@@ -1,0 +1,2260 @@
+//! EwoClient launcher binary entry point.
+//!
+//! Build-sequence steps 4 + 5 in flight: pearl dust particle system + velvet
+//! folds layer. See `CLAUDE.md` for the full build sequence.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use clap::Parser;
+use ewo_core::{Screen, Settings, Theme};
+use ewo_render::backdrop::Backdrop;
+use ewo_render::screens::settings::AccountView;
+use ewo_render::screens::{
+    self, AboutModalState, DevOverlayState, DevSlot, FrameStats, InstancePrefs, InstanceSlot,
+    LaunchingState, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
+};
+use ewo_render::screens::instances::Instance;
+use ewo_render::skia_safe;
+use ewo_render::text::HoverGlowState;
+use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
+
+use auth::{AuthService, AuthState};
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
+
+mod auth;
+mod persistence;
+mod window;
+
+#[derive(Parser, Debug)]
+#[command(name = "ewolauncher", about = "EwoClient — Velvet & Pearl")]
+struct Args {
+    /// Show the developer overlay (state-picker, layout-picker, tweaks panel).
+    #[arg(long)]
+    dev: bool,
+}
+
+const RESIZE_BORDER_LP: f64 = 8.0;
+const CAPTION_HEIGHT_LP: f64 = 32.0;
+
+// Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
+// cursor positions from window-local to card-local for widget hit-testing.
+const CARD_INSET_LP: f64 = 28.0;
+
+/// Action triggered by clicking a sidebar menu item on the main menu.
+#[derive(Copy, Clone, Debug)]
+enum MenuAction {
+    Navigate(Screen),
+    About,
+    Quit,
+}
+
+const MAIN_MENU_ACTIONS: [MenuAction; 4] = [
+    MenuAction::Navigate(Screen::Instances),
+    MenuAction::Navigate(Screen::Settings),
+    MenuAction::About,
+    MenuAction::Quit,
+];
+
+struct App {
+    window: Option<Arc<Window>>,
+    backend: Option<GlBackend>,
+    backdrop: Option<Backdrop>,
+    fonts: Option<FontStore>,
+    clock: Clock,
+    theme: Theme,
+    settings: Settings,
+    cursor: PhysicalPosition<f64>,
+    mouse_down: bool,
+    /// Whether the window currently has focus. Used to throttle the
+    /// redraw loop to ~10 FPS when unfocused so the launcher doesn't
+    /// hammer the GPU while the user is in another app.
+    focused: bool,
+    screen: Screen,
+    settings_tab: SettingsTab,
+    prefs: Prefs,
+    instances: Vec<Instance>,
+    instance_prefs: InstancePrefs,
+    launching: LaunchingState,
+    modal: NewInstanceModalState,
+    about_modal: AboutModalState,
+    dev_overlay: Option<DevOverlayState>,
+    launch_button: VbtnState,
+    menu_items: [VbtnState; 4],
+    /// Hover-tracked state for the main-menu "EwoClient" heading. Drives
+    /// the per-glyph hover-glow stagger (CSS `bt-hover-glow`).
+    heading_hover: HoverGlowState,
+    /// Microsoft auth service — owns the worker thread + auth state.
+    /// Polled each frame via `auth.poll()` to drain the event channel.
+    auth: AuthService,
+    /// Wall-time seconds at which to clear the celebrate state. `None` when
+    /// not celebrating. Set on Launch click; checked each tick.
+    celebrate_until: Option<f32>,
+    dev: bool,
+}
+
+impl App {
+    fn new(dev: bool) -> Self {
+        Self {
+            window: None,
+            backend: None,
+            backdrop: None,
+            fonts: None,
+            clock: Clock::new(),
+            theme: Theme::VELVET,
+            settings: Settings::default(),
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            mouse_down: false,
+            focused: true,
+            screen: Screen::default(),
+            settings_tab: SettingsTab::Graphics,
+            prefs: {
+                let mut p = Prefs::default();
+                p.apply_config(&persistence::load_settings());
+                p
+            },
+            // Try the persisted list first, fall back to the bundled
+            // defaults if missing or malformed.
+            instances: persistence::load_instances(),
+            instance_prefs: InstancePrefs::default(),
+            launching: LaunchingState::default(),
+            modal: NewInstanceModalState::default(),
+            about_modal: AboutModalState::default(),
+            dev_overlay: if dev { Some(DevOverlayState::default()) } else { None },
+            launch_button: VbtnState::default(),
+            menu_items: [VbtnState::default(); 4],
+            heading_hover: HoverGlowState::default(),
+            auth: {
+                let mut svc = AuthService::new();
+                if let Some(account) = auth::persistence::load() {
+                    let refresh = account.ms_refresh_token.clone();
+                    log::info!("auth: hydrated from disk; running silent refresh");
+                    svc.hydrate(account);
+                    if !refresh.is_empty() {
+                        svc.start_silent_refresh(refresh);
+                    }
+                }
+                svc
+            },
+            celebrate_until: None,
+            dev,
+        }
+    }
+
+    /// Bounds of the active screen's Launch button (card-local). Returns
+    /// `None` for screens that don't have one.
+    fn launch_button_bounds(&self, card_w: f32) -> Option<skia_safe::Rect> {
+        match self.screen {
+            Screen::Instances => Some(screens::instances::launch_button_bounds(card_w)),
+            _ => None,
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let attrs = Window::default_attributes()
+            .with_title("EwoClient")
+            .with_decorations(false)
+            .with_inner_size(LogicalSize::new(1180.0, 720.0))
+            .with_min_inner_size(LogicalSize::new(800.0, 520.0));
+
+        let win = Arc::new(
+            event_loop
+                .create_window(attrs)
+                .expect("failed to create window"),
+        );
+
+        window::configure(&win);
+
+        let backend = GlBackend::new(event_loop, win.clone());
+        let size = win.inner_size();
+        let (card_w, card_h) = app_window::card_content_size(size.width, size.height);
+        let backdrop = Backdrop::new(card_w, card_h, &self.settings);
+        let fonts = FontStore::new();
+
+        win.request_redraw();
+
+        self.window = Some(win);
+        self.backend = Some(backend);
+        self.backdrop = Some(backdrop);
+        self.fonts = Some(fonts);
+
+        // Initialize per-mod toggle state from the now-built instance list.
+        self.instance_prefs.sync_mods(&self.instances);
+
+        // Apply the persisted VSync preference to the GL backend that
+        // just came online. The backend defaults to vsync-on, so this is
+        // only meaningful when the user had it off last session.
+        if let Some(b) = self.backend.as_ref() {
+            b.set_vsync(self.prefs.vsync.on);
+        }
+
+        if self.dev {
+            log::info!("dev overlay enabled");
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if focused {
+                    // Coming back from unfocused — kick off a fresh redraw
+                    // so animations resume immediately.
+                    window.request_redraw();
+                }
+            }
+
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. },
+                ..
+            } => {
+                if self.instance_prefs.renaming {
+                    // Inline rename for the selected instance.
+                    const RENAME_MAX_LEN: usize = 48;
+                    if logical_key == Key::Named(NamedKey::Escape) {
+                        log::info!("rename: Esc → cancelled");
+                        self.instance_prefs.renaming = false;
+                        self.instance_prefs.rename_buffer.clear();
+                    } else if logical_key == Key::Named(NamedKey::Enter) {
+                        let trimmed = self.instance_prefs.rename_buffer.trim();
+                        if !trimmed.is_empty() {
+                            if let Some(inst) =
+                                self.instances.get_mut(self.instance_prefs.selected)
+                            {
+                                log::info!(
+                                    "rename: \"{}\" → \"{}\"",
+                                    inst.name, trimmed
+                                );
+                                inst.name = trimmed.to_string();
+                            }
+                            persistence::save_instances(&self.instances);
+                        } else {
+                            log::info!("rename: empty → cancelled");
+                        }
+                        self.instance_prefs.renaming = false;
+                        self.instance_prefs.rename_buffer.clear();
+                    } else if logical_key == Key::Named(NamedKey::Backspace) {
+                        self.instance_prefs.rename_buffer.pop();
+                        self.instance_prefs.rename_focus_time = 0.0;
+                    } else if let Some(t) = text {
+                        for ch in t.chars() {
+                            if !ch.is_control()
+                                && self.instance_prefs.rename_buffer.chars().count() < RENAME_MAX_LEN
+                            {
+                                self.instance_prefs.rename_buffer.push(ch);
+                                self.instance_prefs.rename_focus_time = 0.0;
+                            }
+                        }
+                    }
+                } else if logical_key == Key::Named(NamedKey::Escape) && self.about_modal.open {
+                    log::info!("about: Esc → closing");
+                    self.about_modal.close();
+                } else if logical_key == Key::Named(NamedKey::Escape) && self.modal.open {
+                    log::info!("modal: Esc → closing");
+                    self.modal.close();
+                } else if self.modal.open && self.modal.name_focused {
+                    // Name field text input — append printable chars, pop on
+                    // backspace. Only when the name field is the active
+                    // focus target (set by clicking the input).
+                    const NAME_MAX_LEN: usize = 48;
+                    if logical_key == Key::Named(NamedKey::Backspace) {
+                        self.modal.name.pop();
+                        self.modal.name_focus_time = 0.0; // restart caret blink
+                        if !self.modal.name.is_empty() {
+                            self.modal.name_error = false;
+                        }
+                    } else if logical_key == Key::Named(NamedKey::Enter) {
+                        // Enter commits — same as clicking Create.
+                        if let Some(form) = self.modal.try_submit() {
+                            commit_new_instance(
+                                &mut self.instances,
+                                &mut self.instance_prefs,
+                                form,
+                                self.clock.elapsed,
+                            );
+                            self.modal.close();
+                        }
+                    } else if let Some(t) = text {
+                        for ch in t.chars() {
+                            if !ch.is_control() && self.modal.name.chars().count() < NAME_MAX_LEN {
+                                self.modal.name.push(ch);
+                                self.modal.name_focus_time = 0.0;
+                                self.modal.name_error = false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scale = window.scale_factor();
+                let card_pos = cursor_card_local(self.cursor, scale);
+                let size = window.inner_size();
+                let card_w = card_content_width(size, scale);
+                let card_h = card_content_height(size, scale);
+
+                // Convert delta to logical pixels. `LineDelta` lines are
+                // platform-dependent — multiply by 32px to get a roughly
+                // right wheel-tick-to-pixels mapping. `PixelDelta` is
+                // already in physical pixels — divide by scale.
+                let dy: f32 = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -y * 32.0,
+                    MouseScrollDelta::PixelDelta(p) => -(p.y as f32 / scale as f32),
+                };
+
+                // Routing priority:
+                //  1. If a dropdown menu is open *anywhere*, route the
+                //     wheel to it (so users can scroll the open list).
+                //  2. If the modal is open, absorb the wheel even when no
+                //     menu is open — prevents the underlying Instances
+                //     panel from scrolling beneath a modal.
+                //  3. Otherwise, scroll the active screen's primary
+                //     scrollable region (currently only the Instances
+                //     detail panel).
+                let fonts = self.fonts.as_ref();
+                let mut handled = false;
+
+                // About modal absorbs wheel events outright — there's nothing
+                // scrollable inside it, but we don't want the Instances panel
+                // to scroll behind the dialog.
+                if self.about_modal.open {
+                    let _ = dy;
+                    return;
+                }
+
+                if let Some(fonts) = fonts {
+                    // Modal dropdown takes precedence when modal is open.
+                    if self.modal.open {
+                        if let Some(slot) = self.modal.open_dropdown() {
+                            if let Some(opts) =
+                                screens::new_instance_modal::dropdown_options(slot)
+                            {
+                                let layout = screens::new_instance_modal::compute_layout(
+                                    card_w, card_h, fonts,
+                                );
+                                let head = match slot {
+                                    ModalSlot::Version => layout.version_head,
+                                    ModalSlot::Loader => layout.loader_head,
+                                    _ => layout.version_head,
+                                };
+                                let (menu_bounds, _flip) =
+                                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                                if let Some(state) = self.modal.dropdown_state_mut(slot) {
+                                    state.scroll_by(dy, menu_bounds, opts.len());
+                                }
+                                handled = true;
+                            }
+                        }
+                    } else {
+                        // Settings dropdown
+                        if !handled && self.screen == Screen::Settings {
+                            if let Some(slot) = self.prefs.open_dropdown() {
+                                if let Some(opts) = screens::settings::dropdown_options(slot) {
+                                    if let Some(head) = screens::settings::dropdown_head_for_slot(
+                                        slot, fonts, card_w, card_h,
+                                    ) {
+                                        let (menu_bounds, _flip) =
+                                            ewo_render::widgets::menu_layout(
+                                                head,
+                                                opts.len(),
+                                                card_h,
+                                            );
+                                        if let Some(state) = self.prefs.dropdown_state_mut(slot) {
+                                            state.scroll_by(dy, menu_bounds, opts.len());
+                                        }
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+                        // Instances dropdown
+                        if !handled && self.screen == Screen::Instances {
+                            if let Some(slot) = self.instance_prefs.open_dropdown() {
+                                if let Some(opts) = screens::instances::dropdown_options(slot) {
+                                    if let Some(head) = screens::instances::dropdown_head_for_slot(
+                                        slot,
+                                        fonts,
+                                        card_w,
+                                        card_h,
+                                        &self.instance_prefs,
+                                        &self.instances,
+                                    ) {
+                                        let (menu_bounds, _flip) =
+                                            ewo_render::widgets::menu_layout(
+                                                head,
+                                                opts.len(),
+                                                card_h,
+                                            );
+                                        if let Some(state) =
+                                            self.instance_prefs.dropdown_state_mut(slot)
+                                        {
+                                            state.scroll_by(dy, menu_bounds, opts.len());
+                                        }
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Modal absorbs all remaining wheel events so the
+                // background doesn't scroll beneath it.
+                if !handled && self.modal.open {
+                    handled = true;
+                }
+
+                // Fall-through: Worlds list (left) or Instances detail
+                // panel (right) scroll, depending on which side the cursor
+                // is on.
+                if !handled && self.screen == Screen::Instances {
+                    if let Some(fonts) = fonts {
+                        if card_pos.0 < 320.0 {
+                            // Cursor is over the Worlds list column.
+                            let max_scroll = screens::instances::list_max_scroll(
+                                card_h,
+                                fonts,
+                                &self.instances,
+                            );
+                            self.instance_prefs.list_scroll =
+                                (self.instance_prefs.list_scroll + dy).clamp(0.0, max_scroll);
+                        } else {
+                            let panel =
+                                screens::instances::detail_panel_bounds(card_w, card_h);
+                            if rect_contains(&panel, card_pos) {
+                                let max_scroll = screens::instances::detail_max_scroll(
+                                    card_w,
+                                    card_h,
+                                    fonts,
+                                    &self.instance_prefs,
+                                    &self.instances,
+                                );
+                                self.instance_prefs.detail_scroll = (self.instance_prefs.detail_scroll + dy)
+                                    .clamp(0.0, max_scroll);
+                            }
+                        }
+                    }
+                }
+            }
+
+            WindowEvent::Resized(size) => {
+                if let Some(backend) = self.backend.as_mut() {
+                    backend.resize(size.width, size.height);
+                }
+                if let Some(backdrop) = self.backdrop.as_mut() {
+                    let (cw, ch) = app_window::card_content_size(size.width, size.height);
+                    backdrop.resize(cw, ch, &self.settings);
+                }
+                window.request_redraw();
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position;
+                let scale = window.scale_factor();
+                let card_pos = cursor_card_local(position, scale);
+                let size = window.inner_size();
+                let card_w = card_content_width(size, scale);
+                let card_h = card_content_height(size, scale);
+                let time = self.clock.elapsed;
+
+                // When a modal is open it absorbs all hover state so the
+                // background screen doesn't react under it. Otherwise drive
+                // the active screen's widget + list/button hovers normally.
+                if self.about_modal.open {
+                    // About modal absorbs hover; clear background state so
+                    // glows/highlights don't bleed through.
+                    self.instance_prefs.list_hover = None;
+                    self.instance_prefs.delete_hover = None;
+                    self.instance_prefs.rename_hover = false;
+                    self.instance_prefs.add_hover = false;
+                    self.instance_prefs.sort_hover = false;
+                } else if self.modal.open {
+                    drive_modal_widgets(
+                        &mut self.modal,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        self.mouse_down,
+                        card_w,
+                        card_h,
+                    );
+                    // Clear background hover state so the modal feels modal.
+                    self.instance_prefs.list_hover = None;
+                    self.instance_prefs.add_hover = false;
+                    self.launch_button = VbtnState::default();
+                    for s in self.menu_items.iter_mut() {
+                        *s = VbtnState::default();
+                    }
+                } else if self.screen == Screen::Settings {
+                    let changed = drive_settings_sliders(
+                        &mut self.prefs,
+                        self.settings_tab,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        self.mouse_down,
+                        card_w,
+                        card_h,
+                    );
+                    if changed {
+                        persistence::save_settings(&self.prefs.to_config());
+                        if let Some(b) = self.backend.as_ref() {
+                            b.set_vsync(self.prefs.vsync.on);
+                        }
+                    }
+                    self.instance_prefs.list_hover = None;
+                    self.instance_prefs.add_hover = false;
+                } else if self.screen == Screen::Instances {
+                    let changed = drive_instance_widgets(
+                        &mut self.instance_prefs,
+                        &self.instances,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        self.mouse_down,
+                        card_w,
+                        card_h,
+                    );
+                    if changed {
+                        sync_instance_config(&mut self.instances, &self.instance_prefs);
+                        persistence::save_instances(&self.instances);
+                    }
+                    // List-row + "+" button + sort button + × delete hover
+                    // + ✎ rename hover.
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        self.instance_prefs.rename_hover =
+                            screens::instances::rename_button_bounds(
+                                card_w, card_h, fonts, &self.instances, &self.instance_prefs,
+                            )
+                            .map(|r| rect_contains(&r, card_pos))
+                            .unwrap_or(false);
+                        let mut hover: Option<usize> = None;
+                        let mut delete_hover: Option<usize> = None;
+                        for (i, rect) in screens::instances::list_row_bounds(
+                            card_h,
+                            fonts,
+                            &self.instances,
+                            &self.instance_prefs,
+                        )
+                        .iter()
+                        .enumerate()
+                        {
+                            if rect_contains(rect, card_pos) {
+                                hover = Some(i);
+                            }
+                            let del = screens::instances::delete_button_bounds(*rect);
+                            if rect_contains(&del, card_pos) {
+                                delete_hover = Some(i);
+                            }
+                        }
+                        self.instance_prefs.list_hover = hover;
+                        self.instance_prefs.delete_hover = delete_hover;
+                        self.instance_prefs.add_hover = rect_contains(
+                            &screens::instances::add_button_bounds(),
+                            card_pos,
+                        );
+                        self.instance_prefs.sort_hover = rect_contains(
+                            &screens::instances::sort_button_bounds(fonts),
+                            card_pos,
+                        );
+                    }
+                } else {
+                    // Clear lingering hover state when off the Instances screen.
+                    self.instance_prefs.list_hover = None;
+                    self.instance_prefs.add_hover = false;
+                }
+                if let Some(overlay) = self.dev_overlay.as_mut() {
+                    drive_dev_overlay(overlay, card_pos, self.mouse_down, card_w, card_h);
+                }
+
+                // Update launch-button + main-menu hover state. Modal-open
+                // suppresses these so background buttons don't react under
+                // a modal (new-instance or About).
+                let any_modal_open = self.modal.open || self.about_modal.open;
+                if any_modal_open {
+                    self.launch_button = VbtnState::default();
+                } else if let Some(b) = self.launch_button_bounds(card_w) {
+                    self.launch_button.update(card_pos, b, self.mouse_down, time);
+                } else {
+                    self.launch_button = VbtnState::default();
+                }
+
+                let mut hovering_menu = false;
+                if !any_modal_open && self.screen == Screen::MainMenu {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let bounds = screens::main_menu::menu_item_bounds(card_w, card_h, fonts);
+                        for (i, b) in bounds.iter().enumerate() {
+                            self.menu_items[i].update(card_pos, *b, self.mouse_down, time);
+                            if self.menu_items[i].hover {
+                                hovering_menu = true;
+                            }
+                        }
+                        // Heading hover-glow — fires per-glyph stagger when
+                        // the cursor enters/exits the EwoClient title bbox.
+                        let heading = screens::main_menu::heading_bounds(fonts);
+                        let over_heading = rect_contains(&heading, card_pos);
+                        self.heading_hover.update(over_heading, time);
+                    }
+                } else {
+                    for s in self.menu_items.iter_mut() {
+                        *s = VbtnState::default();
+                    }
+                    // Clear heading-hover when off the main menu so the
+                    // glow doesn't survive a screen change.
+                    self.heading_hover.update(false, time);
+                }
+
+                // About modal — drive the Close button hover so the ghost
+                // glow tracks the cursor without needing a click.
+                if self.about_modal.open {
+                    let close_rect =
+                        screens::about_modal::close_button_bounds(card_w, card_h);
+                    self.about_modal.close_btn.handle(card_pos, close_rect, false);
+                }
+
+                // Hover priority: tab bar → menu items → launch button → window zones.
+                let hovering_tab = if let Some(fonts) = self.fonts.as_ref() {
+                    screens::tab_bounds(card_w, fonts)
+                        .iter()
+                        .any(|(_, r)| rect_contains(r, card_pos))
+                } else {
+                    false
+                };
+
+                let hovering_settings_tab = if self.screen == Screen::Settings {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        screens::settings::sidebar_tab_bounds(fonts)
+                            .iter()
+                            .any(|(_, r)| rect_contains(r, card_pos))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                let hovering_settings_widget = if self.screen == Screen::Settings {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        screens::settings::widget_bounds(
+                            self.settings_tab, fonts, card_w, card_h,
+                        )
+                        .iter()
+                        .any(|(_, r)| rect_contains(r, card_pos))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                let hovering_instance_widget = if self.screen == Screen::Instances {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let widgets = screens::instances::widget_bounds(
+                            card_w, card_h, fonts, &self.instance_prefs, &self.instances,
+                        );
+                        let on_widget = widgets
+                            .iter()
+                            .any(|(_, r)| rect_contains(r, card_pos));
+                        let row_rects = screens::instances::list_row_bounds(
+                            card_h, fonts, &self.instances, &self.instance_prefs,
+                        );
+                        let on_list_row =
+                            row_rects.iter().any(|r| rect_contains(r, card_pos));
+                        let on_add = rect_contains(
+                            &screens::instances::add_button_bounds(),
+                            card_pos,
+                        );
+                        let on_sort = rect_contains(
+                            &screens::instances::sort_button_bounds(fonts),
+                            card_pos,
+                        );
+                        // × buttons are inside row rects, but we want the
+                        // pointer cursor regardless — `on_list_row` already
+                        // covers them.
+                        let on_rename = screens::instances::rename_button_bounds(
+                            card_w, card_h, fonts, &self.instances, &self.instance_prefs,
+                        )
+                        .map(|r| rect_contains(&r, card_pos))
+                        .unwrap_or(false);
+                        on_widget || on_list_row || on_add || on_sort || on_rename
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // Modal hover: when the modal is open, the cursor flips
+                // based on which control it's over. Name field → text
+                // I-beam; buttons / dropdowns / slider → pointer; anywhere
+                // else (including the shroud) → default arrow.
+                let modal_cursor = if self.modal.open {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let layout = screens::new_instance_modal::compute_layout(
+                            card_w, card_h, fonts,
+                        );
+                        if rect_contains(&layout.name_input, card_pos) {
+                            Some(CursorIcon::Text)
+                        } else {
+                            let widgets = screens::new_instance_modal::widget_bounds(
+                                card_w, card_h, fonts,
+                            );
+                            if widgets.iter().any(|(_, r)| rect_contains(r, card_pos)) {
+                                Some(CursorIcon::Pointer)
+                            } else {
+                                Some(CursorIcon::Default)
+                            }
+                        }
+                    } else {
+                        Some(CursorIcon::Default)
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(icon) = modal_cursor {
+                    window.set_cursor(icon);
+                } else if hovering_tab
+                    || hovering_menu
+                    || hovering_settings_tab
+                    || hovering_settings_widget
+                    || hovering_instance_widget
+                    || self.launch_button.hover
+                {
+                    window.set_cursor(CursorIcon::Pointer);
+                } else {
+                    update_cursor_icon(&window, &self.cursor, size, scale);
+                }
+            }
+
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                let pressed = matches!(state, ElementState::Pressed);
+                self.mouse_down = pressed;
+
+                let scale = window.scale_factor();
+                let card_pos = cursor_card_local(self.cursor, scale);
+                let size = window.inner_size();
+                let card_w = card_content_width(size, scale);
+                let card_h = card_content_height(size, scale);
+                let time = self.clock.elapsed;
+
+                // Step -1: dev overlay (when --dev) — sits above everything,
+                // including the modal. Absorbs input when cursor is over it.
+                if let Some(overlay) = self.dev_overlay.as_mut() {
+                    let panel = screens::dev_overlay::panel_bounds(card_w, card_h);
+                    drive_dev_overlay(overlay, card_pos, pressed, card_w, card_h);
+                    if rect_contains(&panel, card_pos) {
+                        if pressed {
+                            let vsync_changed =
+                                handle_dev_overlay_press(overlay, card_pos, card_w, card_h);
+                            if vsync_changed {
+                                if let Some(backend) = self.backend.as_ref() {
+                                    backend.set_vsync(overlay.vsync);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                // Step 0a: About modal — when open, absorbs all input. Close
+                // button click closes; shroud click closes; press anywhere
+                // else inside the card is a no-op so the modal can't be
+                // dismissed by misclicks on the card itself.
+                if self.about_modal.open {
+                    let close_rect =
+                        screens::about_modal::close_button_bounds(card_w, card_h);
+                    let close_clicked =
+                        self.about_modal.close_btn.handle(card_pos, close_rect, pressed);
+                    if close_clicked {
+                        log::info!("about: Close clicked");
+                        self.about_modal.close();
+                    } else if pressed
+                        && screens::about_modal::shroud_consumes(card_pos, card_w, card_h)
+                    {
+                        log::info!("about: shroud click → closing");
+                        self.about_modal.close();
+                    }
+                    return;
+                }
+
+                // Step 0: modal — when open, the modal absorbs all input.
+                // `drive_modal_widgets` runs first so slider drags start on
+                // the rising edge inside bounds; `handle_modal_press` runs
+                // after to consume button / dropdown / shroud clicks.
+                if self.modal.open {
+                    drive_modal_widgets(
+                        &mut self.modal,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        pressed,
+                        card_w,
+                        card_h,
+                    );
+                    if pressed {
+                        handle_modal_press(
+                            &mut self.modal,
+                            &mut self.instances,
+                            &mut self.instance_prefs,
+                            self.fonts.as_ref(),
+                            card_pos,
+                            card_w,
+                            card_h,
+                            self.clock.elapsed,
+                        );
+                    }
+                    return;
+                }
+
+                // Step 1: tab bar hit-test (priority over everything else).
+                let mut handled = false;
+                if pressed {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        for (target, rect) in screens::tab_bounds(card_w, fonts) {
+                            if rect_contains(&rect, card_pos) {
+                                if self.screen != target {
+                                    log::info!("nav: {:?} → {:?}", self.screen, target);
+                                    self.screen = target;
+                                    self.launch_button = VbtnState::default();
+                                    for s in self.menu_items.iter_mut() {
+                                        *s = VbtnState::default();
+                                    }
+                                    self.prefs.close_dropdowns();
+                                    self.instance_prefs.close_dropdowns();
+                                    self.modal.close();
+                                    // Trigger the tab fade-in when arriving at
+                                    // Settings, so the active tab's content
+                                    // greets the user with the same animation
+                                    // it plays when they switch tabs.
+                                    if target == Screen::Settings {
+                                        self.prefs.tab_changed_at = Some(time);
+                                    }
+                                    // Demo affordance: clicking the LAUNCHING
+                                    // tab without an active launch kicks off
+                                    // a fresh synthetic one so the screen is
+                                    // never empty.
+                                    if target == Screen::Launching
+                                        && self.launching.start_time.is_none()
+                                    {
+                                        let (inst_name, inst_meta) = self
+                                            .instances
+                                            .get(self.instance_prefs.selected)
+                                            .map(|i| {
+                                                (
+                                                    i.name.clone(),
+                                                    format!(
+                                                        "{} · ADOPTIUM 21 · {} GB",
+                                                        i.version,
+                                                        self.instance_prefs.ram.value as i32,
+                                                    ),
+                                                )
+                                            })
+                                            .unwrap_or_else(|| {
+                                                (
+                                                    "Velvet Hours".to_string(),
+                                                    "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
+                                                )
+                                            });
+                                        self.launching.enter(time, &inst_name, &inst_meta);
+                                    }
+                                }
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2: main-menu sidebar items.
+                if !handled && self.screen == Screen::MainMenu {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let bounds = screens::main_menu::menu_item_bounds(card_w, card_h, fonts);
+                        for (i, b) in bounds.iter().enumerate() {
+                            let clicked =
+                                self.menu_items[i].update(card_pos, *b, pressed, time);
+                            if clicked {
+                                match MAIN_MENU_ACTIONS[i] {
+                                    MenuAction::Navigate(target) => {
+                                        log::info!("nav (menu): {:?} → {:?}", self.screen, target);
+                                        self.screen = target;
+                                    }
+                                    MenuAction::About => {
+                                        log::info!("about: clicked → opening About modal");
+                                        self.about_modal.open();
+                                    }
+                                    MenuAction::Quit => {
+                                        log::info!("quit: closing app");
+                                        event_loop.exit();
+                                    }
+                                }
+                            }
+                            if self.menu_items[i].hover && pressed {
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2.5: settings sidebar tab switch.
+                if !handled && pressed && self.screen == Screen::Settings {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        for (tab, rect) in screens::settings::sidebar_tab_bounds(fonts) {
+                            if rect_contains(&rect, card_pos) {
+                                if self.settings_tab != tab {
+                                    log::info!(
+                                        "settings: {:?} → {:?}",
+                                        self.settings_tab, tab
+                                    );
+                                    self.settings_tab = tab;
+                                    self.prefs.close_dropdowns();
+                                    self.prefs.tab_changed_at =
+                                        Some(self.clock.elapsed);
+                                }
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2.7: settings widget interaction. Toggles flip on the
+                // press edge; sliders begin a drag (drag continues in
+                // CursorMoved via `drive_settings_sliders`); dropdown heads
+                // toggle the menu open/closed; clicks on open menu rows
+                // commit the selection; clicks elsewhere close the menu.
+                if self.screen == Screen::Settings {
+                    let mut changed = drive_settings_sliders(
+                        &mut self.prefs,
+                        self.settings_tab,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        pressed,
+                        card_w,
+                        card_h,
+                    );
+                    if !handled && pressed {
+                        let (h, c) = handle_settings_press(
+                            &mut self.prefs,
+                            self.settings_tab,
+                            self.fonts.as_ref(),
+                            card_pos,
+                            card_w,
+                            card_h,
+                        );
+                        handled = h;
+                        changed = changed || c;
+                    }
+                    if changed {
+                        persistence::save_settings(&self.prefs.to_config());
+                        if let Some(b) = self.backend.as_ref() {
+                            b.set_vsync(self.prefs.vsync.on);
+                        }
+                    }
+                }
+
+                // Step 2.75: instances list "+" button — opens the
+                // new-instance modal.
+                if !handled && pressed && self.screen == Screen::Instances {
+                    let plus_rect = screens::instances::add_button_bounds();
+                    if rect_contains(&plus_rect, card_pos) {
+                        log::info!("instances: + clicked → opening new-instance modal");
+                        self.modal.open();
+                        handled = true;
+                    }
+                }
+
+                // Step 2.754: ✎ rename icon — enters rename mode for
+                // the currently-selected instance.
+                if !handled && pressed && self.screen == Screen::Instances {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        if let Some(r) = screens::instances::rename_button_bounds(
+                            card_w,
+                            card_h,
+                            fonts,
+                            &self.instances,
+                            &self.instance_prefs,
+                        ) {
+                            if rect_contains(&r, card_pos) {
+                                if let Some(inst) = self
+                                    .instances
+                                    .get(self.instance_prefs.selected)
+                                {
+                                    self.instance_prefs.renaming = true;
+                                    self.instance_prefs.rename_buffer = inst.name.clone();
+                                    self.instance_prefs.rename_focus_time = 0.0;
+                                    log::info!("rename: editing \"{}\"", inst.name);
+                                }
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2.755: × delete button — must run before
+                // click-to-select since × sits inside the row's hit-rect.
+                if !handled && pressed && self.screen == Screen::Instances {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let order = screens::instances::display_order(
+                            &self.instances,
+                            self.instance_prefs.sort_mode,
+                        );
+                        let row_rects = screens::instances::list_row_bounds(
+                            card_h, fonts, &self.instances, &self.instance_prefs,
+                        );
+                        for (display_idx, row_rect) in row_rects.iter().enumerate() {
+                            let del_rect = screens::instances::delete_button_bounds(*row_rect);
+                            if rect_contains(&del_rect, card_pos) {
+                                let underlying = order[display_idx];
+                                delete_instance(
+                                    &mut self.instances,
+                                    &mut self.instance_prefs,
+                                    underlying,
+                                    self.clock.elapsed,
+                                );
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2.76: instance list rows — click-to-select. Click
+                // dispatch uses display order (visual position), then maps
+                // back to the underlying index via `display_order`.
+                if !handled && pressed && self.screen == Screen::Instances {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let order = screens::instances::display_order(
+                            &self.instances,
+                            self.instance_prefs.sort_mode,
+                        );
+                        for (display_idx, rect) in screens::instances::list_row_bounds(
+                            card_h, fonts, &self.instances, &self.instance_prefs,
+                        )
+                        .iter()
+                        .enumerate()
+                        {
+                            if rect_contains(rect, card_pos) {
+                                let underlying = order[display_idx];
+                                if underlying != self.instance_prefs.selected {
+                                    log::info!(
+                                        "instances: select {} → {}",
+                                        self.instance_prefs.selected, underlying
+                                    );
+                                    self.instance_prefs.select(&self.instances, underlying);
+                                    self.instance_prefs.selected_at =
+                                        Some(self.clock.elapsed);
+                                }
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Step 2.77: sort label cycle.
+                if !handled && pressed && self.screen == Screen::Instances {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let r = screens::instances::sort_button_bounds(fonts);
+                        if rect_contains(&r, card_pos) {
+                            self.instance_prefs.sort_mode =
+                                self.instance_prefs.sort_mode.cycle();
+                            log::info!(
+                                "instances: sort → {}",
+                                self.instance_prefs.sort_mode.label()
+                            );
+                            handled = true;
+                        }
+                    }
+                }
+
+                // Step 2.8: instances detail widget interaction. Sliders for
+                // RAM / render distance, plus the Java runtime dropdown.
+                if self.screen == Screen::Instances {
+                    let changed = drive_instance_widgets(
+                        &mut self.instance_prefs,
+                        &self.instances,
+                        self.fonts.as_ref(),
+                        card_pos,
+                        pressed,
+                        card_w,
+                        card_h,
+                    );
+                    if changed {
+                        sync_instance_config(&mut self.instances, &self.instance_prefs);
+                        persistence::save_instances(&self.instances);
+                    }
+                    if !handled && pressed {
+                        handled = handle_instances_press(
+                            &mut self.instance_prefs,
+                            &mut self.instances,
+                            self.fonts.as_ref(),
+                            card_pos,
+                            card_w,
+                            card_h,
+                        );
+                    }
+                }
+
+                // Step 3: active screen's launch button.
+                if !handled {
+                    if let Some(b) = self.launch_button_bounds(card_w) {
+                        let clicked = self.launch_button.update(card_pos, b, pressed, time);
+                        if clicked {
+                            // Pull the actual selected instance's name +
+                            // version line so the Launching screen reflects
+                            // what the user is launching.
+                            let (inst_name, inst_meta) = self
+                                .instances
+                                .get(self.instance_prefs.selected)
+                                .map(|i| {
+                                    (
+                                        i.name.clone(),
+                                        format!(
+                                            "{} · ADOPTIUM 21 · {} GB",
+                                            i.version,
+                                            self.instance_prefs.ram.value as i32,
+                                        ),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    (
+                                        "Velvet Hours".to_string(),
+                                        "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
+                                    )
+                                });
+                            log::info!(
+                                "vbtn: Launch clicked → launching \"{}\"",
+                                inst_name
+                            );
+                            // Update last_played on the launched instance
+                            // and persist immediately so the timestamp
+                            // survives a restart.
+                            if let Some(inst) =
+                                self.instances.get_mut(self.instance_prefs.selected)
+                            {
+                                inst.last_played = "just now".to_string();
+                                inst.last_played_at =
+                                    screens::instances::current_unix_seconds();
+                            }
+                            persistence::save_instances(&self.instances);
+                            // Synthetic launch: enter the Launching screen
+                            // and start the 8s scripted progress + log
+                            // stream. Petals burst + backdrop brightness
+                            // celebrate stays as ambient texture.
+                            self.launching.enter(time, &inst_name, &inst_meta);
+                            self.screen = Screen::Launching;
+                            self.launch_button = VbtnState::default();
+                            self.prefs.close_dropdowns();
+                            self.instance_prefs.close_dropdowns();
+                            if let Some(bd) = self.backdrop.as_mut() {
+                                bd.celebrate(true);
+                            }
+                            self.celebrate_until = Some(time + 4.5);
+                        }
+                        if self.launch_button.hover && pressed {
+                            handled = true;
+                        }
+                    }
+                }
+
+                // Step 4: window drag/resize fallback.
+                if pressed && !handled {
+                    let zone = hit_test(self.cursor, size, scale);
+                    match zone {
+                        Some(Zone::Caption) => {
+                            let _ = window.drag_window();
+                        }
+                        Some(Zone::Resize(dir)) => {
+                            let _ = window.drag_resize_window(dir);
+                        }
+                        None => {
+                            if let Some(b) = self.backdrop.as_mut() {
+                                b.disturb();
+                            }
+                        }
+                    }
+                }
+            }
+
+            WindowEvent::RedrawRequested => {
+                self.clock.tick();
+                let time = self.clock.elapsed;
+                let dt = self.clock.dt;
+                let screen = self.screen;
+
+                // Auto-end celebrate after the configured duration.
+                if let Some(end) = self.celebrate_until {
+                    if time >= end {
+                        if let Some(b) = self.backdrop.as_mut() {
+                            b.celebrate(false);
+                        }
+                        self.celebrate_until = None;
+                    }
+                }
+
+                if let Some(backdrop) = self.backdrop.as_mut() {
+                    backdrop.update(dt);
+                }
+
+                // Tick widget hover animations.
+                self.launch_button.tick(dt);
+                for s in self.menu_items.iter_mut() {
+                    s.tick(dt);
+                }
+                self.prefs.tick(dt);
+                self.instance_prefs.tick(dt);
+                if self.instance_prefs.renaming {
+                    self.instance_prefs.rename_focus_time += dt;
+                }
+                self.modal.tick(dt);
+                self.about_modal.tick(dt);
+                self.auth.poll();
+
+                // Account-tab button — dispatch based on the current
+                // auth state. The button label changes ("Sign in" /
+                // "Sign out" / "Try again") but it's a single slot that
+                // sets `prefs.account_action_requested`.
+                if self.prefs.account_action_requested {
+                    self.prefs.account_action_requested = false;
+                    match self.auth.state() {
+                        AuthState::SignedOut | AuthState::Failed(_) => {
+                            log::info!("auth: starting interactive sign-in");
+                            self.auth.start_interactive();
+                        }
+                        AuthState::SignedIn(_) => {
+                            log::info!("auth: signing out");
+                            self.auth.sign_out();
+                        }
+                        AuthState::Working(_) => {
+                            // Working button currently labelled "Cancel" but we
+                            // can't actually abort an in-flight chain (the
+                            // worker thread isn't cancellable). Best-effort:
+                            // ignore. A proper cancel would mean draining the
+                            // worker's channel + dropping it; punted.
+                            log::info!("auth: ignoring click while working");
+                        }
+                    }
+                }
+
+                // Reset preferences — wipe to bundled defaults, persist,
+                // and resync the GL backend's vsync to match.
+                if self.prefs.reset_requested {
+                    self.prefs.reset_requested = false;
+                    self.prefs
+                        .apply_config(&screens::SettingsConfig::default());
+                    persistence::save_settings(&self.prefs.to_config());
+                    if let Some(b) = self.backend.as_ref() {
+                        b.set_vsync(self.prefs.vsync.on);
+                    }
+                    log::info!("reset_prefs: applied defaults");
+                }
+                if let Some(overlay) = self.dev_overlay.as_mut() {
+                    overlay.tick(dt);
+                    let density_changed = overlay.apply_to_settings(&mut self.settings);
+                    if density_changed {
+                        if let (Some(window), Some(backdrop)) =
+                            (self.window.as_ref(), self.backdrop.as_mut())
+                        {
+                            let size = window.inner_size();
+                            let (cw, ch) = app_window::card_content_size(size.width, size.height);
+                            backdrop.resize(cw, ch, &self.settings);
+                        }
+                    }
+                    // Mirror dev overlay's sim_error into the launching
+                    // state so the pbar variant matches what the dev pill
+                    // shows. Auto-starts a synthetic launch if needed so
+                    // the error has a bar to render against.
+                    if overlay.sim_error != self.launching.error {
+                        match overlay.sim_error {
+                            Some(variant) => {
+                                if self.launching.start_time.is_none() {
+                                    let (n, m) = self
+                                        .instances
+                                        .get(self.instance_prefs.selected)
+                                        .map(|i| {
+                                            (
+                                                i.name.clone(),
+                                                format!(
+                                                    "{} · ADOPTIUM 21 · {} GB",
+                                                    i.version,
+                                                    self.instance_prefs.ram.value as i32,
+                                                ),
+                                            )
+                                        })
+                                        .unwrap_or_else(|| {
+                                            (
+                                                "Velvet Hours".to_string(),
+                                                "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
+                                            )
+                                        });
+                                    self.launching.enter(time, &n, &m);
+                                }
+                                self.launching.trigger_error(variant, time);
+                            }
+                            None => self.launching.clear_error(),
+                        }
+                    }
+                }
+                if self.screen == Screen::Launching {
+                    self.launching.tick(time, dt);
+                    if self.launching.should_handoff(time) {
+                        log::info!("launching: handoff complete → returning to Instances");
+                        self.launching.exit();
+                        self.screen = Screen::Instances;
+                    }
+                }
+
+                let backdrop_ref = self.backdrop.as_ref();
+                let fonts_ref = self.fonts.as_ref();
+                let launch_button = self.launch_button;
+                let menu_items = self.menu_items;
+                let settings_tab = self.settings_tab;
+                let theme = &self.theme;
+                let settings = &self.settings;
+                let prefs = &self.prefs;
+                let instance_prefs = &self.instance_prefs;
+                let launching_state = &self.launching;
+                let modal = &self.modal;
+                let about_modal = &self.about_modal;
+                let dev_overlay = self.dev_overlay.as_ref();
+                let heading_hover = self.heading_hover;
+                // Pluck strings out of the auth state into stack-borrowed
+                // refs that AccountView holds — keeps `ewo-render` ignorant
+                // of the launcher's auth types.
+                let auth_state = self.auth.state();
+                let err_msg: Option<String> = if let AuthState::Failed(err) = auth_state {
+                    Some(format_auth_error(err))
+                } else {
+                    None
+                };
+                let account_view: AccountView<'_> = match auth_state {
+                    AuthState::SignedOut => AccountView::SignedOut,
+                    AuthState::Working(stage) => AccountView::Working { stage },
+                    AuthState::SignedIn(a) => AccountView::SignedIn {
+                        name: &a.name,
+                        uuid: &a.uuid,
+                    },
+                    AuthState::Failed(_) => AccountView::Failed {
+                        message: err_msg.as_deref().unwrap_or("auth failed"),
+                    },
+                };
+                let frame_stats = FrameStats {
+                    fps: self.clock.avg_fps(),
+                    frame_ms: self.clock.avg_dt() * 1000.0,
+                    worst_ms: self.clock.worst_dt() * 1000.0,
+                };
+                let instances = self.instances.as_slice();
+                if let (Some(backend), Some(backdrop), Some(fonts)) =
+                    (self.backend.as_mut(), backdrop_ref, fonts_ref)
+                {
+                    backend.render(|canvas, w, h| {
+                        app_window::draw_frame(
+                            canvas, backdrop, fonts, w, h, time, theme, settings,
+                            screen, &launch_button, &menu_items, settings_tab, prefs,
+                            instance_prefs, launching_state, modal, about_modal,
+                            dev_overlay, frame_stats, instances, heading_hover,
+                            account_view,
+                        );
+                    });
+                }
+                // Only chain redraws while focused. When unfocused, the
+                // event loop's `WaitUntil` (set in `about_to_wait`) will
+                // wake us at ~10 FPS so subtle animations still tick but
+                // we stop hammering the GPU.
+                if self.focused {
+                    window.request_redraw();
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Three modes:
+        //  1. Unfocused → ~10 FPS via WaitUntil — GPU stays idle while
+        //     the user is in another window.
+        //  2. Focused, VSync on → Poll. Skia + GL surface caps at the
+        //     display refresh, no extra throttling needed.
+        //  3. Focused, VSync off → if `max_fps < 240` cap via WaitUntil
+        //     to that target; else Poll for uncapped (the dev-overlay
+        //     path that validates the 500fps OLED target).
+        if !self.focused {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+            return;
+        }
+
+        let max_fps = self.prefs.max_fps.value;
+        if !self.prefs.vsync.on && max_fps < 240.0 && max_fps > 0.0 {
+            let target_ns = (1_000_000_000.0 / max_fps).max(1.0) as u64;
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_nanos(target_ns),
+            ));
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        } else {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Zone {
+    Caption,
+    Resize(ResizeDirection),
+}
+
+fn hit_test(
+    pos: PhysicalPosition<f64>,
+    size: PhysicalSize<u32>,
+    scale: f64,
+) -> Option<Zone> {
+    let border = RESIZE_BORDER_LP * scale;
+    let caption = CAPTION_HEIGHT_LP * scale;
+    let (x, y) = (pos.x, pos.y);
+    let (w, h) = (size.width as f64, size.height as f64);
+
+    let on_top = y >= 0.0 && y < border;
+    let on_bottom = y > h - border;
+    let on_left = x >= 0.0 && x < border;
+    let on_right = x > w - border;
+
+    use ResizeDirection::*;
+    let dir = match (on_top, on_bottom, on_left, on_right) {
+        (true, _, true, _) => Some(NorthWest),
+        (true, _, _, true) => Some(NorthEast),
+        (_, true, true, _) => Some(SouthWest),
+        (_, true, _, true) => Some(SouthEast),
+        (true, _, _, _) => Some(North),
+        (_, true, _, _) => Some(South),
+        (_, _, true, _) => Some(West),
+        (_, _, _, true) => Some(East),
+        _ => None,
+    };
+    if let Some(d) = dir {
+        return Some(Zone::Resize(d));
+    }
+    if y >= 0.0 && y < caption {
+        return Some(Zone::Caption);
+    }
+    None
+}
+
+/// Convert a window-local cursor position (physical px) into card-local
+/// (logical px), matching the coord space widget code uses.
+fn cursor_card_local(cursor: PhysicalPosition<f64>, scale: f64) -> (f32, f32) {
+    let lp_x = cursor.x / scale;
+    let lp_y = cursor.y / scale;
+    ((lp_x - CARD_INSET_LP) as f32, (lp_y - CARD_INSET_LP) as f32)
+}
+
+/// Card content width in card-local logical pixels (window minus 2× card inset).
+fn card_content_width(size: PhysicalSize<u32>, scale: f64) -> f32 {
+    let logical_w = size.width as f64 / scale;
+    (logical_w - 2.0 * CARD_INSET_LP) as f32
+}
+
+/// Card content height in card-local logical pixels.
+fn card_content_height(size: PhysicalSize<u32>, scale: f64) -> f32 {
+    let logical_h = size.height as f64 / scale;
+    (logical_h - 2.0 * CARD_INSET_LP) as f32
+}
+
+fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
+    p.0 >= rect.left && p.0 <= rect.right && p.1 >= rect.top && p.1 <= rect.bottom
+}
+
+/// Drive any slider on the active Settings tab with the current cursor +
+/// mouse-button state. Continuous-drive semantics: on rising edge inside
+/// bounds the slider starts dragging; while dragging, value tracks `mouse.x`
+/// even if the cursor leaves the widget bounds; on falling edge dragging
+/// ends. See `VsliderState::drive` for the per-widget contract.
+///
+/// Also updates dropdown menu hover state for any open dropdown so cursor
+/// motion lights up the row under the cursor.
+fn drive_settings_sliders(
+    prefs: &mut Prefs,
+    tab: SettingsTab,
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let Some(fonts) = fonts else {
+        return false;
+    };
+    let mut changed = false;
+    for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
+        match slot {
+            SettingsSlot::MaxFps => {
+                if prefs.max_fps.drive(mouse, rect, mouse_down) {
+                    changed = true;
+                }
+            }
+            SettingsSlot::Master => {
+                if prefs.master.drive(mouse, rect, mouse_down) {
+                    changed = true;
+                }
+            }
+            SettingsSlot::Music => {
+                if prefs.music.drive(mouse, rect, mouse_down) {
+                    changed = true;
+                }
+            }
+            SettingsSlot::Effects => {
+                if prefs.effects.drive(mouse, rect, mouse_down) {
+                    changed = true;
+                }
+            }
+            // Path fields and Reset button drive their own hover state.
+            SettingsSlot::GameDir => {
+                prefs.game_dir.drive_hover(mouse, rect);
+            }
+            SettingsSlot::Downloads => {
+                prefs.downloads.drive_hover(mouse, rect);
+            }
+            SettingsSlot::ResetPrefs => {
+                prefs.reset_prefs.handle(mouse, rect, false);
+            }
+            SettingsSlot::AccountAction => {
+                prefs.account_action.handle(mouse, rect, false);
+            }
+            // Toggles + dropdowns react to discrete press events, not motion.
+            SettingsSlot::Vsync
+            | SettingsSlot::AmbientHum
+            | SettingsSlot::AutoBackup
+            | SettingsSlot::Telemetry
+            | SettingsSlot::WindowMode
+            | SettingsSlot::Theme
+            | SettingsSlot::LogLevel => {}
+        }
+    }
+
+    // Update menu-row hover for any open dropdown.
+    if let Some(slot) = prefs.open_dropdown() {
+        if let Some(opts) = screens::settings::dropdown_options(slot) {
+            if let Some(head) =
+                screens::settings::dropdown_head_for_slot(slot, fonts, card_w, card_h)
+            {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                if let Some(state) = prefs.dropdown_state_mut(slot) {
+                    state.update_menu_hover(mouse, menu_bounds, opts.len());
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+/// Route a press event on the Settings screen. Returns `true` when the
+/// press hit a Settings widget (and so should be considered "handled" and
+/// not fall through to the launch-button or window-drag handlers).
+///
+/// Order of resolution:
+///   1. If a dropdown is open and the press is inside its menu → commit row
+///      and consume the press.
+///   2. If a dropdown is open and the press is *outside* both its head and
+///      its menu → close the menu and consume the press.
+///   3. Otherwise iterate the active tab's widgets:
+///      - dropdown head → toggle open/closed (closing any other open one)
+///      - toggle → flip
+///      - slider → no-op (already handled by `drive_settings_sliders`)
+fn handle_settings_press(
+    prefs: &mut Prefs,
+    tab: SettingsTab,
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> (bool, bool) {
+    let Some(fonts) = fonts else {
+        return (false, false);
+    };
+    let mut changed = false;
+
+    // (1) and (2): handle any open dropdown menu first.
+    if let Some(open_slot) = prefs.open_dropdown() {
+        if let Some(opts) = screens::settings::dropdown_options(open_slot) {
+            if let Some(head) =
+                screens::settings::dropdown_head_for_slot(open_slot, fonts, card_w, card_h)
+            {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                let in_menu = rect_contains(&menu_bounds, mouse);
+                let in_head = rect_contains(&head, mouse);
+                if in_menu {
+                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                        if let Some(idx) = state.handle_menu(mouse, menu_bounds, opts.len(), true)
+                        {
+                            log::info!("dropdown {:?} → {} ({})", open_slot, idx, opts[idx]);
+                            changed = true;
+                        }
+                    }
+                    return (true, changed);
+                }
+                if !in_head {
+                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                        state.close();
+                    }
+                    // Don't return — allow the press to fall through so the
+                    // user can click another widget while dismissing.
+                }
+            }
+        }
+    }
+
+    // (3) Normal widget dispatch.
+    for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
+        if !rect_contains(&rect, mouse) {
+            continue;
+        }
+        match slot {
+            SettingsSlot::Vsync => {
+                if prefs.vsync.handle(mouse, rect, true) {
+                    log::info!("vsync: {}", prefs.vsync.on);
+                    changed = true;
+                }
+            }
+            SettingsSlot::AmbientHum => {
+                if prefs.ambient_hum.handle(mouse, rect, true) {
+                    log::info!("ambient_hum: {}", prefs.ambient_hum.on);
+                    changed = true;
+                }
+            }
+            SettingsSlot::AutoBackup => {
+                if prefs.auto_backup.handle(mouse, rect, true) {
+                    log::info!("auto_backup: {}", prefs.auto_backup.on);
+                    changed = true;
+                }
+            }
+            SettingsSlot::Telemetry => {
+                if prefs.telemetry.handle(mouse, rect, true) {
+                    log::info!("telemetry: {}", prefs.telemetry.on);
+                    changed = true;
+                }
+            }
+            SettingsSlot::WindowMode | SettingsSlot::Theme | SettingsSlot::LogLevel => {
+                // Close other dropdowns first so only one is ever open.
+                close_other_dropdowns(prefs, slot);
+                if let Some(state) = prefs.dropdown_state_mut(slot) {
+                    if state.handle_head(mouse, rect, true) {
+                        log::info!("dropdown {:?}: open={}", slot, state.open);
+                    }
+                }
+            }
+            SettingsSlot::GameDir => {
+                if prefs.game_dir.handle_press(mouse, rect) {
+                    log::info!("game_dir: Browse clicked");
+                }
+            }
+            SettingsSlot::Downloads => {
+                if prefs.downloads.handle_press(mouse, rect) {
+                    log::info!("downloads: Browse clicked");
+                }
+            }
+            SettingsSlot::ResetPrefs => {
+                if prefs.reset_prefs.handle(mouse, rect, true) {
+                    log::info!("reset_prefs: clicked → flagging for reset");
+                    prefs.reset_requested = true;
+                }
+            }
+            SettingsSlot::AccountAction => {
+                if prefs.account_action.handle(mouse, rect, true) {
+                    log::info!("account_action: clicked → flagging for dispatch");
+                    prefs.account_action_requested = true;
+                }
+            }
+            // Sliders driven by drive_settings_sliders — head click consumed there.
+            SettingsSlot::MaxFps
+            | SettingsSlot::Master
+            | SettingsSlot::Music
+            | SettingsSlot::Effects => {}
+        }
+        return (true, changed);
+    }
+    (false, changed)
+}
+
+/// Drive the Instances detail's slider drags + dropdown menu hover.
+/// Mirror of `drive_settings_sliders` for the Instances screen. Returns
+/// `true` when a slider value changed so the caller can mirror the
+/// change into the underlying instance + persist.
+#[allow(clippy::too_many_arguments)]
+fn drive_instance_widgets(
+    prefs: &mut InstancePrefs,
+    instances: &[Instance],
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let Some(fonts) = fonts else {
+        return false;
+    };
+    let mut value_changed = false;
+    for (slot, rect) in
+        screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances)
+    {
+        match slot {
+            InstanceSlot::Ram => {
+                if prefs.ram.drive(mouse, rect, mouse_down) {
+                    value_changed = true;
+                }
+            }
+            InstanceSlot::RenderDist => {
+                if prefs.render_dist.drive(mouse, rect, mouse_down) {
+                    value_changed = true;
+                }
+            }
+            InstanceSlot::JavaRuntime | InstanceSlot::ModToggle(_) => {}
+        }
+    }
+
+    // Update menu hover for any open dropdown.
+    if let Some(slot) = prefs.open_dropdown() {
+        if let Some(opts) = screens::instances::dropdown_options(slot) {
+            if let Some(head) = screens::instances::dropdown_head_for_slot(
+                slot, fonts, card_w, card_h, prefs, instances,
+            ) {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                if let Some(state) = prefs.dropdown_state_mut(slot) {
+                    state.update_menu_hover(mouse, menu_bounds, opts.len());
+                }
+            }
+        }
+    }
+
+    value_changed
+}
+
+/// Route a press event on the Instances screen — mirror of
+/// `handle_settings_press`. Returns `true` when the press hit a widget.
+#[allow(clippy::too_many_arguments)]
+fn handle_instances_press(
+    prefs: &mut InstancePrefs,
+    instances: &mut Vec<Instance>,
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let Some(fonts) = fonts else {
+        return false;
+    };
+
+    // (1) and (2): handle any open dropdown menu first.
+    if let Some(open_slot) = prefs.open_dropdown() {
+        if let Some(opts) = screens::instances::dropdown_options(open_slot) {
+            if let Some(head) = screens::instances::dropdown_head_for_slot(
+                open_slot, fonts, card_w, card_h, prefs, instances,
+            ) {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                let in_menu = rect_contains(&menu_bounds, mouse);
+                let in_head = rect_contains(&head, mouse);
+                if in_menu {
+                    let mut commit = false;
+                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                        if let Some(idx) =
+                            state.handle_menu(mouse, menu_bounds, opts.len(), true)
+                        {
+                            log::info!("instance dropdown {:?} → {} ({})", open_slot, idx, opts[idx]);
+                            commit = true;
+                        }
+                    }
+                    if commit {
+                        sync_instance_config(instances, prefs);
+                        persistence::save_instances(instances);
+                    }
+                    return true;
+                }
+                if !in_head {
+                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                        state.close();
+                    }
+                }
+            }
+        }
+    }
+
+    // (3) Normal widget dispatch.
+    for (slot, rect) in
+        screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances)
+    {
+        if !rect_contains(&rect, mouse) {
+            continue;
+        }
+        match slot {
+            InstanceSlot::JavaRuntime => {
+                if let Some(state) = prefs.dropdown_state_mut(slot) {
+                    if state.handle_head(mouse, rect, true) {
+                        log::info!("instance dropdown {:?}: open={}", slot, state.open);
+                    }
+                }
+            }
+            InstanceSlot::ModToggle(i) => {
+                if let Some(flag) = prefs.mods_on.get_mut(i) {
+                    *flag = !*flag;
+                    log::info!("mod[{}]: {}", i, *flag);
+                    // Mirror the toggle into the underlying instance so
+                    // the change persists and is reflected on the next
+                    // selection-reset.
+                    let new_value = *flag;
+                    if let Some(inst) = instances.get_mut(prefs.selected) {
+                        if let Some(m) = inst.mods.get_mut(i) {
+                            m.on = new_value;
+                        }
+                    }
+                    persistence::save_instances(instances);
+                }
+            }
+            // Sliders consumed by drive_instance_widgets.
+            InstanceSlot::Ram | InstanceSlot::RenderDist => {}
+        }
+        return true;
+    }
+    false
+}
+
+/// Drive the dev overlay's slider drags + ghost button hover states.
+fn drive_dev_overlay(
+    overlay: &mut DevOverlayState,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) {
+    for (slot, rect) in screens::dev_overlay::widget_bounds(card_w, card_h) {
+        match slot {
+            DevSlot::Reset => {
+                overlay.reset_btn.handle(mouse, rect, false);
+            }
+            DevSlot::VsyncToggle => {
+                overlay.vsync_btn.handle(mouse, rect, false);
+            }
+            DevSlot::SimError => {
+                overlay.sim_error_btn.handle(mouse, rect, false);
+            }
+            slot => {
+                if let Some(state) = screens::dev_overlay::slider_state_mut(overlay, slot) {
+                    state.drive(mouse, rect, mouse_down);
+                }
+            }
+        }
+    }
+}
+
+/// Route a press inside the dev overlay panel. Returns whether the vsync
+/// state changed this frame — caller uses that to call `GlBackend::set_vsync`.
+fn handle_dev_overlay_press(
+    overlay: &mut DevOverlayState,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    for (slot, rect) in screens::dev_overlay::widget_bounds(card_w, card_h) {
+        if !rect_contains(&rect, mouse) {
+            continue;
+        }
+        match slot {
+            DevSlot::Reset => {
+                if overlay.reset_btn.handle(mouse, rect, true) {
+                    log::info!("dev: reset to defaults");
+                    overlay.reset_to_defaults();
+                }
+            }
+            DevSlot::VsyncToggle => {
+                if overlay.vsync_btn.handle(mouse, rect, true) {
+                    overlay.vsync = !overlay.vsync;
+                    log::info!("dev: vsync = {}", overlay.vsync);
+                    return true;
+                }
+            }
+            DevSlot::SimError => {
+                if overlay.sim_error_btn.handle(mouse, rect, true) {
+                    overlay.cycle_sim_error();
+                    log::info!("dev: sim_error = {:?}", overlay.sim_error);
+                }
+            }
+            // Sliders consumed by drive_dev_overlay.
+            _ => {}
+        }
+        return false;
+    }
+    false
+}
+
+/// Drive the modal's slider drag + dropdown menu hover + button hover
+/// states from the current cursor + mouse-button state. Mirrors
+/// `drive_settings_sliders` for the modal's three interactive controls.
+fn drive_modal_widgets(
+    modal: &mut NewInstanceModalState,
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) {
+    let Some(fonts) = fonts else {
+        return;
+    };
+    for (slot, rect) in screens::new_instance_modal::widget_bounds(card_w, card_h, fonts) {
+        match slot {
+            ModalSlot::Ram => {
+                modal.ram.drive(mouse, rect, mouse_down);
+            }
+            ModalSlot::Cancel => {
+                modal.cancel_btn.handle(mouse, rect, false);
+            }
+            ModalSlot::Create => {
+                modal.create_btn.update(mouse, rect, mouse_down, 0.0);
+            }
+            ModalSlot::Version | ModalSlot::Loader => {}
+        }
+    }
+    // Update menu hover for any open dropdown.
+    if let Some(slot) = modal.open_dropdown() {
+        if let Some(opts) = screens::new_instance_modal::dropdown_options(slot) {
+            if let Some(head) = screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
+                .into_iter()
+                .find_map(|(s, r)| if s == slot { Some(r) } else { None })
+            {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                if let Some(state) = modal.dropdown_state_mut(slot) {
+                    state.update_menu_hover(mouse, menu_bounds, opts.len());
+                }
+            }
+        }
+    }
+    let _ = fonts;
+}
+
+/// Route a press inside the open modal. Returns `true` if the press was
+/// consumed (always — the modal absorbs all clicks while open). Calls
+/// `modal.close()` when the press lands on the shroud, Cancel button, or
+/// a successfully-validated Create button. Create with empty name sets
+/// `modal.name_error = true` and keeps the modal open so the user sees
+/// the inline error.
+#[allow(clippy::too_many_arguments)]
+fn handle_modal_press(
+    modal: &mut NewInstanceModalState,
+    instances: &mut Vec<Instance>,
+    instance_prefs: &mut InstancePrefs,
+    fonts: Option<&FontStore>,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+    time: f32,
+) -> bool {
+    let Some(fonts) = fonts else {
+        return true;
+    };
+
+    // (0) Name input focus hit-test. Compute the input rect from the
+    // shared layout. If the click lands inside, focus it; otherwise
+    // unfocus before any other widget dispatch.
+    let layout = screens::new_instance_modal::compute_layout(card_w, card_h, fonts);
+    if rect_contains(&layout.name_input, mouse) {
+        modal.focus_name(true);
+        return true;
+    } else {
+        modal.focus_name(false);
+    }
+
+    // (1) Open dropdown menu hit-test first.
+    if let Some(open_slot) = modal.open_dropdown() {
+        if let Some(opts) = screens::new_instance_modal::dropdown_options(open_slot) {
+            if let Some(head) =
+                screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
+                    .into_iter()
+                    .find_map(|(s, r)| if s == open_slot { Some(r) } else { None })
+            {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                let in_menu = rect_contains(&menu_bounds, mouse);
+                let in_head = rect_contains(&head, mouse);
+                if in_menu {
+                    if let Some(state) = modal.dropdown_state_mut(open_slot) {
+                        if let Some(idx) =
+                            state.handle_menu(mouse, menu_bounds, opts.len(), true)
+                        {
+                            log::info!(
+                                "modal dropdown {:?} → {} ({})",
+                                open_slot, idx, opts[idx]
+                            );
+                        }
+                    }
+                    return true;
+                }
+                if !in_head {
+                    if let Some(state) = modal.dropdown_state_mut(open_slot) {
+                        state.close();
+                    }
+                }
+            }
+        }
+    }
+
+    // (2) Form widget dispatch.
+    for (slot, rect) in screens::new_instance_modal::widget_bounds(card_w, card_h, fonts) {
+        if !rect_contains(&rect, mouse) {
+            continue;
+        }
+        match slot {
+            ModalSlot::Version | ModalSlot::Loader => {
+                close_other_modal_dropdowns(modal, slot);
+                if let Some(state) = modal.dropdown_state_mut(slot) {
+                    if state.handle_head(mouse, rect, true) {
+                        log::info!("modal dropdown {:?}: open={}", slot, state.open);
+                    }
+                }
+                return true;
+            }
+            ModalSlot::Cancel => {
+                if modal.cancel_btn.handle(mouse, rect, true) {
+                    log::info!("modal: Cancel clicked");
+                    modal.close();
+                }
+                return true;
+            }
+            ModalSlot::Create => {
+                modal.create_btn.update(mouse, rect, true, 0.0);
+                if let Some(form) = modal.try_submit() {
+                    commit_new_instance(instances, instance_prefs, form, time);
+                    modal.close();
+                } else {
+                    // Empty name → keep modal open; `modal.name_error` is
+                    // now `true`, the renderer surfaces the inline message.
+                    log::info!("modal: Create blocked — name required");
+                }
+                return true;
+            }
+            // Sliders consumed by drive_modal_widgets.
+            ModalSlot::Ram => return true,
+        }
+    }
+
+    // (3) Anywhere else inside the card body → consume but no-op.
+    let card = screens::new_instance_modal::card_rect(card_w, card_h);
+    if rect_contains(&card, mouse) {
+        return true;
+    }
+
+    // (4) Shroud click outside the card → dismiss.
+    if screens::new_instance_modal::shroud_consumes(mouse, card_w, card_h) {
+        log::info!("modal: shroud click → closing");
+        modal.close();
+        return true;
+    }
+
+    let _ = fonts;
+    true
+}
+
+fn close_other_modal_dropdowns(modal: &mut NewInstanceModalState, keep: ModalSlot) {
+    if keep != ModalSlot::Version {
+        modal.version.close();
+    }
+    if keep != ModalSlot::Loader {
+        modal.loader.close();
+    }
+}
+
+/// Remove an instance by underlying index. Adjusts `prefs.selected` so
+/// it still points at a valid instance (or the last one, if the user
+/// deleted the currently-selected one) and persists. Refuses to delete
+/// the last remaining instance — there must always be at least one.
+fn delete_instance(
+    instances: &mut Vec<Instance>,
+    prefs: &mut InstancePrefs,
+    underlying_idx: usize,
+    time: f32,
+) {
+    if underlying_idx >= instances.len() || instances.len() <= 1 {
+        log::info!("delete: refused (idx={} len={})", underlying_idx, instances.len());
+        return;
+    }
+    let removed_name = instances[underlying_idx].name.clone();
+    instances.remove(underlying_idx);
+
+    // Re-anchor selection. If we removed something below the cursor,
+    // shift back. If we removed the cursor itself, clamp to the new last
+    // index.
+    if prefs.selected > underlying_idx {
+        prefs.selected -= 1;
+    } else if prefs.selected == underlying_idx {
+        prefs.selected = prefs.selected.min(instances.len().saturating_sub(1));
+    }
+    prefs.sync_from_instance(instances);
+    prefs.detail_scroll = 0.0;
+    prefs.selected_at = Some(time); // play the detail-panel fade for the new view
+    prefs.delete_hover = None;
+    prefs.list_hover = None;
+
+    log::info!("delete: removed \"{}\"", removed_name);
+    persistence::save_instances(instances);
+}
+
+/// Mirror the prefs slider/dropdown values into the currently-selected
+/// instance. Called whenever those widgets fire a change event so the
+/// per-instance config follows the user's edits.
+fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
+    if let Some(inst) = instances.get_mut(prefs.selected) {
+        inst.ram = prefs.ram.value as u32;
+        inst.render_distance = prefs.render_dist.value as u32;
+        inst.java_runtime = prefs.java_runtime.selected;
+    }
+}
+
+/// Insert a new instance at the front of the launcher's list (so it
+/// shows first under the default "newest first" sort) and select it.
+/// `time` is the current wall-clock seconds; used to drive the row
+/// drop-in animation. Called by the Create button + Enter-key paths.
+fn commit_new_instance(
+    instances: &mut Vec<Instance>,
+    prefs: &mut InstancePrefs,
+    form: screens::new_instance_modal::NewInstanceForm,
+    time: f32,
+) {
+    let version_meta = format!("{} · {}", form.loader.to_uppercase(), form.version);
+    let mut new_inst = Instance::new(
+        form.name.clone(),
+        version_meta,
+        "just now".to_string(),
+        Vec::new(),
+    )
+    .with_config(form.ram, 16, 0);
+    // Stamp the new world as "just played" so it leads the list in both
+    // newest-first and recently-played sorts until the user launches
+    // anything else.
+    new_inst.last_played_at = screens::instances::current_unix_seconds();
+    log::info!(
+        "instances: created \"{}\" ({} · {} · {} GB)",
+        form.name, form.version, form.loader, form.ram
+    );
+    instances.insert(0, new_inst);
+    // Selection is by underlying index → newly inserted is at 0; previously
+    // selected indices shift +1, so update prefs.selected to track it.
+    prefs.selected = prefs.selected.saturating_add(1);
+    prefs.select(instances, 0);
+    prefs.list_scroll = 0.0;
+    prefs.created_at = Some(time);
+    prefs.selected_at = Some(time);
+    persistence::save_instances(instances);
+}
+
+fn close_other_dropdowns(prefs: &mut Prefs, keep: SettingsSlot) {
+    if keep != SettingsSlot::WindowMode {
+        prefs.window_mode.close();
+    }
+    if keep != SettingsSlot::Theme {
+        prefs.theme.close();
+    }
+    if keep != SettingsSlot::LogLevel {
+        prefs.log_level.close();
+    }
+}
+
+fn update_cursor_icon(
+    window: &Window,
+    pos: &PhysicalPosition<f64>,
+    size: PhysicalSize<u32>,
+    scale: f64,
+) {
+    use winit::window::CursorIcon::*;
+    let icon = match hit_test(*pos, size, scale) {
+        Some(Zone::Resize(ResizeDirection::North)) => NResize,
+        Some(Zone::Resize(ResizeDirection::South)) => SResize,
+        Some(Zone::Resize(ResizeDirection::East)) => EResize,
+        Some(Zone::Resize(ResizeDirection::West)) => WResize,
+        Some(Zone::Resize(ResizeDirection::NorthEast)) => NeResize,
+        Some(Zone::Resize(ResizeDirection::NorthWest)) => NwResize,
+        Some(Zone::Resize(ResizeDirection::SouthEast)) => SeResize,
+        Some(Zone::Resize(ResizeDirection::SouthWest)) => SwResize,
+        Some(Zone::Caption) | None => Default,
+    };
+    window.set_cursor(icon);
+}
+
+fn main() {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .init();
+
+    let args = Args::parse();
+
+    let event_loop = EventLoop::new().expect("failed to create event loop");
+    let mut app = App::new(args.dev);
+    event_loop.run_app(&mut app).expect("event loop error");
+}
+
+/// Render an `AuthError` into a user-facing string for the Account tab's
+/// detail line. The XSTS variants get the spec-defined messages
+/// (region-blocked etc.); other errors get a clean fallback.
+///
+/// `Other` errors are pattern-matched for known patterns so the user
+/// sees something readable instead of raw HTTP-response JSON.
+fn format_auth_error(err: &auth::AuthError) -> String {
+    match err {
+        auth::AuthError::UserCancelled => "sign-in was cancelled.".to_string(),
+        auth::AuthError::Network(msg) => format!("network error: {}", msg),
+        auth::AuthError::XstsBlocked(b) => b.user_message().to_string(),
+        auth::AuthError::NoMinecraftLicense => {
+            "this Microsoft account doesn't appear to own Minecraft Java edition.".to_string()
+        }
+        auth::AuthError::Other(msg) => friendly_other_error(msg),
+    }
+}
+
+/// Best-effort transform of raw HTTP-response error strings into a clean
+/// one-liner. Returns the raw message unchanged if no pattern matches.
+fn friendly_other_error(msg: &str) -> String {
+    if msg.contains("Invalid app registration") {
+        return "this Entra app isn't yet approved by Mojang's Minecraft Launcher \
+            Program. apply at aka.ms/AppRegInfo, or use Phase B (no auth) for now."
+            .to_string();
+    }
+    if msg.contains("AADSTS") {
+        // Pull just the AADSTS code + short message instead of the full body.
+        if let Some(idx) = msg.find("AADSTS") {
+            let tail = &msg[idx..];
+            let line = tail.split('\n').next().unwrap_or(tail);
+            return format!("Microsoft auth: {}", line);
+        }
+    }
+    // Fallback: trim whitespace + cap length so the panel doesn't overflow.
+    let trimmed = msg.trim();
+    if trimmed.len() > 240 {
+        format!("{}…", &trimmed[..240])
+    } else {
+        trimmed.to_string()
+    }
+}

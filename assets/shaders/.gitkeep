@@ -1,0 +1,2 @@
+SkSL shader files for custom effects beyond Skia's built-ins.
+Currently empty — populated during build-sequence step 5 (velvet folds turbulence).

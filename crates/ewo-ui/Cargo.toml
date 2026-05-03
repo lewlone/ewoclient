@@ -1,0 +1,13 @@
+[package]
+name = "ewo-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ewo-core.workspace = true
+ewo-render.workspace = true
+taffy.workspace = true
+glam.workspace = true

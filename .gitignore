@@ -1,0 +1,28 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE
+/.vscode
+/.idea
+*.swp
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Profiling — local-only large files (excluded from public repo)
+/perf.data*
+*.profraw
+Firefox*.json
+
+# Local settings + auth state. The launcher writes these into
+# %APPDATA%/EwoClient on Windows / $XDG_CONFIG_HOME/EwoClient on Linux,
+# *not* into the repo — but list them here defensively in case future
+# code ever puts them in the working tree.
+/.env
+/.cargo/.local
+auth.toml
+settings.toml
+instances.toml

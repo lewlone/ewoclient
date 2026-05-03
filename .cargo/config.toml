@@ -1,0 +1,11 @@
+# Cargo build config for the workspace.
+
+[build]
+# Use sparse registry for faster index updates.
+# (Stable since 1.70, but explicit doesn't hurt.)
+
+[net]
+git-fetch-with-cli = true
+
+# Skia is unusable at opt-level 0; bump the C++ side to 3 even in dev.
+# Configured in the workspace root Cargo.toml, repeated here for emphasis.

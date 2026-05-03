@@ -1,0 +1,11 @@
+Drop variable .ttf font files here. See CLAUDE.md "Velvet theme tokens" for the
+required families and axes:
+
+  Fraunces[SOFT,WONK,opsz,wght].ttf
+  Fraunces-Italic[SOFT,WONK,opsz,wght].ttf
+  Newsreader[opsz,wght].ttf
+  Newsreader-Italic[opsz,wght].ttf
+  JetBrainsMono[wght].ttf
+  JetBrainsMono-Italic[wght].ttf
+
+Source: Google Fonts (https://fonts.google.com/) — download as variable TTF.
