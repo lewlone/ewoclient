@@ -54,6 +54,6 @@ Requires Rust stable 1.80+. First build is slow because Skia compiles its own C+
 
 ## License
 
-Source: see `LICENSE` (TBD).
+Source: [MIT](LICENSE).
 
-Bundled fonts are SIL Open Font License (Fraunces, Newsreader, JetBrains Mono).
+Bundled fonts are SIL Open Font License (Fraunces, Newsreader, JetBrains Mono) — see `LICENSE` for attribution details.
