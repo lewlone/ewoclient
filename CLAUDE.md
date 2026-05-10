@@ -131,7 +131,7 @@ This was the path to v1. Each step was a working program. **As of 2026-05-03, ev
 
 ## What's intentionally NOT in v1 (and never was)
 
-- Real Microsoft OAuth, JVM launching, instance directories on disk, asset/library downloads.
+- ~~Real Microsoft OAuth, JVM launching, instance directories on disk, asset/library downloads.~~ All shipped in v2 (see "v2 status" section below).
 - Pearl / Obsidian / Champagne theme variants. Stubs in the dropdown only.
 - Real text editing in the new-instance Name field (the "Rename" affordance on the Instances detail panel does have working text input — the new-instance modal does not yet).
 - Browse buttons opening real OS file dialogs.
@@ -606,74 +606,107 @@ The state-picker / layout-picker / error-picker the prototype's `dat.gui`-style 
 
 ---
 
-## v2 plan (real launcher backend)
+## v2 status — A/B/C live, D pending
 
-**v1 is the visual replica. v2 is making the Launch button actually launch Minecraft.** Same theme, same UI, same animations — but the buttons connect to real subsystems.
+**v2 turns the Launch button into an actually-functional Minecraft launcher.** Phases A–C are shipped and verified end-to-end (Minecraft 26.1 launches, plays, and exits cleanly from a cold start). Phase D blocks on the user's custom Fabric fork existing as a separate project. Phase E is the original v2 ambition (in-game GUI) and lives further out.
 
-This is a substantial chunk of work and naturally splits into independent phases. Don't start phase N+1 until phase N is working end-to-end. Each phase is a working program by itself.
+### Phase A — Microsoft authentication ✅ shipped + approved
 
-### Phase A — Microsoft authentication
+Code is complete in [`crates/ewo-launcher/src/auth/`](crates/ewo-launcher/src/auth/):
 
-Goal: click "Sign in with Microsoft" in Settings, browser opens, user authenticates, launcher receives a Minecraft access token + profile (UUID, name) and persists it.
+- `chain.rs` — the four-step token exchange (Microsoft OAuth + PKCE → Xbox Live → XSTS → Minecraft Services) + profile fetch
+- `loopback.rs` — `tiny_http` listener bound to a random `127.0.0.1:PORT` that catches the OAuth redirect at the bare `http://localhost` registered URI
+- `pkce.rs` — code verifier/challenge generation
+- `persistence.rs` — refresh-token persistence at `<config>/EwoClient/auth.toml` (plaintext for now; DPAPI/keychain encryption is a TODO before wide distribution)
+- `service.rs` — background-thread auth runner + mpsc UI events
 
-The pipeline is **four token exchanges plus a profile fetch**:
+UI lives on the **Account** tab in Settings (first tab; uses a custom layout, not the row-grid system). Sign-in / sign-out / try-again button changes label by `AccountView` state.
 
-1. **Microsoft OAuth (`login.microsoftonline.com`)** — scopes `XboxLive.signin offline_access`, returns MS access token + refresh token. Native desktop apps should use Authorization Code flow with PKCE.
-2. **Xbox Live (`user.auth.xboxlive.com/user/authenticate`)** — exchanges MS token for an XBL token + UserHash.
-3. **XSTS (`xsts.auth.xboxlive.com/xsts/authorize`)** — exchanges XBL for an XSTS token. Common error here: `XErr` 2148916233 ("no Xbox account") and 2148916235 (region blocked) — these need real error UX.
-4. **Minecraft Services (`api.minecraftservices.com/authentication/login_with_xbox`)** — exchanges XSTS + UserHash for a Minecraft access token.
-5. **Profile fetch (`api.minecraftservices.com/minecraft/profile`)** — returns UUID + display name.
+**The Entra app `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist** (Launcher Program approval came through ~1 week after submission). Sign-in completes the full chain end-to-end: Microsoft OAuth → Xbox Live → XSTS → `login_with_xbox` → profile fetch → token persisted to `auth.toml`. Verified live: signed in as **Vwyla**, joined Hypixel, sent chat, played a Bedwars game end-to-end.
 
-**Redirect strategy.** Use the **loopback** approach (what Prism / ATLauncher / MultiMC do): spin up a one-shot `http://localhost:PORT` listener via `tiny_http`, open the system browser via `opener`, parse the auth code from the incoming GET, shut the listener down. Requires registering `http://localhost` as a redirect URI in the Entra app (the existing `nativeclient` URI doesn't work for loopback). The alternative — device code flow — is simpler to implement but UX is worse (user has to type a code).
+`App::try_real_launch` reads `AuthState::SignedIn(account)` and slots the live `MinecraftAccount.minecraft_token` into the `LaunchProfile` — online multiplayer works without further code changes. Falls back to `LaunchProfile::offline(name)` (synthetic UUID + placeholder `"0"` token) when no signed-in account is available; offline mode is still useful for LAN or singleplayer-only sessions.
 
-**Persistence.** Save the refresh token (encrypted? at least at-rest). On launch, refresh the chain in the background; only show the "Sign in with Microsoft" button when refresh fails. New file: `<config>/EwoClient/auth.toml`.
+### Phase B — Version manifest + downloads ✅ shipped
 
-**Concurrency reminder.** No tokio/smol per CLAUDE.md non-negotiables. Use `ureq` for sync HTTP. Wrap the auth chain in a single background thread spawned from `App` so the UI keeps animating; communicate progress back via a `mpsc::Receiver<AuthEvent>` polled each frame.
+- [`crates/ewo-launcher/src/versions/`](crates/ewo-launcher/src/versions/) — master `version_manifest_v2.json` fetch + 6h disk cache; per-version manifest fetch + sha1 verify + permanent cache (manifests are immutable per Mojang)
+  - `manifest.rs::is_supported` is the **curated allowlist**: 1.21.x + 26.x release line + 1.8.9 + `26.2-snapshot-5`. Add other snapshots via `SNAPSHOT_ALLOWLIST`. The launcher intentionally doesn't surface every Mojang version.
+- [`crates/ewo-launcher/src/downloads/`](crates/ewo-launcher/src/downloads/) — orchestrates the per-stage download (`PerVersion → Client → Libraries → AssetIndex → Assets`), sha1-verifies every file, drops into Mojang's official disk layout under `<config>/EwoClient/shared/{versions,libraries,assets}/`. One worker thread per active job; mpsc events to the UI.
 
-**Crate additions:** `ureq`, `serde_json` (already present), `tiny_http`, `opener`, `base64`, `sha2` (for PKCE), `url`. All sync, all small.
+UI surfaces:
+- New-instance modal Version dropdown is live (filtered from `version_manifest_v2.json`)
+- Instance row shows real percentage badge: `DOWNLOADING · 47%`
+- On completion the instance flips from `Pending` → `Ready` and persists
 
-**UI surface.** A new "Account" section at the top of Settings showing either: (a) "Sign in with Microsoft" ghost button when signed-out, or (b) avatar + name + "Sign out" when signed in. The launching screen reads the access token from `App` when starting a launch.
+### Phase C — JVM spawn + game launch ✅ shipped
 
-### Phase B — Version manifest + library/asset downloads
+[`crates/ewo-launcher/src/launch/`](crates/ewo-launcher/src/launch/):
 
-Goal: launcher knows what 1.21.5 / 1.21.4 / etc. actually mean, can download the JARs, libraries, and assets needed to launch them.
+- `plan.rs` — `LaunchPlan` builder. Substitutes every documented Mojang token (`${auth_player_name}`, `${classpath}`, `${natives_directory}`, etc.) into both modern `arguments` blocks and legacy `minecraftArguments` strings. `LaunchProfile::offline(name)` synthesizes an offline-mode profile.
+- `natives.rs` — extracts native-classifier JAR contents into per-instance `natives/` dir (deletes + recreates each launch). META-INF skipping, basic path-traversal guard.
+- `spawn.rs` — `std::process::Command` child + two reader threads piping stdout/stderr line-by-line back to the UI through mpsc.
+- `jre.rs` — JRE detector. Scans Oracle javapath, Adoptium, Microsoft, Zulu, Liberica, JAVA_HOME, PATH, plus the bundled-runtime dir (see Runtime below). Probes each via `java -version`. Cached + manually invalidatable. `pick_for_major(required)` returns exact match else lowest installed major ≥ requirement.
 
-- `https://launchermeta.mojang.com/mc/game/version_manifest_v2.json` — the master version list. Each entry has a `url` to a per-version manifest.
-- Per-version manifest gives: client JAR url + sha1, libraries list (each with url + sha1 + native classifier rules), asset index url, main class, JVM args, game args.
-- Asset index → object hashes; downloaded into `<game_dir>/assets/objects/<2-char-prefix>/<hash>`.
-- Libraries → `<game_dir>/libraries/...` with native extraction for LWJGL.
+[`crates/ewo-launcher/src/runtime/`](crates/ewo-launcher/src/runtime/):
 
-Disk layout matches vanilla launcher conventions so existing instances are interoperable: `<config>/EwoClient/instances/<name>/` for per-instance worlds + saves, `<config>/EwoClient/shared/` for libraries + assets shared across instances.
+- **Bundled-JRE auto-fetch.** When `pick_for_major` returns `None`, `try_real_launch` triggers an Adoptium download for the missing major. Archive lands at `<config>/EwoClient/runtime/<major>/`; extracted into `<runtime_dir>/jre/`. JRE detector picks it up automatically (cache invalidated by `jre::invalidate_cache` after extraction completes). Currently Windows-only — `.zip` extraction; macOS/Linux `.tar.gz` is the next polish item.
 
-The new-instance modal's Version dropdown becomes live (populated from the manifest); creating an instance schedules the downloads in the background. The launching screen's progress bar becomes real (not synthetic): it shows actual bytes-downloaded against total-bytes-expected.
+**Real launches** are spawned with the right JRE, full classpath, extracted natives, working dir = per-instance dir. JVM stdout/stderr stream into the launching screen's log panel (replaces the synthetic `LOG_SCRIPT`). On clean exit the screen handoffs back to Instances; on non-zero exit the pbar flips to `ErrorRose`, the screen sticks, and a Retry / Back button pair appears in the footer.
 
-### Phase C — JVM spawning + game launch
+**Per-launch logs** are dumped to `<config>/EwoClient/instances/<name>/logs/launch_<unix_ts>.log` on JVM exit, tagged `[OUT]` / `[ERR]` per source.
 
-Goal: the Launch button actually starts Minecraft as a child process.
+**Verified end-to-end on a fresh box:** create instance → Phase B downloads (~3 min for 26.1 full asset set) → click Launch → JRE auto-fetch via Adoptium (~2s for Java 25) → JVM spawn → Minecraft renders → clean exit → handoff. Logs in `tasks/b8ycimnb5.output` (smoke-test session 2026-05-03).
 
-- Resolve a JVM (bundled Adoptium per platform, or honor the user-selected runtime from the per-instance config).
-- Construct the JVM args from the version manifest's templates (substituting `${auth_player_name}`, `${auth_uuid}`, `${auth_access_token}`, `${assets_root}`, etc.).
-- Spawn the JVM as a child via `std::process::Command`, capture stdout+stderr, stream into the Launching screen's log panel (replacing `LOG_SCRIPT`).
-- On exit: success → return to Instances. Crash → show real error variant on the pbar (the Sim error infrastructure is already there).
+### Phase D — Custom Fabric-fork loader 🟡 waiting on the loader project
 
-### Phase D — Modded loaders (Fabric / Forge / Quilt)
+The loader work happens **outside this launcher** — it's a separate Fabric fork the user is building. The launcher's job is to:
 
-Goal: the new-instance modal's Loader dropdown becomes functional.
+1. Recognize when an instance specifies the custom loader (the new-instance modal's Loader dropdown).
+2. Fetch the loader's per-version manifest (whatever URL/format the fork settles on — closest analog is `https://meta.fabricmc.net/v2/versions/loader/<mc>`).
+3. Apply it on top of the vanilla per-version manifest: append libraries, override `mainClass`, append JVM args.
+4. Drop the fork's "ewo-loader" launch JSON in `<config>/EwoClient/shared/<loader-name>/<mc>-<loader-version>/`.
 
-- Fabric's manifest format is well-documented (`https://meta.fabricmc.net/v2/versions/loader/<mc>`). Forge requires bytecode-patching the vanilla manifest (or use the post-2018 Forge installer's profile JSON).
-- Mods are dropped into `<instance>/mods/`. The mods-list UI in Instances becomes a real file system view.
+The infrastructure for this is already in place — `LaunchPlan` is data-driven, `Library` rules + classpath builder are loader-agnostic. The new piece is a "loader manifest" abstraction that produces a merged `PerVersion` from `(vanilla_pv, loader_pv)`. Phase B's `get_or_fetch` is the template for the loader-manifest fetcher.
 
-### Phase E — In-game GUI host (the original v2 ambition)
+The new-instance modal's Loader dropdown currently shows `["Vanilla", "Fabric", "Forge", "NeoForge", "Quilt"]` — only Vanilla is wired. The other entries should either be removed or marked "(coming soon)" until the fork lands.
 
-The bigger arc that originally followed v1. **Don't start until phases A-D are stable.** A custom Fabric fork that opens the launcher's Skia render surface on top of the Minecraft window when the user hits Esc, replacing the vanilla pause menu. Requires a JNI bridge and reusing the same `ewo-render` crate from inside a JVM. Notes already exist on this in [the build-sequence note immediately after v1] but a full plan lands when we get there.
+**This phase doesn't start until the user has the loader fork compilable + producing manifests.**
+
+### Phase E — In-game GUI host 🟣 future
+
+A custom Fabric fork (separate from Phase D's loader-of-mods role; this one is about *replacing the in-game pause menu* with the EwoClient render surface) that opens the same `ewo-render` Skia surface on top of the Minecraft window when the user hits Esc. Requires a JNI bridge and reusing `ewo-render` from inside a JVM. Don't start until D is stable.
+
+### Known gaps + small follow-ups
+
+- **macOS/Linux JRE bundling** — `.tar.gz` extraction shipped; not yet exercised on a real Linux/macOS box. Should "just work" given Adoptium archives are well-behaved gz-tars, but worth smoke-testing once a target host is available.
+- **Hyprland verification** — still not run on actual Linux. The `wayland.rs` window stub should "just work" on wlroots but nobody's tested it. Pairs naturally with the JRE-bundling smoke test above.
+- **Pixel-parity pass** — never formally walked through every screen vs `style/*.png` with side-by-side screenshots.
+- **Refresh-token at-rest encryption** — `auth.toml` is plaintext. Fine for single-developer dev box; would want DPAPI / keychain / libsecret before binary distribution.
+- **Loader dropdown** — see Phase D. Disable / mark "coming soon" the non-Vanilla entries until the fork lands.
+- **Settings → Java runtime dropdown** — instance detail shows a "Java runtime" dropdown that's currently decorative. Since `pick_for_major` does the right thing automatically, wiring this is low-priority.
+
+### Useful runtime conventions
+
+- Disk: `<config>/EwoClient/` is `%APPDATA%/EwoClient` on Windows, `$XDG_CONFIG_HOME/EwoClient` (or `~/.config/EwoClient`) on Linux. Layout under it:
+  ```
+  shared/{versions,libraries,assets}/  ← Mojang-compatible; vanilla launchers can read these
+  instances/<name>/                    ← per-instance: worlds, screenshots, mods, natives, logs
+  runtime/<major>/jre/                 ← bundled JREs auto-fetched from Adoptium
+  auth.toml                            ← MS refresh token (plaintext)
+  versions_cache.json                  ← master manifest cache (6h TTL)
+  settings.toml                        ← UI preferences
+  instances.toml                       ← persisted instance list
+  ```
+- Threading: every long-running task spawns a `std::thread` and reports back via `mpsc`. Polled by `App` once per frame in `RedrawRequested`. No tokio/smol — see CLAUDE.md non-negotiables.
+- All HTTP via `ureq` (sync). User-Agent: `EwoClient/0.1 (+https://github.com/lewlone/ewoclient)`.
 
 ### What NOT to do in v2
 
-- Don't prefetch microsoft credentials at app startup if a user might never sign in. Lazy-fetch on launch.
+- Don't prefetch Microsoft credentials at app startup if a user might never sign in. Lazy-fetch on launch.
 - Don't add a real-time launcher protocol (Discord rich presence, telemetry, news). The "OFFLINE FIRST. NOTHING PHONES HOME." invariant from v1 stays — auth + version manifest + asset CDN are the only network calls.
-- Don't write our own auth lib; the Microsoft-auth chain is well-documented but the failure modes are subtle. Reference https://wiki.vg/Microsoft_Authentication_Scheme religiously.
-- Don't try to do all of v2 in one branch. Phase A → ship → Phase B → ship → etc.
+- Don't write your own auth lib; the Microsoft-auth chain is well-documented but the failure modes are subtle. Reference https://wiki.vg/Microsoft_Authentication_Scheme religiously.
+- Don't expand the curated version allowlist (`is_supported`) without a reason. The launcher targets specific versions deliberately.
+- Don't break the disk layout — vanilla-launcher interop is a real feature.
 
 ---
 
-*Last meaningful structural change to this file: marked v1 visual-replica DONE on Windows (all 16 build-sequence steps complete; remaining work is two validation items: Hyprland smoke test + side-by-side pixel-parity pass) and stubbed out the v2 plan (real launcher backend) in five phases — Microsoft auth → version manifest + downloads → JVM spawn + game launch → modded loaders → in-game GUI host. Phase A (Microsoft auth) is the natural next-session starting point; Entra app registration is already in progress on the user's side.*
+*Last meaningful structural change to this file: Mojang Launcher Program approval came through (~1 week after submission). Phase A is now production-validated end-to-end — signed in as Vwyla, joined Hypixel, played a Bedwars game start-to-finish via the real auth chain. Online multiplayer is fully working; the launcher is functionally complete for v2 phases A/B/C. Concurrent with the approval news: parallel agents shipped `.tar.gz` extraction support (macOS/Linux JRE bundling, structurally complete pending real-host smoke test) and the Phase D loader-manifest scaffold (`crates/ewo-launcher/src/loaders/` with `LoaderManifest` type + `merge` function + passing unit test) so when the user's custom Fabric fork project is ready, integration is `merge(vanilla, loader) → existing launch::build` with no further plumbing. Largest remaining gaps: Hyprland verification, formal pixel-parity pass, refresh-token at-rest encryption (DPAPI/keychain) before binary distribution.*

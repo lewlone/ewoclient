@@ -62,8 +62,16 @@ tiny_http = "0.12"
 opener = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
+sha1 = "0.10"
 urlencoding = "2"
 serde_json = "1"
+
+# v2 phase C — native extraction (unzip natives JARs into per-instance
+# natives/). `zip` is sync; pure Rust; no compression-only deps we don't
+# need (deflate/store cover Mojang's natives jars).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
 
 # Internal
 ewo-core = { path = "crates/ewo-core" }

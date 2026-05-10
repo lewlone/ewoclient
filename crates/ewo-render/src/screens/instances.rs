@@ -202,6 +202,11 @@ pub struct InstancePrefs {
     pub rename_focus_time: f32,
     /// Cursor over the rename ✎ icon.
     pub rename_hover: bool,
+    /// Download progress (0..100) per instance name. Populated each
+    /// frame by `App` from the `DownloadService`. Pending instances
+    /// without an entry render "DOWNLOADING…"; with an entry, "X%".
+    /// Runtime-only — not persisted.
+    pub download_pct: std::collections::HashMap<String, u32>,
 }
 
 /// Duration of the new-row drop-in animation. Silk-eased from 0 to 1.
@@ -232,6 +237,7 @@ impl Default for InstancePrefs {
             rename_buffer: String::new(),
             rename_focus_time: 0.0,
             rename_hover: false,
+            download_pct: std::collections::HashMap::new(),
         }
     }
 }
@@ -341,6 +347,45 @@ pub struct Instance {
     pub java_runtime: usize,
     #[serde(default)]
     pub mods: Vec<ModInfo>,
+    /// Whether this instance's vanilla artifacts (client.jar, libraries,
+    /// assets) have been fully downloaded + sha1-verified. New instances
+    /// start as `Pending` and get flipped to `Ready` once the download
+    /// job finishes. Hand-seeded mock instances default to `Ready` for
+    /// backwards compatibility with on-disk `instances.toml` files
+    /// written before this field existed.
+    #[serde(default = "default_status")]
+    pub status: InstanceStatus,
+    /// Mod-loader to launch under. `Vanilla` is the no-op default — pre-
+    /// existing on-disk entries from before this field existed
+    /// deserialize as `Vanilla` automatically.
+    #[serde(default)]
+    pub loader: InstanceLoader,
+}
+
+/// Which mod-loader (if any) layers on top of vanilla at launch. v2
+/// phase D ships `Ewo` (the user's friendly fabric-loader fork) — Fabric
+/// / Forge / NeoForge / Quilt slot in the same way once their meta
+/// endpoints are wired.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceLoader {
+    #[default]
+    Vanilla,
+    /// EwoLoader — friendly fork of fabric-loader. URL points at the
+    /// manifest file (HTTP or `file://`). The loader's `id` field
+    /// (deserialized from the JSON itself) keys the cache.
+    Ewo {
+        manifest_url: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceStatus {
+    /// Just created; download job hasn't finished (or hasn't started).
+    Pending,
+    /// All artifacts on disk + verified. Safe to launch.
+    Ready,
 }
 
 fn default_ram() -> u32 {
@@ -348,6 +393,13 @@ fn default_ram() -> u32 {
 }
 fn default_render_distance() -> u32 {
     16
+}
+fn default_status() -> InstanceStatus {
+    // Pre-existing on-disk entries from before this field existed are
+    // assumed `Ready` — they were created without a download flow but
+    // shouldn't suddenly turn into "needs downloading" pills. New
+    // instances explicitly set `Pending` at creation time.
+    InstanceStatus::Ready
 }
 
 impl Instance {
@@ -361,7 +413,16 @@ impl Instance {
             render_distance: default_render_distance(),
             java_runtime: 0,
             mods,
+            status: default_status(),
+            loader: InstanceLoader::default(),
         }
+    }
+
+    /// Builder shortcut for assigning a non-default loader on the
+    /// new-instance commit path. `Vanilla` callers don't need this.
+    pub fn with_loader(mut self, loader: InstanceLoader) -> Self {
+        self.loader = loader;
+        self
     }
 
     pub fn with_config(mut self, ram: u32, render_distance: u32, java_runtime: usize) -> Self {
@@ -704,8 +765,10 @@ fn draw_list(
                 &row_div_paint,
             );
         }
+        let progress_pct = prefs.download_pct.get(&inst.name).copied();
         draw_list_row(
             canvas, fonts, inst, y, row_h, is_selected, is_hovered, row_anim, is_delete_hover,
+            progress_pct,
         );
         y += row_h;
     }
@@ -733,6 +796,7 @@ fn draw_list(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn draw_list_row(
     canvas: &Canvas,
     fonts: &FontStore,
@@ -746,6 +810,10 @@ fn draw_list_row(
     anim: Option<f32>,
     // `true` when the cursor is specifically over this row's × button.
     delete_hover: bool,
+    // Download progress (0..100) for this instance, if known. Only used
+    // when status is `Pending` — replaces the bare "DOWNLOADING…" badge
+    // with "DOWNLOADING X%".
+    download_pct: Option<u32>,
 ) {
     // Apply the entrance animation as a save-layer that wraps the entire
     // row drawing — alpha + translate compose cleanly without needing
@@ -862,21 +930,49 @@ fn draw_list_row(
         0.18,
     );
 
-    // Last-played timestamp on the right (italic Newsreader, very dim)
-    let ts_font = fonts.newsreader(11.0);
-    let mut ts_paint = Paint::default();
-    ts_paint.set_anti_alias(true);
-    ts_paint.set_color(TEXT_MAUVE_DEEP);
-    let (ts_advance, _) = ts_font.measure_str(&inst.last_played, Some(&ts_paint));
-    let (_, tm) = ts_font.metrics();
-    let ts_baseline = meta_top + (-tm.ascent);
+    // Right-side label: download status while Pending; last-played timestamp once Ready.
+    // Pending instances show a small mono "DOWNLOADING…" eyebrow in rose
+    // so the row clearly reads as not-yet-launchable.
     let ts_right = LIST_WIDTH - 44.0; // leave room for the × button
-    canvas.draw_str(
-        &inst.last_played,
-        (ts_right - ts_advance, ts_baseline),
-        &ts_font,
-        &ts_paint,
-    );
+    if inst.status == InstanceStatus::Pending {
+        let dl_font = fonts.jetbrains_mono(9.0);
+        let mut dl_paint = Paint::default();
+        dl_paint.set_anti_alias(true);
+        dl_paint.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+        let owned;
+        let label: &str = match download_pct {
+            Some(p) => {
+                owned = format!("DOWNLOADING · {}%", p.min(99));
+                &owned
+            }
+            None => "DOWNLOADING…",
+        };
+        let dl_w = text::measure_tracked_em(&dl_font, label, 0.20);
+        let (_, dlm) = dl_font.metrics();
+        let dl_baseline = meta_top + (-dlm.ascent);
+        text::draw_tracked_em(
+            canvas,
+            label,
+            (ts_right - dl_w, dl_baseline),
+            &dl_font,
+            &dl_paint,
+            0.20,
+        );
+    } else {
+        let ts_font = fonts.newsreader(11.0);
+        let mut ts_paint = Paint::default();
+        ts_paint.set_anti_alias(true);
+        ts_paint.set_color(TEXT_MAUVE_DEEP);
+        let (ts_advance, _) = ts_font.measure_str(&inst.last_played, Some(&ts_paint));
+        let (_, tm) = ts_font.metrics();
+        let ts_baseline = meta_top + (-tm.ascent);
+        canvas.draw_str(
+            &inst.last_played,
+            (ts_right - ts_advance, ts_baseline),
+            &ts_font,
+            &ts_paint,
+        );
+    }
 
     // × delete button — small JetBrains Mono glyph at the right edge.
     // Faint by default, brightens when the cursor is on it. We render it
@@ -984,11 +1080,18 @@ fn draw_detail(
         draw_head(canvas, fonts, content_left, content_top, selected, prefs, time, settings);
         draw_head_divider(canvas, content_left, content_right, head_div_y);
 
-        // Launch button sits inside the panel at top-right of the head row.
+        // Launch button sits inside the panel at top-right of the head
+        // row. Label flips to "Downloading…" while the instance is
+        // Pending so the user sees why the click does nothing.
+        let launch_label = if selected.status == InstanceStatus::Pending {
+            "Downloading…"
+        } else {
+            "Launch"
+        };
         draw_vbtn(
             canvas,
             btn_bounds,
-            "Launch",
+            launch_label,
             launch_button,
             time,
             settings.motion_speed,

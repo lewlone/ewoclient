@@ -18,7 +18,7 @@ pub mod tab_bar;
 pub use about_modal::{draw_modal as draw_about_modal, AboutModalState};
 pub use dev_overlay::{draw_dev_overlay, DevOverlayState, FrameStats, Slot as DevSlot};
 pub use instances::{draw_instances, InstancePrefs, Slot as InstanceSlot};
-pub use launching::{draw_launching, LaunchError, LaunchingState};
+pub use launching::{draw_launching, LaunchError, LaunchingState, RealSeverity};
 pub use main_menu::draw_main_menu;
 pub use new_instance_modal::{
     draw_modal as draw_new_instance_modal, NewInstanceModalState, Slot as ModalSlot,

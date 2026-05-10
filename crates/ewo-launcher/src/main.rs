@@ -20,6 +20,18 @@ use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 
 use auth::{AuthService, AuthState};
+
+/// A launch click whose JRE wasn't available — we kicked off a runtime
+/// fetch and will retry once it lands.
+#[derive(Debug, Clone)]
+struct PendingRelaunch {
+    instance_idx: usize,
+    instance_name: String,
+    instance_meta: String,
+    /// Major version the missing JRE is for. The retry only fires when
+    /// the runtime service emits `Done { major }` matching this value.
+    waiting_for_major: u32,
+}
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -28,7 +40,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 mod auth;
+mod downloads;
+mod launch;
+mod loaders;
 mod persistence;
+mod runtime;
+mod versions;
 mod window;
 
 #[derive(Parser, Debug)]
@@ -41,6 +58,14 @@ struct Args {
 
 const RESIZE_BORDER_LP: f64 = 8.0;
 const CAPTION_HEIGHT_LP: f64 = 32.0;
+
+/// Hard-coded URL for the in-development EwoLoader manifest. The loader
+/// project lives in a sibling repo on the developer's machine and
+/// doesn't yet publish a public meta endpoint, so we point straight at
+/// the on-disk manifest via `file://`. Becomes a config knob (or a real
+/// HTTPS URL) once the loader publishes a meta endpoint.
+const DEV_EWO_LOADER_URL: &str =
+    "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0/26.1.json";
 
 // Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
 // cursor positions from window-local to card-local for widget hit-testing.
@@ -92,6 +117,24 @@ struct App {
     /// Microsoft auth service — owns the worker thread + auth state.
     /// Polled each frame via `auth.poll()` to drain the event channel.
     auth: AuthService,
+    /// Mojang version manifest service — owns disk cache + background
+    /// refresh thread. Hydrated from cache at startup; refreshed on a
+    /// 6-hour TTL. Feeds the new-instance modal's Version dropdown.
+    versions: versions::VersionService,
+    /// Real-download service — owns one worker thread per active job,
+    /// reports progress via mpsc. Polled every frame.
+    downloads: downloads::DownloadService,
+    /// Receiver for events from the most-recent active JVM launch (Phase
+    /// C). `None` while no launch is running. Drained each frame in
+    /// `RedrawRequested`.
+    launch_rx: Option<std::sync::mpsc::Receiver<launch::LaunchEvent>>,
+    /// Bundled-JRE auto-fetch service. Owns one Adoptium download
+    /// thread at a time. Polled each frame.
+    runtime: runtime::RuntimeService,
+    /// When a launch click finds no matching JRE installed, we record
+    /// it here, kick off `runtime.start_fetch(major)`, and retry the
+    /// launch automatically once the JRE is ready.
+    pending_relaunch: Option<PendingRelaunch>,
     /// Wall-time seconds at which to clear the celebrate state. `None` when
     /// not celebrating. Set on Launch click; checked each tick.
     celebrate_until: Option<f32>,
@@ -141,6 +184,11 @@ impl App {
                 }
                 svc
             },
+            versions: versions::VersionService::new(),
+            downloads: downloads::DownloadService::new(),
+            launch_rx: None,
+            runtime: runtime::RuntimeService::new(),
+            pending_relaunch: None,
             celebrate_until: None,
             dev,
         }
@@ -153,6 +201,172 @@ impl App {
             Screen::Instances => Some(screens::instances::launch_button_bounds(card_w)),
             _ => None,
         }
+    }
+
+    /// Attempt a real JVM launch for the instance at `idx`. Returns
+    /// `true` if a real launch started; `false` if we should fall back
+    /// to the synthetic path (e.g. instance not Ready, manifest missing
+    /// from cache, plan-build failed). On success: stores the receiver
+    /// in `self.launch_rx`, transitions `self.launching` into real
+    /// mode, and the per-frame poll picks up subsequent events.
+    fn try_real_launch(&mut self, idx: usize, inst_name: &str, inst_meta: &str, time: f32) -> bool {
+        let inst = match self.instances.get(idx) {
+            Some(i) => i.clone(),
+            None => return false,
+        };
+        if inst.status != ewo_render::screens::instances::InstanceStatus::Ready {
+            log::warn!(
+                "launch: \"{}\" is Pending (download not done) — falling back",
+                inst.name
+            );
+            return false;
+        }
+        // The version *string* comes from the meta, formatted as
+        // "<LOADER> · <version>". Strip the loader prefix.
+        let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        let manifest = match self.versions.manifest() {
+            Some(m) => m,
+            None => {
+                log::warn!("launch: master manifest not loaded — falling back");
+                return false;
+            }
+        };
+        let entry = match manifest.entry(version_id) {
+            Some(e) => e.clone(),
+            None => {
+                log::warn!("launch: {} not in master manifest — falling back", version_id);
+                return false;
+            }
+        };
+        // Per-version manifest must be on disk (Phase B). If somehow
+        // it isn't, refuse to launch — caller falls back to synthetic.
+        let vanilla_pv = match versions::per_version_fetch::get_or_fetch(&entry) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("launch: per-version fetch failed: {}", e);
+                return false;
+            }
+        };
+        // Phase D: layer the instance's loader on top of vanilla, if any.
+        // Loader-fetch failures are non-fatal — we log + fall back to
+        // launching the vanilla profile so the user isn't blocked by a
+        // flaky local manifest.
+        let pv = match &inst.loader {
+            ewo_render::screens::instances::InstanceLoader::Vanilla => vanilla_pv,
+            ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
+                match loaders::get_or_fetch("ewo", manifest_url) {
+                    Ok(loader_manifest) => {
+                        log::info!(
+                            "launch: merging EwoLoader manifest \"{}\" on top of {}",
+                            loader_manifest.id, version_id
+                        );
+                        loaders::merge(&vanilla_pv, &loader_manifest)
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "launch: EwoLoader fetch failed ({}) — launching vanilla {}",
+                            e, version_id
+                        );
+                        vanilla_pv
+                    }
+                }
+            }
+        };
+        if let Err(e) = launch::extract_all(&pv, &inst.name) {
+            log::warn!("launch: native extraction failed: {} — falling back", e);
+            return false;
+        }
+        // Pick a JRE matching the per-version manifest's
+        // `javaVersion.majorVersion`. Falls back to whatever's first in
+        // the detected list if the manifest doesn't specify (legacy
+        // 1.8.9-era).
+        let required_major = pv
+            .java_version
+            .as_ref()
+            .map(|j| j.major_version)
+            .unwrap_or(8);
+        let jvm_path = match launch::pick_jre(required_major) {
+            Some(j) => {
+                log::info!(
+                    "launch: picked Java {} at {} (required ≥ {})",
+                    j.major,
+                    j.path.display(),
+                    required_major
+                );
+                j.path.clone()
+            }
+            None => {
+                let installed: Vec<u32> =
+                    launch::detect_jres().iter().map(|j| j.major).collect();
+                log::info!(
+                    "launch: no Java {} installed (have: {:?}) — fetching from Adoptium",
+                    required_major,
+                    installed
+                );
+                // Kick off the bundled-JRE download, switch the
+                // launching screen into "downloading runtime" mode, and
+                // record this launch as pending. The per-frame runtime
+                // poll will retry once the fetch completes.
+                self.launching.enter_real(time, inst_name, inst_meta);
+                self.launching.push_real_line(
+                    screens::RealSeverity::Info,
+                    format!(
+                        "[ewo] Java {} not installed — fetching Eclipse Temurin from Adoptium…",
+                        required_major
+                    ),
+                    time,
+                );
+                self.runtime.start_fetch(required_major);
+                self.pending_relaunch = Some(PendingRelaunch {
+                    instance_idx: idx,
+                    instance_name: inst_name.to_string(),
+                    instance_meta: inst_meta.to_string(),
+                    waiting_for_major: required_major,
+                });
+                // Treat this as a "real" launch path so the caller
+                // doesn't fall back to synthetic — we've already
+                // populated the launching screen with our own status.
+                return true;
+            }
+        };
+        // Use the signed-in Microsoft account's profile when available;
+        // fall back to offline mode (placeholder UUID + token) otherwise.
+        // Online mode unlocks multiplayer + skin sync; offline mode is
+        // singleplayer/LAN only.
+        let profile = match self.auth.state() {
+            AuthState::SignedIn(account) if !account.minecraft_token.is_empty() => {
+                log::info!(
+                    "launch: using signed-in profile {} (token live)",
+                    account.name
+                );
+                launch::LaunchProfile {
+                    username: account.name.clone(),
+                    uuid: account.uuid.clone(),
+                    access_token: account.minecraft_token.clone(),
+                    user_type: "msa".to_string(),
+                }
+            }
+            _ => {
+                log::info!("launch: offline profile (no live MS token)");
+                launch::LaunchProfile::offline(&inst.name)
+            }
+        };
+        let plan = match launch::build(&pv, &inst.name, inst.ram, &profile, jvm_path) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("launch: plan build failed: {} — falling back", e);
+                return false;
+            }
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
+        let _ = launch::spawn_jvm(plan, tx);
+        self.launch_rx = Some(rx);
+        self.launching.enter_real(time, inst_name, inst_meta);
+        log::info!(
+            "launch: real JVM spawned for \"{}\" ({})",
+            inst.name, version_id
+        );
+        true
     }
 }
 
@@ -287,6 +501,8 @@ impl ApplicationHandler for App {
                             commit_new_instance(
                                 &mut self.instances,
                                 &mut self.instance_prefs,
+                                &self.versions,
+                                &mut self.downloads,
                                 form,
                                 self.clock.elapsed,
                             );
@@ -344,9 +560,10 @@ impl ApplicationHandler for App {
                     // Modal dropdown takes precedence when modal is open.
                     if self.modal.open {
                         if let Some(slot) = self.modal.open_dropdown() {
-                            if let Some(opts) =
-                                screens::new_instance_modal::dropdown_options(slot)
-                            {
+                            // Extract just the count so the `Vec<&str>` borrow on
+                            // `self.modal` ends before the `&mut VdropState`.
+                            let opt_count = self.modal.dropdown_options(slot).map(|v| v.len());
+                            if let Some(opt_count) = opt_count {
                                 let layout = screens::new_instance_modal::compute_layout(
                                     card_w, card_h, fonts,
                                 );
@@ -356,9 +573,9 @@ impl ApplicationHandler for App {
                                     _ => layout.version_head,
                                 };
                                 let (menu_bounds, _flip) =
-                                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                                    ewo_render::widgets::menu_layout(head, opt_count, card_h);
                                 if let Some(state) = self.modal.dropdown_state_mut(slot) {
-                                    state.scroll_by(dy, menu_bounds, opts.len());
+                                    state.scroll_by(dy, menu_bounds, opt_count);
                                 }
                                 handled = true;
                             }
@@ -811,6 +1028,8 @@ impl ApplicationHandler for App {
                             &mut self.modal,
                             &mut self.instances,
                             &mut self.instance_prefs,
+                            &self.versions,
+                            &mut self.downloads,
                             self.fonts.as_ref(),
                             card_pos,
                             card_w,
@@ -1110,11 +1329,67 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Step 2.9: Launching screen's Retry/Back buttons. Only
+                // active when the JVM has exited non-zero. Retry rebuilds
+                // the LaunchPlan and respawns; Back returns to Instances.
+                if !handled
+                    && pressed
+                    && self.screen == Screen::Launching
+                    && self.launching.ended_in_error()
+                {
+                    let retry_rect =
+                        screens::launching::retry_button_bounds(card_w, card_h);
+                    let back_rect =
+                        screens::launching::cancel_button_bounds(card_w, card_h);
+                    if rect_contains(&retry_rect, card_pos) {
+                        log::info!("launching: Retry clicked");
+                        let inst_name = self.launching.instance_name.clone();
+                        let inst_meta = self.launching.instance_meta.clone();
+                        self.launching.reset_for_retry();
+                        let ok = self.try_real_launch(
+                            self.instance_prefs.selected,
+                            &inst_name,
+                            &inst_meta,
+                            time,
+                        );
+                        if !ok {
+                            // try_real_launch can return false silently
+                            // when something's missing — surface that to
+                            // the user as an error rather than a blank
+                            // screen.
+                            self.launching.push_real_line(
+                                screens::RealSeverity::Warn,
+                                "[ewo] retry could not start launch — see logs above".into(),
+                                time,
+                            );
+                            self.launching.set_real_exit(Some(127), time);
+                        }
+                        handled = true;
+                    } else if rect_contains(&back_rect, card_pos) {
+                        log::info!("launching: Back clicked");
+                        self.launching.exit();
+                        self.screen = Screen::Instances;
+                        handled = true;
+                    }
+                }
+
                 // Step 3: active screen's launch button.
                 if !handled {
                     if let Some(b) = self.launch_button_bounds(card_w) {
                         let clicked = self.launch_button.update(card_pos, b, pressed, time);
-                        if clicked {
+                        // Gate: don't launch a Pending instance — its
+                        // download isn't done. The hover state still
+                        // updates (so the button visually responds to
+                        // the click) but the launch logic skips.
+                        let pending = self
+                            .instances
+                            .get(self.instance_prefs.selected)
+                            .map(|i| {
+                                i.status
+                                    == ewo_render::screens::instances::InstanceStatus::Pending
+                            })
+                            .unwrap_or(false);
+                        if clicked && !pending {
                             // Pull the actual selected instance's name +
                             // version line so the Launching screen reflects
                             // what the user is launching.
@@ -1152,11 +1427,25 @@ impl ApplicationHandler for App {
                                     screens::instances::current_unix_seconds();
                             }
                             persistence::save_instances(&self.instances);
-                            // Synthetic launch: enter the Launching screen
-                            // and start the 8s scripted progress + log
-                            // stream. Petals burst + backdrop brightness
-                            // celebrate stays as ambient texture.
-                            self.launching.enter(time, &inst_name, &inst_meta);
+                            // Decide synthetic vs real launch. Real
+                            // launch fires only when the instance is
+                            // `Ready` (artifacts on disk + verified)
+                            // AND we can resolve the per-version manifest
+                            // from cache. Anything else falls back to
+                            // synthetic so the user still gets feedback.
+                            let real_launched = self.try_real_launch(
+                                self.instance_prefs.selected,
+                                &inst_name,
+                                &inst_meta,
+                                time,
+                            );
+                            if !real_launched {
+                                log::info!(
+                                    "vbtn: Launch falling back to synthetic for \"{}\"",
+                                    inst_name
+                                );
+                                self.launching.enter(time, &inst_name, &inst_meta);
+                            }
                             self.screen = Screen::Launching;
                             self.launch_button = VbtnState::default();
                             self.prefs.close_dropdowns();
@@ -1224,6 +1513,231 @@ impl ApplicationHandler for App {
                 self.modal.tick(dt);
                 self.about_modal.tick(dt);
                 self.auth.poll();
+                self.versions.poll();
+                self.downloads.poll();
+
+                // Sync per-instance download progress for the list-row
+                // badge. Only Pending instances are interesting; we
+                // clear the map first so completed downloads stop
+                // showing a stale percentage.
+                self.instance_prefs.download_pct.clear();
+                for inst in self.instances.iter() {
+                    if inst.status
+                        != ewo_render::screens::instances::InstanceStatus::Pending
+                    {
+                        continue;
+                    }
+                    let v = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+                    if let Some(status) = self.downloads.status(v) {
+                        if let Some(total) = status.total {
+                            if total > 0 {
+                                let pct = ((status.downloaded as f64 / total as f64) * 100.0)
+                                    .clamp(0.0, 99.0)
+                                    as u32;
+                                self.instance_prefs
+                                    .download_pct
+                                    .insert(inst.name.clone(), pct);
+                            }
+                        }
+                    }
+                }
+
+                // Drain runtime (bundled-JRE) events. Surface progress
+                // as Info lines on the launching screen; on Done, kick
+                // the JRE-detector cache + retry the pending launch.
+                let runtime_events = self.runtime.poll();
+                for ev in runtime_events {
+                    match ev {
+                        runtime::RuntimeEvent::Resolved { major, info } => {
+                            self.launching.push_real_line(
+                                screens::RealSeverity::Info,
+                                format!(
+                                    "[ewo] resolved Java {} → {} ({:.1} MB)",
+                                    major,
+                                    info.release_name,
+                                    info.size as f32 / 1_048_576.0
+                                ),
+                                time,
+                            );
+                        }
+                        runtime::RuntimeEvent::Progress { downloaded, total } => {
+                            // Drive the real pbar override (visible
+                            // immediately as a smooth fill), and log a
+                            // line every 10% step so the user sees
+                            // discrete checkpoints in the log panel too.
+                            if total > 0 {
+                                let frac = downloaded as f32 / total as f32;
+                                self.launching.set_real_progress(Some(frac));
+                                let pct = frac * 100.0;
+                                let bucket = (pct as u32) / 10 * 10;
+                                if bucket > 0 && bucket % 10 == 0 {
+                                    let line = format!(
+                                        "[ewo] downloading runtime: {:>3}% ({} / {} MB)",
+                                        bucket,
+                                        downloaded / 1_048_576,
+                                        total / 1_048_576,
+                                    );
+                                    self.launching.push_real_line(
+                                        screens::RealSeverity::Info,
+                                        line,
+                                        time,
+                                    );
+                                }
+                            }
+                        }
+                        runtime::RuntimeEvent::Done { major, jre_dir } => {
+                            // Clear the pbar override — synthetic curve
+                            // takes back over while the JVM boots.
+                            self.launching.set_real_progress(None);
+                            self.launching.push_real_line(
+                                screens::RealSeverity::Info,
+                                format!(
+                                    "[ewo] Java {} extracted to {} — retrying launch…",
+                                    major,
+                                    jre_dir.display()
+                                ),
+                                time,
+                            );
+                            launch::jre::invalidate_cache();
+                            // If the launch we deferred is for this
+                            // major, retry it now.
+                            if let Some(p) = self.pending_relaunch.clone() {
+                                if p.waiting_for_major == major {
+                                    self.pending_relaunch = None;
+                                    let ok = self.try_real_launch(
+                                        p.instance_idx,
+                                        &p.instance_name,
+                                        &p.instance_meta,
+                                        time,
+                                    );
+                                    if !ok {
+                                        self.launching.push_real_line(
+                                            screens::RealSeverity::Warn,
+                                            "[ewo] retry failed after JRE install".into(),
+                                            time,
+                                        );
+                                        self.launching.set_real_exit(Some(127), time);
+                                    }
+                                }
+                            }
+                        }
+                        runtime::RuntimeEvent::Failed { major, message } => {
+                            log::warn!("runtime: Java {} fetch failed: {}", major, message);
+                            self.launching.set_real_progress(None);
+                            self.launching.push_real_line(
+                                screens::RealSeverity::Warn,
+                                format!("[ewo] Java {} fetch failed: {}", major, message),
+                                time,
+                            );
+                            self.launching.set_real_exit(Some(127), time);
+                            self.pending_relaunch = None;
+                        }
+                    }
+                }
+
+                // Drain JVM launch events into the launching screen.
+                // Each line, every stage transition, and the exit code
+                // arrives via this channel. When the JVM exits we drop
+                // the receiver — the next launch will create a fresh one.
+                let mut launch_finished = false;
+                if let Some(rx) = self.launch_rx.as_ref() {
+                    while let Ok(event) = rx.try_recv() {
+                        match event {
+                            launch::LaunchEvent::Started => {
+                                log::info!("launch: JVM started");
+                            }
+                            launch::LaunchEvent::Line { severity, text } => {
+                                let sev = match severity {
+                                    launch::Severity::Info => screens::RealSeverity::Info,
+                                    launch::Severity::Warn => screens::RealSeverity::Warn,
+                                };
+                                self.launching.push_real_line(sev, text, time);
+                            }
+                            launch::LaunchEvent::Exited(code) => {
+                                log::info!("launch: JVM exited code={:?}", code);
+                                self.launching.set_real_exit(code, time);
+                                // Dump the in-memory log to disk so the
+                                // user can grab it later (especially on
+                                // a crash). Best-effort: errors don't
+                                // surface to the UI.
+                                persist_launch_log(
+                                    &self.launching.instance_name,
+                                    self.launching
+                                        .real_log
+                                        .as_deref()
+                                        .unwrap_or(&[]),
+                                    code,
+                                );
+                                launch_finished = true;
+                            }
+                            launch::LaunchEvent::SpawnFailed(msg) => {
+                                log::warn!("launch: spawn failed: {}", msg);
+                                self.launching.push_real_line(
+                                    screens::RealSeverity::Warn,
+                                    format!("[ewo] spawn failed: {}", msg),
+                                    time,
+                                );
+                                self.launching.set_real_exit(Some(127), time);
+                                launch_finished = true;
+                            }
+                        }
+                    }
+                }
+                if launch_finished {
+                    self.launch_rx = None;
+                }
+
+                // Flip any instances whose download job just finished from
+                // `Pending` to `Ready` and persist. We match on the
+                // version *string* of the most-recent job — same instance
+                // can appear multiple times with different IDs, but the
+                // status flips per-instance.
+                let mut completed_versions: Vec<String> = Vec::new();
+                for (vid, status) in self.downloads.iter_statuses() {
+                    if status.done && status.error.is_none() {
+                        completed_versions.push(vid.clone());
+                    }
+                }
+                if !completed_versions.is_empty() {
+                    let mut any_changed = false;
+                    for inst in self.instances.iter_mut() {
+                        if inst.status == ewo_render::screens::instances::InstanceStatus::Ready {
+                            continue;
+                        }
+                        // Match by the version-string suffix on the meta
+                        // (commit_new_instance writes "<LOADER> · <version>").
+                        let v = match inst.version.rsplit(" · ").next() {
+                            Some(s) => s,
+                            None => &inst.version,
+                        };
+                        if completed_versions.iter().any(|w| w == v) {
+                            inst.status = ewo_render::screens::instances::InstanceStatus::Ready;
+                            any_changed = true;
+                            log::info!(
+                                "instances: \"{}\" → Ready (version {})",
+                                inst.name, v
+                            );
+                        }
+                    }
+                    if any_changed {
+                        persistence::save_instances(&self.instances);
+                    }
+                }
+
+                // Sync the live version manifest into the new-instance
+                // modal's dropdown source. Filter to releases by default;
+                // a "Show snapshots" toggle could later flip the second
+                // arg. List goes from newest → oldest (Mojang's order).
+                if let Some(manifest) = self.versions.manifest() {
+                    let want: Vec<String> = manifest
+                        .filtered_for_dropdown(false)
+                        .iter()
+                        .map(|e| e.id.clone())
+                        .collect();
+                    if want != self.modal.mc_versions {
+                        self.modal.apply_versions(want);
+                    }
+                }
 
                 // Account-tab button — dispatch based on the current
                 // auth state. The button label changes ("Sign in" /
@@ -1938,17 +2452,20 @@ fn drive_modal_widgets(
             ModalSlot::Version | ModalSlot::Loader => {}
         }
     }
-    // Update menu hover for any open dropdown.
+    // Update menu hover for any open dropdown. Extract just the option
+    // count up-front so the `Vec<&str>` borrow ends before we ask for a
+    // `&mut VdropState` on the same modal.
     if let Some(slot) = modal.open_dropdown() {
-        if let Some(opts) = screens::new_instance_modal::dropdown_options(slot) {
+        let opt_count = modal.dropdown_options(slot).map(|v| v.len());
+        if let Some(opt_count) = opt_count {
             if let Some(head) = screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
                 .into_iter()
                 .find_map(|(s, r)| if s == slot { Some(r) } else { None })
             {
                 let (menu_bounds, _flip) =
-                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                    ewo_render::widgets::menu_layout(head, opt_count, card_h);
                 if let Some(state) = modal.dropdown_state_mut(slot) {
-                    state.update_menu_hover(mouse, menu_bounds, opts.len());
+                    state.update_menu_hover(mouse, menu_bounds, opt_count);
                 }
             }
         }
@@ -1963,10 +2480,13 @@ fn drive_modal_widgets(
 /// `modal.name_error = true` and keeps the modal open so the user sees
 /// the inline error.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn handle_modal_press(
     modal: &mut NewInstanceModalState,
     instances: &mut Vec<Instance>,
     instance_prefs: &mut InstancePrefs,
+    versions: &versions::VersionService,
+    downloads: &mut downloads::DownloadService,
     fonts: Option<&FontStore>,
     mouse: (f32, f32),
     card_w: f32,
@@ -1988,9 +2508,14 @@ fn handle_modal_press(
         modal.focus_name(false);
     }
 
-    // (1) Open dropdown menu hit-test first.
+    // (1) Open dropdown menu hit-test first. Snapshot the option strings
+    // into an owned `Vec<String>` so the borrow on `modal` ends before
+    // we ask for a `&mut VdropState` on the same modal below.
     if let Some(open_slot) = modal.open_dropdown() {
-        if let Some(opts) = screens::new_instance_modal::dropdown_options(open_slot) {
+        let opts: Option<Vec<String>> = modal
+            .dropdown_options(open_slot)
+            .map(|v| v.iter().map(|s| (*s).to_string()).collect());
+        if let Some(opts) = opts {
             if let Some(head) =
                 screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
                     .into_iter()
@@ -2047,7 +2572,7 @@ fn handle_modal_press(
             ModalSlot::Create => {
                 modal.create_btn.update(mouse, rect, true, 0.0);
                 if let Some(form) = modal.try_submit() {
-                    commit_new_instance(instances, instance_prefs, form, time);
+                    commit_new_instance(instances, instance_prefs, versions, downloads, form, time);
                     modal.close();
                 } else {
                     // Empty name → keep modal open; `modal.name_error` is
@@ -2140,21 +2665,37 @@ fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
 fn commit_new_instance(
     instances: &mut Vec<Instance>,
     prefs: &mut InstancePrefs,
+    versions: &versions::VersionService,
+    downloads: &mut downloads::DownloadService,
     form: screens::new_instance_modal::NewInstanceForm,
     time: f32,
 ) {
     let version_meta = format!("{} · {}", form.loader.to_uppercase(), form.version);
+    // Map the modal's loader-string back to the typed `InstanceLoader`.
+    // "Ewo (development)" → Ewo with the hard-coded dev manifest URL;
+    // anything else → Vanilla. Other loaders will land here once the
+    // dropdown grows back.
+    let loader = if form.loader.starts_with("Ewo") {
+        ewo_render::screens::instances::InstanceLoader::Ewo {
+            manifest_url: DEV_EWO_LOADER_URL.to_string(),
+        }
+    } else {
+        ewo_render::screens::instances::InstanceLoader::Vanilla
+    };
     let mut new_inst = Instance::new(
         form.name.clone(),
         version_meta,
         "just now".to_string(),
         Vec::new(),
     )
-    .with_config(form.ram, 16, 0);
+    .with_config(form.ram, 16, 0)
+    .with_loader(loader);
     // Stamp the new world as "just played" so it leads the list in both
     // newest-first and recently-played sorts until the user launches
-    // anything else.
+    // anything else. New instances are Pending until the download job
+    // finishes.
     new_inst.last_played_at = screens::instances::current_unix_seconds();
+    new_inst.status = ewo_render::screens::instances::InstanceStatus::Pending;
     log::info!(
         "instances: created \"{}\" ({} · {} · {} GB)",
         form.name, form.version, form.loader, form.ram
@@ -2168,6 +2709,26 @@ fn commit_new_instance(
     prefs.created_at = Some(time);
     prefs.selected_at = Some(time);
     persistence::save_instances(instances);
+
+    // Kick off the download job for the selected version. If the master
+    // manifest hasn't loaded yet (very-first launch + offline), we just
+    // log + leave the instance Pending; user can retry once the
+    // manifest fetches.
+    if let Some(manifest) = versions.manifest() {
+        if let Some(entry) = manifest.entry(&form.version) {
+            downloads.start(entry.clone());
+        } else {
+            log::warn!(
+                "instances: version {} not in master manifest — download skipped",
+                form.version
+            );
+        }
+    } else {
+        log::warn!(
+            "instances: master manifest not yet loaded — download deferred for {}",
+            form.version
+        );
+    }
 }
 
 fn close_other_dropdowns(prefs: &mut Prefs, keep: SettingsSlot) {
@@ -2214,6 +2775,60 @@ fn main() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);
     event_loop.run_app(&mut app).expect("event loop error");
+}
+
+/// Dump the launching screen's in-memory log to
+/// `<config>/EwoClient/instances/<name>/logs/<timestamp>.log`.
+/// Best-effort — failures log a warning but don't surface. Each line is
+/// prefixed with its severity tag so stderr lines stay distinguishable
+/// from stdout when grepping.
+fn persist_launch_log(
+    instance_name: &str,
+    lines: &[ewo_render::screens::launching::RealLogLine],
+    exit_code: Option<i32>,
+) {
+    use std::io::Write;
+    if lines.is_empty() {
+        return;
+    }
+    let Some(mut path) = downloads::paths::instance_dir(instance_name) else {
+        log::warn!("logs: instance dir unresolvable for {}", instance_name);
+        return;
+    };
+    path.push("logs");
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        log::warn!("logs: mkdir {} failed: {}", path.display(), e);
+        return;
+    }
+    // Filename uses a sortable timestamp so newest logs sort to the
+    // bottom alphabetically.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    path.push(format!("launch_{}.log", ts));
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("logs: create {} failed: {}", path.display(), e);
+            return;
+        }
+    };
+    let mut w = std::io::BufWriter::new(file);
+    let _ = writeln!(
+        w,
+        "# EwoClient launch log — instance \"{}\" — exit code {:?}",
+        instance_name, exit_code
+    );
+    let _ = writeln!(w, "# {} lines\n", lines.len());
+    for line in lines {
+        let tag = match line.severity {
+            ewo_render::screens::RealSeverity::Info => "OUT",
+            ewo_render::screens::RealSeverity::Warn => "ERR",
+        };
+        let _ = writeln!(w, "[{}] {:.2}s {}", tag, line.at, line.text);
+    }
+    log::info!("logs: wrote {} lines to {}", lines.len(), path.display());
 }
 
 /// Render an `AuthError` into a user-facing string for the Account tab's

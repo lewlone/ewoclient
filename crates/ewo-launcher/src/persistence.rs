@@ -157,3 +157,57 @@ pub fn save_settings(config: &SettingsConfig) {
         Err(e) => log::warn!("could not serialize settings: {}", e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ewo_render::screens::instances::InstanceLoader;
+
+    /// Pre-loader-field `instances.toml` content must still parse — the
+    /// `loader` field is `#[serde(default)]` so missing entries get
+    /// `InstanceLoader::Vanilla`.
+    #[test]
+    fn legacy_instances_file_parses_as_vanilla() {
+        let legacy = r#"
+[[instances]]
+name = "Velvet Hours"
+version = "VANILLA · 1.21"
+last_played = "moments ago"
+last_played_at = 0.0
+ram = 8
+render_distance = 16
+java_runtime = 0
+status = "ready"
+mods = []
+"#;
+        let parsed: InstancesFile =
+            toml::from_str(legacy).expect("legacy instances.toml must parse");
+        assert_eq!(parsed.instances.len(), 1);
+        assert_eq!(parsed.instances[0].loader, InstanceLoader::Vanilla);
+    }
+
+    /// Round-trip a fresh instance with `InstanceLoader::Ewo` through
+    /// TOML serialize → deserialize and confirm both variant payload
+    /// and other fields survive intact.
+    #[test]
+    fn ewo_loader_round_trips_through_toml() {
+        let mut inst = Instance::new(
+            "ewo-world".into(),
+            "VANILLA · 26.1".into(),
+            "now".into(),
+            vec![],
+        );
+        inst.loader = InstanceLoader::Ewo {
+            manifest_url: "file:///C:/path/manifest.json".into(),
+        };
+        let file = InstancesFile { instances: vec![inst] };
+        let s = toml::to_string_pretty(&file).expect("serialize");
+        let parsed: InstancesFile = toml::from_str(&s).expect("deserialize");
+        match &parsed.instances[0].loader {
+            InstanceLoader::Ewo { manifest_url } => {
+                assert_eq!(manifest_url, "file:///C:/path/manifest.json");
+            }
+            other => panic!("expected Ewo, got {:?}", other),
+        }
+    }
+}

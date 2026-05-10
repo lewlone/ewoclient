@@ -161,6 +161,45 @@ pub struct LaunchingState {
     /// Cross-fade state for the italic stage label. Updated by
     /// `tick(time, dt)` whenever the keyframe-derived stage changes.
     pub stage: VstatusState,
+    /// Real-launch log buffer — when `Some`, we're streaming actual JVM
+    /// stdout/stderr lines instead of the canned `LOG_SCRIPT`. Bounded
+    /// to the last `MAX_REAL_LOG_LINES` so memory stays predictable
+    /// during long-running launches.
+    pub real_log: Option<Vec<RealLogLine>>,
+    /// JVM exit code, if it has exited. `None` while the process is
+    /// still running. Drives the post-launch handoff back to Instances.
+    pub real_exit_code: Option<i32>,
+    /// Wall-clock second the JVM exited. `should_handoff` waits this
+    /// long + a short grace period before returning to Instances.
+    pub real_exit_at: Option<f32>,
+    /// Optional override fraction (0..1) for the pbar during real
+    /// launches. When `Some`, the pbar shows this exact value instead
+    /// of the synthetic 8-second curve. Used by the Adoptium JRE fetch
+    /// to display real bytes-downloaded progress.
+    pub real_progress_override: Option<f32>,
+}
+
+/// Cap on the in-memory real-launch log. Older lines get dropped from
+/// the front when this overflows. Enough to cover a startup +
+/// short play session without unbounded growth.
+pub const MAX_REAL_LOG_LINES: usize = 1024;
+
+/// Severity of a real log line. JVM stderr → `Warn`; stdout → `Info`.
+/// Mapped to the same color palette as `LogLevel` for visual continuity
+/// with the synthetic log path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealSeverity {
+    Info,
+    Warn,
+}
+
+#[derive(Debug, Clone)]
+pub struct RealLogLine {
+    pub severity: RealSeverity,
+    pub text: String,
+    /// Wall-clock second the line was received. Drives a per-line fade-in
+    /// (most-recent line slightly dimmer until a couple frames later).
+    pub at: f32,
 }
 
 impl LaunchingState {
@@ -175,6 +214,101 @@ impl LaunchingState {
         self.error_at = None;
         self.error_fraction = 0.0;
         self.stage = VstatusState::new("preparing");
+        self.real_log = None;
+        self.real_exit_code = None;
+        self.real_exit_at = None;
+        self.real_progress_override = None;
+    }
+
+    /// Set or clear the pbar's manual override (0..1). Pass `None` to
+    /// fall back to the synthetic curve.
+    pub fn set_real_progress(&mut self, fraction: Option<f32>) {
+        self.real_progress_override = fraction.map(|f| f.clamp(0.0, 1.0));
+    }
+
+    /// Switch the screen into real-launch mode. The synthetic 8s timer
+    /// stops applying; progress + handoff are driven by JVM events
+    /// (lines streamed in via `push_real_line`, exit via `set_real_exit`).
+    pub fn enter_real(&mut self, time: f32, instance_name: &str, instance_meta: &str) {
+        self.enter(time, instance_name, instance_meta);
+        self.real_log = Some(Vec::new());
+        self.stage = VstatusState::new("starting jvm…");
+    }
+
+    /// Append a line from the JVM's stdout or stderr. Drops the oldest
+    /// line when the buffer hits `MAX_REAL_LOG_LINES`.
+    pub fn push_real_line(&mut self, severity: RealSeverity, text: String, time: f32) {
+        let Some(buf) = self.real_log.as_mut() else {
+            return;
+        };
+        if buf.len() >= MAX_REAL_LOG_LINES {
+            buf.remove(0);
+        }
+        buf.push(RealLogLine {
+            severity,
+            text,
+            at: time,
+        });
+    }
+
+    /// Mark the JVM as exited. Caller passes the wall-clock second; the
+    /// handoff timer runs from there. Non-zero exit codes flip the pbar
+    /// into `ErrorRose` and the screen sticks (no auto-handoff) so the
+    /// user can read the log + retry. Code `0` or `None` means a clean
+    /// exit and the usual handoff applies.
+    pub fn set_real_exit(&mut self, code: Option<i32>, time: f32) {
+        self.real_exit_code = code;
+        self.real_exit_at = Some(time);
+        self.done = true;
+        self.done_at = Some(time);
+        let clean = matches!(code, Some(0) | None);
+        if clean {
+            self.stage.set("the curtain rises.");
+        } else {
+            // Snapshot whatever progress the synthetic curve happened to
+            // be at so the recede/error variants have a base to render
+            // from. Then flip to ErrorRose, the most distinct of the
+            // three error variants we shipped earlier.
+            let snapshot = self.progress(time).0 / 100.0;
+            self.error = Some(LaunchError::Rose);
+            self.error_at = Some(time);
+            self.error_fraction = snapshot.clamp(0.0, 1.0);
+            self.stage.set(match code {
+                Some(c) => match c {
+                    127 => "couldn't spawn the JVM.",
+                    _ => "the JVM exited with an error.",
+                },
+                None => "the JVM ended unexpectedly.",
+            });
+        }
+    }
+
+    /// Reset error + handoff state so the same screen can be reused for
+    /// a retry. Caller should call `enter_real` again immediately after
+    /// to populate name/meta and reset the start_time.
+    pub fn reset_for_retry(&mut self) {
+        self.error = None;
+        self.error_at = None;
+        self.error_fraction = 0.0;
+        self.real_exit_code = None;
+        self.real_exit_at = None;
+        self.done = false;
+        self.done_at = None;
+        if let Some(buf) = self.real_log.as_mut() {
+            buf.clear();
+        }
+    }
+
+    /// Whether the most recent launch ended in a non-zero exit. Drives
+    /// the launching screen's footer (Retry vs the curtain rises.).
+    pub fn ended_in_error(&self) -> bool {
+        self.real_exit_code
+            .map(|c| c != 0)
+            .unwrap_or(false)
+    }
+
+    pub fn is_real_launch(&self) -> bool {
+        self.real_log.is_some()
     }
 
     pub fn exit(&mut self) {
@@ -217,7 +351,26 @@ impl LaunchingState {
     /// While an error is active, log/percent advancement is paused and
     /// `done` cannot trip — the error variant locks the screen until the
     /// dev overlay clears it.
+    ///
+    /// In real-launch mode (`is_real_launch() == true`), the synthetic
+    /// 8-second timer doesn't apply — `done` is set explicitly via
+    /// `set_real_exit` when the JVM exits.
     pub fn tick(&mut self, time: f32, dt: f32) -> bool {
+        if self.is_real_launch() {
+            // Real-launch: stage label flips between "starting jvm…",
+            // "running…", and the exit message. We just tick the
+            // crossfade.
+            if self.real_exit_code.is_none() {
+                if let Some(start) = self.start_time {
+                    if time - start > 1.0 {
+                        self.stage.set("running…");
+                    }
+                }
+            }
+            self.stage.tick(dt);
+            let _ = time;
+            return false;
+        }
         let Some(start) = self.start_time else {
             self.stage.tick(dt);
             return false;
@@ -257,13 +410,17 @@ impl LaunchingState {
 
     /// Returns `(percent, stage)` at the given wall-clock time. When an
     /// error is active, returns the snapshot fraction; when `done`, locks
-    /// at 100% / "ready".
+    /// at 100% / "ready". `real_progress_override` (set during e.g.
+    /// the Adoptium JRE fetch) takes precedence over the synthetic curve.
     pub fn progress(&self, time: f32) -> (f32, &'static str) {
         if let Some(err) = self.error {
             return (self.error_fraction * 100.0, err.label());
         }
         if self.done {
             return (100.0, "ready");
+        }
+        if let Some(f) = self.real_progress_override {
+            return (f * 100.0, "downloading runtime…");
         }
         let Some(start) = self.start_time else {
             return (0.0, "preparing");
@@ -274,9 +431,22 @@ impl LaunchingState {
     }
 
     /// `true` if the handoff hold window has elapsed and the screen
-    /// should auto-return. Errors block the handoff.
+    /// should auto-return. Errors and non-zero JVM exit codes block the
+    /// handoff — the user must click Retry or Cancel.
     pub fn should_handoff(&self, time: f32) -> bool {
         if !self.done || self.error.is_some() {
+            return false;
+        }
+        // Real-launch: handoff once the grace period after JVM exit
+        // elapses, but only on a clean exit. Errored launches stick
+        // around until the user dismisses them.
+        if self.is_real_launch() {
+            if self.ended_in_error() {
+                return false;
+            }
+            if let Some(exit_at) = self.real_exit_at {
+                return time - exit_at >= HANDOFF_HOLD_SECONDS;
+            }
             return false;
         }
         let Some(start) = self.start_time else {
@@ -337,7 +507,7 @@ pub fn draw_launching(
         settings,
     );
     draw_log_panel(canvas, fonts, w, h, progress_bottom, time, settings, state);
-    draw_footer(canvas, fonts, w, h, state.done);
+    draw_footer(canvas, fonts, w, h, state);
 }
 
 fn draw_header(
@@ -548,7 +718,12 @@ fn draw_log_panel(
             &head_title_paint,
             0.20,
         );
-        let count_str = format!("{} ENTRIES", state.shown_logs);
+        let entry_count = if state.is_real_launch() {
+            state.real_log.as_ref().map(|v| v.len()).unwrap_or(0)
+        } else {
+            state.shown_logs
+        };
+        let count_str = format!("{} ENTRIES", entry_count);
         let count_advance = text::measure_tracked_em(&head_font, &count_str, 0.20);
         text::draw_tracked_em(
             canvas,
@@ -597,6 +772,9 @@ fn draw_log_lines(
     bottom: f32,
     state: &LaunchingState,
 ) {
+    if state.is_real_launch() {
+        return draw_real_log_lines(canvas, fonts, left, right, top, bottom, state);
+    }
     // Render the most recent N entries that fit in the available height.
     // CSS specifies `font-size: 11.5px; line-height: 1.85` → ~21.3 px / line.
     let mono_font = fonts.jetbrains_mono(11.5);
@@ -687,7 +865,137 @@ fn draw_log_lines(
     }
 }
 
-fn draw_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, done: bool) {
+/// Real-launch log render path. Lines come from JVM stdout/stderr —
+/// no per-source pretty colors, just timestamp-relative-to-launch +
+/// monospace text colored by severity. Same scrolling behavior as the
+/// synthetic path: most recent N lines that fit in the box.
+fn draw_real_log_lines(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    state: &LaunchingState,
+) {
+    let lines = match state.real_log.as_ref() {
+        Some(v) => v,
+        None => return,
+    };
+    if lines.is_empty() {
+        return;
+    }
+    let mono_font = fonts.jetbrains_mono(11.5);
+    let (_, mono_m) = mono_font.metrics();
+    let line_height = 21.3_f32;
+    let avail_h = (bottom - top).max(0.0);
+    let max_lines = (avail_h / line_height).floor() as usize;
+    if max_lines == 0 {
+        return;
+    }
+    let start = lines.len().saturating_sub(max_lines);
+    let start_time = state.start_time.unwrap_or(0.0);
+
+    let time_col_w = 56.0;
+    let col_gap = 14.0;
+    let time_x_right = left + time_col_w;
+    let msg_x_left = time_x_right + col_gap;
+
+    let mut y = top;
+    for line in &lines[start..] {
+        let baseline = y + line_height * 0.5 + mono_m.cap_height * 0.5;
+
+        // Time relative to launch start.
+        let rel = (line.at - start_time).max(0.0);
+        let t_str = format!("{:.2}s", rel);
+        let mut time_paint = Paint::default();
+        time_paint.set_anti_alias(true);
+        time_paint.set_color(TEXT_MAUVE_DEEP);
+        let (t_advance, _) = mono_font.measure_str(&t_str, Some(&time_paint));
+        canvas.draw_str(
+            &t_str,
+            (time_x_right - t_advance, baseline),
+            &mono_font,
+            &time_paint,
+        );
+
+        // Message — pearl for stdout (Info), champagne for stderr (Warn).
+        let mut msg_paint = Paint::default();
+        msg_paint.set_anti_alias(true);
+        msg_paint.set_color(match line.severity {
+            RealSeverity::Info => TEXT_MID_PEARL,
+            RealSeverity::Warn => ACCENT_CHAMP,
+        });
+        // Truncate visually long lines so we don't overflow the panel.
+        let visible_w = (right - msg_x_left).max(0.0);
+        let trimmed = trim_to_width(&mono_font, &msg_paint, &line.text, visible_w);
+        canvas.draw_str(trimmed.as_ref(), (msg_x_left, baseline), &mono_font, &msg_paint);
+
+        y += line_height;
+    }
+}
+
+fn trim_to_width<'a>(
+    font: &skia_safe::Font,
+    paint: &Paint,
+    text: &'a str,
+    max_w: f32,
+) -> std::borrow::Cow<'a, str> {
+    let (full_w, _) = font.measure_str(text, Some(paint));
+    if full_w <= max_w {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    // Greedy truncate by chars + suffix "…". Cheap, doesn't honor
+    // grapheme clusters or RTL — fine for ASCII-heavy JVM logs.
+    let mut buf = String::with_capacity(text.len());
+    for c in text.chars() {
+        buf.push(c);
+        let candidate = format!("{}…", buf);
+        let (w, _) = font.measure_str(&candidate, Some(paint));
+        if w > max_w {
+            buf.pop();
+            buf.push('…');
+            return std::borrow::Cow::Owned(buf);
+        }
+    }
+    std::borrow::Cow::Owned(buf)
+}
+
+/// Width of each Retry/Back pill in the error-state footer. Both pills
+/// are the same size, so hit-testing is symmetric.
+const FOOTER_BTN_W: f32 = 132.0;
+const FOOTER_BTN_H: f32 = 36.0;
+const FOOTER_BTN_GAP: f32 = 12.0;
+
+/// Card-local rect of the Retry button. Only meaningful when the
+/// launching state is errored (`ended_in_error()`); main.rs only
+/// hit-tests in that case.
+pub fn retry_button_bounds(card_w: f32, card_h: f32) -> Rect {
+    let cy = card_h - 32.0;
+    let total_w = FOOTER_BTN_W * 2.0 + FOOTER_BTN_GAP;
+    let left_x = (card_w - total_w) * 0.5;
+    Rect::from_xywh(left_x, cy - FOOTER_BTN_H * 0.5, FOOTER_BTN_W, FOOTER_BTN_H)
+}
+
+/// Card-local rect of the Back button (paired with Retry).
+pub fn cancel_button_bounds(card_w: f32, card_h: f32) -> Rect {
+    let cy = card_h - 32.0;
+    let total_w = FOOTER_BTN_W * 2.0 + FOOTER_BTN_GAP;
+    let left_x = (card_w - total_w) * 0.5;
+    Rect::from_xywh(
+        left_x + FOOTER_BTN_W + FOOTER_BTN_GAP,
+        cy - FOOTER_BTN_H * 0.5,
+        FOOTER_BTN_W,
+        FOOTER_BTN_H,
+    )
+}
+
+fn draw_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, state: &LaunchingState) {
+    if state.ended_in_error() {
+        draw_error_footer(canvas, fonts, w, h);
+        return;
+    }
+    let done = state.done;
     let label = if done {
         "the curtain rises."
     } else {
@@ -706,4 +1014,69 @@ fn draw_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, done: bool) {
     let cy = h - 32.0;
     let baseline = cy + m.cap_height * 0.5;
     canvas.draw_str(label, ((w - advance) * 0.5, baseline), &font, &paint);
+}
+
+fn draw_error_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
+    // Two pill-shaped buttons centred at the bottom: Retry (rose) and
+    // Back (mauve). Drawn manually so the launching screen doesn't pull
+    // a vghost dependency cycle. Hit-testing happens in main.rs via
+    // the `retry_button_bounds` / `cancel_button_bounds` helpers.
+    let retry = retry_button_bounds(w, h);
+    let back = cancel_button_bounds(w, h);
+    let font = fonts.newsreader(14.0);
+    let (_, m) = font.metrics();
+
+    // Retry pill — rose-tinted hairline border, rose label.
+    let rrect_retry = skia_safe::RRect::new_rect_xy(retry, 999.0, 999.0);
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color4f(
+        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
+        None,
+    );
+    canvas.draw_rrect(rrect_retry, &bg);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(
+        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50),
+        None,
+    );
+    canvas.draw_rrect(rrect_retry, &border);
+    let label = "Retry";
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+    let (advance, _) = font.measure_str(label, Some(&p));
+    let cx = (retry.left + retry.right) * 0.5;
+    let cy = (retry.top + retry.bottom) * 0.5;
+    canvas.draw_str(label, (cx - advance * 0.5, cy + m.cap_height * 0.5), &font, &p);
+
+    // Back pill — mauve, less prominent.
+    let rrect_back = skia_safe::RRect::new_rect_xy(back, 999.0, 999.0);
+    let mut bg2 = Paint::default();
+    bg2.set_anti_alias(true);
+    bg2.set_color4f(
+        Color4f::new(154.0 / 255.0, 128.0 / 255.0, 135.0 / 255.0, 0.04),
+        None,
+    );
+    canvas.draw_rrect(rrect_back, &bg2);
+    let mut border2 = Paint::default();
+    border2.set_anti_alias(true);
+    border2.set_style(PaintStyle::Stroke);
+    border2.set_stroke_width(1.0);
+    border2.set_color4f(
+        Color4f::new(154.0 / 255.0, 128.0 / 255.0, 135.0 / 255.0, 0.30),
+        None,
+    );
+    canvas.draw_rrect(rrect_back, &border2);
+    let label2 = "Back";
+    let mut p2 = Paint::default();
+    p2.set_anti_alias(true);
+    p2.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87));
+    let (advance2, _) = font.measure_str(label2, Some(&p2));
+    let cx2 = (back.left + back.right) * 0.5;
+    let cy2 = (back.top + back.bottom) * 0.5;
+    canvas.draw_str(label2, (cx2 - advance2 * 0.5, cy2 + m.cap_height * 0.5), &font, &p2);
 }

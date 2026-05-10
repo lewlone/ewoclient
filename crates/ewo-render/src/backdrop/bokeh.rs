@@ -46,8 +46,13 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     }
 
     // 50vmin sized orb, positioned top: 30%, left: -25% relative to the
-    // backdrop rect (which is our card interior, w × h).
+    // backdrop rect (which is our card interior, w × h). Skip when w/h
+    // hit zero — happens on the first frame before a resize event lands,
+    // and Skia's gradient_shader rejects zero-radius circles with None.
     let vmin = w.min(h);
+    if vmin <= 0.0 {
+        return;
+    }
     let size = 0.50 * vmin * scale;
     // Initial position before transform.
     let base_left = -0.25 * w;
@@ -68,7 +73,7 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let mid_c = Color4f::new(mid[0], mid[1], mid[2], 0.2);
     let outer_c = Color4f::new(0.0, 0.0, 0.0, 0.0);
 
-    let shader = gradient_shader::radial(
+    let Some(shader) = gradient_shader::radial(
         Point::new(cx, cy),
         radius,
         gradient_shader::GradientShaderColors::ColorsInSpace(
@@ -79,13 +84,15 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
         TileMode::Clamp,
         None,
         None,
-    )
-    .expect("bokeh shader");
+    ) else {
+        return;
+    };
 
     // 40px CSS blur → sigma 20. Apply via save_layer so screen-blend + opacity
     // compose correctly.
-    let blur = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None)
-        .expect("bokeh blur filter");
+    let Some(blur) = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None) else {
+        return;
+    };
     let mut layer_paint = Paint::default();
     layer_paint.set_image_filter(blur);
     layer_paint.set_blend_mode(BlendMode::Screen);

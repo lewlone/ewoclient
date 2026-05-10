@@ -24,18 +24,21 @@ use crate::widgets::{
     GhostKind, VbtnState, VdropState, VghostBtnState, VsliderState,
 };
 
-pub const MC_VERSIONS: &[&str] = &[
-    "1.21.1",
-    "1.21",
-    "1.20.4",
-    "1.20.1",
-    "1.19.4",
-    "1.18.2",
-    "1.16.5",
-    "1.12.2",
-    "24w40a (snapshot)",
-];
-pub const LOADERS: &[&str] = &["Vanilla", "Fabric", "Forge", "NeoForge", "Quilt"];
+/// Fallback version list shown before the live `version_manifest_v2.json`
+/// finishes loading (or when offline + no cache yet). Once the live
+/// manifest arrives, `NewInstanceModalState::mc_versions` replaces this
+/// with the real list. Kept short — just a placeholder.
+pub const FALLBACK_MC_VERSIONS: &[&str] = &["loading…"];
+
+/// Loader options shown in the new-instance modal's Loader dropdown. v2
+/// phase D: only Vanilla and the in-development EwoLoader are wired —
+/// other loaders (Fabric, Forge, NeoForge, Quilt) come once their meta
+/// endpoints are integrated.
+pub const LOADERS: &[&str] = &["Vanilla", "Ewo (development)"];
+
+fn default_mc_versions() -> Vec<String> {
+    FALLBACK_MC_VERSIONS.iter().map(|s| (*s).to_string()).collect()
+}
 
 const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
 const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
@@ -98,6 +101,10 @@ pub struct NewInstanceModalState {
     pub ram: VsliderState,
     pub cancel_btn: VghostBtnState,
     pub create_btn: VbtnState,
+    /// Live Minecraft version IDs from `version_manifest_v2.json`. Populated
+    /// each frame from `App::versions` (the `VersionService`). Falls back to
+    /// `FALLBACK_MC_VERSIONS` until the manifest loads.
+    pub mc_versions: Vec<String>,
 }
 
 impl Default for NewInstanceModalState {
@@ -114,6 +121,7 @@ impl Default for NewInstanceModalState {
             ram: VsliderState::new(4.0, 1.0, 16.0).with_step(1.0),
             cancel_btn: VghostBtnState::default(),
             create_btn: VbtnState::default(),
+            mc_versions: default_mc_versions(),
         }
     }
 }
@@ -148,11 +156,16 @@ impl NewInstanceModalState {
         }
         Some(NewInstanceForm {
             name: trimmed.to_string(),
-            version: MC_VERSIONS
+            version: self
+                .mc_versions
                 .get(self.version.selected)
-                .copied()
-                .unwrap_or(MC_VERSIONS[0])
-                .to_string(),
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.mc_versions
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| FALLBACK_MC_VERSIONS[0].to_string())
+                }),
             loader: LOADERS
                 .get(self.loader.selected)
                 .copied()
@@ -221,13 +234,31 @@ impl NewInstanceModalState {
             _ => None,
         }
     }
-}
 
-pub fn dropdown_options(slot: Slot) -> Option<&'static [&'static str]> {
-    match slot {
-        Slot::Version => Some(MC_VERSIONS),
-        Slot::Loader => Some(LOADERS),
-        _ => None,
+    /// Replace `mc_versions` with a freshly-fetched list. Caller (App) is
+    /// responsible for snapshot-stability — new entries shouldn't reorder
+    /// existing ones in a way that breaks the user's selected index. The
+    /// caller passes versions ordered newest-first (Mojang's manifest
+    /// order). Calls clamp `version.selected` to the new list size.
+    pub fn apply_versions(&mut self, versions: Vec<String>) {
+        if versions.is_empty() {
+            return;
+        }
+        if self.version.selected >= versions.len() {
+            self.version.selected = 0;
+        }
+        self.mc_versions = versions;
+    }
+
+    /// List of option strings for an open dropdown. Returns `None` for
+    /// non-dropdown slots. Allocates a `Vec<&str>` since `mc_versions` is
+    /// owned `String`s; cheap, only called when a menu is open.
+    pub fn dropdown_options(&self, slot: Slot) -> Option<Vec<&str>> {
+        match slot {
+            Slot::Version => Some(self.mc_versions.iter().map(|s| s.as_str()).collect()),
+            Slot::Loader => Some(LOADERS.to_vec()),
+            _ => None,
+        }
     }
 }
 
@@ -446,14 +477,14 @@ pub fn draw_modal(
     // Layer 3 — any open dropdown menu, drawn after the card so it sits on
     // top of the form.
     if let Some(slot) = state.open_dropdown() {
-        if let Some(opts) = dropdown_options(slot) {
+        if let Some(opts) = state.dropdown_options(slot) {
             if let Some(head) = widget_bounds(card_w, card_h, fonts)
                 .into_iter()
                 .find_map(|(s, r)| if s == slot { Some(r) } else { None })
             {
                 if let Some(state_ref) = state.dropdown_state(slot) {
                     let (menu, flip_up) = menu_layout(head, opts.len(), card_h);
-                    draw_vdrop_menu(canvas, menu, flip_up, opts, state_ref, fonts);
+                    draw_vdrop_menu(canvas, menu, flip_up, &opts, state_ref, fonts);
                 }
             }
         }
@@ -800,7 +831,11 @@ fn draw_dropdown_row(
         "mod loader",
     );
 
-    let value_a = MC_VERSIONS.get(state.version.selected).copied().unwrap_or("");
+    let value_a = state
+        .mc_versions
+        .get(state.version.selected)
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let value_b = LOADERS.get(state.loader.selected).copied().unwrap_or("");
     let time = 0.0;
     draw_vdrop_head(canvas, l.version_head, value_a, &state.version, time, settings, fonts);

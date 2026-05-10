@@ -8,6 +8,9 @@ Cargo.lock.bak
 *.swp
 *~
 
+# Claude Code local session state
+/.claude/
+
 # OS
 Thumbs.db
 .DS_Store
