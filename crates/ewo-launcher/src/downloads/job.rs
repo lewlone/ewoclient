@@ -18,7 +18,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -302,6 +302,45 @@ fn native_classifier_for(lib: &crate::versions::per_version::Library) -> Option<
     None
 }
 
+/// `file:///C:/path/to.jar` → `C:\path\to.jar` (Windows) or
+/// `file:///home/user/x.jar` → `/home/user/x.jar` (Unix). Returns `None`
+/// for non-`file://` URLs.
+///
+/// Naive percent-decoder — handles `%20` etc. for paths that contain
+/// spaces. Doesn't handle authority or query strings; library URLs
+/// don't need them.
+fn file_url_to_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    // Strip the leading `/` on Windows-style `file:///C:/...` so the
+    // result becomes `C:/...` (a real drive-letter path), not `/C:/...`.
+    let trimmed = if cfg!(windows)
+        && rest.starts_with('/')
+        && rest.len() >= 4
+        && rest.as_bytes()[2] == b':'
+    {
+        &rest[1..]
+    } else {
+        rest
+    };
+    let mut decoded = String::with_capacity(trimmed.len());
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                decoded.push(((h << 4) | l) as u8 as char);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i] as char);
+        i += 1;
+    }
+    Some(PathBuf::from(decoded))
+}
+
 /// Download `url` to `dest`, verify the file's sha1 against `expected_sha1`,
 /// and confirm size matches. Skips the network if the file exists with
 /// a matching hash already.
@@ -327,13 +366,20 @@ fn ensure_file(
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
-    // Stream the body to disk while computing sha1 incrementally so we
-    // don't buffer the whole client jar in memory.
-    let resp = agent
-        .get(url)
-        .call()
-        .map_err(|e| format!("GET {}: {}", url, e))?;
-    let mut reader = resp.into_reader();
+    // `file://` lets local dev point library URLs at on-disk artifacts
+    // (the EwoLoader fat jar during bundle-phase iteration before it's
+    // hosted publicly). Mirrors the same scheme support in `loaders::fetch`.
+    let mut reader: Box<dyn Read> = if let Some(local_path) = file_url_to_path(url) {
+        let f = fs::File::open(&local_path)
+            .map_err(|e| format!("open {}: {}", local_path.display(), e))?;
+        Box::new(f)
+    } else {
+        let resp = agent
+            .get(url)
+            .call()
+            .map_err(|e| format!("GET {}: {}", url, e))?;
+        Box::new(resp.into_reader())
+    };
     let mut file = fs::File::create(dest).map_err(|e| format!("create {}: {}", dest.display(), e))?;
     let mut hasher = Sha1::new();
     let mut buf = [0u8; 64 * 1024];
