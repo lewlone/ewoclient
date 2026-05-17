@@ -351,10 +351,16 @@ fn ensure_file(
     expected_size: u64,
     dest: &Path,
 ) -> Result<(), String> {
-    if dest.exists() {
-        // Quick check: size match → assume sha1 matches. Faster startup
-        // when most of the tree is already on disk. Full sha1 verify on
-        // a stricter "verify" pass we'll add later if needed.
+    // `file://` URLs point at the user's local file. Skip the existence
+    // shortcut + sha1/size verification entirely: the file is whatever the
+    // user has on disk *right now*. Caching would freeze the cached copy
+    // against the source's edits; sha1-pinning would force the user to
+    // bump the manifest on every rebuild. Always re-copy + trust the file.
+    let local_path = file_url_to_path(url);
+    if local_path.is_none() && dest.exists() {
+        // HTTP path: quick check: size match → assume sha1 matches. Faster
+        // startup when most of the tree is already on disk. Full sha1
+        // verify on a stricter "verify" pass we'll add later if needed.
         if let Ok(meta) = fs::metadata(dest) {
             if meta.len() == expected_size {
                 return Ok(());
@@ -366,12 +372,9 @@ fn ensure_file(
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
-    // `file://` lets local dev point library URLs at on-disk artifacts
-    // (the EwoLoader fat jar during bundle-phase iteration before it's
-    // hosted publicly). Mirrors the same scheme support in `loaders::fetch`.
-    let mut reader: Box<dyn Read> = if let Some(local_path) = file_url_to_path(url) {
-        let f = fs::File::open(&local_path)
-            .map_err(|e| format!("open {}: {}", local_path.display(), e))?;
+    let mut reader: Box<dyn Read> = if let Some(ref p) = local_path {
+        let f = fs::File::open(p)
+            .map_err(|e| format!("open {}: {}", p.display(), e))?;
         Box::new(f)
     } else {
         let resp = agent
@@ -395,6 +398,10 @@ fn ensure_file(
         file.write_all(&buf[..n])
             .map_err(|e| format!("write {}: {}", dest.display(), e))?;
         written += n as u64;
+    }
+    if local_path.is_some() {
+        // Local file — verification was already opted out above. Done.
+        return Ok(());
     }
     let got = hasher.finalize();
     let got_hex: String = got.iter().map(|b| format!("{:02x}", b)).collect();
