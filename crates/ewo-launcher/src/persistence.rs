@@ -13,9 +13,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ewo_render::screens::instances::{default_instances, Instance};
+use ewo_render::screens::instances::{default_instances, Instance, InstanceLoader};
 use ewo_render::screens::SettingsConfig;
 use serde::{Deserialize, Serialize};
+
+use crate::bundled;
 
 const INSTANCES_FILENAME: &str = "instances.toml";
 const SETTINGS_FILENAME: &str = "settings.toml";
@@ -45,7 +47,33 @@ fn settings_path() -> Option<PathBuf> {
 
 /// Load the persisted instances list, or fall back to the built-in
 /// defaults. Always returns at least one instance.
+///
+/// After loading, any Ewo-loader instance has its `mods` list merged
+/// against the bundled-mods catalog so the UI shows toggle rows for
+/// mods bundled after the instance was created. Persists the synced
+/// list back to disk if anything changed.
 pub fn load_instances() -> Vec<Instance> {
+    let mut instances = load_instances_raw();
+    let mut any_synced = false;
+    for inst in instances.iter_mut() {
+        if matches!(inst.loader, InstanceLoader::Ewo { .. })
+            && bundled::sync_mods_with_catalog(&mut inst.mods)
+        {
+            log::info!(
+                "instances: synced \"{}\" mod list with bundled catalog ({} entries)",
+                inst.name,
+                inst.mods.len()
+            );
+            any_synced = true;
+        }
+    }
+    if any_synced {
+        save_instances(&instances);
+    }
+    instances
+}
+
+fn load_instances_raw() -> Vec<Instance> {
     let Some(path) = instances_path() else {
         log::warn!("config dir unresolvable — using default instances");
         return default_instances();

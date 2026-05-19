@@ -40,6 +40,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 mod auth;
+mod bundled;
 mod downloads;
 mod launch;
 mod loaders;
@@ -251,7 +252,7 @@ impl App {
         // Loader-fetch failures are non-fatal — we log + fall back to
         // launching the vanilla profile so the user isn't blocked by a
         // flaky local manifest.
-        let pv = match &inst.loader {
+        let mut pv = match &inst.loader {
             ewo_render::screens::instances::InstanceLoader::Vanilla => vanilla_pv,
             ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
                 match loaders::get_or_fetch("ewo", manifest_url) {
@@ -274,14 +275,37 @@ impl App {
         };
         // Phase D follow-on: download any library the merge added that
         // wasn't in the vanilla `PerVersion` Phase B saw at instance-setup
-        // time (the EwoLoader fat jar + bundled mods like Sodium / FAPI /
-        // Lithium). Idempotent — `ensure_libraries` skips files already on
-        // disk. Blocking; runs on the main thread because launch is
-        // already a synchronous operation here and the typical added set
-        // is <10 MB.
+        // time (the EwoLoader fat jar + bundled mods). Idempotent —
+        // `ensure_libraries` skips files already on disk. Runs against the
+        // *full* merged library set so disabled mods stay downloaded — the
+        // user re-enabling a mod doesn't trigger a re-download.
         if let Err(e) = downloads::ensure_libraries(&pv) {
             log::warn!("launch: loader library fetch failed: {} — falling back", e);
             return false;
+        }
+        // Per-instance mod toggles: strip libraries the user disabled from
+        // the merged classpath. The corresponding mod ids also feed the
+        // -Dfabric.debug.disableModIds JVM arg below so the loader's
+        // BundledMods verification skips them. Order matters — strip must
+        // happen after ensure_libraries (we still want disabled mods on
+        // disk for cheap re-enable) but before launch::build (which reads
+        // pv.libraries to assemble the classpath).
+        let disabled_mod_ids = bundled::disabled_mod_ids(&inst.mods);
+        if !disabled_mod_ids.is_empty() {
+            use std::collections::HashSet;
+            let disabled_libs: HashSet<&str> =
+                bundled::library_names_for_disabled(&disabled_mod_ids)
+                    .into_iter()
+                    .collect();
+            let before = pv.libraries.len();
+            pv.libraries
+                .retain(|l| !disabled_libs.contains(l.name.as_str()));
+            log::info!(
+                "launch: disabling {} mod(s) [{}] — stripped {} libraries from classpath",
+                disabled_mod_ids.len(),
+                disabled_mod_ids.join(","),
+                before - pv.libraries.len()
+            );
         }
         if let Err(e) = launch::extract_all(&pv, &inst.name) {
             log::warn!("launch: native extraction failed: {} — falling back", e);
@@ -362,13 +386,23 @@ impl App {
                 launch::LaunchProfile::offline(&inst.name)
             }
         };
-        let plan = match launch::build(&pv, &inst.name, inst.ram, &profile, jvm_path) {
+        let mut plan = match launch::build(&pv, &inst.name, inst.ram, &profile, jvm_path) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("launch: plan build failed: {} — falling back", e);
                 return false;
             }
         };
+        // Append the disabled-mods JVM arg so the loader's BundledMods
+        // verification subtracts them from the expected set and the
+        // discovery filter skips them. -D args go before main-class +
+        // game args, which is exactly where jvm_args ends up.
+        if !disabled_mod_ids.is_empty() {
+            plan.jvm_args.push(format!(
+                "-Dfabric.debug.disableModIds={}",
+                disabled_mod_ids.join(",")
+            ));
+        }
         let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
         let _ = launch::spawn_jvm(plan, tx);
         self.launch_rx = Some(rx);
@@ -2705,11 +2739,20 @@ fn commit_new_instance(
             })
         }
     };
+    // Seed the instance's mods list from the bundled catalog so the
+    // Instances UI shows real toggles immediately. Only Ewo instances get
+    // mods — vanilla launches don't run any mods so the list stays empty.
+    let seeded_mods = match &loader {
+        ewo_render::screens::instances::InstanceLoader::Vanilla => Vec::new(),
+        ewo_render::screens::instances::InstanceLoader::Ewo { .. } => {
+            bundled::seed_instance_mods()
+        }
+    };
     let mut new_inst = Instance::new(
         form.name.clone(),
         version_meta,
         "just now".to_string(),
-        Vec::new(),
+        seeded_mods,
     )
     .with_config(form.ram, 16, 0)
     .with_loader(loader);
