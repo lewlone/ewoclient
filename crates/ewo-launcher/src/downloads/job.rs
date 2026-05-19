@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use sha1::{Digest, Sha1};
 
+use crate::loaders::{self, LoaderSpec};
 use crate::versions::manifest::ManifestEntry;
 use crate::versions::per_version::PerVersion;
 use crate::versions::per_version_fetch;
@@ -37,6 +38,11 @@ use super::rules;
 #[derive(Debug, Clone, Copy)]
 pub enum Stage {
     PerVersion,
+    /// Loader manifest fetch + merge. Only emitted when the job was
+    /// configured with a `LoaderSpec`. Sequenced between `PerVersion` and
+    /// `Client` so the byte total used for the progress bar can include
+    /// every loader-added library.
+    LoaderManifest,
     Client,
     Libraries,
     AssetIndex,
@@ -48,6 +54,7 @@ impl Stage {
     pub fn label(self) -> &'static str {
         match self {
             Stage::PerVersion => "fetching version manifest…",
+            Stage::LoaderManifest => "fetching loader manifest…",
             Stage::Client => "downloading the game…",
             Stage::Libraries => "downloading libraries…",
             Stage::AssetIndex => "fetching asset index…",
@@ -75,6 +82,13 @@ pub struct JobConfig {
     /// Master manifest entry — used both to find the per-version URL and
     /// to sha1-verify the per-version body.
     pub entry: ManifestEntry,
+    /// Optional loader to layer on top of vanilla. When set, the job
+    /// fetches the loader manifest after the vanilla per-version manifest,
+    /// merges them in-memory, and downloads the *merged* library set so
+    /// loader libraries (EwoLoader fat jar + bundled mods) appear on the
+    /// progress bar instead of being hot-downloaded synchronously at
+    /// launch time.
+    pub loader: Option<LoaderSpec>,
 }
 
 /// Spawn the job on a fresh worker thread and return immediately.
@@ -98,7 +112,7 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
 
     // Stage 1 — per-version manifest.
     let _ = tx.send(JobEvent::StageStart(Stage::PerVersion));
-    let pv = match per_version_fetch::get_or_fetch(&entry) {
+    let vanilla_pv = match per_version_fetch::get_or_fetch(&entry) {
         Ok(p) => p,
         Err(e) => {
             let _ = tx.send(JobEvent::Failed(format!("per-version fetch: {}", e)));
@@ -106,7 +120,38 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
         }
     };
 
-    // Compute total size up front so the UI bar has a denominator.
+    // Stage 1b — loader manifest fetch + merge (only when the instance has
+    // a loader configured). On fetch failure we proceed with vanilla:
+    // matches `try_real_launch`'s "non-fatal loader miss" policy so a flaky
+    // dev manifest doesn't block the whole download. The progress bar then
+    // omits loader libs, but `ensure_libraries` (called from launch) will
+    // pick them up if the manifest comes back at launch time.
+    let pv = match &config.loader {
+        Some(spec) => {
+            let _ = tx.send(JobEvent::StageStart(Stage::LoaderManifest));
+            match loaders::get_or_fetch(&spec.id, &spec.url) {
+                Ok(loader_manifest) => {
+                    log::info!(
+                        "downloads: merging loader \"{}\" manifest into {}",
+                        loader_manifest.id, vanilla_pv.id
+                    );
+                    loaders::merge(&vanilla_pv, &loader_manifest)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "downloads: loader \"{}\" fetch failed ({}) — continuing with vanilla",
+                        spec.id, e
+                    );
+                    vanilla_pv
+                }
+            }
+        }
+        None => vanilla_pv,
+    };
+
+    // Compute total size up front so the UI bar has a denominator. The
+    // merged PV's library list already includes loader-added libraries,
+    // so they contribute to the byte total + show up on the progress bar.
     // `pv.asset_index.total_size` covers all assets (Mojang precomputes
     // this); client + libs are the per-version manifest's own numbers.
     let lib_bytes: u64 = pv

@@ -17,3 +17,13 @@ pub mod merge;
 pub use fetch::{get_or_fetch, FetchError};
 pub use manifest::LoaderManifest;
 pub use merge::merge;
+
+/// What the download job needs to know about a loader: a logical id (for
+/// cache keying + log labels) and the manifest URL to fetch. Constructed
+/// from an `InstanceLoader::Ewo { manifest_url }` at the launcher boundary
+/// so neither `downloads` nor `loaders` depends on `ewo-render`'s model.
+#[derive(Debug, Clone)]
+pub struct LoaderSpec {
+    pub id: String,
+    pub url: String,
+}

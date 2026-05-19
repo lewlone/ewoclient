@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
+use crate::loaders::LoaderSpec;
 use crate::versions::manifest::ManifestEntry;
 
 use super::job::{self, JobConfig, JobEvent, Stage};
@@ -59,13 +60,23 @@ impl DownloadService {
 
     /// Start a download job for the given master-manifest entry. No-op if
     /// a job for this ID is already in flight.
-    pub fn start(&mut self, entry: ManifestEntry) {
+    ///
+    /// `loader` is `Some` when the instance was created with a non-vanilla
+    /// loader; the job then fetches + merges the loader manifest before
+    /// counting bytes, so loader-added libraries (EwoLoader fat jar +
+    /// bundled mods) show up on the progress bar instead of being
+    /// hot-downloaded later at launch time.
+    pub fn start(&mut self, entry: ManifestEntry, loader: Option<LoaderSpec>) {
         let id = entry.id.clone();
         if self.statuses.contains_key(&id) {
             log::info!("downloads: {} already in flight — ignoring", id);
             return;
         }
-        log::info!("downloads: starting job for {}", id);
+        log::info!(
+            "downloads: starting job for {} (loader: {})",
+            id,
+            loader.as_ref().map(|s| s.id.as_str()).unwrap_or("vanilla")
+        );
         let id_for_chan = id.clone();
         let outer_tx = self.tx.clone();
         let (inner_tx, inner_rx) = mpsc::channel::<JobEvent>();
@@ -82,7 +93,7 @@ impl DownloadService {
                 }
             })
             .expect("spawn relay thread");
-        let handle = job::spawn(JobConfig { entry }, inner_tx);
+        let handle = job::spawn(JobConfig { entry, loader }, inner_tx);
         self.handles.insert(id.clone(), handle);
         self.statuses.insert(id, JobStatus::default());
     }

@@ -2693,6 +2693,18 @@ fn commit_new_instance(
     } else {
         ewo_render::screens::instances::InstanceLoader::Vanilla
     };
+    // Derived before `loader` is moved into `Instance::with_loader` below.
+    // The job needs the manifest URL up front so it can fetch + merge
+    // before counting bytes for the progress bar.
+    let loader_spec = match &loader {
+        ewo_render::screens::instances::InstanceLoader::Vanilla => None,
+        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
+            Some(loaders::LoaderSpec {
+                id: "ewo".to_string(),
+                url: manifest_url.clone(),
+            })
+        }
+    };
     let mut new_inst = Instance::new(
         form.name.clone(),
         version_meta,
@@ -2724,10 +2736,14 @@ fn commit_new_instance(
     // Kick off the download job for the selected version. If the master
     // manifest hasn't loaded yet (very-first launch + offline), we just
     // log + leave the instance Pending; user can retry once the
-    // manifest fetches.
+    // manifest fetches. `loader_spec` was derived earlier (before `loader`
+    // got moved into the Instance) and feeds the loader manifest URL
+    // through so the job can fetch + merge it up front and include
+    // loader-added libraries (EwoLoader fat jar + bundled mods) in the
+    // progress bar's byte total.
     if let Some(manifest) = versions.manifest() {
         if let Some(entry) = manifest.entry(&form.version) {
-            downloads.start(entry.clone());
+            downloads.start(entry.clone(), loader_spec);
         } else {
             log::warn!(
                 "instances: version {} not in master manifest — download skipped",
