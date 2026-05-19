@@ -456,8 +456,11 @@ fn ensure_file(
             .map_err(|e| format!("open {}: {}", p.display(), e))?;
         Box::new(f)
     } else {
-        let resp = agent
-            .get(url)
+        let mut req = agent.get(url);
+        for (k, v) in github_auth_headers_for(url) {
+            req = req.set(k, &v);
+        }
+        let resp = req
             .call()
             .map_err(|e| format!("GET {}: {}", url, e))?;
         Box::new(resp.into_reader())
@@ -499,4 +502,79 @@ fn ensure_file(
         ));
     }
     Ok(())
+}
+
+/// Build the HTTP headers needed to download a private-repo GitHub
+/// release asset. Returns an empty list for any URL that's not the
+/// `api.github.com/repos/<owner>/<repo>/releases/assets/<id>` shape —
+/// we never send the token to Modrinth, Mojang, or other hosts.
+///
+/// The token comes from `EWO_LOADER_TOKEN` (kept out of source + out of
+/// settings.toml; user sets it in their shell profile). Missing env var
+/// returns empty — the request goes through unauthenticated and GitHub
+/// responds with 404, which the existing `GET {}: {}` error path
+/// surfaces clearly.
+fn github_auth_headers_for(url: &str) -> Vec<(&'static str, String)> {
+    if !is_github_release_asset_url(url) {
+        return Vec::new();
+    }
+    let Ok(token) = std::env::var("EWO_LOADER_TOKEN") else {
+        return Vec::new();
+    };
+    if token.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        ("Authorization", format!("Bearer {}", token)),
+        ("Accept", "application/octet-stream".to_string()),
+        // GitHub API docs recommend pinning the API version. Drift-proofs
+        // against silent breaking changes on their side.
+        ("X-GitHub-Api-Version", "2022-11-28".to_string()),
+    ]
+}
+
+fn is_github_release_asset_url(url: &str) -> bool {
+    // Match `https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>`.
+    // We never send auth to the regular `github.com/<owner>/<repo>/releases/download/...`
+    // path because that's a redirect to a signed CDN URL — the request token
+    // would just confuse GitHub's auth check and isn't strictly needed there
+    // for private repos either (it falls back to session cookies, which we
+    // don't have).
+    url.starts_with("https://api.github.com/repos/")
+        && url.contains("/releases/assets/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_auth_only_for_release_asset_urls() {
+        // Set the env var so the helper has something to return.
+        std::env::set_var("EWO_LOADER_TOKEN", "ghp_test_token");
+
+        let asset = "https://api.github.com/repos/lewlone/ewo-loader/releases/assets/12345";
+        let headers = github_auth_headers_for(asset);
+        assert!(!headers.is_empty(), "GitHub asset URL should get auth headers");
+        assert!(headers.iter().any(|(k, _)| *k == "Authorization"));
+        assert!(headers.iter().any(|(k, v)| *k == "Accept" && v == "application/octet-stream"));
+
+        // Modrinth + Mojang + arbitrary HTTPS must NOT get headers.
+        assert!(github_auth_headers_for("https://cdn.modrinth.com/data/AANobbMI/...").is_empty());
+        assert!(github_auth_headers_for("https://launcher.mojang.com/...").is_empty());
+        // Even the non-API GitHub URL (browser download path) must not get the token.
+        assert!(github_auth_headers_for(
+            "https://github.com/lewlone/ewo-loader/releases/download/v0.19.2/ewo-loader-0.19.2-fat.jar"
+        )
+        .is_empty());
+
+        std::env::remove_var("EWO_LOADER_TOKEN");
+    }
+
+    #[test]
+    fn no_token_means_no_headers() {
+        std::env::remove_var("EWO_LOADER_TOKEN");
+        let asset = "https://api.github.com/repos/lewlone/ewo-loader/releases/assets/12345";
+        assert!(github_auth_headers_for(asset).is_empty());
+    }
 }

@@ -182,6 +182,17 @@ pub const CATALOG: &[BundledMod] = &[
         default_on: true,
         toggleable: true,
     },
+    BundledMod {
+        display_name: "Distant Horizons",
+        category: "visuals",
+        version: "3.0.3",
+        mod_id: "distanthorizons",
+        library_name: "maven.modrinth:distanthorizons:3.0.3-b-26.1.2",
+        // Heavy: 30 MB jar, LOD-renders distant chunks, opinionated.
+        // Default-off so the user opts in rather than out.
+        default_on: false,
+        toggleable: true,
+    },
     // ── Utility ──────────────────────────────────────────────────────
     BundledMod {
         display_name: "Mod Menu",
@@ -345,7 +356,14 @@ mod tests {
 
     #[test]
     fn disabled_ids_resolves_to_strings() {
+        // Seed, then force every default-off mod to on so the only
+        // intentionally-disabled entry is the one we flip below. Keeps the
+        // test robust against the catalog gaining new default-off entries
+        // (like Distant Horizons).
         let mut mods = seed_instance_mods();
+        for m in mods.iter_mut() {
+            m.on = true;
+        }
         // Flip iris off.
         for m in mods.iter_mut() {
             if m.name == "Iris Shaders" {
