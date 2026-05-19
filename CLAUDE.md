@@ -16,6 +16,16 @@ The user has a CSS/HTML prototype of a "Velvet & Pearl" themed Minecraft launche
 
 The user is targeting Windows 11 + CachyOS/Hyprland. macOS is not in scope.
 
+## ⚠️ Two dead sibling directories — confirm you're in V3
+
+There are **three** EwoClient-named directories on this Desktop:
+
+- `c:\Users\valtteri\Desktop\EwoClient` — DEAD (TypeScript+Tauri prototype, abandoned 2026-04-20)
+- `c:\Users\valtteri\Desktop\EwoClient-v2` — DEAD (earlier Rust workspace, abandoned 2026-04-27)
+- `c:\Users\valtteri\Desktop\EwoClientV3` ← **live, this one**
+
+The two dead directories have tombstone `CLAUDE.md` files redirecting here. If you're a fresh session and you opened the wrong one by accident, this file is the one to read. The live repo's `git remote -v` shows `lewlone/ewoclient`.
+
 ## Sibling project: EwoLoader
 
 EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. Sodium + Fabric API + Lithium are bundled via the loader manifest at `EwoLoaderV1/manifest/0.1.0/26.1.json`.
