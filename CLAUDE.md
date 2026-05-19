@@ -16,6 +16,14 @@ The user has a CSS/HTML prototype of a "Velvet & Pearl" themed Minecraft launche
 
 The user is targeting Windows 11 + CachyOS/Hyprland. macOS is not in scope.
 
+## Sibling project: EwoLoader
+
+EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. Sodium + Fabric API + Lithium are bundled via the loader manifest at `EwoLoaderV1/manifest/0.1.0/26.1.json`.
+
+**If you're working on launcher code that touches loader integration** (`crates/ewo-launcher/src/loaders/`, `downloads/job.rs::ensure_libraries`, `launch::merge`, instance loader handling), open EwoLoader in a second window. The two repos are tightly coupled at the loader-manifest contract.
+
+**Author identity for both repos:** `lewlone <valtteri.e.saarinen@gmail.com>`. Set per-repo `git config user.name`/`user.email` if cloning fresh.
+
 ---
 
 ## Reference materials (read these when designing anything visual)
@@ -656,33 +664,62 @@ UI surfaces:
 
 **Verified end-to-end on a fresh box:** create instance → Phase B downloads (~3 min for 26.1 full asset set) → click Launch → JRE auto-fetch via Adoptium (~2s for Java 25) → JVM spawn → Minecraft renders → clean exit → handoff. Logs in `tasks/b8ycimnb5.output` (smoke-test session 2026-05-03).
 
-### Phase D — Custom Fabric-fork loader 🟡 waiting on the loader project
+### Phase D — Custom Fabric-fork loader (EwoLoader) ✅ shipped + verified live
 
-The loader work happens **outside this launcher** — it's a separate Fabric fork the user is building. The launcher's job is to:
+**EwoLoader** is a friendly fork of fabric-loader living in a sibling repo at `C:\Users\valtteri\Desktop\EwoLoaderV1` (`lewlone/ewo-loader`, private). Friendly-fork meaning package names stay `net.fabricmc.loader.*` for binary compat with the existing Fabric mod ecosystem — only artifact identity (`dev.lewlone:ewo-loader`) + Maven group + the `STRIP_PLAN.md`-driven leanness differ. Built from upstream `fabric-loader` 0.19.2; eight strip passes shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC: ProGuard pipeline, LaunchWrapper/Applet/FML125, legacyJava source set, dev-mode helpers, `mods/` folder discovery, Swing crash GUI, all test infrastructure, V0 metadata schema. Build time: 6s clean on JDK 21.
 
-1. Recognize when an instance specifies the custom loader (the new-instance modal's Loader dropdown).
-2. Fetch the loader's per-version manifest (whatever URL/format the fork settles on — closest analog is `https://meta.fabricmc.net/v2/versions/loader/<mc>`).
-3. Apply it on top of the vanilla per-version manifest: append libraries, override `mainClass`, append JVM args.
-4. Drop the fork's "ewo-loader" launch JSON in `<config>/EwoClient/shared/<loader-name>/<mc>-<loader-version>/`.
+**Launcher integration is fully wired:**
 
-The infrastructure for this is already in place — `LaunchPlan` is data-driven, `Library` rules + classpath builder are loader-agnostic. The new piece is a "loader manifest" abstraction that produces a merged `PerVersion` from `(vanilla_pv, loader_pv)`. Phase B's `get_or_fetch` is the template for the loader-manifest fetcher.
+- [`crates/ewo-launcher/src/loaders/`](crates/ewo-launcher/src/loaders/) — `manifest.rs` (`LoaderManifest` shape), `merge.rs` (`merge(vanilla_pv, loader_manifest) -> PerVersion`), `fetch.rs` (`get_or_fetch` with HTTP + `file://` support).
+- `merge::merge` prepends loader libraries ahead of vanilla's on the classpath, overrides `mainClass` when present, concatenates JVM/game args. Critical detail: keeps `id: vanilla.id.clone()` so client.jar path resolution still works (`versions/<vanilla_id>/<vanilla_id>.jar`).
+- `try_real_launch` ([main.rs:254](crates/ewo-launcher/src/main.rs#L254)) reads `Instance::loader`, dispatches: `Vanilla` → vanilla PerVersion as-is; `Ewo { manifest_url }` → fetch loader manifest, merge, hand merged PerVersion downstream. Loader-fetch failures fall back to vanilla launch with a warn (non-fatal — won't block a flaky local manifest).
+- Loader manifest URL is currently the in-development `file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0/26.1.json` (per `DEV_EWO_LOADER_URL` const). Becomes a config knob (or public HTTPS URL) once the loader publishes a meta endpoint.
 
-The new-instance modal's Loader dropdown currently shows `["Vanilla", "Fabric", "Forge", "NeoForge", "Quilt"]` — only Vanilla is wired. The other entries should either be removed or marked "(coming soon)" until the fork lands.
+**The new-instance modal's Loader dropdown** is now `["Vanilla", "Ewo (development)"]` only — the prototype's `["Fabric", "Forge", "NeoForge", "Quilt"]` entries got removed during Phase D wiring since they were never going to be wired (we ship one loader, ours).
 
-**This phase doesn't start until the user has the loader fork compilable + producing manifests.**
+### Bundle phase — Sodium + Fabric API + Lithium ✅ POC shipped + verified live
+
+The README's roadmap step after "ship a custom loader" is "bundle a curated mod set: Sodium / Lithium / Iris / Indium / Distant Horizons / Continuity". The architecture is in place and **three of those six ship live, end-to-end verified on MC 26.1.1**: rendered with Sodium, F3 confirmed mod count, joined a real server. The remaining three are mechanical follow-ups using the same plumbing.
+
+**How bundling works:**
+
+1. The launcher reads `manifest/0.1.0/26.1.json` (in the EwoLoader repo, served via `file://` for now) which lists every artifact the launch needs in its `libraries[]` array — Mojang's standard library schema (`name`, `downloads.artifact.{path, sha1, size, url}`). Currently 10 entries: 1 EwoLoader fat jar + 5 ASM jars + sponge-mixin + Sodium + Fabric API + Lithium.
+2. Phase D's `merge` prepends every loader library onto vanilla's, so the final `PerVersion` going to Phase B/C contains them all.
+3. **`downloads::ensure_libraries`** ([downloads/job.rs](crates/ewo-launcher/src/downloads/job.rs), called from `try_real_launch` after the merge) walks the merged `PerVersion.libraries`, downloads anything missing using the standard `ensure_file` flow (sha1+size verified for HTTP, skip-verify for `file://`). Idempotent — files on disk are skipped via the size-match shortcut. This is the patch-up for Phase B+D's coupling gap (see Known gaps below).
+4. JVM spawns with `mainClass = net.fabricmc.loader.impl.launch.knot.KnotClient` (from the manifest's mainClass override) and `-cp` containing all the loader+mod jars ahead of vanilla's libs + the client.jar.
+5. EwoLoader's `ClasspathModCandidateFinder` scans `fabric.mod.json` resources across the classpath → finds itself + Sodium + FAPI + Lithium → registers them with the mod resolver. Then `BundledMods.BUNDLED_MODS` verification fires: every expected modId must appear in the discovered set, else throw `ModResolutionException` with the missing-mods list. Currently expects `["sodium", "fabric-api", "lithium"]`.
+
+**Bundled-mod sourcing:**
+- Mod jars come from Modrinth's Maven (`https://api.modrinth.com/maven/...` → 307 redirects to `cdn.modrinth.com`). Coordinate form: `maven.modrinth:<slug>:<version_number>`. Modrinth uses the human-readable version string as the path segment.
+- ASM + sponge-mixin come from `maven.fabricmc.net`. EwoLoader's Gradle `installer` configuration declares them but doesn't bundle them — they're expected to come from the installer's manifest, which in our case IS our loader manifest.
+- The EwoLoader fat jar itself comes from `file:///C:/Users/valtteri/Desktop/EwoLoaderV1/build/libs/ewo-loader-0.19.2-fat.jar` for now. **Hosting it publicly is a follow-up** (see Known gaps).
+
+**Live `BundledMods` declaration:** [`src/main/java/net/fabricmc/loader/impl/discovery/BundledMods.java`](https://github.com/lewlone/ewo-loader/blob/main/src/main/java/net/fabricmc/loader/impl/discovery/BundledMods.java) in the EwoLoader repo. Adding a new bundled mod = three places: (a) the loader manifest's `libraries[]`, (b) `BundledMods.BUNDLED_MODS`, (c) one `./gradlew fatJar` to bake the new BUNDLED_MODS into the fat jar. Manifest sha1 doesn't need updating for the EwoLoader fat jar (`file://` skips sha1 verification).
+
+**Iteration loop (concrete commands):**
+```
+1. cd C:\Users\valtteri\Desktop\EwoLoaderV1
+2. # edit src/main/java/.../BundledMods.java + manifest/0.1.0/26.1.json
+3. GITHUB_ACTIONS=true ./gradlew fatJar       # 10s; clean version, no +local suffix
+4. # click Launch in EwoClient
+```
+The launcher re-reads the loader manifest on every launch (no TTL cache in `loaders::fetch`), `ensure_libraries` hot-downloads any new entries to `<config>/EwoClient/shared/libraries/...`, JVM spawns.
 
 ### Phase E — In-game GUI host 🟣 future
 
-A custom Fabric fork (separate from Phase D's loader-of-mods role; this one is about *replacing the in-game pause menu* with the EwoClient render surface) that opens the same `ewo-render` Skia surface on top of the Minecraft window when the user hits Esc. Requires a JNI bridge and reusing `ewo-render` from inside a JVM. Don't start until D is stable.
+A custom Fabric mod (separate from Phase D's loader role; this one is about *replacing the in-game pause menu* with the EwoClient render surface) that opens the same `ewo-render` Skia surface on top of the Minecraft window when the user hits Esc. Requires a JNI bridge and reusing `ewo-render` from inside a JVM. Don't start until the bundle set is bigger + stabilized.
 
 ### Known gaps + small follow-ups
 
-- **macOS/Linux JRE bundling** — `.tar.gz` extraction shipped; not yet exercised on a real Linux/macOS box. Should "just work" given Adoptium archives are well-behaved gz-tars, but worth smoke-testing once a target host is available.
-- **Hyprland verification** — still not run on actual Linux. The `wayland.rs` window stub should "just work" on wlroots but nobody's tested it. Pairs naturally with the JRE-bundling smoke test above.
+- **Phase B / Phase D coupling gap.** Phase B (downloads job, drives the launching-screen progress bar) runs at instance-setup time and sees only the vanilla `PerVersion`. Phase D's merge that *adds* loader libraries runs at launch time, after Phase B is done. `ensure_libraries` is a patch-up that hot-downloads the loader's libraries inline before JVM spawn — but the user doesn't see them on the progress bar; they see a brief pause. The clean fix is making Phase B loader-aware: fetch the loader manifest at instance-setup time too and pre-download all merged libraries through the same progress bar.
+- **EwoLoader fat jar not publicly hosted.** Manifest references `file:///C:/.../ewo-loader-0.19.2-fat.jar` — works for the single-developer dev box, blocks distribution. Options: GitHub Release on the private repo (auth-token-only fetch — complicates the launcher), make the repo public (then `gh release create` gives a stable URL), or push to `chickenedin.com`. **Don't decide without the user.**
+- **Iris + Indium + Distant Horizons + Continuity not yet bundled.** Iris is unblocked (needs Sodium, which is shipped). Indium unblocks any rendering-API-extension mod (Continuity targets MC 26.1 only in beta currently, may need Indium when it stabilizes). Same architecture, just more manifest entries + `BundledMods` additions.
+- **macOS/Linux JRE bundling** — `.tar.gz` extraction shipped; not exercised on a real Linux/macOS box yet.
+- **Hyprland verification** — still not run on actual Linux.
 - **Pixel-parity pass** — never formally walked through every screen vs `style/*.png` with side-by-side screenshots.
 - **Refresh-token at-rest encryption** — `auth.toml` is plaintext. Fine for single-developer dev box; would want DPAPI / keychain / libsecret before binary distribution.
-- **Loader dropdown** — see Phase D. Disable / mark "coming soon" the non-Vanilla entries until the fork lands.
-- **Settings → Java runtime dropdown** — instance detail shows a "Java runtime" dropdown that's currently decorative. Since `pick_for_major` does the right thing automatically, wiring this is low-priority.
+- **Settings → Java runtime dropdown** — decorative; `pick_for_major` does the right thing automatically. Wiring is low-priority.
+- **Duplicate `file_url_to_path`** in `loaders/fetch.rs` + `downloads/job.rs`. Both work; factoring into a shared module is a clean-up follow-up.
 
 ### Useful runtime conventions
 
@@ -709,4 +746,4 @@ A custom Fabric fork (separate from Phase D's loader-of-mods role; this one is a
 
 ---
 
-*Last meaningful structural change to this file: Mojang Launcher Program approval came through (~1 week after submission). Phase A is now production-validated end-to-end — signed in as Vwyla, joined Hypixel, played a Bedwars game start-to-finish via the real auth chain. Online multiplayer is fully working; the launcher is functionally complete for v2 phases A/B/C. Concurrent with the approval news: parallel agents shipped `.tar.gz` extraction support (macOS/Linux JRE bundling, structurally complete pending real-host smoke test) and the Phase D loader-manifest scaffold (`crates/ewo-launcher/src/loaders/` with `LoaderManifest` type + `merge` function + passing unit test) so when the user's custom Fabric fork project is ready, integration is `merge(vanilla, loader) → existing launch::build` with no further plumbing. Largest remaining gaps: Hyprland verification, formal pixel-parity pass, refresh-token at-rest encryption (DPAPI/keychain) before binary distribution.*
+*Last meaningful structural change to this file: Phase D + bundle phase POC verified live on MC 26.1.1 — EwoLoader (sibling repo `lewlone/ewo-loader`, 8 strip passes shipped, ~17k LoC removed) boots via `KnotClient`, classpath-discovers Sodium 0.8.9 + Fabric API 0.148.2 + Lithium 0.24.2, renders with Sodium, plays online (auth chain intact). Plumbing in place: `loaders::merge` (mainClass override + library prepend), `downloads::ensure_libraries` (hot-download merged libraries before JVM spawn), `file://` URL support throughout (for the in-development loader fat jar; HTTPS Modrinth/Fabric URLs for everything else), `BundledMods.BUNDLED_MODS` verification (fails loud if any expected mod missing from classpath post-discovery). Two regressions surfaced + fixed in the same session: Phase B/D coupling (libraries the loader merge adds were never downloaded — fixed with `ensure_libraries`), and Strip A3 over-strip in EwoLoader's `ClasspathModCandidateFinder` (killed the production-mode classpath scan along with the dev-mode branch — only surfaced once B1's removal of `DirectoryModCandidateFinder` left classpath scanning as the only mod-discovery path). Largest remaining gaps: public-hosting the EwoLoader fat jar (currently `file://`), Phase B loader-awareness refactor (replaces the `ensure_libraries` patch-up so loader libraries show on the progress bar), and bundling the remaining four mods (Iris / Indium / Distant Horizons / Continuity).*
