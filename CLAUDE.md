@@ -28,7 +28,7 @@ The two dead directories have tombstone `CLAUDE.md` files redirecting here. If y
 
 ## Sibling project: EwoLoader
 
-EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. Sodium + Fabric API + Lithium + Iris are bundled via the loader manifest at `EwoLoaderV1/manifest/0.1.0/26.1.json`.
+EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. The current bundle ships 15 user-toggleable mods + 4 infrastructure libs (Fabric API, fabric-language-kotlin, YACL, placeholder-api) via the loader manifest at `EwoLoaderV1/manifest/0.1.0/26.1.json`.
 
 **If you're working on launcher code that touches loader integration** (`crates/ewo-launcher/src/loaders/`, `downloads/job.rs::ensure_libraries`, `launch::merge`, instance loader handling), open EwoLoader in a second window. The two repos are tightly coupled at the loader-manifest contract.
 
@@ -687,17 +687,26 @@ UI surfaces:
 
 **The new-instance modal's Loader dropdown** is now `["Vanilla", "Ewo (development)"]` only — the prototype's `["Fabric", "Forge", "NeoForge", "Quilt"]` entries got removed during Phase D wiring since they were never going to be wired (we ship one loader, ours).
 
-### Bundle phase — Sodium + Fabric API + Lithium + Iris ✅ POC shipped
+### Bundle phase — 15 user-toggleable mods + 4 infrastructure libs ✅ shipped
 
-The README's roadmap step after "ship a custom loader" is "bundle a curated mod set: Sodium / Lithium / Iris / Indium / Distant Horizons / Continuity". The architecture is in place and **four of those six ship live**: Sodium + FAPI + Lithium were end-to-end verified on MC 26.1.1 (rendered with Sodium, F3 confirmed mod count, joined a real server); Iris was added via the same architecture (loader manifest entry + `BundledMods.BUNDLED_MODS` entry + `fatJar` rebuild) and waits on user smoke-launch confirmation. The remaining two (Indium + Distant Horizons + Continuity) are partly mechanical, partly blocked upstream — see Known gaps.
+The bundle ships the curated set originally planned (Sodium, Lithium, Iris) plus 12 more — Simple Voice Chat plus the optimization + QoL set the user picked (ImmediatelyFast, FerriteCore, EntityCulling, More Culling, Mod Menu, Reese's Sodium Options, BetterF3, AppleSkin, Zoomify, LambDynamicLights, Continuity), each toggleable per-instance from the Instances UI's mod list. Infrastructure (Fabric API + 3 transitive lib mods needed by Zoomify and Mod Menu) is bundled but hidden from the toggle UI.
 
 **How bundling works:**
 
-1. The launcher reads `manifest/0.1.0/26.1.json` (in the EwoLoader repo, served via `file://` for now) which lists every artifact the launch needs in its `libraries[]` array — Mojang's standard library schema (`name`, `downloads.artifact.{path, sha1, size, url}`). Currently 11 entries: 1 EwoLoader fat jar + 5 ASM jars + sponge-mixin + Sodium + Fabric API + Lithium + Iris.
+1. The launcher reads `manifest/0.1.0/26.1.json` (in the EwoLoader repo, served via `file://` for now) which lists every artifact the launch needs in its `libraries[]` array — Mojang's standard library schema (`name`, `downloads.artifact.{path, sha1, size, url}`). Currently 26 entries: 1 EwoLoader fat jar + 5 ASM jars + sponge-mixin + 4 infrastructure mods (Fabric API + fabric-language-kotlin + YACL + placeholder-api) + 15 user-toggleable mods.
 2. Phase D's `merge` prepends every loader library onto vanilla's, so the final `PerVersion` going to Phase B/C contains them all.
 3. **Phase B is loader-aware as of `64c6fe1`** ([downloads/job.rs](crates/ewo-launcher/src/downloads/job.rs)). `DownloadService::start(entry, Some(LoaderSpec { id, url }))` fetches the loader manifest in a new `Stage::LoaderManifest` between PerVersion and Client, merges in-memory, and counts + downloads the merged library set through the same progress bar. **`downloads::ensure_libraries`** still runs from `try_real_launch` after the merge as a safety net for the iteration loop where the user edits the loader manifest between instance-setup and launch — Phase B's snapshot then misses the new entries and ensure_libraries picks them up. In the steady state it's a fast no-op.
 4. JVM spawns with `mainClass = net.fabricmc.loader.impl.launch.knot.KnotClient` (from the manifest's mainClass override) and `-cp` containing all the loader+mod jars ahead of vanilla's libs + the client.jar.
-5. EwoLoader's `ClasspathModCandidateFinder` scans `fabric.mod.json` resources across the classpath → finds itself + Sodium + FAPI + Lithium + Iris → registers them with the mod resolver. Then `BundledMods.BUNDLED_MODS` verification fires: every expected modId must appear in the discovered set, else throw `ModResolutionException` with the missing-mods list. Currently expects `["sodium", "fabric-api", "lithium", "iris"]`.
+5. EwoLoader's `ClasspathModCandidateFinder` scans `fabric.mod.json` resources across the classpath → finds every bundled mod that wasn't stripped → registers them with the mod resolver. Then `BundledMods.BUNDLED_MODS` verification fires: every expected modId not already in the user-disabled set must appear in the discovered set, else throw `ModResolutionException`. The expected list lives at `BundledMods.java`; the disabled-mods subtraction reads `fabric.debug.disableModIds` (upstream system property the launcher repurposes for per-instance toggles — see below).
+
+**Per-instance mod toggles** are wired end-to-end as of `bcc3ea6` (launcher) + `99a38df` (loader):
+
+- Launcher's `bundled::CATALOG` ([crates/ewo-launcher/src/bundled.rs](crates/ewo-launcher/src/bundled.rs)) is the source of truth: each row has the display name + category + version + `fabric.mod.json` id + loader-manifest library name + `default_on` + `toggleable`. Infrastructure rows (FAPI, language-kotlin, YACL, placeholder-api) are `toggleable: false` so they don't appear in the UI.
+- New Ewo instances get their `Instance.mods` seeded from `bundled::seed_instance_mods()`. Existing instances are migrated on launcher startup via `bundled::sync_mods_with_catalog` (called from `persistence::load_instances`), which adds missing catalog entries with their default-on and preserves user-flipped state.
+- At launch time, `try_real_launch` runs `bundled::disabled_mod_ids(&inst.mods)` → strips the matching libraries from the merged `PerVersion.libraries` (so the classpath excludes them) → appends `-Dfabric.debug.disableModIds=<csv>` to `plan.jvm_args`.
+- The loader's `ModDiscoverer.findDisabledModIds` is upstream's already-wired filter at discovery time. `FabricLoaderImpl.setup()` was extended (`parseDisabledModIds` + verification subtraction) so `BundledMods.BUNDLED_MODS` checks don't fire on intentionally-absent mods.
+- Disabled mods stay on disk after `ensure_libraries` — re-enabling a mod in the UI doesn't trigger a re-download.
+- If the user disables a mod whose required deps are still enabled, the resolver fails loud at launch with the usual upstream "X requires Y" error. We don't pre-detect cascades.
 
 **Bundled-mod sourcing:**
 - Mod jars come from Modrinth's Maven (`https://api.modrinth.com/maven/...` → 307 redirects to `cdn.modrinth.com`). Coordinate form: `maven.modrinth:<slug>:<version_number>`. Modrinth uses the human-readable version string as the path segment.
@@ -714,6 +723,11 @@ The README's roadmap step after "ship a custom loader" is "bundle a curated mod 
 4. # click Launch in EwoClient
 ```
 The launcher re-reads the loader manifest on every launch (no TTL cache in `loaders::fetch`). On a fresh instance Phase B already downloaded the merged library set through its progress bar; on the iteration loop where the user edits the manifest between setup and launch, the safety-net `ensure_libraries` hot-downloads new entries to `<config>/EwoClient/shared/libraries/...` before JVM spawn.
+
+**Adding a new bundled mod:** three-place change (the BundledMods verification fails loud if any two drift):
+1. `crates/ewo-launcher/src/bundled.rs::CATALOG` — adds the UI row + library-name → mod-id mapping the launcher uses for classpath stripping.
+2. `EwoLoaderV1/manifest/0.1.0/26.1.json::libraries[]` — adds the download artifact entry.
+3. `EwoLoaderV1/src/main/java/.../BundledMods.java::BUNDLED_MODS` — adds the post-discovery verification entry.
 
 ### Phase E — In-game GUI host 🟣 future
 
@@ -755,4 +769,4 @@ A custom Fabric mod (separate from Phase D's loader role; this one is about *rep
 
 ---
 
-*Last meaningful structural change to this file (2026-05-19 session): Iris 1.10.9 bundled (loader-side: `d301c52` in `lewlone/ewo-loader`) and Phase B made loader-aware (launcher-side: `64c6fe1` in `lewlone/ewoclient`). Iris boots alongside Sodium 0.8.9 + Fabric API 0.148.2 + Lithium 0.24.2 via the same plumbing (loader-manifest entry + `BundledMods.BUNDLED_MODS` entry + `fatJar` rebuild). Phase B refactor: `DownloadService::start` now takes `Option<LoaderSpec>`; `JobConfig` carries it through; `run_job` emits a new `Stage::LoaderManifest` between PerVersion and Client, fetches + merges the loader manifest, then counts + downloads the merged library set through the same progress bar. `ensure_libraries` stays in `try_real_launch` as a safety net for the iteration loop where the user edits the loader manifest between instance-setup and launch. Largest remaining gaps: public-hosting the EwoLoader fat jar (currently `file://`), Indium upstream blocking Continuity (stalled at MC 1.21.1 since 2025-02), Distant Horizons MC 26.1 build, and user smoke-launch confirmation that Iris boots inside the active instance.*
+*Last meaningful structural change to this file (2026-05-19 session): bundle grew to 15 user-toggleable mods + 4 infrastructure libs, and per-instance mod toggles are wired end-to-end. Loader-side `99a38df` in `lewlone/ewo-loader` adds 12 new mods + 3 transitive deps to `BundledMods.BUNDLED_MODS` and `manifest/0.1.0/26.1.json`, and teaches `FabricLoaderImpl.setup()` to subtract the upstream `fabric.debug.disableModIds` set from the verification expected list. Launcher-side `bcc3ea6` adds `crates/ewo-launcher/src/bundled.rs` (catalog: display name + category + mod_id + library_name + default_on + toggleable), seeds `Instance.mods` from the catalog on new-instance create, migrates existing Ewo instances against the catalog on load, and at launch time strips disabled libraries from the merged classpath + appends `-Dfabric.debug.disableModIds=<csv>` so the loader's discovery filter + verification both honor the user's toggles. Continuity 3.x bundles cleanly without Indium for MC 26.1 (the original "needs Indium" assumption was wrong for the 3.x line). Largest remaining gaps: public-hosting the EwoLoader fat jar (currently `file://`), Indium still upstream-blocked at MC 1.21.1 (no MC 26.x build; would unblock additional render-API mods like Continuity 2.x's effects), Distant Horizons MC 26.1 build (3.0.3-b-26.1.2 exists on Modrinth but we haven't curated it in — deferred until a dedicated test session), and user smoke-launch of the expanded bundle (with toggles).*
