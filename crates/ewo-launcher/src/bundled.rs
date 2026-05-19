@@ -90,6 +90,15 @@ pub const CATALOG: &[BundledMod] = &[
         default_on: true,
         toggleable: false,
     },
+    BundledMod {
+        display_name: "Cloth Config",
+        category: "library",
+        version: "26.1.154",
+        mod_id: "cloth-config",
+        library_name: "maven.modrinth:cloth-config:26.1.154+fabric",
+        default_on: true,
+        toggleable: false,
+    },
     // ── Performance ──────────────────────────────────────────────────
     BundledMod {
         display_name: "Sodium",
