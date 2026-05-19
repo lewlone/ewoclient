@@ -302,6 +302,40 @@ fn native_classifier_for(lib: &crate::versions::per_version::Library) -> Option<
     None
 }
 
+/// Download every library + native in `pv` that isn't already on disk.
+///
+/// Called by the launch path after Phase D's loader merge so loader-added
+/// libraries (which weren't in the vanilla `PerVersion` Phase B saw at
+/// instance-setup time) get pulled before the JVM spawns. Idempotent +
+/// cheap when everything's already present — `ensure_file`'s exists+size
+/// check skips downloaded artifacts.
+pub fn ensure_libraries(pv: &PerVersion) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(60))
+        .user_agent("EwoClient/0.1 (+https://github.com/lewlone/ewoclient)")
+        .build();
+    for lib in &pv.libraries {
+        if !rules::rules_pass(&lib.rules) {
+            continue;
+        }
+        if let Some(art) = &lib.downloads.artifact {
+            let path = paths::library_path(&art.path)
+                .ok_or_else(|| format!("library {}: path unresolvable", lib.name))?;
+            ensure_file(&agent, &art.url, &art.sha1, art.size, &path)
+                .map_err(|e| format!("library {}: {}", lib.name, e))?;
+        }
+        if let Some(natives_key) = native_classifier_for(lib) {
+            if let Some(art) = lib.downloads.classifiers.get(&natives_key) {
+                let path = paths::library_path(&art.path)
+                    .ok_or_else(|| format!("native {}: path unresolvable", lib.name))?;
+                ensure_file(&agent, &art.url, &art.sha1, art.size, &path)
+                    .map_err(|e| format!("native {} ({}): {}", lib.name, natives_key, e))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `file:///C:/path/to.jar` → `C:\path\to.jar` (Windows) or
 /// `file:///home/user/x.jar` → `/home/user/x.jar` (Unix). Returns `None`
 /// for non-`file://` URLs.

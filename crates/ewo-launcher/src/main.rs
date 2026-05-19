@@ -272,6 +272,17 @@ impl App {
                 }
             }
         };
+        // Phase D follow-on: download any library the merge added that
+        // wasn't in the vanilla `PerVersion` Phase B saw at instance-setup
+        // time (the EwoLoader fat jar + bundled mods like Sodium / FAPI /
+        // Lithium). Idempotent — `ensure_libraries` skips files already on
+        // disk. Blocking; runs on the main thread because launch is
+        // already a synchronous operation here and the typical added set
+        // is <10 MB.
+        if let Err(e) = downloads::ensure_libraries(&pv) {
+            log::warn!("launch: loader library fetch failed: {} — falling back", e);
+            return false;
+        }
         if let Err(e) = launch::extract_all(&pv, &inst.name) {
             log::warn!("launch: native extraction failed: {} — falling back", e);
             return false;

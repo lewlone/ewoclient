@@ -14,5 +14,5 @@ pub mod paths;
 pub mod rules;
 pub mod service;
 
-pub use job::{JobEvent, Stage};
+pub use job::{ensure_libraries, JobEvent, Stage};
 pub use service::{DownloadService, JobStatus};
