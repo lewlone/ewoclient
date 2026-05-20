@@ -57,6 +57,7 @@ const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
 const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
 const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
 const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
+const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
 
 const MAX_POTIONS: usize = 8;
 const POTION_REC: usize = 44; // bytes per potion record
@@ -177,6 +178,26 @@ impl HudData {
     pub fn target_name(&self) -> String {
         self.str_at(off::TARGET_NAME, TARGET_NAME_CAP)
     }
+    /// The EwoClient overlay is open — input is being captured.
+    pub fn overlay_open(&self) -> bool {
+        self.flag(FLAG_OVERLAY)
+    }
+}
+
+/// Input the overlay has received — fed by the `nativeMouse*` / `nativeKey`
+/// JNI exports, only while the overlay is open. E4 ships a placeholder overlay
+/// that displays this to prove the input path reaches Rust; E5 routes it into
+/// the HUD editor.
+#[derive(Default)]
+pub struct Input {
+    /// Cursor position in window pixels.
+    pub cursor: (f32, f32),
+    /// Total mouse-button presses since launch.
+    pub clicks: u32,
+    /// GLFW key code of the last key pressed.
+    pub last_key: i32,
+    /// Accumulated scroll-wheel delta.
+    pub scroll: f32,
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -228,7 +249,7 @@ const MARGIN: f32 = 26.0;
 
 /// Draw the whole HUD for one frame from the shared data block. Widget
 /// placement is fixed for E3; the draggable editor stage is E5.
-pub fn draw(canvas: &Canvas, data: &HudData, fonts: &FontStore, w: f32, h: f32) {
+pub fn draw(canvas: &Canvas, data: &HudData, input: &Input, fonts: &FontStore, w: f32, h: f32) {
     // FPS — always shown (works on the title screen too).
     let fps_rect = draw_stat(
         canvas,
@@ -277,6 +298,11 @@ pub fn draw(canvas: &Canvas, data: &HudData, fonts: &FontStore, w: f32, h: f32) 
             w - MARGIN,
             h - MARGIN,
         );
+    }
+
+    // The overlay sits above every widget when open.
+    if data.overlay_open() {
+        draw_overlay(canvas, input, fonts, w, h);
     }
 }
 
@@ -967,4 +993,95 @@ fn draw_target(
             canvas.draw_rrect(RRect::new_rect_xy(fill, bar_h / 2.0, bar_h / 2.0), &fill_paint);
         }
     }
+}
+
+/// E4 placeholder overlay — a dimmed backdrop and a centred panel that shows
+/// the live input state, proving the `nativeMouse*` / `nativeKey` path reaches
+/// Rust. A rose ring tracks the cursor. The real editor + settings overlays
+/// (full glass panels) land in E5/E6.
+fn draw_overlay(canvas: &Canvas, input: &Input, fonts: &FontStore, w: f32, h: f32) {
+    // Dim the scene behind the overlay.
+    let mut dim = Paint::default();
+    dim.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.38), None);
+    canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &dim);
+
+    // Centred panel.
+    let pw = 460.0;
+    let ph = 268.0;
+    let px = (w - pw) * 0.5;
+    let py = (h - ph) * 0.5;
+    draw_chip(canvas, Rect::from_xywh(px, py, pw, ph), 16.0);
+
+    let pad = 30.0;
+    let left = px + pad;
+
+    // Eyebrow.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow_paint = Paint::default();
+    eyebrow_paint.set_anti_alias(true);
+    eyebrow_paint.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(
+        canvas,
+        "EWO OVERLAY",
+        (left, py + pad + 4.0),
+        &eyebrow_font,
+        &eyebrow_paint,
+        0.22,
+    );
+
+    // Title.
+    let title_font = fonts.fraunces_axes(28.0, 36.0, 1.0, 600.0, None);
+    let mut title_paint = Paint::default();
+    title_paint.set_anti_alias(true);
+    title_paint.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str(
+        "Input plumbing — E4",
+        (left, py + pad + 40.0),
+        &title_font,
+        &title_paint,
+    );
+
+    // Live input readouts — proof every path reaches Rust.
+    let row_font = fonts.jetbrains_mono(14.0);
+    let mut row_paint = Paint::default();
+    row_paint.set_anti_alias(true);
+    row_paint.set_color4f(rgba(PEARL, 0.92), None);
+    let rows = [
+        format!("cursor    {:.0}, {:.0}", input.cursor.0, input.cursor.1),
+        format!("clicks    {}", input.clicks),
+        format!("last key  {}", input.last_key),
+        format!("scroll    {:.1}", input.scroll),
+    ];
+    let mut ry = py + pad + 80.0;
+    for row in &rows {
+        canvas.draw_str(row, (left, ry), &row_font, &row_paint);
+        ry += 26.0;
+    }
+
+    // Hint.
+    let hint_font = fonts.jetbrains_mono(11.0);
+    let mut hint_paint = Paint::default();
+    hint_paint.set_anti_alias(true);
+    hint_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        "RIGHT SHIFT OR ESC TO CLOSE",
+        (left, py + ph - pad + 6.0),
+        &hint_font,
+        &hint_paint,
+        0.16,
+    );
+
+    // Cursor marker — a rose ring tracking the live cursor position.
+    let (cx, cy) = input.cursor;
+    let mut ring = Paint::default();
+    ring.set_anti_alias(true);
+    ring.set_style(PaintStyle::Stroke);
+    ring.set_stroke_width(2.0);
+    ring.set_color4f(rgba(ROSE, 0.95), None);
+    canvas.draw_circle((cx, cy), 9.0, &ring);
+    let mut dot = Paint::default();
+    dot.set_anti_alias(true);
+    dot.set_color4f(rgba(PEARL, 0.9), None);
+    canvas.draw_circle((cx, cy), 2.0, &dot);
 }

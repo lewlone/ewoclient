@@ -9,8 +9,7 @@ import java.nio.ByteBuffer;
  * {@code crates/ewo-jni/src/lib.rs}; the symbol names are derived from this
  * class's fully-qualified name, so neither side may be renamed independently.
  *
- * <p>All methods must be invoked on Minecraft's render thread with the GL
- * context current.
+ * <p>All methods must be invoked on Minecraft's render thread.
  */
 public final class EwoHudNative {
     private EwoHudNative() {}
@@ -29,4 +28,18 @@ public final class EwoHudNative {
 
     /** Paint + composite one HUD frame from the shared data block. */
     public static native void nativeRender();
+
+    // ── Overlay input (E4) — forwarded only while the overlay is open ──────
+
+    /** Cursor moved to `(x, y)` in window pixels. */
+    public static native void nativeMouseMove(double x, double y);
+
+    /** Mouse `button` pressed/released at `(x, y)` in window pixels. */
+    public static native void nativeMouseButton(int button, boolean pressed, double x, double y);
+
+    /** Scroll wheel moved by `(dx, dy)`. */
+    public static native void nativeMouseScroll(double dx, double dy);
+
+    /** Key `key` (GLFW code) pressed/released with `modifiers`. */
+    public static native void nativeKey(int key, boolean pressed, int modifiers);
 }

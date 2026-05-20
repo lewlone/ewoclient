@@ -66,6 +66,7 @@ public final class EwoHudData {
     private static final int FLAG_PING = 1 << 1;
     private static final int FLAG_ARMOR = 1 << 2;
     private static final int FLAG_TARGET = 1 << 3;
+    private static final int FLAG_OVERLAY = 1 << 4; // the EwoClient overlay is open
 
     // keys bits
     private static final int K_FWD = 1;
@@ -154,6 +155,10 @@ public final class EwoHudData {
             flags |= FLAG_TARGET;
         } else {
             b.putInt(OFF_TARGET_PRESENT, 0);
+        }
+
+        if (mc.screen instanceof EwoOverlayScreen) {
+            flags |= FLAG_OVERLAY;
         }
 
         b.putInt(OFF_FLAGS, flags);

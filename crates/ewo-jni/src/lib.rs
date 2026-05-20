@@ -33,16 +33,22 @@
 //! **Widgets + data (E2–E3).** HUD content lives in [`hud`]. The mod allocates
 //! a direct `ByteBuffer`, hands it to `nativeInit` once, then fills it each
 //! frame; Rust reads it through the buffer's address with no per-frame JNI
-//! marshaling. E3 push 1 ships FPS, Coords, Ping and Keystrokes; input and the
-//! editor come in E4–E5.
+//! marshaling. The full read-only widget set ships in E3.
+//!
+//! **Overlay input (E4).** A keybind opens a custom Minecraft `Screen` that
+//! frees the cursor and forwards mouse/keyboard to Rust via the `nativeMouse*`
+//! / `nativeKey` exports; while closed the HUD is display-only and the game
+//! owns all input. The editor that consumes this input is E5.
 //!
 //! JNI contract — must match `dev.lewlone.ewohud.EwoHudNative`:
 //! ```text
 //!   static native void nativeHello();              // bridge liveness check
 //!   static native void nativeInit(ByteBuffer buf); // register the shared data block
 //!   static native void nativeRender();             // paint + composite one frame
+//!   static native void nativeMouseMove / nativeMouseButton / nativeMouseScroll
+//!   static native void nativeKey                   // overlay input (E4)
 //! ```
-//! All are invoked on Minecraft's render thread with its GL context current.
+//! All are invoked on Minecraft's render thread.
 
 #![allow(non_snake_case)] // JNI exports must be named `Java_<pkg>_<class>_<method>`.
 
@@ -234,6 +240,8 @@ struct Hud {
     font_store: FontStore,
     /// Address of the shared data block, refreshed from `HUD_BUFFER` each frame.
     buffer: usize,
+    /// Overlay input state, fed by the `nativeMouse*` / `nativeKey` exports.
+    input: hud::Input,
 }
 
 // `Hud` lives in a thread-local for the process lifetime; it is never dropped
@@ -310,6 +318,7 @@ impl Hud {
             paints: 0,
             font_store,
             buffer: 0,
+            input: hud::Input::default(),
         })
     }
 
@@ -392,7 +401,7 @@ impl Hud {
             // held for the process lifetime (`EwoHudData.CAPACITY` bytes).
             let data = unsafe { hud::HudData::new(self.buffer as *const u8) };
             if data.schema_version() == hud::SCHEMA_VERSION {
-                hud::draw(canvas, &data, &self.font_store, w as f32, h as f32);
+                hud::draw(canvas, &data, &self.input, &self.font_store, w as f32, h as f32);
             } else {
                 SCHEMA_WARN.call_once(|| {
                     log(&format!(
@@ -490,6 +499,18 @@ impl Hud {
 // JNI exports
 // ────────────────────────────────────────────────────────────────────────
 
+/// Run `f` against the render thread's `Hud` if it has been created. Used by
+/// the overlay-input exports — input only matters once the HUD is up.
+fn with_hud(f: impl FnOnce(&mut Hud)) {
+    let _ = panic::catch_unwind(AssertUnwindSafe(move || {
+        HUD.with(|cell| {
+            if let HudState::Ready(hud) = &mut *cell.borrow_mut() {
+                f(hud);
+            }
+        });
+    }));
+}
+
 /// Liveness check. Proves the cdylib loaded and JNI linkage works.
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeHello(
@@ -562,4 +583,60 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeRender(
     if result.is_err() {
         log("nativeRender panicked (caught at JNI boundary)");
     }
+}
+
+/// Overlay input — cursor moved to `(x, y)` in window pixels.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseMove(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    x: f64,
+    y: f64,
+) {
+    with_hud(|hud| hud.input.cursor = (x as f32, y as f32));
+}
+
+/// Overlay input — a mouse button pressed/released at `(x, y)` in window pixels.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseButton(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    _button: i32,
+    pressed: u8,
+    x: f64,
+    y: f64,
+) {
+    with_hud(|hud| {
+        hud.input.cursor = (x as f32, y as f32);
+        if pressed != 0 {
+            hud.input.clicks += 1;
+        }
+    });
+}
+
+/// Overlay input — the scroll wheel moved by `dy` (vertical).
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseScroll(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    _dx: f64,
+    dy: f64,
+) {
+    with_hud(|hud| hud.input.scroll += dy as f32);
+}
+
+/// Overlay input — a key (GLFW code) pressed/released.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeKey(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    key: i32,
+    pressed: u8,
+    _modifiers: i32,
+) {
+    with_hud(|hud| {
+        if pressed != 0 {
+            hud.input.last_key = key;
+        }
+    });
 }

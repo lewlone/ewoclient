@@ -18,8 +18,8 @@ Then start at the first `TODO` row in the table below.
 | E1 | Two-clock paint/composite refactor + `HudPaintRate` cap | ✅ DONE (2026-05-20) |
 | E2 | First real widget (FPS) — data pipeline + text engine | ✅ DONE (2026-05-20) |
 | E3 | Remaining read-only widgets + shared state block | ✅ DONE (2026-05-20) |
-| E4 | Input plumbing + overlay open/close keybind | **TODO — start here** |
-| E5 | HUD editor (drag / anchor / toggle stage) | TODO |
+| E4 | Input plumbing + overlay open/close keybind | ✅ DONE (2026-05-20) |
+| E5 | HUD editor (drag / anchor / toggle stage) | **TODO — start here** |
 | E6 | In-game settings overlay (mod toggles, prefs, palette) | TODO |
 | E7 | Polish — refract decision, Velvet re-skin pass, perf | TODO |
 
@@ -27,14 +27,15 @@ Each step is a working, launch-verifiable increment. Don't skip ahead.
 
 ---
 
-## Where things stand (E0–E3)
+## Where things stand (E0–E4)
 
 The spike proved the hard part: `ewo-render`'s Skia pipeline renders over a
 running Minecraft 26.1, stable, verified live (title screen + in-world). E1
 split that into the two-clock paint/composite model. E2 added the first real
 widget + the JVM→Rust data pipeline. E3 finished the read-only widget set —
 the full default HUD (FPS, Coords, Ping, Keystrokes, Armor, Potions,
-TargetHUD) renders with correct live data.
+TargetHUD). E4 added overlay input — a keybind opens a cursor-freeing screen
+that forwards mouse/keyboard to Rust.
 
 What exists:
 - **`crates/ewo-jni/`** — a `cdylib` in the Cargo workspace. Loaded into the MC
@@ -232,16 +233,38 @@ that makes placement user-configurable is E5.
 
 **Verified live:** the full HUD renders with correct live data in-world.
 
-### E4 — Input plumbing + overlay open/close
+### E4 — Input plumbing + overlay open/close ✅ DONE (2026-05-20)
 
-- Register a toggle keybind (Fabric `KeyMapping`, or a keyboard mixin).
-- Mixins into MC's mouse + keyboard handlers: when the overlay is open, forward
-  events to Rust (`nativeMouse*`, `nativeKey`) and cancel them for the game;
-  ungrab the cursor. When closed, pass through untouched.
-- Rust: an "overlay open" state; a placeholder overlay panel to prove input
-  reaches it.
-- **Done when:** the keybind opens/closes a panel, the cursor frees while open,
-  and game input is never eaten while closed.
+A keybind toggles the overlay; while open, input routes to Rust and the game
+is frozen out; while closed, the HUD is display-only.
+
+**Approach — a custom `Screen`, not mouse-handler mixins.** The plan first
+imagined mixins into MC's mouse + keyboard handlers, but a custom `Screen`
+(`EwoOverlayScreen`) turned out cleaner: while it is the active screen MC
+already frees the cursor, routes all mouse/keyboard to it, and starves the
+game world of input — exactly decision #4, for free. It renders nothing
+(`extractRenderState` overridden empty); the Skia HUD paints the overlay.
+`isPauseScreen()` returns false so singleplayer doesn't pause.
+
+**What shipped:**
+- `EwoOverlayScreen` — the input sink. Its `mouse*`/`key*` overrides convert
+  MC's GUI-scaled coords to window pixels and forward to Rust.
+- `KeyboardHandlerMixin` — injects `KeyboardHandler.keyPress` HEAD; on Right
+  Shift with no screen open it opens the overlay. (Closing is the screen's own
+  job — Right Shift in `keyPressed`, or Esc — so the two halves never collide.)
+- Four JNI input exports — `nativeMouseMove` / `nativeMouseButton` /
+  `nativeMouseScroll` / `nativeKey` — feeding a `hud::Input` on the
+  render-thread `Hud` (via a `with_hud` helper). A `FLAG_OVERLAY` buffer bit
+  tells Rust the overlay is open.
+- A placeholder overlay (`hud::draw_overlay`) — a dimmed backdrop + a centred
+  panel showing live cursor / clicks / last-key / scroll, with a rose ring
+  tracking the cursor. Proves every input path; E5 replaces it with the editor.
+
+**MC 26.x note:** the input API is event-object based — `KeyEvent`,
+`MouseButtonEvent` (records). Screen input methods take those, not raw params.
+
+**Verified live:** Right Shift opens/closes the panel, the cursor frees while
+open, the readouts track input, and game input is untouched while closed.
 
 ### E5 — HUD editor
 
