@@ -25,9 +25,19 @@
 //! `hud_paint_rate` defaults to `Match` (paint every frame); it's chosen in the
 //! in-game settings overlay and persisted in `hud.toml`.
 //!
-//! **Tradeoff.** Painting to an offscreen surface means glass panels no longer
-//! backdrop-blur the *live* game (the draw-direct spike got that for free).
-//! Fine for small HUD widgets; revisited for the settings overlay in E7.
+//! **Glass refract (E7).** Painting to an offscreen surface means HUD widgets
+//! can't backdrop-blur the *live* game. E7's call: the MODS/SETTINGS overlay
+//! views frost the whole game so the overlay reads as glass over depth; the
+//! HUD editor leaves the game sharp so widgets stay readable against it while
+//! being positioned. The frost is a genuine blur but it is *cached* — a wide
+//! gaussian is expensive and the game behind an open overlay barely changes,
+//! so it gets its own slow clock (a third one alongside paint and composite):
+//! `refresh_frost` recomputes the blur only a few times per second into a
+//! quarter-resolution surface, and `composite` upscales that cached surface
+//! every frame for the price of one textured quad. The blur itself is a clean
+//! two-step 2× downscale (each linear 2× step averages an exact 2×2 block, so
+//! it never aliases) + a small gaussian + a cubic upscale — that reads as a
+//! smooth wide gaussian, not the block artifacts of one big full-res kernel.
 //!
 //! **Widgets + data (E2–E3).** HUD content lives in [`hud`]. The mod allocates
 //! a direct `ByteBuffer`, hands it to `nativeInit` once, then fills it each
@@ -69,7 +79,11 @@ use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
 use skia_safe::gpu::{
     backend_render_targets, direct_contexts, surfaces, Budgeted, DirectContext, SurfaceOrigin,
 };
-use skia_safe::{AlphaType, Color, ColorType, ImageInfo, Surface};
+use skia_safe::image_filters;
+use skia_safe::{
+    AlphaType, Color, ColorType, CubicResampler, FilterMode, Image, ImageInfo, Paint, Rect,
+    Surface, TileMode,
+};
 
 // ────────────────────────────────────────────────────────────────────────
 // Win32 / WGL
@@ -259,6 +273,39 @@ struct Hud {
     buffer: usize,
     /// HUD-editor state (layout, drag), fed by the `nativeMouse*` exports.
     editor: hud::Editor,
+    /// Cached frosted backdrop — a quarter-resolution blur of the live game,
+    /// recomputed only a few times a second and re-blitted cheaply every
+    /// composite. `None` until the first frost or after a window resize.
+    frost: Option<Surface>,
+    /// Half-resolution scratch surface — the clean intermediate of the
+    /// 2×→2× downscale that feeds `frost` (one linear 2× step never aliases).
+    frost_half: Option<Surface>,
+    /// Full window size `frost`/`frost_half` were sized for.
+    frost_size: (i32, i32),
+    /// Wall-clock seconds of the last frost recompute. `NEG_INFINITY` when the
+    /// cache is cold so the next overlay-open frosts immediately.
+    last_frosted: f32,
+}
+
+/// The frosted backdrop is recomputed at most this often. The game behind an
+/// open overlay barely changes, so a low rate is visually invisible and keeps
+/// the expensive blur off the per-frame composite path.
+const FROST_REFRESH_INTERVAL: f32 = 1.0 / 10.0;
+
+/// Allocate a budgeted offscreen GPU surface, `w`×`h`, RGBA8 premul, no MSAA
+/// (Skia anti-aliases glyphs itself). `TopLeft` origin — callers blit it.
+fn gpu_surface(gr: &mut DirectContext, w: i32, h: i32) -> Option<Surface> {
+    let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Premul, None);
+    surfaces::render_target(
+        gr,
+        Budgeted::Yes,
+        &info,
+        None,                   // sample_count
+        SurfaceOrigin::TopLeft, // logical orientation
+        None,                   // surface_props
+        false,                  // mipmaps
+        false,                  // protected
+    )
 }
 
 // `Hud` lives in a thread-local for the process lifetime; it is never dropped
@@ -331,6 +378,10 @@ impl Hud {
             font_store,
             buffer: 0,
             editor: hud::Editor::new(),
+            frost: None,
+            frost_half: None,
+            frost_size: (0, 0),
+            last_frosted: f32::NEG_INFINITY,
         })
     }
 
@@ -358,7 +409,18 @@ impl Hud {
 
         self.ensure_offscreen(w, h);
         self.paint(elapsed_secs(), w, h);
-        self.composite(w, h);
+        // E7 glass refract: the MODS/SETTINGS overlay views frost the live
+        // game behind them; the HUD editor leaves it sharp so widgets stay
+        // readable against the game while being positioned.
+        let frost = self.buffer != 0
+            && unsafe { hud::HudData::new(self.buffer as *const u8) }.overlay_open()
+            && self.editor.frosts_game();
+        if !frost {
+            // Cache goes cold while the frost isn't shown, so the next open
+            // recomputes immediately instead of flashing a stale frame.
+            self.last_frosted = f32::NEG_INFINITY;
+        }
+        self.composite(w, h, frost);
 
         // Hand the thread's context back to Minecraft.
         unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
@@ -370,17 +432,7 @@ impl Hud {
         if self.offscreen.is_some() && self.offscreen_size == (w, h) {
             return;
         }
-        let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Premul, None);
-        self.offscreen = surfaces::render_target(
-            &mut self.gr,
-            Budgeted::Yes,
-            &info,
-            None,                   // sample_count — no MSAA; Skia AAs the glyphs itself
-            SurfaceOrigin::TopLeft, // logical orientation; composite handles the blit
-            None,                   // surface_props
-            false,                  // mipmaps
-            false,                  // protected
-        );
+        self.offscreen = gpu_surface(&mut self.gr, w, h);
         match &self.offscreen {
             Some(_) => {
                 self.offscreen_size = (w, h);
@@ -429,10 +481,85 @@ impl Hud {
         self.paints += 1;
     }
 
+    /// Create (or recreate, on window resize) the two GPU surfaces the cached
+    /// frost is built in: a half-resolution scratch surface and the
+    /// quarter-resolution cache itself.
+    fn ensure_frost_surfaces(&mut self, w: i32, h: i32) {
+        if self.frost.is_some() && self.frost_size == (w, h) {
+            return;
+        }
+        self.frost_half = gpu_surface(&mut self.gr, (w / 2).max(1), (h / 2).max(1));
+        self.frost = gpu_surface(&mut self.gr, (w / 4).max(1), (h / 4).max(1));
+        self.frost_size = if self.frost.is_some() && self.frost_half.is_some() {
+            (w, h)
+        } else {
+            (0, 0)
+        };
+        self.last_frosted = f32::NEG_INFINITY;
+    }
+
+    /// Frost clock — the third, slowest clock. Recompute the cached frosted
+    /// backdrop from `game` (a snapshot of the live framebuffer), but only
+    /// when the cache has gone stale (`FROST_REFRESH_INTERVAL`). The blur is a
+    /// clean two-step 2× downscale to quarter resolution (each linear 2× step
+    /// averages an exact 2×2 block, so it never aliases) plus a small gaussian
+    /// on that small surface. `composite` upscales the result with a cubic
+    /// resampler — together that reads as a smooth wide gaussian without the
+    /// block artifacts a single big full-res blur kernel produces.
+    fn refresh_frost(&mut self, game: &Image, now: f32) {
+        if now - self.last_frosted < FROST_REFRESH_INTERVAL {
+            return; // cache still fresh — composite reuses it as-is
+        }
+        let (w, h) = self.frost_size;
+        if w == 0 || h == 0 {
+            return; // surfaces failed to allocate
+        }
+
+        // Step 1: clean 2× downscale  game → half-res scratch.
+        let half_img = {
+            let Some(half) = self.frost_half.as_mut() else {
+                return;
+            };
+            let dst = Rect::from_wh((w / 2).max(1) as f32, (h / 2).max(1) as f32);
+            let canvas = half.canvas();
+            canvas.clear(Color::TRANSPARENT);
+            canvas.draw_image_rect_with_sampling_options(
+                game,
+                None,
+                dst,
+                FilterMode::Linear,
+                &Paint::default(),
+            );
+            half.image_snapshot()
+        };
+
+        // Step 2: clean 2× downscale + a small gaussian  half-res → quarter-res cache.
+        {
+            let Some(quarter) = self.frost.as_mut() else {
+                return;
+            };
+            let dst = Rect::from_wh((w / 4).max(1) as f32, (h / 4).max(1) as f32);
+            let mut blur = Paint::default();
+            blur.set_image_filter(image_filters::blur((3.0, 3.0), TileMode::Clamp, None, None));
+            let canvas = quarter.canvas();
+            canvas.clear(Color::TRANSPARENT);
+            canvas.draw_image_rect_with_sampling_options(
+                &half_img,
+                None,
+                dst,
+                FilterMode::Linear,
+                &blur,
+            );
+        }
+        self.last_frosted = now;
+    }
+
     /// Composite clock. Blit the offscreen surface onto Minecraft's
     /// framebuffer (`fbo 0`). Runs every frame so the HUD is always shown,
-    /// even on frames where `paint` was rate-gated.
-    fn composite(&mut self, w: i32, h: i32) {
+    /// even on frames where `paint` was rate-gated. When `frost` is set the
+    /// cached frosted backdrop is upscaled in first, so the overlay reads as
+    /// glass over depth.
+    fn composite(&mut self, w: i32, h: i32, frost: bool) {
         let fb_info = FramebufferInfo {
             fboid: 0, // the window's default framebuffer, shared across both contexts
             format: Format::RGBA8.into(),
@@ -453,6 +580,35 @@ impl Hud {
                 return;
             }
         };
+
+        if frost {
+            // Frost the live game before the HUD is blitted on top, so the
+            // overlay's glass panels read against blurred depth. The blur is a
+            // *cached* quarter-res surface (see `refresh_frost`) recomputed
+            // only a few times a second; here it is just upscaled in — one
+            // textured quad, cheap enough to run every composite.
+            self.ensure_frost_surfaces(w, h);
+            let game = fbo.image_snapshot();
+            self.refresh_frost(&game, elapsed_secs());
+            if let Some(quarter) = self.frost.as_mut() {
+                let blurred = quarter.image_snapshot();
+                let dst = Rect::from_wh(w as f32, h as f32);
+                // Cubic (Mitchell) upscale — smooth, no block artifacts from
+                // the 4× magnification of the quarter-res cache.
+                fbo.canvas().draw_image_rect_with_sampling_options(
+                    &blurred,
+                    None,
+                    dst,
+                    CubicResampler::mitchell(),
+                    &Paint::default(),
+                );
+                // A faint Velvet wine wash deepens the frost so the overlay
+                // panels read as glass over depth — the prototype's modal shroud.
+                let mut tint = Paint::default();
+                tint.set_color(Color::from_argb(70, 10, 0, 6));
+                fbo.canvas().draw_rect(dst, &tint);
+            }
+        }
 
         if let Some(offscreen) = self.offscreen.as_mut() {
             // `image_snapshot` is copy-on-write: this snapshot is dropped at the

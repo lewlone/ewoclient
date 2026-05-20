@@ -546,6 +546,13 @@ impl Editor {
         self.layout.paint_rate
     }
 
+    /// Whether the current view wants the live game frosted behind it. The
+    /// data views (Mods / Settings) do — for a real glass-over-depth backdrop;
+    /// the HUD editor doesn't, so widgets stay readable against the game.
+    pub fn frosts_game(&self) -> bool {
+        !matches!(self.view, OverlayView::HudEditor)
+    }
+
     /// Cursor moved — drag the active widget if one is held, snapping its
     /// edges/centres to other widgets' for a gentle alignment assist.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) {

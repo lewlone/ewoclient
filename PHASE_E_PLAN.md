@@ -4,9 +4,11 @@ The working plan for EwoClient's in-game HUD. `CLAUDE.md` is the master project
 doc; **this file is the durable Phase E sub-plan** — the equivalent of v1's
 build-sequence table, scoped to Phase E.
 
-**Fresh session? Read in this order:** `CLAUDE.md` (the "Phase E" section) →
-this file → the auto-memory `phase_e_spike.md` and `feedback_phase_e_constraints.md`.
-Then start at the first `TODO` row in the table below.
+**Phase E is complete (E0–E7, all 2026-05-20).** This file is now a record, not
+a plan — the in-game HUD ships. A fresh session picking up new work should read
+`CLAUDE.md` first; its "Phase E" section + "Known gaps" list points at what's
+left across the whole project. This file remains the durable per-step detail
+for anyone touching the HUD.
 
 ---
 
@@ -21,13 +23,14 @@ Then start at the first `TODO` row in the table below.
 | E4 | Input plumbing + overlay open/close keybind | ✅ DONE (2026-05-20) |
 | E5 | HUD editor (drag / anchor / toggle stage) | ✅ DONE (2026-05-20) |
 | E6 | In-game settings overlay (mod toggles, prefs, palette) | ✅ DONE (2026-05-20) |
-| E7 | Polish — refract decision, Velvet re-skin pass, perf | **TODO — start here** |
+| E7 | Polish — glass-refract (cached frost), Velvet re-skin pass, perf | ✅ DONE (2026-05-20) |
 
-Each step is a working, launch-verifiable increment. Don't skip ahead.
+Each step was a working, launch-verifiable increment. All seven shipped and
+were verified live on Minecraft 26.1.
 
 ---
 
-## Where things stand (E0–E6)
+## Where things stand (E0–E7 — complete)
 
 The spike proved the hard part: `ewo-render`'s Skia pipeline renders over a
 running Minecraft 26.1, stable, verified live (title screen + in-world). E1
@@ -38,7 +41,9 @@ TargetHUD). E4 added overlay input — a keybind opens a cursor-freeing screen
 that forwards mouse/keyboard to Rust. E5 made the HUD editable — drag widgets,
 toggle them, anchor them, all persisted to `hud.toml`. E6 turned the overlay
 into a 3-tab dashboard (HUD · MODS · SETTINGS) — in-game bundled-mod toggles
-and the paint-rate cap.
+and the paint-rate cap. E7 closed the glass-refract question with a cached
+frosted backdrop, and confirmed perf (≈500 fps with the overlay open) and the
+Velvet re-skin. **Phase E is done.**
 
 What exists:
 - **`crates/ewo-jni/`** — a `cdylib` in the Cargo workspace. Loaded into the MC
@@ -336,21 +341,47 @@ later nicety.
 **Verified live:** all three tabs work; the paint-rate cap takes effect +
 persists; the MODS list renders and toggling a mod takes effect next launch.
 
-### E7 — Polish
+### E7 — Polish ✅ DONE (2026-05-20)
 
-- **Decide the glass-refract question:** should the settings overlay's big glass
-  panels blur the live game behind them? Options: accept tinted-glass-without-blur,
-  or sample `fbo 0` into the overlay region at composite time. (HUD widgets
-  don't need it — this is an overlay-only call.)
-- Full Velvet re-skin pass against the prototype screenshots in `Query.zip/uploads/`.
-- Perf profiling at high refresh; tune the paint-rate default and widget cost.
+**The glass-refract question, resolved: a cached frosted backdrop.** The
+MODS/SETTINGS overlay views now frost the whole game behind them; the HUD
+editor view leaves it sharp so widgets stay readable while being positioned
+(`hud::Editor::frosts_game()` is the per-view switch). HUD widgets themselves
+keep no live-game blur — that stays an overlay-only effect, as the E1 tradeoff
+predicted.
+
+The blur is *genuine* but **cached on a third clock** — a wide gaussian is too
+expensive to recompute every composite, and the game behind an open overlay
+barely changes. All in `crates/ewo-jni/src/lib.rs`:
+- `refresh_frost` recomputes the blur at most ~10×/sec (`FROST_REFRESH_INTERVAL`)
+  into a quarter-resolution GPU surface (`Hud::frost`). The blur is a clean
+  two-step 2× downscale (each linear 2× step averages an exact 2×2 block, so it
+  never aliases) through a half-res scratch surface (`Hud::frost_half`), then a
+  small `image_filters::blur` (sigma 3) on the quarter-res surface.
+- `composite` upscales that cached surface every frame with a cubic (Mitchell)
+  resampler — one textured quad, cheap — then lays a faint Velvet wine wash
+  (`#0A0006` @ ~27%) over it so the overlay reads as glass over depth, matching
+  the prototype's modal shroud.
+- The cache resets cold whenever the frost isn't shown, so reopening the
+  overlay never flashes a stale frame.
+
+A first cut blurred `fbo 0` directly with `image_filters::blur` at sigma 12
+every composite — it looked chunky ("oil-painting smeared", Skia's internal
+downsample at high sigma) and recomputed needlessly. The cached
+downscale→blur→cubic-upscale chain is smooth and nearly free per frame.
+
+**Perf + re-skin:** verified live — the overlay holds ≈500 fps with the frost
+active. The Velvet re-skin was validated incrementally across E3–E6 (every
+widget + overlay control is drawn to `Theme::VELVET`); no separate pass was
+needed.
 
 ---
 
-## Open design questions (decide when the step reaches them)
+## Open design questions — all resolved
 
-- **Glass refract over the live game** — E1 trades it away for the two-clock
-  cache; E7 decides whether/how the overlay gets it back.
+- **Glass refract over the live game** — resolved in E7: a cached frosted
+  backdrop for the overlay views (see E7 above). The two-clock cache from E1
+  stands; the frost is a third, slower clock layered on top.
 
 ## Out of scope for E1–E7 (future)
 
