@@ -20,14 +20,14 @@ Then start at the first `TODO` row in the table below.
 | E3 | Remaining read-only widgets + shared state block | ✅ DONE (2026-05-20) |
 | E4 | Input plumbing + overlay open/close keybind | ✅ DONE (2026-05-20) |
 | E5 | HUD editor (drag / anchor / toggle stage) | ✅ DONE (2026-05-20) |
-| E6 | In-game settings overlay (mod toggles, prefs, palette) | **TODO — start here** |
-| E7 | Polish — refract decision, Velvet re-skin pass, perf | TODO |
+| E6 | In-game settings overlay (mod toggles, prefs, palette) | ✅ DONE (2026-05-20) |
+| E7 | Polish — refract decision, Velvet re-skin pass, perf | **TODO — start here** |
 
 Each step is a working, launch-verifiable increment. Don't skip ahead.
 
 ---
 
-## Where things stand (E0–E5)
+## Where things stand (E0–E6)
 
 The spike proved the hard part: `ewo-render`'s Skia pipeline renders over a
 running Minecraft 26.1, stable, verified live (title screen + in-world). E1
@@ -36,7 +36,9 @@ widget + the JVM→Rust data pipeline. E3 finished the read-only widget set —
 the full default HUD (FPS, Coords, Ping, Keystrokes, Armor, Potions,
 TargetHUD). E4 added overlay input — a keybind opens a cursor-freeing screen
 that forwards mouse/keyboard to Rust. E5 made the HUD editable — drag widgets,
-toggle them, anchor them, all persisted to `hud.toml`.
+toggle them, anchor them, all persisted to `hud.toml`. E6 turned the overlay
+into a 3-tab dashboard (HUD · MODS · SETTINGS) — in-game bundled-mod toggles
+and the paint-rate cap.
 
 What exists:
 - **`crates/ewo-jni/`** — a `cdylib` in the Cargo workspace. Loaded into the MC
@@ -302,17 +304,37 @@ after a close can't reopen the overlay.
 **Verified live:** drag + snap + toggle + anchor all work; layout persists
 across close/reopen and a full relaunch.
 
-### E6 — In-game settings overlay
+### E6 — In-game settings overlay ✅ DONE (2026-05-20)
 
-The settings half of the overlay — heavy reuse of launcher widgets
-(`glass_panel`, `vtoggle`, `vslider`, `vdrop`).
+The overlay became a **dashboard** — a top-centre tab strip switching between
+views — rather than a single settings page (the user asked for the prototype's
+`app.jsx` shell shape). Landed in three pushes.
 
-- Bundled-mod toggles in-game — same model as the launcher's `bundled::CATALOG`
-  toggle UI. Writes mod-enable state the launcher reads on next launch.
-- HUD prefs: the `HudPaintRate` cap selector, visual prefs.
-- Optional: the Cmd/Ctrl+K command-palette pattern (re-themed) for jumping
-  between overlay views.
-- **Done when:** toggling a bundled mod in-game takes effect on the next launch.
+**What shipped — push 1 (the shell):** `OverlayView` + a top-centre tab strip;
+the E5 editor became one view; a Settings scaffold; view-switching.
+
+**What shipped — push 2 (3 tabs + Settings):** the tab set is `HUD · MODS ·
+SETTINGS`. The **Settings view** is real — a paint-rate selector
+(`MATCH/120/60/30`) for the `HudPaintRate` cap, which was env-var-only since
+E1. The cap is now a persisted pref — a `[prefs]` section in `hud.toml`.
+
+**What shipped — push 3 (the MODS view):** a Velvet re-skin of a ClickGUI
+module list — one row per bundled mod (category dot · name · category·version ·
+on/off toggle), from `bundled::CATALOG`. The launcher↔overlay write-back
+(`crates/ewo-launcher/src/overlay_mods.rs`): the launcher writes
+`overlay-mods.toml` (catalog + state) into the instance dir pre-launch; an
+in-game toggle writes a delta to `overlay-mod-overrides.toml`; the launcher
+consumes + applies + deletes that delta on the next launch. The delta form
+means an in-game toggle never clobbers a launcher-UI toggle made meanwhile.
+
+**Deviation from the plan:** the plan imagined "heavy reuse of launcher widgets
+(`vtoggle`, `vslider`, `vdrop`)" — but those live in `ewo-ui` (taffy etc.),
+which the cdylib shouldn't pull. The overlay's controls are drawn directly in
+`hud.rs` to the same Velvet look. The Cmd/Ctrl+K command palette was left as a
+later nicety.
+
+**Verified live:** all three tabs work; the paint-rate cap takes effect +
+persists; the MODS list renders and toggling a mod takes effect next launch.
 
 ### E7 — Polish
 
@@ -329,8 +351,6 @@ The settings half of the overlay — heavy reuse of launcher widgets
 
 - **Glass refract over the live game** — E1 trades it away for the two-clock
   cache; E7 decides whether/how the overlay gets it back.
-- **Mod-toggle write-back** — in-game toggles change state the launcher reads;
-  confirm the file/format the launcher already uses. Settle in E6.
 
 ## Out of scope for E1–E7 (future)
 

@@ -44,6 +44,7 @@ mod bundled;
 mod downloads;
 mod launch;
 mod loaders;
+mod overlay_mods;
 mod persistence;
 mod runtime;
 mod versions;
@@ -211,6 +212,11 @@ impl App {
     /// in `self.launch_rx`, transitions `self.launching` into real
     /// mode, and the per-frame poll picks up subsequent events.
     fn try_real_launch(&mut self, idx: usize, inst_name: &str, inst_meta: &str, time: f32) -> bool {
+        // E6: apply any bundled-mod toggles made in the in-game overlay last
+        // session, before we read the instance's mod state for this launch.
+        if overlay_mods::apply_overrides(&mut self.instances, idx) {
+            persistence::save_instances(&self.instances);
+        }
         let inst = match self.instances.get(idx) {
             Some(i) => i.clone(),
             None => return false,
@@ -222,6 +228,8 @@ impl App {
             );
             return false;
         }
+        // E6: refresh the in-game MODS view's snapshot of the bundled mods.
+        overlay_mods::write_catalog(&inst);
         // The version *string* comes from the meta, formatted as
         // "<LOADER> · <version>". Strip the loader prefix.
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);

@@ -22,9 +22,8 @@
 //!   - `composite()` blits that offscreen surface onto `fbo 0`. It runs
 //!     **every** frame, so the HUD never tears or vanishes between paints.
 //!
-//! `hud_paint_rate` defaults to `Match` (paint every frame). It can be forced
-//! for testing via the `EWO_HUD_PAINT_RATE` env var (`30` / `60` / `120` /
-//! `match`); the real in-overlay setting UI lands in E6.
+//! `hud_paint_rate` defaults to `Match` (paint every frame); it's chosen in the
+//! in-game settings overlay and persisted in `hud.toml`.
 //!
 //! **Tradeoff.** Painting to an offscreen surface means glass panels no longer
 //! backdrop-blur the *live* game (the draw-direct spike got that for free).
@@ -147,9 +146,10 @@ fn log(msg: &str) {
 // ────────────────────────────────────────────────────────────────────────
 
 /// How often the HUD is repainted to its offscreen surface. The composite
-/// step always runs every frame regardless — this only gates `paint`.
+/// step always runs every frame regardless — this only gates `paint`. Chosen
+/// in the in-game settings overlay and persisted in `hud.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HudPaintRate {
+pub(crate) enum HudPaintRate {
     /// Repaint every frame (default — matches the launcher's identity).
     Match,
     Fps120,
@@ -158,8 +158,16 @@ enum HudPaintRate {
 }
 
 impl HudPaintRate {
+    /// Every rate, in settings-selector order.
+    pub(crate) const ALL: [HudPaintRate; 4] = [
+        HudPaintRate::Match,
+        HudPaintRate::Fps120,
+        HudPaintRate::Fps60,
+        HudPaintRate::Fps30,
+    ];
+
     /// Minimum wall-clock seconds between paints. `Match` → 0 (never gates).
-    fn min_interval(self) -> f32 {
+    pub(crate) fn min_interval(self) -> f32 {
         match self {
             HudPaintRate::Match => 0.0,
             HudPaintRate::Fps120 => 1.0 / 120.0,
@@ -168,24 +176,34 @@ impl HudPaintRate {
         }
     }
 
-    /// Read the `EWO_HUD_PAINT_RATE` test override. Defaults to `Match`.
-    /// The real, persisted setting moves into the in-game overlay at E6.
-    fn from_env() -> HudPaintRate {
-        match std::env::var("EWO_HUD_PAINT_RATE") {
-            Ok(v) => match v.trim() {
-                "30" => HudPaintRate::Fps30,
-                "60" => HudPaintRate::Fps60,
-                "120" => HudPaintRate::Fps120,
-                "" | "match" | "Match" => HudPaintRate::Match,
-                other => {
-                    log(&format!(
-                        "EWO_HUD_PAINT_RATE='{other}' not recognized — using Match"
-                    ));
-                    HudPaintRate::Match
-                }
-            },
-            Err(_) => HudPaintRate::Match,
+    /// Short label for the settings selector.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            HudPaintRate::Match => "MATCH",
+            HudPaintRate::Fps120 => "120",
+            HudPaintRate::Fps60 => "60",
+            HudPaintRate::Fps30 => "30",
         }
+    }
+
+    /// Token for `hud.toml`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            HudPaintRate::Match => "match",
+            HudPaintRate::Fps120 => "120",
+            HudPaintRate::Fps60 => "60",
+            HudPaintRate::Fps30 => "30",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Option<HudPaintRate> {
+        Some(match s {
+            "match" => HudPaintRate::Match,
+            "120" => HudPaintRate::Fps120,
+            "60" => HudPaintRate::Fps60,
+            "30" => HudPaintRate::Fps30,
+            _ => return None,
+        })
     }
 }
 
@@ -230,9 +248,6 @@ struct Hud {
     offscreen: Option<Surface>,
     /// Pixel size `offscreen` was created at — recreated when the window resizes.
     offscreen_size: (i32, i32),
-    /// User-facing cap on the paint step. Hard-defaults to `Match`; the real
-    /// setting UI is E6 — for now `EWO_HUD_PAINT_RATE` is the test override.
-    paint_rate: HudPaintRate,
     /// Wall-clock seconds of the last completed paint. `NEG_INFINITY` until the
     /// first paint so the gate always lets frame one through.
     last_painted: f32,
@@ -302,11 +317,7 @@ impl Hud {
             font_store.has_fraunces, font_store.has_jetbrains_mono
         ));
 
-        let paint_rate = HudPaintRate::from_env();
-        log(&format!(
-            "Skia DirectContext created on a dedicated GL context, isolated from \
-             Minecraft (paint rate {paint_rate:?})"
-        ));
+        log("Skia DirectContext created on a dedicated GL context, isolated from Minecraft");
         Some(Hud {
             hdc,
             mc_ctx,
@@ -314,7 +325,6 @@ impl Hud {
             gr,
             offscreen: None,
             offscreen_size: (0, 0),
-            paint_rate,
             last_painted: f32::NEG_INFINITY,
             composites: 0,
             paints: 0,
@@ -388,7 +398,7 @@ impl Hud {
     /// gated out, the offscreen surface keeps its prior contents and
     /// `composite` simply re-blits the stale image.
     fn paint(&mut self, now: f32, w: i32, h: i32) {
-        if now - self.last_painted < self.paint_rate.min_interval() {
+        if now - self.last_painted < self.editor.paint_rate().min_interval() {
             return; // capped — composite reuses the offscreen surface as-is
         }
         let Some(surface) = self.offscreen.as_mut() else {
@@ -465,7 +475,9 @@ impl Hud {
             // lagging well behind — the proof the two-clock cap is working.
             log(&format!(
                 "{} composites, {} paints (rate {:?})",
-                self.composites, self.paints, self.paint_rate
+                self.composites,
+                self.paints,
+                self.editor.paint_rate()
             ));
         }
     }

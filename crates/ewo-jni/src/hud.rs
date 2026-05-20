@@ -27,6 +27,8 @@ const PEARL: (u8, u8, u8) = (0xF4, 0xE8, 0xEA); // --text-pearl
 const MAUVE: (u8, u8, u8) = (0x9A, 0x80, 0x87); // --text-mauve
 const ROSE: (u8, u8, u8) = (0xE5, 0xB8, 0xC5); // --accent-rose
 const LAV: (u8, u8, u8) = (0xC9, 0xA5, 0xD4); // --accent-lav
+const BERRY: (u8, u8, u8) = (0xB4, 0x74, 0x91); // --accent-berry
+const CHAMP: (u8, u8, u8) = (0xE8, 0xD4, 0xA8); // --accent-champ
 const WINE: (u8, u8, u8) = (0x12, 0x00, 0x10); // --bg-wine-b
 
 fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
@@ -334,9 +336,12 @@ struct WidgetLayout {
     y: f32,
 }
 
-/// The whole HUD layout — one entry per [`WidgetId`], persisted to `hud.toml`.
+/// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
+/// `hud.toml`.
 struct HudLayout {
     widgets: [WidgetLayout; 7],
+    /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
+    paint_rate: crate::HudPaintRate,
 }
 
 impl HudLayout {
@@ -359,6 +364,7 @@ impl HudLayout {
                 WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000 }, // potions
                 WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593 }, // target
             ],
+            paint_rate: crate::HudPaintRate::Match,
         }
     }
 
@@ -373,24 +379,35 @@ impl HudLayout {
             return layout;
         };
         let mut current: Option<WidgetId> = None;
+        let mut in_prefs = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                in_prefs = section == "prefs";
                 current = WidgetId::ALL.into_iter().find(|id| id.key() == section);
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            if in_prefs {
+                if key == "paint_rate" {
+                    if let Some(r) = crate::HudPaintRate::from_str(value) {
+                        layout.paint_rate = r;
+                    }
+                }
                 continue;
             }
             let Some(id) = current else {
                 continue;
             };
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let value = value.trim().trim_matches('"');
             let wl = layout.get_mut(id);
-            match key.trim() {
+            match key {
                 "enabled" => wl.enabled = value == "true",
                 "anchor" => {
                     if let Some(a) = Anchor::from_str(value) {
@@ -430,6 +447,10 @@ impl HudLayout {
                 wl.y,
             ));
         }
+        s.push_str(&format!(
+            "\n[prefs]\npaint_rate = \"{}\"\n",
+            self.paint_rate.as_str()
+        ));
         let _ = std::fs::write(&path, s);
     }
 }
@@ -445,6 +466,30 @@ fn hud_toml_path() -> Option<PathBuf> {
 // Editor state.
 // ────────────────────────────────────────────────────────────────────────
 
+/// Which view the overlay dashboard is showing. The overlay is a shell — a
+/// top-centre tab strip switches between these; the HUD editor is one view.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OverlayView {
+    HudEditor,
+    Mods,
+    Settings,
+}
+
+impl OverlayView {
+    const ALL: [OverlayView; 3] = [
+        OverlayView::HudEditor,
+        OverlayView::Mods,
+        OverlayView::Settings,
+    ];
+    fn title(self) -> &'static str {
+        match self {
+            OverlayView::HudEditor => "HUD",
+            OverlayView::Mods => "MODS",
+            OverlayView::Settings => "SETTINGS",
+        }
+    }
+}
+
 /// An active widget drag, with the grab offset from the widget's anchor point.
 struct Drag {
     id: WidgetId,
@@ -456,6 +501,8 @@ struct Drag {
 /// active drag, and records each widget's drawn bounds for hit-testing. Fed by
 /// the `nativeMouse*` JNI exports while the overlay is open.
 pub struct Editor {
+    /// Which dashboard view the overlay is showing.
+    view: OverlayView,
     layout: HudLayout,
     /// Window size from the last paint — for pixel ↔ fraction conversion.
     window: (f32, f32),
@@ -469,6 +516,8 @@ pub struct Editor {
     snap_y: Option<f32>,
     /// The widget selected in the side panel — drives the anchor grid.
     selected: Option<WidgetId>,
+    /// Bundled mods for the MODS view — loaded from `overlay-mods.toml`.
+    mods: Vec<ModEntry>,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -479,6 +528,7 @@ impl Editor {
     /// Build the editor, loading the persisted layout from `hud.toml`.
     pub fn new() -> Self {
         Editor {
+            view: OverlayView::HudEditor,
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
@@ -487,7 +537,13 @@ impl Editor {
             snap_x: None,
             snap_y: None,
             selected: None,
+            mods: load_mods(),
         }
+    }
+
+    /// The HUD paint-rate cap, chosen in the settings view.
+    pub fn paint_rate(&self) -> crate::HudPaintRate {
+        self.layout.paint_rate
     }
 
     /// Cursor moved — drag the active widget if one is held, snapping its
@@ -551,8 +607,8 @@ impl Editor {
         wl.y = (ap_y / h).clamp(0.0, 1.0);
     }
 
-    /// Mouse button — routes a press to the side panel (toggles, widget rows,
-    /// anchor grid) or to widget dragging; ends + persists a drag on release.
+    /// Mouse button — a press first checks the view-tab strip, then routes to
+    /// the active view; a release ends + persists a drag.
     pub fn on_mouse_button(&mut self, pressed: bool, x: f32, y: f32) {
         self.cursor = (x, y);
         if !pressed {
@@ -565,6 +621,42 @@ impl Editor {
             return;
         }
 
+        // The top-centre view-tab strip takes priority.
+        let (_, tabs) = tab_layout(self.window.0);
+        for (i, &tab) in tabs.iter().enumerate() {
+            if point_in(tab, x, y) {
+                self.view = OverlayView::ALL[i];
+                return;
+            }
+        }
+
+        match self.view {
+            OverlayView::HudEditor => self.editor_press(x, y),
+            OverlayView::Mods => {
+                let (_, toggles) = mods_layout(self.window.0, self.window.1, self.mods.len());
+                for (i, &toggle) in toggles.iter().enumerate() {
+                    if point_in(toggle, x, y) {
+                        self.mods[i].enabled = !self.mods[i].enabled;
+                        save_mod_overrides(&self.mods);
+                        return;
+                    }
+                }
+            }
+            OverlayView::Settings => {
+                let (_, buttons) = settings_layout(self.window.0, self.window.1);
+                for (i, &btn) in buttons.iter().enumerate() {
+                    if point_in(btn, x, y) {
+                        self.layout.paint_rate = crate::HudPaintRate::ALL[i];
+                        self.layout.save();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle a press in the HUD-editor view — the side panel or widget drag.
+    fn editor_press(&mut self, x: f32, y: f32) {
         let panel = panel_layout(self.window.1);
 
         // A widget's enable toggle.
@@ -679,9 +771,42 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         editor.bounds[id.index()] = bounds;
     }
 
-    if data.overlay_open() {
-        draw_editor(canvas, editor, fonts, w, h);
+    if !data.overlay_open() {
+        return;
     }
+
+    // Dim the scene — the overlay is a focused mode.
+    let mut tint = Paint::default();
+    tint.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.22), None);
+    canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &tint);
+
+    // The active dashboard view.
+    match editor.view {
+        OverlayView::HudEditor => draw_editor(canvas, editor, fonts, w, h),
+        OverlayView::Mods => draw_mods(canvas, editor, fonts, w, h),
+        OverlayView::Settings => draw_settings(canvas, editor, fonts, w, h),
+    }
+
+    // The view-tab strip + a close hint, on top of the view.
+    draw_tab_strip(canvas, editor.view, fonts, w);
+
+    let hint_font = fonts.jetbrains_mono(12.0);
+    let hint = match editor.view {
+        OverlayView::HudEditor => "DRAG WIDGETS OR USE THE PANEL  ·  RIGHT SHIFT OR ESC TO CLOSE",
+        OverlayView::Mods | OverlayView::Settings => "RIGHT SHIFT OR ESC TO CLOSE",
+    };
+    let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
+    let mut hint_paint = Paint::default();
+    hint_paint.set_anti_alias(true);
+    hint_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        hint,
+        ((w - hint_w) * 0.5, h - 28.0),
+        &hint_font,
+        &hint_paint,
+        0.14,
+    );
 }
 
 /// Whether `id`'s underlying data is present this frame.
@@ -1443,11 +1568,6 @@ fn draw_target(
 /// Draw the editor: a faint tint, a drag outline around each visible widget
 /// (the hovered/dragged one highlighted + labelled), and a hint line.
 fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
-    // Faint tint so the editor reads as a distinct mode.
-    let mut tint = Paint::default();
-    tint.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.22), None);
-    canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &tint);
-
     // Alignment guides — drawn while a drag is snapped to another widget.
     let mut guide = Paint::default();
     guide.set_anti_alias(true);
@@ -1473,23 +1593,6 @@ fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f
     }
 
     draw_side_panel(canvas, editor, fonts, h);
-
-    // Hint, centred along the bottom.
-    let hint_font = fonts.jetbrains_mono(12.0);
-    let hint = "DRAG WIDGETS OR USE THE PANEL  ·  RIGHT SHIFT OR ESC TO CLOSE";
-    let hint_tracking = 0.14;
-    let hint_w = measure_tracked_em(&hint_font, hint, hint_tracking);
-    let mut hint_paint = Paint::default();
-    hint_paint.set_anti_alias(true);
-    hint_paint.set_color4f(rgba(MAUVE, 1.0), None);
-    draw_tracked_em(
-        canvas,
-        hint,
-        ((w - hint_w) * 0.5, h - 28.0),
-        &hint_font,
-        &hint_paint,
-        hint_tracking,
-    );
 }
 
 /// A drag outline around one widget — a rose rounded-rect; the active widget
@@ -1786,4 +1889,430 @@ fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, 
         None,
     );
     canvas.draw_circle((dx, dy), 3.0, &dot);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Overlay dashboard — the top-centre view-tab strip + the Settings view.
+// ────────────────────────────────────────────────────────────────────────
+
+/// The overlay's top-centre view-tab strip: the whole pill + a rect per tab.
+/// Fixed-width tabs so the renderer and the hit-tester agree without fonts.
+fn tab_layout(w: f32) -> (Rect, [Rect; 3]) {
+    const TAB_W: f32 = 132.0;
+    const TAB_H: f32 = 34.0;
+    const TAB_Y: f32 = 18.0;
+    let strip_w = TAB_W * 3.0;
+    let strip_x = (w - strip_w) * 0.5;
+    let pill = Rect::from_xywh(strip_x, TAB_Y, strip_w, TAB_H);
+    let tabs = [
+        Rect::from_xywh(strip_x, TAB_Y, TAB_W, TAB_H),
+        Rect::from_xywh(strip_x + TAB_W, TAB_Y, TAB_W, TAB_H),
+        Rect::from_xywh(strip_x + TAB_W * 2.0, TAB_Y, TAB_W, TAB_H),
+    ];
+    (pill, tabs)
+}
+
+/// Draw the view-tab strip; the active view's tab is lit rose.
+fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontStore, w: f32) {
+    let (pill, tabs) = tab_layout(w);
+    draw_chip(canvas, pill, pill.height() * 0.5);
+
+    let font = fonts.jetbrains_mono(12.0);
+    let tracking = 0.16;
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+
+    for (i, &tab) in tabs.iter().enumerate() {
+        let v = OverlayView::ALL[i];
+        let active = v == view;
+        if active {
+            let inset = Rect::from_xywh(
+                tab.left + 4.0,
+                tab.top + 4.0,
+                tab.width() - 8.0,
+                tab.height() - 8.0,
+            );
+            let mut fill = Paint::default();
+            fill.set_anti_alias(true);
+            fill.set_color4f(rgba(ROSE, 0.5), None);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(inset, inset.height() * 0.5, inset.height() * 0.5),
+                &fill,
+            );
+        }
+        let label = v.title();
+        let label_w = measure_tracked_em(&font, label, tracking);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_color4f(
+            if active { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) },
+            None,
+        );
+        draw_tracked_em(
+            canvas,
+            label,
+            (
+                tab.left + (tab.width() - label_w) * 0.5,
+                tab.top + tab.height() * 0.5 + cap * 0.5,
+            ),
+            &font,
+            &paint,
+            tracking,
+        );
+    }
+}
+
+/// The Settings-view panel rect + its 4 paint-rate selector buttons.
+fn settings_layout(w: f32, h: f32) -> (Rect, [Rect; 4]) {
+    let pw = 484.0;
+    let ph = 232.0;
+    let px = (w - pw) * 0.5;
+    let py = (h - ph) * 0.5;
+    let panel = Rect::from_xywh(px, py, pw, ph);
+
+    const BTN_W: f32 = 92.0;
+    const BTN_H: f32 = 38.0;
+    const BTN_GAP: f32 = 10.0;
+    let bx = px + 32.0;
+    let by = py + 150.0;
+    let mut buttons = [empty_rect(); 4];
+    for (i, slot) in buttons.iter_mut().enumerate() {
+        *slot = Rect::from_xywh(bx + i as f32 * (BTN_W + BTN_GAP), by, BTN_W, BTN_H);
+    }
+    (panel, buttons)
+}
+
+/// One option button in the paint-rate selector.
+fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, active: bool, fonts: &FontStore) {
+    let rrect = RRect::new_rect_xy(rect, 9.0, 9.0);
+
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color4f(if active { rgba(ROSE, 0.55) } else { rgba(WINE, 0.8) }, None);
+    canvas.draw_rrect(rrect, &bg);
+
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(
+        if active { rgba(ROSE, 0.85) } else { rgba(ROSE, 0.18) },
+        None,
+    );
+    canvas.draw_rrect(rrect, &border);
+
+    let font = fonts.jetbrains_mono(13.0);
+    let tracking = 0.10;
+    let label_w = measure_tracked_em(&font, label, tracking);
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    let mut text = Paint::default();
+    text.set_anti_alias(true);
+    text.set_color4f(
+        if active { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) },
+        None,
+    );
+    draw_tracked_em(
+        canvas,
+        label,
+        (
+            rect.left + (rect.width() - label_w) * 0.5,
+            rect.top + rect.height() * 0.5 + cap * 0.5,
+        ),
+        &font,
+        &text,
+        tracking,
+    );
+}
+
+/// The Settings view — HUD preferences. E6 push 2 ships the paint-rate cap.
+fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    let (panel, buttons) = settings_layout(w, h);
+    draw_chip(canvas, panel, 16.0);
+    let left = panel.left + 32.0;
+
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(
+        canvas,
+        "SETTINGS",
+        (left, panel.top + 40.0),
+        &eyebrow_font,
+        &eyebrow,
+        0.22,
+    );
+
+    let title_font = fonts.fraunces_axes(27.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str("HUD preferences", (left, panel.top + 78.0), &title_font, &title);
+
+    let label_font = fonts.jetbrains_mono(10.0);
+    let mut label = Paint::default();
+    label.set_anti_alias(true);
+    label.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        "PAINT RATE  ·  FPS CAP",
+        (left, panel.top + 108.0),
+        &label_font,
+        &label,
+        0.18,
+    );
+
+    let body_font = fonts.newsreader(13.0);
+    let mut body = Paint::default();
+    body.set_anti_alias(true);
+    body.set_color4f(rgba(MAUVE, 0.85), None);
+    canvas.draw_str(
+        "How often the HUD repaints. A lower cap frees GPU for the game.",
+        (left, panel.top + 130.0),
+        &body_font,
+        &body,
+    );
+
+    let current = editor.paint_rate();
+    for (i, &btn) in buttons.iter().enumerate() {
+        let rate = crate::HudPaintRate::ALL[i];
+        draw_settings_button(canvas, btn, rate.label(), rate == current, fonts);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Mods view — the bundled-mod toggle list.
+// ────────────────────────────────────────────────────────────────────────
+
+/// One bundled mod in the MODS view, decoded from `overlay-mods.toml` (which
+/// the launcher writes before each launch).
+struct ModEntry {
+    id: String,
+    name: String,
+    category: String,
+    version: String,
+    enabled: bool,
+    /// Enabled state when loaded — the override file carries only the mods
+    /// whose `enabled` now differs from this.
+    original: bool,
+}
+
+/// `<instance-dir>/<file>` — the cdylib runs with the instance dir as its CWD.
+fn instance_file(file: &str) -> Option<PathBuf> {
+    std::env::current_dir().ok().map(|d| d.join(file))
+}
+
+/// Read `overlay-mods.toml` (written by the launcher) into the MODS list.
+fn load_mods() -> Vec<ModEntry> {
+    let Some(path) = instance_file("overlay-mods.toml") else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut mods: Vec<ModEntry> = Vec::new();
+    let mut cur: Option<ModEntry> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(id) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if let Some(m) = cur.take() {
+                mods.push(m);
+            }
+            cur = Some(ModEntry {
+                id: id.to_string(),
+                name: id.to_string(),
+                category: String::new(),
+                version: String::new(),
+                enabled: true,
+                original: true,
+            });
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        if let Some(m) = cur.as_mut() {
+            match key.trim() {
+                "name" => m.name = value.to_string(),
+                "category" => m.category = value.to_string(),
+                "version" => m.version = value.to_string(),
+                "enabled" => {
+                    m.enabled = value == "true";
+                    m.original = m.enabled;
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(m) = cur.take() {
+        mods.push(m);
+    }
+    mods
+}
+
+/// Write `overlay-mod-overrides.toml` — only the mods toggled away from their
+/// loaded state. The launcher consumes (and deletes) it on the next launch.
+fn save_mod_overrides(mods: &[ModEntry]) {
+    let Some(path) = instance_file("overlay-mod-overrides.toml") else {
+        return;
+    };
+    let mut s = String::from("# In-game mod toggles — consumed by the launcher next launch.\n");
+    for m in mods {
+        if m.enabled != m.original {
+            s.push_str(&format!("{} = {}\n", m.id, m.enabled));
+        }
+    }
+    let _ = std::fs::write(&path, s);
+}
+
+/// Velvet accent for a bundled-mod category — the row's colour dot.
+fn category_color(category: &str) -> (u8, u8, u8) {
+    match category {
+        "performance" => ROSE,
+        "visuals" => LAV,
+        "utility" => CHAMP,
+        "social" => BERRY,
+        _ => MAUVE, // library / unknown
+    }
+}
+
+/// The Mods-view panel rect + a toggle rect per mod row.
+fn mods_layout(w: f32, h: f32, count: usize) -> (Rect, Vec<Rect>) {
+    const PANEL_W: f32 = 544.0;
+    const PAD: f32 = 24.0;
+    const HEADER_H: f32 = 76.0;
+    const ROW_H: f32 = 34.0;
+    let panel_h = PAD * 2.0 + HEADER_H + count.max(1) as f32 * ROW_H;
+    let px = (w - PANEL_W) * 0.5;
+    let py = (h - panel_h) * 0.5;
+    let panel = Rect::from_xywh(px, py, PANEL_W, panel_h);
+
+    let rows_top = py + PAD + HEADER_H;
+    const TOGGLE_W: f32 = 38.0;
+    const TOGGLE_H: f32 = 20.0;
+    let mut toggles = Vec::with_capacity(count);
+    for i in 0..count {
+        let mid = rows_top + i as f32 * ROW_H + ROW_H * 0.5;
+        toggles.push(Rect::from_xywh(
+            px + PANEL_W - PAD - TOGGLE_W,
+            mid - TOGGLE_H * 0.5,
+            TOGGLE_W,
+            TOGGLE_H,
+        ));
+    }
+    (panel, toggles)
+}
+
+/// The Mods view — a Velvet re-skin of a ClickGUI module list: one row per
+/// bundled mod (category dot · name · category·version · on/off toggle).
+fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    let mods = &editor.mods;
+    let (panel, toggles) = mods_layout(w, h, mods.len());
+    draw_chip(canvas, panel, 16.0);
+    let left = panel.left + 24.0;
+
+    // Eyebrow + the enabled count.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(canvas, "MODS", (left, panel.top + 36.0), &eyebrow_font, &eyebrow, 0.22);
+
+    let on_count = mods.iter().filter(|m| m.enabled).count();
+    let count_str = format!("{} / {} ENABLED", on_count, mods.len());
+    let count_w = measure_tracked_em(&eyebrow_font, &count_str, 0.16);
+    let mut count_paint = Paint::default();
+    count_paint.set_anti_alias(true);
+    count_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        &count_str,
+        (panel.right - 24.0 - count_w, panel.top + 36.0),
+        &eyebrow_font,
+        &count_paint,
+        0.16,
+    );
+
+    // Title.
+    let title_font = fonts.fraunces_axes(27.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str("Bundled mods", (left, panel.top + 70.0), &title_font, &title);
+
+    if mods.is_empty() {
+        let body_font = fonts.newsreader(15.0);
+        let mut body = Paint::default();
+        body.set_anti_alias(true);
+        body.set_color4f(rgba(MAUVE, 1.0), None);
+        canvas.draw_str(
+            "No bundled mods found — launch an Ewo instance to populate this.",
+            (left, panel.top + 110.0),
+            &body_font,
+            &body,
+        );
+        return;
+    }
+
+    // Rows.
+    let rows_top = panel.top + 24.0 + 76.0;
+    let row_h = 34.0;
+    let name_font = fonts.newsreader(15.0);
+    let meta_font = fonts.jetbrains_mono(11.0);
+    let (_, nm) = name_font.metrics();
+    let ncap = if nm.cap_height > 0.0 { nm.cap_height } else { 11.0 };
+    for (i, m) in mods.iter().enumerate() {
+        let ry = rows_top + i as f32 * row_h;
+        let mid = ry + row_h * 0.5;
+
+        // Hairline divider above every row but the first.
+        if i > 0 {
+            let mut div = Paint::default();
+            div.set_anti_alias(true);
+            div.set_style(PaintStyle::Stroke);
+            div.set_stroke_width(1.0);
+            div.set_color4f(rgba(ROSE, 0.08), None);
+            canvas.draw_line((left, ry), (panel.right - 24.0, ry), &div);
+        }
+
+        // Category colour dot.
+        let mut dot = Paint::default();
+        dot.set_anti_alias(true);
+        dot.set_color4f(
+            rgba(category_color(&m.category), if m.enabled { 1.0 } else { 0.4 }),
+            None,
+        );
+        canvas.draw_circle((left + 6.0, mid), 4.0, &dot);
+
+        // Name.
+        let mut name = Paint::default();
+        name.set_anti_alias(true);
+        name.set_color4f(
+            if m.enabled { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.7) },
+            None,
+        );
+        canvas.draw_str(&m.name, (left + 22.0, mid + ncap * 0.5), &name_font, &name);
+
+        // Category · version, tracked, before the toggle.
+        let meta = format!("{}  ·  {}", m.category.to_uppercase(), m.version);
+        let meta_w = measure_tracked_em(&meta_font, &meta, 0.08);
+        let mut meta_paint = Paint::default();
+        meta_paint.set_anti_alias(true);
+        meta_paint.set_color4f(rgba(MAUVE, 0.85), None);
+        draw_tracked_em(
+            canvas,
+            &meta,
+            (toggles[i].left - 16.0 - meta_w, mid + 4.0),
+            &meta_font,
+            &meta_paint,
+            0.08,
+        );
+
+        draw_panel_toggle(canvas, toggles[i], m.enabled);
+    }
 }
