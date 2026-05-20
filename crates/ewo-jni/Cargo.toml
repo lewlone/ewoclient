@@ -1,0 +1,22 @@
+[package]
+name = "ewo-jni"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Phase E spike. A C dynamic library loaded into the Minecraft JVM by the
+# `ewo-hud` Fabric mod — it borrows Minecraft's GL context and paints the
+# `ewo-render` Skia UI over the framebuffer. See CLAUDE.md "Phase E".
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ewo-core.workspace = true
+ewo-render.workspace = true
+skia-safe.workspace = true
+gl.workspace = true
+# Raw JNI type definitions — used once, in `nativeInit`, to resolve a direct
+# `ByteBuffer`'s address via `GetDirectBufferAddress`. Just bindings, no logic.
+jni-sys = "0.3"

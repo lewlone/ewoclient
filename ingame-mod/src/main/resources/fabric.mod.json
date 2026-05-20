@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "ewo-hud",
+  "version": "0.1.0",
+  "name": "EwoClient In-Game HUD",
+  "description": "Phase E spike — paints the ewo-render Skia UI over Minecraft via a borrowed GL context.",
+  "authors": ["lewlone"],
+  "license": "Proprietary",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.lewlone.ewohud.EwoHudMod"]
+  },
+  "mixins": ["ewohud.mixins.json"]
+}

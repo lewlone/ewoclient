@@ -647,6 +647,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ewo-jni"
+version = "0.1.0"
+dependencies = [
+ "ewo-core",
+ "ewo-render",
+ "gl",
+ "jni-sys 0.3.1",
+ "skia-safe",
+]
+
+[[package]]
 name = "ewo-launcher"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "crates/ewo-render",
     "crates/ewo-ui",
     "crates/ewo-launcher",
+    "crates/ewo-jni",
 ]
 
 [workspace.package]
