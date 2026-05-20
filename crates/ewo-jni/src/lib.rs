@@ -35,10 +35,12 @@
 //! frame; Rust reads it through the buffer's address with no per-frame JNI
 //! marshaling. The full read-only widget set ships in E3.
 //!
-//! **Overlay input (E4).** A keybind opens a custom Minecraft `Screen` that
-//! frees the cursor and forwards mouse/keyboard to Rust via the `nativeMouse*`
-//! / `nativeKey` exports; while closed the HUD is display-only and the game
-//! owns all input. The editor that consumes this input is E5.
+//! **Overlay input + editor (E4–E5).** A keybind opens a custom Minecraft
+//! `Screen` that frees the cursor and forwards mouse input to Rust; while
+//! closed the HUD is display-only and the game owns all input. E5's HUD
+//! editor consumes that input — widgets are placed from a persisted
+//! `hud.toml` layout and can be dragged to reposition them while the overlay
+//! is open.
 //!
 //! JNI contract — must match `dev.lewlone.ewohud.EwoHudNative`:
 //! ```text
@@ -240,8 +242,8 @@ struct Hud {
     font_store: FontStore,
     /// Address of the shared data block, refreshed from `HUD_BUFFER` each frame.
     buffer: usize,
-    /// Overlay input state, fed by the `nativeMouse*` / `nativeKey` exports.
-    input: hud::Input,
+    /// HUD-editor state (layout, drag), fed by the `nativeMouse*` exports.
+    editor: hud::Editor,
 }
 
 // `Hud` lives in a thread-local for the process lifetime; it is never dropped
@@ -318,7 +320,7 @@ impl Hud {
             paints: 0,
             font_store,
             buffer: 0,
-            input: hud::Input::default(),
+            editor: hud::Editor::new(),
         })
     }
 
@@ -401,7 +403,7 @@ impl Hud {
             // held for the process lifetime (`EwoHudData.CAPACITY` bytes).
             let data = unsafe { hud::HudData::new(self.buffer as *const u8) };
             if data.schema_version() == hud::SCHEMA_VERSION {
-                hud::draw(canvas, &data, &self.input, &self.font_store, w as f32, h as f32);
+                hud::draw(canvas, &data, &mut self.editor, &self.font_store, w as f32, h as f32);
             } else {
                 SCHEMA_WARN.call_once(|| {
                     log(&format!(
@@ -593,10 +595,11 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseMove(
     x: f64,
     y: f64,
 ) {
-    with_hud(|hud| hud.input.cursor = (x as f32, y as f32));
+    with_hud(|hud| hud.editor.on_mouse_move(x as f32, y as f32));
 }
 
-/// Overlay input — a mouse button pressed/released at `(x, y)` in window pixels.
+/// Overlay input — a mouse button pressed/released at `(x, y)` in window
+/// pixels. Drives the HUD editor's drag.
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseButton(
     _env: *mut c_void,
@@ -606,37 +609,27 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseButton(
     x: f64,
     y: f64,
 ) {
-    with_hud(|hud| {
-        hud.input.cursor = (x as f32, y as f32);
-        if pressed != 0 {
-            hud.input.clicks += 1;
-        }
-    });
+    with_hud(|hud| hud.editor.on_mouse_button(pressed != 0, x as f32, y as f32));
 }
 
-/// Overlay input — the scroll wheel moved by `dy` (vertical).
+/// Overlay input — the scroll wheel. Unused until the E6 settings overlay.
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseScroll(
     _env: *mut c_void,
     _class: *mut c_void,
     _dx: f64,
-    dy: f64,
+    _dy: f64,
 ) {
-    with_hud(|hud| hud.input.scroll += dy as f32);
 }
 
-/// Overlay input — a key (GLFW code) pressed/released.
+/// Overlay input — a key. Overlay open/close is handled Java-side; this is
+/// unused until the E6 settings overlay needs text/hotkeys.
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeKey(
     _env: *mut c_void,
     _class: *mut c_void,
-    key: i32,
-    pressed: u8,
+    _key: i32,
+    _pressed: u8,
     _modifiers: i32,
 ) {
-    with_hud(|hud| {
-        if pressed != 0 {
-            hud.input.last_key = key;
-        }
-    });
 }

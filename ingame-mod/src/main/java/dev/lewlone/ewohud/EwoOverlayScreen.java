@@ -83,11 +83,15 @@ public final class EwoOverlayScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyEvent event) {
-        if (event.key() == GLFW.GLFW_KEY_RIGHT_SHIFT) {
-            this.onClose(); // toggle key also closes
+        // The toggle key (Right Shift) or Esc closes the overlay. This screen
+        // overrides keyPressed wholesale, so Esc must be handled here — the
+        // default shouldCloseOnEsc path never runs.
+        int key = event.key();
+        if (key == GLFW.GLFW_KEY_RIGHT_SHIFT || key == GLFW.GLFW_KEY_ESCAPE) {
+            this.onClose();
             return true;
         }
-        EwoHudNative.nativeKey(event.key(), true, event.modifiers());
+        EwoHudNative.nativeKey(key, true, event.modifiers());
         return true;
     }
 

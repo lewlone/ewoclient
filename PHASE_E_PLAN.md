@@ -19,15 +19,15 @@ Then start at the first `TODO` row in the table below.
 | E2 | First real widget (FPS) — data pipeline + text engine | ✅ DONE (2026-05-20) |
 | E3 | Remaining read-only widgets + shared state block | ✅ DONE (2026-05-20) |
 | E4 | Input plumbing + overlay open/close keybind | ✅ DONE (2026-05-20) |
-| E5 | HUD editor (drag / anchor / toggle stage) | **TODO — start here** |
-| E6 | In-game settings overlay (mod toggles, prefs, palette) | TODO |
+| E5 | HUD editor (drag / anchor / toggle stage) | ✅ DONE (2026-05-20) |
+| E6 | In-game settings overlay (mod toggles, prefs, palette) | **TODO — start here** |
 | E7 | Polish — refract decision, Velvet re-skin pass, perf | TODO |
 
 Each step is a working, launch-verifiable increment. Don't skip ahead.
 
 ---
 
-## Where things stand (E0–E4)
+## Where things stand (E0–E5)
 
 The spike proved the hard part: `ewo-render`'s Skia pipeline renders over a
 running Minecraft 26.1, stable, verified live (title screen + in-world). E1
@@ -35,7 +35,8 @@ split that into the two-clock paint/composite model. E2 added the first real
 widget + the JVM→Rust data pipeline. E3 finished the read-only widget set —
 the full default HUD (FPS, Coords, Ping, Keystrokes, Armor, Potions,
 TargetHUD). E4 added overlay input — a keybind opens a cursor-freeing screen
-that forwards mouse/keyboard to Rust.
+that forwards mouse/keyboard to Rust. E5 made the HUD editable — drag widgets,
+toggle them, anchor them, all persisted to `hud.toml`.
 
 What exists:
 - **`crates/ewo-jni/`** — a `cdylib` in the Cargo workspace. Loaded into the MC
@@ -266,16 +267,40 @@ game world of input — exactly decision #4, for free. It renders nothing
 **Verified live:** Right Shift opens/closes the panel, the cursor frees while
 open, the readouts track input, and game input is untouched while closed.
 
-### E5 — HUD editor
+### E5 — HUD editor ✅ DONE (2026-05-20)
 
-Port `hud.jsx`'s editor model into the overlay.
+`hud.jsx`'s editor model, brought into the overlay. Landed in two pushes.
 
-- The 1920×1080 logical stage, scaled to the window.
-- Drag widgets to reposition; the 9-way anchor preset grid (tl…br); per-widget
-  enable toggles; the side panel listing widgets.
-- Layout persists to `hud.toml` (decision #5).
-- **Done when:** moving a widget, closing, reopening, and relaunching all keep
-  the new position.
+**Approach — direct manipulation, not a scaled-stage preview.** The prototype
+edits widgets on a shrunk 1920×1080 stage; in-game it's better to drag the
+*real* widgets in place. Positions are still fractional (0..1 of the window)
++ an anchor, so the coordinate model is resolution-independent.
+
+**What shipped — push 1 (drag + persist):**
+- `HudLayout` — every widget's placement (`enabled`, `anchor`, fractional
+  `x`/`y`); `hud.rs::draw` is now layout-driven, and records each widget's
+  drawn bounds for hit-testing.
+- Drag — while the overlay is open, each widget shows a drag outline; click +
+  drag repositions it. The layout saves to `<config>/EwoClient/hud.toml` on
+  every drag-release and loads on startup (hand-rolled `[section] key = value`
+  reader/writer; Rust self-computes the config dir from `%APPDATA%`).
+- **Snap-to-align** (a refinement the user asked for) — a dragged widget's
+  edges/centres snap to other widgets' within 6px, with a faint rose guide
+  line. Gentle: easy to drag past.
+
+**What shipped — push 2 (editor furniture):**
+- A left-edge **side panel**: a 7-widget list (dot + name + on/off toggle) and
+  a 3×3 **anchor preset grid**. Clicking a toggle shows/hides a widget;
+  clicking a row selects it; clicking a grid cell jumps the selected widget to
+  that corner/edge/centre. This also lets you position *hidden* widgets.
+
+**Also fixed (pre-existing E4 bugs surfaced here):** Esc now closes the
+overlay (the `keyPressed` override has to handle it — the default path is
+bypassed); the `keyPress` mixin now only opens on `GLFW_PRESS`, so the release
+after a close can't reopen the overlay.
+
+**Verified live:** drag + snap + toggle + anchor all work; layout persists
+across close/reopen and a full relaunch.
 
 ### E6 — In-game settings overlay
 

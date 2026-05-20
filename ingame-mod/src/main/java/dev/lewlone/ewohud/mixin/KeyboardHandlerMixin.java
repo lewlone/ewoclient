@@ -16,11 +16,12 @@ import dev.lewlone.ewohud.EwoOverlayScreen;
  * Opens the EwoClient overlay on the toggle key (Right Shift).
  *
  * <p>Injects at the head of {@code KeyboardHandler.keyPress} — the GLFW key
- * callback. It opens the overlay only when no screen is already showing; while
+ * callback. It opens the overlay only on a genuine key <i>press</i> (not a
+ * release or auto-repeat) and only when no screen is already showing; while
  * {@link EwoOverlayScreen} is open, Right Shift routes to its {@code keyPressed}
- * (which closes it), so the two halves of the toggle never collide. A
- * key-release or auto-repeat is harmless — by then a screen is open, so the
- * open condition is already false.
+ * (which closes it), so the two halves of the toggle never collide. The
+ * press-only gate matters: without it the release event that follows a close
+ * would see {@code screen == null} and immediately reopen the overlay.
  */
 @Mixin(KeyboardHandler.class)
 public class KeyboardHandlerMixin {
@@ -29,6 +30,9 @@ public class KeyboardHandlerMixin {
     private void ewo$onKeyPress(long window, int action, KeyEvent event, CallbackInfo ci) {
         if (!EwoHudMod.nativeReady) {
             return;
+        }
+        if (action != GLFW.GLFW_PRESS) {
+            return; // press only — ignore release / auto-repeat
         }
         if (event.key() != GLFW.GLFW_KEY_RIGHT_SHIFT) {
             return;
