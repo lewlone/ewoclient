@@ -144,16 +144,26 @@ disk interop under `shared/` is untouched.
 - **Acceptance:** two profiles with different warmth/theme; switching
   swaps the look instantly. *(Visual verification pending.)*
 
-### F4 — The dashboard
-- New `screens/dashboard.rs`, replaces `main_menu`, becomes the default screen.
-- Active-account card (skin head, name, switch). Active client-profile chip
-  (quick-swap vdrop).
-- Instance quick-launch cards: name, version/loader badge, last-played,
-  one-click Launch.
-- Settings / About / Quit relocate into dashboard chrome.
-- Add a `last_played` timestamp to `Instance`, written on launch.
-- **Acceptance:** cold start → dashboard → one click launches the most-recent
-  instance.
+### F4 — In-game HOME / overview tab ✅ shipped
+
+**Re-scoped 2026-05-21:** "the dashboard" is a HOME tab in the *in-game
+overlay*, not a launcher home screen — the launcher main menu stays as-is.
+
+- `OverlayView::Home` added to the overlay (`crates/ewo-jni/src/hud.rs`);
+  the tab strip is now HOME · HUD · MODS · SETTINGS and HOME is the
+  default view — opening the overlay lands on the overview, not the HUD
+  editor.
+- `draw_home` — an overview panel: 5 session stat cards (FPS, ping,
+  playtime, coords, server), an account + active-client-profile line, and
+  7 per-HUD-widget quick-toggle chips (flip a widget on/off without
+  entering the HUD editor; a click writes `hud.toml`).
+- **Data pipeline bumped v2 → v3** — `EwoHudData.java` + `hud.rs` gained
+  playtime / server / player-name fields; `SCHEMA_VERSION` is 3 on both
+  sides (a mismatch blanks the HUD, so they move in lockstep).
+- Active client-profile name read from `profiles.toml` (read-only) once
+  at `Editor` construction.
+- **Verification pending** — builds clean (Rust workspace + the in-game
+  mod jar); needs an in-game look (launch Minecraft, Right Shift).
 
 ### F5 — In-game profile hot-swap
 - Move `hud.toml` under `profiles/<name>/` (deferred from F2) so HUD layout

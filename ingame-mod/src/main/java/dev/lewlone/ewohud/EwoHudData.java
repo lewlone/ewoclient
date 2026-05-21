@@ -9,6 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -33,7 +34,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -42,6 +43,8 @@ public final class EwoHudData {
     private static final int POTION_REC = 44;      // bytes per potion record
     private static final int POTION_NAME_CAP = 28; // name data bytes per record
     private static final int TARGET_NAME_CAP = 44; // target-name data bytes
+    private static final int SERVER_CAP = 48;      // server-address data bytes
+    private static final int PLAYER_NAME_CAP = 24; // player-name data bytes
 
     // Field offsets — keep in sync with hud.rs `mod off`.
     private static final int OFF_VERSION = 0;
@@ -60,6 +63,9 @@ public final class EwoHudData {
     private static final int OFF_TARGET_HP = 444;
     private static final int OFF_TARGET_MAXHP = 448;
     private static final int OFF_TARGET_NAME = 452; // i32 len + 44 bytes
+    private static final int OFF_PLAYTIME = 500;    // i32 session seconds
+    private static final int OFF_SERVER = 504;      // i32 len + 48 bytes
+    private static final int OFF_PLAYER_NAME = 556; // i32 len + 24 bytes
 
     // flags bits
     private static final int FLAG_WORLD = 1;
@@ -82,6 +88,9 @@ public final class EwoHudData {
     private static final EquipmentSlot[] ARMOR_SLOTS = {
         EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
     };
+
+    /** Wall-clock millis when this class loaded — the session-playtime base. */
+    private static final long SESSION_START = System.currentTimeMillis();
 
     private static ByteBuffer buffer;
 
@@ -160,6 +169,15 @@ public final class EwoHudData {
         if (mc.screen instanceof EwoOverlayScreen) {
             flags |= FLAG_OVERLAY;
         }
+
+        // Session playtime, server address, and account name — for the
+        // overlay's HOME / overview tab.
+        b.putInt(OFF_PLAYTIME, (int) ((System.currentTimeMillis() - SESSION_START) / 1000L));
+        ServerData sd = mc.getCurrentServer();
+        String server = sd != null ? sd.ip : (mc.level != null ? "Singleplayer" : "");
+        putString(b, OFF_SERVER, SERVER_CAP, server);
+        putString(b, OFF_PLAYER_NAME, PLAYER_NAME_CAP,
+                mc.getUser() != null ? mc.getUser().getName() : "");
 
         b.putInt(OFF_FLAGS, flags);
     }

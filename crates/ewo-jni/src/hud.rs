@@ -46,7 +46,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -65,6 +65,9 @@ mod off {
     pub const TARGET_HP: usize = 444;
     pub const TARGET_MAXHP: usize = 448;
     pub const TARGET_NAME: usize = 452;
+    pub const PLAYTIME: usize = 500;
+    pub const SERVER: usize = 504;
+    pub const PLAYER_NAME: usize = 556;
 }
 const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
 const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
@@ -76,6 +79,8 @@ const MAX_POTIONS: usize = 8;
 const POTION_REC: usize = 44; // bytes per potion record
 const POTION_NAME_CAP: usize = 28;
 const TARGET_NAME_CAP: usize = 44;
+const SERVER_CAP: usize = 48;
+const PLAYER_NAME_CAP: usize = 24;
 
 /// One active potion effect, decoded from the shared block.
 pub struct Potion {
@@ -194,6 +199,18 @@ impl HudData {
     /// The EwoClient overlay is open — input is being captured.
     pub fn overlay_open(&self) -> bool {
         self.flag(FLAG_OVERLAY)
+    }
+    /// Session playtime in seconds (since the game launched).
+    pub fn playtime(&self) -> i32 {
+        self.i32_at(off::PLAYTIME)
+    }
+    /// The current server address, "Singleplayer", or "" on the main menu.
+    pub fn server(&self) -> String {
+        self.str_at(off::SERVER, SERVER_CAP)
+    }
+    /// The signed-in account / player name.
+    pub fn player_name(&self) -> String {
+        self.str_at(off::PLAYER_NAME, PLAYER_NAME_CAP)
     }
 }
 
@@ -470,19 +487,22 @@ fn hud_toml_path() -> Option<PathBuf> {
 /// top-centre tab strip switches between these; the HUD editor is one view.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OverlayView {
+    Home,
     HudEditor,
     Mods,
     Settings,
 }
 
 impl OverlayView {
-    const ALL: [OverlayView; 3] = [
+    const ALL: [OverlayView; 4] = [
+        OverlayView::Home,
         OverlayView::HudEditor,
         OverlayView::Mods,
         OverlayView::Settings,
     ];
     fn title(self) -> &'static str {
         match self {
+            OverlayView::Home => "HOME",
             OverlayView::HudEditor => "HUD",
             OverlayView::Mods => "MODS",
             OverlayView::Settings => "SETTINGS",
@@ -518,6 +538,9 @@ pub struct Editor {
     selected: Option<WidgetId>,
     /// Bundled mods for the MODS view — loaded from `overlay-mods.toml`.
     mods: Vec<ModEntry>,
+    /// Active client-profile name — read once at construction for the HOME
+    /// view's overview line.
+    active_profile: String,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -528,7 +551,7 @@ impl Editor {
     /// Build the editor, loading the persisted layout from `hud.toml`.
     pub fn new() -> Self {
         Editor {
-            view: OverlayView::HudEditor,
+            view: OverlayView::Home,
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
@@ -538,6 +561,7 @@ impl Editor {
             snap_y: None,
             selected: None,
             mods: load_mods(),
+            active_profile: read_active_profile().unwrap_or_else(|| "Default".to_string()),
         }
     }
 
@@ -638,6 +662,17 @@ impl Editor {
         }
 
         match self.view {
+            OverlayView::Home => {
+                let (_, _, toggles) = home_layout(self.window.0, self.window.1);
+                for (i, &tog) in toggles.iter().enumerate() {
+                    if point_in(tog, x, y) {
+                        let wl = self.layout.get_mut(WidgetId::ALL[i]);
+                        wl.enabled = !wl.enabled;
+                        self.layout.save();
+                        return;
+                    }
+                }
+            }
             OverlayView::HudEditor => self.editor_press(x, y),
             OverlayView::Mods => {
                 let (_, toggles) = mods_layout(self.window.0, self.window.1, self.mods.len());
@@ -789,6 +824,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
 
     // The active dashboard view.
     match editor.view {
+        OverlayView::Home => draw_home(canvas, editor, data, fonts, w, h),
         OverlayView::HudEditor => draw_editor(canvas, editor, fonts, w, h),
         OverlayView::Mods => draw_mods(canvas, editor, fonts, w, h),
         OverlayView::Settings => draw_settings(canvas, editor, fonts, w, h),
@@ -800,7 +836,9 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     let hint_font = fonts.jetbrains_mono(12.0);
     let hint = match editor.view {
         OverlayView::HudEditor => "DRAG WIDGETS OR USE THE PANEL  ·  RIGHT SHIFT OR ESC TO CLOSE",
-        OverlayView::Mods | OverlayView::Settings => "RIGHT SHIFT OR ESC TO CLOSE",
+        OverlayView::Home | OverlayView::Mods | OverlayView::Settings => {
+            "RIGHT SHIFT OR ESC TO CLOSE"
+        }
     };
     let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
     let mut hint_paint = Paint::default();
@@ -1904,18 +1942,17 @@ fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, 
 
 /// The overlay's top-centre view-tab strip: the whole pill + a rect per tab.
 /// Fixed-width tabs so the renderer and the hit-tester agree without fonts.
-fn tab_layout(w: f32) -> (Rect, [Rect; 3]) {
-    const TAB_W: f32 = 132.0;
+fn tab_layout(w: f32) -> (Rect, [Rect; 4]) {
+    const TAB_W: f32 = 124.0;
     const TAB_H: f32 = 34.0;
     const TAB_Y: f32 = 18.0;
-    let strip_w = TAB_W * 3.0;
+    let strip_w = TAB_W * 4.0;
     let strip_x = (w - strip_w) * 0.5;
     let pill = Rect::from_xywh(strip_x, TAB_Y, strip_w, TAB_H);
-    let tabs = [
-        Rect::from_xywh(strip_x, TAB_Y, TAB_W, TAB_H),
-        Rect::from_xywh(strip_x + TAB_W, TAB_Y, TAB_W, TAB_H),
-        Rect::from_xywh(strip_x + TAB_W * 2.0, TAB_Y, TAB_W, TAB_H),
-    ];
+    let mut tabs = [empty_rect(); 4];
+    for (i, slot) in tabs.iter_mut().enumerate() {
+        *slot = Rect::from_xywh(strip_x + i as f32 * TAB_W, TAB_Y, TAB_W, TAB_H);
+    }
     (pill, tabs)
 }
 
@@ -2085,6 +2122,217 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
     for (i, &btn) in buttons.iter().enumerate() {
         let rate = crate::HudPaintRate::ALL[i];
         draw_settings_button(canvas, btn, rate.label(), rate == current, fonts);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Home view — the session overview + quick toggles.
+// ────────────────────────────────────────────────────────────────────────
+
+/// The HOME-view panel rect, its 5 stat cards, and 7 widget-toggle chips.
+/// Fixed-size so the renderer and the hit-tester agree without fonts.
+fn home_layout(w: f32, h: f32) -> (Rect, [Rect; 5], [Rect; 7]) {
+    let pw = 600.0;
+    let ph = 420.0;
+    let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
+    let left = panel.left + 32.0;
+    let inner_w = pw - 64.0;
+    let gap = 12.0;
+
+    // 5 stat cards — three narrow on top, two wide below.
+    let card_h = 62.0;
+    let stats_top = panel.top + 96.0;
+    let w3 = (inner_w - 2.0 * gap) / 3.0;
+    let w2 = (inner_w - gap) / 2.0;
+    let row2 = stats_top + card_h + gap;
+    let stats = [
+        Rect::from_xywh(left, stats_top, w3, card_h),
+        Rect::from_xywh(left + w3 + gap, stats_top, w3, card_h),
+        Rect::from_xywh(left + 2.0 * (w3 + gap), stats_top, w3, card_h),
+        Rect::from_xywh(left, row2, w2, card_h),
+        Rect::from_xywh(left + w2 + gap, row2, w2, card_h),
+    ];
+
+    // 7 widget toggle chips — four per row.
+    let tog_w = (inner_w - 3.0 * gap) / 4.0;
+    let tog_h = 34.0;
+    let tog_top = row2 + card_h + 72.0;
+    let mut toggles = [empty_rect(); 7];
+    for (i, slot) in toggles.iter_mut().enumerate() {
+        let col = i % 4;
+        let row = i / 4;
+        *slot = Rect::from_xywh(
+            left + col as f32 * (tog_w + gap),
+            tog_top + row as f32 * (tog_h + gap),
+            tog_w,
+            tog_h,
+        );
+    }
+    (panel, stats, toggles)
+}
+
+/// Format session seconds as `m:ss`, or `h:mm:ss` past an hour.
+fn fmt_playtime(secs: i32) -> String {
+    let s = secs.max(0);
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{}:{:02}:{:02}", h, m, sec)
+    } else {
+        format!("{}:{:02}", m, sec)
+    }
+}
+
+/// The active client-profile name from `%APPDATA%/EwoClient/profiles.toml`
+/// (the launcher owns the file; this is a read-only display).
+fn read_active_profile() -> Option<String> {
+    let path = std::env::var_os("APPDATA")
+        .map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("active") {
+            if let Some(val) = rest.trim_start().strip_prefix('=') {
+                let name = val.trim().trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// One stat card on the HOME view — a chip with a mono label and a value.
+fn draw_stat_card(canvas: &Canvas, rect: Rect, label: &str, value: &str, fonts: &FontStore) {
+    draw_chip(canvas, rect, 12.0);
+    let left = rect.left + 14.0;
+
+    let label_font = fonts.jetbrains_mono(9.0);
+    let mut label_paint = Paint::default();
+    label_paint.set_anti_alias(true);
+    label_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(canvas, label, (left, rect.top + 22.0), &label_font, &label_paint, 0.2);
+
+    let value_font = fonts.fraunces_axes(20.0, 36.0, 0.0, 560.0, None);
+    let mut value_paint = Paint::default();
+    value_paint.set_anti_alias(true);
+    value_paint.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str(value, (left, rect.top + 48.0), &value_font, &value_paint);
+}
+
+/// One quick-toggle chip — a widget name + an on/off dot, lit rose when on.
+fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: bool, fonts: &FontStore) {
+    let rrect = RRect::new_rect_xy(rect, rect.height() * 0.5, rect.height() * 0.5);
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color4f(if on { rgba(ROSE, 0.5) } else { rgba(WINE, 0.8) }, None);
+    canvas.draw_rrect(rrect, &bg);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(if on { rgba(ROSE, 0.85) } else { rgba(ROSE, 0.16) }, None);
+    canvas.draw_rrect(rrect, &border);
+
+    let cy = (rect.top + rect.bottom) * 0.5;
+    let dot_x = rect.left + 15.0;
+    let mut dot = Paint::default();
+    dot.set_anti_alias(true);
+    dot.set_color4f(if on { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.5) }, None);
+    canvas.draw_circle((dot_x, cy), 3.0, &dot);
+
+    let font = fonts.jetbrains_mono(9.0);
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    let mut text = Paint::default();
+    text.set_anti_alias(true);
+    text.set_color4f(if on { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) }, None);
+    draw_tracked_em(canvas, label, (dot_x + 12.0, cy + cap * 0.5), &font, &text, 0.08);
+}
+
+/// The HOME / overview view — session stats, account + profile, and quick
+/// per-HUD-widget visibility toggles.
+fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore, w: f32, h: f32) {
+    let (panel, stats, toggles) = home_layout(w, h);
+    draw_chip(canvas, panel, 16.0);
+    let left = panel.left + 32.0;
+
+    // Eyebrow + title.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(canvas, "HOME", (left, panel.top + 40.0), &eyebrow_font, &eyebrow, 0.22);
+
+    let title_font = fonts.fraunces_axes(27.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str("Overview", (left, panel.top + 78.0), &title_font, &title);
+
+    // Stat cards.
+    let ping = if data.ping_valid() {
+        format!("{} ms", data.ping())
+    } else {
+        "—".to_string()
+    };
+    let coords = if data.world_active() {
+        format!(
+            "{:.0}  {:.0}  {:.0}",
+            data.player_x(),
+            data.player_y(),
+            data.player_z()
+        )
+    } else {
+        "—".to_string()
+    };
+    let server = {
+        let s = data.server();
+        if s.is_empty() {
+            "—".to_string()
+        } else {
+            s
+        }
+    };
+    let cards: [(&str, String); 5] = [
+        ("FPS", data.fps().to_string()),
+        ("PING", ping),
+        ("PLAYTIME", fmt_playtime(data.playtime())),
+        ("COORDS", coords),
+        ("SERVER", server),
+    ];
+    for (rect, card) in stats.iter().zip(cards.iter()) {
+        draw_stat_card(canvas, *rect, card.0, &card.1, fonts);
+    }
+
+    // Account + active-profile line.
+    let name = data.player_name();
+    let account = if name.is_empty() {
+        "not signed in".to_string()
+    } else {
+        name
+    };
+    let info = format!("{}        profile · {}", account, editor.active_profile);
+    let info_font = fonts.newsreader(15.0);
+    let mut info_paint = Paint::default();
+    info_paint.set_anti_alias(true);
+    info_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    canvas.draw_str(&info, (left, stats[3].bottom + 36.0), &info_font, &info_paint);
+
+    // Quick-toggle section.
+    let qt_font = fonts.jetbrains_mono(10.0);
+    let mut qt = Paint::default();
+    qt.set_anti_alias(true);
+    qt.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        "QUICK TOGGLES  ·  HUD WIDGETS",
+        (left, toggles[0].top - 16.0),
+        &qt_font,
+        &qt,
+        0.18,
+    );
+    for (rect, id) in toggles.iter().zip(WidgetId::ALL) {
+        draw_toggle_chip(canvas, *rect, id.title(), editor.layout.get(id).enabled, fonts);
     }
 }
 
