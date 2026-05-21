@@ -238,6 +238,47 @@ fn write_toml<T: Serialize>(path: &PathBuf, value: &T, what: &str) {
     }
 }
 
+// ── index helpers ────────────────────────────────────────────────────────
+
+fn read_index() -> ProfileIndex {
+    match index_path() {
+        Some(p) => read_toml(&p, "profiles.toml"),
+        None => ProfileIndex::default(),
+    }
+}
+
+fn write_index(index: &ProfileIndex) {
+    if let Some(p) = index_path() {
+        write_toml(&p, index, "profiles.toml");
+    }
+}
+
+/// Name of the active profile.
+pub fn active_name() -> String {
+    read_index().active
+}
+
+/// All profile names, in registry order.
+pub fn list() -> Vec<String> {
+    read_index().profiles
+}
+
+// ── load ─────────────────────────────────────────────────────────────────
+
+/// Read one profile's `client.toml` + the global `settings.toml`, merged
+/// into the unified `SettingsConfig` + cosmetic tokens.
+fn load_one(name: &str) -> (SettingsConfig, Settings) {
+    let global: GlobalConfig = match settings_path() {
+        Some(p) => read_toml(&p, "settings.toml"),
+        None => GlobalConfig::default(),
+    };
+    let client: ClientProfile = match client_path(name) {
+        Some(p) => read_toml(&p, "client.toml"),
+        None => ClientProfile::default(),
+    };
+    (merge(&global, &client), client.tokens())
+}
+
 /// Load the active profile + global config, reconstructing the unified
 /// `SettingsConfig` the Settings screen uses plus the cosmetic `Settings`
 /// tokens. Migrates a pre-F `settings.toml` on first run. Never fails —
@@ -247,19 +288,12 @@ pub fn load() -> (SettingsConfig, Settings) {
         log::warn!("profile: config dir unresolvable — using defaults");
         return (SettingsConfig::default(), Settings::default());
     };
-
     if !index_p.exists() {
         return migrate(&index_p, &settings_p);
     }
-
-    let index: ProfileIndex = read_toml(&index_p, "profiles.toml");
-    let global: GlobalConfig = read_toml(&settings_p, "settings.toml");
-    let client = match client_path(&index.active) {
-        Some(p) => read_toml::<ClientProfile>(&p, "client.toml"),
-        None => ClientProfile::default(),
-    };
-    log::info!("profile: loaded active profile \"{}\"", index.active);
-    (merge(&global, &client), client.tokens())
+    let active = read_index().active;
+    log::info!("profile: loaded active profile \"{}\"", active);
+    load_one(&active)
 }
 
 /// First-run migration: a pre-F `settings.toml` (a full `SettingsConfig`)
@@ -288,26 +322,118 @@ fn migrate(index_p: &PathBuf, settings_p: &PathBuf) -> (SettingsConfig, Settings
     (merge(&global, &client), tokens)
 }
 
-/// Persist the unified `SettingsConfig` + tokens — splitting them back
-/// into the active `client.toml` and the global `settings.toml`.
+/// Persist the unified `SettingsConfig` + tokens into the active profile's
+/// `client.toml` and the global `settings.toml`.
 pub fn save(config: &SettingsConfig, tokens: &Settings) {
     let (global, client) = split(config, tokens);
-
-    if let Some(settings_p) = settings_path() {
-        write_toml(&settings_p, &global, "settings.toml");
+    if let Some(p) = settings_path() {
+        write_toml(&p, &global, "settings.toml");
     }
-    let active = active_profile_name();
-    if let Some(client_p) = client_path(&active) {
-        write_toml(&client_p, &client, "client.toml");
+    if let Some(p) = client_path(&active_name()) {
+        write_toml(&p, &client, "client.toml");
     }
 }
 
-/// Name of the active profile, from `profiles.toml`. Falls back to
-/// `Default` when the index is missing or unreadable.
-fn active_profile_name() -> String {
-    match index_path() {
-        Some(p) if p.exists() => read_toml::<ProfileIndex>(&p, "profiles.toml").active,
-        _ => DEFAULT_PROFILE.to_string(),
+// ── management ───────────────────────────────────────────────────────────
+
+/// Switch the active profile. Returns the now-active profile's config, or
+/// `None` if `name` isn't a known profile.
+pub fn switch(name: &str) -> Option<(SettingsConfig, Settings)> {
+    let mut index = read_index();
+    if !index.profiles.iter().any(|p| p == name) {
+        return None;
+    }
+    index.active = name.to_string();
+    write_index(&index);
+    log::info!("profile: switched to \"{}\"", name);
+    Some(load_one(name))
+}
+
+/// Create a fresh profile with default settings, make it active, and
+/// return its name + config.
+pub fn create() -> (String, SettingsConfig, Settings) {
+    let mut index = read_index();
+    let name = unique_name(&index.profiles, "Profile");
+    write_profile(&name, &ClientProfile::default());
+    index.profiles.push(name.clone());
+    index.active = name.clone();
+    write_index(&index);
+    log::info!("profile: created \"{}\"", name);
+    let (config, tokens) = load_one(&name);
+    (name, config, tokens)
+}
+
+/// Duplicate `src` — copy its `client.toml` into a new profile and make
+/// the copy active. Returns the new name + config, `None` if `src` is
+/// unknown.
+pub fn duplicate(src: &str) -> Option<(String, SettingsConfig, Settings)> {
+    let mut index = read_index();
+    if !index.profiles.iter().any(|p| p == src) {
+        return None;
+    }
+    let client: ClientProfile = match client_path(src) {
+        Some(p) => read_toml(&p, "client.toml"),
+        None => ClientProfile::default(),
+    };
+    let name = unique_name(&index.profiles, &format!("{src} copy"));
+    write_profile(&name, &client);
+    index.profiles.push(name.clone());
+    index.active = name.clone();
+    write_index(&index);
+    log::info!("profile: duplicated \"{}\" -> \"{}\"", src, name);
+    let (config, tokens) = load_one(&name);
+    Some((name, config, tokens))
+}
+
+/// Delete a profile. The last remaining profile can't be deleted. Returns
+/// the (possibly changed) active profile's config, or `None` if nothing
+/// was deleted.
+pub fn delete(name: &str) -> Option<(SettingsConfig, Settings)> {
+    let mut index = read_index();
+    if index.profiles.len() <= 1 || !index.profiles.iter().any(|p| p == name) {
+        return None;
+    }
+    index.profiles.retain(|p| p != name);
+    if index.active == name {
+        index.active = index.profiles[0].clone();
+    }
+    if let Some(dir) = profile_dir(name) {
+        if let Err(e) = fs::remove_dir_all(&dir) {
+            log::warn!("profile: delete dir failed: {}", e);
+        }
+    }
+    write_index(&index);
+    log::info!("profile: deleted \"{}\" (active now \"{}\")", name, index.active);
+    Some(load_one(&index.active))
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+fn profile_dir(name: &str) -> Option<PathBuf> {
+    let mut p = ewo_dir()?;
+    p.push(PROFILES_DIRNAME);
+    p.push(name);
+    Some(p)
+}
+
+fn write_profile(name: &str, client: &ClientProfile) {
+    if let Some(p) = client_path(name) {
+        write_toml(&p, client, "client.toml");
+    }
+}
+
+/// A name not already in `existing` — `base`, then `base 2`, `base 3`, …
+fn unique_name(existing: &[String], base: &str) -> String {
+    if !existing.iter().any(|p| p == base) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base} {n}");
+        if !existing.iter().any(|p| p == &candidate) {
+            return candidate;
+        }
+        n += 1;
     }
 }
 

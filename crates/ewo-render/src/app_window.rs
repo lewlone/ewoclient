@@ -81,6 +81,7 @@ pub fn draw_frame(
     instances: &[screens::instances::Instance],
     heading_hover: HoverGlowState,
     account: screens::settings::AccountView<'_>,
+    profiles: screens::settings::ProfileView<'_>,
 ) {
     let w = viewport_w as f32;
     let h = viewport_h as f32;
@@ -123,6 +124,7 @@ pub fn draw_frame(
         Screen::Settings => {
             screens::draw_settings(
                 canvas, fonts, card_w, card_h, time, settings, settings_tab, prefs, account,
+                profiles,
             );
         }
         Screen::Launching => {

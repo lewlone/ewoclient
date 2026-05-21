@@ -126,15 +126,23 @@ disk interop under `shared/` is untouched.
 - **Acceptance:** launcher behaves identically post-migration, sourced from
   `profiles/Default/`.
 
-### F3 — Profile management UI + keybind registry
-- Create / rename / delete / duplicate client profiles.
-- A profile picker (vdrop) in the Settings chrome or a small Profiles tab.
-- The Settings screen edits the *active* profile; switching re-applies prefs
-  live.
-- Build the keybind registry + a remap-row widget (real UI even with one
-  keybind).
-- **Acceptance:** two profiles with different warmth/theme/HUD; switching swaps
-  the look instantly.
+### F3 — Profile management UI ✅ shipped
+- New **Profiles tab** in the Settings sidebar (2nd, after Account) — a
+  list of profile rows: click to switch active, per-row delete-×, plus
+  "New profile" and "Duplicate current" buttons.
+- `profile` module gains the management API: `list` / `active_name` /
+  `switch` / `create` / `duplicate` / `delete`. Switching re-applies the
+  profile's config live (Settings widgets, cosmetic tokens, vsync,
+  backdrop density) via `App::apply_loaded_config`.
+- The Settings screen already edits the active profile (since F2 — every
+  settings save splits into the active `client.toml`).
+- **Rename deferred to F6** — it needs text-input plumbing; new profiles
+  are auto-named ("Profile 2", "<name> copy") for now.
+- **Keybind registry moved to F5** — a remap UI does nothing until the
+  in-game side reads keybinds from the profile (F5's job); building it in
+  F3 would be a non-functional shell.
+- **Acceptance:** two profiles with different warmth/theme; switching
+  swaps the look instantly. *(Visual verification pending.)*
 
 ### F4 — The dashboard
 - New `screens/dashboard.rs`, replaces `main_menu`, becomes the default screen.
@@ -150,10 +158,16 @@ disk interop under `shared/` is untouched.
 ### F5 — In-game profile hot-swap
 - Move `hud.toml` under `profiles/<name>/` (deferred from F2) so HUD layout
   is genuinely per-profile, and teach `crates/ewo-jni` the active profile.
-- The overlay SETTINGS tab (Phase E6) gets a client-profile picker.
+- **Decided (user, 2026-05-21):** the in-game profile switcher is a profile
+  **picker row at the top of the overlay SETTINGS tab** (above the
+  paint-rate controls) — *not* a 4th tab. It's a switcher only; create /
+  rename / delete stay launcher-side (F3).
 - Switching in-game re-reads the profile and re-applies HUD layout + HUD
   settings live, through the JNI bridge (`crates/ewo-jni`) — same write-back
   pattern as Phase E6's overlay-mods.
+- Build the module-extensible keybind registry + a remap-row widget (moved
+  from F3) — keybinds become functional here, where the in-game side reads
+  them from the profile.
 - **Acceptance:** swap profile from inside Minecraft, HUD re-lays-out with no
   restart.
 
@@ -164,6 +178,8 @@ disk interop under `shared/` is untouched.
 - Skin-head avatars for accounts (deferred from F1) — capture the skin texture
   URL in the profile fetch + a threaded skin-image fetch/cache, replacing the
   monogram discs.
+- Profile rename (deferred from F3) — reuse the instances inline text-input
+  pattern; until then new profiles are auto-named.
 
 ---
 

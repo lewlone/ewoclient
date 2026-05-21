@@ -44,6 +44,7 @@ const PANEL_INNER_PAD_Y: f32 = 40.0;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
     Account,
+    Profiles,
     Graphics,
     Audio,
     Paths,
@@ -51,8 +52,9 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 5] = [
+    const ALL: [SettingsTab; 6] = [
         SettingsTab::Account,
+        SettingsTab::Profiles,
         SettingsTab::Graphics,
         SettingsTab::Audio,
         SettingsTab::Paths,
@@ -62,6 +64,7 @@ impl SettingsTab {
     fn label(self) -> &'static str {
         match self {
             SettingsTab::Account => "Account",
+            SettingsTab::Profiles => "Profiles",
             SettingsTab::Graphics => "Graphics",
             SettingsTab::Audio => "Audio",
             SettingsTab::Paths => "Paths",
@@ -117,6 +120,44 @@ pub enum AccountHover {
     Row(usize),
     /// The remove-× of account row `index`.
     Remove(usize),
+}
+
+/// One profile row for the Profiles tab's list.
+#[derive(Copy, Clone, Debug)]
+pub struct ProfileRowView<'a> {
+    pub name: &'a str,
+    /// Whether this is the active profile.
+    pub active: bool,
+}
+
+/// The Profiles tab's render input.
+#[derive(Copy, Clone, Debug)]
+pub struct ProfileView<'a> {
+    pub profiles: &'a [ProfileRowView<'a>],
+}
+
+/// A pending profile-management action. The Profiles-tab press handler
+/// sets it into `Prefs::profile_request`; the main loop dispatches it to
+/// the `profile` module and clears it.
+#[derive(Clone, Debug)]
+pub enum ProfileRequest {
+    /// Make the named profile active.
+    Switch(String),
+    /// Create a new profile.
+    New,
+    /// Duplicate the active profile.
+    Duplicate,
+    /// Delete the named profile.
+    Delete(String),
+}
+
+/// Which Profiles-tab control the cursor is over — drives hover highlight.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ProfileHover {
+    /// The body of profile row `index` (click to make active).
+    Row(usize),
+    /// The delete-× of profile row `index`.
+    Delete(usize),
 }
 
 /// Identifies a control slot in the Settings screen — used for hit-testing
@@ -191,6 +232,15 @@ pub struct Prefs {
     /// Which Account-tab row / remove-button the cursor is over. Updated
     /// on cursor motion, read by `draw_account_tab` for hover highlight.
     pub account_hover: Option<AccountHover>,
+    /// Hover state for the Profiles tab's "New profile" / "Duplicate
+    /// current" buttons.
+    pub profile_new: VghostBtnState,
+    pub profile_dup: VghostBtnState,
+    /// A pending profile-management action — set by the Profiles-tab press
+    /// handler, dispatched (and cleared) by the main loop.
+    pub profile_request: Option<ProfileRequest>,
+    /// Which Profiles-tab row / delete-button the cursor is over.
+    pub profile_hover: Option<ProfileHover>,
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
@@ -295,6 +345,10 @@ impl Default for Prefs {
             account_add: VghostBtnState::default(),
             account_request: None,
             account_hover: None,
+            profile_new: VghostBtnState::default(),
+            profile_dup: VghostBtnState::default(),
+            profile_request: None,
+            profile_hover: None,
             tab_changed_at: None,
             reset_requested: false,
         }
@@ -314,6 +368,8 @@ impl Prefs {
         self.downloads.tick(dt);
         self.reset_prefs.tick(dt);
         self.account_add.tick(dt);
+        self.profile_new.tick(dt);
+        self.profile_dup.tick(dt);
     }
 
     /// Snapshot the persisted form of the current prefs. App writes this
@@ -407,10 +463,11 @@ pub fn draw_settings(
     active: SettingsTab,
     prefs: &Prefs,
     account: AccountView<'_>,
+    profiles: ProfileView<'_>,
 ) {
     draw_screen_head(canvas, fonts, w);
     draw_sidebar(canvas, fonts, h, active);
-    draw_panel(canvas, fonts, w, h, time, settings, active, prefs, account);
+    draw_panel(canvas, fonts, w, h, time, settings, active, prefs, account, profiles);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -532,6 +589,7 @@ fn draw_panel(
     active: SettingsTab,
     prefs: &Prefs,
     account: AccountView<'_>,
+    profiles: ProfileView<'_>,
 ) {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
@@ -572,6 +630,8 @@ fn draw_panel(
         let body_top = section_head_bottom(content_top, fonts);
         if active == SettingsTab::Account {
             draw_account_tab(canvas, fonts, w, prefs, account);
+        } else if active == SettingsTab::Profiles {
+            draw_profiles_tab(canvas, fonts, w, prefs, profiles);
         } else {
             draw_section_body(
                 canvas,
@@ -680,6 +740,7 @@ fn section_head_bottom(top: f32, fonts: &FontStore) -> f32 {
 fn subhead_for(tab: SettingsTab) -> &'static str {
     match tab {
         SettingsTab::Account => "your Microsoft account.",
+        SettingsTab::Profiles => "named looks you can switch between.",
         SettingsTab::Graphics => "how the cloth is rendered.",
         SettingsTab::Audio => "tend to the boudoir's hum.",
         SettingsTab::Paths => "where the launcher keeps its things.",
@@ -737,7 +798,9 @@ const ACCOUNT_ROWS: &[RowDef] = &[];
 
 fn rows_for_tab(tab: SettingsTab) -> &'static [RowDef] {
     match tab {
-        SettingsTab::Account => ACCOUNT_ROWS,
+        // Account + Profiles use custom layouts (see draw_account_tab /
+        // draw_profiles_tab) — no row-grid entries.
+        SettingsTab::Account | SettingsTab::Profiles => ACCOUNT_ROWS,
         SettingsTab::Graphics => GRAPHICS_ROWS,
         SettingsTab::Audio => AUDIO_ROWS,
         SettingsTab::Paths => PATHS_ROWS,
@@ -1103,6 +1166,189 @@ fn monogram_tint(uuid: &str) -> (f32, f32, f32) {
     ];
     let sum: u32 = uuid.bytes().map(u32::from).sum();
     TINTS[(sum % 4) as usize]
+}
+
+// ── Profiles tab ─────────────────────────────────────────────────────────
+
+/// Width of the Profiles tab's New / Duplicate buttons.
+const PROFILE_BTN_W: f32 = 188.0;
+
+/// Card-local layout of one profile row: the full row rect (click to make
+/// active) and the delete-× rect nested at its right edge.
+pub struct ProfileRowLayout {
+    pub index: usize,
+    pub row: Rect,
+    pub delete: Rect,
+}
+
+/// Card-local layout of the Profiles tab.
+pub struct ProfileTabLayout {
+    pub content_left: f32,
+    pub content_right: f32,
+    pub header_top: f32,
+    pub rows: Vec<ProfileRowLayout>,
+    pub new_button: Rect,
+    pub dup_button: Rect,
+}
+
+/// Compute the Profiles tab's layout for `profile_count` profiles.
+pub fn profiles_tab_layout(fonts: &FontStore, card_w: f32, profile_count: usize) -> ProfileTabLayout {
+    let body_top = HEADER_BOTTOM + 8.0 + 16.0;
+    let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
+    let panel_right = card_w - BODY_PAD_X;
+    let content_left = panel_left + PANEL_INNER_PAD_X;
+    let content_right = panel_right - PANEL_INNER_PAD_X;
+    let content_top = body_top + PANEL_INNER_PAD_Y;
+    let header_top = section_head_bottom(content_top, fonts);
+
+    let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    let mut rows = Vec::with_capacity(profile_count);
+    for i in 0..profile_count {
+        let top = list_top + i as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP);
+        let row = Rect::from_ltrb(content_left, top, content_right, top + ACCOUNT_ROW_H);
+        let rm = 30.0;
+        let cy = (row.top + row.bottom) * 0.5;
+        let delete = Rect::from_xywh(row.right - rm - 8.0, cy - rm * 0.5, rm, rm);
+        rows.push(ProfileRowLayout { index: i, row, delete });
+    }
+    let list_bottom = if profile_count == 0 {
+        list_top
+    } else {
+        list_top + profile_count as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP) - ACCOUNT_ROW_GAP
+    };
+    let btn_top = list_bottom + 18.0;
+    let new_button = Rect::from_xywh(content_left, btn_top, PROFILE_BTN_W, ADD_BTN_H);
+    let dup_button = Rect::from_xywh(new_button.right + 12.0, btn_top, PROFILE_BTN_W, ADD_BTN_H);
+
+    ProfileTabLayout {
+        content_left,
+        content_right,
+        header_top,
+        rows,
+        new_button,
+        dup_button,
+    }
+}
+
+fn draw_profiles_tab(canvas: &Canvas, fonts: &FontStore, card_w: f32, prefs: &Prefs, view: ProfileView<'_>) {
+    let layout = profiles_tab_layout(fonts, card_w, view.profiles.len());
+
+    // Body copy.
+    let body_font = fonts.newsreader(15.0);
+    let mut body_paint = Paint::default();
+    body_paint.set_anti_alias(true);
+    body_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)); // mid-pearl
+    let (_, bm) = body_font.metrics();
+    canvas.draw_str(
+        "a client profile bundles your cosmetic + perf settings — switch any time.",
+        (layout.content_left, layout.header_top + (-bm.ascent)),
+        &body_font,
+        &body_paint,
+    );
+
+    // Profile rows.
+    let can_delete = view.profiles.len() > 1;
+    for (rl, row) in layout.rows.iter().zip(view.profiles) {
+        let hovered = prefs.profile_hover == Some(ProfileHover::Row(rl.index));
+        let delete_hovered = prefs.profile_hover == Some(ProfileHover::Delete(rl.index));
+        draw_profile_row(canvas, fonts, rl, row, hovered, delete_hovered, can_delete);
+    }
+
+    // New / Duplicate buttons.
+    draw_vghost_btn(
+        canvas,
+        layout.new_button,
+        "New profile",
+        &prefs.profile_new,
+        GhostKind::Pearl,
+        fonts,
+    );
+    draw_vghost_btn(
+        canvas,
+        layout.dup_button,
+        "Duplicate current",
+        &prefs.profile_dup,
+        GhostKind::Pearl,
+        fonts,
+    );
+}
+
+/// Draw one profile row — background, name, active marker, delete-×.
+fn draw_profile_row(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &ProfileRowLayout,
+    view: &ProfileRowView<'_>,
+    hovered: bool,
+    delete_hovered: bool,
+    can_delete: bool,
+) {
+    let row = layout.row;
+    let rrect = RRect::new_rect_xy(row, 12.0, 12.0);
+
+    if view.active {
+        let mut bg = Paint::default();
+        bg.set_anti_alias(true);
+        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10), None);
+        canvas.draw_rrect(rrect, &bg);
+        let mut rim = Paint::default();
+        rim.set_anti_alias(true);
+        rim.set_style(PaintStyle::Stroke);
+        rim.set_stroke_width(1.0);
+        rim.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32), None);
+        canvas.draw_rrect(rrect, &rim);
+    } else if hovered {
+        let mut bg = Paint::default();
+        bg.set_anti_alias(true);
+        bg.set_color4f(Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05), None);
+        canvas.draw_rrect(rrect, &bg);
+    }
+
+    let cy = (row.top + row.bottom) * 0.5;
+
+    // Name — Fraunces, vertically centered.
+    let name_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 360.0, None);
+    let mut name_paint = Paint::default();
+    name_paint.set_anti_alias(true);
+    name_paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    let (_, nm) = name_font.metrics();
+    canvas.draw_str(
+        view.name,
+        (row.left + 18.0, cy + nm.cap_height * 0.5),
+        &name_font,
+        &name_paint,
+    );
+
+    // Active marker — rose dot left of the delete button.
+    if view.active {
+        let mut dot = Paint::default();
+        dot.set_anti_alias(true);
+        dot.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+        canvas.draw_circle((layout.delete.left - 14.0, cy), 3.5, &dot);
+    }
+
+    // Delete-× — hidden when there's only one profile (can't delete the last).
+    if can_delete {
+        let rm = layout.delete;
+        let rcx = (rm.left + rm.right) * 0.5;
+        let rcy = (rm.top + rm.bottom) * 0.5;
+        if delete_hovered {
+            let mut disc = Paint::default();
+            disc.set_anti_alias(true);
+            disc.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18), None);
+            canvas.draw_circle((rcx, rcy), 13.0, &disc);
+        }
+        let mut x = Paint::default();
+        x.set_anti_alias(true);
+        x.set_style(PaintStyle::Stroke);
+        x.set_stroke_width(1.6);
+        x.set_stroke_cap(PaintCap::Round);
+        let alpha = if delete_hovered { 0.95 } else { 0.40 };
+        x.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, alpha), None);
+        let d = 5.0;
+        canvas.draw_line((rcx - d, rcy - d), (rcx + d, rcy + d), &x);
+        canvas.draw_line((rcx + d, rcy - d), (rcx - d, rcy + d), &x);
+    }
 }
 
 /// Render a Minecraft UUID short — first 8 chars uppercase, mono-feel.
@@ -1486,7 +1732,7 @@ pub fn path_browse_bounds(slot: Slot, fonts: &FontStore, card_w: f32, card_h: f3
 
 /// Card-local bounds for each sidebar tab, indexed by `SettingsTab::ALL`.
 /// Returned in the same order as `SettingsTab::ALL`.
-pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 5] {
+pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 6] {
     let sidebar_left = BODY_PAD_X;
     let body_top = HEADER_BOTTOM + 8.0;
     let title_top = body_top + 16.0;
@@ -1500,8 +1746,9 @@ pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 5] {
     let row_h = 14.0 + (-lm.ascent + lm.descent) + 14.0;
     let mut y = title_baseline + tm.descent + 28.0;
 
-    let mut out: [(SettingsTab, Rect); 5] = [
+    let mut out: [(SettingsTab, Rect); 6] = [
         (SettingsTab::Account, Rect::default()),
+        (SettingsTab::Profiles, Rect::default()),
         (SettingsTab::Graphics, Rect::default()),
         (SettingsTab::Audio, Rect::default()),
         (SettingsTab::Paths, Rect::default()),

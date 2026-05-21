@@ -10,7 +10,8 @@ use clap::Parser;
 use ewo_core::{Screen, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
 use ewo_render::screens::settings::{
-    AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView,
+    AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView, ProfileHover,
+    ProfileRequest, ProfileRowView, ProfileView,
 };
 use ewo_render::screens::{
     self, AboutModalState, DevOverlayState, DevSlot, FrameStats, InstancePrefs, InstanceSlot,
@@ -123,6 +124,11 @@ struct App {
     /// Microsoft auth service — owns the worker thread + auth state.
     /// Polled each frame via `auth.poll()` to drain the event channel.
     auth: AuthService,
+    /// Cached client-profile registry — names + the active name. Refreshed
+    /// at startup and after any profile-management action (rare), so the
+    /// per-frame render path never hits disk for the list.
+    profiles: Vec<String>,
+    active_profile: String,
     /// Mojang version manifest service — owns disk cache + background
     /// refresh thread. Hydrated from cache at startup; refreshed on a
     /// 6-hour TTL. Feeds the new-instance modal's Version dropdown.
@@ -185,6 +191,8 @@ impl App {
             // AuthService loads the persisted account store and kicks a
             // silent refresh for the active account itself (see `new`).
             auth: AuthService::new(),
+            profiles: profile::list(),
+            active_profile: profile::active_name(),
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
@@ -192,6 +200,24 @@ impl App {
             pending_relaunch: None,
             celebrate_until: None,
             dev,
+        }
+    }
+
+    /// Apply a freshly-loaded profile config — Settings widgets, cosmetic
+    /// tokens, vsync, and the backdrop particle density (a profile-scoped
+    /// token, so the pools re-spawn).
+    fn apply_loaded_config(&mut self, config: screens::SettingsConfig, settings: Settings) {
+        self.prefs.apply_config(&config);
+        self.settings = settings;
+        if let Some(b) = self.backend.as_ref() {
+            b.set_vsync(self.prefs.vsync.on);
+        }
+        if let (Some(window), Some(backdrop)) = (self.window.as_ref(), self.backdrop.as_mut()) {
+            let scale = window.scale_factor();
+            let size = window.inner_size();
+            let cw = card_content_width(size, scale);
+            let ch = card_content_height(size, scale);
+            backdrop.resize(cw, ch, &self.settings);
         }
     }
 
@@ -782,6 +808,7 @@ impl ApplicationHandler for App {
                         card_w,
                         card_h,
                         &account_uuids,
+                        &self.profiles,
                     );
                     if changed {
                         profile::save(&self.prefs.to_config(), &self.settings);
@@ -1221,6 +1248,7 @@ impl ApplicationHandler for App {
                         card_w,
                         card_h,
                         &account_uuids,
+                        &self.profiles,
                     );
                     if !handled && pressed {
                         let (h, c) = handle_settings_press(
@@ -1231,6 +1259,7 @@ impl ApplicationHandler for App {
                             card_w,
                             card_h,
                             &account_uuids,
+                            &self.profiles,
                         );
                         handled = h;
                         changed = changed || c;
@@ -1813,6 +1842,26 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Profile-tab actions — switch / new / duplicate / delete.
+                if let Some(req) = self.prefs.profile_request.take() {
+                    let applied = match req {
+                        ProfileRequest::Switch(name) => profile::switch(&name),
+                        ProfileRequest::New => {
+                            let (_n, c, s) = profile::create();
+                            Some((c, s))
+                        }
+                        ProfileRequest::Duplicate => {
+                            profile::duplicate(&self.active_profile).map(|(_n, c, s)| (c, s))
+                        }
+                        ProfileRequest::Delete(name) => profile::delete(&name),
+                    };
+                    if let Some((config, settings)) = applied {
+                        self.apply_loaded_config(config, settings);
+                    }
+                    self.profiles = profile::list();
+                    self.active_profile = profile::active_name();
+                }
+
                 // Reset preferences — wipe to bundled defaults, persist,
                 // and resync the GL backend's vsync to match.
                 if self.prefs.reset_requested {
@@ -1925,6 +1974,17 @@ impl ApplicationHandler for App {
                     accounts: &account_rows,
                     op: account_op,
                 };
+                let profile_rows: Vec<ProfileRowView<'_>> = self
+                    .profiles
+                    .iter()
+                    .map(|n| ProfileRowView {
+                        name: n,
+                        active: *n == self.active_profile,
+                    })
+                    .collect();
+                let profile_view = ProfileView {
+                    profiles: &profile_rows,
+                };
                 let frame_stats = FrameStats {
                     fps: self.clock.avg_fps(),
                     frame_ms: self.clock.avg_dt() * 1000.0,
@@ -1940,7 +2000,7 @@ impl ApplicationHandler for App {
                             screen, &launch_button, &menu_items, settings_tab, prefs,
                             instance_prefs, launching_state, modal, about_modal,
                             dev_overlay, frame_stats, instances, heading_hover,
-                            account_view,
+                            account_view, profile_view,
                         );
                     });
                 }
@@ -2074,6 +2134,7 @@ fn drive_settings_sliders(
     card_w: f32,
     card_h: f32,
     account_uuids: &[String],
+    profile_names: &[String],
 ) -> bool {
     let Some(fonts) = fonts else {
         return false;
@@ -2090,6 +2151,22 @@ fn drive_settings_sliders(
             }
         }
         prefs.account_add.handle(mouse, layout.add_button, false);
+        return false;
+    }
+    // Profiles tab — update row / delete / button hover.
+    if tab == SettingsTab::Profiles {
+        let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
+        let can_delete = profile_names.len() > 1;
+        prefs.profile_hover = None;
+        for rl in &layout.rows {
+            if can_delete && rect_contains(&rl.delete, mouse) {
+                prefs.profile_hover = Some(ProfileHover::Delete(rl.index));
+            } else if rect_contains(&rl.row, mouse) {
+                prefs.profile_hover = Some(ProfileHover::Row(rl.index));
+            }
+        }
+        prefs.profile_new.handle(mouse, layout.new_button, false);
+        prefs.profile_dup.handle(mouse, layout.dup_button, false);
         return false;
     }
     let mut changed = false;
@@ -2175,6 +2252,7 @@ fn handle_settings_press(
     card_w: f32,
     card_h: f32,
     account_uuids: &[String],
+    profile_names: &[String],
 ) -> (bool, bool) {
     let Some(fonts) = fonts else {
         return (false, false);
@@ -2204,6 +2282,41 @@ fn handle_settings_press(
         if prefs.account_add.handle(mouse, layout.add_button, true) {
             log::info!("account: add-account button clicked");
             prefs.account_request = Some(AccountRequest::Add);
+            return (true, false);
+        }
+        return (false, false);
+    }
+
+    // Profiles tab — custom layout. Delete buttons nest inside rows, so
+    // test them first; then row clicks (switch); then the action buttons.
+    if tab == SettingsTab::Profiles {
+        let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
+        let can_delete = profile_names.len() > 1;
+        if can_delete {
+            for rl in &layout.rows {
+                if rect_contains(&rl.delete, mouse) {
+                    if let Some(name) = profile_names.get(rl.index) {
+                        log::info!("profile: delete \"{}\"", name);
+                        prefs.profile_request = Some(ProfileRequest::Delete(name.clone()));
+                    }
+                    return (true, false);
+                }
+            }
+        }
+        for rl in &layout.rows {
+            if rect_contains(&rl.row, mouse) {
+                if let Some(name) = profile_names.get(rl.index) {
+                    prefs.profile_request = Some(ProfileRequest::Switch(name.clone()));
+                }
+                return (true, false);
+            }
+        }
+        if prefs.profile_new.handle(mouse, layout.new_button, true) {
+            prefs.profile_request = Some(ProfileRequest::New);
+            return (true, false);
+        }
+        if prefs.profile_dup.handle(mouse, layout.dup_button, true) {
+            prefs.profile_request = Some(ProfileRequest::Duplicate);
             return (true, false);
         }
         return (false, false);
