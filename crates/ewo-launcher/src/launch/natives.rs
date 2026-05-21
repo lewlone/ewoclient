@@ -16,7 +16,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::downloads::paths;
-use crate::versions::per_version::{Library, PerVersion};
+use crate::versions::per_version::PerVersion;
 
 use super::plan::pick_native_classifier;
 
@@ -127,10 +127,4 @@ fn extract_one(jar: &Path, dest: &Path, excludes: &[String]) -> Result<(), Extra
 
 fn io_to_zip(e: io::Error) -> ExtractError {
     ExtractError::Zip(e.to_string())
-}
-
-/// Convenience helper for libraries without their own native classifier
-/// — returns whether the lib has one applicable on this host.
-pub fn has_native(lib: &Library) -> bool {
-    pick_native_classifier(lib).is_some()
 }

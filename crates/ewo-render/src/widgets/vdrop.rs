@@ -210,7 +210,7 @@ pub fn draw_vdrop_head(
     canvas.restore_to_count(saved2);
 
     // Layer 4: value text + caret
-    draw_head_label_and_caret(canvas, bounds, value, state.open, state.anim, fonts);
+    draw_head_label_and_caret(canvas, bounds, value, state.anim, fonts);
 
     canvas.restore_to_count(saved);
 }
@@ -219,7 +219,6 @@ fn draw_head_label_and_caret(
     canvas: &Canvas,
     bounds: Rect,
     value: &str,
-    open: bool,
     anim: f32,
     fonts: &FontStore,
 ) {
@@ -244,11 +243,9 @@ fn draw_head_label_and_caret(
     // Rotation angle in radians: 45° at rest, -135° fully open.
     let from = std::f32::consts::FRAC_PI_4; // 45°
     let to = -3.0 * std::f32::consts::FRAC_PI_4; // -135°
-    let eased = if open {
-        CubicBezier::SILK.eval(anim.clamp(0.0, 1.0))
-    } else {
-        CubicBezier::SILK.eval(anim.clamp(0.0, 1.0))
-    };
+    // `anim` already tracks the open/close direction, so the easing is
+    // the same expression regardless of the menu's open state.
+    let eased = CubicBezier::SILK.eval(anim.clamp(0.0, 1.0));
     let angle = from + (to - from) * eased;
 
     let saved = canvas.save();

@@ -27,12 +27,11 @@ use super::manifest::{VersionManifest, VERSION_MANIFEST_URL};
 pub enum VersionState {
     /// First run, no cache, no fetch yet.
     Empty,
-    /// Cache hydrated; manifest available. `stale = true` means a refresh
-    /// is in flight or about to be triggered.
-    Loaded { manifest: VersionManifest, stale: bool },
+    /// Cache hydrated; manifest available.
+    Loaded { manifest: VersionManifest },
     /// Refresh failed since last successful load. Manifest may still be
-    /// usable from cache; `last_error` is for diagnostic display.
-    Failed { manifest: Option<VersionManifest>, last_error: String },
+    /// usable from cache.
+    Failed { manifest: Option<VersionManifest> },
 }
 
 #[derive(Debug)]
@@ -56,7 +55,7 @@ impl VersionService {
         let (state, needs_refresh) = match cache::load() {
             Some((manifest, fetched_at)) => {
                 let stale = cache::is_stale(fetched_at);
-                (VersionState::Loaded { manifest, stale }, stale)
+                (VersionState::Loaded { manifest }, stale)
             }
             None => (VersionState::Empty, true),
         };
@@ -72,16 +71,12 @@ impl VersionService {
         svc
     }
 
-    pub fn state(&self) -> &VersionState {
-        &self.state
-    }
-
     /// Convenience: borrow the in-memory manifest if any. Returns `None`
     /// for `Empty` or `Failed { manifest: None }`.
     pub fn manifest(&self) -> Option<&VersionManifest> {
         match &self.state {
-            VersionState::Loaded { manifest, .. } => Some(manifest),
-            VersionState::Failed { manifest: Some(m), .. } => Some(m),
+            VersionState::Loaded { manifest } => Some(manifest),
+            VersionState::Failed { manifest: Some(m) } => Some(m),
             _ => None,
         }
     }
@@ -97,23 +92,17 @@ impl VersionService {
                         manifest.latest.release,
                     );
                     cache::save(&manifest);
-                    self.state = VersionState::Loaded {
-                        manifest,
-                        stale: false,
-                    };
+                    self.state = VersionState::Loaded { manifest };
                     self.busy = false;
                 }
                 VersionEvent::Failure(msg) => {
                     log::warn!("versions: refresh failed: {}", msg);
                     let manifest = match &self.state {
-                        VersionState::Loaded { manifest, .. } => Some(manifest.clone()),
-                        VersionState::Failed { manifest, .. } => manifest.clone(),
+                        VersionState::Loaded { manifest } => Some(manifest.clone()),
+                        VersionState::Failed { manifest } => manifest.clone(),
                         VersionState::Empty => None,
                     };
-                    self.state = VersionState::Failed {
-                        manifest,
-                        last_error: msg,
-                    };
+                    self.state = VersionState::Failed { manifest };
                     self.busy = false;
                 }
             }

@@ -19,7 +19,4 @@ pub mod per_version;
 pub mod per_version_fetch;
 pub mod service;
 
-pub use manifest::{ManifestEntry, ManifestEntryKind, VersionManifest};
-pub use per_version::PerVersion;
-pub use per_version_fetch::{get_or_fetch, FetchError};
-pub use service::{VersionEvent, VersionService, VersionState};
+pub use service::VersionService;

@@ -796,7 +796,6 @@ fn draw_list(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn draw_list_row(
     canvas: &Canvas,
     fonts: &FontStore,
@@ -901,8 +900,6 @@ fn draw_list_row(
     name_paint.set_anti_alias(true);
     name_paint.set_color(if selected {
         Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0)
-    } else if hovered {
-        TEXT_PEARL
     } else {
         TEXT_PEARL
     });

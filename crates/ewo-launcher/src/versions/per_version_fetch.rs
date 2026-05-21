@@ -25,8 +25,6 @@ use super::per_version::PerVersion;
 
 #[derive(Debug, Clone)]
 pub enum FetchError {
-    /// The master manifest doesn't have an entry with that ID.
-    UnknownVersion(String),
     /// HTTP failed at fetch time.
     Network(String),
     /// Body didn't parse as `PerVersion` JSON.
@@ -42,7 +40,6 @@ pub enum FetchError {
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FetchError::UnknownVersion(id) => write!(f, "unknown version: {}", id),
             FetchError::Network(s) => write!(f, "network: {}", s),
             FetchError::Parse(s) => write!(f, "parse: {}", s),
             FetchError::Sha1Mismatch { expected, actual } => {

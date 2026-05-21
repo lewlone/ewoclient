@@ -18,15 +18,6 @@ pub fn runtime_dir(major: u32) -> Option<PathBuf> {
     Some(p)
 }
 
-/// Root scan dir for the JRE detector — returns
-/// `<config>/EwoClient/runtime/<major>/jre`. Detector walks one level
-/// deep looking for `bin/java.exe`.
-pub fn jre_dir(major: u32) -> Option<PathBuf> {
-    let mut p = runtime_dir(major)?;
-    p.push("jre");
-    Some(p)
-}
-
 /// All `<config>/EwoClient/runtime/<major>/jre/` dirs that exist. The
 /// JRE detector adds these to its candidate scan.
 pub fn all_bundled_jre_roots() -> Vec<PathBuf> {

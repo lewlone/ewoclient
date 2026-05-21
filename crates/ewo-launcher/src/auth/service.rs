@@ -67,10 +67,6 @@ impl AuthService {
         &self.state
     }
 
-    pub fn is_busy(&self) -> bool {
-        self.busy
-    }
-
     /// Drain pending events and update `state`. Call once per frame.
     pub fn poll(&mut self) {
         while let Ok(event) = self.rx.try_recv() {

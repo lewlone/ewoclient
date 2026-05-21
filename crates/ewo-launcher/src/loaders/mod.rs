@@ -14,8 +14,7 @@ pub mod fetch;
 pub mod manifest;
 pub mod merge;
 
-pub use fetch::{get_or_fetch, FetchError};
-pub use manifest::LoaderManifest;
+pub use fetch::get_or_fetch;
 pub use merge::merge;
 
 /// What the download job needs to know about a loader: a logical id (for

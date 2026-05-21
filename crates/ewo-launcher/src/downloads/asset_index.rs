@@ -21,17 +21,13 @@ use serde::Deserialize;
 /// CDN base URL for asset blobs.
 pub const ASSETS_CDN_BASE: &str = "https://resources.download.minecraft.net";
 
+// Legacy pre-1.7 indexes carried `map_to_resources` / `virtual` flags for
+// the old per-instance asset layout. Every version in our allowlist uses
+// the modern hashed-objects layout, so those fields aren't modeled —
+// serde drops the unknown keys.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssetIndex {
     pub objects: HashMap<String, AssetObject>,
-    /// Some old indexes set this to copy assets into per-instance dirs.
-    /// Modern (≥1.7.x) indexes omit it.
-    #[serde(default)]
-    pub map_to_resources: bool,
-    /// `virtual: true` means the same as `map_to_resources` (old field
-    /// name pre-1.7.3). We don't bother with this either.
-    #[serde(default, rename = "virtual")]
-    pub virtual_: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

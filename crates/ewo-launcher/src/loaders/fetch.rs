@@ -53,7 +53,7 @@ impl std::error::Error for FetchError {}
 /// purely for offline inspection. If the loader is ever shipped with a
 /// stable URL + sha pinning, this is the spot to add a real cache.
 pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
-    let body = if let Some(path) = file_url_to_path(url) {
+    let body = if let Some(path) = crate::util::file_url_to_path(url) {
         log::info!("loader: reading {} from file {}", id, path.display());
         fs::read_to_string(&path)
             .map_err(|e| FetchError::Network(format!("read {}: {}", path.display(), e)))?
@@ -88,61 +88,6 @@ fn fetch_http(url: &str) -> Result<String, FetchError> {
             Err(FetchError::Network(format!("{} HTTP {}", code, body)))
         }
         Err(e) => Err(FetchError::Network(e.to_string())),
-    }
-}
-
-/// Convert a `file://...` URL into a filesystem path, or return `None`
-/// if the URL isn't a `file://` URL. Handles both the unix-style
-/// `file:///etc/foo` and the Windows-style `file:///C:/Users/...` forms.
-fn file_url_to_path(url: &str) -> Option<PathBuf> {
-    let rest = url.strip_prefix("file://")?;
-    // After `file://`, an optional host then `/path`. The user's case is
-    // `file:///C:/...` so we typically see an empty host followed by a
-    // leading `/`. Strip up to one host segment + the slash.
-    let path = rest
-        .split_once('/')
-        .map(|(_host, p)| p.to_string())
-        .unwrap_or_else(|| rest.to_string());
-    // On Windows, `C:/Users/...` is a valid path; the leading `/` from
-    // `file:///C:/Users/...` was already stripped by the split above.
-    // On unix, the original path starts with `/` which we restore.
-    let path = if cfg!(windows) {
-        path
-    } else {
-        format!("/{}", path)
-    };
-    let decoded = percent_decode(&path);
-    Some(PathBuf::from(decoded))
-}
-
-/// Minimal percent-decoder so URLs with spaces (`%20`) round-trip into a
-/// usable path. We don't pull `percent-encoding` for one call.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_digit(bytes[i + 1]);
-            let lo = hex_digit(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
-}
-
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
     }
 }
 

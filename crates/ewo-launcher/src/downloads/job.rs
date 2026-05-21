@@ -18,7 +18,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -48,20 +48,6 @@ pub enum Stage {
     AssetIndex,
     Assets,
     Done,
-}
-
-impl Stage {
-    pub fn label(self) -> &'static str {
-        match self {
-            Stage::PerVersion => "fetching version manifest…",
-            Stage::LoaderManifest => "fetching loader manifest…",
-            Stage::Client => "downloading the game…",
-            Stage::Libraries => "downloading libraries…",
-            Stage::AssetIndex => "fetching asset index…",
-            Stage::Assets => "downloading assets…",
-            Stage::Done => "ready.",
-        }
-    }
 }
 
 /// Events emitted to the UI thread.
@@ -381,45 +367,6 @@ pub fn ensure_libraries(pv: &PerVersion) -> Result<(), String> {
     Ok(())
 }
 
-/// `file:///C:/path/to.jar` → `C:\path\to.jar` (Windows) or
-/// `file:///home/user/x.jar` → `/home/user/x.jar` (Unix). Returns `None`
-/// for non-`file://` URLs.
-///
-/// Naive percent-decoder — handles `%20` etc. for paths that contain
-/// spaces. Doesn't handle authority or query strings; library URLs
-/// don't need them.
-fn file_url_to_path(url: &str) -> Option<PathBuf> {
-    let rest = url.strip_prefix("file://")?;
-    // Strip the leading `/` on Windows-style `file:///C:/...` so the
-    // result becomes `C:/...` (a real drive-letter path), not `/C:/...`.
-    let trimmed = if cfg!(windows)
-        && rest.starts_with('/')
-        && rest.len() >= 4
-        && rest.as_bytes()[2] == b':'
-    {
-        &rest[1..]
-    } else {
-        rest
-    };
-    let mut decoded = String::with_capacity(trimmed.len());
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h = (bytes[i + 1] as char).to_digit(16);
-            let l = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (h, l) {
-                decoded.push(((h << 4) | l) as u8 as char);
-                i += 3;
-                continue;
-            }
-        }
-        decoded.push(bytes[i] as char);
-        i += 1;
-    }
-    Some(PathBuf::from(decoded))
-}
-
 /// Download `url` to `dest`, verify the file's sha1 against `expected_sha1`,
 /// and confirm size matches. Skips the network if the file exists with
 /// a matching hash already.
@@ -435,7 +382,7 @@ fn ensure_file(
     // user has on disk *right now*. Caching would freeze the cached copy
     // against the source's edits; sha1-pinning would force the user to
     // bump the manifest on every rebuild. Always re-copy + trust the file.
-    let local_path = file_url_to_path(url);
+    let local_path = crate::util::file_url_to_path(url);
     if local_path.is_none() && dest.exists() {
         // HTTP path: quick check: size match → assume sha1 matches. Faster
         // startup when most of the tree is already on disk. Full sha1
@@ -548,33 +495,32 @@ fn is_github_release_asset_url(url: &str) -> bool {
 mod tests {
     use super::*;
 
+    // The token-set and token-absent cases share one test on purpose:
+    // `EWO_LOADER_TOKEN` is a process-global env var and Rust runs tests
+    // in parallel threads, so splitting them lets one test's `remove_var`
+    // race the other's `set_var`. One sequential test can't interleave.
     #[test]
-    fn github_auth_only_for_release_asset_urls() {
-        // Set the env var so the helper has something to return.
-        std::env::set_var("EWO_LOADER_TOKEN", "ghp_test_token");
-
+    fn github_auth_headers_gate_on_url_and_token() {
         let asset = "https://api.github.com/repos/lewlone/ewo-loader/releases/assets/12345";
+
+        // With a token set, a release-asset API URL gets auth headers.
+        std::env::set_var("EWO_LOADER_TOKEN", "ghp_test_token");
         let headers = github_auth_headers_for(asset);
         assert!(!headers.is_empty(), "GitHub asset URL should get auth headers");
         assert!(headers.iter().any(|(k, _)| *k == "Authorization"));
         assert!(headers.iter().any(|(k, v)| *k == "Accept" && v == "application/octet-stream"));
 
-        // Modrinth + Mojang + arbitrary HTTPS must NOT get headers.
+        // ...but Modrinth + Mojang + the non-API GitHub browser-download
+        // URL must NOT, even with the token set.
         assert!(github_auth_headers_for("https://cdn.modrinth.com/data/AANobbMI/...").is_empty());
         assert!(github_auth_headers_for("https://launcher.mojang.com/...").is_empty());
-        // Even the non-API GitHub URL (browser download path) must not get the token.
         assert!(github_auth_headers_for(
             "https://github.com/lewlone/ewo-loader/releases/download/v0.19.2/ewo-loader-0.19.2-fat.jar"
         )
         .is_empty());
 
+        // With no token, even the release-asset API URL gets nothing.
         std::env::remove_var("EWO_LOADER_TOKEN");
-    }
-
-    #[test]
-    fn no_token_means_no_headers() {
-        std::env::remove_var("EWO_LOADER_TOKEN");
-        let asset = "https://api.github.com/repos/lewlone/ewo-loader/releases/assets/12345";
         assert!(github_auth_headers_for(asset).is_empty());
     }
 }

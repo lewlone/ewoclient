@@ -375,8 +375,8 @@ impl LaunchingState {
             self.stage.tick(dt);
             return false;
         };
-        if self.error.is_some() {
-            self.stage.set(self.error.unwrap().label());
+        if let Some(err) = self.error {
+            self.stage.set(err.label());
             self.stage.tick(dt);
             return false;
         }

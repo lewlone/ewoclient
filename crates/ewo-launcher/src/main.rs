@@ -47,6 +47,7 @@ mod loaders;
 mod overlay_mods;
 mod persistence;
 mod runtime;
+mod util;
 mod versions;
 mod window;
 

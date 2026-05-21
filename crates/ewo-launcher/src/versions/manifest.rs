@@ -37,15 +37,6 @@ pub enum ManifestEntryKind {
     OldAlpha,
 }
 
-impl ManifestEntryKind {
-    pub fn is_release(self) -> bool {
-        matches!(self, ManifestEntryKind::Release)
-    }
-    pub fn is_snapshot(self) -> bool {
-        matches!(self, ManifestEntryKind::Snapshot)
-    }
-}
-
 /// The master manifest as returned by `version_manifest_v2.json`. The
 /// `latest` block names the current Mojang-recommended release + snapshot,
 /// independent of ordering in `versions[]`.

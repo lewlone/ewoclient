@@ -10,7 +10,7 @@ pub mod natives;
 pub mod plan;
 pub mod spawn;
 
-pub use jre::{detect_all as detect_jres, pick_for_major as pick_jre, DetectedJre};
-pub use natives::{extract_all, ExtractError};
-pub use plan::{build, BuildError, LaunchPlan, LaunchProfile};
+pub use jre::{detect_all as detect_jres, pick_for_major as pick_jre};
+pub use natives::extract_all;
+pub use plan::{build, LaunchProfile};
 pub use spawn::{spawn as spawn_jvm, LaunchEvent, Severity};

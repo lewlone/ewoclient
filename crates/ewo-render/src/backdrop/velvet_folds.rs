@@ -13,7 +13,7 @@
 //! ```
 //!
 //! CSS keyframe `fold-drift` is `ease-in-out infinite alternate`:
-//! ```
+//! ```text
 //! 0%   { translate(-3%, -2%) scale(1.08) rotate(-1deg) }
 //! 50%  { translate(2%, 3%)   scale(1.12) rotate(0.5deg) }
 //! 100% { translate(-2%, -3%) scale(1.06) rotate(-0.5deg) }

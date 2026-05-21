@@ -53,10 +53,6 @@ impl RuntimeService {
         }
     }
 
-    pub fn in_flight(&self) -> Option<u32> {
-        self.in_flight
-    }
-
     /// Spawn a fetch+extract job for `major`. No-op if a fetch is
     /// already in flight (today we serialize them to keep network +
     /// disk simple; could parallelize per-major later).

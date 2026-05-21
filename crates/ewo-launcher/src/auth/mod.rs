@@ -24,7 +24,7 @@ pub mod persistence;
 pub mod pkce;
 pub mod service;
 
-pub use service::{AuthEvent, AuthService, AuthState};
+pub use service::{AuthService, AuthState};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,14 +61,6 @@ pub struct MinecraftAccount {
     /// Currently stored plaintext in `auth.toml`; encrypting at rest is
     /// a follow-up if/when we ship this binary widely.
     pub ms_refresh_token: String,
-}
-
-impl MinecraftAccount {
-    /// Whether the in-memory minecraft_token is present. After loading
-    /// from disk this will be empty until the chain re-runs.
-    pub fn has_live_token(&self) -> bool {
-        !self.minecraft_token.is_empty()
-    }
 }
 
 /// Errors surfaced to the UI. The `String` payloads are user-facing
