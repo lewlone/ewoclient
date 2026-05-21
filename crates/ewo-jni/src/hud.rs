@@ -389,10 +389,12 @@ impl HudLayout {
     /// malformed — so a hand-edited or absent file never breaks the HUD.
     fn load() -> Self {
         let mut layout = Self::defaults();
-        let Some(path) = hud_toml_path() else {
-            return layout;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        // Per-profile path first; fall back to the pre-Phase-F single file
+        // so an existing layout survives the move to per-profile files.
+        let text = hud_toml_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .or_else(|| legacy_hud_toml_path().and_then(|p| std::fs::read_to_string(p).ok()));
+        let Some(text) = text else {
             return layout;
         };
         let mut current: Option<WidgetId> = None;
@@ -452,6 +454,9 @@ impl HudLayout {
         let Some(path) = hud_toml_path() else {
             return;
         };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let mut s = String::from("# EwoClient HUD layout — written by the in-game editor.\n");
         for id in WidgetId::ALL {
             let wl = self.get(id);
@@ -472,9 +477,25 @@ impl HudLayout {
     }
 }
 
-/// `<config>/EwoClient/hud.toml`. Resolved from `%APPDATA%` — the cdylib runs
-/// inside the Minecraft JVM, which inherits the launcher's environment.
+/// `<config>/EwoClient/profiles/<active>/hud.toml` — the HUD layout is
+/// per client profile (Phase F). Resolved from `%APPDATA%` — the cdylib
+/// runs inside the Minecraft JVM, which inherits the launcher's environment.
 fn hud_toml_path() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    let profile = read_active_profile().unwrap_or_else(|| "Default".to_string());
+    Some(
+        PathBuf::from(appdata)
+            .join("EwoClient")
+            .join("profiles")
+            .join(profile)
+            .join("hud.toml"),
+    )
+}
+
+/// The pre-Phase-F single `hud.toml` location. Read as a fallback so an
+/// existing layout survives the move to per-profile files; the next save
+/// writes the new per-profile path.
+fn legacy_hud_toml_path() -> Option<PathBuf> {
     std::env::var_os("APPDATA")
         .map(|appdata| PathBuf::from(appdata).join("EwoClient").join("hud.toml"))
 }

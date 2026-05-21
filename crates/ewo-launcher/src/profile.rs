@@ -377,6 +377,13 @@ pub fn duplicate(src: &str) -> Option<(String, SettingsConfig, Settings)> {
     };
     let name = unique_name(&index.profiles, &format!("{src} copy"));
     write_profile(&name, &client);
+    // Carry the source profile's HUD layout into the copy, if it has one.
+    if let (Some(src_dir), Some(dst_dir)) = (profile_dir(src), profile_dir(&name)) {
+        let src_hud = src_dir.join("hud.toml");
+        if src_hud.exists() {
+            let _ = fs::copy(&src_hud, dst_dir.join("hud.toml"));
+        }
+    }
     index.profiles.push(name.clone());
     index.active = name.clone();
     write_index(&index);
