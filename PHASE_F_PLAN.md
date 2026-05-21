@@ -105,16 +105,25 @@ disk interop under `shared/` is untouched.
 - **Acceptance:** sign into 2+ accounts, switch active, a launch uses the
   active one. *(Visual verification of the new tab layout still pending.)*
 
-### F2 — Client-profile data model + settings split
-- Settle the **profile-scoped vs global** split:
-  - *Profile-scoped:* motion-speed, breath-amp, density, warmth,
-    accent-hue-shift, theme, vsync, max-fps, audio levels, HUD settings.
-  - *Global (stays in `settings.toml`):* game dir, downloads dir, log level.
-- Create `profiles/`, `client.toml`, `profiles.toml`. Migrate today's
-  `settings.toml` + `hud.toml` into a `"Default"` profile.
-- `Prefs` (settings-screen widget state) + `ewo-core::Settings` become reads of
-  the *active* profile.
-- **Acceptance:** launcher behaves identically post-migration, now sourced from
+### F2 — Client-profile data model + settings split ✅ shipped
+- New launcher-side `profile` module (`crates/ewo-launcher/src/profile.rs`).
+  Disk layout: `profiles.toml` (registry), `profiles/<name>/client.toml`
+  (profile-scoped config), `settings.toml` (now global-only).
+- **Split shipped** — *profile-scoped:* the five tweak tokens (motion /
+  breath / density / warmth / accent-hue), theme, vsync, max-fps, audio
+  levels. *Global:* game dir, downloads dir, window mode, auto-backup, log
+  level, telemetry. (Window-mode / auto-backup / telemetry weren't in the
+  headline list — classified global as system, not cosmetic, settings.)
+- `profile::load` reconstructs the unified `SettingsConfig` + `Settings`
+  tokens; `profile::save` splits them back. A pre-F `settings.toml` is
+  migrated on first run — profile slice into `profiles/Default/`,
+  `settings.toml` rewritten global-only. Launcher-only change: `ewo-render`'s
+  `SettingsConfig` stays unified, `ewo-core::Settings` untouched.
+- **`hud.toml` is NOT migrated into the profile yet** — it's in-game-side
+  (read/written by `crates/ewo-jni`). Folding it into the profile dir is
+  deferred to F5 (in-game hot-swap), which already touches that side.
+- One "Default" profile, no UI (that's F3). 3 split/merge round-trip tests.
+- **Acceptance:** launcher behaves identically post-migration, sourced from
   `profiles/Default/`.
 
 ### F3 — Profile management UI + keybind registry
@@ -139,6 +148,8 @@ disk interop under `shared/` is untouched.
   instance.
 
 ### F5 — In-game profile hot-swap
+- Move `hud.toml` under `profiles/<name>/` (deferred from F2) so HUD layout
+  is genuinely per-profile, and teach `crates/ewo-jni` the active profile.
 - The overlay SETTINGS tab (Phase E6) gets a client-profile picker.
 - Switching in-game re-reads the profile and re-applies HUD layout + HUD
   settings live, through the JNI bridge (`crates/ewo-jni`) — same write-back

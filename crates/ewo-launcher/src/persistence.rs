@@ -1,5 +1,9 @@
 //! Disk persistence — load/save the launcher's instance list.
 //!
+//! Settings persistence moved to the `profile` module in Phase F (it's
+//! split across `settings.toml` + the active profile's `client.toml`).
+//! This module is now instances only.
+//!
 //! Single TOML file at `<config>/EwoClient/instances.toml` where
 //! `<config>` is `%APPDATA%` on Windows / `$XDG_CONFIG_HOME` (or
 //! `~/.config`) on Linux, per the `dirs` crate.
@@ -14,13 +18,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use ewo_render::screens::instances::{default_instances, Instance, InstanceLoader};
-use ewo_render::screens::SettingsConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::bundled;
 
 const INSTANCES_FILENAME: &str = "instances.toml";
-const SETTINGS_FILENAME: &str = "settings.toml";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InstancesFile {
@@ -35,13 +37,6 @@ fn instances_path() -> Option<PathBuf> {
     let mut p = dirs::config_dir()?;
     p.push("EwoClient");
     p.push(INSTANCES_FILENAME);
-    Some(p)
-}
-
-fn settings_path() -> Option<PathBuf> {
-    let mut p = dirs::config_dir()?;
-    p.push("EwoClient");
-    p.push(SETTINGS_FILENAME);
     Some(p)
 }
 
@@ -136,53 +131,6 @@ pub fn save_instances(instances: &[Instance]) {
             }
         }
         Err(e) => log::warn!("could not serialize instances: {}", e),
-    }
-}
-
-/// Load the persisted Settings config, or return the bundled defaults.
-pub fn load_settings() -> SettingsConfig {
-    let Some(path) = settings_path() else {
-        return SettingsConfig::default();
-    };
-    if !path.exists() {
-        return SettingsConfig::default();
-    }
-    match fs::read_to_string(&path) {
-        Ok(s) => match toml::from_str::<SettingsConfig>(&s) {
-            Ok(c) => {
-                log::info!("loaded settings from {}", path.display());
-                c
-            }
-            Err(e) => {
-                log::warn!("could not parse {}: {} — using defaults", path.display(), e);
-                SettingsConfig::default()
-            }
-        },
-        Err(e) => {
-            log::warn!("could not read {}: {} — using defaults", path.display(), e);
-            SettingsConfig::default()
-        }
-    }
-}
-
-/// Persist the Settings config to disk. Best-effort; errors are logged.
-pub fn save_settings(config: &SettingsConfig) {
-    let Some(path) = settings_path() else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            log::warn!("could not create {}: {}", parent.display(), e);
-            return;
-        }
-    }
-    match toml::to_string_pretty(config) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
-                log::warn!("could not write {}: {}", path.display(), e);
-            }
-        }
-        Err(e) => log::warn!("could not serialize settings: {}", e),
     }
 }
 

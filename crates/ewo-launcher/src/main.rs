@@ -48,6 +48,7 @@ mod launch;
 mod loaders;
 mod overlay_mods;
 mod persistence;
+mod profile;
 mod runtime;
 mod util;
 mod versions;
@@ -148,6 +149,10 @@ struct App {
 
 impl App {
     fn new(dev: bool) -> Self {
+        // Phase F: settings live in the active client profile. `profile::load`
+        // reconstructs the unified SettingsConfig + the cosmetic tokens,
+        // migrating a pre-F settings.toml on first run.
+        let (settings_config, settings) = profile::load();
         Self {
             window: None,
             backend: None,
@@ -155,7 +160,7 @@ impl App {
             fonts: None,
             clock: Clock::new(),
             theme: Theme::VELVET,
-            settings: Settings::default(),
+            settings,
             cursor: PhysicalPosition::new(0.0, 0.0),
             mouse_down: false,
             focused: true,
@@ -163,7 +168,7 @@ impl App {
             settings_tab: SettingsTab::Graphics,
             prefs: {
                 let mut p = Prefs::default();
-                p.apply_config(&persistence::load_settings());
+                p.apply_config(&settings_config);
                 p
             },
             // Try the persisted list first, fall back to the bundled
@@ -779,7 +784,7 @@ impl ApplicationHandler for App {
                         &account_uuids,
                     );
                     if changed {
-                        persistence::save_settings(&self.prefs.to_config());
+                        profile::save(&self.prefs.to_config(), &self.settings);
                         if let Some(b) = self.backend.as_ref() {
                             b.set_vsync(self.prefs.vsync.on);
                         }
@@ -1231,7 +1236,7 @@ impl ApplicationHandler for App {
                         changed = changed || c;
                     }
                     if changed {
-                        persistence::save_settings(&self.prefs.to_config());
+                        profile::save(&self.prefs.to_config(), &self.settings);
                         if let Some(b) = self.backend.as_ref() {
                             b.set_vsync(self.prefs.vsync.on);
                         }
@@ -1814,7 +1819,7 @@ impl ApplicationHandler for App {
                     self.prefs.reset_requested = false;
                     self.prefs
                         .apply_config(&screens::SettingsConfig::default());
-                    persistence::save_settings(&self.prefs.to_config());
+                    profile::save(&self.prefs.to_config(), &self.settings);
                     if let Some(b) = self.backend.as_ref() {
                         b.set_vsync(self.prefs.vsync.on);
                     }
