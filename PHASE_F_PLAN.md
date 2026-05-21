@@ -89,15 +89,21 @@ disk interop under `shared/` is untouched.
 - **Acceptance:** an already-signed-in user keeps their session after upgrade;
   nothing visible changes.
 
-### F1 — Account switcher UI
-- The Account tab becomes a list: each account a row with skin head + name +
-  active marker.
-- Add account (runs the existing OAuth flow, appends to the store), remove,
-  set-active.
-- Skin head: fetch + cache the face crop from the account's skin URL (already in
-  the profile-fetch payload).
-- **Acceptance:** sign into 2+ accounts, switch active, a launch uses the active
-  one.
+### F1 — Account switcher UI ✅ shipped
+- The Account tab is now a list — each account a row with a monogram avatar,
+  name, short UUID, an active marker, and a remove-×. Click a row to make it
+  active; click × to remove. An "Add account" / "Sign in with Microsoft" /
+  "Try again" button runs the interactive OAuth flow.
+- `AuthService` reworked to own the `AccountStore` + an `AuthOp` (Idle /
+  Working / Failed) — the single source of truth. `set_active` / `remove` /
+  `start_interactive`; `refresh_active_token` brings a switched-to account's
+  token live. The F0 `persistence::{load,save,clear}` shims are gone.
+- **Avatars are monograms** (a Velvet-tinted disc + initial, tint hashed from
+  the UUID) — *not* skin heads. Real skin-head avatars are deferred: they need
+  the profile fetch (`chain.rs::McProfile`) to capture the skin texture URL
+  plus a threaded skin-image fetch/cache. Tracked as an F6-polish item.
+- **Acceptance:** sign into 2+ accounts, switch active, a launch uses the
+  active one. *(Visual verification of the new tab layout still pending.)*
 
 ### F2 — Client-profile data model + settings split
 - Settle the **profile-scoped vs global** split:
@@ -144,6 +150,9 @@ disk interop under `shared/` is untouched.
 - Velvet-parity pass on the dashboard + all new widgets.
 - Entrance animations, hover affordances, breathing where the design calls for
   it. `prefers-reduced-motion` honored.
+- Skin-head avatars for accounts (deferred from F1) — capture the skin texture
+  URL in the profile fetch + a threaded skin-image fetch/cache, replacing the
+  monogram discs.
 
 ---
 

@@ -19,7 +19,7 @@
 
 use ewo_core::Settings;
 use serde::{Deserialize, Serialize};
-use skia_safe::{Canvas, Color, Color4f, Paint, PaintStyle, Rect};
+use skia_safe::{Canvas, Color, Color4f, Paint, PaintCap, PaintStyle, RRect, Rect};
 
 use crate::text::{self, FontStore};
 use crate::widgets::{
@@ -70,15 +70,53 @@ impl SettingsTab {
     }
 }
 
-/// Shape of the Account tab's render input. Decoupled from the launcher's
-/// `AuthService` so `ewo-render` doesn't need to know about HTTP / threads.
-/// Caller (main.rs) converts its `AuthState` snapshot into one of these.
+/// One account row for the Account tab's list. Decoupled from the
+/// launcher's `MinecraftAccount` so `ewo-render` stays ignorant of the
+/// auth chain.
 #[derive(Copy, Clone, Debug)]
-pub enum AccountView<'a> {
-    SignedOut,
+pub struct AccountRowView<'a> {
+    pub name: &'a str,
+    pub uuid: &'a str,
+    /// Whether this is the active account — the one launches use.
+    pub active: bool,
+}
+
+/// Status of the in-flight auth operation, as the Account tab sees it.
+#[derive(Copy, Clone, Debug)]
+pub enum AccountOpView<'a> {
+    Idle,
     Working { stage: &'a str },
-    SignedIn { name: &'a str, uuid: &'a str },
     Failed { message: &'a str },
+}
+
+/// The Account tab's full render input. Decoupled from the launcher's
+/// `AuthService` so `ewo-render` doesn't need to know about HTTP / threads.
+#[derive(Copy, Clone, Debug)]
+pub struct AccountView<'a> {
+    pub accounts: &'a [AccountRowView<'a>],
+    pub op: AccountOpView<'a>,
+}
+
+/// A pending account-management action. The Account-tab press handler
+/// sets it into `Prefs::account_request`; the main loop dispatches it to
+/// the `AuthService` (which it owns mutably) and clears it.
+#[derive(Clone, Debug)]
+pub enum AccountRequest {
+    /// Run the interactive OAuth flow — add, or first-time sign in.
+    Add,
+    /// Make the account with this UUID active.
+    SetActive(String),
+    /// Remove the account with this UUID.
+    Remove(String),
+}
+
+/// Which Account-tab control the cursor is over — drives hover highlight.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AccountHover {
+    /// The body of account row `index` (click to make active).
+    Row(usize),
+    /// The remove-× of account row `index`.
+    Remove(usize),
 }
 
 /// Identifies a control slot in the Settings screen — used for hit-testing
@@ -88,12 +126,6 @@ pub enum AccountView<'a> {
 /// preferences button) land when their primitives ship.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Slot {
-    /// The Account tab's primary button. Meaning depends on `AccountView`:
-    ///   - `SignedOut` → "Sign in with Microsoft"
-    ///   - `Working`   → disabled (the slot still hit-tests but click is ignored)
-    ///   - `SignedIn`  → "Sign out"
-    ///   - `Failed`    → "Try again"
-    AccountAction,
     Vsync,
     MaxFps,
     WindowMode,
@@ -150,13 +182,15 @@ pub struct Prefs {
     pub log_level: VdropState,
     pub telemetry: VtoggleState,
     pub reset_prefs: VghostBtnState,
-    /// Hover state for the Account tab's primary button (sign-in /
-    /// sign-out / try-again — text changes per `AccountView`).
-    pub account_action: VghostBtnState,
-    /// Set to `true` when the user clicks the Account tab's primary
-    /// button. The main loop reads it, dispatches the appropriate action
-    /// based on the current `AuthState`, and clears the flag.
-    pub account_action_requested: bool,
+    /// Hover state for the Account tab's "Add account" button.
+    pub account_add: VghostBtnState,
+    /// A pending account-management action — set by the Account-tab press
+    /// handler, dispatched (and cleared) by the main loop, which owns the
+    /// `&mut AuthService` the action needs.
+    pub account_request: Option<AccountRequest>,
+    /// Which Account-tab row / remove-button the cursor is over. Updated
+    /// on cursor motion, read by `draw_account_tab` for hover highlight.
+    pub account_hover: Option<AccountHover>,
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
@@ -258,8 +292,9 @@ impl Default for Prefs {
             log_level: VdropState::new(2), // "Info"
             telemetry: VtoggleState::new(false),
             reset_prefs: VghostBtnState::default(),
-            account_action: VghostBtnState::default(),
-            account_action_requested: false,
+            account_add: VghostBtnState::default(),
+            account_request: None,
+            account_hover: None,
             tab_changed_at: None,
             reset_requested: false,
         }
@@ -278,7 +313,7 @@ impl Prefs {
         self.game_dir.tick(dt);
         self.downloads.tick(dt);
         self.reset_prefs.tick(dt);
-        self.account_action.tick(dt);
+        self.account_add.tick(dt);
     }
 
     /// Snapshot the persisted form of the current prefs. App writes this
@@ -536,10 +571,7 @@ fn draw_panel(
         draw_section_head(canvas, fonts, content_left, content_right, content_top, active);
         let body_top = section_head_bottom(content_top, fonts);
         if active == SettingsTab::Account {
-            draw_account_tab(
-                canvas, fonts, content_left, content_right, body_top, time, settings,
-                prefs, account,
-            );
+            draw_account_tab(canvas, fonts, w, prefs, account);
         } else {
             draw_section_body(
                 canvas,
@@ -779,122 +811,298 @@ fn control_rect(
 // Account tab — custom layout (the row-grid system doesn't fit)
 // ────────────────────────────────────────────────────────────────────────
 
-/// Width of the Account tab's primary action button.
-const ACCOUNT_BTN_W: f32 = 240.0;
-const ACCOUNT_BTN_H: f32 = 44.0;
+/// Account-tab list metrics.
+const ACCOUNT_ROW_H: f32 = 56.0;
+const ACCOUNT_ROW_GAP: f32 = 8.0;
+const ACCOUNT_AVATAR: f32 = 36.0;
+/// Vertical space the body-copy line reserves above the account list.
+const ACCOUNT_COPY_BLOCK: f32 = 40.0;
+const ADD_BTN_W: f32 = 240.0;
+const ADD_BTN_H: f32 = 44.0;
 
-/// Card-local rect of the Account tab's primary action button. Returned
-/// regardless of `AccountView` (the button is always visible — its label
-/// changes between sign-in / sign-out / try-again, but the rect doesn't).
-pub fn account_button_bounds(fonts: &FontStore, card_w: f32, _card_h: f32) -> Rect {
-    // Mirror the body-top math from draw_panel + section_head_bottom.
+/// Card-local layout of one account row: the full row rect (click to make
+/// active) and the remove-× rect nested at its right edge.
+pub struct AccountRowLayout {
+    pub index: usize,
+    pub row: Rect,
+    pub remove: Rect,
+}
+
+/// Card-local layout of the whole Account tab — the body-copy anchor, the
+/// per-account rows, and the "Add account" button. `draw_account_tab` and
+/// the `main.rs` hit-testers both build this so visuals + input agree.
+pub struct AccountTabLayout {
+    pub content_left: f32,
+    pub content_right: f32,
+    pub header_top: f32,
+    pub rows: Vec<AccountRowLayout>,
+    pub add_button: Rect,
+}
+
+/// Compute the Account tab's layout for `account_count` accounts.
+pub fn account_tab_layout(fonts: &FontStore, card_w: f32, account_count: usize) -> AccountTabLayout {
+    // Mirror the content box from draw_panel + section_head_bottom.
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
     let panel_right = card_w - BODY_PAD_X;
     let content_left = panel_left + PANEL_INNER_PAD_X;
     let content_right = panel_right - PANEL_INNER_PAD_X;
     let content_top = body_top + PANEL_INNER_PAD_Y;
-    let body_top_inner = section_head_bottom(content_top, fonts);
+    let header_top = section_head_bottom(content_top, fonts);
 
-    // Same vertical math as `draw_account_tab` — kept in lock-step.
-    // Eyebrow + body line both eat ~30 px; place the button at body+90 so
-    // there's breathing room above. Centered horizontally in the content
-    // column.
-    let btn_top = body_top_inner + 110.0;
-    let cx = (content_left + content_right) * 0.5;
-    Rect::from_xywh(cx - ACCOUNT_BTN_W * 0.5, btn_top, ACCOUNT_BTN_W, ACCOUNT_BTN_H)
+    let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    let mut rows = Vec::with_capacity(account_count);
+    for i in 0..account_count {
+        let top = list_top + i as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP);
+        let row = Rect::from_ltrb(content_left, top, content_right, top + ACCOUNT_ROW_H);
+        let rm = 30.0;
+        let cy = (row.top + row.bottom) * 0.5;
+        let remove = Rect::from_xywh(row.right - rm - 8.0, cy - rm * 0.5, rm, rm);
+        rows.push(AccountRowLayout { index: i, row, remove });
+    }
+    let list_bottom = if account_count == 0 {
+        list_top
+    } else {
+        list_top + account_count as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP) - ACCOUNT_ROW_GAP
+    };
+    let add_button = Rect::from_xywh(content_left, list_bottom + 18.0, ADD_BTN_W, ADD_BTN_H);
+
+    AccountTabLayout {
+        content_left,
+        content_right,
+        header_top,
+        rows,
+        add_button,
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_account_tab(
     canvas: &Canvas,
     fonts: &FontStore,
-    left: f32,
-    right: f32,
-    top: f32,
-    _time: f32,
-    _settings: &Settings,
+    card_w: f32,
     prefs: &Prefs,
     account: AccountView<'_>,
 ) {
-    // Main copy line — explains the auth state to the user.
+    let layout = account_tab_layout(fonts, card_w, account.accounts.len());
+
+    // Body copy.
     let body_font = fonts.newsreader(15.0);
     let mut body_paint = Paint::default();
     body_paint.set_anti_alias(true);
     body_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)); // mid-pearl
     let (_, bm) = body_font.metrics();
-    let body_baseline = top + (-bm.ascent);
-
-    let body_text = match account {
-        AccountView::SignedOut => {
-            "to launch Minecraft, sign in with the Microsoft account that owns your copy."
-        }
-        AccountView::Working { .. } => "one moment…",
-        AccountView::SignedIn { .. } => "you're signed in. you can launch Minecraft any time.",
-        AccountView::Failed { .. } => "we couldn't sign you in.",
+    let copy = if account.accounts.is_empty() {
+        "sign in with the Microsoft account that owns your copy of Minecraft."
+    } else {
+        "the active account is used for launches — click another to switch."
     };
-    canvas.draw_str(body_text, (left, body_baseline), &body_font, &body_paint);
-
-    // Detail line — name (signed-in), stage (working), error (failed). Mauve italic.
-    // Wraps onto multiple lines if the message is long (auth errors often
-    // are) so it doesn't overflow the panel.
-    let italic_font = fonts.newsreader(13.0);
-    let mut italic_paint = Paint::default();
-    italic_paint.set_anti_alias(true);
-    italic_paint.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87)); // mauve
-    let (_, im) = italic_font.metrics();
-    let italic_top = body_baseline + bm.descent + 8.0;
-    let detail_owned: String;
-    let detail = match account {
-        AccountView::SignedOut => "no account on this machine.",
-        AccountView::Working { stage } => stage,
-        AccountView::SignedIn { name, uuid } => {
-            detail_owned = format!("{}  ·  {}", name, short_uuid(uuid));
-            detail_owned.as_str()
-        }
-        AccountView::Failed { message } => message,
-    };
-    let line_h = -im.ascent + im.descent + 2.0;
-    draw_wrapped_text(
-        canvas,
-        detail,
-        left,
-        right,
-        italic_top,
-        line_h,
-        &italic_font,
-        &italic_paint,
+    canvas.draw_str(
+        copy,
+        (layout.content_left, layout.header_top + (-bm.ascent)),
+        &body_font,
+        &body_paint,
     );
 
-    // Primary action button. Always rendered — when working it just won't
-    // do anything (main.rs gates the click). Position kept in lock-step
-    // with `account_button_bounds` so hit-testing matches the visual rect.
-    let btn_label = match account {
-        AccountView::SignedOut => "Sign in with Microsoft",
-        AccountView::Working { .. } => "Cancel",
-        AccountView::SignedIn { .. } => "Sign out",
-        AccountView::Failed { .. } => "Try again",
+    // Account rows.
+    for (rl, row) in layout.rows.iter().zip(account.accounts) {
+        let hovered = prefs.account_hover == Some(AccountHover::Row(rl.index));
+        let remove_hovered = prefs.account_hover == Some(AccountHover::Remove(rl.index));
+        draw_account_row(canvas, fonts, rl, row, hovered, remove_hovered);
+    }
+
+    // "Add account" button — label + kind depend on first sign-in vs.
+    // addition vs. retry after a failure.
+    let add_label = match account.op {
+        AccountOpView::Failed { .. } => "Try again",
+        _ if account.accounts.is_empty() => "Sign in with Microsoft",
+        _ => "Add another account",
     };
-    let btn_kind = match account {
-        AccountView::Failed { .. } => GhostKind::Danger,
+    let add_kind = match account.op {
+        AccountOpView::Failed { .. } => GhostKind::Danger,
         _ => GhostKind::Pearl,
     };
-    let cx = (left + right) * 0.5;
-    let btn_top = top + 110.0;
-    let btn_rect = Rect::from_xywh(
-        cx - ACCOUNT_BTN_W * 0.5,
-        btn_top,
-        ACCOUNT_BTN_W,
-        ACCOUNT_BTN_H,
-    );
-    crate::widgets::draw_vghost_btn(
+    draw_vghost_btn(
         canvas,
-        btn_rect,
-        btn_label,
-        &prefs.account_action,
-        btn_kind,
+        layout.add_button,
+        add_label,
+        &prefs.account_add,
+        add_kind,
         fonts,
     );
+
+    // In-flight / error status line below the button.
+    let status_baseline = layout.add_button.bottom + 26.0;
+    match account.op {
+        AccountOpView::Idle => {}
+        AccountOpView::Working { stage } => {
+            let f = fonts.newsreader(13.0);
+            let mut p = Paint::default();
+            p.set_anti_alias(true);
+            p.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87)); // mauve
+            canvas.draw_str(stage, (layout.content_left, status_baseline), &f, &p);
+        }
+        AccountOpView::Failed { message } => {
+            let f = fonts.newsreader(13.0);
+            let mut p = Paint::default();
+            p.set_anti_alias(true);
+            p.set_color(Color::from_argb(0xFF, 0xD4, 0x88, 0x9A)); // error text
+            let (_, m) = f.metrics();
+            let line_h = -m.ascent + m.descent + 2.0;
+            draw_wrapped_text(
+                canvas,
+                message,
+                layout.content_left,
+                layout.content_right,
+                status_baseline,
+                line_h,
+                &f,
+                &p,
+            );
+        }
+    }
+}
+
+/// Draw one account row — background, monogram avatar, name + short UUID,
+/// active marker, and the remove-× button.
+fn draw_account_row(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &AccountRowLayout,
+    view: &AccountRowView<'_>,
+    hovered: bool,
+    remove_hovered: bool,
+) {
+    let row = layout.row;
+    let rrect = RRect::new_rect_xy(row, 12.0, 12.0);
+
+    // Background — tinted + rimmed when active, faintly lit when hovered.
+    if view.active {
+        let mut bg = Paint::default();
+        bg.set_anti_alias(true);
+        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10), None);
+        canvas.draw_rrect(rrect, &bg);
+        let mut rim = Paint::default();
+        rim.set_anti_alias(true);
+        rim.set_style(PaintStyle::Stroke);
+        rim.set_stroke_width(1.0);
+        rim.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32), None);
+        canvas.draw_rrect(rrect, &rim);
+    } else if hovered {
+        let mut bg = Paint::default();
+        bg.set_anti_alias(true);
+        bg.set_color4f(Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05), None);
+        canvas.draw_rrect(rrect, &bg);
+    }
+
+    let cy = (row.top + row.bottom) * 0.5;
+
+    // Monogram avatar.
+    let av = Rect::from_xywh(
+        row.left + 12.0,
+        cy - ACCOUNT_AVATAR * 0.5,
+        ACCOUNT_AVATAR,
+        ACCOUNT_AVATAR,
+    );
+    draw_monogram(canvas, fonts, av, view.name, view.uuid);
+
+    // Name (Fraunces) + short UUID (mono), stacked.
+    let text_left = av.right + 14.0;
+    let name_font = fonts.fraunces_axes(17.0, 50.0, 0.0, 360.0, None);
+    let mut name_paint = Paint::default();
+    name_paint.set_anti_alias(true);
+    name_paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    canvas.draw_str(view.name, (text_left, cy - 2.0), &name_font, &name_paint);
+
+    let uuid_font = fonts.jetbrains_mono(10.0);
+    let mut uuid_paint = Paint::default();
+    uuid_paint.set_anti_alias(true);
+    uuid_paint.set_color(Color::from_argb(0xFF, 0x6B, 0x55, 0x5C)); // deep mauve
+    let (_, um) = uuid_font.metrics();
+    canvas.draw_str(
+        short_uuid(view.uuid),
+        (text_left, cy + (-um.ascent) + 5.0),
+        &uuid_font,
+        &uuid_paint,
+    );
+
+    // Active marker — a small rose dot left of the remove button.
+    if view.active {
+        let mut dot = Paint::default();
+        dot.set_anti_alias(true);
+        dot.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+        canvas.draw_circle((layout.remove.left - 14.0, cy), 3.5, &dot);
+    }
+
+    // Remove-× — two round strokes, faint at rest, bright with a disc on hover.
+    let rm = layout.remove;
+    let rcx = (rm.left + rm.right) * 0.5;
+    let rcy = (rm.top + rm.bottom) * 0.5;
+    if remove_hovered {
+        let mut disc = Paint::default();
+        disc.set_anti_alias(true);
+        disc.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18), None);
+        canvas.draw_circle((rcx, rcy), 13.0, &disc);
+    }
+    let mut x = Paint::default();
+    x.set_anti_alias(true);
+    x.set_style(PaintStyle::Stroke);
+    x.set_stroke_width(1.6);
+    x.set_stroke_cap(PaintCap::Round);
+    let x_alpha = if remove_hovered { 0.95 } else { 0.40 };
+    x.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, x_alpha), None);
+    let d = 5.0;
+    canvas.draw_line((rcx - d, rcy - d), (rcx + d, rcy + d), &x);
+    canvas.draw_line((rcx + d, rcy - d), (rcx - d, rcy + d), &x);
+}
+
+/// A monogram avatar — a Velvet-tinted disc with the account's initial.
+/// The tint is picked from the four accent hues by hashing the UUID, so
+/// each account reads distinct without a network fetch. (Real skin-head
+/// avatars are a Phase F polish follow-up — they need the profile fetch
+/// to capture the skin URL plus a threaded skin-image cache.)
+fn draw_monogram(canvas: &Canvas, fonts: &FontStore, rect: Rect, name: &str, uuid: &str) {
+    let cx = (rect.left + rect.right) * 0.5;
+    let cy = (rect.top + rect.bottom) * 0.5;
+    let r = rect.width() * 0.5;
+    let (tr, tg, tb) = monogram_tint(uuid);
+
+    let mut disc = Paint::default();
+    disc.set_anti_alias(true);
+    disc.set_color4f(Color4f::new(tr, tg, tb, 0.30), None);
+    canvas.draw_circle((cx, cy), r, &disc);
+    let mut rim = Paint::default();
+    rim.set_anti_alias(true);
+    rim.set_style(PaintStyle::Stroke);
+    rim.set_stroke_width(1.0);
+    rim.set_color4f(Color4f::new(tr, tg, tb, 0.55), None);
+    canvas.draw_circle((cx, cy), r - 0.5, &rim);
+
+    let initial: String = name.chars().next().unwrap_or('?').to_uppercase().collect();
+    let font = fonts.fraunces_axes(18.0, 50.0, 1.0, 460.0, None);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    let (tw, _) = font.measure_str(&initial, Some(&paint));
+    let (_, m) = font.metrics();
+    canvas.draw_str(
+        &initial,
+        (cx - tw * 0.5, cy + m.cap_height * 0.5),
+        &font,
+        &paint,
+    );
+}
+
+/// Pick one of the four Velvet accent hues for an account's monogram,
+/// deterministically from its UUID.
+fn monogram_tint(uuid: &str) -> (f32, f32, f32) {
+    const TINTS: [(f32, f32, f32); 4] = [
+        (180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0), // berry
+        (229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0), // rose
+        (201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0), // lavender
+        (232.0 / 255.0, 212.0 / 255.0, 168.0 / 255.0), // champagne
+    ];
+    let sum: u32 = uuid.bytes().map(u32::from).sum();
+    TINTS[(sum % 4) as usize]
 }
 
 /// Render a Minecraft UUID short — first 8 chars uppercase, mono-feel.
@@ -1043,9 +1251,6 @@ fn draw_section_body(
             Some(Slot::GameDir) => draw_vpathfield(canvas, ctrl_box, &prefs.game_dir, fonts),
             Some(Slot::Downloads) => draw_vpathfield(canvas, ctrl_box, &prefs.downloads, fonts),
             Some(Slot::ResetPrefs) => draw_danger_button_in(canvas, ctrl_box, &prefs.reset_prefs, fonts),
-            // AccountAction never appears as a row — the Account tab uses
-            // a custom layout (see `draw_account_tab`).
-            Some(Slot::AccountAction) => {}
             None => draw_pending_placeholder(canvas, fonts, ctrl_box),
         }
 
@@ -1255,23 +1460,10 @@ pub fn widget_bounds(
                     let cy = (ctrl.top + ctrl.bottom) * 0.5;
                     Rect::from_xywh(ctrl.right - btn_w, cy - btn_h * 0.5, btn_w, btn_h)
                 }
-                Slot::AccountAction => {
-                    // The Account tab's button doesn't go through the row
-                    // grid — it has its own custom layout. We special-case
-                    // it below the loop. Unreachable from any row.
-                    unreachable!("AccountAction has no row entry")
-                }
             };
             out.push((slot, widget));
         }
         y = row_bottom;
-    }
-    // Account tab — custom layout. Append the button rect directly.
-    if tab == SettingsTab::Account {
-        out.push((
-            Slot::AccountAction,
-            account_button_bounds(fonts, card_w, card_h),
-        ));
     }
     out
 }

@@ -24,7 +24,7 @@ pub mod persistence;
 pub mod pkce;
 pub mod service;
 
-pub use service::{AuthService, AuthState};
+pub use service::{AuthOp, AuthService};
 
 use serde::{Deserialize, Serialize};
 

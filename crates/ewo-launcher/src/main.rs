@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use ewo_core::{Screen, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
-use ewo_render::screens::settings::AccountView;
+use ewo_render::screens::settings::{
+    AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView,
+};
 use ewo_render::screens::{
     self, AboutModalState, DevOverlayState, DevSlot, FrameStats, InstancePrefs, InstanceSlot,
     LaunchingState, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
@@ -19,7 +21,7 @@ use ewo_render::skia_safe;
 use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 
-use auth::{AuthService, AuthState};
+use auth::{AuthOp, AuthService};
 
 /// A launch click whose JRE wasn't available — we kicked off a runtime
 /// fetch and will retry once it lands.
@@ -175,18 +177,9 @@ impl App {
             launch_button: VbtnState::default(),
             menu_items: [VbtnState::default(); 4],
             heading_hover: HoverGlowState::default(),
-            auth: {
-                let mut svc = AuthService::new();
-                if let Some(account) = auth::persistence::load() {
-                    let refresh = account.ms_refresh_token.clone();
-                    log::info!("auth: hydrated from disk; running silent refresh");
-                    svc.hydrate(account);
-                    if !refresh.is_empty() {
-                        svc.start_silent_refresh(refresh);
-                    }
-                }
-                svc
-            },
+            // AuthService loads the persisted account store and kicks a
+            // silent refresh for the active account itself (see `new`).
+            auth: AuthService::new(),
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
@@ -377,8 +370,8 @@ impl App {
         // fall back to offline mode (placeholder UUID + token) otherwise.
         // Online mode unlocks multiplayer + skin sync; offline mode is
         // singleplayer/LAN only.
-        let profile = match self.auth.state() {
-            AuthState::SignedIn(account) if !account.minecraft_token.is_empty() => {
+        let profile = match self.auth.active() {
+            Some(account) if !account.minecraft_token.is_empty() => {
                 log::info!(
                     "launch: using signed-in profile {} (token live)",
                     account.name
@@ -774,6 +767,7 @@ impl ApplicationHandler for App {
                         *s = VbtnState::default();
                     }
                 } else if self.screen == Screen::Settings {
+                    let account_uuids = self.auth.account_uuids();
                     let changed = drive_settings_sliders(
                         &mut self.prefs,
                         self.settings_tab,
@@ -782,6 +776,7 @@ impl ApplicationHandler for App {
                         self.mouse_down,
                         card_w,
                         card_h,
+                        &account_uuids,
                     );
                     if changed {
                         persistence::save_settings(&self.prefs.to_config());
@@ -1211,6 +1206,7 @@ impl ApplicationHandler for App {
                 // toggle the menu open/closed; clicks on open menu rows
                 // commit the selection; clicks elsewhere close the menu.
                 if self.screen == Screen::Settings {
+                    let account_uuids = self.auth.account_uuids();
                     let mut changed = drive_settings_sliders(
                         &mut self.prefs,
                         self.settings_tab,
@@ -1219,6 +1215,7 @@ impl ApplicationHandler for App {
                         pressed,
                         card_w,
                         card_h,
+                        &account_uuids,
                     );
                     if !handled && pressed {
                         let (h, c) = handle_settings_press(
@@ -1228,6 +1225,7 @@ impl ApplicationHandler for App {
                             card_pos,
                             card_w,
                             card_h,
+                            &account_uuids,
                         );
                         handled = h;
                         changed = changed || c;
@@ -1793,28 +1791,19 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Account-tab button — dispatch based on the current
-                // auth state. The button label changes ("Sign in" /
-                // "Sign out" / "Try again") but it's a single slot that
-                // sets `prefs.account_action_requested`.
-                if self.prefs.account_action_requested {
-                    self.prefs.account_action_requested = false;
-                    match self.auth.state() {
-                        AuthState::SignedOut | AuthState::Failed(_) => {
-                            log::info!("auth: starting interactive sign-in");
+                // Account-tab actions — the press handler records one
+                // request; dispatch it here, where we own `&mut auth`.
+                if let Some(req) = self.prefs.account_request.take() {
+                    match req {
+                        AccountRequest::Add => {
+                            log::info!("auth: add account -> interactive sign-in");
                             self.auth.start_interactive();
                         }
-                        AuthState::SignedIn(_) => {
-                            log::info!("auth: signing out");
-                            self.auth.sign_out();
+                        AccountRequest::SetActive(uuid) => {
+                            self.auth.set_active(&uuid);
                         }
-                        AuthState::Working(_) => {
-                            // Working button currently labelled "Cancel" but we
-                            // can't actually abort an in-flight chain (the
-                            // worker thread isn't cancellable). Best-effort:
-                            // ignore. A proper cancel would mean draining the
-                            // worker's channel + dropping it; punted.
-                            log::info!("auth: ignoring click while working");
+                        AccountRequest::Remove(uuid) => {
+                            self.auth.remove(&uuid);
                         }
                     }
                 }
@@ -1901,25 +1890,35 @@ impl ApplicationHandler for App {
                 let about_modal = &self.about_modal;
                 let dev_overlay = self.dev_overlay.as_ref();
                 let heading_hover = self.heading_hover;
-                // Pluck strings out of the auth state into stack-borrowed
-                // refs that AccountView holds — keeps `ewo-render` ignorant
-                // of the launcher's auth types.
-                let auth_state = self.auth.state();
-                let err_msg: Option<String> = if let AuthState::Failed(err) = auth_state {
+                // Build the Account-tab view from the auth store. The row
+                // Vec + the error string are stack locals that AccountView
+                // borrows — keeps `ewo-render` ignorant of auth types.
+                let active_uuid: Option<String> = self.auth.active().map(|a| a.uuid.clone());
+                let account_rows: Vec<AccountRowView<'_>> = self
+                    .auth
+                    .accounts()
+                    .iter()
+                    .map(|a| AccountRowView {
+                        name: &a.name,
+                        uuid: &a.uuid,
+                        active: active_uuid.as_deref() == Some(a.uuid.as_str()),
+                    })
+                    .collect();
+                let err_msg: Option<String> = if let AuthOp::Failed(err) = self.auth.op() {
                     Some(format_auth_error(err))
                 } else {
                     None
                 };
-                let account_view: AccountView<'_> = match auth_state {
-                    AuthState::SignedOut => AccountView::SignedOut,
-                    AuthState::Working(stage) => AccountView::Working { stage },
-                    AuthState::SignedIn(a) => AccountView::SignedIn {
-                        name: &a.name,
-                        uuid: &a.uuid,
-                    },
-                    AuthState::Failed(_) => AccountView::Failed {
+                let account_op = match self.auth.op() {
+                    AuthOp::Idle => AccountOpView::Idle,
+                    AuthOp::Working(stage) => AccountOpView::Working { stage: *stage },
+                    AuthOp::Failed(_) => AccountOpView::Failed {
                         message: err_msg.as_deref().unwrap_or("auth failed"),
                     },
+                };
+                let account_view = AccountView {
+                    accounts: &account_rows,
+                    op: account_op,
                 };
                 let frame_stats = FrameStats {
                     fps: self.clock.avg_fps(),
@@ -2069,10 +2068,25 @@ fn drive_settings_sliders(
     mouse_down: bool,
     card_w: f32,
     card_h: f32,
+    account_uuids: &[String],
 ) -> bool {
     let Some(fonts) = fonts else {
         return false;
     };
+    // Account tab — custom layout. Update row / remove / add-button hover.
+    if tab == SettingsTab::Account {
+        let layout = screens::settings::account_tab_layout(fonts, card_w, account_uuids.len());
+        prefs.account_hover = None;
+        for rl in &layout.rows {
+            if rect_contains(&rl.remove, mouse) {
+                prefs.account_hover = Some(AccountHover::Remove(rl.index));
+            } else if rect_contains(&rl.row, mouse) {
+                prefs.account_hover = Some(AccountHover::Row(rl.index));
+            }
+        }
+        prefs.account_add.handle(mouse, layout.add_button, false);
+        return false;
+    }
     let mut changed = false;
     for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
         match slot {
@@ -2105,9 +2119,6 @@ fn drive_settings_sliders(
             }
             SettingsSlot::ResetPrefs => {
                 prefs.reset_prefs.handle(mouse, rect, false);
-            }
-            SettingsSlot::AccountAction => {
-                prefs.account_action.handle(mouse, rect, false);
             }
             // Toggles + dropdowns react to discrete press events, not motion.
             SettingsSlot::Vsync
@@ -2158,10 +2169,41 @@ fn handle_settings_press(
     mouse: (f32, f32),
     card_w: f32,
     card_h: f32,
+    account_uuids: &[String],
 ) -> (bool, bool) {
     let Some(fonts) = fonts else {
         return (false, false);
     };
+
+    // Account tab — custom layout, handled outside the row-grid dispatch.
+    // Remove buttons are nested inside row rects, so test them first.
+    if tab == SettingsTab::Account {
+        let layout = screens::settings::account_tab_layout(fonts, card_w, account_uuids.len());
+        for rl in &layout.rows {
+            if rect_contains(&rl.remove, mouse) {
+                if let Some(uuid) = account_uuids.get(rl.index) {
+                    log::info!("account: remove {}", uuid);
+                    prefs.account_request = Some(AccountRequest::Remove(uuid.clone()));
+                }
+                return (true, false);
+            }
+        }
+        for rl in &layout.rows {
+            if rect_contains(&rl.row, mouse) {
+                if let Some(uuid) = account_uuids.get(rl.index) {
+                    prefs.account_request = Some(AccountRequest::SetActive(uuid.clone()));
+                }
+                return (true, false);
+            }
+        }
+        if prefs.account_add.handle(mouse, layout.add_button, true) {
+            log::info!("account: add-account button clicked");
+            prefs.account_request = Some(AccountRequest::Add);
+            return (true, false);
+        }
+        return (false, false);
+    }
+
     let mut changed = false;
 
     // (1) and (2): handle any open dropdown menu first.
@@ -2248,12 +2290,6 @@ fn handle_settings_press(
                 if prefs.reset_prefs.handle(mouse, rect, true) {
                     log::info!("reset_prefs: clicked → flagging for reset");
                     prefs.reset_requested = true;
-                }
-            }
-            SettingsSlot::AccountAction => {
-                if prefs.account_action.handle(mouse, rect, true) {
-                    log::info!("account_action: clicked → flagging for dispatch");
-                    prefs.account_action_requested = true;
                 }
             }
             // Sliders driven by drive_settings_sliders — head click consumed there.

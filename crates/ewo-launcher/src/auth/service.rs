@@ -1,12 +1,16 @@
-//! `AuthService` — owns the auth state machine and the worker thread.
+//! `AuthService` — owns the account store + the auth worker thread.
 //!
-//! The UI thread holds an `AuthService`. Each frame it calls `poll()` to
-//! drain pending `AuthEvent`s and update its in-memory `AuthState`. When
-//! the user clicks "Sign in", the UI calls `start_interactive()`, which
-//! spawns a worker thread to run the loopback listener + token chain.
+//! The UI thread holds an `AuthService`. It is the single source of truth
+//! for signed-in accounts (the [`AccountStore`], persisted to `auth.toml`)
+//! and for the status of any in-flight auth operation ([`AuthOp`]).
 //!
-//! The worker emits `AuthEvent`s back through an `mpsc::Sender`. The UI
-//! only interacts with the worker through this channel — no shared
+//! Each frame the UI calls `poll()` to drain `AuthEvent`s from the worker
+//! and fold them into the store. "Add account" runs the interactive
+//! loopback + token chain on a worker thread; `set_active` / `remove`
+//! mutate the store and persist; a silent refresh brings an account's
+//! short-lived Minecraft token live.
+//!
+//! The worker emits `AuthEvent`s through an `mpsc::Sender`. No shared
 //! mutable state, no locks.
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -14,24 +18,25 @@ use std::thread;
 
 use super::chain::{self, ChainStage};
 use super::loopback::{self, LoopbackResult};
-use super::persistence;
+use super::persistence::{self, AccountStore};
 use super::pkce::PkcePair;
 use super::{AuthError, MinecraftAccount};
 
-/// Snapshot of the current auth state — what the UI renders. Updated by
-/// `poll()` as events arrive.
+/// Status of the current auth *operation* — distinct from "is an account
+/// signed in", which is a property of the `AccountStore`. The UI renders
+/// `Working` as a progress line and `Failed` as an error.
 #[derive(Clone, Debug)]
-pub enum AuthState {
-    SignedOut,
-    /// Sign-in or refresh in flight. Carries the current pipeline stage
+pub enum AuthOp {
+    /// No operation in flight.
+    Idle,
+    /// A sign-in or silent refresh is running. Carries the pipeline stage
     /// label so the UI can show "verifying with Xbox Live…".
     Working(&'static str),
-    SignedIn(MinecraftAccount),
+    /// The most recent operation failed.
     Failed(AuthError),
 }
 
-/// Events the worker sends to the UI. The UI maps these to `AuthState`
-/// transitions.
+/// Events the worker sends to the UI thread.
 #[derive(Debug)]
 pub enum AuthEvent {
     Started,
@@ -41,41 +46,64 @@ pub enum AuthEvent {
 }
 
 pub struct AuthService {
-    state: AuthState,
+    /// All signed-in accounts + the active pointer. Persisted to auth.toml.
+    store: AccountStore,
+    /// Status of the in-flight operation.
+    op: AuthOp,
     rx: Receiver<AuthEvent>,
     tx: Sender<AuthEvent>,
     /// `true` while a worker thread is alive — guards against spawning
-    /// concurrent sign-ins (the UI button is also disabled during work,
-    /// but this is the authoritative gate).
+    /// concurrent chains.
     busy: bool,
 }
 
 impl AuthService {
-    /// Construct in `SignedOut`. Caller should immediately attempt
-    /// `try_silent_refresh` if a persisted account exists.
+    /// Construct from the persisted store. If an active account exists, a
+    /// silent refresh is kicked immediately to bring its token live.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self {
-            state: AuthState::SignedOut,
+        let store = persistence::load_store();
+        let mut svc = Self {
+            store,
+            op: AuthOp::Idle,
             rx,
             tx,
             busy: false,
-        }
+        };
+        svc.refresh_active_token();
+        svc
     }
 
-    pub fn state(&self) -> &AuthState {
-        &self.state
+    /// All signed-in accounts, in stored order.
+    pub fn accounts(&self) -> &[MinecraftAccount] {
+        &self.store.accounts
     }
 
-    /// Drain pending events and update `state`. Call once per frame.
+    /// UUIDs of all signed-in accounts, in order — the Settings input
+    /// handlers use this to hit-test the account rows.
+    pub fn account_uuids(&self) -> Vec<String> {
+        self.store.accounts.iter().map(|a| a.uuid.clone()).collect()
+    }
+
+    /// The active account — the one launches use. `None` when signed out.
+    pub fn active(&self) -> Option<&MinecraftAccount> {
+        self.store.active_account()
+    }
+
+    /// Status of the in-flight auth operation.
+    pub fn op(&self) -> &AuthOp {
+        &self.op
+    }
+
+    /// Drain pending worker events. Call once per frame.
     pub fn poll(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 AuthEvent::Started => {
-                    self.state = AuthState::Working(ChainStage::OpeningBrowser.label());
+                    self.op = AuthOp::Working(ChainStage::OpeningBrowser.label());
                 }
                 AuthEvent::Progress(stage) => {
-                    self.state = AuthState::Working(stage.label());
+                    self.op = AuthOp::Working(stage.label());
                 }
                 AuthEvent::Success(account) => {
                     log::info!(
@@ -83,28 +111,32 @@ impl AuthService {
                         account.name,
                         account.uuid,
                     );
-                    persistence::save(&account);
-                    self.state = AuthState::SignedIn(account);
+                    let uuid = account.uuid.clone();
+                    self.store.upsert(account);
+                    self.store.active = Some(uuid);
+                    persistence::save_store(&self.store);
+                    self.op = AuthOp::Idle;
                     self.busy = false;
                 }
                 AuthEvent::Failure(err) => {
                     log::warn!("auth: failed: {:?}", err);
-                    self.state = AuthState::Failed(err);
+                    self.op = AuthOp::Failed(err);
                     self.busy = false;
                 }
             }
         }
     }
 
-    /// Begin the interactive (browser) sign-in flow on a worker thread.
-    /// No-op if a sign-in is already in flight.
+    /// Begin the interactive (browser) sign-in flow — adds a new account,
+    /// or re-authenticates one the user already has. No-op if a chain is
+    /// already running.
     pub fn start_interactive(&mut self) {
         if self.busy {
-            log::info!("auth: already working — ignoring sign-in click");
+            log::info!("auth: already working — ignoring sign-in request");
             return;
         }
         self.busy = true;
-        self.state = AuthState::Working(ChainStage::OpeningBrowser.label());
+        self.op = AuthOp::Working(ChainStage::OpeningBrowser.label());
         let tx = self.tx.clone();
         thread::Builder::new()
             .name("ewo-auth-interactive".into())
@@ -112,37 +144,55 @@ impl AuthService {
             .expect("spawn auth thread");
     }
 
-    /// Begin a silent refresh from a persisted refresh token. Same
-    /// machinery as interactive but skips the browser leg. Useful at
-    /// startup; UI reads the in-flight state and shows "refreshing…".
-    pub fn start_silent_refresh(&mut self, refresh_token: String) {
+    /// Make the account with `uuid` active. Persists, and silently
+    /// refreshes its token if it isn't already live. No-op if `uuid`
+    /// isn't a known account or is already active.
+    pub fn set_active(&mut self, uuid: &str) {
+        if self.store.active.as_deref() == Some(uuid) {
+            return;
+        }
+        if !self.store.accounts.iter().any(|a| a.uuid == uuid) {
+            return;
+        }
+        self.store.active = Some(uuid.to_string());
+        persistence::save_store(&self.store);
+        log::info!("auth: active account -> {}", uuid);
+        self.refresh_active_token();
+    }
+
+    /// Remove the account with `uuid`. The active pointer falls back to
+    /// the first remaining account (see `AccountStore::remove`); its token
+    /// is refreshed if needed.
+    pub fn remove(&mut self, uuid: &str) {
+        self.store.remove(uuid);
+        persistence::save_store(&self.store);
+        log::info!("auth: removed account {}", uuid);
+        // A removed-but-running chain can't be cancelled; its eventual
+        // Success would re-add the account. Acceptable — the user can
+        // remove it again, and `busy` still gates a fresh op.
+        self.refresh_active_token();
+    }
+
+    /// Kick a silent refresh for the active account if it has a refresh
+    /// token but no live Minecraft token yet, and no chain is running.
+    fn refresh_active_token(&mut self) {
         if self.busy {
             return;
         }
+        let Some(account) = self.store.active_account() else {
+            return;
+        };
+        if !account.minecraft_token.is_empty() || account.ms_refresh_token.is_empty() {
+            return;
+        }
+        let refresh = account.ms_refresh_token.clone();
         self.busy = true;
-        self.state = AuthState::Working(ChainStage::RefreshingMicrosoft.label());
+        self.op = AuthOp::Working(ChainStage::RefreshingMicrosoft.label());
         let tx = self.tx.clone();
         thread::Builder::new()
             .name("ewo-auth-refresh".into())
-            .spawn(move || run_refresh(tx, refresh_token))
+            .spawn(move || run_refresh(tx, refresh))
             .expect("spawn auth refresh thread");
-    }
-
-    /// Sign out — wipes in-memory + persisted state. Cannot be called
-    /// while a sign-in is in flight (caller should ignore the click).
-    pub fn sign_out(&mut self) {
-        if self.busy {
-            return;
-        }
-        persistence::clear();
-        self.state = AuthState::SignedOut;
-    }
-
-    /// Hand-set the state to a loaded account (skips the chain). Used at
-    /// startup when we have a persisted account and want to render
-    /// signed-in UI before/while the silent refresh runs.
-    pub fn hydrate(&mut self, account: MinecraftAccount) {
-        self.state = AuthState::SignedIn(account);
     }
 }
 

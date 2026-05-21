@@ -183,34 +183,6 @@ pub fn save_store(store: &AccountStore) {
     }
 }
 
-/// Convenience: the active account, if any. Keeps the single-account
-/// startup path (`App` hydrates + silent-refreshes the active account)
-/// unchanged while the store is plural underneath.
-pub fn load() -> Option<MinecraftAccount> {
-    load_store().active_account().cloned()
-}
-
-/// Convenience: record `account` as signed-in and active. Upserts it into
-/// the store (replacing a stale entry with the same UUID, e.g. after a
-/// silent refresh) and persists.
-pub fn save(account: &MinecraftAccount) {
-    let mut store = load_store();
-    store.upsert(account.clone());
-    store.active = Some(account.uuid.clone());
-    save_store(&store);
-}
-
-/// Convenience: sign out the active account — remove it from the store and
-/// persist. Other accounts (Phase F) are left intact.
-pub fn clear() {
-    let mut store = load_store();
-    let Some(active) = store.active.clone() else {
-        return;
-    };
-    store.remove(&active);
-    save_store(&store);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
