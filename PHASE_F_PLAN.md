@@ -185,11 +185,16 @@ overlay*, not a launcher home screen — the launcher main menu stays as-is.
 - Velvet-parity pass on the dashboard + all new widgets.
 - Entrance animations, hover affordances, breathing where the design calls for
   it. `prefers-reduced-motion` honored.
-- Skin-head avatars for accounts (deferred from F1) — capture the skin texture
-  URL in the profile fetch + a threaded skin-image fetch/cache, replacing the
-  monogram discs.
+- ✅ **3D skin viewer (shipped early)** — the in-game HOME tab shows the
+  signed-in player's skin as a drag-rotatable 3D model, cape included. A
+  Skia software renderer (`crates/ewo-jni/src/skin.rs`) — projected
+  textured quads, back-face culled, painter-sorted, per-face shaded. The
+  mod (`EwoSkinExport`) downloads the skin/cape PNGs from the GameProfile
+  texture URLs. Supersedes the flat skin-heads originally planned.
+  Wide-model only — slim arms are a follow-up.
 - Profile rename (deferred from F3) — reuse the instances inline text-input
   pattern; until then new profiles are auto-named.
+- (Launcher-side account avatars stay monograms — the 3D viewer is in-game.)
 
 ---
 

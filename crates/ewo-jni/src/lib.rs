@@ -64,6 +64,7 @@
 #![allow(non_snake_case)] // JNI exports must be named `Java_<pkg>_<class>_<method>`.
 
 mod hud;
+mod skin;
 
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};

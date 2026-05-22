@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
 use ewo_render::FontStore;
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, MaskFilter, Paint, PaintStyle, Point,
-    RRect, Rect, TileMode,
+    gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, Data, Image, MaskFilter, Paint,
+    PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 // ── Velvet theme tokens (see CLAUDE.md "Velvet theme tokens") ──────────────
@@ -565,6 +565,12 @@ pub struct Editor {
     /// All client-profile names — for the SETTINGS-tab picker. Read once at
     /// construction (a launcher-created profile needs a game restart).
     profiles: Vec<String>,
+    /// The signed-in player's skin / cape images for the HOME 3D viewer.
+    skin_image: Option<Image>,
+    cape_image: Option<Image>,
+    /// HOME skin-viewer rotation (radians) + the in-progress drag's last x.
+    skin_yaw: f32,
+    skin_drag: Option<f32>,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -589,6 +595,10 @@ impl Editor {
             mods: load_mods(),
             active_profile: profile_active,
             profiles: profile_list,
+            skin_image: load_skin_image("ewo-skin.png"),
+            cape_image: load_skin_image("ewo-cape.png"),
+            skin_yaw: 0.5,
+            skin_drag: None,
         }
     }
 
@@ -619,6 +629,12 @@ impl Editor {
     /// edges/centres to other widgets' for a gentle alignment assist.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        // HOME 3D-skin drag — rotate the model by the horizontal delta.
+        if let Some(last_x) = self.skin_drag {
+            self.skin_yaw += (x - last_x) * 0.012;
+            self.skin_drag = Some(x);
+            return;
+        }
         let Some(drag) = &self.dragging else {
             return;
         };
@@ -681,6 +697,7 @@ impl Editor {
     pub fn on_mouse_button(&mut self, pressed: bool, x: f32, y: f32) {
         self.cursor = (x, y);
         if !pressed {
+            self.skin_drag = None;
             if self.dragging.take().is_some() {
                 // A drag finished — drop the snap guides and persist.
                 self.snap_x = None;
@@ -701,7 +718,11 @@ impl Editor {
 
         match self.view {
             OverlayView::Home => {
-                let (_, _, toggles) = home_layout(self.window.0, self.window.1);
+                let (_, skin_rect, _, toggles) = home_layout(self.window.0, self.window.1);
+                if point_in(skin_rect, x, y) {
+                    self.skin_drag = Some(x);
+                    return;
+                }
                 for (i, &tog) in toggles.iter().enumerate() {
                     if point_in(tog, x, y) {
                         let wl = self.layout.get_mut(WidgetId::ALL[i]);
@@ -2219,46 +2240,43 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
 // Home view — the session overview + quick toggles.
 // ────────────────────────────────────────────────────────────────────────
 
-/// The HOME-view panel rect, its 5 stat cards, and 7 widget-toggle chips.
-/// Fixed-size so the renderer and the hit-tester agree without fonts.
-fn home_layout(w: f32, h: f32) -> (Rect, [Rect; 5], [Rect; 7]) {
-    let pw = 600.0;
-    let ph = 420.0;
+/// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 7 toggle
+/// chips. Fixed-size so the renderer and the hit-tester agree without fonts.
+fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 7]) {
+    let pw = 664.0;
+    let ph = 472.0;
     let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
-    let left = panel.left + 32.0;
-    let inner_w = pw - 64.0;
     let gap = 12.0;
 
-    // 5 stat cards — three narrow on top, two wide below.
-    let card_h = 62.0;
+    // Left column — the 3D skin viewer.
+    let skin = Rect::from_xywh(panel.left + 28.0, panel.top + 92.0, 180.0, ph - 92.0 - 30.0);
+
+    // Right column — stat cards (a 2-wide grid, the last card full width).
+    let rx = skin.right + 24.0;
+    let rw = panel.right - 32.0 - rx;
+    let card_h = 58.0;
+    let card_w = (rw - gap) / 2.0;
     let stats_top = panel.top + 96.0;
-    let w3 = (inner_w - 2.0 * gap) / 3.0;
-    let w2 = (inner_w - gap) / 2.0;
-    let row2 = stats_top + card_h + gap;
+    let step = card_h + gap;
     let stats = [
-        Rect::from_xywh(left, stats_top, w3, card_h),
-        Rect::from_xywh(left + w3 + gap, stats_top, w3, card_h),
-        Rect::from_xywh(left + 2.0 * (w3 + gap), stats_top, w3, card_h),
-        Rect::from_xywh(left, row2, w2, card_h),
-        Rect::from_xywh(left + w2 + gap, row2, w2, card_h),
+        Rect::from_xywh(rx, stats_top, card_w, card_h),
+        Rect::from_xywh(rx + card_w + gap, stats_top, card_w, card_h),
+        Rect::from_xywh(rx, stats_top + step, card_w, card_h),
+        Rect::from_xywh(rx + card_w + gap, stats_top + step, card_w, card_h),
+        Rect::from_xywh(rx, stats_top + 2.0 * step, rw, card_h),
     ];
 
-    // 7 widget toggle chips — four per row.
-    let tog_w = (inner_w - 3.0 * gap) / 4.0;
-    let tog_h = 34.0;
-    let tog_top = row2 + card_h + 72.0;
+    // 7 widget toggle chips — four per row, below the account line.
+    let tog_w = (rw - 3.0 * gap) / 4.0;
+    let tog_h = 32.0;
+    let tog_top = stats_top + 2.0 * step + card_h + 82.0;
     let mut toggles = [empty_rect(); 7];
     for (i, slot) in toggles.iter_mut().enumerate() {
-        let col = i % 4;
-        let row = i / 4;
-        *slot = Rect::from_xywh(
-            left + col as f32 * (tog_w + gap),
-            tog_top + row as f32 * (tog_h + gap),
-            tog_w,
-            tog_h,
-        );
+        let col = (i % 4) as f32;
+        let row = (i / 4) as f32;
+        *slot = Rect::from_xywh(rx + col * (tog_w + gap), tog_top + row * (tog_h + gap), tog_w, tog_h);
     }
-    (panel, stats, toggles)
+    (panel, skin, stats, toggles)
 }
 
 /// Format session seconds as `m:ss`, or `h:mm:ss` past an hour.
@@ -2392,12 +2410,12 @@ fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: bool, fonts: &
     draw_tracked_em(canvas, label, (dot_x + 12.0, cy + cap * 0.5), &font, &text, 0.08);
 }
 
-/// The HOME / overview view — session stats, account + profile, and quick
-/// per-HUD-widget visibility toggles.
+/// The HOME / overview view — a rotatable 3D skin, session stats, the
+/// account + profile, and quick per-HUD-widget visibility toggles.
 fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore, w: f32, h: f32) {
-    let (panel, stats, toggles) = home_layout(w, h);
+    let (panel, skin_rect, stats, toggles) = home_layout(w, h);
     draw_chip(canvas, panel, 16.0);
-    let left = panel.left + 32.0;
+    let left = panel.left + 28.0;
 
     // Eyebrow + title.
     let eyebrow_font = fonts.jetbrains_mono(11.0);
@@ -2412,19 +2430,42 @@ fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore
     title.set_color4f(rgba(PEARL, 1.0), None);
     canvas.draw_str("Overview", (left, panel.top + 78.0), &title_font, &title);
 
-    // Stat cards.
+    // Skin viewer — an inset chip with the rotatable 3D model.
+    draw_chip(canvas, skin_rect, 12.0);
+    crate::skin::draw_skin(
+        canvas,
+        skin_rect,
+        editor.skin_image.as_ref(),
+        editor.cape_image.as_ref(),
+        editor.skin_yaw,
+    );
+    let hint_font = fonts.jetbrains_mono(8.0);
+    let mut hint = Paint::default();
+    hint.set_anti_alias(true);
+    hint.set_color4f(rgba(MAUVE, 0.7), None);
+    let hint_text = if editor.skin_image.is_some() {
+        "DRAG TO ROTATE"
+    } else {
+        "NO SKIN LOADED"
+    };
+    let hint_w = measure_tracked_em(&hint_font, hint_text, 0.16);
+    draw_tracked_em(
+        canvas,
+        hint_text,
+        (skin_rect.left + (skin_rect.width() - hint_w) * 0.5, skin_rect.bottom - 12.0),
+        &hint_font,
+        &hint,
+        0.16,
+    );
+
+    // Stat cards (right column).
     let ping = if data.ping_valid() {
         format!("{} ms", data.ping())
     } else {
         "—".to_string()
     };
     let coords = if data.world_active() {
-        format!(
-            "{:.0}  {:.0}  {:.0}",
-            data.player_x(),
-            data.player_y(),
-            data.player_z()
-        )
+        format!("{:.0}  {:.0}  {:.0}", data.player_x(), data.player_y(), data.player_z())
     } else {
         "—".to_string()
     };
@@ -2447,7 +2488,8 @@ fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore
         draw_stat_card(canvas, *rect, card.0, &card.1, fonts);
     }
 
-    // Account + active-profile line.
+    // Account + active-profile line (right column, below the cards).
+    let rx = skin_rect.right + 24.0;
     let name = data.player_name();
     let account = if name.is_empty() {
         "not signed in".to_string()
@@ -2459,7 +2501,7 @@ fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore
     let mut info_paint = Paint::default();
     info_paint.set_anti_alias(true);
     info_paint.set_color4f(rgba(MAUVE, 1.0), None);
-    canvas.draw_str(&info, (left, stats[3].bottom + 36.0), &info_font, &info_paint);
+    canvas.draw_str(&info, (rx, stats[4].bottom + 34.0), &info_font, &info_paint);
 
     // Quick-toggle section.
     let qt_font = fonts.jetbrains_mono(10.0);
@@ -2469,7 +2511,7 @@ fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore
     draw_tracked_em(
         canvas,
         "QUICK TOGGLES  ·  HUD WIDGETS",
-        (left, toggles[0].top - 16.0),
+        (rx, toggles[0].top - 16.0),
         &qt_font,
         &qt,
         0.18,
@@ -2499,6 +2541,12 @@ struct ModEntry {
 /// `<instance-dir>/<file>` — the cdylib runs with the instance dir as its CWD.
 fn instance_file(file: &str) -> Option<PathBuf> {
     std::env::current_dir().ok().map(|d| d.join(file))
+}
+
+/// Load a skin / cape PNG the mod wrote into the instance dir, if present.
+fn load_skin_image(name: &str) -> Option<Image> {
+    let bytes = std::fs::read(instance_file(name)?).ok()?;
+    Image::from_encoded(Data::new_copy(&bytes))
 }
 
 /// Read `overlay-mods.toml` (written by the launcher) into the MODS list.

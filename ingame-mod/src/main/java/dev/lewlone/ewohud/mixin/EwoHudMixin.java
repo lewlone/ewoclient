@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import dev.lewlone.ewohud.EwoHudData;
 import dev.lewlone.ewohud.EwoHudMod;
 import dev.lewlone.ewohud.EwoHudNative;
+import dev.lewlone.ewohud.EwoSkinExport;
 
 /**
  * Drives the in-game HUD paint once per frame.
@@ -31,6 +32,7 @@ public class EwoHudMixin {
         if (!EwoHudMod.nativeReady) {
             return;
         }
+        EwoSkinExport.tick();
         EwoHudData.capture();
         EwoHudNative.nativeRender();
     }
