@@ -1,9 +1,8 @@
 //! Module-extensible keybind registry — Phase F5c.
 //!
 //! A *keybind* binds an EwoClient action to a key. The registry ([`REGISTRY`])
-//! is a static list of [`KeybindAction`]s; Phase F ships one (`overlay.open`),
-//! and future EwoClient **modules** append their own bindable actions here —
-//! the registry is the seam they plug into.
+//! lists every [`KeybindAction`]: the core `overlay.open` key plus one per
+//! EwoClient **module** (Phase G), derived from [`ewo_core::modules::REGISTRY`].
 //!
 //! Bindings are stored per client profile (`profiles/<name>/client.toml`),
 //! so each profile carries its own key layout — see [`crate::profile`].
@@ -17,6 +16,8 @@
 //! key. The `mods` field on [`KeyChord`] keeps the model honest for module
 //! keybinds that may want combos later — the file format and labels already
 //! carry it.
+
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
@@ -48,9 +49,19 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
+    /// An unbound chord. Key `0` is never delivered as a real GLFW press, so
+    /// an action left at `UNBOUND` simply never fires. Module keybinds default
+    /// to this — the user opts in by binding a key.
+    pub const UNBOUND: KeyChord = KeyChord { key: 0, mods: 0 };
+
     /// A plain key chord — no modifiers.
     pub const fn new(key: i32) -> Self {
         Self { key, mods: 0 }
+    }
+
+    /// Whether this chord is bound to a real key.
+    pub fn is_bound(self) -> bool {
+        self.key != 0
     }
 
     /// Build a chord from a captured winit key press. Returns `None` for
@@ -60,8 +71,11 @@ impl KeyChord {
         winit_to_glfw(code).map(KeyChord::new)
     }
 
-    /// Human-readable, e.g. `"Right Shift"` or `"Ctrl + Z"`.
+    /// Human-readable, e.g. `"Right Shift"`, `"Ctrl + Z"`, or `"Unbound"`.
     pub fn label(&self) -> String {
+        if !self.is_bound() {
+            return "Unbound".to_string();
+        }
         let mut s = String::new();
         if self.mods & glfw_mod::CONTROL != 0 {
             s.push_str("Ctrl + ");
@@ -92,14 +106,37 @@ pub struct KeybindAction {
     pub default: KeyChord,
 }
 
-/// Every bindable action. Future EwoClient modules append their own here —
-/// this list is the module-extensible seam.
-pub const REGISTRY: &[KeybindAction] = &[KeybindAction {
-    id: "overlay.open",
-    label: "Open the overlay",
-    module: "Core",
-    default: KeyChord::new(GLFW_RIGHT_SHIFT),
-}];
+/// Every bindable action: the core overlay key, then one per EwoClient module
+/// ([`ewo_core::modules`]). Phase G fills the module-extensible seam Phase F5c
+/// built — deriving the module keybinds here means the Keybinds tab,
+/// `client.toml`, and the in-game `ewo-keybinds.txt` all pick them up for free.
+///
+/// A `LazyLock`, not a `const`: the module catalog is `&'static` data but a
+/// `const` can't iterate it. Built once, on first use.
+pub static REGISTRY: LazyLock<Vec<KeybindAction>> = LazyLock::new(|| {
+    let mut actions = vec![KeybindAction {
+        id: "overlay.open",
+        label: "Open the overlay",
+        module: "Core",
+        default: KeyChord::new(GLFW_RIGHT_SHIFT),
+    }];
+    // One action per module — its id matches the module id, so the chord
+    // round-trips through `client.toml` and `ewo-keybinds.txt` unchanged.
+    for def in ewo_core::modules::REGISTRY {
+        actions.push(KeybindAction {
+            id: def.id,
+            label: def.name,
+            module: "Modules",
+            // `default_key == 0` means the catalog ships the module unbound.
+            default: if def.default_key == 0 {
+                KeyChord::UNBOUND
+            } else {
+                KeyChord::new(def.default_key)
+            },
+        });
+    }
+    actions
+});
 
 // ── Display ───────────────────────────────────────────────────────────────
 
@@ -254,6 +291,28 @@ mod tests {
             .expect("overlay.open registered");
         assert_eq!(a.default.key, GLFW_RIGHT_SHIFT);
         assert_eq!(a.default.mods, 0);
+    }
+
+    #[test]
+    fn registry_has_one_action_per_module() {
+        for m in ewo_core::modules::REGISTRY {
+            let a = REGISTRY
+                .iter()
+                .find(|a| a.id == m.id)
+                .unwrap_or_else(|| panic!("no keybind action for module {}", m.id));
+            assert_eq!(a.default.key, m.default_key);
+        }
+    }
+
+    #[test]
+    fn module_keybinds_default_unbound() {
+        // The starter modules ship with no key — the user opts in.
+        let fb = REGISTRY
+            .iter()
+            .find(|a| a.id == "fullbright")
+            .expect("fullbright action registered");
+        assert!(!fb.default.is_bound());
+        assert_eq!(fb.default.label(), "Unbound");
     }
 
     #[test]

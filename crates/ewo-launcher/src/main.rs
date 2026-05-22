@@ -1964,7 +1964,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         KeybindRequest::ResetAll => {
-                            for a in keybind::REGISTRY {
+                            for a in keybind::REGISTRY.iter() {
                                 self.keybinds.insert(a.id.to_string(), a.default);
                             }
                             self.keybind_capture = None;

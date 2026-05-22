@@ -358,7 +358,7 @@ pub fn load_keybinds() -> BTreeMap<String, KeyChord> {
         None => BTreeMap::new(),
     };
     let mut out = BTreeMap::new();
-    for a in keybind::REGISTRY {
+    for a in keybind::REGISTRY.iter() {
         let chord = stored.get(a.id).copied().unwrap_or(a.default);
         out.insert(a.id.to_string(), chord);
     }
