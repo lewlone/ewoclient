@@ -573,6 +573,10 @@ pub struct Editor {
     skin_drag: Option<f32>,
     /// Whether the loaded skin uses the slim ("Alex") 3px-arm model.
     skin_slim: bool,
+    /// `ewo-skin.png`'s mtime when it was last loaded — the export thread
+    /// rewrites the file after the `Editor` was built, and may also replace a
+    /// stale png left by an earlier launch, so the viewer reloads on a change.
+    skin_mtime: Option<std::time::SystemTime>,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -602,6 +606,7 @@ impl Editor {
             skin_yaw: 0.5,
             skin_drag: None,
             skin_slim: instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false),
+            skin_mtime: skin_png_mtime(),
         }
     }
 
@@ -893,12 +898,21 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     tint.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.22), None);
     canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &tint);
 
-    // Lazily pick up the skin PNGs once the mod has written them — the
-    // download finishes after the Editor was constructed.
-    if editor.view == OverlayView::Home && editor.skin_image.is_none() {
-        editor.skin_image = load_skin_image("ewo-skin.png");
-        editor.cape_image = load_skin_image("ewo-cape.png");
-        editor.skin_slim = instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false);
+    // Pick up the skin PNGs once the mod has written them — the export
+    // finishes after the Editor was constructed, and may replace a stale png
+    // from an earlier launch. Reload when the file's mtime moves, or keep
+    // retrying while we have no image but the file exists (a partial write).
+    if editor.view == OverlayView::Home {
+        let disk_mtime = skin_png_mtime();
+        if disk_mtime != editor.skin_mtime
+            || (editor.skin_image.is_none() && disk_mtime.is_some())
+        {
+            editor.skin_mtime = disk_mtime;
+            editor.skin_image = load_skin_image("ewo-skin.png");
+            editor.cape_image = load_skin_image("ewo-cape.png");
+            editor.skin_slim =
+                instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false);
+        }
     }
 
     // The active dashboard view.
@@ -2559,6 +2573,11 @@ fn instance_file(file: &str) -> Option<PathBuf> {
 fn load_skin_image(name: &str) -> Option<Image> {
     let bytes = std::fs::read(instance_file(name)?).ok()?;
     Image::from_encoded(Data::new_copy(&bytes))
+}
+
+/// `ewo-skin.png`'s last-modified time, or `None` if it isn't there yet.
+fn skin_png_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(instance_file("ewo-skin.png")?).ok()?.modified().ok()
 }
 
 /// Read `overlay-mods.toml` (written by the launcher) into the MODS list.
