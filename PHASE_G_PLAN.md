@@ -201,9 +201,11 @@ All seven default **off** and **unbound** — the user opts in.
 - Targets verified against the 26.1.1 Mojmap bytecode. Note: 26.x is GPU-
   driven — `LightTexture` → `Lightmap`, FOV moved into `Camera.calculateFov`.
 
-### G4 — No Damage Tilt + No View Bob
-- `@Inject(at = HEAD, cancellable = true)` mixins, cancelled when the module is
-  on.
+### G4 — No Damage Tilt + No View Bob ✅ shipped
+- `GameRendererMixin` — `@Inject(at = HEAD, cancellable = true)` on
+  `GameRenderer.bobHurt` (the damage camera-tilt) and `bobView` (the walking
+  view-bob). Each cancels its method when its module is on, so the camera
+  motion is skipped; the vanilla View Bobbing option is left untouched.
 
 ### G5 — Toggle Sprint + Toggle Sneak
 - Force the `KeyMapping` down-state from the frame hook while on; release once
@@ -237,7 +239,7 @@ becomes a record, not a forward plan.
 | G1 | `modules.toml` + `EwoModuleData` channel | ✅ shipped |
 | G2 | In-game MODULES tab | ✅ shipped |
 | G3 | Full Bright + FOV | ✅ shipped |
-| G4 | No Damage Tilt + No View Bob | pending |
+| G4 | No Damage Tilt + No View Bob | ✅ shipped |
 | G5 | Toggle Sprint + Toggle Sneak | pending |
 | G6 | FreeLook | pending |
 | G7 | Module keybinds end-to-end | pending |
