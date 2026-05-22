@@ -23,7 +23,7 @@ public class MouseHandlerMixin {
             method = "turnPlayer",
             at = @At(
                     value = "INVOKE",
-                    target = "Lnet/minecraft/client/player/LocalPlayer;turn:(DD)V"))
+                    target = "Lnet/minecraft/client/player/LocalPlayer;turn(DD)V"))
     private void ewo$turn(LocalPlayer player, double yawDelta, double pitchDelta) {
         if (EwoFreeLook.isActive()) {
             EwoFreeLook.addLook(yawDelta, pitchDelta);
