@@ -234,12 +234,13 @@ All seven default **off** and **unbound** — the user opts in.
   keys (in-world only, so a bound key still types in chat / menus). FreeLook's
   key stays a hold, polled by `EwoFreeLook`.
 
-### G8 — Launcher Settings → Modules tab *(optional)*
-- A `SettingsTab::Modules` — a toggle per module + the FOV slider, editing
-  `modules.toml` for the active profile. `profile::load_modules` /
-  `save_modules`.
-- The most cuttable step: module hotkeys already get a launcher UI via the
-  Keybinds tab without it.
+### G8 — Launcher Settings → Modules tab ✅ shipped
+- A `SettingsTab::Modules` (8th tab) — a custom-layout tab modelled on
+  Keybinds: a Velvet toggle per catalog module, plus FOV Control's slider.
+- The tab edits `prefs.module_toggles` / `module_fov` directly; a change sets
+  `modules_changed`, and the main loop writes `profiles/<active>/modules.toml`
+  via `profile::save_modules` — the same file `ewo-jni` reads.
+- `profile::load_modules` is applied on startup and on profile switch.
 
 ---
 
@@ -256,4 +257,4 @@ becomes a record, not a forward plan.
 | G5 | Toggle Sprint + Toggle Sneak | ✅ shipped |
 | G6 | FreeLook | ✅ shipped |
 | G7 | Module keybinds end-to-end | ✅ shipped |
-| G8 | Launcher Modules tab (optional) | pending |
+| G8 | Launcher Modules tab (optional) | ✅ shipped |

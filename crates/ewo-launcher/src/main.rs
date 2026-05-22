@@ -183,6 +183,8 @@ impl App {
             prefs: {
                 let mut p = Prefs::default();
                 p.apply_config(&settings_config);
+                let (mod_enabled, mod_fov) = profile::load_modules();
+                p.apply_modules(&mod_enabled, mod_fov);
                 p
             },
             // Try the persisted list first, fall back to the bundled
@@ -218,6 +220,9 @@ impl App {
     /// token, so the pools re-spawn).
     fn apply_loaded_config(&mut self, config: screens::SettingsConfig, settings: Settings) {
         self.prefs.apply_config(&config);
+        // Modules are per-profile too — reload them for the switched-to profile.
+        let (mod_enabled, mod_fov) = profile::load_modules();
+        self.prefs.apply_modules(&mod_enabled, mod_fov);
         self.settings = settings;
         if let Some(b) = self.backend.as_ref() {
             b.set_vsync(self.prefs.vsync.on);
@@ -1986,6 +1991,13 @@ impl ApplicationHandler for App {
                     }
                     log::info!("reset_prefs: applied defaults");
                 }
+
+                // Modules tab — persist `modules.toml` when an edit landed.
+                if self.prefs.modules_changed {
+                    self.prefs.modules_changed = false;
+                    let (enabled, fov) = self.prefs.modules_snapshot();
+                    profile::save_modules(&enabled, fov);
+                }
                 if let Some(overlay) = self.dev_overlay.as_mut() {
                     overlay.tick(dt);
                     let density_changed = overlay.apply_to_settings(&mut self.settings);
@@ -2320,6 +2332,21 @@ fn drive_settings_sliders(
         prefs.keybind_reset.handle(mouse, layout.reset_button, false);
         return false;
     }
+    // Modules tab — update toggle hover + drive the FOV Control slider.
+    if tab == SettingsTab::Modules {
+        let layout = screens::settings::modules_tab_layout(fonts, card_w);
+        for rl in &layout.rows {
+            if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
+                toggle.handle(mouse, rl.toggle, false);
+            }
+            if let Some(slider) = rl.slider {
+                if prefs.module_fov.drive(mouse, slider, mouse_down) {
+                    prefs.modules_changed = true;
+                }
+            }
+        }
+        return false;
+    }
     let mut changed = false;
     for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
         match slot {
@@ -2508,6 +2535,28 @@ fn handle_settings_press(
         if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
             prefs.keybind_request = Some(KeybindRequest::ResetAll);
             return (true, false);
+        }
+        return (false, false);
+    }
+
+    // Modules tab — a toggle click flips the module; a slider press is
+    // consumed here (the drag itself runs in `drive_settings_sliders`).
+    if tab == SettingsTab::Modules {
+        let layout = screens::settings::modules_tab_layout(fonts, card_w);
+        for rl in &layout.rows {
+            if rect_contains(&rl.toggle, mouse) {
+                if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
+                    if toggle.handle(mouse, rl.toggle, true) {
+                        prefs.modules_changed = true;
+                    }
+                }
+                return (true, false);
+            }
+            if let Some(slider) = rl.slider {
+                if rect_contains(&slider, mouse) {
+                    return (true, false);
+                }
+            }
         }
         return (false, false);
     }

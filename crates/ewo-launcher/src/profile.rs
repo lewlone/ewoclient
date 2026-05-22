@@ -36,6 +36,7 @@ const PROFILES_DIRNAME: &str = "profiles";
 const INDEX_FILENAME: &str = "profiles.toml";
 const SETTINGS_FILENAME: &str = "settings.toml";
 const CLIENT_FILENAME: &str = "client.toml";
+const MODULES_FILENAME: &str = "modules.toml";
 const DEFAULT_PROFILE: &str = "Default";
 
 /// The profile-scoped config — one `client.toml` per profile. Field order
@@ -158,6 +159,16 @@ fn client_path(profile: &str) -> Option<PathBuf> {
     p.push(PROFILES_DIRNAME);
     p.push(profile);
     p.push(CLIENT_FILENAME);
+    Some(p)
+}
+
+/// `profiles/<profile>/modules.toml` — the per-profile module config,
+/// shared with the in-game side (`ewo-jni` reads and writes the same file).
+fn modules_path(profile: &str) -> Option<PathBuf> {
+    let mut p = ewo_dir()?;
+    p.push(PROFILES_DIRNAME);
+    p.push(profile);
+    p.push(MODULES_FILENAME);
     Some(p)
 }
 
@@ -373,6 +384,75 @@ pub fn save_keybinds(keybinds: &BTreeMap<String, KeyChord>) {
     let mut client: ClientProfile = read_toml(&p, "client.toml");
     client.keybinds = keybinds.clone();
     write_toml(&p, &client, "client.toml");
+}
+
+// ── modules ──────────────────────────────────────────────────────────────
+
+/// Load the active profile's module config — `modules.toml`, the file the
+/// in-game side (`ewo-jni`) also reads and writes. Returns the per-catalog-
+/// module enabled flags (in `ewo_core::modules::REGISTRY` order) plus the FOV
+/// Control value, each defaulting from the catalog when absent.
+///
+/// Hand-parsed line-by-line, matching what `ewo-jni` writes — the format only
+/// carries `enabled` bools and one `fov` float.
+pub fn load_modules() -> (Vec<bool>, f32) {
+    use ewo_core::modules as catalog;
+    let mut enabled: Vec<bool> = catalog::REGISTRY.iter().map(|m| m.default_enabled).collect();
+    let mut fov = catalog::get("fov").map(|m| m.setting_default(0)).unwrap_or(90.0);
+
+    let Some(text) = modules_path(&active_name()).and_then(|p| fs::read_to_string(p).ok()) else {
+        return (enabled, fov);
+    };
+    let mut current: Option<usize> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current = catalog::index_of(section);
+            continue;
+        }
+        let (Some((key, value)), Some(idx)) = (line.split_once('='), current) else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if key == "enabled" {
+            enabled[idx] = value == "true";
+        } else if catalog::REGISTRY[idx].id == "fov" && key == "fov" {
+            if let Ok(v) = value.parse::<f32>() {
+                fov = v;
+            }
+        }
+    }
+    (enabled, fov)
+}
+
+/// Write the active profile's `modules.toml` from the launcher's Modules tab.
+/// The format mirrors what `ewo-jni` writes, so the in-game side reads it back.
+pub fn save_modules(enabled: &[bool], fov: f32) {
+    use ewo_core::modules as catalog;
+    let Some(path) = modules_path(&active_name()) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("profile: mkdir for modules.toml failed: {}", e);
+            return;
+        }
+    }
+    let mut s = String::from("# EwoClient modules — per client profile.\n");
+    for (i, m) in catalog::REGISTRY.iter().enumerate() {
+        let on = enabled.get(i).copied().unwrap_or(m.default_enabled);
+        s.push_str(&format!("\n[{}]\nenabled = {}\n", m.id, on));
+        // FOV Control is the only module with a setting today.
+        if m.id == "fov" {
+            s.push_str(&format!("fov = {}\n", fov));
+        }
+    }
+    if let Err(e) = fs::write(&path, s) {
+        log::warn!("profile: write modules.toml failed: {}", e);
+    }
 }
 
 // ── management ───────────────────────────────────────────────────────────

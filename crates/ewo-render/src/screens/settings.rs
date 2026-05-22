@@ -46,6 +46,7 @@ pub enum SettingsTab {
     Account,
     Profiles,
     Keybinds,
+    Modules,
     Graphics,
     Audio,
     Paths,
@@ -53,10 +54,11 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 7] = [
+    const ALL: [SettingsTab; 8] = [
         SettingsTab::Account,
         SettingsTab::Profiles,
         SettingsTab::Keybinds,
+        SettingsTab::Modules,
         SettingsTab::Graphics,
         SettingsTab::Audio,
         SettingsTab::Paths,
@@ -68,6 +70,7 @@ impl SettingsTab {
             SettingsTab::Account => "Account",
             SettingsTab::Profiles => "Profiles",
             SettingsTab::Keybinds => "Keybinds",
+            SettingsTab::Modules => "Modules",
             SettingsTab::Graphics => "Graphics",
             SettingsTab::Audio => "Audio",
             SettingsTab::Paths => "Paths",
@@ -294,6 +297,12 @@ pub struct Prefs {
     pub keybind_request: Option<KeybindRequest>,
     /// Which Keybinds-tab chord button the cursor is over (row index).
     pub keybind_hover: Option<usize>,
+    /// Modules tab — one toggle state per catalog module (`.on` = enabled).
+    pub module_toggles: Vec<VtoggleState>,
+    /// Modules tab — the FOV Control setting slider.
+    pub module_fov: VsliderState,
+    /// Set by a Modules-tab edit; the main loop writes `modules.toml` + clears.
+    pub modules_changed: bool,
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
@@ -408,6 +417,13 @@ impl Default for Prefs {
             keybind_reset: VghostBtnState::default(),
             keybind_request: None,
             keybind_hover: None,
+            module_toggles: ewo_core::modules::REGISTRY
+                .iter()
+                .map(|m| VtoggleState::new(m.default_enabled))
+                .collect(),
+            // FOV Control's slider — range from the catalog (30–150°).
+            module_fov: VsliderState::new(90.0, 30.0, 150.0).with_step(1.0),
+            modules_changed: false,
             tab_changed_at: None,
             reset_requested: false,
         }
@@ -429,6 +445,9 @@ impl Prefs {
         self.account_add.tick(dt);
         self.profile_new.tick(dt);
         self.profile_dup.tick(dt);
+        for toggle in &mut self.module_toggles {
+            toggle.tick(dt);
+        }
     }
 
     /// Snapshot the persisted form of the current prefs. App writes this
@@ -468,6 +487,25 @@ impl Prefs {
         self.auto_backup = VtoggleState::new(c.auto_backup);
         self.log_level = VdropState::new(c.log_level);
         self.telemetry = VtoggleState::new(c.telemetry);
+    }
+
+    /// Apply a loaded module config — `enabled[i]` for catalog module `i`,
+    /// plus the FOV Control value. Toggle anim states reset to the new
+    /// positions (no slide-in), as `apply_config` does for the others.
+    pub fn apply_modules(&mut self, enabled: &[bool], fov: f32) {
+        for (toggle, &on) in self.module_toggles.iter_mut().zip(enabled) {
+            *toggle = VtoggleState::new(on);
+        }
+        self.module_fov.value = fov;
+    }
+
+    /// Snapshot the Modules tab for persistence — per-module enabled flags
+    /// (catalog order) and the FOV Control value.
+    pub fn modules_snapshot(&self) -> (Vec<bool>, f32) {
+        (
+            self.module_toggles.iter().map(|t| t.on).collect(),
+            self.module_fov.value,
+        )
     }
 
     /// Close every dropdown. Call this on screen/tab switch and on
@@ -697,6 +735,8 @@ fn draw_panel(
             draw_profiles_tab(canvas, fonts, w, prefs, profiles);
         } else if active == SettingsTab::Keybinds {
             draw_keybinds_tab(canvas, fonts, w, prefs, keybinds);
+        } else if active == SettingsTab::Modules {
+            draw_modules_tab(canvas, fonts, w, prefs, time, settings);
         } else {
             draw_section_body(
                 canvas,
@@ -807,6 +847,7 @@ fn subhead_for(tab: SettingsTab) -> &'static str {
         SettingsTab::Account => "your Microsoft account.",
         SettingsTab::Profiles => "named looks you can switch between.",
         SettingsTab::Keybinds => "the keys this profile answers to.",
+        SettingsTab::Modules => "legit-client features, per profile.",
         SettingsTab::Graphics => "how the cloth is rendered.",
         SettingsTab::Audio => "tend to the boudoir's hum.",
         SettingsTab::Paths => "where the launcher keeps its things.",
@@ -866,7 +907,10 @@ fn rows_for_tab(tab: SettingsTab) -> &'static [RowDef] {
     match tab {
         // Account / Profiles / Keybinds use custom layouts (see the
         // draw_*_tab fns) — no row-grid entries.
-        SettingsTab::Account | SettingsTab::Profiles | SettingsTab::Keybinds => ACCOUNT_ROWS,
+        SettingsTab::Account
+        | SettingsTab::Profiles
+        | SettingsTab::Keybinds
+        | SettingsTab::Modules => ACCOUNT_ROWS,
         SettingsTab::Graphics => GRAPHICS_ROWS,
         SettingsTab::Audio => AUDIO_ROWS,
         SettingsTab::Paths => PATHS_ROWS,
@@ -1726,6 +1770,146 @@ fn draw_keybind_row(
     canvas.draw_str(label, (tx, ty), &txt_font, &txt_paint);
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Modules tab — toggle EwoClient modules + the FOV Control slider (Phase G)
+// ────────────────────────────────────────────────────────────────────────
+
+/// Extra height below a module's name row for a setting slider strip.
+const MODULE_SLIDER_STRIP: f32 = 42.0;
+
+/// Card-local layout of one Modules-tab row: the full row, the on/off toggle
+/// at its top-right, and — for a module with a setting — the slider strip.
+pub struct ModuleRowLayout {
+    pub index: usize,
+    pub row: Rect,
+    pub toggle: Rect,
+    /// Slider rect for a module that carries a setting (FOV Control), else None.
+    pub slider: Option<Rect>,
+}
+
+/// Card-local layout of the Modules tab.
+pub struct ModuleTabLayout {
+    pub content_left: f32,
+    pub content_right: f32,
+    pub header_top: f32,
+    pub rows: Vec<ModuleRowLayout>,
+}
+
+/// Compute the Modules tab's layout — one row per `ewo_core::modules` entry.
+pub fn modules_tab_layout(fonts: &FontStore, card_w: f32) -> ModuleTabLayout {
+    let body_top = HEADER_BOTTOM + 8.0 + 16.0;
+    let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
+    let panel_right = card_w - BODY_PAD_X;
+    let content_left = panel_left + PANEL_INNER_PAD_X;
+    let content_right = panel_right - PANEL_INNER_PAD_X;
+    let content_top = body_top + PANEL_INNER_PAD_Y;
+    let header_top = section_head_bottom(content_top, fonts);
+
+    let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    let mut rows = Vec::with_capacity(ewo_core::modules::REGISTRY.len());
+    let mut y = list_top;
+    for (i, m) in ewo_core::modules::REGISTRY.iter().enumerate() {
+        let has_slider = !m.settings.is_empty();
+        let row_h = ACCOUNT_ROW_H + if has_slider { MODULE_SLIDER_STRIP } else { 0.0 };
+        let row = Rect::from_ltrb(content_left, y, content_right, y + row_h);
+        let top_cy = y + ACCOUNT_ROW_H * 0.5;
+        let toggle = Rect::from_xywh(
+            row.right - crate::widgets::TOGGLE_W,
+            top_cy - crate::widgets::TOGGLE_H * 0.5,
+            crate::widgets::TOGGLE_W,
+            crate::widgets::TOGGLE_H,
+        );
+        let slider = if has_slider {
+            Some(Rect::from_ltrb(
+                content_left,
+                y + ACCOUNT_ROW_H + 4.0,
+                content_right - 56.0,
+                y + ACCOUNT_ROW_H + MODULE_SLIDER_STRIP - 4.0,
+            ))
+        } else {
+            None
+        };
+        rows.push(ModuleRowLayout { index: i, row, toggle, slider });
+        y += row_h + ACCOUNT_ROW_GAP;
+    }
+    ModuleTabLayout { content_left, content_right, header_top, rows }
+}
+
+fn draw_modules_tab(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    prefs: &Prefs,
+    time: f32,
+    settings: &Settings,
+) {
+    let layout = modules_tab_layout(fonts, card_w);
+
+    // Body copy.
+    let body_font = fonts.newsreader(15.0);
+    let mut body_paint = Paint::default();
+    body_paint.set_anti_alias(true);
+    body_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5));
+    let (_, bm) = body_font.metrics();
+    canvas.draw_str(
+        "legit-client features — stored per profile, applied live in-game.",
+        (layout.content_left, layout.header_top + (-bm.ascent)),
+        &body_font,
+        &body_paint,
+    );
+
+    for rl in &layout.rows {
+        let def = &ewo_core::modules::REGISTRY[rl.index];
+        draw_module_row(canvas, fonts, rl, def, prefs, time, settings);
+    }
+}
+
+/// Draw one Modules-tab row — name, description, on/off toggle, and (for a
+/// module with a setting) the slider strip beneath.
+fn draw_module_row(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &ModuleRowLayout,
+    def: &ewo_core::modules::ModuleDef,
+    prefs: &Prefs,
+    time: f32,
+    settings: &Settings,
+) {
+    let row = layout.row;
+    let top_cy = row.top + ACCOUNT_ROW_H * 0.5;
+
+    // Name — Fraunces, just above the top-row centre.
+    let name_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 360.0, None);
+    let mut name_paint = Paint::default();
+    name_paint.set_anti_alias(true);
+    name_paint.set_color(TEXT_PEARL);
+    canvas.draw_str(def.name, (row.left + 4.0, top_cy - 1.0), &name_font, &name_paint);
+
+    // Description — Newsreader, mauve, below.
+    let desc_font = fonts.newsreader(13.0);
+    let mut desc_paint = Paint::default();
+    desc_paint.set_anti_alias(true);
+    desc_paint.set_color(TEXT_MAUVE);
+    canvas.draw_str(def.description, (row.left + 4.0, top_cy + 16.0), &desc_font, &desc_paint);
+
+    // On/off toggle.
+    if let Some(toggle) = prefs.module_toggles.get(layout.index) {
+        draw_vtoggle(canvas, layout.toggle, toggle);
+    }
+
+    // Setting slider (FOV Control).
+    if let Some(slider) = layout.slider {
+        draw_vslider(canvas, slider, &prefs.module_fov, time, settings);
+        draw_slider_value_label(
+            canvas,
+            fonts,
+            Rect::from_ltrb(slider.right, slider.top, row.right, slider.bottom),
+            prefs.module_fov.value,
+            |v| format!("{}°", v.round() as i32),
+        );
+    }
+}
+
 /// Render a Minecraft UUID short — first 8 chars uppercase, mono-feel.
 /// (UUIDs come back without dashes from the profile endpoint.)
 fn short_uuid(uuid: &str) -> String {
@@ -2107,7 +2291,7 @@ pub fn path_browse_bounds(slot: Slot, fonts: &FontStore, card_w: f32, card_h: f3
 
 /// Card-local bounds for each sidebar tab, indexed by `SettingsTab::ALL`.
 /// Returned in the same order as `SettingsTab::ALL`.
-pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 7] {
+pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 8] {
     let sidebar_left = BODY_PAD_X;
     let body_top = HEADER_BOTTOM + 8.0;
     let title_top = body_top + 16.0;
@@ -2121,10 +2305,11 @@ pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 7] {
     let row_h = 14.0 + (-lm.ascent + lm.descent) + 14.0;
     let mut y = title_baseline + tm.descent + 28.0;
 
-    let mut out: [(SettingsTab, Rect); 7] = [
+    let mut out: [(SettingsTab, Rect); 8] = [
         (SettingsTab::Account, Rect::default()),
         (SettingsTab::Profiles, Rect::default()),
         (SettingsTab::Keybinds, Rect::default()),
+        (SettingsTab::Modules, Rect::default()),
         (SettingsTab::Graphics, Rect::default()),
         (SettingsTab::Audio, Rect::default()),
         (SettingsTab::Paths, Rect::default()),
