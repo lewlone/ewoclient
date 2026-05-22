@@ -170,7 +170,7 @@ All seven default **off** and **unbound** — the user opts in.
 - Slice-deref keeps every `keybind::REGISTRY` call site working; only the two
   bare `for … in keybind::REGISTRY` loops need `.iter()`.
 
-### G1 — `modules.toml` persistence + the `EwoModuleData` channel
+### G1 — `modules.toml` persistence + the `EwoModuleData` channel ✅ shipped
 - `ewo-jni` side: a `ModuleConfig` (per-module enabled + settings), loaded from
   `profiles/<active>/modules.toml` (hand-parsed, like `HudLayout::load`),
   saved on change. Owned by the overlay `Editor`.
@@ -224,7 +224,7 @@ becomes a record, not a forward plan.
 | # | Step | Status |
 |---|---|---|
 | G0 | Module catalog + keybind refactor | ✅ shipped |
-| G1 | `modules.toml` + `EwoModuleData` channel | pending |
+| G1 | `modules.toml` + `EwoModuleData` channel | ✅ shipped |
 | G2 | In-game MODULES tab | pending |
 | G3 | Full Bright + FOV | pending |
 | G4 | No Damage Tilt + No View Bob | pending |

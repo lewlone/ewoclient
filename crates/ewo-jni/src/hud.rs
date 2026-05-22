@@ -559,6 +559,9 @@ pub struct Editor {
     selected: Option<WidgetId>,
     /// Bundled mods for the MODS view — loaded from `overlay-mods.toml`.
     mods: Vec<ModEntry>,
+    /// EwoClient modules — enabled state + settings, per client profile.
+    /// `pub(crate)` so the JNI layer can write the state buffer and toggle.
+    pub(crate) modules: crate::modules::ModuleConfig,
     /// Active client-profile name. Read at construction; updated when the
     /// SETTINGS-tab picker switches profile.
     active_profile: String,
@@ -599,6 +602,7 @@ impl Editor {
             snap_y: None,
             selected: None,
             mods: load_mods(),
+            modules: crate::modules::ModuleConfig::load(),
             active_profile: profile_active,
             profiles: profile_list,
             skin_image: load_skin_image("ewo-skin.png"),
@@ -631,6 +635,8 @@ impl Editor {
         write_profiles(&name, &self.profiles);
         self.active_profile = name;
         self.layout = HudLayout::load();
+        // Modules are per-profile too — reload them for the switched-to profile.
+        self.modules = crate::modules::ModuleConfig::load();
     }
 
     /// Cursor moved — drag the active widget if one is held, snapping its
@@ -2363,7 +2369,7 @@ fn read_profiles() -> Option<(String, Vec<String>)> {
 }
 
 /// The active client-profile name, or `None` if `profiles.toml` is absent.
-fn read_active_profile() -> Option<String> {
+pub(crate) fn read_active_profile() -> Option<String> {
     read_profiles().map(|(active, _)| active)
 }
 

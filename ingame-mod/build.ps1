@@ -22,9 +22,9 @@ if (-not (Test-Path (Join-Path $jdk "javac.exe"))) {
 # plus every shared library. The libraries cover Minecraft's transitive
 # supertypes, the loader (ClientModInitializer) and sponge-mixin (the mixin
 # annotations) - all of which live under shared/libraries.
-$mc = Join-Path $ewo "shared\versions\26.1\26.1.jar"
+$mc = Join-Path $ewo "shared\versions\26.1.1\26.1.1.jar"
 if (-not (Test-Path $mc)) {
-    throw "Minecraft 26.1 jar not found at $mc - launch 26.1 once to download it."
+    throw "Minecraft 26.1.1 jar not found at $mc - launch 26.1.1 once to download it."
 }
 $libs = (Get-ChildItem -Recurse (Join-Path $ewo "shared\libraries") -Filter *.jar).FullName
 $cp = (@($mc) + $libs) -join ";"

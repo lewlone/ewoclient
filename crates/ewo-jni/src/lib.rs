@@ -64,6 +64,7 @@
 #![allow(non_snake_case)] // JNI exports must be named `Java_<pkg>_<class>_<method>`.
 
 mod hud;
+mod modules;
 mod skin;
 
 use std::cell::RefCell;
@@ -231,6 +232,9 @@ static START: OnceLock<Instant> = OnceLock::new();
 /// Address of the shared JVM→Rust data block, registered by `nativeInit`.
 /// `0` until then. Set on the render thread before the first `nativeRender`.
 static HUD_BUFFER: AtomicUsize = AtomicUsize::new(0);
+/// Address of the Rust→JVM module-state block, registered by `nativeInitModules`.
+/// `0` until then. Rust writes it every frame; the mod reads it. See [`modules`].
+static MODULE_BUFFER: AtomicUsize = AtomicUsize::new(0);
 /// Logs a buffer-schema mismatch at most once.
 static SCHEMA_WARN: Once = Once::new();
 
@@ -390,8 +394,16 @@ impl Hud {
     /// the offscreen surface, then composite it onto Minecraft's framebuffer.
     /// Runs on our dedicated context; Minecraft's context is handed back
     /// untouched at the end.
-    fn frame(&mut self, buffer: usize) {
+    fn frame(&mut self, buffer: usize, module_buffer: usize) {
         self.buffer = buffer;
+
+        // The module-state channel — written every frame (it is ~120 bytes,
+        // and the mod reads it each frame to drive the effect mixins). It is
+        // independent of the window size / paint, so it runs before the
+        // early-return below and is never rate-gated.
+        if module_buffer != 0 {
+            unsafe { self.editor.modules.write_buffer(module_buffer as *mut u8) };
+        }
 
         let Some((w, h)) = self.window_size() else {
             return;
@@ -747,7 +759,10 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeRender(
                 };
             }
             if let HudState::Ready(hud) = &mut *state {
-                hud.frame(HUD_BUFFER.load(Ordering::Relaxed));
+                hud.frame(
+                    HUD_BUFFER.load(Ordering::Relaxed),
+                    MODULE_BUFFER.load(Ordering::Relaxed),
+                );
             }
         });
     }));
@@ -801,4 +816,53 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeKey(
     _pressed: u8,
     _modifiers: i32,
 ) {
+}
+
+/// Register the Rust→JVM module-state block (Phase G). Called once at mod init
+/// with a direct `ByteBuffer`; Rust resolves its address and writes the block
+/// every frame thereafter.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeInitModules(
+    env: *mut jni_sys::JNIEnv,
+    _class: *mut c_void,
+    buf: jni_sys::jobject,
+) {
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        if env.is_null() || buf.is_null() {
+            log("nativeInitModules: null env or buffer");
+            return;
+        }
+        // SAFETY: documented JNI contract — identical to `nativeInit`.
+        let addr = unsafe {
+            match (**env).GetDirectBufferAddress {
+                Some(get_addr) => get_addr(env, buf),
+                None => {
+                    log("nativeInitModules: GetDirectBufferAddress unavailable");
+                    return;
+                }
+            }
+        };
+        if addr.is_null() {
+            log("nativeInitModules: GetDirectBufferAddress returned null (buffer not direct?)");
+            return;
+        }
+        MODULE_BUFFER.store(addr as usize, Ordering::Relaxed);
+        log("nativeInitModules: module-state block registered");
+    }));
+}
+
+/// Flip module `index`'s enabled flag (Phase G). Called from the Java key
+/// handler when a module's toggle key is pressed — Rust owns module state, so
+/// the keypress round-trips through here; the next frame's buffer write carries
+/// the new state back to the mod.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeModuleToggle(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    index: i32,
+) {
+    if index < 0 {
+        return;
+    }
+    with_hud(|hud| hud.editor.modules.toggle(index as usize));
 }

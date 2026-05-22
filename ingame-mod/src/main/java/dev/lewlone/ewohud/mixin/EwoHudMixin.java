@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import dev.lewlone.ewohud.EwoHudData;
 import dev.lewlone.ewohud.EwoHudMod;
 import dev.lewlone.ewohud.EwoHudNative;
+import dev.lewlone.ewohud.EwoModules;
 import dev.lewlone.ewohud.EwoSkinExport;
 
 /**
@@ -35,5 +36,6 @@ public class EwoHudMixin {
         EwoSkinExport.tick();
         EwoHudData.capture();
         EwoHudNative.nativeRender();
+        EwoModules.tick();
     }
 }

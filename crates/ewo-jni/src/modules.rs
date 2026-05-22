@@ -1,0 +1,192 @@
+//! Module config + the Rust→Java module-state channel (Phase G).
+//!
+//! The launcher and the in-game overlay share the module catalog
+//! ([`ewo_core::modules`]). This file is the `ewo-jni` runtime side:
+//!
+//! - [`ModuleConfig`] — the live enabled/settings state, loaded from and saved
+//!   to the active profile's `modules.toml` (a sibling of `hud.toml`, hand-
+//!   parsed for the same reason: no `toml` crate in the cdylib).
+//! - [`ModuleConfig::write_buffer`] — fills the `EwoModuleData` block, the
+//!   Rust→Java half of the bridge. The `ewo-hud` mod reads it every frame to
+//!   apply the module effects. The layout is mirrored in `EwoModuleData.java`;
+//!   [`SCHEMA_VERSION`] guards the two sides against drift.
+
+use std::path::PathBuf;
+
+use ewo_core::modules as catalog;
+
+/// Layout version of the `EwoModuleData` buffer. Bump on any layout change;
+/// `EwoModuleData.SCHEMA_VERSION` on the Java side must match.
+pub const SCHEMA_VERSION: i32 = 1;
+
+/// First record offset — past the `i32 schema` + `i32 count` header.
+const OFF_RECORDS: usize = 8;
+/// Per-module record stride: `i32 enabled`, `MAX_SETTINGS × f32`, `i32 reserved`.
+const RECORD: usize = 8 + catalog::MAX_SETTINGS * 4;
+
+/// One module's live state.
+#[derive(Clone, Copy)]
+pub struct ModuleState {
+    pub enabled: bool,
+    pub settings: [f32; catalog::MAX_SETTINGS],
+}
+
+/// Live module config — one [`ModuleState`] per [`ewo_core::modules::REGISTRY`]
+/// entry, in registry order. Loaded from / saved to the active profile's
+/// `modules.toml`.
+pub struct ModuleConfig {
+    states: Vec<ModuleState>,
+}
+
+impl ModuleConfig {
+    /// Every module at its catalog default.
+    pub fn defaults() -> Self {
+        let states = catalog::REGISTRY
+            .iter()
+            .map(|m| {
+                let mut settings = [0.0_f32; catalog::MAX_SETTINGS];
+                for (slot, value) in settings.iter_mut().enumerate() {
+                    *value = m.setting_default(slot);
+                }
+                ModuleState {
+                    enabled: m.default_enabled,
+                    settings,
+                }
+            })
+            .collect();
+        ModuleConfig { states }
+    }
+
+    /// Load the active profile's `modules.toml`, falling back to the catalog
+    /// default for any module or setting absent or malformed — a hand-edited
+    /// or missing file never breaks the modules.
+    pub fn load() -> Self {
+        let mut cfg = Self::defaults();
+        let Some(text) = modules_toml_path().and_then(|p| std::fs::read_to_string(p).ok())
+        else {
+            return cfg;
+        };
+        let mut current: Option<usize> = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                current = catalog::index_of(section);
+                continue;
+            }
+            let (Some((key, value)), Some(idx)) = (line.split_once('='), current) else {
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            if key == "enabled" {
+                cfg.states[idx].enabled = value == "true";
+            } else if let Some(slot) =
+                catalog::REGISTRY[idx].settings.iter().position(|s| s.id == key)
+            {
+                if let Ok(v) = value.parse::<f32>() {
+                    cfg.states[idx].settings[slot] = v;
+                }
+            }
+        }
+        cfg
+    }
+
+    /// Write the active profile's `modules.toml`.
+    pub fn save(&self) {
+        let Some(path) = modules_toml_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut s = String::from("# EwoClient modules — per client profile.\n");
+        for (idx, def) in catalog::REGISTRY.iter().enumerate() {
+            let st = self.states[idx];
+            s.push_str(&format!("\n[{}]\nenabled = {}\n", def.id, st.enabled));
+            for (slot, setting) in def.settings.iter().enumerate() {
+                s.push_str(&format!("{} = {}\n", setting.id, st.settings[slot]));
+            }
+        }
+        let _ = std::fs::write(&path, s);
+    }
+
+    /// Flip module `idx`'s enabled flag and persist. No-op out of range.
+    pub fn toggle(&mut self, idx: usize) {
+        if let Some(st) = self.states.get_mut(idx) {
+            st.enabled = !st.enabled;
+            self.save();
+        }
+    }
+
+    /// Fill the `EwoModuleData` block at `base` — the Rust→Java channel. The
+    /// `ewo-hud` mod reads it every frame to apply the module effects.
+    ///
+    /// # Safety
+    /// `base` must point to at least `EwoModuleData.CAPACITY` writable bytes.
+    pub unsafe fn write_buffer(&self, base: *mut u8) {
+        write_i32(base, 0, SCHEMA_VERSION);
+        write_i32(base, 4, self.states.len() as i32);
+        for (i, st) in self.states.iter().enumerate() {
+            let rec = OFF_RECORDS + i * RECORD;
+            write_i32(base, rec, st.enabled as i32);
+            for (slot, value) in st.settings.iter().enumerate() {
+                write_f32(base, rec + 4 + slot * 4, *value);
+            }
+            write_i32(base, rec + 4 + catalog::MAX_SETTINGS * 4, 0); // reserved
+        }
+    }
+}
+
+/// Write an `i32` at `base + off` (unaligned-safe — the direct `ByteBuffer` is
+/// native byte order, so no swap is needed).
+unsafe fn write_i32(base: *mut u8, off: usize, v: i32) {
+    (base.add(off) as *mut i32).write_unaligned(v);
+}
+/// Write an `f32` at `base + off` (unaligned-safe).
+unsafe fn write_f32(base: *mut u8, off: usize, v: f32) {
+    (base.add(off) as *mut f32).write_unaligned(v);
+}
+
+/// `%APPDATA%/EwoClient/profiles/<active>/modules.toml` — per client profile,
+/// resolved like `hud.rs`'s `hud_toml_path`.
+fn modules_toml_path() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    let profile = crate::hud::read_active_profile().unwrap_or_else(|| "Default".to_string());
+    Some(
+        PathBuf::from(appdata)
+            .join("EwoClient")
+            .join("profiles")
+            .join(profile)
+            .join("modules.toml"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_layout_matches_the_schema() {
+        let cfg = ModuleConfig::defaults();
+        let mut buf = [0u8; 256];
+        unsafe { cfg.write_buffer(buf.as_mut_ptr()) };
+        let i32_at = |o: usize| i32::from_ne_bytes(buf[o..o + 4].try_into().unwrap());
+        assert_eq!(i32_at(0), SCHEMA_VERSION);
+        assert_eq!(i32_at(4), catalog::REGISTRY.len() as i32);
+        for (i, m) in catalog::REGISTRY.iter().enumerate() {
+            let rec = OFF_RECORDS + i * RECORD;
+            assert_eq!(i32_at(rec) != 0, m.default_enabled, "module {}", m.id);
+        }
+    }
+
+    #[test]
+    fn defaults_carry_catalog_setting_values() {
+        let cfg = ModuleConfig::defaults();
+        let fov = catalog::index_of("fov").expect("fov module");
+        // FOV Control's one slider defaults to 90°.
+        assert_eq!(cfg.states[fov].settings[0], 90.0);
+    }
+}

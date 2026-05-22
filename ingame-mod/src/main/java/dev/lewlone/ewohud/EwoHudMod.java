@@ -29,8 +29,9 @@ public final class EwoHudMod implements ClientModInitializer {
         try {
             System.load(dll.toAbsolutePath().toString());
             EwoHudNative.nativeHello();
-            // Allocate the shared JVM->Rust data block and register it once.
+            // Allocate the JVM->Rust HUD block + the Rust->JVM module block.
             EwoHudNative.nativeInit(EwoHudData.allocate());
+            EwoHudNative.nativeInitModules(EwoModuleData.allocate());
             nativeReady = true;
             System.err.println("[ewo-hud] native bridge loaded: " + dll);
         } catch (Throwable t) {

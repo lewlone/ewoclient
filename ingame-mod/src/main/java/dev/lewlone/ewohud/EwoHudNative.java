@@ -42,4 +42,21 @@ public final class EwoHudNative {
 
     /** Key `key` (GLFW code) pressed/released with `modifiers`. */
     public static native void nativeKey(int key, boolean pressed, int modifiers);
+
+    // ── Modules (Phase G) ─────────────────────────────────────────────────
+
+    /**
+     * Register the Rust&rarr;JVM module-state block. Called once at mod init.
+     * Rust writes it every frame; the mod reads module enabled/settings state
+     * through the buffer with no further JNI marshaling.
+     *
+     * @param buffer a direct {@link ByteBuffer} ({@link EwoModuleData#allocate()}).
+     */
+    public static native void nativeInitModules(ByteBuffer buffer);
+
+    /**
+     * Flip module {@code index}'s enabled flag — driven by a module keybind.
+     * Rust owns module state; the new value comes back through the buffer.
+     */
+    public static native void nativeModuleToggle(int index);
 }
