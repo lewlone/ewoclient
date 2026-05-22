@@ -45,6 +45,7 @@ const PANEL_INNER_PAD_Y: f32 = 40.0;
 pub enum SettingsTab {
     Account,
     Profiles,
+    Keybinds,
     Graphics,
     Audio,
     Paths,
@@ -52,9 +53,10 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 6] = [
+    const ALL: [SettingsTab; 7] = [
         SettingsTab::Account,
         SettingsTab::Profiles,
+        SettingsTab::Keybinds,
         SettingsTab::Graphics,
         SettingsTab::Audio,
         SettingsTab::Paths,
@@ -65,6 +67,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Account => "Account",
             SettingsTab::Profiles => "Profiles",
+            SettingsTab::Keybinds => "Keybinds",
             SettingsTab::Graphics => "Graphics",
             SettingsTab::Audio => "Audio",
             SettingsTab::Paths => "Paths",
@@ -160,6 +163,38 @@ pub enum ProfileHover {
     Delete(usize),
 }
 
+/// One keybind row for the Keybinds tab's list. The launcher resolves the
+/// action + its bound chord into plain strings so `ewo-render` stays
+/// ignorant of GLFW codes and the keybind registry.
+#[derive(Copy, Clone, Debug)]
+pub struct KeybindRowView<'a> {
+    /// The action's human label, e.g. "Open the overlay".
+    pub action_label: &'a str,
+    /// The module the action belongs to, e.g. "Core".
+    pub module: &'a str,
+    /// The bound key, pre-formatted, e.g. "Right Shift".
+    pub chord_label: &'a str,
+    /// True while this row is waiting for a key press to rebind.
+    pub capturing: bool,
+}
+
+/// The Keybinds tab's render input.
+#[derive(Copy, Clone, Debug)]
+pub struct KeybindView<'a> {
+    pub rows: &'a [KeybindRowView<'a>],
+}
+
+/// A pending keybind action — set by the Keybinds-tab press handler into
+/// `Prefs::keybind_request`, dispatched (and cleared) by the main loop.
+#[derive(Clone, Debug)]
+pub enum KeybindRequest {
+    /// Begin capturing a new key for the action with this index in the
+    /// registry (matches `KeybindView::rows`).
+    Capture(usize),
+    /// Restore every keybind to its registry default.
+    ResetAll,
+}
+
 /// Identifies a control slot in the Settings screen — used for hit-testing
 /// + driving the right widget state from `main.rs`. Only the slots that
 /// have a concrete widget implementation today are listed; placeholder
@@ -241,6 +276,13 @@ pub struct Prefs {
     pub profile_request: Option<ProfileRequest>,
     /// Which Profiles-tab row / delete-button the cursor is over.
     pub profile_hover: Option<ProfileHover>,
+    /// Hover state for the Keybinds tab's "Reset to defaults" button.
+    pub keybind_reset: VghostBtnState,
+    /// A pending keybind action — set by the Keybinds-tab press handler,
+    /// dispatched (and cleared) by the main loop.
+    pub keybind_request: Option<KeybindRequest>,
+    /// Which Keybinds-tab chord button the cursor is over (row index).
+    pub keybind_hover: Option<usize>,
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
@@ -349,6 +391,9 @@ impl Default for Prefs {
             profile_dup: VghostBtnState::default(),
             profile_request: None,
             profile_hover: None,
+            keybind_reset: VghostBtnState::default(),
+            keybind_request: None,
+            keybind_hover: None,
             tab_changed_at: None,
             reset_requested: false,
         }
@@ -464,10 +509,13 @@ pub fn draw_settings(
     prefs: &Prefs,
     account: AccountView<'_>,
     profiles: ProfileView<'_>,
+    keybinds: KeybindView<'_>,
 ) {
     draw_screen_head(canvas, fonts, w);
     draw_sidebar(canvas, fonts, h, active);
-    draw_panel(canvas, fonts, w, h, time, settings, active, prefs, account, profiles);
+    draw_panel(
+        canvas, fonts, w, h, time, settings, active, prefs, account, profiles, keybinds,
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -590,6 +638,7 @@ fn draw_panel(
     prefs: &Prefs,
     account: AccountView<'_>,
     profiles: ProfileView<'_>,
+    keybinds: KeybindView<'_>,
 ) {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
@@ -632,6 +681,8 @@ fn draw_panel(
             draw_account_tab(canvas, fonts, w, prefs, account);
         } else if active == SettingsTab::Profiles {
             draw_profiles_tab(canvas, fonts, w, prefs, profiles);
+        } else if active == SettingsTab::Keybinds {
+            draw_keybinds_tab(canvas, fonts, w, prefs, keybinds);
         } else {
             draw_section_body(
                 canvas,
@@ -741,6 +792,7 @@ fn subhead_for(tab: SettingsTab) -> &'static str {
     match tab {
         SettingsTab::Account => "your Microsoft account.",
         SettingsTab::Profiles => "named looks you can switch between.",
+        SettingsTab::Keybinds => "the keys this profile answers to.",
         SettingsTab::Graphics => "how the cloth is rendered.",
         SettingsTab::Audio => "tend to the boudoir's hum.",
         SettingsTab::Paths => "where the launcher keeps its things.",
@@ -798,9 +850,9 @@ const ACCOUNT_ROWS: &[RowDef] = &[];
 
 fn rows_for_tab(tab: SettingsTab) -> &'static [RowDef] {
     match tab {
-        // Account + Profiles use custom layouts (see draw_account_tab /
-        // draw_profiles_tab) — no row-grid entries.
-        SettingsTab::Account | SettingsTab::Profiles => ACCOUNT_ROWS,
+        // Account / Profiles / Keybinds use custom layouts (see the
+        // draw_*_tab fns) — no row-grid entries.
+        SettingsTab::Account | SettingsTab::Profiles | SettingsTab::Keybinds => ACCOUNT_ROWS,
         SettingsTab::Graphics => GRAPHICS_ROWS,
         SettingsTab::Audio => AUDIO_ROWS,
         SettingsTab::Paths => PATHS_ROWS,
@@ -1351,6 +1403,192 @@ fn draw_profile_row(
     }
 }
 
+// ── Keybinds tab ─────────────────────────────────────────────────────────
+
+/// Width of a keybind row's chord button.
+const KEYBIND_CHORD_W: f32 = 176.0;
+/// Height of a keybind row's chord button.
+const KEYBIND_CHORD_H: f32 = 34.0;
+
+/// Card-local layout of one keybind row: the full row rect and the chord
+/// button nested at its right edge (the only clickable part — click to
+/// start a rebind).
+pub struct KeybindRowLayout {
+    pub index: usize,
+    pub row: Rect,
+    pub chord: Rect,
+}
+
+/// Card-local layout of the Keybinds tab.
+pub struct KeybindTabLayout {
+    pub content_left: f32,
+    pub content_right: f32,
+    pub header_top: f32,
+    pub rows: Vec<KeybindRowLayout>,
+    pub reset_button: Rect,
+}
+
+/// Compute the Keybinds tab's layout for `row_count` keybind actions.
+pub fn keybinds_tab_layout(fonts: &FontStore, card_w: f32, row_count: usize) -> KeybindTabLayout {
+    let body_top = HEADER_BOTTOM + 8.0 + 16.0;
+    let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
+    let panel_right = card_w - BODY_PAD_X;
+    let content_left = panel_left + PANEL_INNER_PAD_X;
+    let content_right = panel_right - PANEL_INNER_PAD_X;
+    let content_top = body_top + PANEL_INNER_PAD_Y;
+    let header_top = section_head_bottom(content_top, fonts);
+
+    let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    let mut rows = Vec::with_capacity(row_count);
+    for i in 0..row_count {
+        let top = list_top + i as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP);
+        let row = Rect::from_ltrb(content_left, top, content_right, top + ACCOUNT_ROW_H);
+        let cy = (row.top + row.bottom) * 0.5;
+        let chord = Rect::from_xywh(
+            row.right - KEYBIND_CHORD_W - 8.0,
+            cy - KEYBIND_CHORD_H * 0.5,
+            KEYBIND_CHORD_W,
+            KEYBIND_CHORD_H,
+        );
+        rows.push(KeybindRowLayout { index: i, row, chord });
+    }
+    let list_bottom = if row_count == 0 {
+        list_top
+    } else {
+        list_top + row_count as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP) - ACCOUNT_ROW_GAP
+    };
+    let btn_top = list_bottom + 18.0;
+    let reset_button = Rect::from_xywh(content_left, btn_top, PROFILE_BTN_W, ADD_BTN_H);
+
+    KeybindTabLayout {
+        content_left,
+        content_right,
+        header_top,
+        rows,
+        reset_button,
+    }
+}
+
+fn draw_keybinds_tab(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    prefs: &Prefs,
+    view: KeybindView<'_>,
+) {
+    let layout = keybinds_tab_layout(fonts, card_w, view.rows.len());
+
+    // Body copy.
+    let body_font = fonts.newsreader(15.0);
+    let mut body_paint = Paint::default();
+    body_paint.set_anti_alias(true);
+    body_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)); // mid-pearl
+    let (_, bm) = body_font.metrics();
+    canvas.draw_str(
+        "keys are stored per profile — bind once, they follow this profile.",
+        (layout.content_left, layout.header_top + (-bm.ascent)),
+        &body_font,
+        &body_paint,
+    );
+
+    // Keybind rows.
+    for (rl, row) in layout.rows.iter().zip(view.rows) {
+        let hovered = prefs.keybind_hover == Some(rl.index);
+        draw_keybind_row(canvas, fonts, rl, row, hovered);
+    }
+
+    // Reset button.
+    draw_vghost_btn(
+        canvas,
+        layout.reset_button,
+        "Reset to defaults",
+        &prefs.keybind_reset,
+        GhostKind::Pearl,
+        fonts,
+    );
+}
+
+/// Draw one keybind row — action label, module eyebrow, and the chord button.
+fn draw_keybind_row(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &KeybindRowLayout,
+    view: &KeybindRowView<'_>,
+    hovered: bool,
+) {
+    let row = layout.row;
+    let cy = (row.top + row.bottom) * 0.5;
+
+    // Action label — Fraunces, just above the row centre.
+    let name_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 360.0, None);
+    let mut name_paint = Paint::default();
+    name_paint.set_anti_alias(true);
+    name_paint.set_color(TEXT_PEARL);
+    canvas.draw_str(view.action_label, (row.left + 4.0, cy - 1.0), &name_font, &name_paint);
+
+    // Module eyebrow — mono, tracked, below the label.
+    let eb_font = fonts.jetbrains_mono(9.0);
+    let mut eb_paint = Paint::default();
+    eb_paint.set_anti_alias(true);
+    eb_paint.set_color(TEXT_MAUVE_DEEP);
+    canvas.draw_str(
+        view.module.to_uppercase(),
+        (row.left + 4.0, cy + 15.0),
+        &eb_font,
+        &eb_paint,
+    );
+
+    // Chord button — a pill carrying the bound key (or the capture prompt).
+    let cb = layout.chord;
+    let rr = RRect::new_rect_xy(cb, 9.0, 9.0);
+    // Capturing: champagne; idle/hover: rose.
+    let (r, g, b) = if view.capturing {
+        (232.0 / 255.0, 212.0 / 255.0, 168.0 / 255.0)
+    } else {
+        (229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0)
+    };
+    let fill_a = if view.capturing {
+        0.16
+    } else if hovered {
+        0.14
+    } else {
+        0.07
+    };
+    let rim_a = if view.capturing {
+        0.60
+    } else if hovered {
+        0.44
+    } else {
+        0.24
+    };
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_color4f(Color4f::new(r, g, b, fill_a), None);
+    canvas.draw_rrect(rr, &fill);
+    let mut rim = Paint::default();
+    rim.set_anti_alias(true);
+    rim.set_style(PaintStyle::Stroke);
+    rim.set_stroke_width(1.0);
+    rim.set_color4f(Color4f::new(r, g, b, rim_a), None);
+    canvas.draw_rrect(rr, &rim);
+
+    // Chord text — centred, mono.
+    let label = if view.capturing { "press a key…" } else { view.chord_label };
+    let txt_font = fonts.jetbrains_mono(12.0);
+    let mut txt_paint = Paint::default();
+    txt_paint.set_anti_alias(true);
+    if view.capturing {
+        txt_paint.set_color(Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8));
+    } else {
+        txt_paint.set_color(TEXT_PEARL);
+    }
+    let (tw, _) = txt_font.measure_str(label, Some(&txt_paint));
+    let (_, tm) = txt_font.metrics();
+    let tx = cb.left + (cb.width() - tw) * 0.5;
+    let ty = (cb.top + cb.bottom) * 0.5 + tm.cap_height * 0.5;
+    canvas.draw_str(label, (tx, ty), &txt_font, &txt_paint);
+}
+
 /// Render a Minecraft UUID short — first 8 chars uppercase, mono-feel.
 /// (UUIDs come back without dashes from the profile endpoint.)
 fn short_uuid(uuid: &str) -> String {
@@ -1732,7 +1970,7 @@ pub fn path_browse_bounds(slot: Slot, fonts: &FontStore, card_w: f32, card_h: f3
 
 /// Card-local bounds for each sidebar tab, indexed by `SettingsTab::ALL`.
 /// Returned in the same order as `SettingsTab::ALL`.
-pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 6] {
+pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 7] {
     let sidebar_left = BODY_PAD_X;
     let body_top = HEADER_BOTTOM + 8.0;
     let title_top = body_top + 16.0;
@@ -1746,9 +1984,10 @@ pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 6] {
     let row_h = 14.0 + (-lm.ascent + lm.descent) + 14.0;
     let mut y = title_baseline + tm.descent + 28.0;
 
-    let mut out: [(SettingsTab, Rect); 6] = [
+    let mut out: [(SettingsTab, Rect); 7] = [
         (SettingsTab::Account, Rect::default()),
         (SettingsTab::Profiles, Rect::default()),
+        (SettingsTab::Keybinds, Rect::default()),
         (SettingsTab::Graphics, Rect::default()),
         (SettingsTab::Audio, Rect::default()),
         (SettingsTab::Paths, Rect::default()),

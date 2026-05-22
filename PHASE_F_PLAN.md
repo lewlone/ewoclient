@@ -165,21 +165,36 @@ overlay*, not a launcher home screen — the launcher main menu stays as-is.
 - **Verification pending** — builds clean (Rust workspace + the in-game
   mod jar); needs an in-game look (launch Minecraft, Right Shift).
 
-### F5 — In-game profile hot-swap
-- Move `hud.toml` under `profiles/<name>/` (deferred from F2) so HUD layout
-  is genuinely per-profile, and teach `crates/ewo-jni` the active profile.
-- **Decided (user, 2026-05-21):** the in-game profile switcher is a profile
-  **picker row at the top of the overlay SETTINGS tab** (above the
-  paint-rate controls) — *not* a 4th tab. It's a switcher only; create /
-  rename / delete stay launcher-side (F3).
-- Switching in-game re-reads the profile and re-applies HUD layout + HUD
-  settings live, through the JNI bridge (`crates/ewo-jni`) — same write-back
-  pattern as Phase E6's overlay-mods.
-- Build the module-extensible keybind registry + a remap-row widget (moved
-  from F3) — keybinds become functional here, where the in-game side reads
-  them from the profile.
+### F5 — In-game profile hot-swap ✅ shipped
+- **F5a** — `hud.toml` moved under `profiles/<name>/` so HUD layout is
+  genuinely per-profile; `crates/ewo-jni` reads the active profile.
+- **F5b** — in-game profile switcher: a profile picker row at the top of
+  the overlay SETTINGS tab (above the paint-rate controls). Switching
+  in-game re-reads the profile and re-applies the HUD layout live.
+- **F5c — module-extensible keybind registry + remap-row widget** ✅
+  - New launcher `keybind` module: `KeyChord` (a GLFW key code + a
+    modifier bitmask), `KeybindAction`, the static `REGISTRY` (Phase F
+    ships one — `overlay.open` → Right Shift), a winit→GLFW key table,
+    and key-name/label formatting. The registry is the seam future
+    EwoClient modules append their bindable actions to.
+  - Keybinds are per client profile — `BTreeMap<ActionId, KeyChord>` in
+    `profiles/<name>/client.toml`; `profile::{load,save}_keybinds`, and
+    `profile::save` splices keybinds through so a settings save can't
+    clobber them.
+  - A **Keybinds tab** in the Settings sidebar (3rd, after Profiles):
+    one remap row per registered action — action label, module eyebrow,
+    and a chord button. Click the chord button to arm a rebind; the next
+    key press (captured via winit, mapped to GLFW) becomes the binding,
+    Esc cancels. A "Reset to defaults" button restores the registry.
+  - The launcher resolves the active profile's keybinds into a small
+    `ewo-keybinds.txt` in the instance dir before each launch. The mod's
+    new `EwoKeybinds` reads it; `KeyboardHandlerMixin` + `EwoOverlayScreen`
+    use the bound overlay-open key instead of hardcoded Right Shift.
+  - F5c captures plain keys (no modifier combos) — every F keybind is a
+    single key; the `mods` field is kept for module keybinds later.
 - **Acceptance:** swap profile from inside Minecraft, HUD re-lays-out with no
-  restart.
+  restart. Rebind the overlay key in the launcher, relaunch, the new key
+  opens the overlay.
 
 ### F6 — Polish + parity
 - Velvet-parity pass on the dashboard + all new widgets.

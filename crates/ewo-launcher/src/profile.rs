@@ -22,12 +22,15 @@
 //! `load` migrates it: the profile slice moves into `profiles/Default/`
 //! and `settings.toml` is rewritten with just the global slice.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use ewo_core::Settings;
 use ewo_render::screens::SettingsConfig;
 use serde::{Deserialize, Serialize};
+
+use crate::keybind::{self, KeyChord};
 
 const PROFILES_DIRNAME: &str = "profiles";
 const INDEX_FILENAME: &str = "profiles.toml";
@@ -52,6 +55,11 @@ struct ClientProfile {
     music: f32,
     effects: f32,
     ambient_hum: bool,
+    /// Per-profile keybinds, keyed by [`keybind::KeybindAction::id`]. Any
+    /// action absent here falls back to its registry default — so a fresh
+    /// or older `client.toml` (no `[keybinds]` table) still binds every key.
+    #[serde(default)]
+    keybinds: BTreeMap<String, KeyChord>,
 }
 
 impl Default for ClientProfile {
@@ -69,6 +77,7 @@ impl Default for ClientProfile {
             music: 0.55,
             effects: 0.50,
             ambient_hum: true,
+            keybinds: BTreeMap::new(),
         }
     }
 }
@@ -177,6 +186,9 @@ fn split(config: &SettingsConfig, tokens: &Settings) -> (GlobalConfig, ClientPro
         music: config.music,
         effects: config.effects,
         ambient_hum: config.ambient_hum,
+        // Keybinds aren't part of the unified SettingsConfig; `save` splices
+        // the existing on-disk keybinds back in so they survive a settings save.
+        keybinds: BTreeMap::new(),
     };
     (global, profile)
 }
@@ -323,15 +335,44 @@ fn migrate(index_p: &PathBuf, settings_p: &PathBuf) -> (SettingsConfig, Settings
 }
 
 /// Persist the unified `SettingsConfig` + tokens into the active profile's
-/// `client.toml` and the global `settings.toml`.
+/// `client.toml` and the global `settings.toml`. Keybinds aren't carried by
+/// `SettingsConfig`, so the existing on-disk keybinds are spliced back in.
 pub fn save(config: &SettingsConfig, tokens: &Settings) {
-    let (global, client) = split(config, tokens);
+    let (global, mut client) = split(config, tokens);
     if let Some(p) = settings_path() {
         write_toml(&p, &global, "settings.toml");
     }
     if let Some(p) = client_path(&active_name()) {
+        client.keybinds = read_toml::<ClientProfile>(&p, "client.toml").keybinds;
         write_toml(&p, &client, "client.toml");
     }
+}
+
+// ── keybinds ─────────────────────────────────────────────────────────────
+
+/// The active profile's keybinds — every registered action, with the
+/// profile's override where it has one and the registry default otherwise.
+pub fn load_keybinds() -> BTreeMap<String, KeyChord> {
+    let stored = match client_path(&active_name()) {
+        Some(p) => read_toml::<ClientProfile>(&p, "client.toml").keybinds,
+        None => BTreeMap::new(),
+    };
+    let mut out = BTreeMap::new();
+    for a in keybind::REGISTRY {
+        let chord = stored.get(a.id).copied().unwrap_or(a.default);
+        out.insert(a.id.to_string(), chord);
+    }
+    out
+}
+
+/// Persist the active profile's keybinds, preserving its other settings.
+pub fn save_keybinds(keybinds: &BTreeMap<String, KeyChord>) {
+    let Some(p) = client_path(&active_name()) else {
+        return;
+    };
+    let mut client: ClientProfile = read_toml(&p, "client.toml");
+    client.keybinds = keybinds.clone();
+    write_toml(&p, &client, "client.toml");
 }
 
 // ── management ───────────────────────────────────────────────────────────
@@ -513,6 +554,20 @@ mod tests {
         assert_eq!(parsed.theme, 3);
         assert_eq!(parsed.max_fps, 200.0);
         assert_eq!(parsed.density, 1.0); // untouched default
+    }
+
+    #[test]
+    fn keybinds_survive_the_client_toml_round_trip() {
+        let mut profile = ClientProfile::default();
+        profile
+            .keybinds
+            .insert("overlay.open".to_string(), KeyChord { key: 90, mods: 0 });
+        let text = toml::to_string_pretty(&profile).expect("serialize");
+        let parsed: ClientProfile = toml::from_str(&text).expect("deserialize");
+        assert_eq!(
+            parsed.keybinds.get("overlay.open"),
+            Some(&KeyChord { key: 90, mods: 0 }),
+        );
     }
 
     #[test]

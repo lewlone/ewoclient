@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import dev.lewlone.ewohud.EwoHudMod;
+import dev.lewlone.ewohud.EwoKeybinds;
 import dev.lewlone.ewohud.EwoOverlayScreen;
 
 /**
@@ -34,7 +35,7 @@ public class KeyboardHandlerMixin {
         if (action != GLFW.GLFW_PRESS) {
             return; // press only — ignore release / auto-repeat
         }
-        if (event.key() != GLFW.GLFW_KEY_RIGHT_SHIFT) {
+        if (event.key() != EwoKeybinds.overlayKey()) {
             return;
         }
         Minecraft mc = Minecraft.getInstance();

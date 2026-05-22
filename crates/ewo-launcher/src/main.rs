@@ -10,8 +10,8 @@ use clap::Parser;
 use ewo_core::{Screen, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
 use ewo_render::screens::settings::{
-    AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView, ProfileHover,
-    ProfileRequest, ProfileRowView, ProfileView,
+    AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView, KeybindRequest,
+    KeybindRowView, KeybindView, ProfileHover, ProfileRequest, ProfileRowView, ProfileView,
 };
 use ewo_render::screens::{
     self, AboutModalState, DevOverlayState, DevSlot, FrameStats, InstancePrefs, InstanceSlot,
@@ -45,6 +45,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 mod auth;
 mod bundled;
 mod downloads;
+mod keybind;
 mod launch;
 mod loaders;
 mod overlay_mods;
@@ -129,6 +130,13 @@ struct App {
     /// per-frame render path never hits disk for the list.
     profiles: Vec<String>,
     active_profile: String,
+    /// The active profile's keybinds (every registered action → its chord).
+    /// Loaded at startup, on profile switch, and after a rebind.
+    keybinds: std::collections::BTreeMap<String, keybind::KeyChord>,
+    /// While `Some`, the next key press is captured as the new binding for
+    /// this action id — set by the Keybinds tab, consumed by the keyboard
+    /// handler. See [`keybind`].
+    keybind_capture: Option<String>,
     /// Mojang version manifest service — owns disk cache + background
     /// refresh thread. Hydrated from cache at startup; refreshed on a
     /// 6-hour TTL. Feeds the new-instance modal's Version dropdown.
@@ -193,6 +201,8 @@ impl App {
             auth: AuthService::new(),
             profiles: profile::list(),
             active_profile: profile::active_name(),
+            keybinds: profile::load_keybinds(),
+            keybind_capture: None,
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
@@ -255,6 +265,8 @@ impl App {
         }
         // E6: refresh the in-game MODS view's snapshot of the bundled mods.
         overlay_mods::write_catalog(&inst);
+        // F5c: resolve the active profile's keybinds for the in-game mod.
+        overlay_mods::write_keybinds(&inst.name);
         // The version *string* comes from the meta, formatted as
         // "<LOADER> · <version>". Strip the loader prefix.
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
@@ -515,9 +527,34 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput {
-                event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. },
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        physical_key,
+                        text,
+                        ..
+                    },
                 ..
             } => {
+                // Keybind capture — the Keybinds tab armed a rebind, so the
+                // next key press becomes the new binding. Esc cancels; a key
+                // GLFW can't name leaves the rebind armed.
+                if let Some(action_id) = self.keybind_capture.clone() {
+                    if logical_key == Key::Named(NamedKey::Escape) {
+                        log::info!("keybind: capture cancelled");
+                        self.keybind_capture = None;
+                    } else if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                        if let Some(chord) = keybind::KeyChord::from_winit(code) {
+                            log::info!("keybind: {} → {}", action_id, chord.label());
+                            self.keybinds.insert(action_id, chord);
+                            profile::save_keybinds(&self.keybinds);
+                            self.keybind_capture = None;
+                        }
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 if self.instance_prefs.renaming {
                     // Inline rename for the selected instance.
                     const RENAME_MAX_LEN: usize = 48;
@@ -1136,6 +1173,8 @@ impl ApplicationHandler for App {
                                     }
                                     self.prefs.close_dropdowns();
                                     self.instance_prefs.close_dropdowns();
+                                    self.keybind_capture = None;
+                                    self.prefs.keybind_request = None;
                                     self.modal.close();
                                     // Trigger the tab fade-in when arriving at
                                     // Settings, so the active tab's content
@@ -1222,6 +1261,10 @@ impl ApplicationHandler for App {
                                     );
                                     self.settings_tab = tab;
                                     self.prefs.close_dropdowns();
+                                    // Disarm any pending keybind capture — a
+                                    // tab switch abandons the rebind.
+                                    self.keybind_capture = None;
+                                    self.prefs.keybind_request = None;
                                     self.prefs.tab_changed_at =
                                         Some(self.clock.elapsed);
                                 }
@@ -1860,6 +1903,29 @@ impl ApplicationHandler for App {
                     }
                     self.profiles = profile::list();
                     self.active_profile = profile::active_name();
+                    // Keybinds are profile-scoped — the switched-to profile
+                    // carries its own set.
+                    self.keybinds = profile::load_keybinds();
+                }
+
+                // Keybinds-tab actions — arm a rebind or reset to defaults.
+                if let Some(req) = self.prefs.keybind_request.take() {
+                    match req {
+                        KeybindRequest::Capture(idx) => {
+                            if let Some(action) = keybind::REGISTRY.get(idx) {
+                                log::info!("keybind: capturing for {}", action.id);
+                                self.keybind_capture = Some(action.id.to_string());
+                            }
+                        }
+                        KeybindRequest::ResetAll => {
+                            for a in keybind::REGISTRY {
+                                self.keybinds.insert(a.id.to_string(), a.default);
+                            }
+                            self.keybind_capture = None;
+                            profile::save_keybinds(&self.keybinds);
+                            log::info!("keybind: reset all to defaults");
+                        }
+                    }
                 }
 
                 // Reset preferences — wipe to bundled defaults, persist,
@@ -1985,6 +2051,30 @@ impl ApplicationHandler for App {
                 let profile_view = ProfileView {
                     profiles: &profile_rows,
                 };
+                // Keybinds-tab view — registry actions resolved against the
+                // active profile's bindings. The chord labels are stack
+                // locals the KeybindRowViews borrow.
+                let keybind_chord_labels: Vec<String> = keybind::REGISTRY
+                    .iter()
+                    .map(|a| {
+                        self.keybinds
+                            .get(a.id)
+                            .copied()
+                            .unwrap_or(a.default)
+                            .label()
+                    })
+                    .collect();
+                let keybind_rows: Vec<KeybindRowView<'_>> = keybind::REGISTRY
+                    .iter()
+                    .zip(&keybind_chord_labels)
+                    .map(|(a, label)| KeybindRowView {
+                        action_label: a.label,
+                        module: a.module,
+                        chord_label: label,
+                        capturing: self.keybind_capture.as_deref() == Some(a.id),
+                    })
+                    .collect();
+                let keybind_view = KeybindView { rows: &keybind_rows };
                 let frame_stats = FrameStats {
                     fps: self.clock.avg_fps(),
                     frame_ms: self.clock.avg_dt() * 1000.0,
@@ -2000,7 +2090,7 @@ impl ApplicationHandler for App {
                             screen, &launch_button, &menu_items, settings_tab, prefs,
                             instance_prefs, launching_state, modal, about_modal,
                             dev_overlay, frame_stats, instances, heading_hover,
-                            account_view, profile_view,
+                            account_view, profile_view, keybind_view,
                         );
                     });
                 }
@@ -2169,6 +2259,19 @@ fn drive_settings_sliders(
         prefs.profile_dup.handle(mouse, layout.dup_button, false);
         return false;
     }
+    // Keybinds tab — update chord-button + reset-button hover.
+    if tab == SettingsTab::Keybinds {
+        let layout =
+            screens::settings::keybinds_tab_layout(fonts, card_w, keybind::REGISTRY.len());
+        prefs.keybind_hover = None;
+        for rl in &layout.rows {
+            if rect_contains(&rl.chord, mouse) {
+                prefs.keybind_hover = Some(rl.index);
+            }
+        }
+        prefs.keybind_reset.handle(mouse, layout.reset_button, false);
+        return false;
+    }
     let mut changed = false;
     for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
         match slot {
@@ -2317,6 +2420,24 @@ fn handle_settings_press(
         }
         if prefs.profile_dup.handle(mouse, layout.dup_button, true) {
             prefs.profile_request = Some(ProfileRequest::Duplicate);
+            return (true, false);
+        }
+        return (false, false);
+    }
+
+    // Keybinds tab — custom layout. A chord button arms a rebind; the
+    // reset button restores every registry default.
+    if tab == SettingsTab::Keybinds {
+        let layout =
+            screens::settings::keybinds_tab_layout(fonts, card_w, keybind::REGISTRY.len());
+        for rl in &layout.rows {
+            if rect_contains(&rl.chord, mouse) {
+                prefs.keybind_request = Some(KeybindRequest::Capture(rl.index));
+                return (true, false);
+            }
+        }
+        if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
+            prefs.keybind_request = Some(KeybindRequest::ResetAll);
             return (true, false);
         }
         return (false, false);
