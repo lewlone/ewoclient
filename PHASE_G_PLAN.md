@@ -207,9 +207,10 @@ All seven default **off** and **unbound** — the user opts in.
   view-bob). Each cancels its method when its module is on, so the camera
   motion is skipped; the vanilla View Bobbing option is left untouched.
 
-### G5 — Toggle Sprint + Toggle Sneak
-- Force the `KeyMapping` down-state from the frame hook while on; release once
-  on toggle-off so the key never sticks.
+### G5 — Toggle Sprint + Toggle Sneak ✅ shipped
+- `EwoModules.applyMovement` (run each frame from `flipFrame`) forces the
+  `keySprint` / `keyShift` `KeyMapping` down while the module is on, and
+  releases the key exactly once when the module turns off so it never sticks.
 
 ### G6 — FreeLook
 - A `Camera` mixin applies a separately-accumulated freelook yaw/pitch; a
@@ -240,7 +241,7 @@ becomes a record, not a forward plan.
 | G2 | In-game MODULES tab | ✅ shipped |
 | G3 | Full Bright + FOV | ✅ shipped |
 | G4 | No Damage Tilt + No View Bob | ✅ shipped |
-| G5 | Toggle Sprint + Toggle Sneak | pending |
+| G5 | Toggle Sprint + Toggle Sneak | ✅ shipped |
 | G6 | FreeLook | pending |
 | G7 | Module keybinds end-to-end | pending |
 | G8 | Launcher Modules tab (optional) | pending |
