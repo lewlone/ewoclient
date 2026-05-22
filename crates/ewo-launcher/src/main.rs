@@ -593,6 +593,37 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                } else if self.prefs.profile_renaming.is_some() {
+                    // Inline rename for a client profile (Settings → Profiles).
+                    if logical_key == Key::Named(NamedKey::Escape) {
+                        log::info!("profile rename: Esc → cancelled");
+                        self.prefs.profile_renaming = None;
+                        self.prefs.profile_rename_buffer.clear();
+                    } else if logical_key == Key::Named(NamedKey::Enter) {
+                        if let Some(idx) = self.prefs.profile_renaming {
+                            self.prefs.profile_request = Some(ProfileRequest::Rename {
+                                index: idx,
+                                new_name: self.prefs.profile_rename_buffer.clone(),
+                            });
+                        }
+                        self.prefs.profile_renaming = None;
+                    } else if logical_key == Key::Named(NamedKey::Backspace) {
+                        self.prefs.profile_rename_buffer.pop();
+                        self.prefs.profile_rename_focus_time = 0.0;
+                    } else if let Some(t) = text {
+                        for ch in t.chars() {
+                            // Skip control + path-unsafe chars — the name
+                            // becomes a directory under `profiles/`.
+                            if !ch.is_control()
+                                && !"/\\:*?\"<>|".contains(ch)
+                                && self.prefs.profile_rename_buffer.chars().count()
+                                    < profile::MAX_NAME_LEN
+                            {
+                                self.prefs.profile_rename_buffer.push(ch);
+                                self.prefs.profile_rename_focus_time = 0.0;
+                            }
+                        }
+                    }
                 } else if logical_key == Key::Named(NamedKey::Escape) && self.about_modal.open {
                     log::info!("about: Esc → closing");
                     self.about_modal.close();
@@ -1175,6 +1206,8 @@ impl ApplicationHandler for App {
                                     self.instance_prefs.close_dropdowns();
                                     self.keybind_capture = None;
                                     self.prefs.keybind_request = None;
+                                    self.prefs.profile_renaming = None;
+                                    self.prefs.profile_rename_buffer.clear();
                                     self.modal.close();
                                     // Trigger the tab fade-in when arriving at
                                     // Settings, so the active tab's content
@@ -1261,10 +1294,12 @@ impl ApplicationHandler for App {
                                     );
                                     self.settings_tab = tab;
                                     self.prefs.close_dropdowns();
-                                    // Disarm any pending keybind capture — a
-                                    // tab switch abandons the rebind.
+                                    // A tab switch abandons a pending keybind
+                                    // capture or an in-progress profile rename.
                                     self.keybind_capture = None;
                                     self.prefs.keybind_request = None;
+                                    self.prefs.profile_renaming = None;
+                                    self.prefs.profile_rename_buffer.clear();
                                     self.prefs.tab_changed_at =
                                         Some(self.clock.elapsed);
                                 }
@@ -1639,6 +1674,9 @@ impl ApplicationHandler for App {
                 if self.instance_prefs.renaming {
                     self.instance_prefs.rename_focus_time += dt;
                 }
+                if self.prefs.profile_renaming.is_some() {
+                    self.prefs.profile_rename_focus_time += dt;
+                }
                 self.modal.tick(dt);
                 self.about_modal.tick(dt);
                 self.auth.poll();
@@ -1897,6 +1935,14 @@ impl ApplicationHandler for App {
                             profile::duplicate(&self.active_profile).map(|(_n, c, s)| (c, s))
                         }
                         ProfileRequest::Delete(name) => profile::delete(&name),
+                        ProfileRequest::Rename { index, new_name } => {
+                            if let Some(old) = self.profiles.get(index).cloned() {
+                                profile::rename(&old, &new_name);
+                            }
+                            self.prefs.profile_renaming = None;
+                            self.prefs.profile_rename_buffer.clear();
+                            None // a rename doesn't change the active config
+                        }
                     };
                     if let Some((config, settings)) = applied {
                         self.apply_loaded_config(config, settings);
@@ -2251,6 +2297,8 @@ fn drive_settings_sliders(
         for rl in &layout.rows {
             if can_delete && rect_contains(&rl.delete, mouse) {
                 prefs.profile_hover = Some(ProfileHover::Delete(rl.index));
+            } else if rect_contains(&rl.rename, mouse) {
+                prefs.profile_hover = Some(ProfileHover::Rename(rl.index));
             } else if rect_contains(&rl.row, mouse) {
                 prefs.profile_hover = Some(ProfileHover::Row(rl.index));
             }
@@ -2394,7 +2442,28 @@ fn handle_settings_press(
     // test them first; then row clicks (switch); then the action buttons.
     if tab == SettingsTab::Profiles {
         let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
+        // A click anywhere while renaming commits the in-progress rename.
+        if let Some(idx) = prefs.profile_renaming {
+            prefs.profile_request = Some(ProfileRequest::Rename {
+                index: idx,
+                new_name: prefs.profile_rename_buffer.clone(),
+            });
+            prefs.profile_renaming = None;
+            return (true, false);
+        }
         let can_delete = profile_names.len() > 1;
+        // Rename buttons nest inside rows — test them before row clicks.
+        for rl in &layout.rows {
+            if rect_contains(&rl.rename, mouse) {
+                if let Some(name) = profile_names.get(rl.index) {
+                    log::info!("profile: rename \"{}\" — entering edit", name);
+                    prefs.profile_renaming = Some(rl.index);
+                    prefs.profile_rename_buffer = name.clone();
+                    prefs.profile_rename_focus_time = 0.0;
+                }
+                return (true, false);
+            }
+        }
         if can_delete {
             for rl in &layout.rows {
                 if rect_contains(&rl.delete, mouse) {

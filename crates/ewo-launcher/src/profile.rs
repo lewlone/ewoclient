@@ -433,6 +433,59 @@ pub fn duplicate(src: &str) -> Option<(String, SettingsConfig, Settings)> {
     Some((name, config, tokens))
 }
 
+/// Longest a profile name may be — matches the launcher's rename field cap.
+pub const MAX_NAME_LEN: usize = 48;
+
+/// Whether `name` is usable as a profile name. It becomes a directory name
+/// under `profiles/`, so it must be non-empty, within the length cap, and
+/// free of path-unsafe characters.
+pub fn is_valid_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name.chars().count() <= MAX_NAME_LEN
+        && name != "."
+        && name != ".."
+        && !name.contains(|c: char| "/\\:*?\"<>|".contains(c))
+}
+
+/// Rename profile `old` to `new`. No-op success if the names are equal.
+/// Returns `false` if `new` is invalid, already taken, or `old` is unknown.
+pub fn rename(old: &str, new: &str) -> bool {
+    let new = new.trim();
+    if old == new {
+        return true; // nothing to do — treated as success
+    }
+    if !is_valid_name(new) {
+        log::warn!("profile: rename rejected — invalid name \"{}\"", new);
+        return false;
+    }
+    let mut index = read_index();
+    if !index.profiles.iter().any(|p| p == old) {
+        return false;
+    }
+    if index.profiles.iter().any(|p| p == new) {
+        log::warn!("profile: rename rejected — \"{}\" already exists", new);
+        return false;
+    }
+    if let (Some(src), Some(dst)) = (profile_dir(old), profile_dir(new)) {
+        if let Err(e) = fs::rename(&src, &dst) {
+            log::warn!("profile: rename dir failed: {}", e);
+            return false;
+        }
+    }
+    for p in index.profiles.iter_mut() {
+        if p == old {
+            *p = new.to_string();
+        }
+    }
+    if index.active == old {
+        index.active = new.to_string();
+    }
+    write_index(&index);
+    log::info!("profile: renamed \"{}\" -> \"{}\"", old, new);
+    true
+}
+
 /// Delete a profile. The last remaining profile can't be deleted. Returns
 /// the (possibly changed) active profile's config, or `None` if nothing
 /// was deleted.
@@ -554,6 +607,19 @@ mod tests {
         assert_eq!(parsed.theme, 3);
         assert_eq!(parsed.max_fps, 200.0);
         assert_eq!(parsed.density, 1.0); // untouched default
+    }
+
+    #[test]
+    fn profile_name_validation_rejects_unsafe_names() {
+        assert!(is_valid_name("PvP"));
+        assert!(is_valid_name("  Cinematic  ")); // trimmed before checks
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("   "));
+        assert!(!is_valid_name("."));
+        assert!(!is_valid_name(".."));
+        assert!(!is_valid_name("a/b"));
+        assert!(!is_valid_name("c:\\bad"));
+        assert!(!is_valid_name(&"x".repeat(MAX_NAME_LEN + 1)));
     }
 
     #[test]

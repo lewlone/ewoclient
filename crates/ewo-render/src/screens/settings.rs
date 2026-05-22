@@ -152,6 +152,8 @@ pub enum ProfileRequest {
     Duplicate,
     /// Delete the named profile.
     Delete(String),
+    /// Rename the profile at this registry index to `new_name`.
+    Rename { index: usize, new_name: String },
 }
 
 /// Which Profiles-tab control the cursor is over — drives hover highlight.
@@ -159,6 +161,8 @@ pub enum ProfileRequest {
 pub enum ProfileHover {
     /// The body of profile row `index` (click to make active).
     Row(usize),
+    /// The rename (✎) button of profile row `index`.
+    Rename(usize),
     /// The delete-× of profile row `index`.
     Delete(usize),
 }
@@ -274,8 +278,15 @@ pub struct Prefs {
     /// A pending profile-management action — set by the Profiles-tab press
     /// handler, dispatched (and cleared) by the main loop.
     pub profile_request: Option<ProfileRequest>,
-    /// Which Profiles-tab row / delete-button the cursor is over.
+    /// Which Profiles-tab row / rename / delete control the cursor is over.
     pub profile_hover: Option<ProfileHover>,
+    /// While `Some`, profile row `index` is being inline-renamed — the row
+    /// draws a text field instead of the name. Driven by `main.rs`.
+    pub profile_renaming: Option<usize>,
+    /// The in-progress rename's text buffer.
+    pub profile_rename_buffer: String,
+    /// Seconds since the rename buffer last changed — drives the caret blink.
+    pub profile_rename_focus_time: f32,
     /// Hover state for the Keybinds tab's "Reset to defaults" button.
     pub keybind_reset: VghostBtnState,
     /// A pending keybind action — set by the Keybinds-tab press handler,
@@ -391,6 +402,9 @@ impl Default for Prefs {
             profile_dup: VghostBtnState::default(),
             profile_request: None,
             profile_hover: None,
+            profile_renaming: None,
+            profile_rename_buffer: String::new(),
+            profile_rename_focus_time: 0.0,
             keybind_reset: VghostBtnState::default(),
             keybind_request: None,
             keybind_hover: None,
@@ -1226,10 +1240,11 @@ fn monogram_tint(uuid: &str) -> (f32, f32, f32) {
 const PROFILE_BTN_W: f32 = 188.0;
 
 /// Card-local layout of one profile row: the full row rect (click to make
-/// active) and the delete-× rect nested at its right edge.
+/// active) and the rename-✎ / delete-× buttons nested at its right edge.
 pub struct ProfileRowLayout {
     pub index: usize,
     pub row: Rect,
+    pub rename: Rect,
     pub delete: Rect,
 }
 
@@ -1261,7 +1276,8 @@ pub fn profiles_tab_layout(fonts: &FontStore, card_w: f32, profile_count: usize)
         let rm = 30.0;
         let cy = (row.top + row.bottom) * 0.5;
         let delete = Rect::from_xywh(row.right - rm - 8.0, cy - rm * 0.5, rm, rm);
-        rows.push(ProfileRowLayout { index: i, row, delete });
+        let rename = Rect::from_xywh(delete.left - rm - 4.0, cy - rm * 0.5, rm, rm);
+        rows.push(ProfileRowLayout { index: i, row, rename, delete });
     }
     let list_bottom = if profile_count == 0 {
         list_top
@@ -1302,8 +1318,27 @@ fn draw_profiles_tab(canvas: &Canvas, fonts: &FontStore, card_w: f32, prefs: &Pr
     let can_delete = view.profiles.len() > 1;
     for (rl, row) in layout.rows.iter().zip(view.profiles) {
         let hovered = prefs.profile_hover == Some(ProfileHover::Row(rl.index));
+        let rename_hovered = prefs.profile_hover == Some(ProfileHover::Rename(rl.index));
         let delete_hovered = prefs.profile_hover == Some(ProfileHover::Delete(rl.index));
-        draw_profile_row(canvas, fonts, rl, row, hovered, delete_hovered, can_delete);
+        let renaming = if prefs.profile_renaming == Some(rl.index) {
+            Some((
+                prefs.profile_rename_buffer.as_str(),
+                prefs.profile_rename_focus_time,
+            ))
+        } else {
+            None
+        };
+        draw_profile_row(
+            canvas,
+            fonts,
+            rl,
+            row,
+            hovered,
+            rename_hovered,
+            delete_hovered,
+            can_delete,
+            renaming,
+        );
     }
 
     // New / Duplicate buttons.
@@ -1325,15 +1360,19 @@ fn draw_profiles_tab(canvas: &Canvas, fonts: &FontStore, card_w: f32, prefs: &Pr
     );
 }
 
-/// Draw one profile row — background, name, active marker, delete-×.
+/// Draw one profile row — background, name (or rename field), rename-✎,
+/// active marker, delete-×.
+#[allow(clippy::too_many_arguments)]
 fn draw_profile_row(
     canvas: &Canvas,
     fonts: &FontStore,
     layout: &ProfileRowLayout,
     view: &ProfileRowView<'_>,
     hovered: bool,
+    rename_hovered: bool,
     delete_hovered: bool,
     can_delete: bool,
+    renaming: Option<(&str, f32)>,
 ) {
     let row = layout.row;
     let rrect = RRect::new_rect_xy(row, 12.0, 12.0);
@@ -1358,25 +1397,102 @@ fn draw_profile_row(
 
     let cy = (row.top + row.bottom) * 0.5;
 
-    // Name — Fraunces, vertically centered.
     let name_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 360.0, None);
-    let mut name_paint = Paint::default();
-    name_paint.set_anti_alias(true);
-    name_paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
     let (_, nm) = name_font.metrics();
-    canvas.draw_str(
-        view.name,
-        (row.left + 18.0, cy + nm.cap_height * 0.5),
-        &name_font,
-        &name_paint,
-    );
+    let name_x = row.left + 18.0;
+    let name_baseline = cy + nm.cap_height * 0.5;
 
-    // Active marker — rose dot left of the delete button.
+    if let Some((buffer, focus_time)) = renaming {
+        // Inline rename — a text field with the buffer + a blinking caret.
+        // Submits on Enter, cancels on Escape (handled in main.rs).
+        let ih = -nm.ascent + nm.descent + 8.0;
+        let input = Rect::from_ltrb(
+            name_x - 8.0,
+            cy - ih * 0.5,
+            layout.rename.left - 12.0,
+            cy + ih * 0.5,
+        );
+        let irr = RRect::new_rect_xy(input, 9.0, 9.0);
+        let mut bg = Paint::default();
+        bg.set_anti_alias(true);
+        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06), None);
+        canvas.draw_rrect(irr, &bg);
+        let mut glow = Paint::default();
+        glow.set_anti_alias(true);
+        glow.set_style(PaintStyle::Stroke);
+        glow.set_stroke_width(3.0);
+        glow.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12), None);
+        glow.set_mask_filter(skia_safe::MaskFilter::blur(
+            skia_safe::BlurStyle::Normal,
+            7.0,
+            false,
+        ));
+        canvas.draw_rrect(irr, &glow);
+        let mut border = Paint::default();
+        border.set_anti_alias(true);
+        border.set_style(PaintStyle::Stroke);
+        border.set_stroke_width(1.0);
+        border.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50), None);
+        canvas.draw_rrect(irr, &border);
+
+        let mut text_paint = Paint::default();
+        text_paint.set_anti_alias(true);
+        text_paint.set_color(TEXT_PEARL);
+        canvas.draw_str(buffer, (name_x, name_baseline), &name_font, &text_paint);
+
+        let blink = ((focus_time * 1.6).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        let alpha = blink * blink;
+        if alpha > 0.05 {
+            let typed_w = if buffer.is_empty() {
+                0.0
+            } else {
+                name_font.measure_str(buffer, Some(&text_paint)).0
+            };
+            let caret_x = name_x + typed_w + 1.0;
+            let mut caret = Paint::default();
+            caret.set_anti_alias(true);
+            caret.set_style(PaintStyle::Stroke);
+            caret.set_stroke_width(2.0);
+            caret.set_color4f(Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha), None);
+            canvas.draw_line(
+                (caret_x, name_baseline + nm.ascent),
+                (caret_x, name_baseline + nm.descent),
+                &caret,
+            );
+        }
+    } else {
+        // Name — Fraunces, vertically centered.
+        let mut name_paint = Paint::default();
+        name_paint.set_anti_alias(true);
+        name_paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+        canvas.draw_str(view.name, (name_x, name_baseline), &name_font, &name_paint);
+    }
+
+    // Active marker — rose dot left of the rename button.
     if view.active {
         let mut dot = Paint::default();
         dot.set_anti_alias(true);
         dot.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
-        canvas.draw_circle((layout.delete.left - 14.0, cy), 3.5, &dot);
+        canvas.draw_circle((layout.rename.left - 14.0, cy), 3.5, &dot);
+    }
+
+    // Rename-✎ button.
+    {
+        let rn = layout.rename;
+        let rcx = (rn.left + rn.right) * 0.5;
+        let rcy = (rn.top + rn.bottom) * 0.5;
+        if rename_hovered {
+            let mut disc = Paint::default();
+            disc.set_anti_alias(true);
+            disc.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14), None);
+            canvas.draw_circle((rcx, rcy), 13.0, &disc);
+        }
+        let icon_color = if rename_hovered || renaming.is_some() {
+            Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 1.0)
+        } else {
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.45)
+        };
+        draw_pencil_icon(canvas, rcx, rcy, icon_color);
     }
 
     // Delete-× — hidden when there's only one profile (can't delete the last).
@@ -1401,6 +1517,27 @@ fn draw_profile_row(
         canvas.draw_line((rcx - d, rcy - d), (rcx + d, rcy + d), &x);
         canvas.draw_line((rcx + d, rcy - d), (rcx - d, rcy + d), &x);
     }
+}
+
+/// Custom-drawn pencil icon, ~14×14 centred at `(cx, cy)` — the rename
+/// affordance on a profile row. The bundled fonts carry no pencil glyph,
+/// so it's drawn directly (mirrors `instances::draw_rename_icon`).
+fn draw_pencil_icon(canvas: &Canvas, cx: f32, cy: f32, color: Color4f) {
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_style(PaintStyle::Stroke);
+    p.set_stroke_width(1.6);
+    p.set_color4f(color, None);
+    p.set_stroke_cap(PaintCap::Round);
+    // Diagonal pencil body, top-right → bottom-left.
+    canvas.draw_line((cx + 5.0, cy - 5.0), (cx - 4.0, cy + 4.0), &p);
+    // Cap stroke perpendicular to the body at the top-right end.
+    canvas.draw_line((cx + 3.0, cy - 7.0), (cx + 7.0, cy - 3.0), &p);
+    // Tiny writing tip at the bottom-left end.
+    let mut tip = Paint::default();
+    tip.set_anti_alias(true);
+    tip.set_color4f(color, None);
+    canvas.draw_circle((cx - 5.0, cy + 5.0), 1.0, &tip);
 }
 
 // ── Keybinds tab ─────────────────────────────────────────────────────────

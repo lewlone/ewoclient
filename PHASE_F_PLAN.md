@@ -3,8 +3,8 @@
 The first feature phase past the locked v1 + v2 build sequence. Run like Phase E:
 numbered steps, each a working build, per-step detail recorded here as it lands.
 
-This file is a **forward plan** until F6 ships, then it becomes a record (like
-`PHASE_E_PLAN.md`).
+**Phase F is complete (F0–F6, all shipped).** This file is now a record of
+what landed, like `PHASE_E_PLAN.md` — not a forward plan.
 
 ---
 
@@ -196,19 +196,24 @@ overlay*, not a launcher home screen — the launcher main menu stays as-is.
   restart. Rebind the overlay key in the launcher, relaunch, the new key
   opens the overlay.
 
-### F6 — Polish + parity
-- Velvet-parity pass on the dashboard + all new widgets.
-- Entrance animations, hover affordances, breathing where the design calls for
-  it. `prefers-reduced-motion` honored.
-- ✅ **3D skin viewer (shipped early)** — the in-game HOME tab shows the
-  signed-in player's skin as a drag-rotatable 3D model, cape included. A
-  Skia software renderer (`crates/ewo-jni/src/skin.rs`) — projected
-  textured quads, back-face culled, painter-sorted, per-face shaded. The
-  mod (`EwoSkinExport`) downloads the skin/cape PNGs from the GameProfile
-  texture URLs. Supersedes the flat skin-heads originally planned.
-  Wide-model only — slim arms are a follow-up.
-- Profile rename (deferred from F3) — reuse the instances inline text-input
-  pattern; until then new profiles are auto-named.
+### F6 — Polish + parity ✅ shipped
+- ✅ **3D skin viewer** — the in-game HOME tab shows the signed-in
+  player's skin as a drag-rotatable 3D model, cape included. A Skia
+  software renderer (`crates/ewo-jni/src/skin.rs`) — projected textured
+  quads, back-face culled, painter-sorted, per-face shaded. The mod
+  (`EwoSkinExport`) downloads the skin/cape PNGs from the GameProfile
+  texture URLs and writes an `ewo-skin-slim` marker. Slim + wide models;
+  supersedes the flat skin-heads originally planned.
+- ✅ **Profile rename** — a per-row ✎ button on the Profiles tab enters
+  an inline rename (text field + blinking caret, reusing the Instances
+  rename visual). Enter or a click-away commits, Esc cancels.
+  `profile::rename` renames the `profiles/<name>/` directory and updates
+  `profiles.toml`; `profile::is_valid_name` rejects empty / over-long /
+  path-unsafe names, and the text input filters path-separator chars.
+- Velvet-parity carried through the new widgets — the Keybinds chord
+  buttons, the rename ✎/field, and the Keybinds tab reuse the established
+  rose-tint / hover-disc / glass idioms. The new Settings tabs already
+  get the tab-switch fade via `draw_panel`.
 - (Launcher-side account avatars stay monograms — the 3D viewer is in-game.)
 
 ---
