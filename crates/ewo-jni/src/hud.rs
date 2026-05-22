@@ -559,9 +559,12 @@ pub struct Editor {
     selected: Option<WidgetId>,
     /// Bundled mods for the MODS view — loaded from `overlay-mods.toml`.
     mods: Vec<ModEntry>,
-    /// Active client-profile name — read once at construction for the HOME
-    /// view's overview line.
+    /// Active client-profile name. Read at construction; updated when the
+    /// SETTINGS-tab picker switches profile.
     active_profile: String,
+    /// All client-profile names — for the SETTINGS-tab picker. Read once at
+    /// construction (a launcher-created profile needs a game restart).
+    profiles: Vec<String>,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -571,6 +574,8 @@ const SNAP_PX: f32 = 6.0;
 impl Editor {
     /// Build the editor, loading the persisted layout from `hud.toml`.
     pub fn new() -> Self {
+        let (profile_active, profile_list) = read_profiles()
+            .unwrap_or_else(|| ("Default".to_string(), vec!["Default".to_string()]));
         Editor {
             view: OverlayView::Home,
             layout: HudLayout::load(),
@@ -582,7 +587,8 @@ impl Editor {
             snap_y: None,
             selected: None,
             mods: load_mods(),
-            active_profile: read_active_profile().unwrap_or_else(|| "Default".to_string()),
+            active_profile: profile_active,
+            profiles: profile_list,
         }
     }
 
@@ -596,6 +602,17 @@ impl Editor {
     /// the HUD editor doesn't, so widgets stay readable against the game.
     pub fn frosts_game(&self) -> bool {
         !matches!(self.view, OverlayView::HudEditor)
+    }
+
+    /// Switch the active client profile — persist it to `profiles.toml`
+    /// and reload the HUD layout from the new profile's `hud.toml`, live.
+    fn switch_profile(&mut self, name: String) {
+        if name == self.active_profile {
+            return;
+        }
+        write_profiles(&name, &self.profiles);
+        self.active_profile = name;
+        self.layout = HudLayout::load();
     }
 
     /// Cursor moved — drag the active widget if one is held, snapping its
@@ -706,7 +723,16 @@ impl Editor {
                 }
             }
             OverlayView::Settings => {
-                let (_, buttons) = settings_layout(self.window.0, self.window.1);
+                let (_, chips, buttons) =
+                    settings_layout(self.window.0, self.window.1, self.profiles.len());
+                for (i, &chip) in chips.iter().enumerate() {
+                    if point_in(chip, x, y) {
+                        if let Some(name) = self.profiles.get(i).cloned() {
+                            self.switch_profile(name);
+                        }
+                        return;
+                    }
+                }
                 for (i, &btn) in buttons.iter().enumerate() {
                     if point_in(btn, x, y) {
                         self.layout.paint_rate = crate::HudPaintRate::ALL[i];
@@ -2027,24 +2053,45 @@ fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontStore, w: f32)
     }
 }
 
-/// The Settings-view panel rect + its 4 paint-rate selector buttons.
-fn settings_layout(w: f32, h: f32) -> (Rect, [Rect; 4]) {
+/// The Settings-view panel rect, its client-profile chips, and the 4
+/// paint-rate selector buttons. Fixed-size so renderer + hit-tester agree.
+fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4]) {
+    const CHIP_W: f32 = 112.0;
+    const CHIP_H: f32 = 32.0;
+    const GAP: f32 = 8.0;
+    let chip_rows = (profile_count.max(1) as f32 / 4.0).ceil();
+
     let pw = 484.0;
-    let ph = 232.0;
+    let ph = 262.0 + chip_rows * (CHIP_H + GAP);
     let px = (w - pw) * 0.5;
     let py = (h - ph) * 0.5;
     let panel = Rect::from_xywh(px, py, pw, ph);
+    let left = px + 32.0;
 
+    // Client-profile chips — four per row, under the "CLIENT PROFILE" label.
+    let chips_top = py + 122.0;
+    let mut chips = Vec::with_capacity(profile_count);
+    for i in 0..profile_count {
+        let col = (i % 4) as f32;
+        let row = (i / 4) as f32;
+        chips.push(Rect::from_xywh(
+            left + col * (CHIP_W + GAP),
+            chips_top + row * (CHIP_H + GAP),
+            CHIP_W,
+            CHIP_H,
+        ));
+    }
+
+    // Paint-rate buttons — below the profile section + its labels.
     const BTN_W: f32 = 92.0;
     const BTN_H: f32 = 38.0;
     const BTN_GAP: f32 = 10.0;
-    let bx = px + 32.0;
-    let by = py + 150.0;
+    let buttons_top = chips_top + chip_rows * (CHIP_H + GAP) + 64.0;
     let mut buttons = [empty_rect(); 4];
     for (i, slot) in buttons.iter_mut().enumerate() {
-        *slot = Rect::from_xywh(bx + i as f32 * (BTN_W + BTN_GAP), by, BTN_W, BTN_H);
+        *slot = Rect::from_xywh(left + i as f32 * (BTN_W + BTN_GAP), buttons_top, BTN_W, BTN_H);
     }
-    (panel, buttons)
+    (panel, chips, buttons)
 }
 
 /// One option button in the paint-rate selector.
@@ -2090,9 +2137,9 @@ fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, active: bool, 
     );
 }
 
-/// The Settings view — HUD preferences. E6 push 2 ships the paint-rate cap.
+/// The Settings view — a client-profile picker + the HUD paint-rate cap.
 fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
-    let (panel, buttons) = settings_layout(w, h);
+    let (panel, chips, buttons) = settings_layout(w, h, editor.profiles.len());
     draw_chip(canvas, panel, 16.0);
     let left = panel.left + 32.0;
 
@@ -2116,15 +2163,37 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
     canvas.draw_str("HUD preferences", (left, panel.top + 78.0), &title_font, &title);
 
     let label_font = fonts.jetbrains_mono(10.0);
-    let mut label = Paint::default();
-    label.set_anti_alias(true);
-    label.set_color4f(rgba(MAUVE, 1.0), None);
+
+    // Client-profile picker — chips, the active one lit.
+    let mut prof_label = Paint::default();
+    prof_label.set_anti_alias(true);
+    prof_label.set_color4f(rgba(MAUVE, 1.0), None);
+    let prof_label_y = chips
+        .first()
+        .map(|c| c.top - 14.0)
+        .unwrap_or(panel.top + 108.0);
+    draw_tracked_em(
+        canvas,
+        "CLIENT PROFILE",
+        (left, prof_label_y),
+        &label_font,
+        &prof_label,
+        0.18,
+    );
+    for (chip, name) in chips.iter().zip(&editor.profiles) {
+        draw_settings_button(canvas, *chip, name, *name == editor.active_profile, fonts);
+    }
+
+    // Paint-rate section — positioned relative to the buttons.
+    let mut pr_label = Paint::default();
+    pr_label.set_anti_alias(true);
+    pr_label.set_color4f(rgba(MAUVE, 1.0), None);
     draw_tracked_em(
         canvas,
         "PAINT RATE  ·  FPS CAP",
-        (left, panel.top + 108.0),
+        (left, buttons[0].top - 46.0),
         &label_font,
-        &label,
+        &pr_label,
         0.18,
     );
 
@@ -2134,7 +2203,7 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
     body.set_color4f(rgba(MAUVE, 0.85), None);
     canvas.draw_str(
         "How often the HUD repaints. A lower cap frees GPU for the game.",
-        (left, panel.top + 130.0),
+        (left, buttons[0].top - 22.0),
         &body_font,
         &body,
     );
@@ -2203,23 +2272,76 @@ fn fmt_playtime(secs: i32) -> String {
     }
 }
 
-/// The active client-profile name from `%APPDATA%/EwoClient/profiles.toml`
-/// (the launcher owns the file; this is a read-only display).
-fn read_active_profile() -> Option<String> {
-    let path = std::env::var_os("APPDATA")
-        .map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))?;
-    let text = std::fs::read_to_string(&path).ok()?;
+/// `%APPDATA%/EwoClient/profiles.toml`.
+fn profiles_toml_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))
+}
+
+/// Read `profiles.toml` — `(active, all profile names)`. `None` if the file
+/// is missing or unreadable. The launcher owns this file; the in-game side
+/// reads it and rewrites only the `active` pointer.
+fn read_profiles() -> Option<(String, Vec<String>)> {
+    let text = std::fs::read_to_string(profiles_toml_path()?).ok()?;
+    let mut active = String::new();
     for line in text.lines() {
         if let Some(rest) = line.trim().strip_prefix("active") {
             if let Some(val) = rest.trim_start().strip_prefix('=') {
-                let name = val.trim().trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+                active = val.trim().trim_matches('"').to_string();
+                break;
             }
         }
     }
-    None
+    // Every quoted string after the `profiles` key is a profile name —
+    // robust to inline or wrapped TOML arrays.
+    let mut all: Vec<String> = Vec::new();
+    let after = text
+        .find("\nprofiles")
+        .map(|i| &text[i..])
+        .or_else(|| text.starts_with("profiles").then_some(text.as_str()));
+    if let Some(mut rest) = after {
+        while let Some(q1) = rest.find('"') {
+            let tail = &rest[q1 + 1..];
+            let Some(q2) = tail.find('"') else { break };
+            all.push(tail[..q2].to_string());
+            rest = &tail[q2 + 1..];
+        }
+    }
+    if active.is_empty() && all.is_empty() {
+        return None;
+    }
+    if active.is_empty() {
+        active = all.first().cloned().unwrap_or_else(|| "Default".to_string());
+    }
+    if all.is_empty() {
+        all.push(active.clone());
+    }
+    Some((active, all))
+}
+
+/// The active client-profile name, or `None` if `profiles.toml` is absent.
+fn read_active_profile() -> Option<String> {
+    read_profiles().map(|(active, _)| active)
+}
+
+/// Rewrite `profiles.toml` with a new active profile. The file holds only
+/// `active` + `profiles`, so a full rewrite is total and the launcher
+/// re-reads it cleanly.
+fn write_profiles(active: &str, all: &[String]) {
+    let Some(path) = profiles_toml_path() else {
+        return;
+    };
+    let mut s = format!("active = \"{active}\"\nprofiles = [");
+    for (i, p) in all.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push('"');
+        s.push_str(p);
+        s.push('"');
+    }
+    s.push_str("]\n");
+    let _ = std::fs::write(&path, s);
 }
 
 /// One stat card on the HOME view — a chip with a mono label and a value.
