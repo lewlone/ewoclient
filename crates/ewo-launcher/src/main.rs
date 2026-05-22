@@ -821,6 +821,37 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+
+                // Settings — scroll the Keybinds / Modules tab list.
+                if !handled && self.screen == Screen::Settings {
+                    if let Some(fonts) = fonts {
+                        let (content_h, visible_h) = match self.settings_tab {
+                            SettingsTab::Keybinds => {
+                                let l = screens::settings::keybinds_tab_layout(
+                                    fonts,
+                                    card_w,
+                                    card_h,
+                                    keybind::REGISTRY.len(),
+                                    self.prefs.settings_scroll,
+                                );
+                                (l.content_h, l.list_region.height())
+                            }
+                            SettingsTab::Modules => {
+                                let l = screens::settings::modules_tab_layout(
+                                    fonts,
+                                    card_w,
+                                    card_h,
+                                    self.prefs.settings_scroll,
+                                );
+                                (l.content_h, l.list_region.height())
+                            }
+                            _ => (0.0, 1.0),
+                        };
+                        let max = (content_h - visible_h).max(0.0);
+                        self.prefs.settings_scroll =
+                            (self.prefs.settings_scroll + dy).clamp(0.0, max);
+                    }
+                }
             }
 
             WindowEvent::Resized(size) => {
@@ -1220,6 +1251,7 @@ impl ApplicationHandler for App {
                                     // it plays when they switch tabs.
                                     if target == Screen::Settings {
                                         self.prefs.tab_changed_at = Some(time);
+                                        self.prefs.settings_scroll = 0.0;
                                     }
                                     // Demo affordance: clicking the LAUNCHING
                                     // tab without an active launch kicks off
@@ -1307,6 +1339,7 @@ impl ApplicationHandler for App {
                                     self.prefs.profile_rename_buffer.clear();
                                     self.prefs.tab_changed_at =
                                         Some(self.clock.elapsed);
+                                    self.prefs.settings_scroll = 0.0;
                                 }
                                 handled = true;
                                 break;
@@ -2319,25 +2352,45 @@ fn drive_settings_sliders(
         prefs.profile_dup.handle(mouse, layout.dup_button, false);
         return false;
     }
-    // Keybinds tab — update chord-button + reset-button hover.
+    // Keybinds tab — update chord + reset hover within the scrolled list.
     if tab == SettingsTab::Keybinds {
-        let layout =
-            screens::settings::keybinds_tab_layout(fonts, card_w, keybind::REGISTRY.len());
+        let layout = screens::settings::keybinds_tab_layout(
+            fonts,
+            card_w,
+            card_h,
+            keybind::REGISTRY.len(),
+            prefs.settings_scroll,
+        );
+        let max = (layout.content_h - layout.list_region.height()).max(0.0);
+        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+        let in_list = rect_contains(&layout.list_region, mouse);
         prefs.keybind_hover = None;
-        for rl in &layout.rows {
-            if rect_contains(&rl.chord, mouse) {
-                prefs.keybind_hover = Some(rl.index);
+        if in_list {
+            for rl in &layout.rows {
+                if rect_contains(&rl.chord, mouse) {
+                    prefs.keybind_hover = Some(rl.index);
+                }
             }
         }
-        prefs.keybind_reset.handle(mouse, layout.reset_button, false);
+        let probe = if in_list { mouse } else { (-1.0, -1.0) };
+        prefs.keybind_reset.handle(probe, layout.reset_button, false);
         return false;
     }
-    // Modules tab — update toggle hover + drive the FOV Control slider.
+    // Modules tab — toggle hover + the FOV slider, within the scrolled list.
     if tab == SettingsTab::Modules {
-        let layout = screens::settings::modules_tab_layout(fonts, card_w);
+        let layout = screens::settings::modules_tab_layout(
+            fonts,
+            card_w,
+            card_h,
+            prefs.settings_scroll,
+        );
+        let max = (layout.content_h - layout.list_region.height()).max(0.0);
+        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+        let in_list = rect_contains(&layout.list_region, mouse);
+        let probe = if in_list { mouse } else { (-1.0, -1.0) };
         for rl in &layout.rows {
             if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
-                toggle.handle(mouse, rl.toggle, false);
+                toggle.handle(probe, rl.toggle, false);
             }
             if let Some(slider) = rl.slider {
                 if prefs.module_fov.drive(mouse, slider, mouse_down) {
@@ -2521,20 +2574,27 @@ fn handle_settings_press(
         return (false, false);
     }
 
-    // Keybinds tab — custom layout. A chord button arms a rebind; the
-    // reset button restores every registry default.
+    // Keybinds tab — custom layout. A chord button arms a rebind; the reset
+    // button restores every registry default. Only acts inside the viewport.
     if tab == SettingsTab::Keybinds {
-        let layout =
-            screens::settings::keybinds_tab_layout(fonts, card_w, keybind::REGISTRY.len());
-        for rl in &layout.rows {
-            if rect_contains(&rl.chord, mouse) {
-                prefs.keybind_request = Some(KeybindRequest::Capture(rl.index));
+        let layout = screens::settings::keybinds_tab_layout(
+            fonts,
+            card_w,
+            card_h,
+            keybind::REGISTRY.len(),
+            prefs.settings_scroll,
+        );
+        if rect_contains(&layout.list_region, mouse) {
+            for rl in &layout.rows {
+                if rect_contains(&rl.chord, mouse) {
+                    prefs.keybind_request = Some(KeybindRequest::Capture(rl.index));
+                    return (true, false);
+                }
+            }
+            if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
+                prefs.keybind_request = Some(KeybindRequest::ResetAll);
                 return (true, false);
             }
-        }
-        if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
-            prefs.keybind_request = Some(KeybindRequest::ResetAll);
-            return (true, false);
         }
         return (false, false);
     }
@@ -2542,19 +2602,26 @@ fn handle_settings_press(
     // Modules tab — a toggle click flips the module; a slider press is
     // consumed here (the drag itself runs in `drive_settings_sliders`).
     if tab == SettingsTab::Modules {
-        let layout = screens::settings::modules_tab_layout(fonts, card_w);
-        for rl in &layout.rows {
-            if rect_contains(&rl.toggle, mouse) {
-                if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
-                    if toggle.handle(mouse, rl.toggle, true) {
-                        prefs.modules_changed = true;
+        let layout = screens::settings::modules_tab_layout(
+            fonts,
+            card_w,
+            card_h,
+            prefs.settings_scroll,
+        );
+        if rect_contains(&layout.list_region, mouse) {
+            for rl in &layout.rows {
+                if rect_contains(&rl.toggle, mouse) {
+                    if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
+                        if toggle.handle(mouse, rl.toggle, true) {
+                            prefs.modules_changed = true;
+                        }
                     }
-                }
-                return (true, false);
-            }
-            if let Some(slider) = rl.slider {
-                if rect_contains(&slider, mouse) {
                     return (true, false);
+                }
+                if let Some(slider) = rl.slider {
+                    if rect_contains(&slider, mouse) {
+                        return (true, false);
+                    }
                 }
             }
         }

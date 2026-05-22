@@ -23,9 +23,9 @@ use skia_safe::{Canvas, Color, Color4f, Paint, PaintCap, PaintStyle, RRect, Rect
 
 use crate::text::{self, FontStore};
 use crate::widgets::{
-    draw_glass_panel, draw_vdrop_head, draw_vdrop_menu, draw_vghost_btn, draw_vpathfield,
-    draw_vslider, draw_vtoggle, menu_layout, vpathfield, GhostKind, VdropState, VghostBtnState,
-    VpathfieldState, VsliderState, VtoggleState,
+    draw_glass_panel, draw_scrollbar, draw_vdrop_head, draw_vdrop_menu, draw_vghost_btn,
+    draw_vpathfield, draw_vslider, draw_vtoggle, menu_layout, vpathfield, GhostKind, VdropState,
+    VghostBtnState, VpathfieldState, VsliderState, VtoggleState,
 };
 
 const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
@@ -306,6 +306,9 @@ pub struct Prefs {
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
+    /// Vertical scroll offset (px) for the active tab's list — the Keybinds
+    /// and Modules tabs overflow the panel. Reset to 0 on tab/screen switch.
+    pub settings_scroll: f32,
     /// Set to `true` when the user clicks "Reset preferences". The main
     /// loop checks this each frame, runs the reset, and clears the flag.
     /// We use a flag instead of a return-value path because the reset
@@ -425,6 +428,7 @@ impl Default for Prefs {
             module_fov: VsliderState::new(90.0, 30.0, 150.0).with_step(1.0),
             modules_changed: false,
             tab_changed_at: None,
+            settings_scroll: 0.0,
             reset_requested: false,
         }
     }
@@ -734,9 +738,9 @@ fn draw_panel(
         } else if active == SettingsTab::Profiles {
             draw_profiles_tab(canvas, fonts, w, prefs, profiles);
         } else if active == SettingsTab::Keybinds {
-            draw_keybinds_tab(canvas, fonts, w, prefs, keybinds);
+            draw_keybinds_tab(canvas, fonts, w, h, prefs, keybinds);
         } else if active == SettingsTab::Modules {
-            draw_modules_tab(canvas, fonts, w, prefs, time, settings);
+            draw_modules_tab(canvas, fonts, w, h, prefs, time, settings);
         } else {
             draw_section_body(
                 canvas,
@@ -1600,17 +1604,30 @@ pub struct KeybindRowLayout {
     pub chord: Rect,
 }
 
-/// Card-local layout of the Keybinds tab.
+/// Card-local layout of the Keybinds tab. Row + button rects are already
+/// shifted by the scroll offset; `list_region` is the clip viewport.
 pub struct KeybindTabLayout {
     pub content_left: f32,
     pub content_right: f32,
     pub header_top: f32,
     pub rows: Vec<KeybindRowLayout>,
     pub reset_button: Rect,
+    /// Visible scroll viewport — rows clip + scroll inside this band.
+    pub list_region: Rect,
+    /// Unscrolled total height of the rows + reset button.
+    pub content_h: f32,
 }
 
-/// Compute the Keybinds tab's layout for `row_count` keybind actions.
-pub fn keybinds_tab_layout(fonts: &FontStore, card_w: f32, row_count: usize) -> KeybindTabLayout {
+/// Compute the Keybinds tab's layout for `row_count` keybind actions, with
+/// the list scrolled by `scroll` px. Row + button rects come back already
+/// shifted; `scroll` is clamped to the overflow first.
+pub fn keybinds_tab_layout(
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    row_count: usize,
+    scroll: f32,
+) -> KeybindTabLayout {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
     let panel_right = card_w - BODY_PAD_X;
@@ -1620,9 +1637,26 @@ pub fn keybinds_tab_layout(fonts: &FontStore, card_w: f32, row_count: usize) -> 
     let header_top = section_head_bottom(content_top, fonts);
 
     let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    let row_stride = ACCOUNT_ROW_H + ACCOUNT_ROW_GAP;
+    let rows_h = if row_count == 0 {
+        0.0
+    } else {
+        row_count as f32 * row_stride - ACCOUNT_ROW_GAP
+    };
+    // The reset button sits 18px below the last row.
+    let content_h = rows_h + 18.0 + ADD_BTN_H;
+    let list_region = Rect::from_ltrb(
+        content_left,
+        list_top,
+        content_right,
+        (card_h - BODY_PAD_BOTTOM).max(list_top),
+    );
+    let max_scroll = (content_h - list_region.height()).max(0.0);
+    let scroll = scroll.clamp(0.0, max_scroll);
+
     let mut rows = Vec::with_capacity(row_count);
     for i in 0..row_count {
-        let top = list_top + i as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP);
+        let top = list_top + i as f32 * row_stride - scroll;
         let row = Rect::from_ltrb(content_left, top, content_right, top + ACCOUNT_ROW_H);
         let cy = (row.top + row.bottom) * 0.5;
         let chord = Rect::from_xywh(
@@ -1633,12 +1667,7 @@ pub fn keybinds_tab_layout(fonts: &FontStore, card_w: f32, row_count: usize) -> 
         );
         rows.push(KeybindRowLayout { index: i, row, chord });
     }
-    let list_bottom = if row_count == 0 {
-        list_top
-    } else {
-        list_top + row_count as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP) - ACCOUNT_ROW_GAP
-    };
-    let btn_top = list_bottom + 18.0;
+    let btn_top = list_top + rows_h + 18.0 - scroll;
     let reset_button = Rect::from_xywh(content_left, btn_top, PROFILE_BTN_W, ADD_BTN_H);
 
     KeybindTabLayout {
@@ -1647,6 +1676,8 @@ pub fn keybinds_tab_layout(fonts: &FontStore, card_w: f32, row_count: usize) -> 
         header_top,
         rows,
         reset_button,
+        list_region,
+        content_h,
     }
 }
 
@@ -1654,12 +1685,19 @@ fn draw_keybinds_tab(
     canvas: &Canvas,
     fonts: &FontStore,
     card_w: f32,
+    card_h: f32,
     prefs: &Prefs,
     view: KeybindView<'_>,
 ) {
-    let layout = keybinds_tab_layout(fonts, card_w, view.rows.len());
+    let layout = keybinds_tab_layout(
+        fonts,
+        card_w,
+        card_h,
+        view.rows.len(),
+        prefs.settings_scroll,
+    );
 
-    // Body copy.
+    // Body copy — fixed above the scrolling list.
     let body_font = fonts.newsreader(15.0);
     let mut body_paint = Paint::default();
     body_paint.set_anti_alias(true);
@@ -1672,13 +1710,13 @@ fn draw_keybinds_tab(
         &body_paint,
     );
 
-    // Keybind rows.
+    // Rows + reset button, clipped to the scroll viewport.
+    canvas.save();
+    canvas.clip_rect(layout.list_region, None, false);
     for (rl, row) in layout.rows.iter().zip(view.rows) {
         let hovered = prefs.keybind_hover == Some(rl.index);
         draw_keybind_row(canvas, fonts, rl, row, hovered);
     }
-
-    // Reset button.
     draw_vghost_btn(
         canvas,
         layout.reset_button,
@@ -1687,6 +1725,9 @@ fn draw_keybinds_tab(
         GhostKind::Pearl,
         fonts,
     );
+    canvas.restore();
+
+    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
 }
 
 /// Draw one keybind row — action label, module eyebrow, and the chord button.
@@ -1787,16 +1828,27 @@ pub struct ModuleRowLayout {
     pub slider: Option<Rect>,
 }
 
-/// Card-local layout of the Modules tab.
+/// Card-local layout of the Modules tab. Row rects are already shifted by
+/// the scroll offset; `list_region` is the clip viewport.
 pub struct ModuleTabLayout {
     pub content_left: f32,
     pub content_right: f32,
     pub header_top: f32,
     pub rows: Vec<ModuleRowLayout>,
+    /// Visible scroll viewport — rows clip + scroll inside this band.
+    pub list_region: Rect,
+    /// Unscrolled total height of the row list.
+    pub content_h: f32,
 }
 
-/// Compute the Modules tab's layout — one row per `ewo_core::modules` entry.
-pub fn modules_tab_layout(fonts: &FontStore, card_w: f32) -> ModuleTabLayout {
+/// Compute the Modules tab's layout — one row per `ewo_core::modules` entry,
+/// with the list scrolled by `scroll` px (clamped to the overflow first).
+pub fn modules_tab_layout(
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    scroll: f32,
+) -> ModuleTabLayout {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
     let panel_right = card_w - BODY_PAD_X;
@@ -1806,8 +1858,24 @@ pub fn modules_tab_layout(fonts: &FontStore, card_w: f32) -> ModuleTabLayout {
     let header_top = section_head_bottom(content_top, fonts);
 
     let list_top = header_top + ACCOUNT_COPY_BLOCK;
+    // Unscrolled content height — every row plus the gaps between them.
+    let mut content_h = 0.0_f32;
+    for m in ewo_core::modules::REGISTRY {
+        let row_h = ACCOUNT_ROW_H + if m.settings.is_empty() { 0.0 } else { MODULE_SLIDER_STRIP };
+        content_h += row_h + ACCOUNT_ROW_GAP;
+    }
+    content_h = (content_h - ACCOUNT_ROW_GAP).max(0.0);
+    let list_region = Rect::from_ltrb(
+        content_left,
+        list_top,
+        content_right,
+        (card_h - BODY_PAD_BOTTOM).max(list_top),
+    );
+    let max_scroll = (content_h - list_region.height()).max(0.0);
+    let scroll = scroll.clamp(0.0, max_scroll);
+
     let mut rows = Vec::with_capacity(ewo_core::modules::REGISTRY.len());
-    let mut y = list_top;
+    let mut y = list_top - scroll;
     for (i, m) in ewo_core::modules::REGISTRY.iter().enumerate() {
         let has_slider = !m.settings.is_empty();
         let row_h = ACCOUNT_ROW_H + if has_slider { MODULE_SLIDER_STRIP } else { 0.0 };
@@ -1832,20 +1900,28 @@ pub fn modules_tab_layout(fonts: &FontStore, card_w: f32) -> ModuleTabLayout {
         rows.push(ModuleRowLayout { index: i, row, toggle, slider });
         y += row_h + ACCOUNT_ROW_GAP;
     }
-    ModuleTabLayout { content_left, content_right, header_top, rows }
+    ModuleTabLayout {
+        content_left,
+        content_right,
+        header_top,
+        rows,
+        list_region,
+        content_h,
+    }
 }
 
 fn draw_modules_tab(
     canvas: &Canvas,
     fonts: &FontStore,
     card_w: f32,
+    card_h: f32,
     prefs: &Prefs,
     time: f32,
     settings: &Settings,
 ) {
-    let layout = modules_tab_layout(fonts, card_w);
+    let layout = modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
 
-    // Body copy.
+    // Body copy — fixed above the scrolling list.
     let body_font = fonts.newsreader(15.0);
     let mut body_paint = Paint::default();
     body_paint.set_anti_alias(true);
@@ -1858,10 +1934,16 @@ fn draw_modules_tab(
         &body_paint,
     );
 
+    // Rows, clipped to the scroll viewport.
+    canvas.save();
+    canvas.clip_rect(layout.list_region, None, false);
     for rl in &layout.rows {
         let def = &ewo_core::modules::REGISTRY[rl.index];
         draw_module_row(canvas, fonts, rl, def, prefs, time, settings);
     }
+    canvas.restore();
+
+    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
 }
 
 /// Draw one Modules-tab row — name, description, on/off toggle, and (for a
