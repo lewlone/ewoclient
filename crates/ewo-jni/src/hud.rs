@@ -571,6 +571,8 @@ pub struct Editor {
     /// HOME skin-viewer rotation (radians) + the in-progress drag's last x.
     skin_yaw: f32,
     skin_drag: Option<f32>,
+    /// Whether the loaded skin uses the slim ("Alex") 3px-arm model.
+    skin_slim: bool,
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -599,6 +601,7 @@ impl Editor {
             cape_image: load_skin_image("ewo-cape.png"),
             skin_yaw: 0.5,
             skin_drag: None,
+            skin_slim: instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false),
         }
     }
 
@@ -895,6 +898,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     if editor.view == OverlayView::Home && editor.skin_image.is_none() {
         editor.skin_image = load_skin_image("ewo-skin.png");
         editor.cape_image = load_skin_image("ewo-cape.png");
+        editor.skin_slim = instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false);
     }
 
     // The active dashboard view.
@@ -2445,6 +2449,7 @@ fn draw_home(canvas: &Canvas, editor: &Editor, data: &HudData, fonts: &FontStore
         editor.skin_image.as_ref(),
         editor.cape_image.as_ref(),
         editor.skin_yaw,
+        editor.skin_slim,
     );
     let hint_font = fonts.jetbrains_mono(8.0);
     let mut hint = Paint::default();

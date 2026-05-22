@@ -26,23 +26,29 @@ struct Cuboid {
     uv: (f32, f32),
 }
 
-/// The standard wide player model. Units = skin pixels; the model stands
-/// on y=0 with the head-top at y=32. Six base cuboids then six overlay.
-const BODY: [Cuboid; 12] = [
-    Cuboid { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0) },
-    Cuboid { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0) },
-    Cuboid { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0) },
-    Cuboid { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0) },
-    Cuboid { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0) },
-    Cuboid { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0) },
-    // overlay layer — hat / jacket / sleeves / pants, slightly inflated.
-    Cuboid { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0) },
-    Cuboid { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0) },
-    Cuboid { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0) },
-    Cuboid { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0) },
-    Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0) },
-    Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0) },
-];
+/// The player model — six base cuboids then six overlay. Units = skin
+/// pixels; the model stands on y=0 with the head-top at y=32. `slim`
+/// narrows the arms to 3px (the "Alex" model).
+fn body_cuboids(slim: bool) -> [Cuboid; 12] {
+    let aw = if slim { 3.0 } else { 4.0 }; // arm width
+    let r = -4.0 - aw; // right-arm outer edge
+    let l = 4.0 + aw; // left-arm outer edge
+    [
+        Cuboid { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0) },
+        Cuboid { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0) },
+        Cuboid { min: [r, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [aw, 12.0, 4.0], uv: (40.0, 16.0) },
+        Cuboid { min: [4.0, 12.0, -2.0], max: [l, 24.0, 2.0], size: [aw, 12.0, 4.0], uv: (32.0, 48.0) },
+        Cuboid { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0) },
+        Cuboid { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0) },
+        // overlay layer — hat / jacket / sleeves / pants, slightly inflated.
+        Cuboid { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0) },
+        Cuboid { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0) },
+        Cuboid { min: [r - 0.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [aw, 12.0, 4.0], uv: (40.0, 32.0) },
+        Cuboid { min: [3.75, 11.75, -2.25], max: [l + 0.25, 24.25, 2.25], size: [aw, 12.0, 4.0], uv: (48.0, 48.0) },
+        Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0) },
+        Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0) },
+    ]
+}
 
 /// The cape — a thin slab behind the upper body. Box-UV from (0,0) of the
 /// 64×32 cape texture; 10w × 16h × 1d.
@@ -156,14 +162,22 @@ struct Projected {
 }
 
 /// Draw the player model into `rect`, rotated by `yaw` radians. No-ops if
-/// the skin image is absent. The cape is drawn only if `cape` is present.
-pub fn draw_skin(canvas: &Canvas, rect: Rect, skin: Option<&Image>, cape: Option<&Image>, yaw: f32) {
+/// the skin image is absent. The cape is drawn only if `cape` is present;
+/// `slim` selects the 3px-arm ("Alex") model.
+pub fn draw_skin(
+    canvas: &Canvas,
+    rect: Rect,
+    skin: Option<&Image>,
+    cape: Option<&Image>,
+    yaw: f32,
+    slim: bool,
+) {
     let Some(skin) = skin else {
         return;
     };
 
-    // A fixed downward tilt — a gentle 3/4 view, like a profile-page render.
-    let pitch = -0.30_f32;
+    // A slight downward tilt — a gentle 3/4 view, like a profile-page render.
+    let pitch = -0.16_f32;
     // Model centre of mass ≈ (0, 16, 0); fit its 32-unit height into `rect`.
     let centre = [0.0, 16.0, 0.0];
     let scale = (rect.height() * 0.84) / 32.0;
@@ -200,7 +214,7 @@ pub fn draw_skin(canvas: &Canvas, rect: Rect, skin: Option<&Image>, cape: Option
         });
     };
 
-    for c in &BODY {
+    for c in &body_cuboids(slim) {
         for face in cuboid_faces(c, false) {
             consider(&face);
         }

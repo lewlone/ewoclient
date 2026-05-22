@@ -118,7 +118,8 @@ public final class EwoSkinExport {
             if (textures == null) {
                 return;
             }
-            String skinUrl = urlOf(textures, "SKIN");
+            JsonObject skin = textures.has("SKIN") ? textures.getAsJsonObject("SKIN") : null;
+            String skinUrl = (skin != null && skin.has("url")) ? skin.get("url").getAsString() : null;
             String capeUrl = urlOf(textures, "CAPE");
             if (skinUrl != null) {
                 download(skinUrl, gameDir.resolve("ewo-skin.png"));
@@ -128,6 +129,21 @@ public final class EwoSkinExport {
             } else {
                 // No cape — clear any stale file so the viewer shows none.
                 Files.deleteIfExists(gameDir.resolve("ewo-cape.png"));
+            }
+
+            // Slim ("Alex") vs. wide model — from SKIN.metadata.model. The
+            // marker file's presence tells the renderer which arms to use.
+            boolean slim = false;
+            if (skin != null && skin.has("metadata")) {
+                JsonObject meta = skin.getAsJsonObject("metadata");
+                slim = meta != null && meta.has("model")
+                        && "slim".equals(meta.get("model").getAsString());
+            }
+            Path slimMarker = gameDir.resolve("ewo-skin-slim");
+            if (slim) {
+                Files.writeString(slimMarker, "");
+            } else {
+                Files.deleteIfExists(slimMarker);
             }
         } catch (Exception e) {
             System.err.println("[ewo-hud] skin export failed: " + e);
