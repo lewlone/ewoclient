@@ -121,6 +121,25 @@ impl ModuleConfig {
         }
     }
 
+    /// State of module `idx` — a disabled default past the registry.
+    pub fn get(&self, idx: usize) -> ModuleState {
+        self.states.get(idx).copied().unwrap_or(ModuleState {
+            enabled: false,
+            settings: [0.0; catalog::MAX_SETTINGS],
+        })
+    }
+
+    /// Set module `idx`'s setting `slot`. Does not persist on its own — call
+    /// [`ModuleConfig::save`] when the edit completes (e.g. on slider-release),
+    /// so a drag doesn't write the file on every frame.
+    pub fn set_setting(&mut self, idx: usize, slot: usize, value: f32) {
+        if let Some(st) = self.states.get_mut(idx) {
+            if slot < catalog::MAX_SETTINGS {
+                st.settings[slot] = value;
+            }
+        }
+    }
+
     /// Fill the `EwoModuleData` block at `base` — the Rust→Java channel. The
     /// `ewo-hud` mod reads it every frame to apply the module effects.
     ///

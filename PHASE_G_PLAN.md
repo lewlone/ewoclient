@@ -181,7 +181,7 @@ All seven default **off** and **unbound** — the user opts in.
 - `profile::duplicate` copies `modules.toml` into the new profile.
 - Channel proven with a log line; no effects yet.
 
-### G2 — In-game MODULES overlay tab
+### G2 — In-game MODULES overlay tab ✅ shipped
 - A fifth `OverlayView::Modules`; the tab strip + dispatch grow to five.
 - `draw_modules` / `modules_layout` — a Velvet feature list modelled on the
   MODS tab: per module a category dot, name, description, on/off toggle.
@@ -225,7 +225,7 @@ becomes a record, not a forward plan.
 |---|---|---|
 | G0 | Module catalog + keybind refactor | ✅ shipped |
 | G1 | `modules.toml` + `EwoModuleData` channel | ✅ shipped |
-| G2 | In-game MODULES tab | pending |
+| G2 | In-game MODULES tab | ✅ shipped |
 | G3 | Full Bright + FOV | pending |
 | G4 | No Damage Tilt + No View Bob | pending |
 | G5 | Toggle Sprint + Toggle Sneak | pending |

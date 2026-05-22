@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use ewo_core::modules as catalog;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
 use ewo_render::FontStore;
 use skia_safe::{
@@ -510,14 +511,16 @@ fn legacy_hud_toml_path() -> Option<PathBuf> {
 enum OverlayView {
     Home,
     HudEditor,
+    Modules,
     Mods,
     Settings,
 }
 
 impl OverlayView {
-    const ALL: [OverlayView; 4] = [
+    const ALL: [OverlayView; 5] = [
         OverlayView::Home,
         OverlayView::HudEditor,
+        OverlayView::Modules,
         OverlayView::Mods,
         OverlayView::Settings,
     ];
@@ -525,6 +528,7 @@ impl OverlayView {
         match self {
             OverlayView::Home => "HOME",
             OverlayView::HudEditor => "HUD",
+            OverlayView::Modules => "MODULES",
             OverlayView::Mods => "MODS",
             OverlayView::Settings => "SETTINGS",
         }
@@ -552,6 +556,8 @@ pub struct Editor {
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
     bounds: [Rect; 7],
     dragging: Option<Drag>,
+    /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
+    slider_drag: Option<(usize, usize)>,
     /// Active snap guide lines (window pixels) while a drag is alignment-snapped.
     snap_x: Option<f32>,
     snap_y: Option<f32>,
@@ -598,6 +604,7 @@ impl Editor {
             cursor: (0.0, 0.0),
             bounds: [empty_rect(); 7],
             dragging: None,
+            slider_drag: None,
             snap_x: None,
             snap_y: None,
             selected: None,
@@ -647,6 +654,11 @@ impl Editor {
         if let Some(last_x) = self.skin_drag {
             self.skin_yaw += (x - last_x) * 0.012;
             self.skin_drag = Some(x);
+            return;
+        }
+        // MODULES-view slider drag — track the cursor to the setting value.
+        if let Some((idx, slot)) = self.slider_drag {
+            self.drag_module_slider(idx, slot, x);
             return;
         }
         let Some(drag) = &self.dragging else {
@@ -712,6 +724,10 @@ impl Editor {
         self.cursor = (x, y);
         if !pressed {
             self.skin_drag = None;
+            if self.slider_drag.take().is_some() {
+                // A module-slider drag finished — persist the setting now.
+                self.modules.save();
+            }
             if self.dragging.take().is_some() {
                 // A drag finished — drop the snap guides and persist.
                 self.snap_x = None;
@@ -747,6 +763,22 @@ impl Editor {
                 }
             }
             OverlayView::HudEditor => self.editor_press(x, y),
+            OverlayView::Modules => {
+                let (_, rows) = modules_layout(self.window.0, self.window.1);
+                for (i, row) in rows.iter().enumerate() {
+                    if point_in(row.toggle, x, y) {
+                        self.modules.toggle(i);
+                        return;
+                    }
+                    for (slot, &track) in row.sliders.iter().enumerate() {
+                        if point_in(track, x, y) {
+                            self.slider_drag = Some((i, slot));
+                            self.drag_module_slider(i, slot, x);
+                            return;
+                        }
+                    }
+                }
+            }
             OverlayView::Mods => {
                 let (_, toggles) = mods_layout(self.window.0, self.window.1, self.mods.len());
                 for (i, &toggle) in toggles.iter().enumerate() {
@@ -833,6 +865,26 @@ impl Editor {
                 break;
             }
         }
+    }
+
+    /// Track a MODULES-view slider drag: map the cursor `x` to the setting
+    /// value and apply it. The value persists on drag-release, not per-move.
+    fn drag_module_slider(&mut self, idx: usize, slot: usize, x: f32) {
+        let (_, rows) = modules_layout(self.window.0, self.window.1);
+        let Some(track) = rows.get(idx).and_then(|r| r.sliders.get(slot)).copied() else {
+            return;
+        };
+        let Some(setting) = catalog::REGISTRY.get(idx).and_then(|m| m.settings.get(slot))
+        else {
+            return;
+        };
+        let span = (track.right - track.left).max(1.0);
+        let frac = ((x - track.left) / span).clamp(0.0, 1.0);
+        let mut value = setting.min + frac * (setting.max - setting.min);
+        if setting.step > 0.0 {
+            value = (value / setting.step).round() * setting.step;
+        }
+        self.modules.set_setting(idx, slot, value);
     }
 
     /// The widget the cursor is over (the one being dragged always wins).
@@ -925,6 +977,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     match editor.view {
         OverlayView::Home => draw_home(canvas, editor, data, fonts, w, h),
         OverlayView::HudEditor => draw_editor(canvas, editor, fonts, w, h),
+        OverlayView::Modules => draw_modules(canvas, editor, fonts, w, h),
         OverlayView::Mods => draw_mods(canvas, editor, fonts, w, h),
         OverlayView::Settings => draw_settings(canvas, editor, fonts, w, h),
     }
@@ -935,7 +988,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     let hint_font = fonts.jetbrains_mono(12.0);
     let hint = match editor.view {
         OverlayView::HudEditor => "DRAG WIDGETS OR USE THE PANEL  ·  RIGHT SHIFT OR ESC TO CLOSE",
-        OverlayView::Home | OverlayView::Mods | OverlayView::Settings => {
+        OverlayView::Home | OverlayView::Modules | OverlayView::Mods | OverlayView::Settings => {
             "RIGHT SHIFT OR ESC TO CLOSE"
         }
     };
@@ -2041,14 +2094,14 @@ fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, 
 
 /// The overlay's top-centre view-tab strip: the whole pill + a rect per tab.
 /// Fixed-width tabs so the renderer and the hit-tester agree without fonts.
-fn tab_layout(w: f32) -> (Rect, [Rect; 4]) {
+fn tab_layout(w: f32) -> (Rect, [Rect; 5]) {
     const TAB_W: f32 = 124.0;
     const TAB_H: f32 = 34.0;
     const TAB_Y: f32 = 18.0;
-    let strip_w = TAB_W * 4.0;
+    let strip_w = TAB_W * 5.0;
     let strip_x = (w - strip_w) * 0.5;
     let pill = Rect::from_xywh(strip_x, TAB_Y, strip_w, TAB_H);
-    let mut tabs = [empty_rect(); 4];
+    let mut tabs = [empty_rect(); 5];
     for (i, slot) in tabs.iter_mut().enumerate() {
         *slot = Rect::from_xywh(strip_x + i as f32 * TAB_W, TAB_Y, TAB_W, TAB_H);
     }
@@ -2798,4 +2851,244 @@ fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32
 
         draw_panel_toggle(canvas, toggles[i], m.enabled);
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Modules view — the EwoClient module toggle list (Phase G).
+// ────────────────────────────────────────────────────────────────────────
+
+/// Per-module hit-rects on the MODULES view, in `catalog::REGISTRY` order.
+struct ModuleRow {
+    /// The whole row — base content plus any setting sliders below it.
+    row: Rect,
+    /// The on/off toggle pill.
+    toggle: Rect,
+    /// Slider hit-areas, one per module setting (FOV Control has one).
+    sliders: Vec<Rect>,
+}
+
+/// Velvet accent for a module category — the row's colour dot.
+fn module_category_color(category: catalog::ModuleCategory) -> (u8, u8, u8) {
+    match category {
+        catalog::ModuleCategory::Visual => LAV,
+        catalog::ModuleCategory::Camera => ROSE,
+        catalog::ModuleCategory::Movement => CHAMP,
+    }
+}
+
+/// The Modules-view panel + a [`ModuleRow`] per catalog module. Deterministic
+/// in the window size, so the renderer and the hit-tester agree.
+fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleRow>) {
+    const PANEL_W: f32 = 600.0;
+    const PAD: f32 = 24.0;
+    const HEADER_H: f32 = 76.0;
+    const ROW_H: f32 = 46.0; // colour dot + name + description
+    const SLIDER_H: f32 = 30.0; // extra height per setting slider
+    const TOGGLE_W: f32 = 38.0;
+    const TOGGLE_H: f32 = 20.0;
+
+    let row_h = |m: &catalog::ModuleDef| ROW_H + m.settings.len() as f32 * SLIDER_H;
+    let body_h: f32 = catalog::REGISTRY.iter().map(row_h).sum();
+    let panel_h = PAD * 2.0 + HEADER_H + body_h;
+    let px = (w - PANEL_W) * 0.5;
+    let py = (h - panel_h) * 0.5;
+    let panel = Rect::from_xywh(px, py, PANEL_W, panel_h);
+
+    let mut rows = Vec::with_capacity(catalog::REGISTRY.len());
+    let mut ry = py + PAD + HEADER_H;
+    for m in catalog::REGISTRY {
+        let rh = row_h(m);
+        let row = Rect::from_xywh(px, ry, PANEL_W, rh);
+        let toggle = Rect::from_xywh(
+            px + PANEL_W - PAD - TOGGLE_W,
+            ry + (ROW_H - TOGGLE_H) * 0.5,
+            TOGGLE_W,
+            TOGGLE_H,
+        );
+        let sliders = (0..m.settings.len())
+            .map(|s| {
+                let sy = ry + ROW_H + s as f32 * SLIDER_H;
+                Rect::from_xywh(px + PAD, sy, PANEL_W - PAD * 2.0, SLIDER_H)
+            })
+            .collect();
+        rows.push(ModuleRow { row, toggle, sliders });
+        ry += rh;
+    }
+    (panel, rows)
+}
+
+/// Draw the Modules view — a Velvet feature list, one row per EwoClient module:
+/// a category dot, the name + description, an on/off toggle, and a slider for
+/// any setting the module carries.
+fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    let (panel, rows) = modules_layout(w, h);
+    draw_chip(canvas, panel, 16.0);
+    let left = panel.left + 24.0;
+
+    // Eyebrow + the enabled count.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(
+        canvas,
+        "MODULES",
+        (left, panel.top + 36.0),
+        &eyebrow_font,
+        &eyebrow,
+        0.22,
+    );
+
+    let on = (0..catalog::REGISTRY.len())
+        .filter(|&i| editor.modules.get(i).enabled)
+        .count();
+    let count_str = format!("{} / {} ON", on, catalog::REGISTRY.len());
+    let count_w = measure_tracked_em(&eyebrow_font, &count_str, 0.16);
+    let mut count_paint = Paint::default();
+    count_paint.set_anti_alias(true);
+    count_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        &count_str,
+        (panel.right - 24.0 - count_w, panel.top + 36.0),
+        &eyebrow_font,
+        &count_paint,
+        0.16,
+    );
+
+    // Title.
+    let title_font = fonts.fraunces_axes(27.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str("EwoClient modules", (left, panel.top + 70.0), &title_font, &title);
+
+    // Rows.
+    let name_font = fonts.newsreader(16.0);
+    let desc_font = fonts.newsreader(13.0);
+    for (i, (def, row)) in catalog::REGISTRY.iter().zip(&rows).enumerate() {
+        let st = editor.modules.get(i);
+
+        // Hairline divider above every row but the first.
+        if i > 0 {
+            let mut div = Paint::default();
+            div.set_anti_alias(true);
+            div.set_style(PaintStyle::Stroke);
+            div.set_stroke_width(1.0);
+            div.set_color4f(rgba(ROSE, 0.08), None);
+            canvas.draw_line((left, row.row.top), (panel.right - 24.0, row.row.top), &div);
+        }
+
+        // Category colour dot.
+        let mut dot = Paint::default();
+        dot.set_anti_alias(true);
+        dot.set_color4f(
+            rgba(
+                module_category_color(def.category),
+                if st.enabled { 1.0 } else { 0.4 },
+            ),
+            None,
+        );
+        canvas.draw_circle((left + 6.0, row.row.top + 22.0), 4.0, &dot);
+
+        // Name.
+        let mut name = Paint::default();
+        name.set_anti_alias(true);
+        name.set_color4f(
+            if st.enabled {
+                rgba(PEARL, 1.0)
+            } else {
+                rgba(MAUVE, 0.75)
+            },
+            None,
+        );
+        canvas.draw_str(def.name, (left + 22.0, row.row.top + 21.0), &name_font, &name);
+
+        // Description.
+        let mut desc = Paint::default();
+        desc.set_anti_alias(true);
+        desc.set_color4f(rgba(MAUVE, 0.85), None);
+        canvas.draw_str(
+            def.description,
+            (left + 22.0, row.row.top + 38.0),
+            &desc_font,
+            &desc,
+        );
+
+        // On/off toggle.
+        draw_panel_toggle(canvas, row.toggle, st.enabled);
+
+        // Setting sliders.
+        for (slot, &track) in row.sliders.iter().enumerate() {
+            if let Some(setting) = def.settings.get(slot) {
+                draw_module_slider(canvas, track, setting, st.settings[slot], st.enabled, fonts);
+            }
+        }
+    }
+}
+
+/// Draw one module-setting slider — a thin Velvet track with a pearl knob and
+/// the current value. `enabled` dims it when the parent module is off.
+fn draw_module_slider(
+    canvas: &Canvas,
+    area: Rect,
+    setting: &catalog::ModuleSetting,
+    value: f32,
+    enabled: bool,
+    fonts: &FontStore,
+) {
+    let alpha = if enabled { 1.0 } else { 0.45 };
+    let cy = area.top + area.height() * 0.5;
+    let value_w = 54.0;
+    let track_left = area.left + 14.0;
+    let track_right = area.right - value_w;
+    let track_h = 4.0;
+
+    // Track.
+    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(rgba(WINE, 0.85 * alpha), None);
+    canvas.draw_rrect(RRect::new_rect_xy(track, track_h * 0.5, track_h * 0.5), &tp);
+
+    let span = (setting.max - setting.min).max(0.001);
+    let frac = ((value - setting.min) / span).clamp(0.0, 1.0);
+    let knob_x = track_left + frac * (track_right - track_left);
+
+    // Fill up to the knob — rose→lavender.
+    if knob_x > track_left + 1.0 {
+        let fill = Rect::from_xywh(track_left, cy - track_h * 0.5, knob_x - track_left, track_h);
+        let mut fp = Paint::default();
+        fp.set_anti_alias(true);
+        if let Some(shader) = gradient_shader::linear(
+            (Point::new(track_left, cy), Point::new(track_right, cy)),
+            gradient_shader::GradientShaderColors::ColorsInSpace(
+                &[rgba(ROSE, alpha), rgba(LAV, alpha)],
+                None,
+            ),
+            None,
+            TileMode::Clamp,
+            None,
+            None,
+        ) {
+            fp.set_shader(shader);
+        }
+        canvas.draw_rrect(RRect::new_rect_xy(fill, track_h * 0.5, track_h * 0.5), &fp);
+    }
+
+    // Knob.
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, alpha), None);
+    canvas.draw_circle((knob_x, cy), 6.0, &knob);
+
+    // Value, right-aligned in the reserved strip.
+    let val_font = fonts.jetbrains_mono(13.0);
+    let val_str = format!("{}", value.round() as i32);
+    let mut vp = Paint::default();
+    vp.set_anti_alias(true);
+    vp.set_color4f(rgba(PEARL, alpha), None);
+    let (_, m) = val_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    canvas.draw_str(&val_str, (track_right + 16.0, cy + cap * 0.5), &val_font, &vp);
 }
