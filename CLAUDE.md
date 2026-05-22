@@ -624,7 +624,7 @@ The state-picker / layout-picker / error-picker the prototype's `dat.gui`-style 
 
 ---
 
-## v2 status — A/B/C live, D pending
+## v2 status — A–E all shipped
 
 **v2 turns the Launch button into an actually-functional Minecraft launcher.** Phases A–C are shipped and verified end-to-end (Minecraft 26.1 launches, plays, and exits cleanly from a cold start). Phase D blocks on the user's custom Fabric fork existing as a separate project. Phase E is the original v2 ambition (in-game GUI) and lives further out.
 
@@ -777,9 +777,12 @@ E7 closed Phase E with the **glass-refract decision**: the MODS/SETTINGS overlay
   shared/{versions,libraries,assets}/  ← Mojang-compatible; vanilla launchers can read these
   instances/<name>/                    ← per-instance: worlds, screenshots, mods, natives, logs
   runtime/<major>/jre/                 ← bundled JREs auto-fetched from Adoptium
-  auth.toml                            ← MS refresh token (plaintext)
+  auth.toml                            ← AccountStore { active, accounts[] } (plaintext) — Phase F0
+  profiles.toml                        ← client-profile registry { active, profiles[] } — Phase F2
+  profiles/<name>/client.toml          ← profile-scoped config (tweak tokens, theme, audio, keybinds)
+  profiles/<name>/hud.toml             ← in-game HUD layout, per profile — Phase F5a
   versions_cache.json                  ← master manifest cache (6h TTL)
-  settings.toml                        ← UI preferences
+  settings.toml                        ← GLOBAL-only config (paths, window mode, log level) — Phase F2
   instances.toml                       ← persisted instance list
   ```
 - Threading: every long-running task spawns a `std::thread` and reports back via `mpsc`. Polled by `App` once per frame in `RedrawRequested`. No tokio/smol — see CLAUDE.md non-negotiables.
@@ -795,4 +798,90 @@ E7 closed Phase E with the **glass-refract decision**: the MODS/SETTINGS overlay
 
 ---
 
-*Last meaningful structural change to this file (2026-05-20 session): **Phase E is complete — E7 shipped + verified live, closing the 7-step build sequence.** E7 resolved the glass-refract question: the MODS/SETTINGS overlay views frost the live game with a *cached* genuine blur — `refresh_frost` (in `crates/ewo-jni/src/lib.rs`) recomputes a quarter-resolution downscale→blur a third clock (~10×/sec, `FROST_REFRESH_INTERVAL`), `composite` cubic-upscales that cache every frame plus a faint Velvet wine wash; the HUD editor view leaves the game sharp. Verified ≈500 fps with the overlay open. Earlier this session, all 2026-05-20: **E6** the 3-tab dashboard (**HUD · MODS · SETTINGS**) — MODS a Velvet re-skin of a module list with bundled-mod toggles, write-back via `crates/ewo-launcher/src/overlay_mods.rs` (`overlay-mods.toml` snapshot + `overlay-mod-overrides.toml` delta), SETTINGS the persisted `HudPaintRate` cap; **E5** the HUD editor (drag + 6px snap-to-align + side panel with per-widget toggles + 3×3 anchor grid; layout in `hud.toml`); **E4** overlay input (`EwoOverlayScreen`, a custom `Screen` used as a pure input sink); **E3** the full read-only HUD (FPS/Coords/Ping/Keystrokes/Armor/PotionHUD/TargetHUD) over a shared direct `ByteBuffer` read via `GetDirectBufferAddress`/`jni-sys`; **E2** the first widget (FPS) + a JDK 25 at `%APPDATA%/EwoClient/jdks/temurin-25/`; **E1** draw-direct → two-clock paint/composite (rate-gated by `HudPaintRate`); **E0** the spike — `crates/ewo-jni` (cdylib JNI bridge, dedicated GL context) + `ingame-mod/` (the `ewo-hud` Fabric mod). Headline finding: Skia and Minecraft must NOT share a GL context — a dedicated `wglCreateContext` on MC's window is the isolation model. Per-step detail lives in `PHASE_E_PLAN.md` (now a record, not a plan). With Phase E done, the largest remaining project gaps are: Indium upstream-blocked at MC 1.21.1, Hyprland verification, formal pixel-parity pass, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`.*
+## Phase F — Profiles, Dashboard & Keybinds ✅ shipped (F0–F6, 2026-05-21 → 2026-05-22)
+
+The first feature phase past v1 + v2. `PHASE_F_PLAN.md` (repo root) holds the
+per-step detail and is now a record, not a forward plan. Three pillars:
+multi-account, client profiles, and an in-game dashboard.
+
+### Accounts (F0–F1)
+
+`auth.toml` went from a single account to an `AccountStore { active, accounts[] }`
+(transparent migration on first F-build launch). `AuthService` owns the store
+plus an `AuthOp` (Idle / Working / Failed) — the single source of truth. The
+**Settings → Account tab** is a list: add / remove / set-active, with monogram
+avatars (Velvet-tinted disc + initial; real skin-head avatars deferred — the
+in-game 3D viewer covers the skin-display need).
+
+### Client profiles (F2–F3, rename in F6)
+
+A *client profile* is a named, hot-swappable bundle of cosmetic + perf config —
+**global, not per-instance**. Orthogonal to accounts (any account × any profile).
+Disk: `profiles.toml` (registry), `profiles/<name>/client.toml` (profile-scoped:
+the 5 tweak tokens + theme / vsync / max-fps / audio / **keybinds**), and
+`settings.toml` is now **global-only** (paths, window mode, auto-backup, log
+level, telemetry). The **Settings → Profiles tab** manages them — switch / new /
+duplicate / delete / **rename** (an inline text field with a blinking caret;
+`profile::rename` moves the `profiles/<name>/` directory + updates `profiles.toml`,
+`profile::is_valid_name` rejects path-unsafe names). Switching re-applies the
+config live via `App::apply_loaded_config`.
+
+The launcher-side `profile` module (`crates/ewo-launcher/src/profile.rs`) owns
+all of this — `load` / `save` (split/merge the unified `SettingsConfig` ↔ the
+on-disk pair), `list` / `active_name` / `switch` / `create` / `duplicate` /
+`delete` / `rename`, and `load_keybinds` / `save_keybinds`.
+
+### In-game dashboard (F4–F5)
+
+**"The dashboard" is an in-game overlay tab, NOT a launcher home screen** — the
+launcher main menu is unchanged (this was a scope correction mid-phase). The
+overlay tab strip is **HOME · HUD · MODS · SETTINGS**. HOME (`draw_home` in
+`crates/ewo-jni/src/hud.rs`) is the overview: session stat cards (FPS / ping /
+playtime / coords / server), account + active-profile line, per-HUD-widget
+quick-toggles, and a drag-rotatable **3D skin viewer**. The data pipeline is
+`SCHEMA_VERSION` 3 (`EwoHudData.java` ↔ `hud.rs`). `hud.toml` moved under
+`profiles/<name>/` (F5a) so HUD layout is per-profile; the overlay SETTINGS tab
+has an in-game profile switcher (F5b) that hot-swaps the layout live.
+
+### 3D skin viewer
+
+`crates/ewo-jni/src/skin.rs` — a Skia software renderer for the Minecraft
+player model: 12 textured-quad cuboids + cape, box-UV unwrap, back-face cull,
+painter's-sort, per-face shade, drag-to-rotate. **Slim + wide models.** The mod's
+`EwoSkinExport` downloads the skin/cape PNGs from the player's GameProfile
+`textures` property and writes an `ewo-skin-slim` marker.
+- **Gotcha:** the mod must read the `textures` property **reflectively** — the
+  build-classpath authlib skews from the runtime one (record `properties()` /
+  `value()` vs. class `getProperties()` / `getValue()`); a direct call compiles
+  but throws `NoSuchMethodError` at runtime.
+- **Gotcha:** the viewer reloads the skin on `ewo-skin.png` **mtime change**,
+  not just once — else a stale png from an earlier launch freezes the slim flag.
+
+### Keybinds (F5c)
+
+A **module-extensible keybind registry** — launcher `keybind` module
+(`crates/ewo-launcher/src/keybind.rs`): `KeyChord` (a GLFW key code + modifier
+bitmask — GLFW is Minecraft's own key namespace, so the in-game side compares
+the integer with no translation), `KeybindAction`, the static `REGISTRY` (F
+ships one: `overlay.open` → Right Shift), a winit→GLFW key table, label
+formatting. Keybinds are **per client profile** (`client.toml` `[keybinds]`
+table). The **Settings → Keybinds tab** is a remap row per action — click the
+chord button to arm a rebind, the next key press is captured. The active
+profile's keybinds resolve to `<instance>/ewo-keybinds.txt` before each launch;
+the mod's `EwoKeybinds` reads it so the overlay-open key (`KeyboardHandlerMixin`
++ `EwoOverlayScreen`) is rebindable. **The registry is the seam future
+EwoClient *modules* plug their bindable actions into** — modules (EwoClient's
+own legit client features) are out of scope for F; F built only the seam.
+
+### Phase F — verification still pending (the user does these)
+
+- Launcher-side: the Account / Profiles / Keybinds Settings tabs + profile
+  rename — built + committed, not yet eyeballed.
+- In-game: the F4 HOME tab, F5 profile hot-swap, the 3D skin viewer — build
+  clean; in-game testing is crash-prone until the user disables NVIDIA
+  Threaded Optimization in NVCP (it fights the HUD's 2nd GL context — a
+  `nvoglv64.dll` access violation under heavy GPU load).
+
+---
+
+*Last meaningful structural change to this file (2026-05-22 session): **Phase F is complete — F0–F6 all shipped.** A new "Phase F — Profiles, Dashboard & Keybinds" section was added above; the v2 disk-layout block was updated for `profiles.toml` / `profiles/<name>/` / global-only `settings.toml`; the v2 status header was corrected to "A–E all shipped". Phase F delivered: multi-account (`auth.toml` → `AccountStore`), client profiles (named hot-swappable config bundles, global, orthogonal to accounts; switch / new / duplicate / delete / rename), the in-game **HOME · HUD · MODS · SETTINGS** overlay dashboard with a drag-rotatable 3D skin viewer (`crates/ewo-jni/src/skin.rs`), and a module-extensible keybind registry (`crates/ewo-launcher/src/keybind.rs` — the seam future EwoClient "modules" plug their bindable actions into). `PHASE_F_PLAN.md` holds the per-step detail and is now a record, not a plan. **No open forward feature plan** — the user will keep adding features; the keybind-registry "modules" seam is the likely next direction but isn't committed. Verification of the new launcher Settings tabs (Account / Profiles / Keybinds) + profile rename, and the in-game F4/F5/skin-viewer, is still pending (the user does it; in-game testing is crash-prone until the user disables NVIDIA Threaded Optimization in NVCP — it fights the HUD's 2nd GL context). The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1.*
