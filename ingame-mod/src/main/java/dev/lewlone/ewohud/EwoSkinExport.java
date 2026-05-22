@@ -11,11 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Collection;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.mojang.authlib.GameProfile;
-import com.mojang.authlib.properties.Property;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -28,8 +27,12 @@ import net.minecraft.client.player.LocalPlayer;
  * ({@code ewo-skin.png} / {@code ewo-cape.png}).
  *
  * <p>The skin / cape URLs come from the player's GameProfile {@code textures}
- * property — a base64 JSON blob, the same data Minecraft itself renders the
- * skin from. The download runs once on a background thread.
+ * property — a base64 JSON blob, the same data Minecraft renders the skin
+ * from. authlib's {@code GameProfile} / {@code Property} API differs across
+ * versions (record {@code properties()}/{@code value()} vs. class
+ * {@code getProperties()}/{@code getValue()}) and the build-classpath copy
+ * can skew from the runtime one — so the property is read **reflectively**,
+ * and the whole tick is guarded so skin export can never crash the game.
  */
 public final class EwoSkinExport {
     private EwoSkinExport() {}
@@ -41,37 +44,70 @@ public final class EwoSkinExport {
         if (started) {
             return;
         }
-        Minecraft mc = Minecraft.getInstance();
-        if (mc == null) {
-            return;
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) {
+                return;
+            }
+            LocalPlayer player = mc.player;
+            ClientPacketListener conn = mc.getConnection();
+            if (player == null || conn == null) {
+                return;
+            }
+            PlayerInfo info = conn.getPlayerInfo(player.getUUID());
+            if (info == null) {
+                return;
+            }
+            Object profile = info.getProfile();
+            if (profile == null) {
+                return;
+            }
+            String b64 = texturesBlob(profile);
+            if (b64 == null) {
+                return;
+            }
+            started = true;
+            Path gameDir = mc.gameDirectory.toPath();
+            Thread t = new Thread(() -> exportSkin(b64, gameDir), "ewo-skin-export");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable e) {
+            // Skin export is cosmetic — never let it take down the render thread.
+            started = true;
+            System.err.println("[ewo-hud] skin export skipped: " + e);
         }
-        LocalPlayer player = mc.player;
-        ClientPacketListener conn = mc.getConnection();
-        if (player == null || conn == null) {
-            return;
+    }
+
+    /** The base64 `textures` property of a GameProfile, read reflectively so
+     *  it works whether authlib exposes the record or the class API. */
+    private static String texturesBlob(Object profile) throws Exception {
+        Object propMap = invokeAny(profile, "properties", "getProperties");
+        if (propMap == null) {
+            return null;
         }
-        PlayerInfo info = conn.getPlayerInfo(player.getUUID());
-        if (info == null) {
-            return;
+        Object got = propMap.getClass().getMethod("get", Object.class).invoke(propMap, "textures");
+        if (!(got instanceof Collection<?> props)) {
+            return null;
         }
-        GameProfile profile = info.getProfile();
-        if (profile == null) {
-            return;
+        for (Object p : props) {
+            Object value = invokeAny(p, "value", "getValue");
+            if (value instanceof String s) {
+                return s;
+            }
         }
-        String texturesB64 = null;
-        for (Property p : profile.getProperties().get("textures")) {
-            texturesB64 = p.getValue();
-            break;
+        return null;
+    }
+
+    /** Invoke the first no-arg method named in `names` that `target` has. */
+    private static Object invokeAny(Object target, String... names) throws Exception {
+        for (String name : names) {
+            try {
+                return target.getClass().getMethod(name).invoke(target);
+            } catch (NoSuchMethodException ignored) {
+                // try the next name
+            }
         }
-        if (texturesB64 == null) {
-            return;
-        }
-        started = true;
-        Path gameDir = mc.gameDirectory.toPath();
-        String b64 = texturesB64;
-        Thread t = new Thread(() -> exportSkin(b64, gameDir), "ewo-skin-export");
-        t.setDaemon(true);
-        t.start();
+        return null;
     }
 
     private static void exportSkin(String texturesB64, Path gameDir) {
