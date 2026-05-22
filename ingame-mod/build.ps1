@@ -43,3 +43,12 @@ $jar = Join-Path $build "ewo-hud-0.1.0.jar"
 & (Join-Path $jdk "jar.exe") --create --file $jar -C $out .
 if ($LASTEXITCODE -ne 0) { throw "jar failed" }
 Write-Host "built: $jar"
+
+# Deploy into the launcher's shared library cache. The loader manifest points
+# at this jar via a file:// URL, but the launcher copies file:// libraries into
+# shared/libraries once and never refreshes them - so an in-place rebuild must
+# redeploy here itself, or the next launch silently runs the stale jar.
+$deploy = Join-Path $ewo "shared\libraries\dev\lewlone\ewo-hud\0.1.0\ewo-hud-0.1.0.jar"
+New-Item -ItemType Directory -Force (Split-Path $deploy) | Out-Null
+Copy-Item -Force $jar $deploy
+Write-Host "deployed: $deploy"
