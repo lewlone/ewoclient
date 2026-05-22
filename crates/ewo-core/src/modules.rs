@@ -163,8 +163,10 @@ pub const REGISTRY: &[ModuleDef] = &[
         name: "FreeLook",
         description: "Hold the key to pan the camera freely without turning your body.",
         category: ModuleCategory::Camera,
-        default_enabled: false,
-        default_key: 0,
+        // FreeLook is a hold-to-activate module — useless unbound, and inert
+        // until the key is held — so unlike the others it ships on + bound.
+        default_enabled: true,
+        default_key: 86, // GLFW_KEY_V
         hold_key: true,
         settings: &[],
     },
