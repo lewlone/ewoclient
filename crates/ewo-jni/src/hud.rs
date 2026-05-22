@@ -890,6 +890,13 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     tint.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.22), None);
     canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &tint);
 
+    // Lazily pick up the skin PNGs once the mod has written them — the
+    // download finishes after the Editor was constructed.
+    if editor.view == OverlayView::Home && editor.skin_image.is_none() {
+        editor.skin_image = load_skin_image("ewo-skin.png");
+        editor.cape_image = load_skin_image("ewo-cape.png");
+    }
+
     // The active dashboard view.
     match editor.view {
         OverlayView::Home => draw_home(canvas, editor, data, fonts, w, h),
