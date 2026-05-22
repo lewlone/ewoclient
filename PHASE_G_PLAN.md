@@ -188,8 +188,18 @@ All seven default **off** and **unbound** — the user opts in.
 - A minimal overlay slider primitive for FOV's setting.
 - Toggling a module writes `modules.toml` and flows through the buffer.
 
-### G3 — Full Bright + FOV Control
-- `EwoModules` applies them via render-override mixins. Non-destructive.
+### G3 — Full Bright + FOV Control ✅ shipped
+- Two render-override mixins, both non-destructive (vanilla `options.txt` is
+  never written — toggling a module off restores vanilla exactly):
+  - `CameraMixin` `@Redirect`s the lone `options.fov()` read in
+    `Camera.calculateFov`, so FOV Control's slider value replaces the base
+    FOV (past the 110° cap) while the speed/death/fluid FOV effects still
+    layer on top.
+  - `LightmapRenderStateExtractorMixin` `@Inject`s at the return of `extract`
+    and cranks `LightmapRenderState.brightness` (the gamma-derived field the
+    GPU lightmap shader reads) past the vanilla cap.
+- Targets verified against the 26.1.1 Mojmap bytecode. Note: 26.x is GPU-
+  driven — `LightTexture` → `Lightmap`, FOV moved into `Camera.calculateFov`.
 
 ### G4 — No Damage Tilt + No View Bob
 - `@Inject(at = HEAD, cancellable = true)` mixins, cancelled when the module is
@@ -226,7 +236,7 @@ becomes a record, not a forward plan.
 | G0 | Module catalog + keybind refactor | ✅ shipped |
 | G1 | `modules.toml` + `EwoModuleData` channel | ✅ shipped |
 | G2 | In-game MODULES tab | ✅ shipped |
-| G3 | Full Bright + FOV | pending |
+| G3 | Full Bright + FOV | ✅ shipped |
 | G4 | No Damage Tilt + No View Bob | pending |
 | G5 | Toggle Sprint + Toggle Sneak | pending |
 | G6 | FreeLook | pending |
