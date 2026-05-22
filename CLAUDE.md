@@ -781,6 +781,7 @@ E7 closed Phase E with the **glass-refract decision**: the MODS/SETTINGS overlay
   profiles.toml                        ← client-profile registry { active, profiles[] } — Phase F2
   profiles/<name>/client.toml          ← profile-scoped config (tweak tokens, theme, audio, keybinds)
   profiles/<name>/hud.toml             ← in-game HUD layout, per profile — Phase F5a
+  profiles/<name>/modules.toml         ← per-module config (enabled + settings) — Phase G
   versions_cache.json                  ← master manifest cache (6h TTL)
   settings.toml                        ← GLOBAL-only config (paths, window mode, log level) — Phase F2
   instances.toml                       ← persisted instance list
@@ -884,4 +885,91 @@ own legit client features) are out of scope for F; F built only the seam.
 
 ---
 
-*Last meaningful structural change to this file (2026-05-22 session): **Phase F is complete — F0–F6 all shipped.** A new "Phase F — Profiles, Dashboard & Keybinds" section was added above; the v2 disk-layout block was updated for `profiles.toml` / `profiles/<name>/` / global-only `settings.toml`; the v2 status header was corrected to "A–E all shipped". Phase F delivered: multi-account (`auth.toml` → `AccountStore`), client profiles (named hot-swappable config bundles, global, orthogonal to accounts; switch / new / duplicate / delete / rename), the in-game **HOME · HUD · MODS · SETTINGS** overlay dashboard with a drag-rotatable 3D skin viewer (`crates/ewo-jni/src/skin.rs`), and a module-extensible keybind registry (`crates/ewo-launcher/src/keybind.rs` — the seam future EwoClient "modules" plug their bindable actions into). `PHASE_F_PLAN.md` holds the per-step detail and is now a record, not a plan. **No open forward feature plan** — the user will keep adding features; the keybind-registry "modules" seam is the likely next direction but isn't committed. Verification of the new launcher Settings tabs (Account / Profiles / Keybinds) + profile rename, and the in-game F4/F5/skin-viewer, is still pending (the user does it; in-game testing is crash-prone until the user disables NVIDIA Threaded Optimization in NVCP — it fights the HUD's 2nd GL context). The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1.*
+## Phase G — EwoClient Modules ✅ shipped (G0–G8, 2026-05-22)
+
+The second feature phase past v1 + v2. `PHASE_G_PLAN.md` (repo root) holds the
+per-step detail and is now a record, not a forward plan. Phase G builds the
+**modules** the Phase F keybind registry was the seam for: in-game,
+legit-client quality-of-life features with an on/off state, optional settings,
+and an optional keybind. Seven shipped — see the table below.
+
+**Constraint (Phase E #4) holds: legit-client features only.** No hacked-client
+modules. The MODULES UIs are clean Velvet feature lists, not ClickGUI grids.
+
+### The architecture
+
+The pre-G in-game data flow was one-way — Java→Rust (`EwoHudData`: game state
+in, Rust paints). Modules must *change the running game*, which only the Java
+mod can do, so Phase G adds the missing direction — a **live Rust→Java
+channel**:
+
+- **`ewo_core::modules`** — the module catalog (`REGISTRY`): pure `&'static`
+  data, the single source of truth shared by the launcher and `ewo-jni`. The
+  launcher's `keybind::REGISTRY` is now *generated* from it — each module
+  contributes a `KeybindAction`.
+- **`modules.toml`** — per client profile (`profiles/<name>/modules.toml`,
+  sibling of `hud.toml`): each module's `enabled` + settings. Both the launcher
+  and `ewo-jni` read/write it; modules apply *live*, so there is no
+  overrides-dance (unlike bundled mods).
+- **`EwoModuleData`** — a second shared `ByteBuffer`, the mirror image of
+  `EwoHudData`: Rust writes every module's state each frame, the mod reads it
+  to drive the effect mixins. `crates/ewo-jni/src/modules.rs` owns the Rust
+  side; `EwoModuleData.java` mirrors the layout (its own `SCHEMA_VERSION`).
+- Two new JNI methods: `nativeInitModules` (register the buffer) and
+  `nativeModuleToggle` (a keybind press round-trips a toggle through Rust,
+  which owns module state).
+
+### The module set
+
+All seven are **non-destructive** — each overrides a *computed* value via a
+mixin; nothing writes Minecraft's `options.txt`, so toggling a module off
+restores vanilla behavior exactly.
+
+| Module | Effect | Hook (26.1.1 Mojmap) |
+|---|---|---|
+| Full Bright | World renders fully lit | `@Inject` cranks `LightmapRenderState.brightness` after `LightmapRenderStateExtractor.extract` |
+| FOV Control | FOV past the 110° cap | `@Redirect` the `options.fov()` read in `Camera.calculateFov` |
+| Toggle Sprint | Sprint held for you | force the `keySprint` `KeyMapping` from the frame hook |
+| Toggle Sneak | Sneak held for you | force the `keyShift` `KeyMapping` from the frame hook |
+| No Damage Tilt | No hit camera-lurch | `@Inject` cancel on `GameRenderer.bobHurt` |
+| No View Bob | No walk view-bob | `@Inject` cancel on `GameRenderer.bobView` |
+| FreeLook | Free camera while a key is held | `@Redirect` `LocalPlayer.turn` in `MouseHandler.turnPlayer` + `@ModifyVariable` on `Camera.setRotation` |
+
+**26.x rendering moved** — load-bearing for future mixin work: `LightTexture` →
+`net.minecraft.client.renderer.Lightmap`; the lightmap is GPU-driven (a
+`LightmapRenderState` UBO, `Lightmap.getBrightness` has no callers); FOV is no
+longer `GameRenderer.getFov` — it's `Camera.calculateFov`, and the projection
+matrix is built in `Camera.extractRenderState`.
+
+### The UIs
+
+- **In-game** — a 5th overlay tab: `HOME · HUD · MODULES · MODS · SETTINGS`.
+  `draw_modules` in `crates/ewo-jni/src/hud.rs` is a Velvet feature list — a
+  toggle per module + a slider for FOV. A toggle writes `modules.toml` and
+  flows live through the buffer.
+- **Launcher** — an 8th `SettingsTab::Modules`, modelled on the Keybinds tab:
+  a toggle per module + FOV's slider, editing the active profile's
+  `modules.toml` (`profile::load_modules` / `save_modules`).
+- **Keybinds** — each module contributes a `KeybindAction` (default unbound),
+  so module hotkeys appear in the launcher Keybinds tab and resolve through
+  `ewo-keybinds.txt` for free. In-game, `KeyboardHandlerMixin` toggles a module
+  on its key; FreeLook's key is a hold, polled by `EwoFreeLook`.
+
+### Phase G — verification still pending (the user does these)
+
+- **The `ewo-hud` mod jar is not yet rebuilt.** G3–G7 added 5 mixins + 3
+  classes; the Java is written against the disassembled 26.1.1 bytecode but
+  `build.ps1` hasn't run (it can't clear its dir while the game holds the
+  jar). **With the game closed, run `ingame-mod\build.ps1`** — that compiles
+  the mixins and is where any Java compile error would surface — then
+  `cargo build -p ewo-jni`.
+- The launcher side `cargo check`s clean (34 tests pass); a full `cargo build`
+  + an in-game smoke test of all seven modules is the user's to run.
+- Full Bright uses `brightness = 15.0` — tune in
+  `LightmapRenderStateExtractorMixin` if it reads too dim or washed.
+- In-game testing stays crash-prone until NVIDIA Threaded Optimization is off
+  in NVCP (the HUD's 2nd GL context — see Phase E).
+
+---
+
+*Last meaningful structural change to this file (2026-05-22 session): **Phase G is complete — G0–G8 all shipped.** A new "Phase G — EwoClient Modules" section was added above; the v2 disk-layout block gained `profiles/<name>/modules.toml`. Phase G built the **modules** the Phase F keybind registry was the seam for — in-game legit-client features: a shared catalog (`ewo_core::modules`), a live Rust→Java state channel (the `EwoModuleData` buffer, mirror of `EwoHudData`), per-profile `modules.toml`, an in-game MODULES overlay tab + a launcher Settings → Modules tab, and seven modules (Full Bright, FOV Control, Toggle Sprint, Toggle Sneak, No Damage Tilt, No View Bob, FreeLook) — all non-destructive render/input mixins against MC 26.1.1's Mojmap bytecode. `PHASE_G_PLAN.md` holds the per-step detail and is now a record, not a plan. **No open forward feature plan.** Verification pending (the user does it): the `ewo-hud` mod jar needs a `build.ps1` rebuild with the game closed — that is where any G3–G7 Java compile error would surface — plus a full `cargo build` and an in-game smoke test of all seven modules. The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1.*

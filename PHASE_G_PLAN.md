@@ -4,7 +4,10 @@ The second feature phase past the locked v1 + v2 build sequence. Run like Phase
 E and F: numbered steps, each a working build, per-step detail recorded here as
 it lands.
 
-**Status: in progress.** Step status is in the table at the bottom.
+**Status: complete — G0–G8 all shipped.** This file is now a record, not a
+forward plan. The `ewo-hud` mod jar still needs a `build.ps1` rebuild (with the
+game closed) to compile the G3–G7 mixins — see the Phase G section in
+`CLAUDE.md`.
 
 ---
 
@@ -244,8 +247,7 @@ All seven default **off** and **unbound** — the user opts in.
 
 ---
 
-Phase G folds into `CLAUDE.md` once it lands, like E and F. This file then
-becomes a record, not a forward plan.
+Phase G has folded into `CLAUDE.md`, like E and F. This file is now a record.
 
 | # | Step | Status |
 |---|---|---|
