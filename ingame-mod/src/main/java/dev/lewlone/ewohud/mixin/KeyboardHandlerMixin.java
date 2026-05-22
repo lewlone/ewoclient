@@ -11,18 +11,26 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import dev.lewlone.ewohud.EwoHudMod;
 import dev.lewlone.ewohud.EwoKeybinds;
+import dev.lewlone.ewohud.EwoModules;
 import dev.lewlone.ewohud.EwoOverlayScreen;
 
 /**
- * Opens the EwoClient overlay on the toggle key (Right Shift).
+ * Routes EwoClient key presses (Phase F5c + Phase G).
  *
  * <p>Injects at the head of {@code KeyboardHandler.keyPress} — the GLFW key
- * callback. It opens the overlay only on a genuine key <i>press</i> (not a
- * release or auto-repeat) and only when no screen is already showing; while
- * {@link EwoOverlayScreen} is open, Right Shift routes to its {@code keyPressed}
- * (which closes it), so the two halves of the toggle never collide. The
- * press-only gate matters: without it the release event that follows a close
- * would see {@code screen == null} and immediately reopen the overlay.
+ * callback — on a genuine key <i>press</i> (not a release or auto-repeat):
+ *
+ * <ul>
+ *   <li>the overlay key (Right Shift by default) opens {@link EwoOverlayScreen}
+ *       when no screen is showing; while the overlay is open, the key routes to
+ *       the screen's own {@code keyPressed}, which closes it;</li>
+ *   <li>a module's keybind toggles that module via the native bridge — only
+ *       in-world, so a bound key still types normally in chat or menus.</li>
+ * </ul>
+ *
+ * <p>FreeLook's key is not handled here: it is hold-to-activate, polled each
+ * frame by {@code EwoFreeLook}. A press this handler acts on is cancelled so
+ * it doesn't fall through to the game.
  */
 @Mixin(KeyboardHandler.class)
 public class KeyboardHandlerMixin {
@@ -35,13 +43,22 @@ public class KeyboardHandlerMixin {
         if (action != GLFW.GLFW_PRESS) {
             return; // press only — ignore release / auto-repeat
         }
-        if (event.key() != EwoKeybinds.overlayKey()) {
+        int key = event.key();
+        Minecraft mc = Minecraft.getInstance();
+
+        // Overlay toggle key — opens the overlay when no screen is showing.
+        if (key == EwoKeybinds.overlayKey()) {
+            if (mc.screen == null) {
+                mc.setScreen(new EwoOverlayScreen());
+                ci.cancel(); // don't let the open keypress fall through to the game
+            }
             return;
         }
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.screen == null) {
-            mc.setScreen(new EwoOverlayScreen());
-            ci.cancel(); // don't let the open keypress fall through to the game
+
+        // Module toggle keys — only in-world (no screen open), so a bound key
+        // still types normally in chat or menus.
+        if (mc.screen == null && EwoModules.handleKeyPress(key)) {
+            ci.cancel();
         }
     }
 }

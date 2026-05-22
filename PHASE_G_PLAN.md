@@ -224,10 +224,15 @@ All seven default **off** and **unbound** — the user opts in.
 - `EwoKeybinds` extended to expose every action's bound code (not just the
   overlay key) — the seam G7 reuses.
 
-### G7 — Module keybinds end-to-end
-- `EwoKeybinds` exposes every action's code, not just `overlay.open`.
-- `KeyboardHandlerMixin` (or a sibling) detects a module toggle-key →
-  `nativeModuleToggle`; FreeLook's key is read as a hold.
+### G7 — Module keybinds end-to-end ✅ shipped
+- The launcher→file→mod chain was already complete: G0 put the module actions
+  in `keybind::REGISTRY` (so the Keybinds tab + `ewo-keybinds.txt` carry them),
+  and G6 extended `EwoKeybinds` to parse every action's code.
+- `EwoModules.handleKeyPress` maps a pressed key to its toggle module and flips
+  it via `nativeModuleToggle` (Rust owns module state).
+- `KeyboardHandlerMixin` routes presses: the overlay key, then module toggle
+  keys (in-world only, so a bound key still types in chat / menus). FreeLook's
+  key stays a hold, polled by `EwoFreeLook`.
 
 ### G8 — Launcher Settings → Modules tab *(optional)*
 - A `SettingsTab::Modules` — a toggle per module + the FOV slider, editing
@@ -250,5 +255,5 @@ becomes a record, not a forward plan.
 | G4 | No Damage Tilt + No View Bob | ✅ shipped |
 | G5 | Toggle Sprint + Toggle Sneak | ✅ shipped |
 | G6 | FreeLook | ✅ shipped |
-| G7 | Module keybinds end-to-end | pending |
+| G7 | Module keybinds end-to-end | ✅ shipped |
 | G8 | Launcher Modules tab (optional) | pending |

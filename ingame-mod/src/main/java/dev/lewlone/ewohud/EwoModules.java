@@ -24,6 +24,16 @@ public final class EwoModules {
     private static boolean sprintForced;
     private static boolean sneakForced;
 
+    /** Toggle modules — id paired with buffer index. FreeLook is excluded:
+     *  its key is hold-to-activate (see {@code EwoFreeLook}), not a toggle. */
+    private static final String[] TOGGLE_IDS = {
+        "fullbright", "fov", "toggle_sprint", "toggle_sneak", "no_damage_tilt", "no_view_bob"
+    };
+    private static final int[] TOGGLE_INDEX = {
+        EwoModuleData.FULLBRIGHT, EwoModuleData.FOV, EwoModuleData.TOGGLE_SPRINT,
+        EwoModuleData.TOGGLE_SNEAK, EwoModuleData.NO_DAMAGE_TILT, EwoModuleData.NO_VIEW_BOB
+    };
+
     /** Per-frame module tick. Called from {@code flipFrame}, post-render. */
     public static void tick() {
         if (!announced && EwoModuleData.ready()) {
@@ -62,6 +72,22 @@ public final class EwoModules {
         }
         if (wasForced) {
             key.setDown(false);
+        }
+        return false;
+    }
+
+    /**
+     * If {@code glfwKey} is the keybind of a toggle module, flip that module
+     * (via the native bridge — Rust owns module state) and return true.
+     * Unbound modules report code 0, which never matches a real key. Called
+     * from the keyboard handler on a key press.
+     */
+    public static boolean handleKeyPress(int glfwKey) {
+        for (int i = 0; i < TOGGLE_IDS.length; i++) {
+            if (EwoKeybinds.code(TOGGLE_IDS[i]) == glfwKey) {
+                EwoHudNative.nativeModuleToggle(TOGGLE_INDEX[i]);
+                return true;
+            }
         }
         return false;
     }
