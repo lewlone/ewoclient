@@ -212,10 +212,17 @@ All seven default **off** and **unbound** — the user opts in.
   `keySprint` / `keyShift` `KeyMapping` down while the module is on, and
   releases the key exactly once when the module turns off so it never sticks.
 
-### G6 — FreeLook
-- A `Camera` mixin applies a separately-accumulated freelook yaw/pitch; a
-  mouse-look mixin diverts the delta into it while the key is held. Snaps back
-  on release. Exact Mojmap targets verified against the on-disk MC jar in-step.
+### G6 — FreeLook ✅ shipped
+- `EwoFreeLook` holds the free camera's yaw/pitch — it polls the bound key
+  each frame (`glfwGetKey`), snapshots the body's facing on the rising edge,
+  and accumulates mouse deltas with `Entity.turn`'s 0.15 factor.
+- `MouseHandlerMixin` `@Redirect`s the `LocalPlayer.turn` call in `turnPlayer`
+  — while FreeLook is active the delta drives `EwoFreeLook`, not the player,
+  so the body's facing stays frozen.
+- `CameraMixin` `@ModifyVariable`s both `Camera.setRotation` arguments to the
+  freelook yaw/pitch while active; the camera snaps back to the body on release.
+- `EwoKeybinds` extended to expose every action's bound code (not just the
+  overlay key) — the seam G7 reuses.
 
 ### G7 — Module keybinds end-to-end
 - `EwoKeybinds` exposes every action's code, not just `overlay.open`.
@@ -242,6 +249,6 @@ becomes a record, not a forward plan.
 | G3 | Full Bright + FOV | ✅ shipped |
 | G4 | No Damage Tilt + No View Bob | ✅ shipped |
 | G5 | Toggle Sprint + Toggle Sneak | ✅ shipped |
-| G6 | FreeLook | pending |
+| G6 | FreeLook | ✅ shipped |
 | G7 | Module keybinds end-to-end | pending |
 | G8 | Launcher Modules tab (optional) | pending |

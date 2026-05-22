@@ -8,7 +8,8 @@
     "KeyboardHandlerMixin",
     "CameraMixin",
     "LightmapRenderStateExtractorMixin",
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "MouseHandlerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -33,6 +33,7 @@ public final class EwoModules {
                     + EwoModuleData.moduleCount() + " modules");
         }
         applyMovement();
+        EwoFreeLook.update();
     }
 
     /**

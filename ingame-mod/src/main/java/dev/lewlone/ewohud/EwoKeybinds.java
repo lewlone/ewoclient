@@ -2,19 +2,23 @@ package dev.lewlone.ewohud;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 
 import net.minecraft.client.Minecraft;
 import org.lwjgl.glfw.GLFW;
 
 /**
- * Reads the launcher-written {@code ewo-keybinds.txt} from the game
- * directory and exposes the bound GLFW key codes — Phase F5c.
+ * Reads the launcher-written {@code ewo-keybinds.txt} from the game directory
+ * and exposes the bound GLFW key code for every EwoClient action — Phase F5c
+ * (the overlay key) extended in Phase G with the per-module keys.
  *
- * <p>The launcher resolves the active client profile's keybinds and drops
- * this file into the instance directory before launch. Each line is
- * {@code action=code} (or {@code action=code:mods}); the file is parsed
- * once, lazily, on first use. If it's missing or unparseable every binding
- * falls back to its built-in default, so keybinds can never break input.
+ * <p>The launcher resolves the active client profile's keybinds and drops this
+ * file into the instance directory before launch. Each line is
+ * {@code action=code} (or {@code action=code:mods}); the file is parsed once,
+ * lazily, on first use. If it is missing or unparseable every action is left
+ * unbound (code {@code 0}) except the overlay key, which falls back to its
+ * built-in default — so input can never break.
  */
 public final class EwoKeybinds {
     private EwoKeybinds() {}
@@ -24,6 +28,8 @@ public final class EwoKeybinds {
 
     private static volatile boolean loaded = false;
     private static int overlayKey = DEFAULT_OVERLAY_KEY;
+    /** action id &rarr; GLFW key code, for every line in the file. */
+    private static final Map<String, Integer> codes = new HashMap<>();
 
     /** GLFW code for the overlay-open key; Right Shift until the file loads. */
     public static int overlayKey() {
@@ -31,6 +37,19 @@ public final class EwoKeybinds {
             load();
         }
         return overlayKey;
+    }
+
+    /**
+     * GLFW code bound to {@code actionId}, or {@code 0} (unbound) if the action
+     * has no binding. {@code 0} is never a real GLFW key, so an unbound action
+     * simply never matches a key press.
+     */
+    public static int code(String actionId) {
+        if (!loaded) {
+            load();
+        }
+        Integer c = codes.get(actionId);
+        return c == null ? 0 : c;
     }
 
     private static synchronized void load() {
@@ -58,13 +77,15 @@ public final class EwoKeybinds {
                 }
                 String id = line.substring(0, eq).trim();
                 String value = line.substring(eq + 1).trim();
-                // `code` or `code:mods` — F5c only needs the key code.
+                // `code` or `code:mods` — Phase G only needs the key code.
                 int colon = value.indexOf(':');
                 if (colon >= 0) {
                     value = value.substring(0, colon);
                 }
+                int c = Integer.parseInt(value.trim());
+                codes.put(id, c);
                 if (id.equals("overlay.open")) {
-                    overlayKey = Integer.parseInt(value.trim());
+                    overlayKey = c;
                 }
             }
         } catch (Throwable e) {
