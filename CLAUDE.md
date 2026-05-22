@@ -933,7 +933,7 @@ restores vanilla behavior exactly.
 | Toggle Sneak | Sneak held for you | force the `keyShift` `KeyMapping` from the frame hook |
 | No Damage Tilt | No hit camera-lurch | `@Inject` cancel on `GameRenderer.bobHurt` |
 | No View Bob | No walk view-bob | `@Inject` cancel on `GameRenderer.bobView` |
-| FreeLook | Free camera while a key is held | `@Redirect` `LocalPlayer.turn` in `MouseHandler.turnPlayer` + `@ModifyVariable` on `Camera.setRotation` |
+| FreeLook | Spectator-style flying freecam — hold to detach; WASD flies, mouse looks, body frozen, player model visible, snaps back on release | `@Redirect` `LocalPlayer.turn` in `MouseHandler.turnPlayer` (mouse → freecam) + `@ModifyVariable` on `Camera.setRotation` (rotation) + `@Inject` at `Camera.alignWithEntity` RETURN with `@Shadow`'d `setPosition` (position) + `@Redirect` `CameraType.isFirstPerson()` in `alignWithEntity` (force detached so the body renders). Body is frozen by forcing the six movement `KeyMapping`s `setDown(false)` while active; flight uses raw `glfwGetKey` on default WASD/Space/Shift/Ctrl. No-clip in multiplayer = line-of-sight advantage; a leash or block collision would be the legit-client compromise. |
 
 **26.x rendering moved** — load-bearing for future mixin work: `LightTexture` →
 `net.minecraft.client.renderer.Lightmap`; the lightmap is GPU-driven (a
@@ -955,21 +955,38 @@ matrix is built in `Camera.extractRenderState`.
   `ewo-keybinds.txt` for free. In-game, `KeyboardHandlerMixin` toggles a module
   on its key; FreeLook's key is a hold, polled by `EwoFreeLook`.
 
-### Phase G — verification still pending (the user does these)
+### Phase G — verified live (2026-05-23)
 
-- **The `ewo-hud` mod jar is not yet rebuilt.** G3–G7 added 5 mixins + 3
-  classes; the Java is written against the disassembled 26.1.1 bytecode but
-  `build.ps1` hasn't run (it can't clear its dir while the game holds the
-  jar). **With the game closed, run `ingame-mod\build.ps1`** — that compiles
-  the mixins and is where any Java compile error would surface — then
-  `cargo build -p ewo-jni`.
-- The launcher side `cargo check`s clean (34 tests pass); a full `cargo build`
-  + an in-game smoke test of all seven modules is the user's to run.
+All seven modules built, deployed and smoke-tested in-game. FreeLook was then
+reworked into the flying spectator-style freecam described in the table row
+above — the original "look around with body frozen" implementation worked but
+was nearly invisible in first person, so the user asked for a real spectator
+view.
+
+Two non-blocking notes carry forward:
 - Full Bright uses `brightness = 15.0` — tune in
   `LightmapRenderStateExtractorMixin` if it reads too dim or washed.
 - In-game testing stays crash-prone until NVIDIA Threaded Optimization is off
   in NVCP (the HUD's 2nd GL context — see Phase E).
 
+### Stale `file://` jar gotcha (debugging trap)
+
+The launcher caches `file://` libraries under `shared/libraries/<path>` and
+does **not** refresh them when the source jar changes. A multi-hour FreeLook
+debugging session in 2026-05-22 was caused by exactly this: every "fresh
+build + launch" was secretly running a several-hours-old jar; diagnostics
+looked impossible until `certutil -hashfile` on the build output vs the
+`shared/libraries` copy showed different sha1s.
+
+**Fix in `ingame-mod/build.ps1`**: after `jar.exe --create`, the script copies
+the freshly-built jar into
+`%APPDATA%\EwoClient\shared\libraries\dev\lewlone\ewo-hud\0.1.0\ewo-hud-0.1.0.jar`,
+bypassing the cache. **Always run `build.ps1` for mod changes; never `javac`
+by hand** or you skip the deploy. If a change ever "doesn't take effect",
+compare sha1s before anything else. The same caching almost certainly applies
+to the EwoLoader fat jar (also a `file://` library entry); it has not bitten
+in practice because the loader is rebuilt infrequently.
+
 ---
 
-*Last meaningful structural change to this file (2026-05-22 session): **Phase G is complete — G0–G8 all shipped.** A new "Phase G — EwoClient Modules" section was added above; the v2 disk-layout block gained `profiles/<name>/modules.toml`. Phase G built the **modules** the Phase F keybind registry was the seam for — in-game legit-client features: a shared catalog (`ewo_core::modules`), a live Rust→Java state channel (the `EwoModuleData` buffer, mirror of `EwoHudData`), per-profile `modules.toml`, an in-game MODULES overlay tab + a launcher Settings → Modules tab, and seven modules (Full Bright, FOV Control, Toggle Sprint, Toggle Sneak, No Damage Tilt, No View Bob, FreeLook) — all non-destructive render/input mixins against MC 26.1.1's Mojmap bytecode. `PHASE_G_PLAN.md` holds the per-step detail and is now a record, not a plan. **No open forward feature plan.** Verification pending (the user does it): the `ewo-hud` mod jar needs a `build.ps1` rebuild with the game closed — that is where any G3–G7 Java compile error would surface — plus a full `cargo build` and an in-game smoke test of all seven modules. The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1.*
+*Last meaningful structural change to this file (2026-05-23 session): **Phase G is verified live, and FreeLook was reworked into a spectator-style freecam.** All seven modules built, deployed and smoke-tested in-game. FreeLook's original "look around with body frozen" worked but read as nearly invisible in first person, so the implementation was rewritten: hold the key → camera detaches at the player's eye, flies with WASD (+ Space/Shift/Left Ctrl), mouse looks; body frozen via `setDown(false)` on the six movement `KeyMappings`; player model rendered by forcing the third-person flag through a `@Redirect` on `CameraType.isFirstPerson()` in `alignWithEntity`; camera position set at `alignWithEntity` RETURN via a `@Shadow`'d `setPosition`. The freecam flies through walls like real spectator — a leash or block-collision is the open legit-client compromise. Along the way the **stale `file://` jar gotcha** was discovered (see the dedicated subsection): `ingame-mod/build.ps1` now copies the freshly-built jar straight into `shared/libraries/` after every build, bypassing the launcher cache that was hiding multiple fresh builds during the FreeLook debug. **No open forward feature plan.** The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1, and the optional freecam leash/collision.*
