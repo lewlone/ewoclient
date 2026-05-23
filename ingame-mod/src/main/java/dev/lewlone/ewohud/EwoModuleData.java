@@ -24,7 +24,7 @@ public final class EwoModuleData {
     /** Fixed buffer size — generous headroom past the current module set. */
     public static final int CAPACITY = 256;
     /** Module count — must equal {@code ewo_core::modules::REGISTRY.len()}. */
-    public static final int MODULE_COUNT = 7;
+    public static final int MODULE_COUNT = 9;
 
     // Module indices — mirror of modules::REGISTRY order. The effect mixins
     // reference these by name; reordering needs a SCHEMA_VERSION bump.
@@ -35,6 +35,8 @@ public final class EwoModuleData {
     public static final int NO_DAMAGE_TILT = 4;
     public static final int NO_VIEW_BOB = 5;
     public static final int FREELOOK = 6;
+    public static final int NO_FIRE_OVERLAY = 7;
+    public static final int CROSSHAIR_ON_REACH = 8;
 
     private static final int OFF_RECORDS = 8;  // past i32 schema + i32 count
     private static final int RECORD = 16;      // i32 enabled, f32 s0, f32 s1, i32 reserved

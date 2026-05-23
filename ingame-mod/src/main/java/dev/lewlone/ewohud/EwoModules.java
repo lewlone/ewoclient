@@ -27,11 +27,13 @@ public final class EwoModules {
     /** Toggle modules — id paired with buffer index. FreeLook is excluded:
      *  its key is hold-to-activate (see {@code EwoFreeLook}), not a toggle. */
     private static final String[] TOGGLE_IDS = {
-        "fullbright", "fov", "toggle_sprint", "toggle_sneak", "no_damage_tilt", "no_view_bob"
+        "fullbright", "fov", "toggle_sprint", "toggle_sneak", "no_damage_tilt",
+        "no_view_bob", "no_fire_overlay", "crosshair_on_reach"
     };
     private static final int[] TOGGLE_INDEX = {
         EwoModuleData.FULLBRIGHT, EwoModuleData.FOV, EwoModuleData.TOGGLE_SPRINT,
-        EwoModuleData.TOGGLE_SNEAK, EwoModuleData.NO_DAMAGE_TILT, EwoModuleData.NO_VIEW_BOB
+        EwoModuleData.TOGGLE_SNEAK, EwoModuleData.NO_DAMAGE_TILT, EwoModuleData.NO_VIEW_BOB,
+        EwoModuleData.NO_FIRE_OVERLAY, EwoModuleData.CROSSHAIR_ON_REACH
     };
 
     /** Per-frame module tick. Called from {@code flipFrame}, post-render. */

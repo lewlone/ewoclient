@@ -11,7 +11,8 @@
     "GameRendererMixin",
     "MouseHandlerMixin",
     "LivingEntityJumpMixin",
-    "PlayerAttackMixin"
+    "PlayerAttackMixin",
+    "ScreenEffectRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

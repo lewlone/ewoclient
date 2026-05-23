@@ -168,6 +168,33 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: true,
         settings: &[],
     },
+    ModuleDef {
+        id: "no_fire_overlay",
+        name: "No Fire Overlay",
+        description: "Hides the screen-filling fire texture when you catch alight.",
+        category: ModuleCategory::Visual,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
+    ModuleDef {
+        id: "crosshair_on_reach",
+        name: "Crosshair on Reach",
+        description: "Tints the crosshair when the entity under it is within attack reach.",
+        category: ModuleCategory::Visual,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[ModuleSetting {
+            id: "reach",
+            label: "Reach (blocks)",
+            min: 2.0,
+            max: 6.0,
+            step: 0.05,
+            default: 3.0,
+        }],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -215,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seven_starter_modules_are_present() {
+    fn the_shipped_modules_are_present() {
         for id in [
             "fullbright",
             "fov",
@@ -224,6 +251,8 @@ mod tests {
             "no_damage_tilt",
             "no_view_bob",
             "freelook",
+            "no_fire_overlay",
+            "crosshair_on_reach",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }

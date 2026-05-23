@@ -1218,6 +1218,16 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         editor.bounds[id.index()] = bounds;
     }
 
+    // Crosshair on Reach module — a rose "+" overlays the vanilla crosshair
+    // when the entity under it is within the configured attack reach. Drawn
+    // regardless of overlay state so the feedback is live in actual combat.
+    if let Some(idx) = catalog::index_of("crosshair_on_reach") {
+        let st = editor.modules.get(idx);
+        if st.enabled && data.target_active() && data.target_distance() <= st.settings[0] {
+            draw_crosshair_on_reach(canvas, w, h);
+        }
+    }
+
     if !data.overlay_open() {
         return;
     }
@@ -2503,6 +2513,33 @@ fn draw_item_counters(
     }
 
     chip
+}
+
+/// Rose "+" painted at screen centre to signal the entity under the crosshair
+/// is within attack reach. A two-pass stroke: a soft outer halo first, then a
+/// crisp inner stroke. Overlays the vanilla white crosshair (which paints into
+/// fbo 0 before the HUD composite), giving a rose halo around the vanilla "+".
+fn draw_crosshair_on_reach(canvas: &Canvas, w: f32, h: f32) {
+    let cx = w * 0.5;
+    let cy = h * 0.5;
+    let arm = 7.0;
+
+    let mut glow = Paint::default();
+    glow.set_anti_alias(true);
+    glow.set_style(PaintStyle::Stroke);
+    glow.set_stroke_width(6.0);
+    glow.set_color4f(rgba(ROSE, 0.55), None);
+    glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_line((cx - arm, cy), (cx + arm, cy), &glow);
+    canvas.draw_line((cx, cy - arm), (cx, cy + arm), &glow);
+
+    let mut stroke = Paint::default();
+    stroke.set_anti_alias(true);
+    stroke.set_style(PaintStyle::Stroke);
+    stroke.set_stroke_width(1.8);
+    stroke.set_color4f(rgba(ROSE, 0.95), None);
+    canvas.draw_line((cx - arm, cy), (cx + arm, cy), &stroke);
+    canvas.draw_line((cx, cy - arm), (cx, cy + arm), &stroke);
 }
 
 // ────────────────────────────────────────────────────────────────────────
