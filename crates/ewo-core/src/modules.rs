@@ -205,6 +205,16 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: false,
         settings: &[],
     },
+    ModuleDef {
+        id: "auto_totem",
+        name: "Auto Totem",
+        description: "Re-equips a totem to your offhand after one pops — real inventory click, with realistic timing.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -264,6 +274,7 @@ mod tests {
             "no_fire_overlay",
             "crosshair_on_reach",
             "auto_tool",
+            "auto_totem",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
