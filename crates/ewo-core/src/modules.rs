@@ -215,6 +215,16 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: false,
         settings: &[],
     },
+    ModuleDef {
+        id: "legit_elytra_swap",
+        name: "Legit Elytra Swap",
+        description: "Bound key swaps chestplate ↔ elytra via real inventory clicks.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -275,6 +285,7 @@ mod tests {
             "crosshair_on_reach",
             "auto_tool",
             "auto_totem",
+            "legit_elytra_swap",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }

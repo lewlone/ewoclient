@@ -95,6 +95,14 @@ public final class EwoModules {
                 return true;
             }
         }
+        // Trigger modules — press fires the action once (no toggle). The
+        // module's own enabled flag (settable in the launcher Modules tab)
+        // gates whether the action actually runs; pressing while disabled
+        // is just a no-op rather than a "toggle the disabled module on".
+        if (glfwKey != 0 && EwoKeybinds.code("legit_elytra_swap") == glfwKey) {
+            EwoLegitElytraSwap.trigger();
+            return true;
+        }
         return false;
     }
 }
