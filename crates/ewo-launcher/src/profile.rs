@@ -428,6 +428,21 @@ pub fn load_modules() -> (Vec<bool>, f32) {
     (enabled, fov)
 }
 
+/// Load the active profile's `pvp.toml` — falls back to Velvet defaults if
+/// the file is missing or malformed. Shares the same loader (and the same
+/// file format) as the in-game overlay's PvP editor; the Java mod polls the
+/// file's mtime each frame and hot-reloads on a save.
+pub fn load_pvp_config() -> ewo_core::pvp::PvpConfig {
+    ewo_core::pvp::PvpConfig::load()
+}
+
+/// Write the active profile's `pvp.toml`. Called by the main loop whenever
+/// `Prefs::pvp_changed` flips — the Settings → PvP-Utils tab sets the flag on
+/// every edit (toggle, slider release, sound-chip cycle).
+pub fn save_pvp_config(cfg: &ewo_core::pvp::PvpConfig) {
+    cfg.save();
+}
+
 /// Write the active profile's `modules.toml` from the launcher's Modules tab.
 /// The format mirrors what `ewo-jni` writes, so the in-game side reads it back.
 pub fn save_modules(enabled: &[bool], fov: f32) {

@@ -185,6 +185,10 @@ impl App {
                 p.apply_config(&settings_config);
                 let (mod_enabled, mod_fov) = profile::load_modules();
                 p.apply_modules(&mod_enabled, mod_fov);
+                // PvP-Utils config is shared with the in-game side via
+                // `<profile>/pvp.toml`; load it here so the Settings tab
+                // shows the user's current setup on first open.
+                p.pvp = profile::load_pvp_config();
                 p
             },
             // Try the persisted list first, fall back to the bundled
@@ -223,6 +227,8 @@ impl App {
         // Modules are per-profile too — reload them for the switched-to profile.
         let (mod_enabled, mod_fov) = profile::load_modules();
         self.prefs.apply_modules(&mod_enabled, mod_fov);
+        // PvP-Utils is per-profile as well — reload pvp.toml.
+        self.prefs.pvp = profile::load_pvp_config();
         self.settings = settings;
         if let Some(b) = self.backend.as_ref() {
             b.set_vsync(self.prefs.vsync.on);
@@ -838,6 +844,15 @@ impl ApplicationHandler for App {
                             }
                             SettingsTab::Modules => {
                                 let l = screens::settings::modules_tab_layout(
+                                    fonts,
+                                    card_w,
+                                    card_h,
+                                    self.prefs.settings_scroll,
+                                );
+                                (l.content_h, l.list_region.height())
+                            }
+                            SettingsTab::PvpUtils => {
+                                let l = screens::settings::pvp_tab_layout(
                                     fonts,
                                     card_w,
                                     card_h,
@@ -2031,6 +2046,13 @@ impl ApplicationHandler for App {
                     let (enabled, fov) = self.prefs.modules_snapshot();
                     profile::save_modules(&enabled, fov);
                 }
+                // PvP-Utils tab — persist `pvp.toml` when an edit landed. The
+                // in-game mod polls the file's mtime each frame and reloads,
+                // so a running game picks the change up immediately.
+                if self.prefs.pvp_changed {
+                    self.prefs.pvp_changed = false;
+                    profile::save_pvp_config(&self.prefs.pvp);
+                }
                 if let Some(overlay) = self.dev_overlay.as_mut() {
                     overlay.tick(dt);
                     let density_changed = overlay.apply_to_settings(&mut self.settings);
@@ -2400,6 +2422,25 @@ fn drive_settings_sliders(
         }
         return false;
     }
+    // PvP-Utils tab — slider drag and release. Press dispatch (toggles + chip
+    // cycles + drag start) lives in the MouseInput Pressed branch.
+    if tab == SettingsTab::PvpUtils {
+        let layout = screens::settings::pvp_tab_layout(
+            fonts,
+            card_w,
+            card_h,
+            prefs.settings_scroll,
+        );
+        let max = (layout.content_h - layout.list_region.height()).max(0.0);
+        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+        if prefs.pvp_drag.is_some() {
+            screens::settings::drive_pvp_drag(prefs, fonts, card_w, card_h, mouse.0);
+            if !mouse_down {
+                screens::settings::end_pvp_drag(prefs);
+            }
+        }
+        return false;
+    }
     let mut changed = false;
     for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
         match slot {
@@ -2626,6 +2667,14 @@ fn handle_settings_press(
             }
         }
         return (false, false);
+    }
+
+    // PvP-Utils tab — full press dispatch lives in `pvp_tab_press`. It returns
+    // `true` when the press was consumed (toggle/cycle/drag start). The drag
+    // itself runs through `drive_settings_sliders`.
+    if tab == SettingsTab::PvpUtils {
+        let consumed = screens::settings::pvp_tab_press(prefs, fonts, card_w, card_h, mouse.0, mouse.1);
+        return (consumed, false);
     }
 
     let mut changed = false;

@@ -9,7 +9,9 @@
     "CameraMixin",
     "LightmapRenderStateExtractorMixin",
     "GameRendererMixin",
-    "MouseHandlerMixin"
+    "MouseHandlerMixin",
+    "LivingEntityJumpMixin",
+    "PlayerAttackMixin"
   ],
   "injectors": {
     "defaultRequire": 1

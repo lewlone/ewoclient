@@ -47,6 +47,7 @@ pub enum SettingsTab {
     Profiles,
     Keybinds,
     Modules,
+    PvpUtils,
     Graphics,
     Audio,
     Paths,
@@ -54,11 +55,12 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 8] = [
+    pub const ALL: [SettingsTab; 9] = [
         SettingsTab::Account,
         SettingsTab::Profiles,
         SettingsTab::Keybinds,
         SettingsTab::Modules,
+        SettingsTab::PvpUtils,
         SettingsTab::Graphics,
         SettingsTab::Audio,
         SettingsTab::Paths,
@@ -71,6 +73,7 @@ impl SettingsTab {
             SettingsTab::Profiles => "Profiles",
             SettingsTab::Keybinds => "Keybinds",
             SettingsTab::Modules => "Modules",
+            SettingsTab::PvpUtils => "PvP Utils",
             SettingsTab::Graphics => "Graphics",
             SettingsTab::Audio => "Audio",
             SettingsTab::Paths => "Paths",
@@ -303,6 +306,16 @@ pub struct Prefs {
     pub module_fov: VsliderState,
     /// Set by a Modules-tab edit; the main loop writes `modules.toml` + clears.
     pub modules_changed: bool,
+    /// PvP-Utils tab — the live config the user is editing. Loaded from the
+    /// active profile's `pvp.toml` at startup + on profile switch; the in-game
+    /// mod polls the file's mtime and reloads on a change, so launcher edits
+    /// apply live to the next launch (or to a running game on next save).
+    pub pvp: ewo_core::pvp::PvpConfig,
+    /// An in-progress PvP-tab slider drag — the slot identifies which control
+    /// is held; `drive_pvp_drag` maps cursor x to value.
+    pub pvp_drag: Option<PvpDrag>,
+    /// Set by a PvP-tab edit; the main loop writes `pvp.toml` + clears.
+    pub pvp_changed: bool,
     /// Wall-clock second the active tab last changed. Drives a brief
     /// fade-in on the tab's content so the switch feels intentional.
     pub tab_changed_at: Option<f32>,
@@ -427,11 +440,31 @@ impl Default for Prefs {
             // FOV Control's slider — range from the catalog (30–150°).
             module_fov: VsliderState::new(90.0, 30.0, 150.0).with_step(1.0),
             modules_changed: false,
+            // PvP-Utils — the live config the user is editing. Defaults are
+            // the Velvet baseline (matches the Java mod's `EwoPvpConfig`).
+            // The main loop calls `profile::load_pvp_config` at startup and
+            // on profile switch to swap this in.
+            pvp: ewo_core::pvp::PvpConfig::defaults(),
+            pvp_drag: None,
+            pvp_changed: false,
             tab_changed_at: None,
             settings_scroll: 0.0,
             reset_requested: false,
         }
     }
+}
+
+/// Which PvP-tab slider is being dragged. Mirrors the in-game overlay's
+/// `PvpDrag` enum (`crates/ewo-jni/src/hud.rs`); the launcher tab edits the
+/// same `PvpConfig` and writes the same `pvp.toml`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PvpDrag {
+    TierVolume(usize),
+    TierPitch(usize),
+    ZoneMinDist(usize),
+    ZoneMaxDist(usize),
+    ZoneVolume(usize),
+    ZonePitch(usize),
 }
 
 impl Prefs {
@@ -741,6 +774,8 @@ fn draw_panel(
             draw_keybinds_tab(canvas, fonts, w, h, prefs, keybinds);
         } else if active == SettingsTab::Modules {
             draw_modules_tab(canvas, fonts, w, h, prefs, time, settings);
+        } else if active == SettingsTab::PvpUtils {
+            draw_pvp_utils_tab(canvas, fonts, w, h, prefs);
         } else {
             draw_section_body(
                 canvas,
@@ -852,6 +887,7 @@ fn subhead_for(tab: SettingsTab) -> &'static str {
         SettingsTab::Profiles => "named looks you can switch between.",
         SettingsTab::Keybinds => "the keys this profile answers to.",
         SettingsTab::Modules => "legit-client features, per profile.",
+        SettingsTab::PvpUtils => "jump-reset & hit-range indicators, tuned.",
         SettingsTab::Graphics => "how the cloth is rendered.",
         SettingsTab::Audio => "tend to the boudoir's hum.",
         SettingsTab::Paths => "where the launcher keeps its things.",
@@ -909,12 +945,13 @@ const ACCOUNT_ROWS: &[RowDef] = &[];
 
 fn rows_for_tab(tab: SettingsTab) -> &'static [RowDef] {
     match tab {
-        // Account / Profiles / Keybinds use custom layouts (see the
-        // draw_*_tab fns) — no row-grid entries.
+        // Account / Profiles / Keybinds / Modules / PvP-Utils all use
+        // custom layouts (see the draw_*_tab fns) — no row-grid entries.
         SettingsTab::Account
         | SettingsTab::Profiles
         | SettingsTab::Keybinds
-        | SettingsTab::Modules => ACCOUNT_ROWS,
+        | SettingsTab::Modules
+        | SettingsTab::PvpUtils => ACCOUNT_ROWS,
         SettingsTab::Graphics => GRAPHICS_ROWS,
         SettingsTab::Audio => AUDIO_ROWS,
         SettingsTab::Paths => PATHS_ROWS,
@@ -1992,6 +2029,618 @@ fn draw_module_row(
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// PvP Utils tab — the launcher-side mirror of the in-game PVP overlay tab
+// (Sprint 2b). Edits the same `<profile>/pvp.toml`; the in-game mod polls the
+// file's mtime each frame so changes apply live to a running game.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Card-local hit-rects of every interactive control on the PvP tab.
+/// `None` for a slot means "outside the visible viewport" (scrolled out).
+pub struct PvpTabLayout {
+    pub list_region: Rect,
+    pub content_h: f32,
+    /// `[jump_reset, jump_reset_bar, hit_range]` enable-toggle rects.
+    pub general_toggles: [Rect; 3],
+    /// Per-tier rows: sound cycle chip + volume slider + pitch slider.
+    pub tier_sound: [Rect; 5],
+    pub tier_volume: [Rect; 5],
+    pub tier_pitch: [Rect; 5],
+    /// Per-zone rows: enable + min + max + sound + volume + pitch.
+    pub zone_enable: [Rect; 3],
+    pub zone_min: [Rect; 3],
+    pub zone_max: [Rect; 3],
+    pub zone_sound: [Rect; 3],
+    pub zone_volume: [Rect; 3],
+    pub zone_pitch: [Rect; 3],
+}
+
+const PVP_SECTION_GAP: f32 = 26.0;
+const PVP_SECTION_HEAD: f32 = 30.0;
+const PVP_ROW_H: f32 = 36.0;
+
+/// Compute the PvP-Utils tab layout — three sections (general toggles, per-
+/// tier sounds, hit-range zones). Each row's controls are right-aligned in the
+/// content column. Rows are shifted by `scroll` (clamped to the overflow
+/// first) so the press handler sees the same rects the renderer drew.
+pub fn pvp_tab_layout(
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    scroll: f32,
+) -> PvpTabLayout {
+    let body_top = HEADER_BOTTOM + 8.0 + 16.0;
+    let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
+    let panel_right = card_w - BODY_PAD_X;
+    let content_left = panel_left + PANEL_INNER_PAD_X;
+    let content_right = panel_right - PANEL_INNER_PAD_X;
+    let content_top = body_top + PANEL_INNER_PAD_Y;
+    let header_top = section_head_bottom(content_top, fonts);
+
+    let list_top = header_top + ACCOUNT_COPY_BLOCK;
+
+    // Total unscrolled height — section heads + rows + gaps.
+    let general_h = PVP_SECTION_HEAD + PVP_ROW_H * 3.0;
+    let tiers_h = PVP_SECTION_HEAD + PVP_ROW_H * 5.0;
+    let zones_h = PVP_SECTION_HEAD + PVP_ROW_H * 3.0;
+    let content_h = general_h + PVP_SECTION_GAP + tiers_h + PVP_SECTION_GAP + zones_h;
+
+    let list_region = Rect::from_ltrb(
+        content_left,
+        list_top,
+        content_right,
+        (card_h - BODY_PAD_BOTTOM).max(list_top),
+    );
+    let max_scroll = (content_h - list_region.height()).max(0.0);
+    let scroll = scroll.clamp(0.0, max_scroll);
+
+    let _ = fonts; // section labels use a fixed point size — no metrics-dep.
+    let row_top = list_top - scroll;
+
+    let toggle_w = crate::widgets::TOGGLE_W;
+    let toggle_h = crate::widgets::TOGGLE_H;
+
+    // ── General section ──────────────────────────────────────────────────
+    let mut general_toggles = [Rect::default(); 3];
+    let general_rows_top = row_top + PVP_SECTION_HEAD;
+    for i in 0..3 {
+        let y = general_rows_top + i as f32 * PVP_ROW_H;
+        general_toggles[i] = Rect::from_xywh(
+            content_right - toggle_w,
+            y + (PVP_ROW_H - toggle_h) * 0.5,
+            toggle_w,
+            toggle_h,
+        );
+    }
+
+    // ── Sounds-per-tier section ──────────────────────────────────────────
+    let mut tier_sound = [Rect::default(); 5];
+    let mut tier_volume = [Rect::default(); 5];
+    let mut tier_pitch = [Rect::default(); 5];
+    let tiers_rows_top = general_rows_top + PVP_ROW_H * 3.0 + PVP_SECTION_GAP + PVP_SECTION_HEAD;
+
+    // Layout: [label (220 px)] [sound chip (160 px)] [vol slider] [pitch slider]
+    let label_w = 220.0;
+    let chip_w = 160.0;
+    let slider_h = 22.0;
+    let sliders_left = content_left + label_w + 16.0 + chip_w + 16.0;
+    let sliders_total_w = (content_right - sliders_left - 16.0).max(180.0);
+    let half_slider_w = sliders_total_w * 0.5;
+    for i in 0..5 {
+        let y = tiers_rows_top + i as f32 * PVP_ROW_H;
+        let mid_y = y + (PVP_ROW_H - slider_h) * 0.5;
+        let chip_y = y + (PVP_ROW_H - 24.0) * 0.5;
+        tier_sound[i] = Rect::from_xywh(content_left + label_w + 16.0, chip_y, chip_w, 24.0);
+        tier_volume[i] = Rect::from_xywh(sliders_left, mid_y, half_slider_w - 8.0, slider_h);
+        tier_pitch[i] = Rect::from_xywh(
+            sliders_left + half_slider_w + 8.0,
+            mid_y,
+            half_slider_w - 8.0,
+            slider_h,
+        );
+    }
+
+    // ── Hit-range zones section ──────────────────────────────────────────
+    let mut zone_enable = [Rect::default(); 3];
+    let mut zone_min = [Rect::default(); 3];
+    let mut zone_max = [Rect::default(); 3];
+    let mut zone_sound = [Rect::default(); 3];
+    let mut zone_volume = [Rect::default(); 3];
+    let mut zone_pitch = [Rect::default(); 3];
+    let zones_rows_top = tiers_rows_top + PVP_ROW_H * 5.0 + PVP_SECTION_GAP + PVP_SECTION_HEAD;
+
+    // Layout: [label (60)] [toggle] [min (110)] [max (110)] [sound (140)] [vol] [pitch]
+    let zlabel_w = 80.0;
+    let z_min_w = 110.0;
+    let z_max_w = 110.0;
+    let z_chip_w = 140.0;
+    let z_pad = 14.0;
+    for i in 0..3 {
+        let y = zones_rows_top + i as f32 * PVP_ROW_H;
+        let mid_y = y + (PVP_ROW_H - slider_h) * 0.5;
+        let chip_y = y + (PVP_ROW_H - 24.0) * 0.5;
+
+        let mut x = content_left + zlabel_w;
+        zone_enable[i] = Rect::from_xywh(
+            x,
+            y + (PVP_ROW_H - toggle_h) * 0.5,
+            toggle_w,
+            toggle_h,
+        );
+        x += toggle_w + z_pad;
+        zone_min[i] = Rect::from_xywh(x, mid_y, z_min_w, slider_h);
+        x += z_min_w + z_pad;
+        zone_max[i] = Rect::from_xywh(x, mid_y, z_max_w, slider_h);
+        x += z_max_w + z_pad;
+        zone_sound[i] = Rect::from_xywh(x, chip_y, z_chip_w, 24.0);
+        x += z_chip_w + z_pad;
+        // Remaining width split between volume + pitch.
+        let remaining = (content_right - x - z_pad).max(120.0);
+        let half = remaining * 0.5 - 4.0;
+        zone_volume[i] = Rect::from_xywh(x, mid_y, half, slider_h);
+        zone_pitch[i] = Rect::from_xywh(x + half + 8.0, mid_y, half, slider_h);
+    }
+
+    PvpTabLayout {
+        list_region,
+        content_h,
+        general_toggles,
+        tier_sound,
+        tier_volume,
+        tier_pitch,
+        zone_enable,
+        zone_min,
+        zone_max,
+        zone_sound,
+        zone_volume,
+        zone_pitch,
+    }
+}
+
+/// Draw the PvP-Utils tab — three sections of editing controls.
+fn draw_pvp_utils_tab(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    prefs: &Prefs,
+) {
+    let layout = pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+    let cfg = &prefs.pvp;
+
+    // Body copy — fixed above the scrolling list.
+    let body_font = fonts.newsreader(15.0);
+    let mut body_paint = Paint::default();
+    body_paint.set_anti_alias(true);
+    body_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5));
+    let (_, bm) = body_font.metrics();
+    canvas.draw_str(
+        "defensive jump-reset + hit-range — tune the tiers, sounds and zones.",
+        (layout.list_region.left, layout.list_region.top - ACCOUNT_COPY_BLOCK + (-bm.ascent)),
+        &body_font,
+        &body_paint,
+    );
+
+    // Rows clipped to the scroll viewport.
+    canvas.save();
+    canvas.clip_rect(layout.list_region, None, false);
+
+    // ── General section ──────────────────────────────────────────────────
+    let general_label_y = layout.general_toggles[0].top - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5 - PVP_SECTION_HEAD + 6.0;
+    draw_pvp_section_head(canvas, fonts, "GENERAL", layout.list_region.left, general_label_y);
+
+    let label_font = fonts.fraunces_axes(16.0, 50.0, 0.0, 360.0, None);
+    let general_labels = ["Jump reset", "Jump reset bar", "Hit range"];
+    let general_states = [
+        cfg.jump_reset_enabled,
+        cfg.jump_reset_bar_enabled,
+        cfg.hit_range_enabled,
+    ];
+    for i in 0..3 {
+        let row_y = layout.general_toggles[i].top + crate::widgets::TOGGLE_H * 0.5;
+        let (_, m) = label_font.metrics();
+        let mut p = Paint::default();
+        p.set_anti_alias(true);
+        p.set_color(TEXT_PEARL);
+        canvas.draw_str(
+            general_labels[i],
+            (layout.list_region.left, row_y + (m.cap_height) * 0.5),
+            &label_font,
+            &p,
+        );
+        draw_pvp_toggle(canvas, layout.general_toggles[i], general_states[i]);
+    }
+
+    // ── Sounds per tier ──────────────────────────────────────────────────
+    let tiers_label_y = layout.tier_sound[0].top - PVP_SECTION_HEAD + 4.0;
+    draw_pvp_section_head(canvas, fonts, "SOUNDS PER TIER", layout.list_region.left, tiers_label_y);
+
+    for (i, tier) in ewo_core::pvp::Tier::ALL.iter().enumerate() {
+        let slot = cfg.sound_for_tier(*tier);
+        let row_y = layout.tier_sound[i].top + 12.0;
+        let mut p = Paint::default();
+        p.set_anti_alias(true);
+        p.set_color(TEXT_PEARL);
+        let (_, m) = label_font.metrics();
+        canvas.draw_str(
+            tier.label(),
+            (layout.list_region.left, row_y + m.cap_height * 0.5),
+            &label_font,
+            &p,
+        );
+        draw_pvp_sound_chip(canvas, layout.tier_sound[i], slot.sound, fonts);
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.tier_volume[i],
+            slot.volume,
+            0.0,
+            1.0,
+            |v| format!("vol {:.2}", v),
+        );
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.tier_pitch[i],
+            slot.pitch,
+            0.5,
+            2.0,
+            |v| format!("pitch {:.2}", v),
+        );
+    }
+
+    // ── Hit-range zones ──────────────────────────────────────────────────
+    let zones_label_y = layout.zone_enable[0].top - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5 - PVP_SECTION_HEAD + 6.0;
+    draw_pvp_section_head(canvas, fonts, "HIT-RANGE ZONES", layout.list_region.left, zones_label_y);
+
+    for i in 0..3 {
+        let z = cfg.zone(i);
+        let row_y = layout.zone_enable[i].top + crate::widgets::TOGGLE_H * 0.5;
+        let mut p = Paint::default();
+        p.set_anti_alias(true);
+        p.set_color(TEXT_PEARL);
+        let (_, m) = label_font.metrics();
+        canvas.draw_str(
+            &format!("Zone {}", i + 1),
+            (layout.list_region.left, row_y + m.cap_height * 0.5),
+            &label_font,
+            &p,
+        );
+        draw_pvp_toggle(canvas, layout.zone_enable[i], z.enabled);
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.zone_min[i],
+            z.min_dist,
+            0.0,
+            3.5,
+            |v| format!("min {:.2}", v),
+        );
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.zone_max[i],
+            z.max_dist,
+            0.0,
+            3.5,
+            |v| format!("max {:.2}", v),
+        );
+        draw_pvp_sound_chip(canvas, layout.zone_sound[i], z.sound, fonts);
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.zone_volume[i],
+            z.volume,
+            0.0,
+            1.0,
+            |v| format!("vol {:.2}", v),
+        );
+        draw_pvp_value_slider(
+            canvas,
+            fonts,
+            layout.zone_pitch[i],
+            z.pitch,
+            0.5,
+            2.0,
+            |v| format!("pitch {:.2}", v),
+        );
+    }
+
+    canvas.restore();
+
+    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
+}
+
+/// A small tracked-mono section header inside the PvP tab.
+fn draw_pvp_section_head(canvas: &Canvas, fonts: &FontStore, label: &str, x: f32, y: f32) {
+    let font = fonts.jetbrains_mono(11.0);
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5)); // rose
+    let (_, m) = font.metrics();
+    crate::text::draw_tracked_em(
+        canvas,
+        label,
+        (x, y + (-m.ascent)),
+        &font,
+        &p,
+        0.22,
+    );
+}
+
+/// Compact pill toggle for the PvP tab — same Velvet language as the in-game
+/// `draw_panel_toggle`, with a hairline border when off.
+fn draw_pvp_toggle(canvas: &Canvas, rect: Rect, on: bool) {
+    let r = rect.height() * 0.5;
+    let rrect = skia_safe::RRect::new_rect_xy(rect, r, r);
+
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    if on {
+        bg.set_color(Color::from_argb(0xCC, 0xE5, 0xB8, 0xC5)); // rose
+    } else {
+        bg.set_color(Color::from_argb(0xD8, 0x12, 0x00, 0x10)); // wine
+    }
+    canvas.draw_rrect(rrect, &bg);
+    if !on {
+        let mut border = Paint::default();
+        border.set_anti_alias(true);
+        border.set_style(skia_safe::PaintStyle::Stroke);
+        border.set_stroke_width(1.0);
+        border.set_color(Color::from_argb(0x40, 0xE5, 0xB8, 0xC5));
+        canvas.draw_rrect(rrect, &border);
+    }
+
+    let knob_r = r - 3.0;
+    let cx = if on {
+        rect.right - knob_r - 3.0
+    } else {
+        rect.left + knob_r + 3.0
+    };
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color(if on {
+        Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA) // pearl
+    } else {
+        Color::from_argb(0xE0, 0x9A, 0x80, 0x87) // mauve
+    });
+    canvas.draw_circle((cx, rect.top + r), knob_r, &knob);
+}
+
+/// Sound cycle chip — Velvet pill with the sound name + a "▾" hint. Click
+/// cycles to the next sound (same UX as the in-game tab).
+fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: ewo_core::pvp::PvpSound, fonts: &FontStore) {
+    let rr = skia_safe::RRect::new_rect_xy(rect, rect.height() * 0.4, rect.height() * 0.4);
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color(Color::from_argb(0xD8, 0x12, 0x00, 0x10)); // wine
+    canvas.draw_rrect(rr, &bg);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(skia_safe::PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color(Color::from_argb(0x40, 0xE5, 0xB8, 0xC5));
+    canvas.draw_rrect(rr, &border);
+
+    let font = fonts.jetbrains_mono(12.0);
+    let label = sound.label();
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color(TEXT_PEARL);
+    let (lw, _) = font.measure_str(label, Some(&p));
+    let (_, m) = font.metrics();
+    canvas.draw_str(
+        label,
+        (rect.left + (rect.width() - lw - 14.0) * 0.5, rect.top + rect.height() * 0.5 + m.cap_height * 0.5),
+        &font,
+        &p,
+    );
+    let mut hint = Paint::default();
+    hint.set_anti_alias(true);
+    hint.set_color(Color::from_argb(0xCC, 0x9A, 0x80, 0x87)); // mauve
+    canvas.draw_str(
+        "▾",
+        (rect.right - 14.0, rect.top + rect.height() * 0.5 + m.cap_height * 0.5),
+        &font,
+        &hint,
+    );
+}
+
+/// Compact one-line slider for the PvP tab — track + rose knob + value label.
+/// `formatter` shapes the right-aligned label (e.g. `vol 0.80`, `min 2.50`).
+fn draw_pvp_value_slider(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    area: Rect,
+    value: f32,
+    min: f32,
+    max: f32,
+    formatter: impl Fn(f32) -> String,
+) {
+    let cy = area.top + area.height() * 0.5;
+    let value_w = 70.0;
+    let track_left = area.left + 4.0;
+    let track_right = (area.right - value_w).max(track_left + 20.0);
+    let track_h = 4.0;
+
+    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color(Color::from_argb(0xD8, 0x12, 0x00, 0x10));
+    canvas.draw_rrect(skia_safe::RRect::new_rect_xy(track, track_h, track_h), &tp);
+
+    let span = (max - min).max(0.0001);
+    let frac = ((value - min) / span).clamp(0.0, 1.0);
+    let knob_x = track_left + frac * (track_right - track_left);
+
+    if knob_x > track_left + 1.0 {
+        let fill = Rect::from_xywh(track_left, cy - track_h * 0.5, knob_x - track_left, track_h);
+        let mut fp = Paint::default();
+        fp.set_anti_alias(true);
+        fp.set_color(Color::from_argb(0xCC, 0xE5, 0xB8, 0xC5));
+        canvas.draw_rrect(skia_safe::RRect::new_rect_xy(fill, track_h, track_h), &fp);
+    }
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    canvas.draw_circle((knob_x, cy), 6.0, &knob);
+
+    let font = fonts.jetbrains_mono(11.0);
+    let val = formatter(value);
+    let mut vp = Paint::default();
+    vp.set_anti_alias(true);
+    vp.set_color(TEXT_PEARL);
+    let (_, m) = font.metrics();
+    canvas.draw_str(&val, (track_right + 8.0, cy + m.cap_height * 0.5), &font, &vp);
+}
+
+/// Map cursor `x` onto one of the PvP-tab sliders' value range. Returns the
+/// new value clamped to `[min, max]`. The slider rect's right strip is the
+/// value-label area (see `draw_pvp_value_slider`) so the usable track ends a
+/// fixed distance before the rect's right edge.
+fn pvp_drag_value(track: Rect, x: f32, min: f32, max: f32) -> f32 {
+    let value_w = 70.0;
+    let track_left = track.left + 4.0;
+    let track_right = (track.right - value_w).max(track_left + 20.0);
+    let span_px = (track_right - track_left).max(1.0);
+    let frac = ((x - track_left) / span_px).clamp(0.0, 1.0);
+    min + frac * (max - min)
+}
+
+/// Press dispatch for the PvP-Utils tab. Returns `true` if the press was
+/// consumed (toggle flipped, chip cycled, or slider drag started). Edits
+/// flip `prefs.pvp_changed` so the main loop persists `pvp.toml`.
+pub fn pvp_tab_press(prefs: &mut Prefs, fonts: &FontStore, card_w: f32, card_h: f32, x: f32, y: f32) -> bool {
+    let layout = pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+
+    // Outside the scroll viewport — ignore (e.g. clicks on the scrollbar).
+    if y < layout.list_region.top || y > layout.list_region.bottom {
+        return false;
+    }
+
+    let hit = |r: Rect| x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+
+    // General toggles.
+    for (i, &rect) in layout.general_toggles.iter().enumerate() {
+        if hit(rect) {
+            match i {
+                0 => prefs.pvp.jump_reset_enabled = !prefs.pvp.jump_reset_enabled,
+                1 => prefs.pvp.jump_reset_bar_enabled = !prefs.pvp.jump_reset_bar_enabled,
+                2 => prefs.pvp.hit_range_enabled = !prefs.pvp.hit_range_enabled,
+                _ => {}
+            }
+            prefs.pvp_changed = true;
+            return true;
+        }
+    }
+
+    // Per-tier sound chips + volume/pitch sliders.
+    for i in 0..5 {
+        if hit(layout.tier_sound[i]) {
+            let tier = ewo_core::pvp::Tier::ALL[i];
+            let slot = prefs.pvp.sound_for_tier_mut(tier);
+            let next = (slot.sound.index() + 1) % ewo_core::pvp::PvpSound::ALL.len();
+            slot.sound = ewo_core::pvp::PvpSound::ALL[next];
+            prefs.pvp_changed = true;
+            return true;
+        }
+        if hit(layout.tier_volume[i]) {
+            prefs.pvp_drag = Some(PvpDrag::TierVolume(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+        if hit(layout.tier_pitch[i]) {
+            prefs.pvp_drag = Some(PvpDrag::TierPitch(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+    }
+
+    // Per-zone controls.
+    for i in 0..3 {
+        if hit(layout.zone_enable[i]) {
+            let z = prefs.pvp.zone_mut(i);
+            z.enabled = !z.enabled;
+            prefs.pvp_changed = true;
+            return true;
+        }
+        if hit(layout.zone_min[i]) {
+            prefs.pvp_drag = Some(PvpDrag::ZoneMinDist(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+        if hit(layout.zone_max[i]) {
+            prefs.pvp_drag = Some(PvpDrag::ZoneMaxDist(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+        if hit(layout.zone_sound[i]) {
+            let z = prefs.pvp.zone_mut(i);
+            let next = (z.sound.index() + 1) % ewo_core::pvp::PvpSound::ALL.len();
+            z.sound = ewo_core::pvp::PvpSound::ALL[next];
+            prefs.pvp_changed = true;
+            return true;
+        }
+        if hit(layout.zone_volume[i]) {
+            prefs.pvp_drag = Some(PvpDrag::ZoneVolume(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+        if hit(layout.zone_pitch[i]) {
+            prefs.pvp_drag = Some(PvpDrag::ZonePitch(i));
+            drive_pvp_drag(prefs, fonts, card_w, card_h, x);
+            return true;
+        }
+    }
+    false
+}
+
+/// Map the cursor's x onto the held slider's value range, updating the
+/// `PvpConfig`. Persistence happens on drag-release, not here, so a drag
+/// doesn't write `pvp.toml` 60 times a second.
+pub fn drive_pvp_drag(prefs: &mut Prefs, fonts: &FontStore, card_w: f32, card_h: f32, x: f32) {
+    let Some(slot) = prefs.pvp_drag else { return };
+    let layout = pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+    match slot {
+        PvpDrag::TierVolume(i) => {
+            let v = pvp_drag_value(layout.tier_volume[i], x, 0.0, 1.0);
+            let tier = ewo_core::pvp::Tier::ALL[i];
+            prefs.pvp.sound_for_tier_mut(tier).volume = v;
+        }
+        PvpDrag::TierPitch(i) => {
+            let v = pvp_drag_value(layout.tier_pitch[i], x, 0.5, 2.0);
+            let tier = ewo_core::pvp::Tier::ALL[i];
+            prefs.pvp.sound_for_tier_mut(tier).pitch = v;
+        }
+        PvpDrag::ZoneMinDist(i) => {
+            let v = pvp_drag_value(layout.zone_min[i], x, 0.0, 3.5);
+            let max = prefs.pvp.zone(i).max_dist;
+            prefs.pvp.zone_mut(i).min_dist = v.min(max - 0.05).max(0.0);
+        }
+        PvpDrag::ZoneMaxDist(i) => {
+            let v = pvp_drag_value(layout.zone_max[i], x, 0.0, 3.5);
+            let min = prefs.pvp.zone(i).min_dist;
+            prefs.pvp.zone_mut(i).max_dist = v.max(min + 0.05).min(3.5);
+        }
+        PvpDrag::ZoneVolume(i) => {
+            prefs.pvp.zone_mut(i).volume =
+                pvp_drag_value(layout.zone_volume[i], x, 0.0, 1.0);
+        }
+        PvpDrag::ZonePitch(i) => {
+            prefs.pvp.zone_mut(i).pitch =
+                pvp_drag_value(layout.zone_pitch[i], x, 0.5, 2.0);
+        }
+    }
+}
+
+/// Release a held PvP slider drag. Flips the change-flag so the main loop
+/// persists `pvp.toml`.
+pub fn end_pvp_drag(prefs: &mut Prefs) {
+    if prefs.pvp_drag.take().is_some() {
+        prefs.pvp_changed = true;
+    }
+}
+
 /// Render a Minecraft UUID short — first 8 chars uppercase, mono-feel.
 /// (UUIDs come back without dashes from the profile endpoint.)
 fn short_uuid(uuid: &str) -> String {
@@ -2373,7 +3022,7 @@ pub fn path_browse_bounds(slot: Slot, fonts: &FontStore, card_w: f32, card_h: f3
 
 /// Card-local bounds for each sidebar tab, indexed by `SettingsTab::ALL`.
 /// Returned in the same order as `SettingsTab::ALL`.
-pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 8] {
+pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 9] {
     let sidebar_left = BODY_PAD_X;
     let body_top = HEADER_BOTTOM + 8.0;
     let title_top = body_top + 16.0;
@@ -2387,11 +3036,12 @@ pub fn sidebar_tab_bounds(fonts: &FontStore) -> [(SettingsTab, Rect); 8] {
     let row_h = 14.0 + (-lm.ascent + lm.descent) + 14.0;
     let mut y = title_baseline + tm.descent + 28.0;
 
-    let mut out: [(SettingsTab, Rect); 8] = [
+    let mut out: [(SettingsTab, Rect); 9] = [
         (SettingsTab::Account, Rect::default()),
         (SettingsTab::Profiles, Rect::default()),
         (SettingsTab::Keybinds, Rect::default()),
         (SettingsTab::Modules, Rect::default()),
+        (SettingsTab::PvpUtils, Rect::default()),
         (SettingsTab::Graphics, Rect::default()),
         (SettingsTab::Audio, Rect::default()),
         (SettingsTab::Paths, Rect::default()),

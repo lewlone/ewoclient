@@ -8,6 +8,7 @@
 pub mod color;
 pub mod easing;
 pub mod modules;
+pub mod pvp;
 pub mod state;
 pub mod theme;
 

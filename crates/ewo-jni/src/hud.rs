@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -69,12 +69,61 @@ mod off {
     pub const PLAYTIME: usize = 500;
     pub const SERVER: usize = 504;
     pub const PLAYER_NAME: usize = 556;
+    // PvP Utils (schema 4): two contiguous records — jump reset, then hit range.
+    pub const PVP_JUMP: usize = 584; // i32 tier, i32 offset_ms, i32 age_ticks, i32 fade_total
+    pub const PVP_HIT: usize = 600;  // f32 distance, i32 color_rgb, i32 age_ticks, i32 fade_total
+    // Combat HUD additions (schema 5): CPS pair + four tracked item counts.
+    pub const CPS_LEFT: usize = 616;
+    pub const CPS_RIGHT: usize = 620;
+    pub const ITEM_PEARLS: usize = 624;
+    pub const ITEM_ARROWS: usize = 628;
+    pub const ITEM_TOTEMS: usize = 632;
+    pub const ITEM_GAPPLES: usize = 636;
 }
 const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
 const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
 const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
 const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
 const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
+const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
+const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
+
+/// Jump-reset tier — wire-mirror of `EwoJumpReset.Tier` ordinal mapping in
+/// `EwoHudData.tierToInt`. The renderer dispatches on this.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PvpTier {
+    None,
+    Perfect,
+    SlightlyEarly,
+    Early,
+    SlightlyLate,
+    Late,
+}
+
+impl PvpTier {
+    fn from_wire(v: i32) -> PvpTier {
+        match v {
+            1 => PvpTier::Perfect,
+            2 => PvpTier::SlightlyEarly,
+            3 => PvpTier::Early,
+            4 => PvpTier::SlightlyLate,
+            5 => PvpTier::Late,
+            _ => PvpTier::None,
+        }
+    }
+
+    /// Short tier label for the widget.
+    fn label(self) -> &'static str {
+        match self {
+            PvpTier::Perfect => "PERFECT",
+            PvpTier::SlightlyEarly => "SLIGHTLY EARLY",
+            PvpTier::Early => "EARLY",
+            PvpTier::SlightlyLate => "SLIGHTLY LATE",
+            PvpTier::Late => "LATE",
+            PvpTier::None => "NO RESET",
+        }
+    }
+}
 
 const MAX_POTIONS: usize = 8;
 const POTION_REC: usize = 44; // bytes per potion record
@@ -213,6 +262,63 @@ impl HudData {
     pub fn player_name(&self) -> String {
         self.str_at(off::PLAYER_NAME, PLAYER_NAME_CAP)
     }
+
+    // ── PvP Utils (schema 4) ──────────────────────────────────────────────
+
+    /// A jump-reset result is live this frame (within the fade window).
+    pub fn pvp_jump_active(&self) -> bool {
+        self.flag(FLAG_PVP_JUMP)
+    }
+    pub fn pvp_jump_tier(&self) -> PvpTier {
+        PvpTier::from_wire(self.i32_at(off::PVP_JUMP))
+    }
+    pub fn pvp_jump_offset_ms(&self) -> i32 {
+        self.i32_at(off::PVP_JUMP + 4)
+    }
+    /// Fade progress 0..1 — `age_ticks / fade_total`.
+    pub fn pvp_jump_fade(&self) -> f32 {
+        let total = self.i32_at(off::PVP_JUMP + 12).max(1) as f32;
+        let age = self.i32_at(off::PVP_JUMP + 8).max(0) as f32;
+        1.0 - (age / total).clamp(0.0, 1.0)
+    }
+
+    /// A hit-range result is live this frame (within the fade window).
+    pub fn pvp_hit_active(&self) -> bool {
+        self.flag(FLAG_PVP_HIT)
+    }
+    pub fn pvp_hit_distance(&self) -> f32 {
+        self.f32_at(off::PVP_HIT)
+    }
+    /// Matched zone's packed `0xRRGGBB` colour, or 0 if no result.
+    pub fn pvp_hit_color(&self) -> i32 {
+        self.i32_at(off::PVP_HIT + 4)
+    }
+    pub fn pvp_hit_fade(&self) -> f32 {
+        let total = self.i32_at(off::PVP_HIT + 12).max(1) as f32;
+        let age = self.i32_at(off::PVP_HIT + 8).max(0) as f32;
+        1.0 - (age / total).clamp(0.0, 1.0)
+    }
+
+    // ── Combat HUD additions (schema 5) ───────────────────────────────────
+
+    pub fn cps_left(&self) -> i32 {
+        self.i32_at(off::CPS_LEFT)
+    }
+    pub fn cps_right(&self) -> i32 {
+        self.i32_at(off::CPS_RIGHT)
+    }
+    pub fn item_pearls(&self) -> i32 {
+        self.i32_at(off::ITEM_PEARLS)
+    }
+    pub fn item_arrows(&self) -> i32 {
+        self.i32_at(off::ITEM_ARROWS)
+    }
+    pub fn item_totems(&self) -> i32 {
+        self.i32_at(off::ITEM_TOTEMS)
+    }
+    pub fn item_gapples(&self) -> i32 {
+        self.i32_at(off::ITEM_GAPPLES)
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -291,7 +397,8 @@ impl Anchor {
 // Widget identity + the persisted layout.
 // ────────────────────────────────────────────────────────────────────────
 
-/// Every HUD widget, in draw order.
+/// Every HUD widget, in draw order. New widgets append at the end so existing
+/// indices in `hud.toml` stay stable across schema bumps.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WidgetId {
     Fps,
@@ -301,10 +408,15 @@ enum WidgetId {
     Armor,
     Potions,
     Target,
+    JumpResetText,
+    JumpResetBar,
+    HitRange,
+    Cps,
+    Items,
 }
 
 impl WidgetId {
-    const ALL: [WidgetId; 7] = [
+    const ALL: [WidgetId; 12] = [
         WidgetId::Fps,
         WidgetId::Coords,
         WidgetId::Ping,
@@ -312,6 +424,11 @@ impl WidgetId {
         WidgetId::Armor,
         WidgetId::Potions,
         WidgetId::Target,
+        WidgetId::JumpResetText,
+        WidgetId::JumpResetBar,
+        WidgetId::HitRange,
+        WidgetId::Cps,
+        WidgetId::Items,
     ];
 
     fn index(self) -> usize {
@@ -328,6 +445,11 @@ impl WidgetId {
             WidgetId::Armor => "armor",
             WidgetId::Potions => "potions",
             WidgetId::Target => "target",
+            WidgetId::JumpResetText => "jump_reset_text",
+            WidgetId::JumpResetBar => "jump_reset_bar",
+            WidgetId::HitRange => "hit_range",
+            WidgetId::Cps => "cps",
+            WidgetId::Items => "items",
         }
     }
 
@@ -341,6 +463,11 @@ impl WidgetId {
             WidgetId::Armor => "ARMOR",
             WidgetId::Potions => "POTIONS",
             WidgetId::Target => "TARGET",
+            WidgetId::JumpResetText => "JUMP RESET",
+            WidgetId::JumpResetBar => "JUMP RESET BAR",
+            WidgetId::HitRange => "HIT RANGE",
+            WidgetId::Cps => "CPS",
+            WidgetId::Items => "ITEMS",
         }
     }
 }
@@ -357,7 +484,7 @@ struct WidgetLayout {
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
 /// `hud.toml`.
 struct HudLayout {
-    widgets: [WidgetLayout; 7],
+    widgets: [WidgetLayout; 12],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
 }
@@ -381,6 +508,11 @@ impl HudLayout {
                 WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330 }, // armor
                 WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000 }, // potions
                 WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593 }, // target
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700 }, // jump_reset_text
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300 }, // jump_reset_bar
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500 }, // hit_range
+                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204 }, // cps
+                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000 }, // items
             ],
             paint_rate: crate::HudPaintRate::Match,
         }
@@ -512,15 +644,17 @@ enum OverlayView {
     Home,
     HudEditor,
     Modules,
+    Pvp,
     Mods,
     Settings,
 }
 
 impl OverlayView {
-    const ALL: [OverlayView; 5] = [
+    const ALL: [OverlayView; 6] = [
         OverlayView::Home,
         OverlayView::HudEditor,
         OverlayView::Modules,
+        OverlayView::Pvp,
         OverlayView::Mods,
         OverlayView::Settings,
     ];
@@ -529,6 +663,7 @@ impl OverlayView {
             OverlayView::Home => "HOME",
             OverlayView::HudEditor => "HUD",
             OverlayView::Modules => "MODULES",
+            OverlayView::Pvp => "PVP",
             OverlayView::Mods => "MODS",
             OverlayView::Settings => "SETTINGS",
         }
@@ -554,7 +689,7 @@ pub struct Editor {
     /// Cursor position in window pixels.
     cursor: (f32, f32),
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
-    bounds: [Rect; 7],
+    bounds: [Rect; 12],
     dragging: Option<Drag>,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
@@ -586,6 +721,23 @@ pub struct Editor {
     /// rewrites the file after the `Editor` was built, and may also replace a
     /// stale png left by an earlier launch, so the viewer reloads on a change.
     skin_mtime: Option<std::time::SystemTime>,
+    /// PvP-Utils config — loaded from the active profile's `pvp.toml`,
+    /// edited from the PVP overlay tab, saved on each commit. The Java mod
+    /// polls the file's mtime and hot-reloads — so edits apply live.
+    pvp: crate::pvp::PvpConfig,
+    /// An in-progress PVP-tab slider drag — identifies which control is held.
+    pvp_drag: Option<PvpDrag>,
+}
+
+/// Which PVP-tab slider is being dragged. PvP-tab volume/pitch/distance
+/// sliders share a uniform 0..1 -> value mapping; the variant identifies the
+/// target field for the per-frame `drag_pvp_slider` update.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PvpDrag {
+    TierVolume(usize),
+    ZoneMinDist(usize),
+    ZoneMaxDist(usize),
+    ZoneVolume(usize),
 }
 
 /// How close (window px) an edge must come to another widget's edge before the
@@ -602,7 +754,7 @@ impl Editor {
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
-            bounds: [empty_rect(); 7],
+            bounds: [empty_rect(); 12],
             dragging: None,
             slider_drag: None,
             snap_x: None,
@@ -618,6 +770,8 @@ impl Editor {
             skin_drag: None,
             skin_slim: instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false),
             skin_mtime: skin_png_mtime(),
+            pvp: crate::pvp::PvpConfig::load(),
+            pvp_drag: None,
         }
     }
 
@@ -659,6 +813,12 @@ impl Editor {
         // MODULES-view slider drag — track the cursor to the setting value.
         if let Some((idx, slot)) = self.slider_drag {
             self.drag_module_slider(idx, slot, x);
+            return;
+        }
+        // PVP-view slider drag — same idea, but the slot identifies which
+        // PVP control is held.
+        if let Some(drag) = self.pvp_drag {
+            self.drag_pvp_slider(drag, x);
             return;
         }
         let Some(drag) = &self.dragging else {
@@ -727,6 +887,10 @@ impl Editor {
             if self.slider_drag.take().is_some() {
                 // A module-slider drag finished — persist the setting now.
                 self.modules.save();
+            }
+            if self.pvp_drag.take().is_some() {
+                // A PVP-tab slider drag finished — persist the config.
+                self.pvp.save();
             }
             if self.dragging.take().is_some() {
                 // A drag finished — drop the snap guides and persist.
@@ -808,6 +972,7 @@ impl Editor {
                     }
                 }
             }
+            OverlayView::Pvp => self.pvp_press(x, y),
         }
     }
 
@@ -897,6 +1062,112 @@ impl Editor {
             b.width() > 0.0 && point_in(b, self.cursor.0, self.cursor.1)
         })
     }
+
+    /// PVP tab — a press cycles a sound chip, flips a toggle, or starts a
+    /// slider drag. Edits are persisted to `pvp.toml` on commit (toggle / chip
+    /// click immediately; slider drag on release in `on_mouse_button`).
+    fn pvp_press(&mut self, x: f32, y: f32) {
+        let layout = pvp_layout(self.window.0, self.window.1);
+
+        // General-section toggles.
+        for (i, &rect) in layout.general_toggles.iter().enumerate() {
+            if point_in(rect, x, y) {
+                match i {
+                    0 => self.pvp.jump_reset_enabled = !self.pvp.jump_reset_enabled,
+                    1 => self.pvp.jump_reset_bar_enabled = !self.pvp.jump_reset_bar_enabled,
+                    2 => self.pvp.hit_range_enabled = !self.pvp.hit_range_enabled,
+                    _ => {}
+                }
+                self.pvp.save();
+                return;
+            }
+        }
+
+        // Sound-cycle chips for each tier.
+        for (i, &rect) in layout.tier_sound.iter().enumerate() {
+            if point_in(rect, x, y) {
+                let tier = crate::pvp::Tier::ALL[i];
+                let slot = self.pvp.sound_for_tier_mut(tier);
+                let next = (slot.sound.index() + 1) % crate::pvp::PvpSound::ALL.len();
+                slot.sound = crate::pvp::PvpSound::ALL[next];
+                self.pvp.save();
+                return;
+            }
+        }
+
+        // Tier volume sliders.
+        for (i, &rect) in layout.tier_volume.iter().enumerate() {
+            if point_in(rect, x, y) {
+                self.pvp_drag = Some(PvpDrag::TierVolume(i));
+                self.drag_pvp_slider(PvpDrag::TierVolume(i), x);
+                return;
+            }
+        }
+
+        // Zone enable toggles + min/max sliders + sound chips + volume sliders.
+        for i in 0..3 {
+            if point_in(layout.zone_enable[i], x, y) {
+                let z = self.pvp.zone_mut(i);
+                z.enabled = !z.enabled;
+                self.pvp.save();
+                return;
+            }
+            if point_in(layout.zone_min[i], x, y) {
+                self.pvp_drag = Some(PvpDrag::ZoneMinDist(i));
+                self.drag_pvp_slider(PvpDrag::ZoneMinDist(i), x);
+                return;
+            }
+            if point_in(layout.zone_max[i], x, y) {
+                self.pvp_drag = Some(PvpDrag::ZoneMaxDist(i));
+                self.drag_pvp_slider(PvpDrag::ZoneMaxDist(i), x);
+                return;
+            }
+            if point_in(layout.zone_sound[i], x, y) {
+                let z = self.pvp.zone_mut(i);
+                let next = (z.sound.index() + 1) % crate::pvp::PvpSound::ALL.len();
+                z.sound = crate::pvp::PvpSound::ALL[next];
+                self.pvp.save();
+                return;
+            }
+            if point_in(layout.zone_volume[i], x, y) {
+                self.pvp_drag = Some(PvpDrag::ZoneVolume(i));
+                self.drag_pvp_slider(PvpDrag::ZoneVolume(i), x);
+                return;
+            }
+        }
+    }
+
+    /// Track a PVP slider drag — the slot identifies which control is held
+    /// (the cursor x maps to its value). Persists on drag-release, not
+    /// per-frame, so dragging doesn't write `pvp.toml` 60 times a second.
+    fn drag_pvp_slider(&mut self, slot: PvpDrag, x: f32) {
+        let layout = pvp_layout(self.window.0, self.window.1);
+        let frac_of = |track: Rect| -> f32 {
+            let span = (track.right - track.left - 44.0).max(1.0); // value strip
+            ((x - track.left - 4.0) / span).clamp(0.0, 1.0)
+        };
+        match slot {
+            PvpDrag::TierVolume(i) => {
+                let frac = frac_of(layout.tier_volume[i]);
+                let tier = crate::pvp::Tier::ALL[i];
+                self.pvp.sound_for_tier_mut(tier).volume = frac;
+            }
+            PvpDrag::ZoneMinDist(i) => {
+                let frac = frac_of(layout.zone_min[i]);
+                let z = self.pvp.zone_mut(i);
+                z.min_dist = (frac * 3.5).max(0.0).min(z.max_dist - 0.05);
+            }
+            PvpDrag::ZoneMaxDist(i) => {
+                let frac = frac_of(layout.zone_max[i]);
+                let z = self.pvp.zone_mut(i);
+                z.max_dist = (frac * 3.5).max(z.min_dist + 0.05).min(3.5);
+            }
+            PvpDrag::ZoneVolume(i) => {
+                let frac = frac_of(layout.zone_volume[i]);
+                self.pvp.zone_mut(i).volume = frac;
+            }
+        }
+    }
 }
 
 impl Default for Editor {
@@ -978,6 +1249,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         OverlayView::Home => draw_home(canvas, editor, data, fonts, w, h),
         OverlayView::HudEditor => draw_editor(canvas, editor, fonts, w, h),
         OverlayView::Modules => draw_modules(canvas, editor, fonts, w, h),
+        OverlayView::Pvp => draw_pvp(canvas, editor, fonts, w, h),
         OverlayView::Mods => draw_mods(canvas, editor, fonts, w, h),
         OverlayView::Settings => draw_settings(canvas, editor, fonts, w, h),
     }
@@ -988,9 +1260,11 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     let hint_font = fonts.jetbrains_mono(12.0);
     let hint = match editor.view {
         OverlayView::HudEditor => "DRAG WIDGETS OR USE THE PANEL  ·  RIGHT SHIFT OR ESC TO CLOSE",
-        OverlayView::Home | OverlayView::Modules | OverlayView::Mods | OverlayView::Settings => {
-            "RIGHT SHIFT OR ESC TO CLOSE"
-        }
+        OverlayView::Home
+        | OverlayView::Modules
+        | OverlayView::Pvp
+        | OverlayView::Mods
+        | OverlayView::Settings => "RIGHT SHIFT OR ESC TO CLOSE",
     };
     let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
     let mut hint_paint = Paint::default();
@@ -1006,7 +1280,9 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     );
 }
 
-/// Whether `id`'s underlying data is present this frame.
+/// Whether `id`'s underlying data is present this frame. PvP widgets show
+/// while the overlay editor is open (so they can be placed even without a
+/// recent result) or while a real result is live.
 fn widget_available(id: WidgetId, data: &HudData) -> bool {
     match id {
         WidgetId::Fps => true,
@@ -1015,6 +1291,12 @@ fn widget_available(id: WidgetId, data: &HudData) -> bool {
         WidgetId::Armor => data.world_active() && data.armor_active(),
         WidgetId::Potions => data.world_active() && data.potion_count() > 0,
         WidgetId::Target => data.world_active() && data.target_active(),
+        WidgetId::JumpResetText | WidgetId::JumpResetBar => {
+            data.pvp_jump_active() || data.overlay_open()
+        }
+        WidgetId::HitRange => data.pvp_hit_active() || data.overlay_open(),
+        WidgetId::Cps => data.world_active() || data.overlay_open(),
+        WidgetId::Items => data.world_active() || data.overlay_open(),
     }
 }
 
@@ -1045,6 +1327,21 @@ fn draw_widget(
         WidgetId::Armor => draw_armor(canvas, data, fonts, anchor, ax, ay),
         WidgetId::Potions => draw_potions(canvas, data, fonts, anchor, ax, ay),
         WidgetId::Target => draw_target(canvas, data, fonts, anchor, ax, ay),
+        WidgetId::JumpResetText => draw_jump_reset_text(canvas, data, fonts, anchor, ax, ay),
+        WidgetId::JumpResetBar => draw_jump_reset_bar(canvas, data, anchor, ax, ay),
+        WidgetId::HitRange => draw_hit_range(canvas, data, fonts, anchor, ax, ay),
+        WidgetId::Cps => draw_cps(canvas, data.cps_left(), data.cps_right(), fonts, anchor, ax, ay),
+        WidgetId::Items => draw_item_counters(
+            canvas,
+            data.item_pearls(),
+            data.item_arrows(),
+            data.item_totems(),
+            data.item_gapples(),
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
     }
 }
 
@@ -1759,6 +2056,456 @@ fn draw_target(
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// PvP Utils widgets — jump-reset indicator + hit-range chip.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Tier → display colour. Velvet palette (matches `EwoPvpConfig` defaults on
+/// the Java side). The matched-zone colour for hit-range comes from the wire,
+/// not this table.
+fn pvp_tier_color(tier: PvpTier) -> (u8, u8, u8) {
+    match tier {
+        PvpTier::Perfect => CHAMP,
+        PvpTier::SlightlyLate => ROSE,
+        PvpTier::Late => (0xC9, 0x6A, 0x7A), // --accent-ember
+        PvpTier::SlightlyEarly => LAV,
+        PvpTier::Early => BERRY,
+        PvpTier::None => MAUVE,
+    }
+}
+
+/// "PERFECT RESET" / "+50 ms LATE" / etc. — the Velvet re-skin of the
+/// source mod's JumpResetHud. A wine chip with the tier label in Fraunces and
+/// a tracked-mono "ms" suffix; on PERFECT, an extra rose-champagne glow.
+fn draw_jump_reset_text(
+    canvas: &Canvas,
+    data: &HudData,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let tier = if data.pvp_jump_active() { data.pvp_jump_tier() } else { PvpTier::Perfect };
+    let offset_ms = data.pvp_jump_offset_ms();
+    let fade = if data.pvp_jump_active() { data.pvp_jump_fade() } else { 0.45 };
+
+    let tier_text = tier.label();
+    let ms_text = match tier {
+        PvpTier::Perfect | PvpTier::None => String::new(),
+        _ => {
+            let sign = if offset_ms >= 0 { "+" } else { "" };
+            format!("  {}{} ms", sign, offset_ms)
+        }
+    };
+
+    let title_font = fonts.fraunces_axes(22.0, 40.0, 0.0, 600.0, None);
+    let ms_font = fonts.jetbrains_mono(13.0);
+    let ms_tracking_em = 0.14;
+
+    let pad_x = 18.0;
+    let pad_y = 10.0;
+    let radius = 12.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (title_w, _) = title_font.measure_str(tier_text, Some(&probe));
+    let ms_w = if ms_text.is_empty() { 0.0 } else { measure_tracked_em(&ms_font, &ms_text, ms_tracking_em) };
+
+    let (_, m) = title_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 22.0 * 0.72 };
+    let chip_w = pad_x * 2.0 + title_w + ms_w;
+    let chip_h = pad_y * 2.0 + cap;
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    let baseline_y = y + pad_y + cap;
+    let tier_color = pvp_tier_color(tier);
+    let alpha = if data.pvp_jump_active() { fade.clamp(0.0, 1.0) } else { 0.5 };
+
+    // Glow under PERFECT — celebratory champagne halo, only when the result
+    // is fresh (no glow in the editor preview).
+    if tier == PvpTier::Perfect && data.pvp_jump_active() {
+        let mut glow = Paint::default();
+        glow.set_anti_alias(true);
+        glow.set_color4f(rgba(tier_color, 0.55 * fade), None);
+        glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 14.0, false));
+        canvas.draw_str(tier_text, (x + pad_x, baseline_y), &title_font, &glow);
+    }
+
+    // Soft drop shadow for legibility over any game background.
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6 * alpha), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_str(tier_text, (x + pad_x, baseline_y + 2.0), &title_font, &shadow);
+
+    // The tier label itself.
+    let mut title_paint = Paint::default();
+    title_paint.set_anti_alias(true);
+    title_paint.set_color4f(rgba(tier_color, alpha), None);
+    canvas.draw_str(tier_text, (x + pad_x, baseline_y), &title_font, &title_paint);
+
+    // "+50 ms LATE" suffix — tracked mono in mauve so the tier word reads first.
+    if !ms_text.is_empty() {
+        let mut ms_paint = Paint::default();
+        ms_paint.set_anti_alias(true);
+        ms_paint.set_color4f(rgba(MAUVE, alpha), None);
+        draw_tracked_em(
+            canvas,
+            &ms_text,
+            (x + pad_x + title_w, baseline_y),
+            &ms_font,
+            &ms_paint,
+            ms_tracking_em,
+        );
+    }
+
+    chip
+}
+
+/// The timing meter — a Velvet glass pill with a centre rose-pip "perfect"
+/// marker and a sliding pearl tick at the player's actual offset. Replaces
+/// the source mod's red→green→red boss-bar with the Velvet language.
+fn draw_jump_reset_bar(
+    canvas: &Canvas,
+    data: &HudData,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    const BAR_W: f32 = 180.0;
+    const BAR_H: f32 = 6.0;
+    const PIP: f32 = 12.0; // tall side: the offset marker height
+    let chip_h = PIP.max(BAR_H) + 6.0;
+    let (x, y) = anchor.origin(ax, ay, BAR_W, chip_h);
+    let bounds = Rect::from_xywh(x, y, BAR_W, chip_h);
+
+    let active = data.pvp_jump_active();
+    let fade = if active { data.pvp_jump_fade() } else { 0.5 };
+    let tier = if active { data.pvp_jump_tier() } else { PvpTier::Perfect };
+    let offset_ms = if active { data.pvp_jump_offset_ms() as f32 } else { 0.0 };
+
+    let track = Rect::from_xywh(x, y + (chip_h - BAR_H) * 0.5, BAR_W, BAR_H);
+    let track_rr = RRect::new_rect_xy(track, BAR_H * 0.5, BAR_H * 0.5);
+
+    // Track — a thin wine pill with a faint rose hairline (matches HUD chip).
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color4f(rgba(WINE, 0.62), None);
+    canvas.draw_rrect(track_rr, &bg);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(rgba(ROSE, 0.18), None);
+    canvas.draw_rrect(track_rr, &border);
+
+    // The "perfect" marker — a centre pip in champagne with a soft halo.
+    let cx = x + BAR_W * 0.5;
+    let center_top = y + (chip_h - PIP) * 0.5;
+    let center_rect = Rect::from_xywh(cx - 1.0, center_top, 2.0, PIP);
+    let mut center_paint = Paint::default();
+    center_paint.set_anti_alias(true);
+    center_paint.set_color4f(rgba(CHAMP, 0.55), None);
+    canvas.draw_rect(center_rect, &center_paint);
+
+    // The "your offset" mark — a small pearl tick slid out to the right
+    // (late) or left (early) by an offset proportional to ±300 ms full-scale.
+    if active {
+        const MAX_MS: f32 = 300.0;
+        let norm = (offset_ms / MAX_MS).clamp(-1.0, 1.0);
+        let mx = cx + norm * (BAR_W * 0.5 - 4.0);
+        let tier_color = pvp_tier_color(tier);
+        let mark_w = 3.0;
+        let mark_h = PIP + 2.0;
+        let mark = Rect::from_xywh(mx - mark_w * 0.5, y + (chip_h - mark_h) * 0.5, mark_w, mark_h);
+        let mark_rr = RRect::new_rect_xy(mark, 1.5, 1.5);
+
+        // Halo behind the mark.
+        let mut halo = Paint::default();
+        halo.set_anti_alias(true);
+        halo.set_color4f(rgba(tier_color, 0.55 * fade), None);
+        halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 6.0, false));
+        canvas.draw_rrect(mark_rr, &halo);
+
+        let mut mark_paint = Paint::default();
+        mark_paint.set_anti_alias(true);
+        mark_paint.set_color4f(rgba(PEARL, fade), None);
+        canvas.draw_rrect(mark_rr, &mark_paint);
+    } else {
+        // In editor preview, draw a dim mark at the centre so the widget has
+        // visible chrome to grab.
+        let mark = Rect::from_xywh(cx - 1.5, y + (chip_h - PIP) * 0.5 - 1.0, 3.0, PIP + 2.0);
+        let mut mark_paint = Paint::default();
+        mark_paint.set_anti_alias(true);
+        mark_paint.set_color4f(rgba(PEARL, 0.35), None);
+        canvas.draw_rrect(RRect::new_rect_xy(mark, 1.5, 1.5), &mark_paint);
+    }
+
+    bounds
+}
+
+/// Hit-range chip — a big Fraunces distance reading + a tracked "BLOCKS"
+/// eyebrow, tinted by the matched zone's colour (set by the user in pvp.toml).
+fn draw_hit_range(
+    canvas: &Canvas,
+    data: &HudData,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let active = data.pvp_hit_active();
+    let distance = if active { data.pvp_hit_distance() } else { 3.00 };
+    let fade = if active { data.pvp_hit_fade() } else { 0.45 };
+    let zone_color = if active && data.pvp_hit_color() != 0 {
+        let c = data.pvp_hit_color();
+        ((c >> 16) as u8 & 0xFF, (c >> 8) as u8 & 0xFF, c as u8 & 0xFF)
+    } else {
+        ROSE
+    };
+
+    let value = format!("{:.2}", distance.max(0.0));
+    let unit = "BLOCKS";
+
+    let num_font = fonts.fraunces_axes(28.0, 34.0, 0.0, 600.0, None);
+    let unit_font = fonts.jetbrains_mono(12.0);
+    let unit_tracking_em = 0.18;
+
+    let pad_x = 16.0;
+    let pad_y = 9.0;
+    let gap = 10.0;
+    let radius = 12.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (num_w, _) = num_font.measure_str(&value, Some(&probe));
+    let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
+
+    let (_, m) = num_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 28.0 * 0.72 };
+    let chip_w = pad_x * 2.0 + num_w + gap + unit_w;
+    let chip_h = pad_y * 2.0 + cap;
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    let baseline_y = y + pad_y + cap;
+    let alpha = if active { fade.clamp(0.0, 1.0) } else { 0.5 };
+
+    // Soft drop shadow.
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6 * alpha), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_str(&value, (x + pad_x, baseline_y + 2.0), &num_font, &shadow);
+
+    // Distance — Fraunces in the matched zone's colour.
+    let mut num_paint = Paint::default();
+    num_paint.set_anti_alias(true);
+    num_paint.set_color4f(rgba(zone_color, alpha), None);
+    canvas.draw_str(&value, (x + pad_x, baseline_y), &num_font, &num_paint);
+
+    // "BLOCKS" — tracked mauve eyebrow.
+    let mut unit_paint = Paint::default();
+    unit_paint.set_anti_alias(true);
+    unit_paint.set_color4f(rgba(MAUVE, alpha), None);
+    draw_tracked_em(
+        canvas,
+        unit,
+        (x + pad_x + num_w + gap, baseline_y),
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
+
+    chip
+}
+
+/// Click-per-second chip — two Fraunces numbers (left | right mouse) with a
+/// thin mauve divider and a tracked "CPS" eyebrow. Mirrors the AxolotlClient /
+/// Lunar idiom; left number is always the LMB rate.
+fn draw_cps(
+    canvas: &Canvas,
+    left: i32,
+    right: i32,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let left_s = left.to_string();
+    let right_s = right.to_string();
+    let unit = "CPS";
+
+    let num_font = fonts.fraunces_axes(30.0, 34.0, 0.0, 600.0, None);
+    let unit_font = fonts.jetbrains_mono(14.0);
+    let unit_tracking_em = 0.18;
+
+    let pad_x = 14.0;
+    let pad_y = 8.0;
+    let inner_gap = 10.0; // between number and divider
+    let unit_gap = 10.0; // between right number and unit
+    let div_w = 1.5;
+    let radius = 12.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (l_w, _) = num_font.measure_str(&left_s, Some(&probe));
+    let (r_w, _) = num_font.measure_str(&right_s, Some(&probe));
+    let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
+
+    let (_, m) = num_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 30.0 * 0.72 };
+    let chip_w =
+        pad_x * 2.0 + l_w + inner_gap + div_w + inner_gap + r_w + unit_gap + unit_w;
+    let chip_h = pad_y * 2.0 + cap;
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    let baseline_y = y + pad_y + cap;
+    let r_x = x + pad_x + l_w + inner_gap + div_w + inner_gap;
+
+    // Soft drop shadow on both numbers for game-background legibility.
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_str(&left_s, (x + pad_x, baseline_y + 2.0), &num_font, &shadow);
+    canvas.draw_str(&right_s, (r_x, baseline_y + 2.0), &num_font, &shadow);
+
+    let mut num_paint = Paint::default();
+    num_paint.set_anti_alias(true);
+    num_paint.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str(&left_s, (x + pad_x, baseline_y), &num_font, &num_paint);
+    canvas.draw_str(&right_s, (r_x, baseline_y), &num_font, &num_paint);
+
+    // Divider — thin mauve vertical line spanning the cap height.
+    let mut div_paint = Paint::default();
+    div_paint.set_anti_alias(true);
+    div_paint.set_style(PaintStyle::Stroke);
+    div_paint.set_stroke_width(div_w);
+    div_paint.set_color4f(rgba(MAUVE, 0.55), None);
+    let div_x = x + pad_x + l_w + inner_gap + div_w * 0.5;
+    let div_top = baseline_y - cap + 2.0;
+    let div_bot = baseline_y - 2.0;
+    canvas.draw_line((div_x, div_top), (div_x, div_bot), &div_paint);
+
+    let mut unit_paint = Paint::default();
+    unit_paint.set_anti_alias(true);
+    unit_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        unit,
+        (r_x + r_w + unit_gap, baseline_y),
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
+
+    chip
+}
+
+/// Item-counter strip — four side-by-side cells (pearls / arrows / totems /
+/// gapples). Each cell pairs a tracked Mono mauve label with a Fraunces count
+/// in the item's accent colour. Zero-count cells render dimmed so the chip
+/// width is stable as the player picks items up or drops them.
+fn draw_item_counters(
+    canvas: &Canvas,
+    pearls: i32,
+    arrows: i32,
+    totems: i32,
+    gapples: i32,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let items: [(&str, i32, (u8, u8, u8)); 4] = [
+        ("PRL", pearls, LAV),
+        ("ARW", arrows, CHAMP),
+        ("TOT", totems, ROSE),
+        ("GAP", gapples, BERRY),
+    ];
+
+    let num_font = fonts.fraunces_axes(22.0, 32.0, 0.0, 600.0, None);
+    let label_font = fonts.jetbrains_mono(11.0);
+    let label_tracking_em = 0.18;
+
+    let pad_x = 14.0;
+    let pad_y = 8.0;
+    let label_to_num_gap = 6.0;
+    let item_gap = 16.0;
+    let radius = 12.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (_, m) = num_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 22.0 * 0.72 };
+
+    let mut widths: [(f32, f32); 4] = [(0.0, 0.0); 4];
+    let mut total = 0.0;
+    for i in 0..4 {
+        let (label, n, _) = items[i];
+        let num_s = n.to_string();
+        let (num_w, _) = num_font.measure_str(&num_s, Some(&probe));
+        let label_w = measure_tracked_em(&label_font, label, label_tracking_em);
+        widths[i] = (label_w, num_w);
+        total += label_w + label_to_num_gap + num_w;
+    }
+    total += item_gap * 3.0;
+
+    let chip_w = pad_x * 2.0 + total;
+    let chip_h = pad_y * 2.0 + cap;
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    let baseline_y = y + pad_y + cap;
+    let mut cursor_x = x + pad_x;
+
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6), None);
+
+    for i in 0..4 {
+        let (label, n, color) = items[i];
+        let (label_w, num_w) = widths[i];
+        let alpha = if n > 0 { 1.0 } else { 0.35 };
+
+        let mut label_paint = Paint::default();
+        label_paint.set_anti_alias(true);
+        label_paint.set_color4f(rgba(MAUVE, alpha), None);
+        draw_tracked_em(
+            canvas,
+            label,
+            (cursor_x, baseline_y),
+            &label_font,
+            &label_paint,
+            label_tracking_em,
+        );
+
+        let num_x = cursor_x + label_w + label_to_num_gap;
+        let num_s = n.to_string();
+        if n > 0 {
+            canvas.draw_str(&num_s, (num_x, baseline_y + 2.0), &num_font, &shadow);
+        }
+
+        let mut num_paint = Paint::default();
+        num_paint.set_anti_alias(true);
+        let nc = if n > 0 { color } else { PEARL };
+        num_paint.set_color4f(rgba(nc, alpha), None);
+        canvas.draw_str(&num_s, (num_x, baseline_y), &num_font, &num_paint);
+
+        cursor_x = num_x + num_w + item_gap;
+    }
+
+    chip
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // HUD editor chrome — drawn over the widgets while the overlay is open.
 // ────────────────────────────────────────────────────────────────────────
 
@@ -1853,8 +2600,8 @@ const ANCHOR_PRESETS: [(Anchor, f32, f32); 9] = [
 /// Hit-rects of the editor side panel, computed from the window height.
 struct PanelLayout {
     panel: Rect,
-    rows: [Rect; 7],
-    toggles: [Rect; 7],
+    rows: [Rect; 12],
+    toggles: [Rect; 12],
     cells: [Rect; 9],
 }
 
@@ -1874,8 +2621,9 @@ fn panel_layout(h: f32) -> PanelLayout {
     const CELL_GAP: f32 = 6.0;
 
     let grid_h = CELL * 3.0 + CELL_GAP * 2.0;
+    let row_count = WidgetId::ALL.len() as f32;
     let panel_h =
-        PAD * 2.0 + HEADER_H + WLABEL_H + ROW_H * 7.0 + SECTION_GAP + ALABEL_H + grid_h;
+        PAD * 2.0 + HEADER_H + WLABEL_H + ROW_H * row_count + SECTION_GAP + ALABEL_H + grid_h;
     let panel_y = (h - panel_h) * 0.5;
     let panel = Rect::from_xywh(PANEL_X, panel_y, PANEL_W, panel_h);
 
@@ -1883,9 +2631,9 @@ fn panel_layout(h: f32) -> PanelLayout {
     let content_w = PANEL_W - PAD * 2.0;
 
     let rows_top = panel_y + PAD + HEADER_H + WLABEL_H;
-    let mut rows = [empty_rect(); 7];
-    let mut toggles = [empty_rect(); 7];
-    for i in 0..7 {
+    let mut rows = [empty_rect(); 12];
+    let mut toggles = [empty_rect(); 12];
+    for i in 0..WidgetId::ALL.len() {
         let row = Rect::from_xywh(content_x, rows_top + i as f32 * ROW_H, content_w, ROW_H);
         rows[i] = row;
         let tw = 34.0;
@@ -1893,7 +2641,7 @@ fn panel_layout(h: f32) -> PanelLayout {
         toggles[i] = Rect::from_xywh(row.right - tw, row.top + (ROW_H - th) * 0.5, tw, th);
     }
 
-    let grid_top = rows_top + ROW_H * 7.0 + SECTION_GAP + ALABEL_H;
+    let grid_top = rows_top + ROW_H * row_count + SECTION_GAP + ALABEL_H;
     let grid_w = CELL * 3.0 + CELL_GAP * 2.0;
     let grid_x = content_x + (content_w - grid_w) * 0.5;
     let mut cells = [empty_rect(); 9];
@@ -2094,14 +2842,14 @@ fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, 
 
 /// The overlay's top-centre view-tab strip: the whole pill + a rect per tab.
 /// Fixed-width tabs so the renderer and the hit-tester agree without fonts.
-fn tab_layout(w: f32) -> (Rect, [Rect; 5]) {
-    const TAB_W: f32 = 124.0;
+fn tab_layout(w: f32) -> (Rect, [Rect; 6]) {
+    const TAB_W: f32 = 110.0; // narrowed a touch — 6 tabs in the same strip.
     const TAB_H: f32 = 34.0;
     const TAB_Y: f32 = 18.0;
-    let strip_w = TAB_W * 5.0;
+    let strip_w = TAB_W * 6.0;
     let strip_x = (w - strip_w) * 0.5;
     let pill = Rect::from_xywh(strip_x, TAB_Y, strip_w, TAB_H);
-    let mut tabs = [empty_rect(); 5];
+    let mut tabs = [empty_rect(); 6];
     for (i, slot) in tabs.iter_mut().enumerate() {
         *slot = Rect::from_xywh(strip_x + i as f32 * TAB_W, TAB_Y, TAB_W, TAB_H);
     }
@@ -2324,11 +3072,12 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
 // Home view — the session overview + quick toggles.
 // ────────────────────────────────────────────────────────────────────────
 
-/// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 7 toggle
-/// chips. Fixed-size so the renderer and the hit-tester agree without fonts.
-fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 7]) {
+/// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 12 widget
+/// toggle chips (4-per-row × 3 rows). Fixed-size so the renderer and the
+/// hit-tester agree without fonts.
+fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 12]) {
     let pw = 664.0;
-    let ph = 472.0;
+    let ph = 520.0; // a touch taller now to fit a third toggle row.
     let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
     let gap = 12.0;
 
@@ -2350,11 +3099,11 @@ fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 7]) {
         Rect::from_xywh(rx, stats_top + 2.0 * step, rw, card_h),
     ];
 
-    // 7 widget toggle chips — four per row, below the account line.
+    // 12 widget toggle chips — four per row, below the account line.
     let tog_w = (rw - 3.0 * gap) / 4.0;
     let tog_h = 32.0;
     let tog_top = stats_top + 2.0 * step + card_h + 82.0;
-    let mut toggles = [empty_rect(); 7];
+    let mut toggles = [empty_rect(); 12];
     for (i, slot) in toggles.iter_mut().enumerate() {
         let col = (i % 4) as f32;
         let row = (i / 4) as f32;
@@ -2851,6 +3600,370 @@ fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32
 
         draw_panel_toggle(canvas, toggles[i], m.enabled);
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// PVP view — the PvP-Utils editor: master toggles, per-tier sounds, zones.
+// (Sprint 2a) Edits are saved to the active profile's `pvp.toml`; the Java
+// mod polls the file's mtime each frame and hot-reloads, so changes apply
+// live without a relaunch.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Hit-rects for the PVP tab — three sections of rows.
+struct PvpLayout {
+    panel: Rect,
+    /// General-section toggles, in the order [jump, jump-bar, hit-range].
+    general_toggles: [Rect; 3],
+    /// Per-tier rows — [tier index]{ sound chip, volume slider }.
+    tier_sound: [Rect; 5],
+    tier_volume: [Rect; 5],
+    /// Per-zone rows — [zone index]{ enable toggle, min/max sliders, sound, vol }.
+    zone_enable: [Rect; 3],
+    zone_min: [Rect; 3],
+    zone_max: [Rect; 3],
+    zone_sound: [Rect; 3],
+    zone_volume: [Rect; 3],
+}
+
+/// Lay out the PVP-tab panel + every control. Deterministic in `(w, h)`, so
+/// the renderer and the press-handler agree.
+fn pvp_layout(w: f32, h: f32) -> PvpLayout {
+    const PANEL_W: f32 = 740.0;
+    const PAD: f32 = 24.0;
+    const HEADER_H: f32 = 78.0;
+    const SECTION_GAP: f32 = 18.0;
+    const SECTION_HEAD_H: f32 = 26.0;
+    const ROW_H: f32 = 32.0;
+
+    let general_rows = 3;
+    let tier_rows = 5;
+    let zone_rows = 3;
+    let body_h = SECTION_HEAD_H + ROW_H * general_rows as f32
+        + SECTION_GAP + SECTION_HEAD_H + ROW_H * tier_rows as f32
+        + SECTION_GAP + SECTION_HEAD_H + ROW_H * zone_rows as f32;
+    let panel_h = PAD * 2.0 + HEADER_H + body_h;
+    let px = (w - PANEL_W) * 0.5;
+    let py = ((h - panel_h) * 0.5).max(70.0); // never above the tab strip
+    let panel = Rect::from_xywh(px, py, PANEL_W, panel_h);
+
+    let content_x = px + PAD;
+    let content_w = PANEL_W - PAD * 2.0;
+    let toggle_w = 38.0;
+    let toggle_h = 20.0;
+
+    // General toggles — right-edge.
+    let mut general_toggles = [empty_rect(); 3];
+    let general_top = py + PAD + HEADER_H + SECTION_HEAD_H;
+    for i in 0..3 {
+        let row_top = general_top + i as f32 * ROW_H;
+        general_toggles[i] = Rect::from_xywh(
+            content_x + content_w - toggle_w,
+            row_top + (ROW_H - toggle_h) * 0.5,
+            toggle_w,
+            toggle_h,
+        );
+    }
+
+    // Per-tier rows — left: label text (handled by draw), middle: sound chip,
+    // right: volume slider.
+    let mut tier_sound = [empty_rect(); 5];
+    let mut tier_volume = [empty_rect(); 5];
+    let tier_top = general_top + ROW_H * 3.0 + SECTION_GAP + SECTION_HEAD_H;
+    let label_w = 150.0;
+    let sound_chip_w = 130.0;
+    let gap = 16.0;
+    let vol_left = content_x + label_w + gap + sound_chip_w + gap;
+    for i in 0..5 {
+        let row_top = tier_top + i as f32 * ROW_H;
+        tier_sound[i] = Rect::from_xywh(
+            content_x + label_w + gap,
+            row_top + 4.0,
+            sound_chip_w,
+            ROW_H - 8.0,
+        );
+        tier_volume[i] = Rect::from_xywh(
+            vol_left,
+            row_top + (ROW_H - 20.0) * 0.5,
+            content_x + content_w - vol_left,
+            20.0,
+        );
+    }
+
+    // Per-zone rows — { label | enable | min | max | sound chip | vol slider }.
+    let mut zone_enable = [empty_rect(); 3];
+    let mut zone_min = [empty_rect(); 3];
+    let mut zone_max = [empty_rect(); 3];
+    let mut zone_sound = [empty_rect(); 3];
+    let mut zone_volume = [empty_rect(); 3];
+    let zone_top = tier_top + ROW_H * 5.0 + SECTION_GAP + SECTION_HEAD_H;
+    let z_label_w = 60.0;
+    let z_toggle_w = 30.0;
+    let z_toggle_h = 16.0;
+    let z_slider_w = 100.0;
+    let z_sound_w = 100.0;
+    let z_gap = 10.0;
+    for i in 0..3 {
+        let row_top = zone_top + i as f32 * ROW_H;
+        let mut x = content_x + z_label_w;
+        zone_enable[i] = Rect::from_xywh(
+            x,
+            row_top + (ROW_H - z_toggle_h) * 0.5,
+            z_toggle_w,
+            z_toggle_h,
+        );
+        x += z_toggle_w + z_gap;
+        zone_min[i] = Rect::from_xywh(x, row_top + (ROW_H - 20.0) * 0.5, z_slider_w, 20.0);
+        x += z_slider_w + z_gap;
+        zone_max[i] = Rect::from_xywh(x, row_top + (ROW_H - 20.0) * 0.5, z_slider_w, 20.0);
+        x += z_slider_w + z_gap;
+        zone_sound[i] = Rect::from_xywh(x, row_top + 4.0, z_sound_w, ROW_H - 8.0);
+        x += z_sound_w + z_gap;
+        zone_volume[i] = Rect::from_xywh(
+            x,
+            row_top + (ROW_H - 20.0) * 0.5,
+            content_x + content_w - x,
+            20.0,
+        );
+    }
+
+    PvpLayout {
+        panel,
+        general_toggles,
+        tier_sound,
+        tier_volume,
+        zone_enable,
+        zone_min,
+        zone_max,
+        zone_sound,
+        zone_volume,
+    }
+}
+
+/// Draw a sound-cycle chip — a Velvet pill with the sound's name, clickable
+/// to cycle to the next sound. Simpler than a full portal dropdown and
+/// composes cleanly in this dense layout.
+fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: crate::pvp::PvpSound, fonts: &FontStore) {
+    let rr = RRect::new_rect_xy(rect, rect.height() * 0.4, rect.height() * 0.4);
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color4f(rgba(WINE, 0.85), None);
+    canvas.draw_rrect(rr, &bg);
+
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(rgba(ROSE, 0.22), None);
+    canvas.draw_rrect(rr, &border);
+
+    let font = fonts.jetbrains_mono(11.0);
+    let label = sound.label();
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color4f(rgba(PEARL, 0.92), None);
+    let (lw, _) = font.measure_str(label, Some(&p));
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 8.0 };
+    canvas.draw_str(
+        label,
+        (rect.left + (rect.width() - lw) * 0.5 - 4.0, rect.top + rect.height() * 0.5 + cap * 0.5),
+        &font,
+        &p,
+    );
+    // A tiny "▾" hint at the right edge.
+    let mut hint = Paint::default();
+    hint.set_anti_alias(true);
+    hint.set_color4f(rgba(MAUVE, 0.85), None);
+    canvas.draw_str(
+        "▾",
+        (rect.right - 12.0, rect.top + rect.height() * 0.5 + cap * 0.5),
+        &font,
+        &hint,
+    );
+}
+
+/// Draw a small min/max-distance slider — sized for the dense zone row. Knob
+/// position is `frac` (0..1); current value displayed to the right.
+fn draw_pvp_distance_slider(canvas: &Canvas, area: Rect, value: f32, fonts: &FontStore) {
+    const RANGE_MIN: f32 = 0.0;
+    const RANGE_MAX: f32 = 3.5;
+    let cy = area.top + area.height() * 0.5;
+    let value_w = 36.0;
+    let track_left = area.left + 4.0;
+    let track_right = area.right - value_w;
+    let track_h = 3.0;
+
+    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(rgba(WINE, 0.85), None);
+    canvas.draw_rrect(RRect::new_rect_xy(track, track_h, track_h), &tp);
+
+    let span = (RANGE_MAX - RANGE_MIN).max(0.001);
+    let frac = ((value - RANGE_MIN) / span).clamp(0.0, 1.0);
+    let knob_x = track_left + frac * (track_right - track_left);
+
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(ROSE, 0.95), None);
+    canvas.draw_circle((knob_x, cy), 5.0, &knob);
+
+    let font = fonts.jetbrains_mono(10.0);
+    let val = format!("{:.1}", value);
+    let mut vp = Paint::default();
+    vp.set_anti_alias(true);
+    vp.set_color4f(rgba(PEARL, 0.92), None);
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.0 };
+    canvas.draw_str(&val, (track_right + 6.0, cy + cap * 0.5), &font, &vp);
+}
+
+/// Draw a small volume slider — fixed 0..1 range, knob in pearl.
+fn draw_pvp_volume_slider(canvas: &Canvas, area: Rect, value: f32, fonts: &FontStore) {
+    let cy = area.top + area.height() * 0.5;
+    let value_w = 40.0;
+    let track_left = area.left + 4.0;
+    let track_right = area.right - value_w;
+    let track_h = 3.0;
+
+    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(rgba(WINE, 0.85), None);
+    canvas.draw_rrect(RRect::new_rect_xy(track, track_h, track_h), &tp);
+
+    let frac = value.clamp(0.0, 1.0);
+    let knob_x = track_left + frac * (track_right - track_left);
+    if knob_x > track_left + 1.0 {
+        let fill = Rect::from_xywh(track_left, cy - track_h * 0.5, knob_x - track_left, track_h);
+        let mut fp = Paint::default();
+        fp.set_anti_alias(true);
+        fp.set_color4f(rgba(LAV, 0.8), None);
+        canvas.draw_rrect(RRect::new_rect_xy(fill, track_h, track_h), &fp);
+    }
+
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_circle((knob_x, cy), 5.0, &knob);
+
+    let font = fonts.jetbrains_mono(10.0);
+    let val = format!("{:.2}", value);
+    let mut vp = Paint::default();
+    vp.set_anti_alias(true);
+    vp.set_color4f(rgba(PEARL, 0.92), None);
+    let (_, m) = font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.0 };
+    canvas.draw_str(&val, (track_right + 6.0, cy + cap * 0.5), &font, &vp);
+}
+
+/// Draw the PVP view — Velvet panel + three sections of editing controls.
+fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    let layout = pvp_layout(w, h);
+    let cfg = &editor.pvp;
+    draw_chip(canvas, layout.panel, 16.0);
+
+    let left = layout.panel.left + 24.0;
+
+    // Header — eyebrow + title + subhead.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(
+        canvas,
+        "PVP UTILS",
+        (left, layout.panel.top + 36.0),
+        &eyebrow_font,
+        &eyebrow,
+        0.22,
+    );
+
+    let title_font = fonts.fraunces_axes(26.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str(
+        "Jump-reset & hit-range indicators",
+        (left, layout.panel.top + 68.0),
+        &title_font,
+        &title,
+    );
+
+    let body_left = layout.panel.left + 24.0;
+    let body_right = layout.panel.right - 24.0;
+    let row_h: f32 = 32.0;
+
+    // ── Section: GENERAL ─────────────────────────────────────────────────
+    let general_section_top = layout.general_toggles[0].top - (row_h - 20.0) * 0.5 - 26.0;
+    draw_pvp_section_label(canvas, "GENERAL", body_left, general_section_top + 18.0, fonts);
+
+    let general_labels = ["Jump reset", "Jump reset bar", "Hit range"];
+    let general_states = [
+        cfg.jump_reset_enabled,
+        cfg.jump_reset_bar_enabled,
+        cfg.hit_range_enabled,
+    ];
+    let label_font = fonts.newsreader(14.0);
+    for i in 0..3 {
+        let cy = layout.general_toggles[i].top + layout.general_toggles[i].height() * 0.5;
+        let mut lp = Paint::default();
+        lp.set_anti_alias(true);
+        lp.set_color4f(rgba(PEARL, 1.0), None);
+        let (_, m) = label_font.metrics();
+        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+        canvas.draw_str(general_labels[i], (body_left, cy + cap * 0.5), &label_font, &lp);
+        draw_panel_toggle(canvas, layout.general_toggles[i], general_states[i]);
+    }
+
+    // ── Section: SOUNDS PER TIER ─────────────────────────────────────────
+    let tiers_section_top = layout.tier_sound[0].top - 26.0;
+    draw_pvp_section_label(canvas, "SOUNDS PER TIER", body_left, tiers_section_top + 18.0, fonts);
+
+    for (i, tier) in crate::pvp::Tier::ALL.iter().enumerate() {
+        let slot = cfg.sound_for_tier(*tier);
+        let cy = layout.tier_sound[i].top + layout.tier_sound[i].height() * 0.5;
+        let mut lp = Paint::default();
+        lp.set_anti_alias(true);
+        lp.set_color4f(rgba(PEARL, 1.0), None);
+        let (_, m) = label_font.metrics();
+        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+        canvas.draw_str(tier.label(), (body_left, cy + cap * 0.5), &label_font, &lp);
+        draw_pvp_sound_chip(canvas, layout.tier_sound[i], slot.sound, fonts);
+        draw_pvp_volume_slider(canvas, layout.tier_volume[i], slot.volume, fonts);
+    }
+
+    // ── Section: HIT-RANGE ZONES ─────────────────────────────────────────
+    let zones_section_top = layout.zone_enable[0].top - 26.0;
+    draw_pvp_section_label(canvas, "HIT-RANGE ZONES", body_left, zones_section_top + 18.0, fonts);
+
+    for i in 0..3 {
+        let z = cfg.zone(i);
+        let cy = layout.zone_enable[i].top + layout.zone_enable[i].height() * 0.5;
+        let zlabel = format!("Zone {}", i + 1);
+        let mut lp = Paint::default();
+        lp.set_anti_alias(true);
+        lp.set_color4f(rgba(PEARL, 1.0), None);
+        let (_, m) = label_font.metrics();
+        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+        canvas.draw_str(&zlabel, (body_left, cy + cap * 0.5), &label_font, &lp);
+        draw_panel_toggle(canvas, layout.zone_enable[i], z.enabled);
+        draw_pvp_distance_slider(canvas, layout.zone_min[i], z.min_dist, fonts);
+        draw_pvp_distance_slider(canvas, layout.zone_max[i], z.max_dist, fonts);
+        draw_pvp_sound_chip(canvas, layout.zone_sound[i], z.sound, fonts);
+        draw_pvp_volume_slider(canvas, layout.zone_volume[i], z.volume, fonts);
+    }
+
+    // Quiet the unused body_right warning when we add more controls later.
+    let _ = body_right;
+}
+
+fn draw_pvp_section_label(canvas: &Canvas, label: &str, x: f32, y: f32, fonts: &FontStore) {
+    let font = fonts.jetbrains_mono(10.0);
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(canvas, label, (x, y), &font, &p, 0.20);
 }
 
 // ────────────────────────────────────────────────────────────────────────

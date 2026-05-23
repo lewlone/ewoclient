@@ -65,6 +65,7 @@
 
 mod hud;
 mod modules;
+mod pvp;
 mod skin;
 
 use std::cell::RefCell;

@@ -16,7 +16,14 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+
+import dev.lewlone.ewohud.pvp.EwoHitRange;
+import dev.lewlone.ewohud.pvp.EwoJumpReset;
+import dev.lewlone.ewohud.pvp.EwoPvpModule;
 
 /**
  * The JVM&rarr;Rust HUD data block.
@@ -34,7 +41,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 5;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -67,12 +74,35 @@ public final class EwoHudData {
     private static final int OFF_SERVER = 504;      // i32 len + 48 bytes
     private static final int OFF_PLAYER_NAME = 556; // i32 len + 24 bytes
 
+    // PvP Utils — schema 4. Two contiguous records: jump-reset, then hit-range.
+    private static final int OFF_PVP_JUMP = 584;       // i32 tier, i32 offset_ms, i32 age_ticks, i32 fade_total
+    private static final int OFF_PVP_HIT = 600;        // f32 distance, i32 color_rgb, i32 age_ticks, i32 fade_total
+
+    // Combat HUD additions — schema 5. CPS pair + four tracked item counts.
+    private static final int OFF_CPS_LEFT = 616;       // i32 clicks-per-second, left mouse
+    private static final int OFF_CPS_RIGHT = 620;      // i32 clicks-per-second, right mouse
+    private static final int OFF_ITEM_PEARLS = 624;    // i32 ender pearls in inventory
+    private static final int OFF_ITEM_ARROWS = 628;    // i32 arrows
+    private static final int OFF_ITEM_TOTEMS = 632;    // i32 totems of undying
+    private static final int OFF_ITEM_GAPPLES = 636;   // i32 enchanted golden apples
+
     // flags bits
     private static final int FLAG_WORLD = 1;
     private static final int FLAG_PING = 1 << 1;
     private static final int FLAG_ARMOR = 1 << 2;
     private static final int FLAG_TARGET = 1 << 3;
     private static final int FLAG_OVERLAY = 1 << 4; // the EwoClient overlay is open
+    private static final int FLAG_PVP_JUMP = 1 << 5; // jump-reset result is live
+    private static final int FLAG_PVP_HIT = 1 << 6;  // hit-range result is live
+
+    // jump-reset tier values written into OFF_PVP_JUMP (matches the enum order
+    // in EwoJumpReset.Tier; reordering needs a SCHEMA_VERSION bump).
+    private static final int TIER_NONE = 0;
+    private static final int TIER_PERFECT = 1;
+    private static final int TIER_SLIGHTLY_EARLY = 2;
+    private static final int TIER_EARLY = 3;
+    private static final int TIER_SLIGHTLY_LATE = 4;
+    private static final int TIER_LATE = 5;
 
     // keys bits
     private static final int K_FWD = 1;
@@ -111,6 +141,13 @@ public final class EwoHudData {
         if (mc == null) {
             return;
         }
+
+        // Drive the PvP-Utils trackers + fire any sounds before we sample
+        // their state into the shared block. Pure Java work, no rendering.
+        EwoPvpModule.tick();
+
+        // Sample the per-frame click rate before reading it into the buffer.
+        EwoClickTracker.tick();
 
         b.putInt(OFF_FPS, mc.getFps());
 
@@ -169,6 +206,50 @@ public final class EwoHudData {
         if (mc.screen instanceof EwoOverlayScreen) {
             flags |= FLAG_OVERLAY;
         }
+
+        // PvP Utils — write the jump-reset record. Always writes the four
+        // ints; the flag bit tells the HUD whether the result is "live" or a
+        // stale value the renderer should ignore.
+        if (EwoJumpReset.hasResult()) {
+            flags |= FLAG_PVP_JUMP;
+        }
+        b.putInt(OFF_PVP_JUMP,     tierToInt(EwoJumpReset.currentTier()));
+        b.putInt(OFF_PVP_JUMP + 4, EwoJumpReset.currentOffsetMs());
+        b.putInt(OFF_PVP_JUMP + 8, EwoJumpReset.ageTicks());
+        b.putInt(OFF_PVP_JUMP + 12, EwoJumpReset.fadeTotalTicks());
+
+        if (EwoHitRange.hasResult()) {
+            flags |= FLAG_PVP_HIT;
+        }
+        b.putFloat(OFF_PVP_HIT,     EwoHitRange.lastDistance());
+        b.putInt(OFF_PVP_HIT + 4,   EwoHitRange.matchedZoneColor() & 0xFFFFFF);
+        b.putInt(OFF_PVP_HIT + 8,   EwoHitRange.ageTicks());
+        b.putInt(OFF_PVP_HIT + 12,  EwoHitRange.fadeTotalTicks());
+
+        // CPS — always written, gated by world_active on the renderer side.
+        b.putInt(OFF_CPS_LEFT,  EwoClickTracker.leftCps());
+        b.putInt(OFF_CPS_RIGHT, EwoClickTracker.rightCps());
+
+        // Item counts — sum every matching stack across the player's inventory.
+        int pearls = 0, arrows = 0, totems = 0, gapples = 0;
+        if (player != null) {
+            Inventory inv = player.getInventory();
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                ItemStack st = inv.getItem(i);
+                if (st.isEmpty()) {
+                    continue;
+                }
+                Item it = st.getItem();
+                if (it == Items.ENDER_PEARL) pearls += st.getCount();
+                else if (it == Items.ARROW) arrows += st.getCount();
+                else if (it == Items.TOTEM_OF_UNDYING) totems += st.getCount();
+                else if (it == Items.ENCHANTED_GOLDEN_APPLE) gapples += st.getCount();
+            }
+        }
+        b.putInt(OFF_ITEM_PEARLS,  pearls);
+        b.putInt(OFF_ITEM_ARROWS,  arrows);
+        b.putInt(OFF_ITEM_TOTEMS,  totems);
+        b.putInt(OFF_ITEM_GAPPLES, gapples);
 
         // Session playtime, server address, and account name — for the
         // overlay's HOME / overview tab.
@@ -242,6 +323,18 @@ public final class EwoHudData {
         }
         putString(b, OFF_TARGET_NAME, TARGET_NAME_CAP, target.getName().getString());
         return true;
+    }
+
+    /** Tier → wire int (matches the constants at the top of this class). */
+    private static int tierToInt(EwoJumpReset.Tier tier) {
+        return switch (tier) {
+            case PERFECT -> TIER_PERFECT;
+            case SLIGHTLY_EARLY -> TIER_SLIGHTLY_EARLY;
+            case EARLY -> TIER_EARLY;
+            case SLIGHTLY_LATE -> TIER_SLIGHTLY_LATE;
+            case LATE -> TIER_LATE;
+            case NONE -> TIER_NONE;
+        };
     }
 
     /**
