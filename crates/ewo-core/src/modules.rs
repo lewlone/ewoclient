@@ -195,6 +195,16 @@ pub const REGISTRY: &[ModuleDef] = &[
             default: 3.0,
         }],
     },
+    ModuleDef {
+        id: "auto_tool",
+        name: "Auto Tool",
+        description: "Swaps to the best hotbar tool while you mine a block.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -253,6 +263,7 @@ mod tests {
             "freelook",
             "no_fire_overlay",
             "crosshair_on_reach",
+            "auto_tool",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
