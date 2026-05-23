@@ -34,6 +34,11 @@ public final class EwoPvpConfig {
     public boolean hitRangeEnabled = true;
     public int hitRangeFadeTicks = 20;              // 1 s
 
+    /** World-anchored combat indicators (Commit 3): per-entity overhead totem
+     *  count and floating-health bars on visible LivingEntities. */
+    public boolean totemCountEnabled = true;
+    public boolean floatingHealthEnabled = true;
+
     /** Velvet-themed tier colours (RRGGBB). Defaults match {@code hud.rs}'s
      *  palette — rose for perfect, champ for slightly off, ember for late. */
     public int colorPerfect       = 0xE8D4A8; // champ — the celebratory tier
@@ -183,6 +188,7 @@ public final class EwoPvpConfig {
             switch (section) {
                 case "jump_reset" -> applyJumpResetKey(key, val);
                 case "hit_range" -> applyHitRangeKey(key, val);
+                case "indicators" -> applyIndicatorsKey(key, val);
                 case "colors" -> applyColorsKey(key, val);
                 case "sounds.perfect" -> applySoundKey(soundPerfect, key, val);
                 case "sounds.slightly_late" -> applySoundKey(soundSlightlyLate, key, val);
@@ -213,6 +219,14 @@ public final class EwoPvpConfig {
         switch (key) {
             case "enabled" -> hitRangeEnabled = parseBool(val, hitRangeEnabled);
             case "fade_ticks" -> hitRangeFadeTicks = parseInt(val, hitRangeFadeTicks);
+            default -> {}
+        }
+    }
+
+    private void applyIndicatorsKey(String key, String val) {
+        switch (key) {
+            case "totem_count" -> totemCountEnabled = parseBool(val, totemCountEnabled);
+            case "floating_health" -> floatingHealthEnabled = parseBool(val, floatingHealthEnabled);
             default -> {}
         }
     }
@@ -268,6 +282,10 @@ public final class EwoPvpConfig {
         sb.append("\n[hit_range]\n");
         sb.append("enabled = ").append(hitRangeEnabled).append('\n');
         sb.append("fade_ticks = ").append(hitRangeFadeTicks).append('\n');
+
+        sb.append("\n[indicators]\n");
+        sb.append("totem_count = ").append(totemCountEnabled).append('\n');
+        sb.append("floating_health = ").append(floatingHealthEnabled).append('\n');
 
         sb.append("\n[colors]\n");
         appendHex(sb, "perfect", colorPerfect);

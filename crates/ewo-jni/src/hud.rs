@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -79,7 +79,14 @@ mod off {
     pub const ITEM_ARROWS: usize = 628;
     pub const ITEM_TOTEMS: usize = 632;
     pub const ITEM_GAPPLES: usize = 636;
+    // Indicators block (schema 6): i32 count + up to MAX_INDICATORS records.
+    pub const INDICATORS: usize = 640;
 }
+
+/// Max per-frame indicator records — mirror of `EwoIndicators.MAX_TRACKED`.
+pub const MAX_INDICATORS: usize = 16;
+/// Bytes per indicator record — mirror of `EwoIndicators.RECORD`.
+pub const INDICATOR_RECORD: usize = 40;
 const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
 const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
 const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
@@ -319,6 +326,58 @@ impl HudData {
     pub fn item_gapples(&self) -> i32 {
         self.i32_at(off::ITEM_GAPPLES)
     }
+
+    // ── World-anchored indicators (schema 6) ──────────────────────────────
+
+    /// How many indicator records the mod wrote this frame (capped at
+    /// [`MAX_INDICATORS`]).
+    pub fn indicator_count(&self) -> usize {
+        (self.i32_at(off::INDICATORS).max(0) as usize).min(MAX_INDICATORS)
+    }
+
+    /// One indicator record — decoded copy of slot `i` in the block.
+    pub fn indicator(&self, i: usize) -> Indicator {
+        let rec = off::INDICATORS + 4 + i * INDICATOR_RECORD;
+        Indicator {
+            entity_id: self.i32_at(rec),
+            screen_x: self.f32_at(rec + 4),
+            screen_y: self.f32_at(rec + 8),
+            distance: self.f32_at(rec + 12),
+            in_view: self.i32_at(rec + 16) != 0,
+            totem_count: self.i32_at(rec + 20),
+            health: self.f32_at(rec + 24),
+            max_health: self.f32_at(rec + 28),
+            last_damage: self.f32_at(rec + 32),
+            damage_age_sec: self.f32_at(rec + 36),
+        }
+    }
+}
+
+/// One overhead-indicator record — a tracked LivingEntity projected to
+/// screen space, with its persistent totem count and most-recent damage.
+///
+/// `entity_id` + `distance` are not consumed by the current draws but stay on
+/// the wire so future polish (distance-fade, per-entity rate-limit, opt-in
+/// list) doesn't need a schema bump to read them.
+#[allow(dead_code)]
+pub struct Indicator {
+    pub entity_id: i32,
+    pub screen_x: f32,
+    pub screen_y: f32,
+    /// World-space distance to the local player (blocks).
+    pub distance: f32,
+    /// `true` if the head position is on (or near) the screen.
+    pub in_view: bool,
+    /// Running tally of observed totem-of-undying activations.
+    pub totem_count: i32,
+    pub health: f32,
+    pub max_health: f32,
+    /// Damage delta from the most recent health drop. Stale if
+    /// [`damage_age_sec`] is `< 0`.
+    pub last_damage: f32,
+    /// Seconds since the most recent damage hit; `< 0` means no live damage
+    /// (the fade has elapsed or none has been seen yet).
+    pub damage_age_sec: f32,
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -1076,6 +1135,8 @@ impl Editor {
                     0 => self.pvp.jump_reset_enabled = !self.pvp.jump_reset_enabled,
                     1 => self.pvp.jump_reset_bar_enabled = !self.pvp.jump_reset_bar_enabled,
                     2 => self.pvp.hit_range_enabled = !self.pvp.hit_range_enabled,
+                    3 => self.pvp.totem_count_enabled = !self.pvp.totem_count_enabled,
+                    4 => self.pvp.floating_health_enabled = !self.pvp.floating_health_enabled,
                     _ => {}
                 }
                 self.pvp.save();
@@ -1225,6 +1286,26 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         let st = editor.modules.get(idx);
         if st.enabled && data.target_active() && data.target_distance() <= st.settings[0] {
             draw_crosshair_on_reach(canvas, w, h);
+        }
+    }
+
+    // World-anchored combat indicators — overhead totem-pop counter and
+    // floating health/damage on visible LivingEntities. Always drawn so the
+    // PvP feedback is live in actual fights; the per-feature toggle gates it.
+    let totem_on = editor.pvp.totem_count_enabled;
+    let health_on = editor.pvp.floating_health_enabled;
+    if totem_on || health_on {
+        for i in 0..data.indicator_count() {
+            let ind = data.indicator(i);
+            if !ind.in_view {
+                continue;
+            }
+            if health_on {
+                draw_floating_health(canvas, &ind, fonts);
+            }
+            if totem_on && ind.totem_count > 0 {
+                draw_totem_overhead(canvas, &ind, fonts);
+            }
         }
     }
 
@@ -2515,6 +2596,149 @@ fn draw_item_counters(
     chip
 }
 
+/// Overhead totem-of-undying pop counter — a small rose chip with `× N`
+/// painted just above the entity's head. Drawn only when `totem_count > 0`,
+/// so entities without observed pops stay un-cluttered.
+fn draw_totem_overhead(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
+    let label = format!("\u{00D7} {}", ind.totem_count); // "× N"
+    let num_font = fonts.fraunces_axes(14.0, 30.0, 0.0, 600.0, None);
+    let pad_x = 7.0;
+    let pad_y = 3.5;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (lw, _) = num_font.measure_str(&label, Some(&probe));
+    let (_, m) = num_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 14.0 * 0.72 };
+    let chip_w = pad_x * 2.0 + lw;
+    let chip_h = pad_y * 2.0 + cap;
+
+    // Stacked above the head; vertical-offset 22 px clears any nametag.
+    let cx = ind.screen_x;
+    let cy = ind.screen_y - 22.0;
+    let x = cx - chip_w * 0.5;
+    let y = cy - chip_h * 0.5;
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+
+    // Wine fill + rose hairline — the Velvet chip language at small scale.
+    let rrect = RRect::new_rect_xy(chip, chip_h * 0.45, chip_h * 0.45);
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_color4f(rgba(WINE, 0.78), None);
+    canvas.draw_rrect(rrect, &fill);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(rgba(ROSE, 0.55), None);
+    canvas.draw_rrect(rrect, &border);
+
+    let baseline = y + pad_y + cap;
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 2.0, false));
+    canvas.draw_str(&label, (x + pad_x, baseline + 1.0), &num_font, &shadow);
+
+    let mut num_paint = Paint::default();
+    num_paint.set_anti_alias(true);
+    num_paint.set_color4f(rgba(ROSE, 1.0), None);
+    canvas.draw_str(&label, (x + pad_x, baseline), &num_font, &num_paint);
+}
+
+/// Floating health bar — a narrow rose fill on a wine track, with the live HP
+/// numerically beneath. A brief ember "-N.N" damage pop fades out beside the
+/// number after each hit. Anchored at the entity's "above-head" screen point.
+fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
+    if ind.max_health <= 0.0 {
+        return;
+    }
+    let frac = (ind.health / ind.max_health).clamp(0.0, 1.0);
+
+    // Bar geometry — fixed width so the indicator stays readable at any
+    // distance. Sat above the head; the totem chip stacks higher still.
+    let bar_w = 56.0;
+    let bar_h = 4.0;
+    let cx = ind.screen_x;
+    let cy = ind.screen_y;
+    let bar_x = cx - bar_w * 0.5;
+    let bar_y = cy;
+
+    // Track — wine pill with a hairline inset for legibility on bright maps.
+    let track = Rect::from_xywh(bar_x, bar_y, bar_w, bar_h);
+    let track_rr = RRect::new_rect_xy(track, bar_h * 0.5, bar_h * 0.5);
+    let mut track_paint = Paint::default();
+    track_paint.set_anti_alias(true);
+    track_paint.set_color4f(rgba(WINE, 0.78), None);
+    canvas.draw_rrect(track_rr, &track_paint);
+
+    // Fill — rose for healthy, ember for low. Threshold at 30% mirrors
+    // vanilla's "low HP" heart flash.
+    let fill_color = if frac < 0.30 { (0xC9, 0x6A, 0x7A) } else { ROSE };
+    let fill_rect = Rect::from_xywh(bar_x, bar_y, bar_w * frac, bar_h);
+    if fill_rect.width() > 0.0 {
+        let fill_rr = RRect::new_rect_xy(fill_rect, bar_h * 0.5, bar_h * 0.5);
+        let mut fill = Paint::default();
+        fill.set_anti_alias(true);
+        fill.set_color4f(rgba(fill_color, 1.0), None);
+        canvas.draw_rrect(fill_rr, &fill);
+    }
+
+    let border_rr = RRect::new_rect_xy(track, bar_h * 0.5, bar_h * 0.5);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(0.8);
+    border.set_color4f(rgba(ROSE, 0.30), None);
+    canvas.draw_rrect(border_rr, &border);
+
+    // HP read-out — JetBrains Mono beneath the bar.
+    let hp_label = format!("{:.1} / {:.0}", ind.health.max(0.0), ind.max_health);
+    let hp_font = fonts.jetbrains_mono(10.0);
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (hp_w, _) = hp_font.measure_str(&hp_label, Some(&probe));
+    let (_, m) = hp_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.5 };
+    let text_baseline = bar_y + bar_h + cap + 4.0;
+
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.65), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 2.0, false));
+    canvas.draw_str(
+        &hp_label,
+        (cx - hp_w * 0.5, text_baseline + 1.0),
+        &hp_font,
+        &shadow,
+    );
+
+    let mut hp_paint = Paint::default();
+    hp_paint.set_anti_alias(true);
+    hp_paint.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str(&hp_label, (cx - hp_w * 0.5, text_baseline), &hp_font, &hp_paint);
+
+    // Damage pop — ember "-N.N" beside the HP, fading out over 1.5 s.
+    if ind.damage_age_sec >= 0.0 && ind.last_damage > 0.05 {
+        let alpha = (1.0 - (ind.damage_age_sec / 1.5).clamp(0.0, 1.0)).powf(1.2);
+        let dmg_label = format!("-{:.1}", ind.last_damage);
+        let dmg_font = fonts.fraunces_axes(13.0, 30.0, 0.0, 600.0, None);
+        let mut dmg_paint = Paint::default();
+        dmg_paint.set_anti_alias(true);
+        let ember = (0xC9, 0x6A, 0x7A);
+        dmg_paint.set_color4f(rgba(ember, alpha), None);
+        let dmg_x = cx + hp_w * 0.5 + 8.0;
+        // Lift the pop as it fades, the standard "damage number" affordance.
+        let lift = ind.damage_age_sec * 8.0;
+        canvas.draw_str(
+            &dmg_label,
+            (dmg_x, text_baseline - lift),
+            &dmg_font,
+            &dmg_paint,
+        );
+    }
+}
+
 /// Rose "+" painted at screen centre to signal the entity under the crosshair
 /// is within attack reach. A two-pass stroke: a soft outer halo first, then a
 /// crisp inner stroke. Overlays the vanilla white crosshair (which paints into
@@ -3649,8 +3873,9 @@ fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32
 /// Hit-rects for the PVP tab — three sections of rows.
 struct PvpLayout {
     panel: Rect,
-    /// General-section toggles, in the order [jump, jump-bar, hit-range].
-    general_toggles: [Rect; 3],
+    /// General-section toggles, in the order
+    /// `[jump, jump-bar, hit-range, totem-count, floating-health]`.
+    general_toggles: [Rect; 5],
     /// Per-tier rows — [tier index]{ sound chip, volume slider }.
     tier_sound: [Rect; 5],
     tier_volume: [Rect; 5],
@@ -3672,7 +3897,7 @@ fn pvp_layout(w: f32, h: f32) -> PvpLayout {
     const SECTION_HEAD_H: f32 = 26.0;
     const ROW_H: f32 = 32.0;
 
-    let general_rows = 3;
+    let general_rows = 5;
     let tier_rows = 5;
     let zone_rows = 3;
     let body_h = SECTION_HEAD_H + ROW_H * general_rows as f32
@@ -3689,9 +3914,9 @@ fn pvp_layout(w: f32, h: f32) -> PvpLayout {
     let toggle_h = 20.0;
 
     // General toggles — right-edge.
-    let mut general_toggles = [empty_rect(); 3];
+    let mut general_toggles = [empty_rect(); 5];
     let general_top = py + PAD + HEADER_H + SECTION_HEAD_H;
-    for i in 0..3 {
+    for i in 0..5 {
         let row_top = general_top + i as f32 * ROW_H;
         general_toggles[i] = Rect::from_xywh(
             content_x + content_w - toggle_w,
@@ -3705,7 +3930,7 @@ fn pvp_layout(w: f32, h: f32) -> PvpLayout {
     // right: volume slider.
     let mut tier_sound = [empty_rect(); 5];
     let mut tier_volume = [empty_rect(); 5];
-    let tier_top = general_top + ROW_H * 3.0 + SECTION_GAP + SECTION_HEAD_H;
+    let tier_top = general_top + ROW_H * 5.0 + SECTION_GAP + SECTION_HEAD_H;
     let label_w = 150.0;
     let sound_chip_w = 130.0;
     let gap = 16.0;
@@ -3921,7 +4146,7 @@ fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32)
     title.set_anti_alias(true);
     title.set_color4f(rgba(PEARL, 1.0), None);
     canvas.draw_str(
-        "Jump-reset & hit-range indicators",
+        "Combat indicators & sound cues",
         (left, layout.panel.top + 68.0),
         &title_font,
         &title,
@@ -3935,14 +4160,22 @@ fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32)
     let general_section_top = layout.general_toggles[0].top - (row_h - 20.0) * 0.5 - 26.0;
     draw_pvp_section_label(canvas, "GENERAL", body_left, general_section_top + 18.0, fonts);
 
-    let general_labels = ["Jump reset", "Jump reset bar", "Hit range"];
+    let general_labels = [
+        "Jump reset",
+        "Jump reset bar",
+        "Hit range",
+        "Totem pop counter",
+        "Floating health",
+    ];
     let general_states = [
         cfg.jump_reset_enabled,
         cfg.jump_reset_bar_enabled,
         cfg.hit_range_enabled,
+        cfg.totem_count_enabled,
+        cfg.floating_health_enabled,
     ];
     let label_font = fonts.newsreader(14.0);
-    for i in 0..3 {
+    for i in 0..5 {
         let cy = layout.general_toggles[i].top + layout.general_toggles[i].height() * 0.5;
         let mut lp = Paint::default();
         lp.set_anti_alias(true);

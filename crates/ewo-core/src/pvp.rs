@@ -164,6 +164,10 @@ pub struct PvpConfig {
     pub hit_range_enabled: bool,
     pub hit_range_fade_ticks: i32,
 
+    // [indicators] — world-anchored combat indicators (Commit 3)
+    pub totem_count_enabled: bool,
+    pub floating_health_enabled: bool,
+
     // [colors]
     pub color_perfect: i32,
     pub color_slightly_late: i32,
@@ -198,6 +202,9 @@ impl PvpConfig {
 
             hit_range_enabled: true,
             hit_range_fade_ticks: 20,
+
+            totem_count_enabled: true,
+            floating_health_enabled: true,
 
             color_perfect: 0xE8D4A8,
             color_slightly_late: 0xE5B8C5,
@@ -359,6 +366,16 @@ impl PvpConfig {
                 "fade_ticks" => self.hit_range_fade_ticks = parse_i32(value, self.hit_range_fade_ticks),
                 _ => {}
             },
+            "indicators" => match key {
+                "totem_count" => {
+                    self.totem_count_enabled = parse_bool(value, self.totem_count_enabled)
+                }
+                "floating_health" => {
+                    self.floating_health_enabled =
+                        parse_bool(value, self.floating_health_enabled)
+                }
+                _ => {}
+            },
             "colors" => match key {
                 "perfect" => self.color_perfect = parse_color(value, self.color_perfect),
                 "slightly_late" => {
@@ -443,6 +460,13 @@ impl PvpConfig {
         s.push_str("\n[hit_range]\n");
         s.push_str(&format!("enabled = {}\n", self.hit_range_enabled));
         s.push_str(&format!("fade_ticks = {}\n", self.hit_range_fade_ticks));
+
+        s.push_str("\n[indicators]\n");
+        s.push_str(&format!("totem_count = {}\n", self.totem_count_enabled));
+        s.push_str(&format!(
+            "floating_health = {}\n",
+            self.floating_health_enabled
+        ));
 
         s.push_str("\n[colors]\n");
         push_color(&mut s, "perfect", self.color_perfect);

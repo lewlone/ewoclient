@@ -41,7 +41,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 6;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -85,6 +85,11 @@ public final class EwoHudData {
     private static final int OFF_ITEM_ARROWS = 628;    // i32 arrows
     private static final int OFF_ITEM_TOTEMS = 632;    // i32 totems of undying
     private static final int OFF_ITEM_GAPPLES = 636;   // i32 enchanted golden apples
+
+    // Indicators block — schema 6. World-anchored per-entity overhead data:
+    // an i32 count followed by MAX_TRACKED × 40-byte records (see EwoIndicators).
+    private static final int OFF_INDICATORS = 640;     // i32 count + 16 × 40-byte records
+    // Indicator block ends at 640 + 4 + 16*40 = 1284. Plenty of room left in CAPACITY 4096.
 
     // flags bits
     private static final int FLAG_WORLD = 1;
@@ -250,6 +255,11 @@ public final class EwoHudData {
         b.putInt(OFF_ITEM_ARROWS,  arrows);
         b.putInt(OFF_ITEM_TOTEMS,  totems);
         b.putInt(OFF_ITEM_GAPPLES, gapples);
+
+        // World-anchored indicators — per-entity overhead data for the totem
+        // counter + floating-health widgets. The fill writes the i32 count
+        // header itself, then up to MAX_TRACKED records.
+        EwoIndicators.fill(b, OFF_INDICATORS);
 
         // Session playtime, server address, and account name — for the
         // overlay's HOME / overview tab.

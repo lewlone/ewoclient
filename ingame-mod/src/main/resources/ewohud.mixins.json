@@ -12,7 +12,8 @@
     "MouseHandlerMixin",
     "LivingEntityJumpMixin",
     "PlayerAttackMixin",
-    "ScreenEffectRendererMixin"
+    "ScreenEffectRendererMixin",
+    "LivingEntityStatusMixin"
   ],
   "injectors": {
     "defaultRequire": 1
