@@ -262,6 +262,33 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: false,
         settings: &[],
     },
+    ModuleDef {
+        id: "sprint_tap",
+        name: "Sprint Tap",
+        description: "After each attack re-engages sprint so the next hit also gets vanilla's knockback boost.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
+    ModuleDef {
+        id: "auto_eat",
+        name: "Auto Eat",
+        description: "When hunger drops below the threshold, swap to a food slot and eat through a real right-click cycle.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[ModuleSetting {
+            id: "threshold",
+            label: "Eat when hunger ≤",
+            min: 0.0,
+            max: 20.0,
+            step: 1.0,
+            default: 16.0,
+        }],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -326,6 +353,8 @@ mod tests {
             "hand_restock",
             "no_pumpkin_overlay",
             "hit_color",
+            "sprint_tap",
+            "auto_eat",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
