@@ -29,13 +29,15 @@ public final class EwoModules {
     private static final String[] TOGGLE_IDS = {
         "fullbright", "fov", "toggle_sprint", "toggle_sneak", "no_damage_tilt",
         "no_view_bob", "no_fire_overlay", "crosshair_on_reach",
-        "auto_tool", "auto_totem", "hand_restock"
+        "auto_tool", "auto_totem", "hand_restock",
+        "no_pumpkin_overlay", "hit_color"
     };
     private static final int[] TOGGLE_INDEX = {
         EwoModuleData.FULLBRIGHT, EwoModuleData.FOV, EwoModuleData.TOGGLE_SPRINT,
         EwoModuleData.TOGGLE_SNEAK, EwoModuleData.NO_DAMAGE_TILT, EwoModuleData.NO_VIEW_BOB,
         EwoModuleData.NO_FIRE_OVERLAY, EwoModuleData.CROSSHAIR_ON_REACH,
-        EwoModuleData.AUTO_TOOL, EwoModuleData.AUTO_TOTEM, EwoModuleData.HAND_RESTOCK
+        EwoModuleData.AUTO_TOOL, EwoModuleData.AUTO_TOTEM, EwoModuleData.HAND_RESTOCK,
+        EwoModuleData.NO_PUMPKIN_OVERLAY, EwoModuleData.HIT_COLOR
     };
 
     /** Per-frame module tick. Called from {@code flipFrame}, post-render. */

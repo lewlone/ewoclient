@@ -242,6 +242,26 @@ pub const REGISTRY: &[ModuleDef] = &[
             default: 0.0,
         }],
     },
+    ModuleDef {
+        id: "no_pumpkin_overlay",
+        name: "No Pumpkin Overlay",
+        description: "Hides the pumpkin-blur overlay when you wear a carved pumpkin on your head.",
+        category: ModuleCategory::Visual,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
+    ModuleDef {
+        id: "hit_color",
+        name: "Hit Color",
+        description: "Suppresses the vanilla red hurt-flash on entities you damage. (Color picker in a follow-up.)",
+        category: ModuleCategory::Visual,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -304,6 +324,8 @@ mod tests {
             "auto_totem",
             "legit_elytra_swap",
             "hand_restock",
+            "no_pumpkin_overlay",
+            "hit_color",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }

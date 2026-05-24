@@ -13,7 +13,8 @@
     "LivingEntityJumpMixin",
     "PlayerAttackMixin",
     "ScreenEffectRendererMixin",
-    "LivingEntityStatusMixin"
+    "LivingEntityStatusMixin",
+    "LivingEntityRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1
