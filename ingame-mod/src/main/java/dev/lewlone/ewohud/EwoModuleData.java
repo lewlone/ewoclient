@@ -30,7 +30,7 @@ public final class EwoModuleData {
      *  the catalog plenty of headroom before another bump is needed. */
     public static final int CAPACITY = 4096;
     /** Module count — must equal {@code ewo_core::modules::REGISTRY.len()}. */
-    public static final int MODULE_COUNT = 24;
+    public static final int MODULE_COUNT = 25;
 
     // Module indices — mirror of modules::REGISTRY order. The effect mixins
     // reference these by name; reordering needs a SCHEMA_VERSION bump.
@@ -57,7 +57,8 @@ public final class EwoModuleData {
     public static final int AUTO_PEARL = 20;
     public static final int RIPTIDE_BOOST = 21;
     public static final int MACE_COMBO = 22;
-    public static final int WIND_CHARGE_MLG = 23;
+    public static final int HIT_INDICATOR = 23;
+    public static final int WIND_CHARGE_MLG = 24;
 
     private static final int OFF_RECORDS = 8;  // past i32 schema + i32 count
     /** Schema 2: 4 + 8*4 + 4 = 40 bytes per module record. Must mirror

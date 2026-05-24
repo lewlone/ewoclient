@@ -399,6 +399,33 @@ pub const REGISTRY: &[ModuleDef] = &[
         ],
     },
     ModuleDef {
+        id: "hit_indicator",
+        name: "Hit Indicator",
+        description: "Screen-edge chevron pointing back toward whoever just hit you, fading over 1 s. Pure HUD.",
+        category: ModuleCategory::Visual,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[
+            ModuleSetting {
+                id: "radius_pct",
+                label: "Chevron radius (%)",
+                min: 15.0,
+                max: 40.0,
+                step: 1.0,
+                default: 25.0,
+            },
+            ModuleSetting {
+                id: "fade_seconds",
+                label: "Fade duration (s)",
+                min: 0.5,
+                max: 3.0,
+                step: 0.1,
+                default: 1.0,
+            },
+        ],
+    },
+    ModuleDef {
         id: "wind_charge_mlg",
         name: "Wind Charge MLG",
         description: "Auto-throws a hotbar wind charge to break a fatal fall. Off-mode (default) fires only when you're already looking sufficiently downward; snap-mode briefly snaps pitch to straight-down for a reliable save.",
@@ -506,6 +533,7 @@ mod tests {
             "riptide_boost",
             "mace_combo",
             "wind_charge_mlg",
+            "hit_indicator",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }

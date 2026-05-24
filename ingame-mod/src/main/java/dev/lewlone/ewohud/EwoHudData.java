@@ -41,7 +41,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 7;
+    public static final int SCHEMA_VERSION = 8;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -93,6 +93,12 @@ public final class EwoHudData {
 
     // Combat HUD additions — schema 7. Local-player shield cooldown fraction.
     private static final int OFF_SHIELD_COOLDOWN = 1284; // f32, 0 = ready, 1 = just disabled
+
+    // Hit indicator — schema 8. Direction of the most recent attacker, for the
+    // screen-edge chevron. i32 present + f32 relative-yaw (deg) + f32 age (sec).
+    private static final int OFF_HIT_PRESENT = 1288;
+    private static final int OFF_HIT_REL_YAW = 1292;
+    private static final int OFF_HIT_AGE = 1296;
 
     // flags bits
     private static final int FLAG_WORLD = 1;
@@ -277,6 +283,32 @@ public final class EwoHudData {
             shieldPct = player.getCooldowns().getCooldownPercent(SHIELD_PROBE, 0f);
         }
         b.putFloat(OFF_SHIELD_COOLDOWN, shieldPct);
+
+        // Hit indicator — direction of the most recent attacker, in degrees
+        // relative to the player's look direction (0 = ahead, ±180 = behind).
+        // Uses LivingEntity.getLastHurtByMob — vanilla's revenge-target field,
+        // which is the most reliable "who hit me" attribution available.
+        int hitPresent = 0;
+        float hitYaw = 0f;
+        float hitAgeSec = 99f;
+        if (player != null) {
+            LivingEntity attacker = player.getLastHurtByMob();
+            int ageTicks = player.tickCount - player.getLastHurtByMobTimestamp();
+            if (attacker != null && attacker != player && ageTicks >= 0 && ageTicks < 60) {
+                double dx = attacker.getX() - player.getX();
+                double dz = attacker.getZ() - player.getZ();
+                float attackerYawDeg = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+                float rel = attackerYawDeg - player.getYRot();
+                while (rel > 180f) rel -= 360f;
+                while (rel < -180f) rel += 360f;
+                hitPresent = 1;
+                hitYaw = rel;
+                hitAgeSec = ageTicks / 20f;
+            }
+        }
+        b.putInt(OFF_HIT_PRESENT, hitPresent);
+        b.putFloat(OFF_HIT_REL_YAW, hitYaw);
+        b.putFloat(OFF_HIT_AGE, hitAgeSec);
 
         // Session playtime, server address, and account name — for the
         // overlay's HOME / overview tab.

@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -83,6 +83,10 @@ mod off {
     pub const INDICATORS: usize = 640;
     // Combat HUD additions (schema 7): local-player shield cooldown fraction.
     pub const SHIELD_COOLDOWN: usize = 1284;
+    // Hit indicator (schema 8): present + relative yaw (deg) + age (sec).
+    pub const HIT_PRESENT: usize = 1288;
+    pub const HIT_REL_YAW: usize = 1292;
+    pub const HIT_AGE: usize = 1296;
 }
 
 /// Max per-frame indicator records — mirror of `EwoIndicators.MAX_TRACKED`.
@@ -342,6 +346,20 @@ impl HudData {
     /// Local-player shield cooldown fraction: 0 = ready, 1 = just disabled.
     pub fn shield_cooldown(&self) -> f32 {
         self.f32_at(off::SHIELD_COOLDOWN)
+    }
+
+    /// Hit-indicator: an attacker is currently being tracked (recent hit).
+    pub fn hit_present(&self) -> bool {
+        self.i32_at(off::HIT_PRESENT) != 0
+    }
+    /// Yaw to the attacker, relative to the local player's facing. Degrees,
+    /// normalised to `[-180, 180]`. `0` = directly ahead, `±180` = behind.
+    pub fn hit_relative_yaw(&self) -> f32 {
+        self.f32_at(off::HIT_REL_YAW)
+    }
+    /// Seconds since the most recent hit. Renderer fades the chevron by this.
+    pub fn hit_age(&self) -> f32 {
+        self.f32_at(off::HIT_AGE)
     }
 
     /// One indicator record — decoded copy of slot `i` in the block.
@@ -1305,6 +1323,29 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         let st = editor.modules.get(idx);
         if st.enabled && data.target_active() && data.target_distance() <= st.settings[0] {
             draw_crosshair_on_reach(canvas, w, h);
+        }
+    }
+
+    // Hit Indicator module — screen-edge chevron pointing back toward the
+    // most recent attacker. Always drawn (game-state-meaningful) regardless
+    // of overlay state.
+    if let Some(idx) = catalog::index_of("hit_indicator") {
+        let st = editor.modules.get(idx);
+        if st.enabled && data.hit_present() {
+            let radius_pct = st.settings[0].max(5.0).min(50.0);
+            let fade_secs = st.settings[1].max(0.1);
+            let age = data.hit_age();
+            if age >= 0.0 && age < fade_secs {
+                draw_hit_indicator(
+                    canvas,
+                    w,
+                    h,
+                    data.hit_relative_yaw(),
+                    age,
+                    fade_secs,
+                    radius_pct,
+                );
+            }
         }
     }
 
@@ -2872,6 +2913,88 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
             &dmg_paint,
         );
     }
+}
+
+/// Hit Indicator chevron — a small ember triangle on a circle around screen
+/// centre, pointing outward in the direction the most recent attacker is
+/// relative to the player's facing. Fades to zero alpha by `fade_secs`.
+///
+/// `relative_yaw` is in degrees: 0 = ahead (top of screen), +90 = right,
+/// -90 = left, ±180 = behind (bottom). Mapped to a screen-space circle
+/// position via `(sin(yaw), -cos(yaw)) × radius`.
+fn draw_hit_indicator(
+    canvas: &Canvas,
+    w: f32,
+    h: f32,
+    relative_yaw_deg: f32,
+    age_secs: f32,
+    fade_secs: f32,
+    radius_pct: f32,
+) {
+    let progress = (age_secs / fade_secs).clamp(0.0, 1.0);
+    let alpha = (1.0 - progress).powf(1.2);
+    if alpha <= 0.01 {
+        return;
+    }
+
+    let cx = w * 0.5;
+    let cy = h * 0.5;
+    let radius = (w.min(h) * radius_pct * 0.01).min(280.0);
+
+    let yaw_rad = relative_yaw_deg.to_radians();
+    let dir_x = yaw_rad.sin();
+    let dir_y = -yaw_rad.cos();
+
+    let px = cx + dir_x * radius;
+    let py = cy + dir_y * radius;
+
+    // Triangle pointing AWAY from screen centre (toward the attacker bearing).
+    let tip_len = 18.0;
+    let base_back = 8.0;
+    let base_half = 9.0;
+    let perp_x = -dir_y;
+    let perp_y = dir_x;
+
+    let tip = (px + dir_x * tip_len, py + dir_y * tip_len);
+    let base_l = (
+        px - dir_x * base_back + perp_x * base_half,
+        py - dir_y * base_back + perp_y * base_half,
+    );
+    let base_r = (
+        px - dir_x * base_back - perp_x * base_half,
+        py - dir_y * base_back - perp_y * base_half,
+    );
+
+    let mut path = skia_safe::Path::new();
+    path.move_to(tip);
+    path.line_to(base_l);
+    path.line_to(base_r);
+    path.close();
+
+    let ember = (0xC9, 0x6A, 0x7A);
+
+    // Outer glow — wider stroke under the fill so the chevron pops over busy
+    // backgrounds.
+    let mut glow = Paint::default();
+    glow.set_anti_alias(true);
+    glow.set_style(PaintStyle::Stroke);
+    glow.set_stroke_width(6.0);
+    glow.set_color4f(rgba(ember, alpha * 0.45), None);
+    glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_path(&path, &glow);
+
+    // Filled chevron — ember body with a rose hairline outline.
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_color4f(rgba(ember, alpha * 0.88), None);
+    canvas.draw_path(&path, &fill);
+
+    let mut stroke = Paint::default();
+    stroke.set_anti_alias(true);
+    stroke.set_style(PaintStyle::Stroke);
+    stroke.set_stroke_width(1.2);
+    stroke.set_color4f(rgba(ROSE, alpha), None);
+    canvas.draw_path(&path, &stroke);
 }
 
 /// Rose "+" painted at screen centre to signal the entity under the crosshair
