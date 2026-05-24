@@ -85,7 +85,9 @@ impl ModuleDef {
 }
 
 /// Most settings any one module carries — fixes the shared-buffer record size.
-pub const MAX_SETTINGS: usize = 2;
+/// Bumped 2 → 8 with `EwoModuleData.SCHEMA_VERSION` 1 → 2 to unblock modules
+/// that need more than 2 sliders (Mace Combo: 4) and to leave headroom.
+pub const MAX_SETTINGS: usize = 8;
 
 /// Every EwoClient module, in a stable order. A module's index here is its
 /// slot in the `EwoModuleData` buffer — never reorder without bumping the

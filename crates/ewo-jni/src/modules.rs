@@ -17,11 +17,17 @@ use ewo_core::modules as catalog;
 
 /// Layout version of the `EwoModuleData` buffer. Bump on any layout change;
 /// `EwoModuleData.SCHEMA_VERSION` on the Java side must match.
-pub const SCHEMA_VERSION: i32 = 1;
+///
+/// Schema 2 (2026-05): grew `MAX_SETTINGS` 2 → 8 (record stride 16 → 40 bytes)
+/// and the buffer `CAPACITY` 256 → 4096 on the Java side. Schema 1 was over-
+/// capacity at 17 modules (the 17th record landed past the 256-byte limit
+/// causing UB in the unsafe pointer write).
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// First record offset — past the `i32 schema` + `i32 count` header.
 const OFF_RECORDS: usize = 8;
 /// Per-module record stride: `i32 enabled`, `MAX_SETTINGS × f32`, `i32 reserved`.
+/// Schema 2: 4 + 8*4 + 4 = 40 bytes.
 const RECORD: usize = 8 + catalog::MAX_SETTINGS * 4;
 
 /// One module's live state.

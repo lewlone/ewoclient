@@ -19,10 +19,16 @@ import java.nio.ByteOrder;
 public final class EwoModuleData {
     private EwoModuleData() {}
 
-    /** Layout version — must match {@code modules.rs} SCHEMA_VERSION. */
-    public static final int SCHEMA_VERSION = 1;
-    /** Fixed buffer size — generous headroom past the current module set. */
-    public static final int CAPACITY = 256;
+    /** Layout version — must match {@code modules.rs} SCHEMA_VERSION.
+     *  <p>Schema 2 (2026-05): record stride grew 16 → 40 bytes (MAX_SETTINGS
+     *  2 → 8) and {@link #CAPACITY} grew 256 → 4096. Schema 1 was over-
+     *  capacity at 17 modules — the 17th record overflowed the 256-byte
+     *  buffer, causing IndexOutOfBoundsException reads and undefined
+     *  behavior on the Rust unsafe write side. */
+    public static final int SCHEMA_VERSION = 2;
+    /** Fixed buffer size — fits ~100 modules at the schema-2 stride; gives
+     *  the catalog plenty of headroom before another bump is needed. */
+    public static final int CAPACITY = 4096;
     /** Module count — must equal {@code ewo_core::modules::REGISTRY.len()}. */
     public static final int MODULE_COUNT = 17;
 
@@ -47,7 +53,11 @@ public final class EwoModuleData {
     public static final int AUTO_EAT = 16;
 
     private static final int OFF_RECORDS = 8;  // past i32 schema + i32 count
-    private static final int RECORD = 16;      // i32 enabled, f32 s0, f32 s1, i32 reserved
+    /** Schema 2: 4 + 8*4 + 4 = 40 bytes per module record. Must mirror
+     *  {@code modules.rs}: {@code 8 + catalog::MAX_SETTINGS * 4}. */
+    private static final int RECORD = 40;
+    /** Max settings per module — mirrors {@code ewo_core::modules::MAX_SETTINGS}. */
+    private static final int MAX_SETTINGS_PER_MODULE = 8;
 
     private static ByteBuffer buffer;
 
@@ -75,10 +85,11 @@ public final class EwoModuleData {
         return buffer.getInt(OFF_RECORDS + index * RECORD) != 0;
     }
 
-    /** Setting {@code slot} (0 or 1) of module {@code index}. */
+    /** Setting {@code slot} (0..{@link #MAX_SETTINGS_PER_MODULE}-1) of module
+     *  {@code index}. */
     public static float setting(int index, int slot) {
         if (buffer == null || index < 0 || index >= MODULE_COUNT
-                || slot < 0 || slot > 1) {
+                || slot < 0 || slot >= MAX_SETTINGS_PER_MODULE) {
             return 0f;
         }
         return buffer.getFloat(OFF_RECORDS + index * RECORD + 4 + slot * 4);
