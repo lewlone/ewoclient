@@ -112,8 +112,15 @@ public final class EwoModules {
         // module's own enabled flag (settable in the launcher Modules tab)
         // gates whether the action actually runs; pressing while disabled
         // is just a no-op rather than a "toggle the disabled module on".
-        if (glfwKey != 0 && EwoKeybinds.code("legit_elytra_swap") == glfwKey) {
+        if (glfwKey == 0) {
+            return false;
+        }
+        if (EwoKeybinds.code("legit_elytra_swap") == glfwKey) {
             EwoLegitElytraSwap.trigger();
+            return true;
+        }
+        if (EwoKeybinds.code("mace_combo") == glfwKey) {
+            EwoMaceCombo.trigger();
             return true;
         }
         return false;

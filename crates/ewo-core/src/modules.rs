@@ -328,6 +328,49 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: false,
         settings: &[],
     },
+    ModuleDef {
+        id: "mace_combo",
+        name: "Mace Combo",
+        description: "Bound key fires axe → spear → mace at the configured per-hit delay. At 50 ms = tick-perfect stun-slam; dial up to 500 ms for a paced human-cadence version.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[
+            ModuleSetting {
+                id: "axe_slot",
+                label: "Axe hotbar slot",
+                min: 0.0,
+                max: 8.0,
+                step: 1.0,
+                default: 0.0,
+            },
+            ModuleSetting {
+                id: "spear_slot",
+                label: "Spear hotbar slot",
+                min: 0.0,
+                max: 8.0,
+                step: 1.0,
+                default: 1.0,
+            },
+            ModuleSetting {
+                id: "mace_slot",
+                label: "Mace hotbar slot",
+                min: 0.0,
+                max: 8.0,
+                step: 1.0,
+                default: 2.0,
+            },
+            ModuleSetting {
+                id: "per_hit_delay_ms",
+                label: "Per-hit delay (ms)",
+                min: 50.0,
+                max: 500.0,
+                step: 10.0,
+                default: 50.0,
+            },
+        ],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -397,6 +440,7 @@ mod tests {
             "auto_mace_swap",
             "auto_jump_reset",
             "auto_crit",
+            "mace_combo",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
