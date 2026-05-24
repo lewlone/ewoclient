@@ -28,13 +28,14 @@ public final class EwoModules {
      *  its key is hold-to-activate (see {@code EwoFreeLook}), not a toggle. */
     private static final String[] TOGGLE_IDS = {
         "fullbright", "fov", "toggle_sprint", "toggle_sneak", "no_damage_tilt",
-        "no_view_bob", "no_fire_overlay", "crosshair_on_reach", "auto_tool", "auto_totem"
+        "no_view_bob", "no_fire_overlay", "crosshair_on_reach",
+        "auto_tool", "auto_totem", "hand_restock"
     };
     private static final int[] TOGGLE_INDEX = {
         EwoModuleData.FULLBRIGHT, EwoModuleData.FOV, EwoModuleData.TOGGLE_SPRINT,
         EwoModuleData.TOGGLE_SNEAK, EwoModuleData.NO_DAMAGE_TILT, EwoModuleData.NO_VIEW_BOB,
         EwoModuleData.NO_FIRE_OVERLAY, EwoModuleData.CROSSHAIR_ON_REACH,
-        EwoModuleData.AUTO_TOOL, EwoModuleData.AUTO_TOTEM
+        EwoModuleData.AUTO_TOOL, EwoModuleData.AUTO_TOTEM, EwoModuleData.HAND_RESTOCK
     };
 
     /** Per-frame module tick. Called from {@code flipFrame}, post-render. */
@@ -49,6 +50,7 @@ public final class EwoModules {
         EwoFreeLook.update();
         EwoAutoTool.tick();
         EwoAutoTotem.tick();
+        EwoHandRestock.tick();
         EwoActionMotor.tick();
     }
 

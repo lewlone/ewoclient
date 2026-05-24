@@ -225,6 +225,16 @@ pub const REGISTRY: &[ModuleDef] = &[
         hold_key: false,
         settings: &[],
     },
+    ModuleDef {
+        id: "hand_restock",
+        name: "Hand Restock",
+        description: "When your held stack runs out, swap another of the same item into the slot from inventory.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -286,6 +296,7 @@ mod tests {
             "auto_tool",
             "auto_totem",
             "legit_elytra_swap",
+            "hand_restock",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
