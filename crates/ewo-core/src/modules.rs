@@ -398,6 +398,41 @@ pub const REGISTRY: &[ModuleDef] = &[
             },
         ],
     },
+    ModuleDef {
+        id: "wind_charge_mlg",
+        name: "Wind Charge MLG",
+        description: "Auto-throws a hotbar wind charge to break a fatal fall. Off-mode (default) fires only when you're already looking sufficiently downward; snap-mode briefly snaps pitch to straight-down for a reliable save.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[
+            ModuleSetting {
+                id: "min_fall",
+                label: "Fire when fall ≥ (blocks)",
+                min: 10.0,
+                max: 50.0,
+                step: 1.0,
+                default: 15.0,
+            },
+            ModuleSetting {
+                id: "min_pitch",
+                label: "Min look-down (deg)",
+                min: 30.0,
+                max: 90.0,
+                step: 5.0,
+                default: 60.0,
+            },
+            ModuleSetting {
+                id: "snap_pitch",
+                label: "Snap pitch (0=off, 1=on)",
+                min: 0.0,
+                max: 1.0,
+                step: 1.0,
+                default: 0.0,
+            },
+        ],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -470,6 +505,7 @@ mod tests {
             "auto_pearl",
             "riptide_boost",
             "mace_combo",
+            "wind_charge_mlg",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }
