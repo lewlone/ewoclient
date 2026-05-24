@@ -1038,16 +1038,17 @@ impl Editor {
             }
             OverlayView::HudEditor => self.editor_press(x, y),
             OverlayView::Modules => {
-                let (_, rows) = modules_layout(self.window.0, self.window.1);
-                for (i, row) in rows.iter().enumerate() {
+                let (_, _, rows) = modules_layout(self.window.0, self.window.1);
+                for row in rows.iter() {
+                    let idx = row.catalog_index;
                     if point_in(row.toggle, x, y) {
-                        self.modules.toggle(i);
+                        self.modules.toggle(idx);
                         return;
                     }
                     for (slot, &track) in row.sliders.iter().enumerate() {
                         if point_in(track, x, y) {
-                            self.slider_drag = Some((i, slot));
-                            self.drag_module_slider(i, slot, x);
+                            self.slider_drag = Some((idx, slot));
+                            self.drag_module_slider(idx, slot, x);
                             return;
                         }
                     }
@@ -1145,8 +1146,13 @@ impl Editor {
     /// Track a MODULES-view slider drag: map the cursor `x` to the setting
     /// value and apply it. The value persists on drag-release, not per-move.
     fn drag_module_slider(&mut self, idx: usize, slot: usize, x: f32) {
-        let (_, rows) = modules_layout(self.window.0, self.window.1);
-        let Some(track) = rows.get(idx).and_then(|r| r.sliders.get(slot)).copied() else {
+        let (_, _, rows) = modules_layout(self.window.0, self.window.1);
+        // Rows are in display (grouped) order; find by catalog_index, not
+        // array position.
+        let Some(row) = rows.iter().find(|r| r.catalog_index == idx) else {
+            return;
+        };
+        let Some(track) = row.sliders.get(slot).copied() else {
             return;
         };
         let Some(setting) = catalog::REGISTRY.get(idx).and_then(|m| m.settings.get(slot))
@@ -2885,14 +2891,32 @@ fn draw_attack_charge(
     chip
 }
 
+/// Linear distance-fade alpha multiplier for world-anchored indicators.
+/// 1.0 at distance ≤ near, falls off to `min` at distance ≥ far, linear in
+/// between. Cheap declutter for busy fights — far entities dim, near ones
+/// stay crisp.
+fn distance_fade_alpha(distance: f32, near: f32, far: f32, min: f32) -> f32 {
+    if distance <= near {
+        return 1.0;
+    }
+    if distance >= far {
+        return min;
+    }
+    let t = (distance - near) / (far - near);
+    1.0 - t * (1.0 - min)
+}
+
 /// Overhead totem-of-undying pop counter — a small rose chip with `× N`
 /// painted just above the entity's head. Drawn only when `totem_count > 0`,
-/// so entities without observed pops stay un-cluttered.
+/// so entities without observed pops stay un-cluttered. Alpha fades with
+/// distance so far entities dim out.
 fn draw_totem_overhead(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
     let label = format!("\u{00D7} {}", ind.totem_count); // "× N"
     let num_font = fonts.fraunces_axes(14.0, 30.0, 0.0, 600.0, None);
     let pad_x = 7.0;
     let pad_y = 3.5;
+
+    let alpha_mul = distance_fade_alpha(ind.distance, 6.0, 32.0, 0.35);
 
     let mut probe = Paint::default();
     probe.set_anti_alias(true);
@@ -2913,25 +2937,25 @@ fn draw_totem_overhead(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
     let rrect = RRect::new_rect_xy(chip, chip_h * 0.45, chip_h * 0.45);
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
-    fill.set_color4f(rgba(WINE, 0.78), None);
+    fill.set_color4f(rgba(WINE, 0.78 * alpha_mul), None);
     canvas.draw_rrect(rrect, &fill);
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(rgba(ROSE, 0.55), None);
+    border.set_color4f(rgba(ROSE, 0.55 * alpha_mul), None);
     canvas.draw_rrect(rrect, &border);
 
     let baseline = y + pad_y + cap;
     let mut shadow = Paint::default();
     shadow.set_anti_alias(true);
-    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55), None);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55 * alpha_mul), None);
     shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 2.0, false));
     canvas.draw_str(&label, (x + pad_x, baseline + 1.0), &num_font, &shadow);
 
     let mut num_paint = Paint::default();
     num_paint.set_anti_alias(true);
-    num_paint.set_color4f(rgba(ROSE, 1.0), None);
+    num_paint.set_color4f(rgba(ROSE, alpha_mul), None);
     canvas.draw_str(&label, (x + pad_x, baseline), &num_font, &num_paint);
 }
 
@@ -2943,6 +2967,10 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
         return;
     }
     let frac = (ind.health / ind.max_health).clamp(0.0, 1.0);
+
+    // Distance fade — same near/far/min as draw_totem_overhead so the two
+    // indicators dim in lockstep on the same entity.
+    let alpha_mul = distance_fade_alpha(ind.distance, 6.0, 32.0, 0.35);
 
     // Bar geometry — fixed width so the indicator stays readable at any
     // distance. Sat above the head; the totem chip stacks higher still.
@@ -2958,7 +2986,7 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
     let track_rr = RRect::new_rect_xy(track, bar_h * 0.5, bar_h * 0.5);
     let mut track_paint = Paint::default();
     track_paint.set_anti_alias(true);
-    track_paint.set_color4f(rgba(WINE, 0.78), None);
+    track_paint.set_color4f(rgba(WINE, 0.78 * alpha_mul), None);
     canvas.draw_rrect(track_rr, &track_paint);
 
     // Fill — rose for healthy, ember for low. Threshold at 30% mirrors
@@ -2969,7 +2997,7 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
         let fill_rr = RRect::new_rect_xy(fill_rect, bar_h * 0.5, bar_h * 0.5);
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        fill.set_color4f(rgba(fill_color, 1.0), None);
+        fill.set_color4f(rgba(fill_color, alpha_mul), None);
         canvas.draw_rrect(fill_rr, &fill);
     }
 
@@ -2978,7 +3006,7 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(0.8);
-    border.set_color4f(rgba(ROSE, 0.30), None);
+    border.set_color4f(rgba(ROSE, 0.30 * alpha_mul), None);
     canvas.draw_rrect(border_rr, &border);
 
     // HP read-out — JetBrains Mono beneath the bar.
@@ -2993,7 +3021,7 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
 
     let mut shadow = Paint::default();
     shadow.set_anti_alias(true);
-    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.65), None);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.65 * alpha_mul), None);
     shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 2.0, false));
     canvas.draw_str(
         &hp_label,
@@ -3004,12 +3032,12 @@ fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &FontStore) {
 
     let mut hp_paint = Paint::default();
     hp_paint.set_anti_alias(true);
-    hp_paint.set_color4f(rgba(PEARL, 1.0), None);
+    hp_paint.set_color4f(rgba(PEARL, alpha_mul), None);
     canvas.draw_str(&hp_label, (cx - hp_w * 0.5, text_baseline), &hp_font, &hp_paint);
 
     // Damage pop — ember "-N.N" beside the HP, fading out over 1.5 s.
     if ind.damage_age_sec >= 0.0 && ind.last_damage > 0.05 {
-        let alpha = (1.0 - (ind.damage_age_sec / 1.5).clamp(0.0, 1.0)).powf(1.2);
+        let alpha = (1.0 - (ind.damage_age_sec / 1.5).clamp(0.0, 1.0)).powf(1.2) * alpha_mul;
         let dmg_label = format!("-{:.1}", ind.last_damage);
         let dmg_font = fonts.fraunces_axes(13.0, 30.0, 0.0, 600.0, None);
         let mut dmg_paint = Paint::default();
@@ -4612,14 +4640,27 @@ fn draw_pvp_section_label(canvas: &Canvas, label: &str, x: f32, y: f32, fonts: &
 // Modules view — the EwoClient module toggle list (Phase G).
 // ────────────────────────────────────────────────────────────────────────
 
-/// Per-module hit-rects on the MODULES view, in `catalog::REGISTRY` order.
+/// Per-module hit-rects on the MODULES view. Sorted by category for grouping;
+/// `catalog_index` carries the canonical REGISTRY position so the slider-
+/// drag + toggle dispatch can still look up the module without walking the
+/// REGISTRY in sync.
 struct ModuleRow {
+    /// The module's index in [`catalog::REGISTRY`]. Used by toggle + slider
+    /// dispatch to identify which module the row belongs to.
+    catalog_index: usize,
     /// The whole row — base content plus any setting sliders below it.
     row: Rect,
     /// The on/off toggle pill.
     toggle: Rect,
     /// Slider hit-areas, one per module setting (FOV Control has one).
     sliders: Vec<Rect>,
+}
+
+/// A category header rendered between module groups.
+struct ModuleSection {
+    label: &'static str,
+    /// Baseline-y for the header label.
+    label_y: f32,
 }
 
 /// Velvet accent for a module category — the row's colour dot.
@@ -4631,9 +4672,18 @@ fn module_category_color(category: catalog::ModuleCategory) -> (u8, u8, u8) {
     }
 }
 
-/// The Modules-view panel + a [`ModuleRow`] per catalog module. Deterministic
-/// in the window size, so the renderer and the hit-tester agree.
-fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleRow>) {
+/// Category iteration order — VISUAL first, then CAMERA, then MOVEMENT.
+/// Stable so the rendered tab order doesn't shift as new modules ship.
+const MODULE_CATEGORY_ORDER: [catalog::ModuleCategory; 3] = [
+    catalog::ModuleCategory::Visual,
+    catalog::ModuleCategory::Camera,
+    catalog::ModuleCategory::Movement,
+];
+
+/// The Modules-view panel, the section headers between groups, and one
+/// [`ModuleRow`] per catalog module (in grouped display order). Deterministic
+/// in the window size, so renderer + hit-tester agree.
+fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleSection>, Vec<ModuleRow>) {
     const PANEL_W: f32 = 600.0;
     const PAD: f32 = 24.0;
     const HEADER_H: f32 = 76.0;
@@ -4641,42 +4691,87 @@ fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleRow>) {
     const SLIDER_H: f32 = 30.0; // extra height per setting slider
     const TOGGLE_W: f32 = 38.0;
     const TOGGLE_H: f32 = 20.0;
+    const SECTION_TOP_GAP: f32 = 22.0; // gap above each section label
+    const SECTION_LABEL_GAP: f32 = 14.0; // gap between label baseline + first row
 
     let row_h = |m: &catalog::ModuleDef| ROW_H + m.settings.len() as f32 * SLIDER_H;
-    let body_h: f32 = catalog::REGISTRY.iter().map(row_h).sum();
+
+    // Group modules by category, in MODULE_CATEGORY_ORDER, preserving each
+    // module's REGISTRY index for the dispatch path.
+    let mut groups: Vec<Vec<usize>> = Vec::with_capacity(MODULE_CATEGORY_ORDER.len());
+    for cat in MODULE_CATEGORY_ORDER {
+        let mut group: Vec<usize> = catalog::REGISTRY
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| (m.category == cat).then_some(i))
+            .collect();
+        // Sort within a group by REGISTRY index — stable display order.
+        group.sort();
+        groups.push(group);
+    }
+
+    // Compute total body height: sum of (section header + module rows) per group.
+    let mut body_h: f32 = 0.0;
+    for group in &groups {
+        if group.is_empty() {
+            continue;
+        }
+        body_h += SECTION_TOP_GAP + SECTION_LABEL_GAP;
+        for &idx in group {
+            body_h += row_h(&catalog::REGISTRY[idx]);
+        }
+    }
+
     let panel_h = PAD * 2.0 + HEADER_H + body_h;
     let px = (w - PANEL_W) * 0.5;
     let py = (h - panel_h) * 0.5;
     let panel = Rect::from_xywh(px, py, PANEL_W, panel_h);
 
-    let mut rows = Vec::with_capacity(catalog::REGISTRY.len());
+    let mut rows: Vec<ModuleRow> = Vec::with_capacity(catalog::REGISTRY.len());
+    let mut sections: Vec<ModuleSection> = Vec::with_capacity(MODULE_CATEGORY_ORDER.len());
     let mut ry = py + PAD + HEADER_H;
-    for m in catalog::REGISTRY {
-        let rh = row_h(m);
-        let row = Rect::from_xywh(px, ry, PANEL_W, rh);
-        let toggle = Rect::from_xywh(
-            px + PANEL_W - PAD - TOGGLE_W,
-            ry + (ROW_H - TOGGLE_H) * 0.5,
-            TOGGLE_W,
-            TOGGLE_H,
-        );
-        let sliders = (0..m.settings.len())
-            .map(|s| {
-                let sy = ry + ROW_H + s as f32 * SLIDER_H;
-                Rect::from_xywh(px + PAD, sy, PANEL_W - PAD * 2.0, SLIDER_H)
-            })
-            .collect();
-        rows.push(ModuleRow { row, toggle, sliders });
-        ry += rh;
+
+    for (group_i, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        // Section header — tracked uppercase label above the group's rows.
+        let cat = MODULE_CATEGORY_ORDER[group_i];
+        ry += SECTION_TOP_GAP;
+        sections.push(ModuleSection {
+            label: cat.label(),
+            label_y: ry,
+        });
+        ry += SECTION_LABEL_GAP;
+
+        for &idx in group {
+            let m = &catalog::REGISTRY[idx];
+            let rh = row_h(m);
+            let row = Rect::from_xywh(px, ry, PANEL_W, rh);
+            let toggle = Rect::from_xywh(
+                px + PANEL_W - PAD - TOGGLE_W,
+                ry + (ROW_H - TOGGLE_H) * 0.5,
+                TOGGLE_W,
+                TOGGLE_H,
+            );
+            let sliders = (0..m.settings.len())
+                .map(|s| {
+                    let sy = ry + ROW_H + s as f32 * SLIDER_H;
+                    Rect::from_xywh(px + PAD, sy, PANEL_W - PAD * 2.0, SLIDER_H)
+                })
+                .collect();
+            rows.push(ModuleRow { catalog_index: idx, row, toggle, sliders });
+            ry += rh;
+        }
     }
-    (panel, rows)
+    (panel, sections, rows)
 }
 
 /// Draw the Modules view — a Velvet feature list, one row per EwoClient module:
 /// a category dot, the name + description, an on/off toggle, and a slider for
 /// any setting the module carries.
 fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
-    let (panel, rows) = modules_layout(w, h);
+    let (panel, sections, rows) = modules_layout(w, h);
     draw_chip(canvas, panel, 16.0);
     let left = panel.left + 24.0;
 
@@ -4718,14 +4813,37 @@ fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: 
     title.set_color4f(rgba(PEARL, 1.0), None);
     canvas.draw_str("EwoClient modules", (left, panel.top + 70.0), &title_font, &title);
 
+    // Section headers — tracked mono uppercase, rose accent.
+    let section_font = fonts.jetbrains_mono(11.0);
+    let mut section_paint = Paint::default();
+    section_paint.set_anti_alias(true);
+    section_paint.set_color4f(rgba(ROSE, 0.85), None);
+    for section in &sections {
+        draw_tracked_em(
+            canvas,
+            section.label,
+            (left, section.label_y),
+            &section_font,
+            &section_paint,
+            0.22,
+        );
+    }
+
     // Rows.
     let name_font = fonts.newsreader(16.0);
     let desc_font = fonts.newsreader(13.0);
-    for (i, (def, row)) in catalog::REGISTRY.iter().zip(&rows).enumerate() {
-        let st = editor.modules.get(i);
+    for (row_pos, row) in rows.iter().enumerate() {
+        let idx = row.catalog_index;
+        let def = &catalog::REGISTRY[idx];
+        let st = editor.modules.get(idx);
 
-        // Hairline divider above every row but the first.
-        if i > 0 {
+        // Hairline divider above every row but the first in this group.
+        // First-row detection: a section header sits directly above us if
+        // any section's label_y is in the band (row.top - SECTION_LABEL_GAP).
+        let is_first_in_section = sections.iter().any(|s| {
+            (row.row.top - s.label_y).abs() < 20.0
+        });
+        if row_pos > 0 && !is_first_in_section {
             let mut div = Paint::default();
             div.set_anti_alias(true);
             div.set_style(PaintStyle::Stroke);
