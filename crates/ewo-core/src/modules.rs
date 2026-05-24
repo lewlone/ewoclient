@@ -329,6 +329,33 @@ pub const REGISTRY: &[ModuleDef] = &[
         settings: &[],
     },
     ModuleDef {
+        id: "auto_pearl",
+        name: "Auto Pearl",
+        description: "Bound key throws an ender pearl from a hotbar slot then swaps back — clutch escape via real swap + use + swap-back.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
+    ModuleDef {
+        id: "riptide_boost",
+        name: "Riptide Boost",
+        description: "Bound key swaps to a trident, holds use long enough for Riptide to charge, then swaps back. Vanilla self-no-ops outside rain/water.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[ModuleSetting {
+            id: "charge_ms",
+            label: "Hold use (ms)",
+            min: 400.0,
+            max: 1500.0,
+            step: 50.0,
+            default: 700.0,
+        }],
+    },
+    ModuleDef {
         id: "mace_combo",
         name: "Mace Combo",
         description: "Bound key fires axe → spear → mace at the configured per-hit delay. At 50 ms = tick-perfect stun-slam; dial up to 500 ms for a paced human-cadence version.",
@@ -440,6 +467,8 @@ mod tests {
             "auto_mace_swap",
             "auto_jump_reset",
             "auto_crit",
+            "auto_pearl",
+            "riptide_boost",
             "mace_combo",
         ] {
             assert!(get(id).is_some(), "missing module {id}");

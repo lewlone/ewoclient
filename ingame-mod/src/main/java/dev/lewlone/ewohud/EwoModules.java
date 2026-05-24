@@ -123,6 +123,14 @@ public final class EwoModules {
             EwoMaceCombo.trigger();
             return true;
         }
+        if (EwoKeybinds.code("auto_pearl") == glfwKey) {
+            EwoAutoPearl.trigger();
+            return true;
+        }
+        if (EwoKeybinds.code("riptide_boost") == glfwKey) {
+            EwoRiptideBoost.trigger();
+            return true;
+        }
         return false;
     }
 }
