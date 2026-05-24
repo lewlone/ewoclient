@@ -41,7 +41,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -91,6 +91,9 @@ public final class EwoHudData {
     private static final int OFF_INDICATORS = 640;     // i32 count + 16 × 40-byte records
     // Indicator block ends at 640 + 4 + 16*40 = 1284. Plenty of room left in CAPACITY 4096.
 
+    // Combat HUD additions — schema 7. Local-player shield cooldown fraction.
+    private static final int OFF_SHIELD_COOLDOWN = 1284; // f32, 0 = ready, 1 = just disabled
+
     // flags bits
     private static final int FLAG_WORLD = 1;
     private static final int FLAG_PING = 1 << 1;
@@ -126,6 +129,11 @@ public final class EwoHudData {
 
     /** Wall-clock millis when this class loaded — the session-playtime base. */
     private static final long SESSION_START = System.currentTimeMillis();
+
+    /** Cached single-shield stack for ItemCooldowns probing — allocated once,
+     *  never modified. Avoids a per-frame ItemStack alloc just to query the
+     *  shield cooldown fraction. */
+    private static final ItemStack SHIELD_PROBE = new ItemStack(Items.SHIELD);
 
     private static ByteBuffer buffer;
 
@@ -260,6 +268,15 @@ public final class EwoHudData {
         // counter + floating-health widgets. The fill writes the i32 count
         // header itself, then up to MAX_TRACKED records.
         EwoIndicators.fill(b, OFF_INDICATORS);
+
+        // Local-player shield cooldown — 0 when ready, 1 just after disable,
+        // fading back to 0 as the cooldown ticks down. Drives the shield
+        // cooldown bar widget. Always written; renderer gates on > 0.
+        float shieldPct = 0f;
+        if (player != null) {
+            shieldPct = player.getCooldowns().getCooldownPercent(SHIELD_PROBE, 0f);
+        }
+        b.putFloat(OFF_SHIELD_COOLDOWN, shieldPct);
 
         // Session playtime, server address, and account name — for the
         // overlay's HOME / overview tab.

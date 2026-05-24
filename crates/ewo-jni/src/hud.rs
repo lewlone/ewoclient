@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -81,6 +81,8 @@ mod off {
     pub const ITEM_GAPPLES: usize = 636;
     // Indicators block (schema 6): i32 count + up to MAX_INDICATORS records.
     pub const INDICATORS: usize = 640;
+    // Combat HUD additions (schema 7): local-player shield cooldown fraction.
+    pub const SHIELD_COOLDOWN: usize = 1284;
 }
 
 /// Max per-frame indicator records — mirror of `EwoIndicators.MAX_TRACKED`.
@@ -335,6 +337,13 @@ impl HudData {
         (self.i32_at(off::INDICATORS).max(0) as usize).min(MAX_INDICATORS)
     }
 
+    // ── Combat HUD additions (schema 7) ──────────────────────────────────
+
+    /// Local-player shield cooldown fraction: 0 = ready, 1 = just disabled.
+    pub fn shield_cooldown(&self) -> f32 {
+        self.f32_at(off::SHIELD_COOLDOWN)
+    }
+
     /// One indicator record — decoded copy of slot `i` in the block.
     pub fn indicator(&self, i: usize) -> Indicator {
         let rec = off::INDICATORS + 4 + i * INDICATOR_RECORD;
@@ -472,10 +481,12 @@ enum WidgetId {
     HitRange,
     Cps,
     Items,
+    ShieldCooldown,
+    Reach,
 }
 
 impl WidgetId {
-    const ALL: [WidgetId; 12] = [
+    const ALL: [WidgetId; 14] = [
         WidgetId::Fps,
         WidgetId::Coords,
         WidgetId::Ping,
@@ -488,6 +499,8 @@ impl WidgetId {
         WidgetId::HitRange,
         WidgetId::Cps,
         WidgetId::Items,
+        WidgetId::ShieldCooldown,
+        WidgetId::Reach,
     ];
 
     fn index(self) -> usize {
@@ -509,6 +522,8 @@ impl WidgetId {
             WidgetId::HitRange => "hit_range",
             WidgetId::Cps => "cps",
             WidgetId::Items => "items",
+            WidgetId::ShieldCooldown => "shield_cooldown",
+            WidgetId::Reach => "reach",
         }
     }
 
@@ -527,6 +542,8 @@ impl WidgetId {
             WidgetId::HitRange => "HIT RANGE",
             WidgetId::Cps => "CPS",
             WidgetId::Items => "ITEMS",
+            WidgetId::ShieldCooldown => "SHIELD CD",
+            WidgetId::Reach => "REACH",
         }
     }
 }
@@ -543,7 +560,7 @@ struct WidgetLayout {
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
 /// `hud.toml`.
 struct HudLayout {
-    widgets: [WidgetLayout; 12],
+    widgets: [WidgetLayout; 14],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
 }
@@ -572,6 +589,8 @@ impl HudLayout {
                 WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500 }, // hit_range
                 WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204 }, // cps
                 WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000 }, // items
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800 }, // shield_cooldown
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100 }, // reach
             ],
             paint_rate: crate::HudPaintRate::Match,
         }
@@ -748,7 +767,7 @@ pub struct Editor {
     /// Cursor position in window pixels.
     cursor: (f32, f32),
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
-    bounds: [Rect; 12],
+    bounds: [Rect; 14],
     dragging: Option<Drag>,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
@@ -813,7 +832,7 @@ impl Editor {
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
-            bounds: [empty_rect(); 12],
+            bounds: [empty_rect(); 14],
             dragging: None,
             slider_drag: None,
             snap_x: None,
@@ -1388,6 +1407,10 @@ fn widget_available(id: WidgetId, data: &HudData) -> bool {
         WidgetId::HitRange => data.pvp_hit_active() || data.overlay_open(),
         WidgetId::Cps => data.world_active() || data.overlay_open(),
         WidgetId::Items => data.world_active() || data.overlay_open(),
+        WidgetId::ShieldCooldown => {
+            data.world_active() && (data.shield_cooldown() > 0.0 || data.overlay_open())
+        }
+        WidgetId::Reach => data.world_active() && (data.target_active() || data.overlay_open()),
     }
 }
 
@@ -1428,6 +1451,18 @@ fn draw_widget(
             data.item_arrows(),
             data.item_totems(),
             data.item_gapples(),
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
+        WidgetId::ShieldCooldown => {
+            draw_shield_cooldown(canvas, data.shield_cooldown(), fonts, anchor, ax, ay)
+        }
+        WidgetId::Reach => draw_stat(
+            canvas,
+            &format!("{:.2}", data.target_distance().max(0.0)),
+            "REACH",
             fonts,
             anchor,
             ax,
@@ -2596,6 +2631,106 @@ fn draw_item_counters(
     chip
 }
 
+/// Local-player shield cooldown bar — a wide rose-fill pill on a wine track
+/// with a "SHIELD" eyebrow + seconds-remaining numeric. The fraction is
+/// taken straight from `ItemCooldowns.getCooldownPercent`; the vanilla
+/// disable is 5 s (5 × 20 ticks = 100), so we render `pct * 5.0` seconds.
+fn draw_shield_cooldown(
+    canvas: &Canvas,
+    pct: f32,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let pct = pct.clamp(0.0, 1.0);
+    let seconds_left = pct * 5.0;
+
+    let label = "SHIELD";
+    let value = format!("{:.1}s", seconds_left);
+
+    let label_font = fonts.jetbrains_mono(11.0);
+    let value_font = fonts.fraunces_axes(18.0, 32.0, 0.0, 600.0, None);
+    let label_tracking_em = 0.20;
+
+    let pad_x = 14.0;
+    let pad_y = 8.0;
+    let bar_h = 4.0;
+    let bar_gap = 8.0;
+    let value_gap = 10.0;
+    let radius = 12.0;
+    let chip_w = 180.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (val_w, _) = value_font.measure_str(&value, Some(&probe));
+    let label_w = measure_tracked_em(&label_font, label, label_tracking_em);
+
+    let (_, vm) = value_font.metrics();
+    let value_cap = if vm.cap_height > 0.0 { vm.cap_height } else { 18.0 * 0.72 };
+    let (_, lm) = label_font.metrics();
+    let label_cap = if lm.cap_height > 0.0 { lm.cap_height } else { 11.0 * 0.72 };
+
+    let header_h = value_cap.max(label_cap);
+    let chip_h = pad_y * 2.0 + header_h + bar_gap + bar_h;
+
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    // Header row — eyebrow on the left, seconds-remaining on the right.
+    let baseline = y + pad_y + header_h;
+
+    let mut label_paint = Paint::default();
+    label_paint.set_anti_alias(true);
+    label_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        label,
+        (x + pad_x, baseline),
+        &label_font,
+        &label_paint,
+        label_tracking_em,
+    );
+
+    let value_x = x + chip_w - pad_x - val_w;
+    let _ = label_w + value_gap; // gap consumed implicitly by chip_w
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_str(&value, (value_x, baseline + 1.0), &value_font, &shadow);
+
+    let mut value_paint = Paint::default();
+    value_paint.set_anti_alias(true);
+    let ember = (0xC9, 0x6A, 0x7A);
+    value_paint.set_color4f(rgba(ember, 1.0), None);
+    canvas.draw_str(&value, (value_x, baseline), &value_font, &value_paint);
+
+    // Bar — track + fill below the header row.
+    let bar_y = y + pad_y + header_h + bar_gap;
+    let track = Rect::from_xywh(x + pad_x, bar_y, chip_w - pad_x * 2.0, bar_h);
+    let track_rr = RRect::new_rect_xy(track, bar_h * 0.5, bar_h * 0.5);
+    let mut track_paint = Paint::default();
+    track_paint.set_anti_alias(true);
+    track_paint.set_color4f(rgba(WINE, 0.78), None);
+    canvas.draw_rrect(track_rr, &track_paint);
+
+    if pct > 0.0 {
+        let fill_w = (chip_w - pad_x * 2.0) * pct;
+        let fill_rect = Rect::from_xywh(x + pad_x, bar_y, fill_w, bar_h);
+        let fill_rr = RRect::new_rect_xy(fill_rect, bar_h * 0.5, bar_h * 0.5);
+        let mut fill = Paint::default();
+        fill.set_anti_alias(true);
+        // Ember when high (just disabled), rose as it ticks down to ready.
+        let color = if pct > 0.5 { ember } else { ROSE };
+        fill.set_color4f(rgba(color, 1.0), None);
+        canvas.draw_rrect(fill_rr, &fill);
+    }
+
+    chip
+}
+
 /// Overhead totem-of-undying pop counter — a small rose chip with `× N`
 /// painted just above the entity's head. Drawn only when `totem_count > 0`,
 /// so entities without observed pops stay un-cluttered.
@@ -2861,8 +2996,8 @@ const ANCHOR_PRESETS: [(Anchor, f32, f32); 9] = [
 /// Hit-rects of the editor side panel, computed from the window height.
 struct PanelLayout {
     panel: Rect,
-    rows: [Rect; 12],
-    toggles: [Rect; 12],
+    rows: [Rect; 14],
+    toggles: [Rect; 14],
     cells: [Rect; 9],
 }
 
@@ -2892,8 +3027,8 @@ fn panel_layout(h: f32) -> PanelLayout {
     let content_w = PANEL_W - PAD * 2.0;
 
     let rows_top = panel_y + PAD + HEADER_H + WLABEL_H;
-    let mut rows = [empty_rect(); 12];
-    let mut toggles = [empty_rect(); 12];
+    let mut rows = [empty_rect(); 14];
+    let mut toggles = [empty_rect(); 14];
     for i in 0..WidgetId::ALL.len() {
         let row = Rect::from_xywh(content_x, rows_top + i as f32 * ROW_H, content_w, ROW_H);
         rows[i] = row;
@@ -3333,12 +3468,12 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
 // Home view — the session overview + quick toggles.
 // ────────────────────────────────────────────────────────────────────────
 
-/// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 12 widget
-/// toggle chips (4-per-row × 3 rows). Fixed-size so the renderer and the
-/// hit-tester agree without fonts.
-fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 12]) {
+/// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 14 widget
+/// toggle chips (4-per-row × 4 rows, last row 2/4 filled). Fixed-size so the
+/// renderer and the hit-tester agree without fonts.
+fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 14]) {
     let pw = 664.0;
-    let ph = 520.0; // a touch taller now to fit a third toggle row.
+    let ph = 564.0; // grew one toggle row to fit the 13th + 14th widgets.
     let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
     let gap = 12.0;
 
@@ -3360,11 +3495,12 @@ fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 12]) {
         Rect::from_xywh(rx, stats_top + 2.0 * step, rw, card_h),
     ];
 
-    // 12 widget toggle chips — four per row, below the account line.
+    // 14 widget toggle chips — four per row (last row 2/4 filled), below the
+    // account line.
     let tog_w = (rw - 3.0 * gap) / 4.0;
     let tog_h = 32.0;
     let tog_top = stats_top + 2.0 * step + card_h + 82.0;
-    let mut toggles = [empty_rect(); 12];
+    let mut toggles = [empty_rect(); 14];
     for (i, slot) in toggles.iter_mut().enumerate() {
         let col = (i % 4) as f32;
         let row = (i / 4) as f32;
