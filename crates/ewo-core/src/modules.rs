@@ -291,6 +291,43 @@ pub const REGISTRY: &[ModuleDef] = &[
             default: 16.0,
         }],
     },
+    ModuleDef {
+        id: "auto_mace_swap",
+        name: "Auto Mace Swap",
+        description: "Swap to a hotbar mace when you've fallen far enough to land a smash attack.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[ModuleSetting {
+            id: "min_fall",
+            label: "Min fall (blocks)",
+            min: 1.5,
+            max: 8.0,
+            step: 0.5,
+            default: 1.5,
+        }],
+    },
+    ModuleDef {
+        id: "auto_jump_reset",
+        name: "Auto Jump Reset",
+        description: "Auto-press jump when you take damage so vanilla converts the knockback into a vertical reset.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
+    ModuleDef {
+        id: "auto_crit",
+        name: "Auto Crit",
+        description: "Hold jump while attacking so every hit lands mid-air and triggers a vanilla critical. Visible bunny-hop.",
+        category: ModuleCategory::Movement,
+        default_enabled: false,
+        default_key: 0,
+        hold_key: false,
+        settings: &[],
+    },
 ];
 
 /// The module's index in [`REGISTRY`] — its shared-buffer slot — by id.
@@ -357,6 +394,9 @@ mod tests {
             "hit_color",
             "sprint_tap",
             "auto_eat",
+            "auto_mace_swap",
+            "auto_jump_reset",
+            "auto_crit",
         ] {
             assert!(get(id).is_some(), "missing module {id}");
         }

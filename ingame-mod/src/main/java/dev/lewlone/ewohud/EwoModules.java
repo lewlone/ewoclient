@@ -31,7 +31,8 @@ public final class EwoModules {
         "no_view_bob", "no_fire_overlay", "crosshair_on_reach",
         "auto_tool", "auto_totem", "hand_restock",
         "no_pumpkin_overlay", "hit_color",
-        "sprint_tap", "auto_eat"
+        "sprint_tap", "auto_eat",
+        "auto_mace_swap", "auto_jump_reset", "auto_crit"
     };
     private static final int[] TOGGLE_INDEX = {
         EwoModuleData.FULLBRIGHT, EwoModuleData.FOV, EwoModuleData.TOGGLE_SPRINT,
@@ -39,7 +40,8 @@ public final class EwoModules {
         EwoModuleData.NO_FIRE_OVERLAY, EwoModuleData.CROSSHAIR_ON_REACH,
         EwoModuleData.AUTO_TOOL, EwoModuleData.AUTO_TOTEM, EwoModuleData.HAND_RESTOCK,
         EwoModuleData.NO_PUMPKIN_OVERLAY, EwoModuleData.HIT_COLOR,
-        EwoModuleData.SPRINT_TAP, EwoModuleData.AUTO_EAT
+        EwoModuleData.SPRINT_TAP, EwoModuleData.AUTO_EAT,
+        EwoModuleData.AUTO_MACE_SWAP, EwoModuleData.AUTO_JUMP_RESET, EwoModuleData.AUTO_CRIT
     };
 
     /** Per-frame module tick. Called from {@code flipFrame}, post-render. */
@@ -57,6 +59,9 @@ public final class EwoModules {
         EwoHandRestock.tick();
         EwoSprintTap.tick();
         EwoAutoEat.tick();
+        EwoAutoMaceSwap.tick();
+        EwoAutoJumpReset.tick();
+        EwoAutoCrit.tick();
         EwoActionMotor.tick();
     }
 
