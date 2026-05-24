@@ -228,12 +228,19 @@ pub const REGISTRY: &[ModuleDef] = &[
     ModuleDef {
         id: "hand_restock",
         name: "Hand Restock",
-        description: "When your held stack runs out, swap another of the same item into the slot from inventory.",
+        description: "Swap a fresh stack of the same item into the held slot when it runs low (or runs out).",
         category: ModuleCategory::Movement,
         default_enabled: false,
         default_key: 0,
         hold_key: false,
-        settings: &[],
+        settings: &[ModuleSetting {
+            id: "threshold",
+            label: "Refill at count ≤",
+            min: 0.0,
+            max: 8.0,
+            step: 1.0,
+            default: 0.0,
+        }],
     },
 ];
 
