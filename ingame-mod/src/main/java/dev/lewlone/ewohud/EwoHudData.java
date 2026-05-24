@@ -41,7 +41,7 @@ public final class EwoHudData {
     private EwoHudData() {}
 
     /** Layout version — checked on the Rust side; bump on any layout change. */
-    public static final int SCHEMA_VERSION = 9;
+    public static final int SCHEMA_VERSION = 10;
     /** Fixed buffer size — generous headroom for the whole E3 widget set. */
     public static final int CAPACITY = 4096;
 
@@ -102,6 +102,11 @@ public final class EwoHudData {
 
     // Attack charge — schema 9. Local-player attack-strength scale (0..1).
     private static final int OFF_ATTACK_CHARGE = 1300; // f32, 0 = freshly attacked, 1 = ready
+
+    // Combo counter — schema 10. Consecutive-hit tracker + seconds since
+    // last hit (so the renderer can fade the chip as the combo ages).
+    private static final int OFF_COMBO_COUNT = 1304;
+    private static final int OFF_COMBO_AGE = 1308;
 
     // flags bits
     private static final int FLAG_WORLD = 1;
@@ -321,6 +326,13 @@ public final class EwoHudData {
             charge = player.getAttackStrengthScale(0f);
         }
         b.putFloat(OFF_ATTACK_CHARGE, charge);
+
+        // Combo counter — driven by the EwoComboTracker static state, which
+        // PlayerAttackMixin increments and tick() resets on health drops +
+        // timeout.
+        EwoComboTracker.tick(player);
+        b.putInt(OFF_COMBO_COUNT, EwoComboTracker.count());
+        b.putFloat(OFF_COMBO_AGE, EwoComboTracker.ageSec());
 
         // Session playtime, server address, and account name — for the
         // overlay's HOME / overview tab.

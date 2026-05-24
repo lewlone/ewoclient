@@ -5,6 +5,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import dev.lewlone.ewohud.EwoComboTracker;
 import dev.lewlone.ewohud.EwoModuleData;
 import dev.lewlone.ewohud.EwoSprintTap;
 import dev.lewlone.ewohud.pvp.EwoHitRange;
@@ -42,6 +43,7 @@ public abstract class PlayerAttackMixin {
             return;
         }
         EwoHitRange.onAttack(target);
+        EwoComboTracker.onAttack(target);
         if (EwoModuleData.enabled(EwoModuleData.KNOCKBACK_MAX)
                 && mc.options != null && mc.options.keyUp.isDown()
                 && !mc.player.isSprinting()) {

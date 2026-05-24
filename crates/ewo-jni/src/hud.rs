@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 9;
+pub const SCHEMA_VERSION: i32 = 10;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -89,6 +89,9 @@ mod off {
     pub const HIT_AGE: usize = 1296;
     // Attack-strength scale (schema 9): 0 = freshly attacked, 1 = ready.
     pub const ATTACK_CHARGE: usize = 1300;
+    // Combo counter (schema 10): i32 hit count + f32 seconds-since-last-hit.
+    pub const COMBO_COUNT: usize = 1304;
+    pub const COMBO_AGE: usize = 1308;
 }
 
 /// Max per-frame indicator records — mirror of `EwoIndicators.MAX_TRACKED`.
@@ -371,6 +374,18 @@ impl HudData {
         self.f32_at(off::ATTACK_CHARGE)
     }
 
+    /// Consecutive-hit counter for the Combo Counter widget. Resets on the
+    /// player taking damage OR a 5 s timeout from the Java side.
+    pub fn combo_count(&self) -> i32 {
+        self.i32_at(off::COMBO_COUNT)
+    }
+    /// Seconds since the last combo hit landed. Renderer fades the chip
+    /// alpha by this for a smoother decay (the count itself snaps to 0 on
+    /// timeout, but the visual can ease out).
+    pub fn combo_age(&self) -> f32 {
+        self.f32_at(off::COMBO_AGE)
+    }
+
     /// One indicator record — decoded copy of slot `i` in the block.
     pub fn indicator(&self, i: usize) -> Indicator {
         let rec = off::INDICATORS + 4 + i * INDICATOR_RECORD;
@@ -511,10 +526,11 @@ enum WidgetId {
     ShieldCooldown,
     Reach,
     AttackCharge,
+    Combo,
 }
 
 impl WidgetId {
-    const ALL: [WidgetId; 15] = [
+    const ALL: [WidgetId; 16] = [
         WidgetId::Fps,
         WidgetId::Coords,
         WidgetId::Ping,
@@ -530,6 +546,7 @@ impl WidgetId {
         WidgetId::ShieldCooldown,
         WidgetId::Reach,
         WidgetId::AttackCharge,
+        WidgetId::Combo,
     ];
 
     fn index(self) -> usize {
@@ -554,6 +571,7 @@ impl WidgetId {
             WidgetId::ShieldCooldown => "shield_cooldown",
             WidgetId::Reach => "reach",
             WidgetId::AttackCharge => "attack_charge",
+            WidgetId::Combo => "combo",
         }
     }
 
@@ -575,6 +593,7 @@ impl WidgetId {
             WidgetId::ShieldCooldown => "SHIELD CD",
             WidgetId::Reach => "REACH",
             WidgetId::AttackCharge => "ATTACK CHARGE",
+            WidgetId::Combo => "COMBO",
         }
     }
 }
@@ -591,7 +610,7 @@ struct WidgetLayout {
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
 /// `hud.toml`.
 struct HudLayout {
-    widgets: [WidgetLayout; 15],
+    widgets: [WidgetLayout; 16],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
 }
@@ -623,6 +642,7 @@ impl HudLayout {
                 WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800 }, // shield_cooldown
                 WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100 }, // reach
                 WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800 }, // attack_charge
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800 }, // combo
             ],
             paint_rate: crate::HudPaintRate::Match,
         }
@@ -799,7 +819,7 @@ pub struct Editor {
     /// Cursor position in window pixels.
     cursor: (f32, f32),
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
-    bounds: [Rect; 15],
+    bounds: [Rect; 16],
     dragging: Option<Drag>,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
@@ -864,7 +884,7 @@ impl Editor {
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
-            bounds: [empty_rect(); 15],
+            bounds: [empty_rect(); 16],
             dragging: None,
             slider_drag: None,
             snap_x: None,
@@ -1473,6 +1493,7 @@ fn widget_available(id: WidgetId, data: &HudData) -> bool {
         }
         WidgetId::Reach => data.world_active() && (data.target_active() || data.overlay_open()),
         WidgetId::AttackCharge => data.world_active() || data.overlay_open(),
+        WidgetId::Combo => data.world_active() && (data.combo_count() > 0 || data.overlay_open()),
     }
 }
 
@@ -1533,6 +1554,15 @@ fn draw_widget(
         WidgetId::AttackCharge => {
             draw_attack_charge(canvas, data.attack_charge(), fonts, anchor, ax, ay)
         }
+        WidgetId::Combo => draw_combo(
+            canvas,
+            data.combo_count(),
+            data.combo_age(),
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
     }
 }
 
@@ -2796,6 +2826,99 @@ fn draw_shield_cooldown(
     chip
 }
 
+/// Combo counter chip — re-skin of `draw_stat` with an age-based alpha
+/// fade. The count itself snaps to 0 server-side on timeout (5 s of no
+/// hits) or hit-taken, but the visual fades smoothly over the last second
+/// so a missed combo ages out instead of vanishing on the next frame.
+fn draw_combo(
+    canvas: &Canvas,
+    count: i32,
+    age_secs: f32,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    // Velvet fade: full alpha for the first 4 s, linear decay over the last
+    // 1 s of the 5 s combo window. After that the count is 0 anyway.
+    let alpha_mul = if age_secs < 4.0 {
+        1.0
+    } else if age_secs >= 5.0 {
+        0.0
+    } else {
+        1.0 - (age_secs - 4.0)
+    };
+
+    let value = count.to_string();
+    let unit = "COMBO";
+
+    let num_font = fonts.fraunces_axes(30.0, 34.0, 0.0, 600.0, None);
+    let unit_font = fonts.jetbrains_mono(14.0);
+    let unit_tracking_em = 0.18;
+
+    let pad_x = 14.0;
+    let pad_y = 8.0;
+    let gap = 8.0;
+    let radius = 12.0;
+
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (num_w, _) = num_font.measure_str(&value, Some(&probe));
+    let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
+
+    let (_, m) = num_font.metrics();
+    let cap = if m.cap_height > 0.0 { m.cap_height } else { 30.0 * 0.72 };
+    let chip_w = pad_x * 2.0 + num_w + gap + unit_w;
+    let chip_h = pad_y * 2.0 + cap;
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+
+    // Chip background fades along with the number.
+    let rrect = RRect::new_rect_xy(chip, radius, radius);
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_color4f(rgba(WINE, 0.62 * alpha_mul), None);
+    canvas.draw_rrect(rrect, &fill);
+    let mut border = Paint::default();
+    border.set_anti_alias(true);
+    border.set_style(PaintStyle::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color4f(rgba(ROSE, 0.12 * alpha_mul), None);
+    canvas.draw_rrect(rrect, &border);
+
+    let baseline_y = y + pad_y + cap;
+    let num_x = x + pad_x;
+    let unit_x = num_x + num_w + gap;
+
+    // Number — champagne when combo is fresh (≥ 4 stacks reads as "real
+    // combo"), otherwise rose. Both fade with alpha_mul.
+    let num_color = if count >= 4 { CHAMP } else { ROSE };
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6 * alpha_mul), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_str(&value, (num_x, baseline_y + 2.0), &num_font, &shadow);
+
+    let mut num_paint = Paint::default();
+    num_paint.set_anti_alias(true);
+    num_paint.set_color4f(rgba(num_color, alpha_mul), None);
+    canvas.draw_str(&value, (num_x, baseline_y), &num_font, &num_paint);
+
+    let mut unit_paint = Paint::default();
+    unit_paint.set_anti_alias(true);
+    unit_paint.set_color4f(rgba(MAUVE, alpha_mul), None);
+    draw_tracked_em(
+        canvas,
+        unit,
+        (unit_x, baseline_y),
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
+
+    chip
+}
+
 /// Attack-strength charge meter — a wide pill bar showing the vanilla
 /// attack-strength scale (0..1). Fill colour ramps ember → rose → champagne
 /// as the meter approaches full, so peripheral vision can tell at a glance
@@ -3260,8 +3383,8 @@ const ANCHOR_PRESETS: [(Anchor, f32, f32); 9] = [
 /// Hit-rects of the editor side panel, computed from the window height.
 struct PanelLayout {
     panel: Rect,
-    rows: [Rect; 15],
-    toggles: [Rect; 15],
+    rows: [Rect; 16],
+    toggles: [Rect; 16],
     cells: [Rect; 9],
 }
 
@@ -3291,8 +3414,8 @@ fn panel_layout(h: f32) -> PanelLayout {
     let content_w = PANEL_W - PAD * 2.0;
 
     let rows_top = panel_y + PAD + HEADER_H + WLABEL_H;
-    let mut rows = [empty_rect(); 15];
-    let mut toggles = [empty_rect(); 15];
+    let mut rows = [empty_rect(); 16];
+    let mut toggles = [empty_rect(); 16];
     for i in 0..WidgetId::ALL.len() {
         let row = Rect::from_xywh(content_x, rows_top + i as f32 * ROW_H, content_w, ROW_H);
         rows[i] = row;
@@ -3735,9 +3858,9 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
 /// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 14 widget
 /// toggle chips (4-per-row × 4 rows, last row 2/4 filled). Fixed-size so the
 /// renderer and the hit-tester agree without fonts.
-fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 15]) {
+fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 16]) {
     let pw = 664.0;
-    let ph = 564.0; // four toggle rows fits up to 16 widgets (current: 15).
+    let ph = 564.0; // four toggle rows fits exactly 16 widgets (current: 16).
     let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
     let gap = 12.0;
 
@@ -3764,7 +3887,7 @@ fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 15]) {
     let tog_w = (rw - 3.0 * gap) / 4.0;
     let tog_h = 32.0;
     let tog_top = stats_top + 2.0 * step + card_h + 82.0;
-    let mut toggles = [empty_rect(); 15];
+    let mut toggles = [empty_rect(); 16];
     for (i, slot) in toggles.iter_mut().enumerate() {
         let col = (i % 4) as f32;
         let row = (i / 4) as f32;
