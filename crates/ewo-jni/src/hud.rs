@@ -47,7 +47,7 @@ fn empty_rect() -> Rect {
 
 /// Layout version. Bumped whenever the buffer layout below changes; the Java
 /// side (`EwoHudData.SCHEMA_VERSION`) must match or the HUD draws no data.
-pub const SCHEMA_VERSION: i32 = 8;
+pub const SCHEMA_VERSION: i32 = 9;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
 mod off {
@@ -87,6 +87,8 @@ mod off {
     pub const HIT_PRESENT: usize = 1288;
     pub const HIT_REL_YAW: usize = 1292;
     pub const HIT_AGE: usize = 1296;
+    // Attack-strength scale (schema 9): 0 = freshly attacked, 1 = ready.
+    pub const ATTACK_CHARGE: usize = 1300;
 }
 
 /// Max per-frame indicator records — mirror of `EwoIndicators.MAX_TRACKED`.
@@ -362,6 +364,13 @@ impl HudData {
         self.f32_at(off::HIT_AGE)
     }
 
+    /// Local-player attack-strength scale (0..1). 0 = just attacked, 1 = ready
+    /// for full-damage hit. Drives the Attack Charge HUD + the Auto Hit
+    /// Timing trigger threshold.
+    pub fn attack_charge(&self) -> f32 {
+        self.f32_at(off::ATTACK_CHARGE)
+    }
+
     /// One indicator record — decoded copy of slot `i` in the block.
     pub fn indicator(&self, i: usize) -> Indicator {
         let rec = off::INDICATORS + 4 + i * INDICATOR_RECORD;
@@ -501,10 +510,11 @@ enum WidgetId {
     Items,
     ShieldCooldown,
     Reach,
+    AttackCharge,
 }
 
 impl WidgetId {
-    const ALL: [WidgetId; 14] = [
+    const ALL: [WidgetId; 15] = [
         WidgetId::Fps,
         WidgetId::Coords,
         WidgetId::Ping,
@@ -519,6 +529,7 @@ impl WidgetId {
         WidgetId::Items,
         WidgetId::ShieldCooldown,
         WidgetId::Reach,
+        WidgetId::AttackCharge,
     ];
 
     fn index(self) -> usize {
@@ -542,6 +553,7 @@ impl WidgetId {
             WidgetId::Items => "items",
             WidgetId::ShieldCooldown => "shield_cooldown",
             WidgetId::Reach => "reach",
+            WidgetId::AttackCharge => "attack_charge",
         }
     }
 
@@ -562,6 +574,7 @@ impl WidgetId {
             WidgetId::Items => "ITEMS",
             WidgetId::ShieldCooldown => "SHIELD CD",
             WidgetId::Reach => "REACH",
+            WidgetId::AttackCharge => "ATTACK CHARGE",
         }
     }
 }
@@ -578,7 +591,7 @@ struct WidgetLayout {
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
 /// `hud.toml`.
 struct HudLayout {
-    widgets: [WidgetLayout; 14],
+    widgets: [WidgetLayout; 15],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
 }
@@ -609,6 +622,7 @@ impl HudLayout {
                 WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000 }, // items
                 WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800 }, // shield_cooldown
                 WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100 }, // reach
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800 }, // attack_charge
             ],
             paint_rate: crate::HudPaintRate::Match,
         }
@@ -785,7 +799,7 @@ pub struct Editor {
     /// Cursor position in window pixels.
     cursor: (f32, f32),
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
-    bounds: [Rect; 14],
+    bounds: [Rect; 15],
     dragging: Option<Drag>,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
@@ -850,7 +864,7 @@ impl Editor {
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
-            bounds: [empty_rect(); 14],
+            bounds: [empty_rect(); 15],
             dragging: None,
             slider_drag: None,
             snap_x: None,
@@ -1452,6 +1466,7 @@ fn widget_available(id: WidgetId, data: &HudData) -> bool {
             data.world_active() && (data.shield_cooldown() > 0.0 || data.overlay_open())
         }
         WidgetId::Reach => data.world_active() && (data.target_active() || data.overlay_open()),
+        WidgetId::AttackCharge => data.world_active() || data.overlay_open(),
     }
 }
 
@@ -1509,6 +1524,9 @@ fn draw_widget(
             ax,
             ay,
         ),
+        WidgetId::AttackCharge => {
+            draw_attack_charge(canvas, data.attack_charge(), fonts, anchor, ax, ay)
+        }
     }
 }
 
@@ -2772,6 +2790,101 @@ fn draw_shield_cooldown(
     chip
 }
 
+/// Attack-strength charge meter — a wide pill bar showing the vanilla
+/// attack-strength scale (0..1). Fill colour ramps ember → rose → champagne
+/// as the meter approaches full, so peripheral vision can tell at a glance
+/// whether the next click will land a full-charge hit. A "READY" tracked-mono
+/// eyebrow flashes briefly when charge crosses 0.98.
+fn draw_attack_charge(
+    canvas: &Canvas,
+    charge: f32,
+    fonts: &FontStore,
+    anchor: Anchor,
+    ax: f32,
+    ay: f32,
+) -> Rect {
+    let charge = charge.clamp(0.0, 1.0);
+
+    let label = "ATTACK";
+    let label_font = fonts.jetbrains_mono(11.0);
+    let label_tracking_em = 0.20;
+
+    let pad_x = 14.0;
+    let pad_y = 8.0;
+    let bar_h = 5.0;
+    let bar_gap = 8.0;
+    let radius = 12.0;
+    let chip_w = 168.0;
+
+    let label_w = measure_tracked_em(&label_font, label, label_tracking_em);
+    let (_, lm) = label_font.metrics();
+    let label_cap = if lm.cap_height > 0.0 { lm.cap_height } else { 11.0 * 0.72 };
+
+    // Right-aligned percentage value in JetBrains Mono.
+    let value = if charge >= 0.999 { "READY".to_string() } else { format!("{:>3}%", (charge * 100.0).round() as i32) };
+    let value_font = fonts.jetbrains_mono(11.0);
+    let mut probe = Paint::default();
+    probe.set_anti_alias(true);
+    let (val_w, _) = value_font.measure_str(&value, Some(&probe));
+
+    let header_h = label_cap;
+    let chip_h = pad_y * 2.0 + header_h + bar_gap + bar_h;
+
+    let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
+    let chip = Rect::from_xywh(x, y, chip_w, chip_h);
+    draw_chip(canvas, chip, radius);
+
+    let baseline = y + pad_y + header_h;
+    let mut label_paint = Paint::default();
+    label_paint.set_anti_alias(true);
+    label_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        label,
+        (x + pad_x, baseline),
+        &label_font,
+        &label_paint,
+        label_tracking_em,
+    );
+    let _ = label_w; // gap consumed implicitly by chip_w
+
+    let mut value_paint = Paint::default();
+    value_paint.set_anti_alias(true);
+    let value_color = if charge >= 0.999 { CHAMP } else { PEARL };
+    value_paint.set_color4f(rgba(value_color, 1.0), None);
+    canvas.draw_str(&value, (x + chip_w - pad_x - val_w, baseline), &value_font, &value_paint);
+
+    // Bar — track + fill below the header row.
+    let bar_y = y + pad_y + header_h + bar_gap;
+    let track = Rect::from_xywh(x + pad_x, bar_y, chip_w - pad_x * 2.0, bar_h);
+    let track_rr = RRect::new_rect_xy(track, bar_h * 0.5, bar_h * 0.5);
+    let mut track_paint = Paint::default();
+    track_paint.set_anti_alias(true);
+    track_paint.set_color4f(rgba(WINE, 0.78), None);
+    canvas.draw_rrect(track_rr, &track_paint);
+
+    if charge > 0.01 {
+        let fill_w = (chip_w - pad_x * 2.0) * charge;
+        let fill_rect = Rect::from_xywh(x + pad_x, bar_y, fill_w, bar_h);
+        let fill_rr = RRect::new_rect_xy(fill_rect, bar_h * 0.5, bar_h * 0.5);
+        let mut fill = Paint::default();
+        fill.set_anti_alias(true);
+        // ember when half-or-less, rose at moderate, champagne when ready.
+        let ember = (0xC9, 0x6A, 0x7A);
+        let color = if charge >= 0.999 {
+            CHAMP
+        } else if charge >= 0.66 {
+            ROSE
+        } else {
+            ember
+        };
+        fill.set_color4f(rgba(color, 1.0), None);
+        canvas.draw_rrect(fill_rr, &fill);
+    }
+
+    chip
+}
+
 /// Overhead totem-of-undying pop counter — a small rose chip with `× N`
 /// painted just above the entity's head. Drawn only when `totem_count > 0`,
 /// so entities without observed pops stay un-cluttered.
@@ -3119,8 +3232,8 @@ const ANCHOR_PRESETS: [(Anchor, f32, f32); 9] = [
 /// Hit-rects of the editor side panel, computed from the window height.
 struct PanelLayout {
     panel: Rect,
-    rows: [Rect; 14],
-    toggles: [Rect; 14],
+    rows: [Rect; 15],
+    toggles: [Rect; 15],
     cells: [Rect; 9],
 }
 
@@ -3150,8 +3263,8 @@ fn panel_layout(h: f32) -> PanelLayout {
     let content_w = PANEL_W - PAD * 2.0;
 
     let rows_top = panel_y + PAD + HEADER_H + WLABEL_H;
-    let mut rows = [empty_rect(); 14];
-    let mut toggles = [empty_rect(); 14];
+    let mut rows = [empty_rect(); 15];
+    let mut toggles = [empty_rect(); 15];
     for i in 0..WidgetId::ALL.len() {
         let row = Rect::from_xywh(content_x, rows_top + i as f32 * ROW_H, content_w, ROW_H);
         rows[i] = row;
@@ -3594,9 +3707,9 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
 /// The HOME-view panel, the 3D-skin viewport, 5 stat cards, and 14 widget
 /// toggle chips (4-per-row × 4 rows, last row 2/4 filled). Fixed-size so the
 /// renderer and the hit-tester agree without fonts.
-fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 14]) {
+fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 15]) {
     let pw = 664.0;
-    let ph = 564.0; // grew one toggle row to fit the 13th + 14th widgets.
+    let ph = 564.0; // four toggle rows fits up to 16 widgets (current: 15).
     let panel = Rect::from_xywh((w - pw) * 0.5, (h - ph) * 0.5, pw, ph);
     let gap = 12.0;
 
@@ -3623,7 +3736,7 @@ fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], [Rect; 14]) {
     let tog_w = (rw - 3.0 * gap) / 4.0;
     let tog_h = 32.0;
     let tog_top = stats_top + 2.0 * step + card_h + 82.0;
-    let mut toggles = [empty_rect(); 14];
+    let mut toggles = [empty_rect(); 15];
     for (i, slot) in toggles.iter_mut().enumerate() {
         let col = (i % 4) as f32;
         let row = (i / 4) as f32;

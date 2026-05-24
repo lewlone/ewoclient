@@ -33,6 +33,7 @@ public final class EwoModules {
         "no_pumpkin_overlay", "hit_color",
         "sprint_tap", "auto_eat",
         "auto_mace_swap", "auto_jump_reset", "auto_crit",
+        "reach_lock", "auto_hit_timing", "knockback_max",
         "hit_indicator", "wind_charge_mlg"
     };
     private static final int[] TOGGLE_INDEX = {
@@ -43,6 +44,7 @@ public final class EwoModules {
         EwoModuleData.NO_PUMPKIN_OVERLAY, EwoModuleData.HIT_COLOR,
         EwoModuleData.SPRINT_TAP, EwoModuleData.AUTO_EAT,
         EwoModuleData.AUTO_MACE_SWAP, EwoModuleData.AUTO_JUMP_RESET, EwoModuleData.AUTO_CRIT,
+        EwoModuleData.REACH_LOCK, EwoModuleData.AUTO_HIT_TIMING, EwoModuleData.KNOCKBACK_MAX,
         EwoModuleData.HIT_INDICATOR, EwoModuleData.WIND_CHARGE_MLG
     };
 
@@ -64,6 +66,8 @@ public final class EwoModules {
         EwoAutoMaceSwap.tick();
         EwoAutoJumpReset.tick();
         EwoAutoCrit.tick();
+        EwoReachLock.tick();
+        EwoAutoHitTiming.tick();
         EwoWindChargeMLG.tick();
         EwoActionMotor.tick();
     }
