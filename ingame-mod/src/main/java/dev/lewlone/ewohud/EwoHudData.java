@@ -146,8 +146,18 @@ public final class EwoHudData {
 
     /** Cached single-shield stack for ItemCooldowns probing — allocated once,
      *  never modified. Avoids a per-frame ItemStack alloc just to query the
-     *  shield cooldown fraction. */
-    private static final ItemStack SHIELD_PROBE = new ItemStack(Items.SHIELD);
+     *  shield cooldown fraction.
+     *
+     *  <p>Lazy: initialised on first {@link #capture} call rather than at
+     *  class load. {@code new ItemStack(Items.SHIELD)} reads the item's data
+     *  components (1.20.5+); those aren't bound until MC's resource-manager
+     *  reload runs, which happens AFTER Fabric mod init. Initialising this
+     *  field at class load (via the {@code allocate}-from-{@code
+     *  onInitializeClient} call chain) hits
+     *  "{@code Components not bound yet}" and takes the whole HUD bridge
+     *  down with it. capture() always runs from the render loop, well past
+     *  registry bind time, so deferring is safe. */
+    private static ItemStack shieldProbe;
 
     private static ByteBuffer buffer;
 
@@ -288,7 +298,12 @@ public final class EwoHudData {
         // cooldown bar widget. Always written; renderer gates on > 0.
         float shieldPct = 0f;
         if (player != null) {
-            shieldPct = player.getCooldowns().getCooldownPercent(SHIELD_PROBE, 0f);
+            if (shieldProbe == null) {
+                // First-tick lazy init — see the field's javadoc for why
+                // we can't do this at class load.
+                shieldProbe = new ItemStack(Items.SHIELD);
+            }
+            shieldPct = player.getCooldowns().getCooldownPercent(shieldProbe, 0f);
         }
         b.putFloat(OFF_SHIELD_COOLDOWN, shieldPct);
 
