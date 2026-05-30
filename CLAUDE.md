@@ -989,4 +989,326 @@ in practice because the loader is rebuilt infrequently.
 
 ---
 
-*Last meaningful structural change to this file (2026-05-23 session): **Phase G is verified live, and FreeLook was reworked into a spectator-style freecam.** All seven modules built, deployed and smoke-tested in-game. FreeLook's original "look around with body frozen" worked but read as nearly invisible in first person, so the implementation was rewritten: hold the key → camera detaches at the player's eye, flies with WASD (+ Space/Shift/Left Ctrl), mouse looks; body frozen via `setDown(false)` on the six movement `KeyMappings`; player model rendered by forcing the third-person flag through a `@Redirect` on `CameraType.isFirstPerson()` in `alignWithEntity`; camera position set at `alignWithEntity` RETURN via a `@Shadow`'d `setPosition`. The freecam flies through walls like real spectator — a leash or block-collision is the open legit-client compromise. Along the way the **stale `file://` jar gotcha** was discovered (see the dedicated subsection): `ingame-mod/build.ps1` now copies the freshly-built jar straight into `shared/libraries/` after every build, bypassing the launcher cache that was hiding multiple fresh builds during the FreeLook debug. **No open forward feature plan.** The largest standing gaps remain: Hyprland verification, a formal pixel-parity pass vs `style/*.png`, DPAPI / Credential Vault encryption for `auth.toml` + `EWO_LOADER_TOKEN`, Indium upstream-blocked at MC 1.21.1, and the optional freecam leash/collision.*
+## Unfocused-swap memory leak (fixed 2026-05-26)
+
+The launcher used to leak ≈6 KB / frame (≈3 MB/s at ~500 fps) of
+C++-side memory whenever the window wasn't the foreground — by the time
+you'd been in YouTube fullscreen for half an hour, the launcher could be
+sitting on 6 GB. The hunt is logged in [[leak_hunt]] memory; the short
+version: `wglSwapBuffers` on a fully-obscured window queues presentations
+in the NVIDIA GL driver indefinitely because the compositor never
+consumes them. Skia's tracked caches were all bounded the whole time;
+nothing in Rust grew. winit's `WindowEvent::Focused(false)` /
+`Occluded(true)` / `is_minimized()` are all **unreliable on Win11 when
+another app takes fullscreen** — they kept reporting the launcher as
+visible, focused, and not minimised even when YouTube fullscreen sat on
+top of it.
+
+**Fix:** skip `RedrawRequested` entirely (no Skia work, no
+`swap_buffers`) when the launcher isn't the OS foreground window. The
+foreground check polls `GetForegroundWindow()` via Win32 (lives in
+`crates/ewo-launcher/src/window/win32.rs::is_foreground`, wrapped by
+`window::is_foreground`). On non-Windows it returns `true` always, so
+the cross-platform path falls back to winit's `Occluded` +
+`is_minimized` signals — those work fine on Hyprland/wlroots because
+Wayland's frame-callback model makes occlusion explicit. The render
+loop also still skips on `WindowEvent::Occluded(true)` and
+`window.is_minimized() == Some(true)` for the platforms / scenarios
+where those do fire.
+
+**`!self.focused` is intentionally NOT a skip signal** — the user might
+have a chat or browser focused on a second monitor while the launcher
+animates on their primary. Foreground covers the actually-leak-causing
+case (no compositor presentations possible) without sabotaging that.
+
+### Leak-hunt instrumentation — strip before release
+
+Various leak-hunt diagnostics + Skia cache caps were left in place
+after the fix landed. They're harmless but add noise + a tiny per-alloc
+atomic overhead, and should be removed when the project is ready to
+ship binaries. **Every diagnostic site is tagged with the comment
+marker `LEAK_HUNT_INSTRUMENT`** — `git grep LEAK_HUNT_INSTRUMENT`
+turns them all up. Removing the lot:
+
+- `crates/ewo-launcher/src/main.rs` — the `CountingAllocator` block +
+  `alloc_stats()` + `#[global_allocator]`, the periodic `mem:` / `alloc:`
+  log block in `RedrawRequested`, and the `cap_skia_global_caches()`
+  call in `main()`.
+- `crates/ewo-render/src/gl_backend.rs` — `cap_skia_global_caches`,
+  `log_skia_global_cache_state`, `format_bytes`, the
+  `set_resource_cache_limit(192 MB)` call in `GlBackend::new`, the
+  `frames` field, the periodic `perform_deferred_cleanup` +
+  `skia gpu:` log block at the bottom of `render()`.
+- `crates/ewo-launcher/src/window/win32.rs::process_memory` and the
+  `window::process_memory` wrapper in `window/mod.rs`.
+- `Cargo.toml` — `Win32_System_Threading` + `Win32_System_ProcessStatus`
+  features on the `windows` workspace dep (only used by
+  `process_memory`).
+
+The actual fix (`is_foreground`, the `WindowEvent::Occluded` handler,
+the `self.occluded` field, the render-skip check using all three
+visibility signals) is NOT tagged — it stays forever.
+
+---
+
+## Post-ban refactor: legit / pvp split (2026-05-26)
+
+The "legit-client only" rule that Phase G stated drifted hard during the
+post-G iteration sprints — what was originally CLAUDE.md non-negotiable
+#4 (Phase E) got walked across a series of incremental PvP / macro
+modules (Auto Tool, Auto Totem, Hand Restock, Auto Eat, Sprint Tap, Auto
+Mace Swap, Auto Jump Reset, Auto Pearl, Riptide Boost, Auto Hit Timing,
+Mace Combo, Wind Charge MLG, Triggerbot, …) that shipped without docs
+updates. An anticheat ban landed on CatPvP **with the macros switched
+off**, which is the giveaway that class-name fingerprinting (not
+behavior detection) was the surface. **This refactor splits the catalog
+into a legit set that ships by default and an assist set behind a build
+flag.**
+
+### What's where after the refactor
+
+- **Legit module catalog** (always ships, slots 0..11 of REGISTRY):
+  Full Bright, FOV Control, Toggle Sprint, Toggle Sneak, No Damage Tilt,
+  No View Bob, FreeLook, No Fire Overlay, Crosshair on Reach, No Pumpkin
+  Overlay, Hit Color, Hit Indicator. Pure rendering / read-only / universal
+  QoL — zero packet synthesis.
+- **Assist module catalog** (slots 12..25 of REGISTRY, only present under
+  `--features pvp` / `build.ps1 -Pvp`): Auto Tool, Auto Totem, Legit
+  Elytra Swap, Hand Restock, Auto Eat, Auto Jump Reset, Sprint Tap,
+  Knockback Maximizer, Auto Mace Swap, Auto Pearl, Riptide Boost, Reach
+  Lock, Auto Hit Timing, **Swing Cadence**. All synthesize input packets
+  (inventory clicks, hotbar swaps, sprint state, attack packets) — that's
+  the user's "touching packets isn't fine" red line, and that's why these
+  classes must not exist in the legit jar at all.
+- **Deleted outright** (gone from both legit + pvp catalogs): `auto_crit`
+  (was already a no-op since the bunny-hop tell was too obvious),
+  `mace_combo` (tick-perfect kill chain — beyond the line even for
+  semi-anarchy), `wind_charge_mlg` (snap-pitch mode was literal aim
+  assist).
+- **Renamed** with humanization: `triggerbot` → `swing_cadence`. Same
+  core behaviour (auto-fires the next swing when attack-strength is
+  ready and the crosshair sits on a living target), plus three
+  humanization knobs on top — minimum inter-fire interval (default
+  200 ms ≈ 5 hits/sec cap), ±ms jitter (default 30), and a
+  target-acquired reaction delay (default 80 ms). The class identity
+  changed (`EwoTriggerbot` → `EwoSwingCadence`) specifically to drop the
+  obvious class-name fingerprint a class-scan AC would flag on.
+
+### Build mechanics
+
+- Rust: each crate (`ewo-core`, `ewo-jni`, `ewo-launcher`) has a `pvp`
+  feature. `ewo-core` is the one that gates the registry; `ewo-jni` and
+  `ewo-launcher` just propagate it. `cargo build` is the legit build;
+  `cargo build --features pvp` (or `-p ewo-jni --features pvp`) is the
+  pvp build.
+- `crates/ewo-core/src/modules.rs` uses `#[cfg(feature = "pvp")]` on
+  individual REGISTRY entries — the legit-build registry is a 12-entry
+  prefix of the 26-entry pvp registry. Slot indices for legit modules
+  are stable across builds, so Java's legit slot constants
+  (`EwoModuleData.FULLBRIGHT = 0`, etc.) never change.
+- Java: gated classes live in `dev.lewlone.ewohud.assist.*`
+  (modules + `EwoActionMotor` + `EwoSwingCadence`) and their mixin in
+  `dev.lewlone.ewohud.assist.mixin.PlayerAttackAssistMixin`. Assist slot
+  constants live in `assist.AssistSlots` (slots 12..25). The legit
+  `EwoModuleData.java` carries only legit slot constants — assist names
+  don't enter the legit jar's constant pool at all.
+- The legit driver `EwoModules.java` resolves
+  `dev.lewlone.ewohud.assist.EwoAssist` via reflection at class-load:
+  present → `tick()` + `handleKeyPress()` delegate to it; absent (legit
+  build) → both are no-ops with zero per-frame cost.
+- The pvp-only `PlayerAttackAssistMixin` injects HEAD on
+  `Player.attack(Entity)` alongside the legit `PlayerAttackMixin`
+  (multiple HEAD injects coexist). The legit `PlayerAttackMixin` was
+  trimmed to only the legit handoffs (`EwoHitRange.onAttack` +
+  `EwoComboTracker.onAttack`); the assist mixin adds Knockback Max +
+  `EwoSprintTap.onAttack`.
+- Two mixin configs: `ewohud.mixins.json` (legit, always shipped) and
+  `ewohud-pvp.mixins.json` (additive, pvp jar only). Two `fabric.mod.json`
+  variants: legit references only the legit config; `fabric-pvp.mod.json`
+  references both (`build.ps1 -Pvp` renames it to `fabric.mod.json`
+  inside the jar).
+- `EwoModuleData.SCHEMA_VERSION` bumped 2 → 3. The new layout: legit
+  slots 0..11 in stable order; assist slots 12..25 only written when
+  Rust is built with `--features pvp`. `MODULE_COUNT` is now dynamic —
+  read from buffer offset 4, where Rust writes the live registry length
+  per build. `enabled(slot)` returns false for any slot at or past that
+  value, so legit-build code asking about an assist slot is safe.
+- `ingame-mod/build.ps1` gains a `-Pvp` switch. Without it: cargo build
+  is plain, assist Java sources are filtered out of `javac`,
+  `ewohud-pvp.mixins.json` is excluded from the jar, legit
+  `fabric.mod.json` ships. With it: cargo build adds `--features pvp`,
+  assist sources are compiled, both mixin configs ship, and
+  `fabric-pvp.mod.json` ships as the in-jar `fabric.mod.json`.
+
+### Verification (2026-05-26)
+
+- `cargo test -p ewo-core --lib` passes 8 tests (legit). Same with
+  `--features pvp` (one extra test covers the assist slot ordering).
+  Two regression-guard tests block re-introduction: one fails if any
+  deleted id reappears in REGISTRY; one fails if the legit-build
+  REGISTRY ever exceeds 12 entries.
+- `build.ps1` (legit) produces a jar whose `jar --list` shows zero
+  classes under `dev/lewlone/ewohud/assist/` and exactly one mixin
+  config (`ewohud.mixins.json`). `build.ps1 -Pvp` produces a jar with
+  all 14 assist classes + the pvp mixin + both mixin configs.
+- **In-game verification of both builds still pending** — the user does
+  this. Likely smoke test: launch a legit-build session, open the
+  overlay's MODULES tab, confirm only the 12 legit modules render;
+  launch a pvp-build session, confirm all 26 show + Swing Cadence
+  toggles + fires with the humanized cadence.
+
+### Known follow-ups
+
+- The launcher's profile-level `modules.toml` is id-keyed so settings
+  for the deleted modules linger as inert sections. Cosmetic; the
+  modules are no longer in REGISTRY so the launcher Settings → Modules
+  tab won't surface them. A future cleanup pass on `profile::load_modules`
+  could drop unknown ids on save.
+- Keybinds for `triggerbot` (now `swing_cadence`) need a rebind because
+  the id changed — the launcher Keybinds tab will show `swing_cadence`
+  unbound on profiles where `triggerbot` was bound.
+
+---
+
+## Phase H — Social: Friends, Presence, Launcher-Link (built; deploy + live test pending)
+
+The third feature phase past v1 + v2. [`PHASE_H_PLAN.md`](PHASE_H_PLAN.md)
+holds the original forward plan (now partly stale — see below). Phase H
+plugs the launcher into the user's existing **chickenedin** Minecraft
+network so the launcher knows your friends, their presence, and (future
+H6) lets you Roblox-style join them. **Offline-first holds**: signed-out
+launcher makes zero network calls; signed-in-but-unlinked makes MS-auth
+calls only; social calls happen only once the launcher has a per-user
+`social_token`.
+
+### Three repos, all built — the contract is verified-aligned
+
+Phase H spans three repos. As of 2026-05-30 **all three are implemented
+and the wire contract matches across them** (verified handler-by-handler
+against [`crates/ewo-launcher/src/social/mod.rs`](crates/ewo-launcher/src/social/mod.rs)):
+
+1. **chickenbot (Python)** — `C:/Users/valtteri/Desktop/FULLSTACK/chickenbot/`,
+   branch `chickenbot-mod-tools`. **Committed + clean.** `database.py`
+   declares the Phase H tables (`launcher_link_codes`, `social_tokens`,
+   `presence`, `friendships`, `mc_name_cache`) and helpers
+   (`mint_social_token`, `validate_social_token`, `list_friendships_for`,
+   `upsert_friendship_request`, `respond_to_friendship`,
+   `remove_friendship`, `upsert_presence`, `consume_launcher_link_code`,
+   `lookup_uuid_by_mc_name`). `api.py` registers + implements every
+   endpoint below. Auth: `check_auth` (system `API_SECRET`) for
+   plugin/website calls; `check_user_token` (per-row `social_tokens`
+   bearer) for launcher calls.
+2. **ChickenLink (Paper plugin)** — `FULLSTACK/NETWORK/ChickenLink/`.
+   The `/launcher-link` command (`LauncherLinkCommand.java`) mints a
+   6-digit code via `POST /api/launcher-link-code` and shows it to the
+   player. **Uncommitted as of 2026-05-30** (command + `APIClient` +
+   `ChickenLink.java` registration + `plugin.yml`).
+3. **EwoClient launcher (this repo)** — `social/mod.rs` (the HTTP +
+   state machine), `screens/friends.rs` (`Screen::Friends`),
+   `screens/launcher_link_modal.rs` (6-digit redeem modal). Wired into
+   `App` as `SocialState`. **Uncommitted** (part of the big checkpoint).
+
+### The wire contract (launcher ↔ bot)
+
+Base URL = `https://chickenedin.com/bot` (override with env
+`EWO_BOT_API_BASE`); endpoints hang under `{base}/api/...`, reverse-proxied
+to the bot's `:8080`. **The bot itself listens on `/api/...` directly** —
+the `/bot` prefix is the nginx route.
+
+```
+GET    /api/links/by-uuid?minecraft_uuid=<dashed>   PUBLIC  → {linked: bool}
+POST   /api/launcher-link-code                      system  body {minecraft_uuid} → {code, expires_at} | 404 not-linked
+POST   /api/launcher/link                           PUBLIC  body {code} → {social_token, discord_id} | 404 code-invalid-or-expired
+POST   /api/presence/heartbeat                       user    body {minecraft_uuid, location, screen?, server_addr?, visibility?} → {ok}
+GET    /api/friends                                  user    → {friends[], incoming[], outgoing[]} (discord_id as STRING, presence nested)
+POST   /api/friends/request                          user    body {target_mc_name} → {status} | 404 {status: not-found|not-linked}
+POST   /api/friends/respond                          user    body {request_from_discord_id:int, action} → {status}
+DELETE /api/friends/{discord_id}                     user    → {status: removed}
+```
+
+Contract gotchas (already correct on both sides — recorded so they don't
+regress): `discord_id` is a **string** in `/api/friends` entries (the
+launcher parses it with `.as_str()`; a numeric value would silently drop
+every friend) but a **number** in `/api/friends/respond`'s body. UUIDs go
+to the bot **dashed** (`social::uuid_with_dashes`). Two cosmetic-only
+mismatches remain unfixed: a self-request returns HTTP 400 so the launcher
+shows "http 400" instead of "you can't friend yourself", and an
+`already_*`/`reciprocal` status renders as generic text. Neither breaks
+anything.
+
+### What's done vs. open
+
+- **Launcher H1–H5 built**: link probe on MS sign-in (Account tab shows
+  linked status), `/launcher-link` redeem modal, 30s presence heartbeat,
+  friends list + request/respond/remove, `Screen::Friends`. Some loose
+  ends (the `friend_action` toast, `refresh_friends_now`, and the
+  `InGame` presence variant are coded but not all call-sites wired —
+  these surface as dead-code warnings).
+- **H6 (live server-status widget + Roblox-style join) not done**: the
+  `InGame { server_addr }` heartbeat variant is never constructed yet, so
+  presence always reports `launcher`. Wiring `--server <addr>` launch +
+  the main-menu server widget is the next functional step.
+- **H7 (WebSocket push) not done** — polling-only, by design until lag
+  justifies it.
+- **In-game FRIENDS overlay tab not added** — the in-game dashboard tab
+  strip is still HOME · HUD · CROSSHAIR · MODULES · MODS · SETTINGS.
+- **THE real remaining blocker is ops, not code**: the bot must be
+  *deployed/running* on the VPS with nginx routing `/bot/api/*` → bot
+  `:8080`, and a live end-to-end test (sign in → `/launcher-link`
+  in-game → paste code → see a friend's presence) has not been run. H0's
+  SSH key (`ssh ewo-vps`) was generated 2026-05-27; the public key may
+  still need deploying to the VPS.
+
+## Two undocumented in-game features (shipped, in the big checkpoint)
+
+Built during the post-G / Phase H sprints and absent from every plan doc
+until now. Both live in `crates/ewo-jni` (the in-game HUD cdylib) and the
+overlay editor:
+
+- **Custom crosshair** — [`crates/ewo-jni/src/crosshair.rs`](crates/ewo-jni/src/crosshair.rs)
+  + `ingame-mod/.../mixin/GuiCrosshairMixin.java`. A per-profile
+  `crosshair.toml` (sibling of `hud.toml`), an in-overlay **CROSSHAIR**
+  editor tab (sliders + toggles + colour swatches + live preview), and an
+  in-world crosshair drawn at screen center. When enabled, the Java mixin
+  reads `nativeIsCustomCrosshairEnabled` and cancels the vanilla
+  `Gui.extractCrosshair` so only ours shows. `MouseHandlerInputMixin` was
+  added alongside.
+- **Media controller** — [`crates/ewo-jni/src/media.rs`](crates/ewo-jni/src/media.rs).
+  Reads Windows **SMTC** (System Media Transport Controls — the global
+  feed Spotify/browsers/Apple Music write to) on a background thread;
+  paints a HUD "now playing" widget (title/artist/scrub/transport/thumb)
+  plus a large card on the HOME overlay tab. Transport clicks
+  (play/pause/skip) flow back through `MediaService::act` →
+  `TryPlayAsync`/`TryPauseAsync`. `EwoHudData` schema is at version 10.
+
+---
+
+*Last meaningful structural change to this file (2026-05-26 session):
+**Post-ban refactor — the legit/pvp split.** An anticheat ban on CatPvP
+landed with the macros switched off, pointing at class-name
+fingerprinting as the surface. The catalog now ships in two halves:
+12 legit modules in the default build (zero packet synthesis), and 14
+assist modules behind `--features pvp` / `build.ps1 -Pvp` (the
+packet-touching helpers — Auto Tool, Auto Totem, …, Swing Cadence).
+Java assist sources live in `dev.lewlone.ewohud.assist.*` and are
+filtered out of the legit jar entirely so their class names never enter
+the runtime. Deleted outright: `auto_crit`, `mace_combo`,
+`wind_charge_mlg`. Renamed + humanized: `triggerbot` →
+`swing_cadence` with min-interval-cap + jitter + reaction-delay knobs.
+The previous Phase G "legit-client features only" rule is now
+explicitly the rule for the **default build**; the assist set is the
+opt-in for semi-anarchy use. Build + Rust tests pass in both
+configurations; in-game smoke-test of both builds is the open
+verification step.*
+
+*Update (2026-05-30 session): **documented Phase H (Social) + the two
+undocumented in-game features (custom crosshair, SMTC media controller).**
+No code changed — this was a reconciliation pass after finding ~8.4k lines
+of working-but-uncommitted launcher work plus a fully-built-and-committed
+bot side. Phase H is built and contract-verified across all three repos
+(launcher / chickenbot / ChickenLink); the open items are H6
+(Roblox-style join), the in-game FRIENDS tab, and — the real blocker —
+deploying the bot to the VPS and running a live end-to-end test. The
+launcher working tree (legit/pvp refactor + Phase H + crosshair + media)
+was checkpointed this session; both legit and `--features pvp` builds
+compile and `ewo-core` tests pass.*

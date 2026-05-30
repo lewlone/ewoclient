@@ -20,3 +20,23 @@ gl.workspace = true
 # Raw JNI type definitions — used once, in `nativeInit`, to resolve a direct
 # `ByteBuffer`'s address via `GetDirectBufferAddress`. Just bindings, no logic.
 jni-sys = "0.3"
+
+[features]
+default = []
+# Propagates to `ewo-core/pvp` so the shared REGISTRY (and therefore the
+# overlay's MODULES tab + Rust-side module-state writer) extends to the
+# assist set. The Java mod's `build.ps1 -Pvp` must be paired with this when
+# producing a matched pvp build.
+pvp = ["ewo-core/pvp"]
+
+# Windows System Media Transport Controls — feeds the media-controller widget
+# with "now playing" / thumbnail / transport state. Polled from a background
+# thread (see `media.rs`).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media",
+    "Media_Control",
+    "Storage_Streams",
+] }

@@ -1,5 +1,6 @@
-package dev.lewlone.ewohud;
+package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
@@ -7,14 +8,12 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Items;
 
 /**
- * Phase H — Auto Mace Swap module (1.21+ mace tech).
+ * Auto Mace Swap module (1.21+ mace tech).
  *
  * <p>Vanilla mace mechanic: hitting an entity after falling 1.5+ blocks
- * triggers a "smash attack" with damage scaling per block fallen (4 HP × the
- * first 3 blocks, 2 HP × the next 5, 1 HP per block after). The Density
- * enchantment scales that further. To land smash attacks you must have the
- * mace in your held slot the instant you hit, which is awkward to swap
- * mid-air without a macro.
+ * triggers a "smash attack" with damage scaling per block fallen. To land
+ * smash attacks you must have the mace in your held slot the instant you
+ * hit, which is awkward to swap mid-air without a macro.
  *
  * <p>This module: while in free-fall past the configured minimum and the
  * held slot isn't already a mace, swap to the first hotbar mace via a real
@@ -25,11 +24,10 @@ public final class EwoAutoMaceSwap {
 
     private EwoAutoMaceSwap() {}
 
-    /** Latches once we've swapped for the current fall; cleared on landing. */
     private static boolean swappedThisFall;
 
     public static void tick() {
-        if (!EwoModuleData.enabled(EwoModuleData.AUTO_MACE_SWAP)) {
+        if (!EwoModuleData.enabled(AssistSlots.AUTO_MACE_SWAP)) {
             swappedThisFall = false;
             return;
         }
@@ -47,7 +45,6 @@ public final class EwoAutoMaceSwap {
 
         LocalPlayer player = mc.player;
         if (player.onGround()) {
-            // Reset for the next fall.
             swappedThisFall = false;
             return;
         }
@@ -55,7 +52,7 @@ public final class EwoAutoMaceSwap {
             return;
         }
 
-        float minFall = EwoModuleData.setting(EwoModuleData.AUTO_MACE_SWAP, 0);
+        float minFall = EwoModuleData.setting(AssistSlots.AUTO_MACE_SWAP, 0);
         if (minFall < 1.5f) minFall = 1.5f;
         if (player.fallDistance < minFall) {
             return;
@@ -63,7 +60,6 @@ public final class EwoAutoMaceSwap {
 
         Inventory inv = player.getInventory();
         if (inv.getItem(inv.getSelectedSlot()).is(Items.MACE)) {
-            // Already on mace — nothing to do, but latch so we don't re-check.
             swappedThisFall = true;
             return;
         }
@@ -76,8 +72,6 @@ public final class EwoAutoMaceSwap {
             }
         }
         if (maceSlot < 0) {
-            // No mace in hotbar — bail out and don't keep scanning every frame
-            // for the rest of the fall.
             swappedThisFall = true;
             return;
         }

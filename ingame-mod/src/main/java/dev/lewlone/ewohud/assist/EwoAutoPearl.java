@@ -1,5 +1,6 @@
-package dev.lewlone.ewohud;
+package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.world.InteractionHand;
@@ -7,7 +8,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Items;
 
 /**
- * Phase H — Auto Pearl (clutch escape).
+ * Auto Pearl module (clutch escape).
  *
  * <p>Bound key fires a real swap + use + swap-back: same {@code Inventory}
  * mutate + {@code ServerboundSetCarriedItemPacket} pressing a number key
@@ -17,15 +18,14 @@ import net.minecraft.world.item.Items;
  * means a single click per press — the macro doesn't and can't pearl-spam.
  *
  * <p>No-ops if no pearl is in the hotbar, the inventory screen is open, or
- * another motor sequence is in flight. Throw direction is whatever the user
- * is currently facing — that's the user's choice, not the macro's.
+ * another motor sequence is in flight.
  */
 public final class EwoAutoPearl {
 
     private EwoAutoPearl() {}
 
     public static void trigger() {
-        if (!EwoModuleData.enabled(EwoModuleData.AUTO_PEARL)) {
+        if (!EwoModuleData.enabled(AssistSlots.AUTO_PEARL)) {
             return;
         }
         if (EwoActionMotor.busy()) {
@@ -46,13 +46,11 @@ public final class EwoAutoPearl {
             }
         }
         if (pearlSlot < 0) {
-            return; // no pearl to throw
+            return;
         }
 
         final int slot = pearlSlot;
         final int origSlot = inv.getSelectedSlot();
-        // swap (~one tick) → use → swap back. Tight cadence; vanilla's
-        // 1 s pearl cooldown is the real rate-limit, not the motor.
         EwoActionMotor.enqueue(() -> swapHotbar(slot), 50);
         EwoActionMotor.enqueue(EwoAutoPearl::useMainhand, 50);
         EwoActionMotor.enqueue(() -> swapHotbar(origSlot), 0);

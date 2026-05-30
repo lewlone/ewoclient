@@ -11,11 +11,13 @@ use ewo_core::{Screen, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
 use ewo_render::screens::settings::{
     AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView, KeybindRequest,
-    KeybindRowView, KeybindView, ProfileHover, ProfileRequest, ProfileRowView, ProfileView,
+    KeybindRowView, KeybindView, LinkStatusView, ProfileHover, ProfileRequest, ProfileRowView,
+    ProfileView,
 };
 use ewo_render::screens::{
-    self, AboutModalState, DevOverlayState, DevSlot, FrameStats, InstancePrefs, InstanceSlot,
-    LaunchingState, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
+    self, AboutModalState, DevOverlayState, DevSlot, FrameStats, FriendRowView, FriendsPrefs,
+    FriendsViewState, InstancePrefs, InstanceSlot, LaunchingState, LauncherLinkModalState,
+    LinkRedeemView, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
 };
 use ewo_render::screens::instances::Instance;
 use ewo_render::skia_safe;
@@ -52,6 +54,7 @@ mod overlay_mods;
 mod persistence;
 mod profile;
 mod runtime;
+mod social;
 mod util;
 mod versions;
 mod window;
@@ -108,6 +111,13 @@ struct App {
     /// redraw loop to ~10 FPS when unfocused so the launcher doesn't
     /// hammer the GPU while the user is in another app.
     focused: bool,
+    /// `WindowEvent::Occluded(true)` was the most recent occlusion event —
+    /// the window is fully obscured by another window (fullscreen YouTube,
+    /// covered by other apps, etc.). winit fires this on platforms that
+    /// can detect it; on Windows it fires reliably. Combined with
+    /// `is_minimized` it tells us whether painting the offscreen surface
+    /// is wasted work.
+    occluded: bool,
     screen: Screen,
     settings_tab: SettingsTab,
     prefs: Prefs,
@@ -116,6 +126,10 @@ struct App {
     launching: LaunchingState,
     modal: NewInstanceModalState,
     about_modal: AboutModalState,
+    /// Phase H2 launcher-link modal — the 6-digit code redemption flow.
+    launcher_link_modal: LauncherLinkModalState,
+    /// Phase H5 Friends screen state — text input buffer, button states.
+    friends_prefs: FriendsPrefs,
     dev_overlay: Option<DevOverlayState>,
     launch_button: VbtnState,
     menu_items: [VbtnState; 4],
@@ -125,6 +139,10 @@ struct App {
     /// Microsoft auth service — owns the worker thread + auth state.
     /// Polled each frame via `auth.poll()` to drain the event channel.
     auth: AuthService,
+    /// ChickenedIn social state (Phase H). H1 caches per-account
+    /// "is this MC UUID linked to Discord?" probes. Polled each frame
+    /// the same way `auth` is.
+    social: social::SocialState,
     /// Cached client-profile registry — names + the active name. Refreshed
     /// at startup and after any profile-management action (rare), so the
     /// per-frame render path never hits disk for the list.
@@ -178,6 +196,7 @@ impl App {
             cursor: PhysicalPosition::new(0.0, 0.0),
             mouse_down: false,
             focused: true,
+            occluded: false,
             screen: Screen::default(),
             settings_tab: SettingsTab::Graphics,
             prefs: {
@@ -198,6 +217,8 @@ impl App {
             launching: LaunchingState::default(),
             modal: NewInstanceModalState::default(),
             about_modal: AboutModalState::default(),
+            launcher_link_modal: LauncherLinkModalState::default(),
+            friends_prefs: FriendsPrefs::default(),
             dev_overlay: if dev { Some(DevOverlayState::default()) } else { None },
             launch_button: VbtnState::default(),
             menu_items: [VbtnState::default(); 4],
@@ -205,6 +226,10 @@ impl App {
             // AuthService loads the persisted account store and kicks a
             // silent refresh for the active account itself (see `new`).
             auth: AuthService::new(),
+            // SocialState starts with no probes; we trigger them each
+            // frame for every signed-in account that hasn't been
+            // probed yet (in `drive_social_probes`).
+            social: social::SocialState::new(),
             profiles: profile::list(),
             active_profile: profile::active_name(),
             keybinds: profile::load_keybinds(),
@@ -239,6 +264,29 @@ impl App {
             let cw = card_content_width(size, scale);
             let ch = card_content_height(size, scale);
             backdrop.resize(cw, ch, &self.settings);
+        }
+    }
+
+    /// Map the active account's chickenedin link probe state into the
+    /// renderer-side `LinkStatusView`. Returns `Hidden` when there's no
+    /// active account or the probe hasn't been triggered yet. When the
+    /// account is MC-linked but the launcher itself hasn't been linked
+    /// (Phase H2 social_token missing), returns the clickable variant.
+    fn link_status_view(&self) -> LinkStatusView {
+        let Some(active) = self.auth.active() else {
+            return LinkStatusView::Hidden;
+        };
+        match self.social.link_status(&active.uuid) {
+            social::LinkStatus::Unknown | social::LinkStatus::Probing => LinkStatusView::Probing,
+            social::LinkStatus::Linked => {
+                if self.auth.social_token(&active.uuid).is_some() {
+                    LinkStatusView::Linked
+                } else {
+                    LinkStatusView::LinkedNeedsLauncherLink
+                }
+            }
+            social::LinkStatus::NotLinked => LinkStatusView::NotLinked,
+            social::LinkStatus::Failed(_) => LinkStatusView::Failed,
         }
     }
 
@@ -488,8 +536,18 @@ impl ApplicationHandler for App {
         window::configure(&win);
 
         let backend = GlBackend::new(event_loop, win.clone());
+        // Backdrop particle pools + layout sizes live in logical pixels —
+        // the same coord space `draw_frame` paints in. Inputs to
+        // `card_content_size` are logical, so divide physical by the DPI
+        // scale factor up-front. On 100% scale they're equal; on HiDPI
+        // (e.g. 125% on 1440p) they differ — and a physical-sized backdrop
+        // would put the particles in a coord space the renderer doesn't
+        // share, throwing off both density + bounds.
         let size = win.inner_size();
-        let (card_w, card_h) = app_window::card_content_size(size.width, size.height);
+        let scale = win.scale_factor() as f32;
+        let logical_w = ((size.width as f32) / scale) as u32;
+        let logical_h = ((size.height as f32) / scale) as u32;
+        let (card_w, card_h) = app_window::card_content_size(logical_w, logical_h);
         let backdrop = Backdrop::new(card_w, card_h, &self.settings);
         let fonts = FontStore::new();
 
@@ -533,6 +591,21 @@ impl ApplicationHandler for App {
                 if focused {
                     // Coming back from unfocused — kick off a fresh redraw
                     // so animations resume immediately.
+                    window.request_redraw();
+                }
+            }
+
+            WindowEvent::Occluded(occluded) => {
+                // The window became fully obscured (or stopped being
+                // obscured). On Windows this fires reliably when another
+                // fullscreen app takes over, when the user minimises, or
+                // when our window is fully hidden behind others. We use
+                // it together with `focused` to gate the render+swap
+                // path: presenting a frame when the OS won't show it is
+                // wasted work AND a known leak path (driver-side
+                // present queue accumulates).
+                self.occluded = occluded;
+                if !occluded {
                     window.request_redraw();
                 }
             }
@@ -638,6 +711,66 @@ impl ApplicationHandler for App {
                 } else if logical_key == Key::Named(NamedKey::Escape) && self.about_modal.open {
                     log::info!("about: Esc → closing");
                     self.about_modal.close();
+                } else if self.launcher_link_modal.open {
+                    // Phase H2 launcher-link modal — captures Esc, Enter,
+                    // Backspace, and digit chars while open. Non-digit
+                    // chars are ignored (push_digit double-checks).
+                    if logical_key == Key::Named(NamedKey::Escape) {
+                        log::info!("launcher-link modal: Esc → closing");
+                        self.launcher_link_modal.close();
+                        self.social.clear_link_redeem();
+                    } else if logical_key == Key::Named(NamedKey::Backspace) {
+                        self.launcher_link_modal.pop_digit();
+                    } else if logical_key == Key::Named(NamedKey::Enter)
+                        && self.launcher_link_modal.is_ready()
+                    {
+                        let code = self.launcher_link_modal.code.clone();
+                        log::info!("launcher-link modal: Enter → submitting");
+                        self.social.submit_link_code(code);
+                    } else if let Some(t) = text.as_ref() {
+                        for ch in t.chars() {
+                            if ch.is_ascii_digit() {
+                                self.launcher_link_modal.push_digit(ch);
+                            }
+                        }
+                    }
+                } else if self.screen == Screen::Friends
+                    && self.friends_prefs.add_focused
+                {
+                    // Phase H5 — text input for the add-friend MC name.
+                    const NAME_MAX_LEN: usize = 32;
+                    if logical_key == Key::Named(NamedKey::Escape) {
+                        self.friends_prefs.add_focused = false;
+                    } else if logical_key == Key::Named(NamedKey::Backspace) {
+                        self.friends_prefs.add_buffer.pop();
+                        self.friends_prefs.add_focus_time = 0.0;
+                    } else if logical_key == Key::Named(NamedKey::Enter) {
+                        let token = self
+                            .auth
+                            .active()
+                            .and_then(|a| self.auth.social_token(&a.uuid))
+                            .map(str::to_string);
+                        let name = self.friends_prefs.add_buffer.trim().to_string();
+                        if let (Some(token), false) = (token, name.is_empty()) {
+                            log::info!("friends: Enter → request '{}'", name);
+                            self.social.submit_friend_request_by_name(&token, name);
+                            self.friends_prefs.add_buffer.clear();
+                            self.friends_prefs.add_focused = false;
+                        }
+                    } else if let Some(t) = text.as_ref() {
+                        for ch in t.chars() {
+                            // MC names are ASCII alphanumeric + underscore,
+                            // 1-16 chars, but accept broader and let the
+                            // bot reject — keeps the input forgiving.
+                            if !ch.is_control()
+                                && self.friends_prefs.add_buffer.chars().count()
+                                    < NAME_MAX_LEN
+                            {
+                                self.friends_prefs.add_buffer.push(ch);
+                                self.friends_prefs.add_focus_time = 0.0;
+                            }
+                        }
+                    }
                 } else if logical_key == Key::Named(NamedKey::Escape) && self.modal.open {
                     log::info!("modal: Esc → closing");
                     self.modal.close();
@@ -874,7 +1007,13 @@ impl ApplicationHandler for App {
                     backend.resize(size.width, size.height);
                 }
                 if let Some(backdrop) = self.backdrop.as_mut() {
-                    let (cw, ch) = app_window::card_content_size(size.width, size.height);
+                    // Backdrop is sized in logical pixels — the same space
+                    // `draw_frame` paints in after the canvas scale. Convert
+                    // physical→logical via the current scale factor.
+                    let scale = window.scale_factor() as f32;
+                    let logical_w = ((size.width as f32) / scale) as u32;
+                    let logical_h = ((size.height as f32) / scale) as u32;
+                    let (cw, ch) = app_window::card_content_size(logical_w, logical_h);
                     backdrop.resize(cw, ch, &self.settings);
                 }
                 window.request_redraw();
@@ -918,6 +1057,7 @@ impl ApplicationHandler for App {
                     }
                 } else if self.screen == Screen::Settings {
                     let account_uuids = self.auth.account_uuids();
+                    let link_status = self.link_status_view();
                     let changed = drive_settings_sliders(
                         &mut self.prefs,
                         self.settings_tab,
@@ -928,6 +1068,7 @@ impl ApplicationHandler for App {
                         card_h,
                         &account_uuids,
                         &self.profiles,
+                        link_status,
                     );
                     if changed {
                         profile::save(&self.prefs.to_config(), &self.settings);
@@ -1001,8 +1142,10 @@ impl ApplicationHandler for App {
 
                 // Update launch-button + main-menu hover state. Modal-open
                 // suppresses these so background buttons don't react under
-                // a modal (new-instance or About).
-                let any_modal_open = self.modal.open || self.about_modal.open;
+                // a modal (new-instance, About, or launcher-link).
+                let any_modal_open = self.modal.open
+                    || self.about_modal.open
+                    || self.launcher_link_modal.open;
                 if any_modal_open {
                     self.launch_button = VbtnState::default();
                 } else if let Some(b) = self.launch_button_bounds(card_w) {
@@ -1042,6 +1185,25 @@ impl ApplicationHandler for App {
                     let close_rect =
                         screens::about_modal::close_button_bounds(card_w, card_h);
                     self.about_modal.close_btn.handle(card_pos, close_rect, false);
+                }
+
+                // Phase H2 launcher-link modal — drive Cancel + Submit hover.
+                if self.launcher_link_modal.open {
+                    let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
+                        card_w, card_h,
+                    );
+                    let submit_rect = screens::launcher_link_modal::submit_button_bounds(
+                        card_w, card_h,
+                    );
+                    self.launcher_link_modal.cancel_btn.handle(
+                        card_pos, cancel_rect, false,
+                    );
+                    self.launcher_link_modal.submit_btn.update(
+                        card_pos,
+                        submit_rect,
+                        self.mouse_down,
+                        time,
+                    );
                 }
 
                 // Hover priority: tab bar → menu items → launch button → window zones.
@@ -1210,6 +1372,45 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                // Step 0b (Phase H2): launcher-link modal absorbs all input.
+                // Cancel closes + clears redeem; Submit fires submit_link_code
+                // when the code is ready; shroud click closes.
+                if self.launcher_link_modal.open {
+                    let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
+                        card_w, card_h,
+                    );
+                    let submit_rect = screens::launcher_link_modal::submit_button_bounds(
+                        card_w, card_h,
+                    );
+                    let cancel_clicked = self.launcher_link_modal.cancel_btn.handle(
+                        card_pos, cancel_rect, pressed,
+                    );
+                    let submit_clicked = self.launcher_link_modal.submit_btn.update(
+                        card_pos,
+                        submit_rect,
+                        self.mouse_down,
+                        time,
+                    );
+                    if cancel_clicked {
+                        log::info!("launcher-link modal: Cancel clicked");
+                        self.launcher_link_modal.close();
+                        self.social.clear_link_redeem();
+                    } else if submit_clicked && self.launcher_link_modal.is_ready() {
+                        let code = self.launcher_link_modal.code.clone();
+                        log::info!("launcher-link modal: Submit clicked");
+                        self.social.submit_link_code(code);
+                    } else if pressed
+                        && screens::launcher_link_modal::shroud_consumes(
+                            card_pos, card_w, card_h,
+                        )
+                    {
+                        log::info!("launcher-link modal: shroud click → closing");
+                        self.launcher_link_modal.close();
+                        self.social.clear_link_redeem();
+                    }
+                    return;
+                }
+
                 // Step 0: modal — when open, the modal absorbs all input.
                 // `drive_modal_widgets` runs first so slider drags start on
                 // the rising edge inside bounds; `handle_modal_press` runs
@@ -1368,8 +1569,109 @@ impl ApplicationHandler for App {
                 // CursorMoved via `drive_settings_sliders`); dropdown heads
                 // toggle the menu open/closed; clicks on open menu rows
                 // commit the selection; clicks elsewhere close the menu.
+                // Phase H5 — Friends screen press handling. Inline because
+                // the surface is small (5 click targets + N row buttons).
+                if !handled && pressed && self.screen == Screen::Friends {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let counts = if let social::FriendsListState::Loaded(list) =
+                            self.social.friends()
+                        {
+                            screens::FriendsCounts {
+                                friends: list.friends.len(),
+                                incoming: list.incoming.len(),
+                                outgoing: list.outgoing.len(),
+                            }
+                        } else {
+                            screens::FriendsCounts::default()
+                        };
+                        let layout = screens::friends_layout(card_w, fonts, counts);
+                        let active_token: Option<String> = self
+                            .auth
+                            .active()
+                            .and_then(|a| self.auth.social_token(&a.uuid))
+                            .map(str::to_string);
+
+                        if active_token.is_none() {
+                            // NotLinked: clicking the centered button opens
+                            // the launcher-link modal (same path as the
+                            // rose line in Settings → Account).
+                            if rect_contains(&layout.link_launcher_btn, card_pos) {
+                                log::info!("friends: link button → open launcher-link modal");
+                                self.social.clear_link_redeem();
+                                self.launcher_link_modal.open();
+                                handled = true;
+                            }
+                        } else if let Some(token) = active_token.as_deref() {
+                            // Loaded path. add input → focus.
+                            if rect_contains(&layout.add_input, card_pos) {
+                                self.friends_prefs.add_focused = true;
+                                self.friends_prefs.add_focus_time = 0.0;
+                                handled = true;
+                            } else if rect_contains(&layout.add_submit, card_pos) {
+                                let name = self.friends_prefs.add_buffer.trim().to_string();
+                                if !name.is_empty() {
+                                    log::info!("friends: + Add → request '{}'", name);
+                                    self.social.submit_friend_request_by_name(token, name);
+                                    self.friends_prefs.add_buffer.clear();
+                                    self.friends_prefs.add_focused = false;
+                                }
+                                handled = true;
+                            } else {
+                                // Click landed away from the input; lose focus.
+                                self.friends_prefs.add_focused = false;
+                                // Walk row buttons for accept/decline/remove.
+                                for btn in &layout.row_buttons {
+                                    if !rect_contains(&btn.rect, card_pos) {
+                                        continue;
+                                    }
+                                    let target_id = if let social::FriendsListState::Loaded(list) =
+                                        self.social.friends()
+                                    {
+                                        match btn.kind {
+                                            screens::RowButtonKind::Accept
+                                            | screens::RowButtonKind::Decline => list
+                                                .incoming
+                                                .get(btn.index)
+                                                .map(|e| e.discord_id.clone()),
+                                            screens::RowButtonKind::Remove => list
+                                                .friends
+                                                .get(btn.index)
+                                                .map(|e| e.discord_id.clone()),
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(other) = target_id {
+                                        match btn.kind {
+                                            screens::RowButtonKind::Accept => {
+                                                log::info!("friends: accept {}", other);
+                                                self.social.respond_friend_request(
+                                                    token, other, true,
+                                                );
+                                            }
+                                            screens::RowButtonKind::Decline => {
+                                                log::info!("friends: decline {}", other);
+                                                self.social.respond_friend_request(
+                                                    token, other, false,
+                                                );
+                                            }
+                                            screens::RowButtonKind::Remove => {
+                                                log::info!("friends: remove {}", other);
+                                                self.social.remove_friend(token, other);
+                                            }
+                                        }
+                                        handled = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if self.screen == Screen::Settings {
                     let account_uuids = self.auth.account_uuids();
+                    let link_status = self.link_status_view();
                     let mut changed = drive_settings_sliders(
                         &mut self.prefs,
                         self.settings_tab,
@@ -1380,6 +1682,7 @@ impl ApplicationHandler for App {
                         card_h,
                         &account_uuids,
                         &self.profiles,
+                        link_status,
                     );
                     if !handled && pressed {
                         let (h, c) = handle_settings_press(
@@ -1391,6 +1694,7 @@ impl ApplicationHandler for App {
                             card_h,
                             &account_uuids,
                             &self.profiles,
+                            link_status,
                         );
                         handled = h;
                         changed = changed || c;
@@ -1698,10 +2002,71 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Skip render + swap entirely when the window can't be
+                // shown. On Windows, `wglSwapBuffers` on an obscured /
+                // minimised window queues presentations in the GL driver
+                // indefinitely (the compositor can't display them, so
+                // they pile up) — that's the per-frame ~6 KB / frame
+                // C++-side leak we hunted.
+                //
+                // Four signals, any of which skips this frame:
+                //  - `Occluded(true)` — winit's official signal. Reliable
+                //    on most platforms but on Win11 it sometimes fails to
+                //    fire when another app takes fullscreen.
+                //  - `is_minimized() == Some(true)` — minimised to taskbar.
+                //  - `Win32 GetForegroundWindow() != our hwnd` — we're not
+                //    the user's active app. The Win32 fallback that fires
+                //    when winit's Focused / Occluded didn't.
+                //  - (`!self.focused` is intentionally NOT a skip signal —
+                //    the user might have a chat window focused while
+                //    watching the launcher animations in another monitor.
+                //    Foreground covers the actually-leak-causing case.)
+                let minimized = window.is_minimized().unwrap_or(false);
+                let foreground = window::is_foreground(&window);
+                if self.occluded || minimized || !foreground {
+                    return;
+                }
                 self.clock.tick();
                 let time = self.clock.elapsed;
                 let dt = self.clock.dt;
                 let screen = self.screen;
+
+                // Periodic process-memory snapshot — pairs with the Skia
+                // GPU-cache log from `GlBackend::render` so we can tell at
+                // a glance whether memory growth is GPU-side (Skia) or
+                // CPU-side (everything else: log buffers, font caches,
+                // string allocations, leaked Vecs).
+                // LEAK_HUNT_INSTRUMENT — strip before release.
+                // Per-minute memory + allocator snapshot. Pairs with the
+                // Skia cache log from `GlBackend::render` so we can tell
+                // at a glance where memory is going. The `focused /
+                // occluded / minimized / foreground` tail line is the
+                // live state of the four signals we use to decide
+                // whether to skip rendering.
+                if self.clock.frame_count.is_multiple_of(3600) {
+                    if let Some((rss, private)) = window::process_memory() {
+                        log::info!(
+                            "mem: rss {:.1} MB, private {:.1} MB  (focused={} occluded={} minimized={} foreground={})",
+                            rss as f64 / (1024.0 * 1024.0),
+                            private as f64 / (1024.0 * 1024.0),
+                            self.focused,
+                            self.occluded,
+                            window.is_minimized().unwrap_or(false),
+                            window::is_foreground(&window),
+                        );
+                    }
+                    let (ac, ab, fc, fb) = alloc_stats();
+                    let net_count = ac.saturating_sub(fc);
+                    let net_bytes = ab.saturating_sub(fb);
+                    log::info!(
+                        "alloc: net {} live ({:.1} MB) — total {} allocs / {} frees",
+                        net_count,
+                        net_bytes as f64 / (1024.0 * 1024.0),
+                        ac,
+                        fc,
+                    );
+                }
+                // ── end LEAK_HUNT_INSTRUMENT ─────────────────────────────
 
                 // Auto-end celebrate after the configured duration.
                 if let Some(end) = self.celebrate_until {
@@ -1732,7 +2097,59 @@ impl ApplicationHandler for App {
                 }
                 self.modal.tick(dt);
                 self.about_modal.tick(dt);
+                self.launcher_link_modal.tick(dt);
+                self.friends_prefs.tick(dt);
                 self.auth.poll();
+                // Social: drain probe results, then make sure every
+                // signed-in account has a probe in flight or done.
+                // `ensure_probed` is idempotent — already-probed UUIDs
+                // are a no-op.
+                self.social.poll();
+                for uuid in self.auth.account_uuids() {
+                    self.social.ensure_probed(&uuid);
+                }
+                // Phase H3: fire a presence heartbeat (rate-gated to 30s
+                // inside `maybe_send_heartbeat`). Only when both an
+                // active account AND a live social_token are available
+                // — i.e. the user has completed the launcher-link flow.
+                let heartbeat_inputs: Option<(String, String)> = self
+                    .auth
+                    .active()
+                    .and_then(|a| {
+                        self.auth
+                            .social_token(&a.uuid)
+                            .map(|t| (a.uuid.clone(), t.to_string()))
+                    });
+                if let Some((mc_uuid, token)) = heartbeat_inputs {
+                    let screen_name = screen_name(self.screen);
+                    self.social.maybe_send_heartbeat(
+                        time,
+                        &mc_uuid,
+                        &token,
+                        social::HeartbeatLocation::InLauncher { screen: screen_name },
+                    );
+                    // Phase H5: refresh friends list on the 30s cadence.
+                    // Post-mutation refreshes are chained inside the
+                    // social worker thread (see `dispatch_friend_action`).
+                    self.social.maybe_refresh_friends(time, &token);
+                }
+                // Phase H2: harvest a successful launcher-link redemption
+                // immediately — persist the token next to the active MC
+                // account, clear the redemption state, close the modal.
+                let pending_token: Option<(String, String)> = if let
+                    social::LinkRedeemStatus::Success { token, .. } =
+                    self.social.link_redeem()
+                {
+                    let token = token.clone();
+                    self.auth.active().map(|a| (a.uuid.clone(), token))
+                } else {
+                    None
+                };
+                if let Some((uuid, token)) = pending_token {
+                    self.auth.set_social_token(&uuid, token);
+                    self.social.clear_link_redeem();
+                    self.launcher_link_modal.close();
+                }
                 self.versions.poll();
                 self.downloads.poll();
 
@@ -1973,6 +2390,11 @@ impl ApplicationHandler for App {
                         AccountRequest::Remove(uuid) => {
                             self.auth.remove(&uuid);
                         }
+                        AccountRequest::OpenLauncherLink => {
+                            log::info!("launcher-link modal: open");
+                            self.social.clear_link_redeem();
+                            self.launcher_link_modal.open();
+                        }
                     }
                 }
 
@@ -2060,8 +2482,14 @@ impl ApplicationHandler for App {
                         if let (Some(window), Some(backdrop)) =
                             (self.window.as_ref(), self.backdrop.as_mut())
                         {
+                            // Logical pixels — match `draw_frame`'s coord
+                            // space (post-canvas-scale).
                             let size = window.inner_size();
-                            let (cw, ch) = app_window::card_content_size(size.width, size.height);
+                            let scale = window.scale_factor() as f32;
+                            let logical_w = ((size.width as f32) / scale) as u32;
+                            let logical_h = ((size.height as f32) / scale) as u32;
+                            let (cw, ch) =
+                                app_window::card_content_size(logical_w, logical_h);
                             backdrop.resize(cw, ch, &self.settings);
                         }
                     }
@@ -2121,6 +2549,78 @@ impl ApplicationHandler for App {
                 let launching_state = &self.launching;
                 let modal = &self.modal;
                 let about_modal = &self.about_modal;
+                let launcher_link_modal = &self.launcher_link_modal;
+                let friends_prefs = &self.friends_prefs;
+                // Phase H5: build owned per-row Vecs from the social
+                // state. These stack locals outlive the friends_view
+                // binding (same block scope), so the slices the view
+                // holds borrow cleanly from them.
+                let active_has_token = self
+                    .auth
+                    .active()
+                    .and_then(|a| self.auth.social_token(&a.uuid))
+                    .is_some();
+                let (friends_rows, incoming_rows, outgoing_rows, friends_err_msg) =
+                    if active_has_token {
+                        match self.social.friends() {
+                            social::FriendsListState::Loaded(list) => {
+                                let f = list
+                                    .friends
+                                    .iter()
+                                    .map(friend_entry_to_view)
+                                    .collect::<Vec<_>>();
+                                let i = list
+                                    .incoming
+                                    .iter()
+                                    .map(friend_entry_to_view)
+                                    .collect::<Vec<_>>();
+                                let o = list
+                                    .outgoing
+                                    .iter()
+                                    .map(friend_entry_to_view)
+                                    .collect::<Vec<_>>();
+                                (f, i, o, None)
+                            }
+                            social::FriendsListState::Failed(msg) => {
+                                (vec![], vec![], vec![], Some(msg.clone()))
+                            }
+                            _ => (vec![], vec![], vec![], None),
+                        }
+                    } else {
+                        (vec![], vec![], vec![], None)
+                    };
+                let friends_view: FriendsViewState<'_> = if !active_has_token {
+                    FriendsViewState::NotLinked
+                } else if let Some(msg) = friends_err_msg.as_deref() {
+                    FriendsViewState::Failed(msg)
+                } else if matches!(
+                    self.social.friends(),
+                    social::FriendsListState::Unknown
+                        | social::FriendsListState::Loading
+                ) {
+                    FriendsViewState::Loading
+                } else {
+                    FriendsViewState::Loaded {
+                        friends: &friends_rows,
+                        incoming: &incoming_rows,
+                        outgoing: &outgoing_rows,
+                    }
+                };
+                // Phase H2: clone the Failed message into a local so the
+                // LinkRedeemView's &str doesn't borrow self.social (which
+                // would conflict with `self.backend.as_mut()` below).
+                let link_redeem_msg: Option<String> = match self.social.link_redeem() {
+                    social::LinkRedeemStatus::Failed(m) => Some(m.clone()),
+                    _ => None,
+                };
+                let link_redeem: LinkRedeemView<'_> =
+                    match (self.social.link_redeem(), link_redeem_msg.as_deref()) {
+                        (social::LinkRedeemStatus::Submitting, _) => LinkRedeemView::Submitting,
+                        (social::LinkRedeemStatus::Failed(_), Some(m)) => {
+                            LinkRedeemView::Failed(m)
+                        }
+                        _ => LinkRedeemView::Idle,
+                    };
                 let dev_overlay = self.dev_overlay.as_ref();
                 let heading_hover = self.heading_hover;
                 // Build the Account-tab view from the auth store. The row
@@ -2149,9 +2649,11 @@ impl ApplicationHandler for App {
                         message: err_msg.as_deref().unwrap_or("auth failed"),
                     },
                 };
+                let link_status = self.link_status_view();
                 let account_view = AccountView {
                     accounts: &account_rows,
                     op: account_op,
+                    link_status,
                 };
                 let profile_rows: Vec<ProfileRowView<'_>> = self
                     .profiles
@@ -2194,23 +2696,44 @@ impl ApplicationHandler for App {
                     worst_ms: self.clock.worst_dt() * 1000.0,
                 };
                 let instances = self.instances.as_slice();
+                // DPI handling: the GL surface is sized in physical pixels
+                // (winit reports + we forward to `GlBackend::resize` raw).
+                // But hit-testing in this file converts the cursor to
+                // *logical* pixels (`cursor_card_local` divides by
+                // `scale_factor`) so widget bounds in the screens crate are
+                // already laid out against logical dimensions. To keep both
+                // sides in the same coord space, we apply a one-time
+                // `canvas.scale(scale, scale)` at the top of the frame and
+                // pass `draw_frame` the *logical* viewport size. Without
+                // this, on a HiDPI monitor (e.g. 1440p @ 125%) the renderer
+                // would lay widgets out at physical pixel positions while
+                // the hit-test sat in logical space — cursor would land
+                // up-and-left of where the visible widget rendered.
+                let scale = window.scale_factor() as f32;
                 if let (Some(backend), Some(backdrop), Some(fonts)) =
                     (self.backend.as_mut(), backdrop_ref, fonts_ref)
                 {
                     backend.render(|canvas, w, h| {
+                        let saved = canvas.save();
+                        canvas.scale((scale, scale));
+                        let w_lp = ((w as f32) / scale).round() as u32;
+                        let h_lp = ((h as f32) / scale).round() as u32;
                         app_window::draw_frame(
-                            canvas, backdrop, fonts, w, h, time, theme, settings,
+                            canvas, backdrop, fonts, w_lp, h_lp, time, theme, settings,
                             screen, &launch_button, &menu_items, settings_tab, prefs,
                             instance_prefs, launching_state, modal, about_modal,
-                            dev_overlay, frame_stats, instances, heading_hover,
-                            account_view, profile_view, keybind_view,
+                            launcher_link_modal, link_redeem, dev_overlay, frame_stats,
+                            instances, heading_hover, account_view, profile_view, keybind_view,
+                            friends_prefs, friends_view,
                         );
+                        canvas.restore_to_count(saved);
                     });
                 }
-                // Only chain redraws while focused. When unfocused, the
-                // event loop's `WaitUntil` (set in `about_to_wait`) will
-                // wake us at ~10 FPS so subtle animations still tick but
-                // we stop hammering the GPU.
+                // Chain the next redraw so animations keep ticking. The
+                // unfocused-skip at the top of this arm short-circuits
+                // before any expensive work, so leaving this on for the
+                // unfocused path is cheap (one re-queue per ~100 ms while
+                // unfocused, throttled by `about_to_wait`'s WaitUntil).
                 if self.focused {
                     window.request_redraw();
                 }
@@ -2320,6 +2843,65 @@ fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
     p.0 >= rect.left && p.0 <= rect.right && p.1 >= rect.top && p.1 <= rect.bottom
 }
 
+/// Phase H5: map a `social::FriendEntry` (raw bot payload) to a
+/// renderer-ready `FriendRowView`. The launcher doesn't yet know MC
+/// display names (no Mojang UUID→name resolver), so we fall back to
+/// "Player <last-8-of-uuid>" — good enough for v1, polish later.
+fn friend_entry_to_view(entry: &social::FriendEntry) -> FriendRowView {
+    let display_name = entry
+        .minecraft_uuid
+        .as_deref()
+        .map(|u| {
+            let cleaned: String = u.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            if cleaned.len() >= 8 {
+                format!("Player {}", &cleaned[cleaned.len() - 8..])
+            } else {
+                format!("Player {}", u)
+            }
+        })
+        .unwrap_or_else(|| "Unknown".into());
+
+    let (presence, online) = match entry.presence.as_ref() {
+        None => ("offline".to_string(), false),
+        Some(p) => {
+            let where_at = match p.location.as_str() {
+                "launcher" => p
+                    .screen
+                    .as_deref()
+                    .map(|s| format!("in launcher · {}", s))
+                    .unwrap_or_else(|| "in launcher".into()),
+                "in_game" => p
+                    .server_addr
+                    .as_deref()
+                    .map(|s| format!("in-game · {}", s))
+                    .unwrap_or_else(|| "in-game".into()),
+                other => other.to_string(),
+            };
+            (where_at, true)
+        }
+    };
+
+    FriendRowView {
+        display_name,
+        presence,
+        online,
+        discord_id: entry.discord_id.clone(),
+    }
+}
+
+/// Stable lowercase name for a launcher screen — used as the `screen`
+/// field on Phase H3 presence heartbeats. Friends see this verbatim
+/// (e.g. "in_launcher · settings"), so keep the strings short.
+fn screen_name(screen: Screen) -> &'static str {
+    match screen {
+        Screen::MainMenu => "main_menu",
+        Screen::Instances => "instances",
+        Screen::Friends => "friends",
+        Screen::Settings => "settings",
+        Screen::Launching => "launching",
+    }
+}
+
 /// Drive any slider on the active Settings tab with the current cursor +
 /// mouse-button state. Continuous-drive semantics: on rising edge inside
 /// bounds the slider starts dragging; while dragging, value tracks `mouse.x`
@@ -2338,13 +2920,15 @@ fn drive_settings_sliders(
     card_h: f32,
     account_uuids: &[String],
     profile_names: &[String],
+    link_status: LinkStatusView,
 ) -> bool {
     let Some(fonts) = fonts else {
         return false;
     };
     // Account tab — custom layout. Update row / remove / add-button hover.
     if tab == SettingsTab::Account {
-        let layout = screens::settings::account_tab_layout(fonts, card_w, account_uuids.len());
+        let layout =
+            screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
         prefs.account_hover = None;
         for rl in &layout.rows {
             if rect_contains(&rl.remove, mouse) {
@@ -2525,6 +3109,7 @@ fn handle_settings_press(
     card_h: f32,
     account_uuids: &[String],
     profile_names: &[String],
+    link_status: LinkStatusView,
 ) -> (bool, bool) {
     let Some(fonts) = fonts else {
         return (false, false);
@@ -2533,7 +3118,8 @@ fn handle_settings_press(
     // Account tab — custom layout, handled outside the row-grid dispatch.
     // Remove buttons are nested inside row rects, so test them first.
     if tab == SettingsTab::Account {
-        let layout = screens::settings::account_tab_layout(fonts, card_w, account_uuids.len());
+        let layout =
+            screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
         for rl in &layout.rows {
             if rect_contains(&rl.remove, mouse) {
                 if let Some(uuid) = account_uuids.get(rl.index) {
@@ -2548,6 +3134,16 @@ fn handle_settings_press(
                 if let Some(uuid) = account_uuids.get(rl.index) {
                     prefs.account_request = Some(AccountRequest::SetActive(uuid.clone()));
                 }
+                return (true, false);
+            }
+        }
+        // Phase H2: clickable link-status line (only when status is
+        // `LinkedNeedsLauncherLink`, in which case `link_line_bounds`
+        // is `Some`).
+        if let Some(bounds) = layout.link_line_bounds {
+            if rect_contains(&bounds, mouse) {
+                log::info!("account: link line clicked → open launcher-link modal");
+                prefs.account_request = Some(AccountRequest::OpenLauncherLink);
                 return (true, false);
             }
         }
@@ -3352,6 +3948,50 @@ fn update_cursor_icon(
     window.set_cursor(icon);
 }
 
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║ LEAK_HUNT_INSTRUMENT — strip before release (CLAUDE.md "Leak-hunt    ║
+// ║ instrumentation"). This counting global allocator lets us separate   ║
+// ║ Rust-side from C++-side heap growth: a flat `alloc: net X B` while   ║
+// ║ `mem: rss` climbs proves the leak isn't in Rust. The wrap of         ║
+// ║ `System` is otherwise behaviour-preserving but every alloc / dealloc ║
+// ║ now goes through two atomic adds.                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct CountingAllocator;
+
+static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static FREE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        System.alloc(layout)
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+        FREE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        System.dealloc(ptr, layout)
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAllocator = CountingAllocator;
+
+fn alloc_stats() -> (usize, usize, usize, usize) {
+    (
+        ALLOC_COUNT.load(Ordering::Relaxed),
+        ALLOC_BYTES.load(Ordering::Relaxed),
+        FREE_COUNT.load(Ordering::Relaxed),
+        FREE_BYTES.load(Ordering::Relaxed),
+    )
+}
+// ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────────
+
 fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
@@ -3359,6 +3999,14 @@ fn main() {
     .init();
 
     let args = Args::parse();
+
+    // LEAK_HUNT_INSTRUMENT — strip before release.
+    // Cap Skia's process-wide CPU caches before any Skia work happens. The
+    // GPU-side cache lives on `DirectContext` and is set in `GlBackend::new`.
+    // Was added during leak-hunt as belt-and-braces; the actual leak turned
+    // out to be unrelated (driver-side present queue on hidden window).
+    ewo_render::gl_backend::cap_skia_global_caches();
+    // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);

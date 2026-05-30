@@ -309,6 +309,10 @@ fn finish_chain(
         // Refresh tokens roll on each refresh — prefer the new one if the
         // server gave us one, otherwise re-use the input refresh token.
         ms_refresh_token: ms.refresh_token.clone().unwrap_or_default(),
+        // social_token is managed by the Phase H link flow, not the auth
+        // chain. `AccountStore::upsert` preserves any existing value when
+        // we re-auth, so this stays None only for first-time sign-in.
+        social_token: None,
     })
 }
 

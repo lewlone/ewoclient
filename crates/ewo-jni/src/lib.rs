@@ -63,7 +63,9 @@
 
 #![allow(non_snake_case)] // JNI exports must be named `Java_<pkg>_<class>_<method>`.
 
+mod crosshair;
 mod hud;
+mod media;
 mod modules;
 mod pvp;
 mod skin;
@@ -84,8 +86,8 @@ use skia_safe::gpu::{
 };
 use skia_safe::image_filters;
 use skia_safe::{
-    AlphaType, Color, ColorType, CubicResampler, FilterMode, Image, ImageInfo, Paint, Rect,
-    Surface, TileMode,
+    canvas::SrcRectConstraint, AlphaType, ClipOp, Color, ColorType, CubicResampler, FilterMode,
+    Image, ImageInfo, Paint, RRect, Rect, Surface, TileMode,
 };
 
 // ────────────────────────────────────────────────────────────────────────
@@ -622,6 +624,30 @@ impl Hud {
                 tint.set_color(Color::from_argb(70, 10, 0, 6));
                 fbo.canvas().draw_rect(dst, &tint);
             }
+            // Live-game cutouts. The CROSSHAIR editor's preview panes want
+            // *un-frosted* live game underneath so the crosshair sits over
+            // the real world at 1:1 (true-to-life). Each cutout re-draws
+            // the pre-frost snapshot back into a rounded-rect region; the
+            // offscreen Skia surface leaves the pane interior transparent
+            // so the game stays visible there once the offscreen is
+            // composited on top.
+            let cutouts = self.editor.live_game_cutouts(w as f32, h as f32);
+            for rect in &cutouts {
+                let saved = fbo.canvas().save();
+                fbo.canvas().clip_rrect(
+                    RRect::new_rect_xy(*rect, 10.0, 10.0),
+                    Some(ClipOp::Intersect),
+                    Some(true),
+                );
+                fbo.canvas().draw_image_rect_with_sampling_options(
+                    &game,
+                    Some((rect, SrcRectConstraint::Strict)),
+                    *rect,
+                    FilterMode::Nearest,
+                    &Paint::default(),
+                );
+                fbo.canvas().restore_to_count(saved);
+            }
         }
 
         if let Some(offscreen) = self.offscreen.as_mut() {
@@ -789,22 +815,52 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseMove(
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseButton(
     _env: *mut c_void,
     _class: *mut c_void,
-    _button: i32,
+    button: i32,
     pressed: u8,
     x: f64,
     y: f64,
 ) {
-    with_hud(|hud| hud.editor.on_mouse_button(pressed != 0, x as f32, y as f32));
+    with_hud(|hud| hud.editor.on_mouse_button(button, pressed != 0, x as f32, y as f32));
 }
 
-/// Overlay input — the scroll wheel. Unused until the E6 settings overlay.
+/// Overlay input — the scroll wheel. Drives the MODULES-tab vertical scroll
+/// (the only dashboard view tall enough to overflow). Mouse wheel delta y is
+/// positive when scrolling up — invert so positive scroll moves content up
+/// (showing later rows).
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseScroll(
     _env: *mut c_void,
     _class: *mut c_void,
     _dx: f64,
-    _dy: f64,
+    dy: f64,
 ) {
+    with_hud(|hud| hud.editor.on_scroll(dy as f32));
+}
+
+/// Mouse click forwarded by the Fabric mod when a *vanilla* screen is open
+/// and the user left-clicks. Hit-tests the in-world Media widget's transport
+/// buttons; if a button is hit the action fires and we return `1` so the mod
+/// can cancel the vanilla screen's click. `0` means "not consumed — let
+/// vanilla have it."
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMediaTryClick(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    button: i32,
+    x: f64,
+    y: f64,
+) -> u8 {
+    let mut consumed: u8 = 0;
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        HUD.with(|cell| {
+            if let HudState::Ready(hud) = &mut *cell.borrow_mut() {
+                if hud.editor.try_media_click(button, x as f32, y as f32) {
+                    consumed = 1;
+                }
+            }
+        });
+    }));
+    consumed
 }
 
 /// Overlay input — a key. Overlay open/close is handled Java-side; this is
@@ -817,6 +873,31 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeKey(
     _pressed: u8,
     _modifiers: i32,
 ) {
+}
+
+/// Returns `1` when the custom crosshair is enabled and the Java mixin
+/// should cancel vanilla's `Gui.extractCrosshair` so only ours draws,
+/// `0` otherwise. Called once per frame from the suppression mixin.
+///
+/// Defaults to `0` whenever the HUD isn't initialised (e.g. before
+/// `nativeInit`) so the vanilla crosshair always shows when no custom
+/// override is in play.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeIsCustomCrosshairEnabled(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) -> u8 {
+    let mut enabled: u8 = 0;
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        HUD.with(|cell| {
+            if let HudState::Ready(hud) = &*cell.borrow() {
+                if hud.editor.crosshair_config().enabled {
+                    enabled = 1;
+                }
+            }
+        });
+    }));
+    enabled
 }
 
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init

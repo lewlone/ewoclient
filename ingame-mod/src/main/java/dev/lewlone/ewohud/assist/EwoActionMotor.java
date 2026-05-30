@@ -1,14 +1,15 @@
-package dev.lewlone.ewohud;
+package dev.lewlone.ewohud.assist;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Random;
 
 /**
- * Phase H — the shared action queue + tick driver for the auto-action modules.
+ * The shared action queue + tick driver for the assist auto-action modules.
  *
- * <p>Auto-action modules (Auto Tool, Auto Totem, Legit Elytra Swap) need to
- * fire a sequence of <i>real</i> client-side actions — number-key swap, open
+ * <p>Auto-action assist modules (Auto Tool, Auto Totem, Legit Elytra Swap,
+ * Hand Restock, Auto Pearl, Riptide Boost, Auto Mace Swap) need to fire a
+ * sequence of <i>real</i> client-side actions — number-key swap, open
  * inventory, click slot, close inventory — with realistic delays + jitter
  * between steps so the cadence reads as human, not bot.
  *
@@ -21,7 +22,11 @@ import java.util.Random;
  *
  * <p>Only one sequence runs at a time — modules consult {@link #busy()} before
  * queueing. {@link #tick()} is called once per frame from
- * {@link EwoModules#tick()}.
+ * {@code EwoAssist.tick()}.
+ *
+ * <p>This class lives in {@code dev.lewlone.ewohud.assist} so the legit-only
+ * build (without the {@code -Pvp} flag) doesn't ship it at all — its class
+ * name was a clear pattern-match for a class-scan-driven anti-cheat.
  */
 public final class EwoActionMotor {
 

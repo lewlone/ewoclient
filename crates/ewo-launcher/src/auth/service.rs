@@ -173,6 +173,31 @@ impl AuthService {
         self.refresh_active_token();
     }
 
+    /// Phase H2: persist a social_token against an existing account.
+    /// Called when the launcher-link modal successfully completes — the
+    /// bot returned a fresh token, we save it next to the account so
+    /// future bot calls authenticate as this user.
+    pub fn set_social_token(&mut self, uuid: &str, token: String) {
+        if self.store.set_social_token(uuid, token) {
+            persistence::save_store(&self.store);
+            log::info!("auth: stored social token for {}", uuid);
+        } else {
+            log::warn!(
+                "auth: ignored social_token for unknown uuid {}",
+                uuid
+            );
+        }
+    }
+
+    /// Phase H2: read the social_token for the account with `uuid`.
+    pub fn social_token(&self, uuid: &str) -> Option<&str> {
+        self.store
+            .accounts
+            .iter()
+            .find(|a| a.uuid == uuid)
+            .and_then(|a| a.social_token.as_deref())
+    }
+
     /// Kick a silent refresh for the active account if it has a refresh
     /// token but no live Minecraft token yet, and no chain is running.
     fn refresh_active_token(&mut self) {

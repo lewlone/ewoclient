@@ -61,6 +61,13 @@ pub struct MinecraftAccount {
     /// Currently stored plaintext in `auth.toml`; encrypting at rest is
     /// a follow-up if/when we ship this binary widely.
     pub ms_refresh_token: String,
+    /// Phase H2: per-user bearer token for the chickenedin bot API.
+    /// `None` until the user completes the in-game `/launcher-link`
+    /// flow + redeems the code in the launcher's link modal. Sensitive
+    /// — single revocable credential per launcher install.
+    /// `default` so old auth.toml files (no field) deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub social_token: Option<String>,
 }
 
 /// Errors surfaced to the UI. The `String` payloads are user-facing

@@ -51,9 +51,29 @@ impl AccountStore {
     /// not change the `active` pointer.
     pub fn upsert(&mut self, account: MinecraftAccount) {
         if let Some(slot) = self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+            // Preserve Phase H social_token across re-auth (the auth chain
+            // doesn't manage it). If the caller explicitly set one, honor
+            // that — otherwise carry the existing token forward.
+            let preserved = account
+                .social_token
+                .clone()
+                .or_else(|| slot.social_token.clone());
             *slot = account;
+            slot.social_token = preserved;
         } else {
             self.accounts.push(account);
+        }
+    }
+
+    /// Phase H2: persist a social_token against an existing account.
+    /// Returns `true` if the account exists and was updated, `false`
+    /// if `uuid` doesn't match any known account.
+    pub fn set_social_token(&mut self, uuid: &str, token: String) -> bool {
+        if let Some(slot) = self.accounts.iter_mut().find(|a| a.uuid == uuid) {
+            slot.social_token = Some(token);
+            true
+        } else {
+            false
         }
     }
 
@@ -193,6 +213,7 @@ mod tests {
             uuid: uuid.to_string(),
             minecraft_token: String::new(),
             ms_refresh_token: format!("refresh-{uuid}"),
+            social_token: None,
         }
     }
 

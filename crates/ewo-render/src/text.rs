@@ -9,6 +9,8 @@
 //! and falls back to the system default if missing — so the app boots fine
 //! before fonts are dropped in, just with non-target typography.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use skia_safe::font_arguments::variation_position::Coordinate;
@@ -24,6 +26,36 @@ pub struct FontStore {
     pub has_newsreader_italic: bool,
     pub jetbrains_mono: Typeface,
     pub has_jetbrains_mono: bool,
+    /// Cache of Fraunces typefaces by (soft, wonk, opsz, weight). Each
+    /// `clone_with_arguments` produces a fresh `Typeface` that Skia's
+    /// internal caches don't fully release, so without this we leak ≈4 MB/s
+    /// at 500 fps with the launcher's animated breathing-text + per-screen
+    /// axis-tweaked headings. The launcher uses ~20 distinct combinations
+    /// across the whole UI; the cache fits them all + stays at a stable
+    /// size forever.
+    fraunces_cache: RefCell<HashMap<FrauncesAxisKey, Typeface>>,
+}
+
+/// Quantised cache key for a Fraunces variant — values map to fixed-point
+/// integers so `f32`s with rounding noise don't multiply identical entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FrauncesAxisKey {
+    soft: i32,
+    wonk: i32,
+    opsz: i32,
+    weight: i32,
+}
+
+impl FrauncesAxisKey {
+    fn from_axes(soft: f32, wonk: f32, opsz: f32, weight: f32) -> Self {
+        // ×100 fixed-point — sub-axis precision the eye couldn't see anyway.
+        Self {
+            soft: (soft * 100.0).round() as i32,
+            wonk: (wonk * 100.0).round() as i32,
+            opsz: (opsz * 100.0).round() as i32,
+            weight: (weight * 100.0).round() as i32,
+        }
+    }
 }
 
 impl FontStore {
@@ -42,6 +74,7 @@ impl FontStore {
             has_newsreader_italic,
             jetbrains_mono,
             has_jetbrains_mono,
+            fraunces_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -67,6 +100,19 @@ impl FontStore {
         opsz: Option<f32>,
     ) -> Font {
         let opsz = opsz.unwrap_or(size); // CSS `font-optical-sizing: auto` ≈ opsz tracks size
+        let key = FrauncesAxisKey::from_axes(soft, wonk, opsz, weight);
+
+        // Fast path — variant already built for this axis combination.
+        if let Some(tf) = self.fraunces_cache.borrow().get(&key) {
+            let mut f = Font::new(tf.clone(), size);
+            f.set_subpixel(true);
+            return f;
+        }
+
+        // Slow path — build the variant once and cache it. `clone_with_arguments`
+        // is what was leaking when called per-frame; doing it once per
+        // (soft, wonk, opsz, weight) combination is fine. Skia handles the
+        // refcounted clone in `Font::new(tf.clone(), size)` cheaply.
         let coords = [
             Coordinate { axis: FourByteTag::from_chars('S', 'O', 'F', 'T'), value: soft },
             Coordinate { axis: FourByteTag::from_chars('W', 'O', 'N', 'K'), value: wonk },
@@ -79,8 +125,9 @@ impl FontStore {
             .fraunces
             .clone_with_arguments(&args)
             .unwrap_or_else(|| self.fraunces.clone());
-        let mut f = Font::new(tf, size);
+        let mut f = Font::new(tf.clone(), size);
         f.set_subpixel(true);
+        self.fraunces_cache.borrow_mut().insert(key, tf);
         f
     }
 

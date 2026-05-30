@@ -10,6 +10,8 @@
     "LightmapRenderStateExtractorMixin",
     "GameRendererMixin",
     "MouseHandlerMixin",
+    "MouseHandlerInputMixin",
+    "GuiCrosshairMixin",
     "LivingEntityJumpMixin",
     "PlayerAttackMixin",
     "ScreenEffectRendererMixin",

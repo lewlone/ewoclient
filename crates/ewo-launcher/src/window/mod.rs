@@ -31,3 +31,34 @@ pub fn configure(window: &Window) {
     #[cfg(target_os = "linux")]
     wayland::configure(window);
 }
+
+/// LEAK_HUNT_INSTRUMENT — strip before release.
+/// Current process memory snapshot — `(working_set_bytes, private_bytes)`.
+/// Returns `None` on platforms where this isn't wired up.
+pub fn process_memory() -> Option<(u64, u64)> {
+    #[cfg(target_os = "windows")]
+    {
+        win32::process_memory()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// Whether the given window is the OS's foreground window. Used as a
+/// supplementary signal to skip rendering when winit's focus/occluded
+/// state lies (Win11 doesn't always fire `Focused(false)` when another
+/// app takes fullscreen). Returns `true` on platforms where this isn't
+/// implemented, so the render-skip path only triggers on Windows.
+pub fn is_foreground(window: &Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win32::is_foreground(window)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        true
+    }
+}

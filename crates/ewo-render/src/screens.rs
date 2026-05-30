@@ -8,7 +8,9 @@
 
 pub mod about_modal;
 pub mod dev_overlay;
+pub mod friends;
 pub mod instances;
+pub mod launcher_link_modal;
 pub mod launching;
 pub mod main_menu;
 pub mod new_instance_modal;
@@ -17,7 +19,14 @@ pub mod tab_bar;
 
 pub use about_modal::{draw_modal as draw_about_modal, AboutModalState};
 pub use dev_overlay::{draw_dev_overlay, DevOverlayState, FrameStats, Slot as DevSlot};
+pub use friends::{
+    draw_friends, friends_layout, FriendRowView, FriendsCounts, FriendsLayout, FriendsPrefs,
+    FriendsViewState, RowButton, RowButtonKind,
+};
 pub use instances::{draw_instances, InstancePrefs, Slot as InstanceSlot};
+pub use launcher_link_modal::{
+    draw_modal as draw_launcher_link_modal, LauncherLinkModalState, LinkRedeemView,
+};
 pub use launching::{draw_launching, LaunchError, LaunchingState, RealSeverity};
 pub use main_menu::draw_main_menu;
 pub use new_instance_modal::{

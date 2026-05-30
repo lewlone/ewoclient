@@ -1,5 +1,6 @@
-package dev.lewlone.ewohud;
+package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -11,7 +12,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
 /**
- * Phase H1 — Auto Tool module.
+ * Auto Tool module.
  *
  * <p>While the attack key is held against a block, swap to the most-effective
  * hotbar slot for that block before the swing lands. The slot swap is a real
@@ -33,7 +34,7 @@ public final class EwoAutoTool {
 
     /** Per-frame check. Queues at most one slot-swap step via the motor. */
     public static void tick() {
-        if (!EwoModuleData.enabled(EwoModuleData.AUTO_TOOL)) {
+        if (!EwoModuleData.enabled(AssistSlots.AUTO_TOOL)) {
             lastTarget = null;
             return;
         }
@@ -48,9 +49,6 @@ public final class EwoAutoTool {
             return;
         }
 
-        // Only act while the user is actively trying to mine — `keyAttack` is
-        // released when no screen is open, so this also filters out menu
-        // clicks. Releasing the key re-arms a fresh swap on the next press.
         if (!mc.options.keyAttack.isDown()) {
             lastTarget = null;
             return;
@@ -84,8 +82,6 @@ public final class EwoAutoTool {
             }
         }
 
-        // Don't bother swapping if the best slot is the current one, or if no
-        // hotbar tool is faster than bare hands (speed 1.0 on most blocks).
         if (bestSlot == current || bestSpeed <= 1.0f) {
             lastTarget = pos;
             return;
@@ -93,14 +89,9 @@ public final class EwoAutoTool {
 
         lastTarget = pos;
         final int target = bestSlot;
-        // Single-step sequence — no perceptible delay before swap; the motor
-        // would normally pace inter-step delays, but a hotbar press has no
-        // sub-actions. Re-queueable on the next block target.
         EwoActionMotor.enqueue(() -> swapHotbar(target), 0);
     }
 
-    /** Switch hotbar slot the way a number-key press does: set the inventory
-     *  index + send the standard set-carried-item packet. */
     private static void swapHotbar(int slot) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.player.connection == null) {

@@ -404,22 +404,59 @@ public final class EwoHudData {
         b.putInt(OFF_POTION_COUNT, count);
     }
 
-    /** Write the entity under the crosshair. Returns true if one is present. */
+    // Persistence window for the TargetHUD + Reach widgets — once a target
+    // leaves the crosshair the last-seen values stay live for this long, so
+    // the widgets don't flicker on briefly-lost targets in fights.
+    private static final long TARGET_PERSIST_MS = 3500L;
+    private static long lastTargetMs = 0L;
+    private static float lastTargetDist = 0f;
+    private static float lastTargetHp = 0f;
+    private static float lastTargetMaxHp = 0f;
+    private static String lastTargetName = "";
+
+    /**
+     * Write the entity under the crosshair. Returns true if one is present —
+     * either live now, or last-seen within {@link #TARGET_PERSIST_MS}.
+     */
     private static boolean captureTarget(ByteBuffer b, Minecraft mc, LocalPlayer player) {
         Entity target = mc.crosshairPickEntity;
-        if (target == null) {
+        if (target != null) {
+            float dist = player.distanceTo(target);
+            float hp = 0f;
+            float maxHp = 0f;
+            if (target instanceof LivingEntity living) {
+                hp = living.getHealth();
+                maxHp = living.getMaxHealth();
+            }
+            String name = target.getName().getString();
+
+            // Update the cache before writing — next no-target frame uses this.
+            lastTargetMs = System.currentTimeMillis();
+            lastTargetDist = dist;
+            lastTargetHp = hp;
+            lastTargetMaxHp = maxHp;
+            lastTargetName = name;
+
+            b.putInt(OFF_TARGET_PRESENT, 1);
+            b.putFloat(OFF_TARGET_DIST, dist);
+            b.putFloat(OFF_TARGET_HP, hp);
+            b.putFloat(OFF_TARGET_MAXHP, maxHp);
+            putString(b, OFF_TARGET_NAME, TARGET_NAME_CAP, name);
+            return true;
+        }
+
+        // No live target — keep the last-seen values for the persistence
+        // window so the TargetHUD doesn't flicker when a target briefly slips
+        // off the crosshair (combat camera shake, line-of-sight blip, etc.).
+        long since = System.currentTimeMillis() - lastTargetMs;
+        if (lastTargetMs == 0L || since > TARGET_PERSIST_MS) {
             return false;
         }
         b.putInt(OFF_TARGET_PRESENT, 1);
-        b.putFloat(OFF_TARGET_DIST, player.distanceTo(target));
-        if (target instanceof LivingEntity living) {
-            b.putFloat(OFF_TARGET_HP, living.getHealth());
-            b.putFloat(OFF_TARGET_MAXHP, living.getMaxHealth());
-        } else {
-            b.putFloat(OFF_TARGET_HP, 0f);
-            b.putFloat(OFF_TARGET_MAXHP, 0f);
-        }
-        putString(b, OFF_TARGET_NAME, TARGET_NAME_CAP, target.getName().getString());
+        b.putFloat(OFF_TARGET_DIST, lastTargetDist);
+        b.putFloat(OFF_TARGET_HP, lastTargetHp);
+        b.putFloat(OFF_TARGET_MAXHP, lastTargetMaxHp);
+        putString(b, OFF_TARGET_NAME, TARGET_NAME_CAP, lastTargetName);
         return true;
     }
 

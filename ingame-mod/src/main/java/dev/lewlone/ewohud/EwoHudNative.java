@@ -59,4 +59,30 @@ public final class EwoHudNative {
      * Rust owns module state; the new value comes back through the buffer.
      */
     public static native void nativeModuleToggle(int index);
+
+    // ── Media (in-world widget transport) ─────────────────────────────────
+
+    /**
+     * Forward a left-click that landed while a *vanilla* screen is open
+     * (inventory / pause menu / chat / etc.). Rust hit-tests the in-world
+     * Media widget's transport buttons; if the click landed on one, the
+     * action fires and this returns {@code 1} so the caller can cancel the
+     * vanilla screen's click. {@code 0} = "not consumed — let vanilla have it."
+     *
+     * @param button GLFW button code (0 = left, 1 = right, …)
+     * @param x      cursor x in raw window pixels
+     * @param y      cursor y in raw window pixels
+     */
+    public static native byte nativeMediaTryClick(int button, double x, double y);
+
+    // ── Crosshair (vanilla suppression) ──────────────────────────────────
+
+    /**
+     * Returns {@code 1} when the CROSSHAIR overlay tab has the custom
+     * crosshair enabled and the {@link dev.lewlone.ewohud.mixin.GuiCrosshairMixin}
+     * should cancel vanilla's {@code Gui.extractCrosshair}; {@code 0}
+     * otherwise. Rust owns the config — the editor in the overlay mutates
+     * the same value this reads.
+     */
+    public static native byte nativeIsCustomCrosshairEnabled();
 }

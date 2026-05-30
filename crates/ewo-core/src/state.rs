@@ -5,6 +5,11 @@ pub enum Screen {
     #[default]
     MainMenu,
     Instances,
+    /// Phase H5 — chickenedin friend graph: see who's online, send/accept
+    /// requests, remove friends. Visible only when the active account
+    /// has a launcher-linked social_token; otherwise the tab still
+    /// renders but the screen shows a "link your launcher" affordance.
+    Friends,
     Settings,
     Launching,
 }
@@ -15,6 +20,7 @@ impl Screen {
         &[
             Screen::MainMenu,
             Screen::Instances,
+            Screen::Friends,
             Screen::Settings,
             Screen::Launching,
         ]
@@ -25,6 +31,7 @@ impl Screen {
         match self {
             Screen::MainMenu => "MAIN MENU",
             Screen::Instances => "INSTANCES",
+            Screen::Friends => "FRIENDS",
             Screen::Settings => "SETTINGS",
             Screen::Launching => "LAUNCHING",
         }

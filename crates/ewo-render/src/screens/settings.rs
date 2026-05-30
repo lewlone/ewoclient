@@ -101,12 +101,38 @@ pub enum AccountOpView<'a> {
     Failed { message: &'a str },
 }
 
+/// Whether the **active** account's MC UUID is linked to a ChickenedIn
+/// Discord account (Phase H1). Renders as a single status line between
+/// the account rows and the "Add account" button. The launcher's
+/// `crate::social::LinkStatus` flattens into this — the renderer doesn't
+/// need to know about probe-failure detail strings or threading state.
+#[derive(Copy, Clone, Debug)]
+pub enum LinkStatusView {
+    /// Hide the link line entirely. Use when there's no active account.
+    Hidden,
+    /// Probe in flight (or about to be); show "Checking…".
+    Probing,
+    /// MC linked + launcher linked. The "all set" state.
+    Linked,
+    /// MC linked, launcher NOT linked. The line is clickable — click
+    /// opens the launcher-link modal to redeem an in-game code.
+    LinkedNeedsLauncherLink,
+    /// Not linked — show "ChickenedIn · Not linked" + a hint.
+    NotLinked,
+    /// Probe failed — show "ChickenedIn · Could not check".
+    Failed,
+}
+
 /// The Account tab's full render input. Decoupled from the launcher's
 /// `AuthService` so `ewo-render` doesn't need to know about HTTP / threads.
 #[derive(Copy, Clone, Debug)]
 pub struct AccountView<'a> {
     pub accounts: &'a [AccountRowView<'a>],
     pub op: AccountOpView<'a>,
+    /// Phase H1: linked-on-ChickenedIn status for the **active** account.
+    /// `Hidden` when no account is active, when the probe hasn't fired
+    /// yet, or when the user shouldn't be bothered with the status.
+    pub link_status: LinkStatusView,
 }
 
 /// A pending account-management action. The Account-tab press handler
@@ -120,6 +146,10 @@ pub enum AccountRequest {
     SetActive(String),
     /// Remove the account with this UUID.
     Remove(String),
+    /// Phase H2: open the launcher-link modal so the user can paste a
+    /// 6-digit code from in-game. Triggered by clicking the
+    /// `LinkedNeedsLauncherLink` status line on the Account tab.
+    OpenLauncherLink,
 }
 
 /// Which Account-tab control the cursor is over — drives hover highlight.
@@ -1043,18 +1073,37 @@ pub struct AccountRowLayout {
 }
 
 /// Card-local layout of the whole Account tab — the body-copy anchor, the
-/// per-account rows, and the "Add account" button. `draw_account_tab` and
-/// the `main.rs` hit-testers both build this so visuals + input agree.
+/// per-account rows, the optional ChickenedIn link-status line, and the
+/// "Add account" button. `draw_account_tab` and the `main.rs` hit-testers
+/// both build this so visuals + input agree.
 pub struct AccountTabLayout {
     pub content_left: f32,
     pub content_right: f32,
     pub header_top: f32,
     pub rows: Vec<AccountRowLayout>,
+    /// Y baseline for the ChickenedIn link-status line, or `None` when
+    /// the status is `Hidden` (no active account / suppressed).
+    pub link_line_top: Option<f32>,
+    /// Hit-test rect for the link line — only `Some` when the line is
+    /// clickable (currently just `LinkedNeedsLauncherLink`, which opens
+    /// the launcher-link modal). Used by `main.rs` press routing.
+    pub link_line_bounds: Option<Rect>,
     pub add_button: Rect,
 }
 
-/// Compute the Account tab's layout for `account_count` accounts.
-pub fn account_tab_layout(fonts: &FontStore, card_w: f32, account_count: usize) -> AccountTabLayout {
+/// Vertical block reserved for the ChickenedIn link-status line:
+/// top-gap (12) + one newsreader-13 line (~17) + bottom-gap (12).
+const LINK_LINE_BLOCK: f32 = 41.0;
+
+/// Compute the Account tab's layout for `account_count` accounts and
+/// the given link status. Passing `LinkStatusView::Hidden` reserves no
+/// vertical space for the link line (and `link_line_top` is `None`).
+pub fn account_tab_layout(
+    fonts: &FontStore,
+    card_w: f32,
+    account_count: usize,
+    link_status: LinkStatusView,
+) -> AccountTabLayout {
     // Mirror the content box from draw_panel + section_head_bottom.
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
@@ -1079,13 +1128,32 @@ pub fn account_tab_layout(fonts: &FontStore, card_w: f32, account_count: usize) 
     } else {
         list_top + account_count as f32 * (ACCOUNT_ROW_H + ACCOUNT_ROW_GAP) - ACCOUNT_ROW_GAP
     };
-    let add_button = Rect::from_xywh(content_left, list_bottom + 18.0, ADD_BTN_W, ADD_BTN_H);
+    let (link_line_top, add_button_top) = match link_status {
+        LinkStatusView::Hidden => (None, list_bottom + 18.0),
+        _ => (
+            Some(list_bottom + 12.0),
+            list_bottom + LINK_LINE_BLOCK + 8.0,
+        ),
+    };
+    // Hit-rect only for the clickable variant (LinkedNeedsLauncherLink).
+    let link_line_bounds = match (link_status, link_line_top) {
+        (LinkStatusView::LinkedNeedsLauncherLink, Some(top)) => Some(Rect::from_ltrb(
+            content_left,
+            top - 4.0,
+            content_right,
+            top + 22.0,
+        )),
+        _ => None,
+    };
+    let add_button = Rect::from_xywh(content_left, add_button_top, ADD_BTN_W, ADD_BTN_H);
 
     AccountTabLayout {
         content_left,
         content_right,
         header_top,
         rows,
+        link_line_top,
+        link_line_bounds,
         add_button,
     }
 }
@@ -1097,7 +1165,7 @@ fn draw_account_tab(
     prefs: &Prefs,
     account: AccountView<'_>,
 ) {
-    let layout = account_tab_layout(fonts, card_w, account.accounts.len());
+    let layout = account_tab_layout(fonts, card_w, account.accounts.len(), account.link_status);
 
     // Body copy.
     let body_font = fonts.newsreader(15.0);
@@ -1122,6 +1190,61 @@ fn draw_account_tab(
         let hovered = prefs.account_hover == Some(AccountHover::Row(rl.index));
         let remove_hovered = prefs.account_hover == Some(AccountHover::Remove(rl.index));
         draw_account_row(canvas, fonts, rl, row, hovered, remove_hovered);
+    }
+
+    // ChickenedIn link-status line (Phase H1).
+    if let Some(link_top) = layout.link_line_top {
+        let line_font = fonts.newsreader(13.0);
+        let (_, lm) = line_font.metrics();
+        let baseline = link_top + (-lm.ascent);
+        // Eyebrow label "CHICKENEDIN" in mono-tracked caps, then the
+        // status text in newsreader.
+        let eyebrow_font = fonts.jetbrains_mono(10.0);
+        let mut eyebrow_paint = Paint::default();
+        eyebrow_paint.set_anti_alias(true);
+        eyebrow_paint.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87)); // mauve
+        let eyebrow = "CHICKENEDIN";
+        canvas.draw_str(
+            eyebrow,
+            (layout.content_left, baseline - 1.0),
+            &eyebrow_font,
+            &eyebrow_paint,
+        );
+        let eyebrow_advance = eyebrow_font.measure_str(eyebrow, Some(&eyebrow_paint)).0 + 14.0;
+
+        let (text, color) = match account.link_status {
+            LinkStatusView::Hidden => unreachable!("Hidden implies link_line_top is None"),
+            LinkStatusView::Probing => (
+                "checking…".to_string(),
+                Color::from_argb(0xFF, 0x9A, 0x80, 0x87), // mauve
+            ),
+            LinkStatusView::Linked => (
+                "linked to Discord · launcher linked".to_string(),
+                Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA), // pearl
+            ),
+            LinkStatusView::LinkedNeedsLauncherLink => (
+                "linked to Discord — click to link launcher".to_string(),
+                Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5), // rose (clickable affordance)
+            ),
+            LinkStatusView::NotLinked => (
+                "not linked — run /link on chickenedin to enable social"
+                    .to_string(),
+                Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5), // mid-pearl
+            ),
+            LinkStatusView::Failed => (
+                "could not check (bot offline or no network)".to_string(),
+                Color::from_argb(0xFF, 0x9A, 0x80, 0x87), // mauve
+            ),
+        };
+        let mut text_paint = Paint::default();
+        text_paint.set_anti_alias(true);
+        text_paint.set_color(color);
+        canvas.draw_str(
+            &text,
+            (layout.content_left + eyebrow_advance, baseline),
+            &line_font,
+            &text_paint,
+        );
     }
 
     // "Add account" button — label + kind depend on first sign-in vs.

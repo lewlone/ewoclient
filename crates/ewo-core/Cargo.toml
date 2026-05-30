@@ -13,3 +13,9 @@ serde = { workspace = true, optional = true }
 [features]
 default = []
 serde = ["dep:serde", "glam/serde"]
+# Opt-in: include the "assist" (PvP / packet-touching) module catalog.
+# Without this feature, REGISTRY contains only the legit-client module set
+# (visual / camera / pure render); with it, the catalog extends to the
+# assist set (auto-tool, auto-totem, swing-cadence, …) used in semi-anarchy
+# builds. The Java side mirrors the gate via `build.ps1 -Pvp`.
+pvp = []

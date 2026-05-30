@@ -1,35 +1,30 @@
-package dev.lewlone.ewohud;
+package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Items;
 
 /**
- * Phase H — Riptide Boost.
+ * Riptide Boost module.
  *
  * <p>Bound key fires a real swap + hold-use + release + swap-back. The hold-
  * use phase pretends the right-click is held for the configured number of
- * milliseconds (default 700, slider 400..1500) — vanilla's
- * {@code TridentItem.use} reads {@code keyUse.isDown()} each tick during
- * the use action, and after 10 ticks of charge fires the Riptide launch on
- * key release if conditions are met (player in water, or it's raining, or
- * the trident has Riptide enchantment).
+ * milliseconds (default 700) — vanilla's {@code TridentItem.use} reads
+ * {@code keyUse.isDown()} each tick during the use action, and after 10
+ * ticks of charge fires the Riptide launch on key release if conditions
+ * are met (player in water, or it's raining, or the trident has Riptide).
  *
- * <p>Vanilla self-gates the launch — if you're not in rain/water and the
- * trident lacks Riptide, releasing just ends the use harmlessly. The macro
- * doesn't try to detect conditions, just fires the cycle and lets vanilla
- * decide whether to launch.
- *
- * <p>No-ops if no trident is in the hotbar, the inventory screen is open,
- * or another motor sequence is in flight.
+ * <p>Vanilla self-gates the launch — if conditions aren't met, releasing
+ * just ends the use harmlessly.
  */
 public final class EwoRiptideBoost {
 
     private EwoRiptideBoost() {}
 
     public static void trigger() {
-        if (!EwoModuleData.enabled(EwoModuleData.RIPTIDE_BOOST)) {
+        if (!EwoModuleData.enabled(AssistSlots.RIPTIDE_BOOST)) {
             return;
         }
         if (EwoActionMotor.busy()) {
@@ -50,10 +45,10 @@ public final class EwoRiptideBoost {
             }
         }
         if (tridentSlot < 0) {
-            return; // no trident
+            return;
         }
 
-        int chargeMs = (int) EwoModuleData.setting(EwoModuleData.RIPTIDE_BOOST, 0);
+        int chargeMs = (int) EwoModuleData.setting(AssistSlots.RIPTIDE_BOOST, 0);
         if (chargeMs < 400) chargeMs = 400;
         if (chargeMs > 1500) chargeMs = 1500;
 
@@ -61,9 +56,6 @@ public final class EwoRiptideBoost {
         final int origSlot = inv.getSelectedSlot();
         final int hold = chargeMs;
 
-        // Swap to trident (~one tick), hold use for the charge duration,
-        // release (vanilla fires riptide on release if conditions met),
-        // swap back.
         EwoActionMotor.enqueue(() -> swapHotbar(slot), 50);
         EwoActionMotor.enqueue(EwoRiptideBoost::pressUse, hold);
         EwoActionMotor.enqueue(EwoRiptideBoost::releaseUse, 100);

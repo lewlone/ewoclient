@@ -12,6 +12,67 @@ use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║ LEAK_HUNT_INSTRUMENT — strip before release.                         ║
+// ║                                                                       ║
+// ║ Skia cache caps + diagnostic helpers below were added during the     ║
+// ║ memory-leak hunt. The actual leak turned out to be unrelated —       ║
+// ║ `wglSwapBuffers` on a fullscreen-occluded window leaking driver-     ║
+// ║ side present queue memory (~6 KB/frame). Fix lives in                ║
+// ║ `main.rs::WindowEvent::RedrawRequested` (skip render when not the    ║
+// ║ foreground window). These caps are harmless insurance but not        ║
+// ║ needed for correctness. The periodic log in `render()` is the same.  ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+
+/// Cap Skia's *process-wide* (CPU-side) caches. These live in
+/// `SkGraphics::SetResourceCacheTotalByteLimit` / `SetFontCacheLimit` and
+/// are separate from the `DirectContext`'s GPU resource cache. Defaults
+/// in Skia are 32 MB / 256 MB respectively; cap tighter so a long-running
+/// session can't spend memory on bitmap/glyph rasterisation history we
+/// don't actually need.
+///
+/// Call once at process startup, before any `GlBackend::new`.
+pub fn cap_skia_global_caches() {
+    let prev_res =
+        skia_safe::graphics::set_resource_cache_total_bytes_limit(64 * 1024 * 1024);
+    let prev_font = skia_safe::graphics::set_font_cache_limit(96 * 1024 * 1024);
+    log::info!(
+        "skia globals: resource cache {} → 64 MB, font cache {} → 96 MB",
+        format_bytes(prev_res),
+        format_bytes(prev_font),
+    );
+}
+
+/// Log current Skia CPU-cache usage. The launcher's periodic memory
+/// diagnostic calls this alongside its RSS log so we can tell whether the
+/// global resource cache + font cache are climbing.
+pub fn log_skia_global_cache_state() {
+    let res_used = skia_safe::graphics::resource_cache_total_bytes_used();
+    let res_lim = skia_safe::graphics::resource_cache_total_bytes_limit();
+    let font_used = skia_safe::graphics::font_cache_used();
+    let font_lim = skia_safe::graphics::font_cache_limit();
+    let font_count = skia_safe::graphics::font_cache_count_used();
+    log::info!(
+        "skia globals: resource {}/{}, font {}/{} ({} strikes)",
+        format_bytes(res_used),
+        format_bytes(res_lim),
+        format_bytes(font_used),
+        format_bytes(font_lim),
+        font_count,
+    );
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+// ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────────
+
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
 use glutin::context::{
     ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
@@ -44,6 +105,11 @@ pub struct GlBackend {
     sk_surface: SkSurface,
     width: u32,
     height: u32,
+
+    /// LEAK_HUNT_INSTRUMENT — strip before release.
+    /// Frame counter — drives the periodic GPU-resource cleanup + diagnostic
+    /// log. Wraps at ~136 years @ 1000fps; fine.
+    frames: u64,
 }
 
 impl GlBackend {
@@ -133,6 +199,13 @@ impl GlBackend {
         let mut gr_context = direct_contexts::make_gl(interface, None)
             .expect("direct_contexts::make_gl");
 
+        // LEAK_HUNT_INSTRUMENT — strip before release.
+        // Cap Skia's GPU resource cache at 192 MB (default 256 MB). Was
+        // added during leak-hunt; harmless but not actually fixing
+        // anything since the real leak was outside Skia's tracked caches.
+        gr_context.set_resource_cache_limit(192 * 1024 * 1024);
+        // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────
+
         let fb_info = {
             let mut fboid: gl::types::GLint = 0;
             unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
@@ -166,6 +239,7 @@ impl GlBackend {
             sk_surface,
             width: size.width,
             height: size.height,
+            frames: 0,
         }
     }
 
@@ -194,6 +268,25 @@ impl GlBackend {
         draw(canvas, self.width, self.height);
         self.gr_context.flush_and_submit();
         let _ = self.gl_surface.swap_buffers(&self.gl_context);
+
+        // LEAK_HUNT_INSTRUMENT — strip before release.
+        self.frames = self.frames.wrapping_add(1);
+        if self.frames.is_multiple_of(300) {
+            self.gr_context
+                .perform_deferred_cleanup(std::time::Duration::from_secs(3), None);
+        }
+        if self.frames.is_multiple_of(3600) {
+            let usage = self.gr_context.resource_cache_usage();
+            let limit = self.gr_context.resource_cache_limit();
+            log::info!(
+                "skia gpu: cache {} resources, {:.1}/{:.0} MB",
+                usage.resource_count,
+                usage.resource_bytes as f64 / (1024.0 * 1024.0),
+                limit as f64 / (1024.0 * 1024.0),
+            );
+            log_skia_global_cache_state();
+        }
+        // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────
     }
 
     /// Toggle vsync on or off. `true` waits for the display refresh

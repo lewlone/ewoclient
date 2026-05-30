@@ -76,6 +76,8 @@ pub fn draw_frame(
     launching_state: &screens::LaunchingState,
     modal: &screens::NewInstanceModalState,
     about_modal: &screens::AboutModalState,
+    launcher_link_modal: &screens::LauncherLinkModalState,
+    link_redeem: screens::LinkRedeemView<'_>,
     dev_overlay: Option<&screens::DevOverlayState>,
     frame_stats: screens::FrameStats,
     instances: &[screens::instances::Instance],
@@ -83,6 +85,8 @@ pub fn draw_frame(
     account: screens::settings::AccountView<'_>,
     profiles: screens::settings::ProfileView<'_>,
     keybinds: screens::settings::KeybindView<'_>,
+    friends_prefs: &screens::FriendsPrefs,
+    friends_view: screens::FriendsViewState<'_>,
 ) {
     let w = viewport_w as f32;
     let h = viewport_h as f32;
@@ -122,6 +126,11 @@ pub fn draw_frame(
                 instances,
             );
         }
+        Screen::Friends => {
+            let _ = screens::draw_friends(
+                canvas, fonts, card_w, card_h, time, friends_prefs, friends_view,
+            );
+        }
         Screen::Settings => {
             screens::draw_settings(
                 canvas, fonts, card_w, card_h, time, settings, settings_tab, prefs, account,
@@ -141,6 +150,16 @@ pub fn draw_frame(
     // Modal overlay (above all screen content, still inside the card clip).
     screens::draw_new_instance_modal(canvas, fonts, card_w, card_h, time, settings, modal);
     screens::draw_about_modal(canvas, fonts, card_w, card_h, about_modal);
+    screens::draw_launcher_link_modal(
+        canvas,
+        fonts,
+        card_w,
+        card_h,
+        time,
+        settings,
+        launcher_link_modal,
+        link_redeem,
+    );
 
     // Dev overlay sits above everything when --dev is enabled.
     if let Some(state) = dev_overlay {

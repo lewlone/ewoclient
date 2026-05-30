@@ -41,3 +41,11 @@ windows.workspace = true
 
 # Linux (Hyprland / wlroots Wayland) deps are added in step 1 when we wire
 # the wayland.rs platform implementation. See CLAUDE.md.
+
+[features]
+default = []
+# Propagates to `ewo-core/pvp` so the launcher's Settings → Modules tab +
+# keybind registry expose the assist module set. Pair with `ewo-jni`'s `pvp`
+# feature when producing a matched pvp build (cargo's feature unification
+# does this automatically when you build the workspace with --features pvp).
+pvp = ["ewo-core/pvp"]
