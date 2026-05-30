@@ -44,6 +44,14 @@ const HEARTBEAT_INTERVAL_S: f32 = 30.0;
 /// refetch; this is the idle cadence.
 const FRIENDS_REFRESH_INTERVAL_S: f32 = 30.0;
 
+/// Phase H6 — poll the live network status (`/api/server-status`) at most
+/// this often (seconds). Only ticked while the user is on the main menu.
+const SERVER_STATUS_REFRESH_INTERVAL_S: f32 = 15.0;
+
+/// The lobby the main-menu server widget joins on click. Host:port; the
+/// client defaults the port to 25565 when omitted.
+pub const CHICKENEDIN_LOBBY_ADDR: &str = "play.chickenedin.com";
+
 fn bot_api_base() -> String {
     std::env::var("EWO_BOT_API_BASE")
         .unwrap_or_else(|_| DEFAULT_BOT_API_BASE.to_string())
@@ -129,6 +137,22 @@ pub struct FriendPresence {
     pub screen: Option<String>,
 }
 
+/// Phase H6 — a snapshot of the chickenedin network's live status, polled
+/// from the public `/api/server-status`. Drives the main-menu server widget.
+#[derive(Clone, Debug, Default)]
+pub struct ServerStatus {
+    /// `false` when the network is down / the status endpoint reported
+    /// `online: false`. The widget renders "offline" in that case.
+    pub online: bool,
+    pub online_count: u32,
+    pub max_players: u32,
+    /// Usernames currently online (already public on the website). The
+    /// widget shows up to a handful as an avatar/name strip.
+    pub players: Vec<String>,
+    /// TPS as the bot reports it — a free-form string like "19.8" or "N/A".
+    pub tps: String,
+}
+
 /// State of an in-flight friend-mutation (request / respond / remove).
 /// Drives the toast/inline status the Friends screen shows for the
 /// most recent action. Cleared on next successful refresh or by the
@@ -160,6 +184,12 @@ pub struct SocialState {
     friends_in_flight: bool,
     /// Last mutation status (request/respond/remove) for the UI toast.
     friend_action: FriendActionStatus,
+    /// Phase H6 — latest network status snapshot (or `None` until the first
+    /// successful poll). A failed poll leaves the previous snapshot in place
+    /// rather than blanking the widget.
+    server_status: Option<ServerStatus>,
+    server_status_last_fetch: Option<f32>,
+    server_status_in_flight: bool,
     rx: Receiver<SocialEvent>,
     tx: Sender<SocialEvent>,
 }
@@ -182,6 +212,7 @@ enum SocialEvent {
     HeartbeatDone,
     FriendsRefreshed(Result<FriendsList, String>),
     FriendActionDone(FriendActionStatus),
+    ServerStatusResult(Option<ServerStatus>),
 }
 
 impl SocialState {
@@ -196,6 +227,9 @@ impl SocialState {
             friends_last_fetch: None,
             friends_in_flight: false,
             friend_action: FriendActionStatus::Idle,
+            server_status: None,
+            server_status_last_fetch: None,
+            server_status_in_flight: false,
             rx,
             tx,
         }
@@ -274,6 +308,14 @@ impl SocialState {
                 SocialEvent::FriendActionDone(status) => {
                     log::info!("social: friend-action {:?}", status);
                     self.friend_action = status;
+                }
+                SocialEvent::ServerStatusResult(result) => {
+                    self.server_status_in_flight = false;
+                    // Keep the last good snapshot on failure rather than
+                    // blanking the widget; only overwrite on success.
+                    if let Some(status) = result {
+                        self.server_status = Some(status);
+                    }
                 }
             }
         }
@@ -396,6 +438,39 @@ impl SocialState {
 
     pub fn clear_friend_action(&mut self) {
         self.friend_action = FriendActionStatus::Idle;
+    }
+
+    // ── Phase H6: live network status ──────────────────────────────────
+
+    /// Latest network-status snapshot, or `None` before the first poll.
+    pub fn server_status(&self) -> Option<&ServerStatus> {
+        self.server_status.as_ref()
+    }
+
+    /// Poll `/api/server-status` (public, no token) if at least
+    /// `SERVER_STATUS_REFRESH_INTERVAL_S` has elapsed since the last poll
+    /// start. The caller gates this to the main-menu screen so we don't
+    /// hammer the endpoint from screens that never show the widget.
+    pub fn maybe_refresh_server_status(&mut self, time: f32) {
+        if self.server_status_in_flight {
+            return;
+        }
+        if let Some(last) = self.server_status_last_fetch {
+            if time - last < SERVER_STATUS_REFRESH_INTERVAL_S {
+                return;
+            }
+        }
+        self.server_status_in_flight = true;
+        self.server_status_last_fetch = Some(time);
+
+        let tx = self.tx.clone();
+        let base = self.bot_api_base.clone();
+        let _ = thread::Builder::new()
+            .name("ewo-social-server-status".into())
+            .spawn(move || {
+                let result = fetch_server_status(&base);
+                let _ = tx.send(SocialEvent::ServerStatusResult(result));
+            });
     }
 
     /// Refresh the friends list immediately, regardless of the 30s
@@ -667,6 +742,51 @@ fn fetch_friends(base: &str, social_token: &str) -> Result<FriendsList, String> 
         friends: parse_section(&json["friends"]),
         incoming: parse_section(&json["incoming"]),
         outgoing: parse_section(&json["outgoing"]),
+    })
+}
+
+/// Phase H6: GET the public `/api/server-status`. Returns `None` on any
+/// failure (network down, bot down, malformed) — the caller keeps the last
+/// good snapshot in that case. A successful fetch where the bot reports the
+/// network as down comes back as `Some(ServerStatus { online: false, .. })`
+/// so the widget can render the "offline" state distinctly.
+fn fetch_server_status(base: &str) -> Option<ServerStatus> {
+    let url = format!("{}/api/server-status", base);
+    let agent = ureq_agent();
+    let json: serde_json::Value = match agent.get(&url).call() {
+        Ok(resp) => resp.into_json().ok()?,
+        Err(e) => {
+            log::warn!("social: server-status fetch failed: {}", e);
+            return None;
+        }
+    };
+    let players = json
+        .get("players")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    // TPS may arrive as a string ("19.8") or a number — accept both.
+    let tps = match json.get("tps") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => "N/A".to_string(),
+    };
+    Some(ServerStatus {
+        online: json.get("online").and_then(|v| v.as_bool()).unwrap_or(false),
+        online_count: json
+            .get("online_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32,
+        max_players: json
+            .get("max_players")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32,
+        players,
+        tps,
     })
 }
 

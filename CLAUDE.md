@@ -1244,10 +1244,25 @@ anything.
   ends (the `friend_action` toast, `refresh_friends_now`, and the
   `InGame` presence variant are coded but not all call-sites wired —
   these surface as dead-code warnings).
-- **H6 (live server-status widget + Roblox-style join) not done**: the
-  `InGame { server_addr }` heartbeat variant is never constructed yet, so
-  presence always reports `launcher`. Wiring `--server <addr>` launch +
-  the main-menu server widget is the next functional step.
+- **H6 (live server-status widget + Roblox-style join) BUILT (2026-05-30)**:
+  - Launch-into-server plumbing — `App::active_server` + a shared
+    `start_launch(idx, server, time)` helper (the Launch button and both
+    join paths funnel through it). When set, `try_real_launch` appends
+    `--quickPlayMultiplayer <addr>` (the 1.20+ replacement for the removed
+    `--server`/`--port` pair) and the presence heartbeat reports
+    `in_game · <addr>` while the JVM is alive (gated on `launch_rx.is_some()`).
+  - `social::ServerStatus` poller (`maybe_refresh_server_status`, 15s,
+    main-menu only) against the now-public `GET /api/server-status`.
+  - Main-menu network widget (`main_menu::draw_server_widget`, lower-left
+    Velvet card) — "X / Y online · TPS Z", click joins
+    `play.chickenedin.com`. Render-side `ServerWidgetView` mirrors the
+    `FriendRowView` cross-crate pattern.
+  - Friend "Join" button — `server_addr` added to `FriendRowView`; the
+    button draws only for in-game friends and joins their `server_addr`.
+  - **Bot change**: `GET /api/server-status` made public (POST stays
+    system-authed) — needs a redeploy. **Visual placement of the
+    main-menu widget is unverified** (lower-left; may want tuning vs the
+    right-column menu items on narrow windows) — eyeball pass pending.
 - **H7 (WebSocket push) not done** — polling-only, by design until lag
   justifies it.
 - **In-game FRIENDS overlay tab not added** — the in-game dashboard tab
@@ -1301,14 +1316,17 @@ opt-in for semi-anarchy use. Build + Rust tests pass in both
 configurations; in-game smoke-test of both builds is the open
 verification step.*
 
-*Update (2026-05-30 session): **documented Phase H (Social) + the two
-undocumented in-game features (custom crosshair, SMTC media controller).**
-No code changed — this was a reconciliation pass after finding ~8.4k lines
-of working-but-uncommitted launcher work plus a fully-built-and-committed
-bot side. Phase H is built and contract-verified across all three repos
-(launcher / chickenbot / ChickenLink); the open items are H6
-(Roblox-style join), the in-game FRIENDS tab, and — the real blocker —
-deploying the bot to the VPS and running a live end-to-end test. The
-launcher working tree (legit/pvp refactor + Phase H + crosshair + media)
-was checkpointed this session; both legit and `--features pvp` builds
-compile and `ewo-core` tests pass.*
+*Update (2026-05-30 session): two parts. **(1) Reconciliation** — documented
+Phase H (Social) + the two undocumented in-game features (custom crosshair,
+SMTC media controller) after finding ~8.4k lines of working-but-uncommitted
+launcher work plus a fully-built-and-committed bot side; checkpointed it
+(commit `61855ed`) and committed the ChickenLink `/launcher-link` plugin
+(`14326ba`). The bot is **live + wire-verified** (`/bot/api/links/by-uuid`,
+`/launcher/link`, `/friends`, auth middleware all respond to contract).
+**(2) H6 built** — Roblox-style join: `--quickPlayMultiplayer` launch
+plumbing via a shared `start_launch` helper, `in_game` presence, a 15s
+server-status poller, the main-menu network widget, and a friend "Join"
+button; the bot's `GET /api/server-status` was made public (needs redeploy).
+Both legit and `--features pvp` compile and `ewo-core` tests pass. Open:
+visual eyeball of the main-menu widget, the in-game FRIENDS tab, H7
+WebSocket, and the live in-game `/launcher-link` → presence → join test.*

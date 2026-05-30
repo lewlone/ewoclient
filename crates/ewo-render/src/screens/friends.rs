@@ -71,6 +71,9 @@ pub struct FriendRowView {
     pub online: bool,
     /// Stable id for matching click events back to a `discord_id`.
     pub discord_id: String,
+    /// H6 — the joinable server address when the friend is in-game
+    /// (`presence.server_addr`), else `None`. Drives the "Join" button.
+    pub server_addr: Option<String>,
 }
 
 /// Per-button hover/press state for the screen. Held by `App`.
@@ -128,6 +131,11 @@ pub enum RowButtonKind {
     Decline,
     /// Remove a friend.
     Remove,
+    /// H6 — join this friend's current server. The hit-rect is reserved for
+    /// every friend row; `main.rs` only acts when that friend has a
+    /// `server_addr`, and the renderer only draws the label for in-game
+    /// friends.
+    Join,
 }
 
 /// Per-section row counts — what `friends_layout` needs to size up.
@@ -219,13 +227,21 @@ pub fn friends_layout(
             }
             y += section_trailer;
         }
-        // Friends — Remove on each row.
+        // Friends — Join (left, in-game only) + Remove on each row.
         if counts.friends > 0 {
             y += section_head_to_first_row;
             for i in 0..counts.friends {
                 let btn_y = y + row_h * 0.5 - btn_h * 0.5;
                 let remove = Rect::from_xywh(
                     content_right - btn_w - 8.0, btn_y, btn_w, btn_h);
+                // H6 — reserve a Join slot left of Remove for every friend
+                // row; the renderer only draws it for in-game friends and
+                // main.rs gates the click on `server_addr` presence.
+                let join = Rect::from_xywh(
+                    remove.left - btn_w - 8.0, btn_y, btn_w, btn_h);
+                row_buttons.push(RowButton {
+                    kind: RowButtonKind::Join, index: i, rect: join,
+                });
                 row_buttons.push(RowButton {
                     kind: RowButtonKind::Remove, index: i, rect: remove,
                 });
@@ -547,6 +563,13 @@ fn draw_friend_row(
                 row.right - btn_w - 8.0, btn_y, btn_w, btn_h,
             );
             draw_compact_label(canvas, fonts, remove_rect, "Remove", ACCENT_EMBER);
+            // H6 — Join button (left of Remove), only for in-game friends.
+            if view.server_addr.is_some() {
+                let join_rect = Rect::from_xywh(
+                    remove_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h,
+                );
+                draw_compact_label(canvas, fonts, join_rect, "Join", ACCENT_LAV);
+            }
         }
         RowSection::Outgoing => {
             // Outgoing requests are passive — show a "pending…" tag.

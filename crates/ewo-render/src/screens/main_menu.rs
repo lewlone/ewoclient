@@ -43,12 +43,144 @@ pub fn draw_main_menu(
     time: f32,
     menu_states: &[VbtnState; 4],
     heading_hover: HoverGlowState,
+    server: ServerWidgetView<'_>,
 ) {
     draw_top_right_settings(canvas, fonts, w);
     draw_heading_block(canvas, fonts, time, heading_hover);
     draw_menu_items(canvas, fonts, w, h, menu_states);
+    draw_server_widget(canvas, fonts, w, h, server);
     draw_footer(canvas, fonts, h);
     draw_disturb_hint(canvas, fonts, w, h);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// H6 — live network status widget (lower-left). Click joins the lobby.
+// ────────────────────────────────────────────────────────────────────────
+
+/// Render-side snapshot of the chickenedin network status. `main.rs` maps
+/// `social::ServerStatus` into this so `ewo-render` stays ignorant of the
+/// social / HTTP types (same pattern as `FriendRowView`).
+#[derive(Clone, Copy, Default)]
+pub struct ServerWidgetView<'a> {
+    /// `None` until the first poll resolves — renders a "connecting…" state.
+    pub data: Option<ServerWidgetData<'a>>,
+    /// Cursor is over the widget (drives the hover brightening + JOIN hint).
+    pub hovered: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct ServerWidgetData<'a> {
+    pub online: bool,
+    pub online_count: u32,
+    pub max_players: u32,
+    pub tps: &'a str,
+}
+
+/// Card-local bounds of the network widget — also its click target. Sits in
+/// the lower-left, above the footer.
+pub fn server_widget_bounds(card_w: f32, card_h: f32) -> Rect {
+    let width = 300.0_f32.min(card_w * 0.45);
+    let height = 60.0;
+    let bottom = card_h - PAD_BOTTOM - 36.0;
+    Rect::from_xywh(PAD_LEFT, bottom - height, width, height)
+}
+
+fn draw_server_widget(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    view: ServerWidgetView<'_>,
+) {
+    const ACCENT_CHAMP: Color = Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8);
+    const ACCENT_EMBER: Color = Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A);
+
+    let bounds = server_widget_bounds(card_w, card_h);
+    let rrect = skia_safe::RRect::new_rect_xy(bounds, 12.0, 12.0);
+    let online = matches!(view.data, Some(d) if d.online);
+
+    // Card fill — low-alpha rose tint, a touch brighter on hover.
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    let fill_alpha = if view.hovered { 0.10 } else { 0.055 };
+    fill.set_color4f(Color4f::new(0.71, 0.51, 0.62, fill_alpha), None);
+    canvas.draw_rrect(rrect, &fill);
+
+    // Hairline rim.
+    let mut rim = Paint::default();
+    rim.set_anti_alias(true);
+    rim.set_style(PaintStyle::Stroke);
+    rim.set_stroke_width(1.0);
+    rim.set_color(ACCENT_ROSE);
+    rim.set_alpha_f(if view.hovered { 0.32 } else { 0.16 });
+    canvas.draw_rrect(rrect, &rim);
+
+    let pad = 14.0;
+    let left = bounds.left() + pad;
+
+    // Status dot — champagne when online, ember when offline, dim before
+    // the first poll resolves.
+    let dot_cx = left + 3.5;
+    let dot_cy = bounds.top() + 20.0;
+    let mut dot = Paint::default();
+    dot.set_anti_alias(true);
+    dot.set_color(if online { ACCENT_CHAMP } else { ACCENT_EMBER });
+    dot.set_alpha_f(if view.data.is_some() { 1.0 } else { 0.4 });
+    canvas.draw_circle((dot_cx, dot_cy), 3.5, &dot);
+
+    // "CHICKENEDIN" eyebrow.
+    let eyebrow_font = fonts.jetbrains_mono(9.0);
+    let mut eyebrow_paint = Paint::default();
+    eyebrow_paint.set_anti_alias(true);
+    eyebrow_paint.set_color(TEXT_MAUVE);
+    let (_, em) = eyebrow_font.metrics();
+    let eyebrow_baseline = dot_cy + (-em.ascent + em.descent) / 2.0;
+    draw_tracked(
+        canvas,
+        "CHICKENEDIN",
+        left + 14.0,
+        eyebrow_baseline,
+        &eyebrow_font,
+        &eyebrow_paint,
+        0.18,
+    );
+
+    // JOIN hint on the right when online.
+    if online {
+        let join_font = fonts.jetbrains_mono(9.0);
+        let mut join_paint = Paint::default();
+        join_paint.set_anti_alias(true);
+        join_paint.set_color(ACCENT_ROSE);
+        join_paint.set_alpha_f(if view.hovered { 1.0 } else { 0.6 });
+        let label = "JOIN ▸";
+        let lw = measure_tracked_width(&join_font, label, 0.18);
+        draw_tracked(
+            canvas,
+            label,
+            bounds.right() - pad - lw,
+            eyebrow_baseline,
+            &join_font,
+            &join_paint,
+            0.18,
+        );
+    }
+
+    // Status line.
+    let status_font = fonts.jetbrains_mono(12.0);
+    let mut status_paint = Paint::default();
+    status_paint.set_anti_alias(true);
+    status_paint.set_color(if online { TEXT_PEARL } else { TEXT_MAUVE });
+    let (_, sm) = status_font.metrics();
+    let status_baseline = bounds.top() + 42.0 + (-sm.ascent);
+    let status_text = match view.data {
+        None => "connecting…".to_string(),
+        Some(d) if !d.online => "network offline".to_string(),
+        Some(d) => format!(
+            "{} / {} online · {} TPS",
+            d.online_count, d.max_players, d.tps
+        ),
+    };
+    canvas.draw_str(&status_text, (left, status_baseline), &status_font, &status_paint);
 }
 
 /// Card-local bounds for the four sidebar menu items, in rendered order.

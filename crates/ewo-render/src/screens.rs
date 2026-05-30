@@ -28,7 +28,9 @@ pub use launcher_link_modal::{
     draw_modal as draw_launcher_link_modal, LauncherLinkModalState, LinkRedeemView,
 };
 pub use launching::{draw_launching, LaunchError, LaunchingState, RealSeverity};
-pub use main_menu::draw_main_menu;
+pub use main_menu::{
+    draw_main_menu, server_widget_bounds, ServerWidgetData, ServerWidgetView,
+};
 pub use new_instance_modal::{
     draw_modal as draw_new_instance_modal, NewInstanceModalState, Slot as ModalSlot,
 };

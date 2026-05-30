@@ -13,9 +13,12 @@ current state. Summary:
   wire contract was verified handler-by-handler 2026-05-30 and matches.
 - chickenbot Phase H code is **committed**; the launcher + ChickenLink
   plugin pieces were **uncommitted** until the 2026-05-30 checkpoint.
-- **H6** (live server widget + Roblox-style join) **not done** — `InGame`
-  presence variant unconstructed; `--server` launch + main-menu widget
-  pending. **H7** (WebSocket) not done (polling by design).
+- **H6** (live server widget + Roblox-style join) **BUILT 2026-05-30** —
+  `--quickPlayMultiplayer` launch via a shared `start_launch` helper,
+  `in_game` presence, 15s server-status poller, main-menu network widget,
+  friend "Join" button. Bot `GET /api/server-status` made public (needs
+  redeploy). Widget visual placement unverified. **H7** (WebSocket) not
+  done (polling by design).
 - The in-game **FRIENDS overlay tab is not added** yet (tab strip is
   HOME · HUD · CROSSHAIR · MODULES · MODS · SETTINGS).
 - **Real remaining blocker is ops**: deploy the bot to the VPS with nginx

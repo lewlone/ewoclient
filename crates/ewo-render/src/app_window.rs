@@ -87,6 +87,7 @@ pub fn draw_frame(
     keybinds: screens::settings::KeybindView<'_>,
     friends_prefs: &screens::FriendsPrefs,
     friends_view: screens::FriendsViewState<'_>,
+    server_widget: screens::ServerWidgetView<'_>,
 ) {
     let w = viewport_w as f32;
     let h = viewport_h as f32;
@@ -111,7 +112,9 @@ pub fn draw_frame(
     // Screen-specific content.
     match screen {
         Screen::MainMenu => {
-            screens::draw_main_menu(canvas, fonts, card_w, card_h, time, menu_states, heading_hover);
+            screens::draw_main_menu(
+                canvas, fonts, card_w, card_h, time, menu_states, heading_hover, server_widget,
+            );
         }
         Screen::Instances => {
             screens::draw_instances(

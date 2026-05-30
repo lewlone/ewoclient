@@ -176,6 +176,15 @@ struct App {
     /// Wall-time seconds at which to clear the celebrate state. `None` when
     /// not celebrating. Set on Launch click; checked each tick.
     celebrate_until: Option<f32>,
+    /// H6 (Roblox-style join). When `Some`, the in-flight / most-recent
+    /// launch was initiated as a server-join (main-menu server widget or a
+    /// friend's "Join"); `try_real_launch` appends the quick-play arg and
+    /// the presence heartbeat reports `in_game · <addr>` while the JVM is
+    /// alive. Set by `start_launch`; a normal Launch click sets it `None`.
+    active_server: Option<String>,
+    /// H6 — cursor is over the main-menu network widget (updated in the
+    /// CursorMoved handler, read at render time to drive the hover state).
+    server_widget_hover: bool,
     dev: bool,
 }
 
@@ -240,6 +249,8 @@ impl App {
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
             celebrate_until: None,
+            active_server: None,
+            server_widget_hover: false,
             dev,
         }
     }
@@ -507,6 +518,17 @@ impl App {
                 disabled_mod_ids.join(",")
             ));
         }
+        // H6: if this launch was initiated as a server-join (main-menu
+        // server widget or a friend's "Join"), auto-connect on boot via the
+        // modern quick-play arg. The address is `host:port`; the client
+        // defaults the port to 25565 when omitted. `--quickPlayMultiplayer`
+        // is the 1.20+ replacement for the removed `--server`/`--port` pair,
+        // which is right for the 26.x line this launcher targets.
+        if let Some(addr) = self.active_server.clone() {
+            plan.game_args.push("--quickPlayMultiplayer".to_string());
+            plan.game_args.push(addr.clone());
+            log::info!("launch: quick-play join → {}", addr);
+        }
         let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
         let _ = launch::spawn_jvm(plan, tx);
         self.launch_rx = Some(rx);
@@ -516,6 +538,67 @@ impl App {
             inst.name, version_id
         );
         true
+    }
+
+    /// Shared launch entry point for the Launch button and the H6 server-join
+    /// paths (main-menu server widget + friend "Join"). `server` is the
+    /// `host:port` to auto-connect to, or `None` for a plain launch.
+    ///
+    /// Resolves the instance's display name + meta, gates out a `Pending`
+    /// (mid-download) or missing instance, stamps `last_played`, then runs
+    /// the real launch (falling back to the synthetic animation if anything
+    /// upstream is missing) and switches to the Launching screen with the
+    /// celebrate burst.
+    fn start_launch(&mut self, idx: usize, server: Option<String>, time: f32) {
+        use ewo_render::screens::instances::InstanceStatus;
+        // Resolve name + meta and gate Pending/missing instances. The
+        // immutable borrow ends here so the rest can mutate `self`.
+        let (inst_name, inst_meta) = match self.instances.get(idx) {
+            Some(i) if i.status != InstanceStatus::Pending => (
+                i.name.clone(),
+                format!(
+                    "{} · ADOPTIUM 21 · {} GB",
+                    i.version, self.instance_prefs.ram.value as i32,
+                ),
+            ),
+            _ => {
+                log::warn!(
+                    "launch: instance #{} not launchable (missing or still downloading)",
+                    idx
+                );
+                return;
+            }
+        };
+        if let Some(addr) = &server {
+            log::info!("launch: server-join → {} (instance \"{}\")", addr, inst_name);
+        } else {
+            log::info!("vbtn: Launch clicked → launching \"{}\"", inst_name);
+        }
+        self.active_server = server;
+
+        // Stamp last_played + persist so the timestamp survives a restart.
+        if let Some(inst) = self.instances.get_mut(idx) {
+            inst.last_played = "just now".to_string();
+            inst.last_played_at = screens::instances::current_unix_seconds();
+        }
+        persistence::save_instances(&self.instances);
+
+        // Real launch fires only when the instance is Ready + the manifest
+        // resolves; otherwise fall back to the synthetic animation so the
+        // user still gets feedback.
+        let real_launched = self.try_real_launch(idx, &inst_name, &inst_meta, time);
+        if !real_launched {
+            log::info!("launch: falling back to synthetic for \"{}\"", inst_name);
+            self.launching.enter(time, &inst_name, &inst_meta);
+        }
+        self.screen = Screen::Launching;
+        self.launch_button = VbtnState::default();
+        self.prefs.close_dropdowns();
+        self.instance_prefs.close_dropdowns();
+        if let Some(bd) = self.backdrop.as_mut() {
+            bd.celebrate(true);
+        }
+        self.celebrate_until = Some(time + 4.5);
     }
 }
 
@@ -1170,6 +1253,9 @@ impl ApplicationHandler for App {
                         let over_heading = rect_contains(&heading, card_pos);
                         self.heading_hover.update(over_heading, time);
                     }
+                    // H6 — network widget hover (lower-left card).
+                    let server_rect = screens::server_widget_bounds(card_w, card_h);
+                    self.server_widget_hover = rect_contains(&server_rect, card_pos);
                 } else {
                     for s in self.menu_items.iter_mut() {
                         *s = VbtnState::default();
@@ -1177,6 +1263,7 @@ impl ApplicationHandler for App {
                     // Clear heading-hover when off the main menu so the
                     // glow doesn't survive a screen change.
                     self.heading_hover.update(false, time);
+                    self.server_widget_hover = false;
                 }
 
                 // About modal — drive the Close button hover so the ghost
@@ -1533,6 +1620,26 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // H6 — click the network widget to join the chickenedin
+                    // lobby (only when the network reports online).
+                    if !handled {
+                        let server_rect = screens::server_widget_bounds(card_w, card_h);
+                        if rect_contains(&server_rect, card_pos) {
+                            let online = matches!(
+                                self.social.server_status(),
+                                Some(s) if s.online
+                            );
+                            if online {
+                                log::info!("h6: network widget clicked → joining lobby");
+                                self.start_launch(
+                                    self.instance_prefs.selected,
+                                    Some(social::CHICKENEDIN_LOBBY_ADDR.to_string()),
+                                    time,
+                                );
+                            }
+                            handled = true;
+                        }
+                    }
                 }
 
                 // Step 2.5: settings sidebar tab switch.
@@ -1624,6 +1731,34 @@ impl ApplicationHandler for App {
                                     if !rect_contains(&btn.rect, card_pos) {
                                         continue;
                                     }
+                                    // H6 — "Join" launches into the friend's
+                                    // current server (presence.server_addr),
+                                    // not a friend-graph mutation.
+                                    if btn.kind == screens::RowButtonKind::Join {
+                                        let addr = if let social::FriendsListState::Loaded(list) =
+                                            self.social.friends()
+                                        {
+                                            list.friends
+                                                .get(btn.index)
+                                                .and_then(|e| e.presence.as_ref())
+                                                .and_then(|p| p.server_addr.clone())
+                                        } else {
+                                            None
+                                        };
+                                        if let Some(addr) = addr {
+                                            log::info!(
+                                                "friends: join row {} → {}",
+                                                btn.index, addr
+                                            );
+                                            self.start_launch(
+                                                self.instance_prefs.selected,
+                                                Some(addr),
+                                                time,
+                                            );
+                                        }
+                                        handled = true;
+                                        break;
+                                    }
                                     let target_id = if let social::FriendsListState::Loaded(list) =
                                         self.social.friends()
                                     {
@@ -1637,6 +1772,8 @@ impl ApplicationHandler for App {
                                                 .friends
                                                 .get(btn.index)
                                                 .map(|e| e.discord_id.clone()),
+                                            // Handled above with an early break.
+                                            screens::RowButtonKind::Join => None,
                                         }
                                     } else {
                                         None
@@ -1659,6 +1796,8 @@ impl ApplicationHandler for App {
                                                 log::info!("friends: remove {}", other);
                                                 self.social.remove_friend(token, other);
                                             }
+                                            // Join is handled above (early break).
+                                            screens::RowButtonKind::Join => {}
                                         }
                                         handled = true;
                                     }
@@ -1898,83 +2037,10 @@ impl ApplicationHandler for App {
                 if !handled {
                     if let Some(b) = self.launch_button_bounds(card_w) {
                         let clicked = self.launch_button.update(card_pos, b, pressed, time);
-                        // Gate: don't launch a Pending instance — its
-                        // download isn't done. The hover state still
-                        // updates (so the button visually responds to
-                        // the click) but the launch logic skips.
-                        let pending = self
-                            .instances
-                            .get(self.instance_prefs.selected)
-                            .map(|i| {
-                                i.status
-                                    == ewo_render::screens::instances::InstanceStatus::Pending
-                            })
-                            .unwrap_or(false);
-                        if clicked && !pending {
-                            // Pull the actual selected instance's name +
-                            // version line so the Launching screen reflects
-                            // what the user is launching.
-                            let (inst_name, inst_meta) = self
-                                .instances
-                                .get(self.instance_prefs.selected)
-                                .map(|i| {
-                                    (
-                                        i.name.clone(),
-                                        format!(
-                                            "{} · ADOPTIUM 21 · {} GB",
-                                            i.version,
-                                            self.instance_prefs.ram.value as i32,
-                                        ),
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    (
-                                        "Velvet Hours".to_string(),
-                                        "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
-                                    )
-                                });
-                            log::info!(
-                                "vbtn: Launch clicked → launching \"{}\"",
-                                inst_name
-                            );
-                            // Update last_played on the launched instance
-                            // and persist immediately so the timestamp
-                            // survives a restart.
-                            if let Some(inst) =
-                                self.instances.get_mut(self.instance_prefs.selected)
-                            {
-                                inst.last_played = "just now".to_string();
-                                inst.last_played_at =
-                                    screens::instances::current_unix_seconds();
-                            }
-                            persistence::save_instances(&self.instances);
-                            // Decide synthetic vs real launch. Real
-                            // launch fires only when the instance is
-                            // `Ready` (artifacts on disk + verified)
-                            // AND we can resolve the per-version manifest
-                            // from cache. Anything else falls back to
-                            // synthetic so the user still gets feedback.
-                            let real_launched = self.try_real_launch(
-                                self.instance_prefs.selected,
-                                &inst_name,
-                                &inst_meta,
-                                time,
-                            );
-                            if !real_launched {
-                                log::info!(
-                                    "vbtn: Launch falling back to synthetic for \"{}\"",
-                                    inst_name
-                                );
-                                self.launching.enter(time, &inst_name, &inst_meta);
-                            }
-                            self.screen = Screen::Launching;
-                            self.launch_button = VbtnState::default();
-                            self.prefs.close_dropdowns();
-                            self.instance_prefs.close_dropdowns();
-                            if let Some(bd) = self.backdrop.as_mut() {
-                                bd.celebrate(true);
-                            }
-                            self.celebrate_until = Some(time + 4.5);
+                        if clicked {
+                            // start_launch gates a Pending/missing instance
+                            // internally; a plain Launch passes no server.
+                            self.start_launch(self.instance_prefs.selected, None, time);
                         }
                         if self.launch_button.hover && pressed {
                             handled = true;
@@ -2121,13 +2187,20 @@ impl ApplicationHandler for App {
                             .map(|t| (a.uuid.clone(), t.to_string()))
                     });
                 if let Some((mc_uuid, token)) = heartbeat_inputs {
-                    let screen_name = screen_name(self.screen);
-                    self.social.maybe_send_heartbeat(
-                        time,
-                        &mc_uuid,
-                        &token,
-                        social::HeartbeatLocation::InLauncher { screen: screen_name },
-                    );
+                    // H6: while a server-join JVM is alive, advertise
+                    // `in_game · <addr>` so friends see (and can join) us.
+                    // `launch_rx` is `Some` only while the child runs; once
+                    // it exits we fall back to the current launcher screen.
+                    let location = match (self.launch_rx.is_some(), self.active_server.as_deref())
+                    {
+                        (true, Some(addr)) => {
+                            social::HeartbeatLocation::InGame { server_addr: addr }
+                        }
+                        _ => social::HeartbeatLocation::InLauncher {
+                            screen: screen_name(self.screen),
+                        },
+                    };
+                    self.social.maybe_send_heartbeat(time, &mc_uuid, &token, location);
                     // Phase H5: refresh friends list on the 30s cadence.
                     // Post-mutation refreshes are chained inside the
                     // social worker thread (see `dispatch_friend_action`).
@@ -2149,6 +2222,11 @@ impl ApplicationHandler for App {
                     self.auth.set_social_token(&uuid, token);
                     self.social.clear_link_redeem();
                     self.launcher_link_modal.close();
+                }
+                // H6 — poll the public network status only while it's on
+                // screen (the main-menu widget). 15s cadence inside the call.
+                if self.screen == Screen::MainMenu {
+                    self.social.maybe_refresh_server_status(time);
                 }
                 self.versions.poll();
                 self.downloads.poll();
@@ -2696,6 +2774,20 @@ impl ApplicationHandler for App {
                     worst_ms: self.clock.worst_dt() * 1000.0,
                 };
                 let instances = self.instances.as_slice();
+                // H6 — network-status widget view. Clone the snapshot into a
+                // local so the borrowed `tps: &str` doesn't reference
+                // self.social (which would conflict with self.backend.as_mut()
+                // below — same reason as link_redeem_msg above).
+                let server_status_snapshot = self.social.server_status().cloned();
+                let server_widget_view = screens::ServerWidgetView {
+                    data: server_status_snapshot.as_ref().map(|s| screens::ServerWidgetData {
+                        online: s.online,
+                        online_count: s.online_count,
+                        max_players: s.max_players,
+                        tps: &s.tps,
+                    }),
+                    hovered: self.server_widget_hover,
+                };
                 // DPI handling: the GL surface is sized in physical pixels
                 // (winit reports + we forward to `GlBackend::resize` raw).
                 // But hit-testing in this file converts the cursor to
@@ -2724,7 +2816,7 @@ impl ApplicationHandler for App {
                             instance_prefs, launching_state, modal, about_modal,
                             launcher_link_modal, link_redeem, dev_overlay, frame_stats,
                             instances, heading_hover, account_view, profile_view, keybind_view,
-                            friends_prefs, friends_view,
+                            friends_prefs, friends_view, server_widget_view,
                         );
                         canvas.restore_to_count(saved);
                     });
@@ -2881,11 +2973,21 @@ fn friend_entry_to_view(entry: &social::FriendEntry) -> FriendRowView {
         }
     };
 
+    // H6 — joinable address: only when the friend is actually in-game.
+    let server_addr = entry.presence.as_ref().and_then(|p| {
+        if p.location == "in_game" {
+            p.server_addr.clone()
+        } else {
+            None
+        }
+    });
+
     FriendRowView {
         display_name,
         presence,
         online,
         discord_id: entry.discord_id.clone(),
+        server_addr,
     }
 }
 
