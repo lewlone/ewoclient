@@ -1312,6 +1312,98 @@ overlay editor:
 
 ---
 
+## Launcher window: transparent floating card (2026-05-31 — supersedes the Step 1/2 "app-window chrome" notes)
+
+The launcher window changed from an **opaque card painted inside a 28px
+margin with a 3-layer berry box-shadow** to a **real per-pixel-alpha window
+where the rounded card IS the window**. The old Step 1/Step 2 notes
+(`CARD_INSET = 28`, `draw_chrome_outer` berry-glow + black drop shadows,
+`DWMWCP_ROUND`) are historical — here's the current state.
+
+- **`with_transparent(true)`** on the winit window (the GL config already
+  carries `alpha_size 8`). `draw_chrome_outer` clears the frame to
+  `Color::TRANSPARENT`; the desktop shows through anywhere the card isn't.
+  Transparent GL windows can be driver-finicky on Windows — it composited
+  fine here (NVIDIA), but that's the thing to re-check if it ever renders
+  black instead of the desktop.
+- **`CARD_INSET = 0`** (both `app_window::CARD_INSET` *and* the launcher's
+  mirror `CARD_INSET_LP` used for cursor→card mapping — they MUST match or
+  the cursor drifts from the widgets). The 22px-rounded card fills the
+  window edge-to-edge, so **the window's edges are the card's edges** and
+  the OS resize/drag hit zones (which key off the window rect) line up. This
+  fixed a long-standing UX bug where the invisible 28px margin still counted
+  as the window, putting the resize edge out in empty space.
+- **No outer drop shadow** — there's no margin to render one into.
+  `draw_outer_shadow` is kept (`#[allow(dead_code)]`) for a future
+  shadow-with-margin variant. Edge definition is the inset rose hairline rim
+  in `draw_chrome_inner`. (An interim transparent-window build *did* keep a
+  margin + shadow; the berry glow bled a coloured halo onto apps behind the
+  window, so it was first neutralised, then dropped with the margin.)
+- **`win32.rs`: `DWMWCP_DONOTROUND`** (was `DWMWCP_ROUND`) — we paint our own
+  22px corners, so DWM must not also round the window rect (its ~8px would
+  clip our corners + cast a competing rectangular shadow).
+- **Minimize + close buttons** (top-right) — `app_window::window_button_bounds`
+  + `draw_window_buttons`: vector — / × icons, hover fills a soft rounded bg
+  (rose / ember) + brightens. `hit_test` excludes the button rects from the
+  drag caption so clicks land; the launcher handles them before modals so
+  they always work. Close → `event_loop.exit()`; minimize →
+  `Window::set_minimized(true)`.
+
+### Freeze-on-exit — fixed (was a bug since the start)
+
+On quit (Quit-to-desktop / taskbar close / the close button) the GL-context +
+window teardown could **deadlock the main thread**, leaving the window "Not
+Responding" until killed via Task Manager. Fix: `main()` calls
+**`std::process::exit(0)` right after `event_loop.run_app` returns**, skipping
+the hanging `App`/`GlBackend` `Drop`. Nothing in `Drop` needs to run —
+settings / instances persist on change, not on exit — and the OS reclaims the
+window, GL context, and detached threads.
+
+### Packaging — shortcut + icon + portability
+
+- **Release builds are GUI apps** — `#![cfg_attr(not(debug_assertions),
+  windows_subsystem = "windows")]` in `main.rs`, so no console window pops up
+  from a shortcut. Debug keeps the console for `cargo run`.
+- **App icon**: `assets/icon.ico` (multi-res 16/32/48/256, 32-bit RGBA) is
+  embedded into the exe by `crates/ewo-launcher/build.rs` via the
+  `winresource` build-dep (no-op until the `.ico` exists, so the build never
+  blocks on art). Shows in taskbar / Explorer / shortcut. The borderless
+  window's own taskbar/alt-tab icon may still need a runtime
+  `with_window_icon` if it shows a default — not yet wired.
+- **Portable assets**: `ewo-render` `text.rs::workspace_assets_dir` resolves
+  `assets/fonts` **next to the executable first**, falling back to the
+  compile-time workspace path for `cargo run`. Fonts are the only
+  runtime-loaded asset (shaders are built-in SkSL).
+- **`package.ps1`** (repo root): release-builds + stages a self-contained
+  `dist/EwoClient/` (EwoClient.exe + assets/fonts + icon), then points the
+  Desktop "EwoClient" shortcut at it. `dist/` is gitignored. Run it after code
+  changes to refresh the bundle the shortcut launches; `cargo run` is the dev
+  path (uses the in-repo assets).
+
+### Launcher visual polish (same session)
+
+- **Hover glow** — `text::draw_glow_str` / `draw_tracked_glow` (the hero
+  title's two-halo treatment, gated by an intensity) now lights up: main-menu
+  items, the top tab bar (hovered tab), the Settings sidebar tabs, instance
+  list rows, and the "‹ Main menu" back-link — all on hover, with a pearl /
+  warm-white brighten.
+- **Tofu fixes** — the menu caret, server-widget "JOIN", Instances back/sort,
+  and Settings back-link used arrow glyphs the serif fonts lack (rendered as
+  boxes). Replaced with vector chevrons (`draw_chevron_right`) / en-dashes.
+- **Dropdown** — flip-up is now bias-toward-down (only flips when < ~1.5 rows
+  fit below); the "square corner" artifact was finally diagnosed by rendering
+  the dropdown to a PNG (`crates/ewo-render/examples/dropdown_shot.rs`) — it
+  was the drop shadow pooling below the rounded corners, fixed with a faint
+  symmetric halo + opaque body. **That render harness is the tool for
+  verifying visual changes without a full launcher run.**
+- **Sliders** glow/grow the handle on hover; the **scrollbar** moved into the
+  panel's right gutter (was overlapping widgets); the **main menu** dropped
+  the SETTINGS link + footer + disturb-hint texts and gained a fade+slide
+  entrance; **Friends** heading/subtitle overlap fixed; the back-link
+  navigates to MainMenu.
+
+---
+
 *Last meaningful structural change to this file (2026-05-26 session):
 **Post-ban refactor — the legit/pvp split.** An anticheat ban on CatPvP
 landed with the macros switched off, pointing at class-name
@@ -1344,3 +1436,18 @@ button; the bot's `GET /api/server-status` was made public (needs redeploy).
 Both legit and `--features pvp` compile and `ewo-core` tests pass. Open:
 visual eyeball of the main-menu widget, the in-game FRIENDS tab, H7
 WebSocket, and the live in-game `/launcher-link` → presence → join test.*
+
+*Update (2026-05-31 session): in-game **FRIENDS overlay tab** (read-only,
+file-bridge) + a long **launcher polish + window** pass — see the new
+"**Launcher window: transparent floating card**" section above (it supersedes
+the Step 1/2 app-window chrome notes). Headlines: the window is now a
+transparent per-pixel-alpha **floating 22px card that fills the window**
+(`CARD_INSET = 0`, no bevel, no outer shadow, `DWMWCP_DONOTROUND`); the
+**freeze-on-exit bug is fixed** (`process::exit(0)` after the loop);
+**minimize/close buttons** added top-right; **release builds are GUI apps**
+with an **embedded app icon** (`assets/icon.ico` via `build.rs`/`winresource`)
+and a **portable `package.ps1` → `dist/EwoClient/` bundle** (fonts resolve
+next to the exe). Plus broad visual polish (hover glow everywhere, tofu-arrow
+→ vector-chevron fixes, dropdown corner fix diagnosed via a new
+PNG-render harness `examples/dropdown_shot.rs`, slider/scrollbar/main-menu
+tweaks). All committed; verified live except the open Phase H items above.*
