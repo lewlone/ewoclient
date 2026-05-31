@@ -379,23 +379,24 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
 
     // Drop shadow `0 18px 48px rgba(0,0,0,0.6)` + `0 4px 16px rgba(0,0,0,0.4)`
     // + warm bloom `0 0 32px rgba(180,116,145,0.12)`.
-    // A single soft drop shadow. Previously two stacked offset shadows — the
-    // tighter 8px-blur one rendered a hard, square-looking dark wedge in the
-    // panel's rounded bottom-corner cutouts (the panel is semi-transparent,
-    // so the shadow behind it shows through where the rounding carves the
-    // corner away). One soft shadow reads as a clean drop shadow with no boxy
-    // corners. `respect_ctm = true` keeps the blur DPI-correct (sigma in
-    // logical px, scaled by the canvas) so it stays soft on HiDPI displays —
-    // with `false` the sigma was applied in device px and under-blurred.
+    // Soft drop shadow, CLIPPED to outside the panel's square footprint. The
+    // panel is semi-transparent, so any shadow drawn behind it shows through
+    // the rounded bottom-corner *cutouts* — that's what read as dark square
+    // corners. Excluding the panel's bounding box from the clip means the
+    // shadow can only render below/around the panel, never inside the corner
+    // cutouts. `respect_ctm = true` keeps the blur DPI-correct on HiDPI.
     let mut shadow = Paint::default();
     shadow.set_anti_alias(true);
     shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55), None);
-    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 26.0, true));
-    let shadow_rect = bounds.with_offset((0.0, 12.0));
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 22.0, true));
+    let shadow_rect = bounds.with_offset((0.0, 14.0));
+    let shadow_save = canvas.save();
+    canvas.clip_rect(bounds, skia_safe::ClipOp::Difference, true);
     canvas.draw_rrect(
         RRect::new_rect_xy(shadow_rect, MENU_RADIUS, MENU_RADIUS),
         &shadow,
     );
+    canvas.restore_to_count(shadow_save);
 
     let mut bloom = Paint::default();
     bloom.set_anti_alias(true);

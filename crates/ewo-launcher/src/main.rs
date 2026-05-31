@@ -1237,6 +1237,34 @@ impl ApplicationHandler for App {
                     self.launch_button = VbtnState::default();
                 }
 
+                // Friends-screen buttons hover (link-launcher / add-friend) —
+                // without this the buttons never animate and read as dead.
+                if !any_modal_open && self.screen == Screen::Friends {
+                    if let Some(fonts) = self.fonts.as_ref() {
+                        let counts = match self.social.friends() {
+                            social::FriendsListState::Loaded(list) => screens::FriendsCounts {
+                                friends: list.friends.len(),
+                                incoming: list.incoming.len(),
+                                outgoing: list.outgoing.len(),
+                            },
+                            _ => screens::FriendsCounts::default(),
+                        };
+                        let layout = screens::friends_layout(card_w, fonts, counts);
+                        self.friends_prefs.link_launcher_btn.update(
+                            card_pos,
+                            layout.link_launcher_btn,
+                            self.mouse_down,
+                            time,
+                        );
+                        self.friends_prefs.add_submit_btn.update(
+                            card_pos,
+                            layout.add_submit,
+                            self.mouse_down,
+                            time,
+                        );
+                    }
+                }
+
                 let mut hovering_menu = false;
                 if !any_modal_open && self.screen == Screen::MainMenu {
                     if let Some(fonts) = self.fonts.as_ref() {
@@ -1589,6 +1617,22 @@ impl ApplicationHandler for App {
                                 break;
                             }
                         }
+                    }
+                }
+
+                // Step 1.5: "‹ Main menu" back-link (top-left of the
+                // screen-head screens) — navigate home.
+                if !handled
+                    && pressed
+                    && matches!(self.screen, Screen::Settings | Screen::Instances)
+                {
+                    let back_rect = skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0);
+                    if rect_contains(&back_rect, card_pos) {
+                        log::info!("nav: {:?} → MainMenu (back-link)", self.screen);
+                        self.screen = Screen::MainMenu;
+                        self.prefs.close_dropdowns();
+                        self.instance_prefs.close_dropdowns();
+                        handled = true;
                     }
                 }
 

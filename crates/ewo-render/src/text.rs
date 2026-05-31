@@ -394,6 +394,59 @@ pub fn draw_breathing_glow(
     }
 }
 
+/// Draw a soft hover-glow behind a plain (un-tracked) string — the same
+/// two-halo treatment as [`draw_breathing_glow`], but for the whole string at
+/// once and gated by a single `intensity` (0 = none, 1 = full). The caller
+/// draws the real text on top afterward. Used to light up menu items,
+/// instance rows, etc. on hover, mirroring the hero title's glow.
+pub fn draw_glow_str(canvas: &Canvas, text: &str, origin: (f32, f32), font: &Font, intensity: f32) {
+    draw_tracked_glow(canvas, text, origin, font, 0.0, intensity);
+}
+
+/// Tracked variant of [`draw_glow_str`] — glyph-walked with `tracking_em`
+/// letter-spacing so it lines up under tracked labels (tab bar, eyebrows).
+pub fn draw_tracked_glow(
+    canvas: &Canvas,
+    text: &str,
+    origin: (f32, f32),
+    font: &Font,
+    tracking_em: f32,
+    intensity: f32,
+) {
+    if intensity <= 0.02 {
+        return;
+    }
+    let i = intensity.clamp(0.0, 1.0);
+    let spacing = tracking_em * font.size();
+    // Two halo passes: far (berry, 9px) then near (rose, 4px). respect_ctm
+    // true so the blur is DPI-correct.
+    for pass in 0..2 {
+        let (color, blur) = if pass == 0 {
+            (
+                skia_safe::Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.35 * i),
+                9.0,
+            )
+        } else {
+            (
+                skia_safe::Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.65 * i),
+                4.0,
+            )
+        };
+        let mut p = Paint::default();
+        p.set_anti_alias(true);
+        p.set_color4f(color, None);
+        p.set_mask_filter(skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, blur, true));
+        let (mut x, y) = origin;
+        let mut buf = [0u8; 4];
+        for ch in text.chars() {
+            let s: &str = ch.encode_utf8(&mut buf);
+            canvas.draw_str(s, (x, y), font, &p);
+            let (adv, _) = font.measure_str(s, Some(&p));
+            x += adv + spacing;
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Internal — font loading
 // ────────────────────────────────────────────────────────────────────────

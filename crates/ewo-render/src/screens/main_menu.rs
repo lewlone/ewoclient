@@ -465,18 +465,30 @@ fn draw_menu_items(
             );
         }
 
-        // Label
+        // Label — with a hover-glow behind it (the hero-title treatment) and
+        // a slight warm-white brighten on hover.
         if item.muted {
             let baseline = label_top + (-mm.ascent);
+            text::draw_glow_str(canvas, item.label, (baseline_x, baseline), &muted_font, hover * 0.85);
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
             paint.set_color(TEXT_MAUVE);
             canvas.draw_str(item.label, (baseline_x, baseline), &muted_font, &paint);
         } else {
             let baseline = label_top + (-lm.ascent);
+            text::draw_glow_str(canvas, item.label, (baseline_x, baseline), &label_font, hover * 0.85);
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
-            paint.set_color(TEXT_PEARL);
+            // Pearl → warm-white (#FFF0F4) as hover ramps.
+            paint.set_color4f(
+                Color4f::new(
+                    (0xF4 as f32 + (0xFF - 0xF4) as f32 * hover) / 255.0,
+                    (0xE8 as f32 + (0xF0 - 0xE8) as f32 * hover) / 255.0,
+                    (0xEA as f32 + (0xF4 - 0xEA) as f32 * hover) / 255.0,
+                    1.0,
+                ),
+                None,
+            );
             canvas.draw_str(item.label, (baseline_x, baseline), &label_font, &paint);
         }
 
