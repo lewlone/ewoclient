@@ -1265,8 +1265,22 @@ anything.
     right-column menu items on narrow windows) — eyeball pass pending.
 - **H7 (WebSocket push) not done** — polling-only, by design until lag
   justifies it.
-- **In-game FRIENDS overlay tab not added** — the in-game dashboard tab
-  strip is still HOME · HUD · CROSSHAIR · MODULES · MODS · SETTINGS.
+- **In-game FRIENDS overlay tab BUILT (2026-05-31, read-only)** — an 8th
+  overlay tab; the strip is now HOME · HUD · CROSSHAIR · MODULES · PVP ·
+  MODS · FRIENDS · SETTINGS. **File-bridge, no HTTP in the cdylib**: the
+  launcher writes a per-profile `ewo-friends.txt` snapshot
+  (`<online>\t<name>\t<presence>\t<server_addr>` per accepted friend) on
+  each friends-list change via `profile::active_dir()`; the cdylib's
+  `social::read_friends()` reads it fresh each frame the tab is visible and
+  `hud::draw_friends_view` renders the Velvet list. View-only — mutations +
+  join stay launcher-side. **Freshness caveat**: the launcher only rewrites
+  the snapshot while it's foreground (its leak-fix skips per-frame work when
+  backgrounded), so during active play the list reflects the last
+  launcher-foreground refresh (≈launch time); live-during-play needs an
+  in-game poller or a launcher background tick — deferred. Also fixed a
+  latent bug: `hud::tab_layout` was hardcoded to 6 slots while
+  `OverlayView::ALL` had 7 (PVP), silently clipping the SETTINGS tab off
+  the strip — it now sizes to `ALL.len()`.
 - **THE real remaining blocker is ops, not code**: the bot must be
   *deployed/running* on the VPS with nginx routing `/bot/api/*` → bot
   `:8080`, and a live end-to-end test (sign in → `/launcher-link`

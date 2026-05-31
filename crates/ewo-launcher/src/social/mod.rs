@@ -190,6 +190,10 @@ pub struct SocialState {
     server_status: Option<ServerStatus>,
     server_status_last_fetch: Option<f32>,
     server_status_in_flight: bool,
+    /// H6/FRIENDS-tab — set when the friends list changes; the main loop
+    /// drains it to rewrite `<profile>/ewo-friends.txt` for the in-game
+    /// FRIENDS overlay tab. A take-once flag.
+    friends_snapshot_dirty: bool,
     rx: Receiver<SocialEvent>,
     tx: Sender<SocialEvent>,
 }
@@ -230,9 +234,18 @@ impl SocialState {
             server_status: None,
             server_status_last_fetch: None,
             server_status_in_flight: false,
+            friends_snapshot_dirty: false,
             rx,
             tx,
         }
+    }
+
+    /// Take-once: `true` exactly once after each friends-list change. The
+    /// caller rewrites the in-game `ewo-friends.txt` snapshot when set.
+    pub fn take_friends_dirty(&mut self) -> bool {
+        let d = self.friends_snapshot_dirty;
+        self.friends_snapshot_dirty = false;
+        d
     }
 
     /// Current link status for `uuid`. `Unknown` for any UUID we
@@ -298,6 +311,7 @@ impl SocialState {
                                 list.outgoing.len(),
                             );
                             self.friends = FriendsListState::Loaded(list);
+                            self.friends_snapshot_dirty = true;
                         }
                         Err(msg) => {
                             log::warn!("social: friends refresh failed: {}", msg);

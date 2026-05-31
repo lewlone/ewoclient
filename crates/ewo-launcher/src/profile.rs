@@ -614,6 +614,14 @@ fn profile_dir(name: &str) -> Option<PathBuf> {
     Some(p)
 }
 
+/// Absolute path to the active profile's directory
+/// (`<config>/EwoClient/profiles/<active>/`), or `None` if the config dir
+/// can't be resolved. Used to drop per-profile files the in-game cdylib
+/// reads back (e.g. `ewo-friends.txt` for the FRIENDS overlay tab — Phase H).
+pub fn active_dir() -> Option<PathBuf> {
+    profile_dir(&active_name())
+}
+
 fn write_profile(name: &str, client: &ClientProfile) {
     if let Some(p) = client_path(name) {
         write_toml(&p, client, "client.toml");

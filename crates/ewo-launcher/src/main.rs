@@ -2174,6 +2174,31 @@ impl ApplicationHandler for App {
                 for uuid in self.auth.account_uuids() {
                     self.social.ensure_probed(&uuid);
                 }
+                // FRIENDS overlay tab — when the friends list changes,
+                // rewrite the per-profile `ewo-friends.txt` snapshot the
+                // in-game cdylib reads. One tab-separated line per accepted
+                // friend: <online 0|1>\t<name>\t<presence>\t<server_addr>.
+                if self.social.take_friends_dirty() {
+                    if let social::FriendsListState::Loaded(list) = self.social.friends() {
+                        use std::fmt::Write as _;
+                        let mut s = String::new();
+                        for e in &list.friends {
+                            let v = friend_entry_to_view(e);
+                            let _ = writeln!(
+                                s,
+                                "{}\t{}\t{}\t{}",
+                                if v.online { 1 } else { 0 },
+                                v.display_name,
+                                v.presence,
+                                v.server_addr.unwrap_or_default(),
+                            );
+                        }
+                        if let Some(dir) = profile::active_dir() {
+                            let _ = std::fs::create_dir_all(&dir);
+                            let _ = std::fs::write(dir.join("ewo-friends.txt"), s);
+                        }
+                    }
+                }
                 // Phase H3: fire a presence heartbeat (rate-gated to 30s
                 // inside `maybe_send_heartbeat`). Only when both an
                 // active account AND a live social_token are available

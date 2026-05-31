@@ -784,17 +784,19 @@ enum OverlayView {
     Modules,
     Pvp,
     Mods,
+    Friends,
     Settings,
 }
 
 impl OverlayView {
-    const ALL: [OverlayView; 7] = [
+    const ALL: [OverlayView; 8] = [
         OverlayView::Home,
         OverlayView::HudEditor,
         OverlayView::Crosshair,
         OverlayView::Modules,
         OverlayView::Pvp,
         OverlayView::Mods,
+        OverlayView::Friends,
         OverlayView::Settings,
     ];
     fn title(self) -> &'static str {
@@ -805,6 +807,7 @@ impl OverlayView {
             OverlayView::Modules => "MODULES",
             OverlayView::Pvp => "PVP",
             OverlayView::Mods => "MODS",
+            OverlayView::Friends => "FRIENDS",
             OverlayView::Settings => "SETTINGS",
         }
     }
@@ -1400,6 +1403,9 @@ impl Editor {
             }
             OverlayView::Pvp => self.pvp_press(x, y),
             OverlayView::Crosshair => self.crosshair_press(x, y),
+            // FRIENDS is read-only (view who's online). Mutations + join stay
+            // on the launcher side for now.
+            OverlayView::Friends => {}
         }
     }
 
@@ -1868,6 +1874,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         OverlayView::Modules => draw_modules(canvas, editor, fonts, w, h),
         OverlayView::Pvp => draw_pvp(canvas, editor, fonts, w, h),
         OverlayView::Mods => draw_mods(canvas, editor, fonts, w, h),
+        OverlayView::Friends => draw_friends_view(canvas, fonts, w, h),
         OverlayView::Settings => draw_settings(canvas, editor, fonts, w, h),
     }
 
@@ -1891,6 +1898,7 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
         | OverlayView::Modules
         | OverlayView::Pvp
         | OverlayView::Mods
+        | OverlayView::Friends
         | OverlayView::Settings => "RIGHT SHIFT OR ESC TO CLOSE",
     };
     let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
@@ -4437,17 +4445,20 @@ fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, 
 
 /// The overlay's top-centre view-tab strip: the whole pill + a rect per tab.
 /// Fixed-width tabs so the renderer and the hit-tester agree without fonts.
-fn tab_layout(w: f32) -> (Rect, [Rect; 6]) {
-    const TAB_W: f32 = 110.0; // narrowed a touch — 6 tabs in the same strip.
+fn tab_layout(w: f32) -> (Rect, Vec<Rect>) {
+    // One slot per `OverlayView::ALL` entry — derived from the array length so
+    // adding a view (e.g. FRIENDS) can't desync the strip from the click
+    // hit-test, and so no tab gets silently clipped off the end.
+    let n = OverlayView::ALL.len();
+    const TAB_W: f32 = 102.0; // narrowed for the 8-tab strip.
     const TAB_H: f32 = 34.0;
     const TAB_Y: f32 = 18.0;
-    let strip_w = TAB_W * 6.0;
+    let strip_w = TAB_W * n as f32;
     let strip_x = (w - strip_w) * 0.5;
     let pill = Rect::from_xywh(strip_x, TAB_Y, strip_w, TAB_H);
-    let mut tabs = [empty_rect(); 6];
-    for (i, slot) in tabs.iter_mut().enumerate() {
-        *slot = Rect::from_xywh(strip_x + i as f32 * TAB_W, TAB_Y, TAB_W, TAB_H);
-    }
+    let tabs = (0..n)
+        .map(|i| Rect::from_xywh(strip_x + i as f32 * TAB_W, TAB_Y, TAB_W, TAB_H))
+        .collect();
     (pill, tabs)
 }
 
@@ -6030,6 +6041,151 @@ fn mods_layout(w: f32, h: f32, count: usize) -> (Rect, Vec<Rect>) {
         ));
     }
     (panel, toggles)
+}
+
+/// The FRIENDS view — who's on the chickenedin network right now, read from
+/// the `ewo-friends.txt` snapshot the launcher drops in the active profile
+/// dir (Phase H). Read-only: a Velvet list with an online dot · name ·
+/// presence per row. Mutations + join stay on the launcher for now.
+fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
+    let friends = crate::social::read_friends();
+    let online_n = friends.iter().filter(|f| f.online).count();
+
+    const PANEL_W: f32 = 544.0;
+    const PAD: f32 = 24.0;
+    const HEADER_H: f32 = 76.0;
+    const ROW_H: f32 = 40.0;
+    let rows = friends.len().max(1);
+    let panel_h = PAD * 2.0 + HEADER_H + rows as f32 * ROW_H;
+    let px = (w - PANEL_W) * 0.5;
+    let py = (h - panel_h) * 0.5;
+    let panel = Rect::from_xywh(px, py, PANEL_W, panel_h);
+    draw_chip(canvas, panel, 16.0);
+    let left = panel.left + 24.0;
+
+    // Eyebrow + online count.
+    let eyebrow_font = fonts.jetbrains_mono(11.0);
+    let mut eyebrow = Paint::default();
+    eyebrow.set_anti_alias(true);
+    eyebrow.set_color4f(rgba(ROSE, 0.9), None);
+    draw_tracked_em(canvas, "FRIENDS", (left, panel.top + 36.0), &eyebrow_font, &eyebrow, 0.22);
+
+    let count_str = format!("{} / {} ONLINE", online_n, friends.len());
+    let count_w = measure_tracked_em(&eyebrow_font, &count_str, 0.16);
+    let mut count_paint = Paint::default();
+    count_paint.set_anti_alias(true);
+    count_paint.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        &count_str,
+        (panel.right - 24.0 - count_w, panel.top + 36.0),
+        &eyebrow_font,
+        &count_paint,
+        0.16,
+    );
+
+    // Title.
+    let title_font = fonts.fraunces_axes(27.0, 36.0, 1.0, 600.0, None);
+    let mut title = Paint::default();
+    title.set_anti_alias(true);
+    title.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_str("Who's around", (left, panel.top + 70.0), &title_font, &title);
+
+    if friends.is_empty() {
+        let body_font = fonts.newsreader(15.0);
+        let mut body = Paint::default();
+        body.set_anti_alias(true);
+        body.set_color4f(rgba(MAUVE, 1.0), None);
+        canvas.draw_str(
+            "No friends yet — link the launcher and add friends from the",
+            (left, panel.top + 112.0),
+            &body_font,
+            &body,
+        );
+        canvas.draw_str(
+            "launcher's Friends screen. They'll show here once they're online.",
+            (left, panel.top + 134.0),
+            &body_font,
+            &body,
+        );
+        return;
+    }
+
+    let rows_top = panel.top + PAD + HEADER_H;
+    let name_font = fonts.newsreader(15.0);
+    let meta_font = fonts.jetbrains_mono(10.0);
+    let (_, nm) = name_font.metrics();
+    let ncap = if nm.cap_height > 0.0 { nm.cap_height } else { 11.0 };
+    for (i, f) in friends.iter().enumerate() {
+        let ry = rows_top + i as f32 * ROW_H;
+        let mid = ry + ROW_H * 0.5;
+
+        if i > 0 {
+            let mut div = Paint::default();
+            div.set_anti_alias(true);
+            div.set_style(PaintStyle::Stroke);
+            div.set_stroke_width(1.0);
+            div.set_color4f(rgba(PEARL, 0.06), None);
+            canvas.draw_line((left, ry), (panel.right - 24.0, ry), &div);
+        }
+
+        // Online dot — lavender (with halo) when online, dim mauve otherwise.
+        let dot_cx = left + 6.0;
+        if f.online {
+            let mut halo = Paint::default();
+            halo.set_anti_alias(true);
+            halo.set_color4f(rgba(LAV, 0.55), None);
+            halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 4.0, false));
+            canvas.draw_circle((dot_cx, mid), 5.5, &halo);
+        }
+        let mut dot = Paint::default();
+        dot.set_anti_alias(true);
+        dot.set_color4f(
+            if f.online { rgba(LAV, 1.0) } else { rgba(MAUVE, 0.4) },
+            None,
+        );
+        canvas.draw_circle((dot_cx, mid), 4.0, &dot);
+
+        // Name.
+        let mut name = Paint::default();
+        name.set_anti_alias(true);
+        name.set_color4f(
+            if f.online { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.7) },
+            None,
+        );
+        canvas.draw_str(&f.name, (left + 20.0, mid + ncap * 0.5), &name_font, &name);
+
+        // Presence, right-aligned, tracked mono. Champagne when in-game,
+        // rose when in the launcher, dim mauve when offline.
+        let in_game = !f.server_addr.is_empty();
+        let pres = if f.presence.is_empty() {
+            "offline".to_string()
+        } else {
+            f.presence.clone()
+        };
+        let pres_up = pres.to_uppercase();
+        let pres_w = measure_tracked_em(&meta_font, &pres_up, 0.14);
+        let mut pres_paint = Paint::default();
+        pres_paint.set_anti_alias(true);
+        pres_paint.set_color4f(
+            if in_game {
+                rgba(CHAMP, 0.95)
+            } else if f.online {
+                rgba(ROSE, 0.85)
+            } else {
+                rgba(MAUVE, 0.7)
+            },
+            None,
+        );
+        draw_tracked_em(
+            canvas,
+            &pres_up,
+            (panel.right - 24.0 - pres_w, mid + 3.0),
+            &meta_font,
+            &pres_paint,
+            0.14,
+        );
+    }
 }
 
 /// The Mods view — a Velvet re-skin of a ClickGUI module list: one row per

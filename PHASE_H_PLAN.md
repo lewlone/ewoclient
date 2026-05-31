@@ -19,8 +19,10 @@ current state. Summary:
   friend "Join" button. Bot `GET /api/server-status` made public (needs
   redeploy). Widget visual placement unverified. **H7** (WebSocket) not
   done (polling by design).
-- The in-game **FRIENDS overlay tab is not added** yet (tab strip is
-  HOME · HUD · CROSSHAIR · MODULES · MODS · SETTINGS).
+- The in-game **FRIENDS overlay tab is BUILT** (2026-05-31, read-only):
+  an 8th tab fed by a per-profile `ewo-friends.txt` file-bridge (launcher
+  writes it, cdylib reads it — no HTTP in the cdylib). View-only; freshness
+  is launcher-foreground-bound (see CLAUDE.md Phase H for the caveat).
 - **Real remaining blocker is ops**: deploy the bot to the VPS with nginx
   routing `/bot/api/*` → `:8080`, then run a live end-to-end test. H0's
   `ssh ewo-vps` key was generated 2026-05-27; public-key deploy may still

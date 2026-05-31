@@ -69,6 +69,7 @@ mod media;
 mod modules;
 mod pvp;
 mod skin;
+mod social;
 
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};
