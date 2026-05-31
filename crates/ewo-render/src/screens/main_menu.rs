@@ -531,25 +531,11 @@ fn draw_menu_items(
 // ────────────────────────────────────────────────────────────────────────
 
 /// Build a Newsreader italic Font with explicit axes (opsz tracks size, wght
-/// configurable). Falls back to the default cut if axes aren't applicable.
+/// configurable). Delegates to `FontStore::newsreader_italic_axes`, which
+/// caches the variable-font typeface — building one per frame here used to
+/// leak foreign FreeType memory.
 fn newsreader_italic_axes(fonts: &FontStore, size: f32, weight: f32) -> Font {
-    use skia_safe::font_arguments::variation_position::Coordinate;
-    use skia_safe::font_arguments::VariationPosition;
-    use skia_safe::{FontArguments, FourByteTag};
-
-    let coords = [
-        Coordinate { axis: FourByteTag::from_chars('o', 'p', 's', 'z'), value: size },
-        Coordinate { axis: FourByteTag::from_chars('w', 'g', 'h', 't'), value: weight },
-    ];
-    let pos = VariationPosition { coordinates: &coords };
-    let args = FontArguments::new().set_variation_design_position(pos);
-    let tf = fonts
-        .newsreader_italic_typeface()
-        .clone_with_arguments(&args)
-        .unwrap_or_else(|| fonts.newsreader_italic_typeface().clone());
-    let mut f = Font::new(tf, size);
-    f.set_subpixel(true);
-    f
+    fonts.newsreader_italic_axes(size, weight)
 }
 
 /// Thin wrappers around `text::draw_tracked_em` / `text::measure_tracked_em`

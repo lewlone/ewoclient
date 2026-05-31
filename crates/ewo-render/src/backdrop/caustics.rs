@@ -30,12 +30,32 @@
 //! drawing each layer's gradients in an over-extended bounds, so when the
 //! animation transform shifts them they don't expose the edge.
 
+use std::cell::RefCell;
+
 use ewo_core::OkLch;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, BlendMode, Canvas, Color4f, Matrix, Paint, Point, Rect,
-    TileMode,
+    gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Matrix, Paint, Point,
+    Rect, TileMode,
 };
+
+thread_local! {
+    /// The 30px (sigma 15) blur is identical for both caustic layers and never
+    /// changes. Build once, clone the refcounted handle per frame instead of
+    /// constructing a fresh `SkImageFilter` twice every frame.
+    static CAUSTIC_BLUR: RefCell<Option<ImageFilter>> = const { RefCell::new(None) };
+}
+
+fn caustic_blur() -> ImageFilter {
+    CAUSTIC_BLUR.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                image_filters::blur((15.0, 15.0), TileMode::Decal, None, None)
+                    .expect("caustic blur filter")
+            })
+            .clone()
+    })
+}
 
 struct CausticBlob {
     /// Center as a fraction of layer width/height.
@@ -100,9 +120,8 @@ fn draw_layer(canvas: &Canvas, w: f32, h: f32, blobs: &[CausticBlob], phase: f32
     let ty = -0.04 * lh * phase;
     let rot_deg = 6.0 * phase;
 
-    // 30px CSS blur → sigma 15.
-    let blur = image_filters::blur((15.0, 15.0), TileMode::Decal, None, None)
-        .expect("caustic blur filter");
+    // 30px CSS blur → sigma 15 (static — built once, cloned per frame).
+    let blur = caustic_blur();
     let mut layer_paint = Paint::default();
     layer_paint.set_image_filter(blur);
     layer_paint.set_blend_mode(BlendMode::Screen);

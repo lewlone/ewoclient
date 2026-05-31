@@ -103,6 +103,16 @@ const MAIN_MENU_ACTIONS: [MenuAction; 4] = [
     MenuAction::Quit,
 ];
 
+/// Seconds of no user input before the focused redraw loop throttles down.
+/// Long enough that transient interactions (ripples, sheen sweeps, modal
+/// entrances) finish at full rate; short enough that an idle launcher stops
+/// burning the full monitor rate quickly.
+const IDLE_THRESHOLD_SECS: f32 = 0.5;
+/// Frame rate the focused loop drops to while idle. Ambient motion (folds,
+/// caustics, breathing, drifting motes) runs on multi-second periods, so it's
+/// fully smooth here; the eye can't resolve more on those layers.
+const IDLE_FPS: f32 = 120.0;
+
 struct App {
     window: Option<Arc<Window>>,
     backend: Option<GlBackend>,
@@ -124,6 +134,12 @@ struct App {
     /// `is_minimized` it tells us whether painting the offscreen surface
     /// is wasted work.
     occluded: bool,
+    /// Wall-clock of the last user input (cursor move, click, scroll, key).
+    /// `about_to_wait` throttles the focused redraw loop to `IDLE_FPS` once the
+    /// launcher has been idle past `IDLE_THRESHOLD_SECS`, so an untouched
+    /// launcher doesn't render at the full monitor rate (500 Hz on the OLED)
+    /// for slow ambient motion the eye can't resolve. Any input snaps it back.
+    last_activity: Instant,
     screen: Screen,
     settings_tab: SettingsTab,
     prefs: Prefs,
@@ -224,6 +240,7 @@ impl App {
             mouse_down: false,
             focused: true,
             occluded: false,
+            last_activity: Instant::now(),
             screen: Screen::default(),
             settings_tab: SettingsTab::Graphics,
             prefs: {
@@ -695,6 +712,21 @@ impl ApplicationHandler for App {
             return;
         };
 
+        // Any user input resets the idle clock — so the frame-pacing throttle
+        // in `about_to_wait` only kicks in when the launcher is genuinely idle.
+        // (Non-binding patterns, so `event` is not consumed by this peek.)
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::Touch(..)
+        ) {
+            self.last_activity = Instant::now();
+        }
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -702,7 +734,8 @@ impl ApplicationHandler for App {
                 self.focused = focused;
                 if focused {
                     // Coming back from unfocused — kick off a fresh redraw
-                    // so animations resume immediately.
+                    // so animations resume immediately, at full rate briefly.
+                    self.last_activity = Instant::now();
                     window.request_redraw();
                 }
             }
@@ -3004,14 +3037,20 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Three modes:
-        //  1. Unfocused → ~10 FPS via WaitUntil — GPU stays idle while
-        //     the user is in another window.
-        //  2. Focused, VSync on → Poll. Skia + GL surface caps at the
-        //     display refresh, no extra throttling needed.
-        //  3. Focused, VSync off → if `max_fps < 240` cap via WaitUntil
-        //     to that target; else Poll for uncapped (the dev-overlay
-        //     path that validates the 500fps OLED target).
+        // Frame pacing. `request_redraw` only marks the window dirty; this
+        // ControlFlow decides *when* the loop wakes to service that redraw, so
+        // a WaitUntil here caps the effective frame rate even though the
+        // redraw is always pending.
+        //
+        //  1. Unfocused → ~10 FPS — GPU stays idle in another window.
+        //  2. Focused + idle (no input past IDLE_THRESHOLD, and not mid-launch)
+        //     → IDLE_FPS. Ambient motion is far slower than that, so it reads
+        //     identical while cutting GPU/heat/power on an untouched launcher.
+        //     Applies regardless of vsync — vsync alone caps at the monitor
+        //     rate (up to 500 Hz on the OLED), which is overkill at idle.
+        //  3. Focused + active, VSync off, `max_fps < 240` → cap to max_fps.
+        //  4. Focused + active otherwise → Poll (vsync caps at refresh; the
+        //     dev-overlay uncapped path validates the 500fps OLED target).
         if !self.focused {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(100),
@@ -3022,17 +3061,29 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let idle = self.last_activity.elapsed().as_secs_f32() >= IDLE_THRESHOLD_SECS
+            && self.screen != Screen::Launching;
+
         let max_fps = self.prefs.max_fps.value;
-        if !self.prefs.vsync.on && max_fps < 240.0 && max_fps > 0.0 {
-            let target_ns = (1_000_000_000.0 / max_fps).max(1.0) as u64;
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_nanos(target_ns),
-            ));
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
+        let cap_fps: Option<f32> = if idle {
+            Some(IDLE_FPS)
+        } else if !self.prefs.vsync.on && max_fps > 0.0 && max_fps < 240.0 {
+            Some(max_fps)
         } else {
-            event_loop.set_control_flow(ControlFlow::Poll);
+            None
+        };
+
+        match cap_fps {
+            Some(fps) => {
+                let target_ns = (1_000_000_000.0 / fps).max(1.0) as u64;
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_nanos(target_ns),
+                ));
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            None => event_loop.set_control_flow(ControlFlow::Poll),
         }
     }
 }

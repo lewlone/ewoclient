@@ -22,13 +22,33 @@
 //!
 //! Tint variant 0 (berry) is the default and the only one we render in v1.
 
+use std::cell::RefCell;
+
 use ewo_core::Srgb;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, BlendMode, Canvas, Color4f, Paint, Point, Rect, TileMode,
+    gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Paint, Point, Rect,
+    TileMode,
 };
 
 const PERIOD_SEC: f32 = 60.0;
+
+thread_local! {
+    /// The orb's 40px (sigma 20) blur never changes. Build once, clone the
+    /// refcounted handle per frame.
+    static BOKEH_BLUR: RefCell<Option<ImageFilter>> = const { RefCell::new(None) };
+}
+
+fn bokeh_blur() -> ImageFilter {
+    BOKEH_BLUR.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                image_filters::blur((20.0, 20.0), TileMode::Decal, None, None)
+                    .expect("bokeh blur filter")
+            })
+            .clone()
+    })
+}
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let phase = (time / PERIOD_SEC).fract();
@@ -88,11 +108,9 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
         return;
     };
 
-    // 40px CSS blur → sigma 20. Apply via save_layer so screen-blend + opacity
-    // compose correctly.
-    let Some(blur) = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None) else {
-        return;
-    };
+    // 40px CSS blur → sigma 20 (static — built once, cloned per frame). Apply
+    // via save_layer so screen-blend + opacity compose correctly.
+    let blur = bokeh_blur();
     let mut layer_paint = Paint::default();
     layer_paint.set_image_filter(blur);
     layer_paint.set_blend_mode(BlendMode::Screen);

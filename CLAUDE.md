@@ -1404,6 +1404,90 @@ window, GL context, and detached threads.
 
 ---
 
+## Memory + performance pass (2026-05-31)
+
+A dedicated pass to kill the focused-RSS leak and cut per-frame GPU cost.
+Verified live: RSS now **stable at ~108 MB** (was climbing ~2.6 GB/hour while
+focused + idle), and the app runs nicely at the 500fps target.
+
+### The focused-idle leak — root-caused + fixed
+
+The H5-session leak (RSS → ~20.9 GB over 8h *while focused*; foreign
+C++/FreeType memory not in any Skia cache) was two per-frame foreign
+allocations:
+
+1. **`backdrop/velvet_folds.rs` rebuilt a Perlin-noise filter chain every
+   frame** — `shaders::fractal_noise` + `image_filters::shader` +
+   `displacement_map` + `blur`, all *logically static* (fixed seed/freq/octaves;
+   the module comment already said so), constructed fresh ~500×/sec. Each
+   `SkPerlinNoiseShader` carries precomputed noise tables in plain C++ heap,
+   invisible to Skia's resource/font caches — the exact "foreign, untracked,
+   leaks while idle" profile. Runs on **every** screen (the backdrop draws
+   unconditionally), which is why it leaked at idle. **Fix:** build the chain
+   once into a `thread_local`, clone the refcounted handle per frame. This was
+   the dominant leak.
+2. **`screens/main_menu.rs::newsreader_italic_axes` called
+   `clone_with_arguments` per frame** (main menu only) — the same
+   variable-font-clone hazard `text.rs`'s `fraunces_cache` already documents
+   (it measured ≈4 MB/s @ 500fps). **Fix:** added
+   `FontStore::newsreader_italic_axes` with a quantized typeface cache mirroring
+   `fraunces_cache`.
+
+Both fixes are **zero pixel change**. The load-bearing principle: *never
+construct a Skia shader / image-filter / variable-font `Typeface` inside a
+per-frame draw — they allocate foreign C++/FreeType state that Skia's tracked
+caches don't bound. Build once, clone the handle.* The constant-sigma blur
+filters in `caustics.rs` / `bokeh.rs` were hoisted the same way.
+
+### The backdrop render graph now has a "slow clock"
+
+`backdrop::Backdrop` caches the four **slow** layers — wine → velvet folds →
+caustics → bokeh, i.e. the three full-screen Gaussian blurs (σ 20/15/20) + the
+fractal-noise displacement, by far the heaviest GPU work — into an offscreen
+surface refreshed at **`CACHE_REFRESH_HZ` (20 Hz)**, blitted 1:1 every frame.
+The **fast** layers (pearl dust, petals) + the cheap vignette draw live on top
+each frame. Heavy blur work now runs ~20×/sec instead of ~500×/sec (~25× less
+per-frame backdrop cost) with no perceptible change — those layers drift on
+8–60 s periods. Mechanism: `canvas.new_surface(...)` → `image_snapshot()` →
+`draw_image`; the cache is invalidated on resize. Same "cache the slow clock"
+trick the in-game HUD frost uses (`ewo-jni::refresh_frost`).
+
+Layering is exact: wine fills the offscreen opaquely, folds/caustics/bokeh
+screen-blend on top inside it, the opaque result blits over the black card body
+under the same rrect clip → identical pixels, rounded corners and all. The
+offscreen has no MSAA (soft gradient content doesn't need it).
+
+### Other wins
+
+- **Pearl-dust halos batched** (`backdrop/pearl_dust.rs`) — the 110 airborne
+  motes each allocated a fresh 3-stop radial-gradient shader per frame (which
+  also churned Skia's gradient-LUT cache). Now the halo is **baked once into a
+  64px GPU sprite** at reference alpha 1.0 and stamped per mote with a reused
+  `set_alpha_f` paint — mathematically identical pixels, zero per-frame shader
+  allocation. Cores + settled motes stay as solid `draw_circle` (no alloc).
+  (Counts are 110 airborne + 80 settled, above the docs' 90/60.)
+- **Inner berry glow baked** (`app_window.rs`) — was a σ40 mask-blur of an
+  unchanging stroke every frame; now baked once per window size into a cached
+  image (`GLOW_CACHE` thread_local) and blitted.
+- **Idle frame throttle** (`main.rs::about_to_wait`) — after
+  `IDLE_THRESHOLD_SECS` (0.5 s) of no input the focused loop drops to `IDLE_FPS`
+  (120) **even with vsync on**; any cursor/key/scroll resets `last_activity` and
+  snaps back to full rate; never throttles during the Launching screen. Cuts
+  idle GPU/heat/power without touching the interactive 500fps target. (This
+  softens the "always 500fps" line, but only when the launcher is untouched.
+  `request_redraw` only marks the window dirty; `ControlFlow` decides the wake
+  cadence, so the WaitUntil caps the rate even with a redraw pending — the
+  existing `max_fps` cap relied on this too.)
+
+### Still open
+
+- **`LEAK_HUNT_INSTRUMENT` diagnostics are still in** (the counting global
+  allocator + periodic mem/cache logs + Skia cache caps) — deliberately kept
+  through the verification of this fix. Now that RSS is confirmed flat they can
+  be stripped per the markers (`git grep LEAK_HUNT_INSTRUMENT`).
+
+---
+
 *Last meaningful structural change to this file (2026-05-26 session):
 **Post-ban refactor — the legit/pvp split.** An anticheat ban on CatPvP
 landed with the macros switched off, pointing at class-name
@@ -1451,3 +1535,15 @@ next to the exe). Plus broad visual polish (hover glow everywhere, tofu-arrow
 → vector-chevron fixes, dropdown corner fix diagnosed via a new
 PNG-render harness `examples/dropdown_shot.rs`, slider/scrollbar/main-menu
 tweaks). All committed; verified live except the open Phase H items above.*
+
+*Update (2026-05-31 session, perf): **Memory + performance pass** — see the new
+"**Memory + performance pass**" section above. Root-caused + fixed the
+focused-idle RSS leak (per-frame `fractal_noise` filter chain in `velvet_folds`
++ an uncached `newsreader_italic` variable-font clone on the main menu — both
+foreign C++/FreeType churn, both zero-pixel fixes), gave the backdrop a 20 Hz
+"slow clock" offscreen cache for the three full-screen blurs, baked the
+pearl-dust halos to a sprite + the inner glow to a cached image, and added an
+idle frame throttle (120fps after 0.5s untouched, full rate on interaction).
+Verified live: **RSS stable ~108 MB** (was climbing ~2.6 GB/hr), renders
+identically. `LEAK_HUNT_INSTRUMENT` diagnostics intentionally left in pending a
+final strip.*

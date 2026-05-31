@@ -18,9 +18,12 @@
 //! }
 //! ```
 
+use std::cell::RefCell;
+
 use ewo_core::{Screen, Settings, Theme};
 use skia_safe::{
-    BlurStyle, Canvas, ClipOp, Color, Color4f, MaskFilter, Paint, PaintStyle, RRect, Rect,
+    AlphaType, BlurStyle, Canvas, ClipOp, Color, Color4f, ColorType, Image, ImageInfo, MaskFilter,
+    Paint, PaintStyle, RRect, Rect,
 };
 
 use crate::backdrop::Backdrop;
@@ -289,8 +292,6 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
 /// whatever was rendered into the card.
 pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
     let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
-    let card_rrect_ = RRect::new_rect_xy(card, CARD_RADIUS, CARD_RADIUS);
-
     // Inset hairline rim: inset 0 0 0 1px rgba(229, 184, 197, 0.08)
     let mut rim = Paint::default();
     rim.set_anti_alias(true);
@@ -301,7 +302,66 @@ pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
     let inset_rrect = RRect::new_rect_xy(inset_rect, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5);
     canvas.draw_rrect(inset_rrect, &rim);
 
-    // Inner berry glow: ::after inset 0 0 80px -20px rgba(180, 100, 140, 0.15)
+    // Inner berry glow: ::after inset 0 0 80px -20px rgba(180, 100, 140, 0.15).
+    // Static per window size — a sigma-40 mask-blur of an unchanging stroke —
+    // so bake it once into a cached image and blit thereafter (see
+    // `draw_inner_glow`), instead of re-blurring every frame.
+    draw_inner_glow(canvas, w, h);
+}
+
+thread_local! {
+    /// Cached inner-glow image, keyed by window size. The glow never changes
+    /// for a given size, so a sigma-40 mask-blur per frame was pure waste.
+    static GLOW_CACHE: RefCell<Option<(i32, i32, Image)>> = const { RefCell::new(None) };
+}
+
+/// Blit the cached inner berry glow, (re)baking it when the size changes.
+fn draw_inner_glow(canvas: &Canvas, w: f32, h: f32) {
+    let wi = w.round() as i32;
+    let hi = h.round() as i32;
+    if wi <= 0 || hi <= 0 {
+        return;
+    }
+
+    let cached = GLOW_CACHE.with(|c| match c.borrow().as_ref() {
+        Some((cw, ch, img)) if *cw == wi && *ch == hi => Some(img.clone()),
+        _ => None,
+    });
+
+    let image = match cached {
+        Some(img) => Some(img),
+        None => {
+            let built = build_inner_glow(canvas, w, h, wi, hi);
+            if let Some(ref img) = built {
+                GLOW_CACHE.with(|c| *c.borrow_mut() = Some((wi, hi, img.clone())));
+            }
+            built
+        }
+    };
+
+    match image {
+        Some(img) => {
+            canvas.draw_image(&img, (0.0, 0.0), None);
+        }
+        // No offscreen available — draw straight (e.g. a non-GPU canvas).
+        None => draw_inner_glow_direct(canvas, w, h),
+    }
+}
+
+/// Bake the inner glow (clip included) into a transparent per-size sprite.
+fn build_inner_glow(canvas: &Canvas, w: f32, h: f32, wi: i32, hi: i32) -> Option<Image> {
+    let info = ImageInfo::new((wi, hi), ColorType::RGBA8888, AlphaType::Premul, None);
+    let mut surface = canvas.new_surface(&info, None)?;
+    let c = surface.canvas();
+    c.clear(Color::TRANSPARENT);
+    draw_inner_glow_direct(c, w, h);
+    Some(surface.image_snapshot())
+}
+
+/// The actual glow draw: a blurred stroke clipped to the card rrect.
+fn draw_inner_glow_direct(canvas: &Canvas, w: f32, h: f32) {
+    let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
+    let card_rrect_ = RRect::new_rect_xy(card, CARD_RADIUS, CARD_RADIUS);
     let saved = canvas.save();
     canvas.clip_rrect(card_rrect_, Some(ClipOp::Intersect), Some(true));
     let mut inner_glow = Paint::default();

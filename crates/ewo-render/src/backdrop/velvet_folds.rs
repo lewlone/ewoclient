@@ -27,12 +27,59 @@
 //! negligible additional movement; the silky-fold motion comes from the
 //! gradient drift transforms below, not the noise).
 
+use std::cell::RefCell;
+
 use ewo_core::{OkLch, Settings};
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, shaders, BlendMode, Canvas, Color4f, ColorChannel, Matrix,
-    Paint, Point, Rect, TileMode,
+    gradient_shader, image_filters, shaders, BlendMode, Canvas, Color4f, ColorChannel, ImageFilter,
+    Matrix, Paint, Point, Rect, TileMode,
 };
+
+thread_local! {
+    /// The layer's filter chain — `blur(40px) → displacement_map(scale=28,
+    /// src=fractalNoise)` — is *fully static*: fixed seed/frequencies/octaves,
+    /// fixed displacement scale, fixed blur sigma, and independent of canvas
+    /// size, time, and settings. Building it per frame churned a fresh
+    /// `SkPerlinNoiseShader` every frame, whose precomputed permutation/noise
+    /// tables live in plain C++ heap that is invisible to Skia's resource and
+    /// font caches — i.e. foreign memory that accumulated at ~500 fps. Build
+    /// it once and clone the refcounted handle each frame (a cheap refcount
+    /// bump). This was the dominant per-frame foreign-memory leak.
+    static VELVET_FILTER: RefCell<Option<ImageFilter>> = const { RefCell::new(None) };
+}
+
+/// The cached, static velvet-folds image filter (see `VELVET_FILTER`).
+fn velvet_filter() -> ImageFilter {
+    VELVET_FILTER.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(build_velvet_filter)
+            .clone()
+    })
+}
+
+fn build_velvet_filter() -> ImageFilter {
+    // blur(40px) → displacement(scale=28, src=noise).
+    //
+    // Mirrors `filter: blur(40px) url(#vfTurb)` where `vfTurb` is
+    //   feTurbulence type=fractalNoise baseFrequency="0.007 0.011" octaves=2 seed=4
+    //   feDisplacementMap in=SourceGraphic scale=28
+    let blur = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None)
+        .expect("velvet-folds blur filter");
+
+    let noise = shaders::fractal_noise((0.007, 0.011), 2, 4.0, None)
+        .expect("fractal noise shader");
+    let noise_filter = image_filters::shader(noise, None).expect("noise → filter");
+
+    image_filters::displacement_map(
+        (ColorChannel::R, ColorChannel::G),
+        28.0,
+        Some(noise_filter),
+        Some(blur),
+        None,
+    )
+    .expect("displacement_map filter")
+}
 
 struct Fold {
     /// Radial-gradient size as % of layer (rx, ry).
@@ -85,26 +132,8 @@ fn folds(warmth: f32) -> [Fold; 3] {
 }
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32, settings: &Settings) {
-    // Layer-level filter chain: blur(40px) → displacement(scale=28, src=noise).
-    //
-    // Mirrors `filter: blur(40px) url(#vfTurb)` where `vfTurb` is
-    //   feTurbulence type=fractalNoise baseFrequency="0.007 0.011" octaves=2 seed=4
-    //   feDisplacementMap in=SourceGraphic scale=28
-    let blur = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None)
-        .expect("velvet-folds blur filter");
-
-    let noise = shaders::fractal_noise((0.007, 0.011), 2, 4.0, None)
-        .expect("fractal noise shader");
-    let noise_filter = image_filters::shader(noise, None).expect("noise → filter");
-
-    let displaced = image_filters::displacement_map(
-        (ColorChannel::R, ColorChannel::G),
-        28.0,
-        Some(noise_filter),
-        Some(blur),
-        None,
-    )
-    .expect("displacement_map filter");
+    // Layer-level filter chain (static — built once, cloned per frame).
+    let displaced = velvet_filter();
 
     let mut layer_paint = Paint::default();
     layer_paint.set_image_filter(displaced);

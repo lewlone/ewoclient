@@ -34,6 +34,18 @@ pub struct FontStore {
     /// across the whole UI; the cache fits them all + stays at a stable
     /// size forever.
     fraunces_cache: RefCell<HashMap<FrauncesAxisKey, Typeface>>,
+    /// Same story for italic Newsreader (`opsz`/`wght`). The main-menu tagline
+    /// + menu-item sublabels built one of these per frame via
+    /// `clone_with_arguments`, leaking foreign FreeType memory exactly like the
+    /// pre-cache Fraunces path did. A handful of distinct (size, weight) combos.
+    newsreader_italic_cache: RefCell<HashMap<NewsreaderAxisKey, Typeface>>,
+}
+
+/// Quantised cache key for an italic-Newsreader variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct NewsreaderAxisKey {
+    opsz: i32,
+    weight: i32,
 }
 
 /// Quantised cache key for a Fraunces variant — values map to fixed-point
@@ -75,6 +87,7 @@ impl FontStore {
             jetbrains_mono,
             has_jetbrains_mono,
             fraunces_cache: RefCell::new(HashMap::new()),
+            newsreader_italic_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -148,6 +161,41 @@ impl FontStore {
     /// upright cut (`newsreader`) skips italics in `try_load_family`.
     pub fn newsreader_italic_typeface(&self) -> &Typeface {
         &self.newsreader_italic
+    }
+
+    /// Build an italic Newsreader `Font` with explicit `opsz`/`wght` axes,
+    /// caching the underlying variable-font `Typeface` the same way
+    /// `fraunces_axes` does. `opsz` tracks the pixel size (CSS
+    /// `font-optical-sizing: auto`). Calling `clone_with_arguments` per frame
+    /// here was a foreign-memory leak on the main menu.
+    pub fn newsreader_italic_axes(&self, size: f32, weight: f32) -> Font {
+        let key = NewsreaderAxisKey {
+            opsz: (size * 100.0).round() as i32,
+            weight: (weight * 100.0).round() as i32,
+        };
+
+        // Fast path — variant already built for this (size, weight).
+        if let Some(tf) = self.newsreader_italic_cache.borrow().get(&key) {
+            let mut f = Font::new(tf.clone(), size);
+            f.set_subpixel(true);
+            return f;
+        }
+
+        // Slow path — build the variant once and cache it.
+        let coords = [
+            Coordinate { axis: FourByteTag::from_chars('o', 'p', 's', 'z'), value: size },
+            Coordinate { axis: FourByteTag::from_chars('w', 'g', 'h', 't'), value: weight },
+        ];
+        let pos = VariationPosition { coordinates: &coords };
+        let args = FontArguments::new().set_variation_design_position(pos);
+        let tf = self
+            .newsreader_italic
+            .clone_with_arguments(&args)
+            .unwrap_or_else(|| self.newsreader_italic.clone());
+        let mut f = Font::new(tf.clone(), size);
+        f.set_subpixel(true);
+        self.newsreader_italic_cache.borrow_mut().insert(key, tf);
+        f
     }
 }
 

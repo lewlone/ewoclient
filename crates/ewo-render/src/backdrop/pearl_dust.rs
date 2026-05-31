@@ -16,8 +16,10 @@ use ewo_core::Settings;
 use rand::Rng;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, BlendMode, Canvas, Color4f, Paint, Point, Rect, TileMode,
+    gradient_shader, AlphaType, BlendMode, Canvas, Color, Color4f, ColorType, FilterMode, Image,
+    ImageInfo, Paint, Point, Rect, TileMode,
 };
+use std::cell::RefCell;
 use std::f32::consts::PI;
 
 // Bumped above the prototype's CSS-derived 90 / 60 so the bottom shimmer
@@ -27,6 +29,11 @@ use std::f32::consts::PI;
 // pre-tuning mask-blur halo at lower visual fidelity.
 const AIR_BASE: usize = 110;
 const SETTLED_BASE: usize = 80;
+
+/// Resolution of the baked airborne-halo sprite. A soft radial gradient has no
+/// high-frequency detail, so this downscales to the ~10–25px on-screen halos
+/// with linear sampling without aliasing.
+const HALO_SPRITE_PX: i32 = 64;
 
 #[derive(Clone, Copy)]
 struct Airborne {
@@ -60,6 +67,13 @@ pub struct PearlDust {
     width: f32,
     height: f32,
     motion_speed: f32,
+    /// The airborne halo, baked once into a GPU sprite at reference alpha 1.0.
+    /// Stamped per mote with a per-mote `set_alpha_f`, which is mathematically
+    /// identical to building a fresh 3-stop radial gradient per mote (the old
+    /// path) but allocates nothing per frame — 110 gradient shaders/frame also
+    /// churned Skia's gradient-LUT cache. Size-independent, so it survives
+    /// resize. `RefCell` so it can be built lazily inside `draw(&self)`.
+    halo_sprite: RefCell<Option<Image>>,
 }
 
 impl PearlDust {
@@ -80,6 +94,7 @@ impl PearlDust {
             width,
             height,
             motion_speed: settings.motion_speed,
+            halo_sprite: RefCell::new(None),
         }
     }
 
@@ -168,14 +183,21 @@ impl PearlDust {
             canvas.draw_circle((s.x + push, s.y + dy), s.r, &paint);
         }
 
-        // Airborne motes — render each as a 3-stop radial gradient (the
-        // prototype's exact JS form). Faster than mask-blur halos and a
-        // closer match to the browser-canvas reference.
-        //
-        // Each mote = 1 draw call (gradient circle at halo radius) + 1
-        // tiny core circle. Previously: 1 mask-blur draw + 1 core. The
-        // gradient shader path replaces the offscreen blur with an inline
-        // shader pass, shaving ~30-50% off the per-mote cost.
+        // Airborne motes — stamp the baked halo sprite (built once) modulated
+        // by the per-mote alpha, then the bright core on top. Identical pixels
+        // to the old per-mote 3-stop gradient, but with zero per-frame shader
+        // allocation. Built lazily here so we have a GPU canvas to render into.
+        {
+            let mut slot = self.halo_sprite.borrow_mut();
+            if slot.is_none() {
+                *slot = build_halo_sprite(canvas);
+            }
+        }
+        let halo_sprite = self.halo_sprite.borrow().clone();
+
+        let mut halo_paint = Paint::default();
+        let mut core = Paint::default();
+        core.set_anti_alias(true);
         for m in &self.airborne {
             let shine = (m.shine_phase.sin() + 1.0) * 0.5; // 0..1
             let alpha = 0.18 + shine * 0.50;
@@ -183,52 +205,29 @@ impl PearlDust {
             let halo_radius = r * 4.0;
 
             // Skip tiny halos — for very small motes the halo is barely a
-            // single pixel and the core alone reads correctly. Saves an
-            // extra ~30% of the airborne draws when many small motes spawn.
+            // single pixel and the core alone reads correctly.
             if halo_radius >= 2.0 {
-                if let Some(shader) = gradient_shader::radial(
-                    Point::new(m.x, m.y),
-                    halo_radius,
-                    gradient_shader::GradientShaderColors::ColorsInSpace(
-                        &[
-                            Color4f::new(
-                                250.0 / 255.0,
-                                240.0 / 255.0,
-                                242.0 / 255.0,
-                                alpha * 0.55,
-                            ),
-                            Color4f::new(
-                                229.0 / 255.0,
-                                184.0 / 255.0,
-                                197.0 / 255.0,
-                                alpha * 0.25,
-                            ),
-                            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
-                        ],
+                if let Some(sprite) = halo_sprite.as_ref() {
+                    halo_paint.set_alpha_f(alpha);
+                    let dst = Rect::from_xywh(
+                        m.x - halo_radius,
+                        m.y - halo_radius,
+                        halo_radius * 2.0,
+                        halo_radius * 2.0,
+                    );
+                    canvas.draw_image_rect_with_sampling_options(
+                        sprite,
                         None,
-                    ),
-                    Some(&[0.0_f32, 0.40, 1.0][..]),
-                    TileMode::Clamp,
-                    None,
-                    None,
-                ) {
-                    let mut halo = Paint::default();
-                    halo.set_anti_alias(true);
-                    halo.set_shader(shader);
-                    canvas.draw_circle((m.x, m.y), halo_radius, &halo);
+                        dst,
+                        FilterMode::Linear,
+                        &halo_paint,
+                    );
                 }
             }
 
             // Core: bright pearl
-            let mut core = Paint::default();
-            core.set_anti_alias(true);
             core.set_color4f(
-                Color4f::new(
-                    250.0 / 255.0,
-                    240.0 / 255.0,
-                    242.0 / 255.0,
-                    alpha,
-                ),
+                Color4f::new(250.0 / 255.0, 240.0 / 255.0, 242.0 / 255.0, alpha),
                 None,
             );
             canvas.draw_circle((m.x, m.y), r, &core);
@@ -236,6 +235,49 @@ impl PearlDust {
 
         canvas.restore_to_count(saved);
     }
+}
+
+/// Bake the airborne-halo 3-stop radial gradient into a square GPU sprite at
+/// reference alpha 1.0. Drawn once; `draw` stamps it per mote with
+/// `set_alpha_f`. Returns `None` if an offscreen surface can't be allocated
+/// (e.g. a non-GPU canvas), in which case `draw` simply skips halos.
+fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
+    let info = ImageInfo::new(
+        (HALO_SPRITE_PX, HALO_SPRITE_PX),
+        ColorType::RGBA8888,
+        AlphaType::Premul,
+        None,
+    );
+    let mut surface = canvas.new_surface(&info, None)?;
+    let center = HALO_SPRITE_PX as f32 * 0.5;
+    let radius = center;
+
+    // 3-stop radial: warm-white core → rose mid → transparent edge, at the
+    // reference alphas the old per-mote path multiplied by `alpha`.
+    let shader = gradient_shader::radial(
+        Point::new(center, center),
+        radius,
+        gradient_shader::GradientShaderColors::ColorsInSpace(
+            &[
+                Color4f::new(250.0 / 255.0, 240.0 / 255.0, 242.0 / 255.0, 0.55),
+                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.25),
+                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
+            ],
+            None,
+        ),
+        Some(&[0.0_f32, 0.40, 1.0][..]),
+        TileMode::Clamp,
+        None,
+        None,
+    )?;
+
+    let c = surface.canvas();
+    c.clear(Color::TRANSPARENT);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_shader(shader);
+    c.draw_circle((center, center), radius, &paint);
+    Some(surface.image_snapshot())
 }
 
 fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32, speed: f32) -> Airborne {
