@@ -80,7 +80,8 @@ const DEV_EWO_LOADER_URL: &str =
 
 // Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
 // cursor positions from window-local to card-local for widget hit-testing.
-const CARD_INSET_LP: f64 = 28.0;
+// 0 — the card fills the window (see app_window::CARD_INSET).
+const CARD_INSET_LP: f64 = 0.0;
 
 /// Action triggered by clicking a sidebar menu item on the main menu.
 #[derive(Copy, Clone, Debug)]

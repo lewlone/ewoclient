@@ -29,7 +29,11 @@ use crate::text::{FontStore, HoverGlowState};
 use crate::widgets::VbtnState;
 
 /// CSS card inset — distance from window edge to card edge.
-pub const CARD_INSET: f32 = 28.0;
+// 0 — the card fills the whole (transparent) window, so the window's edges ARE
+// the card's edges. (Was 28px, which left an invisible margin that still
+// counted as the window for resize/drag — the OS thought the edge was out in
+// empty space. No outer drop shadow now, since there's no margin to hold it.)
+pub const CARD_INSET: f32 = 0.0;
 /// Card corner radius.
 pub const CARD_RADIUS: f32 = 22.0;
 
@@ -204,28 +208,9 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
 
     let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
 
-    // Soft, NEUTRAL float shadow — like a native window drop shadow. The
-    // prototype's warm berry glow read as an out-of-place coloured halo when
-    // another app sits behind the transparent window. Two black layers: a wide
-    // ambient one + a tighter contact one.
-    draw_outer_shadow(
-        canvas,
-        &card,
-        CARD_RADIUS,
-        (0.0, 14.0),
-        60.0,
-        -14.0,
-        Color::from_argb((0.42 * 255.0) as u8, 0, 0, 0),
-    );
-    draw_outer_shadow(
-        canvas,
-        &card,
-        CARD_RADIUS,
-        (0.0, 4.0),
-        22.0,
-        -8.0,
-        Color::from_argb((0.38 * 255.0) as u8, 0, 0, 0),
-    );
+    // No outer drop shadow — the card fills the window edge-to-edge, so there
+    // is no margin to render one into. Edge definition comes from the inset
+    // rose hairline rim in `draw_chrome_inner`.
 
     // Card body — fills with --bg-core black so screen-blend layers on top
     // have a defined source.
@@ -265,6 +250,9 @@ pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
     canvas.restore_to_count(saved);
 }
 
+// Kept for a possible return of a window drop shadow (would need a margin —
+// i.e. a small CARD_INSET — plus hit-testing that grabs the card edge).
+#[allow(dead_code)]
 fn draw_outer_shadow(
     canvas: &Canvas,
     card: &Rect,
