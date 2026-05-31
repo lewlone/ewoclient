@@ -385,13 +385,12 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     // bleed. `respect_ctm = true` keeps the blur DPI-correct on HiDPI.
     let mut shadow = Paint::default();
     shadow.set_anti_alias(true);
-    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.5), None);
-    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 24.0, true));
-    let shadow_rect = bounds.with_offset((0.0, 6.0));
-    canvas.draw_rrect(
-        RRect::new_rect_xy(shadow_rect, MENU_RADIUS, MENU_RADIUS),
-        &shadow,
-    );
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.18), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 32.0, true));
+    // No vertical offset — a symmetric, faint halo. An offset shadow pooled
+    // darkly below the rounded bottom corners, which read as square notches
+    // against the lighter settings panel behind the dropdown.
+    canvas.draw_rrect(rrect, &shadow);
 
     let mut bloom = Paint::default();
     bloom.set_anti_alias(true);
