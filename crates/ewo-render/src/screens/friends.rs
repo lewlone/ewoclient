@@ -296,7 +296,10 @@ pub fn draw_friends(
     sub_paint.set_anti_alias(true);
     sub_paint.set_color(TEXT_MAUVE);
     let (_, sm) = sub_font.metrics();
-    let sub_baseline = layout.header_top + hm.descent + 8.0 + (-sm.ascent);
+    // Below the heading's full visual height (ascent + descent), not just its
+    // descent — otherwise the subtitle is drawn ~one cap-height too high and
+    // overlaps the heading.
+    let sub_baseline = layout.header_top + (-hm.ascent) + hm.descent + 8.0 + (-sm.ascent);
     canvas.draw_str(
         match view {
             FriendsViewState::NotLinked => "link the launcher to chickenedin to see who's online.",

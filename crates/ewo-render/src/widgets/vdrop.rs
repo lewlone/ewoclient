@@ -19,7 +19,7 @@
 
 use ewo_core::{CubicBezier, Settings};
 use skia_safe::{
-    gradient_shader, image_filters, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint,
+    gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint,
     PaintStyle, Path, Point, RRect, Rect, TileMode,
 };
 
@@ -282,10 +282,6 @@ fn draw_head_label_and_caret(
 /// `MENU_MAX_VISIBLE_H` further bounds the height so a 9-option list
 /// doesn't dominate the screen even on tall windows.
 pub fn menu_layout(head_bounds: Rect, rows: usize, card_h: f32) -> (Rect, bool) {
-    /// Minimum acceptable downward space before considering a flip-up. ~5
-    /// rows visible. Below this, opening down would feel cramped.
-    const MIN_DOWN_SPACE: f32 = 5.0 * ROW_HEIGHT;
-
     let menu_w = head_bounds.width().max(220.0);
     let inner_h = (rows as f32) * ROW_HEIGHT;
     let desired_h = (inner_h + 2.0 * MENU_PAD).min(MENU_MAX_VISIBLE_H);
@@ -293,9 +289,12 @@ pub fn menu_layout(head_bounds: Rect, rows: usize, card_h: f32) -> (Rect, bool) 
     let space_below = (card_h - 12.0 - (head_bounds.bottom + MENU_GAP)).max(0.0);
     let space_above = (head_bounds.top - 12.0 - MENU_GAP).max(0.0);
 
-    // Only flip up if the down position is genuinely too small AND there's
-    // appreciably more room above. Default behavior is open-down + scroll.
-    let flip_up = space_below < MIN_DOWN_SPACE && space_above > space_below + 60.0;
+    // Open down by default. Only flip up when the menu genuinely doesn't fit
+    // below AND there's meaningfully more room above. (The old heuristic
+    // flipped whenever fewer than 5 rows fit below, so a 4-row menu near the
+    // bottom — e.g. the Graphics → Theme dropdown — flipped up even though it
+    // had room to open down.)
+    let flip_up = space_below < desired_h && space_above > space_below + 40.0;
 
     let (top, h) = if flip_up {
         let h = desired_h.min(space_above);
@@ -521,46 +520,25 @@ fn draw_menu_rows(
         let row_rect = Rect::from_ltrb(row_left, y, row_right, y + ROW_HEIGHT);
         let row_rrect = RRect::new_rect_xy(row_rect, 10.0, 10.0);
 
-        // Per-row stagger reveal (CSS `vdrop-row-in`):
-        //   delay = i * 50ms, duration = 400ms silk
-        //   from: opacity 0, translateY(-4), blur(3px)
-        //   to:   opacity 1, translateY(0),  blur(0)
-        // After `delay + duration` the row settles at rest (no layer
-        // overhead). Closing the menu handles fade through the outer
-        // layer's alpha — per-row rest is fine.
+        // Per-row stagger reveal (CSS `vdrop-row-in`): opacity 0→1 +
+        // translateY(-4→0). The CSS also blurs 3px→0 on entrance, but we
+        // deliberately skip that: non-negotiable #3 forbids blurring
+        // text-bearing surfaces during entrance, and the square-bounded
+        // (Decal) blur layer left a visible boxy artifact on the lower rows
+        // while the menu was still animating in.
         let local = state.time_open - (i as f32) * ROW_STAGGER_S;
         let row_layer_handle = if state.open && local < ROW_REVEAL_S {
             let t = (local / ROW_REVEAL_S).clamp(0.0, 1.0);
             let eased = CubicBezier::SILK.eval(t.max(0.0));
             let alpha = if local < 0.0 { 0.0 } else { eased };
             let dy = (1.0 - eased) * -4.0; // -4 → 0
-            let blur_sigma = (1.0 - eased) * 1.5; // 3px → 0 (CSS blur ÷ 2)
-            // `save_layer_alpha_f` doesn't accept a filter, so for the blur
-            // pass we use a full SaveLayerRec when blur > 0.
             let bounds_for_layer = Rect::from_xywh(
                 row_left - 4.0,
                 y - 4.0,
                 row_right - row_left + 8.0,
                 ROW_HEIGHT + 8.0,
             );
-            let s = if blur_sigma > 0.05 {
-                let mut p = Paint::default();
-                p.set_alpha_f(alpha);
-                if let Some(blur) = image_filters::blur(
-                    (blur_sigma, blur_sigma),
-                    TileMode::Decal,
-                    None,
-                    None,
-                ) {
-                    p.set_image_filter(blur);
-                }
-                let rec = skia_safe::canvas::SaveLayerRec::default()
-                    .bounds(&bounds_for_layer)
-                    .paint(&p);
-                canvas.save_layer(&rec)
-            } else {
-                canvas.save_layer_alpha_f(bounds_for_layer, alpha)
-            };
+            let s = canvas.save_layer_alpha_f(bounds_for_layer, alpha);
             canvas.translate((0.0, dy));
             Some(s)
         } else {

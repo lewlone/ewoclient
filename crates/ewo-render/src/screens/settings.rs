@@ -1887,7 +1887,15 @@ fn draw_keybinds_tab(
     );
     canvas.restore();
 
-    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
+    // Scrollbar sits in the panel's right inner-padding gutter, clear of the
+    // row widgets (toggles/sliders end at list_region.right = content_right).
+    let sb_region = Rect::from_ltrb(
+        layout.list_region.left,
+        layout.list_region.top,
+        layout.list_region.right + 22.0,
+        layout.list_region.bottom,
+    );
+    draw_scrollbar(canvas, sb_region, prefs.settings_scroll, layout.content_h);
 }
 
 /// Draw one keybind row — action label, module eyebrow, and the chord button.
@@ -2103,7 +2111,15 @@ fn draw_modules_tab(
     }
     canvas.restore();
 
-    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
+    // Scrollbar sits in the panel's right inner-padding gutter, clear of the
+    // row widgets (toggles/sliders end at list_region.right = content_right).
+    let sb_region = Rect::from_ltrb(
+        layout.list_region.left,
+        layout.list_region.top,
+        layout.list_region.right + 22.0,
+        layout.list_region.bottom,
+    );
+    draw_scrollbar(canvas, sb_region, prefs.settings_scroll, layout.content_h);
 }
 
 /// Draw one Modules-tab row — name, description, on/off toggle, and (for a
@@ -2471,7 +2487,15 @@ fn draw_pvp_utils_tab(
 
     canvas.restore();
 
-    draw_scrollbar(canvas, layout.list_region, prefs.settings_scroll, layout.content_h);
+    // Scrollbar sits in the panel's right inner-padding gutter, clear of the
+    // row widgets (toggles/sliders end at list_region.right = content_right).
+    let sb_region = Rect::from_ltrb(
+        layout.list_region.left,
+        layout.list_region.top,
+        layout.list_region.right + 22.0,
+        layout.list_region.bottom,
+    );
+    draw_scrollbar(canvas, sb_region, prefs.settings_scroll, layout.content_h);
 }
 
 /// A small tracked-mono section header inside the PvP tab.

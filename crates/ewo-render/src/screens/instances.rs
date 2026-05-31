@@ -99,8 +99,8 @@ impl SortMode {
         match self {
             SortMode::Newest => "newest first",
             SortMode::Oldest => "oldest first",
-            SortMode::AlphaAsc => "A → Z",
-            SortMode::AlphaDesc => "Z → A",
+            SortMode::AlphaAsc => "A–Z",
+            SortMode::AlphaDesc => "Z–A",
             SortMode::RecentlyPlayed => "recently played",
         }
     }
@@ -580,14 +580,27 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
     // breathing room.
     let head_y = 58.0;
 
-    // Left: back button "← Main menu"
+    // Left: back button — a vector left-chevron + "Main menu". The "←" glyph
+    // isn't in the serif display font (it renders as a tofu box).
     let back_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
     let mut back_paint = Paint::default();
     back_paint.set_anti_alias(true);
     back_paint.set_color(TEXT_MID_PEARL);
     let (_, bm) = back_font.metrics();
     let back_baseline = head_y + (-bm.ascent);
-    canvas.draw_str("← Main menu", (LIST_LEFT_PAD, back_baseline), &back_font, &back_paint);
+    let cap = if bm.cap_height > 0.0 { bm.cap_height } else { 14.0 };
+    let chev_cy = back_baseline - cap * 0.5;
+    let mut chev = Paint::default();
+    chev.set_anti_alias(true);
+    chev.set_style(PaintStyle::Stroke);
+    chev.set_stroke_width(1.8);
+    chev.set_color(TEXT_MID_PEARL);
+    let half = 5.0;
+    let tip_x = LIST_LEFT_PAD + 1.0;
+    let back_x = tip_x + half * 0.72;
+    canvas.draw_line((back_x, chev_cy - half), (tip_x, chev_cy), &chev);
+    canvas.draw_line((back_x, chev_cy + half), (tip_x, chev_cy), &chev);
+    canvas.draw_str("Main menu", (LIST_LEFT_PAD + 16.0, back_baseline), &back_font, &back_paint);
 
     // Right: screen-eyebrow "INSTANCES"
     let eyebrow_font = fonts.jetbrains_mono(10.0);

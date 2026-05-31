@@ -22,6 +22,29 @@ use skia_safe::{Canvas, Color, Color4f, Font, Paint, PaintStyle, Rect};
 use crate::text::{self, FontStore, HoverGlowState};
 use crate::widgets::VbtnState;
 
+/// Draw a right-pointing chevron (">") from two strokes, with `tip_x` the
+/// rightmost point. Used in place of "→"/"▸" glyphs — the bundled serif
+/// display fonts don't carry those arrows, so they render as tofu boxes.
+fn draw_chevron_right(
+    canvas: &Canvas,
+    tip_x: f32,
+    cy: f32,
+    half_h: f32,
+    stroke: f32,
+    color: Color,
+    alpha: f32,
+) {
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_style(PaintStyle::Stroke);
+    p.set_stroke_width(stroke);
+    p.set_color(color);
+    p.set_alpha_f(alpha);
+    let back_x = tip_x - half_h * 0.72;
+    canvas.draw_line((back_x, cy - half_h), (tip_x, cy), &p);
+    canvas.draw_line((back_x, cy + half_h), (tip_x, cy), &p);
+}
+
 // CSS .screen-asym padding + margins
 const PAD_LEFT: f32 = 80.0;
 const PAD_TOP: f32 = 72.0;
@@ -152,17 +175,22 @@ fn draw_server_widget(
         join_paint.set_anti_alias(true);
         join_paint.set_color(ACCENT_ROSE);
         join_paint.set_alpha_f(if view.hovered { 1.0 } else { 0.6 });
-        let label = "JOIN ▸";
+        // "JOIN" + a vector chevron (the "▸" glyph isn't in these fonts).
+        let label = "JOIN";
         let lw = measure_tracked_width(&join_font, label, 0.18);
+        let chevron_gap = 7.0;
+        let chevron_tip = bounds.right() - pad;
         draw_tracked(
             canvas,
             label,
-            bounds.right() - pad - lw,
+            chevron_tip - chevron_gap - lw,
             eyebrow_baseline,
             &join_font,
             &join_paint,
             0.18,
         );
+        let chev_alpha = if view.hovered { 1.0 } else { 0.6 };
+        draw_chevron_right(canvas, chevron_tip, eyebrow_baseline - 3.0, 3.5, 1.3, ACCENT_ROSE, chev_alpha);
     }
 
     // Status line.
@@ -390,9 +418,6 @@ fn draw_menu_items(
     let menu_left = layout.menu_left;
     let menu_right = layout.menu_right;
 
-    // Caret font (Fraunces 22, accent rose).
-    let caret_font = fonts.fraunces_axes(22.0, 50.0, 0.0, 300.0, None);
-
     for (i, item) in MENU_ITEMS.iter().enumerate() {
         let item_rect = layout.item_rects[i];
         let state = &states[i];
@@ -470,25 +495,14 @@ fn draw_menu_items(
         draw_tracked(canvas, item.sub, baseline_x, sub_baseline, &sub_font, &sub_paint, 0.22);
 
         // Caret on the right — opacity 0 → 1, transform translateX(-6) → 0.
+        // Drawn as a vector chevron rather than a "→" glyph: the serif
+        // display fonts don't carry the arrow and render it as a tofu box.
         if hover > 0.001 {
-            let caret = "→";
-            let mut caret_paint = Paint::default();
-            caret_paint.set_anti_alias(true);
-            caret_paint.set_color(if item.muted { TEXT_MAUVE } else { ACCENT_ROSE });
-            caret_paint.set_alpha_f(hover);
-            let (caret_advance, _) = caret_font.measure_str(caret, Some(&caret_paint));
-            let (_, cm) = caret_font.metrics();
+            let color = if item.muted { TEXT_MAUVE } else { ACCENT_ROSE };
             let translate_x = -6.0 * (1.0 - hover);
-            let caret_baseline = item_rect.top + item_rect.height() * 0.5 + cm.cap_height * 0.5;
-            canvas.draw_str(
-                caret,
-                (
-                    menu_right - caret_advance - 4.0 + translate_x,
-                    caret_baseline,
-                ),
-                &caret_font,
-                &caret_paint,
-            );
+            let cy = item_rect.top + item_rect.height() * 0.5;
+            let tip_x = menu_right - 5.0 + translate_x;
+            draw_chevron_right(canvas, tip_x, cy, 6.0, 1.8, color, hover);
         }
 
         // Hairline divider at the bottom of each item except the last.
