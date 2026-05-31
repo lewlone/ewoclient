@@ -39,6 +39,11 @@ serde_json.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true
 
+# Embeds the Windows app icon (assets/icon.ico) into the .exe via build.rs.
+# Only invoked when the .ico exists, so the build never depends on the art.
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
 # Linux (Hyprland / wlroots Wayland) deps are added in step 1 when we wire
 # the wayland.rs platform implementation. See CLAUDE.md.
 

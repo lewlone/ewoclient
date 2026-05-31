@@ -3,6 +3,11 @@
 //! Build-sequence steps 4 + 5 in flight: pearl dust particle system + velvet
 //! folds layer. See `CLAUDE.md` for the full build sequence.
 
+// Release builds are a GUI app — no console window pops up when launched from
+// a shortcut / Explorer. Debug builds keep the console so `cargo run` still
+// shows the env_logger output.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
