@@ -204,26 +204,27 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
 
     let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
 
-    // Outer berry glow: 0 40 120 -20 rgba(180, 100, 140, 0.35)
+    // Soft, NEUTRAL float shadow — like a native window drop shadow. The
+    // prototype's warm berry glow read as an out-of-place coloured halo when
+    // another app sits behind the transparent window. Two black layers: a wide
+    // ambient one + a tighter contact one.
     draw_outer_shadow(
         canvas,
         &card,
         CARD_RADIUS,
-        (0.0, 40.0),
-        120.0,
-        -20.0,
-        Color::from_argb((0.35 * 255.0) as u8, 180, 100, 140),
+        (0.0, 14.0),
+        60.0,
+        -14.0,
+        Color::from_argb((0.42 * 255.0) as u8, 0, 0, 0),
     );
-
-    // Outer black drop: 0 12 40 -8 rgba(0, 0, 0, 0.8)
     draw_outer_shadow(
         canvas,
         &card,
         CARD_RADIUS,
-        (0.0, 12.0),
-        40.0,
+        (0.0, 4.0),
+        22.0,
         -8.0,
-        Color::from_argb((0.8 * 255.0) as u8, 0, 0, 0),
+        Color::from_argb((0.38 * 255.0) as u8, 0, 0, 0),
     );
 
     // Card body — fills with --bg-core black so screen-blend layers on top
