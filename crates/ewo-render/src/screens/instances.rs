@@ -564,8 +564,9 @@ pub fn draw_instances(
     launch_button: &VbtnState,
     prefs: &InstancePrefs,
     instances: &[Instance],
+    back_link_hover: bool,
 ) {
-    draw_screen_head(canvas, fonts, w);
+    draw_screen_head(canvas, fonts, w, back_link_hover);
     draw_list(canvas, fonts, h, time, prefs, instances);
     draw_detail(canvas, fonts, w, h, time, settings, launch_button, prefs, instances);
 }
@@ -574,18 +575,24 @@ pub fn draw_instances(
 // Screen head — back button + screen-eyebrow
 // ────────────────────────────────────────────────────────────────────────
 
-fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
+fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     // CSS: `.screen-head { padding: 28px 44px; border-bottom: 1px hairline }`
     // Sits under the tab bar (20-44 px region). We start at y=58 to leave
     // breathing room.
     let head_y = 58.0;
 
     // Left: back button — a vector left-chevron + "Main menu". The "←" glyph
-    // isn't in the serif display font (it renders as a tofu box).
+    // isn't in the serif display font (it renders as a tofu box). Brightens to
+    // pearl + glows on hover.
+    let back_color = if hover {
+        Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)
+    } else {
+        TEXT_MID_PEARL
+    };
     let back_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
     let mut back_paint = Paint::default();
     back_paint.set_anti_alias(true);
-    back_paint.set_color(TEXT_MID_PEARL);
+    back_paint.set_color(back_color);
     let (_, bm) = back_font.metrics();
     let back_baseline = head_y + (-bm.ascent);
     let cap = if bm.cap_height > 0.0 { bm.cap_height } else { 14.0 };
@@ -594,12 +601,21 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
     chev.set_anti_alias(true);
     chev.set_style(PaintStyle::Stroke);
     chev.set_stroke_width(1.8);
-    chev.set_color(TEXT_MID_PEARL);
+    chev.set_color(back_color);
     let half = 5.0;
     let tip_x = LIST_LEFT_PAD + 1.0;
     let back_x = tip_x + half * 0.72;
     canvas.draw_line((back_x, chev_cy - half), (tip_x, chev_cy), &chev);
     canvas.draw_line((back_x, chev_cy + half), (tip_x, chev_cy), &chev);
+    if hover {
+        crate::text::draw_glow_str(
+            canvas,
+            "Main menu",
+            (LIST_LEFT_PAD + 16.0, back_baseline),
+            &back_font,
+            0.85,
+        );
+    }
     canvas.draw_str("Main menu", (LIST_LEFT_PAD + 16.0, back_baseline), &back_font, &back_paint);
 
     // Right: screen-eyebrow "INSTANCES"

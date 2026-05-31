@@ -633,8 +633,9 @@ pub fn draw_settings(
     account: AccountView<'_>,
     profiles: ProfileView<'_>,
     keybinds: KeybindView<'_>,
+    back_link_hover: bool,
 ) {
-    draw_screen_head(canvas, fonts, w);
+    draw_screen_head(canvas, fonts, w, back_link_hover);
     draw_sidebar(canvas, fonts, h, active, prefs.hovered_sidebar_tab);
     draw_panel(
         canvas, fonts, w, h, time, settings, active, prefs, account, profiles, keybinds,
@@ -645,11 +646,16 @@ pub fn draw_settings(
 // Screen head (back button + eyebrow). Reuses Instances' visual treatment.
 // ────────────────────────────────────────────────────────────────────────
 
-fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
+fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     let head_y = 58.0;
 
     let back_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
-    let back_color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
+    // Brighten to pearl on hover (paired with the glow below).
+    let back_color = if hover {
+        Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)
+    } else {
+        Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)
+    };
     let mut back_paint = Paint::default();
     back_paint.set_anti_alias(true);
     back_paint.set_color(back_color);
@@ -669,6 +675,15 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
     let chev_back_x = tip_x + half * 0.72;
     canvas.draw_line((chev_back_x, chev_cy - half), (tip_x, chev_cy), &chev);
     canvas.draw_line((chev_back_x, chev_cy + half), (tip_x, chev_cy), &chev);
+    if hover {
+        crate::text::draw_glow_str(
+            canvas,
+            "Main menu",
+            (BODY_PAD_X + 16.0, back_baseline),
+            &back_font,
+            0.85,
+        );
+    }
     canvas.draw_str("Main menu", (BODY_PAD_X + 16.0, back_baseline), &back_font, &back_paint);
 
     let eyebrow_font = fonts.jetbrains_mono(10.0);

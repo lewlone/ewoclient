@@ -67,13 +67,26 @@ pub fn draw_main_menu(
     menu_states: &[VbtnState; 4],
     heading_hover: HoverGlowState,
     server: ServerWidgetView<'_>,
+    enter_anim: f32,
 ) {
-    draw_top_right_settings(canvas, fonts, w);
+    // Smooth entrance — fade + slide-up when arriving at the main menu.
+    // Alpha + translate only (never scale/blur text-bearing surfaces, per the
+    // non-negotiables).
+    let eased = CubicBezier::SILK.eval(enter_anim.clamp(0.0, 1.0));
+    let layer = if eased < 0.999 {
+        let dy = (1.0 - eased) * 14.0;
+        let s = canvas.save_layer_alpha_f(Rect::from_xywh(0.0, 0.0, w, h), eased);
+        canvas.translate((0.0, dy));
+        Some(s)
+    } else {
+        None
+    };
     draw_heading_block(canvas, fonts, time, heading_hover);
     draw_menu_items(canvas, fonts, w, h, menu_states);
     draw_server_widget(canvas, fonts, w, h, server);
-    draw_footer(canvas, fonts, h);
-    draw_disturb_hint(canvas, fonts, w, h);
+    if let Some(s) = layer {
+        canvas.restore_to_count(s);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -233,26 +246,6 @@ pub fn heading_bounds(fonts: &FontStore) -> Rect {
     let top = heading_baseline + hm.ascent;
     let bottom = heading_baseline + hm.descent;
     Rect::from_xywh(PAD_LEFT, top, width, bottom - top)
-}
-
-// ────────────────────────────────────────────────────────────────────────
-// Top-right "SETTINGS" link
-// ────────────────────────────────────────────────────────────────────────
-
-fn draw_top_right_settings(canvas: &Canvas, fonts: &FontStore, w: f32) {
-    // Mirrors the "settings" link in `style/mainMenu.png` — small tracked
-    // mauve text in the top-right corner. Not a separate component in the
-    // CSS prototype; rendered here for visual parity.
-    let label = "SETTINGS";
-    let font = fonts.jetbrains_mono(10.0);
-    let tracking_em = 0.18;
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    paint.set_color(TEXT_MAUVE);
-    let label_w = measure_tracked_width(&font, label, tracking_em);
-    let (_, metrics) = font.metrics();
-    let baseline = 32.0 + (-metrics.ascent);
-    draw_tracked(canvas, label, w - PAD_LEFT - label_w, baseline, &font, &paint, tracking_em);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -531,35 +524,6 @@ fn draw_menu_items(
             canvas.draw_line((menu_left, div_y), (menu_right, div_y), &div);
         }
     }
-}
-
-// ────────────────────────────────────────────────────────────────────────
-// Footer + disturb hint
-// ────────────────────────────────────────────────────────────────────────
-
-fn draw_footer(canvas: &Canvas, fonts: &FontStore, h: f32) {
-    let label = "OFFLINE FIRST. NOTHING PHONES HOME.";
-    let font = fonts.jetbrains_mono(10.0);
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    paint.set_color(TEXT_MAUVE_DEEP);
-    let (_, metrics) = font.metrics();
-    let baseline = h - PAD_BOTTOM + (-metrics.ascent) - metrics.descent;
-    draw_tracked(canvas, label, PAD_LEFT, baseline, &font, &paint, 0.40);
-}
-
-fn draw_disturb_hint(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
-    let label = "click backdrop to disturb rose-dust";
-    let size = 11.0;
-    let font = newsreader_italic_axes(fonts, size, 400.0);
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    paint.set_color(TEXT_MAUVE);
-    paint.set_alpha_f(0.4);
-    let (advance, _) = font.measure_str(label, Some(&paint));
-    let (_, metrics) = font.metrics();
-    let baseline = h - PAD_BOTTOM - 18.0 + (-metrics.ascent);
-    canvas.draw_str(label, ((w - advance) * 0.5, baseline), &font, &paint);
 }
 
 // ────────────────────────────────────────────────────────────────────────

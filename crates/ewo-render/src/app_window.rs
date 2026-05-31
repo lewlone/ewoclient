@@ -89,6 +89,8 @@ pub fn draw_frame(
     friends_prefs: &screens::FriendsPrefs,
     friends_view: screens::FriendsViewState<'_>,
     server_widget: screens::ServerWidgetView<'_>,
+    main_menu_enter: f32,
+    back_link_hover: bool,
 ) {
     let w = viewport_w as f32;
     let h = viewport_h as f32;
@@ -115,6 +117,7 @@ pub fn draw_frame(
         Screen::MainMenu => {
             screens::draw_main_menu(
                 canvas, fonts, card_w, card_h, time, menu_states, heading_hover, server_widget,
+                main_menu_enter,
             );
         }
         Screen::Instances => {
@@ -128,6 +131,7 @@ pub fn draw_frame(
                 launch_button,
                 instance_prefs,
                 instances,
+                back_link_hover,
             );
         }
         Screen::Friends => {
@@ -138,7 +142,7 @@ pub fn draw_frame(
         Screen::Settings => {
             screens::draw_settings(
                 canvas, fonts, card_w, card_h, time, settings, settings_tab, prefs, account,
-                profiles, keybinds,
+                profiles, keybinds, back_link_hover,
             );
         }
         Screen::Launching => {

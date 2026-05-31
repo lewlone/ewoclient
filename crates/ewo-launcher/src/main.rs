@@ -188,6 +188,12 @@ struct App {
     /// Tab the cursor is over in the top tab bar (for the hover glow), or
     /// `None`. Updated each CursorMoved.
     hovered_tab: Option<Screen>,
+    /// Previous-frame screen + the wall-time the current screen was entered —
+    /// drives the smooth main-menu entrance (fade + slide).
+    prev_screen: Screen,
+    screen_enter_at: f32,
+    /// Cursor is over the "‹ Main menu" back-link (for its hover glow).
+    back_link_hover: bool,
     dev: bool,
 }
 
@@ -255,6 +261,10 @@ impl App {
             active_server: None,
             server_widget_hover: false,
             hovered_tab: None,
+            // Start settled (no entrance on first paint); transitions animate.
+            prev_screen: Screen::default(),
+            screen_enter_at: -1.0,
+            back_link_hover: false,
             dev,
         }
     }
@@ -1130,6 +1140,13 @@ impl ApplicationHandler for App {
                             .map(|(s, _)| s)
                     })
                 };
+                // "‹ Main menu" back-link hover (for its glow).
+                self.back_link_hover = !any_modal
+                    && matches!(self.screen, Screen::Settings | Screen::Instances)
+                    && rect_contains(
+                        &skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0),
+                        card_pos,
+                    );
 
                 // When a modal is open it absorbs all hover state so the
                 // background screen doesn't react under it. Otherwise drive
@@ -2166,6 +2183,13 @@ impl ApplicationHandler for App {
                 let dt = self.clock.dt;
                 let screen = self.screen;
 
+                // Smooth screen entrance: stamp the wall-time the screen
+                // changed so the renderer can fade + slide the main menu in.
+                if screen != self.prev_screen {
+                    self.prev_screen = screen;
+                    self.screen_enter_at = time;
+                }
+
                 // Periodic process-memory snapshot — pairs with the Skia
                 // GPU-cache log from `GlBackend::render` so we can tell at
                 // a glance whether memory growth is GPU-side (Skia) or
@@ -2714,6 +2738,13 @@ impl ApplicationHandler for App {
                 let launch_button = self.launch_button;
                 let menu_items = self.menu_items;
                 let hovered_tab = self.hovered_tab;
+                let back_link_hover = self.back_link_hover;
+                // 0..1 entrance progress for the main menu (fade + slide).
+                let main_menu_enter = if screen == Screen::MainMenu {
+                    ((time - self.screen_enter_at) / 0.34).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
                 let settings_tab = self.settings_tab;
                 let theme = &self.theme;
                 let settings = &self.settings;
@@ -2912,6 +2943,7 @@ impl ApplicationHandler for App {
                             launcher_link_modal, link_redeem, dev_overlay, frame_stats,
                             instances, heading_hover, account_view, profile_view, keybind_view,
                             friends_prefs, friends_view, server_widget_view,
+                            main_menu_enter, back_link_hover,
                         );
                         canvas.restore_to_count(saved);
                     });
