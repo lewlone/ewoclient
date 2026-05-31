@@ -645,12 +645,27 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
     let head_y = 58.0;
 
     let back_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
+    let back_color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
     let mut back_paint = Paint::default();
     back_paint.set_anti_alias(true);
-    back_paint.set_color(Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5));
+    back_paint.set_color(back_color);
     let (_, bm) = back_font.metrics();
     let back_baseline = head_y + (-bm.ascent);
-    canvas.draw_str("← Main menu", (BODY_PAD_X, back_baseline), &back_font, &back_paint);
+    // Vector left-chevron + "Main menu" — the "←" glyph is a tofu box in the
+    // serif display font.
+    let cap = if bm.cap_height > 0.0 { bm.cap_height } else { 14.0 };
+    let chev_cy = back_baseline - cap * 0.5;
+    let mut chev = Paint::default();
+    chev.set_anti_alias(true);
+    chev.set_style(PaintStyle::Stroke);
+    chev.set_stroke_width(1.8);
+    chev.set_color(back_color);
+    let half = 5.0;
+    let tip_x = BODY_PAD_X + 1.0;
+    let chev_back_x = tip_x + half * 0.72;
+    canvas.draw_line((chev_back_x, chev_cy - half), (tip_x, chev_cy), &chev);
+    canvas.draw_line((chev_back_x, chev_cy + half), (tip_x, chev_cy), &chev);
+    canvas.draw_str("Main menu", (BODY_PAD_X + 16.0, back_baseline), &back_font, &back_paint);
 
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();

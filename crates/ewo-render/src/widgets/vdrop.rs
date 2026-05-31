@@ -289,12 +289,12 @@ pub fn menu_layout(head_bounds: Rect, rows: usize, card_h: f32) -> (Rect, bool) 
     let space_below = (card_h - 12.0 - (head_bounds.bottom + MENU_GAP)).max(0.0);
     let space_above = (head_bounds.top - 12.0 - MENU_GAP).max(0.0);
 
-    // Open down by default. Only flip up when the menu genuinely doesn't fit
-    // below AND there's meaningfully more room above. (The old heuristic
-    // flipped whenever fewer than 5 rows fit below, so a 4-row menu near the
-    // bottom — e.g. the Graphics → Theme dropdown — flipped up even though it
-    // had room to open down.)
-    let flip_up = space_below < desired_h && space_above > space_below + 40.0;
+    // Strongly prefer opening DOWN. Only flip up when barely anything fits
+    // below (< ~1.5 rows) and there's clearly more room above. A dropdown
+    // that doesn't fully fit below opens down + scrolls rather than flipping —
+    // the Graphics → Theme dropdown sits near the panel bottom and should
+    // still open downward, not cover the rows above it.
+    let flip_up = space_below < 1.5 * ROW_HEIGHT && space_above > space_below + 40.0;
 
     let (top, h) = if flip_up {
         let h = desired_h.min(space_above);
@@ -379,24 +379,22 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
 
     // Drop shadow `0 18px 48px rgba(0,0,0,0.6)` + `0 4px 16px rgba(0,0,0,0.4)`
     // + warm bloom `0 0 32px rgba(180,116,145,0.12)`.
-    let mut shadow_a = Paint::default();
-    shadow_a.set_anti_alias(true);
-    shadow_a.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6), None);
-    shadow_a.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 24.0, false));
-    let shadow_a_rect = bounds.with_offset((0.0, 18.0));
+    // A single soft drop shadow. Previously two stacked offset shadows — the
+    // tighter 8px-blur one rendered a hard, square-looking dark wedge in the
+    // panel's rounded bottom-corner cutouts (the panel is semi-transparent,
+    // so the shadow behind it shows through where the rounding carves the
+    // corner away). One soft shadow reads as a clean drop shadow with no boxy
+    // corners. `respect_ctm = true` keeps the blur DPI-correct (sigma in
+    // logical px, scaled by the canvas) so it stays soft on HiDPI displays —
+    // with `false` the sigma was applied in device px and under-blurred.
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 26.0, true));
+    let shadow_rect = bounds.with_offset((0.0, 12.0));
     canvas.draw_rrect(
-        RRect::new_rect_xy(shadow_a_rect, MENU_RADIUS, MENU_RADIUS),
-        &shadow_a,
-    );
-
-    let mut shadow_b = Paint::default();
-    shadow_b.set_anti_alias(true);
-    shadow_b.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.4), None);
-    shadow_b.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 8.0, false));
-    let shadow_b_rect = bounds.with_offset((0.0, 4.0));
-    canvas.draw_rrect(
-        RRect::new_rect_xy(shadow_b_rect, MENU_RADIUS, MENU_RADIUS),
-        &shadow_b,
+        RRect::new_rect_xy(shadow_rect, MENU_RADIUS, MENU_RADIUS),
+        &shadow,
     );
 
     let mut bloom = Paint::default();
@@ -405,7 +403,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
         Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.12),
         None,
     );
-    bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 16.0, false));
+    bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 16.0, true));
     canvas.draw_rrect(rrect, &bloom);
 
     // Solid panel body — vertical gradient `rgba(38,18,30,0.96)` →
