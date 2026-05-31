@@ -196,7 +196,11 @@ fn log_fallback_once() {
 /// box-shadows and a black fill of the card. The body fill matters because
 /// the backdrop layers use screen-blend on top of it.
 pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
-    canvas.clear(Color::BLACK);
+    // Transparent — the margin around the card is per-pixel-alpha so the
+    // desktop shows through (the window is `with_transparent(true)`). The soft
+    // shadows below render onto that transparency as a floating-card shadow
+    // rather than a black bevel.
+    canvas.clear(Color::TRANSPARENT);
 
     let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
 

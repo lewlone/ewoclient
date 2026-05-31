@@ -22,7 +22,7 @@ use winit::window::Window;
 pub fn configure(window: &Window) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
     };
 
     let raw = match window.window_handle() {
@@ -41,7 +41,10 @@ pub fn configure(window: &Window) {
         }
     };
 
-    let pref: u32 = DWMWCP_ROUND.0 as u32;
+    // We paint our own 22px rounded card into a transparent window, so tell
+    // DWM NOT to round the window rect — its ~8px rounding would otherwise
+    // clip our corners and add a rectangular shadow that fights ours.
+    let pref: u32 = DWMWCP_DONOTROUND.0 as u32;
     let res = unsafe {
         DwmSetWindowAttribute(
             hwnd,

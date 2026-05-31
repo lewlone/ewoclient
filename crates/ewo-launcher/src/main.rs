@@ -621,6 +621,10 @@ impl ApplicationHandler for App {
         let attrs = Window::default_attributes()
             .with_title("EwoClient")
             .with_decorations(false)
+            // Per-pixel alpha: the rounded card floats with transparent corners
+            // (the desktop shows through) instead of an opaque black margin +
+            // painted bevel. The GL surface already carries an alpha channel.
+            .with_transparent(true)
             .with_inner_size(LogicalSize::new(1180.0, 720.0))
             .with_min_inner_size(LogicalSize::new(800.0, 520.0));
 
