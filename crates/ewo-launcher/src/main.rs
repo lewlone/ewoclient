@@ -195,6 +195,9 @@ struct App {
     screen_enter_at: f32,
     /// Cursor is over the "‹ Main menu" back-link (for its hover glow).
     back_link_hover: bool,
+    /// Cursor over the top-right minimize / close buttons (hover state).
+    min_btn_hover: bool,
+    close_btn_hover: bool,
     dev: bool,
 }
 
@@ -266,6 +269,8 @@ impl App {
             prev_screen: Screen::default(),
             screen_enter_at: -1.0,
             back_link_hover: false,
+            min_btn_hover: false,
+            close_btn_hover: false,
             dev,
         }
     }
@@ -1152,6 +1157,10 @@ impl ApplicationHandler for App {
                         &skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0),
                         card_pos,
                     );
+                // Top-right window buttons hover.
+                let (min_btn, close_btn) = app_window::window_button_bounds(card_w);
+                self.min_btn_hover = rect_contains(&min_btn, card_pos);
+                self.close_btn_hover = rect_contains(&close_btn, card_pos);
 
                 // When a modal is open it absorbs all hover state so the
                 // background screen doesn't react under it. Otherwise drive
@@ -1493,6 +1502,26 @@ impl ApplicationHandler for App {
                 let card_w = card_content_width(size, scale);
                 let card_h = card_content_height(size, scale);
                 let time = self.clock.elapsed;
+
+                // Step -2: top-right window buttons (minimize / close) — handled
+                // before anything else (incl. modals + dev overlay) so they
+                // always work. They're excluded from the drag caption in
+                // `hit_test`, so the press reaches here.
+                if pressed {
+                    let (min_btn, close_btn) = app_window::window_button_bounds(card_w);
+                    if rect_contains(&close_btn, card_pos) {
+                        log::info!("window: close button → exit");
+                        event_loop.exit();
+                        return;
+                    }
+                    if rect_contains(&min_btn, card_pos) {
+                        log::info!("window: minimize button");
+                        if let Some(w) = self.window.as_ref() {
+                            w.set_minimized(true);
+                        }
+                        return;
+                    }
+                }
 
                 // Step -1: dev overlay (when --dev) — sits above everything,
                 // including the modal. Absorbs input when cursor is over it.
@@ -2744,6 +2773,8 @@ impl ApplicationHandler for App {
                 let menu_items = self.menu_items;
                 let hovered_tab = self.hovered_tab;
                 let back_link_hover = self.back_link_hover;
+                let min_btn_hover = self.min_btn_hover;
+                let close_btn_hover = self.close_btn_hover;
                 // 0..1 entrance progress for the main menu (fade + slide).
                 let main_menu_enter = if screen == Screen::MainMenu {
                     ((time - self.screen_enter_at) / 0.34).clamp(0.0, 1.0)
@@ -2948,7 +2979,7 @@ impl ApplicationHandler for App {
                             launcher_link_modal, link_redeem, dev_overlay, frame_stats,
                             instances, heading_hover, account_view, profile_view, keybind_view,
                             friends_prefs, friends_view, server_widget_view,
-                            main_menu_enter, back_link_hover,
+                            main_menu_enter, back_link_hover, min_btn_hover, close_btn_hover,
                         );
                         canvas.restore_to_count(saved);
                     });
@@ -3036,6 +3067,14 @@ fn hit_test(
     };
     if let Some(d) = dir {
         return Some(Zone::Resize(d));
+    }
+    // Top-right minimize / close buttons sit in the caption strip but must be
+    // clickable, not a drag handle — exclude them before the caption check.
+    let lx = (x / scale) as f32;
+    let ly = (y / scale) as f32;
+    let (min_btn, close_btn) = app_window::window_button_bounds((w / scale) as f32);
+    if rect_contains(&min_btn, (lx, ly)) || rect_contains(&close_btn, (lx, ly)) {
+        return None;
     }
     if y >= 0.0 && y < caption {
         return Some(Zone::Caption);
@@ -4245,6 +4284,14 @@ fn main() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);
     event_loop.run_app(&mut app).expect("event loop error");
+
+    // Terminate immediately instead of unwinding `app`. The GL context +
+    // transparent-window teardown can deadlock the main thread on some drivers
+    // — the window would hang as "Not Responding" on quit (from "Quit to
+    // desktop" or the taskbar close). Nothing in our Drop path needs to run
+    // (settings / instances persist on change, not on exit), so we let the OS
+    // reclaim the window, GL context, and detached background threads.
+    std::process::exit(0);
 }
 
 /// Dump the launching screen's in-memory log to

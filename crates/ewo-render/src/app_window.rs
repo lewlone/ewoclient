@@ -20,7 +20,7 @@
 
 use ewo_core::{Screen, Settings, Theme};
 use skia_safe::{
-    BlurStyle, Canvas, ClipOp, Color, MaskFilter, Paint, PaintStyle, RRect, Rect,
+    BlurStyle, Canvas, ClipOp, Color, Color4f, MaskFilter, Paint, PaintStyle, RRect, Rect,
 };
 
 use crate::backdrop::Backdrop;
@@ -95,6 +95,8 @@ pub fn draw_frame(
     server_widget: screens::ServerWidgetView<'_>,
     main_menu_enter: f32,
     back_link_hover: bool,
+    min_btn_hover: bool,
+    close_btn_hover: bool,
 ) {
     let w = viewport_w as f32;
     let h = viewport_h as f32;
@@ -183,6 +185,68 @@ pub fn draw_frame(
     canvas.restore_to_count(saved);
 
     draw_chrome_inner(canvas, w, h);
+    draw_window_buttons(canvas, w, min_btn_hover, close_btn_hover);
+}
+
+/// Top-right minimize + close button rects. The card fills the window now, so
+/// these are both card-local and window-local. Shared by the renderer and the
+/// launcher's hit-testing (so a click on a button isn't treated as a drag).
+pub fn window_button_bounds(width: f32) -> (Rect, Rect) {
+    const SIZE: f32 = 28.0;
+    const Y: f32 = 12.0;
+    const GAP: f32 = 4.0;
+    const RIGHT_PAD: f32 = 14.0;
+    let close = Rect::from_xywh(width - RIGHT_PAD - SIZE, Y, SIZE, SIZE);
+    let minimize = Rect::from_xywh(close.left - GAP - SIZE, Y, SIZE, SIZE);
+    (minimize, close)
+}
+
+/// Velvet-themed minimize (—) + close (×) buttons in the top-right. Icons are
+/// drawn as vector strokes (no glyph fonts). Hover fills a soft rounded
+/// background — rose for minimize, ember for close — and brightens the icon.
+fn draw_window_buttons(canvas: &Canvas, width: f32, min_hover: bool, close_hover: bool) {
+    let (minimize, close) = window_button_bounds(width);
+
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    if min_hover {
+        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14), None);
+        canvas.draw_rrect(RRect::new_rect_xy(minimize, 7.0, 7.0), &bg);
+    }
+    if close_hover {
+        bg.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20), None);
+        canvas.draw_rrect(RRect::new_rect_xy(close, 7.0, 7.0), &bg);
+    }
+
+    let icon = |hover: bool, danger: bool| -> Paint {
+        let mut p = Paint::default();
+        p.set_anti_alias(true);
+        p.set_style(PaintStyle::Stroke);
+        p.set_stroke_width(1.5);
+        p.set_color(if hover {
+            if danger {
+                Color::from_argb(0xFF, 0xF4, 0xC8, 0xD0)
+            } else {
+                Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)
+            }
+        } else {
+            Color::from_argb(0xFF, 0x9A, 0x80, 0x87)
+        });
+        p
+    };
+
+    // Minimize — a short centred horizontal bar.
+    let mcx = (minimize.left + minimize.right) * 0.5;
+    let mcy = (minimize.top + minimize.bottom) * 0.5;
+    canvas.draw_line((mcx - 5.0, mcy), (mcx + 5.0, mcy), &icon(min_hover, false));
+
+    // Close — an ×.
+    let ccx = (close.left + close.right) * 0.5;
+    let ccy = (close.top + close.bottom) * 0.5;
+    let r = 5.0;
+    let p = icon(close_hover, true);
+    canvas.draw_line((ccx - r, ccy - r), (ccx + r, ccy + r), &p);
+    canvas.draw_line((ccx - r, ccy + r), (ccx + r, ccy - r), &p);
 }
 
 fn log_fallback_once() {
