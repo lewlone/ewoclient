@@ -937,6 +937,17 @@ fn draw_list_row(
     }
     let (_, nm) = name_font.metrics();
     let name_baseline = label_top + (-nm.ascent);
+    // Hover glow on the row name (the hero-title treatment), like the main-menu
+    // items and tabs.
+    if hovered && !selected {
+        crate::text::draw_glow_str(
+            canvas,
+            &inst.name,
+            (LIST_LEFT_PAD, name_baseline),
+            &name_font,
+            0.8,
+        );
+    }
     canvas.draw_str(&inst.name, (LIST_LEFT_PAD, name_baseline), &name_font, &name_paint);
 
     // Meta below name (JetBrains Mono small caps tracked)

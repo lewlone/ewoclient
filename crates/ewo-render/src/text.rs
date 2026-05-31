@@ -452,8 +452,20 @@ pub fn draw_tracked_glow(
 // ────────────────────────────────────────────────────────────────────────
 
 fn workspace_assets_dir() -> PathBuf {
-    // env!("CARGO_MANIFEST_DIR") points to crates/ewo-render at compile time.
-    // The assets dir is two levels up from there.
+    // Portable builds: `assets/fonts` sits next to the executable, so the exe
+    // (with its assets folder) can be moved anywhere. Prefer that.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let next_to_exe = dir.join("assets").join("fonts");
+            if next_to_exe.is_dir() {
+                return next_to_exe;
+            }
+        }
+    }
+    // Dev fallback: the workspace assets dir baked in at compile time, so
+    // `cargo run` / `cargo test` work without copying anything next to the
+    // target/{debug,release} binary. `env!("CARGO_MANIFEST_DIR")` points to
+    // crates/ewo-render; the assets dir is two levels up.
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut p = PathBuf::from(manifest);
     p.pop(); // crates/

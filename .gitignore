@@ -29,3 +29,4 @@ Firefox*.json
 auth.toml
 settings.toml
 instances.toml
+/dist/
