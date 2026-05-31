@@ -72,8 +72,15 @@ pub fn tab_bounds(card_w: f32, fonts: &FontStore) -> Vec<(Screen, Rect)> {
     out
 }
 
-/// Draw the tab bar with `current` highlighted as active.
-pub fn draw_tab_bar(canvas: &Canvas, fonts: &FontStore, card_w: f32, current: Screen) {
+/// Draw the tab bar with `current` highlighted as active. `hovered` (if any)
+/// gets the hero-style glow + pearl text so the cursor lights tabs up.
+pub fn draw_tab_bar(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    current: Screen,
+    hovered: Option<Screen>,
+) {
     let bounds = tab_bounds(card_w, fonts);
     if bounds.is_empty() {
         return;
@@ -112,6 +119,7 @@ pub fn draw_tab_bar(canvas: &Canvas, fonts: &FontStore, card_w: f32, current: Sc
     // Items
     for (screen, rect) in &bounds {
         let active = *screen == current;
+        let is_hover = !active && hovered == Some(*screen);
 
         if active {
             let pill = RRect::new_rect_xy(*rect, ITEM_RADIUS, ITEM_RADIUS);
@@ -136,13 +144,24 @@ pub fn draw_tab_bar(canvas: &Canvas, fonts: &FontStore, card_w: f32, current: Sc
 
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_color(if active { TEXT_PEARL } else { TEXT_MAUVE });
+        paint.set_color(if active || is_hover { TEXT_PEARL } else { TEXT_MAUVE });
 
         let baseline = rect.top + ITEM_PAD_Y + (-metrics.ascent);
+        let origin = (rect.left + ITEM_PAD_X, baseline);
+        if is_hover {
+            text::draw_tracked_glow(
+                canvas,
+                screen.tab_label(),
+                origin,
+                &font,
+                LABEL_TRACKING_EM,
+                0.85,
+            );
+        }
         text::draw_tracked_em(
             canvas,
             screen.tab_label(),
-            (rect.left + ITEM_PAD_X, baseline),
+            origin,
             &font,
             &paint,
             LABEL_TRACKING_EM,

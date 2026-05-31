@@ -141,7 +141,15 @@ pub fn draw_vslider(
         draw_fill(canvas, &fill_rect, &fill_rrect);
     }
 
-    draw_handle(canvas, handle_x, cy, time, settings.motion_speed, state.dragging);
+    draw_handle(
+        canvas,
+        handle_x,
+        cy,
+        time,
+        settings.motion_speed,
+        state.dragging,
+        state.hover,
+    );
 }
 
 fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
@@ -200,16 +208,26 @@ fn draw_fill(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
     canvas.draw_rrect(*rrect, &p);
 }
 
-fn draw_handle(canvas: &Canvas, cx: f32, cy: f32, time: f32, motion_speed: f32, dragging: bool) {
+fn draw_handle(
+    canvas: &Canvas,
+    cx: f32,
+    cy: f32,
+    time: f32,
+    motion_speed: f32,
+    dragging: bool,
+    hover: bool,
+) {
     // Firefly pulse — 3s ease-in-out, opacity 0.65↔1, scale 1↔1.15.
     let speed = motion_speed.max(0.0001);
     let phase = (time / (3.0 / speed)).rem_euclid(1.0);
     let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
     let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
-    let halo_alpha = 0.65 + 0.35 * smooth;
-    let halo_scale = 1.0 + 0.15 * smooth;
-    // Dragging brightens the handle.
-    let drag_boost = if dragging { 1.2 } else { 1.0 };
+    // Hover lights the handle up (brighter, larger halo); dragging more so.
+    let halo_mult = if dragging { 1.3 } else if hover { 1.18 } else { 1.0 };
+    let halo_alpha = ((0.65 + 0.35 * smooth) * halo_mult).min(1.0);
+    let halo_scale = (1.0 + 0.15 * smooth) * if dragging || hover { 1.18 } else { 1.0 };
+    // Dragging / hover brightens the handle core.
+    let drag_boost = if dragging { 1.2 } else if hover { 1.1 } else { 1.0 };
 
     let handle_r = HANDLE_SIZE * 0.5;
     // Halo — `inset: -10px` of a 14×14 yields 34×34, so radius 17.

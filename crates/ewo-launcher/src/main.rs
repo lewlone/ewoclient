@@ -185,6 +185,9 @@ struct App {
     /// H6 — cursor is over the main-menu network widget (updated in the
     /// CursorMoved handler, read at render time to drive the hover state).
     server_widget_hover: bool,
+    /// Tab the cursor is over in the top tab bar (for the hover glow), or
+    /// `None`. Updated each CursorMoved.
+    hovered_tab: Option<Screen>,
     dev: bool,
 }
 
@@ -251,6 +254,7 @@ impl App {
             celebrate_until: None,
             active_server: None,
             server_widget_hover: false,
+            hovered_tab: None,
             dev,
         }
     }
@@ -1111,6 +1115,22 @@ impl ApplicationHandler for App {
                 let card_h = card_content_height(size, scale);
                 let time = self.clock.elapsed;
 
+                // Top tab bar hover → glow (every screen). Suppressed while a
+                // modal is open so tabs don't light up under the shroud.
+                let any_modal = self.modal.open
+                    || self.about_modal.open
+                    || self.launcher_link_modal.open;
+                self.hovered_tab = if any_modal {
+                    None
+                } else {
+                    self.fonts.as_ref().and_then(|fonts| {
+                        screens::tab_bounds(card_w, fonts)
+                            .into_iter()
+                            .find(|(_, r)| rect_contains(r, card_pos))
+                            .map(|(s, _)| s)
+                    })
+                };
+
                 // When a modal is open it absorbs all hover state so the
                 // background screen doesn't react under it. Otherwise drive
                 // the active screen's widget + list/button hovers normally.
@@ -1332,13 +1352,18 @@ impl ApplicationHandler for App {
 
                 let hovering_settings_tab = if self.screen == Screen::Settings {
                     if let Some(fonts) = self.fonts.as_ref() {
-                        screens::settings::sidebar_tab_bounds(fonts)
-                            .iter()
-                            .any(|(_, r)| rect_contains(r, card_pos))
+                        let hit = screens::settings::sidebar_tab_bounds(fonts)
+                            .into_iter()
+                            .find(|(_, r)| rect_contains(r, card_pos))
+                            .map(|(t, _)| t);
+                        self.prefs.hovered_sidebar_tab = hit;
+                        hit.is_some()
                     } else {
+                        self.prefs.hovered_sidebar_tab = None;
                         false
                     }
                 } else {
+                    self.prefs.hovered_sidebar_tab = None;
                     false
                 };
 
@@ -2688,6 +2713,7 @@ impl ApplicationHandler for App {
                 let fonts_ref = self.fonts.as_ref();
                 let launch_button = self.launch_button;
                 let menu_items = self.menu_items;
+                let hovered_tab = self.hovered_tab;
                 let settings_tab = self.settings_tab;
                 let theme = &self.theme;
                 let settings = &self.settings;
@@ -2881,7 +2907,7 @@ impl ApplicationHandler for App {
                         let h_lp = ((h as f32) / scale).round() as u32;
                         app_window::draw_frame(
                             canvas, backdrop, fonts, w_lp, h_lp, time, theme, settings,
-                            screen, &launch_button, &menu_items, settings_tab, prefs,
+                            screen, hovered_tab, &launch_button, &menu_items, settings_tab, prefs,
                             instance_prefs, launching_state, modal, about_modal,
                             launcher_link_modal, link_redeem, dev_overlay, frame_stats,
                             instances, heading_hover, account_view, profile_view, keybind_view,

@@ -352,6 +352,9 @@ pub struct Prefs {
     /// Vertical scroll offset (px) for the active tab's list — the Keybinds
     /// and Modules tabs overflow the panel. Reset to 0 on tab/screen switch.
     pub settings_scroll: f32,
+    /// Sidebar tab the cursor is over (for the hover glow), or `None`.
+    /// Updated each CursorMoved by the launcher.
+    pub hovered_sidebar_tab: Option<SettingsTab>,
     /// Set to `true` when the user clicks "Reset preferences". The main
     /// loop checks this each frame, runs the reset, and clears the flag.
     /// We use a flag instead of a return-value path because the reset
@@ -479,6 +482,7 @@ impl Default for Prefs {
             pvp_changed: false,
             tab_changed_at: None,
             settings_scroll: 0.0,
+            hovered_sidebar_tab: None,
             reset_requested: false,
         }
     }
@@ -631,7 +635,7 @@ pub fn draw_settings(
     keybinds: KeybindView<'_>,
 ) {
     draw_screen_head(canvas, fonts, w);
-    draw_sidebar(canvas, fonts, h, active);
+    draw_sidebar(canvas, fonts, h, active, prefs.hovered_sidebar_tab);
     draw_panel(
         canvas, fonts, w, h, time, settings, active, prefs, account, profiles, keybinds,
     );
@@ -699,7 +703,13 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32) {
 // Sidebar — "Settings" title + 4 tab rows
 // ────────────────────────────────────────────────────────────────────────
 
-fn draw_sidebar(canvas: &Canvas, fonts: &FontStore, _h: f32, active: SettingsTab) {
+fn draw_sidebar(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    _h: f32,
+    active: SettingsTab,
+    hovered: Option<SettingsTab>,
+) {
     let sidebar_left = BODY_PAD_X;
     let body_top = HEADER_BOTTOM + 8.0; // settings-body padding-top: 8
     let title_top = body_top + 16.0; // settings-tabs padding-top: 16
@@ -721,6 +731,7 @@ fn draw_sidebar(canvas: &Canvas, fonts: &FontStore, _h: f32, active: SettingsTab
 
     for tab in SettingsTab::ALL.iter() {
         let is_active = *tab == active;
+        let is_hover = !is_active && hovered == Some(*tab);
 
         // Mark — left bar 4×18 px. Active: gradient; inactive: transparent.
         if is_active {
@@ -745,12 +756,21 @@ fn draw_sidebar(canvas: &Canvas, fonts: &FontStore, _h: f32, active: SettingsTab
             );
         }
 
-        // Label
+        // Label — hovered tab gets the hero-style glow + pearl text.
         let label_x = sidebar_left + 4.0 + 14.0; // mark width + gap
         let label_baseline = y + 14.0 + (-lm.ascent);
+        if is_hover {
+            crate::text::draw_glow_str(
+                canvas,
+                tab.label(),
+                (label_x, label_baseline),
+                &tab_label_font,
+                0.8,
+            );
+        }
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
-        label_paint.set_color(if is_active { TEXT_PEARL } else { TEXT_MAUVE });
+        label_paint.set_color(if is_active || is_hover { TEXT_PEARL } else { TEXT_MAUVE });
         canvas.draw_str(tab.label(), (label_x, label_baseline), &tab_label_font, &label_paint);
 
         y += row_h + 2.0;

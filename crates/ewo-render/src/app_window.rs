@@ -68,6 +68,7 @@ pub fn draw_frame(
     theme: &Theme,
     settings: &Settings,
     screen: Screen,
+    hovered_tab: Option<Screen>,
     launch_button: &VbtnState,
     menu_states: &[VbtnState; 4],
     settings_tab: screens::SettingsTab,
@@ -107,7 +108,7 @@ pub fn draw_frame(
 
     // Tab bar is shared across screens (drawn first so screen content can
     // overlap it deliberately if needed — currently nothing does).
-    screens::draw_tab_bar(canvas, fonts, card_w, screen);
+    screens::draw_tab_bar(canvas, fonts, card_w, screen, hovered_tab);
 
     // Screen-specific content.
     match screen {

@@ -377,26 +377,21 @@ pub fn draw_vdrop_menu(
 fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     let rrect = RRect::new_rect_xy(bounds, MENU_RADIUS, MENU_RADIUS);
 
-    // Drop shadow `0 18px 48px rgba(0,0,0,0.6)` + `0 4px 16px rgba(0,0,0,0.4)`
-    // + warm bloom `0 0 32px rgba(180,116,145,0.12)`.
-    // Soft drop shadow, CLIPPED to outside the panel's square footprint. The
-    // panel is semi-transparent, so any shadow drawn behind it shows through
-    // the rounded bottom-corner *cutouts* — that's what read as dark square
-    // corners. Excluding the panel's bounding box from the clip means the
-    // shadow can only render below/around the panel, never inside the corner
-    // cutouts. `respect_ctm = true` keeps the blur DPI-correct on HiDPI.
+    // Soft, symmetric shadow halo. NOT a clipped offset shadow — the prior
+    // approaches all left dark notches at the rounded bottom corners because
+    // the (semi-transparent) panel revealed dark behind its corner cutouts.
+    // A gentle halo around the whole panel softens every edge instead, and an
+    // OPAQUE body (below) gives the rounding a crisp edge with no backdrop
+    // bleed. `respect_ctm = true` keeps the blur DPI-correct on HiDPI.
     let mut shadow = Paint::default();
     shadow.set_anti_alias(true);
-    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.55), None);
-    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 22.0, true));
-    let shadow_rect = bounds.with_offset((0.0, 14.0));
-    let shadow_save = canvas.save();
-    canvas.clip_rect(bounds, skia_safe::ClipOp::Difference, true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.5), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 24.0, true));
+    let shadow_rect = bounds.with_offset((0.0, 6.0));
     canvas.draw_rrect(
         RRect::new_rect_xy(shadow_rect, MENU_RADIUS, MENU_RADIUS),
         &shadow,
     );
-    canvas.restore_to_count(shadow_save);
 
     let mut bloom = Paint::default();
     bloom.set_anti_alias(true);
@@ -407,8 +402,9 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 16.0, true));
     canvas.draw_rrect(rrect, &bloom);
 
-    // Solid panel body — vertical gradient `rgba(38,18,30,0.96)` →
-    // `rgba(28,12,22,0.97)`.
+    // Solid panel body — vertical gradient. Now fully OPAQUE (was 0.96/0.97):
+    // the transparency let the dark backdrop bleed through the body + corner
+    // cutouts, which is what made the rounded corners read as dark squares.
     let Some(body) = gradient_shader::linear(
         (
             Point::new(bounds.left, bounds.top),
@@ -416,8 +412,8 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 0.96),
-                Color4f::new(28.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0, 0.97),
+                Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 1.0),
+                Color4f::new(28.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0, 1.0),
             ],
             None,
         ),
