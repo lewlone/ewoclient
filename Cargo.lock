@@ -703,6 +703,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "skia-safe",
+ "windows",
  "winit",
 ]
 
@@ -2205,6 +2206,7 @@ dependencies = [
  "bitflags 2.11.1",
  "lazy_static",
  "skia-bindings",
+ "windows",
 ]
 
 [[package]]

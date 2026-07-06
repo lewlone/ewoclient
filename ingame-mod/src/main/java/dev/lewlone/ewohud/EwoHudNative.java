@@ -85,4 +85,12 @@ public final class EwoHudNative {
      * the same value this reads.
      */
     public static native byte nativeIsCustomCrosshairEnabled();
+
+    /**
+     * Hard-terminates the process ({@code TerminateProcess} on Windows —
+     * skips DLL detach, so it works even when native teardown is
+     * deadlocked). Called only by the exit watchdog armed in
+     * {@link EwoHudMod}, seconds after orderly JVM shutdown began.
+     */
+    public static native void nativeForceExit();
 }

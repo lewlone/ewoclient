@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
@@ -32,7 +34,7 @@ public final class EwoRiptideBoost {
         }
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.player.connection == null
-                || mc.options == null || mc.screen != null) {
+                || mc.options == null || EwoCompat.screen(mc) != null) {
             return;
         }
 

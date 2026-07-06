@@ -75,13 +75,28 @@ struct Args {
 const RESIZE_BORDER_LP: f64 = 8.0;
 const CAPTION_HEIGHT_LP: f64 = 32.0;
 
-/// Hard-coded URL for the in-development EwoLoader manifest. The loader
+/// Base URL for the in-development EwoLoader manifests, one JSON per
+/// supported Minecraft version line (26.1.json, 26.2.json, …). The loader
 /// project lives in a sibling repo on the developer's machine and
 /// doesn't yet publish a public meta endpoint, so we point straight at
-/// the on-disk manifest via `file://`. Becomes a config knob (or a real
+/// the on-disk manifests via `file://`. Becomes a config knob (or a real
 /// HTTPS URL) once the loader publishes a meta endpoint.
-const DEV_EWO_LOADER_URL: &str =
-    "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0/26.1.json";
+const DEV_EWO_LOADER_BASE: &str =
+    "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0";
+
+/// Resolve the EwoLoader manifest URL for a Minecraft version id. The
+/// manifests are keyed by version *line* (major.minor), so patch releases
+/// map onto their line's manifest: "26.2.1" → 26.2.json, "26.1" →
+/// 26.1.json. A line with no manifest on disk (e.g. 1.21.x) fetch-fails
+/// at launch and falls back to a vanilla launch — the existing non-fatal
+/// loader path — so this doesn't need its own allowlist.
+fn ewo_loader_manifest_url(version_id: &str) -> String {
+    let line = match version_id.match_indices('.').nth(1) {
+        Some((second_dot, _)) => &version_id[..second_dot],
+        None => version_id,
+    };
+    format!("{}/{}.json", DEV_EWO_LOADER_BASE, line)
+}
 
 // Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
 // cursor positions from window-local to card-local for widget hit-testing.
@@ -112,6 +127,30 @@ const IDLE_THRESHOLD_SECS: f32 = 0.5;
 /// caustics, breathing, drifting motes) runs on multi-second periods, so it's
 /// fully smooth here; the eye can't resolve more on those layers.
 const IDLE_FPS: f32 = 120.0;
+
+/// Fallback delay (seconds after JVM spawn) before the launcher minimizes
+/// itself if no window-ready marker was seen in the game log. Generous
+/// enough to cover a slow cold start / heavy modpack on a spinning disk,
+/// while still guaranteeing the hand-off eventually happens.
+const MINIMIZE_FALLBACK_SECS: f32 = 25.0;
+
+/// Does this game-log line signal that Minecraft's window is coming up on
+/// screen? These substrings are logged right as the client initializes its
+/// render backend / audio / narrator — i.e. the moment the game becomes
+/// visible — so seeing one is our cue to minimize the launcher. Matched
+/// case-insensitively; kept deliberately broad so vanilla and modded
+/// (Fabric/loader) log formats both trip it.
+fn is_window_ready_marker(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    const MARKERS: [&str; 5] = [
+        "backend library: lwjgl", // client render backend init — window created
+        "lwjgl version",          // same signal, alternate phrasing
+        "openal initialized",     // sound engine — just after window shows
+        "sound engine started",   // "
+        "narrator library",       // accessibility init at client startup
+    ];
+    MARKERS.iter().any(|m| lower.contains(m))
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -188,6 +227,15 @@ struct App {
     /// C). `None` while no launch is running. Drained each frame in
     /// `RedrawRequested`.
     launch_rx: Option<std::sync::mpsc::Receiver<launch::LaunchEvent>>,
+    /// While a launch is in flight, the wall-time deadline after which the
+    /// launcher minimizes itself even if we haven't yet seen the game's
+    /// window-ready log marker. `None` when no launch is pending a minimize.
+    /// We defer the minimize (rather than doing it on `Started`) so the
+    /// window doesn't vanish during the ~10-30s the JVM spends loading before
+    /// Minecraft's own window appears — it drops out only once the game is
+    /// visibly coming up (marker seen) or this fallback fires. Cleared once
+    /// the minimize happens or the launch finishes.
+    pending_minimize: Option<f32>,
     /// Bundled-JRE auto-fetch service. Owns one Adoptium download
     /// thread at a time. Polled each frame.
     runtime: runtime::RuntimeService,
@@ -255,8 +303,40 @@ impl App {
                 p
             },
             // Try the persisted list first, fall back to the bundled
-            // defaults if missing or malformed.
-            instances: persistence::load_instances(),
+            // defaults if missing or malformed. Ewo manifest URLs are
+            // re-derived from each instance's version on every load —
+            // instances created by older launcher builds carry the
+            // pre-version-keying hardcoded 26.1 URL in instances.toml,
+            // which merges 26.1 mods into a 26.2 game ("Incompatible
+            // mods found!" at boot). Self-heal instead of asking the
+            // user to recreate the instance.
+            instances: {
+                let mut instances = persistence::load_instances();
+                let mut healed = false;
+                for inst in instances.iter_mut() {
+                    if let ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } =
+                        &mut inst.loader
+                    {
+                        let version_id =
+                            inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+                        let derived = ewo_loader_manifest_url(version_id);
+                        if *manifest_url != derived {
+                            log::info!(
+                                "instances: re-keying \"{}\" loader manifest {} → {}",
+                                inst.name,
+                                manifest_url,
+                                derived
+                            );
+                            *manifest_url = derived;
+                            healed = true;
+                        }
+                    }
+                }
+                if healed {
+                    persistence::save_instances(&instances);
+                }
+                instances
+            },
             instance_prefs: InstancePrefs::default(),
             launching: LaunchingState::default(),
             modal: NewInstanceModalState::default(),
@@ -281,6 +361,7 @@ impl App {
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
+            pending_minimize: None,
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
             celebrate_until: None,
@@ -447,22 +528,41 @@ impl App {
         // happen after ensure_libraries (we still want disabled mods on
         // disk for cheap re-enable) but before launch::build (which reads
         // pv.libraries to assemble the classpath).
-        let disabled_mod_ids = bundled::disabled_mod_ids(&inst.mods);
+        let mut disabled_mod_ids = bundled::disabled_mod_ids(&inst.mods);
         if !disabled_mod_ids.is_empty() {
-            use std::collections::HashSet;
-            let disabled_libs: HashSet<&str> =
-                bundled::library_names_for_disabled(&disabled_mod_ids)
-                    .into_iter()
-                    .collect();
+            // Prefix match (`maven.modrinth:iris:`), not the full pinned
+            // coordinate — the catalog is version-agnostic across manifest
+            // lines (26.1 vs 26.2 pin different versions of the same mod).
+            let disabled_prefixes = bundled::library_prefixes_for_disabled(&disabled_mod_ids);
             let before = pv.libraries.len();
             pv.libraries
-                .retain(|l| !disabled_libs.contains(l.name.as_str()));
+                .retain(|l| !disabled_prefixes.iter().any(|p| l.name.starts_with(p)));
             log::info!(
                 "launch: disabling {} mod(s) [{}] — stripped {} libraries from classpath",
                 disabled_mod_ids.len(),
                 disabled_mod_ids.join(","),
                 before - pv.libraries.len()
             );
+        }
+        // Bundled mods this manifest line doesn't ship at all (BetterF3 has
+        // no MC 26.2 build, so 26.2.json omits it) were never on the
+        // classpath — but the loader-side BundledMods verification still
+        // expects them, so they must ride the same disableModIds subtraction.
+        if matches!(
+            inst.loader,
+            ewo_render::screens::instances::InstanceLoader::Ewo { .. }
+        ) {
+            let missing =
+                bundled::missing_bundled_ids(pv.libraries.iter().map(|l| l.name.as_str()));
+            for id in missing {
+                if !disabled_mod_ids.contains(&id) {
+                    log::info!(
+                        "launch: bundled mod \"{}\" absent from this manifest line — auto-disabling",
+                        id
+                    );
+                    disabled_mod_ids.push(id);
+                }
+            }
         }
         if let Err(e) = launch::extract_all(&pv, &inst.name) {
             log::warn!("launch: native extraction failed: {} — falling back", e);
@@ -560,6 +660,12 @@ impl App {
                 disabled_mod_ids.join(",")
             ));
         }
+        // Tell ewo-hud's mixin plugin which MC version this is so it can
+        // select the right version-specific mixin set (26.2 renamed the
+        // frame hook + crosshair/fire-overlay targets). Authoritative over
+        // the plugin's Fabric-loader fallback probe.
+        plan.jvm_args
+            .push(format!("-Dewo.mc.version={}", version_id));
         // H6: if this launch was initiated as a server-join (main-menu
         // server widget or a friend's "Join"), auto-connect on boot via the
         // modern quick-play arg. The address is `host:port`; the client
@@ -651,10 +757,22 @@ impl ApplicationHandler for App {
             .with_decorations(false)
             // Per-pixel alpha: the rounded card floats with transparent corners
             // (the desktop shows through) instead of an opaque black margin +
-            // painted bevel. The GL surface already carries an alpha channel.
+            // painted bevel.
             .with_transparent(true)
             .with_inner_size(LogicalSize::new(1180.0, 720.0))
             .with_min_inner_size(LogicalSize::new(800.0, 520.0));
+
+        // Windows: create the window WITHOUT a redirection bitmap. The render
+        // backend presents through a DirectComposition swapchain (see
+        // `ewo-render::gl_backend`), so there must be no opaque GDI/GL
+        // redirection surface behind it — otherwise the transparent corners
+        // composite against that surface (black) instead of the desktop. This
+        // MUST be set at creation time; it can't be added afterwards.
+        #[cfg(target_os = "windows")]
+        let attrs = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_no_redirection_bitmap(true)
+        };
 
         let win = Arc::new(
             event_loop
@@ -663,6 +781,22 @@ impl ApplicationHandler for App {
         );
 
         window::configure(&win);
+
+        // Warm the JRE-detection cache on a background thread. `pick_jre` on
+        // the Launch path calls `detect_all`, which shells `java -version` at
+        // every installed JDK — a 1-3s scan that, run cold on the UI thread at
+        // click time, froze the whole render loop. Kicking it off at window
+        // creation means the `OnceLock` cache is populated seconds before the
+        // user can reach the Launch button, so the click resolves instantly.
+        // (CREATE_NO_WINDOW — see `launch::no_window` — keeps the scan's
+        // subprocesses from flashing consoles here too.)
+        std::thread::Builder::new()
+            .name("ewo-jre-warm".into())
+            .spawn(|| {
+                let n = launch::detect_jres().len();
+                log::info!("jre warm: {n} runtime(s) detected (cache primed)");
+            })
+            .expect("spawn jre-warm thread");
 
         let backend = GlBackend::new(event_loop, win.clone());
         // Backdrop particle pools + layout sizes live in logical pixels —
@@ -2550,8 +2684,31 @@ impl ApplicationHandler for App {
                         match event {
                             launch::LaunchEvent::Started => {
                                 log::info!("launch: JVM started");
+                                // Don't minimize yet — the JVM has only just
+                                // spawned; Minecraft's window is ~10-30s away.
+                                // Arm a fallback deadline instead. We minimize
+                                // the moment the game's window-ready marker shows
+                                // in the log (see the `Line` arm), or when this
+                                // deadline fires, whichever comes first. Restored
+                                // on JVM exit (the `launch_finished` block below).
+                                self.pending_minimize = Some(time + MINIMIZE_FALLBACK_SECS);
                             }
                             launch::LaunchEvent::Line { severity, text } => {
+                                // Minimize as soon as the game is visibly coming
+                                // up. These markers are logged right as the client
+                                // creates its render backend / window — the point
+                                // where MC becomes visible — so this tracks "the
+                                // game is on screen now" far better than the spawn
+                                // event does. Only acts while a minimize is armed.
+                                if self.pending_minimize.is_some()
+                                    && is_window_ready_marker(&text)
+                                {
+                                    if let Some(win) = self.window.as_ref() {
+                                        win.set_minimized(true);
+                                    }
+                                    self.pending_minimize = None;
+                                    log::info!("launch: game window up — minimized launcher");
+                                }
                                 let sev = match severity {
                                     launch::Severity::Info => screens::RealSeverity::Info,
                                     launch::Severity::Warn => screens::RealSeverity::Warn,
@@ -2588,8 +2745,34 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                // Fallback minimize: if the game has been starting for a while
+                // but we never saw a window-ready marker (modded logs vary),
+                // minimize once the armed deadline passes so the hand-off still
+                // happens.
+                if let Some(deadline) = self.pending_minimize {
+                    if time >= deadline {
+                        if let Some(win) = self.window.as_ref() {
+                            win.set_minimized(true);
+                        }
+                        self.pending_minimize = None;
+                        log::info!("launch: minimize fallback fired — minimized launcher");
+                    }
+                }
+
                 if launch_finished {
                     self.launch_rx = None;
+                    // A launch that ends before it ever minimized (fast crash,
+                    // spawn failure): disarm so we don't minimize after the fact.
+                    self.pending_minimize = None;
+                    // The game (or a failed spawn) is done — bring the launcher
+                    // back from the taskbar and re-focus it so the user lands on
+                    // the post-launch screen. `set_minimized(false)` is a no-op
+                    // if we never minimized (e.g. a spawn that failed before
+                    // `Started`), so this is safe on every finish path.
+                    if let Some(win) = self.window.as_ref() {
+                        win.set_minimized(false);
+                        win.focus_window();
+                    }
                 }
 
                 // Flip any instances whose download job just finished from
@@ -4160,12 +4343,12 @@ fn commit_new_instance(
 ) {
     let version_meta = format!("{} · {}", form.loader.to_uppercase(), form.version);
     // Map the modal's loader-string back to the typed `InstanceLoader`.
-    // "Ewo (development)" → Ewo with the hard-coded dev manifest URL;
-    // anything else → Vanilla. Other loaders will land here once the
-    // dropdown grows back.
+    // "Ewo (development)" → Ewo with the version-line-keyed dev manifest
+    // URL (26.2 instances get 26.2.json, etc.); anything else → Vanilla.
+    // Other loaders will land here once the dropdown grows back.
     let loader = if form.loader.starts_with("Ewo") {
         ewo_render::screens::instances::InstanceLoader::Ewo {
-            manifest_url: DEV_EWO_LOADER_URL.to_string(),
+            manifest_url: ewo_loader_manifest_url(&form.version),
         }
     } else {
         ewo_render::screens::instances::InstanceLoader::Vanilla

@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -36,7 +38,7 @@ public final class EwoReachLock {
 
         boolean wantOverride = false;
         if (EwoModuleData.enabled(AssistSlots.REACH_LOCK)
-                && mc.player != null && mc.screen == null) {
+                && mc.player != null && EwoCompat.screen(mc) == null) {
             float maxDist = EwoModuleData.setting(AssistSlots.REACH_LOCK, 0);
             HitResult hr = mc.hitResult;
             if (hr instanceof EntityHitResult ehr

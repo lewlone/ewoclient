@@ -67,9 +67,12 @@ mod crosshair;
 mod hud;
 mod media;
 mod modules;
+mod perf;
 mod pvp;
 mod skin;
 mod social;
+
+use perf::{Mode, Perf, Sec};
 
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};
@@ -81,9 +84,10 @@ use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use ewo_render::FontStore;
-use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
+use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface, TextureInfo};
 use skia_safe::gpu::{
-    backend_render_targets, direct_contexts, surfaces, Budgeted, DirectContext, SurfaceOrigin,
+    backend_render_targets, backend_textures, direct_contexts, surfaces, Budgeted, DirectContext,
+    Mipmapped, Protected, SurfaceOrigin,
 };
 use skia_safe::image_filters;
 use skia_safe::{
@@ -103,6 +107,11 @@ extern "system" {
     fn wglCreateContext(hdc: *mut c_void) -> *mut c_void;
     fn wglMakeCurrent(hdc: *mut c_void, hglrc: *mut c_void) -> i32;
     fn wglDeleteContext(hglrc: *mut c_void) -> i32;
+    /// Share the GL *object* namespace (textures, buffers, programs) between two
+    /// contexts. Does **not** share GL *state* — the state isolation that keeps
+    /// Skia and Minecraft from corrupting each other is unchanged. `hglrc2` must
+    /// have created no objects yet.
+    fn wglShareLists(hglrc1: *mut c_void, hglrc2: *mut c_void) -> i32;
 }
 #[link(name = "kernel32")]
 extern "system" {
@@ -294,6 +303,36 @@ struct Hud {
     /// Wall-clock seconds of the last frost recompute. `NEG_INFINITY` when the
     /// cache is cold so the next overlay-open frosts immediately.
     last_frosted: f32,
+    /// Opt-in render-thread profiler (gated by a `%TEMP%/ewo-perf.on` sentinel;
+    /// zero per-frame cost when off). See [`perf`].
+    perf: Perf,
+
+    // ── MC-context composite (the per-frame context-switch elimination) ──
+    /// `wglShareLists` succeeded — our GL objects are visible to Minecraft's
+    /// context, so the per-frame composite can run as a quad in *its* context
+    /// with no `wglMakeCurrent`. When false we fall back to the legacy
+    /// switch-every-frame Skia composite.
+    shared: bool,
+    /// GL id of the texture the HUD is painted into. We own it (so the id is
+    /// stable and shareable) and wrap it as `offscreen` for Skia. `0` until the
+    /// first `ensure_offscreen`. Sampled by `composite_mc` in Minecraft's context.
+    hud_tex: u32,
+    /// Shader program that draws `hud_tex` as a full-screen quad. A *shared*
+    /// object (built in our context, used from Minecraft's). `0` if it failed
+    /// to build — then `shared` is forced false.
+    comp_program: u32,
+    /// `u_tex` sampler uniform location in `comp_program`.
+    comp_tex_loc: i32,
+    /// `u_solid` diagnostic-uniform location (fixed-colour test mode).
+    comp_solid_loc: i32,
+    /// Vertex array object for the composite draw. VAOs are **not** shared, so
+    /// this is created lazily in Minecraft's context on the first `composite_mc`.
+    comp_vao: u32,
+    /// Sampler object bound for the composite draw (NEAREST, no mips, clamp). It
+    /// overrides whatever sampler params Skia left on `hud_tex`, guaranteeing the
+    /// texture is *complete* when Minecraft's context samples it — otherwise GL
+    /// returns `(0,0,0,1)` (opaque black). Created lazily with `comp_vao`.
+    comp_sampler: u32,
 }
 
 /// The frosted backdrop is recomputed at most this often. The game behind an
@@ -317,6 +356,82 @@ fn gpu_surface(gr: &mut DirectContext, w: i32, h: i32) -> Option<Surface> {
     )
 }
 
+/// Compile + link the full-screen composite shader. Returns `(program, u_tex
+/// uniform location)`. Built while *our* context is current (init); the program
+/// is a shared GL object so Minecraft's context uses it every frame.
+///
+/// The vertex stage is a `gl_VertexID` full-screen triangle — no VBO or vertex
+/// attributes. The fragment stage samples the HUD texture, flipping V because
+/// Skia paints with a top-left origin; premultiplied-alpha blending is set by
+/// the caller (`ONE, ONE_MINUS_SRC_ALPHA`).
+unsafe fn build_composite_program() -> Option<(u32, i32, i32)> {
+    let vs = b"#version 330 core\n\
+        out vec2 v_uv;\n\
+        void main(){\n\
+        vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n\
+        v_uv = p;\n\
+        gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n\
+        }\0";
+    // `u_solid` is a diagnostic: when set it ignores the texture and outputs a
+    // fixed semi-transparent colour, so a black-screen bug can be split into
+    // "blend/state path" vs "texture-sampling path" without a rebuild.
+    let fs = b"#version 330 core\n\
+        in vec2 v_uv;\n\
+        uniform sampler2D u_tex;\n\
+        uniform int u_solid;\n\
+        out vec4 frag;\n\
+        void main(){\n\
+        if (u_solid != 0) frag = vec4(0.0, 0.55, 0.0, 0.5);\n\
+        else frag = texture(u_tex, vec2(v_uv.x, 1.0 - v_uv.y));\n\
+        }\0";
+
+    let v = compile_shader(gl::VERTEX_SHADER, vs)?;
+    let f = compile_shader(gl::FRAGMENT_SHADER, fs)?;
+    let prog = gl::CreateProgram();
+    gl::AttachShader(prog, v);
+    gl::AttachShader(prog, f);
+    gl::LinkProgram(prog);
+    gl::DeleteShader(v);
+    gl::DeleteShader(f);
+    let mut ok: i32 = 0;
+    gl::GetProgramiv(prog, gl::LINK_STATUS, &mut ok);
+    if ok == 0 {
+        let mut buf = [0u8; 512];
+        let mut len = 0i32;
+        gl::GetProgramInfoLog(prog, buf.len() as i32, &mut len, buf.as_mut_ptr() as *mut i8);
+        log(&format!(
+            "composite program link failed: {}",
+            String::from_utf8_lossy(&buf[..len.max(0) as usize])
+        ));
+        gl::DeleteProgram(prog);
+        return None;
+    }
+    let tex = gl::GetUniformLocation(prog, b"u_tex\0".as_ptr() as *const i8);
+    let solid = gl::GetUniformLocation(prog, b"u_solid\0".as_ptr() as *const i8);
+    Some((prog, tex, solid))
+}
+
+unsafe fn compile_shader(kind: u32, src: &[u8]) -> Option<u32> {
+    let sh = gl::CreateShader(kind);
+    let ptr = src.as_ptr() as *const i8;
+    gl::ShaderSource(sh, 1, &ptr, ptr::null()); // src is NUL-terminated
+    gl::CompileShader(sh);
+    let mut ok: i32 = 0;
+    gl::GetShaderiv(sh, gl::COMPILE_STATUS, &mut ok);
+    if ok == 0 {
+        let mut buf = [0u8; 512];
+        let mut len = 0i32;
+        gl::GetShaderInfoLog(sh, buf.len() as i32, &mut len, buf.as_mut_ptr() as *mut i8);
+        log(&format!(
+            "composite shader compile failed: {}",
+            String::from_utf8_lossy(&buf[..len.max(0) as usize])
+        ));
+        gl::DeleteShader(sh);
+        return None;
+    }
+    Some(sh)
+}
+
 // `Hud` lives in a thread-local for the process lifetime; it is never dropped
 // before exit, so no `Drop`/`wglDeleteContext` cleanup is wired up.
 
@@ -337,6 +452,14 @@ impl Hud {
             log("wglCreateContext failed");
             return None;
         }
+        // Share the GL object namespace so the HUD texture Skia creates in our
+        // context can be sampled from Minecraft's context for the composite quad.
+        // Must precede any object creation in our context (Skia, below). Shares
+        // objects only, never GL state — the isolation model is unchanged.
+        let shared = unsafe { wglShareLists(mc_ctx, our_ctx) } != 0;
+        if !shared {
+            log("wglShareLists failed — composite falls back to per-frame context switch");
+        }
         if unsafe { wglMakeCurrent(hdc, our_ctx) } == 0 {
             log("wglMakeCurrent(dedicated context) failed");
             unsafe { wglDeleteContext(our_ctx) };
@@ -356,6 +479,11 @@ impl Hud {
         })
         .and_then(|interface| direct_contexts::make_gl(interface, None));
 
+        // Build the composite shader program while our context is current — it's
+        // a *shared* object, so Minecraft's context can use it every frame.
+        let (comp_program, comp_tex_loc, comp_solid_loc) =
+            unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
+
         // Hand the thread's context back to Minecraft, success or not.
         unsafe { wglMakeCurrent(hdc, mc_ctx) };
 
@@ -365,6 +493,16 @@ impl Hud {
             return None;
         };
 
+        // The fast (MC-context) composite needs both the shared namespace and a
+        // working shader. Either missing → fall back to the legacy switch path.
+        // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy path too —
+        // a no-rebuild kill switch if the new path misbehaves on a given driver.
+        let force_legacy = std::env::temp_dir().join("ewo-no-mc-composite").exists();
+        if force_legacy {
+            log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
+        }
+        let shared = shared && comp_program != 0 && !force_legacy;
+
         // CPU-side font loading — no GL context needed. Resolves the workspace
         // `assets/fonts/` dir via the compile-time path baked into `ewo-render`.
         let font_store = FontStore::new();
@@ -373,7 +511,25 @@ impl Hud {
             font_store.has_fraunces, font_store.has_jetbrains_mono
         ));
 
-        log("Skia DirectContext created on a dedicated GL context, isolated from Minecraft");
+        let perf = Perf::new();
+        log(&format!(
+            "Skia DirectContext created on a dedicated GL context, isolated from Minecraft \
+             (composite: {}, perf: {})",
+            if shared {
+                "MC-context quad (no per-frame switch)"
+            } else {
+                "legacy per-frame switch"
+            },
+            if perf.enabled {
+                if perf.ab_enabled() {
+                    "ON + A/B"
+                } else {
+                    "ON"
+                }
+            } else {
+                "off"
+            }
+        ));
         Some(Hud {
             hdc,
             mc_ctx,
@@ -391,6 +547,14 @@ impl Hud {
             frost_half: None,
             frost_size: (0, 0),
             last_frosted: f32::NEG_INFINITY,
+            perf,
+            shared,
+            hud_tex: 0,
+            comp_program,
+            comp_tex_loc,
+            comp_solid_loc,
+            comp_vao: 0,
+            comp_sampler: 0,
         })
     }
 
@@ -413,22 +577,26 @@ impl Hud {
             return;
         };
 
-        // From here until we hand it back, the thread runs on our context —
-        // Minecraft's GL state is untouchable.
-        if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
-            log("wglMakeCurrent(dedicated context) failed in frame");
-            return;
+        // Profiler — no-op unless the `%TEMP%/ewo-perf.on` sentinel existed at
+        // init. Records the frame period and returns this frame's A/B mode; in
+        // `Bypass` (only with the `ewo-perf.ab` sentinel) we skip all GPU work
+        // so the HUD's true end-to-end cost is the full-vs-bypass period delta.
+        let prof = self.perf.enabled;
+        let rate_label = self.editor.paint_rate().as_str();
+        let mode = if prof {
+            self.perf.begin_frame(w, h, rate_label)
+        } else {
+            Mode::Full
+        };
+        if mode == Mode::Bypass {
+            return; // HUD blinks off this window; period already recorded
         }
+        let injected_t = prof.then(Instant::now);
 
-        // Minecraft mutated GL state since we last ran — resync Skia's view.
-        self.gr.reset(None);
-        unsafe { gl::Viewport(0, 0, w, h) };
-
-        self.ensure_offscreen(w, h);
-        self.paint(elapsed_secs(), w, h);
-        // E7 glass refract: the MODS/SETTINGS overlay views frost the live
-        // game behind them; the HUD editor leaves it sharp so widgets stay
-        // readable against the game while being positioned.
+        // E7 glass refract: the MODS/SETTINGS overlay views frost the live game
+        // behind them, which needs Skia to read + blur the live framebuffer —
+        // only possible in our context. Those frames (and the fallback when the
+        // shared composite is unavailable) take the legacy switch-in/out path.
         let frost = self.buffer != 0
             && unsafe { hud::HudData::new(self.buffer as *const u8) }.overlay_open()
             && self.editor.frosts_game();
@@ -437,27 +605,343 @@ impl Hud {
             // recomputes immediately instead of flashing a stale frame.
             self.last_frosted = f32::NEG_INFINITY;
         }
-        self.composite(w, h, frost);
 
-        // Hand the thread's context back to Minecraft.
-        unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+        if frost || !self.shared {
+            // ── Legacy path ── full Skia paint + composite in our context, with
+            // one `wglMakeCurrent` in and out. Correct but pays the per-frame
+            // context-switch cost; reserved for frosted overlay views.
+            let t = prof.then(Instant::now);
+            if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
+                log("wglMakeCurrent(dedicated context) failed in frame");
+                return;
+            }
+            if let Some(t) = t {
+                self.perf.rec(Sec::McTo, t.elapsed().as_nanos() as u64);
+            }
+            let resized = self.offscreen_size != (w, h);
+            if resized {
+                let t = prof.then(Instant::now);
+                self.gr.reset(None);
+                if let Some(t) = t {
+                    self.perf.rec(Sec::Reset, t.elapsed().as_nanos() as u64);
+                }
+            }
+            unsafe { gl::Viewport(0, 0, w, h) };
+            self.ensure_offscreen(w, h);
+            let pt = prof.then(Instant::now);
+            let painted = self.paint(elapsed_secs(), w, h);
+            if let (Some(pt), true) = (pt, painted) {
+                self.perf.rec(Sec::Paint, pt.elapsed().as_nanos() as u64);
+                self.perf.note_paint();
+            }
+            self.composite(w, h, frost);
+            let t = prof.then(Instant::now);
+            unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+            if let Some(t) = t {
+                self.perf.rec(Sec::McBack, t.elapsed().as_nanos() as u64);
+            }
+        } else {
+            // ── Fast path ── paint (rate-gated) in our context, but composite
+            // as a quad in *Minecraft's* context with no per-frame switch. On
+            // most frames `should_paint` is false, so we never make our context
+            // current at all — eliding that switch pair is the whole win.
+            let now = elapsed_secs();
+            if self.should_paint(now) {
+                let t = prof.then(Instant::now);
+                if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
+                    log("wglMakeCurrent(dedicated context) failed in frame");
+                    return;
+                }
+                if let Some(t) = t {
+                    self.perf.rec(Sec::McTo, t.elapsed().as_nanos() as u64);
+                }
+                let resized = self.offscreen_size != (w, h);
+                if resized {
+                    let t = prof.then(Instant::now);
+                    self.gr.reset(None);
+                    if let Some(t) = t {
+                        self.perf.rec(Sec::Reset, t.elapsed().as_nanos() as u64);
+                    }
+                }
+                unsafe { gl::Viewport(0, 0, w, h) };
+                self.ensure_offscreen(w, h);
+                let pt = prof.then(Instant::now);
+                let painted = self.paint(now, w, h);
+                if let (Some(pt), true) = (pt, painted) {
+                    self.perf.rec(Sec::Paint, pt.elapsed().as_nanos() as u64);
+                    self.perf.note_paint();
+                }
+                // Submit Skia's writes to `hud_tex` before Minecraft's context
+                // samples it. (Same-thread + flush ⇒ coherent; worst case the
+                // HUD shows one frame late, which the 60 Hz cap makes invisible.)
+                let ft = prof.then(Instant::now);
+                self.gr.flush_and_submit();
+                // DIAGNOSTIC: `ewo-comp-finish` sentinel → a hard GPU sync so the
+                // texture render is guaranteed complete before Minecraft's
+                // context samples it (tests the cross-context coherency theory).
+                if std::env::temp_dir().join("ewo-comp-finish").exists() {
+                    unsafe { gl::Finish() };
+                }
+                if let Some(ft) = ft {
+                    self.perf.rec(Sec::Flush, ft.elapsed().as_nanos() as u64);
+                }
+                let t = prof.then(Instant::now);
+                unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+                if let Some(t) = t {
+                    self.perf.rec(Sec::McBack, t.elapsed().as_nanos() as u64);
+                }
+            }
+            // Composite the HUD texture onto Minecraft's framebuffer in its own
+            // context — every frame, no switch.
+            let bt = prof.then(Instant::now);
+            self.composite_mc(w, h);
+            if let Some(bt) = bt {
+                self.perf.rec(Sec::Blit, bt.elapsed().as_nanos() as u64);
+            }
+        }
+
+        if let Some(it) = injected_t {
+            self.perf.rec(Sec::Injected, it.elapsed().as_nanos() as u64);
+        }
     }
 
-    /// Create (or recreate, on window resize) the offscreen GPU surface the
-    /// HUD is painted to. No-op when one of the right size already exists.
+    /// Whether the paint clock is due (≥ `1 / paint_rate` since the last paint).
+    /// Lets the fast path skip the context switch entirely on non-paint frames.
+    fn should_paint(&self, now: f32) -> bool {
+        now - self.last_painted >= self.editor.paint_rate().min_interval()
+    }
+
+    /// Composite `hud_tex` onto Minecraft's default framebuffer as a full-screen
+    /// quad, drawn in **Minecraft's** GL context (no `wglMakeCurrent`). Every GL
+    /// state bit we touch is saved and restored so Minecraft's own renderer —
+    /// and its Java-side state cache — sees the context exactly as it left it.
+    fn composite_mc(&mut self, w: i32, h: i32) {
+        if self.hud_tex == 0 || self.comp_program == 0 {
+            return; // nothing painted yet, or shader failed — show no HUD
+        }
+        // VAOs are not shared between contexts — create ours lazily here, in
+        // Minecraft's context, the first time we composite. Same for the sampler
+        // object that guarantees texture completeness.
+        if self.comp_vao == 0 {
+            unsafe { gl::GenVertexArrays(1, &mut self.comp_vao) };
+            if self.comp_vao == 0 {
+                return;
+            }
+        }
+        if self.comp_sampler == 0 {
+            unsafe {
+                gl::GenSamplers(1, &mut self.comp_sampler);
+                gl::SamplerParameteri(self.comp_sampler, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+                gl::SamplerParameteri(self.comp_sampler, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+                gl::SamplerParameteri(
+                    self.comp_sampler,
+                    gl::TEXTURE_WRAP_S,
+                    gl::CLAMP_TO_EDGE as i32,
+                );
+                gl::SamplerParameteri(
+                    self.comp_sampler,
+                    gl::TEXTURE_WRAP_T,
+                    gl::CLAMP_TO_EDGE as i32,
+                );
+            }
+            if self.comp_sampler == 0 {
+                return;
+            }
+        }
+
+        unsafe {
+            // ── save the state we are about to clobber ──
+            let mut prev_prog = 0i32;
+            gl::GetIntegerv(gl::CURRENT_PROGRAM, &mut prev_prog);
+            let mut prev_vao = 0i32;
+            gl::GetIntegerv(gl::VERTEX_ARRAY_BINDING, &mut prev_vao);
+            let mut prev_active = 0i32;
+            gl::GetIntegerv(gl::ACTIVE_TEXTURE, &mut prev_active);
+            let mut prev_fbo = 0i32;
+            gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut prev_fbo);
+            let mut prev_vp = [0i32; 4];
+            gl::GetIntegerv(gl::VIEWPORT, prev_vp.as_mut_ptr());
+            let blend_on = gl::IsEnabled(gl::BLEND);
+            let depth_on = gl::IsEnabled(gl::DEPTH_TEST);
+            let cull_on = gl::IsEnabled(gl::CULL_FACE);
+            let scissor_on = gl::IsEnabled(gl::SCISSOR_TEST);
+            let srgb_on = gl::IsEnabled(gl::FRAMEBUFFER_SRGB);
+            let mut b_src_rgb = 0i32;
+            let mut b_dst_rgb = 0i32;
+            let mut b_src_a = 0i32;
+            let mut b_dst_a = 0i32;
+            gl::GetIntegerv(gl::BLEND_SRC_RGB, &mut b_src_rgb);
+            gl::GetIntegerv(gl::BLEND_DST_RGB, &mut b_dst_rgb);
+            gl::GetIntegerv(gl::BLEND_SRC_ALPHA, &mut b_src_a);
+            gl::GetIntegerv(gl::BLEND_DST_ALPHA, &mut b_dst_a);
+            let mut b_eq_rgb = 0i32;
+            let mut b_eq_a = 0i32;
+            gl::GetIntegerv(gl::BLEND_EQUATION_RGB, &mut b_eq_rgb);
+            gl::GetIntegerv(gl::BLEND_EQUATION_ALPHA, &mut b_eq_a);
+            let mut cmask = [0u8; 4];
+            gl::GetBooleanv(gl::COLOR_WRITEMASK, cmask.as_mut_ptr());
+            gl::ActiveTexture(gl::TEXTURE0);
+            let mut prev_tex0 = 0i32;
+            gl::GetIntegerv(gl::TEXTURE_BINDING_2D, &mut prev_tex0);
+            let mut prev_sampler = 0i32;
+            gl::GetIntegerv(gl::SAMPLER_BINDING, &mut prev_sampler);
+
+            // ── set our state + draw ──
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+            gl::Viewport(0, 0, w, h);
+            gl::Disable(gl::DEPTH_TEST);
+            gl::Disable(gl::CULL_FACE);
+            gl::Disable(gl::SCISSOR_TEST);
+            gl::Disable(gl::FRAMEBUFFER_SRGB); // Skia paints non-sRGB RGBA8 — write straight
+            gl::Enable(gl::BLEND);
+            gl::BlendEquationSeparate(gl::FUNC_ADD, gl::FUNC_ADD);
+            gl::BlendFuncSeparate(
+                gl::ONE,
+                gl::ONE_MINUS_SRC_ALPHA,
+                gl::ONE,
+                gl::ONE_MINUS_SRC_ALPHA,
+            );
+            gl::ColorMask(gl::TRUE, gl::TRUE, gl::TRUE, gl::TRUE);
+            gl::UseProgram(self.comp_program);
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::BindTexture(gl::TEXTURE_2D, self.hud_tex);
+            gl::BindSampler(0, self.comp_sampler); // guarantees texture completeness
+            gl::Uniform1i(self.comp_tex_loc, 0);
+            // DIAGNOSTIC: `ewo-comp-solid` sentinel → output a fixed
+            // semi-transparent green instead of sampling, isolating the
+            // blend/state path from the texture-sampling path.
+            let solid = std::env::temp_dir().join("ewo-comp-solid").exists();
+            gl::Uniform1i(self.comp_solid_loc, solid as i32);
+            // Drain any pre-existing GL error so the post-draw check is ours.
+            if self.composites < 4 {
+                let _ = gl::GetError();
+            }
+            gl::BindVertexArray(self.comp_vao);
+            gl::DrawArrays(gl::TRIANGLES, 0, 3);
+            if self.composites < 4 {
+                let err = gl::GetError();
+                if err != gl::NO_ERROR {
+                    log(&format!("composite_mc GL error after draw: 0x{err:x}"));
+                }
+            }
+
+            // ── restore Minecraft's state exactly ──
+            gl::BindVertexArray(prev_vao as u32);
+            gl::BindSampler(0, prev_sampler as u32);
+            gl::BindTexture(gl::TEXTURE_2D, prev_tex0 as u32);
+            gl::ActiveTexture(prev_active as u32);
+            gl::UseProgram(prev_prog as u32);
+            gl::BindFramebuffer(gl::FRAMEBUFFER, prev_fbo as u32);
+            gl::Viewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+            gl::BlendFuncSeparate(
+                b_src_rgb as u32,
+                b_dst_rgb as u32,
+                b_src_a as u32,
+                b_dst_a as u32,
+            );
+            gl::BlendEquationSeparate(b_eq_rgb as u32, b_eq_a as u32);
+            if blend_on == 0 {
+                gl::Disable(gl::BLEND);
+            }
+            if depth_on != 0 {
+                gl::Enable(gl::DEPTH_TEST);
+            }
+            if cull_on != 0 {
+                gl::Enable(gl::CULL_FACE);
+            }
+            if scissor_on != 0 {
+                gl::Enable(gl::SCISSOR_TEST);
+            }
+            if srgb_on != 0 {
+                gl::Enable(gl::FRAMEBUFFER_SRGB);
+            }
+            gl::ColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+        }
+
+        self.composites += 1;
+        if self.composites == 1 {
+            log(&format!(
+                "first MC-context composite ({w}x{h}) — HUD quad in Minecraft's context"
+            ));
+        }
+    }
+
+    /// Create (or recreate, on window resize) the offscreen GPU surface the HUD
+    /// is painted to. No-op when one of the right size already exists.
+    ///
+    /// We back it with a GL texture **we** allocate (rather than a Skia-managed
+    /// render target) so its id is stable and — thanks to `wglShareLists` — can
+    /// be sampled from Minecraft's context by `composite_mc`. Called only while
+    /// our context is current.
     fn ensure_offscreen(&mut self, w: i32, h: i32) {
         if self.offscreen.is_some() && self.offscreen_size == (w, h) {
             return;
         }
-        self.offscreen = gpu_surface(&mut self.gr, w, h);
+        // Drop the old surface first (releases Skia's FBO wrapper), then the
+        // texture it wrapped.
+        self.offscreen = None;
+        if self.hud_tex != 0 {
+            unsafe { gl::DeleteTextures(1, &self.hud_tex) };
+            self.hud_tex = 0;
+        }
+
+        let mut tex = 0u32;
+        unsafe {
+            gl::GenTextures(1, &mut tex);
+            gl::BindTexture(gl::TEXTURE_2D, tex);
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA8 as i32,
+                w,
+                h,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                ptr::null(),
+            );
+            // 1:1 sample (window-sized texture, window-sized quad) — NEAREST is
+            // exact; clamp so the edge texel never wraps.
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+            // Single mip level — keeps the texture mipmap-complete for sampling
+            // (the default MAX_LEVEL is 1000, which would demand mips we don't have).
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_BASE_LEVEL, 0);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAX_LEVEL, 0);
+            gl::BindTexture(gl::TEXTURE_2D, 0);
+        }
+
+        let info = TextureInfo {
+            target: gl::TEXTURE_2D,
+            id: tex,
+            format: gl::RGBA8,
+            protected: Protected::No,
+        };
+        // SAFETY: `tex` is a valid, just-allocated RGBA8 texture of size (w, h).
+        let backend = unsafe { backend_textures::make_gl((w, h), Mipmapped::No, info, "ewo-hud") };
+        self.offscreen = surfaces::wrap_backend_texture(
+            &mut self.gr,
+            &backend,
+            SurfaceOrigin::TopLeft,
+            0, // sample count
+            ColorType::RGBA8888,
+            None,
+            None,
+        );
+
         match &self.offscreen {
             Some(_) => {
+                self.hud_tex = tex;
                 self.offscreen_size = (w, h);
-                log(&format!("offscreen HUD surface created ({w}x{h})"));
+                log(&format!("offscreen HUD texture created ({w}x{h}, gl id {tex})"));
             }
             None => {
+                unsafe { gl::DeleteTextures(1, &tex) };
+                self.hud_tex = 0;
                 self.offscreen_size = (0, 0);
-                log("offscreen HUD surface creation failed");
+                log("offscreen HUD texture wrap failed");
             }
         }
     }
@@ -466,12 +950,12 @@ impl Hud {
     /// least `1 / paint_rate` seconds have passed since the last paint. When
     /// gated out, the offscreen surface keeps its prior contents and
     /// `composite` simply re-blits the stale image.
-    fn paint(&mut self, now: f32, w: i32, h: i32) {
+    fn paint(&mut self, now: f32, w: i32, h: i32) -> bool {
         if now - self.last_painted < self.editor.paint_rate().min_interval() {
-            return; // capped — composite reuses the offscreen surface as-is
+            return false; // capped — composite reuses the offscreen surface as-is
         }
         let Some(surface) = self.offscreen.as_mut() else {
-            return;
+            return false;
         };
         let canvas = surface.canvas();
         // Clear to transparent so only the widgets composite over the game.
@@ -496,6 +980,7 @@ impl Hud {
 
         self.last_painted = now;
         self.paints += 1;
+        true
     }
 
     /// Create (or recreate, on window resize) the two GPU surfaces the cached
@@ -577,6 +1062,8 @@ impl Hud {
     /// cached frosted backdrop is upscaled in first, so the overlay reads as
     /// glass over depth.
     fn composite(&mut self, w: i32, h: i32, frost: bool) {
+        let prof = self.perf.enabled;
+        let wt = prof.then(Instant::now);
         let fb_info = FramebufferInfo {
             fboid: 0, // the window's default framebuffer, shared across both contexts
             format: Format::RGBA8.into(),
@@ -597,6 +1084,9 @@ impl Hud {
                 return;
             }
         };
+        if let Some(wt) = wt {
+            self.perf.rec(Sec::Wrap, wt.elapsed().as_nanos() as u64);
+        }
 
         if frost {
             // Frost the live game before the HUD is blitted on top, so the
@@ -651,6 +1141,7 @@ impl Hud {
             }
         }
 
+        let bt = prof.then(Instant::now);
         if let Some(offscreen) = self.offscreen.as_mut() {
             // `image_snapshot` is copy-on-write: this snapshot is dropped at the
             // end of the frame, so the next `paint` renders into the offscreen
@@ -658,8 +1149,15 @@ impl Hud {
             let image = offscreen.image_snapshot();
             fbo.canvas().draw_image(&image, (0.0, 0.0), None);
         }
+        if let Some(bt) = bt {
+            self.perf.rec(Sec::Blit, bt.elapsed().as_nanos() as u64);
+        }
 
+        let ft = prof.then(Instant::now);
         self.gr.flush_and_submit();
+        if let Some(ft) = ft {
+            self.perf.rec(Sec::Flush, ft.elapsed().as_nanos() as u64);
+        }
 
         self.composites += 1;
         if self.composites == 1 {
@@ -731,6 +1229,28 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeHello(
     let _ = panic::catch_unwind(|| {
         log("nativeHello — JNI bridge alive, Rust side responding");
     });
+}
+
+/// Hard process termination for the mod's exit watchdog.
+///
+/// The JVM's shutdown can deadlock in native teardown (DLL_PROCESS_DETACH
+/// under the Windows loader lock — the 2nd GL context + the WinRT SMTC
+/// media thread are the suspects), leaving a windowless zombie java.exe
+/// that holds this dll + the instance files. `TerminateProcess` skips DLL
+/// detach entirely, so it works even mid-deadlock. Only called by the
+/// watchdog seconds after orderly shutdown (world saves included) finished.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeForceExit(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        let _ = TerminateProcess(GetCurrentProcess(), 0);
+    }
+    #[cfg(not(windows))]
+    std::process::exit(0);
 }
 
 /// Register the shared JVM→Rust data block. Called once at mod init with a

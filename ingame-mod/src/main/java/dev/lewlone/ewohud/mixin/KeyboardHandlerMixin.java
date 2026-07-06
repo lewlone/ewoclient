@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.mixin;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import net.minecraft.client.KeyboardHandler;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
@@ -48,8 +50,8 @@ public class KeyboardHandlerMixin {
 
         // Overlay toggle key — opens the overlay when no screen is showing.
         if (key == EwoKeybinds.overlayKey()) {
-            if (mc.screen == null) {
-                mc.setScreen(new EwoOverlayScreen());
+            if (EwoCompat.screen(mc) == null) {
+                EwoCompat.setScreen(mc, new EwoOverlayScreen());
                 ci.cancel(); // don't let the open keypress fall through to the game
             }
             return;
@@ -57,7 +59,7 @@ public class KeyboardHandlerMixin {
 
         // Module toggle keys — only in-world (no screen open), so a bound key
         // still types normally in chat or menus.
-        if (mc.screen == null && EwoModules.handleKeyPress(key)) {
+        if (EwoCompat.screen(mc) == null && EwoModules.handleKeyPress(key)) {
             ci.cancel();
         }
     }

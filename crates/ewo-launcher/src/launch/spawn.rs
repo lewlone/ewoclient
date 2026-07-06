@@ -67,6 +67,10 @@ fn run_launch(plan: LaunchPlan, tx: Sender<LaunchEvent>) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+    // Don't pop a console window for the game JVM. stdout/stderr are piped
+    // above, so we still stream every log line to the launching screen —
+    // we just don't flash a black `java.exe` console alongside the game.
+    super::no_window(&mut cmd);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

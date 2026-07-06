@@ -2,15 +2,23 @@
 //!
 //! This is the launcher-side mirror of EwoLoader's `BundledMods.BUNDLED_MODS`
 //! list — same set of mod ids, but extended with display metadata + the
-//! per-mod loader-manifest library name so the launcher can:
+//! per-mod loader-manifest library prefix so the launcher can:
 //!
 //! 1. Seed a new Ewo instance's `Instance.mods` with the user-toggleable
 //!    subset, so the Instances UI shows real toggle rows immediately.
 //! 2. At launch time, map a disabled mod id back to the loader-manifest
-//!    library name to strip it from the JVM classpath, and feed the same
+//!    library prefix to strip it from the JVM classpath, and feed the same
 //!    id list to the loader via `-Dfabric.debug.disableModIds=…` so the
 //!    `BundledMods` verification doesn't fire on the intentionally-absent
 //!    mod.
+//! 3. Detect bundled mods a given loader manifest simply doesn't ship
+//!    (e.g. BetterF3 has no MC 26.2 build, so 26.2.json omits it) and
+//!    auto-disable them so the loader-side verification passes.
+//!
+//! The catalog is **version-agnostic**: library matching is by coordinate
+//! *prefix* (`maven.modrinth:iris:`), never the full pinned version, so a
+//! manifest re-pin (26.1 → 26.2 bundle) needs no launcher change. The
+//! per-version truth lives in the EwoLoader manifests.
 //!
 //! Adding a new bundled mod is a three-place change: this catalog, the
 //! EwoLoader manifest's `libraries[]` array, and `BundledMods.BUNDLED_MODS`
@@ -22,25 +30,28 @@ use ewo_render::screens::instances::ModInfo;
 
 /// One bundled-mod row.
 ///
-/// `library_name` matches the EwoLoader manifest's `libraries[].name`
-/// coordinate (the Maven-ish `group:artifact:version` string). The
-/// launcher walks the merged `PerVersion.libraries` looking for entries
-/// whose name equals this one to strip them from the classpath when the
-/// mod is disabled.
+/// `library_prefix` matches the EwoLoader manifest's `libraries[].name`
+/// coordinate up to (and including) the version separator — i.e.
+/// `group:artifact:`. The launcher walks the merged `PerVersion.libraries`
+/// looking for entries whose name starts with this prefix, which keeps the
+/// catalog valid across per-MC-version manifest re-pins.
 pub struct BundledMod {
     pub display_name: &'static str,
     pub category: &'static str,
-    /// Display version shown in the UI mod row. Mirrors the version in
-    /// the loader manifest's library coordinate.
+    /// Display version shown in the UI mod row. Tracks the *newest*
+    /// bundle (currently the 26.2 manifest); instances launched against
+    /// an older manifest line may actually load a slightly older build.
+    /// Cosmetic only — the classpath truth is the manifest.
     pub version: &'static str,
     /// The mod's `fabric.mod.json` id — this is what `BundledMods.BUNDLED_MODS`
     /// on the loader side asserts at startup, and what
     /// `fabric.debug.disableModIds` expects in its comma-separated list.
     pub mod_id: &'static str,
-    /// Coordinate matching the loader manifest's `libraries[].name` so
-    /// the classpath-strip step can find this row by mod-id and remove
-    /// the matching library.
-    pub library_name: &'static str,
+    /// Version-agnostic coordinate prefix matching the loader manifest's
+    /// `libraries[].name` (`group:artifact:` including the trailing colon)
+    /// so the classpath-strip step can find this row's library in any
+    /// manifest line.
+    pub library_prefix: &'static str,
     pub default_on: bool,
     /// Whether this mod is surfaced to the user as a togglable row.
     /// Infrastructure mods (fabric-api, language-kotlin, YACL, placeholder-api)
@@ -57,73 +68,76 @@ pub const CATALOG: &[BundledMod] = &[
     BundledMod {
         display_name: "Fabric API",
         category: "library",
-        version: "0.148.2",
+        version: "0.154.0",
         mod_id: "fabric-api",
-        library_name: "maven.modrinth:fabric-api:0.148.2+26.1.2",
+        library_prefix: "maven.modrinth:fabric-api:",
         default_on: true,
         toggleable: false,
     },
     BundledMod {
         display_name: "Fabric Language Kotlin",
         category: "library",
-        version: "1.13.11",
+        version: "1.13.12",
         mod_id: "fabric-language-kotlin",
-        library_name: "maven.modrinth:fabric-language-kotlin:1.13.11+kotlin.2.3.21",
+        library_prefix: "maven.modrinth:fabric-language-kotlin:",
         default_on: true,
         toggleable: false,
     },
     BundledMod {
         display_name: "YetAnotherConfigLib",
         category: "library",
-        version: "3.9.3",
+        version: "3.9.5",
         mod_id: "yet_another_config_lib_v3",
-        library_name: "maven.modrinth:yacl:3.9.3+26.1-fabric",
+        library_prefix: "maven.modrinth:yacl:",
         default_on: true,
         toggleable: false,
     },
     BundledMod {
         display_name: "Text Placeholder API",
         category: "library",
-        version: "3.0.0",
+        version: "3.1.0",
         mod_id: "placeholder-api",
-        library_name: "maven.modrinth:placeholder-api:3.0.0+26.1",
+        library_prefix: "maven.modrinth:placeholder-api:",
         default_on: true,
         toggleable: false,
     },
     BundledMod {
         display_name: "Cloth Config",
         category: "library",
-        version: "26.1.154",
+        version: "26.2.155",
         mod_id: "cloth-config",
-        library_name: "maven.modrinth:cloth-config:26.1.154+fabric",
+        library_prefix: "maven.modrinth:cloth-config:",
         default_on: true,
         toggleable: false,
     },
     // ── Performance ──────────────────────────────────────────────────
     BundledMod {
+        // 0.9.0, not 0.9.1-beta: the 26.2 bundle pins the launch-day
+        // stable trio (Sodium 0.9.0 + Iris 1.11.1 + RSO 2.0.5) — the
+        // 0.9.1 beta line declares it breaks Iris <= 1.11.1.
         display_name: "Sodium",
         category: "performance",
-        version: "0.8.9",
+        version: "0.9.0",
         mod_id: "sodium",
-        library_name: "maven.modrinth:sodium:mc26.1.1-0.8.9-fabric",
+        library_prefix: "maven.modrinth:sodium:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "Lithium",
         category: "performance",
-        version: "0.24.2",
+        version: "0.25.1",
         mod_id: "lithium",
-        library_name: "maven.modrinth:lithium:mc26.1.2-0.24.2-fabric",
+        library_prefix: "maven.modrinth:lithium:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "ImmediatelyFast",
         category: "performance",
-        version: "1.15.2",
+        version: "1.16.1",
         mod_id: "immediatelyfast",
-        library_name: "maven.modrinth:immediatelyfast:1.15.2+26.1.2-fabric",
+        library_prefix: "maven.modrinth:immediatelyfast:",
         default_on: true,
         toggleable: true,
     },
@@ -132,25 +146,25 @@ pub const CATALOG: &[BundledMod] = &[
         category: "performance",
         version: "9.0.0",
         mod_id: "ferritecore",
-        library_name: "maven.modrinth:ferrite-core:9.0.0-fabric",
+        library_prefix: "maven.modrinth:ferrite-core:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "Entity Culling",
         category: "performance",
-        version: "1.10.2",
+        version: "1.10.5",
         mod_id: "entityculling",
-        library_name: "maven.modrinth:entityculling:1.10.2",
+        library_prefix: "maven.modrinth:entityculling:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "More Culling",
         category: "performance",
-        version: "1.7.0",
+        version: "1.8.0",
         mod_id: "moreculling",
-        library_name: "maven.modrinth:moreculling:1.7.0",
+        library_prefix: "maven.modrinth:moreculling:",
         default_on: true,
         toggleable: true,
     },
@@ -158,18 +172,18 @@ pub const CATALOG: &[BundledMod] = &[
     BundledMod {
         display_name: "Iris Shaders",
         category: "visuals",
-        version: "1.10.9",
+        version: "1.11.1",
         mod_id: "iris",
-        library_name: "maven.modrinth:iris:1.10.9+26.1-fabric",
+        library_prefix: "maven.modrinth:iris:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "LambDynamicLights",
         category: "visuals",
-        version: "4.10.2",
+        version: "4.12.2",
         mod_id: "lambdynlights",
-        library_name: "maven.modrinth:lambdynamiclights:4.10.2+26.1.2",
+        library_prefix: "maven.modrinth:lambdynamiclights:",
         default_on: true,
         toggleable: true,
     },
@@ -178,16 +192,16 @@ pub const CATALOG: &[BundledMod] = &[
         category: "visuals",
         version: "3.0.1",
         mod_id: "continuity",
-        library_name: "maven.modrinth:continuity:3.0.1-beta.2+26.1",
+        library_prefix: "maven.modrinth:continuity:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "Distant Horizons",
         category: "visuals",
-        version: "3.0.3",
+        version: "3.1.2",
         mod_id: "distanthorizons",
-        library_name: "maven.modrinth:distanthorizons:3.0.3-b-26.1.2",
+        library_prefix: "maven.modrinth:distanthorizons:",
         // Heavy: 30 MB jar, LOD-renders distant chunks, opinionated.
         // Default-off so the user opts in rather than out.
         default_on: false,
@@ -197,9 +211,9 @@ pub const CATALOG: &[BundledMod] = &[
     BundledMod {
         display_name: "Mod Menu",
         category: "utility",
-        version: "18.0.0",
+        version: "20.0.0",
         mod_id: "modmenu",
-        library_name: "maven.modrinth:modmenu:18.0.0-beta.1",
+        library_prefix: "maven.modrinth:modmenu:",
         default_on: true,
         toggleable: true,
     },
@@ -208,34 +222,37 @@ pub const CATALOG: &[BundledMod] = &[
         category: "utility",
         version: "2.0.5",
         mod_id: "reeses-sodium-options",
-        library_name: "maven.modrinth:reeses-sodium-options:mc26.1.1-2.0.5+fabric",
+        library_prefix: "maven.modrinth:reeses-sodium-options:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
+        // No MC 26.2 build upstream as of 2026-07 — present in the 26.1
+        // manifest only. On manifest lines that omit it,
+        // `missing_bundled_ids` auto-disables it at launch.
         display_name: "BetterF3",
         category: "utility",
         version: "18.0.2",
         mod_id: "betterf3",
-        library_name: "maven.modrinth:betterf3:18.0.2",
+        library_prefix: "maven.modrinth:betterf3:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "AppleSkin",
         category: "utility",
-        version: "3.0.9",
+        version: "3.0.10",
         mod_id: "appleskin",
-        library_name: "maven.modrinth:appleskin:3.0.9+mc26.1",
+        library_prefix: "maven.modrinth:appleskin:",
         default_on: true,
         toggleable: true,
     },
     BundledMod {
         display_name: "Zoomify",
         category: "utility",
-        version: "2.16.0",
+        version: "2.16.1",
         mod_id: "zoomify",
-        library_name: "maven.modrinth:zoomify:2.16.0+26.1",
+        library_prefix: "maven.modrinth:zoomify:",
         default_on: true,
         toggleable: true,
     },
@@ -243,9 +260,9 @@ pub const CATALOG: &[BundledMod] = &[
     BundledMod {
         display_name: "Simple Voice Chat",
         category: "social",
-        version: "2.6.17",
+        version: "2.6.20",
         mod_id: "voicechat",
-        library_name: "maven.modrinth:simple-voice-chat:fabric-2.6.17+26.1.2",
+        library_prefix: "maven.modrinth:simple-voice-chat:",
         default_on: true,
         toggleable: true,
     },
@@ -314,16 +331,37 @@ pub fn disabled_mod_ids(mods: &[ModInfo]) -> Vec<&'static str> {
         .collect()
 }
 
-/// Map a set of disabled mod ids to the loader-manifest library names
-/// that should be stripped from the JVM classpath. Lookup is by `mod_id`
-/// across the full catalog (infrastructure entries included, although in
-/// practice only toggleable ids appear in the disabled list).
-pub fn library_names_for_disabled(disabled_ids: &[&str]) -> Vec<&'static str> {
+/// Map a set of disabled mod ids to the loader-manifest library prefixes
+/// whose matching libraries should be stripped from the JVM classpath.
+/// Lookup is by `mod_id` across the full catalog (infrastructure entries
+/// included, although in practice only toggleable ids appear in the
+/// disabled list).
+pub fn library_prefixes_for_disabled(disabled_ids: &[&str]) -> Vec<&'static str> {
     let set: std::collections::HashSet<&str> = disabled_ids.iter().copied().collect();
     CATALOG
         .iter()
         .filter(|m| set.contains(m.mod_id))
-        .map(|m| m.library_name)
+        .map(|m| m.library_prefix)
+        .collect()
+}
+
+/// Catalog mod ids with no matching library in the merged `PerVersion`
+/// library set — i.e. bundled mods this manifest line simply doesn't ship
+/// (BetterF3 has no MC 26.2 build, so 26.2.json omits it). The caller
+/// appends these to `-Dfabric.debug.disableModIds` so the loader-side
+/// `BundledMods` verification subtracts them instead of failing loud on a
+/// mod that was never on the classpath.
+pub fn missing_bundled_ids<'a>(
+    library_names: impl Iterator<Item = &'a str> + Clone,
+) -> Vec<&'static str> {
+    CATALOG
+        .iter()
+        .filter(|m| {
+            !library_names
+                .clone()
+                .any(|name| name.starts_with(m.library_prefix))
+        })
+        .map(|m| m.mod_id)
         .collect()
 }
 
@@ -345,7 +383,7 @@ mod tests {
     fn sync_adds_missing_and_preserves_flips() {
         // Start with only Sodium present and flipped off; sync should
         // grow to full toggleable list with Sodium kept as off.
-        let mut mods = vec![ModInfo::new("Sodium", "0.8.9", "performance", false)];
+        let mut mods = vec![ModInfo::new("Sodium", "0.9.1", "performance", false)];
         let changed = sync_mods_with_catalog(&mut mods);
         assert!(changed);
         let sodium = mods.iter().find(|m| m.name == "Sodium").expect("sodium");
@@ -373,8 +411,8 @@ mod tests {
         let disabled = disabled_mod_ids(&mods);
         assert_eq!(disabled, vec!["iris"]);
 
-        let libs = library_names_for_disabled(&disabled);
-        assert_eq!(libs, vec!["maven.modrinth:iris:1.10.9+26.1-fabric"]);
+        let libs = library_prefixes_for_disabled(&disabled);
+        assert_eq!(libs, vec!["maven.modrinth:iris:"]);
     }
 
     #[test]
@@ -383,5 +421,33 @@ mod tests {
         // (everything's default_on=true).
         let disabled = disabled_mod_ids(&[]);
         assert!(disabled.is_empty());
+    }
+
+    #[test]
+    fn prefix_matching_is_version_agnostic() {
+        // The same prefix must match both the 26.1 and 26.2 manifest pins.
+        let iris = CATALOG.iter().find(|m| m.mod_id == "iris").expect("iris");
+        assert!("maven.modrinth:iris:1.10.9+26.1-fabric".starts_with(iris.library_prefix));
+        assert!("maven.modrinth:iris:1.11.1+26.2-fabric".starts_with(iris.library_prefix));
+    }
+
+    #[test]
+    fn missing_bundled_ids_flags_manifest_gaps() {
+        // A merged library set shaped like the 26.2 manifest (everything
+        // except betterf3) → exactly betterf3 reported missing.
+        let names: Vec<String> = CATALOG
+            .iter()
+            .filter(|m| m.mod_id != "betterf3")
+            .map(|m| format!("{}some-26.2-version", m.library_prefix))
+            .collect();
+        let missing = missing_bundled_ids(names.iter().map(|s| s.as_str()));
+        assert_eq!(missing, vec!["betterf3"]);
+
+        // Full set → nothing missing.
+        let all: Vec<String> = CATALOG
+            .iter()
+            .map(|m| format!("{}v", m.library_prefix))
+            .collect();
+        assert!(missing_bundled_ids(all.iter().map(|s| s.as_str())).is_empty());
     }
 }

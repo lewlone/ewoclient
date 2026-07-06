@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -35,7 +37,7 @@ public final class EwoAutoHitTiming {
 
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.options == null
-                || mc.gameMode == null || mc.screen != null) {
+                || mc.gameMode == null || EwoCompat.screen(mc) != null) {
             return;
         }
         if (!mc.options.keyAttack.isDown()) {

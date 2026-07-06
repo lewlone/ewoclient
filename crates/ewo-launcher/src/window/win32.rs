@@ -56,6 +56,12 @@ pub fn configure(window: &Window) {
     if let Err(e) = res {
         log::warn!("DwmSetWindowAttribute(corner_preference) failed: {e:?}");
     }
+
+    // NOTE: per-pixel alpha (the transparent rounded corners) is provided by the
+    // DirectComposition presentation backend in `ewo-render::gl_backend`, not by
+    // any DWM attribute here. The old `DwmEnableBlurBehindWindow` alpha hack was
+    // removed — it never worked on this Win11 build and would only interfere
+    // with the no-redirection-bitmap window DComp needs.
 }
 
 /// Returns `true` when the given window is the OS's foreground window —

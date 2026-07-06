@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -75,7 +77,7 @@ public final class EwoAutoEat {
             return;
         }
 
-        if (mc.screen != null) return;
+        if (EwoCompat.screen(mc) != null) return;
         if (mc.options.keyAttack.isDown()) return;
         if (EwoActionMotor.busy()) return;
         if (mc.gameMode == null) return;

@@ -98,7 +98,10 @@ fn scan() -> Vec<DetectedJre> {
 /// `java version "21.0.8" 2025-07-15 LTS` → 21,
 /// `openjdk version "1.8.0_392" ...` → 8).
 fn read_java_major(java_exe: &Path) -> Option<u32> {
-    let out = Command::new(java_exe).arg("-version").output().ok()?;
+    let mut cmd = Command::new(java_exe);
+    cmd.arg("-version");
+    super::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
     // `java -version` writes to stderr by historical convention.
     let combined = format!(
         "{}{}",
@@ -132,7 +135,10 @@ fn parse_major(version_text: &str) -> Option<u32> {
 fn add_path_lookup(out: &mut Vec<PathBuf>) {
     // `where java` returns multiple matches across PATH; we collect them all.
     if cfg!(target_os = "windows") {
-        if let Ok(o) = Command::new("where").arg("java").output() {
+        let mut cmd = Command::new("where");
+        cmd.arg("java");
+        super::no_window(&mut cmd);
+        if let Ok(o) = cmd.output() {
             let text = String::from_utf8_lossy(&o.stdout);
             for line in text.lines() {
                 let p = PathBuf::from(line.trim());

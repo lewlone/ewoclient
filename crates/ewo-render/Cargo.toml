@@ -19,3 +19,9 @@ gl.workspace = true
 log.workspace = true
 rand.workspace = true
 serde.workspace = true
+
+# Windows-only: DirectComposition presentation backend (see gl_backend.rs).
+# Skia's D3D12 backend + a composition swapchain give true per-pixel-alpha
+# rounded corners, which a WGL swapchain can't on Win11.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true

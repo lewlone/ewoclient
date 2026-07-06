@@ -47,8 +47,8 @@ rand = "0.8"
 # Software framebuffer for step 1 (replaced by Skia GL surface in step 2)
 softbuffer = "0.4"
 
-# Step 2 — Skia GL stack
-skia-safe = { version = "0.78", features = ["gl", "textlayout"] }
+# Step 2 — Skia GL stack (+ d3d for the Windows DirectComposition backend)
+skia-safe = { version = "0.78", features = ["gl", "textlayout", "d3d"] }
 glutin = "0.32"
 glutin-winit = "0.5"
 raw-window-handle = "0.6"
@@ -85,6 +85,15 @@ version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # Windows DirectComposition backend (true per-pixel-alpha rounded corners):
+    # Skia's D3D12 backend renders into a composition swapchain with
+    # premultiplied alpha, presented through a DComp visual on a
+    # WS_EX_NOREDIRECTIONBITMAP window. See `ewo-render/src/gl_backend.rs`.
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_DirectComposition",
     # LEAK_HUNT_INSTRUMENT — these two enable `GetProcessMemoryInfo` in
     # `crates/ewo-launcher/src/window/win32.rs::process_memory`. Strip
     # them when the leak-hunt instrumentation is removed.

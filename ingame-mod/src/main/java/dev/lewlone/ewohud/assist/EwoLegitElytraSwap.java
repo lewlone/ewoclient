@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import java.util.function.Predicate;
 
 import dev.lewlone.ewohud.EwoModuleData;
@@ -47,7 +49,7 @@ public final class EwoLegitElytraSwap {
         }
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.player == null || mc.screen != null) {
+        if (mc == null || mc.player == null || EwoCompat.screen(mc) != null) {
             return;
         }
 
@@ -100,17 +102,17 @@ public final class EwoLegitElytraSwap {
 
     private static void openInventoryStep() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.player == null || mc.screen != null) {
+        if (mc == null || mc.player == null || EwoCompat.screen(mc) != null) {
             EwoActionMotor.abort();
             return;
         }
-        mc.setScreen(new InventoryScreen(mc.player));
+        EwoCompat.setScreen(mc, new InventoryScreen(mc.player));
     }
 
     private static void clickChestStep() {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.gameMode == null
-                || !(mc.screen instanceof InventoryScreen)) {
+                || !(EwoCompat.screen(mc) instanceof InventoryScreen)) {
             EwoActionMotor.abort();
             return;
         }
@@ -131,7 +133,7 @@ public final class EwoLegitElytraSwap {
     private static void clickSlotStep(int containerSlot) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.gameMode == null
-                || !(mc.screen instanceof InventoryScreen)) {
+                || !(EwoCompat.screen(mc) instanceof InventoryScreen)) {
             EwoActionMotor.abort();
             return;
         }
@@ -154,7 +156,7 @@ public final class EwoLegitElytraSwap {
         if (mc == null || mc.player == null) {
             return;
         }
-        if (mc.screen instanceof InventoryScreen) {
+        if (EwoCompat.screen(mc) instanceof InventoryScreen) {
             mc.player.closeContainer();
         }
     }

@@ -79,7 +79,7 @@ public final class EwoIndicators {
             return;
         }
         LocalPlayer player = mc.player;
-        Camera cam = mc.gameRenderer.getMainCamera();
+        Camera cam = EwoCompat.mainCamera(mc.gameRenderer);
         Vec3 camPos = cam.position();
         Quaternionf invRot = cam.rotation().conjugate(new Quaternionf());
         float fovDeg = cam.getFov();

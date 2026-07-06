@@ -73,9 +73,14 @@ try {
 }
 
 # Classpath: the Minecraft jar (Mojmap-named) plus every shared library.
-$mc = Join-Path $ewo "shared\versions\26.1.1\26.1.1.jar"
+# Compile against the 26.2 jar: it resolves every class the 26.1 mixins
+# reference (Gui, RenderSystem, TracyFrameCapture, MultiBufferSource all
+# still exist there) PLUS the 26.2-only class literals the 262 mixin
+# variants need (Hud, SubmitNodeCollector). The reverse is not true — the
+# 26.1 jar cannot compile the 262 variants.
+$mc = Join-Path $ewo "shared\versions\26.2\26.2.jar"
 if (-not (Test-Path $mc)) {
-    throw "Minecraft 26.1.1 jar not found at $mc - launch 26.1.1 once to download it."
+    throw "Minecraft 26.2 jar not found at $mc - launch (or start downloading) a 26.2 instance once, or copy the official client jar there."
 }
 $libs = (Get-ChildItem -Recurse (Join-Path $ewo "shared\libraries") -Filter *.jar).FullName
 $cp = (@($mc) + $libs) -join ";"
@@ -96,7 +101,16 @@ if ($Pvp) {
     $srcs = @($allSrcs | Where-Object { -not $_.StartsWith($assistDir + [IO.Path]::DirectorySeparatorChar) })
 }
 
-& (Join-Path $jdk "javac.exe") --release 21 -proc:none -cp $cp -d $out $srcs
+# The classpath (every jar in shared/libraries) blew past the Windows
+# command-line length limit once the 26.2 mod set doubled the library
+# count — pass everything to javac via an @argfile instead. javac argfile
+# quoting: backslashes must be escaped, values with spaces quoted.
+$argFile = Join-Path $build "javac-args.txt"
+$quote = { param($s) '"' + ($s -replace '\\', '\\') + '"' }
+$argLines = @("--release", "21", "-proc:none", "-cp", (& $quote $cp), "-d", (& $quote $out))
+$argLines += $srcs | ForEach-Object { & $quote $_ }
+Set-Content -Path $argFile -Value $argLines -Encoding ascii
+& (Join-Path $jdk "javac.exe") "@$argFile"
 if ($LASTEXITCODE -ne 0) { throw "javac failed" }
 
 # Resource layout. The legit jar ships exactly one mixin config

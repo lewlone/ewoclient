@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.mixin;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
 import net.minecraft.client.gui.screens.Screen;
@@ -28,7 +30,7 @@ import dev.lewlone.ewohud.EwoOverlayScreen;
  * the vanilla screen never sees the press. Otherwise the call falls through
  * untouched and vanilla handles it normally.
  *
- * <p>The press only forwards when {@code mc.screen != null} (cursor is free
+ * <p>The press only forwards when {@code EwoCompat.screen(mc) != null} (cursor is free
  * for the user to actually click) and the screen isn't our own
  * {@link EwoOverlayScreen} (which routes its own input through
  * {@code nativeMouseButton} already).
@@ -50,7 +52,7 @@ public class MouseHandlerInputMixin {
         if (mc == null) {
             return;
         }
-        Screen screen = mc.screen;
+        Screen screen = EwoCompat.screen(mc);
         // Gameplay (cursor grabbed) → vanilla path. Overlay open → already
         // forwarded via EwoOverlayScreen. Otherwise: vanilla menu, hit-test.
         if (screen == null || screen instanceof EwoOverlayScreen) {

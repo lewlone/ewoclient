@@ -39,4 +39,7 @@ windows = { version = "0.58", features = [
     "Media",
     "Media_Control",
     "Storage_Streams",
+    # nativeForceExit — TerminateProcess for the mod's exit watchdog (the
+    # JVM's native teardown can deadlock at DLL detach; see EwoHudMod).
+    "Win32_System_Threading",
 ] }

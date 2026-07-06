@@ -240,7 +240,7 @@ public final class EwoHudData {
             b.putInt(OFF_TARGET_PRESENT, 0);
         }
 
-        if (mc.screen instanceof EwoOverlayScreen) {
+        if (EwoCompat.screen(mc) instanceof EwoOverlayScreen) {
             flags |= FLAG_OVERLAY;
         }
 

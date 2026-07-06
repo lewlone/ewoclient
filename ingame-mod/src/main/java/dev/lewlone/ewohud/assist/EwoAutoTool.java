@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -44,7 +46,7 @@ public final class EwoAutoTool {
 
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.level == null
-                || mc.options == null || mc.screen != null) {
+                || mc.options == null || EwoCompat.screen(mc) != null) {
             lastTarget = null;
             return;
         }

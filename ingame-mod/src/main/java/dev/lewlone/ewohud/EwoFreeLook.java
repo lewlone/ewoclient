@@ -88,7 +88,7 @@ public final class EwoFreeLook {
                 && GLFW.glfwGetKey(window, key) == GLFW.GLFW_PRESS;
         boolean want = keyDown
                 && EwoModuleData.enabled(EwoModuleData.FREELOOK)
-                && mc != null && mc.player != null && mc.screen == null;
+                && mc != null && mc.player != null && EwoCompat.screen(mc) == null;
 
         long now = System.nanoTime();
         float dt = lastNanos == 0L ? 0f : Math.min((now - lastNanos) / 1.0e9f, MAX_DT);

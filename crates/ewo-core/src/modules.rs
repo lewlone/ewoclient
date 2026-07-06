@@ -468,7 +468,7 @@ pub const REGISTRY: &[ModuleDef] = &[
     #[cfg(feature = "pvp")]
     ModuleDef {
         id: "swing_cadence",
-        name: "Swing Cadence",
+        name: "Triggerbot",
         description: "Auto-fires the next swing as soon as your attack-strength fills while your crosshair is on a living entity in reach. Humanized cadence (interval cap + ms jitter + target-acquired reaction delay). Doesn't aim — that's still your job.",
         category: ModuleCategory::Movement,
         default_enabled: false,
@@ -528,11 +528,11 @@ pub const REGISTRY: &[ModuleDef] = &[
                 // under the "every-tick" pattern detection. Pair with
                 // `jitter_ms` to break up the regular cadence.
                 id: "min_interval_ms",
-                label: "Min interval (ms)",
-                min: 100.0,
+                label: "Min interval (ms, 0 = cooldown-limited)",
+                min: 0.0,
                 max: 600.0,
                 step: 10.0,
-                default: 200.0,
+                default: 0.0,
             },
             ModuleSetting {
                 // Randomized ±ms jitter added on top of `min_interval_ms`

@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -39,7 +41,7 @@ public final class EwoAutoJumpReset {
             lastHealth = -1f;
             return;
         }
-        if (mc.screen != null) {
+        if (EwoCompat.screen(mc) != null) {
             return;
         }
 

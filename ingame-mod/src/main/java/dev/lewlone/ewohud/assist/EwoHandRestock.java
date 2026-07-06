@@ -1,5 +1,7 @@
 package dev.lewlone.ewohud.assist;
 
+import dev.lewlone.ewohud.EwoCompat;
+
 import dev.lewlone.ewohud.EwoModuleData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
@@ -53,7 +55,7 @@ public final class EwoHandRestock {
 
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.player.connection == null
-                || mc.screen != null) {
+                || EwoCompat.screen(mc) != null) {
             return;
         }
 
@@ -126,17 +128,17 @@ public final class EwoHandRestock {
 
     private static void openInventoryStep() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.player == null || mc.screen != null) {
+        if (mc == null || mc.player == null || EwoCompat.screen(mc) != null) {
             EwoActionMotor.abort();
             return;
         }
-        mc.setScreen(new InventoryScreen(mc.player));
+        EwoCompat.setScreen(mc, new InventoryScreen(mc.player));
     }
 
     private static void swapToHotbarStep(int sourceContainerSlot, int destHotbarButton) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || mc.gameMode == null
-                || !(mc.screen instanceof InventoryScreen)) {
+                || !(EwoCompat.screen(mc) instanceof InventoryScreen)) {
             EwoActionMotor.abort();
             return;
         }
@@ -162,7 +164,7 @@ public final class EwoHandRestock {
         if (mc == null || mc.player == null) {
             return;
         }
-        if (mc.screen instanceof InventoryScreen) {
+        if (EwoCompat.screen(mc) instanceof InventoryScreen) {
             mc.player.closeContainer();
         }
     }
