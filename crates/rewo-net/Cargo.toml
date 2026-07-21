@@ -1,0 +1,13 @@
+[package]
+name = "rewo-net"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rewo-proto = { workspace = true }
+rewo-data = { workspace = true }
+rewo-world = { workspace = true }
+log = { workspace = true }

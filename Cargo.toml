@@ -8,6 +8,10 @@ members = [
     "crates/ewo-jni",
     "crates/rewo-gpu",
     "crates/rewo-app",
+    "crates/rewo-proto",
+    "crates/rewo-data",
+    "crates/rewo-net",
+    "crates/rewo-world",
 ]
 
 [workspace.package]
@@ -90,6 +94,10 @@ ewo-core = { path = "crates/ewo-core" }
 ewo-render = { path = "crates/ewo-render" }
 ewo-ui = { path = "crates/ewo-ui" }
 rewo-gpu = { path = "crates/rewo-gpu" }
+rewo-proto = { path = "crates/rewo-proto" }
+rewo-data = { path = "crates/rewo-data" }
+rewo-net = { path = "crates/rewo-net" }
+rewo-world = { path = "crates/rewo-world" }
 
 # Platform: Windows
 [workspace.dependencies.windows]

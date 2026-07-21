@@ -1572,6 +1572,22 @@ apply.
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
   overlay + GPU timestamps + tracy. Verified headlessly on the RTX 5080:
   ~4.3k fps clear+overlay, cpu p99 0.87 ms, validation-clean.
+- **M1 shipped 2026-07-21** (`crates/rewo-proto` + `rewo-data` + `rewo-world`
+  + `rewo-net`): the full vanilla protocol — Handshake→Login(offline)→
+  Configuration→Play with zlib compression + the liveness contract, chunk/
+  light/entity decode, packet record/replay. Ground truth = the decompiled
+  26.2 jar (Vineflower) + Mojang datagen reports under
+  `%APPDATA%/EwoClient/rewo/26.2/` (git-ignored, derived from the user's own
+  download). **Verified against a live vanilla 26.2 offline flat-world server
+  Claude set up + ran headlessly**: 329 chunks decoded with zero failures,
+  block queries hit the exact flat-world layers (bedrock/dirt/grass/air), and
+  replay reproduced the live world digest bit-for-bit. `rewo net soak` /
+  `rewo net replay` are the M1 verification tools. Key wire gotchas captured:
+  the paletted long array is **fixed-size, not length-prefixed**; each 16³
+  section starts with **two shorts (non-empty + fluid count)**; packet ids
+  are resolved **by name** from the datagen report so a version bump fails
+  loud instead of misfiring. **Not yet done:** the launcher `InstanceLoader::
+  Native` arm (driven via `rewo net` directly for now) — first M2 task.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

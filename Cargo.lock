@@ -2135,9 +2135,23 @@ dependencies = [
  "env_logger",
  "log",
  "raw-window-handle",
+ "rewo-data",
  "rewo-gpu",
+ "rewo-net",
  "tracy-client",
  "winit",
+]
+
+[[package]]
+name = "rewo-data"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "log",
+ "serde",
+ "serde_json",
+ "sha1",
+ "ureq",
 ]
 
 [[package]]
@@ -2151,6 +2165,32 @@ dependencies = [
  "log",
  "png",
  "raw-window-handle",
+]
+
+[[package]]
+name = "rewo-net"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rewo-data",
+ "rewo-proto",
+ "rewo-world",
+]
+
+[[package]]
+name = "rewo-proto"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
+name = "rewo-world"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rewo-data",
+ "rewo-proto",
 ]
 
 [[package]]

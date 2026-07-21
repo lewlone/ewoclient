@@ -628,3 +628,79 @@ work is exercised through the real launcher with a real account.
     alpha-masked UI writes.
 - Next: **M1** (rewo-data datagen + codec + local offline Paper 26.2 soak +
   record/replay + `Native` instance wiring).
+
+**2026-07-21 — M1 protocol foundation shipped + headlessly verified.**
+
+Connected to a real vanilla 26.2 server, walked the full protocol, decoded
+the world, and proved replay equivalence — all without a human at a window.
+
+- **Ground truth captured.** Decompiled the bundled `26.2.jar` with
+  Vineflower 1.12 (Mojmap source at `<data>/rewo/26.2/decompiled/`, 39.7k
+  log lines) and ran Mojang's data generator off `server.jar`
+  (`--reports` → `blocks.json` 32,366 states, `packets.json`,
+  `registries.json`) under `<data>/rewo/26.2/datagen/`. Every wire layout
+  below was read from that source, not guessed.
+- **`crates/rewo-proto`** — VarInt/VarLong (canonical-vector tested),
+  primitive reader/writer, packed Position, network NBT (unnamed root,
+  hostile-length-guarded), frame codec with zlib compression. 11 unit tests.
+- **`crates/rewo-data`** — parses the datagen reports into runtime tables:
+  `blocks` (state id → name, air=0 assertion, 15-bit global palette derived),
+  `packets` (id ↔ name by (state,dir), resolved by *name* at connect so a
+  version bump can't silently misfire — REWO_PLAN §11), server-jar
+  ensure/sha1.
+- **`crates/rewo-world`** — paletted container decode (single/indirect/
+  direct, **fixed-size long array, no length prefix** — the format detail
+  that had to be exactly right), 16³ sections with **two leading shorts
+  (non-empty + fluid count)**, dimension shape from the wire
+  `dimension_type` registry NBT (`min_y`/`height`), block-light/sky-light
+  nibble arrays distributed by Y-mask, entity table, `block_state_at` query,
+  commutative FNV world digest. Palette round-trip unit tests
+  (single/indirect/direct).
+- **`crates/rewo-net`** — the connection state machine:
+  Handshake→Login(offline)→Configuration→Play with zlib compression,
+  the liveness contract (keep-alive, ping/pong, teleport confirm,
+  chunk-batch ack, known-packs empty-reply, brand + client-information,
+  cookie stubs, config re-entry), chunk/block-update/add-entity/
+  forget-chunk decode into `rewo-world`, and a packet **recorder + replay
+  driver**. Packet ids resolved by name via `ids::Ids` (fails loud on a
+  missing required packet).
+- **`rewo net` subcommand** (`crates/rewo-app/src/net_cmd.rs`): `soak`
+  (connect N seconds, decode, stats + digest, optional record + block
+  query) and `replay` (re-decode a recording, compare digest).
+
+  **Verified against a live vanilla 26.2 offline flat-world server** (set up
+  + run headlessly by Claude on `127.0.0.1:25599`):
+  - Reached Play, answered keep-alive + teleport, took **8k+ play packets /
+    2.5 MB** over a 20 s soak.
+  - **329 chunks decoded, zero decode failures.**
+  - Block queries hit the flat-world layers exactly: `(0,-64,0)=bedrock`,
+    `(5,-62,5)=dirt`, `(0,-61,0)=grass_block`, `(8,100,8)=air`.
+  - **Replay equivalence:** replaying the recording reproduced the live
+    world digest `0x194468be04d129e8` bit-for-bit (329 chunks both sides).
+  - 18 unit tests green across the M0+M1 crates.
+
+- **How to reproduce the ground-truth + server** (one-time per version):
+  ```
+  # decompile (optional, for layouts): vineflower.jar over 26.2.jar
+  # datagen reports:
+  java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports
+  # test server: server.properties online-mode=false, level-type=flat,
+  #   enforce-secure-profile=false, server-port=25599; eula=true; java -jar
+  ```
+  Artifacts live under `%APPDATA%/EwoClient/rewo/26.2/` (git-ignored — they
+  derive from the user's own Mojang download; see the EULA note in §5).
+
+- **Carried to a follow-on (not blocking M2):**
+  - **`Native` instance wiring in the launcher is NOT done yet** — the plan
+    put it in M1, but the protocol core was the load-bearing risk and took
+    priority. `rewo net` is driven directly for now; the `InstanceLoader::
+    Native` arm + env handoff + reduced-download profile is the first M2-adjacent
+    task so later milestones launch from the real UI.
+  - Biome container uses a placeholder global-bit width (single-biome flat
+    world never exercises direct biome palettes); registry-derived biome
+    bits lands with M4 tint.
+  - Datagen is run out-of-band; wiring it into Native-instance first-launch
+    is part of the `rewo-data` §5 followon.
+- Next: **M2** (first pixels) — `Native` launcher arm + a full-cube
+  face-culled mesher fed by the replay fixture + live server, texture array,
+  fly camera, headless PNG of a known scene.

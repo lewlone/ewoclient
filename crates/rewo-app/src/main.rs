@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod net_cmd;
 mod stats;
 
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ash::vk;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
@@ -47,8 +48,11 @@ impl PresentPref {
 }
 
 #[derive(Parser)]
-#[command(name = "rewo", about = "Rewo native client — M0 skeleton")]
+#[command(name = "rewo", about = "Rewo native client — M0 renderer + M1 protocol")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Render N frames offscreen (no window) and write a PNG.
     #[arg(long)]
     headless: Option<u32>,
@@ -85,16 +89,25 @@ impl Args {
     }
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// M1 protocol: connect to a server, soak, and optionally record.
+    Net(net_cmd::NetArgs),
+}
+
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
     let tracy = tracy_client::Client::start();
 
-    let result = match args.headless {
-        Some(frames) => run_headless(&args, frames),
-        None => run_windowed(args, tracy),
+    let result = match args.command.take() {
+        Some(Command::Net(net_args)) => net_cmd::run(net_args),
+        None => match args.headless {
+            Some(frames) => run_headless(&args, frames),
+            None => run_windowed(args, tracy),
+        },
     };
     if let Err(e) = result {
         log::error!("rewo: {e}");
