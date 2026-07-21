@@ -14,7 +14,6 @@
 //! proving the live client renders the actual server world at the player's
 //! position.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,11 +71,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let jar = client_jar_path(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
-    let solid: Vec<bool> = baked
-        .render
-        .iter()
-        .map(|k| matches!(k, RenderKind::Cube { .. }))
-        .collect();
+    let solid: Vec<bool> = baked.solid.clone();
 
     let conn = Connection::connect(&args.host, args.port, &data)?;
     let session = conn.into_play(
@@ -256,14 +251,17 @@ fn run_headless(
         off.render(&gpu, Some((&mut world_renderer, vp)), &draw, CLEAR_SKY)?;
     }
     off.save_png(&gpu, out)?;
+    let total = world_renderer.column_count();
+    let gpu_drawn = world_renderer.read_draw_count(&gpu);
     println!(
-        "[rewo-m3-live] headless: spawned at ({:.1},{:.1},{:.1}), {} columns, {} drawn, {} culled",
+        "[rewo-m3-live] headless: spawned at ({:.1},{:.1},{:.1}), {} columns loaded, GPU cull drew {} of {} ({} culled on GPU)",
         session.player.x,
         session.player.y,
         session.player.z,
         session.world.loaded_columns(),
-        world_renderer.drawn_last_frame,
-        world_renderer.culled_last_frame,
+        gpu_drawn,
+        total,
+        total as i64 - gpu_drawn as i64,
     );
     println!("[rewo-m3-live] wrote {}", out.display());
     world_renderer.destroy(&mut gpu);
@@ -489,7 +487,8 @@ impl LiveApp {
             &self.models,
             REMESH_BUDGET,
         ) {
-            Ok(n) if n > 0 => state.gpu.wait_idle(),
+            // M5: upload_column self-syncs (device-local staging copy with its
+            // own fence), so the per-frame render path no longer stalls.
             Ok(_) => {}
             Err(e) => {
                 log::error!("live: remesh failed: {e}");

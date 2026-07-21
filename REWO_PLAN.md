@@ -902,3 +902,53 @@ cross-plants, logs, and directional cubes all rendering correctly.
 - Next: the M4 follow-ons above + the M5 GPU-driven path (mega-buffer arena,
   compute cull, drawIndirectCount) which removes the live-remesh `wait_idle`
   stall and is where greedy/packing pay off.
+
+**2026-07-21 — M5 GPU-driven rendering shipped (+ two bug fixes found while
+verifying).**
+
+The renderer went from one draw call *per column* with CPU frustum culling
+to a **single `vkCmdDrawIndexedIndirectCount`** fed by a **GPU compute cull**
+— the CPU draw cost stops scaling with column count.
+
+- **Mega-buffer arena** (`rewo-gpu/src/world.rs`, full rewrite): all chunk
+  geometry lives in two device-local buffers (4M verts + 6M indices), each
+  column a **free-list-suballocated** region (first-fit + coalescing).
+  Uploads go through a one-shot staging copy with its own fence, so the
+  per-FRAME path never stalls — M4's per-frame `wait_idle` in the live
+  client is gone.
+- **Per-column metadata SSBO** (world-space AABB + draw params), rebuilt +
+  map-written only when the column set changes.
+- **Compute cull** (`shaders/cull.comp`): one invocation per column
+  frustum-tests its AABB and, if visible, appends a
+  `VkDrawIndexedIndirectCommand` + `atomicAdd`s a draw count. Runs BEFORE
+  dynamic rendering (compute can't run in a render pass), so the frame is
+  `cull()` (pre-pass) → begin_rendering → `draw()` (indirect) → overlay.
+- **Device features**: enabled Vulkan 1.2 `draw_indirect_count` +
+  `multiDrawIndirect`.
+- **Verified:** demo + flat-world PNGs render **identically to M4**,
+  validation-clean; a count readback confirms the GPU cull works —
+  **113 of 329 columns drawn, 216 culled on the GPU**. Windowed soak
+  ~974 fps, cpu p99 2.68 ms, 0 corrections.
+- **Two bugs found + fixed while verifying M5** (both predated it):
+  1. **World-space vertex double-add** (since M2): the mesher emits
+     world-space positions but the vertex shader ALSO added the column
+     origin, pushing distant chunks progressively out of place — THE actual
+     cause of the M4 "far-field holes" (not depth precision). Dropped the
+     origin add; the flat world now renders as a solid plane to a clean
+     horizon. (Committed separately, `680622a`.)
+  2. **grass_block collided as non-solid** (M4 regression): grass renders as
+     a `Model` (its model has a cube element + an overlay element, so the
+     single-element cube fast-path rejects it), and the bot's collision
+     table was `matches!(Cube)` → the bot fell through the grass surface
+     every tick → 258 server corrections. Added a proper `solid` flag to the
+     bake (`Cube` OR a `Model` with a full-16³ element) so collision is
+     independent of the render fast-path. 0 corrections restored.
+- **Deferred to M5 follow-ons (tracked):** dedicated async transfer queue +
+  staging ring (uploads still fence-sync, fine for a mostly-static world);
+  visibility-graph ("cave") culling; HZB occlusion (M8); mega-buffer resize
+  (over-cap columns are dropped with a log). Plus the M4 carryovers (greedy,
+  fluids, per-biome tint, animation, packed vertices) — greedy + packing pay
+  off most now that the arena exists.
+- Next: M6 (latency pass — `VK_NV_low_latency2`, frames-in-flight tuning,
+  click-to-photon, the replay-benchmark regression gate) or the M4/M5
+  follow-ons.

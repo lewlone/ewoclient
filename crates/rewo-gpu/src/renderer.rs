@@ -245,6 +245,9 @@ impl Renderer {
 
             // Pass 1 (optional): world with depth, clearing both.
             if let Some((world_renderer, view_proj)) = world.as_mut() {
+                // GPU cull runs BEFORE dynamic rendering (compute can't run
+                // inside a render pass).
+                world_renderer.cull(gpu, frame.cb, *view_proj);
                 let depth = self.depth.as_ref().unwrap();
                 depth.barrier_for_use(gpu, frame.cb);
                 let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -274,6 +277,7 @@ impl Renderer {
                 device.cmd_begin_rendering(frame.cb, &rendering_info);
                 world_renderer.draw(gpu, frame.cb, *view_proj, extent);
                 device.cmd_end_rendering(frame.cb);
+                let _ = view_proj;
 
                 // World writes → overlay pass reads/writes the same color.
                 image_barrier(

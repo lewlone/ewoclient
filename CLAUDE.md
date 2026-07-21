@@ -1631,6 +1631,23 @@ apply.
   follow-up: grazing-angle far-field slivers on flat ground (needs MSAA /
   back-face cull). Deferred: greedy meshing, fluids, per-biome tint,
   animation, packed vertices.
+- **M5 shipped 2026-07-21** (`rewo-gpu::world` full rewrite + `cull.comp`):
+  GPU-driven rendering. Mega-buffer arena (device-local vert+index buffers,
+  free-list suballocation, one-shot staging uploads) + per-column metadata
+  SSBO + compute cull (frustum test → indirect commands + atomic count) +
+  single `vkCmdDrawIndexedIndirectCount`. Enabled Vulkan 1.2
+  draw_indirect_count + multiDrawIndirect. Verified: renders identically to
+  M4, validation-clean, GPU cull drew 113/329 (216 culled on GPU via
+  readback), windowed ~974 fps, removed the live-remesh per-frame wait_idle.
+  **Two bugs fixed while verifying** (both predated M5): (1) world-space
+  vertex double-add — mesher emits world-space but the shader also added the
+  column origin, THE real cause of the M4 far-field holes (not depth);
+  dropped the origin add. (2) grass_block collided as non-solid — it renders
+  as a Model (cube + overlay element), and the collision table was
+  matches!(Cube), so the bot fell through grass every tick (258 corrections);
+  added a proper `solid` flag to the bake (Cube OR full-16³-element Model).
+  Deferred M5 follow-ons: dedicated async transfer queue, visibility-graph
+  cull, mega-buffer resize (over-cap columns dropped w/ log).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -209,6 +209,8 @@ impl Offscreen {
 
             // Pass 1 (optional): world with depth.
             if let Some((world_renderer, view_proj)) = world.as_mut() {
+                // GPU cull before the render pass.
+                world_renderer.cull(gpu, self.cb, *view_proj);
                 self.depth.barrier_for_use(gpu, self.cb);
                 let color_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(self.view)

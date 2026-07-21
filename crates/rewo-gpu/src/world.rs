@@ -1,22 +1,41 @@
-//! M2 world renderer: block texture array (with CPU-generated mips), the
-//! textured/depth-tested world pipeline, per-column vertex/index buffers,
-//! and CPU frustum culling.
+//! M5 GPU-driven world renderer.
 //!
-//! M2 constraints (deliberate): buffers are host-visible (CpuToGpu) and
-//! uploaded before rendering starts — snapshot viewing, no mid-frame
-//! streaming. The device-local mega-buffer arena + async transfer queue is
-//! M5. Cull mode is NONE (correctness first); back-face culling is an M5
-//! perf lever once winding is regression-tested.
+//! All chunk geometry lives in two device-local **mega-buffers** (vertices +
+//! indices), each column a free-list-suballocated region. A per-column
+//! **metadata SSBO** (world-space AABB + draw params) feeds a **compute cull
+//! pass**: one invocation per column frustum-tests its AABB and, if visible,
+//! appends a `VkDrawIndexedIndirectCommand` and bumps an atomic count. The
+//! CPU then issues a single **`vkCmdDrawIndexedIndirectCount`** — the draw
+//! cost stops scaling with column count and culling runs on the GPU.
+//!
+//! Vertices are world-space (the mesher emits `cx*16+lx+corner`), so no
+//! per-column origin is needed — exactly what one shared indirect draw wants.
+//!
+//! Frame split: `cull()` runs the compute + count reset BEFORE dynamic
+//! rendering begins (compute can't run inside a render pass); `draw()` binds
+//! the mega-buffers and issues the indirect draw INSIDE the pass.
+//!
+//! Column uploads (rare — only on chunk load / block edit) go through a
+//! one-shot staging copy with its own fence, so the per-FRAME path never
+//! stalls (removing M4's per-frame `wait_idle`). The dedicated async
+//! transfer queue + staging ring is the M5 follow-on.
 
 use std::collections::HashMap;
 
 use ash::vk;
+use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
 use crate::Gpu;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+const VERTEX_STRIDE: u64 = 36;
+/// Mega-buffer capacities. 4M verts (144 MB) + 6M indices (24 MB) covers a
+/// large render distance; over-cap columns are dropped with a log.
+const MAX_VERTS: u64 = 4_000_000;
+const MAX_INDICES: u64 = 6_000_000;
+const MAX_COLUMNS: usize = 8192;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -24,35 +43,133 @@ struct WorldPush {
     view_proj: [[f32; 4]; 4],
 }
 
-struct ColumnGpu {
-    vbuf: vk::Buffer,
-    valloc: Option<Allocation>,
-    ibuf: vk::Buffer,
-    ialloc: Option<Allocation>,
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct ColumnMeta {
+    aabb_min: [f32; 4],
+    aabb_max: [f32; 4],
     index_count: u32,
-    origin: [f32; 3],
-    aabb_min: [f32; 3],
-    aabb_max: [f32; 3],
+    first_index: u32,
+    vertex_offset: i32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CullPush {
+    planes: [[f32; 4]; 6],
+    column_count: u32,
+    _pad: [u32; 3],
+}
+
+struct Slot {
+    vtx_off: u64,   // in vertices
+    vtx_len: u64,
+    idx_off: u64,   // in indices
+    idx_len: u64,
+    meta: ColumnMeta,
+}
+
+/// First-fit free-list over a fixed-capacity element range, with coalescing.
+struct FreeList {
+    free: Vec<(u64, u64)>, // (offset, len), sorted by offset
+}
+
+impl FreeList {
+    fn new(capacity: u64) -> Self {
+        Self {
+            free: vec![(0, capacity)],
+        }
+    }
+
+    fn alloc(&mut self, n: u64) -> Option<u64> {
+        if n == 0 {
+            return Some(0);
+        }
+        for i in 0..self.free.len() {
+            let (off, len) = self.free[i];
+            if len >= n {
+                if len == n {
+                    self.free.remove(i);
+                } else {
+                    self.free[i] = (off + n, len - n);
+                }
+                return Some(off);
+            }
+        }
+        None
+    }
+
+    fn free_region(&mut self, off: u64, n: u64) {
+        if n == 0 {
+            return;
+        }
+        // Insert sorted, then coalesce neighbors.
+        let pos = self.free.partition_point(|&(o, _)| o < off);
+        self.free.insert(pos, (off, n));
+        let mut i = 0;
+        while i + 1 < self.free.len() {
+            let (o1, l1) = self.free[i];
+            let (o2, l2) = self.free[i + 1];
+            if o1 + l1 == o2 {
+                self.free[i] = (o1, l1 + l2);
+                self.free.remove(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+    }
 }
 
 pub struct WorldRenderer {
-    set_layout: vk::DescriptorSetLayout,
-    layout: vk::PipelineLayout,
+    // -- graphics --
+    tex_set_layout: vk::DescriptorSetLayout,
+    graphics_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
+    tex_pool: vk::DescriptorPool,
+    tex_set: vk::DescriptorSet,
     sampler: vk::Sampler,
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    columns: HashMap<(i32, i32), ColumnGpu>,
+    // -- mega-buffers --
+    vbuf: vk::Buffer,
+    vbuf_alloc: Option<Allocation>,
+    vfree: FreeList,
+    ibuf: vk::Buffer,
+    ibuf_alloc: Option<Allocation>,
+    ifree: FreeList,
+    // -- columns + metadata --
+    columns: HashMap<(i32, i32), Slot>,
+    meta_dirty: bool,
+    meta_buf: vk::Buffer,
+    meta_alloc: Option<Allocation>,
+    column_count: u32,
+    // -- compute cull --
+    cull_set_layout: vk::DescriptorSetLayout,
+    cull_layout: vk::PipelineLayout,
+    cull_pipeline: vk::Pipeline,
+    cull_pool: vk::DescriptorPool,
+    cull_set: vk::DescriptorSet,
+    indirect_buf: vk::Buffer,
+    indirect_alloc: Option<Allocation>,
+    count_buf: vk::Buffer,
+    count_alloc: Option<Allocation>,
+    // -- one-shot uploads --
+    upload_pool: vk::CommandPool,
+    upload_cb: vk::CommandBuffer,
+    upload_fence: vk::Fence,
+    staging: vk::Buffer,
+    staging_alloc: Option<Allocation>,
+    staging_cap: u64,
+    count_readback: vk::Buffer,
+    count_readback_alloc: Option<Allocation>,
+
     pub drawn_last_frame: usize,
     pub culled_last_frame: usize,
 }
 
 impl WorldRenderer {
-    /// Build the pipeline + upload the texture array. `layers` are RGBA8
-    /// sRGB texels, `tex_size`² each.
     pub fn new(
         gpu: &mut Gpu,
         color_format: vk::Format,
@@ -61,9 +178,9 @@ impl WorldRenderer {
     ) -> Result<Self, String> {
         unsafe {
             let layer_count = layers.len().max(1) as u32;
-            let mip_levels = 32 - tex_size.leading_zeros(); // 16 → 5
+            let mip_levels = 32 - tex_size.leading_zeros();
 
-            // -- texture array image ---------------------------------------
+            // ---- texture array ----
             let image = gpu
                 .device
                 .create_image(
@@ -98,10 +215,9 @@ impl WorldRenderer {
             gpu.device
                 .bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
                 .map_err(|e| format!("texture bind: {e}"))?;
-
             upload_texture_array(gpu, image, tex_size, mip_levels, layers)?;
 
-            let device = &gpu.device;
+            let device = gpu.device.clone();
             let view = device
                 .create_image_view(
                     &vk::ImageViewCreateInfo::default()
@@ -119,8 +235,6 @@ impl WorldRenderer {
                     None,
                 )
                 .map_err(|e| format!("texture view: {e}"))?;
-
-            // Vanilla look: nearest magnification, linear between mips.
             let sampler = device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -135,184 +249,249 @@ impl WorldRenderer {
                 )
                 .map_err(|e| format!("sampler: {e}"))?;
 
-            // -- descriptors ----------------------------------------------
-            let bindings = [vk::DescriptorSetLayoutBinding::default()
+            // ---- graphics descriptor + pipeline ----
+            let tex_bindings = [vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-            let set_layout = device
+            let tex_set_layout = device
                 .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_bindings),
                     None,
                 )
-                .map_err(|e| format!("world set layout: {e}"))?;
-            let pool_sizes = [vk::DescriptorPoolSize::default()
+                .map_err(|e| format!("tex set layout: {e}"))?;
+            let tex_pool_sizes = [vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)];
-            let pool = device
+            let tex_pool = device
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
                         .max_sets(1)
-                        .pool_sizes(&pool_sizes),
+                        .pool_sizes(&tex_pool_sizes),
                     None,
                 )
-                .map_err(|e| format!("world descriptor pool: {e}"))?;
-            let set_layouts = [set_layout];
-            let set = device
+                .map_err(|e| format!("tex pool: {e}"))?;
+            let tex_layouts = [tex_set_layout];
+            let tex_set = device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(pool)
-                        .set_layouts(&set_layouts),
+                        .descriptor_pool(tex_pool)
+                        .set_layouts(&tex_layouts),
                 )
-                .map_err(|e| format!("world descriptor set: {e}"))?[0];
+                .map_err(|e| format!("tex set: {e}"))?[0];
             let image_info = [vk::DescriptorImageInfo::default()
                 .sampler(sampler)
                 .image_view(view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let writes = [vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&image_info)];
-            device.update_descriptor_sets(&writes, &[]);
+            device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(tex_set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&image_info)],
+                &[],
+            );
 
-            // -- pipeline --------------------------------------------------
             let pc_ranges = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
                 .offset(0)
                 .size(std::mem::size_of::<WorldPush>() as u32)];
-            let layout = device
+            let graphics_layout = device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(&set_layouts)
+                        .set_layouts(&tex_layouts)
                         .push_constant_ranges(&pc_ranges),
                     None,
                 )
-                .map_err(|e| format!("world pipeline layout: {e}"))?;
+                .map_err(|e| format!("graphics layout: {e}"))?;
+            let pipeline = build_graphics_pipeline(&device, graphics_layout, color_format)?;
 
-            let vert = crate::overlay::create_shader(
-                device,
-                include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv")),
-            )?;
-            let frag = crate::overlay::create_shader(
-                device,
-                include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv")),
-            )?;
-            let entry = c"main";
-            let stages = [
-                vk::PipelineShaderStageCreateInfo::default()
-                    .stage(vk::ShaderStageFlags::VERTEX)
-                    .module(vert)
-                    .name(entry),
-                vk::PipelineShaderStageCreateInfo::default()
-                    .stage(vk::ShaderStageFlags::FRAGMENT)
-                    .module(frag)
-                    .name(entry),
+            // ---- compute cull descriptor + pipeline ----
+            let cull_bindings = [
+                storage_binding(0),
+                storage_binding(1),
+                storage_binding(2),
             ];
-            let stride = 36u32; // pos 12 + uv 8 + layer 4 + color 12
-            let bindings = [vk::VertexInputBindingDescription::default()
-                .binding(0)
-                .stride(stride)
-                .input_rate(vk::VertexInputRate::VERTEX)];
-            let attrs = [
-                vk::VertexInputAttributeDescription::default()
-                    .location(0)
-                    .format(vk::Format::R32G32B32_SFLOAT)
-                    .offset(0),
-                vk::VertexInputAttributeDescription::default()
-                    .location(1)
-                    .format(vk::Format::R32G32_SFLOAT)
-                    .offset(12),
-                vk::VertexInputAttributeDescription::default()
-                    .location(2)
-                    .format(vk::Format::R32_UINT)
-                    .offset(20),
-                vk::VertexInputAttributeDescription::default()
-                    .location(3)
-                    .format(vk::Format::R32G32B32_SFLOAT)
-                    .offset(24),
-            ];
-            let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&bindings)
-                .vertex_attribute_descriptions(&attrs);
-            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-            let viewport = vk::PipelineViewportStateCreateInfo::default()
-                .viewport_count(1)
-                .scissor_count(1);
-            let raster = vk::PipelineRasterizationStateCreateInfo::default()
-                .polygon_mode(vk::PolygonMode::FILL)
-                .cull_mode(vk::CullModeFlags::NONE)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                .line_width(1.0);
-            let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-            // Reversed-Z: clear to 0 (far), GREATER passes for nearer. Gives
-            // usable depth precision across Minecraft's near/far range on a
-            // float depth buffer, where standard [0,1] LESS z-fights the flat
-            // terrain into holes at distance.
-            let depth = vk::PipelineDepthStencilStateCreateInfo::default()
-                .depth_test_enable(true)
-                .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::GREATER);
-            let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-                .blend_enable(false)
-                .color_write_mask(
-                    vk::ColorComponentFlags::R
-                        | vk::ColorComponentFlags::G
-                        | vk::ColorComponentFlags::B,
-                )];
-            let blend =
-                vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
-            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-            let dynamic =
-                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-            let color_formats = [color_format];
-            let mut rendering = vk::PipelineRenderingCreateInfo::default()
-                .color_attachment_formats(&color_formats)
-                .depth_attachment_format(DEPTH_FORMAT);
-            let ci = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&stages)
-                .vertex_input_state(&vertex_input)
-                .input_assembly_state(&input_assembly)
-                .viewport_state(&viewport)
-                .rasterization_state(&raster)
-                .multisample_state(&multisample)
-                .depth_stencil_state(&depth)
-                .color_blend_state(&blend)
-                .dynamic_state(&dynamic)
-                .layout(layout)
-                .push_next(&mut rendering);
-            let pipeline = device
-                .create_graphics_pipelines(
-                    vk::PipelineCache::null(),
-                    std::slice::from_ref(&ci),
+            let cull_set_layout = device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&cull_bindings),
                     None,
                 )
-                .map_err(|(_, e)| format!("world pipeline: {e}"))?[0];
-            device.destroy_shader_module(vert, None);
-            device.destroy_shader_module(frag, None);
+                .map_err(|e| format!("cull set layout: {e}"))?;
+            let cull_pc = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(std::mem::size_of::<CullPush>() as u32)];
+            let cull_layouts = [cull_set_layout];
+            let cull_layout = device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&cull_layouts)
+                        .push_constant_ranges(&cull_pc),
+                    None,
+                )
+                .map_err(|e| format!("cull layout: {e}"))?;
+            let cull_module = crate::overlay::create_shader(
+                &device,
+                include_bytes!(concat!(env!("OUT_DIR"), "/cull.comp.spv")),
+            )?;
+            let cull_pipeline = device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(cull_module)
+                                .name(c"main"),
+                        )
+                        .layout(cull_layout)],
+                    None,
+                )
+                .map_err(|(_, e)| format!("cull pipeline: {e}"))?[0];
+            device.destroy_shader_module(cull_module, None);
+
+            // ---- mega-buffers + metadata + indirect + count ----
+            let (vbuf, vbuf_alloc) = create_device_buffer(
+                gpu,
+                MAX_VERTS * VERTEX_STRIDE,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                "mega-vertices",
+            )?;
+            let (ibuf, ibuf_alloc) = create_device_buffer(
+                gpu,
+                MAX_INDICES * 4,
+                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                "mega-indices",
+            )?;
+            let (meta_buf, meta_alloc) = create_host_buffer(
+                gpu,
+                (MAX_COLUMNS * std::mem::size_of::<ColumnMeta>()) as u64,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                "column-meta",
+            )?;
+            let (indirect_buf, indirect_alloc) = create_device_buffer(
+                gpu,
+                (MAX_COLUMNS * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64,
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                "indirect-cmds",
+            )?;
+            let (count_buf, count_alloc) = create_device_buffer(
+                gpu,
+                16,
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::TRANSFER_SRC, // readback for stats
+                "indirect-count",
+            )?;
+
+            // Cull descriptor set (meta, indirect cmds, count).
+            let cull_pool_sizes = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(3)];
+            let cull_pool = device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(1)
+                        .pool_sizes(&cull_pool_sizes),
+                    None,
+                )
+                .map_err(|e| format!("cull pool: {e}"))?;
+            let cull_set = device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(cull_pool)
+                        .set_layouts(&cull_layouts),
+                )
+                .map_err(|e| format!("cull set: {e}"))?[0];
+            write_storage(&device, cull_set, 0, meta_buf);
+            write_storage(&device, cull_set, 1, indirect_buf);
+            write_storage(&device, cull_set, 2, count_buf);
+
+            // ---- one-shot upload machinery ----
+            let upload_pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default().queue_family_index(gpu.graphics_family),
+                    None,
+                )
+                .map_err(|e| format!("upload pool: {e}"))?;
+            let upload_cb = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(upload_pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1),
+                )
+                .map_err(|e| format!("upload cb: {e}"))?[0];
+            let upload_fence = device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| format!("upload fence: {e}"))?;
+            let staging_cap = 8 * 1024 * 1024; // grows on demand
+            let (staging, staging_alloc) = create_host_buffer(
+                gpu,
+                staging_cap,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                "upload-staging",
+            )?;
+            let (count_readback, count_readback_alloc) = create_host_buffer(
+                gpu,
+                16,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                "count-readback",
+            )?;
 
             Ok(Self {
-                set_layout,
-                layout,
+                tex_set_layout,
+                graphics_layout,
                 pipeline,
-                pool,
-                set,
+                tex_pool,
+                tex_set,
                 sampler,
                 image,
                 image_alloc: Some(image_alloc),
                 view,
+                vbuf,
+                vbuf_alloc: Some(vbuf_alloc),
+                vfree: FreeList::new(MAX_VERTS),
+                ibuf,
+                ibuf_alloc: Some(ibuf_alloc),
+                ifree: FreeList::new(MAX_INDICES),
                 columns: HashMap::new(),
+                meta_dirty: false,
+                meta_buf,
+                meta_alloc: Some(meta_alloc),
+                column_count: 0,
+                cull_set_layout,
+                cull_layout,
+                cull_pipeline,
+                cull_pool,
+                cull_set,
+                indirect_buf,
+                indirect_alloc: Some(indirect_alloc),
+                count_buf,
+                count_alloc: Some(count_alloc),
+                upload_pool,
+                upload_cb,
+                upload_fence,
+                staging,
+                staging_alloc: Some(staging_alloc),
+                staging_cap,
+                count_readback,
+                count_readback_alloc: Some(count_readback_alloc),
                 drawn_last_frame: 0,
                 culled_last_frame: 0,
             })
         }
     }
 
-    /// Create/replace a column's buffers. M2 contract: call only while the
-    /// GPU is idle for this renderer (snapshot flow uploads before drawing).
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// Suballocate + upload a column's geometry into the mega-buffers via a
+    /// one-shot staging copy (own fence — the per-frame path never waits).
     pub fn upload_column(
         &mut self,
         gpu: &mut Gpu,
@@ -324,108 +503,207 @@ impl WorldRenderer {
         y_max: f32,
     ) -> Result<(), String> {
         self.remove_column(gpu, cx, cz);
-        unsafe {
-            let device = &gpu.device;
-            let make_buffer = |gpu: &mut Gpu,
-                               bytes: &[u8],
-                               usage: vk::BufferUsageFlags,
-                               name: &str|
-             -> Result<(vk::Buffer, Allocation), String> {
-                let buffer = gpu
-                    .device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(bytes.len().max(4) as u64)
-                            .usage(usage)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("{name}: {e}"))?;
-                let req = gpu.device.get_buffer_memory_requirements(buffer);
-                let mut alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name,
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("{name} alloc: {e}"))?;
-                gpu.device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("{name} bind: {e}"))?;
-                alloc
-                    .mapped_slice_mut()
-                    .ok_or_else(|| format!("{name}: not mapped"))?[..bytes.len()]
-                    .copy_from_slice(bytes);
-                Ok((buffer, alloc))
-            };
-            let _ = device;
-            let (vbuf, valloc) = make_buffer(
-                gpu,
-                vertex_bytes,
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                "column-vertices",
-            )?;
-            let (ibuf, ialloc) = make_buffer(
-                gpu,
-                bytemuck_cast(indices),
-                vk::BufferUsageFlags::INDEX_BUFFER,
-                "column-indices",
-            )?;
-            let origin = [cx as f32 * 16.0, 0.0, cz as f32 * 16.0];
-            self.columns.insert(
-                (cx, cz),
-                ColumnGpu {
-                    vbuf,
-                    valloc: Some(valloc),
-                    ibuf,
-                    ialloc: Some(ialloc),
-                    index_count: indices.len() as u32,
-                    origin,
-                    aabb_min: [origin[0], y_min, origin[2]],
-                    aabb_max: [origin[0] + 16.0, y_max, origin[2] + 16.0],
-                },
-            );
+        let vtx_count = (vertex_bytes.len() as u64) / VERTEX_STRIDE;
+        let idx_count = indices.len() as u64;
+        if vtx_count == 0 || idx_count == 0 {
+            return Ok(());
         }
+        let Some(vtx_off) = self.vfree.alloc(vtx_count) else {
+            log::warn!("world: vertex mega-buffer full — dropping column ({cx},{cz})");
+            return Ok(());
+        };
+        let Some(idx_off) = self.ifree.alloc(idx_count) else {
+            self.vfree.free_region(vtx_off, vtx_count);
+            log::warn!("world: index mega-buffer full — dropping column ({cx},{cz})");
+            return Ok(());
+        };
+
+        // Stage vertices then indices contiguously, one copy each.
+        let index_bytes: &[u8] = bytemuck::cast_slice(indices);
+        let total = vertex_bytes.len() + index_bytes.len();
+        self.ensure_staging(gpu, total as u64)?;
+        unsafe {
+            let alloc = self.staging_alloc.as_mut().unwrap();
+            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
+            slice[..vertex_bytes.len()].copy_from_slice(vertex_bytes);
+            slice[vertex_bytes.len()..total].copy_from_slice(index_bytes);
+
+            let device = &gpu.device;
+            device
+                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
+                .map_err(|e| format!("reset upload pool: {e}"))?;
+            device
+                .begin_command_buffer(
+                    self.upload_cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(|e| format!("begin upload: {e}"))?;
+            device.cmd_copy_buffer(
+                self.upload_cb,
+                self.staging,
+                self.vbuf,
+                &[vk::BufferCopy::default()
+                    .src_offset(0)
+                    .dst_offset(vtx_off * VERTEX_STRIDE)
+                    .size(vertex_bytes.len() as u64)],
+            );
+            device.cmd_copy_buffer(
+                self.upload_cb,
+                self.staging,
+                self.ibuf,
+                &[vk::BufferCopy::default()
+                    .src_offset(vertex_bytes.len() as u64)
+                    .dst_offset(idx_off * 4)
+                    .size(index_bytes.len() as u64)],
+            );
+            device
+                .end_command_buffer(self.upload_cb)
+                .map_err(|e| format!("end upload: {e}"))?;
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
+            let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
+            device
+                .queue_submit2(gpu.graphics_queue, &[submit], self.upload_fence)
+                .map_err(|e| format!("upload submit: {e}"))?;
+            device
+                .wait_for_fences(&[self.upload_fence], true, u64::MAX)
+                .map_err(|e| format!("upload wait: {e}"))?;
+            device
+                .reset_fences(&[self.upload_fence])
+                .map_err(|e| format!("upload reset fence: {e}"))?;
+        }
+
+        let meta = ColumnMeta {
+            aabb_min: [cx as f32 * 16.0, y_min, cz as f32 * 16.0, 0.0],
+            aabb_max: [cx as f32 * 16.0 + 16.0, y_max, cz as f32 * 16.0 + 16.0, 0.0],
+            index_count: idx_count as u32,
+            first_index: idx_off as u32,
+            vertex_offset: vtx_off as i32,
+            _pad: 0,
+        };
+        self.columns.insert(
+            (cx, cz),
+            Slot {
+                vtx_off,
+                vtx_len: vtx_count,
+                idx_off,
+                idx_len: idx_count,
+                meta,
+            },
+        );
+        self.meta_dirty = true;
         Ok(())
     }
 
-    pub fn remove_column(&mut self, gpu: &mut Gpu, cx: i32, cz: i32) {
-        if let Some(col) = self.columns.remove(&(cx, cz)) {
-            unsafe {
-                gpu.device.destroy_buffer(col.vbuf, None);
-                gpu.device.destroy_buffer(col.ibuf, None);
-            }
-            if let Some(a) = col.valloc {
-                let _ = gpu.allocator.free(a);
-            }
-            if let Some(a) = col.ialloc {
-                let _ = gpu.allocator.free(a);
-            }
+    pub fn remove_column(&mut self, _gpu: &mut Gpu, cx: i32, cz: i32) {
+        if let Some(slot) = self.columns.remove(&(cx, cz)) {
+            self.vfree.free_region(slot.vtx_off, slot.vtx_len);
+            self.ifree.free_region(slot.idx_off, slot.idx_len);
+            self.meta_dirty = true;
         }
     }
 
-    pub fn column_count(&self) -> usize {
-        self.columns.len()
+    /// Rebuild the compacted metadata array (only when columns changed) and
+    /// map-write it into the host-visible SSBO.
+    fn sync_meta(&mut self) {
+        if !self.meta_dirty {
+            return;
+        }
+        let metas: Vec<ColumnMeta> = self.columns.values().map(|s| s.meta).collect();
+        self.column_count = metas.len().min(MAX_COLUMNS) as u32;
+        if let Some(alloc) = self.meta_alloc.as_mut() {
+            if let Some(slice) = alloc.mapped_slice_mut() {
+                let bytes: &[u8] = bytemuck::cast_slice(&metas[..self.column_count as usize]);
+                slice[..bytes.len()].copy_from_slice(bytes);
+            }
+        }
+        self.meta_dirty = false;
     }
 
-    /// Record world draws. Caller has begun dynamic rendering with a depth
-    /// attachment (`DEPTH_FORMAT`).
-    pub fn draw(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        let planes = frustum_planes(&view_proj);
+    /// Pre-pass (OUTSIDE dynamic rendering): reset the draw count, dispatch
+    /// the compute cull, and barrier its writes for the indirect draw.
+    pub fn cull(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
+        self.sync_meta();
+        let device = &gpu.device;
         unsafe {
-            let device = &gpu.device;
+            // Reset the atomic count to 0.
+            device.cmd_fill_buffer(cb, self.count_buf, 0, 4, 0);
+            let reset_barrier = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(self.count_buf)
+                .offset(0)
+                .size(vk::WHOLE_SIZE);
+            device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default()
+                    .buffer_memory_barriers(std::slice::from_ref(&reset_barrier)),
+            );
+
+            if self.column_count > 0 {
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.cull_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cb,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.cull_layout,
+                    0,
+                    &[self.cull_set],
+                    &[],
+                );
+                let push = CullPush {
+                    planes: frustum_planes(&view_proj),
+                    column_count: self.column_count,
+                    _pad: [0; 3],
+                };
+                device.cmd_push_constants(
+                    cb,
+                    self.cull_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    bytemuck::bytes_of(&push),
+                );
+                let groups = self.column_count.div_ceil(64);
+                device.cmd_dispatch(cb, groups, 1, 1);
+
+                // Compute writes → indirect draw reads (cmds + count).
+                let barriers = [
+                    buf_barrier(
+                        self.indirect_buf,
+                        vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                        vk::PipelineStageFlags2::DRAW_INDIRECT,
+                        vk::AccessFlags2::INDIRECT_COMMAND_READ,
+                    ),
+                    buf_barrier(
+                        self.count_buf,
+                        vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                        vk::PipelineStageFlags2::DRAW_INDIRECT,
+                        vk::AccessFlags2::INDIRECT_COMMAND_READ,
+                    ),
+                ];
+                device.cmd_pipeline_barrier2(
+                    cb,
+                    &vk::DependencyInfo::default().buffer_memory_barriers(&barriers),
+                );
+            }
+        }
+        self.drawn_last_frame = self.column_count as usize; // pre-cull estimate
+        self.culled_last_frame = 0;
+    }
+
+    /// In-pass draw: bind the mega-buffers + one indirect-count draw.
+    pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        if self.column_count == 0 {
+            return;
+        }
+        let device = &gpu.device;
+        unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            // Flip Y via negative viewport height: glam's RH/zero-to-one
-            // projection is Y-up; Vulkan framebuffer space is Y-down.
             let viewport = vk::Viewport::default()
                 .y(extent.height as f32)
                 .width(extent.width as f32)
@@ -436,84 +714,364 @@ impl WorldRenderer {
             device.cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.layout,
+                self.graphics_layout,
                 0,
-                &[self.set],
+                &[self.tex_set],
                 &[],
             );
-            let mut drawn = 0;
-            let mut culled = 0;
-            for col in self.columns.values() {
-                if !aabb_visible(&planes, col.aabb_min, col.aabb_max) {
-                    culled += 1;
-                    continue;
-                }
-                let push = WorldPush { view_proj };
-                let bytes = std::slice::from_raw_parts(
+            let push = WorldPush { view_proj };
+            device.cmd_push_constants(
+                cb,
+                self.graphics_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(
                     (&push as *const WorldPush) as *const u8,
                     std::mem::size_of::<WorldPush>(),
-                );
-                device.cmd_push_constants(
-                    cb,
-                    self.layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    bytes,
-                );
-                device.cmd_bind_vertex_buffers(cb, 0, &[col.vbuf], &[0]);
-                device.cmd_bind_index_buffer(cb, col.ibuf, 0, vk::IndexType::UINT32);
-                device.cmd_draw_indexed(cb, col.index_count, 1, 0, 0, 0);
-                drawn += 1;
-            }
-            self.drawn_last_frame = drawn;
-            self.culled_last_frame = culled;
+                ),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[self.vbuf], &[0]);
+            device.cmd_bind_index_buffer(cb, self.ibuf, 0, vk::IndexType::UINT32);
+            device.cmd_draw_indexed_indirect_count(
+                cb,
+                self.indirect_buf,
+                0,
+                self.count_buf,
+                0,
+                self.column_count,
+                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+            );
         }
+    }
+
+    /// Read back the GPU cull's draw count from the last frame (one-shot
+    /// copy + wait — for verification/stats, not per-frame use).
+    pub fn read_draw_count(&mut self, gpu: &Gpu) -> u32 {
+        unsafe {
+            let device = &gpu.device;
+            if device
+                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
+                .is_err()
+            {
+                return 0;
+            }
+            let _ = device.begin_command_buffer(
+                self.upload_cb,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            );
+            device.cmd_copy_buffer(
+                self.upload_cb,
+                self.count_buf,
+                self.count_readback,
+                &[vk::BufferCopy::default().size(4)],
+            );
+            let _ = device.end_command_buffer(self.upload_cb);
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
+            let _ = device.queue_submit2(
+                gpu.graphics_queue,
+                &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                self.upload_fence,
+            );
+            let _ = device.wait_for_fences(&[self.upload_fence], true, u64::MAX);
+            let _ = device.reset_fences(&[self.upload_fence]);
+            self.count_readback_alloc
+                .as_ref()
+                .and_then(|a| a.mapped_slice())
+                .map(|s| u32::from_ne_bytes(s[..4].try_into().unwrap()))
+                .unwrap_or(0)
+        }
+    }
+
+    fn ensure_staging(&mut self, gpu: &mut Gpu, need: u64) -> Result<(), String> {
+        if need <= self.staging_cap {
+            return Ok(());
+        }
+        let new_cap = need.next_power_of_two();
+        unsafe {
+            gpu.device.destroy_buffer(self.staging, None);
+        }
+        if let Some(a) = self.staging_alloc.take() {
+            let _ = gpu.allocator.free(a);
+        }
+        let (buf, alloc) = create_host_buffer(
+            gpu,
+            new_cap,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            "upload-staging",
+        )?;
+        self.staging = buf;
+        self.staging_alloc = Some(alloc);
+        self.staging_cap = new_cap;
+        Ok(())
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        let keys: Vec<_> = self.columns.keys().copied().collect();
-        for (cx, cz) in keys {
-            self.remove_column(gpu, cx, cz);
-        }
         unsafe {
             let device = &gpu.device;
+            device.destroy_fence(self.upload_fence, None);
+            device.destroy_command_pool(self.upload_pool, None);
+            device.destroy_pipeline(self.cull_pipeline, None);
+            device.destroy_pipeline_layout(self.cull_layout, None);
+            device.destroy_descriptor_pool(self.cull_pool, None);
+            device.destroy_descriptor_set_layout(self.cull_set_layout, None);
             device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_pool(self.pool, None);
-            device.destroy_descriptor_set_layout(self.set_layout, None);
+            device.destroy_pipeline_layout(self.graphics_layout, None);
+            device.destroy_descriptor_pool(self.tex_pool, None);
+            device.destroy_descriptor_set_layout(self.tex_set_layout, None);
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
+            for b in [
+                self.vbuf,
+                self.ibuf,
+                self.meta_buf,
+                self.indirect_buf,
+                self.count_buf,
+                self.staging,
+                self.count_readback,
+            ] {
+                device.destroy_buffer(b, None);
+            }
         }
-        if let Some(a) = self.image_alloc.take() {
+        for a in [
+            self.image_alloc.take(),
+            self.vbuf_alloc.take(),
+            self.ibuf_alloc.take(),
+            self.meta_alloc.take(),
+            self.indirect_alloc.take(),
+            self.count_alloc.take(),
+            self.staging_alloc.take(),
+            self.count_readback_alloc.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let _ = gpu.allocator.free(a);
         }
     }
 }
 
-fn bytemuck_cast(indices: &[u32]) -> &[u8] {
+// -- helpers -----------------------------------------------------------------
+
+fn storage_binding(binding: u32) -> vk::DescriptorSetLayoutBinding<'static> {
+    vk::DescriptorSetLayoutBinding::default()
+        .binding(binding)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+}
+
+fn write_storage(device: &ash::Device, set: vk::DescriptorSet, binding: u32, buf: vk::Buffer) {
+    let info = [vk::DescriptorBufferInfo::default()
+        .buffer(buf)
+        .offset(0)
+        .range(vk::WHOLE_SIZE)];
     unsafe {
-        std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * 4)
+        device.update_descriptor_sets(
+            &[vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(binding)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&info)],
+            &[],
+        );
     }
 }
 
-/// Infinite reversed-Z perspective (RH, Y-up world). Maps z_view=-near → 1,
-/// z_view=-∞ → 0; pair with a 0.0 depth clear + `GREATER` compare. No far
-/// plane. Column-major, matching glam's `Mat4::to_cols_array_2d`.
-pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4]; 4] {
-    let f = 1.0 / (fov_y_rad * 0.5).tan();
-    // Columns.
-    [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, 0.0, -1.0],
-        [0.0, 0.0, near, 0.0],
-    ]
+fn buf_barrier<'a>(
+    buf: vk::Buffer,
+    src_stage: vk::PipelineStageFlags2,
+    src_access: vk::AccessFlags2,
+    dst_stage: vk::PipelineStageFlags2,
+    dst_access: vk::AccessFlags2,
+) -> vk::BufferMemoryBarrier2<'a> {
+    vk::BufferMemoryBarrier2::default()
+        .src_stage_mask(src_stage)
+        .src_access_mask(src_access)
+        .dst_stage_mask(dst_stage)
+        .dst_access_mask(dst_access)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(buf)
+        .offset(0)
+        .size(vk::WHOLE_SIZE)
 }
 
-/// Box-filter mips in sRGB space (matches the vanilla look closely enough
-/// for M2; alpha-coverage-preserving mips are the M4 cutout item).
+fn create_device_buffer(
+    gpu: &mut Gpu,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    name: &str,
+) -> Result<(vk::Buffer, Allocation), String> {
+    unsafe {
+        let buffer = gpu
+            .device
+            .create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(usage)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+            .map_err(|e| format!("{name}: {e}"))?;
+        let req = gpu.device.get_buffer_memory_requirements(buffer);
+        let alloc = gpu
+            .allocator
+            .allocate(&AllocationCreateDesc {
+                name,
+                requirements: req,
+                location: MemoryLocation::GpuOnly,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("{name} alloc: {e}"))?;
+        gpu.device
+            .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
+            .map_err(|e| format!("{name} bind: {e}"))?;
+        Ok((buffer, alloc))
+    }
+}
+
+fn create_host_buffer(
+    gpu: &mut Gpu,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    name: &str,
+) -> Result<(vk::Buffer, Allocation), String> {
+    unsafe {
+        let buffer = gpu
+            .device
+            .create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(usage)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+            .map_err(|e| format!("{name}: {e}"))?;
+        let req = gpu.device.get_buffer_memory_requirements(buffer);
+        let alloc = gpu
+            .allocator
+            .allocate(&AllocationCreateDesc {
+                name,
+                requirements: req,
+                location: MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("{name} alloc: {e}"))?;
+        gpu.device
+            .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
+            .map_err(|e| format!("{name} bind: {e}"))?;
+        Ok((buffer, alloc))
+    }
+}
+
+fn build_graphics_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(VERTEX_STRIDE as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let attrs = [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(12),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .format(vk::Format::R32_UINT)
+                .offset(20),
+            vk::VertexInputAttributeDescription::default()
+                .location(3)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(24),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attrs);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(false)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
+            )];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&ci), None)
+            .map_err(|(_, e)| format!("world pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
+    }
+}
+
+// -- texture upload (unchanged from M2/M4) -----------------------------------
+
 fn generate_mips(tex_size: u32, mip_levels: u32, base: &[u8]) -> Vec<Vec<u8>> {
     let mut out = vec![base.to_vec()];
     let mut prev_size = tex_size as usize;
@@ -547,18 +1105,17 @@ fn upload_texture_array(
     mip_levels: u32,
     layers: &[Vec<u8>],
 ) -> Result<(), String> {
-    // Staging layout: mip-major, layers contiguous inside each mip, so one
-    // copy region per mip covers every layer.
     let layer_count = layers.len().max(1);
     let mut staging_data = Vec::new();
     let mut mip_offsets = Vec::new();
     let per_layer_mips: Vec<Vec<Vec<u8>>> = if layers.is_empty() {
-        vec![generate_mips(tex_size, mip_levels, &vec![255u8; (tex_size * tex_size * 4) as usize])]
+        vec![generate_mips(
+            tex_size,
+            mip_levels,
+            &vec![255u8; (tex_size * tex_size * 4) as usize],
+        )]
     } else {
-        layers
-            .iter()
-            .map(|l| generate_mips(tex_size, mip_levels, l))
-            .collect()
+        layers.iter().map(|l| generate_mips(tex_size, mip_levels, l)).collect()
     };
     for mip in 0..mip_levels as usize {
         mip_offsets.push(staging_data.len() as u64);
@@ -568,7 +1125,7 @@ fn upload_texture_array(
     }
 
     unsafe {
-        let device = &gpu.device;
+        let device = gpu.device.clone();
         let staging = device
             .create_buffer(
                 &vk::BufferCreateInfo::default()
@@ -592,9 +1149,7 @@ fn upload_texture_array(
         device
             .bind_buffer_memory(staging, staging_alloc.memory(), staging_alloc.offset())
             .map_err(|e| format!("staging bind: {e}"))?;
-        staging_alloc
-            .mapped_slice_mut()
-            .ok_or("staging not mapped")?[..staging_data.len()]
+        staging_alloc.mapped_slice_mut().ok_or("staging not mapped")?[..staging_data.len()]
             .copy_from_slice(&staging_data);
 
         let pool = device
@@ -617,8 +1172,7 @@ fn upload_texture_array(
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )
-            .map_err(|e| format!("upload begin: {e}"))?;
-
+            .map_err(|e| format!("begin: {e}"))?;
         let full_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .base_mip_level(0)
@@ -639,7 +1193,6 @@ fn upload_texture_array(
             cb,
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_dst)),
         );
-
         let mut regions = Vec::new();
         for mip in 0..mip_levels {
             let size = (tex_size >> mip).max(1);
@@ -667,7 +1220,6 @@ fn upload_texture_array(
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             &regions,
         );
-
         let to_read = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
             .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
@@ -683,21 +1235,19 @@ fn upload_texture_array(
             cb,
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_read)),
         );
-        device
-            .end_command_buffer(cb)
-            .map_err(|e| format!("upload end: {e}"))?;
-
+        device.end_command_buffer(cb).map_err(|e| format!("end: {e}"))?;
         let fence = device
             .create_fence(&vk::FenceCreateInfo::default(), None)
-            .map_err(|e| format!("upload fence: {e}"))?;
+            .map_err(|e| format!("fence: {e}"))?;
         let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
-        let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
         device
-            .queue_submit2(gpu.graphics_queue, std::slice::from_ref(&submit), fence)
-            .map_err(|e| format!("upload submit: {e}"))?;
-        device
-            .wait_for_fences(&[fence], true, u64::MAX)
-            .map_err(|e| format!("upload wait: {e}"))?;
+            .queue_submit2(
+                gpu.graphics_queue,
+                &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                fence,
+            )
+            .map_err(|e| format!("submit: {e}"))?;
+        device.wait_for_fences(&[fence], true, u64::MAX).map_err(|e| format!("wait: {e}"))?;
         device.destroy_fence(fence, None);
         device.destroy_command_pool(pool, None);
         device.destroy_buffer(staging, None);
@@ -706,7 +1256,8 @@ fn upload_texture_array(
     Ok(())
 }
 
-/// A shared depth target for the world pass.
+// -- depth target (unchanged) ------------------------------------------------
+
 pub struct DepthTarget {
     pub image: vk::Image,
     alloc: Option<Allocation>,
@@ -717,7 +1268,7 @@ pub struct DepthTarget {
 impl DepthTarget {
     pub fn new(gpu: &mut Gpu, extent: vk::Extent2D) -> Result<Self, String> {
         unsafe {
-            let device = &gpu.device;
+            let device = gpu.device.clone();
             let image = device
                 .create_image(
                     &vk::ImageCreateInfo::default()
@@ -777,7 +1328,6 @@ impl DepthTarget {
         }
     }
 
-    /// Transition UNDEFINED → DEPTH_ATTACHMENT for this frame's clear+use.
     pub fn barrier_for_use(&self, gpu: &Gpu, cb: vk::CommandBuffer) {
         unsafe {
             let barrier = vk::ImageMemoryBarrier2::default()
@@ -805,8 +1355,7 @@ impl DepthTarget {
                 );
             gpu.device.cmd_pipeline_barrier2(
                 cb,
-                &vk::DependencyInfo::default()
-                    .image_memory_barriers(std::slice::from_ref(&barrier)),
+                &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier)),
             );
         }
     }
@@ -822,13 +1371,9 @@ impl DepthTarget {
     }
 }
 
-// -- frustum ----------------------------------------------------------------
+// -- frustum -----------------------------------------------------------------
 
-type Plane = [f32; 4];
-
-/// Gribb–Hartmann plane extraction from a column-major view_proj with
-/// Vulkan-style clip (z in [0, w]).
-fn frustum_planes(m: &[[f32; 4]; 4]) -> [Plane; 6] {
+fn frustum_planes(m: &[[f32; 4]; 4]) -> [[f32; 4]; 6] {
     let row = |i: usize| -> [f32; 4] { [m[0][i], m[1][i], m[2][i], m[3][i]] };
     let r0 = row(0);
     let r1 = row(1);
@@ -837,26 +1382,23 @@ fn frustum_planes(m: &[[f32; 4]; 4]) -> [Plane; 6] {
     let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
     let sub = |a: [f32; 4], b: [f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
     [
-        add(r3, r0), // left
-        sub(r3, r0), // right
-        add(r3, r1), // bottom
-        sub(r3, r1), // top
-        r2,          // near (z >= 0)
-        sub(r3, r2), // far
+        add(r3, r0),
+        sub(r3, r0),
+        add(r3, r1),
+        sub(r3, r1),
+        r2,
+        sub(r3, r2),
     ]
 }
 
-fn aabb_visible(planes: &[Plane; 6], min: [f32; 3], max: [f32; 3]) -> bool {
-    for p in planes {
-        // Positive vertex: the AABB corner furthest along the plane normal.
-        let v = [
-            if p[0] >= 0.0 { max[0] } else { min[0] },
-            if p[1] >= 0.0 { max[1] } else { min[1] },
-            if p[2] >= 0.0 { max[2] } else { min[2] },
-        ];
-        if p[0] * v[0] + p[1] * v[1] + p[2] * v[2] + p[3] < 0.0 {
-            return false;
-        }
-    }
-    true
+/// Infinite reversed-Z perspective (RH, Y-up). Maps z=-near→1, z=-∞→0; pair
+/// with a 0.0 depth clear + `GREATER`. Column-major.
+pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4]; 4] {
+    let f = 1.0 / (fov_y_rad * 0.5).tan();
+    [
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, 0.0, -1.0],
+        [0.0, 0.0, near, 0.0],
+    ]
 }

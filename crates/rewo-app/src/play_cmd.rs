@@ -10,7 +10,6 @@
 use std::time::{Duration, Instant};
 
 use clap::Args as ClapArgs;
-use rewo_data::assets::RenderKind;
 use rewo_data::{assets, DataPaths, GameData};
 use rewo_net::play::PlaySession;
 use rewo_net::Connection;
@@ -50,11 +49,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         Some(jar) => {
             let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
             match assets::bake(&jar, &paths.blocks_json()) {
-                Ok(baked) => baked
-                    .render
-                    .iter()
-                    .map(|k| matches!(k, RenderKind::Cube { .. }))
-                    .collect(),
+                Ok(baked) => baked.solid,
                 Err(e) => {
                     log::warn!("play: asset bake failed ({e}); using non-air-is-solid");
                     Vec::new()

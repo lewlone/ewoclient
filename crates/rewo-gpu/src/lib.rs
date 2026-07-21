@@ -199,10 +199,19 @@ impl Gpu {
             let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
                 .dynamic_rendering(true)
                 .synchronization2(true);
+            // M5 GPU-driven path: draw_indirect_count (core 1.2) +
+            // multi_draw_indirect (core feature) so the compute cull pass can
+            // emit an indirect draw list the GPU consumes in one call.
+            let mut features12 =
+                vk::PhysicalDeviceVulkan12Features::default().draw_indirect_count(true);
+            let mut features_core = vk::PhysicalDeviceFeatures2::default();
+            features_core.features.multi_draw_indirect = vk::TRUE;
             let device_ci = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_exts)
-                .push_next(&mut features13);
+                .push_next(&mut features13)
+                .push_next(&mut features12)
+                .push_next(&mut features_core);
             let device = instance
                 .create_device(physical, &device_ci, None)
                 .map_err(|e| format!("create device: {e}"))?;

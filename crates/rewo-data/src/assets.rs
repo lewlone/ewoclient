@@ -67,6 +67,11 @@ pub enum RenderKind {
 pub struct BakedAssets {
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
+    /// Per-state full-cube collision flag — true for a `Cube` OR a `Model`
+    /// with a full 16³ element (grass_block renders as a Model because of its
+    /// overlay element, but collides as a solid cube). Drives the client's
+    /// M3 full-cube collision, independent of the render fast-path.
+    pub solid: Vec<bool>,
     /// RGBA8 16×16 texels per layer (sRGB).
     pub layers: Vec<Vec<u8>>,
     pub layer_names: Vec<String>,
@@ -117,6 +122,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     };
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
+    let mut solid = vec![false; max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
     let mut stats = BakeStats::default();
 
@@ -133,16 +139,18 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 continue;
             };
             let props = state.get("properties").and_then(|p| p.as_object());
-            let kind = bs
+            let resolved = bs
                 .as_ref()
                 .and_then(|bs| baker.resolve_state(bs, props, foliage, &mut models));
-            match kind {
-                Some(k @ RenderKind::Cube { .. }) => {
+            match resolved {
+                Some((k @ RenderKind::Cube { .. }, is_solid)) => {
                     render[id as usize] = k;
+                    solid[id as usize] = is_solid;
                     stats.cube_states += 1;
                 }
-                Some(k @ RenderKind::Model(_)) => {
+                Some((k @ RenderKind::Model(_), is_solid)) => {
                     render[id as usize] = k;
+                    solid[id as usize] = is_solid;
                     stats.model_states += 1;
                 }
                 _ => stats.invisible_states += 1,
@@ -161,6 +169,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     Ok(BakedAssets {
         render,
+        solid,
         models,
         layers: baker.layers,
         layer_names: baker.layer_names,
@@ -231,7 +240,7 @@ impl<'a> Baker<'a> {
         props: Option<&serde_json::Map<String, serde_json::Value>>,
         foliage: bool,
         models: &mut Vec<Vec<Quad>>,
-    ) -> Option<RenderKind> {
+    ) -> Option<(RenderKind, bool)> {
         let refs: Vec<ModelRef> = match bs {
             BlockState::Variants(v) => pick_variant(v, props).into_iter().collect(),
             BlockState::Multipart(parts) => parts
@@ -244,10 +253,15 @@ impl<'a> Baker<'a> {
             return None;
         }
 
+        // Collision solidity: any referenced model with a full 16³ element
+        // makes this a solid cube (grass_block renders as a Model due to its
+        // overlay element but must still collide as a full cube).
+        let is_solid = refs.iter().any(|r| self.model_has_full_cube(&r.model));
+
         // Fast path: a single, unrotated, full-cube model.
         if refs.len() == 1 && refs[0].x == 0 && refs[0].y == 0 {
             if let Some(cube) = self.try_cube(&refs[0].model, foliage) {
-                return Some(cube);
+                return Some((cube, true));
             }
         }
 
@@ -260,7 +274,19 @@ impl<'a> Baker<'a> {
         }
         let idx = models.len() as u32;
         models.push(quads);
-        Some(RenderKind::Model(idx))
+        Some((RenderKind::Model(idx), is_solid))
+    }
+
+    /// True if the model (or a parent) has any element spanning the full
+    /// 16³ box — the collision-cube test.
+    fn model_has_full_cube(&mut self, model: &str) -> bool {
+        let Some(resolved) = self.resolve_model(model) else {
+            return false;
+        };
+        resolved.elements.iter().any(|el| {
+            box_coords(el, "from") == Some([0.0, 0.0, 0.0])
+                && box_coords(el, "to") == Some([16.0, 16.0, 16.0])
+        })
     }
 
     /// If `model` is a full 16³ cube with all six faces, return a Cube.
