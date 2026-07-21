@@ -1552,3 +1552,25 @@ command packet.**
   player still renders (shared-geometry regression — unit test + arm_forward
   0 is a player no-op); demo **byte-identical**, bench flat (0.1% low
   0.583 ms), live soak corrections 0. 50 rewo tests green.
+
+**2026-07-22 — cow mob (the quadruped body plan; third model family).**
+
+- **Quadruped model** (`quadruped_model_quads`), from vanilla
+  `QuadrupedModel::createBodyMesh` (cow `legSize=12`): head + a **body box
+  rotated 90° about X** (lies horizontal) + 4 legs. The rotated body is why
+  this can't use plain `cuboid_quads` — so the box-UV face generation was
+  extracted into `box_uv_faces`, and the quadruped builds each part's faces
+  in vanilla-local coords, applies the part's X-rotation + pose, then
+  converts to this crate's convention (`(-x, 24-y, -z)`). Static for v1 (no
+  leg walk-swing, no head look — both follow-ups). Cow texture
+  `cow_temperate.png` (64×64) bakes into the atlas at (192,64); a `blit_64`
+  helper now shares the entity-skin blit. `EntityModelKind::Cow`, mob 1/16
+  scale, dispatched on `minecraft:cow` (pig/sheep share the shape but need
+  their own textures — follow-up).
+- **Verified:** summoned a cow (`REWO_SUMMON=cow`, `REWO_LOOK=cow`) and
+  rendered it — brown/white body, **pink ears**, blocky head, 4 legs, from
+  the front-left; the rotated-body UVs land correctly (coloring in the right
+  places). 0 VUIDs; player + zombie still render (shared `box_uv_faces`
+  refactor — unit test intact); demo **byte-identical**, bench flat, live
+  soak corrections 0. 50 rewo tests green. The mob registry now spans three
+  body plans: humanoid (player/zombie), cube (slime), quadruped (cow).

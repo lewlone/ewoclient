@@ -86,8 +86,10 @@ const ATLAS_W: u32 = 256;
 const ATLAS_H: u32 = 128;
 const SKIN_X: u32 = 128;
 const SLIME_Y: u32 = 64;
-/// The 64×64 zombie skin sits at (ZOMBIE_X, 0), right of the player skin.
+/// The 64×64 zombie skin sits at (ZOMBIE_X, 0), right of the player skin;
+/// the 64×64 cow skin sits below it at (ZOMBIE_X, COW_Y).
 const ZOMBIE_X: u32 = 192;
+const COW_Y: u32 = 64;
 
 /// Which model to render for an entity.
 #[derive(Clone, Copy, PartialEq)]
@@ -96,6 +98,8 @@ pub enum EntityModelKind {
     Player,
     /// Humanoid model with the zombie texture + arms-forward pose.
     Zombie,
+    /// Quadruped model (cow/pig/sheep share it) with the cow texture.
+    Cow,
     /// Green slime cube (needs the slime texture).
     Slime,
     /// Colored capsule fallback (mobs without a bespoke model).
@@ -124,6 +128,8 @@ pub struct EntityPass {
     player_quads: Vec<PlayerQuad>,
     /// Zombie: the same humanoid geometry, UVs into the zombie skin slot.
     zombie_quads: Vec<PlayerQuad>,
+    /// Cow: the quadruped model, UVs into the cow skin slot.
+    cow_quads: Vec<PlayerQuad>,
     /// Slime model quads (green cube, atlas UVs into the slime region).
     slime_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
@@ -134,6 +140,7 @@ pub struct EntityPass {
     has_skin: bool,
     has_slime: bool,
     has_zombie: bool,
+    has_cow: bool,
 }
 
 /// Which articulated part a player-model quad belongs to — sets its
@@ -165,6 +172,7 @@ impl EntityPass {
         skin: Option<&[u8]>,
         slime: Option<&[u8]>,
         zombie: Option<&[u8]>,
+        cow: Option<&[u8]>,
     ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
@@ -210,17 +218,9 @@ impl EntityPass {
             _ => false,
         };
         // Zombie skin (64×64) at (ZOMBIE_X, 0), right of the player skin.
-        let has_zombie = match zombie {
-            Some(px) if px.len() == 64 * 64 * 4 => {
-                for row in 0..64usize {
-                    let src = row * 64 * 4;
-                    let dst = (row * ATLAS_W as usize + ZOMBIE_X as usize) * 4;
-                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
-                }
-                true
-            }
-            _ => false,
-        };
+        let has_zombie = blit_64(&mut atlas, zombie, ZOMBIE_X, 0);
+        // Cow skin (64×64) at (ZOMBIE_X, COW_Y), below the zombie.
+        let has_cow = blit_64(&mut atlas, cow, ZOMBIE_X, COW_Y);
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
             (white_texel.0 as f32 + 0.5) / ATLAS_W as f32,
@@ -347,6 +347,7 @@ impl EntityPass {
                 capsule: unit_capsule(),
                 player_quads: cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0),
                 zombie_quads: cuboid_quads(&humanoid_cuboids(), ZOMBIE_X as f32, 0.0),
+                cow_quads: quadruped_model_quads(ZOMBIE_X as f32, COW_Y as f32),
                 slime_quads: slime_model_quads(),
                 cell,
                 advance,
@@ -355,6 +356,7 @@ impl EntityPass {
                 has_skin,
                 has_slime,
                 has_zombie,
+                has_cow,
             })
         }
     }
@@ -383,6 +385,11 @@ impl EntityPass {
                     // Same humanoid geometry; arms held forward (−75°) — the
                     // iconic zombie pose. Slightly taller than a player.
                     self.emit_model(&mut verts, d, &self.zombie_quads, 1.0 / 16.0, -1.3);
+                    continue;
+                }
+                EntityModelKind::Cow if self.has_cow => {
+                    // Quadruped, standard mob 1/16 model scale.
+                    self.emit_model(&mut verts, d, &self.cow_quads, 1.0 / 16.0, 0.0);
                     continue;
                 }
                 EntityModelKind::Slime if self.has_slime => {
@@ -721,63 +728,123 @@ struct Cuboid {
     part: LimbPart,
 }
 
-/// Unwrap cuboids into per-face quads with standard Minecraft box-UV,
-/// offset into the given atlas texture slot (`off_x`, `off_y` in atlas px).
-fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
+/// Box-UV a single cuboid into its 6 faces (positions in the box's own
+/// frame + atlas-normalized UVs + per-face shade). The caller may transform
+/// the positions (the quadruped's rotated body needs this).
+fn box_uv_faces(
+    min: [f32; 3],
+    max: [f32; 3],
+    size: [f32; 3],
+    uv: (f32, f32),
+    off_x: f32,
+    off_y: f32,
+) -> [([[f32; 3]; 4], [[f32; 2]; 4], f32); 6] {
     let t = |u: f32, v: f32| -> [f32; 2] {
         [(off_x + u) / ATLAS_W as f32, (off_y + v) / ATLAS_H as f32]
     };
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    let [sw, sh, sd] = size;
+    let (u, v) = uv;
+    // Box-UV sub-rect origins (identical to skin.rs::cuboid_faces).
+    let (tu, tv) = (u + sd, v); // top
+    let (du, dv) = (u + sd + sw, v); // bottom
+    let (ru, rv) = (u, v + sd); // right (-X)
+    let (fu, fv) = (u + sd, v + sd); // front (+Z)
+    let (lu, lv) = (u + sd + sw, v + sd); // left (+X)
+    let (bu, bv) = (u + 2.0 * sd + sw, v + sd); // back (-Z)
+    [
+        (
+            [[x0, y1, z1], [x1, y1, z1], [x1, y0, z1], [x0, y0, z1]],
+            [t(fu, fv), t(fu + sw, fv), t(fu + sw, fv + sh), t(fu, fv + sh)],
+            0.80, // front
+        ),
+        (
+            [[x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [x1, y0, z0]],
+            [t(bu, bv), t(bu + sw, bv), t(bu + sw, bv + sh), t(bu, bv + sh)],
+            0.62, // back
+        ),
+        (
+            [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
+            [t(tu, tv), t(tu + sw, tv), t(tu + sw, tv + sd), t(tu, tv + sd)],
+            1.0, // top
+        ),
+        (
+            [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
+            [t(du, dv), t(du + sw, dv), t(du + sw, dv + sd), t(du, dv + sd)],
+            0.50, // bottom
+        ),
+        (
+            [[x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [x0, y0, z0]],
+            [t(ru, rv), t(ru + sd, rv), t(ru + sd, rv + sh), t(ru, rv + sh)],
+            0.68, // right (-X)
+        ),
+        (
+            [[x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [x1, y0, z1]],
+            [t(lu, lv), t(lu + sd, lv), t(lu + sd, lv + sh), t(lu, lv + sh)],
+            0.68, // left (+X)
+        ),
+    ]
+}
+
+/// Unwrap cuboids into per-face quads with standard Minecraft box-UV,
+/// offset into the given atlas texture slot (`off_x`, `off_y` in atlas px).
+fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
     let mut out = Vec::with_capacity(cuboids.len() * 6);
     for c in cuboids {
-        let [x0, y0, z0] = c.min;
-        let [x1, y1, z1] = c.max;
-        let [sw, sh, sd] = c.size;
-        let (u, v) = c.uv;
-        // Box-UV sub-rect origins (identical to skin.rs::cuboid_faces).
-        let (tu, tv) = (u + sd, v); // top
-        let (du, dv) = (u + sd + sw, v); // bottom
-        let (ru, rv) = (u, v + sd); // right (-X)
-        let (fu, fv) = (u + sd, v + sd); // front (+Z)
-        let (lu, lv) = (u + sd + sw, v + sd); // left (+X)
-        let (bu, bv) = (u + 2.0 * sd + sw, v + sd); // back (-Z)
-        let faces: [([[f32; 3]; 4], [[f32; 2]; 4], f32); 6] = [
-            (
-                [[x0, y1, z1], [x1, y1, z1], [x1, y0, z1], [x0, y0, z1]],
-                [t(fu, fv), t(fu + sw, fv), t(fu + sw, fv + sh), t(fu, fv + sh)],
-                0.80, // front
-            ),
-            (
-                [[x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [x1, y0, z0]],
-                [t(bu, bv), t(bu + sw, bv), t(bu + sw, bv + sh), t(bu, bv + sh)],
-                0.62, // back
-            ),
-            (
-                [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
-                [t(tu, tv), t(tu + sw, tv), t(tu + sw, tv + sd), t(tu, tv + sd)],
-                1.0, // top
-            ),
-            (
-                [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
-                [t(du, dv), t(du + sw, dv), t(du + sw, dv + sd), t(du, dv + sd)],
-                0.50, // bottom
-            ),
-            (
-                [[x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [x0, y0, z0]],
-                [t(ru, rv), t(ru + sd, rv), t(ru + sd, rv + sh), t(ru, rv + sh)],
-                0.68, // right (-X)
-            ),
-            (
-                [[x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [x1, y0, z1]],
-                [t(lu, lv), t(lu + sd, lv), t(lu + sd, lv + sh), t(lu, lv + sh)],
-                0.68, // left (+X)
-            ),
-        ];
-        for (pos, uv, shade) in faces {
+        for (pos, uv, shade) in box_uv_faces(c.min, c.max, c.size, c.uv, off_x, off_y) {
             out.push(PlayerQuad {
                 pos,
                 uv,
                 shade,
                 part: c.part,
+            });
+        }
+    }
+    out
+}
+
+/// The quadruped model (cow/pig/sheep share the shape), from vanilla
+/// `QuadrupedModel::createBodyMesh` (cow `legSize=12`). Built in vanilla
+/// local coords with each part's rotation + pose applied, then converted to
+/// this crate's convention (feet-up y, front +Z: `(-x, 24-y, -z)`). The
+/// body is a box rotated 90° about X (lies horizontal) — the reason this
+/// needs the per-vertex transform rather than plain `cuboid_quads`. Static
+/// for v1 (no leg walk-swing, no head look).
+fn quadruped_model_quads(off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
+    use std::f32::consts::FRAC_PI_2;
+    // (min, max, size, uv, rot_x, pose) in vanilla local coords.
+    let leg = 12.0f32;
+    #[rustfmt::skip]
+    let parts: [([f32;3],[f32;3],[f32;3],(f32,f32),f32,[f32;3]); 6] = [
+        // head
+        ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.]),
+        // body — rotated 90° about X so it lies horizontal
+        ([-5.,-10.,-7.], [5.,6.,1.], [10.,16.,8.], (28.,8.), FRAC_PI_2, [0., 17.-leg, 2.]),
+        // legs: right-hind, left-hind, right-front, left-front
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, 7.]),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, 7.]),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, -5.]),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.]),
+    ];
+    // Rotate a local vertex about X, add the pose, convert vanilla→my.
+    let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
+        let (c, s) = (rot_x.cos(), rot_x.sin());
+        let (y, z) = (p[1], p[2]);
+        let v = [p[0] + pose[0], y * c - z * s + pose[1], y * s + z * c + pose[2]];
+        [-v[0], 24.0 - v[1], -v[2]]
+    };
+    let mut out = Vec::with_capacity(parts.len() * 6);
+    for (min, max, size, uv, rot_x, pose) in parts {
+        for (mut pos, uv, shade) in box_uv_faces(min, max, size, uv, off_x, off_y) {
+            for p in &mut pos {
+                *p = xform(*p, rot_x, pose);
+            }
+            out.push(PlayerQuad {
+                pos,
+                uv,
+                shade,
+                part: LimbPart::Body,
             });
         }
     }
@@ -830,6 +897,22 @@ pub fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Blit a 64×64 RGBA entity skin into the atlas at (x, y). Returns whether
+/// it was present + correctly sized.
+fn blit_64(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32) -> bool {
+    match tex {
+        Some(px) if px.len() == 64 * 64 * 4 => {
+            for row in 0..64usize {
+                let src = row * 64 * 4;
+                let dst = ((y as usize + row) * ATLAS_W as usize + x as usize) * 4;
+                atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+            }
+            true
+        }
+        _ => false,
     }
 }
 

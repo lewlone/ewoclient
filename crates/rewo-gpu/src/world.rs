@@ -775,8 +775,17 @@ impl WorldRenderer {
         skin: Option<&[u8]>,
         slime: Option<&[u8]>,
         zombie: Option<&[u8]>,
+        cow: Option<&[u8]>,
     ) -> Result<(), String> {
-        self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin, slime, zombie)?);
+        self.entities = Some(EntityPass::new(
+            gpu,
+            self.color_format,
+            font,
+            skin,
+            slime,
+            zombie,
+            cow,
+        )?);
         Ok(())
     }
 
