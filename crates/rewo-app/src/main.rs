@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod live_cmd;
 mod net_cmd;
 mod play_cmd;
 mod stats;
@@ -100,6 +101,9 @@ enum Command {
     /// M3 be a player: headless bot — spawn, move, build, chat; report
     /// server position corrections (the physics-parity meter).
     Play(play_cmd::PlayArgs),
+    /// M3 capstone: connect + play in a real window (WASD/mouse), the live
+    /// session feeding the renderer. `--out` writes the eye view headless.
+    Live(live_cmd::LiveArgs),
 }
 
 fn main() {
@@ -113,6 +117,7 @@ fn main() {
         Some(Command::Net(net_args)) => net_cmd::run(net_args),
         Some(Command::View(view_args)) => view_cmd::run(view_args),
         Some(Command::Play(play_args)) => play_cmd::run(play_args),
+        Some(Command::Live(live_args)) => live_cmd::run(live_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

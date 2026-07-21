@@ -825,10 +825,25 @@ reads **zero server corrections over 3,000 ticks** of continuous movement.
   physics locally and *reconcile* on the server's teleport corrections
   (which stay at 0), but don't yet pre-apply block changes before the ack —
   fine while corrections are rare; full predict/rollback is a refinement.
-- **The live windowed client** (play session feeding the renderer so you can
-  *see* yourself play) is the natural M3→M4 bridge — the tick loop + world
-  are ready, it needs a dirty-column remesh + eye camera + WASD→input. Left
-  as the next step since it's the interactive piece the user drives.
-- Next: **M4** (real meshing) — greedy + model-quad path, fluids,
-  26-neighbor AO, biome tint, packed vertices — *and* the live windowed
-  client as the tangible capstone.
+- **The live windowed client shipped too** (`rewo live`, `rewo-app/src/
+  live_cmd.rs`) — the M3 capstone. The M1 protocol + M3 physics session feed
+  the M2 renderer in **one single-threaded loop** (the socket reader is
+  already its own thread): a 50 ms accumulator drives the 20 Hz tick with
+  WASD/mouse input, every frame renders from the player's eye
+  (`eye_y = y + 1.62`, MC-convention yaw/pitch camera). Live re-meshing uses
+  a **per-frame budget** (`REMESH_BUDGET = 6`, nearest-column-first) fed by a
+  `PlaySession` dirty set (block edits + new chunks mark the 3×3
+  neighborhood stale; forgotten columns free their buffers) so the initial
+  ~329-chunk flood amortizes instead of hitching. A `wait_idle` guards the
+  host-visible column-buffer swap on any frame that re-uploaded (the
+  device-local arena that removes the stall is M5).
+  - Headless-verified: `rewo live --out PNG` pumps the session to spawn +
+    settle, meshes everything, and renders the eye view — **inspected: a
+    proper first-person shot standing on the flat world at the real spawn
+    (7.5,-60,8.5)**, sky + grass + a persisted dirt block from a prior bot
+    run visible on the horizon (real mutated server state).
+  - Windowed release soak (`--run-seconds 6`): **~988 fps, cpu p99 2.18 ms,
+    0 corrections**, 329 columns, tick loop running concurrently.
+- Next: **M4** (real meshing) — binary greedy + model-quad path, fluids,
+  26-neighbor AO, biome tint (colormaps), packed 8–12 B vertices. The live
+  client makes M4's visual gains directly inspectable.

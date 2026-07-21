@@ -1,0 +1,579 @@
+//! `rewo live` — the M3 capstone: connect, play, and SEE it. A real
+//! windowed client — the M1 protocol + M3 physics session feeding the M2
+//! renderer, with live re-meshing as the world changes.
+//!
+//! Single-threaded by design (the socket reader is already its own thread):
+//! one loop drives the 20 Hz tick on a 50 ms accumulator and renders every
+//! frame from the player's eye. Dirty columns re-mesh with a per-frame
+//! budget so the initial chunk flood amortizes instead of hitching (the
+//! plan's "bounded per-frame work"; the device-local arena that removes the
+//! remesh stall entirely is M5).
+//!
+//! Headless-verifiable: `--run-seconds N` auto-exits and `--out PNG` writes
+//! the final frame from the player's eye — a machine-checkable artifact
+//! proving the live client renders the actual server world at the player's
+//! position.
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use ash::vk;
+use clap::Args as ClapArgs;
+use glam::{Mat4, Vec3};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use rewo_data::assets::{self, RenderKind};
+use rewo_data::{DataPaths, GameData};
+use rewo_gpu::offscreen::Offscreen;
+use rewo_gpu::overlay::OverlayDraw;
+use rewo_gpu::renderer::{RenderOutcome, Renderer};
+use rewo_gpu::world::WorldRenderer;
+use rewo_gpu::Gpu;
+use rewo_net::play::PlaySession;
+use rewo_net::Connection;
+use rewo_world::physics::{TickInput, EYE_HEIGHT};
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{CursorGrabMode, Window, WindowId};
+
+use crate::stats::{OverlayRing, StatsAccum};
+
+const CLEAR_SKY: [f32; 4] = [0.184, 0.380, 1.0, 1.0];
+const TICK_DT: f32 = 0.05; // 20 Hz
+/// Max columns re-meshed per frame — the rest stay queued.
+const REMESH_BUDGET: usize = 6;
+
+#[derive(ClapArgs)]
+pub struct LiveArgs {
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    #[arg(long, default_value_t = 25599)]
+    port: u16,
+    #[arg(long, default_value = "RewoLive")]
+    username: String,
+    #[arg(long, default_value = "26.2")]
+    version: String,
+    /// Auto-exit after N seconds (headless soak).
+    #[arg(long)]
+    run_seconds: Option<f32>,
+    /// Write the final frame to this PNG (headless verification artifact).
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    no_validation: bool,
+}
+
+pub fn run(args: LiveArgs) -> Result<(), String> {
+    let data = GameData::load_for_version(&args.version)?;
+    let jar = client_jar_path(&args.version).ok_or("client jar not found")?;
+    let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
+    let baked = assets::bake(&jar, &paths.blocks_json())?;
+    let solid: Vec<bool> = baked
+        .render
+        .iter()
+        .map(|k| matches!(k, RenderKind::Cube { .. }))
+        .collect();
+
+    let conn = Connection::connect(&args.host, args.port, &data)?;
+    let session = conn.into_play(
+        &args.host,
+        args.port,
+        &args.username,
+        solid,
+        data.blocks.global_palette_bits,
+    )?;
+    log::info!("live: session up, opening window…");
+
+    let want_validation = cfg!(debug_assertions) && !args.no_validation;
+    match &args.out {
+        // Headless: pump the session until spawn + a settle window, render
+        // one frame from the eye, save. No window at all.
+        Some(out) if args.run_seconds.is_none() => {
+            run_headless(session, baked, want_validation, out, 6.0)
+        }
+        _ => run_windowed(session, baked, args, want_validation),
+    }
+}
+
+/// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
+/// pitch+ looks down.
+fn eye_view_proj(
+    eye: Vec3,
+    yaw_deg: f32,
+    pitch_deg: f32,
+    aspect: f32,
+) -> [[f32; 4]; 4] {
+    let yaw = yaw_deg.to_radians();
+    let pitch = pitch_deg.to_radians();
+    let dir = Vec3::new(
+        -yaw.sin() * pitch.cos(),
+        -pitch.sin(),
+        yaw.cos() * pitch.cos(),
+    );
+    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let proj = Mat4::perspective_rh(70f32.to_radians(), aspect.max(0.01), 0.05, 2000.0);
+    (proj * view).to_cols_array_2d()
+}
+
+fn player_eye(session: &PlaySession) -> Vec3 {
+    Vec3::new(
+        session.player.x as f32,
+        session.player.eye_y() as f32,
+        session.player.z as f32,
+    )
+}
+
+/// Re-mesh up to `budget` dirty columns; requeue the overflow. Returns how
+/// many were uploaded (caller waits idle once if > 0).
+fn drain_remesh(
+    session: &mut PlaySession,
+    gpu: &mut Gpu,
+    world_renderer: &mut WorldRenderer,
+    table: &[RenderKind],
+    budget: usize,
+) -> Result<usize, String> {
+    for (cx, cz) in session.take_removed() {
+        world_renderer.remove_column(gpu, cx, cz);
+    }
+    let mut dirty = session.take_dirty();
+    if dirty.is_empty() {
+        return Ok(0);
+    }
+    // Nearest-to-player first so what you're looking at appears soonest.
+    let (px, pz) = (session.player.x as f32, session.player.z as f32);
+    dirty.sort_by(|a, b| {
+        let da = col_dist(*a, px, pz);
+        let db = col_dist(*b, px, pz);
+        da.partial_cmp(&db).unwrap()
+    });
+    let overflow: Vec<(i32, i32)> = dirty.split_off(dirty.len().min(budget));
+    session.requeue_dirty(overflow);
+
+    let mut uploaded = 0;
+    for (cx, cz) in dirty {
+        match rewo_mesh::mesh_column(&session.world, table, cx, cz) {
+            Some(mesh) => {
+                world_renderer.upload_column(
+                    gpu,
+                    cx,
+                    cz,
+                    bytemuck::cast_slice(&mesh.vertices),
+                    &mesh.indices,
+                    mesh.y_min,
+                    mesh.y_max,
+                )?;
+                uploaded += 1;
+            }
+            None => world_renderer.remove_column(gpu, cx, cz),
+        }
+    }
+    Ok(uploaded)
+}
+
+fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
+    let x = cx as f32 * 16.0 + 8.0 - px;
+    let z = cz as f32 * 16.0 + 8.0 - pz;
+    x * x + z * z
+}
+
+// -- headless ---------------------------------------------------------------
+
+fn run_headless(
+    mut session: PlaySession,
+    baked: assets::BakedAssets,
+    want_validation: bool,
+    out: &std::path::Path,
+    settle_seconds: f32,
+) -> Result<(), String> {
+    let mut gpu = Gpu::new(None, want_validation)?;
+    let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
+    let mut world_renderer =
+        WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+
+    // Pump the session on a real 20 Hz clock until spawned + settled, so
+    // chunks arrive and the player position is real.
+    let start = Instant::now();
+    let idle = TickInput::default();
+    let mut tick = 0u64;
+    while start.elapsed().as_secs_f32() < settle_seconds {
+        let deadline = start + Duration::from_millis(50) * (tick as u32 + 1);
+        session.tick(&idle)?;
+        if let Some(reason) = &session.disconnect {
+            return Err(format!("disconnected: {reason}"));
+        }
+        tick += 1;
+        let now = Instant::now();
+        if now < deadline {
+            std::thread::sleep(deadline - now);
+        }
+    }
+    if !session.spawned {
+        return Err("never spawned".into());
+    }
+    // Mesh everything loaded (no budget — one-shot).
+    session.requeue_dirty(session.world.column_coords());
+    while !session_dirty_empty(&mut session) {
+        drain_remesh(&mut session, &mut gpu, &mut world_renderer, &baked.render, 4096)?;
+    }
+    gpu.wait_idle();
+
+    // Look slightly down from the eye toward the horizon.
+    let eye = player_eye(&session);
+    let vp = eye_view_proj(eye, session.player.yaw, 10.0, 1280.0 / 720.0);
+    let ring = OverlayRing::default();
+    let draw = OverlayDraw {
+        samples_ms: &ring.data,
+        head: ring.head(),
+        scale_ms: 20.0,
+        origin: [16.0, 16.0],
+        size: [560.0, 140.0],
+    };
+    for _ in 0..3 {
+        off.render(&gpu, Some((&mut world_renderer, vp)), &draw, CLEAR_SKY)?;
+    }
+    off.save_png(&gpu, out)?;
+    println!(
+        "[rewo-m3-live] headless: spawned at ({:.1},{:.1},{:.1}), {} columns, {} drawn, {} culled",
+        session.player.x,
+        session.player.y,
+        session.player.z,
+        session.world.loaded_columns(),
+        world_renderer.drawn_last_frame,
+        world_renderer.culled_last_frame,
+    );
+    println!("[rewo-m3-live] wrote {}", out.display());
+    world_renderer.destroy(&mut gpu);
+    off.destroy(&mut gpu);
+    Ok(())
+}
+
+fn session_dirty_empty(session: &mut PlaySession) -> bool {
+    let d = session.take_dirty();
+    let empty = d.is_empty();
+    session.requeue_dirty(d);
+    empty
+}
+
+// -- windowed ---------------------------------------------------------------
+
+#[derive(Default)]
+struct Keys {
+    w: bool,
+    a: bool,
+    s: bool,
+    d: bool,
+    jump: bool,
+    sneak: bool,
+    sprint: bool,
+}
+
+impl Keys {
+    fn input(&self) -> TickInput {
+        TickInput {
+            forward: (self.w as i32 - self.s as i32) as f32,
+            strafe: (self.a as i32 - self.d as i32) as f32,
+            jump: self.jump,
+            sneak: self.sneak,
+            sprint: self.sprint && self.w,
+        }
+    }
+}
+
+struct LiveState {
+    window: Arc<Window>,
+    gpu: Gpu,
+    renderer: Renderer,
+    world_renderer: WorldRenderer,
+}
+
+struct LiveApp {
+    session: Option<PlaySession>,
+    baked: Option<assets::BakedAssets>,
+    table: Vec<RenderKind>,
+    keys: Keys,
+    want_validation: bool,
+    run_seconds: Option<f32>,
+    state: Option<LiveState>,
+    ring: OverlayRing,
+    cpu: StatsAccum,
+    started: Instant,
+    last_frame: Option<Instant>,
+    tick_accum: f32,
+    logged_spawn: bool,
+    init_error: Option<String>,
+}
+
+impl ApplicationHandler for LiveApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title("Rewo · live")
+            .with_inner_size(LogicalSize::new(1280.0, 720.0));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                self.init_error = Some(format!("create window: {e}"));
+                event_loop.exit();
+                return;
+            }
+        };
+        let init = (|| -> Result<LiveState, String> {
+            let rdh = window.display_handle().map_err(|e| format!("dh: {e}"))?.as_raw();
+            let rwh = window.window_handle().map_err(|e| format!("wh: {e}"))?.as_raw();
+            let mut gpu = Gpu::new(Some((rdh, rwh)), self.want_validation)?;
+            let size = window.inner_size();
+            let mut renderer = Renderer::new(
+                &mut gpu,
+                size.width.max(1),
+                size.height.max(1),
+                vk::PresentModeKHR::MAILBOX,
+            )?;
+            renderer.ensure_depth(&mut gpu)?;
+            let baked = self.baked.take().ok_or("assets consumed")?;
+            let world_renderer = WorldRenderer::new(
+                &mut gpu,
+                renderer.swapchain.format,
+                assets::TEX_SIZE,
+                &baked.layers,
+            )?;
+            Ok(LiveState {
+                window: window.clone(),
+                gpu,
+                renderer,
+                world_renderer,
+            })
+        })();
+        match init {
+            Ok(state) => {
+                let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
+                state.window.set_cursor_visible(false);
+                self.started = Instant::now();
+                self.state = Some(state);
+            }
+            Err(e) => {
+                self.init_error = Some(e);
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(LiveState { gpu, renderer, .. }) = self.state.as_mut() {
+                    if size.width > 0 && size.height > 0 {
+                        let _ = renderer.resize(gpu, size.width, size.height);
+                        let _ = renderer.ensure_depth(gpu);
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let p = event.state == ElementState::Pressed;
+                match event.physical_key {
+                    PhysicalKey::Code(KeyCode::KeyW) => self.keys.w = p,
+                    PhysicalKey::Code(KeyCode::KeyA) => self.keys.a = p,
+                    PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
+                    PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
+                    PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
+                    PhysicalKey::Code(KeyCode::ShiftLeft) => self.keys.sneak = p,
+                    PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
+                    PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    _ => {}
+                }
+            }
+            WindowEvent::RedrawRequested => self.frame(event_loop),
+            _ => {}
+        }
+    }
+
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let (DeviceEvent::MouseMotion { delta }, Some(session)) =
+            (&event, self.session.as_mut())
+        {
+            // Mouse drives the player's look (what we render AND send).
+            session.player.yaw += delta.0 as f32 * 0.15;
+            session.player.pitch =
+                (session.player.pitch - delta.1 as f32 * 0.15).clamp(-89.0, 89.0);
+        }
+    }
+
+    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
+        }
+    }
+}
+
+impl LiveApp {
+    fn frame(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        let dt = self
+            .last_frame
+            .map(|l| now.duration_since(l).as_secs_f32())
+            .unwrap_or(0.0)
+            .min(0.1);
+        self.last_frame = Some(now);
+        if dt > 0.0 {
+            self.cpu.push(dt * 1000.0);
+            self.ring.push(dt * 1000.0);
+        }
+
+        // Fixed 20 Hz tick on an accumulator.
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        self.tick_accum += dt;
+        let input = self.keys.input();
+        let mut ran_tick = false;
+        while self.tick_accum >= TICK_DT {
+            self.tick_accum -= TICK_DT;
+            if let Err(e) = session.tick(&input) {
+                log::error!("live: tick failed: {e}");
+                event_loop.exit();
+                return;
+            }
+            ran_tick = true;
+        }
+        if let Some(reason) = session.disconnect.clone() {
+            log::warn!("live: disconnected: {reason}");
+            event_loop.exit();
+            return;
+        }
+        if ran_tick && session.spawned && !self.logged_spawn {
+            self.logged_spawn = true;
+            log::info!(
+                "live: spawned at ({:.1},{:.1},{:.1})",
+                session.player.x,
+                session.player.y,
+                session.player.z
+            );
+        }
+
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        // Re-mesh a budgeted slice of dirty columns.
+        match drain_remesh(
+            session,
+            &mut state.gpu,
+            &mut state.world_renderer,
+            &self.table,
+            REMESH_BUDGET,
+        ) {
+            Ok(n) if n > 0 => state.gpu.wait_idle(),
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("live: remesh failed: {e}");
+                event_loop.exit();
+                return;
+            }
+        }
+
+        let extent = state.renderer.swapchain.extent;
+        let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
+        let eye = player_eye(session);
+        let vp = eye_view_proj(eye, session.player.yaw, session.player.pitch, aspect);
+        let draw = OverlayDraw {
+            samples_ms: &self.ring.data,
+            head: self.ring.head(),
+            scale_ms: 20.0,
+            origin: [16.0, 16.0],
+            size: [560.0, 140.0],
+        };
+        let LiveState {
+            window,
+            gpu,
+            renderer,
+            world_renderer,
+        } = state;
+        match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
+            Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+            Ok(RenderOutcome::NeedsRecreate) => {
+                let size = window.inner_size();
+                let _ = renderer.recreate(gpu, size.width, size.height);
+                let _ = renderer.ensure_depth(gpu);
+            }
+            Err(e) => {
+                log::error!("live: render failed: {e}");
+                event_loop.exit();
+            }
+        }
+
+        if let Some(limit) = self.run_seconds {
+            if self.started.elapsed().as_secs_f32() >= limit {
+                event_loop.exit();
+            }
+        }
+    }
+}
+
+fn run_windowed(
+    session: PlaySession,
+    baked: assets::BakedAssets,
+    args: LiveArgs,
+    want_validation: bool,
+) -> Result<(), String> {
+    let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let table = baked.render.clone();
+    let mut app = LiveApp {
+        session: Some(session),
+        baked: Some(baked),
+        table,
+        keys: Keys::default(),
+        want_validation,
+        run_seconds: args.run_seconds,
+        state: None,
+        ring: OverlayRing::default(),
+        cpu: StatsAccum::default(),
+        started: Instant::now(),
+        last_frame: None,
+        tick_accum: 0.0,
+        logged_spawn: false,
+        init_error: None,
+    };
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| format!("event loop run: {e}"))?;
+    if let Some(e) = app.init_error.take() {
+        return Err(e);
+    }
+    let elapsed = app.started.elapsed().as_secs_f32();
+    if let (Some(mut state), Some(session)) = (app.state.take(), app.session.take()) {
+        println!(
+            "[rewo-m3-live] windowed: {:.1}s, {} frames, avg fps {:.0}, cpu p99 {:.2} ms",
+            elapsed,
+            app.cpu.ms.len(),
+            app.cpu.ms.len() as f32 / elapsed.max(0.001),
+            app.cpu.percentile(0.99),
+        );
+        println!(
+            "[rewo-m3-live] final pos ({:.1},{:.1},{:.1}), corrections {}, columns {}",
+            session.player.x,
+            session.player.y,
+            session.player.z,
+            session.corrections,
+            session.world.loaded_columns(),
+        );
+        let _ = EYE_HEIGHT;
+        state.world_renderer.destroy(&mut state.gpu);
+        state.renderer.destroy(&mut state.gpu);
+    }
+    Ok(())
+}
+
+fn client_jar_path(version: &str) -> Option<PathBuf> {
+    let mut p = dirs::config_dir()?;
+    p.push("EwoClient");
+    p.push("shared/versions");
+    p.push(version);
+    p.push(format!("{version}.jar"));
+    p.exists().then_some(p)
+}

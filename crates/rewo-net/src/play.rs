@@ -40,6 +40,11 @@ pub struct PlaySession {
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
+    /// Columns whose mesh is stale (new chunk / block edit). The live
+    /// renderer drains this to know what to re-mesh; the bot ignores it.
+    dirty: std::collections::HashSet<(i32, i32)>,
+    /// Columns the server dropped — the renderer frees their GPU buffers.
+    removed: Vec<(i32, i32)>,
     pub chat_log: Vec<String>,
     pub health: f32,
     pub dead: bool,
@@ -131,6 +136,8 @@ impl<'a> Connection<'a> {
             corrections: 0,
             teleports: 0,
             block_updates: 0,
+            dirty: std::collections::HashSet::new(),
+            removed: Vec::new(),
             chat_log: Vec::new(),
             health: 20.0,
             dead: false,
@@ -160,6 +167,30 @@ impl PlaySession {
     fn next_sequence(&mut self) -> i32 {
         self.sequence += 1;
         self.sequence
+    }
+
+    /// Mark a column + its 4 orthogonal neighbors stale for re-meshing.
+    fn mark_dirty_around(&mut self, cx: i32, cz: i32) {
+        for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if self.world.is_loaded((cx + dx) * 16, (cz + dz) * 16) {
+                self.dirty.insert((cx + dx, cz + dz));
+            }
+        }
+    }
+
+    /// Drain the stale-column set (live renderer re-meshes these).
+    pub fn take_dirty(&mut self) -> Vec<(i32, i32)> {
+        self.dirty.drain().collect()
+    }
+
+    /// Re-queue columns whose re-mesh was deferred (per-frame budget).
+    pub fn requeue_dirty(&mut self, cols: impl IntoIterator<Item = (i32, i32)>) {
+        self.dirty.extend(cols);
+    }
+
+    /// Drain the dropped-column list (renderer frees their buffers).
+    pub fn take_removed(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.removed)
     }
 
     /// One 20 Hz tick: drain inbound, run physics, send movement.
@@ -294,19 +325,28 @@ impl PlaySession {
             let shape = self.world.shape;
             let mut r = PacketReader::new(body);
             match rewo_world::chunk::read_level_chunk_bits(&mut r, &shape, self.global_bits) {
-                Ok(col) => self.world.insert_column(col.cx, col.cz, col),
+                Ok(col) => {
+                    let (cx, cz) = (col.cx, col.cz);
+                    self.world.insert_column(cx, cz, col);
+                    // New column changes its own + its neighbors' edge faces.
+                    self.mark_dirty_around(cx, cz);
+                }
                 Err(e) => log::error!("play: chunk decode failed: {e}"),
             }
         } else if id == ids.cb_play_forget_chunk {
             let mut r = PacketReader::new(body);
             if let Ok(v) = r.i64() {
-                self.world.forget_column(v as i32, (v >> 32) as i32);
+                let (cx, cz) = (v as i32, (v >> 32) as i32);
+                self.world.forget_column(cx, cz);
+                self.dirty.remove(&(cx, cz));
+                self.removed.push((cx, cz));
             }
         } else if id == ids.cb_play_block_update {
             let mut r = PacketReader::new(body);
             if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
                 self.world.set_block(x, y, z, state as u32);
                 self.block_updates += 1;
+                self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
         } else if Some(id) == ids.cb_play_block_ack {

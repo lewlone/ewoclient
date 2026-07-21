@@ -1610,8 +1610,12 @@ apply.
   `rewo play` is the DoD bot harness. Gotcha fixed: `Column::block_state_at`
   wasn't consulting the `overrides` map that `set_block` writes (block
   edits looked ignored though the server applied them). Not exercised:
-  attack-a-mob (no mobs on flat creative). The live windowed client (play
-  session → renderer) is the M3→M4 bridge, not yet built.
+  attack-a-mob (no mobs on flat creative). **The live windowed client
+  shipped too** (`rewo live`): the protocol+physics session feeds the M2
+  renderer in one loop (20 Hz tick accumulator + per-frame dirty-column
+  remesh budget + eye camera + WASD/mouse). Headless `--out PNG` renders the
+  first-person eye view; windowed soak ~988 fps, 0 corrections. Rewo is now
+  a playable windowed client.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
