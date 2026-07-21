@@ -14,6 +14,7 @@
 //!   (device → surface → debug → instance, after a wait_idle).
 
 pub mod entities;
+pub mod hud;
 pub mod offscreen;
 pub mod overlay;
 pub mod renderer;

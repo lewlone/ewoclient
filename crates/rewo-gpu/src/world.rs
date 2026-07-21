@@ -28,6 +28,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
 use crate::entities::{EntityDraw, EntityPass, FontData};
+use crate::hud::{HudPass, HudSpritesData};
 use crate::Gpu;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
@@ -216,9 +217,13 @@ pub struct WorldRenderer {
     upload_slots: Vec<UploadSlot>,
     count_readback: vk::Buffer,
     count_readback_alloc: Option<Allocation>,
-    // -- entities (optional pass; drawn after the terrain in `draw`) --
+    // -- entities + HUD (optional passes; drawn after terrain in `draw`) --
     color_format: vk::Format,
     entities: Option<EntityPass>,
+    hud: Option<HudPass>,
+    /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
+    /// `None`, no HUD draws (view/demo/bench aren't "playing").
+    hud_state: Option<(f32, i32, u8)>,
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
@@ -577,6 +582,8 @@ impl WorldRenderer {
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
                 entities: None,
+                hud: None,
+                hud_state: None,
                 camera_eye: [0.0; 3],
                 fog: parse_fog_env(),
                 tex_size,
@@ -720,6 +727,18 @@ impl WorldRenderer {
     ) -> Result<(), String> {
         self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin)?);
         Ok(())
+    }
+
+    /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).
+    pub fn init_hud(&mut self, gpu: &mut Gpu, sprites: &HudSpritesData<'_>) -> Result<(), String> {
+        self.hud = Some(HudPass::new(gpu, self.color_format, sprites)?);
+        Ok(())
+    }
+
+    /// Set this frame's HUD state (health/food 0..20, selected slot 0..8).
+    /// Never called → no HUD (view/demo/bench).
+    pub fn set_hud(&mut self, health: f32, food: i32, slot: u8) {
+        self.hud_state = Some((health, food, slot));
     }
 
     /// Rebuild this frame's entity geometry (no-op until `init_entities`).
@@ -1101,6 +1120,10 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
+        // HUD last, over everything, in screen space.
+        if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
+            hud.draw(gpu, cb, extent, health, food, slot);
+        }
     }
 
     /// Fullscreen gradient sky — drawn first, no depth test/write, so the
@@ -1276,6 +1299,9 @@ impl WorldRenderer {
         gpu.wait_idle();
         if let Some(mut pass) = self.entities.take() {
             pass.destroy(gpu);
+        }
+        if let Some(mut hud) = self.hud.take() {
+            hud.destroy(gpu);
         }
         unsafe {
             let device = &gpu.device;

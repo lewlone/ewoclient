@@ -184,6 +184,9 @@ the code's author. Nothing below is settled truth.
 - **Sky is gradient + distance fog only** — no sun/moon/clouds/stars, no
   time-of-day or per-biome sky color (§7 lists those; shipped the gradient
   + fog, deferred the rest).
+- **HUD is crosshair + hotbar + hearts + hunger only** — no item icons in
+  the hotbar slots (needs item models), no XP bar, no armor/air, no
+  effect icons, no gamemode-awareness (creative shows hearts/hunger).
 - **Mega-buffer has no resize** — over-cap columns are dropped with a log
   (4M verts / 6M indices; high RD could hit this).
 - `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU
@@ -1439,3 +1442,32 @@ player capsule).**
   155 entities, 0 VUIDs. Bench rose a hair (avg 0.209 → 0.243 ms, 0.1% low
   0.920 → 1.052) — the honest cost of a fullscreen pass + per-fragment fog,
   still deep under budget. Sun/moon/clouds/stars/time-of-day deferred (§7).
+
+**2026-07-21 — in-game HUD (crosshair, hotbar, hearts, hunger).**
+
+- **The live client now looks like you're playing.** A new screen-space
+  `HudPass` (`rewo-gpu/hud.rs`, drawn last in `WorldRenderer::draw` with a
+  positive viewport, alpha blend, no depth) renders the vanilla HUD from
+  the jar's `gui/sprites/hud/` sprites: crosshair (centered), hotbar +
+  selection frame (bottom-center, over the active slot), 10 health hearts
+  (left) + 10 hunger drumsticks (right). Nine sprites packed into one
+  256×64 atlas, one alpha-blended pipeline, a per-frame CPU quad list at
+  the auto GUI scale (`floor(min(h/240, w/320))`).
+- **Real data**: `rewo-data` extracts the sprites (`decode_png_any` — a
+  size-agnostic decoder handling the P/LA/RGBA sprite modes); the session
+  now tracks `food` (Set Health carries it after health); the HUD reflects
+  live health/food. Number keys 1–9 select the hotbar slot (HUD frame +
+  the `set_carried_item` packet so the held item matches). Hearts + hunger
+  share one fill rule (full/half/empty at ≥(j+1)·2 / >j·2 / else),
+  mirrored origins.
+- **Live-only**: `set_hud` is called only by `rewo live`; view/demo/bench
+  never draw a HUD (they aren't "playing") — so the demo PNG is
+  **byte-identical** to the post-sky baseline, bench flat (avg 0.244 ms).
+- **Verified:** headless live PNG shows the full HUD — white crosshair,
+  9-slot hotbar with the slot-0 selection frame, 10 red hearts, 10
+  drumsticks — pixel-correct vanilla layout; 0 VUIDs; live soak corrections
+  0, 153 entities. (Debugging note: the first render was blank because a
+  stale *debug* binary ran after a release-only build — a solid-red frag
+  test proved the geometry/UVs/alpha were correct all along. Same
+  build-profile gotcha bit twice this session; always rebuild the profile
+  you run.)

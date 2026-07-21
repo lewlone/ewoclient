@@ -99,7 +99,30 @@ pub struct BakedAssets {
     /// servers carry no skin data, so every player renders with it until
     /// real profile-texture fetching lands (needs online mode).
     pub player_skin: Option<Vec<u8>>,
+    /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
+    /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
+    pub hud: Option<HudSprites>,
     pub stats: BakeStats,
+}
+
+/// A decoded GUI sprite: RGBA8 + pixel dimensions.
+pub struct HudSprite {
+    pub rgba: Vec<u8>,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The HUD sprite set (1.20.2+ individual sprite files).
+pub struct HudSprites {
+    pub hotbar: HudSprite,
+    pub selection: HudSprite,
+    pub crosshair: HudSprite,
+    pub heart_full: HudSprite,
+    pub heart_half: HudSprite,
+    pub heart_container: HudSprite,
+    pub food_full: HudSprite,
+    pub food_half: HudSprite,
+    pub food_empty: HudSprite,
 }
 
 /// One animated texture-array layer, from an N-frame vertical strip +
@@ -169,6 +192,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let player_skin = bake_player_skin(&mut jar);
     if player_skin.is_none() {
         log::warn!("rewo-data: steve.png missing — players render as capsules");
+    }
+    let hud = bake_hud(&mut jar);
+    if hud.is_none() {
+        log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
 
     let mut baker = Baker {
@@ -270,8 +297,70 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         foliage_tint,
         font,
         player_skin,
+        hud,
         stats,
     })
+}
+
+/// Extract the in-game HUD sprite set. Any missing sprite → no HUD.
+fn bake_hud(jar: Jar) -> Option<HudSprites> {
+    let get = |jar: Jar, rel: &str| -> Option<HudSprite> {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!("assets/minecraft/textures/{rel}"))
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        Some(HudSprite { rgba, w, h })
+    };
+    Some(HudSprites {
+        hotbar: get(jar, "gui/sprites/hud/hotbar.png")?,
+        selection: get(jar, "gui/sprites/hud/hotbar_selection.png")?,
+        crosshair: get(jar, "gui/sprites/hud/crosshair.png")?,
+        heart_full: get(jar, "gui/sprites/hud/heart/full.png")?,
+        heart_half: get(jar, "gui/sprites/hud/heart/half.png")?,
+        heart_container: get(jar, "gui/sprites/hud/heart/container.png")?,
+        food_full: get(jar, "gui/sprites/hud/food_full.png")?,
+        food_half: get(jar, "gui/sprites/hud/food_half.png")?,
+        food_empty: get(jar, "gui/sprites/hud/food_empty.png")?,
+    })
+}
+
+/// Decode any small PNG (any color type) to (RGBA8, w, h). Unlike
+/// `decode_png_rgba` this doesn't assume the 16px block-texture size.
+fn decode_png_any(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let n = (info.width * info.height) as usize;
+    let mut rgba = vec![0u8; n * 4];
+    match info.color_type {
+        png::ColorType::Rgba => rgba.copy_from_slice(&buf[..n * 4]),
+        png::ColorType::Rgb => {
+            for i in 0..n {
+                rgba[i * 4..i * 4 + 3].copy_from_slice(&buf[i * 3..i * 3 + 3]);
+                rgba[i * 4 + 3] = 255;
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for i in 0..n {
+                let g = buf[i * 2];
+                rgba[i * 4..i * 4 + 3].copy_from_slice(&[g, g, g]);
+                rgba[i * 4 + 3] = buf[i * 2 + 1];
+            }
+        }
+        png::ColorType::Grayscale => {
+            for i in 0..n {
+                let g = buf[i];
+                rgba[i * 4..i * 4 + 3].copy_from_slice(&[g, g, g]);
+                rgba[i * 4 + 3] = 255;
+            }
+        }
+        png::ColorType::Indexed => return None,
+    }
+    Some((rgba, info.width, info.height))
 }
 
 /// The bundled wide-model default skin, as flat 64×64 RGBA.

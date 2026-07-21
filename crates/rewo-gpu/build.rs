@@ -16,6 +16,8 @@ fn main() {
         ("shaders/entity.frag", "entity.frag.spv"),
         ("shaders/sky.vert", "sky.vert.spv"),
         ("shaders/sky.frag", "sky.frag.spv"),
+        ("shaders/hud.vert", "hud.vert.spv"),
+        ("shaders/hud.frag", "hud.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
         println!("cargo:rerun-if-changed={src}");

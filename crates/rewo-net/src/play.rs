@@ -47,6 +47,8 @@ pub struct PlaySession {
     removed: Vec<(i32, i32)>,
     pub chat_log: Vec<String>,
     pub health: f32,
+    /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
+    pub food: i32,
     pub dead: bool,
     pub disconnect: Option<String>,
     // sendPosition cadence state (decompiled LocalPlayer).
@@ -140,6 +142,7 @@ impl<'a> Connection<'a> {
             removed: Vec::new(),
             chat_log: Vec::new(),
             health: 20.0,
+            food: 20,
             dead: false,
             disconnect: None,
             last_pos: (0.0, 0.0, 0.0),
@@ -466,6 +469,10 @@ impl PlaySession {
             let mut r = PacketReader::new(body);
             if let Ok(h) = r.f32() {
                 self.health = h;
+                // food (VarInt) + saturation (f32) follow.
+                if let Ok(f) = r.varint() {
+                    self.food = f;
+                }
                 if h <= 0.0 && !self.dead {
                     self.dead = true;
                     // client_command action 0 = perform respawn.

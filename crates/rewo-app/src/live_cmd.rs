@@ -186,6 +186,30 @@ fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
     })
 }
 
+/// Borrow the baked HUD sprites into the renderer's view type.
+fn hud_sprite(sp: &assets::HudSprite) -> rewo_gpu::hud::HudSpriteData<'_> {
+    rewo_gpu::hud::HudSpriteData {
+        rgba: &sp.rgba,
+        w: sp.w,
+        h: sp.h,
+    }
+}
+
+fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
+    let h = baked.hud.as_ref()?;
+    Some(rewo_gpu::hud::HudSpritesData {
+        hotbar: hud_sprite(&h.hotbar),
+        selection: hud_sprite(&h.selection),
+        crosshair: hud_sprite(&h.crosshair),
+        heart_full: hud_sprite(&h.heart_full),
+        heart_half: hud_sprite(&h.heart_half),
+        heart_container: hud_sprite(&h.heart_container),
+        food_full: hud_sprite(&h.food_full),
+        food_half: hud_sprite(&h.food_half),
+        food_empty: hud_sprite(&h.food_empty),
+    })
+}
+
 pub(crate) fn layer_animations(baked: &assets::BakedAssets) -> Vec<rewo_gpu::world::LayerAnimation> {
     baked
         .animations
@@ -320,6 +344,9 @@ fn run_headless(
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref())?;
     world_renderer.set_animations(layer_animations(&baked));
+    if let Some(hud) = hud_sprites(&baked) {
+        world_renderer.init_hud(&mut gpu, &hud)?;
+    }
 
     // Pump the session on a real 20 Hz clock until spawned + settled, so
     // chunks arrive and the player position is real.
@@ -431,6 +458,7 @@ fn run_headless(
     let (cr, cu) = camera_basis(yaw, pitch);
     world_renderer.set_entities(&draws, cr, cu);
     world_renderer.set_camera(eye.to_array());
+    world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
@@ -513,6 +541,8 @@ struct LiveApp {
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
+    /// Selected hotbar slot 0..8 (number keys), for the HUD selection frame.
+    hotbar_slot: u8,
     init_error: Option<String>,
 }
 
@@ -554,6 +584,9 @@ impl ApplicationHandler for LiveApp {
             )?;
             world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref())?;
             world_renderer.set_animations(layer_animations(&baked));
+            if let Some(hud) = hud_sprites(&baked) {
+                world_renderer.init_hud(&mut gpu, &hud)?;
+            }
             Ok(LiveState {
                 window: window.clone(),
                 gpu,
@@ -597,6 +630,16 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::ShiftLeft) => self.keys.sneak = p,
                     PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    // Number keys 1..9 select the hotbar slot (HUD frame +
+                    // sent to the server so the held item matches).
+                    PhysicalKey::Code(code) if p => {
+                        if let Some(n) = digit_key(code) {
+                            self.hotbar_slot = n;
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.select_hotbar(n);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -720,6 +763,9 @@ impl LiveApp {
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
         let eye = player_eye(session);
         state.world_renderer.set_camera(eye.to_array());
+        state
+            .world_renderer
+            .set_hud(session.health, session.food, self.hotbar_slot);
         if let Err(e) = state.world_renderer.anim_tick(&mut state.gpu, session.ticks) {
             log::error!("live: texture animation: {e}");
         }
@@ -789,6 +835,7 @@ fn run_windowed(
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,
+        hotbar_slot: 0,
         init_error: None,
     };
     event_loop
@@ -845,4 +892,20 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
     p.push(version);
     p.push(format!("{version}.jar"));
     p.exists().then_some(p)
+}
+
+/// Number keys 1..9 → hotbar slot 0..8.
+fn digit_key(code: KeyCode) -> Option<u8> {
+    Some(match code {
+        KeyCode::Digit1 => 0,
+        KeyCode::Digit2 => 1,
+        KeyCode::Digit3 => 2,
+        KeyCode::Digit4 => 3,
+        KeyCode::Digit5 => 4,
+        KeyCode::Digit6 => 5,
+        KeyCode::Digit7 => 6,
+        KeyCode::Digit8 => 7,
+        KeyCode::Digit9 => 8,
+        _ => return None,
+    })
 }

@@ -741,7 +741,7 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
-fn create_texture(
+pub(crate) fn create_texture(
     gpu: &mut Gpu,
     rgba: &[u8],
     width: u32,
