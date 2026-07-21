@@ -9,7 +9,177 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0 shipped + headlessly verified (2026-07-21).** See §15 status log.
+**Status: M0–M6 shipped + headlessly verified (2026-07-21), all pushed.**
+See §0.0 for the fresh-session handoff and §15 for the per-milestone log.
+
+---
+
+## 0.0 HANDOFF — read this first (fresh session, 2026-07-21)
+
+This section exists because the project is being handed to a session with no
+prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
+log), then critique before continuing.** The rest of the plan is reference.
+
+### What Rewo is, in one paragraph
+
+A from-scratch Rust Minecraft: Java Edition **client** — it speaks the
+vanilla network protocol (pinned **26.2 / protocol 776**), decodes the world
+the server sends, and renders it with **raw Vulkan via `ash`**. Multiplayer
+only (no singleplayer/worldgen). It lives in the `EwoClientV3` Cargo
+workspace as `crates/rewo-*` (~11k LoC) and plugs into the EwoClient launcher
+as a future `Native` instance kind. The four **fixed product decisions**
+(don't silently pivot; raise a genuine objection with the user instead):
+(1) from-scratch vanilla-protocol client, (2) performance = frame-time
+consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
+into EwoClient reusing its MS auth. Everything else is open to revision.
+
+### Where it is: M0–M6 all shipped, verified, pushed
+
+- **M0** skeleton: ash 1.3 device + swapchain + frame-time overlay + GPU
+  timestamps.
+- **M1** protocol: full Handshake→Login(offline)→Config→Play, chunk/light/
+  entity decode, record/replay. Verified vs a live vanilla 26.2 server:
+  329 chunks, 0 decode failures, 10-min soak no kick, replay digest matches.
+- **M2** first pixels: asset bake from the client jar, face-culled cube
+  mesher, textured world pass.
+- **M3** be a player: vanilla 20 Hz physics port, live play session
+  (walk/sprint/jump/dig/place/chat), and **`rewo live`** — a real windowed
+  client. Verified: **0 server corrections over 3,000 ticks** of movement.
+- **M4** real meshing: full block-model path (stairs/slabs/fences/glass/
+  torches/plants/logs), 26-neighbor AO, colormap tint.
+- **M5** GPU-driven: mega-buffer arena + compute frustum cull +
+  `drawIndexedIndirectCount` (one draw call; 216/329 culled on GPU).
+- **M6** latency/measurement: `rewo bench` (deterministic render benchmark),
+  1%/0.1% low reporting, frames-in-flight knob. GPU render 0.198 ms avg /
+  0.367 ms 0.1%-low on the 5080.
+
+### The verification toolkit (how to check things yourself — USE THESE)
+
+The user hates manual testing (§0.1). Everything is headlessly verifiable:
+- `rewo net soak --host … --seconds N [--record x.rewo] [--query X Y Z]` —
+  protocol soak + block queries.
+- `rewo net replay --file x.rewo [--expect-digest N]` — deterministic replay.
+- `rewo view --replay FILE|--host … --out png` — snapshot render (M2).
+- `rewo demo --out png` — synthetic showcase of every block-model family (M4,
+  no server).
+- `rewo play --host … --seconds N` — **the headless bot**; reports
+  `CORRECTIONS` (the physics-parity meter — must stay ~0) + place/dig
+  world-state verification + chat round-trip.
+- `rewo live --host … [--out png] [--run-seconds N] [--fif 1|2]` — the real
+  windowed client; `--out` renders the eye view headless.
+- `rewo bench --replay FILE --frames N` — **the regression gate**: run it
+  before/after any render change; a change that worsens the 0.1% low is a
+  regression even if avg fps rises.
+- **The test server**: a local offline flat-world vanilla 26.2 server the
+  assistant sets up + runs at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
+  (online-mode=false, flat, port 25599). Wipe `world/` for a clean run; the
+  same username respawns at its last logout position (repeat runs drift —
+  not a bug).
+- Ground truth for wire formats / physics constants is the **decompiled
+  26.2 jar** at `%APPDATA%/EwoClient/rewo/26.2/decompiled/` (Mojmap) + the
+  datagen reports under `…/datagen/generated/reports/` — NOT community docs
+  (§11). Both are git-ignored (derived from the user's own Mojang download).
+
+### Load-bearing gotchas (each cost real debugging time — internalize them)
+
+1. **World-space vertices + no shader origin.** The mesher emits world-space
+   positions (`cx*16+lx+corner`); the vertex shader must NOT add a column
+   origin. A double-add here was THE cause of the M4 "far-field holes"
+   (wrongly blamed on depth for a while). Keep vertices world-space.
+2. **Collision uses `baked.solid`, NOT `matches!(RenderKind::Cube)`.** Many
+   full-cube blocks (grass_block!) render as `Model` (cube + overlay
+   element). Keying collision off the render fast-path made the bot fall
+   through grass every tick → 258 corrections. `baked.solid` = Cube OR a
+   Model with a full-16³ element. Any new collision code must use it.
+3. **26.x model textures can be objects** `{sprite, force_translucent}`, not
+   just string refs (glass baked invisible until handled).
+4. **Paletted long array is FIXED-size (no length prefix); section = TWO
+   leading shorts** (non-empty + fluid count). These are the two chunk-decode
+   details that break everything if wrong.
+5. **Packet ids resolved BY NAME** from the datagen report, so a version bump
+   fails loud instead of misfiring.
+6. **`upload_column` self-syncs** (one-shot fence) — do not re-add a
+   per-frame `wait_idle` around it.
+
+### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
+
+Grouped by severity. The assistant is encouraged to challenge any of these,
+find more, and propose better approaches — you are a stronger reviewer than
+the code's author. Nothing below is settled truth.
+
+**Architectural deviations from the plan (§4) worth reconsidering:**
+- **Meshing runs on the MAIN thread**, not the rayon worker pool the plan
+  specifies. `drain_remesh` calls `mesh_column` inline in the render loop.
+  Fine at flat-world RD (~21 ms for 329 columns, amortized 6/frame), but the
+  plan's whole thesis is "meshing happens off the frame." At high RD or with
+  block churn this WILL hitch. Likely the highest-value next refactor.
+- **Column uploads are synchronous** (one-shot fence), not the dedicated
+  async transfer queue + staging ring the plan wants. A chunk flood
+  (teleport) stalls. Deferred as an M5 follow-on.
+- **The launcher `Native` arm spawns `rewo view`** (M2 snapshot), NOT
+  `rewo live` (the real client). Launching a Native instance from the UI
+  opens a static snapshot. Should spawn `live` now that it exists — an easy,
+  high-value fix, but never eyeballed in the actual launcher UI at all.
+
+**Correctness / completeness gaps:**
+- **Entities are decoded into a table but NOT rendered** — no capsules/
+  nametags. Other players + mobs are invisible. The M3 plan called for
+  capsules; deferred.
+- **Collision is full-cube only** — slabs/stairs/fences have no collision
+  (you walk through them). "Expected" for the M3 subset, but a real gap.
+- **Physics parity verified only for the on-foot flat-world subset.** Water,
+  cobwebs, stairs-vs-sneak, ladders, ice, slabs-as-steps, etc. untested —
+  each will likely need decompile-derived constants (§13 risk).
+- **Light decode beyond flat-world-full-skylight is unverified.** The M1
+  Y-mask light distribution renders the flat world correctly, but caves/
+  overhangs/mixed light are untested (the earlier "black patches" were the
+  vertex double-add, not light — so light itself is *plausibly* fine but
+  unproven).
+- **Only the overworld dimension is tested.** Nether/end (different
+  min_y/height via the registry parse) is coded but unexercised.
+- **No online-mode / encryption / chat signing** — offline servers only
+  (M7). Unsigned chat is kicked on `enforce-secure-profile` servers.
+- **Reversed-Z frustum-plane math** (Gribb–Hartmann on the reversed-Z
+  matrix) culls correctly *empirically* (216/329, render is correct) but a
+  reviewer should verify the near/far plane semantics are exactly right, not
+  just approximately — it's used on both CPU (M4 legacy) and GPU (M5 cull).
+
+**Visual/perf follow-ons (all now guarded by `rewo bench`):**
+- No **greedy meshing** (3.7M verts for 329 flat chunks — high; conflicts
+  with per-vertex AO, hence deferred).
+- **AO only on cube faces**, not model quads.
+- **Per-biome tint** is a fixed plains color (no biome variation).
+- No **fluids** (water/lava geometry) + no **translucent pass**.
+- No **texture animation** ticking.
+- **36-byte vertices**, not the packed 8–12 B the plan targets.
+- **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
+  (candidate: MSAA / back-face cull once model-quad winding is guaranteed
+  CCW). Cosmetic; the demo + normal angles are clean.
+- **Mega-buffer has no resize** — over-cap columns are dropped with a log
+  (4M verts / 6M indices; high RD could hit this).
+- `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU
+  render (~0.2 ms) is far below the frame budget, so submission pacing isn't
+  the current bottleneck. Revisit at high RD/complexity.
+
+**Minor / cleanup:**
+- Dev env knobs `REWO_SETTLE` / `REWO_PITCH` linger in `live_cmd.rs` (one-
+  shot, headless-only, zero-cost when unset).
+- An `impl Renderer { frames_in_flight() }` block sits awkwardly right after
+  the `use` line in `renderer.rs`.
+- The `bench` orbit is a regression gate, not a worst-case stress test (the
+  render is too cheap to stress the pipeline; a higher-RD scene would).
+
+### Suggested next moves (the user will choose — don't assume)
+
+Strongest candidates, roughly by value: (a) **meshing off the main thread**
+(rayon pool) — the biggest architectural gap; (b) **fix the Native launcher
+arm to spawn `live`** + eyeball it in the UI — cheap, makes the launcher
+integration real; (c) **entity rendering** (capsules + nametags) — makes
+multiplayer visible; (d) **M7 online-mode + chat signing** — needed to play
+on the user's Frogsy network; (e) the visual follow-ons (greedy, fluids,
+tint). Confirm direction with the user before diving in.
+
+---
 
 ## 0.1 Verification policy (user mandate, 2026-07-21)
 

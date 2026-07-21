@@ -1556,17 +1556,38 @@ final strip.*
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0 shipped)
+## Rewo — from-scratch native Minecraft client (M0–M6 shipped)
 
-**[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — read it before
-touching `crates/rewo-*`.** Rewo (from "rewolution", as Ewo came from
-"ewolution") is a from-scratch Rust Minecraft client speaking the vanilla
-protocol (pin: **26.2 / protocol 776**, read from the bundled jar's
-version.json), rendered with **raw Vulkan via ash** — frame-time
-consistency (1%/0.1% lows) and input latency first. It plugs into this
-launcher as a future `Native` instance kind (M1) reusing auth + spawn +
-reaper; it is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not
-apply.
+**[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
+read its §0.0 HANDOFF first** (it consolidates current state, the headless
+verification toolkit, the load-bearing gotchas, and a categorized list of
+every known issue/gap/deviation, explicitly framed for critique). Rewo (from
+"rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
+client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
+the bundled jar's version.json), rendered with **raw Vulkan via ash** —
+frame-time consistency (1%/0.1% lows) and input latency first. It plugs into
+this launcher as a `Native` instance kind reusing auth + spawn + reaper; it
+is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
+
+- **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
+  playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
+  connect, walk/dig/place/chat with 0 physics-corrections, full block-model
+  rendering, GPU-driven (compute cull + one indirect draw), with a
+  deterministic `rewo bench` regression gate. Subcommands: `net` (M1
+  protocol), `view` (M2 snapshot), `play` (M3 headless bot), `live` (windowed
+  client), `demo` (M4 model showcase), `bench` (M6 render benchmark).
+- **Three load-bearing gotchas** (full list in REWO_PLAN §0.0): (1) mesher
+  emits WORLD-space vertices — the shader must NOT add a column origin (the
+  double-add was the real M4 "far-field holes" bug). (2) Collision uses
+  `baked.solid`, NOT `matches!(Cube)` — grass_block renders as a Model, so
+  keying off the render fast-path makes the player fall through the ground.
+  (3) 26.x model textures can be `{sprite}` objects, not just strings.
+- **Biggest open gaps to critique** (REWO_PLAN §0.0): meshing runs on the
+  MAIN thread (not the plan's rayon pool — hitches at high RD); entities
+  decode but don't render (invisible players/mobs); the launcher Native arm
+  spawns `rewo view` (snapshot) not `rewo live` (the real client) and was
+  never eyeballed in the UI; online-mode/chat-signing not done (offline
+  only).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
