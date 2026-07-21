@@ -105,6 +105,8 @@ pub struct BakedAssets {
     pub zombie_tex: Option<Vec<u8>>,
     /// Cow entity texture (64×64 RGBA) for the quadruped mob model.
     pub cow_tex: Option<Vec<u8>>,
+    /// Pig entity texture (64×64 RGBA) — quadruped w/ short legs + a snout.
+    pub pig_tex: Option<Vec<u8>>,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
@@ -202,6 +204,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let slime_tex = bake_entity_tex(&mut jar, "entity/slime/slime.png", 64, 32);
     let zombie_tex = bake_entity_tex(&mut jar, "entity/zombie/zombie.png", 64, 64);
     let cow_tex = bake_entity_tex(&mut jar, "entity/cow/cow_temperate.png", 64, 64);
+    let pig_tex = bake_entity_tex(&mut jar, "entity/pig/pig_temperate.png", 64, 64);
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
@@ -309,6 +312,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         slime_tex,
         zombie_tex,
         cow_tex,
+        pig_tex,
         hud,
         stats,
     })

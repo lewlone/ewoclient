@@ -165,15 +165,16 @@ fn collect_entities<'a>(
             name,
             "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombie_villager"
         );
-        // Only actual cows use the cow texture; pig/sheep share the
-        // quadruped *shape* but need their own textures (follow-up).
         let is_cow = name == "minecraft:cow";
+        let is_pig = name == "minecraft:pig";
         let kind = if is_player {
             EntityModelKind::Player
         } else if is_zombie {
             EntityModelKind::Zombie
         } else if is_cow {
             EntityModelKind::Cow
+        } else if is_pig {
+            EntityModelKind::Pig
         } else if is_slime {
             EntityModelKind::Slime
         } else {
@@ -376,7 +377,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref())?;
+    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref(), baked.pig_tex.as_deref())?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -717,7 +718,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref())?;
+            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref(), baked.pig_tex.as_deref())?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;

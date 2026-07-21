@@ -1584,10 +1584,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
 - **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
   chat-signing not done (offline only — M7, needs the user's real
-  account); entity collision ignored; most *other* mobs (pig/sheep/…)
-  are still capsules — the four real models (player/slime/cow/humanoid)
-  cover the common cases but pig/sheep want a texture-array refactor (the
-  entity atlas is full). All three §4 deviations are now closed (rayon mesh
+  account); entity collision ignored; some mobs (sheep/chicken/…) are
+  still capsules — the five real models (player/slime/cow/pig/humanoid)
+  cover the common cases; each further mob needs its vanilla dims + UVs
+  (the entity atlas grew to 256×256, so there's room — no texture-array
+  refactor needed). All three §4 deviations are now closed (rayon mesh
   pool, Native `live` arm, async upload ring). Fixed 2026-07-21 (several
   passes): meshing moved OFF the
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
@@ -1634,8 +1635,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   mob by `sin(yaw)`); and an **F3 debug overlay** (vanilla-style block — XYZ
   / block+in-chunk / chunk / facing+axis / loaded-chunks+entities, with
   `rem_euclid`/`div_euclid` chunk math; F3 toggles it windowed, always on
-  headless). The mob registry spans humanoid/cube/quadruped. Also un-broke
-  `rewo view` (stale M2 bake-sanity check).
+  headless); and the **pig** (fourth mob model — grew the entity atlas to
+  256×256, generalized `quadruped_model_quads` to `(off, leg, snout)` so cow
+  legSize=12 and pig legSize=6+snout share it; cow renders unchanged). The
+  mob registry spans humanoid/cube/quadruped. Also un-broke `rewo view`
+  (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

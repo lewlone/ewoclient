@@ -138,13 +138,15 @@ the code's author. Nothing below is settled truth.
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
-  limb swing**), and **slimes** (green cube), **cows** (quadruped, walking
-  legs), and **zombies/husks/drowned** (humanoid, arms-forward pose) render
-  as real models — humanoids also **turn their heads** toward nearby players
+  limb swing**), and **slimes** (green cube), **cows** + **pigs**
+  (quadruped, walking legs; pig has short legs + a snout), and
+  **zombies/husks/drowned** (humanoid, arms-forward pose) render as real
+  models — humanoids also **turn their heads** toward nearby players
   (server-driven `rotate_head`, verified via a fixed-body/cranked-head A/B).
   See the §15 entries. Still open within it: entity *collision* is ignored
-  (walk through mobs), most other mobs are still capsules (pig/sheep want a
-  texture-array refactor — the entity atlas is full), slime face/size need
+  (walk through mobs), some mobs are still capsules (sheep/chicken/… — each
+  needs its vanilla model dims + UVs; the entity atlas grew to 256×256 so
+  there's room, no texture-array refactor needed), slime face/size need
   the translucent pass + entity metadata, no real per-player skins (needs
   online-mode profile textures — M7), tags are depth-tested (vanilla shows
   them through walls).
@@ -1696,3 +1698,26 @@ capability).**
   with its head **naturally** turned toward the client — real server
   `rotate_head`, confirming head-look under live data, not just the forced
   knob. 4 rewo-app tests green.
+
+**2026-07-22 — the pig (fourth mob model; retiring more capsules).**
+
+- **Grew the entity atlas 256×128 → 256×256** so more mob skins fit without a
+  texture-array refactor (UVs already normalize by the atlas dims, so this is
+  a one-const change + a blit; the bottom half is expansion room). Font +
+  player/slime/zombie/cow stay in the top half; the pig sits at (0, 128).
+  The font/nametag sampling is unaffected (UVs are atlas-relative), and the
+  F3 text + HUD are separate passes with their own atlases.
+- **`quadruped_model_quads` generalized** from cow-only to `(off_x, off_y,
+  leg, snout)`: `leg` is the vanilla legSize (cow 12, pig 6) — it also drives
+  the head/body pose height (18/17 − legSize, which is why `PigModel`'s head
+  offset is `(0, 12, -6)`); `snout` appends the pig's nose box (vanilla
+  `texOffs(16,16) addBox(-2,0,-9, 4,3,1)`, riding the head pose). The cow now
+  calls it with `(…, 12, false)` — an identical parts list to before, so cows
+  render unchanged. New `EntityModelKind::Pig` + `pig_tex`
+  (`entity/pig/pig_temperate.png`) threaded through `bake` → `init_entities`
+  → `EntityPass::new`; `minecraft:pig` maps to it in `collect_entities`.
+- **Verified** with summon renders: a **pig** (pink, squat, short legs, snout
+  clearly on the face) and a **cow** (taller legs, brown/white — visually
+  unchanged) side by side confirm the generalized model serves both. Tests
+  4+5+3+3+18 green; **demo byte-identical** (md5 match) + entities live-only
+  so bench/view unaffected; 0 VUIDs.

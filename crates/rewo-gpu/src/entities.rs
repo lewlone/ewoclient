@@ -88,13 +88,19 @@ struct Vertex {
 /// Combined entity atlas layout: the font occupies (0,0)..(128,128), the
 /// 64×64 player skin sits at (SKIN_X, 0). One texture, one pipeline family.
 const ATLAS_W: u32 = 256;
-const ATLAS_H: u32 = 128;
+/// 256 tall: the top half (0..128) holds font + player/slime/zombie/cow
+/// skins; the bottom half (128..256) is the expansion room for more mob
+/// textures (pig at (PIG_X, PIG_Y), …).
+const ATLAS_H: u32 = 256;
 const SKIN_X: u32 = 128;
 const SLIME_Y: u32 = 64;
 /// The 64×64 zombie skin sits at (ZOMBIE_X, 0), right of the player skin;
 /// the 64×64 cow skin sits below it at (ZOMBIE_X, COW_Y).
 const ZOMBIE_X: u32 = 192;
 const COW_Y: u32 = 64;
+/// The 64×64 pig skin sits in the lower-left of the grown atlas.
+const PIG_X: u32 = 0;
+const PIG_Y: u32 = 128;
 
 /// Which model to render for an entity.
 #[derive(Clone, Copy, PartialEq)]
@@ -103,8 +109,10 @@ pub enum EntityModelKind {
     Player,
     /// Humanoid model with the zombie texture + arms-forward pose.
     Zombie,
-    /// Quadruped model (cow/pig/sheep share it) with the cow texture.
+    /// Quadruped model (cow legs) with the cow texture.
     Cow,
+    /// Quadruped model with short legs + a snout, the pig texture.
+    Pig,
     /// Green slime cube (needs the slime texture).
     Slime,
     /// Colored capsule fallback (mobs without a bespoke model).
@@ -135,6 +143,8 @@ pub struct EntityPass {
     zombie_quads: Vec<PlayerQuad>,
     /// Cow: the quadruped model, UVs into the cow skin slot.
     cow_quads: Vec<PlayerQuad>,
+    /// Pig: the short-legged quadruped + snout, UVs into the pig skin slot.
+    pig_quads: Vec<PlayerQuad>,
     /// Slime model quads (green cube, atlas UVs into the slime region).
     slime_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
@@ -146,6 +156,7 @@ pub struct EntityPass {
     has_slime: bool,
     has_zombie: bool,
     has_cow: bool,
+    has_pig: bool,
 }
 
 /// Which articulated part a model quad belongs to — sets its rotation pivot
@@ -185,6 +196,7 @@ impl EntityPass {
         slime: Option<&[u8]>,
         zombie: Option<&[u8]>,
         cow: Option<&[u8]>,
+        pig: Option<&[u8]>,
     ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
@@ -233,6 +245,8 @@ impl EntityPass {
         let has_zombie = blit_64(&mut atlas, zombie, ZOMBIE_X, 0);
         // Cow skin (64×64) at (ZOMBIE_X, COW_Y), below the zombie.
         let has_cow = blit_64(&mut atlas, cow, ZOMBIE_X, COW_Y);
+        // Pig skin (64×64) in the grown lower half at (PIG_X, PIG_Y).
+        let has_pig = blit_64(&mut atlas, pig, PIG_X, PIG_Y);
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
             (white_texel.0 as f32 + 0.5) / ATLAS_W as f32,
@@ -359,7 +373,8 @@ impl EntityPass {
                 capsule: unit_capsule(),
                 player_quads: cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0),
                 zombie_quads: cuboid_quads(&humanoid_cuboids(), ZOMBIE_X as f32, 0.0),
-                cow_quads: quadruped_model_quads(ZOMBIE_X as f32, COW_Y as f32),
+                cow_quads: quadruped_model_quads(ZOMBIE_X as f32, COW_Y as f32, 12.0, false),
+                pig_quads: quadruped_model_quads(PIG_X as f32, PIG_Y as f32, 6.0, true),
                 slime_quads: slime_model_quads(),
                 cell,
                 advance,
@@ -369,6 +384,7 @@ impl EntityPass {
                 has_slime,
                 has_zombie,
                 has_cow,
+                has_pig,
             })
         }
     }
@@ -402,6 +418,10 @@ impl EntityPass {
                 EntityModelKind::Cow if self.has_cow => {
                     // Quadruped, standard mob 1/16 model scale.
                     self.emit_model(&mut verts, d, &self.cow_quads, 1.0 / 16.0, 0.0);
+                    continue;
+                }
+                EntityModelKind::Pig if self.has_pig => {
+                    self.emit_model(&mut verts, d, &self.pig_quads, 1.0 / 16.0, 0.0);
                     continue;
                 }
                 EntityModelKind::Slime if self.has_slime => {
@@ -833,20 +853,22 @@ fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
 }
 
 /// The quadruped model (cow/pig/sheep share the shape), from vanilla
-/// `QuadrupedModel::createBodyMesh` (cow `legSize=12`). Built in vanilla
-/// local coords with each part's rotation + pose applied, then converted to
-/// this crate's convention (feet-up y, front +Z: `(-x, 24-y, -z)`). The
-/// body is a box rotated 90° about X (lies horizontal) — the reason this
-/// needs the per-vertex transform rather than plain `cuboid_quads`. The 4
-/// legs animate (diagonal gait); head + body are static (head-look is a
-/// follow-up).
-fn quadruped_model_quads(off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
+/// `QuadrupedModel::createBodyMesh` (cow `legSize=12`, pig `legSize=6`).
+/// Built in vanilla local coords with each part's rotation + pose applied,
+/// then converted to this crate's convention (feet-up y, front +Z:
+/// `(-x, 24-y, -z)`). The body is a box rotated 90° about X (lies
+/// horizontal) — the reason this needs the per-vertex transform rather than
+/// plain `cuboid_quads`. `leg` is the leg length (vanilla legSize) — it also
+/// sets the head/body pose height (18/17 − legSize). `snout` adds the pig's
+/// nose box (rides the head pose). The 4 legs animate (diagonal gait); head
+/// + body are static (head-look is a follow-up).
+fn quadruped_model_quads(off_x: f32, off_y: f32, leg: f32, snout: bool) -> Vec<PlayerQuad> {
     use std::f32::consts::FRAC_PI_2;
     use LimbPart::*;
     // (min, max, size, uv, rot_x, pose, part) in vanilla local coords.
-    let leg = 12.0f32;
+    type Part = ([f32; 3], [f32; 3], [f32; 3], (f32, f32), f32, [f32; 3], LimbPart);
     #[rustfmt::skip]
-    let parts: [([f32;3],[f32;3],[f32;3],(f32,f32),f32,[f32;3],LimbPart); 6] = [
+    let mut parts: Vec<Part> = vec![
         // head
         ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.], Body),
         // body — rotated 90° about X so it lies horizontal
@@ -857,6 +879,11 @@ fn quadruped_model_quads(off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
         ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, -5.], QuadFrontRight),
         ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.], QuadFrontLeft),
     ];
+    if snout {
+        // Pig snout: vanilla texOffs(16,16) addBox(-2,0,-9, 4,3,1), same head
+        // pose so it rides on the head's front face.
+        parts.push(([-2., 0., -9.], [2., 3., -8.], [4., 3., 1.], (16., 16.), 0.0, [0., 18. - leg, -6.], Body));
+    }
     // Rotate a local vertex about X, add the pose, convert vanilla→my.
     let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
         let (c, s) = (rot_x.cos(), rot_x.sin());

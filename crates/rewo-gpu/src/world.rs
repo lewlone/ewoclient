@@ -794,6 +794,7 @@ impl WorldRenderer {
         slime: Option<&[u8]>,
         zombie: Option<&[u8]>,
         cow: Option<&[u8]>,
+        pig: Option<&[u8]>,
     ) -> Result<(), String> {
         self.entities = Some(EntityPass::new(
             gpu,
@@ -803,6 +804,7 @@ impl WorldRenderer {
             slime,
             zombie,
             cow,
+            pig,
         )?);
         Ok(())
     }
