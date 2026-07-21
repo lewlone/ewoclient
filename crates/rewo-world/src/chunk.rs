@@ -158,6 +158,32 @@ impl Section {
     }
 }
 
+impl Section {
+    /// An all-air section at full sky light — the building block for
+    /// synthetic worlds (the `demo` showcase). `set_block` overrides then
+    /// populate it; the full skylight makes the scene render lit.
+    pub fn empty_lit() -> Self {
+        Section {
+            non_empty: 0,
+            states: Container::single(0),
+            block_light: None,
+            sky_light: Some(vec![0xFF; 2048]), // both nibbles = 15
+            overrides: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl Column {
+    /// An all-air, fully-lit column for synthetic scenes. Blocks are added
+    /// via `Column::set_block` (through `World::set_block`).
+    pub fn empty_lit(shape: &DimensionShape, cx: i32, cz: i32) -> Self {
+        let sections = (0..shape.section_count())
+            .map(|_| Section::empty_lit())
+            .collect();
+        Column { cx, cz, sections }
+    }
+}
+
 /// Decode a full Level Chunk With Light packet body (reader positioned right
 /// after the packet id).
 pub fn read_level_chunk(

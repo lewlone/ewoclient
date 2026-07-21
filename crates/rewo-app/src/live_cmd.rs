@@ -93,7 +93,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         // Headless: pump the session until spawn + a settle window, render
         // one frame from the eye, save. No window at all.
         Some(out) if args.run_seconds.is_none() => {
-            run_headless(session, baked, want_validation, out, 6.0)
+            let settle = std::env::var("REWO_SETTLE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(6.0);
+            run_headless(session, baked, want_validation, out, settle)
         }
         _ => run_windowed(session, baked, args, want_validation),
     }
@@ -115,7 +119,11 @@ fn eye_view_proj(
         yaw.cos() * pitch.cos(),
     );
     let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
-    let proj = Mat4::perspective_rh(70f32.to_radians(), aspect.max(0.01), 0.05, 2000.0);
+    let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
+        70f32.to_radians(),
+        aspect.max(0.01),
+        0.05,
+    ));
     (proj * view).to_cols_array_2d()
 }
 
@@ -134,6 +142,7 @@ fn drain_remesh(
     gpu: &mut Gpu,
     world_renderer: &mut WorldRenderer,
     table: &[RenderKind],
+    models: &[Vec<rewo_data::assets::Quad>],
     budget: usize,
 ) -> Result<usize, String> {
     for (cx, cz) in session.take_removed() {
@@ -155,7 +164,7 @@ fn drain_remesh(
 
     let mut uploaded = 0;
     for (cx, cz) in dirty {
-        match rewo_mesh::mesh_column(&session.world, table, cx, cz) {
+        match rewo_mesh::mesh_column(&session.world, table, models, cx, cz) {
             Some(mesh) => {
                 world_renderer.upload_column(
                     gpu,
@@ -217,13 +226,24 @@ fn run_headless(
     // Mesh everything loaded (no budget — one-shot).
     session.requeue_dirty(session.world.column_coords());
     while !session_dirty_empty(&mut session) {
-        drain_remesh(&mut session, &mut gpu, &mut world_renderer, &baked.render, 4096)?;
+        drain_remesh(
+            &mut session,
+            &mut gpu,
+            &mut world_renderer,
+            &baked.render,
+            &baked.models,
+            4096,
+        )?;
     }
     gpu.wait_idle();
 
-    // Look slightly down from the eye toward the horizon.
+    // Look slightly down from the eye toward the horizon (or a debug pitch).
     let eye = player_eye(&session);
-    let vp = eye_view_proj(eye, session.player.yaw, 10.0, 1280.0 / 720.0);
+    let pitch = std::env::var("REWO_PITCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10.0);
+    let vp = eye_view_proj(eye, session.player.yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
         samples_ms: &ring.data,
@@ -294,6 +314,7 @@ struct LiveApp {
     session: Option<PlaySession>,
     baked: Option<assets::BakedAssets>,
     table: Vec<RenderKind>,
+    models: Vec<Vec<assets::Quad>>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -465,6 +486,7 @@ impl LiveApp {
             &mut state.gpu,
             &mut state.world_renderer,
             &self.table,
+            &self.models,
             REMESH_BUDGET,
         ) {
             Ok(n) if n > 0 => state.gpu.wait_idle(),
@@ -523,10 +545,12 @@ fn run_windowed(
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let table = baked.render.clone();
+    let models = baked.models.clone();
     let mut app = LiveApp {
         session: Some(session),
         baked: Some(baked),
         table,
+        models,
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,

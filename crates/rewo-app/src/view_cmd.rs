@@ -130,7 +130,7 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
     let mut meshes = Vec::new();
     let mut total_verts = 0usize;
     for (cx, cz) in world.column_coords() {
-        if let Some(mesh) = rewo_mesh::mesh_column(&world, &baked.render, cx, cz) {
+        if let Some(mesh) = rewo_mesh::mesh_column(&world, &baked.render, &baked.models, cx, cz) {
             total_verts += mesh.vertices.len();
             meshes.push(mesh);
         }
@@ -196,7 +196,11 @@ fn view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32; 4];
         -yaw.cos() * pitch.cos(),
     );
     let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
-    let proj = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 2000.0);
+    let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
+        70f32.to_radians(),
+        aspect,
+        0.05,
+    ));
     (proj * view).to_cols_array_2d()
 }
 

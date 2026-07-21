@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod demo_cmd;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
@@ -104,6 +105,9 @@ enum Command {
     /// M3 capstone: connect + play in a real window (WASD/mouse), the live
     /// session feeding the renderer. `--out` writes the eye view headless.
     Live(live_cmd::LiveArgs),
+    /// M4 showcase: render a synthetic scene of varied block models to a PNG
+    /// (no server) — the model/AO/tint verification artifact.
+    Demo(demo_cmd::DemoArgs),
 }
 
 fn main() {
@@ -118,6 +122,7 @@ fn main() {
         Some(Command::View(view_args)) => view_cmd::run(view_args),
         Some(Command::Play(play_args)) => play_cmd::run(play_args),
         Some(Command::Live(live_args)) => live_cmd::run(live_args),
+        Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

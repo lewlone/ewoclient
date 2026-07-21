@@ -211,7 +211,7 @@ impl WorldRenderer {
                     .module(frag)
                     .name(entry),
             ];
-            let stride = 28u32; // pos 12 + uv 8 + layer 4 + shade 4
+            let stride = 36u32; // pos 12 + uv 8 + layer 4 + color 12
             let bindings = [vk::VertexInputBindingDescription::default()
                 .binding(0)
                 .stride(stride)
@@ -231,7 +231,7 @@ impl WorldRenderer {
                     .offset(20),
                 vk::VertexInputAttributeDescription::default()
                     .location(3)
-                    .format(vk::Format::R32_SFLOAT)
+                    .format(vk::Format::R32G32B32_SFLOAT)
                     .offset(24),
             ];
             let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
@@ -249,10 +249,14 @@ impl WorldRenderer {
                 .line_width(1.0);
             let multisample = vk::PipelineMultisampleStateCreateInfo::default()
                 .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            // Reversed-Z: clear to 0 (far), GREATER passes for nearer. Gives
+            // usable depth precision across Minecraft's near/far range on a
+            // float depth buffer, where standard [0,1] LESS z-fights the flat
+            // terrain into holes at distance.
             let depth = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
                 .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::LESS);
+                .depth_compare_op(vk::CompareOp::GREATER);
             let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
                 .blend_enable(false)
                 .color_write_mask(
@@ -496,6 +500,20 @@ fn bytemuck_cast(indices: &[u32]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * 4)
     }
+}
+
+/// Infinite reversed-Z perspective (RH, Y-up world). Maps z_view=-near → 1,
+/// z_view=-∞ → 0; pair with a 0.0 depth clear + `GREATER` compare. No far
+/// plane. Column-major, matching glam's `Mat4::to_cols_array_2d`.
+pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4]; 4] {
+    let f = 1.0 / (fov_y_rad * 0.5).tan();
+    // Columns.
+    [
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, 0.0, -1.0],
+        [0.0, 0.0, near, 0.0],
+    ]
 }
 
 /// Box-filter mips in sRGB space (matches the vanilla look closely enough

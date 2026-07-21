@@ -847,3 +847,58 @@ reads **zero server corrections over 3,000 ticks** of continuous movement.
 - Next: **M4** (real meshing) — binary greedy + model-quad path, fluids,
   26-neighbor AO, biome tint (colormaps), packed 8–12 B vertices. The live
   client makes M4's visual gains directly inspectable.
+
+**2026-07-21 — M4 real meshing shipped (model path + AO + tint) + a
+reversed-Z depth fix.**
+
+The world went from cubes-only to the full block-model variety — verified
+by a synthetic showcase PNG showing stairs, slabs, fences, glass, torches,
+cross-plants, logs, and directional cubes all rendering correctly.
+
+- **Block-model parser** (`rewo-data/assets.rs`, ~750 lines): blockstate
+  variants (x/y rotation) OR multipart (with `when`-condition eval against
+  state properties) → model parent chains → arbitrary `elements` (from/to
+  boxes) → per-face uv (explicit + derived) / texture / cullface / tintindex,
+  element rotation (origin/axis/angle/rescale for cross-plants),
+  `shade`/`ambientocclusion` flags. Output is a fast-path `Cube` (full
+  opaque 16³, for cheap face-cull + AO) or a baked `Model` quad list. Bake
+  result: **2,320 cubes + 26,555 models** (was 2,649 cube-only in M2).
+  Gotcha fixed: 26.x textures can be an **object** `{sprite,
+  force_translucent}` not just a string ref — glass + many blocks baked
+  invisible until the parser accepted both forms.
+- **Mesher** (`rewo-mesh`): full-cube fast path with **26-neighbor ambient
+  occlusion** (vanilla 0–3 corner darkening) + the general model-quad path
+  (cullface culling against full-cube neighbors, per-quad shade/light).
+  Vertex format → pos/uv/layer/**color** (shade × light × AO); tint is baked
+  into the texture layers (grayscale grass/foliage × colormap-center plains
+  color) so the mesher doesn't re-tint. Greedy meshing deliberately skipped
+  (conflicts with per-vertex AO — the plan's own tension, resolved toward
+  the vanilla look).
+- **`rewo demo`**: synthetic in-memory showcase (grass platform + a row of
+  10 varied blocks) rendered headless — no server. The deterministic M4
+  artifact. Inspected: **every model family correct**, AO visible on the
+  terrain, grass green from the colormap tint, glass transparent.
+- **Reversed-Z depth (`world::perspective_reverse_z`)** — while verifying
+  M4 on the *real* flat world, distant terrain showed holes. Instrumented
+  the mesher (face tally proved all top faces emit — geometry was correct)
+  and isolated it to **depth precision**: standard [0,1] `LESS` with a
+  0.05→2000 range z-fights a flat plane into holes at distance. Switched the
+  world pass to reversed-Z (infinite far, `GREATER`, 0.0 clear) across all
+  three cameras — the mid-field solidified. A **big win that also helps
+  M2/M3**.
+- **Verified:** demo PNG (all models) inspected; real-world live PNG much
+  improved; 14 rewo tests green; debug instrumentation removed.
+- **Known follow-up (cosmetic, not M4-scope):** the real flat world still
+  shows some grazing-angle far-field slivers + dark patches at the horizon
+  (the world-bottom bedrock down-faces showing through, amplified by 1×
+  sampling at near-edge-on angles). Candidate fixes: MSAA (the plan's AA
+  item) and/or back-face culling once model-quad winding is guaranteed CCW.
+  It does not affect the demo or normal-angle play; the interesting content
+  (models/AO/tint) is correct.
+- **Deferred to a later M4 pass (tracked):** binary greedy meshing, fluids
+  (water/lava neighbor-height geometry + translucent pass), per-biome tint
+  (fixed plains color baked for now), animated-texture ticking, packed
+  8–12 B vertices (36 B now), uvlock, AO on model quads (cubes only today).
+- Next: the M4 follow-ons above + the M5 GPU-driven path (mega-buffer arena,
+  compute cull, drawIndirectCount) which removes the live-remesh `wait_idle`
+  stall and is where greedy/packing pay off.

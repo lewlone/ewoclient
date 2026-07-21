@@ -1616,6 +1616,21 @@ apply.
   remesh budget + eye camera + WASD/mouse). Headless `--out PNG` renders the
   first-person eye view; windowed soak ~988 fps, 0 corrections. Rewo is now
   a playable windowed client.
+- **M4 shipped 2026-07-21** (`rewo-data::assets` model parser + `rewo-mesh`
+  AO/model path + `rewo demo`): real meshing. Full block-model resolution
+  (variants w/ x/y rotation, multipart w/ when-conditions, elements/faces/
+  cullface/element-rotation) → cube fast-path or baked quad list; 2,320
+  cubes + 26,555 models. Mesher adds 26-neighbor AO + the model-quad path;
+  tint baked into texture layers (grass/foliage colormap). `rewo demo`
+  renders a synthetic showcase (stairs/slab/fence/glass/torch/plants/log)
+  headless — verified all model families correct. Also switched the world
+  pass to **reversed-Z depth** (`world::perspective_reverse_z`, GREATER, 0.0
+  clear) to fix distant-terrain z-fighting holes — helps M2/M3 too. 26.x
+  gotcha: model textures can be `{sprite, force_translucent}` objects, not
+  just string refs (glass baked invisible until handled). Known cosmetic
+  follow-up: grazing-angle far-field slivers on flat ground (needs MSAA /
+  back-face cull). Deferred: greedy meshing, fluids, per-biome tint,
+  animation, packed vertices.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

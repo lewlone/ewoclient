@@ -71,6 +71,17 @@ pub struct Container {
 }
 
 impl Container {
+    /// A single-value container (whole section is one state) — for building
+    /// synthetic sections without a wire packet.
+    pub fn single(value: u32) -> Self {
+        Self {
+            single: Some(value),
+            palette: Vec::new(),
+            cells: Vec::new(),
+            direct: false,
+        }
+    }
+
     pub fn read(r: &mut PacketReader, kind: ContainerKind) -> Result<Self> {
         let bits = r.u8()? as u32;
         let entry_count = kind.entry_count();

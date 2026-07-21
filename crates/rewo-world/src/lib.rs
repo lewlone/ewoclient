@@ -35,6 +35,13 @@ impl World {
         self.columns.insert((cx, cz), column);
     }
 
+    /// Ensure an all-air, fully-lit column exists (synthetic scenes).
+    pub fn ensure_column(&mut self, cx: i32, cz: i32) {
+        self.columns
+            .entry((cx, cz))
+            .or_insert_with(|| chunk::Column::empty_lit(&self.shape, cx, cz));
+    }
+
     pub fn forget_column(&mut self, cx: i32, cz: i32) {
         self.columns.remove(&(cx, cz));
     }

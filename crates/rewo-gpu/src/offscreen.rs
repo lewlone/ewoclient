@@ -225,7 +225,7 @@ impl Offscreen {
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .clear_value(vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
+                            depth: 0.0, // reversed-Z: 0 = far
                             stencil: 0,
                         },
                     });
