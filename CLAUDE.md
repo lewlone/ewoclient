@@ -1593,10 +1593,14 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   **entity rendering shipped** — full movement/player-info decode, vanilla
   3-tick lerp, capsule pass + bitmap-font nametags, verified live
   (position cross-check exact, 129-entity soak at ~1,170 fps, "RewoCap2"
-  legible in a headless PNG); and **fluids + translucent pass shipped** —
+  legible in a headless PNG); **fluids + translucent pass shipped** —
   water (corner-height surfaces, texture-alpha blend, CPU-sorted
   back-to-front per column) + opaque fullbright lava, demo-PNG verified,
-  view-replay byte-identical + bench green. Also un-broke `rewo view`
+  view-replay byte-identical + bench green; **texture animation** (water
+  ripples/lava churns via .mcmeta-driven 20 Hz layer re-uploads, PNG-diff
+  verified); and **the player model** — Steve (12 cuboids incl. overlays,
+  box-UV from skin.rs, jar default skin, yaw + head pitch) replaces the
+  player capsule, verified in a headless PNG. Also un-broke `rewo view`
   (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary

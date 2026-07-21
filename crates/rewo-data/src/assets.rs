@@ -95,6 +95,10 @@ pub struct BakedAssets {
     /// the `.mcmeta` frame order + timing. The layer itself holds frame 0;
     /// the renderer re-uploads frames on the 20 Hz tick.
     pub animations: Vec<AnimatedLayer>,
+    /// The default wide-model player skin (Steve, 64×64 RGBA) — offline
+    /// servers carry no skin data, so every player renders with it until
+    /// real profile-texture fetching lands (needs online mode).
+    pub player_skin: Option<Vec<u8>>,
     pub stats: BakeStats,
 }
 
@@ -161,6 +165,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let font = bake_font(&mut jar);
     if font.is_none() {
         log::warn!("rewo-data: font/ascii.png missing — nametags disabled");
+    }
+    let player_skin = bake_player_skin(&mut jar);
+    if player_skin.is_none() {
+        log::warn!("rewo-data: steve.png missing — players render as capsules");
     }
 
     let mut baker = Baker {
@@ -261,8 +269,39 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         grass_tint,
         foliage_tint,
         font,
+        player_skin,
         stats,
     })
+}
+
+/// The bundled wide-model default skin, as flat 64×64 RGBA.
+fn bake_player_skin(jar: Jar) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    jar.by_name("assets/minecraft/textures/entity/player/wide/steve.png")
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.width != 64 || info.height != 64 {
+        return None;
+    }
+    let n = 64 * 64;
+    let mut rgba = vec![0u8; n * 4];
+    match info.color_type {
+        png::ColorType::Rgba => rgba.copy_from_slice(&buf[..n * 4]),
+        png::ColorType::Rgb => {
+            for i in 0..n {
+                rgba[i * 4..i * 4 + 3].copy_from_slice(&buf[i * 3..i * 3 + 3]);
+                rgba[i * 4 + 3] = 255;
+            }
+        }
+        _ => return None,
+    }
+    Some(rgba)
 }
 
 /// Extract + measure the legacy bitmap font from the jar.

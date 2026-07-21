@@ -55,10 +55,17 @@ pub struct EntityDraw<'a> {
     pub pos: [f32; 3],
     pub width: f32,
     pub height: f32,
-    /// Linear-space base color.
+    /// Linear-space base color (capsules; the player model is textured).
     pub color: [f32; 3],
     /// Nametag text (players); `None` draws no tag.
     pub name: Option<&'a str>,
+    /// Render the textured player model instead of a capsule (falls back
+    /// to the capsule when no skin was provided).
+    pub player: bool,
+    /// Body yaw (degrees, MC convention) — rotates the whole model.
+    pub yaw: f32,
+    /// Look pitch (degrees) — tilts the head about the neck.
+    pub pitch: f32,
 }
 
 #[repr(C)]
@@ -68,6 +75,12 @@ struct Vertex {
     uv: [f32; 2],
     color: [f32; 4],
 }
+
+/// Combined entity atlas layout: the font occupies (0,0)..(128,128), the
+/// 64×64 player skin sits at (SKIN_X, 0). One texture, one pipeline family.
+const ATLAS_W: u32 = 256;
+const ATLAS_H: u32 = 128;
+const SKIN_X: u32 = 128;
 
 pub struct EntityPass {
     layout: vk::PipelineLayout,
@@ -87,12 +100,24 @@ pub struct EntityPass {
     text_verts: u32,
     /// Unit capsule shell: (position [0..1 y, ±0.5 xz], normal).
     capsule: Vec<([f32; 3], [f32; 3])>,
+    /// Player model quads (model px, atlas-normalized UVs, baked shade).
+    player_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
     cell: u32,
-    atlas_size: u32,
     advance: [u8; 256],
     white_uv: [f32; 2],
     has_font: bool,
+    has_skin: bool,
+}
+
+/// One face of the player model, pre-unwrapped: corners in model pixels
+/// (y 0..32, feet at 0), UVs already atlas-normalized, per-face shade.
+struct PlayerQuad {
+    pos: [[f32; 3]; 4],
+    uv: [[f32; 2]; 4],
+    shade: f32,
+    /// Head/hat quads pitch about the neck pivot (0, 24, 0).
+    head: bool,
 }
 
 impl EntityPass {
@@ -100,25 +125,43 @@ impl EntityPass {
         gpu: &mut Gpu,
         color_format: vk::Format,
         font: Option<FontData<'_>>,
+        skin: Option<&[u8]>,
     ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
-        // ---- font atlas (or a 1×1 white fallback) ----
-        let (atlas, size, cell, advance, white_texel, has_font) = match &font {
-            Some(f) => (
-                f.atlas.to_vec(),
-                f.size,
-                f.cell,
-                *f.advance,
-                f.white_texel,
-                true,
-            ),
-            None => (vec![255u8; 4], 1, 8, [4u8; 256], (0, 0), false),
+        // ---- combined atlas: font at (0,0), player skin at (SKIN_X,0) ----
+        let mut atlas = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
+        let (cell, advance, white_texel, has_font) = match &font {
+            Some(f) => {
+                let side = f.size.min(ATLAS_H).min(SKIN_X) as usize;
+                for row in 0..side {
+                    let src = row * f.size as usize * 4;
+                    let dst = row * ATLAS_W as usize * 4;
+                    atlas[dst..dst + side * 4].copy_from_slice(&f.atlas[src..src + side * 4]);
+                }
+                (f.cell, *f.advance, f.white_texel, true)
+            }
+            None => (8, [4u8; 256], (0, 16), false),
         };
-        let (image, image_alloc, view) = create_texture(gpu, &atlas, size)?;
+        // The white texel lives in the (blank) space glyph cell — patch it
+        // whether or not a font was blitted (the cell is zeroed either way).
+        let wi = ((white_texel.1 * ATLAS_W + white_texel.0) * 4) as usize;
+        atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
+        let has_skin = match skin {
+            Some(px) if px.len() == 64 * 64 * 4 => {
+                for row in 0..64usize {
+                    let src = row * 64 * 4;
+                    let dst = (row * ATLAS_W as usize + SKIN_X as usize) * 4;
+                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+                }
+                true
+            }
+            _ => false,
+        };
+        let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
-            (white_texel.0 as f32 + 0.5) / size as f32,
-            (white_texel.1 as f32 + 0.5) / size as f32,
+            (white_texel.0 as f32 + 0.5) / ATLAS_W as f32,
+            (white_texel.1 as f32 + 0.5) / ATLAS_H as f32,
         ];
 
         unsafe {
@@ -239,11 +282,12 @@ impl EntityPass {
                 solid_verts: 0,
                 text_verts: 0,
                 capsule: unit_capsule(),
+                player_quads: player_model_quads(),
                 cell,
-                atlas_size: size,
                 advance,
                 white_uv,
                 has_font,
+                has_skin,
             })
         }
     }
@@ -262,6 +306,10 @@ impl EntityPass {
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
+            if d.player && self.has_skin {
+                self.emit_player(&mut verts, d);
+                continue;
+            }
             let base = d.color;
             for (p, n) in &self.capsule {
                 if verts.len() >= MAX_VERTS {
@@ -302,6 +350,52 @@ impl EntityPass {
                 std::slice::from_raw_parts(verts.as_ptr() as *const u8, total * 36)
             };
             slice[..bytes.len()].copy_from_slice(bytes);
+        }
+    }
+
+    /// The textured player model: 12 pre-unwrapped cuboids (6 base + 6
+    /// inflated overlay layers), yaw-rotated as a whole, head pitched
+    /// about the neck. Skin texels ride the alpha-test (`discard`) path,
+    /// so transparent overlay regions vanish for free.
+    fn emit_player(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>) {
+        // Vanilla's RenderPlayer scale: 0.9375 model→world, /16 px→blocks.
+        const S: f32 = 0.9375 / 16.0;
+        let yaw = d.yaw.to_radians();
+        let (cy, sy) = (yaw.cos(), yaw.sin());
+        let pitch = d.pitch.to_radians();
+        let (cp, sp) = (pitch.cos(), pitch.sin());
+        for q in &self.player_quads {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let mut p4 = [[0f32; 3]; 4];
+            for (i, corner) in q.pos.iter().enumerate() {
+                let mut p = *corner;
+                if q.head {
+                    // Pitch about the neck pivot (0, 24, 0): +pitch = look
+                    // down (front face tilts toward −Y).
+                    let (py, pz) = (p[1] - 24.0, p[2]);
+                    p[1] = 24.0 + py * cp - pz * sp;
+                    p[2] = py * sp + pz * cp;
+                }
+                // Whole-model yaw: front (+Z) → MC look dir (−sin, 0, cos).
+                let (x, z) = (p[0], p[2]);
+                p[0] = x * cy - z * sy;
+                p[2] = x * sy + z * cy;
+                p4[i] = [
+                    d.pos[0] + p[0] * S,
+                    d.pos[1] + p[1] * S,
+                    d.pos[2] + p[2] * S,
+                ];
+            }
+            let c = q.shade;
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: p4[i],
+                    uv: q.uv[i],
+                    color: [c, c, c, 1.0],
+                });
+            }
         }
     }
 
@@ -367,7 +461,7 @@ impl EntityPass {
         );
 
         // Glyphs, left to right. v axis: image y is down, glyph py is up.
-        let size = self.atlas_size as f32;
+        let (aw, ah) = (ATLAS_W as f32, ATLAS_H as f32);
         let mut pen = -total_px / 2.0;
         for b in name.bytes() {
             let adv = self.advance[b as usize] as f32;
@@ -381,7 +475,7 @@ impl EntityPass {
                     0.0,
                     pen + cell,
                     cell,
-                    [cx / size, (cy + cell) / size, (cx + cell) / size, cy / size],
+                    [cx / aw, (cy + cell) / ah, (cx + cell) / aw, cy / ah],
                     [1.0, 1.0, 1.0, 1.0],
                 );
             }
@@ -517,6 +611,96 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
     [v[0] / l, v[1] / l, v[2] / l]
 }
 
+/// The wide ("Steve") player model, ported from `ewo-jni/src/skin.rs`
+/// (Phase F's battle-tested viewer): 6 base cuboids + 6 inflated overlay
+/// layers, standard box-UV unwrap, per-face shades. Model pixels: feet at
+/// y=0, head top at y=32; UVs normalized into the skin's atlas slot.
+fn player_model_quads() -> Vec<PlayerQuad> {
+    struct C {
+        min: [f32; 3],
+        max: [f32; 3],
+        size: [f32; 3],
+        uv: (f32, f32),
+        head: bool,
+    }
+    #[rustfmt::skip]
+    let cuboids = [
+        // Base layer: head, body, right/left arm, right/left leg.
+        C { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), head: true },
+        C { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), head: false },
+        C { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), head: false },
+        C { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), head: false },
+        C { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), head: false },
+        C { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), head: false },
+        // Overlay layer (hat/jacket/sleeves/pants), inflated 0.25.
+        C { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), head: true },
+        C { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), head: false },
+        C { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), head: false },
+        C { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), head: false },
+        C { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), head: false },
+        C { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), head: false },
+    ];
+
+    let t = |u: f32, v: f32| -> [f32; 2] {
+        [(SKIN_X as f32 + u) / ATLAS_W as f32, v / ATLAS_H as f32]
+    };
+    let mut out = Vec::with_capacity(cuboids.len() * 6);
+    for c in &cuboids {
+        let [x0, y0, z0] = c.min;
+        let [x1, y1, z1] = c.max;
+        let [sw, sh, sd] = c.size;
+        let (u, v) = c.uv;
+        // Box-UV sub-rect origins (identical to skin.rs::cuboid_faces).
+        let (tu, tv) = (u + sd, v); // top
+        let (du, dv) = (u + sd + sw, v); // bottom
+        let (ru, rv) = (u, v + sd); // right (-X)
+        let (fu, fv) = (u + sd, v + sd); // front (+Z)
+        let (lu, lv) = (u + sd + sw, v + sd); // left (+X)
+        let (bu, bv) = (u + 2.0 * sd + sw, v + sd); // back (-Z)
+        let faces: [([[f32; 3]; 4], [[f32; 2]; 4], f32); 6] = [
+            (
+                [[x0, y1, z1], [x1, y1, z1], [x1, y0, z1], [x0, y0, z1]],
+                [t(fu, fv), t(fu + sw, fv), t(fu + sw, fv + sh), t(fu, fv + sh)],
+                0.80, // front
+            ),
+            (
+                [[x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [x1, y0, z0]],
+                [t(bu, bv), t(bu + sw, bv), t(bu + sw, bv + sh), t(bu, bv + sh)],
+                0.62, // back
+            ),
+            (
+                [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
+                [t(tu, tv), t(tu + sw, tv), t(tu + sw, tv + sd), t(tu, tv + sd)],
+                1.0, // top
+            ),
+            (
+                [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
+                [t(du, dv), t(du + sw, dv), t(du + sw, dv + sd), t(du, dv + sd)],
+                0.50, // bottom
+            ),
+            (
+                [[x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [x0, y0, z0]],
+                [t(ru, rv), t(ru + sd, rv), t(ru + sd, rv + sh), t(ru, rv + sh)],
+                0.68, // right (-X)
+            ),
+            (
+                [[x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [x1, y0, z1]],
+                [t(lu, lv), t(lu + sd, lv), t(lu + sd, lv + sh), t(lu, lv + sh)],
+                0.68, // left (+X)
+            ),
+        ];
+        for (pos, uv, shade) in faces {
+            out.push(PlayerQuad {
+                pos,
+                uv,
+                shade,
+                head: c.head,
+            });
+        }
+    }
+    out
+}
+
 /// sRGB component → linear (CPU-side color prep; discipline #1).
 pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -529,7 +713,8 @@ pub fn srgb_to_linear(c: f32) -> f32 {
 fn create_texture(
     gpu: &mut Gpu,
     rgba: &[u8],
-    size: u32,
+    width: u32,
+    height: u32,
 ) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
     unsafe {
         let device = gpu.device.clone();
@@ -539,8 +724,8 @@ fn create_texture(
                     .image_type(vk::ImageType::TYPE_2D)
                     .format(vk::Format::R8G8B8A8_SRGB)
                     .extent(vk::Extent3D {
-                        width: size,
-                        height: size,
+                        width,
+                        height,
                         depth: 1,
                     })
                     .mip_levels(1)
@@ -645,8 +830,8 @@ fn create_texture(
                         .layer_count(1),
                 )
                 .image_extent(vk::Extent3D {
-                    width: size,
-                    height: size,
+                    width,
+                    height,
                     depth: 1,
                 })],
         );
@@ -822,5 +1007,29 @@ mod tests {
         assert_eq!(srgb_to_linear(0.0), 0.0);
         assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
         assert!(srgb_to_linear(0.5) < 0.5, "midtones darken in linear");
+    }
+
+    #[test]
+    fn player_model_unwraps_the_face_where_the_face_is() {
+        let quads = player_model_quads();
+        assert_eq!(quads.len(), 72, "12 cuboids × 6 faces");
+        // Head cuboid (first), front face (first): skin px (8,8)..(16,16),
+        // offset into the atlas's skin slot.
+        let front = &quads[0];
+        assert!(front.head);
+        let u0 = (SKIN_X as f32 + 8.0) / ATLAS_W as f32;
+        let v0 = 8.0 / ATLAS_H as f32;
+        assert_eq!(front.uv[0], [u0, v0]);
+        assert_eq!(
+            front.uv[2],
+            [(SKIN_X as f32 + 16.0) / ATLAS_W as f32, 16.0 / ATLAS_H as f32]
+        );
+        // Model bounds: feet at 0, hat top at 32.5 model px.
+        let top = quads
+            .iter()
+            .flat_map(|q| q.pos.iter())
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max);
+        assert_eq!(top, 32.5);
     }
 }

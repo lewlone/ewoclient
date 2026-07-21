@@ -127,9 +127,12 @@ the code's author. Nothing below is settled truth.
 - ~~Entities are decoded into a table but NOT rendered~~ — **RESOLVED
   2026-07-21.** Full entity track: movement/teleport/position-sync/
   player-info decode, vanilla 3-tick lerp + partial-tick blend, capsule
-  render pass + bitmap-font nametags. See the §15 entry. Still open within
-  it: entity *collision* is ignored (walk through mobs), no player-model
-  port (capsules only — correction #11's later track), tags are
+  render pass + bitmap-font nametags — and **players render as the real
+  textured model** (12-cuboid wide model incl. overlay layers, Steve
+  default skin from the jar, whole-body yaw + head pitch). See the §15
+  entries. Still open within it: entity *collision* is ignored (walk
+  through mobs), mobs are capsules, no real per-player skins (needs
+  online-mode profile textures — M7), no limb-swing animation, tags are
   depth-tested (vanilla shows them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
@@ -160,8 +163,11 @@ the code's author. Nothing below is settled truth.
   (translucent, corner-height surfaces) + lava (opaque fullbright) with a
   CPU-sorted back-to-front translucent pass. See §15. Still open within
   it: waterlogged blocks don't render their water, no flowing-texture
-  UV rotation, no texture animation.
-- No **texture animation** ticking (water/lava render their first frame).
+  UV rotation.
+- ~~No texture animation ticking~~ — **RESOLVED 2026-07-21**: `.mcmeta`
+  frame order + frametime drive per-layer re-uploads on the 20 Hz tick
+  (water ripples, lava churns; `demo --anim-tick N` is the deterministic
+  check). Frame *interpolation* (lava's `interpolate` flag) not done.
 - **36-byte vertices**, not the packed 8–12 B the plan targets.
 - **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
@@ -1318,3 +1324,33 @@ carryover).**
   0.1% low 1.131 — noise-level vs every prior run); live soak vs the test
   server: corrections 0, 129 entities, frame times unchanged. 49 rewo
   tests green.
+
+**2026-07-21 — texture animation + the player model (Steve replaces the
+player capsule).**
+
+- **Texture animation** (`.mcmeta`-driven): the bake slices animation
+  strips into 16×16 frames (tint applied to all — water's 32 sequential
+  frames at frametime 2, lava's explicit ping-pong order) and
+  `WorldRenderer::anim_tick(gpu, tick)` re-uploads a layer (+ regenerated
+  mips, a few KB) whenever its frame changes on the 20 Hz game tick.
+  `rewo live` drives it from `session.ticks`; `rewo demo --anim-tick N`
+  is the deterministic check — PNGs at tick 0 vs 20 differ in 168,873
+  pixels **all confined to the fluid pools** (sky + model row
+  byte-identical). Frame interpolation (lava's `interpolate`) deferred.
+- **Player model**: players now render as the real textured wide model —
+  the 12-cuboid set (6 base + 6 inflated overlay layers) with the
+  standard box-UV unwrap, ported from `ewo-jni/src/skin.rs` (Phase F's
+  battle-tested viewer) into `EntityPass` as pre-unwrapped quads. The
+  **Steve default skin** bakes from the client jar (offline servers carry
+  no profile textures; real skins arrive with M7 online-mode). The entity
+  atlas grew to a combined 256×128 (font at (0,0), skin at (128,0)) so
+  glyphs, capsule fills, and skin texels share one pipeline family;
+  transparent overlay texels ride the existing alpha-test discard.
+  Whole-body yaw rotation + head pitch about the neck pivot; vanilla's
+  0.9375 render scale. Mobs stay capsules.
+- **Verified:** validation clean; the close-range harness PNG shows a
+  pixel-correct Steve from behind (hair, shirt, jeans — yaw 0 facing away
+  from the observer, exactly right) under the "RewoCap2" nametag;
+  position cross-check still exact; windowed soak with 137 live entities:
+  corrections 0, frame times comfortable. New unit test pins the head's
+  front-face UV rect + the 72-quad model + hat-top bound.
