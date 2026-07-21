@@ -106,7 +106,7 @@ pub fn run(args: BenchArgs) -> Result<(), String> {
             wall_ms.push(wall);
         }
         if i == total - 1 {
-            last_cull = wr.read_draw_count(&gpu);
+            last_cull = wr.read_draw_count(&mut gpu);
         }
     }
     let elapsed = start.elapsed().as_secs_f32();

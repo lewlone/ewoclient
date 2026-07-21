@@ -435,7 +435,7 @@ fn run_headless(
     }
     off.save_png(&gpu, out)?;
     let total = world_renderer.column_count();
-    let gpu_drawn = world_renderer.read_draw_count(&gpu);
+    let gpu_drawn = world_renderer.read_draw_count(&mut gpu);
     println!(
         "[rewo-m3-live] headless: spawned at ({:.1},{:.1},{:.1}), {} columns loaded, GPU cull drew {} of {} ({} culled on GPU)",
         session.player.x,
@@ -660,9 +660,9 @@ impl LiveApp {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        // Upload finished meshes + feed the worker pool. (upload_column
-        // self-syncs — device-local staging copy with its own fence — so the
-        // per-frame render path never stalls.)
+        // Upload finished meshes + feed the worker pool. (Uploads are
+        // async slot-ring submissions — the CPU never waits on the copy;
+        // same-queue FIFO ordering keeps this frame's draws safe.)
         match pump_meshing(
             session,
             &mut state.gpu,

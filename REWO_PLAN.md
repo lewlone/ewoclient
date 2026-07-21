@@ -98,8 +98,12 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    details that break everything if wrong.
 5. **Packet ids resolved BY NAME** from the datagen report, so a version bump
    fails loud instead of misfiring.
-6. **`upload_column` self-syncs** (one-shot fence) — do not re-add a
-   per-frame `wait_idle` around it.
+6. **Uploads are async slot-ring submissions on the graphics queue** —
+   the CPU never waits on the copy; same-queue FIFO ordering is what makes
+   the frame's draws safe. Do not re-add a per-frame `wait_idle`, and do
+   not move uploads to another queue without adding real cross-queue
+   sync (timeline semaphores + ownership/sharing) — the FIFO guarantee is
+   load-bearing.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
@@ -113,9 +117,13 @@ the code's author. Nothing below is settled truth.
   `World::snapshot_3x3` Arc-clone snapshots (§4's copy-on-write model,
   implemented); the frame only uploads finished meshes (6/frame budget).
   See the §15 entry for the design + verification.
-- **Column uploads are synchronous** (one-shot fence), not the dedicated
-  async transfer queue + staging ring the plan wants. A chunk flood
-  (teleport) stalls. Deferred as an M5 follow-on.
+- ~~Column uploads are synchronous~~ — **RESOLVED 2026-07-21** (the last
+  §4 deviation): uploads are now an async 4-slot staging ring — the CPU
+  submits and returns, never waiting the fence (gotcha #6 has the new
+  contract). Scope call: the ring stays on the graphics queue — same-queue
+  FIFO ordering preserves every draw-safety guarantee for free, and a
+  dedicated-DMA-queue only overlaps ~µs of copy time today, so it's
+  deferred measure-first like `VK_NV_low_latency2`.
 - ~~The launcher `Native` arm spawns `rewo view`~~ — **RESOLVED
   2026-07-21.** It spawns `rewo live` (`launch::native_client_args`, argv[0]
   pinned by a regression test); `package.ps1` stages `rewo.exe` into dist;
@@ -1354,3 +1362,27 @@ player capsule).**
   position cross-check still exact; windowed soak with 137 live entities:
   corrections 0, frame times comfortable. New unit test pins the head's
   front-face UV rect + the 72-quad model + hat-top bound.
+
+**2026-07-21 — async upload ring (the last §4 deviation closed).**
+
+- `upload_column` / `upload_layer_frame` no longer block the CPU on their
+  fence: a **4-slot ring** (per-slot command buffer + fence + growable
+  staging) submits on the graphics queue and returns. Same-queue FIFO
+  ordering keeps every existing draw-safety guarantee (the copy executes
+  before any later-submitted frame that could read the regions — exactly
+  what the old blocking path relied on, minus the stall); a trailing
+  TRANSFER→VERTEX/INDEX memory barrier in the upload cb makes visibility
+  locally airtight. Retired fences are harvested opportunistically; the
+  CPU only waits when all 4 slots are in flight (sustained burst) or to
+  grow a slot's staging. `read_draw_count` keeps its blocking readback
+  (stats path). Texture animation (10 uploads/s) rides the same ring.
+- **Scope call, documented in §0.0:** the dedicated transfer queue + DMA
+  overlap stays deferred measure-first — a ~100 KB copy is microseconds
+  of GPU time; the plan's real goal ("meshing/uploads happen off the
+  frame") is met by pool + ring. Moving to another queue later requires
+  real cross-queue sync (see the rewritten gotcha #6).
+- **Verified:** demo + view PNGs **byte-identical** through the async
+  path; bench gate green (avg 0.209 / 0.1% low 0.920 ms — best yet);
+  validation 0 VUIDs on demo + live streaming (debug); live soak: flood
+  488 uploads in 2.0 s, corrections 0, lows tighter than the pre-async
+  run at the same 138-entity count.

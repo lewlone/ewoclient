@@ -86,6 +86,19 @@ struct Slot {
     meta: ColumnMeta,
 }
 
+/// One in-flight upload: its own command buffer, fence, and staging
+/// buffer (untouched until the fence says the copy retired).
+struct UploadSlot {
+    cb: vk::CommandBuffer,
+    fence: vk::Fence,
+    staging: vk::Buffer,
+    staging_alloc: Option<Allocation>,
+    staging_cap: u64,
+    busy: bool,
+}
+
+const UPLOAD_SLOTS: usize = 4;
+
 /// First-fit free-list over a fixed-capacity element range, with coalescing.
 struct FreeList {
     free: Vec<(u64, u64)>, // (offset, len), sorted by offset
@@ -173,13 +186,14 @@ pub struct WorldRenderer {
     indirect_alloc: Option<Allocation>,
     count_buf: vk::Buffer,
     count_alloc: Option<Allocation>,
-    // -- one-shot uploads --
+    // -- async upload ring --
+    // Uploads submit on the graphics queue WITHOUT a CPU fence wait: queue
+    // FIFO ordering guarantees every copy executes before any later-
+    // submitted frame that could read it (the same guarantee the old
+    // blocking path relied on — minus the stall). The CPU only waits when
+    // all slots are still in flight (sustained burst) or to grow staging.
     upload_pool: vk::CommandPool,
-    upload_cb: vk::CommandBuffer,
-    upload_fence: vk::Fence,
-    staging: vk::Buffer,
-    staging_alloc: Option<Allocation>,
-    staging_cap: u64,
+    upload_slots: Vec<UploadSlot>,
     count_readback: vk::Buffer,
     count_readback_alloc: Option<Allocation>,
     // -- entities (optional pass; drawn after the terrain in `draw`) --
@@ -440,31 +454,46 @@ impl WorldRenderer {
             write_storage(&device, cull_set, 1, indirect_buf);
             write_storage(&device, cull_set, 2, count_buf);
 
-            // ---- one-shot upload machinery ----
+            // ---- async upload ring ----
+            // RESET_COMMAND_BUFFER so each slot's cb re-begins on its own
+            // while its siblings stay in flight.
             let upload_pool = device
                 .create_command_pool(
-                    &vk::CommandPoolCreateInfo::default().queue_family_index(gpu.graphics_family),
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(gpu.graphics_family)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                     None,
                 )
                 .map_err(|e| format!("upload pool: {e}"))?;
-            let upload_cb = device
+            let slot_cbs = device
                 .allocate_command_buffers(
                     &vk::CommandBufferAllocateInfo::default()
                         .command_pool(upload_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_buffer_count(1),
+                        .command_buffer_count(UPLOAD_SLOTS as u32),
                 )
-                .map_err(|e| format!("upload cb: {e}"))?[0];
-            let upload_fence = device
-                .create_fence(&vk::FenceCreateInfo::default(), None)
-                .map_err(|e| format!("upload fence: {e}"))?;
-            let staging_cap = 8 * 1024 * 1024; // grows on demand
-            let (staging, staging_alloc) = create_host_buffer(
-                gpu,
-                staging_cap,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                "upload-staging",
-            )?;
+                .map_err(|e| format!("upload cbs: {e}"))?;
+            let mut upload_slots = Vec::with_capacity(UPLOAD_SLOTS);
+            for cb in slot_cbs {
+                let fence = device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+                    .map_err(|e| format!("upload fence: {e}"))?;
+                let staging_cap = 2 * 1024 * 1024; // grows on demand
+                let (staging, staging_alloc) = create_host_buffer(
+                    gpu,
+                    staging_cap,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    "upload-staging",
+                )?;
+                upload_slots.push(UploadSlot {
+                    cb,
+                    fence,
+                    staging,
+                    staging_alloc: Some(staging_alloc),
+                    staging_cap,
+                    busy: false,
+                });
+            }
             let (count_readback, count_readback_alloc) = create_host_buffer(
                 gpu,
                 16,
@@ -504,11 +533,7 @@ impl WorldRenderer {
                 count_buf,
                 count_alloc: Some(count_alloc),
                 upload_pool,
-                upload_cb,
-                upload_fence,
-                staging,
-                staging_alloc: Some(staging_alloc),
-                staging_cap,
+                upload_slots,
                 count_readback,
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
@@ -553,14 +578,16 @@ impl WorldRenderer {
         Ok(())
     }
 
-    /// Replace one texture-array layer's content (all mip levels) via the
-    /// one-shot upload machinery.
+    /// Replace one texture-array layer's content (all mip levels) via an
+    /// async slot upload (no CPU wait — same-queue ordering keeps the
+    /// frame's sampling safe, and the in-cb barriers order the layer's
+    /// shader reads around the copy).
     fn upload_layer_frame(&mut self, gpu: &mut Gpu, layer: u16, rgba: &[u8]) -> Result<(), String> {
         let mips = generate_mips(self.tex_size, self.mip_levels, rgba);
         let total: usize = mips.iter().map(|m| m.len()).sum();
-        self.ensure_staging(gpu, total as u64)?;
+        let slot = self.acquire_slot(gpu, total as u64)?;
         unsafe {
-            let alloc = self.staging_alloc.as_mut().unwrap();
+            let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
             let mut off = 0usize;
             let mut copies = Vec::with_capacity(mips.len());
@@ -587,17 +614,9 @@ impl WorldRenderer {
                 size = (size / 2).max(1);
             }
 
+            let cb = self.begin_slot(gpu, slot)?;
+            let staging = self.upload_slots[slot].staging;
             let device = &gpu.device;
-            device
-                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
-                .map_err(|e| format!("anim reset pool: {e}"))?;
-            device
-                .begin_command_buffer(
-                    self.upload_cb,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .map_err(|e| format!("anim begin: {e}"))?;
             let range = vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_mip_level(0)
@@ -614,13 +633,13 @@ impl WorldRenderer {
                 .image(self.image)
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
-                self.upload_cb,
+                cb,
                 &vk::DependencyInfo::default()
                     .image_memory_barriers(std::slice::from_ref(&to_dst)),
             );
             device.cmd_copy_buffer_to_image(
-                self.upload_cb,
-                self.staging,
+                cb,
+                staging,
                 self.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &copies,
@@ -635,29 +654,12 @@ impl WorldRenderer {
                 .image(self.image)
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
-                self.upload_cb,
+                cb,
                 &vk::DependencyInfo::default()
                     .image_memory_barriers(std::slice::from_ref(&to_read)),
             );
-            device
-                .end_command_buffer(self.upload_cb)
-                .map_err(|e| format!("anim end: {e}"))?;
-            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
-            device
-                .queue_submit2(
-                    gpu.graphics_queue,
-                    &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
-                    self.upload_fence,
-                )
-                .map_err(|e| format!("anim submit: {e}"))?;
-            device
-                .wait_for_fences(&[self.upload_fence], true, u64::MAX)
-                .map_err(|e| format!("anim wait: {e}"))?;
-            device
-                .reset_fences(&[self.upload_fence])
-                .map_err(|e| format!("anim reset fence: {e}"))?;
         }
-        Ok(())
+        self.submit_slot(gpu, slot)
     }
 
     /// Set the frame's eye position — drives translucent back-to-front
@@ -696,10 +698,97 @@ impl WorldRenderer {
         self.columns.len()
     }
 
-    /// Suballocate + upload a column's geometry into the mega-buffers via a
-    /// one-shot staging copy (own fence — the per-frame path never waits).
-    /// Opaque and translucent (water) sets ride the same buffers as two
-    /// regions; either may be empty.
+    /// Find (or wait for) a free upload slot with at least `need` staging
+    /// bytes. Retired fences are harvested opportunistically; the CPU only
+    /// blocks when every slot is still in flight (sustained burst).
+    fn acquire_slot(&mut self, gpu: &mut Gpu, need: u64) -> Result<usize, String> {
+        unsafe {
+            for s in &mut self.upload_slots {
+                if s.busy && gpu.device.get_fence_status(s.fence).unwrap_or(false) {
+                    gpu.device
+                        .reset_fences(&[s.fence])
+                        .map_err(|e| format!("slot fence reset: {e}"))?;
+                    s.busy = false;
+                }
+            }
+            let idx = match self.upload_slots.iter().position(|s| !s.busy) {
+                Some(i) => i,
+                None => {
+                    let fence = self.upload_slots[0].fence;
+                    gpu.device
+                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .map_err(|e| format!("slot wait: {e}"))?;
+                    gpu.device
+                        .reset_fences(&[fence])
+                        .map_err(|e| format!("slot reset: {e}"))?;
+                    self.upload_slots[0].busy = false;
+                    0
+                }
+            };
+            if self.upload_slots[idx].staging_cap < need {
+                let new_cap = need.next_power_of_two();
+                let old = self.upload_slots[idx].staging;
+                gpu.device.destroy_buffer(old, None);
+                if let Some(a) = self.upload_slots[idx].staging_alloc.take() {
+                    let _ = gpu.allocator.free(a);
+                }
+                let (buf, alloc) = create_host_buffer(
+                    gpu,
+                    new_cap,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    "upload-staging",
+                )?;
+                let s = &mut self.upload_slots[idx];
+                s.staging = buf;
+                s.staging_alloc = Some(alloc);
+                s.staging_cap = new_cap;
+            }
+            Ok(idx)
+        }
+    }
+
+    /// Begin the slot's command buffer (implicitly reset — the pool has
+    /// RESET_COMMAND_BUFFER).
+    fn begin_slot(&self, gpu: &Gpu, idx: usize) -> Result<vk::CommandBuffer, String> {
+        let cb = self.upload_slots[idx].cb;
+        unsafe {
+            gpu.device
+                .begin_command_buffer(
+                    cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(|e| format!("slot begin: {e}"))?;
+        }
+        Ok(cb)
+    }
+
+    /// End + submit the slot on the graphics queue, signaling its fence —
+    /// and RETURN, no CPU wait. Queue FIFO order makes the copy execute
+    /// before any later-submitted frame that reads the regions.
+    fn submit_slot(&mut self, gpu: &Gpu, idx: usize) -> Result<(), String> {
+        let s = &mut self.upload_slots[idx];
+        unsafe {
+            gpu.device
+                .end_command_buffer(s.cb)
+                .map_err(|e| format!("slot end: {e}"))?;
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(s.cb)];
+            gpu.device
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                    s.fence,
+                )
+                .map_err(|e| format!("slot submit: {e}"))?;
+        }
+        s.busy = true;
+        Ok(())
+    }
+
+    /// Suballocate + upload a column's geometry into the mega-buffers via
+    /// an async staged copy (slot ring — the CPU does not wait for the
+    /// copy). Opaque and translucent (water) sets ride the same buffers as
+    /// two regions; either may be empty.
     #[allow(clippy::too_many_arguments)]
     pub fn upload_column(
         &mut self,
@@ -757,33 +846,23 @@ impl WorldRenderer {
             (tindex_bytes, self.ibuf, tidx_off * 4),
         ];
         let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
-        self.ensure_staging(gpu, total as u64)?;
+        let slot = self.acquire_slot(gpu, total as u64)?;
         unsafe {
-            let alloc = self.staging_alloc.as_mut().unwrap();
+            let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
             let mut off = 0usize;
             for (bytes, _, _) in &spans {
                 slice[off..off + bytes.len()].copy_from_slice(bytes);
                 off += bytes.len();
             }
-
-            let device = &gpu.device;
-            device
-                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
-                .map_err(|e| format!("reset upload pool: {e}"))?;
-            device
-                .begin_command_buffer(
-                    self.upload_cb,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .map_err(|e| format!("begin upload: {e}"))?;
+            let cb = self.begin_slot(gpu, slot)?;
+            let staging = self.upload_slots[slot].staging;
             let mut src = 0u64;
             for (bytes, dst_buf, dst_off) in &spans {
                 if !bytes.is_empty() {
-                    device.cmd_copy_buffer(
-                        self.upload_cb,
-                        self.staging,
+                    gpu.device.cmd_copy_buffer(
+                        cb,
+                        staging,
                         *dst_buf,
                         &[vk::BufferCopy::default()
                             .src_offset(src)
@@ -793,21 +872,24 @@ impl WorldRenderer {
                 }
                 src += bytes.len() as u64;
             }
-            device
-                .end_command_buffer(self.upload_cb)
-                .map_err(|e| format!("end upload: {e}"))?;
-            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
-            let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
-            device
-                .queue_submit2(gpu.graphics_queue, &[submit], self.upload_fence)
-                .map_err(|e| format!("upload submit: {e}"))?;
-            device
-                .wait_for_fences(&[self.upload_fence], true, u64::MAX)
-                .map_err(|e| format!("upload wait: {e}"))?;
-            device
-                .reset_fences(&[self.upload_fence])
-                .map_err(|e| format!("upload reset fence: {e}"))?;
+            // Make the copies visible to later frames' vertex/index reads
+            // without relying on fence-signal domain semantics alone.
+            let vis = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::VERTEX_INPUT
+                        | vk::PipelineStageFlags2::INDEX_INPUT,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
+                );
+            gpu.device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
+            );
         }
+        self.submit_slot(gpu, slot)?;
 
         let meta = ColumnMeta {
             aabb_min: [cx as f32 * 16.0, y_min, cz as f32 * 16.0, 0.0],
@@ -1075,65 +1157,36 @@ impl WorldRenderer {
     }
 
     /// Read back the GPU cull's draw count from the last frame (one-shot
-    /// copy + wait — for verification/stats, not per-frame use).
-    pub fn read_draw_count(&mut self, gpu: &Gpu) -> u32 {
+    /// copy + a blocking wait — for verification/stats, not per-frame use).
+    pub fn read_draw_count(&mut self, gpu: &mut Gpu) -> u32 {
+        let Ok(slot) = self.acquire_slot(gpu, 0) else {
+            return 0;
+        };
+        let Ok(cb) = self.begin_slot(gpu, slot) else {
+            return 0;
+        };
         unsafe {
-            let device = &gpu.device;
-            if device
-                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
-                .is_err()
-            {
-                return 0;
-            }
-            let _ = device.begin_command_buffer(
-                self.upload_cb,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            );
-            device.cmd_copy_buffer(
-                self.upload_cb,
+            gpu.device.cmd_copy_buffer(
+                cb,
                 self.count_buf,
                 self.count_readback,
                 &[vk::BufferCopy::default().size(4)],
             );
-            let _ = device.end_command_buffer(self.upload_cb);
-            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
-            let _ = device.queue_submit2(
-                gpu.graphics_queue,
-                &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
-                self.upload_fence,
-            );
-            let _ = device.wait_for_fences(&[self.upload_fence], true, u64::MAX);
-            let _ = device.reset_fences(&[self.upload_fence]);
+        }
+        if self.submit_slot(gpu, slot).is_err() {
+            return 0;
+        }
+        unsafe {
+            let fence = self.upload_slots[slot].fence;
+            let _ = gpu.device.wait_for_fences(&[fence], true, u64::MAX);
+            let _ = gpu.device.reset_fences(&[fence]);
+            self.upload_slots[slot].busy = false;
             self.count_readback_alloc
                 .as_ref()
                 .and_then(|a| a.mapped_slice())
                 .map(|s| u32::from_ne_bytes(s[..4].try_into().unwrap()))
                 .unwrap_or(0)
         }
-    }
-
-    fn ensure_staging(&mut self, gpu: &mut Gpu, need: u64) -> Result<(), String> {
-        if need <= self.staging_cap {
-            return Ok(());
-        }
-        let new_cap = need.next_power_of_two();
-        unsafe {
-            gpu.device.destroy_buffer(self.staging, None);
-        }
-        if let Some(a) = self.staging_alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
-        let (buf, alloc) = create_host_buffer(
-            gpu,
-            new_cap,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            "upload-staging",
-        )?;
-        self.staging = buf;
-        self.staging_alloc = Some(alloc);
-        self.staging_cap = new_cap;
-        Ok(())
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
@@ -1143,7 +1196,10 @@ impl WorldRenderer {
         }
         unsafe {
             let device = &gpu.device;
-            device.destroy_fence(self.upload_fence, None);
+            for s in &mut self.upload_slots {
+                device.destroy_fence(s.fence, None);
+                device.destroy_buffer(s.staging, None);
+            }
             device.destroy_command_pool(self.upload_pool, None);
             device.destroy_pipeline(self.cull_pipeline, None);
             device.destroy_pipeline_layout(self.cull_layout, None);
@@ -1163,12 +1219,16 @@ impl WorldRenderer {
                 self.meta_buf,
                 self.indirect_buf,
                 self.count_buf,
-                self.staging,
                 self.count_readback,
             ] {
                 device.destroy_buffer(b, None);
             }
         }
+        let slot_allocs: Vec<Option<Allocation>> = self
+            .upload_slots
+            .iter_mut()
+            .map(|s| s.staging_alloc.take())
+            .collect();
         for a in [
             self.image_alloc.take(),
             self.vbuf_alloc.take(),
@@ -1176,10 +1236,10 @@ impl WorldRenderer {
             self.meta_alloc.take(),
             self.indirect_alloc.take(),
             self.count_alloc.take(),
-            self.staging_alloc.take(),
             self.count_readback_alloc.take(),
         ]
         .into_iter()
+        .chain(slot_allocs)
         .flatten()
         {
             let _ = gpu.allocator.free(a);

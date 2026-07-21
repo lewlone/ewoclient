@@ -1583,9 +1583,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   keying off the render fast-path makes the player fall through the ground.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
 - **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
-  chat-signing not done (offline only); column uploads still fence-sync
-  (no async transfer queue); entity collision ignored + capsules not
-  player models. Fixed 2026-07-21 (three passes): meshing moved OFF the
+  chat-signing not done (offline only — M7, needs the user's real
+  account); entity collision ignored; mobs still capsules (players got
+  the real model). All three §4 deviations are now closed (rayon mesh
+  pool, Native `live` arm, async upload ring). Fixed 2026-07-21 (several
+  passes): meshing moved OFF the
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
   unchanged, demo PNG byte-identical, bench gate green); the launcher
   Native arm now spawns `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join
