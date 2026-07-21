@@ -677,6 +677,10 @@ the world, and proved replay equivalence — all without a human at a window.
     `(5,-62,5)=dirt`, `(0,-61,0)=grass_block`, `(8,100,8)=air`.
   - **Replay equivalence:** replaying the recording reproduced the live
     world digest `0x194468be04d129e8` bit-for-bit (329 chunks both sides).
+  - **10-minute endurance soak (the DoD's "no kick"):** stayed in Play the
+    full 600 s — **237,678 packets / 5.7 MB, 39 keep-alives answered**
+    (server sends one ~every 15 s and kicks after ~30 s of silence, so 39
+    over 10 min = zero missed), exit 0, block query still correct.
   - 18 unit tests green across the M0+M1 crates.
 
 - **How to reproduce the ground-truth + server** (one-time per version):
