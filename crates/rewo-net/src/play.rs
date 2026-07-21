@@ -188,6 +188,11 @@ impl PlaySession {
         self.dirty.extend(cols);
     }
 
+    /// How many columns are currently queued for re-mesh (cheap peek).
+    pub fn dirty_len(&self) -> usize {
+        self.dirty.len()
+    }
+
     /// Drain the dropped-column list (renderer frees their buffers).
     pub fn take_removed(&mut self) -> Vec<(i32, i32)> {
         std::mem::take(&mut self.removed)

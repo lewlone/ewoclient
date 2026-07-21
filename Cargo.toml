@@ -83,8 +83,10 @@ tar = "0.4"
 
 # Rewo — the from-scratch native Minecraft client (see REWO_PLAN.md).
 # ash = raw Vulkan 1.3; gpu-allocator = VMA-style suballocation;
-# tracy-client = frame profiler; png = headless-verification screenshots.
+# tracy-client = frame profiler; png = headless-verification screenshots;
+# rayon = the mesh worker pool (REWO_PLAN §4 — meshing happens off the frame).
 ash = "0.38"
+rayon = "1"
 ash-window = "0.13"
 gpu-allocator = "0.28"
 tracy-client = "0.18"

@@ -2,12 +2,12 @@
 //! windowed client — the M1 protocol + M3 physics session feeding the M2
 //! renderer, with live re-meshing as the world changes.
 //!
-//! Single-threaded by design (the socket reader is already its own thread):
-//! one loop drives the 20 Hz tick on a 50 ms accumulator and renders every
-//! frame from the player's eye. Dirty columns re-mesh with a per-frame
-//! budget so the initial chunk flood amortizes instead of hitching (the
-//! plan's "bounded per-frame work"; the device-local arena that removes the
-//! remesh stall entirely is M5).
+//! The main loop drives the 20 Hz tick on a 50 ms accumulator and renders
+//! every frame from the player's eye. **Meshing happens off the frame**
+//! (REWO_PLAN §4): dirty columns are snapshotted (`Arc`-shared, no copies)
+//! and meshed on a rayon worker pool (`rewo_mesh::pool::MeshPool`); the
+//! frame only uploads finished meshes, metered by a per-frame budget. The
+//! socket reader is its own thread, as before.
 //!
 //! Headless-verifiable: `--run-seconds N` auto-exits and `--out PNG` writes
 //! the final frame from the player's eye — a machine-checkable artifact
@@ -22,13 +22,14 @@ use ash::vk;
 use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use rewo_data::assets::{self, RenderKind};
+use rewo_data::assets::{self};
 use rewo_data::{DataPaths, GameData};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
 use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
+use rewo_mesh::pool::{MeshPool, MeshTables};
 use rewo_net::play::PlaySession;
 use rewo_net::Connection;
 use rewo_world::physics::{TickInput, EYE_HEIGHT};
@@ -43,8 +44,10 @@ use crate::stats::{OverlayRing, StatsAccum};
 
 const CLEAR_SKY: [f32; 4] = [0.184, 0.380, 1.0, 1.0];
 const TICK_DT: f32 = 0.05; // 20 Hz
-/// Max columns re-meshed per frame — the rest stay queued.
-const REMESH_BUDGET: usize = 6;
+/// Max finished meshes uploaded to the GPU per frame — the rest stay queued
+/// in the pool's result channel. (Meshing itself is unmetered: it runs on
+/// the worker pool, off the frame.)
+const UPLOAD_BUDGET: usize = 6;
 
 #[derive(ClapArgs)]
 pub struct LiveArgs {
@@ -52,8 +55,10 @@ pub struct LiveArgs {
     host: String,
     #[arg(long, default_value_t = 25599)]
     port: u16,
-    #[arg(long, default_value = "RewoLive")]
-    username: String,
+    /// Player name. Defaults to the launcher's `REWO_USERNAME` env handoff
+    /// (REWO_PLAN §9.1), then "RewoLive".
+    #[arg(long)]
+    username: Option<String>,
     #[arg(long, default_value = "26.2")]
     version: String,
     /// Auto-exit after N seconds (headless soak).
@@ -75,12 +80,17 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
     let solid: Vec<bool> = baked.solid.clone();
+    let username = args
+        .username
+        .clone()
+        .or_else(|| std::env::var("REWO_USERNAME").ok())
+        .unwrap_or_else(|| "RewoLive".into());
 
     let conn = Connection::connect(&args.host, args.port, &data)?;
     let session = conn.into_play(
         &args.host,
         args.port,
-        &args.username,
+        &username,
         solid,
         data.blocks.global_palette_bits,
     )?;
@@ -133,41 +143,32 @@ fn player_eye(session: &PlaySession) -> Vec3 {
     )
 }
 
-/// Re-mesh up to `budget` dirty columns; requeue the overflow. Returns how
-/// many were uploaded (caller waits idle once if > 0).
-fn drain_remesh(
+/// Per-frame mesh pump. Frees removed columns, uploads up to
+/// `upload_budget` finished meshes from the worker pool, then submits
+/// fresh snapshots for dirty columns. Returns how many meshes uploaded.
+fn pump_meshing(
     session: &mut PlaySession,
     gpu: &mut Gpu,
     world_renderer: &mut WorldRenderer,
-    table: &[RenderKind],
-    models: &[Vec<rewo_data::assets::Quad>],
-    budget: usize,
+    pool: &mut MeshPool,
+    upload_budget: usize,
 ) -> Result<usize, String> {
     for (cx, cz) in session.take_removed() {
         world_renderer.remove_column(gpu, cx, cz);
     }
-    let mut dirty = session.take_dirty();
-    if dirty.is_empty() {
-        return Ok(0);
-    }
-    // Nearest-to-player first so what you're looking at appears soonest.
-    let (px, pz) = (session.player.x as f32, session.player.z as f32);
-    dirty.sort_by(|a, b| {
-        let da = col_dist(*a, px, pz);
-        let db = col_dist(*b, px, pz);
-        da.partial_cmp(&db).unwrap()
-    });
-    let overflow: Vec<(i32, i32)> = dirty.split_off(dirty.len().min(budget));
-    session.requeue_dirty(overflow);
 
+    // Drain finished jobs — uploads are metered, removals are free.
     let mut uploaded = 0;
-    for (cx, cz) in dirty {
-        match rewo_mesh::mesh_column(&session.world, table, models, cx, cz) {
-            Some(mesh) => {
+    while uploaded < upload_budget {
+        let Some(out) = pool.try_recv() else { break };
+        // Column forgotten while its job was in flight → don't resurrect it.
+        let gone = session.world.column(out.cx, out.cz).is_none();
+        match out.mesh {
+            Some(mesh) if !gone => {
                 world_renderer.upload_column(
                     gpu,
-                    cx,
-                    cz,
+                    out.cx,
+                    out.cz,
                     bytemuck::cast_slice(&mesh.vertices),
                     &mesh.indices,
                     mesh.y_min,
@@ -175,8 +176,34 @@ fn drain_remesh(
                 )?;
                 uploaded += 1;
             }
-            None => world_renderer.remove_column(gpu, cx, cz),
+            _ => world_renderer.remove_column(gpu, out.cx, out.cz),
         }
+    }
+
+    // Submit dirty columns, nearest-to-player first so what you're looking
+    // at appears soonest. A column already in flight stays dirty and
+    // resubmits after its result lands (per-column ordering — see
+    // `rewo_mesh::pool`).
+    let mut dirty = session.take_dirty();
+    if !dirty.is_empty() {
+        let (px, pz) = (session.player.x as f32, session.player.z as f32);
+        dirty.sort_by(|a, b| {
+            let da = col_dist(*a, px, pz);
+            let db = col_dist(*b, px, pz);
+            da.partial_cmp(&db).unwrap()
+        });
+        let mut deferred = Vec::new();
+        for (cx, cz) in dirty {
+            if session.world.column(cx, cz).is_none() {
+                // Nothing to mesh (matches the old `None` arm's removal).
+                world_renderer.remove_column(gpu, cx, cz);
+                continue;
+            }
+            if !pool.submit(&session.world, cx, cz) {
+                deferred.push((cx, cz));
+            }
+        }
+        session.requeue_dirty(deferred);
     }
     Ok(uploaded)
 }
@@ -221,18 +248,38 @@ fn run_headless(
     if !session.spawned {
         return Err("never spawned".into());
     }
-    // Mesh everything loaded (no budget — one-shot).
-    session.requeue_dirty(session.world.column_coords());
-    while !session_dirty_empty(&mut session) {
-        drain_remesh(
-            &mut session,
-            &mut gpu,
-            &mut world_renderer,
-            &baked.render,
-            &baked.models,
-            4096,
-        )?;
+    // Mesh everything loaded — one shot, parallel across the rayon pool
+    // (order-preserving; nothing mutates the world while this runs).
+    for (cx, cz) in session.take_removed() {
+        world_renderer.remove_column(&mut gpu, cx, cz);
     }
+    let _ = session.take_dirty(); // superseded — we mesh every column below
+    let mut coords = session.world.column_coords();
+    coords.sort_unstable();
+    let t0 = Instant::now();
+    let outputs =
+        rewo_mesh::pool::mesh_all(&session.world, &baked.render, &baked.models, &coords);
+    let mut meshed = 0usize;
+    for out in outputs {
+        if let Some(mesh) = out.mesh {
+            world_renderer.upload_column(
+                &mut gpu,
+                out.cx,
+                out.cz,
+                bytemuck::cast_slice(&mesh.vertices),
+                &mesh.indices,
+                mesh.y_min,
+                mesh.y_max,
+            )?;
+            meshed += 1;
+        }
+    }
+    log::info!(
+        "live: meshed {} of {} columns in {:.1} ms (parallel one-shot)",
+        meshed,
+        coords.len(),
+        t0.elapsed().as_secs_f32() * 1000.0
+    );
     gpu.wait_idle();
 
     // Look slightly down from the eye toward the horizon (or a debug pitch).
@@ -272,13 +319,6 @@ fn run_headless(
     Ok(())
 }
 
-fn session_dirty_empty(session: &mut PlaySession) -> bool {
-    let d = session.take_dirty();
-    let empty = d.is_empty();
-    session.requeue_dirty(d);
-    empty
-}
-
 // -- windowed ---------------------------------------------------------------
 
 #[derive(Default)]
@@ -314,8 +354,7 @@ struct LiveState {
 struct LiveApp {
     session: Option<PlaySession>,
     baked: Option<assets::BakedAssets>,
-    table: Vec<RenderKind>,
-    models: Vec<Vec<assets::Quad>>,
+    pool: MeshPool,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -327,6 +366,8 @@ struct LiveApp {
     last_frame: Option<Instant>,
     tick_accum: f32,
     logged_spawn: bool,
+    uploaded_total: usize,
+    flood_logged: bool,
     init_error: Option<String>,
 }
 
@@ -483,18 +524,37 @@ impl LiveApp {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        // Re-mesh a budgeted slice of dirty columns.
-        match drain_remesh(
+        // Upload finished meshes + feed the worker pool. (upload_column
+        // self-syncs — device-local staging copy with its own fence — so the
+        // per-frame render path never stalls.)
+        match pump_meshing(
             session,
             &mut state.gpu,
             &mut state.world_renderer,
-            &self.table,
-            &self.models,
-            REMESH_BUDGET,
+            &mut self.pool,
+            UPLOAD_BUDGET,
         ) {
-            // M5: upload_column self-syncs (device-local staging copy with its
-            // own fence), so the per-frame render path no longer stalls.
-            Ok(_) => {}
+            Ok(n) => {
+                self.uploaded_total += n;
+                // Log once when the pool first idles after spawn + a settle
+                // margin (the chunk stream arrives over the first seconds —
+                // firing on the tiny pre-stream batch would be misleading).
+                if !self.flood_logged
+                    && session.spawned
+                    && self.uploaded_total > 0
+                    && self.pool.in_flight() == 0
+                    && session.dirty_len() == 0
+                    && self.started.elapsed().as_secs_f32() >= 2.0
+                {
+                    self.flood_logged = true;
+                    log::info!(
+                        "live: initial mesh flood done — {} uploads for {} columns in {:.1}s",
+                        self.uploaded_total,
+                        session.world.loaded_columns(),
+                        self.started.elapsed().as_secs_f32()
+                    );
+                }
+            }
             Err(e) => {
                 log::error!("live: remesh failed: {e}");
                 event_loop.exit();
@@ -548,13 +608,14 @@ fn run_windowed(
 ) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let table = baked.render.clone();
-    let models = baked.models.clone();
+    let pool = MeshPool::new(MeshTables {
+        render: baked.render.clone(),
+        models: baked.models.clone(),
+    })?;
     let mut app = LiveApp {
         session: Some(session),
         baked: Some(baked),
-        table,
-        models,
+        pool,
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
@@ -566,6 +627,8 @@ fn run_windowed(
         last_frame: None,
         tick_accum: 0.0,
         logged_spawn: false,
+        uploaded_total: 0,
+        flood_logged: false,
         init_error: None,
     };
     event_loop
@@ -598,6 +661,11 @@ fn run_windowed(
             session.player.z,
             session.corrections,
             session.world.loaded_columns(),
+        );
+        println!(
+            "[rewo-m3-live] mesh pool: {} column uploads over the session ({} still in flight)",
+            app.uploaded_total,
+            app.pool.in_flight(),
         );
         let _ = EYE_HEIGHT;
         state.world_renderer.destroy(&mut state.gpu);

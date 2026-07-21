@@ -11,6 +11,8 @@
 //! makes coplanar faces non-mergeable, so visual parity wins over vertex
 //! count for now — the plan's own tension, resolved toward the vanilla look.
 
+pub mod pool;
+
 use bytemuck::{Pod, Zeroable};
 use rewo_data::assets::RenderKind;
 use rewo_world::World;

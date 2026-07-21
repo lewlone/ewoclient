@@ -113,14 +113,21 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let client_jar = client_jar_path(&args.version).ok_or("client jar not found")?;
     let baked = assets::bake(&client_jar, &paths.blocks_json())?;
-    // Bake sanity: the flat-world staples must have resolved.
+    // Bake sanity: the flat-world staples must have resolved to visible,
+    // solid geometry. Not necessarily `Cube` — since M4 grass_block bakes as
+    // a `Model` (cube + overlay element); `baked.solid` is the flag that
+    // covers both (the same distinction that fixed the M5 collision bug).
     for name in ["minecraft:grass_block", "minecraft:dirt", "minecraft:bedrock"] {
         if let Some(state) = data.blocks.default_state(name) {
-            if !matches!(
+            let visible = !matches!(
                 baked.render.get(state as usize),
-                Some(assets::RenderKind::Cube { .. })
-            ) {
-                return Err(format!("bake sanity: {name} did not resolve to a cube"));
+                None | Some(assets::RenderKind::Invisible)
+            );
+            let solid = baked.solid.get(state as usize).copied().unwrap_or(false);
+            if !visible || !solid {
+                return Err(format!(
+                    "bake sanity: {name} did not bake as visible solid geometry"
+                ));
             }
         }
     }

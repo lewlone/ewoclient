@@ -59,6 +59,7 @@ impl ContainerKind {
 }
 
 /// A decoded container: a global-id lookup indexed by cell position.
+#[derive(Clone)]
 pub struct Container {
     /// `None` = single value fills the whole container.
     single: Option<u32>,

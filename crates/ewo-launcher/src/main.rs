@@ -471,9 +471,10 @@ impl App {
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
         // Native (Rewo) instances skip the entire JVM pipeline — no
         // manifest, no libraries, no natives, no JRE. Spawn the rewo
-        // binary with the REWO_* env contract (REWO_PLAN.md §9.1). M2
-        // drives it in view-snapshot mode when a server join is active;
-        // the M3 tick loop turns this into the real client session.
+        // binary with the REWO_* env contract (REWO_PLAN.md §9.1). With a
+        // server join active this is `rewo live` — the real playable
+        // client (M3+); without one there's nothing to connect to, so the
+        // bare M0 window opens as a placeholder.
         if matches!(
             inst.loader,
             ewo_render::screens::instances::InstanceLoader::Native
@@ -499,16 +500,8 @@ impl App {
                     None => (addr.clone(), 25565),
                 };
                 envs.push(("REWO_SERVER".into(), addr.clone()));
-                args = vec![
-                    "view".into(),
-                    "--host".into(),
-                    host,
-                    "--port".into(),
-                    port.to_string(),
-                    "--version".into(),
-                    version_id.to_string(),
-                ];
-                log::info!("launch: rewo view → {}", addr);
+                args = launch::native_client_args(&host, port, version_id);
+                log::info!("launch: rewo live → {}", addr);
             }
             let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
             let _ = launch::spawn_native(launch::NativePlan { program, args, envs }, tx);
@@ -794,6 +787,13 @@ impl App {
                 return;
             }
         };
+        // Dev affordance: `EWO_DEV_SERVER=host:port` points plain Launch
+        // clicks at a server without going through a join flow — e.g. the
+        // local offline Rewo test server (127.0.0.1:25599) for eyeballing
+        // the Native → `rewo live` path. Join flows (Some) always win.
+        let server = server.or_else(|| {
+            std::env::var("EWO_DEV_SERVER").ok().filter(|s| !s.is_empty())
+        });
         if let Some(addr) = &server {
             log::info!("launch: server-join → {} (instance \"{}\")", addr, inst_name);
         } else {

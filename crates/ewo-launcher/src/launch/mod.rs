@@ -26,6 +26,22 @@ pub fn find_rewo_binary() -> Option<std::path::PathBuf> {
     candidate.exists().then_some(candidate)
 }
 
+/// Argv for launching Rewo as the real playable client against a server —
+/// `rewo live` (NOT `view`, the M2 static snapshot; spawning `view` here
+/// was the launcher-integration gap flagged in REWO_PLAN §0.0). Username
+/// and token ride the `REWO_*` env contract, never argv (§9.1).
+pub fn native_client_args(host: &str, port: u16, version: &str) -> Vec<String> {
+    vec![
+        "live".into(),
+        "--host".into(),
+        host.into(),
+        "--port".into(),
+        port.to_string(),
+        "--version".into(),
+        version.into(),
+    ]
+}
+
 /// Suppress the console window a child console program (`java.exe`,
 /// `where`, …) would otherwise pop when spawned from a GUI process.
 ///
@@ -45,5 +61,30 @@ pub(crate) fn no_window(cmd: &mut std::process::Command) {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = cmd;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Launching a Native instance must open the real client (`live`), not
+    /// the M2 snapshot viewer — the regression REWO_PLAN §0.0 flagged.
+    #[test]
+    fn native_launch_uses_the_live_client() {
+        let args = native_client_args("play.example.net", 25565, "26.2");
+        assert_eq!(args[0], "live");
+        assert_eq!(
+            args[1..],
+            [
+                "--host",
+                "play.example.net",
+                "--port",
+                "25565",
+                "--version",
+                "26.2"
+            ]
+            .map(String::from)
+        );
     }
 }

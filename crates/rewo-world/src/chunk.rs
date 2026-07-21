@@ -22,6 +22,7 @@ use rewo_proto::Result;
 use crate::dimension::DimensionShape;
 use crate::palette::{Container, ContainerKind};
 
+#[derive(Clone)]
 pub struct Section {
     pub non_empty: i16,
     states: Container,
@@ -56,6 +57,7 @@ impl Section {
     }
 }
 
+#[derive(Clone)]
 pub struct Column {
     pub cx: i32,
     pub cz: i32,

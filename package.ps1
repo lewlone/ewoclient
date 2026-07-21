@@ -19,7 +19,7 @@ Write-Host "[package] building release..." -ForegroundColor Cyan
 Push-Location $root
 try {
     $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    & cargo build --release -p ewo-launcher
+    & cargo build --release -p ewo-launcher -p rewo-app
     $code = $LASTEXITCODE
     $ErrorActionPreference = $prev
     if ($code -ne 0) { throw "cargo build failed ($code)" }
@@ -27,11 +27,16 @@ try {
 
 $exe = Join-Path $root "target\release\ewolauncher.exe"
 if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
+# Rewo rides along: find_rewo_binary() looks next to the launcher exe, so
+# Native instances launch from the dist bundle too.
+$rewo = Join-Path $root "target\release\rewo.exe"
+if (-not (Test-Path $rewo)) { throw "exe not found: $rewo" }
 
 Write-Host "[package] staging $dist ..." -ForegroundColor Cyan
 if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 New-Item -ItemType Directory -Force (Join-Path $dist "assets\fonts") | Out-Null
 Copy-Item -Force $exe (Join-Path $dist "EwoClient.exe")
+Copy-Item -Force $rewo (Join-Path $dist "rewo.exe")
 Copy-Item -Force (Join-Path $root "assets\fonts\*") (Join-Path $dist "assets\fonts")
 $icon = Join-Path $root "assets\icon.ico"
 if (Test-Path $icon) { Copy-Item -Force $icon (Join-Path $dist "assets\icon.ico") }

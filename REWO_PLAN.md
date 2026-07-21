@@ -108,18 +108,20 @@ find more, and propose better approaches — you are a stronger reviewer than
 the code's author. Nothing below is settled truth.
 
 **Architectural deviations from the plan (§4) worth reconsidering:**
-- **Meshing runs on the MAIN thread**, not the rayon worker pool the plan
-  specifies. `drain_remesh` calls `mesh_column` inline in the render loop.
-  Fine at flat-world RD (~21 ms for 329 columns, amortized 6/frame), but the
-  plan's whole thesis is "meshing happens off the frame." At high RD or with
-  block churn this WILL hitch. Likely the highest-value next refactor.
+- ~~Meshing runs on the MAIN thread~~ — **RESOLVED 2026-07-21.** Meshing
+  now runs on a rayon worker pool (`rewo_mesh::pool::MeshPool`) fed by
+  `World::snapshot_3x3` Arc-clone snapshots (§4's copy-on-write model,
+  implemented); the frame only uploads finished meshes (6/frame budget).
+  See the §15 entry for the design + verification.
 - **Column uploads are synchronous** (one-shot fence), not the dedicated
   async transfer queue + staging ring the plan wants. A chunk flood
   (teleport) stalls. Deferred as an M5 follow-on.
-- **The launcher `Native` arm spawns `rewo view`** (M2 snapshot), NOT
-  `rewo live` (the real client). Launching a Native instance from the UI
-  opens a static snapshot. Should spawn `live` now that it exists — an easy,
-  high-value fix, but never eyeballed in the actual launcher UI at all.
+- ~~The launcher `Native` arm spawns `rewo view`~~ — **RESOLVED
+  2026-07-21.** It spawns `rewo live` (`launch::native_client_args`, argv[0]
+  pinned by a regression test); `package.ps1` stages `rewo.exe` into dist;
+  `EWO_DEV_SERVER=host:port` points a plain Launch at a server (the only
+  way to reach the local offline test server from the UI until M7). The
+  **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
 - **Entities are decoded into a table but NOT rendered** — no capsules/
@@ -171,13 +173,13 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-Strongest candidates, roughly by value: (a) **meshing off the main thread**
-(rayon pool) — the biggest architectural gap; (b) **fix the Native launcher
-arm to spawn `live`** + eyeball it in the UI — cheap, makes the launcher
-integration real; (c) **entity rendering** (capsules + nametags) — makes
-multiplayer visible; (d) **M7 online-mode + chat signing** — needed to play
-on the user's Frogsy network; (e) the visual follow-ons (greedy, fluids,
-tint). Confirm direction with the user before diving in.
+Strongest candidates, roughly by value: (a) **entity rendering** (capsules +
+nametags) — makes multiplayer visible; (b) **M7 online-mode + chat signing**
+— needed to play on the user's Frogsy network; (c) **async transfer queue +
+staging ring** — the remaining §4 deviation; (d) the visual follow-ons
+(greedy, fluids, tint). Meshing-off-thread and the Native `live` arm both
+shipped 2026-07-21 (the UI eyeball of the latter is the user's). Confirm
+direction with the user before diving in.
 
 ---
 
@@ -1166,3 +1168,48 @@ consistency (1%/0.1% lows) and the merge-gate benchmark.
   translucent pass, per-biome tint, animation, packed vertices; M5: async
   transfer queue, visibility-graph cull) — the `rewo bench` regression gate
   now guards all of them — or M7 (online-mode + chat signing) / M8.
+
+**2026-07-21 — meshing off the main thread + the launcher spawns the real
+client (the two top fixes from §0.0).**
+
+- **Mesh worker pool** (`rewo-mesh/src/pool.rs` + `rewo-world` CoW): `World`
+  now stores `Arc<Column>` — writers go through `Arc::make_mut`, i.e. the
+  copy-on-write sharing §4 specified. `World::snapshot_3x3(cx, cz)` hands a
+  mesh job a self-contained 9-Arc-clone view (face culling reads ±1 block
+  and AO reads diagonal corners at ±1, so 3×3 is sufficient; snapshot-edge
+  reads behave exactly like today's unloaded-edge reads). `MeshPool` (rayon,
+  `available_parallelism − 2` clamped to [1, 8] workers) runs `mesh_column`
+  **unchanged** on those snapshots; results return over an mpsc channel.
+  Ordering safety is one rule: a column already in flight is never
+  resubmitted — it stays dirty and follows the stale result with a fresh
+  snapshot. The live frame now only *uploads* finished meshes
+  (`UPLOAD_BUDGET = 6`/frame); meshing itself is off the frame — the plan's
+  own thesis. One-shot paths (`live --out`) use `pool::mesh_all`
+  (order-preserving rayon `par_iter`): 329 columns in ~70 ms wall.
+- **Verified headlessly:** demo PNG **byte-identical** pre/post (the Arc
+  refactor + pool change zero pixels); `rewo bench` gate PASS — identical
+  scene (329 chunks / 3,723,160 verts / cull 220 of 329), GPU 0.1% low
+  1.208 → 1.097 ms; windowed soak vs the live test server: 8 workers,
+  initial flood **488 uploads for 329 columns done in 2.0 s**, corrections
+  0, 0 jobs in flight at exit, frame time avg 0.43 / 0.1% low 3.61 ms; 71
+  tests green incl. 4 new pool tests (off-thread mesh, in-flight dedupe,
+  snapshot isolation from later edits, `mesh_all` ordering).
+- **Launcher Native arm → `rewo live`** (was `view`, the M2 snapshot): argv
+  built by `launch::native_client_args`, with a regression test pinning
+  `argv[0] == "live"`. `rewo live` now resolves its username from the
+  launcher's `REWO_USERNAME` env handoff (arg > env > "RewoLive").
+  `package.ps1` builds + stages `rewo.exe` next to `EwoClient.exe` (the
+  `find_rewo_binary` contract — without this the fix was dead in the dist
+  bundle). New dev affordance: `EWO_DEV_SERVER=host:port` makes a plain
+  Launch click behave like a server join (real join flows still win) — the
+  only way to point the UI at the local offline test server, since Frogsy
+  is online-mode (M7) and the H6 widget / friend-Join are the only other
+  `active_server` setters. **UI eyeball still pending (user):** start the
+  test server, then `EWO_DEV_SERVER=127.0.0.1:25599 cargo run -p
+  ewo-launcher`, Launch a Native instance.
+- **Drive-by fix:** `rewo view` had been silently broken since M4 — an
+  M2-era bake sanity check demanded grass_block bake as a `Cube`, but M4
+  correctly bakes it as a `Model` (§0.0 gotcha #2, the same one that caused
+  the collision bug). The check now asserts visible + `baked.solid`.
+- Next: entity rendering (capsules + nametags), M7 online-mode + chat
+  signing, or the async transfer queue — see §0.0 "Suggested next moves".
