@@ -1589,12 +1589,15 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
   unchanged, demo PNG byte-identical, bench gate green); the launcher
   Native arm now spawns `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join
-  knob, `package.ps1` stages rewo.exe; UI eyeball still pending); and
+  knob, `package.ps1` stages rewo.exe; UI eyeball still pending);
   **entity rendering shipped** — full movement/player-info decode, vanilla
   3-tick lerp, capsule pass + bitmap-font nametags, verified live
   (position cross-check exact, 129-entity soak at ~1,170 fps, "RewoCap2"
-  legible in a headless PNG). Also un-broke `rewo view` (stale M2
-  bake-sanity check).
+  legible in a headless PNG); and **fluids + translucent pass shipped** —
+  water (corner-height surfaces, texture-alpha blend, CPU-sorted
+  back-to-front per column) + opaque fullbright lava, demo-PNG verified,
+  view-replay byte-identical + bench green. Also un-broke `rewo view`
+  (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

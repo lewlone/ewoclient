@@ -69,6 +69,8 @@ pub fn run(args: BenchArgs) -> Result<(), String> {
                 cz,
                 bytemuck::cast_slice(&mesh.vertices),
                 &mesh.indices,
+                bytemuck::cast_slice(&mesh.tvertices),
+                &mesh.tindices,
                 mesh.y_min,
                 mesh.y_max,
             )?;

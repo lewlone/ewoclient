@@ -68,6 +68,11 @@ struct Slot {
     vtx_len: u64,
     idx_off: u64,   // in indices
     idx_len: u64,
+    // Translucent (water) region — zero-length when the column has none.
+    tvtx_off: u64,
+    tvtx_len: u64,
+    tidx_off: u64,
+    tidx_len: u64,
     meta: ColumnMeta,
 }
 
@@ -127,6 +132,8 @@ pub struct WorldRenderer {
     tex_set_layout: vk::DescriptorSetLayout,
     graphics_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// Blended, depth-write-off variant for the water pass.
+    water_pipeline: vk::Pipeline,
     tex_pool: vk::DescriptorPool,
     tex_set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -168,6 +175,8 @@ pub struct WorldRenderer {
     // -- entities (optional pass; drawn after the terrain in `draw`) --
     color_format: vk::Format,
     entities: Option<EntityPass>,
+    /// Eye position for translucent back-to-front sorting (`set_camera`).
+    camera_eye: [f32; 3],
 
     pub drawn_last_frame: usize,
     pub culled_last_frame: usize,
@@ -309,7 +318,9 @@ impl WorldRenderer {
                     None,
                 )
                 .map_err(|e| format!("graphics layout: {e}"))?;
-            let pipeline = build_graphics_pipeline(&device, graphics_layout, color_format)?;
+            let pipeline = build_graphics_pipeline(&device, graphics_layout, color_format, false)?;
+            let water_pipeline =
+                build_graphics_pipeline(&device, graphics_layout, color_format, true)?;
 
             // ---- compute cull descriptor + pipeline ----
             let cull_bindings = [
@@ -450,6 +461,7 @@ impl WorldRenderer {
                 tex_set_layout,
                 graphics_layout,
                 pipeline,
+                water_pipeline,
                 tex_pool,
                 tex_set,
                 sampler,
@@ -486,10 +498,17 @@ impl WorldRenderer {
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
                 entities: None,
+                camera_eye: [0.0; 3],
                 drawn_last_frame: 0,
                 culled_last_frame: 0,
             })
         }
+    }
+
+    /// Set the frame's eye position — drives translucent back-to-front
+    /// column sorting. Callers that never render water can skip it.
+    pub fn set_camera(&mut self, eye: [f32; 3]) {
+        self.camera_eye = eye;
     }
 
     /// Attach the entity pass (capsules + nametags). Callers that never
@@ -521,6 +540,9 @@ impl WorldRenderer {
 
     /// Suballocate + upload a column's geometry into the mega-buffers via a
     /// one-shot staging copy (own fence — the per-frame path never waits).
+    /// Opaque and translucent (water) sets ride the same buffers as two
+    /// regions; either may be empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_column(
         &mut self,
         gpu: &mut Gpu,
@@ -528,34 +550,64 @@ impl WorldRenderer {
         cz: i32,
         vertex_bytes: &[u8],
         indices: &[u32],
+        tvertex_bytes: &[u8],
+        tindices: &[u32],
         y_min: f32,
         y_max: f32,
     ) -> Result<(), String> {
         self.remove_column(gpu, cx, cz);
         let vtx_count = (vertex_bytes.len() as u64) / VERTEX_STRIDE;
         let idx_count = indices.len() as u64;
-        if vtx_count == 0 || idx_count == 0 {
+        let tvtx_count = (tvertex_bytes.len() as u64) / VERTEX_STRIDE;
+        let tidx_count = tindices.len() as u64;
+        if idx_count == 0 && tidx_count == 0 {
             return Ok(());
         }
-        let Some(vtx_off) = self.vfree.alloc(vtx_count) else {
-            log::warn!("world: vertex mega-buffer full — dropping column ({cx},{cz})");
-            return Ok(());
-        };
-        let Some(idx_off) = self.ifree.alloc(idx_count) else {
-            self.vfree.free_region(vtx_off, vtx_count);
-            log::warn!("world: index mega-buffer full — dropping column ({cx},{cz})");
+        // Four regions from the two shared free-lists (zero-length allocs
+        // are free). Roll back everything on any failure.
+        let allocs = (|| {
+            let v = self.vfree.alloc(vtx_count)?;
+            let Some(i) = self.ifree.alloc(idx_count) else {
+                self.vfree.free_region(v, vtx_count);
+                return None;
+            };
+            let Some(tv) = self.vfree.alloc(tvtx_count) else {
+                self.vfree.free_region(v, vtx_count);
+                self.ifree.free_region(i, idx_count);
+                return None;
+            };
+            let Some(ti) = self.ifree.alloc(tidx_count) else {
+                self.vfree.free_region(v, vtx_count);
+                self.ifree.free_region(i, idx_count);
+                self.vfree.free_region(tv, tvtx_count);
+                return None;
+            };
+            Some((v, i, tv, ti))
+        })();
+        let Some((vtx_off, idx_off, tvtx_off, tidx_off)) = allocs else {
+            log::warn!("world: mega-buffer full — dropping column ({cx},{cz})");
             return Ok(());
         };
 
-        // Stage vertices then indices contiguously, one copy each.
+        // Stage all four spans contiguously, copy each non-empty one.
         let index_bytes: &[u8] = bytemuck::cast_slice(indices);
-        let total = vertex_bytes.len() + index_bytes.len();
+        let tindex_bytes: &[u8] = bytemuck::cast_slice(tindices);
+        let spans = [
+            (vertex_bytes, self.vbuf, vtx_off * VERTEX_STRIDE),
+            (index_bytes, self.ibuf, idx_off * 4),
+            (tvertex_bytes, self.vbuf, tvtx_off * VERTEX_STRIDE),
+            (tindex_bytes, self.ibuf, tidx_off * 4),
+        ];
+        let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
         self.ensure_staging(gpu, total as u64)?;
         unsafe {
             let alloc = self.staging_alloc.as_mut().unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            slice[..vertex_bytes.len()].copy_from_slice(vertex_bytes);
-            slice[vertex_bytes.len()..total].copy_from_slice(index_bytes);
+            let mut off = 0usize;
+            for (bytes, _, _) in &spans {
+                slice[off..off + bytes.len()].copy_from_slice(bytes);
+                off += bytes.len();
+            }
 
             let device = &gpu.device;
             device
@@ -568,24 +620,21 @@ impl WorldRenderer {
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .map_err(|e| format!("begin upload: {e}"))?;
-            device.cmd_copy_buffer(
-                self.upload_cb,
-                self.staging,
-                self.vbuf,
-                &[vk::BufferCopy::default()
-                    .src_offset(0)
-                    .dst_offset(vtx_off * VERTEX_STRIDE)
-                    .size(vertex_bytes.len() as u64)],
-            );
-            device.cmd_copy_buffer(
-                self.upload_cb,
-                self.staging,
-                self.ibuf,
-                &[vk::BufferCopy::default()
-                    .src_offset(vertex_bytes.len() as u64)
-                    .dst_offset(idx_off * 4)
-                    .size(index_bytes.len() as u64)],
-            );
+            let mut src = 0u64;
+            for (bytes, dst_buf, dst_off) in &spans {
+                if !bytes.is_empty() {
+                    device.cmd_copy_buffer(
+                        self.upload_cb,
+                        self.staging,
+                        *dst_buf,
+                        &[vk::BufferCopy::default()
+                            .src_offset(src)
+                            .dst_offset(*dst_off)
+                            .size(bytes.len() as u64)],
+                    );
+                }
+                src += bytes.len() as u64;
+            }
             device
                 .end_command_buffer(self.upload_cb)
                 .map_err(|e| format!("end upload: {e}"))?;
@@ -617,6 +666,10 @@ impl WorldRenderer {
                 vtx_len: vtx_count,
                 idx_off,
                 idx_len: idx_count,
+                tvtx_off,
+                tvtx_len: tvtx_count,
+                tidx_off,
+                tidx_len: tidx_count,
                 meta,
             },
         );
@@ -628,6 +681,8 @@ impl WorldRenderer {
         if let Some(slot) = self.columns.remove(&(cx, cz)) {
             self.vfree.free_region(slot.vtx_off, slot.vtx_len);
             self.ifree.free_region(slot.idx_off, slot.idx_len);
+            self.vfree.free_region(slot.tvtx_off, slot.tvtx_len);
+            self.ifree.free_region(slot.tidx_off, slot.tidx_len);
             self.meta_dirty = true;
         }
     }
@@ -725,14 +780,95 @@ impl WorldRenderer {
         self.culled_last_frame = 0;
     }
 
-    /// In-pass draw: bind the mega-buffers + one indirect-count draw, then
-    /// the entity pass (capsules + nametags) over the terrain.
+    /// In-pass draws, in blend-correct order: opaque terrain (indirect) →
+    /// opaque entity capsules → translucent water (CPU-sorted back-to-
+    /// front) → blended nametag text.
     pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
         if let Some(pass) = &self.entities {
-            pass.draw(gpu, cb, view_proj, extent);
+            pass.draw_solid(gpu, cb, view_proj, extent);
+        }
+        self.draw_translucent(gpu, cb, view_proj, extent);
+        if let Some(pass) = &self.entities {
+            pass.draw_text(gpu, cb, view_proj, extent);
+        }
+    }
+
+    /// Water: per-column direct draws, CPU frustum-culled (mirroring
+    /// cull.comp's positive-vertex test) and sorted far→near — the plan's
+    /// "per-section back-to-front CPU sort; intra-section artifacts
+    /// accepted v1". Column counts with water are small; the indirect path
+    /// stays opaque-only.
+    fn draw_translucent(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        let planes = frustum_planes(&view_proj);
+        let visible = |mn: &[f32; 4], mx: &[f32; 4]| -> bool {
+            planes.iter().all(|p| {
+                let pv = [
+                    if p[0] >= 0.0 { mx[0] } else { mn[0] },
+                    if p[1] >= 0.0 { mx[1] } else { mn[1] },
+                    if p[2] >= 0.0 { mx[2] } else { mn[2] },
+                ];
+                p[0] * pv[0] + p[1] * pv[1] + p[2] * pv[2] + p[3] >= 0.0
+            })
+        };
+        let eye = self.camera_eye;
+        let mut cols: Vec<(f32, u32, u32, i32)> = self
+            .columns
+            .values()
+            .filter(|s| s.tidx_len > 0 && visible(&s.meta.aabb_min, &s.meta.aabb_max))
+            .map(|s| {
+                let cx = (s.meta.aabb_min[0] + s.meta.aabb_max[0]) * 0.5 - eye[0];
+                let cy = (s.meta.aabb_min[1] + s.meta.aabb_max[1]) * 0.5 - eye[1];
+                let cz = (s.meta.aabb_min[2] + s.meta.aabb_max[2]) * 0.5 - eye[2];
+                (
+                    cx * cx + cy * cy + cz * cz,
+                    s.tidx_len as u32,
+                    s.tidx_off as u32,
+                    s.tvtx_off as i32,
+                )
+            })
+            .collect();
+        if cols.is_empty() {
+            return;
+        }
+        cols.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.water_pipeline);
+            let viewport = vk::Viewport::default()
+                .y(extent.height as f32)
+                .width(extent.width as f32)
+                .height(-(extent.height as f32))
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_layout,
+                0,
+                &[self.tex_set],
+                &[],
+            );
+            let push = WorldPush { view_proj };
+            device.cmd_push_constants(
+                cb,
+                self.graphics_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(
+                    (&push as *const WorldPush) as *const u8,
+                    std::mem::size_of::<WorldPush>(),
+                ),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[self.vbuf], &[0]);
+            device.cmd_bind_index_buffer(cb, self.ibuf, 0, vk::IndexType::UINT32);
+            for (_, count, first, voff) in cols {
+                device.cmd_draw_indexed(cb, count, 1, first, voff, 0);
+            }
         }
     }
 
@@ -856,6 +992,7 @@ impl WorldRenderer {
             device.destroy_descriptor_pool(self.cull_pool, None);
             device.destroy_descriptor_set_layout(self.cull_set_layout, None);
             device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline_layout(self.graphics_layout, None);
             device.destroy_descriptor_pool(self.tex_pool, None);
             device.destroy_descriptor_set_layout(self.tex_set_layout, None);
@@ -1012,6 +1149,7 @@ fn build_graphics_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    translucent: bool,
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
@@ -1020,7 +1158,11 @@ fn build_graphics_pipeline(
         )?;
         let frag = crate::overlay::create_shader(
             device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv")),
+            if translucent {
+                include_bytes!(concat!(env!("OUT_DIR"), "/water.frag.spv")).as_slice()
+            } else {
+                include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv")).as_slice()
+            },
         )?;
         let entry = c"main";
         let stages = [
@@ -1072,10 +1214,16 @@ fn build_graphics_pipeline(
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
-            .depth_write_enable(true)
+            .depth_write_enable(!translucent)
             .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(false)
+            .blend_enable(translucent)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
             .color_write_mask(
                 vk::ColorComponentFlags::R
                     | vk::ColorComponentFlags::G

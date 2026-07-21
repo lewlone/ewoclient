@@ -60,6 +60,16 @@ pub enum RenderKind {
         faces: [u16; 6],
         tint: [bool; 6],
     },
+    /// Water/lava — geometry comes from the mesher's fluid path (corner
+    /// heights, not a model; vanilla hardcodes fluid rendering the same
+    /// way). `level`: 0 = source, 1..7 = flowing, ≥8 = falling full block.
+    /// Water goes to the translucent mesh (texture alpha 180), lava to the
+    /// opaque mesh at full bright.
+    Fluid {
+        layer: u16,
+        level: u8,
+        lava: bool,
+    },
     /// General model — index into `BakedAssets::models`.
     Model(u32),
 }
@@ -105,6 +115,7 @@ pub struct BakedFont {
 pub struct BakeStats {
     pub cube_states: usize,
     pub model_states: usize,
+    pub fluid_states: usize,
     pub invisible_states: usize,
     pub textures: usize,
 }
@@ -156,6 +167,34 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .and_then(|s| s.as_array())
             .ok_or_else(|| format!("blocks.json: {block_name} has no states"))?;
         let short = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
+        // Fluids have no usable blockstate models (vanilla hardcodes their
+        // renderer) — classify by name, keyed on the `level` property.
+        if short == "water" || short == "lava" {
+            let lava = short == "lava";
+            let layer = if lava {
+                baker.layer_for("block/lava_still", TintKind::None)
+            } else {
+                baker.layer_for("block/water_still", TintKind::Water)
+            };
+            let Some(layer) = layer else {
+                log::warn!("rewo-data: {short}_still texture missing — fluid invisible");
+                continue;
+            };
+            for state in states {
+                let Some(id) = state.get("id").and_then(|i| i.as_u64()) else {
+                    continue;
+                };
+                let level = state
+                    .get("properties")
+                    .and_then(|p| p.get("level"))
+                    .and_then(|l| l.as_str())
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .unwrap_or(0);
+                render[id as usize] = RenderKind::Fluid { layer, level, lava };
+                stats.fluid_states += 1;
+            }
+            continue;
+        }
         let bs = baker.load_blockstate(short);
         let foliage = is_foliage(short);
         for state in states {
@@ -583,6 +622,10 @@ impl<'a> Baker<'a> {
         match apply_tint {
             TintKind::Grass => tint_rgb(&mut rgba, self.grass_tint),
             TintKind::Foliage => tint_rgb(&mut rgba, self.foliage_tint),
+            // Water ships grayscale + alpha 180; biome water color is a
+            // registry value, not a colormap — plains #3F76E4 baked (the
+            // same fixed-plains approach as grass until per-biome tint).
+            TintKind::Water => tint_rgb(&mut rgba, [0x3F, 0x76, 0xE4]),
             TintKind::None => {}
         }
         let layer = self.layers.len() as u16;
@@ -596,6 +639,7 @@ impl<'a> Baker<'a> {
 #[derive(Clone, Copy, Debug)]
 enum TintKind {
     None,
+    Water,
     Grass,
     Foliage,
 }

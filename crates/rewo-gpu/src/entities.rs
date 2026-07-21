@@ -389,44 +389,57 @@ impl EntityPass {
         }
     }
 
-    /// In-pass draw (after the terrain): solid capsules, then blended text.
-    pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
-        if self.solid_verts + self.text_verts == 0 {
+    /// Shared draw state (viewport, descriptor, push, vertex buffer).
+    unsafe fn bind_common(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        let device = &gpu.device;
+        let viewport = vk::Viewport::default()
+            .y(extent.height as f32)
+            .width(extent.width as f32)
+            .height(-(extent.height as f32))
+            .max_depth(1.0);
+        device.cmd_set_viewport(cb, 0, &[viewport]);
+        device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+        device.cmd_bind_descriptor_sets(
+            cb,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.layout,
+            0,
+            &[self.set],
+            &[],
+        );
+        device.cmd_push_constants(
+            cb,
+            self.layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
+        );
+        device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+    }
+
+    /// Opaque capsules — draw before any translucent content.
+    pub fn draw_solid(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        if self.solid_verts == 0 {
             return;
         }
-        let device = &gpu.device;
         unsafe {
-            let viewport = vk::Viewport::default()
-                .y(extent.height as f32)
-                .width(extent.width as f32)
-                .height(-(extent.height as f32))
-                .max_depth(1.0);
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_descriptor_sets(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.layout,
-                0,
-                &[self.set],
-                &[],
-            );
-            device.cmd_push_constants(
-                cb,
-                self.layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
-            );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
-            if self.solid_verts > 0 {
-                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.solid_pipeline);
-                device.cmd_draw(cb, self.solid_verts, 1, 0, 0);
-            }
-            if self.text_verts > 0 {
-                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.text_pipeline);
-                device.cmd_draw(cb, self.text_verts, 1, self.solid_verts, 0);
-            }
+            self.bind_common(gpu, cb, view_proj, extent);
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.solid_pipeline);
+            device.cmd_draw(cb, self.solid_verts, 1, 0, 0);
+        }
+    }
+
+    /// Blended nametag text — draw last (after water).
+    pub fn draw_text(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        if self.text_verts == 0 {
+            return;
+        }
+        unsafe {
+            self.bind_common(gpu, cb, view_proj, extent);
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.text_pipeline);
+            device.cmd_draw(cb, self.text_verts, 1, self.solid_verts, 0);
         }
     }
 

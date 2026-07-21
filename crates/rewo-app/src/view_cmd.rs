@@ -223,6 +223,8 @@ fn upload_all(
             mesh.cz,
             bytemuck::cast_slice(&mesh.vertices),
             &mesh.indices,
+            bytemuck::cast_slice(&mesh.tvertices),
+            &mesh.tindices,
             mesh.y_min,
             mesh.y_max,
         )?;
@@ -246,6 +248,7 @@ fn render_headless(
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     upload_all(&mut gpu, &mut world_renderer, meshes)?;
+    world_renderer.set_camera(eye.to_array());
 
     let vp = view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
@@ -470,6 +473,7 @@ impl ViewApp {
 
         let extent = state.renderer.swapchain.extent;
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
+        state.world_renderer.set_camera(self.camera.pos.to_array());
         let vp = view_proj(self.camera.pos, self.camera.yaw, self.camera.pitch, aspect);
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,

@@ -31,6 +31,10 @@ pub struct ColumnMesh {
     pub cz: i32,
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
+    /// Translucent geometry (water) — drawn blended, after all opaque
+    /// content, sorted per column back-to-front by the renderer.
+    pub tvertices: Vec<MeshVertex>,
+    pub tindices: Vec<u32>,
     pub y_min: f32,
     pub y_max: f32,
 }
@@ -116,6 +120,8 @@ pub fn mesh_column(
 
     let mut vertices: Vec<MeshVertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let mut tvertices: Vec<MeshVertex> = Vec::new();
+    let mut tindices: Vec<u32> = Vec::new();
     let mut y_min = f32::MAX;
     let mut y_max = f32::MIN;
     let mut bump = |y: f32| {
@@ -155,6 +161,17 @@ pub fn mesh_column(
                             );
                             bump(y as f32);
                         }
+                        Some(RenderKind::Fluid { layer, level, lava }) => {
+                            // Water blends → translucent set; lava is
+                            // opaque (and fullbright) → opaque set.
+                            let (fv, fi) = if *lava {
+                                (&mut vertices, &mut indices)
+                            } else {
+                                (&mut tvertices, &mut tindices)
+                            };
+                            emit_fluid(world, table, fv, fi, wx, y, wz, *layer, *level, *lava);
+                            bump(y as f32);
+                        }
                         _ => {}
                     }
                 }
@@ -162,7 +179,7 @@ pub fn mesh_column(
         }
     }
 
-    if indices.is_empty() {
+    if indices.is_empty() && tindices.is_empty() {
         return None;
     }
     Some(ColumnMesh {
@@ -170,9 +187,179 @@ pub fn mesh_column(
         cz,
         vertices,
         indices,
+        tvertices,
+        tindices,
         y_min,
         y_max,
     })
+}
+
+/// Fluid surface height within its block, from the `level` property:
+/// source = 8/9, flowing 1..7 shrink toward 1/9, ≥8 = falling (full).
+fn fluid_h(level: u8) -> f32 {
+    match level {
+        0 => 8.0 / 9.0,
+        1..=7 => (8 - level) as f32 / 9.0,
+        _ => 1.0,
+    }
+}
+
+/// The fluid's level at (x,y,z) if it is the same fluid type, else None.
+fn fluid_level(
+    world: &World,
+    table: &[RenderKind],
+    x: i32,
+    y: i32,
+    z: i32,
+    want_lava: bool,
+) -> Option<u8> {
+    match table.get(world.block_state_at(x, y, z) as usize) {
+        Some(RenderKind::Fluid { level, lava, .. }) if *lava == want_lava => Some(*level),
+        _ => None,
+    }
+}
+
+/// Vanilla-style fluid cell: top face at per-corner heights (max over the
+/// four touching same-fluid cells — a simpler take on vanilla's weighted
+/// average that still reads as a continuous sloped surface), trapezoid
+/// side faces down to the block floor, bottom face against air.
+#[allow(clippy::too_many_arguments)]
+fn emit_fluid(
+    world: &World,
+    table: &[RenderKind],
+    vertices: &mut Vec<MeshVertex>,
+    indices: &mut Vec<u32>,
+    wx: i32,
+    y: i32,
+    wz: i32,
+    layer: u16,
+    _level: u8,
+    lava: bool,
+) {
+    let same = |x: i32, yy: i32, z: i32| fluid_level(world, table, x, yy, z, lava).is_some();
+    // Corner height at grid point (wx+dx, wz+dz): max over the 4 cells
+    // sharing that corner; a cell with the same fluid above it is a full
+    // column (1.0).
+    let corner = |dx: i32, dz: i32| -> f32 {
+        let mut h = 0.0f32;
+        for (cx, cz) in [
+            (wx + dx - 1, wz + dz - 1),
+            (wx + dx, wz + dz - 1),
+            (wx + dx - 1, wz + dz),
+            (wx + dx, wz + dz),
+        ] {
+            if let Some(lv) = fluid_level(world, table, cx, y, cz, lava) {
+                let ch = if same(cx, y + 1, cz) { 1.0 } else { fluid_h(lv) };
+                h = h.max(ch);
+            }
+        }
+        h
+    };
+    let (h00, h10, h01, h11) = (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1));
+    let (x0, x1) = (wx as f32, wx as f32 + 1.0);
+    let (z0, z1) = (wz as f32, wz as f32 + 1.0);
+    let yf = y as f32;
+
+    // Face brightness mirrors the cube path (the cell the face looks into);
+    // lava is fullbright.
+    let light = |x: i32, yy: i32, z: i32| -> f32 {
+        if lava {
+            1.0
+        } else {
+            world.brightness_at(x, yy, z) as f32 / 15.0
+        }
+    };
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade: f32, l: f32| {
+        let c = shade * (0.25 + 0.75 * l);
+        let base = vertices.len() as u32;
+        for (pos, uv) in p {
+            vertices.push(MeshVertex {
+                pos,
+                uv,
+                layer: layer as u32,
+                color: [c, c, c],
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+
+    // Top — unless the same fluid sits above.
+    if !same(wx, y + 1, wz) {
+        quad(
+            [
+                ([x0, yf + h00, z0], [0.0, 0.0]),
+                ([x1, yf + h10, z0], [1.0, 0.0]),
+                ([x1, yf + h11, z1], [1.0, 1.0]),
+                ([x0, yf + h01, z1], [0.0, 1.0]),
+            ],
+            FACE_SHADE[0],
+            light(wx, y + 1, wz),
+        );
+    }
+    // Sides — skip against the same fluid or a full opaque cube.
+    // (north -Z, south +Z, west -X, east +X; corner pairs per edge.)
+    let sides: [((i32, i32), usize, [([f32; 3], [f32; 2]); 4]); 4] = [
+        (
+            (0, -1),
+            2,
+            [
+                ([x0, yf + h00, z0], [0.0, 1.0 - h00]),
+                ([x1, yf + h10, z0], [1.0, 1.0 - h10]),
+                ([x1, yf, z0], [1.0, 1.0]),
+                ([x0, yf, z0], [0.0, 1.0]),
+            ],
+        ),
+        (
+            (0, 1),
+            3,
+            [
+                ([x0, yf + h01, z1], [0.0, 1.0 - h01]),
+                ([x1, yf + h11, z1], [1.0, 1.0 - h11]),
+                ([x1, yf, z1], [1.0, 1.0]),
+                ([x0, yf, z1], [0.0, 1.0]),
+            ],
+        ),
+        (
+            (-1, 0),
+            4,
+            [
+                ([x0, yf + h00, z0], [0.0, 1.0 - h00]),
+                ([x0, yf + h01, z1], [1.0, 1.0 - h01]),
+                ([x0, yf, z1], [1.0, 1.0]),
+                ([x0, yf, z0], [0.0, 1.0]),
+            ],
+        ),
+        (
+            (1, 0),
+            5,
+            [
+                ([x1, yf + h10, z0], [0.0, 1.0 - h10]),
+                ([x1, yf + h11, z1], [1.0, 1.0 - h11]),
+                ([x1, yf, z1], [1.0, 1.0]),
+                ([x1, yf, z0], [0.0, 1.0]),
+            ],
+        ),
+    ];
+    for ((dx, dz), face, corners) in sides {
+        let (nx, nz) = (wx + dx, wz + dz);
+        if same(nx, y, nz) || is_full_cube(table, world.block_state_at(nx, y, nz)) {
+            continue;
+        }
+        quad(corners, FACE_SHADE[face], light(nx, y, nz));
+    }
+    // Bottom — against anything that isn't fluid or a full cube.
+    if !same(wx, y - 1, wz) && !is_full_cube(table, world.block_state_at(wx, y - 1, wz)) {
+        quad(
+            [
+                ([x0, yf, z0], [0.0, 0.0]),
+                ([x0, yf, z1], [0.0, 1.0]),
+                ([x1, yf, z1], [1.0, 1.0]),
+                ([x1, yf, z0], [1.0, 0.0]),
+            ],
+            FACE_SHADE[1],
+            light(wx, y - 1, wz),
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,6 +490,74 @@ fn solid(world: &World, table: &[RenderKind], p: [i32; 3]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rewo_world::dimension::DimensionShape;
+
+    fn fluid_table() -> Vec<RenderKind> {
+        vec![
+            RenderKind::Invisible,
+            RenderKind::Cube {
+                faces: [0; 6],
+                tint: [false; 6],
+            },
+            RenderKind::Fluid {
+                layer: 1,
+                level: 0,
+                lava: false,
+            },
+            RenderKind::Fluid {
+                layer: 2,
+                level: 0,
+                lava: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn water_source_meshes_translucent_at_vanilla_height() {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(4, 9, 4, 1); // floor cube
+        w.set_block(4, 10, 4, 2); // water source on it
+        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        assert!(!mesh.vertices.is_empty(), "floor cube goes to the opaque set");
+        assert!(!mesh.tvertices.is_empty(), "water goes to the translucent set");
+        let top = mesh
+            .tvertices
+            .iter()
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            (top - (10.0 + 8.0 / 9.0)).abs() < 1e-5,
+            "source surface sits at 8/9: {top}"
+        );
+    }
+
+    #[test]
+    fn lava_meshes_opaque() {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(4, 10, 4, 3);
+        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        assert!(!mesh.vertices.is_empty(), "lava is opaque geometry");
+        assert!(mesh.tvertices.is_empty());
+    }
+
+    #[test]
+    fn submerged_water_column_is_full_height() {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(4, 10, 4, 2);
+        w.set_block(4, 11, 4, 2); // water above → lower cell is a full column
+        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        // Lower cell contributes no top face; the surface is the upper
+        // cell's 8/9 → max y = 11 + 8/9.
+        let top = mesh
+            .tvertices
+            .iter()
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!((top - (11.0 + 8.0 / 9.0)).abs() < 1e-5, "top {top}");
+    }
 
     #[test]
     fn side_faces_have_texture_top_at_block_top() {

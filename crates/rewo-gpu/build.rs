@@ -11,6 +11,7 @@ fn main() {
         ("shaders/overlay.frag", "overlay.frag.spv"),
         ("shaders/world.vert", "world.vert.spv"),
         ("shaders/world.frag", "world.frag.spv"),
+        ("shaders/water.frag", "water.frag.spv"),
         ("shaders/entity.vert", "entity.vert.spv"),
         ("shaders/entity.frag", "entity.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),

@@ -58,14 +58,30 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     let mut world = World::new(DimensionShape::OVERWORLD);
     let grass = data.blocks.default_state("minecraft:grass_block").unwrap_or(9);
     let dirt = data.blocks.default_state("minecraft:dirt").unwrap_or(10);
-    // A 3×(N+2) platform of grass over dirt at y=0 (grass top).
+    // A grass-over-dirt platform: 3 rows behind the showcase line plus a
+    // 4-row apron in front (z −4..−1) that hosts the fluid pools.
     let n = SHOWCASE.len() as i32;
     for x in -1..=n {
-        for z in -1..=1 {
+        for z in -4..=1 {
             ensure_and_set(&mut world, x, -1, z, dirt);
             ensure_and_set(&mut world, x, 0, z, grass);
         }
     }
+    // Fluid pools carved into the apron (M4-followon: fluids). Water left,
+    // lava right, a grass spine at x=5 between them. One flowing (level 4)
+    // water cell shows the sloped-surface path; water states are id-ordered
+    // by the `level` property, so default (source) + 4 = level 4.
+    let water = data.blocks.default_state("minecraft:water").unwrap_or(0);
+    let lava = data.blocks.default_state("minecraft:lava").unwrap_or(0);
+    for z in -3..=-1 {
+        for x in 2..=4 {
+            ensure_and_set(&mut world, x, 0, z, water);
+        }
+        for x in 6..=8 {
+            ensure_and_set(&mut world, x, 0, z, lava);
+        }
+    }
+    ensure_and_set(&mut world, 4, 0, -3, water + 4);
     // Row of showcase blocks on top of the grass (y=1), spaced 1 apart.
     let mut placed = Vec::new();
     for (i, name) in SHOWCASE.iter().enumerate() {
@@ -101,6 +117,8 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
                 cz,
                 bytemuck::cast_slice(&mesh.vertices),
                 &mesh.indices,
+                bytemuck::cast_slice(&mesh.tvertices),
+                &mesh.tindices,
                 mesh.y_min,
                 mesh.y_max,
             )?;
@@ -109,9 +127,11 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     gpu.wait_idle();
     log::info!("demo: meshed {} vertices", total_verts);
 
-    // -- camera: look along the row from a low front-left angle -----------
-    let center = Vec3::new(n as f32 / 2.0, 1.5, 0.5);
-    let eye = center + Vec3::new(-2.0, 2.2, -5.0);
+    // -- camera: look along the row from a low front-left angle (aim point
+    // dropped to y=1.0 so the fluid apron in front reads too) -------------
+    let center = Vec3::new(n as f32 / 2.0, 1.0, 0.5);
+    let eye = Vec3::new(n as f32 / 2.0 - 2.0, 3.7, -4.5);
+    wr.set_camera(eye.to_array());
     let dir = (center - eye).normalize();
     let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
@@ -154,6 +174,7 @@ fn kind_of(baked: &assets::BakedAssets, state: u32) -> &'static str {
     match baked.render.get(state as usize) {
         Some(assets::RenderKind::Cube { .. }) => "cube",
         Some(assets::RenderKind::Model(_)) => "model",
+        Some(assets::RenderKind::Fluid { .. }) => "fluid",
         _ => "invisible",
     }
 }

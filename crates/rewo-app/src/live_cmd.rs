@@ -232,6 +232,8 @@ fn pump_meshing(
                     out.cz,
                     bytemuck::cast_slice(&mesh.vertices),
                     &mesh.indices,
+                    bytemuck::cast_slice(&mesh.tvertices),
+                    &mesh.tindices,
                     mesh.y_min,
                     mesh.y_max,
                 )?;
@@ -331,6 +333,8 @@ fn run_headless(
                 out.cz,
                 bytemuck::cast_slice(&mesh.vertices),
                 &mesh.indices,
+                bytemuck::cast_slice(&mesh.tvertices),
+                &mesh.tindices,
                 mesh.y_min,
                 mesh.y_max,
             )?;
@@ -398,6 +402,7 @@ fn run_headless(
     }
     let (cr, cu) = camera_basis(yaw, pitch);
     world_renderer.set_entities(&draws, cr, cu);
+    world_renderer.set_camera(eye.to_array());
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
@@ -684,6 +689,7 @@ impl LiveApp {
         let extent = state.renderer.swapchain.extent;
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
         let eye = player_eye(session);
+        state.world_renderer.set_camera(eye.to_array());
         let vp = eye_view_proj(eye, session.player.yaw, session.player.pitch, aspect);
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,

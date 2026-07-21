@@ -154,9 +154,14 @@ the code's author. Nothing below is settled truth.
 - No **greedy meshing** (3.7M verts for 329 flat chunks — high; conflicts
   with per-vertex AO, hence deferred).
 - **AO only on cube faces**, not model quads.
-- **Per-biome tint** is a fixed plains color (no biome variation).
-- No **fluids** (water/lava geometry) + no **translucent pass**.
-- No **texture animation** ticking.
+- **Per-biome tint** is a fixed plains color (no biome variation; water
+  tint likewise fixed plains #3F76E4).
+- ~~No fluids + no translucent pass~~ — **RESOLVED 2026-07-21**: water
+  (translucent, corner-height surfaces) + lava (opaque fullbright) with a
+  CPU-sorted back-to-front translucent pass. See §15. Still open within
+  it: waterlogged blocks don't render their water, no flowing-texture
+  UV rotation, no texture animation.
+- No **texture animation** ticking (water/lava render their first frame).
 - **36-byte vertices**, not the packed 8–12 B the plan targets.
 - **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
@@ -1272,3 +1277,44 @@ is visible).**
 - **Known limits (tracked in §0.0):** no entity collision, capsules not
   player models, tags depth-tested (vanilla renders them through walls),
   AO/light not sampled for entities (fixed sun shade).
+
+**2026-07-21 — fluids + translucent pass shipped (the biggest M4
+carryover).**
+
+- **Bake** (`rewo-data/assets.rs`): water/lava classified by NAME (vanilla
+  hardcodes fluid rendering — their blockstates carry no usable model) into
+  a new `RenderKind::Fluid { layer, level, lava }` keyed on the `level`
+  property. Water texture = `water_still` first animation frame (ships
+  grayscale, uniform alpha 180) × plains water #3F76E4 — the same
+  fixed-plains tint approach as grass; lava = `lava_still`, opaque.
+- **Mesher** (`rewo-mesh`): a fluid path alongside cubes/models — top face
+  at per-corner heights (source 8/9, flowing (8−level)/9, falling 1.0;
+  corner = max over the 4 touching same-fluid cells, a simpler take on
+  vanilla's weighted average that still reads as a continuous sloped
+  surface), trapezoid side faces, bottom face vs air. Water emits into a
+  new **translucent set** on `ColumnMesh` (`tvertices`/`tindices`); lava
+  emits opaque at fullbright. 3 new unit tests (source height, lava
+  opacity, submerged columns full-height).
+- **Renderer** (`rewo-gpu/world.rs`): each column now owns up to four
+  mega-buffer regions (opaque + translucent verts/indices from the same
+  free-lists, one staged upload). The indirect GPU-cull path stays
+  opaque-only (cull.comp already skips `index_count == 0`); water draws as
+  **per-column direct indexed draws, CPU frustum-culled (mirroring
+  cull.comp's positive-vertex test) and sorted far→near** from a new
+  `set_camera(eye)` — the plan's "per-section back-to-front CPU sort;
+  intra-section artifacts accepted v1". New `water.frag` (texture alpha
+  rides to the blender) + a blended, depth-write-off pipeline variant.
+  Blend-correct frame order: opaque terrain → entity capsules →
+  translucent water → nametag text (EntityPass::draw split into
+  solid/text).
+- **Demo**: the showcase gains a water pool (with one level-4 flowing
+  cell) and a lava pool carved into a front apron; camera aim dropped to
+  frame them. Inspected: translucent blue water with the dirt floor
+  clearly visible through it, surface at 8/9 below the grass rim; opaque
+  glowing lava; the whole M4 model row intact behind.
+- **Verified:** validation layers clean on the new pass; `view --replay`
+  PNG **byte-identical** (no fluids in the flat world — the dual-region
+  upload changes nothing without water); bench gate green (avg 0.211 ms /
+  0.1% low 1.131 — noise-level vs every prior run); live soak vs the test
+  server: corrections 0, 129 entities, frame times unchanged. 49 rewo
+  tests green.
