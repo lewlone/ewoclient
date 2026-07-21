@@ -179,7 +179,11 @@ the code's author. Nothing below is settled truth.
 - **36-byte vertices**, not the packed 8–12 B the plan targets.
 - **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
-  CCW). Cosmetic; the demo + normal angles are clean.
+  CCW). Cosmetic; the demo + normal angles are clean. (Much less visible
+  now — the horizon fog covers the far field.)
+- **Sky is gradient + distance fog only** — no sun/moon/clouds/stars, no
+  time-of-day or per-biome sky color (§7 lists those; shipped the gradient
+  + fog, deferred the rest).
 - **Mega-buffer has no resize** — over-cap columns are dropped with a log
   (4M verts / 6M indices; high RD could hit this).
 - `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU
@@ -1412,3 +1416,26 @@ player capsule).**
   clearly split (one forward, one back), arms swung in opposite phase, torso
   + head correct. Entity-only change → demo PNG **byte-identical**, bench
   untouched. 45 rewo tests green.
+
+**2026-07-21 — gradient sky + distance fog (the world gained a horizon).**
+
+- **Gradient sky** (`sky.vert`/`sky.frag`, a new fullscreen pipeline in
+  `WorldRenderer`, drawn first with no depth test/write): reconstructs each
+  pixel's world-space view ray from `inverse(view_proj)` (computed on the
+  GPU-side via glam, no app plumbing) and blends a pale-blue horizon →
+  deeper zenith by the ray's up-component. Colors linear (SRGB store).
+- **Distance fog** in `world.frag` + `water.frag`: the vertex shader passes
+  world-space position through; the fragment fades toward the **sky horizon
+  color** over a `[start, end]` band (default 80–180, `REWO_FOG=a,b` to
+  tune). Fog color = sky horizon, so terrain **melts into the sky** at the
+  render-distance edge — the hard chunk-boundary silhouette that showed in
+  every prior screenshot is gone. The world push grew
+  (`view_proj` + camera + fog band; range now VERTEX|FRAGMENT).
+- **Verified:** 0 VUIDs (the sky pipeline must declare the pass's depth
+  *format* though it disables depth test/write — the one gotcha); flat-world
+  `view --replay` + live eye-view PNGs show grass dissolving into a soft
+  foggy horizon under the gradient sky (no visible edge); demo unchanged in
+  substance (close scene, gradient sky behind); live soak corrections 0,
+  155 entities, 0 VUIDs. Bench rose a hair (avg 0.209 → 0.243 ms, 0.1% low
+  0.920 → 1.052) — the honest cost of a fullscreen pass + per-fragment fog,
+  still deep under budget. Sun/moon/clouds/stars/time-of-day deferred (§7).

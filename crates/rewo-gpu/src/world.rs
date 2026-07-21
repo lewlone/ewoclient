@@ -52,7 +52,24 @@ pub struct LayerAnimation {
 #[derive(Clone, Copy)]
 struct WorldPush {
     view_proj: [[f32; 4]; 4],
+    /// xyz camera world pos, w = fog start distance.
+    cam_fog: [f32; 4],
+    /// xyz fog color (linear = sky horizon), w = fog end distance.
+    fog_col: [f32; 4],
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SkyPush {
+    inv_view_proj: [[f32; 4]; 4],
+    horizon: [f32; 4],
+    zenith: [f32; 4],
+}
+
+/// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
+/// The horizon is also the terrain's fog color for a seamless far edge.
+const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
+const SKY_ZENITH: [f32; 3] = [0.147, 0.319, 0.890];
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
@@ -157,6 +174,9 @@ pub struct WorldRenderer {
     pipeline: vk::Pipeline,
     /// Blended, depth-write-off variant for the water pass.
     water_pipeline: vk::Pipeline,
+    /// Fullscreen gradient sky (no descriptor set, no vertex input).
+    sky_layout: vk::PipelineLayout,
+    sky_pipeline: vk::Pipeline,
     tex_pool: vk::DescriptorPool,
     tex_set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -199,8 +219,10 @@ pub struct WorldRenderer {
     // -- entities (optional pass; drawn after the terrain in `draw`) --
     color_format: vk::Format,
     entities: Option<EntityPass>,
-    /// Eye position for translucent back-to-front sorting (`set_camera`).
+    /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
+    /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
+    fog: [f32; 2],
     // -- animated texture layers (water/lava; `anim_tick`) --
     tex_size: u32,
     mip_levels: u32,
@@ -335,8 +357,10 @@ impl WorldRenderer {
                 &[],
             );
 
+            // view_proj is read in the vertex stage, the fog fields in the
+            // fragment stage — one range spanning both.
             let pc_ranges = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .offset(0)
                 .size(std::mem::size_of::<WorldPush>() as u32)];
             let graphics_layout = device
@@ -350,6 +374,19 @@ impl WorldRenderer {
             let pipeline = build_graphics_pipeline(&device, graphics_layout, color_format, false)?;
             let water_pipeline =
                 build_graphics_pipeline(&device, graphics_layout, color_format, true)?;
+
+            // ---- sky pipeline (fullscreen, no sets / vertex input) ----
+            let sky_pc = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .offset(0)
+                .size(std::mem::size_of::<SkyPush>() as u32)];
+            let sky_layout = device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&sky_pc),
+                    None,
+                )
+                .map_err(|e| format!("sky layout: {e}"))?;
+            let sky_pipeline = build_sky_pipeline(&device, sky_layout, color_format)?;
 
             // ---- compute cull descriptor + pipeline ----
             let cull_bindings = [
@@ -506,6 +543,8 @@ impl WorldRenderer {
                 graphics_layout,
                 pipeline,
                 water_pipeline,
+                sky_layout,
+                sky_pipeline,
                 tex_pool,
                 tex_set,
                 sampler,
@@ -539,6 +578,7 @@ impl WorldRenderer {
                 color_format,
                 entities: None,
                 camera_eye: [0.0; 3],
+                fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
                 animations: Vec::new(),
@@ -1020,10 +1060,37 @@ impl WorldRenderer {
         self.culled_last_frame = 0;
     }
 
-    /// In-pass draws, in blend-correct order: opaque terrain (indirect) →
-    /// opaque entity capsules → translucent water (CPU-sorted back-to-
-    /// front) → blended nametag text.
+    /// Override the distance-fog band (defaults from `REWO_FOG`).
+    pub fn set_fog(&mut self, start: f32, end: f32) {
+        self.fog = [start, end.max(start + 1.0)];
+    }
+
+    /// Push the world/fog constants (view_proj + camera + fog band).
+    fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
+        let push = WorldPush {
+            view_proj,
+            cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
+            fog_col: [SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], self.fog[1]],
+        };
+        unsafe {
+            device.cmd_push_constants(
+                cb,
+                self.graphics_layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    (&push as *const WorldPush) as *const u8,
+                    std::mem::size_of::<WorldPush>(),
+                ),
+            );
+        }
+    }
+
+    /// In-pass draws, in blend-correct order: gradient sky (background) →
+    /// opaque terrain (indirect) → opaque entity capsules/models →
+    /// translucent water (CPU-sorted back-to-front) → nametag text.
     pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        self.draw_sky(gpu, cb, view_proj, extent);
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
@@ -1033,6 +1100,42 @@ impl WorldRenderer {
         self.draw_translucent(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
+        }
+    }
+
+    /// Fullscreen gradient sky — drawn first, no depth test/write, so the
+    /// terrain (reversed-Z GREATER, cleared 0.0) draws over it and the fog
+    /// fade meets a matching horizon color.
+    fn draw_sky(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        let inv = glam::Mat4::from_cols_array_2d(&view_proj)
+            .inverse()
+            .to_cols_array_2d();
+        let push = SkyPush {
+            inv_view_proj: inv,
+            horizon: [SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], 1.0],
+            zenith: [SKY_ZENITH[0], SKY_ZENITH[1], SKY_ZENITH[2], 1.0],
+        };
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.sky_pipeline);
+            let viewport = vk::Viewport::default()
+                .y(extent.height as f32)
+                .width(extent.width as f32)
+                .height(-(extent.height as f32))
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_push_constants(
+                cb,
+                self.sky_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    (&push as *const SkyPush) as *const u8,
+                    std::mem::size_of::<SkyPush>(),
+                ),
+            );
+            device.cmd_draw(cb, 3, 1, 0, 0);
         }
     }
 
@@ -1093,17 +1196,7 @@ impl WorldRenderer {
                 &[self.tex_set],
                 &[],
             );
-            let push = WorldPush { view_proj };
-            device.cmd_push_constants(
-                cb,
-                self.graphics_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(
-                    (&push as *const WorldPush) as *const u8,
-                    std::mem::size_of::<WorldPush>(),
-                ),
-            );
+            self.push_world(device, cb, view_proj);
             device.cmd_bind_vertex_buffers(cb, 0, &[self.vbuf], &[0]);
             device.cmd_bind_index_buffer(cb, self.ibuf, 0, vk::IndexType::UINT32);
             for (_, count, first, voff) in cols {
@@ -1131,17 +1224,7 @@ impl WorldRenderer {
                 &[self.tex_set],
                 &[],
             );
-            let push = WorldPush { view_proj };
-            device.cmd_push_constants(
-                cb,
-                self.graphics_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(
-                    (&push as *const WorldPush) as *const u8,
-                    std::mem::size_of::<WorldPush>(),
-                ),
-            );
+            self.push_world(device, cb, view_proj);
             device.cmd_bind_vertex_buffers(cb, 0, &[self.vbuf], &[0]);
             device.cmd_bind_index_buffer(cb, self.ibuf, 0, vk::IndexType::UINT32);
             device.cmd_draw_indexed_indirect_count(
@@ -1207,6 +1290,8 @@ impl WorldRenderer {
             device.destroy_descriptor_set_layout(self.cull_set_layout, None);
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline(self.water_pipeline, None);
+            device.destroy_pipeline(self.sky_pipeline, None);
+            device.destroy_pipeline_layout(self.sky_layout, None);
             device.destroy_pipeline_layout(self.graphics_layout, None);
             device.destroy_descriptor_pool(self.tex_pool, None);
             device.destroy_descriptor_set_layout(self.tex_set_layout, None);
@@ -1360,6 +1445,105 @@ fn create_host_buffer(
             .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
             .map_err(|e| format!("{name} bind: {e}"))?;
         Ok((buffer, alloc))
+    }
+}
+
+/// Default fog band, overridable via `REWO_FOG=start,end`. The default
+/// end (~180) sits at the flat-world test's loaded radius so the far
+/// chunk boundary fully dissolves into the horizon (fog color = sky
+/// horizon) instead of ending hard. Ideally derived from render distance;
+/// a fixed default + override is the current compromise.
+fn parse_fog_env() -> [f32; 2] {
+    let default = [80.0, 180.0];
+    std::env::var("REWO_FOG")
+        .ok()
+        .and_then(|s| {
+            let mut it = s.split(',');
+            let a: f32 = it.next()?.trim().parse().ok()?;
+            let b: f32 = it.next()?.trim().parse().ok()?;
+            Some([a, b.max(a + 1.0)])
+        })
+        .unwrap_or(default)
+}
+
+/// Fullscreen gradient-sky pipeline: no vertex input, no depth, no blend.
+fn build_sky_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/sky.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/sky.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        // No depth test/write — the sky is pure background.
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(false)
+            .depth_write_enable(false);
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(false)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
+            )];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        // The pass carries a depth attachment (terrain uses it); the sky
+        // pipeline must declare the same format to match, even though its
+        // depth test/write are disabled.
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&ci), None)
+            .map_err(|(_, e)| format!("sky pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
     }
 }
 

@@ -2207,6 +2207,7 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "glam",
  "gpu-allocator",
  "log",
  "png",

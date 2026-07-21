@@ -1603,8 +1603,10 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   verified); **the player model** — Steve (12 cuboids incl. overlays,
   box-UV from skin.rs, jar default skin, yaw + head pitch + **walk-cycle
   limb swing** derived client-side from motion) replaces the player
-  capsule, headless-PNG verified; and the **async upload ring** (4-slot,
-  no per-frame fence wait — closes the last §4 deviation). Also un-broke
+  capsule, headless-PNG verified; the **async upload ring** (4-slot,
+  no per-frame fence wait — closes the last §4 deviation); and **gradient
+  sky + distance fog** (view-ray sky, terrain fades to the horizon color
+  so the chunk-boundary edge dissolves — PNG-verified). Also un-broke
   `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary

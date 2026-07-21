@@ -95,7 +95,8 @@ pub fn run(args: BenchArgs) -> Result<(), String> {
     let start = Instant::now();
     let total = args.frames + args.warmup;
     for i in 0..total {
-        let vp = orbit(center, i, total);
+        let (vp, eye) = orbit(center, i, total);
+        wr.set_camera(eye.to_array());
         let t0 = Instant::now();
         off.render(&gpu, Some((&mut wr, vp)), &draw, CLEAR_SKY)?;
         let wall = t0.elapsed().as_secs_f32() * 1000.0;
@@ -152,7 +153,7 @@ fn report(label: &str, s: &StatsAccum) {
 
 /// Deterministic orbit: 3 full turns over the run, radius scaled to the
 /// loaded area, hovering above the surface and looking at the center.
-fn orbit(center: Vec3, frame: u32, total: u32) -> [[f32; 4]; 4] {
+fn orbit(center: Vec3, frame: u32, total: u32) -> ([[f32; 4]; 4], Vec3) {
     let t = frame as f32 / total.max(1) as f32;
     let angle = t * std::f32::consts::TAU * 3.0;
     let radius = 90.0;
@@ -163,7 +164,7 @@ fn orbit(center: Vec3, frame: u32, total: u32) -> [[f32; 4]; 4] {
         1280.0 / 720.0,
         0.05,
     ));
-    (proj * view).to_cols_array_2d()
+    ((proj * view).to_cols_array_2d(), eye)
 }
 
 fn world_center(world: &World) -> Vec3 {
