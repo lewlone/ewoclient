@@ -24,6 +24,9 @@ pub struct EntityState {
     pub z: f64,
     pub yaw: f32,
     pub pitch: f32,
+    /// Head yaw (degrees) — the server points it at nearby players, so the
+    /// model can turn its head toward the viewer. Defaults to the body yaw.
+    pub head_yaw: f32,
     lerp_steps: u32,
     cur: [f64; 3],
     prev: [f64; 3],
@@ -46,12 +49,17 @@ impl EntityState {
             z,
             yaw,
             pitch,
+            head_yaw: yaw,
             lerp_steps: 0,
             cur: [x, y, z],
             prev: [x, y, z],
             limb_swing: 0.0,
             limb_amount: 0.0,
         }
+    }
+
+    pub fn set_head_yaw(&mut self, yaw: f32) {
+        self.head_yaw = yaw;
     }
 
     /// Absolute target (teleport / position sync): start a fresh 3-tick lerp.

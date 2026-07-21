@@ -454,6 +454,17 @@ impl PlaySession {
                     e.set_rot(yaw, pitch);
                 }
             }
+        } else if id == ids.cb_play_rotate_head {
+            // varint id, yHeadRot (packed-degree byte). The server steers the
+            // head toward nearby players, so this is what makes a mob watch you.
+            let mut r = PacketReader::new(body);
+            if let Ok(eid) = r.varint() {
+                if let Ok(b) = r.i8() {
+                    if let Some(e) = self.world.entities.get_mut(eid) {
+                        e.set_head_yaw(packed_degrees(b));
+                    }
+                }
+            }
         } else if id == ids.cb_play_set_entity_data {
             let mut r = PacketReader::new(body);
             if let Ok(eid) = r.varint() {

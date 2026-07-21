@@ -138,12 +138,16 @@ the code's author. Nothing below is settled truth.
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
-  limb swing**), and **slimes render as the green cube model**. See the
-  §15 entries. Still open within it: entity *collision* is ignored (walk
-  through mobs), most mobs are still capsules (only players + slimes have
-  models), slime face/size need the translucent pass + entity metadata, no
-  real per-player skins (needs online-mode profile textures — M7), tags are
-  depth-tested (vanilla shows them through walls).
+  limb swing**), and **slimes** (green cube), **cows** (quadruped, walking
+  legs), and **zombies/husks/drowned** (humanoid, arms-forward pose) render
+  as real models — humanoids also **turn their heads** toward nearby players
+  (server-driven `rotate_head`, verified via a fixed-body/cranked-head A/B).
+  See the §15 entries. Still open within it: entity *collision* is ignored
+  (walk through mobs), most other mobs are still capsules (pig/sheep want a
+  texture-array refactor — the entity atlas is full), slime face/size need
+  the translucent pass + entity metadata, no real per-player skins (needs
+  online-mode profile textures — M7), tags are depth-tested (vanilla shows
+  them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1640,3 +1644,37 @@ capability).**
   custom names survive a world reload too. 0 VUIDs; entity-only + live-only
   → demo **byte-identical**, bench flat; soak corrections 0. 53 rewo tests
   green.
+
+**2026-07-22 — mob head-look (humanoids watch you).**
+
+- Humanoid mobs (player/zombie/husk/drowned) now **turn their heads** toward
+  whatever the server steers them at (nearby players). Wire side: decode the
+  `rotate_head` packet (entity id + packed-degree `yHeadRot`) + the
+  `add_entity` head-yaw byte (previously dropped) → `EntityState.head_yaw`
+  (defaults to body yaw). Render side: `EntityDraw.head_yaw` flows to
+  `emit_model`, where `LimbPart::Head` quads yaw by the head's **own**
+  absolute angle instead of the body's. This collapses to a one-line
+  per-part angle swap because the humanoid neck pivot sits at x=z=0 — two
+  Y-rotations about the same vertical axis compose, so "head-about-neck +
+  body-about-origin" *is* "head-yaw-about-origin". The quadruped head is a
+  rigid `Body` part, so cows are correctly excluded (a v1 simplification).
+- **Caught + fixed a regression I introduced in the same change:** the new
+  `let (c, s) = …` head/body-yaw binding **shadowed `emit_model`'s `s` model
+  scale**, so the `d.pos + p*s` placement multiplied by `sin(yaw)` instead of
+  1/16 — every `emit_model` mob silently scaled by `sin(yaw)`, vanishing near
+  yaw 0/±180 and rendering at wrong sizes elsewhere. The visual verification
+  is exactly what surfaced it (the humanoid was invisible when aimed at
+  head-on); renamed to `(cyaw, syaw)`. Lesson: a render artifact that
+  correlates with *orientation* is a rotation/scale term leaking.
+- **Verified** headlessly: summoned a `husk` (humanoid model, doesn't burn in
+  daylight — clean capture) with `NoAI` + a fixed body rotation facing the
+  camera, then rendered a **fixed-framing A/B** — `REWO_FORCE_HEAD=0` (head
+  aligned, face head-on, both eyes symmetric) vs `REWO_FORCE_HEAD=70` (same
+  body/pose/framing, head cranked into profile). Only the head differs. New
+  reusable verification knobs added to `rewo live`: `REWO_SUMMON_DIST` /
+  `REWO_SUMMON_DY` (place a summon at range / floated into empty sky),
+  `REWO_PRECMD` (one op command before the summon — e.g. clear a scene),
+  `REWO_LOOK_AT="x,y,z"` (deterministic fixed-point camera aim),
+  `REWO_LOOK_HIGH` (aim at the highest matching mob), `REWO_FORCE_HEAD`.
+  0 VUIDs; decode-side + live-only render → demo **byte-identical**, bench
+  flat (avg 0.25 ms); 24 rewo-gpu + 6 rewo-net + world tests green.

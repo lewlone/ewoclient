@@ -526,11 +526,10 @@ pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_p
     // then yHeadRot — packed-degree bytes.
     let pitch = r.i8()? as f32 * (360.0 / 256.0);
     let yaw = r.i8()? as f32 * (360.0 / 256.0);
-    let _head_yaw = r.i8()?;
-    world.entities.add(
-        id,
-        rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch),
-    );
+    let head_yaw = r.i8()? as f32 * (360.0 / 256.0);
+    let mut state = rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch);
+    state.set_head_yaw(head_yaw);
+    world.entities.add(id, state);
     Ok(())
 }
 

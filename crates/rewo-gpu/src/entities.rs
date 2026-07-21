@@ -64,6 +64,11 @@ pub struct EntityDraw<'a> {
     pub kind: EntityModelKind,
     /// Body yaw (degrees, MC convention) — rotates the whole model.
     pub yaw: f32,
+    /// Head yaw (degrees) — the head yaws to this absolute angle instead of
+    /// the body's, so a mob can turn its head toward the viewer. Only the
+    /// humanoid head articulates (pivot at x=z=0), so this is the head's
+    /// whole-model Y-rotation; equal to `yaw` leaves the head aligned.
+    pub head_yaw: f32,
     /// Look pitch (degrees) — tilts the head about the neck.
     pub pitch: f32,
     /// Walk-cycle phase + amplitude (vanilla limbSwing / limbSwingAmount)
@@ -459,6 +464,12 @@ impl EntityPass {
     fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, quads: &[PlayerQuad], s: f32, arm_forward: f32) {
         let yaw = d.yaw.to_radians();
         let (cy, sy) = (yaw.cos(), yaw.sin());
+        // The head yaws to its own absolute angle (server-steered toward
+        // nearby players); every other part uses the body yaw. Because the
+        // humanoid neck pivot is at x=z=0, this absolute head yaw about the
+        // origin is exactly "head-relative-to-body about the neck, then body".
+        let head_yaw = d.head_yaw.to_radians();
+        let (cyh, syh) = (head_yaw.cos(), head_yaw.sin());
         let pitch = d.pitch.to_radians();
         // Vanilla HumanoidModel.setupAnim: opposite-phase diagonal gait,
         // arms ±2.0 rad · amount, legs ±1.4 rad · amount, at the 0.6662
@@ -496,9 +507,13 @@ impl EntityPass {
                     p[2] = pivot_z + dy * sx_ + dz * cx_;
                 }
                 // Whole-model yaw: front (+Z) → MC look dir (−sin, 0, cos).
+                // Head parts use the head's own yaw so the model can look
+                // around independently of its body.
+                // NB: use distinct names — `s` is the model→world scale below.
                 let (x, z) = (p[0], p[2]);
-                p[0] = x * cy - z * sy;
-                p[2] = x * sy + z * cy;
+                let (cyaw, syaw) = if q.part == LimbPart::Head { (cyh, syh) } else { (cy, sy) };
+                p[0] = x * cyaw - z * syaw;
+                p[2] = x * syaw + z * cyaw;
                 p4[i] = [
                     d.pos[0] + p[0] * s,
                     d.pos[1] + p[1] * s,

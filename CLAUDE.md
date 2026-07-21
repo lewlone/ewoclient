@@ -1584,8 +1584,10 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
 - **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
   chat-signing not done (offline only — M7, needs the user's real
-  account); entity collision ignored; mobs still capsules (players got
-  the real model). All three §4 deviations are now closed (rayon mesh
+  account); entity collision ignored; most *other* mobs (pig/sheep/…)
+  are still capsules — the four real models (player/slime/cow/humanoid)
+  cover the common cases but pig/sheep want a texture-array refactor (the
+  entity atlas is full). All three §4 deviations are now closed (rayon mesh
   pool, Native `live` arm, async upload ring). Fixed 2026-07-21 (several
   passes): meshing moved OFF the
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
@@ -1624,9 +1626,13 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   skip table → custom nametags on mobs; slime size/baby deferred as
   entity-specific indices); and **quadruped leg animation** (the cow walks
   in vanilla's diagonal gait — `emit_model`'s rotation generalized to a
-  `(pivot_y, pivot_z)` pivot for the front/back legs). The mob registry
-  spans humanoid/cube/quadruped. Also un-broke `rewo view` (stale M2
-  bake-sanity check).
+  `(pivot_y, pivot_z)` pivot for the front/back legs); and **mob head-look**
+  (humanoids turn their heads toward nearby players via the `rotate_head`
+  packet — `LimbPart::Head` yaws to its own absolute angle; the same change
+  caught+fixed a variable-shadowing regression where the head/body-yaw
+  binding shadowed `emit_model`'s model-scale `s`, silently scaling every
+  mob by `sin(yaw)`). The mob registry spans humanoid/cube/quadruped. Also
+  un-broke `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

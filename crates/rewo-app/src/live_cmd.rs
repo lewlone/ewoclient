@@ -151,6 +151,10 @@ fn collect_entities<'a>(
         let mut it = s.split(',');
         Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
     });
+    // Headless-only knob: `REWO_FORCE_HEAD=<degrees>` cranks every mob's head
+    // yaw to body-yaw + this offset, so a PNG can prove head-look turns the
+    // head independently of the body without depending on live server AI.
+    let force_head: Option<f32> = std::env::var("REWO_FORCE_HEAD").ok().and_then(|s| s.trim().parse().ok());
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(alpha);
@@ -195,6 +199,7 @@ fn collect_entities<'a>(
             },
             kind,
             yaw: e.yaw,
+            head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
             pitch: e.pitch,
             limb_swing,
             limb_amount,
@@ -395,12 +400,32 @@ fn run_headless(
         // REWO_SUMMON=mob: once spawned, /summon a mob ~3 blocks in front
         // (op required) so the model can be verified without a live one.
         if !summoned && session.spawned {
+            // REWO_PRECMD: run one op command before the summon (e.g. clear
+            // prior test mobs with `kill @e[type=husk]`), so a re-run starts
+            // from a clean scene.
+            if let Ok(cmd) = std::env::var("REWO_PRECMD") {
+                if !cmd.is_empty() {
+                    let _ = session.send_command(&cmd);
+                    log::info!("REWO_PRECMD: {cmd}");
+                    std::env::remove_var("REWO_PRECMD");
+                }
+            }
             if let Ok(mob) = std::env::var("REWO_SUMMON") {
                 let dir = look_dir(session.player.yaw, 0.0);
+                let dist = std::env::var("REWO_SUMMON_DIST")
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(3.0);
+                // Optional vertical offset — float the mob into empty sky so a
+                // verification shot isn't occluded by ground clutter.
+                let dy: f64 = std::env::var("REWO_SUMMON_DY")
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0.0);
                 let (sx, sy, sz) = (
-                    session.player.x + dir[0] * 3.0,
-                    session.player.y,
-                    session.player.z + dir[2] * 3.0,
+                    session.player.x + dir[0] * dist,
+                    session.player.y + dy,
+                    session.player.z + dir[2] * dist,
                 );
                 // Optional NBT tail (e.g. REWO_SUMMON_NBT={CustomName:'"Bo"'}).
                 let nbt = std::env::var("REWO_SUMMON_NBT").unwrap_or_default();
@@ -494,7 +519,26 @@ fn run_headless(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10.0);
-    if std::env::var("REWO_LOOK_ENTITY").is_ok() {
+    // REWO_LOOK_AT="x,y,z": aim the camera at a fixed world point, bypassing
+    // the entity search — deterministic framing for a summoned target even in
+    // a scene full of other entities of the same kind.
+    if let Some(pt) = std::env::var("REWO_LOOK_AT").ok().and_then(|s| {
+        let mut it = s.split(',');
+        Some(Vec3::new(
+            it.next()?.trim().parse().ok()?,
+            it.next()?.trim().parse().ok()?,
+            it.next()?.trim().parse().ok()?,
+        ))
+    }) {
+        let d = pt - Vec3::new(eye.x, eye.y, eye.z);
+        let len = d.length().max(1e-4);
+        yaw = (-d.x).atan2(d.z).to_degrees();
+        pitch = (-d.y / len).asin().to_degrees();
+        log::info!(
+            "live: LOOK_AT {pt:?} from eye ({:.1},{:.1},{:.1}) -> yaw {yaw:.1} pitch {pitch:.1}",
+            eye.x, eye.y, eye.z
+        );
+    } else if std::env::var("REWO_LOOK_ENTITY").is_ok() {
         // Aim at the nearest interesting model: a player, or (REWO_LOOK=slime)
         // the nearest slime; else the nearest anything.
         let d = |e: &EntityDraw| {
@@ -507,11 +551,21 @@ fn run_headless(
             Some("cow") => e.kind == EntityModelKind::Cow,
             _ => e.name.is_some(),
         };
-        let nearest = draws
-            .iter()
-            .filter(pref)
-            .min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap())
-            .or_else(|| draws.iter().min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap()));
+        // REWO_LOOK_HIGH: among the preferred kind, take the highest one
+        // (a floated summon sits above all ground clutter — deterministic).
+        let high = std::env::var("REWO_LOOK_HIGH").is_ok();
+        let nearest = if high {
+            draws
+                .iter()
+                .filter(pref)
+                .max_by(|a, b| a.pos[1].partial_cmp(&b.pos[1]).unwrap())
+        } else {
+            draws
+                .iter()
+                .filter(pref)
+                .min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap())
+        }
+        .or_else(|| draws.iter().min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap()));
         if let Some(t) = nearest {
             let d = Vec3::new(
                 t.pos[0] - eye.x,
