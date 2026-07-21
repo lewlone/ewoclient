@@ -1529,3 +1529,26 @@ player capsule).**
   (best-yet 0.1% low 0.810 ms). Dig/place packet mechanics were already
   proven by `rewo play`; this wires them to the mouse + the live remesh.
   50 rewo tests green.
+
+**2026-07-22 — zombie mob (humanoid mobs reuse the player model) + the
+command packet.**
+
+- **Zombie**: reuses the player model geometry *verbatim* — the 64×64
+  zombie skin has the same box-UV layout as the player skin, so
+  `player_model_quads` became `humanoid_cuboids()` (shared 12 cuboids) and
+  both player + zombie build quads from it via `cuboid_quads` with different
+  atlas offsets (skin at (128,0), zombie at (192,0), no atlas growth). Near
+  zero new geometry. `emit_model` gained an `arm_forward` param; zombies get
+  −1.3 rad (arms held out — the iconic pose), players 0. Dispatched by name
+  (`zombie`/`husk`/`drowned`/`zombie_villager`). Skeleton deferred (its
+  64×32 texture uses the older single-layer humanoid UV — a variant).
+- **Command packet**: `chat_command` (unsigned, just the command string) →
+  `PlaySession::send_command`. Verification tool + a real feature.
+- **Verification tooling**: a `REWO_SUMMON=<mob>` headless knob `/summon`s a
+  mob 3 blocks ahead once spawned (the client is op'd via a generated
+  `ops.json` with the offline UUID); `REWO_LOOK=zombie` aims at it.
+- **Verified:** summoned a zombie and rendered it — green head, teal shirt,
+  **arms held forward** (pose correct), from behind at yaw 45; 0 VUIDs; the
+  player still renders (shared-geometry regression — unit test + arm_forward
+  0 is a player no-op); demo **byte-identical**, bench flat (0.1% low
+  0.583 ms), live soak corrections 0. 50 rewo tests green.

@@ -157,8 +157,14 @@ fn collect_entities<'a>(
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
         let is_slime = name == "minecraft:slime" || name == "minecraft:magma_cube";
+        let is_zombie = matches!(
+            name,
+            "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombie_villager"
+        );
         let kind = if is_player {
             EntityModelKind::Player
+        } else if is_zombie {
+            EntityModelKind::Zombie
         } else if is_slime {
             EntityModelKind::Slime
         } else {
@@ -358,7 +364,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref())?;
+    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref())?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -369,11 +375,30 @@ fn run_headless(
     let start = Instant::now();
     let idle = TickInput::default();
     let mut tick = 0u64;
+    let mut summoned = false;
     while start.elapsed().as_secs_f32() < settle_seconds {
         let deadline = start + Duration::from_millis(50) * (tick as u32 + 1);
         session.tick(&idle)?;
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
+        }
+        // REWO_SUMMON=mob: once spawned, /summon a mob ~3 blocks in front
+        // (op required) so the model can be verified without a live one.
+        if !summoned && session.spawned {
+            if let Ok(mob) = std::env::var("REWO_SUMMON") {
+                let dir = look_dir(session.player.yaw, 0.0);
+                let (sx, sy, sz) = (
+                    session.player.x + dir[0] * 3.0,
+                    session.player.y,
+                    session.player.z + dir[2] * 3.0,
+                );
+                let cmd = format!("summon minecraft:{mob} {sx:.2} {sy:.2} {sz:.2}");
+                if let Err(e) = session.send_command(&cmd) {
+                    log::warn!("REWO_SUMMON: {e}");
+                }
+                log::info!("REWO_SUMMON: {cmd}");
+                summoned = true;
+            }
         }
         tick += 1;
         let now = Instant::now();
@@ -454,13 +479,11 @@ fn run_headless(
         let d = |e: &EntityDraw| {
             (e.pos[0] - eye.x).powi(2) + (e.pos[1] - eye.y).powi(2) + (e.pos[2] - eye.z).powi(2)
         };
-        let want_slime = std::env::var("REWO_LOOK").ok().as_deref() == Some("slime");
-        let pref = |e: &&EntityDraw| {
-            if want_slime {
-                e.kind == EntityModelKind::Slime
-            } else {
-                e.name.is_some()
-            }
+        let look = std::env::var("REWO_LOOK").ok();
+        let pref = |e: &&EntityDraw| match look.as_deref() {
+            Some("slime") => e.kind == EntityModelKind::Slime,
+            Some("zombie") => e.kind == EntityModelKind::Zombie,
+            _ => e.name.is_some(),
         };
         let nearest = draws
             .iter()
@@ -615,7 +638,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref())?;
+            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref())?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;

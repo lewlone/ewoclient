@@ -101,6 +101,8 @@ pub struct BakedAssets {
     pub player_skin: Option<Vec<u8>>,
     /// Slime entity texture (64×32 RGBA) for the slime mob model.
     pub slime_tex: Option<Vec<u8>>,
+    /// Zombie entity texture (64×64 RGBA) — reuses the player model geometry.
+    pub zombie_tex: Option<Vec<u8>>,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
@@ -196,6 +198,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::warn!("rewo-data: steve.png missing — players render as capsules");
     }
     let slime_tex = bake_entity_tex(&mut jar, "entity/slime/slime.png", 64, 32);
+    let zombie_tex = bake_entity_tex(&mut jar, "entity/zombie/zombie.png", 64, 64);
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
@@ -301,6 +304,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         player_skin,
         slime_tex,
+        zombie_tex,
         hud,
         stats,
     })

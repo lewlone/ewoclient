@@ -86,12 +86,16 @@ const ATLAS_W: u32 = 256;
 const ATLAS_H: u32 = 128;
 const SKIN_X: u32 = 128;
 const SLIME_Y: u32 = 64;
+/// The 64×64 zombie skin sits at (ZOMBIE_X, 0), right of the player skin.
+const ZOMBIE_X: u32 = 192;
 
 /// Which model to render for an entity.
 #[derive(Clone, Copy, PartialEq)]
 pub enum EntityModelKind {
     /// Textured wide player model (needs the skin).
     Player,
+    /// Humanoid model with the zombie texture + arms-forward pose.
+    Zombie,
     /// Green slime cube (needs the slime texture).
     Slime,
     /// Colored capsule fallback (mobs without a bespoke model).
@@ -118,6 +122,8 @@ pub struct EntityPass {
     capsule: Vec<([f32; 3], [f32; 3])>,
     /// Player model quads (model px, atlas-normalized UVs, baked shade).
     player_quads: Vec<PlayerQuad>,
+    /// Zombie: the same humanoid geometry, UVs into the zombie skin slot.
+    zombie_quads: Vec<PlayerQuad>,
     /// Slime model quads (green cube, atlas UVs into the slime region).
     slime_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
@@ -127,6 +133,7 @@ pub struct EntityPass {
     has_font: bool,
     has_skin: bool,
     has_slime: bool,
+    has_zombie: bool,
 }
 
 /// Which articulated part a player-model quad belongs to — sets its
@@ -157,6 +164,7 @@ impl EntityPass {
         font: Option<FontData<'_>>,
         skin: Option<&[u8]>,
         slime: Option<&[u8]>,
+        zombie: Option<&[u8]>,
     ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
@@ -195,6 +203,18 @@ impl EntityPass {
                 for row in 0..32usize {
                     let src = row * 64 * 4;
                     let dst = ((SLIME_Y as usize + row) * ATLAS_W as usize + SKIN_X as usize) * 4;
+                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+                }
+                true
+            }
+            _ => false,
+        };
+        // Zombie skin (64×64) at (ZOMBIE_X, 0), right of the player skin.
+        let has_zombie = match zombie {
+            Some(px) if px.len() == 64 * 64 * 4 => {
+                for row in 0..64usize {
+                    let src = row * 64 * 4;
+                    let dst = (row * ATLAS_W as usize + ZOMBIE_X as usize) * 4;
                     atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
                 }
                 true
@@ -325,7 +345,8 @@ impl EntityPass {
                 solid_verts: 0,
                 text_verts: 0,
                 capsule: unit_capsule(),
-                player_quads: player_model_quads(),
+                player_quads: cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0),
+                zombie_quads: cuboid_quads(&humanoid_cuboids(), ZOMBIE_X as f32, 0.0),
                 slime_quads: slime_model_quads(),
                 cell,
                 advance,
@@ -333,6 +354,7 @@ impl EntityPass {
                 has_font,
                 has_skin,
                 has_slime,
+                has_zombie,
             })
         }
     }
@@ -354,13 +376,19 @@ impl EntityPass {
             match d.kind {
                 EntityModelKind::Player if self.has_skin => {
                     // Vanilla RenderPlayer scale: 0.9375 model→world, /16 px.
-                    self.emit_model(&mut verts, d, &self.player_quads, 0.9375 / 16.0);
+                    self.emit_model(&mut verts, d, &self.player_quads, 0.9375 / 16.0, 0.0);
+                    continue;
+                }
+                EntityModelKind::Zombie if self.has_zombie => {
+                    // Same humanoid geometry; arms held forward (−75°) — the
+                    // iconic zombie pose. Slightly taller than a player.
+                    self.emit_model(&mut verts, d, &self.zombie_quads, 1.0 / 16.0, -1.3);
                     continue;
                 }
                 EntityModelKind::Slime if self.has_slime => {
                     // 8px outer cube → ~1 block (size-2 slime); no metadata
                     // for the real size, so a fixed medium slime.
-                    self.emit_model(&mut verts, d, &self.slime_quads, 1.0 / 8.0);
+                    self.emit_model(&mut verts, d, &self.slime_quads, 1.0 / 8.0, 0.0);
                     continue;
                 }
                 _ => {}
@@ -408,12 +436,13 @@ impl EntityPass {
         }
     }
 
-    /// A textured cuboid model (player, slime, …): each quad rotates about
-    /// its part's pivot (head pitch, arm/leg walk swing — no-ops for parts
-    /// that don't articulate), then the whole model yaws by `d.yaw`. Model
-    /// pixels × `s` → world blocks. Texels ride the alpha-test (`discard`)
-    /// path, so transparent regions vanish for free.
-    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, quads: &[PlayerQuad], s: f32) {
+    /// A textured cuboid model (player, zombie, slime, …): each quad rotates
+    /// about its part's pivot (head pitch, arm/leg walk swing — no-ops for
+    /// parts that don't articulate), then the whole model yaws by `d.yaw`.
+    /// `arm_forward` (radians) adds a static shoulder rotation — 0 for a
+    /// player, −1.3 for a zombie's held-out arms. Model pixels × `s` → world
+    /// blocks. Texels ride the alpha-test (`discard`) path.
+    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, quads: &[PlayerQuad], s: f32, arm_forward: f32) {
         let yaw = d.yaw.to_radians();
         let (cy, sy) = (yaw.cos(), yaw.sin());
         let pitch = d.pitch.to_radians();
@@ -430,8 +459,8 @@ impl EntityPass {
             let (pivot_y, xrot) = match q.part {
                 LimbPart::Body => (0.0, 0.0),
                 LimbPart::Head => (24.0, pitch),
-                LimbPart::ArmRight => (24.0, (f + PI).cos() * 2.0 * amt),
-                LimbPart::ArmLeft => (24.0, f.cos() * 2.0 * amt),
+                LimbPart::ArmRight => (24.0, arm_forward + (f + PI).cos() * 2.0 * amt),
+                LimbPart::ArmLeft => (24.0, arm_forward + f.cos() * 2.0 * amt),
                 LimbPart::LegRight => (12.0, f.cos() * 1.4 * amt),
                 LimbPart::LegLeft => (12.0, (f + PI).cos() * 1.4 * amt),
             };
@@ -755,11 +784,12 @@ fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
     out
 }
 
-/// The wide ("Steve") player model, ported from `ewo-jni/src/skin.rs`
-/// (Phase F's battle-tested viewer): 6 base cuboids + 6 inflated overlay
-/// layers. Model pixels: feet at y=0, head top at y=32; UVs into the skin
-/// atlas slot.
-fn player_model_quads() -> Vec<PlayerQuad> {
+/// The wide humanoid model (Steve/zombie share it), ported from
+/// `ewo-jni/src/skin.rs`: 6 base cuboids + 6 inflated overlay layers. Model
+/// pixels: feet at y=0, head top at y=32. The 64×64 texture layout is the
+/// same for the player skin and the zombie skin — only the atlas offset
+/// differs — so both call `cuboid_quads` with these cuboids.
+fn humanoid_cuboids() -> [Cuboid; 12] {
     use LimbPart::*;
     #[rustfmt::skip]
     let cuboids = [
@@ -778,7 +808,7 @@ fn player_model_quads() -> Vec<PlayerQuad> {
         Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), part: LegRight },
         Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), part: LegLeft },
     ];
-    cuboid_quads(&cuboids, SKIN_X as f32, 0.0)
+    cuboids
 }
 
 /// The slime cube, from vanilla `SlimeModel` converted to this crate's
@@ -1104,7 +1134,7 @@ mod tests {
 
     #[test]
     fn player_model_unwraps_the_face_where_the_face_is() {
-        let quads = player_model_quads();
+        let quads = cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0);
         assert_eq!(quads.len(), 72, "12 cuboids × 6 faces");
         // Head cuboid (first), front face (first): skin px (8,8)..(16,16),
         // offset into the atlas's skin slot.

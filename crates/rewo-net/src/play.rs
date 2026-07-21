@@ -716,6 +716,18 @@ impl PlaySession {
     }
 
     /// Start digging (creative servers break the block on START).
+    /// Run a server command (unsigned `chat_command`, the string without the
+    /// leading `/`). Used for verification (`/summon …`) when the account is
+    /// op; a normal client mostly sends these too.
+    pub fn send_command(&mut self, command: &str) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_chat_command else {
+            return Err("chat_command unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.string(command);
+        self.send(p)
+    }
+
     /// The block the eye is looking at (voxel raycast against `solid`), or
     /// `None`. `dir` need not be normalized; `reach` in blocks (~4.5 creative).
     pub fn target_block(

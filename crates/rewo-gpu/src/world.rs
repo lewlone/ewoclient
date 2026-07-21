@@ -767,14 +767,16 @@ impl WorldRenderer {
     /// Callers that never attach it (demo/view/bench snapshots) pay
     /// nothing. `skin` = flat 64×64 RGBA (players fall back to capsules
     /// without it).
+    #[allow(clippy::too_many_arguments)]
     pub fn init_entities(
         &mut self,
         gpu: &mut Gpu,
         font: Option<FontData<'_>>,
         skin: Option<&[u8]>,
         slime: Option<&[u8]>,
+        zombie: Option<&[u8]>,
     ) -> Result<(), String> {
-        self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin, slime)?);
+        self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin, slime, zombie)?);
         Ok(())
     }
 

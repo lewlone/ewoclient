@@ -1613,8 +1613,10 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   model registry `EntityModelKind {Player, Slime, Capsule}`; slime is the
   vanilla 8³ cube, face/size deferred); and **block targeting** (voxel
   raycast → vanilla-style selection outline + left-click dig / right-click
-  place, so `rewo live` can mine and build). Also un-broke `rewo view`
-  (stale M2 bake-sanity check).
+  place, so `rewo live` can mine and build); and the **zombie mob** (reuses
+  the player model geometry with the zombie skin + arms-forward pose; the
+  `chat_command` packet + a `REWO_SUMMON` op'd-summon verification knob came
+  with it). Also un-broke `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
