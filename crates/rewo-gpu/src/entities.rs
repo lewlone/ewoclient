@@ -59,9 +59,9 @@ pub struct EntityDraw<'a> {
     pub color: [f32; 3],
     /// Nametag text (players); `None` draws no tag.
     pub name: Option<&'a str>,
-    /// Render the textured player model instead of a capsule (falls back
-    /// to the capsule when no skin was provided).
-    pub player: bool,
+    /// Which model to draw (falls back to the capsule when the model's
+    /// texture wasn't baked).
+    pub kind: EntityModelKind,
     /// Body yaw (degrees, MC convention) — rotates the whole model.
     pub yaw: f32,
     /// Look pitch (degrees) — tilts the head about the neck.
@@ -85,6 +85,18 @@ struct Vertex {
 const ATLAS_W: u32 = 256;
 const ATLAS_H: u32 = 128;
 const SKIN_X: u32 = 128;
+const SLIME_Y: u32 = 64;
+
+/// Which model to render for an entity.
+#[derive(Clone, Copy, PartialEq)]
+pub enum EntityModelKind {
+    /// Textured wide player model (needs the skin).
+    Player,
+    /// Green slime cube (needs the slime texture).
+    Slime,
+    /// Colored capsule fallback (mobs without a bespoke model).
+    Capsule,
+}
 
 pub struct EntityPass {
     layout: vk::PipelineLayout,
@@ -106,12 +118,15 @@ pub struct EntityPass {
     capsule: Vec<([f32; 3], [f32; 3])>,
     /// Player model quads (model px, atlas-normalized UVs, baked shade).
     player_quads: Vec<PlayerQuad>,
+    /// Slime model quads (green cube, atlas UVs into the slime region).
+    slime_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
     cell: u32,
     advance: [u8; 256],
     white_uv: [f32; 2],
     has_font: bool,
     has_skin: bool,
+    has_slime: bool,
 }
 
 /// Which articulated part a player-model quad belongs to — sets its
@@ -141,6 +156,7 @@ impl EntityPass {
         color_format: vk::Format,
         font: Option<FontData<'_>>,
         skin: Option<&[u8]>,
+        slime: Option<&[u8]>,
     ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
@@ -167,6 +183,18 @@ impl EntityPass {
                 for row in 0..64usize {
                     let src = row * 64 * 4;
                     let dst = (row * ATLAS_W as usize + SKIN_X as usize) * 4;
+                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+                }
+                true
+            }
+            _ => false,
+        };
+        // Slime texture (64×32) below the skin at (SKIN_X, SLIME_Y).
+        let has_slime = match slime {
+            Some(px) if px.len() == 64 * 32 * 4 => {
+                for row in 0..32usize {
+                    let src = row * 64 * 4;
+                    let dst = ((SLIME_Y as usize + row) * ATLAS_W as usize + SKIN_X as usize) * 4;
                     atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
                 }
                 true
@@ -298,11 +326,13 @@ impl EntityPass {
                 text_verts: 0,
                 capsule: unit_capsule(),
                 player_quads: player_model_quads(),
+                slime_quads: slime_model_quads(),
                 cell,
                 advance,
                 white_uv,
                 has_font,
                 has_skin,
+                has_slime,
             })
         }
     }
@@ -321,9 +351,19 @@ impl EntityPass {
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
-            if d.player && self.has_skin {
-                self.emit_player(&mut verts, d);
-                continue;
+            match d.kind {
+                EntityModelKind::Player if self.has_skin => {
+                    // Vanilla RenderPlayer scale: 0.9375 model→world, /16 px.
+                    self.emit_model(&mut verts, d, &self.player_quads, 0.9375 / 16.0);
+                    continue;
+                }
+                EntityModelKind::Slime if self.has_slime => {
+                    // 8px outer cube → ~1 block (size-2 slime); no metadata
+                    // for the real size, so a fixed medium slime.
+                    self.emit_model(&mut verts, d, &self.slime_quads, 1.0 / 8.0);
+                    continue;
+                }
+                _ => {}
             }
             let base = d.color;
             for (p, n) in &self.capsule {
@@ -368,14 +408,12 @@ impl EntityPass {
         }
     }
 
-    /// The textured player model: 12 pre-unwrapped cuboids (6 base + 6
-    /// inflated overlay layers). Each quad rotates about its part's pivot
-    /// (head pitch, arm/leg walk swing), then the whole model yaws. Skin
-    /// texels ride the alpha-test (`discard`) path, so transparent overlay
-    /// regions vanish for free.
-    fn emit_player(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>) {
-        // Vanilla's RenderPlayer scale: 0.9375 model→world, /16 px→blocks.
-        const S: f32 = 0.9375 / 16.0;
+    /// A textured cuboid model (player, slime, …): each quad rotates about
+    /// its part's pivot (head pitch, arm/leg walk swing — no-ops for parts
+    /// that don't articulate), then the whole model yaws by `d.yaw`. Model
+    /// pixels × `s` → world blocks. Texels ride the alpha-test (`discard`)
+    /// path, so transparent regions vanish for free.
+    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, quads: &[PlayerQuad], s: f32) {
         let yaw = d.yaw.to_radians();
         let (cy, sy) = (yaw.cos(), yaw.sin());
         let pitch = d.pitch.to_radians();
@@ -385,7 +423,7 @@ impl EntityPass {
         let f = d.limb_swing * 0.6662;
         let amt = d.limb_amount;
         use std::f32::consts::PI;
-        for q in &self.player_quads {
+        for q in quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
@@ -413,9 +451,9 @@ impl EntityPass {
                 p[0] = x * cy - z * sy;
                 p[2] = x * sy + z * cy;
                 p4[i] = [
-                    d.pos[0] + p[0] * S,
-                    d.pos[1] + p[1] * S,
-                    d.pos[2] + p[2] * S,
+                    d.pos[0] + p[0] * s,
+                    d.pos[1] + p[1] * s,
+                    d.pos[2] + p[2] * s,
                 ];
             }
             let c = q.shade;
@@ -645,38 +683,23 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
 /// (Phase F's battle-tested viewer): 6 base cuboids + 6 inflated overlay
 /// layers, standard box-UV unwrap, per-face shades. Model pixels: feet at
 /// y=0, head top at y=32; UVs normalized into the skin's atlas slot.
-fn player_model_quads() -> Vec<PlayerQuad> {
-    struct C {
-        min: [f32; 3],
-        max: [f32; 3],
-        size: [f32; 3],
-        uv: (f32, f32),
-        part: LimbPart,
-    }
-    use LimbPart::*;
-    #[rustfmt::skip]
-    let cuboids = [
-        // Base layer: head, body, right/left arm, right/left leg.
-        C { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: Head },
-        C { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), part: Body },
-        C { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), part: ArmRight },
-        C { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), part: ArmLeft },
-        C { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), part: LegRight },
-        C { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), part: LegLeft },
-        // Overlay layer (hat/jacket/sleeves/pants), inflated 0.25.
-        C { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), part: Head },
-        C { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), part: Body },
-        C { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), part: ArmRight },
-        C { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), part: ArmLeft },
-        C { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), part: LegRight },
-        C { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), part: LegLeft },
-    ];
+/// A model cuboid: box (feet-up y, front +Z) + box-UV origin + limb part.
+struct Cuboid {
+    min: [f32; 3],
+    max: [f32; 3],
+    size: [f32; 3],
+    uv: (f32, f32),
+    part: LimbPart,
+}
 
+/// Unwrap cuboids into per-face quads with standard Minecraft box-UV,
+/// offset into the given atlas texture slot (`off_x`, `off_y` in atlas px).
+fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
     let t = |u: f32, v: f32| -> [f32; 2] {
-        [(SKIN_X as f32 + u) / ATLAS_W as f32, v / ATLAS_H as f32]
+        [(off_x + u) / ATLAS_W as f32, (off_y + v) / ATLAS_H as f32]
     };
     let mut out = Vec::with_capacity(cuboids.len() * 6);
-    for c in &cuboids {
+    for c in cuboids {
         let [x0, y0, z0] = c.min;
         let [x1, y1, z1] = c.max;
         let [sw, sh, sd] = c.size;
@@ -730,6 +753,45 @@ fn player_model_quads() -> Vec<PlayerQuad> {
         }
     }
     out
+}
+
+/// The wide ("Steve") player model, ported from `ewo-jni/src/skin.rs`
+/// (Phase F's battle-tested viewer): 6 base cuboids + 6 inflated overlay
+/// layers. Model pixels: feet at y=0, head top at y=32; UVs into the skin
+/// atlas slot.
+fn player_model_quads() -> Vec<PlayerQuad> {
+    use LimbPart::*;
+    #[rustfmt::skip]
+    let cuboids = [
+        // Base layer: head, body, right/left arm, right/left leg.
+        Cuboid { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: Head },
+        Cuboid { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), part: Body },
+        Cuboid { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), part: ArmRight },
+        Cuboid { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), part: ArmLeft },
+        Cuboid { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), part: LegRight },
+        Cuboid { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), part: LegLeft },
+        // Overlay layer (hat/jacket/sleeves/pants), inflated 0.25.
+        Cuboid { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), part: Head },
+        Cuboid { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), part: Body },
+        Cuboid { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), part: ArmRight },
+        Cuboid { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), part: ArmLeft },
+        Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), part: LegRight },
+        Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), part: LegLeft },
+    ];
+    cuboid_quads(&cuboids, SKIN_X as f32, 0.0)
+}
+
+/// The slime cube, from vanilla `SlimeModel` converted to this crate's
+/// convention (feet-up y, front +Z): the 8³ outer body cube. Vanilla's
+/// inner cube + eyes/mouth live inside a *translucent* outer shell; we
+/// render the outer opaque, so the face is a follow-up (needs the entity
+/// translucent pass). UVs into the slime atlas slot; all one Body part.
+fn slime_model_quads() -> Vec<PlayerQuad> {
+    #[rustfmt::skip]
+    let cuboids = [
+        Cuboid { min: [-4.0, 0.0, -4.0], max: [4.0, 8.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: LimbPart::Body },
+    ];
+    cuboid_quads(&cuboids, SKIN_X as f32, SLIME_Y as f32)
 }
 
 /// sRGB component → linear (CPU-side color prep; discipline #1).

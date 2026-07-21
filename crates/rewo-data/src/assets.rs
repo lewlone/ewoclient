@@ -99,6 +99,8 @@ pub struct BakedAssets {
     /// servers carry no skin data, so every player renders with it until
     /// real profile-texture fetching lands (needs online mode).
     pub player_skin: Option<Vec<u8>>,
+    /// Slime entity texture (64×32 RGBA) for the slime mob model.
+    pub slime_tex: Option<Vec<u8>>,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
@@ -193,6 +195,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     if player_skin.is_none() {
         log::warn!("rewo-data: steve.png missing — players render as capsules");
     }
+    let slime_tex = bake_entity_tex(&mut jar, "entity/slime/slime.png", 64, 32);
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
@@ -297,9 +300,26 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         foliage_tint,
         font,
         player_skin,
+        slime_tex,
         hud,
         stats,
     })
+}
+
+/// Extract an entity texture of a known size to flat RGBA (mob models).
+fn bake_entity_tex(jar: Jar, rel: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("assets/minecraft/textures/{rel}"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let (rgba, gw, gh) = decode_png_any(&bytes)?;
+    if gw == w && gh == h {
+        Some(rgba)
+    } else {
+        log::warn!("rewo-data: {rel} is {gw}×{gh}, expected {w}×{h}");
+        None
+    }
 }
 
 /// Extract the in-game HUD sprite set. Any missing sprite → no HUD.

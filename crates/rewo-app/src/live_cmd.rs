@@ -25,7 +25,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rewo_data::assets::{self, BakedFont};
 use rewo_data::entity_types::EntityTypes;
 use rewo_data::{DataPaths, GameData};
-use rewo_gpu::entities::{srgb_to_linear, EntityDraw, FontData};
+use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, FontData};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
@@ -153,8 +153,21 @@ fn collect_entities<'a>(
     let mut out = Vec::new();
     for (_id, e) in session.world.entities.iter() {
         let p = e.render_pos(alpha);
-        let (w, h) = etypes.dimensions(e.type_id);
+        let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
+        let is_slime = name == "minecraft:slime" || name == "minecraft:magma_cube";
+        let kind = if is_player {
+            EntityModelKind::Player
+        } else if is_slime {
+            EntityModelKind::Slime
+        } else {
+            EntityModelKind::Capsule
+        };
+        let (w, h) = if is_slime {
+            (1.0, 1.0) // fixed medium slime (real size needs metadata)
+        } else {
+            etypes.dimensions(e.type_id)
+        };
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
@@ -166,7 +179,7 @@ fn collect_entities<'a>(
             } else {
                 None
             },
-            player: is_player,
+            kind,
             yaw: e.yaw,
             pitch: e.pitch,
             limb_swing,
@@ -342,7 +355,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref())?;
+    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref())?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -433,14 +446,22 @@ fn run_headless(
         .and_then(|s| s.parse().ok())
         .unwrap_or(10.0);
     if std::env::var("REWO_LOOK_ENTITY").is_ok() {
-        // Prefer the nearest PLAYER (name + rose capsule — the interesting
-        // verification target); fall back to the nearest anything.
+        // Aim at the nearest interesting model: a player, or (REWO_LOOK=slime)
+        // the nearest slime; else the nearest anything.
         let d = |e: &EntityDraw| {
             (e.pos[0] - eye.x).powi(2) + (e.pos[1] - eye.y).powi(2) + (e.pos[2] - eye.z).powi(2)
         };
+        let want_slime = std::env::var("REWO_LOOK").ok().as_deref() == Some("slime");
+        let pref = |e: &&EntityDraw| {
+            if want_slime {
+                e.kind == EntityModelKind::Slime
+            } else {
+                e.name.is_some()
+            }
+        };
         let nearest = draws
             .iter()
-            .filter(|e| e.name.is_some())
+            .filter(pref)
             .min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap())
             .or_else(|| draws.iter().min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap()));
         if let Some(t) = nearest {
@@ -582,7 +603,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref())?;
+            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref())?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;

@@ -724,8 +724,9 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         font: Option<FontData<'_>>,
         skin: Option<&[u8]>,
+        slime: Option<&[u8]>,
     ) -> Result<(), String> {
-        self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin)?);
+        self.entities = Some(EntityPass::new(gpu, self.color_format, font, skin, slime)?);
         Ok(())
     }
 

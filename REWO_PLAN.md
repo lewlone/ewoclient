@@ -138,9 +138,11 @@ the code's author. Nothing below is settled truth.
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
-  limb swing**). See the §15 entries. Still open within it: entity
-  *collision* is ignored (walk through mobs), mobs are capsules, no real
-  per-player skins (needs online-mode profile textures — M7), tags are
+  limb swing**), and **slimes render as the green cube model**. See the
+  §15 entries. Still open within it: entity *collision* is ignored (walk
+  through mobs), most mobs are still capsules (only players + slimes have
+  models), slime face/size need the translucent pass + entity metadata, no
+  real per-player skins (needs online-mode profile textures — M7), tags are
   depth-tested (vanilla shows them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
@@ -1471,3 +1473,30 @@ player capsule).**
   test proved the geometry/UVs/alpha were correct all along. Same
   build-profile gotcha bit twice this session; always rebuild the profile
   you run.)
+
+**2026-07-21 — slime mob model (first real mob; capsules start retiring).**
+
+- **The entity pass gained a mob-model registry.** `EntityDraw.player: bool`
+  became `EntityDraw.kind: EntityModelKind {Player, Slime, Capsule}`;
+  `emit_player` generalized to `emit_model(quads, scale)` (per-part pivot
+  rotation is a no-op for non-articulated parts), and the player box-UV
+  builder became a reusable `cuboid_quads(cuboids, atlas_off_x, off_y)`.
+  Adding a mob is now: a texture in the atlas + a `*_model_quads()` + a
+  dispatch arm.
+- **Slime**: the vanilla `SlimeModel` 8³ outer body cube, converted to this
+  crate's convention (feet-up y, front +Z; `my = (-vx, 24-vy, -vz)`). Its
+  64×32 texture bakes into the entity atlas at (SKIN_X, 64). Rendered opaque
+  at a fixed ~1-block (size-2) scale — real slime size lives in entity
+  metadata (`set_entity_data`, not decoded), and the eyes/mouth sit inside
+  a *translucent* outer shell in vanilla, so **face + size are follow-ups**
+  (need the entity translucent pass + metadata). A green cube reads clearly
+  as a slime.
+- **Dispatch** by entity-type name (`minecraft:slime` / `magma_cube`);
+  slime capsule dims overridden to (1,1). `REWO_LOOK=slime` headless knob
+  aims the verification camera at the nearest slime.
+- **Verified:** the test world's ~15 slimes now render as green slime cubes
+  (close-up inspected — slime-green textured cube); the player model still
+  renders correctly (regression check on the shared `emit_model` refactor —
+  Steve + nametag intact); 0 VUIDs; entity-pass change is live-only so the
+  demo PNG is **byte-identical**, bench flat (avg 0.240 ms); live soak
+  corrections 0, 154 entities. 45 rewo tests green.

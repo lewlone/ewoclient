@@ -1608,8 +1608,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   sky + distance fog** (view-ray sky, terrain fades to the horizon color
   so the chunk-boundary edge dissolves — PNG-verified); and the **in-game
   HUD** (crosshair, hotbar + selection, health hearts, hunger drumsticks
-  from the jar's gui sprites; live-only so demo/view/bench are unchanged).
-  Also un-broke `rewo view` (stale M2 bake-sanity check).
+  from the jar's gui sprites; live-only so demo/view/bench are unchanged);
+  and the **slime mob model** (first real mob — the entity pass now has a
+  model registry `EntityModelKind {Player, Slime, Capsule}`; slime is the
+  vanilla 8³ cube, face/size deferred). Also un-broke `rewo view` (stale M2
+  bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
