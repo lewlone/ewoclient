@@ -1600,10 +1600,12 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   back-to-front per column) + opaque fullbright lava, demo-PNG verified,
   view-replay byte-identical + bench green; **texture animation** (water
   ripples/lava churns via .mcmeta-driven 20 Hz layer re-uploads, PNG-diff
-  verified); and **the player model** — Steve (12 cuboids incl. overlays,
-  box-UV from skin.rs, jar default skin, yaw + head pitch) replaces the
-  player capsule, verified in a headless PNG. Also un-broke `rewo view`
-  (stale M2 bake-sanity check).
+  verified); **the player model** — Steve (12 cuboids incl. overlays,
+  box-UV from skin.rs, jar default skin, yaw + head pitch + **walk-cycle
+  limb swing** derived client-side from motion) replaces the player
+  capsule, headless-PNG verified; and the **async upload ring** (4-slot,
+  no per-frame fence wait — closes the last §4 deviation). Also un-broke
+  `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

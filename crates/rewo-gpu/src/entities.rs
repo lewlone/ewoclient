@@ -66,6 +66,10 @@ pub struct EntityDraw<'a> {
     pub yaw: f32,
     /// Look pitch (degrees) — tilts the head about the neck.
     pub pitch: f32,
+    /// Walk-cycle phase + amplitude (vanilla limbSwing / limbSwingAmount)
+    /// — arms and legs swing about their pivots. 0 amount = neutral pose.
+    pub limb_swing: f32,
+    pub limb_amount: f32,
 }
 
 #[repr(C)]
@@ -110,14 +114,25 @@ pub struct EntityPass {
     has_skin: bool,
 }
 
+/// Which articulated part a player-model quad belongs to — sets its
+/// rotation pivot height and swing formula.
+#[derive(Clone, Copy, PartialEq)]
+enum LimbPart {
+    Body,
+    Head,
+    ArmRight,
+    ArmLeft,
+    LegRight,
+    LegLeft,
+}
+
 /// One face of the player model, pre-unwrapped: corners in model pixels
 /// (y 0..32, feet at 0), UVs already atlas-normalized, per-face shade.
 struct PlayerQuad {
     pos: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     shade: f32,
-    /// Head/hat quads pitch about the neck pivot (0, 24, 0).
-    head: bool,
+    part: LimbPart,
 }
 
 impl EntityPass {
@@ -354,29 +369,44 @@ impl EntityPass {
     }
 
     /// The textured player model: 12 pre-unwrapped cuboids (6 base + 6
-    /// inflated overlay layers), yaw-rotated as a whole, head pitched
-    /// about the neck. Skin texels ride the alpha-test (`discard`) path,
-    /// so transparent overlay regions vanish for free.
+    /// inflated overlay layers). Each quad rotates about its part's pivot
+    /// (head pitch, arm/leg walk swing), then the whole model yaws. Skin
+    /// texels ride the alpha-test (`discard`) path, so transparent overlay
+    /// regions vanish for free.
     fn emit_player(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>) {
         // Vanilla's RenderPlayer scale: 0.9375 model→world, /16 px→blocks.
         const S: f32 = 0.9375 / 16.0;
         let yaw = d.yaw.to_radians();
         let (cy, sy) = (yaw.cos(), yaw.sin());
         let pitch = d.pitch.to_radians();
-        let (cp, sp) = (pitch.cos(), pitch.sin());
+        // Vanilla HumanoidModel.setupAnim: opposite-phase diagonal gait,
+        // arms ±2.0 rad · amount, legs ±1.4 rad · amount, at the 0.6662
+        // walk frequency. Head rotation is the look pitch.
+        let f = d.limb_swing * 0.6662;
+        let amt = d.limb_amount;
+        use std::f32::consts::PI;
         for q in &self.player_quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
+            let (pivot_y, xrot) = match q.part {
+                LimbPart::Body => (0.0, 0.0),
+                LimbPart::Head => (24.0, pitch),
+                LimbPart::ArmRight => (24.0, (f + PI).cos() * 2.0 * amt),
+                LimbPart::ArmLeft => (24.0, f.cos() * 2.0 * amt),
+                LimbPart::LegRight => (12.0, f.cos() * 1.4 * amt),
+                LimbPart::LegLeft => (12.0, (f + PI).cos() * 1.4 * amt),
+            };
+            let (cx_, sx_) = (xrot.cos(), xrot.sin());
             let mut p4 = [[0f32; 3]; 4];
             for (i, corner) in q.pos.iter().enumerate() {
                 let mut p = *corner;
-                if q.head {
-                    // Pitch about the neck pivot (0, 24, 0): +pitch = look
-                    // down (front face tilts toward −Y).
-                    let (py, pz) = (p[1] - 24.0, p[2]);
-                    p[1] = 24.0 + py * cp - pz * sp;
-                    p[2] = py * sp + pz * cp;
+                // Local rotation about X at the part pivot (+angle tilts the
+                // front face toward −Y — look-down / leg-forward).
+                if xrot != 0.0 {
+                    let (dy, dz) = (p[1] - pivot_y, p[2]);
+                    p[1] = pivot_y + dy * cx_ - dz * sx_;
+                    p[2] = dy * sx_ + dz * cx_;
                 }
                 // Whole-model yaw: front (+Z) → MC look dir (−sin, 0, cos).
                 let (x, z) = (p[0], p[2]);
@@ -621,24 +651,25 @@ fn player_model_quads() -> Vec<PlayerQuad> {
         max: [f32; 3],
         size: [f32; 3],
         uv: (f32, f32),
-        head: bool,
+        part: LimbPart,
     }
+    use LimbPart::*;
     #[rustfmt::skip]
     let cuboids = [
         // Base layer: head, body, right/left arm, right/left leg.
-        C { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), head: true },
-        C { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), head: false },
-        C { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), head: false },
-        C { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), head: false },
-        C { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), head: false },
-        C { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), head: false },
+        C { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: Head },
+        C { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), part: Body },
+        C { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), part: ArmRight },
+        C { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), part: ArmLeft },
+        C { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), part: LegRight },
+        C { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), part: LegLeft },
         // Overlay layer (hat/jacket/sleeves/pants), inflated 0.25.
-        C { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), head: true },
-        C { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), head: false },
-        C { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), head: false },
-        C { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), head: false },
-        C { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), head: false },
-        C { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), head: false },
+        C { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), part: Head },
+        C { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), part: Body },
+        C { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), part: ArmRight },
+        C { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), part: ArmLeft },
+        C { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), part: LegRight },
+        C { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), part: LegLeft },
     ];
 
     let t = |u: f32, v: f32| -> [f32; 2] {
@@ -694,7 +725,7 @@ fn player_model_quads() -> Vec<PlayerQuad> {
                 pos,
                 uv,
                 shade,
-                head: c.head,
+                part: c.part,
             });
         }
     }
@@ -1016,7 +1047,10 @@ mod tests {
         // Head cuboid (first), front face (first): skin px (8,8)..(16,16),
         // offset into the atlas's skin slot.
         let front = &quads[0];
-        assert!(front.head);
+        assert!(front.part == LimbPart::Head);
+        // Legs/arms mapped to distinct parts (drives the swing).
+        assert!(quads.iter().any(|q| q.part == LimbPart::LegRight));
+        assert!(quads.iter().any(|q| q.part == LimbPart::ArmLeft));
         let u0 = (SKIN_X as f32 + 8.0) / ATLAS_W as f32;
         let v0 = 8.0 / ATLAS_H as f32;
         assert_eq!(front.uv[0], [u0, v0]);

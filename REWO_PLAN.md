@@ -137,10 +137,10 @@ the code's author. Nothing below is settled truth.
   player-info decode, vanilla 3-tick lerp + partial-tick blend, capsule
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
-  default skin from the jar, whole-body yaw + head pitch). See the §15
-  entries. Still open within it: entity *collision* is ignored (walk
-  through mobs), mobs are capsules, no real per-player skins (needs
-  online-mode profile textures — M7), no limb-swing animation, tags are
+  default skin from the jar, whole-body yaw + head pitch + **walk-cycle
+  limb swing**). See the §15 entries. Still open within it: entity
+  *collision* is ignored (walk through mobs), mobs are capsules, no real
+  per-player skins (needs online-mode profile textures — M7), tags are
   depth-tested (vanilla shows them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
@@ -1386,3 +1386,29 @@ player capsule).**
   validation 0 VUIDs on demo + live streaming (debug); live soak: flood
   488 uploads in 2.0 s, corrections 0, lows tighter than the pre-async
   run at the same 138-entity count.
+
+**2026-07-21 — player limb-swing animation (the model walks).**
+
+- **Derived client-side from motion** (the server never sends limb
+  angles): `EntityState::tick` now updates vanilla's `animationSpeed`
+  (smoothed horizontal speed 0..1, `+= (min(1, dist·4) − speed)·0.4`) and
+  `animationPosition` (phase, `+= speed` each tick) from the entity's own
+  per-tick displacement — so a standing entity's limbs freeze and a
+  walker's build up, exactly as `LivingEntity.aiStep` does. Exposed via
+  `EntityState::limb() → (swing, amount)`.
+- **The model articulates** (`emit_player`): each of the 12 cuboids is
+  tagged with a `LimbPart` (Body/Head/Arm{R,L}/Leg{R,L}); arms/legs rotate
+  about their shoulder (y=24) / hip (y=12) pivots by
+  `HumanoidModel.setupAnim`'s constants — arms ±2.0 rad·amount, legs
+  ±1.4 rad·amount at the 0.6662 walk frequency, opposite-phase diagonal
+  gait. Head keeps its look-pitch about the neck (unified into the same
+  per-part X-rotation). Verified the gait direction from the decompile
+  math: `+xRot` on a leg swings the foot to −Z (behind); right leg back ⇔
+  right arm forward.
+- **Verified:** unit test pins still→no-swing and sustained-walk→amount>0.5
+  + phase advance; a `REWO_FORCE_LIMB=swing,amount` headless knob (one-shot,
+  dev-only) pins a player's pose so a still-target PNG proves the mechanism
+  deterministically — inspected a live second client mid-stride: legs
+  clearly split (one forward, one back), arms swung in opposite phase, torso
+  + head correct. Entity-only change → demo PNG **byte-identical**, bench
+  untouched. 45 rewo tests green.

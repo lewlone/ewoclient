@@ -27,6 +27,13 @@ pub struct EntityState {
     lerp_steps: u32,
     cur: [f64; 3],
     prev: [f64; 3],
+    /// Walk-cycle phase (vanilla `animationPosition`) — advances by
+    /// `limb_amount` each tick, so a still entity's limbs freeze.
+    limb_swing: f32,
+    /// Smoothed horizontal speed 0..1 (vanilla `animationSpeed`) — the
+    /// swing amplitude. The server never sends limb angles; both are
+    /// derived here from the entity's own motion, exactly as vanilla does.
+    limb_amount: f32,
 }
 
 impl EntityState {
@@ -42,6 +49,8 @@ impl EntityState {
             lerp_steps: 0,
             cur: [x, y, z],
             prev: [x, y, z],
+            limb_swing: 0.0,
+            limb_amount: 0.0,
         }
     }
 
@@ -65,6 +74,7 @@ impl EntityState {
     }
 
     fn tick(&mut self) {
+        let before = self.cur;
         self.prev = self.cur;
         if self.lerp_steps > 0 {
             let n = self.lerp_steps as f64;
@@ -73,6 +83,14 @@ impl EntityState {
             self.cur[2] += (self.z - self.cur[2]) / n;
             self.lerp_steps -= 1;
         }
+        // Walk animation from this tick's horizontal displacement (vanilla
+        // LivingEntity.aiStep): target = min(1, dist·4), smoothed by 0.4,
+        // phase advances by the smoothed amount.
+        let dx = self.cur[0] - before[0];
+        let dz = self.cur[2] - before[2];
+        let target = ((dx * dx + dz * dz).sqrt() as f32 * 4.0).min(1.0);
+        self.limb_amount += (target - self.limb_amount) * 0.4;
+        self.limb_swing += self.limb_amount;
     }
 
     /// Frame position: last tick's `prev` blended toward `cur` by the
@@ -84,6 +102,11 @@ impl EntityState {
             self.prev[1] + (self.cur[1] - self.prev[1]) * a,
             self.prev[2] + (self.cur[2] - self.prev[2]) * a,
         ]
+    }
+
+    /// Walk-cycle phase + amplitude for the model's limb swing.
+    pub fn limb(&self) -> (f32, f32) {
+        (self.limb_swing, self.limb_amount)
     }
 }
 
@@ -173,6 +196,24 @@ mod tests {
             e.tick();
         }
         assert_eq!(e.render_pos(1.0)[0], 11.0);
+    }
+
+    #[test]
+    fn still_entity_has_no_limb_swing_but_walking_builds_it_up() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for _ in 0..10 {
+            e.tick(); // no target set → cur never moves
+        }
+        let (_, amt_still) = e.limb();
+        assert!(amt_still < 1e-6, "still entity: amount {amt_still}");
+        // Now walk ~0.2 blk/tick and let the smoother ramp.
+        for _ in 0..20 {
+            e.nudge(0.2, 0.0, 0.0);
+            e.tick();
+        }
+        let (swing, amt) = e.limb();
+        assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
+        assert!(swing > 0.0, "phase advanced: {swing}");
     }
 
     #[test]

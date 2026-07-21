@@ -142,11 +142,20 @@ fn collect_entities<'a>(
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
+    // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
+    // pins every player's walk pose so a still-target PNG can prove the
+    // limb-swing mechanism deterministically (a live walker's phase at
+    // capture time is timing-dependent). One-shot; zero-cost when unset.
+    let force_limb: Option<(f32, f32)> = std::env::var("REWO_FORCE_LIMB").ok().and_then(|s| {
+        let mut it = s.split(',');
+        Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+    });
     let mut out = Vec::new();
     for (_id, e) in session.world.entities.iter() {
         let p = e.render_pos(alpha);
         let (w, h) = etypes.dimensions(e.type_id);
         let is_player = e.type_id == etypes.player_id;
+        let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
@@ -160,6 +169,8 @@ fn collect_entities<'a>(
             player: is_player,
             yaw: e.yaw,
             pitch: e.pitch,
+            limb_swing,
+            limb_amount,
         });
     }
     out
