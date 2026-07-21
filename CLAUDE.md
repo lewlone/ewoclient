@@ -1622,8 +1622,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   coordinates/facing line + a chat overlay, the client's first on-screen
   text); and **entity metadata decode** (`set_entity_data` → a serializer
   skip table → custom nametags on mobs; slime size/baby deferred as
-  entity-specific indices). The mob registry spans humanoid/cube/quadruped.
-  Also un-broke `rewo view` (stale M2 bake-sanity check).
+  entity-specific indices); and **quadruped leg animation** (the cow walks
+  in vanilla's diagonal gait — `emit_model`'s rotation generalized to a
+  `(pivot_y, pivot_z)` pivot for the front/back legs). The mob registry
+  spans humanoid/cube/quadruped. Also un-broke `rewo view` (stale M2
+  bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

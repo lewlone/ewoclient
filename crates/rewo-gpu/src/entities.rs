@@ -143,8 +143,9 @@ pub struct EntityPass {
     has_cow: bool,
 }
 
-/// Which articulated part a player-model quad belongs to — sets its
-/// rotation pivot height and swing formula.
+/// Which articulated part a model quad belongs to — sets its rotation pivot
+/// and swing formula. Humanoid parts pivot at z=0; the quadruped legs pivot
+/// at their own z (front vs. back), with the diagonal gait.
 #[derive(Clone, Copy, PartialEq)]
 enum LimbPart {
     Body,
@@ -153,6 +154,12 @@ enum LimbPart {
     ArmLeft,
     LegRight,
     LegLeft,
+    // Quadruped legs (pivot y=12; z per front/back). Diagonal gait:
+    // back-right + front-left in phase, back-left + front-right opposite.
+    QuadBackRight,
+    QuadBackLeft,
+    QuadFrontRight,
+    QuadFrontLeft,
 }
 
 /// One face of the player model, pre-unwrapped: corners in model pixels
@@ -463,13 +470,19 @@ impl EntityPass {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
-            let (pivot_y, xrot) = match q.part {
-                LimbPart::Body => (0.0, 0.0),
-                LimbPart::Head => (24.0, pitch),
-                LimbPart::ArmRight => (24.0, arm_forward + (f + PI).cos() * 2.0 * amt),
-                LimbPart::ArmLeft => (24.0, arm_forward + f.cos() * 2.0 * amt),
-                LimbPart::LegRight => (12.0, f.cos() * 1.4 * amt),
-                LimbPart::LegLeft => (12.0, (f + PI).cos() * 1.4 * amt),
+            // (pivot_y, pivot_z, xrot). Quadruped legs pivot at their own z
+            // (front ≈ +5, back ≈ −7) so they swing about their tops.
+            let (pivot_y, pivot_z, xrot) = match q.part {
+                LimbPart::Body => (0.0, 0.0, 0.0),
+                LimbPart::Head => (24.0, 0.0, pitch),
+                LimbPart::ArmRight => (24.0, 0.0, arm_forward + (f + PI).cos() * 2.0 * amt),
+                LimbPart::ArmLeft => (24.0, 0.0, arm_forward + f.cos() * 2.0 * amt),
+                LimbPart::LegRight => (12.0, 0.0, f.cos() * 1.4 * amt),
+                LimbPart::LegLeft => (12.0, 0.0, (f + PI).cos() * 1.4 * amt),
+                LimbPart::QuadBackRight => (12.0, -7.0, f.cos() * 1.2 * amt),
+                LimbPart::QuadBackLeft => (12.0, -7.0, (f + PI).cos() * 1.2 * amt),
+                LimbPart::QuadFrontRight => (12.0, 5.0, (f + PI).cos() * 1.2 * amt),
+                LimbPart::QuadFrontLeft => (12.0, 5.0, f.cos() * 1.2 * amt),
             };
             let (cx_, sx_) = (xrot.cos(), xrot.sin());
             let mut p4 = [[0f32; 3]; 4];
@@ -478,9 +491,9 @@ impl EntityPass {
                 // Local rotation about X at the part pivot (+angle tilts the
                 // front face toward −Y — look-down / leg-forward).
                 if xrot != 0.0 {
-                    let (dy, dz) = (p[1] - pivot_y, p[2]);
+                    let (dy, dz) = (p[1] - pivot_y, p[2] - pivot_z);
                     p[1] = pivot_y + dy * cx_ - dz * sx_;
-                    p[2] = dy * sx_ + dz * cx_;
+                    p[2] = pivot_z + dy * sx_ + dz * cx_;
                 }
                 // Whole-model yaw: front (+Z) → MC look dir (−sin, 0, cos).
                 let (x, z) = (p[0], p[2]);
@@ -809,23 +822,25 @@ fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
 /// local coords with each part's rotation + pose applied, then converted to
 /// this crate's convention (feet-up y, front +Z: `(-x, 24-y, -z)`). The
 /// body is a box rotated 90° about X (lies horizontal) — the reason this
-/// needs the per-vertex transform rather than plain `cuboid_quads`. Static
-/// for v1 (no leg walk-swing, no head look).
+/// needs the per-vertex transform rather than plain `cuboid_quads`. The 4
+/// legs animate (diagonal gait); head + body are static (head-look is a
+/// follow-up).
 fn quadruped_model_quads(off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
     use std::f32::consts::FRAC_PI_2;
-    // (min, max, size, uv, rot_x, pose) in vanilla local coords.
+    use LimbPart::*;
+    // (min, max, size, uv, rot_x, pose, part) in vanilla local coords.
     let leg = 12.0f32;
     #[rustfmt::skip]
-    let parts: [([f32;3],[f32;3],[f32;3],(f32,f32),f32,[f32;3]); 6] = [
+    let parts: [([f32;3],[f32;3],[f32;3],(f32,f32),f32,[f32;3],LimbPart); 6] = [
         // head
-        ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.]),
+        ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.], Body),
         // body — rotated 90° about X so it lies horizontal
-        ([-5.,-10.,-7.], [5.,6.,1.], [10.,16.,8.], (28.,8.), FRAC_PI_2, [0., 17.-leg, 2.]),
+        ([-5.,-10.,-7.], [5.,6.,1.], [10.,16.,8.], (28.,8.), FRAC_PI_2, [0., 17.-leg, 2.], Body),
         // legs: right-hind, left-hind, right-front, left-front
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, 7.]),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, 7.]),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, -5.]),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.]),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, 7.], QuadBackRight),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, 7.], QuadBackLeft),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, -5.], QuadFrontRight),
+        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.], QuadFrontLeft),
     ];
     // Rotate a local vertex about X, add the pose, convert vanilla→my.
     let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
@@ -835,17 +850,12 @@ fn quadruped_model_quads(off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
         [-v[0], 24.0 - v[1], -v[2]]
     };
     let mut out = Vec::with_capacity(parts.len() * 6);
-    for (min, max, size, uv, rot_x, pose) in parts {
+    for (min, max, size, uv, rot_x, pose, part) in parts {
         for (mut pos, uv, shade) in box_uv_faces(min, max, size, uv, off_x, off_y) {
             for p in &mut pos {
                 *p = xform(*p, rot_x, pose);
             }
-            out.push(PlayerQuad {
-                pos,
-                uv,
-                shade,
-                part: LimbPart::Body,
-            });
+            out.push(PlayerQuad { pos, uv, shade, part });
         }
     }
     out

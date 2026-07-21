@@ -1619,3 +1619,24 @@ capability).**
   feedback — end-to-end chat + metadata + the `chat_command` packet all in
   one frame). 0 VUIDs; decode-side + live-only render → demo
   **byte-identical**, bench flat; soak corrections 0. 53 rewo tests green.
+
+**2026-07-22 — quadruped leg animation (the cow walks).**
+
+- The 4 cow legs now swing in vanilla's **diagonal gait** (back-right +
+  front-left in phase, back-left + front-right opposite; ±1.2 rad · amount
+  at the 0.6662 walk frequency) — driven by the same client-derived
+  `limb_swing`/`limb_amount` the humanoid mobs use. Head + body stay static
+  (head-look is a follow-up).
+- **`emit_model`'s rotation generalized from `pivot_y` to `(pivot_y,
+  pivot_z)`** — the crux: humanoid legs sit at z≈0 (rotating about z=0 is
+  fine), but the quadruped's front/back legs sit at different z, so each
+  must swing about *its own* top (front z≈+5, back z≈−7). 4 new `LimbPart`
+  variants (`QuadBackRight/Left`, `QuadFrontRight/Left`) carry the pivot-z +
+  phase; humanoid parts pass pivot_z 0 (unchanged behavior — player/zombie
+  render identically).
+- **Verified:** summoned a cow, forced a mid-stride pose (`REWO_FORCE_LIMB`)
+  — the legs splay front/back in the diagonal gait (a side-view cow shows it
+  cleanly); the persisted "Bessie" nametag from the prior run confirms
+  custom names survive a world reload too. 0 VUIDs; entity-only + live-only
+  → demo **byte-identical**, bench flat; soak corrections 0. 53 rewo tests
+  green.
