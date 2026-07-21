@@ -374,6 +374,9 @@ fn run_headless(
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
     }
+    if let Some(font) = font_data(&baked) {
+        world_renderer.init_text(&mut gpu, &font)?;
+    }
 
     // Pump the session on a real 20 Hz clock until spawned + settled, so
     // chunks arrive and the player position is real.
@@ -403,6 +406,15 @@ fn run_headless(
                 }
                 log::info!("REWO_SUMMON: {cmd}");
                 summoned = true;
+            }
+        }
+        // REWO_CHAT: send a chat line once (verifies the chat overlay).
+        if summoned || session.spawned {
+            if let Ok(msg) = std::env::var("REWO_CHAT") {
+                if !msg.is_empty() {
+                    let _ = session.send_chat(&msg);
+                    std::env::remove_var("REWO_CHAT");
+                }
             }
         }
         tick += 1;
@@ -519,6 +531,7 @@ fn run_headless(
     world_renderer.set_entities(&draws, cr, cu);
     world_renderer.set_camera(eye.to_array());
     world_renderer.set_hud(session.health, session.food, 0);
+    world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0));
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
@@ -867,6 +880,10 @@ impl LiveApp {
         state
             .world_renderer
             .set_hud(session.health, session.food, self.hotbar_slot);
+        let px = gui_px(extent.width, extent.height);
+        state
+            .world_renderer
+            .set_text(build_text(session, px, extent.height as f32));
         if let Err(e) = state.world_renderer.anim_tick(&mut state.gpu, session.ticks) {
             log::error!("live: texture animation: {e}");
         }
@@ -995,6 +1012,65 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
     p.push(version);
     p.push(format!("{version}.jar"));
     p.exists().then_some(p)
+}
+
+/// Build this frame's overlay text: a coordinates/facing line (top-left)
+/// and the last few chat messages (above the hotbar). GUI scale `px`.
+fn build_text(session: &PlaySession, px: f32, screen_h: f32) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_gpu::world::OwnedTextLine;
+    let white = [0.93, 0.93, 0.93];
+    let mut lines = Vec::new();
+    // Coords + facing (top-left).
+    let facing = compass(session.player.yaw);
+    lines.push(OwnedTextLine {
+        x: 3.0 * px,
+        y: 3.0 * px,
+        px,
+        color: white,
+        alpha: 1.0,
+        text: format!(
+            "XYZ {:.1} {:.1} {:.1}   facing {}",
+            session.player.x, session.player.y, session.player.z, facing,
+        ),
+    });
+    // Recent chat (bottom-left, above the hotbar; oldest higher, newest low).
+    let chat = &session.chat_log;
+    let show = 8.min(chat.len());
+    let line_h = 10.0 * px; // 9px glyph + 1px gap
+    let base_y = screen_h - 40.0 * px - line_h; // above the hotbar
+    for (i, msg) in chat[chat.len() - show..].iter().enumerate() {
+        // Trim overlong lines; a real client wraps.
+        let text: String = msg.chars().take(80).collect();
+        lines.push(OwnedTextLine {
+            x: 3.0 * px,
+            y: base_y - (show as f32 - 1.0 - i as f32) * line_h,
+            px,
+            color: white,
+            alpha: 1.0,
+            text,
+        });
+    }
+    lines
+}
+
+/// Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
+fn gui_px(w: u32, h: u32) -> f32 {
+    ((h as f32 / 240.0).min(w as f32 / 320.0)).floor().clamp(1.0, 4.0)
+}
+
+/// Cardinal/intercardinal name for a yaw (MC: 0=south/+Z, 90=west/−X).
+fn compass(yaw_deg: f32) -> &'static str {
+    let a = yaw_deg.rem_euclid(360.0);
+    match (a / 45.0).round() as i32 % 8 {
+        0 => "S",
+        1 => "SW",
+        2 => "W",
+        3 => "NW",
+        4 => "N",
+        5 => "NE",
+        6 => "E",
+        _ => "SE",
+    }
 }
 
 /// Eye position in f64 (block-precise) — feet + the 1.62 eye height.

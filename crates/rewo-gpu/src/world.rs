@@ -29,7 +29,19 @@ use gpu_allocator::MemoryLocation;
 
 use crate::entities::{EntityDraw, EntityPass, FontData};
 use crate::hud::{HudPass, HudSpritesData};
+use crate::text::{TextLine, TextPass};
 use crate::Gpu;
+
+/// An owned screen-space text line (the app fills these each frame; the
+/// renderer borrows them into `TextLine` at draw time).
+pub struct OwnedTextLine {
+    pub x: f32,
+    pub y: f32,
+    pub px: f32,
+    pub color: [f32; 3],
+    pub alpha: f32,
+    pub text: String,
+}
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 const VERTEX_STRIDE: u64 = 36;
@@ -241,6 +253,10 @@ pub struct WorldRenderer {
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
     hud_state: Option<(f32, i32, u8)>,
+    text: Option<TextPass>,
+    /// Screen-space text lines to draw this frame (chat, coords); empty →
+    /// nothing (view/demo/bench never set them).
+    text_lines: Vec<OwnedTextLine>,
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
@@ -632,6 +648,8 @@ impl WorldRenderer {
                 entities: None,
                 hud: None,
                 hud_state: None,
+                text: None,
+                text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
                 fog: parse_fog_env(),
                 tex_size,
@@ -799,6 +817,17 @@ impl WorldRenderer {
     /// Never called → no HUD (view/demo/bench).
     pub fn set_hud(&mut self, health: f32, food: i32, slot: u8) {
         self.hud_state = Some((health, food, slot));
+    }
+
+    /// Attach the screen-space text pass (chat + coords overlay).
+    pub fn init_text(&mut self, gpu: &mut Gpu, font: &FontData<'_>) -> Result<(), String> {
+        self.text = Some(TextPass::new(gpu, self.color_format, font)?);
+        Ok(())
+    }
+
+    /// Replace this frame's screen-space text lines (chat, coords).
+    pub fn set_text(&mut self, lines: Vec<OwnedTextLine>) {
+        self.text_lines = lines;
     }
 
     /// Rebuild this frame's entity geometry (no-op until `init_entities`).
@@ -1187,9 +1216,26 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
-        // HUD last, over everything, in screen space.
+        // HUD, then text (chat/coords), last — all screen space.
         if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(gpu, cb, extent, health, food, slot);
+        }
+        if let Some(text) = self.text.as_mut() {
+            if !self.text_lines.is_empty() {
+                let lines: Vec<TextLine> = self
+                    .text_lines
+                    .iter()
+                    .map(|l| TextLine {
+                        x: l.x,
+                        y: l.y,
+                        px: l.px,
+                        color: l.color,
+                        alpha: l.alpha,
+                        text: &l.text,
+                    })
+                    .collect();
+                text.draw(gpu, cb, extent, &lines);
+            }
         }
     }
 
@@ -1428,6 +1474,9 @@ impl WorldRenderer {
         }
         if let Some(mut hud) = self.hud.take() {
             hud.destroy(gpu);
+        }
+        if let Some(mut text) = self.text.take() {
+            text.destroy(gpu);
         }
         unsafe {
             let device = &gpu.device;

@@ -20,6 +20,8 @@ fn main() {
         ("shaders/hud.frag", "hud.frag.spv"),
         ("shaders/line.vert", "line.vert.spv"),
         ("shaders/line.frag", "line.frag.spv"),
+        ("shaders/text.vert", "text.vert.spv"),
+        ("shaders/text.frag", "text.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
         println!("cargo:rerun-if-changed={src}");

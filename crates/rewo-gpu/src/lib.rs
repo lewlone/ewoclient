@@ -16,6 +16,7 @@
 pub mod entities;
 pub mod hud;
 pub mod offscreen;
+pub mod text;
 pub mod overlay;
 pub mod renderer;
 pub mod swapchain;

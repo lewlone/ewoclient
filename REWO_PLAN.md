@@ -1574,3 +1574,25 @@ command packet.**
   refactor — unit test intact); demo **byte-identical**, bench flat, live
   soak corrections 0. 50 rewo tests green. The mob registry now spans three
   body plans: humanoid (player/zombie), cube (slime), quadruped (cow).
+
+**2026-07-22 — screen-space text: coordinates + chat overlay (a new
+capability).**
+
+- **`TextPass`** (`rewo-gpu/text.rs`): the vanilla bitmap font rendered as
+  2D screen-space glyph quads — its own 128×128 font texture + a 2D
+  pipeline (alpha-blended, no depth, top-left pixel origin), a per-frame
+  glyph-quad ring. Each glyph draws **twice**: a darkened copy offset +1
+  font-px (the vanilla drop shadow), then the tinted glyph, so text stays
+  readable on any background. Layout uses the font's per-glyph advances.
+  Drawn last (over the HUD). `OwnedTextLine` lets the app fill lines each
+  frame; the renderer borrows them into `TextLine` at draw time.
+- **Uses**: a coordinates + facing line top-left (`XYZ x y z   facing NE`,
+  compass from yaw) and a **chat overlay** (the last 8 `chat_log` messages,
+  above the hotbar). Both at the auto GUI scale.
+- **This is the client's first on-screen text** — nametags were world-space
+  billboards; now chat, coords, and any debug line have a home.
+- **Verified:** headless PNG shows the coords line (with drop shadow) +
+  "hello from rewo!" in the chat area (sent via a `REWO_CHAT` knob); the
+  HUD + world render underneath; 0 VUIDs; text is live-only so the demo PNG
+  is **byte-identical**, bench flat; live soak corrections 0. 50 rewo tests
+  green.

@@ -1617,9 +1617,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   the player model geometry with the zombie skin + arms-forward pose; the
   `chat_command` packet + a `REWO_SUMMON` op'd-summon verification knob came
   with it); and the **cow mob** (the quadruped body plan — rotated body box,
-  `box_uv_faces` extracted for the per-vertex transform). The mob registry
-  now spans humanoid/cube/quadruped. Also un-broke `rewo view` (stale M2
-  bake-sanity check).
+  `box_uv_faces` extracted for the per-vertex transform); and **screen-space
+  text** (a `TextPass` rendering the vanilla font with drop shadows — a
+  coordinates/facing line + a chat overlay, the client's first on-screen
+  text). The mob registry spans humanoid/cube/quadruped. Also un-broke
+  `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
