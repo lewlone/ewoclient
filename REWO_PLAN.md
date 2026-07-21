@@ -1500,3 +1500,32 @@ player capsule).**
   Steve + nametag intact); 0 VUIDs; entity-pass change is live-only so the
   demo PNG is **byte-identical**, bench flat (avg 0.240 ms); live soak
   corrections 0, 154 entities. 45 rewo tests green.
+
+**2026-07-21 — block targeting: selection outline + interactive dig/place
+(the windowed client can now mine and build).**
+
+- **Raycast** (`rewo-world/raycast.rs`): Amanatides–Woo voxel DDA from the
+  eye along the look dir, testing each cell against `baked.solid` (the same
+  flag collision uses), up to a 4.5-block reach; returns the hit block + the
+  entered-face normal (the placement side). 5 unit tests (floor-from-above,
+  wall-near-face, miss, max-distance, diagonal). Exposed as
+  `PlaySession::target_block(eye, dir, reach)`.
+- **Selection outline** (`rewo-gpu`): a `LINE_LIST` pipeline (depth-tested
+  against terrain — reversed-Z GREATER, depth-write off, alpha-blended)
+  draws the 12 edges of the targeted block, inflated 0.002 to dodge
+  z-fighting. `WorldRenderer::set_selection(Option<[i32;3]>)`; `None` →
+  nothing (so view/demo/bench, which never set it, stay byte-identical).
+  Black at 0.7 alpha — vanilla's look.
+- **Interactive** (`rewo live`, windowed): each frame raycasts and sets the
+  outline; **left-click digs** the targeted block (creative = instant break),
+  **right-click places** against the hit face. The client gives itself a
+  stack of dirt in slot 0 on spawn (creative) so placing has something to
+  place; the existing dirty-set → mesh-pool loop remeshes the edit live.
+- **Verified:** headless render looking down logs `targeting block
+  [-3,-61,6] face [0,1,0]` (correct — the grass block under the crosshair
+  via its top face) and the PNG shows the black diamond outline on that
+  block; 0 VUIDs; windowed soak (per-frame raycast in the hot loop)
+  corrections 0, frame avg 0.71 ms; demo/view **byte-identical**, bench flat
+  (best-yet 0.1% low 0.810 ms). Dig/place packet mechanics were already
+  proven by `rewo play`; this wires them to the mouse + the live remesh.
+  50 rewo tests green.

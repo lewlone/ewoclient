@@ -10,6 +10,7 @@ pub mod dimension;
 pub mod entities;
 pub mod palette;
 pub mod physics;
+pub mod raycast;
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -67,6 +67,15 @@ struct SkyPush {
     zenith: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinePush {
+    view_proj: [[f32; 4]; 4],
+    color: [f32; 4],
+}
+
+const SELECT_RING: usize = 2;
+
 /// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
 /// The horizon is also the terrain's fog color for a seamless far edge.
 const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
@@ -178,6 +187,14 @@ pub struct WorldRenderer {
     /// Fullscreen gradient sky (no descriptor set, no vertex input).
     sky_layout: vk::PipelineLayout,
     sky_pipeline: vk::Pipeline,
+    /// Block-selection outline (LINE_LIST, depth-tested against terrain).
+    select_layout: vk::PipelineLayout,
+    select_pipeline: vk::Pipeline,
+    select_bufs: [vk::Buffer; SELECT_RING],
+    select_allocs: [Option<Allocation>; SELECT_RING],
+    select_cursor: usize,
+    /// The targeted block (world coords), or `None` — set each frame.
+    selection: Option<[i32; 3]>,
     tex_pool: vk::DescriptorPool,
     tex_set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -393,6 +410,31 @@ impl WorldRenderer {
                 .map_err(|e| format!("sky layout: {e}"))?;
             let sky_pipeline = build_sky_pipeline(&device, sky_layout, color_format)?;
 
+            // ---- selection outline (lines) ----
+            let line_pc = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .offset(0)
+                .size(std::mem::size_of::<LinePush>() as u32)];
+            let select_layout = device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&line_pc),
+                    None,
+                )
+                .map_err(|e| format!("select layout: {e}"))?;
+            let select_pipeline = build_line_pipeline(&device, select_layout, color_format)?;
+            let mut select_bufs = [vk::Buffer::null(); SELECT_RING];
+            let mut select_allocs: [Option<Allocation>; SELECT_RING] = [None, None];
+            for i in 0..SELECT_RING {
+                let (b, a) = create_host_buffer(
+                    gpu,
+                    24 * 12, // 24 line verts × vec3
+                    vk::BufferUsageFlags::VERTEX_BUFFER,
+                    "selection-lines",
+                )?;
+                select_bufs[i] = b;
+                select_allocs[i] = Some(a);
+            }
+
             // ---- compute cull descriptor + pipeline ----
             let cull_bindings = [
                 storage_binding(0),
@@ -550,6 +592,12 @@ impl WorldRenderer {
                 water_pipeline,
                 sky_layout,
                 sky_pipeline,
+                select_layout,
+                select_pipeline,
+                select_bufs,
+                select_allocs,
+                select_cursor: 0,
+                selection: None,
                 tex_pool,
                 tex_set,
                 sampler,
@@ -1085,6 +1133,11 @@ impl WorldRenderer {
         self.fog = [start, end.max(start + 1.0)];
     }
 
+    /// Set the targeted block for the selection outline (`None` = hidden).
+    pub fn set_selection(&mut self, block: Option<[i32; 3]>) {
+        self.selection = block;
+    }
+
     /// Push the world/fog constants (view_proj + camera + fog band).
     fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
         let push = WorldPush {
@@ -1114,6 +1167,8 @@ impl WorldRenderer {
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
+        // Selection outline over the terrain (depth-tested against it).
+        self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
         }
@@ -1124,6 +1179,65 @@ impl WorldRenderer {
         // HUD last, over everything, in screen space.
         if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(gpu, cb, extent, health, food, slot);
+        }
+    }
+
+    /// The block-selection wireframe: the 12 edges of the targeted block,
+    /// slightly inflated to avoid z-fighting, depth-tested against terrain.
+    fn draw_selection(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+        let Some(b) = self.selection else { return };
+        let (x0, y0, z0) = (b[0] as f32 - 0.002, b[1] as f32 - 0.002, b[2] as f32 - 0.002);
+        let (x1, y1, z1) = (b[0] as f32 + 1.002, b[1] as f32 + 1.002, b[2] as f32 + 1.002);
+        // 8 corners → 12 edges → 24 line vertices.
+        let c = [
+            [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], // bottom
+            [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], // top
+        ];
+        let edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0), // bottom loop
+            (4, 5), (5, 6), (6, 7), (7, 4), // top loop
+            (0, 4), (1, 5), (2, 6), (3, 7), // verticals
+        ];
+        let mut verts = [[0f32; 3]; 24];
+        for (i, &(a, bb)) in edges.iter().enumerate() {
+            verts[i * 2] = c[a];
+            verts[i * 2 + 1] = c[bb];
+        }
+
+        self.select_cursor = (self.select_cursor + 1) % SELECT_RING;
+        if let Some(slice) = self.select_allocs[self.select_cursor]
+            .as_mut()
+            .and_then(|a| a.mapped_slice_mut())
+        {
+            let bytes: &[u8] = bytemuck::cast_slice(&verts);
+            slice[..bytes.len()].copy_from_slice(bytes);
+        }
+        let push = LinePush {
+            view_proj,
+            color: [0.0, 0.0, 0.0, 0.7], // black outline, like vanilla
+        };
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.select_pipeline);
+            let viewport = vk::Viewport::default()
+                .y(extent.height as f32)
+                .width(extent.width as f32)
+                .height(-(extent.height as f32))
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_push_constants(
+                cb,
+                self.select_layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    (&push as *const LinePush) as *const u8,
+                    std::mem::size_of::<LinePush>(),
+                ),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[self.select_bufs[self.select_cursor]], &[0]);
+            device.cmd_draw(cb, 24, 1, 0, 0);
         }
     }
 
@@ -1319,6 +1433,11 @@ impl WorldRenderer {
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline(self.sky_pipeline, None);
             device.destroy_pipeline_layout(self.sky_layout, None);
+            device.destroy_pipeline(self.select_pipeline, None);
+            device.destroy_pipeline_layout(self.select_layout, None);
+            for b in self.select_bufs {
+                device.destroy_buffer(b, None);
+            }
             device.destroy_pipeline_layout(self.graphics_layout, None);
             device.destroy_descriptor_pool(self.tex_pool, None);
             device.destroy_descriptor_set_layout(self.tex_set_layout, None);
@@ -1336,11 +1455,14 @@ impl WorldRenderer {
                 device.destroy_buffer(b, None);
             }
         }
-        let slot_allocs: Vec<Option<Allocation>> = self
+        let mut slot_allocs: Vec<Option<Allocation>> = self
             .upload_slots
             .iter_mut()
             .map(|s| s.staging_alloc.take())
             .collect();
+        for a in self.select_allocs.iter_mut() {
+            slot_allocs.push(a.take());
+        }
         for a in [
             self.image_alloc.take(),
             self.vbuf_alloc.take(),
@@ -1491,6 +1613,98 @@ fn parse_fog_env() -> [f32; 2] {
             Some([a, b.max(a + 1.0)])
         })
         .unwrap_or(default)
+}
+
+/// Line pipeline for the selection outline: LINE_LIST, depth-tested
+/// (reversed-Z GREATER) but no depth write, alpha-blended.
+fn build_line_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/line.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/line.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(12)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let attrs = [vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(0)];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attrs);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::LINE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(
+                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+            )];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&ci), None)
+            .map_err(|(_, e)| format!("line pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
+    }
 }
 
 /// Fullscreen gradient-sky pipeline: no vertex input, no depth, no blend.

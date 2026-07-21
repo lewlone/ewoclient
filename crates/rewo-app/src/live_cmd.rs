@@ -37,7 +37,7 @@ use rewo_net::Connection;
 use rewo_world::physics::{TickInput, EYE_HEIGHT};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -89,6 +89,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         .or_else(|| std::env::var("REWO_USERNAME").ok())
         .unwrap_or_else(|| "RewoLive".into());
 
+    let dirt_item = data.items.id("dirt");
     let conn = Connection::connect(&args.host, args.port, &data)?;
     let session = conn.into_play(&args.host, args.port, &username, solid, global_bits)?;
     log::info!("live: session up, opening window…");
@@ -103,9 +104,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(6.0);
-            run_headless(session, baked, etypes, want_validation, out, settle)
+            run_headless(session, baked, etypes, want_validation, out, settle, dirt_item)
         }
-        _ => run_windowed(session, baked, etypes, args, want_validation),
+        _ => run_windowed(session, baked, etypes, args, want_validation, dirt_item),
     }
 }
 
@@ -350,7 +351,9 @@ fn run_headless(
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
+    dirt_item: Option<i32>,
 ) -> Result<(), String> {
+    let _ = dirt_item;
     let mut gpu = Gpu::new(None, want_validation)?;
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
@@ -476,6 +479,13 @@ fn run_headless(
             log::info!("live: aiming at entity ({:.1},{:.1},{:.1})", t.pos[0], t.pos[1], t.pos[2]);
         }
     }
+    // Block targeting: aim the raycast the same way the camera looks, so the
+    // selection outline lands on whatever block the eye view frames.
+    let hit = session.target_block(eye_f64(&session), look_dir(yaw, pitch), REACH);
+    if let Some(h) = hit {
+        log::info!("live: targeting block {:?} face {:?}", h.block, h.face);
+    }
+    world_renderer.set_selection(hit.map(|h| h.block));
     let (cr, cu) = camera_basis(yaw, pitch);
     world_renderer.set_entities(&draws, cr, cu);
     world_renderer.set_camera(eye.to_array());
@@ -564,6 +574,8 @@ struct LiveApp {
     flood_logged: bool,
     /// Selected hotbar slot 0..8 (number keys), for the HUD selection frame.
     hotbar_slot: u8,
+    /// Dirt item id (for right-click place), resolved from the item table.
+    dirt_item: Option<i32>,
     init_error: Option<String>,
 }
 
@@ -664,6 +676,32 @@ impl ApplicationHandler for LiveApp {
                     _ => {}
                 }
             }
+            WindowEvent::MouseInput { state: btn, button, .. }
+                if btn == ElementState::Pressed =>
+            {
+                // Left-click digs the targeted block; right-click places
+                // against its hit face. (Creative: dig breaks instantly.)
+                if let Some(session) = self.session.as_mut() {
+                    let eye = player_eye(session);
+                    if let Some(h) = session.target_block(
+        eye_f64(session),
+                        look_dir(session.player.yaw, session.player.pitch),
+                        REACH,
+                    ) {
+                        let [x, y, z] = h.block;
+                        let face = face_index(h.face);
+                        match button {
+                            MouseButton::Left => {
+                                let _ = session.start_dig(x, y, z, face);
+                            }
+                            MouseButton::Right => {
+                                let _ = session.use_item_on(x, y, z, face);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
         }
@@ -730,6 +768,12 @@ impl LiveApp {
                 session.player.y,
                 session.player.z
             );
+            // Put a stack of dirt in slot 0 so right-click can place (the
+            // test server is creative — a no-op elsewhere).
+            if let Some(dirt) = self.dirt_item {
+                let _ = session.creative_set_hotbar(0, dirt, 64);
+                let _ = session.select_hotbar(0);
+            }
         }
 
         let Some(state) = self.state.as_mut() else {
@@ -783,6 +827,13 @@ impl LiveApp {
         let extent = state.renderer.swapchain.extent;
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
         let eye = player_eye(session);
+        // Targeted block for the selection outline.
+        let hit = session.target_block(
+        eye_f64(session),
+            look_dir(session.player.yaw, session.player.pitch),
+            REACH,
+        );
+        state.world_renderer.set_selection(hit.map(|h| h.block));
         state.world_renderer.set_camera(eye.to_array());
         state
             .world_renderer
@@ -831,6 +882,7 @@ fn run_windowed(
     etypes: EntityTypes,
     args: LiveArgs,
     want_validation: bool,
+    dirt_item: Option<i32>,
 ) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -857,6 +909,7 @@ fn run_windowed(
         uploaded_total: 0,
         flood_logged: false,
         hotbar_slot: 0,
+        dirt_item,
         init_error: None,
     };
     event_loop
@@ -913,6 +966,38 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
     p.push(version);
     p.push(format!("{version}.jar"));
     p.exists().then_some(p)
+}
+
+/// Eye position in f64 (block-precise) — feet + the 1.62 eye height.
+fn eye_f64(s: &PlaySession) -> [f64; 3] {
+    [s.player.x, s.player.y + 1.62, s.player.z]
+}
+
+/// Look direction (unit) from MC-convention yaw/pitch degrees.
+fn look_dir(yaw_deg: f32, pitch_deg: f32) -> [f64; 3] {
+    let (yaw, pitch) = (yaw_deg.to_radians(), pitch_deg.to_radians());
+    [
+        (-yaw.sin() * pitch.cos()) as f64,
+        (-pitch.sin()) as f64,
+        (yaw.cos() * pitch.cos()) as f64,
+    ]
+}
+
+/// Reach distance (creative). Survival is 3.0; the test server is creative.
+const REACH: f64 = 4.5;
+
+/// Face normal → MC face index (0 down, 1 up, 2 north −Z, 3 south +Z,
+/// 4 west −X, 5 east +X).
+fn face_index(n: [i32; 3]) -> u8 {
+    match n {
+        [0, -1, 0] => 0,
+        [0, 1, 0] => 1,
+        [0, 0, -1] => 2,
+        [0, 0, 1] => 3,
+        [-1, 0, 0] => 4,
+        [1, 0, 0] => 5,
+        _ => 1,
+    }
 }
 
 /// Number keys 1..9 → hotbar slot 0..8.

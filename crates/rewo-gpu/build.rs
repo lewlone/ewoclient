@@ -18,6 +18,8 @@ fn main() {
         ("shaders/sky.frag", "sky.frag.spv"),
         ("shaders/hud.vert", "hud.vert.spv"),
         ("shaders/hud.frag", "hud.frag.spv"),
+        ("shaders/line.vert", "line.vert.spv"),
+        ("shaders/line.frag", "line.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
         println!("cargo:rerun-if-changed={src}");

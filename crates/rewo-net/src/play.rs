@@ -716,6 +716,22 @@ impl PlaySession {
     }
 
     /// Start digging (creative servers break the block on START).
+    /// The block the eye is looking at (voxel raycast against `solid`), or
+    /// `None`. `dir` need not be normalized; `reach` in blocks (~4.5 creative).
+    pub fn target_block(
+        &self,
+        eye: [f64; 3],
+        dir: [f64; 3],
+        reach: f64,
+    ) -> Option<rewo_world::raycast::RayHit> {
+        let world = &self.world;
+        let solid = &self.solid;
+        rewo_world::raycast::cast(eye, dir, reach, |x, y, z| {
+            let s = world.block_state_at(x, y, z);
+            solid.get(s as usize).copied().unwrap_or(s != 0)
+        })
+    }
+
     pub fn start_dig(&mut self, x: i32, y: i32, z: i32, face: u8) -> Result<(), String> {
         let seq = self.next_sequence();
         let mut p = PacketWriter::packet(self.ids.sb_play_player_action);
