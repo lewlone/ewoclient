@@ -38,6 +38,16 @@ const MAX_VERTS: u64 = 4_000_000;
 const MAX_INDICES: u64 = 6_000_000;
 const MAX_COLUMNS: usize = 8192;
 
+/// One animated texture-array layer (mirror of rewo-data's
+/// `AnimatedLayer` — this crate stays free of a rewo-data dependency).
+pub struct LayerAnimation {
+    pub layer: u16,
+    /// 16×16 RGBA frames (pre-tinted).
+    pub frames: Vec<Vec<u8>>,
+    pub order: Vec<u32>,
+    pub frametime: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct WorldPush {
@@ -177,6 +187,11 @@ pub struct WorldRenderer {
     entities: Option<EntityPass>,
     /// Eye position for translucent back-to-front sorting (`set_camera`).
     camera_eye: [f32; 3],
+    // -- animated texture layers (water/lava; `anim_tick`) --
+    tex_size: u32,
+    mip_levels: u32,
+    animations: Vec<LayerAnimation>,
+    anim_last: Vec<Option<usize>>,
 
     pub drawn_last_frame: usize,
     pub culled_last_frame: usize,
@@ -499,10 +514,150 @@ impl WorldRenderer {
                 color_format,
                 entities: None,
                 camera_eye: [0.0; 3],
+                tex_size,
+                mip_levels,
+                animations: Vec::new(),
+                anim_last: Vec::new(),
                 drawn_last_frame: 0,
                 culled_last_frame: 0,
             })
         }
+    }
+
+    /// Register animated texture layers (from the bake). Frames are
+    /// re-uploaded into the texture array as `anim_tick` advances.
+    pub fn set_animations(&mut self, animations: Vec<LayerAnimation>) {
+        self.anim_last = vec![None; animations.len()];
+        self.animations = animations;
+    }
+
+    /// Advance texture animations to the given game tick (20 Hz), and
+    /// re-upload any layer whose frame changed. A few KB per change —
+    /// water/lava tick every `frametime` (2) ticks.
+    pub fn anim_tick(&mut self, gpu: &mut Gpu, tick: u64) -> Result<(), String> {
+        for i in 0..self.animations.len() {
+            let a = &self.animations[i];
+            if a.order.is_empty() || a.frames.is_empty() {
+                continue;
+            }
+            let step = (tick / a.frametime as u64) as usize % a.order.len();
+            let frame = a.order[step] as usize % a.frames.len();
+            if self.anim_last[i] == Some(frame) {
+                continue;
+            }
+            self.anim_last[i] = Some(frame);
+            let layer = a.layer;
+            let rgba = self.animations[i].frames[frame].clone();
+            self.upload_layer_frame(gpu, layer, &rgba)?;
+        }
+        Ok(())
+    }
+
+    /// Replace one texture-array layer's content (all mip levels) via the
+    /// one-shot upload machinery.
+    fn upload_layer_frame(&mut self, gpu: &mut Gpu, layer: u16, rgba: &[u8]) -> Result<(), String> {
+        let mips = generate_mips(self.tex_size, self.mip_levels, rgba);
+        let total: usize = mips.iter().map(|m| m.len()).sum();
+        self.ensure_staging(gpu, total as u64)?;
+        unsafe {
+            let alloc = self.staging_alloc.as_mut().unwrap();
+            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
+            let mut off = 0usize;
+            let mut copies = Vec::with_capacity(mips.len());
+            let mut size = self.tex_size;
+            for (level, mip) in mips.iter().enumerate() {
+                slice[off..off + mip.len()].copy_from_slice(mip);
+                copies.push(
+                    vk::BufferImageCopy::default()
+                        .buffer_offset(off as u64)
+                        .image_subresource(
+                            vk::ImageSubresourceLayers::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .mip_level(level as u32)
+                                .base_array_layer(layer as u32)
+                                .layer_count(1),
+                        )
+                        .image_extent(vk::Extent3D {
+                            width: size,
+                            height: size,
+                            depth: 1,
+                        }),
+                );
+                off += mip.len();
+                size = (size / 2).max(1);
+            }
+
+            let device = &gpu.device;
+            device
+                .reset_command_pool(self.upload_pool, vk::CommandPoolResetFlags::empty())
+                .map_err(|e| format!("anim reset pool: {e}"))?;
+            device
+                .begin_command_buffer(
+                    self.upload_cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(|e| format!("anim begin: {e}"))?;
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(self.mip_levels)
+                .base_array_layer(layer as u32)
+                .layer_count(1);
+            let to_dst = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .image(self.image)
+                .subresource_range(range);
+            device.cmd_pipeline_barrier2(
+                self.upload_cb,
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&to_dst)),
+            );
+            device.cmd_copy_buffer_to_image(
+                self.upload_cb,
+                self.staging,
+                self.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &copies,
+            );
+            let to_read = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(self.image)
+                .subresource_range(range);
+            device.cmd_pipeline_barrier2(
+                self.upload_cb,
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&to_read)),
+            );
+            device
+                .end_command_buffer(self.upload_cb)
+                .map_err(|e| format!("anim end: {e}"))?;
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.upload_cb)];
+            device
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                    self.upload_fence,
+                )
+                .map_err(|e| format!("anim submit: {e}"))?;
+            device
+                .wait_for_fences(&[self.upload_fence], true, u64::MAX)
+                .map_err(|e| format!("anim wait: {e}"))?;
+            device
+                .reset_fences(&[self.upload_fence])
+                .map_err(|e| format!("anim reset fence: {e}"))?;
+        }
+        Ok(())
     }
 
     /// Set the frame's eye position — drives translucent back-to-front

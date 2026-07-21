@@ -25,6 +25,10 @@ pub struct DemoArgs {
     version: String,
     #[arg(long, default_value = "rewo-m4-demo.png")]
     out: PathBuf,
+    /// Render at this texture-animation game tick (water/lava frames) —
+    /// two PNGs at different ticks must differ only in fluid texels.
+    #[arg(long, default_value_t = 0)]
+    anim_tick: u64,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -126,6 +130,9 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     }
     gpu.wait_idle();
     log::info!("demo: meshed {} vertices", total_verts);
+
+    wr.set_animations(crate::live_cmd::layer_animations(&baked));
+    wr.anim_tick(&mut gpu, args.anim_tick)?;
 
     // -- camera: look along the row from a low front-left angle (aim point
     // dropped to y=1.0 so the fluid apron in front reads too) -------------

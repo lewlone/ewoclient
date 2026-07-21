@@ -91,7 +91,24 @@ pub struct BakedAssets {
     /// The vanilla bitmap font (ascii.png) for nametags/HUD text. `None`
     /// only if the jar somehow lacks it — callers degrade to no text.
     pub font: Option<BakedFont>,
+    /// Animated texture layers (water/lava/…): all frames pre-tinted, with
+    /// the `.mcmeta` frame order + timing. The layer itself holds frame 0;
+    /// the renderer re-uploads frames on the 20 Hz tick.
+    pub animations: Vec<AnimatedLayer>,
     pub stats: BakeStats,
+}
+
+/// One animated texture-array layer, from an N-frame vertical strip +
+/// its `.mcmeta` ({"animation": {"frametime": T, "frames": [...]?}}).
+pub struct AnimatedLayer {
+    pub layer: u16,
+    /// 16×16 RGBA frames, in strip order (tint already applied).
+    pub frames: Vec<Vec<u8>>,
+    /// Playback order (indices into `frames`); sequential when the mcmeta
+    /// has no explicit list (water); lava ping-pongs.
+    pub order: Vec<u32>,
+    /// Game ticks per animation frame.
+    pub frametime: u32,
 }
 
 /// The legacy bitmap font: a 16×16 grid of glyph cells covering code points
@@ -152,6 +169,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         layer_index: HashMap::new(),
         layers: Vec::new(),
         layer_names: Vec::new(),
+        animations: Vec::new(),
         grass_tint,
         foliage_tint,
     };
@@ -230,12 +248,16 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         stats.textures
     );
 
+    if !baker.animations.is_empty() {
+        log::info!("rewo-data: {} animated texture layers", baker.animations.len());
+    }
     Ok(BakedAssets {
         render,
         solid,
         models,
         layers: baker.layers,
         layer_names: baker.layer_names,
+        animations: baker.animations,
         grass_tint,
         foliage_tint,
         font,
@@ -324,6 +346,7 @@ struct Baker<'a> {
     layer_index: HashMap<String, u16>,
     layers: Vec<Vec<u8>>,
     layer_names: Vec<String>,
+    animations: Vec<AnimatedLayer>,
     grass_tint: [u8; 3],
     foliage_tint: [u8; 3],
 }
@@ -615,25 +638,69 @@ impl<'a> Baker<'a> {
         let path = format!("assets/minecraft/textures/{short}.png");
         let mut bytes = Vec::new();
         self.jar.by_name(&path).ok()?.read_to_end(&mut bytes).ok()?;
-        let mut rgba = decode_png_rgba(&bytes)?;
+        let mut frames = decode_png_rgba_frames(&bytes)?;
         // The `grass_block_top` / `short_grass` textures ship grayscale and
         // expect a colormap multiply — bake the plains color in so their
-        // layer reads green. Per-biome variation is deferred.
-        match apply_tint {
-            TintKind::Grass => tint_rgb(&mut rgba, self.grass_tint),
-            TintKind::Foliage => tint_rgb(&mut rgba, self.foliage_tint),
+        // layer reads green. Per-biome variation is deferred. Tint applies
+        // to every animation frame.
+        let tint = match apply_tint {
+            TintKind::Grass => Some(self.grass_tint),
+            TintKind::Foliage => Some(self.foliage_tint),
             // Water ships grayscale + alpha 180; biome water color is a
             // registry value, not a colormap — plains #3F76E4 baked (the
             // same fixed-plains approach as grass until per-biome tint).
-            TintKind::Water => tint_rgb(&mut rgba, [0x3F, 0x76, 0xE4]),
-            TintKind::None => {}
+            TintKind::Water => Some([0x3F, 0x76, 0xE4]),
+            TintKind::None => None,
+        };
+        if let Some(color) = tint {
+            for f in &mut frames {
+                tint_rgb(f, color);
+            }
         }
         let layer = self.layers.len() as u16;
-        self.layers.push(rgba);
+        // Multi-frame strip + .mcmeta → register the animation; the layer
+        // itself holds frame 0 (also the static fallback).
+        if frames.len() > 1 {
+            if let Some((order, frametime)) = read_mcmeta(self.jar, &path, frames.len() as u32) {
+                self.animations.push(AnimatedLayer {
+                    layer,
+                    frames: frames.clone(),
+                    order,
+                    frametime,
+                });
+            }
+        }
+        self.layers.push(frames.into_iter().next()?);
         self.layer_names.push(cache_key.clone());
         self.layer_index.insert(cache_key, layer);
         Some(layer)
     }
+}
+
+/// Parse `<texture>.png.mcmeta` → (frame order, frametime in ticks).
+/// Missing `frames` list = sequential; missing `frametime` = 1.
+fn read_mcmeta(jar: Jar, png_path: &str, frame_count: u32) -> Option<(Vec<u32>, u32)> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("{png_path}.mcmeta"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let anim = json.get("animation")?;
+    let frametime = anim
+        .get("frametime")
+        .and_then(|f| f.as_u64())
+        .unwrap_or(1)
+        .max(1) as u32;
+    let order = match anim.get("frames").and_then(|f| f.as_array()) {
+        Some(list) => list
+            .iter()
+            .filter_map(|v| v.as_u64())
+            .map(|v| (v as u32).min(frame_count - 1))
+            .collect(),
+        None => (0..frame_count).collect(),
+    };
+    Some((order, frametime))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -974,26 +1041,32 @@ fn resolve_texture_var<'a>(
 }
 
 fn decode_png_rgba(bytes: &[u8]) -> Option<Vec<u8>> {
+    decode_png_rgba_frames(bytes)?.into_iter().next()
+}
+
+/// Decode a block texture into its 16×16 RGBA frames — one for a plain
+/// texture, N for an animation strip (width 16, height N×16).
+fn decode_png_rgba_frames(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
-    if info.width != TEX_SIZE || info.height < TEX_SIZE {
+    if info.width != TEX_SIZE || info.height < TEX_SIZE || info.height % TEX_SIZE != 0 {
         return None;
     }
-    let px = TEX_SIZE as usize;
-    let mut rgba = vec![0u8; px * px * 4];
+    let n = (info.width as usize) * (info.height as usize);
+    let mut rgba = vec![0u8; n * 4];
     match info.color_type {
-        png::ColorType::Rgba => rgba.copy_from_slice(&buf[..px * px * 4]),
+        png::ColorType::Rgba => rgba.copy_from_slice(&buf[..n * 4]),
         png::ColorType::Rgb => {
-            for i in 0..px * px {
+            for i in 0..n {
                 rgba[i * 4..i * 4 + 3].copy_from_slice(&buf[i * 3..i * 3 + 3]);
                 rgba[i * 4 + 3] = 255;
             }
         }
         png::ColorType::GrayscaleAlpha => {
-            for i in 0..px * px {
+            for i in 0..n {
                 let g = buf[i * 2];
                 rgba[i * 4] = g;
                 rgba[i * 4 + 1] = g;
@@ -1002,7 +1075,7 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<Vec<u8>> {
             }
         }
         png::ColorType::Grayscale => {
-            for i in 0..px * px {
+            for i in 0..n {
                 let g = buf[i];
                 rgba[i * 4] = g;
                 rgba[i * 4 + 1] = g;
@@ -1012,7 +1085,8 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         png::ColorType::Indexed => return None,
     }
-    Some(rgba)
+    let frame_bytes = (TEX_SIZE * TEX_SIZE * 4) as usize;
+    Some(rgba.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect())
 }
 
 /// Center pixel of a colormap PNG (the "plains" reference point).

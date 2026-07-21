@@ -172,6 +172,19 @@ fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
     })
 }
 
+pub(crate) fn layer_animations(baked: &assets::BakedAssets) -> Vec<rewo_gpu::world::LayerAnimation> {
+    baked
+        .animations
+        .iter()
+        .map(|a| rewo_gpu::world::LayerAnimation {
+            layer: a.layer,
+            frames: a.frames.clone(),
+            order: a.order.clone(),
+            frametime: a.frametime,
+        })
+        .collect()
+}
+
 /// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
 /// pitch+ looks down.
 fn eye_view_proj(
@@ -292,6 +305,7 @@ fn run_headless(
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     world_renderer.init_entities(&mut gpu, font_data(&baked))?;
+    world_renderer.set_animations(layer_animations(&baked));
 
     // Pump the session on a real 20 Hz clock until spawned + settled, so
     // chunks arrive and the player position is real.
@@ -403,6 +417,7 @@ fn run_headless(
     let (cr, cu) = camera_basis(yaw, pitch);
     world_renderer.set_entities(&draws, cr, cu);
     world_renderer.set_camera(eye.to_array());
+    world_renderer.anim_tick(&mut gpu, session.ticks)?;
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
@@ -524,6 +539,7 @@ impl ApplicationHandler for LiveApp {
                 &baked.layers,
             )?;
             world_renderer.init_entities(&mut gpu, font_data(&baked))?;
+            world_renderer.set_animations(layer_animations(&baked));
             Ok(LiveState {
                 window: window.clone(),
                 gpu,
@@ -690,6 +706,9 @@ impl LiveApp {
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
         let eye = player_eye(session);
         state.world_renderer.set_camera(eye.to_array());
+        if let Err(e) = state.world_renderer.anim_tick(&mut state.gpu, session.ticks) {
+            log::error!("live: texture animation: {e}");
+        }
         let vp = eye_view_proj(eye, session.player.yaw, session.player.pitch, aspect);
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,
