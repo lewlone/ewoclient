@@ -768,3 +768,67 @@ a window.
 - Next: **M3** (be a player) — 20 Hz tick + prediction, movement packets,
   dig/place/attack with sequence-ack, hotbar, chat, live streaming into the
   renderer.
+
+**2026-07-21 — M3 be a player shipped + headlessly verified.**
+
+A headless bot connects, spawns, walks/sprints/jumps, looks, places, mines,
+and chats on the live vanilla 26.2 server — and the physics-parity meter
+reads **zero server corrections over 3,000 ticks** of continuous movement.
+
+- **Vanilla physics port** (`rewo-world/src/physics.rs`): a faithful 20 Hz
+  tick from the decompiled `LivingEntity.travel` / `Entity.move` /
+  `LocalPlayer` — gravity 0.08, drag 0.91×0.98, ground accel
+  `speed·0.216/friction³`, air accel 0.02/0.026, jump 0.42 (+0.2 forward on
+  sprint-jump), input×0.98, sneak×0.3. Axis-separated AABB collision (Y→X→Z)
+  with 0.6 step-up. **Unit tests lock walk (≈8.63 blk/2s), sprint (≈11.2),
+  and jump apex (≈1.2522) to vanilla values**, plus wall-stop, step-up-fails
+  / jump-succeeds on a full block.
+- **Live play session** (`rewo-net/src/play.rs`): `Connection::into_play`
+  does login+config synchronously, then splits the socket — a reader thread
+  decodes frames into a channel; `PlaySession::tick` drains inbound, runs
+  physics, and sends movement with the **exact decompiled
+  `LocalPlayer.sendPosition` cadence** (Pos / PosRot / Rot / StatusOnly +
+  20-tick reminder + `player_input` on change + `client_tick_end`). Handles
+  teleport-correct (relative-bit aware, echoes accepted position), keep-
+  alive/ping, live chunk/block-update/entity, set-health→respawn, and both
+  system + player chat decode.
+- **Gameplay verbs**: chat (unsigned — M7 signs), creative hotbar set +
+  select, dig (`player_action` START + swing), place (`use_item_on` with a
+  block-hit-result + click offset + sequence), attack (`interact` ATTACK).
+  Sequence numbers on dig/place feed the server's block-changed-ack.
+- **`rewo-data` items** (`items.rs`): parses the `minecraft:item` registry
+  from registries.json (1,537 items) so the bot can hold real item ids.
+- **`rewo play`** (`rewo-app/src/play_cmd.rs`): the headless DoD harness —
+  scripted session on a real-time 20 Hz clock (settle → walk → sprint →
+  jump → look → give+place → dig → chat → continuous wander), reporting the
+  corrections meter + place/dig world-state verification + chat-received.
+
+  **Verified against the live server:**
+  - `RewoBot logged in … joined the game … <RewoBot> rewo bot online … left`
+    — clean join/chat-broadcast/clean-disconnect, **no "moved too
+    quickly/wrongly" warnings** (independent corroboration of 0 corrections).
+  - Movement: **0 corrections over a 150 s / 3,000-tick continuous-wander
+    run** (walk + curve + sprint-jump across fresh chunks).
+  - Build: place → `block_update (…) = 10` (dirt) echoed + world query reads
+    dirt ✓. Dig: `block_update (…) = 0` (air) echoed + query reads air ✓.
+  - Chat send→receive round-trip ✓.
+  - 73 workspace tests green.
+  - **Bug found + fixed in the process**: `Column::block_state_at` ignored
+    the `overrides` map that `set_block` writes, so queries returned stale
+    chunk-snapshot state even though the block_update *was* applied — the
+    server had done the right thing all along. Now the query is
+    override-aware (the mesher benefits too: edits show on remesh).
+- **Not exercised (honest):** "fight" — `attack_entity` is implemented but
+  the flat creative test world has no mobs; it sends on a valid entity id
+  but hasn't been hit against a live target. Prediction is **server-
+  authoritative-apply**, not client-predict-with-rollback yet: we run
+  physics locally and *reconcile* on the server's teleport corrections
+  (which stay at 0), but don't yet pre-apply block changes before the ack —
+  fine while corrections are rare; full predict/rollback is a refinement.
+- **The live windowed client** (play session feeding the renderer so you can
+  *see* yourself play) is the natural M3→M4 bridge — the tick loop + world
+  are ready, it needs a dirty-column remesh + eye camera + WASD→input. Left
+  as the next step since it's the interactive piece the user drives.
+- Next: **M4** (real meshing) — greedy + model-quad path, fluids,
+  26-neighbor AO, biome tint, packed vertices — *and* the live windowed
+  client as the tangible capstone.

@@ -9,6 +9,7 @@ pub mod chunk;
 pub mod dimension;
 pub mod entities;
 pub mod palette;
+pub mod physics;
 
 use std::collections::HashMap;
 

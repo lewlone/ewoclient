@@ -70,7 +70,9 @@ impl Column {
         let Some(section) = self.sections.get(si) else {
             return 0;
         };
-        section.block_state(lx, y & 15, lz)
+        // Consult post-decode edits (Block Update packets) first — the query
+        // must reflect the live world, not just the chunk snapshot.
+        section.block_state_with_overrides(lx, y & 15, lz)
     }
 
     pub fn set_block(&mut self, shape: &DimensionShape, lx: i32, y: i32, lz: i32, state: u32) {
@@ -163,6 +165,16 @@ pub fn read_level_chunk(
     shape: &DimensionShape,
     blocks: &Blocks,
 ) -> Result<Column> {
+    read_level_chunk_bits(r, shape, blocks.global_palette_bits)
+}
+
+/// Same decode, taking the global-palette width directly (for callers that
+/// don't hold a `Blocks` table — the play session stores the number).
+pub fn read_level_chunk_bits(
+    r: &mut PacketReader,
+    shape: &DimensionShape,
+    global_bits: u32,
+) -> Result<Column> {
     let cx = r.i32()?;
     let cz = r.i32()?;
 
@@ -181,7 +193,6 @@ pub fn read_level_chunk(
     let blob = r.take(size as usize)?;
     let mut sr = PacketReader::new(blob);
     let section_count = shape.section_count();
-    let global_bits = blocks.global_palette_bits;
     let mut sections = Vec::with_capacity(section_count);
     for _ in 0..section_count {
         // Two shorts: non-empty block count, then fluid count (decompiled

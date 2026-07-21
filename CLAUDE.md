@@ -1599,6 +1599,19 @@ apply.
   `rewo.exe` (REWO_* env contract; `view --host` args when a server join is
   active), reaper covers rewo.exe. UI eyeball of the modal + Launch flow
   still pending; `package.ps1` doesn't copy rewo.exe into dist yet.
+- **M3 shipped 2026-07-21** (`rewo-world::physics` + `rewo-net::play` +
+  `rewo-data::items` + `rewo play`): be a player. Faithful vanilla 20 Hz
+  physics port from the decompile (walk/sprint/jump speeds unit-locked to
+  vanilla), live play session (split socket: reader thread + 20 Hz tick
+  loop) with the exact `LocalPlayer.sendPosition` cadence, dig/place/attack/
+  chat/hotbar. Verified headlessly vs the live 26.2 server: **0 server
+  corrections over 3,000 ticks** of continuous movement, place→dirt &
+  dig→air confirmed by world query + block_update echo, chat round-trip.
+  `rewo play` is the DoD bot harness. Gotcha fixed: `Column::block_state_at`
+  wasn't consulting the `overrides` map that `set_block` writes (block
+  edits looked ignored though the server applied them). Not exercised:
+  attack-a-mob (no mobs on flat creative). The live windowed client (play
+  session → renderer) is the M3→M4 bridge, not yet built.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

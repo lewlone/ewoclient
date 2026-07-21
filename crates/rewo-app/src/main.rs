@@ -8,6 +8,7 @@
 //! and writes a PNG — the self-check harness for machines/agents.
 
 mod net_cmd;
+mod play_cmd;
 mod stats;
 mod view_cmd;
 
@@ -96,6 +97,9 @@ enum Command {
     Net(net_cmd::NetArgs),
     /// M2 first pixels: snapshot a world and view it (headless or windowed).
     View(view_cmd::ViewArgs),
+    /// M3 be a player: headless bot — spawn, move, build, chat; report
+    /// server position corrections (the physics-parity meter).
+    Play(play_cmd::PlayArgs),
 }
 
 fn main() {
@@ -108,6 +112,7 @@ fn main() {
     let result = match args.command.take() {
         Some(Command::Net(net_args)) => net_cmd::run(net_args),
         Some(Command::View(view_args)) => view_cmd::run(view_args),
+        Some(Command::Play(play_args)) => play_cmd::run(play_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

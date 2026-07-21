@@ -10,6 +10,7 @@
 
 pub mod assets;
 pub mod blocks;
+pub mod items;
 pub mod packets;
 pub mod server_jar;
 
@@ -46,6 +47,10 @@ impl DataPaths {
         self.reports_dir().join("packets.json")
     }
 
+    pub fn registries_json(&self) -> PathBuf {
+        self.reports_dir().join("registries.json")
+    }
+
     pub fn server_jar(&self) -> PathBuf {
         self.root.join("server.jar")
     }
@@ -55,13 +60,19 @@ impl DataPaths {
 pub struct GameData {
     pub blocks: blocks::Blocks,
     pub packets: packets::Packets,
+    pub items: items::Items,
 }
 
 impl GameData {
     pub fn load(paths: &DataPaths) -> Result<Self, String> {
         let blocks = blocks::Blocks::load(&paths.blocks_json())?;
         let packets = packets::Packets::load(&paths.packets_json())?;
-        Ok(Self { blocks, packets })
+        let items = items::Items::load(&paths.registries_json())?;
+        Ok(Self {
+            blocks,
+            packets,
+            items,
+        })
     }
 
     pub fn load_for_version(version: &str) -> Result<Self, String> {

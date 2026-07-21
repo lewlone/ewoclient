@@ -60,6 +60,25 @@ pub struct Ids {
     pub cb_play_start_configuration: Option<i32>,
     pub cb_play_cookie_request: Option<i32>,
     pub cb_play_disconnect: i32,
+    // M3 gameplay
+    pub sb_play_move_pos: i32,
+    pub sb_play_move_pos_rot: i32,
+    pub sb_play_move_rot: i32,
+    pub sb_play_move_status: i32,
+    pub sb_play_player_input: Option<i32>,
+    pub sb_play_client_tick_end: Option<i32>,
+    pub sb_play_chat: Option<i32>,
+    pub sb_play_set_creative_slot: Option<i32>,
+    pub sb_play_set_carried_item: Option<i32>,
+    pub sb_play_player_action: i32,
+    pub sb_play_use_item_on: Option<i32>,
+    pub sb_play_interact: Option<i32>,
+    pub sb_play_swing: Option<i32>,
+    pub sb_play_client_command: Option<i32>,
+    pub cb_play_set_health: Option<i32>,
+    pub cb_play_system_chat: Option<i32>,
+    pub cb_play_player_chat: Option<i32>,
+    pub cb_play_block_ack: Option<i32>,
 }
 
 impl Ids {
@@ -110,6 +129,25 @@ impl Ids {
             cb_play_start_configuration: opt!(p, P, C, "start_configuration"),
             cb_play_cookie_request: opt!(p, P, C, "cookie_request"),
             cb_play_disconnect: req!(p, P, C, "disconnect"),
+
+            sb_play_move_pos: req!(p, P, S, "move_player_pos"),
+            sb_play_move_pos_rot: req!(p, P, S, "move_player_pos_rot"),
+            sb_play_move_rot: req!(p, P, S, "move_player_rot"),
+            sb_play_move_status: req!(p, P, S, "move_player_status_only"),
+            sb_play_player_input: opt!(p, P, S, "player_input"),
+            sb_play_client_tick_end: opt!(p, P, S, "client_tick_end"),
+            sb_play_chat: opt!(p, P, S, "chat"),
+            sb_play_set_creative_slot: opt!(p, P, S, "set_creative_mode_slot"),
+            sb_play_set_carried_item: opt!(p, P, S, "set_carried_item"),
+            sb_play_player_action: req!(p, P, S, "player_action"),
+            sb_play_use_item_on: opt!(p, P, S, "use_item_on"),
+            sb_play_interact: opt!(p, P, S, "interact"),
+            sb_play_swing: opt!(p, P, S, "swing"),
+            sb_play_client_command: opt!(p, P, S, "client_command"),
+            cb_play_set_health: opt!(p, P, C, "set_health"),
+            cb_play_system_chat: opt!(p, P, C, "system_chat"),
+            cb_play_player_chat: opt!(p, P, C, "player_chat"),
+            cb_play_block_ack: opt!(p, P, C, "block_changed_ack"),
         })
     }
 }

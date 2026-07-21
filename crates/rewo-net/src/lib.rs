@@ -11,6 +11,7 @@
 //! soak/replay tools it runs on its own driver.
 
 pub mod ids;
+pub mod play;
 pub mod record;
 
 use std::io::Write;
@@ -463,33 +464,7 @@ impl<'a> Connection<'a> {
 
     fn handle_add_entity(&mut self, world: &mut World, body: usize) {
         let mut r = PacketReader::new(&self.packet[body..]);
-        let Ok(id) = r.varint() else { return };
-        let Ok(uuid) = r.uuid() else { return };
-        let Ok(type_id) = r.varint() else { return };
-        let Ok(x) = r.f64() else { return };
-        let Ok(y) = r.f64() else { return };
-        let Ok(z) = r.f64() else { return };
-        // Movement is LpVec3 (variable length) — skip it by reading the
-        // marker byte; 0 means zero-vector (1 byte), else 6 bytes + optional
-        // varint continuation. For M1 we don't need velocity, but we must
-        // advance correctly to reach rotation. Read minimal LpVec3.
-        if skip_lpvec3(&mut r).is_err() {
-            return;
-        }
-        let yaw = r.i8().map(|b| b as f32 * 360.0 / 256.0).unwrap_or(0.0);
-        let pitch = r.i8().map(|b| b as f32 * 360.0 / 256.0).unwrap_or(0.0);
-        world.entities.add(
-            id,
-            rewo_world::entities::EntityState {
-                uuid,
-                type_id,
-                x,
-                y,
-                z,
-                yaw,
-                pitch,
-            },
-        );
+        let _ = read_add_entity(&mut r, world);
     }
 
     // -- driver ------------------------------------------------------------
@@ -536,10 +511,37 @@ impl<'a> Connection<'a> {
     }
 }
 
+/// Decode an Add Entity packet body into the entity table. Shared by the M1
+/// snapshot path and the M3 live session.
+pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_proto::Result<()> {
+    let id = r.varint()?;
+    let uuid = r.uuid()?;
+    let type_id = r.varint()?;
+    let x = r.f64()?;
+    let y = r.f64()?;
+    let z = r.f64()?;
+    skip_lpvec3(r)?; // movement (LpVec3, variable length)
+    let yaw = r.i8()? as f32 * 360.0 / 256.0;
+    let pitch = r.i8()? as f32 * 360.0 / 256.0;
+    world.entities.add(
+        id,
+        rewo_world::entities::EntityState {
+            uuid,
+            type_id,
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+        },
+    );
+    Ok(())
+}
+
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
 /// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
 /// (byte0 & 4) continuation flag set, read a trailing VarInt.
-fn skip_lpvec3(r: &mut PacketReader) -> rewo_proto::Result<()> {
+pub(crate) fn skip_lpvec3(r: &mut PacketReader) -> rewo_proto::Result<()> {
     let lowest = r.u8()?;
     if lowest == 0 {
         return Ok(());
