@@ -27,6 +27,7 @@ use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
+use crate::entities::{EntityDraw, EntityPass, FontData};
 use crate::Gpu;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
@@ -164,6 +165,9 @@ pub struct WorldRenderer {
     staging_cap: u64,
     count_readback: vk::Buffer,
     count_readback_alloc: Option<Allocation>,
+    // -- entities (optional pass; drawn after the terrain in `draw`) --
+    color_format: vk::Format,
+    entities: Option<EntityPass>,
 
     pub drawn_last_frame: usize,
     pub culled_last_frame: usize,
@@ -480,9 +484,34 @@ impl WorldRenderer {
                 staging_cap,
                 count_readback,
                 count_readback_alloc: Some(count_readback_alloc),
+                color_format,
+                entities: None,
                 drawn_last_frame: 0,
                 culled_last_frame: 0,
             })
+        }
+    }
+
+    /// Attach the entity pass (capsules + nametags). Callers that never
+    /// attach it (demo/view/bench snapshots) pay nothing.
+    pub fn init_entities(
+        &mut self,
+        gpu: &mut Gpu,
+        font: Option<FontData<'_>>,
+    ) -> Result<(), String> {
+        self.entities = Some(EntityPass::new(gpu, self.color_format, font)?);
+        Ok(())
+    }
+
+    /// Rebuild this frame's entity geometry (no-op until `init_entities`).
+    pub fn set_entities(
+        &mut self,
+        draws: &[EntityDraw<'_>],
+        cam_right: [f32; 3],
+        cam_up: [f32; 3],
+    ) {
+        if let Some(pass) = self.entities.as_mut() {
+            pass.set_draws(draws, cam_right, cam_up);
         }
     }
 
@@ -696,11 +725,18 @@ impl WorldRenderer {
         self.culled_last_frame = 0;
     }
 
-    /// In-pass draw: bind the mega-buffers + one indirect-count draw.
+    /// In-pass draw: bind the mega-buffers + one indirect-count draw, then
+    /// the entity pass (capsules + nametags) over the terrain.
     pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
-        if self.column_count == 0 {
-            return;
+        if self.column_count > 0 {
+            self.draw_terrain(gpu, cb, view_proj, extent);
         }
+        if let Some(pass) = &self.entities {
+            pass.draw(gpu, cb, view_proj, extent);
+        }
+    }
+
+    fn draw_terrain(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -808,6 +844,9 @@ impl WorldRenderer {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        if let Some(mut pass) = self.entities.take() {
+            pass.destroy(gpu);
+        }
         unsafe {
             let device = &gpu.device;
             device.destroy_fence(self.upload_fence, None);

@@ -78,7 +78,27 @@ pub struct BakedAssets {
     /// Baked plains-biome tint colors (colormap centers).
     pub grass_tint: [u8; 3],
     pub foliage_tint: [u8; 3],
+    /// The vanilla bitmap font (ascii.png) for nametags/HUD text. `None`
+    /// only if the jar somehow lacks it — callers degrade to no text.
+    pub font: Option<BakedFont>,
     pub stats: BakeStats,
+}
+
+/// The legacy bitmap font: a 16×16 grid of glyph cells covering code points
+/// 0..256 (ASCII names only need rows 2..8). Advances derived from the
+/// bitmap the way vanilla's legacy provider does (rightmost lit column + 1
+/// spacing px; space = 4).
+pub struct BakedFont {
+    /// RGBA8 atlas, `atlas_size`² texels (sRGB; white glyphs on alpha).
+    pub atlas: Vec<u8>,
+    pub atlas_size: u32,
+    /// Glyph cell edge in px (vanilla: 8).
+    pub cell: u32,
+    /// Horizontal advance per code point, in font px.
+    pub advance: [u8; 256],
+    /// A guaranteed-opaque-white texel (patched into the blank space cell),
+    /// for drawing solid quads through the same pipeline. (u, v) in texels.
+    pub white_texel: (u32, u32),
 }
 
 #[derive(Default, Debug)]
@@ -110,6 +130,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let grass_tint = colormap_center(&mut jar, "grass").unwrap_or([124, 189, 107]);
     let foliage_tint = colormap_center(&mut jar, "foliage").unwrap_or([89, 174, 48]);
+    let font = bake_font(&mut jar);
+    if font.is_none() {
+        log::warn!("rewo-data: font/ascii.png missing — nametags disabled");
+    }
 
     let mut baker = Baker {
         jar: &mut jar,
@@ -175,8 +199,82 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         layer_names: baker.layer_names,
         grass_tint,
         foliage_tint,
+        font,
         stats,
     })
+}
+
+/// Extract + measure the legacy bitmap font from the jar.
+fn bake_font(jar: Jar) -> Option<BakedFont> {
+    let mut bytes = Vec::new();
+    jar.by_name("assets/minecraft/textures/font/ascii.png")
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width, info.height);
+    if w != h || w % 16 != 0 {
+        return None;
+    }
+    let px = w as usize;
+    let mut atlas = vec![0u8; px * px * 4];
+    match info.color_type {
+        png::ColorType::Rgba => atlas.copy_from_slice(&buf[..px * px * 4]),
+        png::ColorType::GrayscaleAlpha => {
+            for i in 0..px * px {
+                let g = buf[i * 2];
+                atlas[i * 4..i * 4 + 3].copy_from_slice(&[g, g, g]);
+                atlas[i * 4 + 3] = buf[i * 2 + 1];
+            }
+        }
+        _ => return None,
+    }
+    let cell = w / 16;
+    let advance = font_advances(&atlas, w, cell);
+
+    // Patch one opaque-white texel into the space glyph's cell (guaranteed
+    // blank — and text layout never emits quads for spaces, so it can't
+    // show). Solid quads (nametag backgrounds, capsules) sample it.
+    let (wx, wy) = ((32 % 16) * cell, (32 / 16) * cell);
+    let wi = ((wy as usize) * px + wx as usize) * 4;
+    atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
+
+    Some(BakedFont {
+        atlas,
+        atlas_size: w,
+        cell,
+        advance,
+        white_texel: (wx, wy),
+    })
+}
+
+/// Per-glyph advances: rightmost column with any alpha + 2 (1 px glyph edge
+/// + 1 px spacing), matching vanilla's legacy provider; blank cells (space)
+/// advance 4.
+fn font_advances(atlas: &[u8], size: u32, cell: u32) -> [u8; 256] {
+    let mut advance = [0u8; 256];
+    for cp in 0..256u32 {
+        let (cx, cy) = ((cp % 16) * cell, (cp / 16) * cell);
+        let mut rightmost: Option<u32> = None;
+        for col in 0..cell {
+            for row in 0..cell {
+                let i = (((cy + row) * size + cx + col) * 4 + 3) as usize;
+                if atlas[i] > 0 {
+                    rightmost = Some(col);
+                    break;
+                }
+            }
+        }
+        advance[cp as usize] = match rightmost {
+            Some(r) => (r + 2) as u8,
+            None => 4,
+        };
+    }
+    advance
 }
 
 type Jar<'a> = &'a mut zip::ZipArchive<std::io::BufReader<std::fs::File>>;
@@ -929,5 +1027,17 @@ mod tests {
         // Full 16-wide top face → uv spans 0..1.
         let uv = default_uv([0.0, 0.0, 0.0], [16.0, 8.0, 16.0], 0);
         assert_eq!(uv, [0.0, 0.0, 16.0, 16.0]);
+    }
+
+    #[test]
+    fn font_advance_measures_rightmost_lit_column() {
+        // 16×16 grid of 2-px cells; light up column 1 of glyph 'A' (65).
+        let (size, cell) = (32u32, 2u32);
+        let mut atlas = vec![0u8; (size * size * 4) as usize];
+        let (cx, cy) = ((65 % 16) * cell, (65 / 16) * cell);
+        atlas[((cy * size + cx + 1) * 4 + 3) as usize] = 255;
+        let adv = font_advances(&atlas, size, cell);
+        assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
+        assert_eq!(adv[32], 4, "blank space cell advances 4");
     }
 }

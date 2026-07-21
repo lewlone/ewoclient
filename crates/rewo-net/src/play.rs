@@ -204,6 +204,8 @@ impl PlaySession {
         if self.disconnect.is_some() {
             return Ok(());
         }
+        // Step other entities' 3-tick position lerps (vanilla cadence).
+        self.world.entities.tick_lerp();
         if self.spawned {
             let solid = std::mem::take(&mut self.solid);
             let world = &self.world;
@@ -375,6 +377,91 @@ impl PlaySession {
                     }
                 }
             }
+        } else if id == ids.cb_play_move_entity_pos {
+            let mut r = PacketReader::new(body);
+            if let Ok((eid, dx, dy, dz)) = read_move_delta(&mut r) {
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    e.nudge(dx, dy, dz);
+                }
+            }
+        } else if id == ids.cb_play_move_entity_pos_rot {
+            let mut r = PacketReader::new(body);
+            let parse = (|| -> rewo_proto::Result<(i32, f64, f64, f64, f32, f32)> {
+                let (eid, dx, dy, dz) = read_move_delta(&mut r)?;
+                let yaw = packed_degrees(r.i8()?);
+                let pitch = packed_degrees(r.i8()?);
+                Ok((eid, dx, dy, dz, yaw, pitch))
+            })();
+            if let Ok((eid, dx, dy, dz, yaw, pitch)) = parse {
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    e.nudge(dx, dy, dz);
+                    e.set_rot(yaw, pitch);
+                }
+            }
+        } else if id == ids.cb_play_move_entity_rot {
+            let mut r = PacketReader::new(body);
+            let parse = (|| -> rewo_proto::Result<(i32, f32, f32)> {
+                Ok((r.varint()?, packed_degrees(r.i8()?), packed_degrees(r.i8()?)))
+            })();
+            if let Ok((eid, yaw, pitch)) = parse {
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    e.set_rot(yaw, pitch);
+                }
+            }
+        } else if id == ids.cb_play_entity_position_sync {
+            // varint id, PositionMoveRotation {pos 3×f64, vel 3×f64, yaw
+            // f32, pitch f32}, bool on_ground.
+            let mut r = PacketReader::new(body);
+            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32)> {
+                let eid = r.varint()?;
+                let pos = [r.f64()?, r.f64()?, r.f64()?];
+                let _vel = [r.f64()?, r.f64()?, r.f64()?];
+                Ok((eid, pos, r.f32()?, r.f32()?))
+            })();
+            if let Ok((eid, pos, yaw, pitch)) = parse {
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    e.set_target(pos[0], pos[1], pos[2]);
+                    e.set_rot(yaw, pitch);
+                }
+            }
+        } else if id == ids.cb_play_teleport_entity {
+            // varint id, PositionMoveRotation, i32 relative-bits, bool
+            // on_ground — same Relative order as the player teleport
+            // (X=0 Y=1 Z=2 Y_ROT=3 X_ROT=4; velocity deltas 5..7 ignored).
+            let mut r = PacketReader::new(body);
+            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32, i32)> {
+                let eid = r.varint()?;
+                let pos = [r.f64()?, r.f64()?, r.f64()?];
+                let _vel = [r.f64()?, r.f64()?, r.f64()?];
+                let yaw = r.f32()?;
+                let pitch = r.f32()?;
+                Ok((eid, pos, yaw, pitch, r.i32()?))
+            })();
+            if let Ok((eid, pos, yaw, pitch, relatives)) = parse {
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    let rel = |bit: i32| relatives & (1 << bit) != 0;
+                    let (tx, ty, tz) = (
+                        if rel(0) { e.x + pos[0] } else { pos[0] },
+                        if rel(1) { e.y + pos[1] } else { pos[1] },
+                        if rel(2) { e.z + pos[2] } else { pos[2] },
+                    );
+                    e.set_target(tx, ty, tz);
+                    let yaw = if rel(3) { e.yaw + yaw } else { yaw };
+                    let pitch = if rel(4) { e.pitch + pitch } else { pitch };
+                    e.set_rot(yaw, pitch);
+                }
+            }
+        } else if id == ids.cb_play_player_info_update {
+            self.apply_player_info(body);
+        } else if id == ids.cb_play_player_info_remove {
+            let mut r = PacketReader::new(body);
+            if let Ok(n) = r.count("player info removes", 16) {
+                for _ in 0..n {
+                    if let Ok(uuid) = r.uuid() {
+                        self.world.entities.remove_name(uuid);
+                    }
+                }
+            }
         } else if Some(id) == ids.cb_play_set_health {
             let mut r = PacketReader::new(body);
             if let Ok(h) = r.f32() {
@@ -471,6 +558,75 @@ impl PlaySession {
         }
         self.spawned = true;
         Ok(())
+    }
+
+    /// Player Info Update (decompiled `ClientboundPlayerInfoUpdatePacket`):
+    /// a 1-byte fixed bitset over the 8 actions (LSB-first, ordinal order),
+    /// then a VarInt list of entries [uuid + per-set-action fields]. We keep
+    /// ADD_PLAYER's name (nametags) and skip everything else byte-exactly —
+    /// a mis-skip here corrupts the rest of the packet's entries.
+    fn apply_player_info(&mut self, body: &[u8]) {
+        let mut r = PacketReader::new(body);
+        let mut names: Vec<(u128, String)> = Vec::new();
+        let parse = (|| -> rewo_proto::Result<()> {
+            let mask = r.u8()?;
+            let has = |bit: u8| mask & (1u8 << bit) != 0;
+            let count = r.count("player info entries", 16)?;
+            for _ in 0..count {
+                let uuid = r.uuid()?;
+                if has(0) {
+                    // ADD_PLAYER: name + profile properties (skin blobs).
+                    let name = r.string(16)?.to_string();
+                    let props = r.count("profile properties", 1)?;
+                    for _ in 0..props {
+                        let _name = r.string(64)?;
+                        let _value = r.string(32767)?;
+                        if r.bool()? {
+                            let _sig = r.string(1024)?;
+                        }
+                    }
+                    names.push((uuid, name));
+                }
+                if has(1) {
+                    // INITIALIZE_CHAT: nullable {session uuid, expires i64,
+                    // pubkey bytes ≤512, key sig bytes ≤4096}.
+                    if r.bool()? {
+                        let _ = r.uuid()?;
+                        let _ = r.i64()?;
+                        let _ = r.byte_array(512)?;
+                        let _ = r.byte_array(4096)?;
+                    }
+                }
+                if has(2) {
+                    let _gamemode = r.varint()?;
+                }
+                if has(3) {
+                    let _listed = r.bool()?;
+                }
+                if has(4) {
+                    let _latency = r.varint()?;
+                }
+                if has(5) {
+                    // UPDATE_DISPLAY_NAME: nullable NBT text component.
+                    if r.bool()? {
+                        let _ = r.nbt()?;
+                    }
+                }
+                if has(6) {
+                    let _list_order = r.varint()?;
+                }
+                if has(7) {
+                    let _show_hat = r.bool()?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(e) = parse {
+            log::debug!("play: player_info_update parse: {e}");
+        }
+        for (uuid, name) in names {
+            self.world.entities.set_name(uuid, name);
+        }
     }
 
     #[allow(dead_code)]
@@ -609,4 +765,20 @@ fn write_position(p: &mut PacketWriter, x: i32, y: i32, z: i32) {
         | (((z as i64 & 0x3ff_ffff) as u64) << 12)
         | ((y as i64 & 0xfff) as u64);
     p.i64(v as i64);
+}
+
+/// The move-entity delta prefix: varint id + 3 shorts, each Δpos·4096
+/// (decompiled `VecDeltaCodec` — deltas accumulate on the last transmitted
+/// position, which is exactly what `EntityState::nudge` targets).
+fn read_move_delta(r: &mut PacketReader) -> rewo_proto::Result<(i32, f64, f64, f64)> {
+    let eid = r.varint()?;
+    let dx = r.i16()? as f64 / 4096.0;
+    let dy = r.i16()? as f64 / 4096.0;
+    let dz = r.i16()? as f64 / 4096.0;
+    Ok((eid, dx, dy, dz))
+}
+
+/// `Mth.unpackDegrees`: packed byte angle → degrees.
+fn packed_degrees(b: i8) -> f32 {
+    b as f32 * (360.0 / 256.0)
 }

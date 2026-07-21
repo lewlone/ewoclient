@@ -1582,15 +1582,19 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `baked.solid`, NOT `matches!(Cube)` — grass_block renders as a Model, so
   keying off the render fast-path makes the player fall through the ground.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
-- **Biggest open gaps to critique** (REWO_PLAN §0.0): entities decode but
-  don't render (invisible players/mobs); online-mode/chat-signing not done
-  (offline only); column uploads still fence-sync (no async transfer
-  queue). Fixed 2026-07-21: meshing moved OFF the main thread (rayon
-  `MeshPool` + `Arc<Column>` CoW snapshots — mesher unchanged, demo PNG
-  byte-identical, bench gate green) and the launcher Native arm now spawns
-  `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join knob, `package.ps1`
-  stages rewo.exe; the UI eyeball is still pending). Same session also
-  un-broke `rewo view` (stale M2 bake-sanity check).
+- **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
+  chat-signing not done (offline only); column uploads still fence-sync
+  (no async transfer queue); entity collision ignored + capsules not
+  player models. Fixed 2026-07-21 (three passes): meshing moved OFF the
+  main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
+  unchanged, demo PNG byte-identical, bench gate green); the launcher
+  Native arm now spawns `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join
+  knob, `package.ps1` stages rewo.exe; UI eyeball still pending); and
+  **entity rendering shipped** — full movement/player-info decode, vanilla
+  3-tick lerp, capsule pass + bitmap-font nametags, verified live
+  (position cross-check exact, 129-entity soak at ~1,170 fps, "RewoCap2"
+  legible in a headless PNG). Also un-broke `rewo view` (stale M2
+  bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

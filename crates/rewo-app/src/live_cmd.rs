@@ -22,8 +22,10 @@ use ash::vk;
 use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use rewo_data::assets::{self};
+use rewo_data::assets::{self, BakedFont};
+use rewo_data::entity_types::EntityTypes;
 use rewo_data::{DataPaths, GameData};
+use rewo_gpu::entities::{srgb_to_linear, EntityDraw, FontData};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
@@ -80,6 +82,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
     let solid: Vec<bool> = baked.solid.clone();
+    let global_bits = data.blocks.global_palette_bits;
     let username = args
         .username
         .clone()
@@ -87,14 +90,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         .unwrap_or_else(|| "RewoLive".into());
 
     let conn = Connection::connect(&args.host, args.port, &data)?;
-    let session = conn.into_play(
-        &args.host,
-        args.port,
-        &username,
-        solid,
-        data.blocks.global_palette_bits,
-    )?;
+    let session = conn.into_play(&args.host, args.port, &username, solid, global_bits)?;
     log::info!("live: session up, opening window…");
+    let etypes = data.entity_types;
 
     let want_validation = cfg!(debug_assertions) && !args.no_validation;
     match &args.out {
@@ -105,10 +103,73 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(6.0);
-            run_headless(session, baked, want_validation, out, settle)
+            run_headless(session, baked, etypes, want_validation, out, settle)
         }
-        _ => run_windowed(session, baked, args, want_validation),
+        _ => run_windowed(session, baked, etypes, args, want_validation),
     }
+}
+
+/// Velvet-tinted linear colors for the capsule set.
+fn linear_rgb(r: u8, g: u8, b: u8) -> [f32; 3] {
+    [
+        srgb_to_linear(r as f32 / 255.0),
+        srgb_to_linear(g as f32 / 255.0),
+        srgb_to_linear(b as f32 / 255.0),
+    ]
+}
+
+/// Camera basis vectors for nametag billboards, from MC-convention angles.
+fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
+    let yaw = yaw_deg.to_radians();
+    let pitch = pitch_deg.to_radians();
+    let dir = Vec3::new(
+        -yaw.sin() * pitch.cos(),
+        -pitch.sin(),
+        yaw.cos() * pitch.cos(),
+    );
+    let right = dir.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(dir).normalize_or_zero();
+    (right.to_array(), up.to_array())
+}
+
+/// Snapshot every tracked entity into this frame's draw list. `alpha` is
+/// the partial-tick blend (0..1). Players get the rose capsule + nametag;
+/// everything else gets mauve, sized by the type table.
+fn collect_entities<'a>(
+    session: &'a PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+) -> Vec<EntityDraw<'a>> {
+    let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
+    let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
+    let mut out = Vec::new();
+    for (_id, e) in session.world.entities.iter() {
+        let p = e.render_pos(alpha);
+        let (w, h) = etypes.dimensions(e.type_id);
+        let is_player = e.type_id == etypes.player_id;
+        out.push(EntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            width: w,
+            height: h,
+            color: if is_player { player_color } else { mob_color },
+            name: if is_player {
+                session.world.entities.name_of(e.uuid)
+            } else {
+                None
+            },
+        });
+    }
+    out
+}
+
+fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
+    baked.font.as_ref().map(|f: &BakedFont| FontData {
+        atlas: &f.atlas,
+        size: f.atlas_size,
+        cell: f.cell,
+        advance: &f.advance,
+        white_texel: f.white_texel,
+    })
 }
 
 /// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
@@ -219,6 +280,7 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 fn run_headless(
     mut session: PlaySession,
     baked: assets::BakedAssets,
+    etypes: EntityTypes,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -227,6 +289,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    world_renderer.init_entities(&mut gpu, font_data(&baked))?;
 
     // Pump the session on a real 20 Hz clock until spawned + settled, so
     // chunks arrive and the player position is real.
@@ -282,13 +345,60 @@ fn run_headless(
     );
     gpu.wait_idle();
 
-    // Look slightly down from the eye toward the horizon (or a debug pitch).
+    // Look slightly down from the eye toward the horizon (or a debug
+    // pitch) — unless REWO_LOOK_ENTITY=1, which aims at the nearest entity
+    // so the verification PNG is guaranteed to frame it.
     let eye = player_eye(&session);
-    let pitch = std::env::var("REWO_PITCH")
+    let draws = collect_entities(&session, &etypes, 1.0);
+    for (id, e) in session.world.entities.iter() {
+        let p = e.render_pos(1.0);
+        println!(
+            "[rewo-entities] #{id} {} at ({:.2},{:.2},{:.2}) yaw {:.0}{}",
+            etypes.name(e.type_id).unwrap_or("?"),
+            p[0],
+            p[1],
+            p[2],
+            e.yaw,
+            session
+                .world
+                .entities
+                .name_of(e.uuid)
+                .map(|n| format!(" name \"{n}\""))
+                .unwrap_or_default(),
+        );
+    }
+    println!("[rewo-entities] {} tracked", draws.len());
+    let mut yaw = session.player.yaw;
+    let mut pitch = std::env::var("REWO_PITCH")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10.0);
-    let vp = eye_view_proj(eye, session.player.yaw, pitch, 1280.0 / 720.0);
+    if std::env::var("REWO_LOOK_ENTITY").is_ok() {
+        // Prefer the nearest PLAYER (name + rose capsule — the interesting
+        // verification target); fall back to the nearest anything.
+        let d = |e: &EntityDraw| {
+            (e.pos[0] - eye.x).powi(2) + (e.pos[1] - eye.y).powi(2) + (e.pos[2] - eye.z).powi(2)
+        };
+        let nearest = draws
+            .iter()
+            .filter(|e| e.name.is_some())
+            .min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap())
+            .or_else(|| draws.iter().min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap()));
+        if let Some(t) = nearest {
+            let d = Vec3::new(
+                t.pos[0] - eye.x,
+                t.pos[1] + t.height * 0.5 - eye.y,
+                t.pos[2] - eye.z,
+            );
+            let len = d.length().max(1e-4);
+            yaw = (-d.x).atan2(d.z).to_degrees();
+            pitch = (-d.y / len).asin().to_degrees();
+            log::info!("live: aiming at entity ({:.1},{:.1},{:.1})", t.pos[0], t.pos[1], t.pos[2]);
+        }
+    }
+    let (cr, cu) = camera_basis(yaw, pitch);
+    world_renderer.set_entities(&draws, cr, cu);
+    let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
         samples_ms: &ring.data,
@@ -354,6 +464,7 @@ struct LiveState {
 struct LiveApp {
     session: Option<PlaySession>,
     baked: Option<assets::BakedAssets>,
+    etypes: EntityTypes,
     pool: MeshPool,
     keys: Keys,
     want_validation: bool,
@@ -401,12 +512,13 @@ impl ApplicationHandler for LiveApp {
             )?;
             renderer.ensure_depth(&mut gpu)?;
             let baked = self.baked.take().ok_or("assets consumed")?;
-            let world_renderer = WorldRenderer::new(
+            let mut world_renderer = WorldRenderer::new(
                 &mut gpu,
                 renderer.swapchain.format,
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
+            world_renderer.init_entities(&mut gpu, font_data(&baked))?;
             Ok(LiveState {
                 window: window.clone(),
                 gpu,
@@ -562,6 +674,13 @@ impl LiveApp {
             }
         }
 
+        // Entities: frame-interpolated snapshot + camera-billboarded tags.
+        let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
+        let draws = collect_entities(session, &self.etypes, alpha);
+        let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
+        state.world_renderer.set_entities(&draws, cr, cu);
+        drop(draws);
+
         let extent = state.renderer.swapchain.extent;
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
         let eye = player_eye(session);
@@ -603,6 +722,7 @@ impl LiveApp {
 fn run_windowed(
     session: PlaySession,
     baked: assets::BakedAssets,
+    etypes: EntityTypes,
     args: LiveArgs,
     want_validation: bool,
 ) -> Result<(), String> {
@@ -615,6 +735,7 @@ fn run_windowed(
     let mut app = LiveApp {
         session: Some(session),
         baked: Some(baked),
+        etypes,
         pool,
         keys: Keys::default(),
         want_validation,
@@ -666,6 +787,10 @@ fn run_windowed(
             "[rewo-m3-live] mesh pool: {} column uploads over the session ({} still in flight)",
             app.uploaded_total,
             app.pool.in_flight(),
+        );
+        println!(
+            "[rewo-m3-live] entities tracked at exit: {}",
+            session.world.entities.len(),
         );
         let _ = EYE_HEIGHT;
         state.world_renderer.destroy(&mut state.gpu);

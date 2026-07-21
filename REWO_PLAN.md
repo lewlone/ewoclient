@@ -124,9 +124,13 @@ the code's author. Nothing below is settled truth.
   **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
-- **Entities are decoded into a table but NOT rendered** — no capsules/
-  nametags. Other players + mobs are invisible. The M3 plan called for
-  capsules; deferred.
+- ~~Entities are decoded into a table but NOT rendered~~ — **RESOLVED
+  2026-07-21.** Full entity track: movement/teleport/position-sync/
+  player-info decode, vanilla 3-tick lerp + partial-tick blend, capsule
+  render pass + bitmap-font nametags. See the §15 entry. Still open within
+  it: entity *collision* is ignored (walk through mobs), no player-model
+  port (capsules only — correction #11's later track), tags are
+  depth-tested (vanilla shows them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -173,13 +177,15 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-Strongest candidates, roughly by value: (a) **entity rendering** (capsules +
-nametags) — makes multiplayer visible; (b) **M7 online-mode + chat signing**
-— needed to play on the user's Frogsy network; (c) **async transfer queue +
-staging ring** — the remaining §4 deviation; (d) the visual follow-ons
-(greedy, fluids, tint). Meshing-off-thread and the Native `live` arm both
-shipped 2026-07-21 (the UI eyeball of the latter is the user's). Confirm
-direction with the user before diving in.
+Strongest candidates, roughly by value: (a) **M7 online-mode + chat
+signing** — needed to play on the user's Frogsy network; (b) **async
+transfer queue + staging ring** — the remaining §4 deviation; (c) the
+visual follow-ons (greedy, fluids, biome tint, packed vertices, texture
+animation); (d) the player-model port (capsules → real player model —
+`skin.rs` cuboid geometry is the reference). Shipped 2026-07-21:
+meshing-off-thread, the Native `live` arm (UI eyeball still the user's),
+and entity rendering (capsules + nametags). Confirm direction with the
+user before diving in.
 
 ---
 
@@ -1213,3 +1219,56 @@ client (the two top fixes from §0.0).**
   the collision bug). The check now asserts visible + `baked.solid`.
 - Next: entity rendering (capsules + nametags), M7 online-mode + chat
   signing, or the async transfer queue — see §0.0 "Suggested next moves".
+
+**2026-07-21 — entity rendering shipped: capsules + nametags (multiplayer
+is visible).**
+
+- **Protocol** (all wire shapes read from the decompile, §11):
+  `move_entity_pos` / `move_entity_pos_rot` / `move_entity_rot` (short
+  deltas ÷4096 — accumulated onto the synced target, the client mirror of
+  `VecDeltaCodec`), `entity_position_sync` + `teleport_entity`
+  (`PositionMoveRotation`; teleport honors the same Relative bitfield as
+  the player teleport), `player_info_update` (1-byte fixed bitset over the
+  8 actions, ADD_PLAYER name kept, every other field skipped byte-exactly —
+  properties/chat-session/NBT display names) + `player_info_remove`. All
+  resolved by name (fail-loud). **Latent M1 bug fixed:** `add_entity` read
+  2 rotation bytes as yaw-then-pitch; the wire is pitch, yaw, head-yaw (3
+  bytes).
+- **Interpolation** (`rewo-world/entities.rs`): vanilla semantics — targets
+  from packets, 3-step tick lerp (`(target−cur)/steps_left`, exact on the
+  third tick), frames blend prev→cur by partial-tick alpha.
+  `PlaySession::tick` steps all lerps at 20 Hz. Names in a UUID→name map
+  that outlives entity unload. Unit-tested (convergence, delta
+  accumulation, name lifetime).
+- **Font**: the vanilla bitmap font baked from the client jar
+  (`ascii.png` → atlas + per-glyph advances measured the way the legacy
+  provider does: rightmost lit column + 2, space = 4; a white texel is
+  patched into the blank space cell so solid quads ride the same pipeline).
+- **Renderer** (`rewo-gpu/entities.rs`): a deliberately simple CPU-built
+  world-space triangle soup, rebuilt per frame — capsule shells (12-segment
+  profile sweep, ~500 verts each, per-vertex sun shade) + camera-
+  billboarded glyph/background quads. One vertex format, two pipelines
+  (solid: depth-write GREATER; text: blended, depth-write off), both
+  alpha-masked + linear-color (the two render disciplines), 2-slot buffer
+  ring matching frames-in-flight. Lives inside `WorldRenderer::draw` after
+  the terrain — renderer/offscreen untouched; snapshots (view/demo/bench)
+  never init it and pay nothing. Instancing is the escalation path if
+  entity counts ever grow 100×.
+- **Colors**: players = accent rose + nametag, mobs = mauve, sized by an
+  `entity_types` registry table (new `rewo-data` module, exact dims for
+  the common types).
+- **Verified headlessly on the live test server** (which turned out to
+  have a natural slime herd + horses + pig — free test entities):
+  validation layers **clean**; `[rewo-entities]` printout lists every
+  tracked entity (`REWO_LOOK_ENTITY=1` aims the headless camera at the
+  nearest player); **position cross-check exact** — a stationary second
+  client self-reported (6.5,−60.0,7.5) and the observer tracked it at
+  (6.50,−60.00,7.50); PNGs inspected: mauve capsules across the plain
+  (one mid-jump), and a close-range shot with the rose player capsule +
+  **"RewoCap2" legible in the vanilla font** on its dimmed plate; windowed
+  soak with **129 live entities**: ~1,170 fps, avg 0.89 ms, 0.1% low
+  4.1 ms, corrections 0. `rewo bench` gate green (0.1% low 0.976 ms) and
+  the demo PNG still byte-identical.
+- **Known limits (tracked in §0.0):** no entity collision, capsules not
+  player models, tags depth-tested (vanilla renders them through walls),
+  AO/light not sampled for entities (fixed sun shade).

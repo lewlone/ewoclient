@@ -10,6 +10,7 @@
 
 pub mod assets;
 pub mod blocks;
+pub mod entity_types;
 pub mod items;
 pub mod packets;
 pub mod server_jar;
@@ -61,6 +62,7 @@ pub struct GameData {
     pub blocks: blocks::Blocks,
     pub packets: packets::Packets,
     pub items: items::Items,
+    pub entity_types: entity_types::EntityTypes,
 }
 
 impl GameData {
@@ -68,10 +70,12 @@ impl GameData {
         let blocks = blocks::Blocks::load(&paths.blocks_json())?;
         let packets = packets::Packets::load(&paths.packets_json())?;
         let items = items::Items::load(&paths.registries_json())?;
+        let entity_types = entity_types::EntityTypes::load(&paths.registries_json())?;
         Ok(Self {
             blocks,
             packets,
             items,
+            entity_types,
         })
     }
 

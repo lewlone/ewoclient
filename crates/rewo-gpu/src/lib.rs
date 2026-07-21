@@ -13,6 +13,7 @@
 //!   load-bearing and implicit drops hide it. `Gpu` itself is the one Drop
 //!   (device → surface → debug → instance, after a wait_idle).
 
+pub mod entities;
 pub mod offscreen;
 pub mod overlay;
 pub mod renderer;

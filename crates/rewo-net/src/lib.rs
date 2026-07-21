@@ -521,19 +521,14 @@ pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_p
     let y = r.f64()?;
     let z = r.f64()?;
     skip_lpvec3(r)?; // movement (LpVec3, variable length)
-    let yaw = r.i8()? as f32 * 360.0 / 256.0;
-    let pitch = r.i8()? as f32 * 360.0 / 256.0;
+    // Wire order (decompiled read): xRot (pitch) first, THEN yRot (yaw),
+    // then yHeadRot — packed-degree bytes.
+    let pitch = r.i8()? as f32 * (360.0 / 256.0);
+    let yaw = r.i8()? as f32 * (360.0 / 256.0);
+    let _head_yaw = r.i8()?;
     world.entities.add(
         id,
-        rewo_world::entities::EntityState {
-            uuid,
-            type_id,
-            x,
-            y,
-            z,
-            yaw,
-            pitch,
-        },
+        rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch),
     );
     Ok(())
 }
