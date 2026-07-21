@@ -1596,3 +1596,26 @@ capability).**
   HUD + world render underneath; 0 VUIDs; text is live-only so the demo PNG
   is **byte-identical**, bench flat; live soak corrections 0. 50 rewo tests
   green.
+
+**2026-07-22 — entity metadata decode → custom nametags on mobs.**
+
+- **`set_entity_data` was undecoded** — the `SynchedEntityData` delta stream
+  (`u8 index` [0xFF end] + `VarInt serializer type` + a type-dependent
+  value). New `rewo-net/metadata.rs` parses it with a **serializer skip
+  table** (the `EntityDataSerializers` registration order, read from the
+  decompile): it extracts the reliably-indexed **Entity base** fields —
+  shared flags (index 0, BYTE) and **custom name** (index 2,
+  OPTIONAL_COMPONENT → flattened text) — skipping the rest by type, and
+  bails cleanly on a complex type (item stack / particle / …) that never
+  precedes index 2. 3 unit tests (name-after-skips, bail-on-complex, empty).
+- **Custom nametags**: `EntityTable` gains an id→name map
+  (`set_custom_name` / `custom_name`, cleared on removal); the live client
+  renders it as the entity's nametag (players still show their profile
+  name). Slime size / baby flags live at *entity-specific* indices
+  (fragile) — deferred; the parser + flags byte are the reusable base.
+- **Verified:** summoned `cow {CustomName:'"Bessie"'}` — **"Bessie" floats
+  above the cow** (metadata decoded → nametag rendered); the same shot also
+  shows `commands.summon.success` in the chat overlay (the server's command
+  feedback — end-to-end chat + metadata + the `chat_command` packet all in
+  one frame). 0 VUIDs; decode-side + live-only render → demo
+  **byte-identical**, bench flat; soak corrections 0. 53 rewo tests green.

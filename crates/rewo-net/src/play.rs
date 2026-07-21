@@ -454,6 +454,14 @@ impl PlaySession {
                     e.set_rot(yaw, pitch);
                 }
             }
+        } else if id == ids.cb_play_set_entity_data {
+            let mut r = PacketReader::new(body);
+            if let Ok(eid) = r.varint() {
+                let meta = crate::metadata::parse(&mut r);
+                if meta.custom_name.is_some() {
+                    self.world.entities.set_custom_name(eid, meta.custom_name);
+                }
+            }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
         } else if id == ids.cb_play_player_info_remove {

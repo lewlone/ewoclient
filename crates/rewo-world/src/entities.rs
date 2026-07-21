@@ -117,6 +117,9 @@ pub struct EntityTable {
     /// `add_entity` arrives; survives entity unload (list membership, not
     /// entity lifetime).
     names: HashMap<u128, String>,
+    /// Custom names from entity metadata, keyed by entity id (a named mob
+    /// shows this above its model). Cleared on entity removal.
+    custom_names: HashMap<i32, String>,
 }
 
 impl EntityTable {
@@ -126,6 +129,23 @@ impl EntityTable {
 
     pub fn remove(&mut self, id: i32) {
         self.map.remove(&id);
+        self.custom_names.remove(&id);
+    }
+
+    /// Set / clear an entity's metadata custom name.
+    pub fn set_custom_name(&mut self, id: i32, name: Option<String>) {
+        match name {
+            Some(n) => {
+                self.custom_names.insert(id, n);
+            }
+            None => {
+                self.custom_names.remove(&id);
+            }
+        }
+    }
+
+    pub fn custom_name(&self, id: i32) -> Option<&str> {
+        self.custom_names.get(&id).map(|s| s.as_str())
     }
 
     pub fn len(&self) -> usize {

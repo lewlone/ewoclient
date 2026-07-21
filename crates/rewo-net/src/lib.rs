@@ -11,6 +11,7 @@
 //! soak/replay tools it runs on its own driver.
 
 pub mod ids;
+pub mod metadata;
 pub mod play;
 pub mod record;
 

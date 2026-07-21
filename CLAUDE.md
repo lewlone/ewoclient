@@ -1620,8 +1620,10 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `box_uv_faces` extracted for the per-vertex transform); and **screen-space
   text** (a `TextPass` rendering the vanilla font with drop shadows — a
   coordinates/facing line + a chat overlay, the client's first on-screen
-  text). The mob registry spans humanoid/cube/quadruped. Also un-broke
-  `rewo view` (stale M2 bake-sanity check).
+  text); and **entity metadata decode** (`set_entity_data` → a serializer
+  skip table → custom nametags on mobs; slime size/baby deferred as
+  entity-specific indices). The mob registry spans humanoid/cube/quadruped.
+  Also un-broke `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

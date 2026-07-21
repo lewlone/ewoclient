@@ -152,7 +152,7 @@ fn collect_entities<'a>(
         Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
     });
     let mut out = Vec::new();
-    for (_id, e) in session.world.entities.iter() {
+    for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
@@ -186,10 +186,12 @@ fn collect_entities<'a>(
             width: w,
             height: h,
             color: if is_player { player_color } else { mob_color },
+            // Players show their profile name; any entity with a metadata
+            // custom name shows that (named mobs).
             name: if is_player {
                 session.world.entities.name_of(e.uuid)
             } else {
-                None
+                session.world.entities.custom_name(id)
             },
             kind,
             yaw: e.yaw,
@@ -400,7 +402,9 @@ fn run_headless(
                     session.player.y,
                     session.player.z + dir[2] * 3.0,
                 );
-                let cmd = format!("summon minecraft:{mob} {sx:.2} {sy:.2} {sz:.2}");
+                // Optional NBT tail (e.g. REWO_SUMMON_NBT={CustomName:'"Bo"'}).
+                let nbt = std::env::var("REWO_SUMMON_NBT").unwrap_or_default();
+                let cmd = format!("summon minecraft:{mob} {sx:.2} {sy:.2} {sz:.2} {nbt}");
                 if let Err(e) = session.send_command(&cmd) {
                     log::warn!("REWO_SUMMON: {e}");
                 }
