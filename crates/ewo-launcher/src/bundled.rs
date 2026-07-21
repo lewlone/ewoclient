@@ -256,6 +256,18 @@ pub const CATALOG: &[BundledMod] = &[
         default_on: true,
         toggleable: true,
     },
+    BundledMod {
+        // Local custom mod (not on Modrinth) — force any player into crawl
+        // mode via /forcecrawl. 26.2-only; the manifest ships it as a
+        // file:// jar, so it only appears on the 26.2 line.
+        display_name: "Force Crawl",
+        category: "utility",
+        version: "1.2.0",
+        mod_id: "forcecrawl",
+        library_prefix: "dev.valtteri:forcecrawl:",
+        default_on: true,
+        toggleable: true,
+    },
     // ── Social ───────────────────────────────────────────────────────
     BundledMod {
         display_name: "Simple Voice Chat",

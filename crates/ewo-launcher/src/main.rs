@@ -227,6 +227,11 @@ struct App {
     /// C). `None` while no launch is running. Drained each frame in
     /// `RedrawRequested`.
     launch_rx: Option<std::sync::mpsc::Receiver<launch::LaunchEvent>>,
+    /// PID of the most-recent spawned game JVM, held so a lingering zombie
+    /// (JVM that deadlocks in native teardown on exit — see `launch::reaper`)
+    /// can be force-killed before the next launch. Set on `Started`, cleared
+    /// on a clean exit. `None` when no launch has run this session.
+    active_launch_pid: Option<u32>,
     /// While a launch is in flight, the wall-time deadline after which the
     /// launcher minimizes itself even if we haven't yet seen the game's
     /// window-ready log marker. `None` when no launch is pending a minimize.
@@ -361,6 +366,7 @@ impl App {
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
+            active_launch_pid: None,
             pending_minimize: None,
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
@@ -565,8 +571,28 @@ impl App {
             }
         }
         if let Err(e) = launch::extract_all(&pv, &inst.name) {
-            log::warn!("launch: native extraction failed: {} — falling back", e);
-            return false;
+            // A locked natives dir almost always means a zombie game JVM
+            // (deadlocked in teardown on a previous exit) still holds a
+            // native .dll open. The PID reaper above only knows launches we
+            // recorded; an untracked zombie (e.g. left by an older launcher
+            // build) slips past it. Reap any windowless java and retry once
+            // — self-healing instead of silently falling back to synthetic.
+            log::warn!(
+                "launch: native extraction failed: {} — reaping windowless java and retrying",
+                e
+            );
+            let killed = launch::reaper::reap_windowless_java();
+            if killed > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            if let Err(e2) = launch::extract_all(&pv, &inst.name) {
+                log::warn!(
+                    "launch: native extraction still failing after reaping {} process(es): {} — falling back",
+                    killed, e2
+                );
+                return false;
+            }
+            log::info!("launch: native extraction recovered after reaping {} zombie(s)", killed);
         }
         // Pick a JRE matching the per-version manifest's
         // `javaVersion.majorVersion`. Falls back to whatever's first in
@@ -730,6 +756,21 @@ impl App {
             inst.last_played_at = screens::instances::current_unix_seconds();
         }
         persistence::save_instances(&self.instances);
+
+        // Reap any lingering game JVM before spawning a new one. On Windows
+        // the previous JVM can deadlock in native teardown on exit and hang
+        // around as a headless zombie holding this instance's files + the
+        // ewo_jni.dll open — that lock is what makes a second launch fail.
+        // A cleanly-exited launch already cleared its record, so this is a
+        // no-op in the normal case; only a real zombie gets terminated.
+        if let Some(pid) = self.active_launch_pid.take() {
+            launch::reaper::reap(pid);
+            launch::reaper::clear();
+        } else {
+            // No live launch this session, but a previous launcher session
+            // may have left a zombie recorded on disk — reap that too.
+            launch::reaper::reap_recorded();
+        }
 
         // Real launch fires only when the instance is Ready + the manifest
         // resolves; otherwise fall back to the synthetic animation so the
@@ -2682,8 +2723,13 @@ impl ApplicationHandler for App {
                 if let Some(rx) = self.launch_rx.as_ref() {
                     while let Ok(event) = rx.try_recv() {
                         match event {
-                            launch::LaunchEvent::Started => {
-                                log::info!("launch: JVM started");
+                            launch::LaunchEvent::Started { pid } => {
+                                log::info!("launch: JVM started (pid {pid})");
+                                // Record the PID so a zombie JVM (deadlocked
+                                // in native teardown on exit) can be reaped
+                                // before the next launch — see launch::reaper.
+                                self.active_launch_pid = Some(pid);
+                                launch::reaper::record(pid);
                                 // Don't minimize yet — the JVM has only just
                                 // spawned; Minecraft's window is ~10-30s away.
                                 // Arm a fallback deadline instead. We minimize
@@ -2761,6 +2807,10 @@ impl ApplicationHandler for App {
 
                 if launch_finished {
                     self.launch_rx = None;
+                    // JVM reported exit — forget its PID so we don't reap a
+                    // recycled PID on the next launch (see launch::reaper).
+                    self.active_launch_pid = None;
+                    launch::reaper::clear();
                     // A launch that ends before it ever minimized (fast crash,
                     // spawn failure): disarm so we don't minimize after the fact.
                     self.pending_minimize = None;

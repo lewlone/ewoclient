@@ -1,0 +1,21 @@
+[package]
+name = "rewo-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rewo"
+path = "src/main.rs"
+
+[dependencies]
+rewo-gpu = { workspace = true }
+ash = { workspace = true }
+winit = { workspace = true }
+raw-window-handle = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+tracy-client = { workspace = true }

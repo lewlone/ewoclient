@@ -18,8 +18,10 @@ use super::plan::LaunchPlan;
 
 #[derive(Debug)]
 pub enum LaunchEvent {
-    /// Process spawned — UI flips to the streaming-log layout.
-    Started,
+    /// Process spawned — UI flips to the streaming-log layout. Carries the
+    /// child PID so the launcher can reap it if the JVM later zombies on
+    /// exit (see `launch::reaper`).
+    Started { pid: u32 },
     /// One line of output (stdout or stderr — we don't distinguish today;
     /// the JVM mostly logs to stderr but Minecraft's own logger goes to
     /// stdout). Includes a hint via `Severity` for log-coloring.
@@ -84,7 +86,7 @@ fn run_launch(plan: LaunchPlan, tx: Sender<LaunchEvent>) {
         }
     };
 
-    let _ = tx.send(LaunchEvent::Started);
+    let _ = tx.send(LaunchEvent::Started { pid: child.id() });
 
     // Reader threads — one per pipe.
     let stdout = child.stdout.take().expect("piped stdout");

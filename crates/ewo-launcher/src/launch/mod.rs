@@ -8,6 +8,7 @@
 pub mod jre;
 pub mod natives;
 pub mod plan;
+pub mod reaper;
 pub mod spawn;
 
 pub use jre::{detect_all as detect_jres, pick_for_major as pick_jre};

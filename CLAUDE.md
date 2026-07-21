@@ -1179,8 +1179,10 @@ flag.**
 The third feature phase past v1 + v2. [`PHASE_H_PLAN.md`](PHASE_H_PLAN.md)
 holds the original forward plan (now partly stale — see below). Phase H
 plugs the launcher into the user's existing **chickenedin** Minecraft
-network so the launcher knows your friends, their presence, and (future
-H6) lets you Roblox-style join them. **Offline-first holds**: signed-out
+network (**renamed Frogsy in mid-2026** — this section predates the rename;
+domains/API bases below still say chickenedin.com, verify what's live before
+relying on them) so the launcher knows your friends, their presence, and
+(future H6) lets you Roblox-style join them. **Offline-first holds**: signed-out
 launcher makes zero network calls; signed-in-but-unlinked makes MS-auth
 calls only; social calls happen only once the launcher has a per-user
 `social_token`.
@@ -1551,3 +1553,35 @@ idle frame throttle (120fps after 0.5s untouched, full rate on interaction).
 Verified live: **RSS stable ~108 MB** (was climbing ~2.6 GB/hr), renders
 identically. `LEAK_HUNT_INSTRUMENT` diagnostics intentionally left in pending a
 final strip.*
+
+---
+
+## Rewo — from-scratch native Minecraft client (M0 shipped)
+
+**[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — read it before
+touching `crates/rewo-*`.** Rewo (from "rewolution", as Ewo came from
+"ewolution") is a from-scratch Rust Minecraft client speaking the vanilla
+protocol (pin: **26.2 / protocol 776**, read from the bundled jar's
+version.json), rendered with **raw Vulkan via ash** — frame-time
+consistency (1%/0.1% lows) and input latency first. It plugs into this
+launcher as a future `Native` instance kind (M1) reusing auth + spawn +
+reaper; it is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not
+apply.
+
+- **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
+  `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart
+  overlay + GPU timestamps + tracy. Verified headlessly on the RTX 5080:
+  ~4.3k fps clear+overlay, cpu p99 0.87 ms, validation-clean.
+- **Verification policy (user mandate): headless-first.** `rewo --headless N
+  --chart-demo --out x.png` renders offscreen (no window) to a PNG;
+  `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
+  Rewo milestone must ship a self-check path like these — the user does not
+  manually test what a machine can check.
+- Render disciplines already load-bearing: shader color constants are
+  authored sRGB and **must convert to linear in-shader** (SRGB attachments
+  encode on store); UI passes **mask alpha writes** so readback PNGs stay
+  opaque. Shaders are GLSL compiled by glslc from the installed Vulkan SDK
+  (`VULKAN_SDK` env; validation layers come with it).
+- The user's network (Phase H's "chickenedin") is now named **Frogsy** and
+  is Rewo's staging target (D1 in the plan); public servers are out of
+  scope for Rewo until the user says otherwise (anti-cheat ban risk).

@@ -1,0 +1,16 @@
+[package]
+name = "rewo-gpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ash = { workspace = true }
+ash-window = { workspace = true }
+gpu-allocator = { workspace = true }
+raw-window-handle = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }
+png = { workspace = true }

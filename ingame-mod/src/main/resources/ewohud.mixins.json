@@ -7,6 +7,7 @@
   "client": [
     "EwoHudMixin",
     "EwoHudMixin262",
+    "MinecraftShutdownMixin",
     "KeyboardHandlerMixin",
     "CameraMixin",
     "LightmapRenderStateExtractorMixin",
