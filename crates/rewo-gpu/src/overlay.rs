@@ -313,7 +313,7 @@ impl OverlayPipeline {
     }
 }
 
-fn create_shader(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
+pub(crate) fn create_shader(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
     let code = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
         .map_err(|e| format!("read spv: {e}"))?;
     unsafe {

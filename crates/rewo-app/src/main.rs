@@ -9,6 +9,7 @@
 
 mod net_cmd;
 mod stats;
+mod view_cmd;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,6 +94,8 @@ impl Args {
 enum Command {
     /// M1 protocol: connect to a server, soak, and optionally record.
     Net(net_cmd::NetArgs),
+    /// M2 first pixels: snapshot a world and view it (headless or windowed).
+    View(view_cmd::ViewArgs),
 }
 
 fn main() {
@@ -104,6 +107,7 @@ fn main() {
 
     let result = match args.command.take() {
         Some(Command::Net(net_args)) => net_cmd::run(net_args),
+        Some(Command::View(view_args)) => view_cmd::run(view_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),
@@ -145,7 +149,7 @@ fn run_headless(args: &Args, frames: u32) -> Result<(), String> {
             origin: [16.0, 16.0],
             size: [560.0, 140.0],
         };
-        off.render(&gpu, &draw, CLEAR_WINE)?;
+        off.render(&gpu, None, &draw, CLEAR_WINE)?;
         if let Some(g) = off.last_gpu_ms {
             gpu_ms.push(g);
         }
@@ -212,7 +216,7 @@ impl WinApp {
             size: [560.0, 140.0],
         };
         let State { window, gpu, renderer } = state;
-        match renderer.render(gpu, &draw, CLEAR_WINE) {
+        match renderer.render(gpu, None, &draw, CLEAR_WINE) {
             Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
             Ok(RenderOutcome::NeedsRecreate) => {
                 let size = window.inner_size();

@@ -377,6 +377,11 @@ pub enum InstanceLoader {
     Ewo {
         manifest_url: String,
     },
+    /// Rewo — the from-scratch native client (REWO_PLAN.md). Not a JVM
+    /// loader at all: launch spawns `rewo.exe` with the REWO_* env
+    /// contract instead of building a JVM plan. Downloads still run the
+    /// vanilla profile (Rewo bakes textures/data from the client jar).
+    Native,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -43,6 +43,15 @@ pub enum Severity {
     Warn,
 }
 
+/// A native (non-JVM) child — Rewo. Same event model as the JVM path.
+#[derive(Debug)]
+pub struct NativePlan {
+    pub program: std::path::PathBuf,
+    pub args: Vec<String>,
+    /// REWO_* handoff contract (REWO_PLAN.md §9.1) — env, never argv.
+    pub envs: Vec<(String, String)>,
+}
+
 /// Spawn the child on a worker thread + start the readers. Returns
 /// immediately. Caller should poll the receiver each frame.
 pub fn spawn(plan: LaunchPlan, tx: Sender<LaunchEvent>) -> thread::JoinHandle<()> {
@@ -50,6 +59,30 @@ pub fn spawn(plan: LaunchPlan, tx: Sender<LaunchEvent>) -> thread::JoinHandle<()
         .name("ewo-launch-supervisor".into())
         .spawn(move || run_launch(plan, tx))
         .expect("spawn launch supervisor thread")
+}
+
+/// Spawn a native binary (Rewo) with the same supervision + log streaming.
+pub fn spawn_native(plan: NativePlan, tx: Sender<LaunchEvent>) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("ewo-launch-native".into())
+        .spawn(move || {
+            log::info!(
+                "launch: {} {}",
+                plan.program.display(),
+                plan.args.join(" ")
+            );
+            let mut cmd = Command::new(&plan.program);
+            cmd.args(&plan.args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null());
+            for (key, value) in &plan.envs {
+                cmd.env(key, value);
+            }
+            super::no_window(&mut cmd);
+            run_child(cmd, tx, &plan.program.display().to_string());
+        })
+        .expect("spawn native supervisor thread")
 }
 
 fn run_launch(plan: LaunchPlan, tx: Sender<LaunchEvent>) {
@@ -74,13 +107,17 @@ fn run_launch(plan: LaunchPlan, tx: Sender<LaunchEvent>) {
     // we just don't flash a black `java.exe` console alongside the game.
     super::no_window(&mut cmd);
 
+    let program = plan.jvm_path.display().to_string();
+    run_child(cmd, tx, &program);
+}
+
+/// Shared child supervision: spawn, stream both pipes, report exit.
+fn run_child(mut cmd: Command, tx: Sender<LaunchEvent>, program: &str) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(LaunchEvent::SpawnFailed(format!(
-                "could not spawn {}: {}",
-                plan.jvm_path.display(),
-                e
+                "could not spawn {program}: {e}"
             )));
             return;
         }

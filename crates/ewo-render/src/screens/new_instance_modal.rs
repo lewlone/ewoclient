@@ -34,7 +34,7 @@ pub const FALLBACK_MC_VERSIONS: &[&str] = &["loading…"];
 /// phase D: only Vanilla and the in-development EwoLoader are wired —
 /// other loaders (Fabric, Forge, NeoForge, Quilt) come once their meta
 /// endpoints are integrated.
-pub const LOADERS: &[&str] = &["Vanilla", "Ewo (development)"];
+pub const LOADERS: &[&str] = &["Vanilla", "Ewo (development)", "Native · Rewo"];
 
 fn default_mc_versions() -> Vec<String> {
     FALLBACK_MC_VERSIONS.iter().map(|s| (*s).to_string()).collect()

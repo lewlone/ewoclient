@@ -5,6 +5,7 @@ use ash::vk;
 
 use crate::overlay::{OverlayDraw, OverlayFrameRes, OverlayPipeline};
 use crate::swapchain::Swapchain;
+use crate::world::{DepthTarget, WorldRenderer};
 use crate::{image_barrier, Gpu, FRAMES_IN_FLIGHT};
 
 pub enum RenderOutcome {
@@ -32,6 +33,7 @@ pub struct Renderer {
     cursor: usize,
     frames_submitted: u64,
     preferred_present: vk::PresentModeKHR,
+    depth: Option<DepthTarget>,
     /// GPU time of the most recently *measured* frame (2 frames behind).
     pub last_gpu_ms: Option<f32>,
 }
@@ -102,6 +104,7 @@ impl Renderer {
                 cursor: 0,
                 frames_submitted: 0,
                 preferred_present,
+                depth: None,
                 last_gpu_ms: None,
             })
         }
@@ -109,6 +112,25 @@ impl Renderer {
 
     pub fn present_mode(&self) -> vk::PresentModeKHR {
         self.swapchain.present_mode
+    }
+
+    /// (Re)create the depth target to match the swapchain extent — required
+    /// before passing a world to `render()`. Call after `new` and after any
+    /// resize/recreate.
+    pub fn ensure_depth(&mut self, gpu: &mut Gpu) -> Result<(), String> {
+        let extent = self.swapchain.extent;
+        let needs = match &self.depth {
+            Some(d) => d.extent.width != extent.width || d.extent.height != extent.height,
+            None => true,
+        };
+        if needs {
+            gpu.wait_idle();
+            if let Some(mut old) = self.depth.take() {
+                old.destroy(gpu);
+            }
+            self.depth = Some(DepthTarget::new(gpu, extent)?);
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) -> Result<(), String> {
@@ -137,9 +159,13 @@ impl Renderer {
     pub fn render(
         &mut self,
         gpu: &Gpu,
+        mut world: Option<(&mut WorldRenderer, [[f32; 4]; 4])>,
         draw: &OverlayDraw,
         clear: [f32; 4],
     ) -> Result<RenderOutcome, String> {
+        if world.is_some() && self.depth.is_none() {
+            return Err("render: world pass requires ensure_depth() first".into());
+        }
         if self.swapchain.extent.width == 0 || self.swapchain.extent.height == 0 {
             return Ok(RenderOutcome::Skipped);
         }
@@ -214,16 +240,73 @@ impl Renderer {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             );
 
+            let view = self.swapchain.views[image_index as usize];
+            let extent = self.swapchain.extent;
+
+            // Pass 1 (optional): world with depth, clearing both.
+            if let Some((world_renderer, view_proj)) = world.as_mut() {
+                let depth = self.depth.as_ref().unwrap();
+                depth.barrier_for_use(gpu, frame.cb);
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue { float32: clear },
+                    });
+                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(depth.view)
+                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
+                    });
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D::default().extent(extent))
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment))
+                    .depth_attachment(&depth_attachment);
+                device.cmd_begin_rendering(frame.cb, &rendering_info);
+                world_renderer.draw(gpu, frame.cb, *view_proj, extent);
+                device.cmd_end_rendering(frame.cb);
+
+                // World writes → overlay pass reads/writes the same color.
+                image_barrier(
+                    device,
+                    frame.cb,
+                    image,
+                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                    vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                );
+            }
+
+            // Pass 2: overlay. Clears when it's the only pass; loads over
+            // the world otherwise.
+            let overlay_load = if world.is_some() {
+                vk::AttachmentLoadOp::LOAD
+            } else {
+                vk::AttachmentLoadOp::CLEAR
+            };
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(self.swapchain.views[image_index as usize])
+                .image_view(view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .load_op(overlay_load)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
                     color: vk::ClearColorValue { float32: clear },
                 });
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D::default().extent(self.swapchain.extent))
+                .render_area(vk::Rect2D::default().extent(extent))
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment));
             device.cmd_begin_rendering(frame.cb, &rendering_info);
@@ -232,7 +315,7 @@ impl Renderer {
                 frame.cb,
                 &mut self.overlay_res[self.cursor],
                 draw,
-                self.swapchain.extent,
+                extent,
             );
             device.cmd_end_rendering(frame.cb);
 
@@ -310,6 +393,9 @@ impl Renderer {
                 device.destroy_command_pool(f.pool, None);
             }
             device.destroy_query_pool(self.query_pool, None);
+        }
+        if let Some(mut depth) = self.depth.take() {
+            depth.destroy(gpu);
         }
         self.overlay.destroy(gpu, &mut self.overlay_res);
         self.swapchain.destroy(gpu);

@@ -69,13 +69,13 @@ pub struct RecordedPacket {
 }
 
 /// Replay a recording through the world decoder with no socket, returning
-/// `(world_digest, loaded_columns, chunks_decoded)`. This is the DoD's
-/// equivalence check: a live session and its replay must agree bit-for-bit.
+/// the rebuilt `World` + chunks decoded. Callers digest/query it — the DoD
+/// equivalence check compares a live session's digest against its replay's.
 pub fn replay(
     path: &std::path::Path,
     data: &rewo_data::GameData,
     ids: &crate::ids::Ids,
-) -> Result<(u64, usize, u64), String> {
+) -> Result<(rewo_world::World, u64), String> {
     use rewo_proto::reader::PacketReader;
     use rewo_world::dimension::DimensionShape;
 
@@ -117,7 +117,7 @@ pub fn replay(
             }
         }
     }
-    Ok((world.digest(), world.loaded_columns(), chunks))
+    Ok((world, chunks))
 }
 
 fn parse_registry_shapes(

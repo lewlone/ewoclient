@@ -469,6 +469,54 @@ impl App {
         // The version *string* comes from the meta, formatted as
         // "<LOADER> · <version>". Strip the loader prefix.
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        // Native (Rewo) instances skip the entire JVM pipeline — no
+        // manifest, no libraries, no natives, no JRE. Spawn the rewo
+        // binary with the REWO_* env contract (REWO_PLAN.md §9.1). M2
+        // drives it in view-snapshot mode when a server join is active;
+        // the M3 tick loop turns this into the real client session.
+        if matches!(
+            inst.loader,
+            ewo_render::screens::instances::InstanceLoader::Native
+        ) {
+            let Some(program) = launch::find_rewo_binary() else {
+                log::warn!(
+                    "launch: rewo binary not found next to the launcher — falling back"
+                );
+                return false;
+            };
+            let mut envs = vec![("REWO_VERSION".to_string(), version_id.to_string())];
+            if let Some(account) = self.auth.active() {
+                if !account.minecraft_token.is_empty() {
+                    envs.push(("REWO_USERNAME".into(), account.name.clone()));
+                    envs.push(("REWO_UUID".into(), account.uuid.clone()));
+                    envs.push(("REWO_ACCESS_TOKEN".into(), account.minecraft_token.clone()));
+                }
+            }
+            let mut args: Vec<String> = Vec::new();
+            if let Some(addr) = self.active_server.clone() {
+                let (host, port) = match addr.rsplit_once(':') {
+                    Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(25565)),
+                    None => (addr.clone(), 25565),
+                };
+                envs.push(("REWO_SERVER".into(), addr.clone()));
+                args = vec![
+                    "view".into(),
+                    "--host".into(),
+                    host,
+                    "--port".into(),
+                    port.to_string(),
+                    "--version".into(),
+                    version_id.to_string(),
+                ];
+                log::info!("launch: rewo view → {}", addr);
+            }
+            let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
+            let _ = launch::spawn_native(launch::NativePlan { program, args, envs }, tx);
+            self.launch_rx = Some(rx);
+            self.launching.enter_real(time, inst_name, inst_meta);
+            log::info!("launch: rewo spawned for \"{}\" ({})", inst.name, version_id);
+            return true;
+        }
         let manifest = match self.versions.manifest() {
             Some(m) => m,
             None => {
@@ -497,7 +545,10 @@ impl App {
         // launching the vanilla profile so the user isn't blocked by a
         // flaky local manifest.
         let mut pv = match &inst.loader {
-            ewo_render::screens::instances::InstanceLoader::Vanilla => vanilla_pv,
+            // Native never reaches here (early return above) — vanilla is
+            // the harmless arm the exhaustiveness check wants.
+            ewo_render::screens::instances::InstanceLoader::Vanilla
+            | ewo_render::screens::instances::InstanceLoader::Native => vanilla_pv,
             ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
                 match loaders::get_or_fetch("ewo", manifest_url) {
                     Ok(loader_manifest) => {
@@ -4400,6 +4451,10 @@ fn commit_new_instance(
         ewo_render::screens::instances::InstanceLoader::Ewo {
             manifest_url: ewo_loader_manifest_url(&form.version),
         }
+    } else if form.loader.starts_with("Native") {
+        // Rewo — spawns the native client at launch. Downloads still run
+        // the vanilla profile: Rewo bakes textures/data from the client jar.
+        ewo_render::screens::instances::InstanceLoader::Native
     } else {
         ewo_render::screens::instances::InstanceLoader::Vanilla
     };
@@ -4407,7 +4462,8 @@ fn commit_new_instance(
     // The job needs the manifest URL up front so it can fetch + merge
     // before counting bytes for the progress bar.
     let loader_spec = match &loader {
-        ewo_render::screens::instances::InstanceLoader::Vanilla => None,
+        ewo_render::screens::instances::InstanceLoader::Vanilla
+        | ewo_render::screens::instances::InstanceLoader::Native => None,
         ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
             Some(loaders::LoaderSpec {
                 id: "ewo".to_string(),
@@ -4419,7 +4475,8 @@ fn commit_new_instance(
     // Instances UI shows real toggles immediately. Only Ewo instances get
     // mods — vanilla launches don't run any mods so the list stays empty.
     let seeded_mods = match &loader {
-        ewo_render::screens::instances::InstanceLoader::Vanilla => Vec::new(),
+        ewo_render::screens::instances::InstanceLoader::Vanilla
+        | ewo_render::screens::instances::InstanceLoader::Native => Vec::new(),
         ewo_render::screens::instances::InstanceLoader::Ewo { .. } => {
             bundled::seed_instance_mods()
         }

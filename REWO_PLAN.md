@@ -708,3 +708,63 @@ the world, and proved replay equivalence — all without a human at a window.
 - Next: **M2** (first pixels) — `Native` launcher arm + a full-cube
   face-culled mesher fed by the replay fixture + live server, texture array,
   fly camera, headless PNG of a known scene.
+
+**2026-07-21 — M2 first pixels shipped + headlessly verified.**
+
+A recognizable Minecraft world renders from both the M1 replay fixture and a
+live vanilla 26.2 server — verified by inspecting headless PNGs, no human at
+a window.
+
+- **Asset bake** (`rewo-data/src/assets.rs`): client.jar → texture-array
+  layers + per-state render table. Minimal by design: blockstate variants →
+  model parent chains → cube-family / first-full-size-element faces (that
+  rule is what makes grass_block work — it's element-defined, not cube_all).
+  **2,649 cube states across 460 blocks, 542 textures**; everything else is
+  Invisible until M4's real model baker. Gotcha caught by the bake sanity
+  assertions: vanilla textures are mostly **palette-indexed PNGs** —
+  without `Transformations::normalize_to_color8()` only 39 blocks resolved.
+  Grass-top tint is a hardcoded plains-green multiply (M4 does colormaps).
+- **Mesher** (`crates/rewo-mesh`): face-culled full cubes, classic per-face
+  shade × the neighbor cell's light (server light data finally visible).
+  329 columns → **695k vertices in ~21 ms** single-threaded. Face-table
+  orientation unit tests (texture-top-at-block-top on side faces).
+- **GPU world pass** (`rewo-gpu/src/world.rs`): R8G8B8A8_SRGB texture array
+  with CPU box-filter mips, NEAREST/mip-LINEAR sampler (vanilla look), D32
+  depth target, two-pass frame (world clears color+depth → overlay loads),
+  CPU frustum culling (Gribb–Hartmann, 219 of 329 columns culled in the DoD
+  shot), negative-viewport Y-flip, per-column host-visible buffers (the
+  device-local mega-buffer arena stays M5; cull-mode NONE until winding is
+  regression-tested).
+- **`rewo view`**: snapshot viewer — world from `--replay FILE` or a live
+  `--host/--port` fetch → bake → mesh → render. `--out x.png` headless
+  (the DoD artifact) or windowed WASD/mouse/Space/Ctrl fly camera with
+  cursor grab + `--run-seconds` soak.
+- **Launcher `Native` arm (carried M1 item, done):** `InstanceLoader::
+  Native` (+ TOML round-trip test), "Native · Rewo" in the new-instance
+  modal, `try_real_launch` early arm that skips the whole JVM pipeline and
+  spawns `rewo.exe` (found next to the launcher exe — covers dev target dir
+  + dist) with the `REWO_*` env contract; when a server join is active it
+  passes `view --host … --port …` so Launch opens a native fly-over of that
+  server. `spawn_native` shares the JVM path's supervision/log-streaming
+  (`run_child` refactor); the reaper's image-name guard accepts `rewo.exe`.
+
+  **Verified headlessly:**
+  - Replay PNG + live-server PNG both inspected: grass plain with per-block
+    texture detail, sky, chunk-edge silhouette at the loaded boundary,
+    overlay chart composited. 110 columns drawn / 219 culled.
+  - Windowed release soak (5 s auto-exit): **~1,000 fps, cpu p99 2.16 ms,
+    max 5.72 ms**, clean exit.
+  - 21 Rewo tests + 37 launcher tests green; debug validation layers clean.
+
+- **Deferred, tracked:** texture animation ticking (no animated texture in
+  the M2 scene to prove it against — lands with fluids in M4); biome
+  tint/colormaps (M4); streaming-while-rendering + the chart-spike-on-load
+  criterion (needs the M3 live loop; M2 is snapshot-only by design);
+  reduced Native download profile (uses the vanilla profile — the extra
+  libraries are shared with vanilla instances and cost nothing on this
+  box); `package.ps1` doesn't yet copy `rewo.exe` into dist; the modal's
+  Native option + Launch flow not yet eyeballed in the UI (machine-tested
+  at the unit/spawn level only).
+- Next: **M3** (be a player) — 20 Hz tick + prediction, movement packets,
+  dig/place/attack with sequence-ack, hotbar, chat, live streaming into the
+  renderer.

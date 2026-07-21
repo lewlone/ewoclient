@@ -14,7 +14,17 @@ pub mod spawn;
 pub use jre::{detect_all as detect_jres, pick_for_major as pick_jre};
 pub use natives::extract_all;
 pub use plan::{build, LaunchProfile};
-pub use spawn::{spawn as spawn_jvm, LaunchEvent, Severity};
+pub use spawn::{spawn as spawn_jvm, spawn_native, LaunchEvent, NativePlan, Severity};
+
+/// Locate the Rewo binary: same directory as the launcher exe — covers both
+/// the shared cargo target dir (dev) and the dist bundle (release).
+pub fn find_rewo_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) { "rewo.exe" } else { "rewo" };
+    let candidate = dir.join(name);
+    candidate.exists().then_some(candidate)
+}
 
 /// Suppress the console window a child console program (`java.exe`,
 /// `where`, …) would otherwise pop when spawned from a GUI process.

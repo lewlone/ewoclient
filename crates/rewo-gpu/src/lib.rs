@@ -17,6 +17,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod renderer;
 pub mod swapchain;
+pub mod world;
 
 use std::ffi::{c_char, c_void, CStr};
 use std::mem::ManuallyDrop;

@@ -86,6 +86,44 @@ impl Column {
         }
     }
 
+    /// Combined light 0..15 (max of block + sky) at section-local x/z,
+    /// world y. Above the world reads full-bright; below reads dark.
+    pub fn brightness_at(&self, shape: &DimensionShape, lx: i32, y: i32, lz: i32) -> u8 {
+        let Some(si) = shape.section_index(y) else {
+            return if y >= shape.min_y + shape.height { 15 } else { 0 };
+        };
+        let Some(section) = self.sections.get(si) else {
+            return 15;
+        };
+        let (x, ly, z) = (lx, y & 15, lz);
+        section.block_light(x, ly, z).max(section.sky_light(x, ly, z))
+    }
+
+    /// True when the section at index has no visible content — lets the
+    /// mesher skip air. Overrides count as content.
+    pub fn section_is_trivial(&self, idx: usize) -> bool {
+        self.sections
+            .get(idx)
+            .map(|s| s.non_empty == 0 && s.overrides.is_empty())
+            .unwrap_or(true)
+    }
+
+    /// World-y range [min, max) of sections with content, for cull AABBs.
+    pub fn content_y_range(&self, shape: &DimensionShape) -> Option<(i32, i32)> {
+        let mut lo = None;
+        let mut hi = None;
+        for (i, _) in self.sections.iter().enumerate() {
+            if !self.section_is_trivial(i) {
+                let base = shape.min_y + (i as i32) * 16;
+                if lo.is_none() {
+                    lo = Some(base);
+                }
+                hi = Some(base + 16);
+            }
+        }
+        Some((lo?, hi?))
+    }
+
     pub fn digest(&self, shape: &DimensionShape, mut h: u64) -> u64 {
         for (si, section) in self.sections.iter().enumerate() {
             if section.states.is_uniform_zero() && section.overrides.is_empty() {

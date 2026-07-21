@@ -2131,13 +2131,18 @@ name = "rewo-app"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "bytemuck",
  "clap",
+ "dirs",
  "env_logger",
+ "glam",
  "log",
  "raw-window-handle",
  "rewo-data",
  "rewo-gpu",
+ "rewo-mesh",
  "rewo-net",
+ "rewo-world",
  "tracy-client",
  "winit",
 ]
@@ -2148,10 +2153,12 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "log",
+ "png",
  "serde",
  "serde_json",
  "sha1",
  "ureq",
+ "zip",
 ]
 
 [[package]]
@@ -2165,6 +2172,16 @@ dependencies = [
  "log",
  "png",
  "raw-window-handle",
+]
+
+[[package]]
+name = "rewo-mesh"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "rewo-data",
+ "rewo-world",
 ]
 
 [[package]]

@@ -130,7 +130,8 @@ pub fn reap(pid: u32) {
     }
 }
 
-/// True if the open process handle's executable is `java.exe`/`javaw.exe`.
+/// True if the open process handle's executable is a game child we spawned:
+/// `java.exe`/`javaw.exe` (JVM instances) or `rewo.exe` (Native instances).
 #[cfg(target_os = "windows")]
 unsafe fn process_is_java(handle: windows::Win32::Foundation::HANDLE) -> bool {
     use windows::core::PWSTR;
@@ -143,7 +144,7 @@ unsafe fn process_is_java(handle: windows::Win32::Foundation::HANDLE) -> bool {
         return false;
     }
     let path = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
-    path.ends_with("java.exe") || path.ends_with("javaw.exe")
+    path.ends_with("java.exe") || path.ends_with("javaw.exe") || path.ends_with("rewo.exe")
 }
 
 /// Non-Windows: the zombie-JVM deadlock is a Windows-loader-lock symptom,

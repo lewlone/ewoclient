@@ -1586,8 +1586,19 @@ apply.
   the paletted long array is **fixed-size, not length-prefixed**; each 16³
   section starts with **two shorts (non-empty + fluid count)**; packet ids
   are resolved **by name** from the datagen report so a version bump fails
-  loud instead of misfiring. **Not yet done:** the launcher `InstanceLoader::
-  Native` arm (driven via `rewo net` directly for now) — first M2 task.
+  loud instead of misfiring.
+- **M2 shipped 2026-07-21** (`crates/rewo-mesh` + `rewo-data::assets` +
+  `rewo-gpu::world` + `rewo view`): first pixels — client-jar asset bake
+  (cube-family models only; indexed-PNG expand was the gotcha), face-culled
+  mesher with per-face shade × server light, texture array + CPU mips +
+  depth + frustum cull, snapshot viewer (`rewo view --replay|--host …
+  [--out png]`). Verified headlessly: recognizable flat world PNGs from
+  both the M1 recording and a live server; windowed fly-cam ~1k fps, p99
+  2.16 ms. **Launcher `Native` arm landed too**: `InstanceLoader::Native`,
+  "Native · Rewo" in the new-instance modal, `try_real_launch` spawns
+  `rewo.exe` (REWO_* env contract; `view --host` args when a server join is
+  active), reaper covers rewo.exe. UI eyeball of the modal + Launch flow
+  still pending; `package.ps1` doesn't copy rewo.exe into dist yet.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

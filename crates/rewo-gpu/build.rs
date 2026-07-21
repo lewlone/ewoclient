@@ -9,6 +9,8 @@ fn main() {
     for (src, dst) in [
         ("shaders/overlay.vert", "overlay.vert.spv"),
         ("shaders/overlay.frag", "overlay.frag.spv"),
+        ("shaders/world.vert", "world.vert.spv"),
+        ("shaders/world.frag", "world.frag.spv"),
     ] {
         println!("cargo:rerun-if-changed={src}");
         let output = Command::new(&glslc)

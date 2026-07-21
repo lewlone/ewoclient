@@ -12,6 +12,7 @@ members = [
     "crates/rewo-data",
     "crates/rewo-net",
     "crates/rewo-world",
+    "crates/rewo-mesh",
 ]
 
 [workspace.package]
@@ -98,6 +99,7 @@ rewo-proto = { path = "crates/rewo-proto" }
 rewo-data = { path = "crates/rewo-data" }
 rewo-net = { path = "crates/rewo-net" }
 rewo-world = { path = "crates/rewo-world" }
+rewo-mesh = { path = "crates/rewo-mesh" }
 
 # Platform: Windows
 [workspace.dependencies.windows]

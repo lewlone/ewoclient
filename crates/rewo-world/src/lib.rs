@@ -53,6 +53,28 @@ impl World {
         col.block_state_at(&self.shape, x & 15, y, z & 15)
     }
 
+    /// True when the column holding (x,z) is loaded.
+    pub fn is_loaded(&self, x: i32, z: i32) -> bool {
+        self.columns.contains_key(&(x >> 4, z >> 4))
+    }
+
+    /// Combined light level 0..15 at world coords (max of block + sky).
+    /// Unloaded or above-world positions read as full-bright.
+    pub fn brightness_at(&self, x: i32, y: i32, z: i32) -> u8 {
+        let Some(col) = self.columns.get(&(x >> 4, z >> 4)) else {
+            return 15;
+        };
+        col.brightness_at(&self.shape, x & 15, y, z & 15)
+    }
+
+    pub fn column(&self, cx: i32, cz: i32) -> Option<&chunk::Column> {
+        self.columns.get(&(cx, cz))
+    }
+
+    pub fn column_coords(&self) -> Vec<(i32, i32)> {
+        self.columns.keys().copied().collect()
+    }
+
     /// Apply a single block change (Block Update packet).
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, state: u32) {
         let cx = x >> 4;

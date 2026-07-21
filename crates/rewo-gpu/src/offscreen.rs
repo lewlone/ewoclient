@@ -13,6 +13,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
 use crate::overlay::{OverlayDraw, OverlayFrameRes, OverlayPipeline};
+use crate::world::{DepthTarget, WorldRenderer};
 use crate::{color_range, image_barrier, Gpu};
 
 pub struct Offscreen {
@@ -21,6 +22,7 @@ pub struct Offscreen {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
+    depth: DepthTarget,
     readback: vk::Buffer,
     readback_alloc: Option<Allocation>,
     pool: vk::CommandPool,
@@ -40,6 +42,7 @@ impl Offscreen {
             height,
         };
         let (overlay, overlay_res) = OverlayPipeline::new(gpu, format, 1)?;
+        let depth = DepthTarget::new(gpu, extent)?;
         unsafe {
             let device = &gpu.device;
             let image = device
@@ -147,6 +150,7 @@ impl Offscreen {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
+                depth,
                 readback,
                 readback_alloc: Some(readback_alloc),
                 pool,
@@ -160,9 +164,15 @@ impl Offscreen {
         }
     }
 
-    /// Render one frame (clear + overlay) and wait for it. Serialized on
-    /// purpose — see module docs.
-    pub fn render(&mut self, gpu: &Gpu, draw: &OverlayDraw, clear: [f32; 4]) -> Result<(), String> {
+    /// Render one frame (optional world pass, then overlay) and wait for
+    /// it. Serialized on purpose — see module docs.
+    pub fn render(
+        &mut self,
+        gpu: &Gpu,
+        mut world: Option<(&mut WorldRenderer, [[f32; 4]; 4])>,
+        draw: &OverlayDraw,
+        clear: [f32; 4],
+    ) -> Result<(), String> {
         unsafe {
             let device = &gpu.device;
             device
@@ -197,10 +207,59 @@ impl Offscreen {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             );
 
+            // Pass 1 (optional): world with depth.
+            if let Some((world_renderer, view_proj)) = world.as_mut() {
+                self.depth.barrier_for_use(gpu, self.cb);
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(self.view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue { float32: clear },
+                    });
+                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(self.depth.view)
+                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
+                    });
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D::default().extent(self.extent))
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment))
+                    .depth_attachment(&depth_attachment);
+                device.cmd_begin_rendering(self.cb, &rendering_info);
+                world_renderer.draw(gpu, self.cb, *view_proj, self.extent);
+                device.cmd_end_rendering(self.cb);
+                image_barrier(
+                    device,
+                    self.cb,
+                    self.image,
+                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                    vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                );
+            }
+
+            let overlay_load = if world.is_some() {
+                vk::AttachmentLoadOp::LOAD
+            } else {
+                vk::AttachmentLoadOp::CLEAR
+            };
             let color_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(self.view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .load_op(overlay_load)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
                     color: vk::ClearColorValue { float32: clear },
@@ -353,6 +412,7 @@ impl Offscreen {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        self.depth.destroy(gpu);
         unsafe {
             let device = &gpu.device;
             device.destroy_query_pool(self.query_pool, None);

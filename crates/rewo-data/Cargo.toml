@@ -13,3 +13,5 @@ ureq = { workspace = true }
 sha1 = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }
+zip = { workspace = true }
+png = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "rewo-mesh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rewo-world = { workspace = true }
+rewo-data = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }

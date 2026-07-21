@@ -186,4 +186,21 @@ mods = []
             other => panic!("expected Ewo, got {:?}", other),
         }
     }
+
+    /// `InstanceLoader::Native` (Rewo) is a unit variant — confirm it
+    /// TOML-round-trips like Vanilla does.
+    #[test]
+    fn native_loader_round_trips_through_toml() {
+        let mut inst = Instance::new(
+            "rewo-world".into(),
+            "NATIVE · 26.2".into(),
+            "now".into(),
+            vec![],
+        );
+        inst.loader = InstanceLoader::Native;
+        let file = InstancesFile { instances: vec![inst] };
+        let s = toml::to_string_pretty(&file).expect("serialize");
+        let parsed: InstancesFile = toml::from_str(&s).expect("deserialize");
+        assert_eq!(parsed.instances[0].loader, InstanceLoader::Native);
+    }
 }

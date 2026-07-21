@@ -136,7 +136,9 @@ fn soak(
 
 fn replay(data: &GameData, file: &std::path::Path, expect: Option<u64>) -> Result<(), String> {
     let ids = Ids::resolve(&data.packets)?;
-    let (digest, columns, chunks) = record::replay(file, data, &ids)?;
+    let (world, chunks) = record::replay(file, data, &ids)?;
+    let digest = world.digest();
+    let columns = world.loaded_columns();
     println!("[rewo-m1] replay of {}", file.display());
     println!("[rewo-m1] chunks decoded: {chunks}  columns: {columns}");
     println!("[rewo-m1] world digest: {digest:#018x}");
