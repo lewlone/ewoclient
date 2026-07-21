@@ -589,7 +589,7 @@ fn run_headless(
     world_renderer.set_entities(&draws, cr, cu);
     world_renderer.set_camera(eye.to_array());
     world_renderer.set_hud(session.health, session.food, 0);
-    world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0));
+    world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
@@ -676,6 +676,8 @@ struct LiveApp {
     hotbar_slot: u8,
     /// Dirt item id (for right-click place), resolved from the item table.
     dirt_item: Option<i32>,
+    /// F3 debug overlay visible (toggled by the F3 key). Default on.
+    debug: bool,
     init_error: Option<String>,
 }
 
@@ -763,6 +765,8 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::ShiftLeft) => self.keys.sneak = p,
                     PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    // F3 toggles the debug overlay (edge-triggered on press).
+                    PhysicalKey::Code(KeyCode::F3) if p => self.debug = !self.debug,
                     // Number keys 1..9 select the hotbar slot (HUD frame +
                     // sent to the server so the held item matches).
                     PhysicalKey::Code(code) if p => {
@@ -939,9 +943,10 @@ impl LiveApp {
             .world_renderer
             .set_hud(session.health, session.food, self.hotbar_slot);
         let px = gui_px(extent.width, extent.height);
+        let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
         state
             .world_renderer
-            .set_text(build_text(session, px, extent.height as f32));
+            .set_text(build_text(session, px, extent.height as f32, fps, self.debug));
         if let Err(e) = state.world_renderer.anim_tick(&mut state.gpu, session.ticks) {
             log::error!("live: texture animation: {e}");
         }
@@ -1014,6 +1019,7 @@ fn run_windowed(
         flood_logged: false,
         hotbar_slot: 0,
         dirt_item,
+        debug: true,
         init_error: None,
     };
     event_loop
@@ -1072,25 +1078,63 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// Build this frame's overlay text: a coordinates/facing line (top-left)
-/// and the last few chat messages (above the hotbar). GUI scale `px`.
-fn build_text(session: &PlaySession, px: f32, screen_h: f32) -> Vec<rewo_gpu::world::OwnedTextLine> {
+/// Build this frame's overlay text: an F3-style debug block (top-left, when
+/// `debug`) and the last few chat messages (above the hotbar). GUI scale
+/// `px`; `fps` is shown in the header when known (windowed only).
+fn build_text(
+    session: &PlaySession,
+    px: f32,
+    screen_h: f32,
+    fps: Option<f32>,
+    debug: bool,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_gpu::world::OwnedTextLine;
     let white = [0.93, 0.93, 0.93];
     let mut lines = Vec::new();
-    // Coords + facing (top-left).
-    let facing = compass(session.player.yaw);
-    lines.push(OwnedTextLine {
-        x: 3.0 * px,
-        y: 3.0 * px,
-        px,
-        color: white,
-        alpha: 1.0,
-        text: format!(
-            "XYZ {:.1} {:.1} {:.1}   facing {}",
-            session.player.x, session.player.y, session.player.z, facing,
-        ),
-    });
+    // F3 debug block (top-left). Toggled by F3 in the windowed client;
+    // always on in headless so a verification PNG shows the state.
+    if debug {
+        let p = &session.player;
+        let (bx, by, bz) = (p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64);
+        // Chunk-relative block coords (0..15) — Rust's rem_euclid keeps them
+        // non-negative in the negative hemisphere, matching vanilla's F3.
+        let (rbx, rbz) = (bx.rem_euclid(16), bz.rem_euclid(16));
+        let (cx, cz) = (bx.div_euclid(16), bz.div_euclid(16));
+        let toward = facing_axis(p.yaw, p.pitch);
+        let header = match fps {
+            Some(f) => format!("Rewo 26.2   {f:.0} fps"),
+            None => "Rewo 26.2".to_string(),
+        };
+        let f3 = [
+            header,
+            format!("XYZ: {:.3} / {:.3} / {:.3}", p.x, p.y, p.z),
+            format!("Block: {bx} {by} {bz}   [{rbx} {} {rbz}]", by.rem_euclid(16)),
+            format!("Chunk: {cx} {cz}"),
+            format!(
+                "Facing: {} {}  ({:.1} / {:.1})",
+                compass(p.yaw),
+                toward,
+                p.yaw,
+                p.pitch
+            ),
+            format!(
+                "Loaded: {} chunks   Entities: {}   {}",
+                session.world.loaded_columns(),
+                session.world.entities.len(),
+                if p.on_ground { "grounded" } else { "airborne" },
+            ),
+        ];
+        for (i, text) in f3.into_iter().enumerate() {
+            lines.push(OwnedTextLine {
+                x: 3.0 * px,
+                y: (3.0 + i as f32 * 10.0) * px,
+                px,
+                color: white,
+                alpha: 1.0,
+                text,
+            });
+        }
+    }
     // Recent chat (bottom-left, above the hotbar; oldest higher, newest low).
     let chat = &session.chat_log;
     let show = 8.min(chat.len());
@@ -1114,6 +1158,19 @@ fn build_text(session: &PlaySession, px: f32, screen_h: f32) -> Vec<rewo_gpu::wo
 /// Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
 fn gui_px(w: u32, h: u32) -> f32 {
     ((h as f32 / 240.0).min(w as f32 / 320.0)).floor().clamp(1.0, 4.0)
+}
+
+/// Vanilla F3's "Towards …" axis hint — the dominant world axis of the look
+/// direction (used alongside the compass name).
+fn facing_axis(yaw_deg: f32, pitch_deg: f32) -> &'static str {
+    let d = look_dir(yaw_deg, pitch_deg);
+    if d[0].abs() > d[2].abs() {
+        if d[0] > 0.0 { "(Towards +X)" } else { "(Towards -X)" }
+    } else if d[2] > 0.0 {
+        "(Towards +Z)"
+    } else {
+        "(Towards -Z)"
+    }
 }
 
 /// Cardinal/intercardinal name for a yaw (MC: 0=south/+Z, 90=west/−X).

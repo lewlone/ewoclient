@@ -1631,8 +1631,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   packet — `LimbPart::Head` yaws to its own absolute angle; the same change
   caught+fixed a variable-shadowing regression where the head/body-yaw
   binding shadowed `emit_model`'s model-scale `s`, silently scaling every
-  mob by `sin(yaw)`). The mob registry spans humanoid/cube/quadruped. Also
-  un-broke `rewo view` (stale M2 bake-sanity check).
+  mob by `sin(yaw)`); and an **F3 debug overlay** (vanilla-style block — XYZ
+  / block+in-chunk / chunk / facing+axis / loaded-chunks+entities, with
+  `rem_euclid`/`div_euclid` chunk math; F3 toggles it windowed, always on
+  headless). The mob registry spans humanoid/cube/quadruped. Also un-broke
+  `rewo view` (stale M2 bake-sanity check).
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

@@ -1678,3 +1678,21 @@ capability).**
   `REWO_LOOK_HIGH` (aim at the highest matching mob), `REWO_FORCE_HEAD`.
   0 VUIDs; decode-side + live-only render → demo **byte-identical**, bench
   flat (avg 0.25 ms); 24 rewo-gpu + 6 rewo-net + world tests green.
+
+**2026-07-22 — F3 debug overlay.**
+
+- The single top-left coords line grew into a vanilla-style **F3 block**:
+  version header (+ `fps` in windowed), `XYZ`, `Block` world + in-chunk
+  coords, `Chunk`, a `Facing` line (compass name + Towards-axis hint + yaw/
+  pitch), and a `Loaded chunks / Entities / grounded` line. Chunk math uses
+  `rem_euclid`/`div_euclid` so block-in-chunk + chunk index are correct in
+  the negative hemisphere (plain `%`/`/` truncate toward zero — wrong across
+  the origin). `F3` toggles it in the windowed client (default on); always on
+  in headless so a verification PNG shows the state.
+- Live-only (`demo`/`bench`/`view` never call `build_text`) → those gates
+  unchanged. **Verified** in a headless PNG: all six lines correct at spawn
+  (block 6/-60/4, in-chunk [6 4 4], chunk 0/0, facing S/+Z, 329 loaded). A
+  bonus in the same shot: a leftover summoned husk renders at correct scale
+  with its head **naturally** turned toward the client — real server
+  `rotate_head`, confirming head-look under live data, not just the forced
+  knob. 4 rewo-app tests green.
