@@ -22,7 +22,6 @@ pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 #[derive(Clone, Copy)]
 struct WorldPush {
     view_proj: [[f32; 4]; 4],
-    origin: [f32; 4],
 }
 
 struct ColumnGpu {
@@ -449,10 +448,7 @@ impl WorldRenderer {
                     culled += 1;
                     continue;
                 }
-                let push = WorldPush {
-                    view_proj,
-                    origin: [col.origin[0], col.origin[1], col.origin[2], 0.0],
-                };
+                let push = WorldPush { view_proj };
                 let bytes = std::slice::from_raw_parts(
                     (&push as *const WorldPush) as *const u8,
                     std::mem::size_of::<WorldPush>(),
