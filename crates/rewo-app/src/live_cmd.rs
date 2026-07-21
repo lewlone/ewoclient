@@ -62,6 +62,9 @@ pub struct LiveArgs {
     /// Write the final frame to this PNG (headless verification artifact).
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Frames in flight (M6 latency knob): 1 = lowest latency, 2 = default.
+    #[arg(long, default_value_t = 2)]
+    fif: usize,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -316,6 +319,7 @@ struct LiveApp {
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
+    fif: usize,
     state: Option<LiveState>,
     ring: OverlayRing,
     cpu: StatsAccum,
@@ -347,11 +351,12 @@ impl ApplicationHandler for LiveApp {
             let rwh = window.window_handle().map_err(|e| format!("wh: {e}"))?.as_raw();
             let mut gpu = Gpu::new(Some((rdh, rwh)), self.want_validation)?;
             let size = window.inner_size();
-            let mut renderer = Renderer::new(
+            let mut renderer = Renderer::with_frames_in_flight(
                 &mut gpu,
                 size.width.max(1),
                 size.height.max(1),
                 vk::PresentModeKHR::MAILBOX,
+                self.fif,
             )?;
             renderer.ensure_depth(&mut gpu)?;
             let baked = self.baked.take().ok_or("assets consumed")?;
@@ -553,6 +558,7 @@ fn run_windowed(
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
+        fif: args.fif,
         state: None,
         ring: OverlayRing::default(),
         cpu: StatsAccum::default(),
@@ -571,11 +577,19 @@ fn run_windowed(
     let elapsed = app.started.elapsed().as_secs_f32();
     if let (Some(mut state), Some(session)) = (app.state.take(), app.session.take()) {
         println!(
-            "[rewo-m3-live] windowed: {:.1}s, {} frames, avg fps {:.0}, cpu p99 {:.2} ms",
+            "[rewo-m3-live] windowed: {:.1}s, {} frames, avg fps {:.0}, frames-in-flight {}",
             elapsed,
-            app.cpu.ms.len(),
-            app.cpu.ms.len() as f32 / elapsed.max(0.001),
+            app.cpu.len(),
+            app.cpu.len() as f32 / elapsed.max(0.001),
+            state.renderer.frames_in_flight(),
+        );
+        println!(
+            "[rewo-m3-live] frame time: avg {:.2}  p99 {:.2}  1% low {:.2}  0.1% low {:.2}  max {:.2} ms",
+            app.cpu.average(),
             app.cpu.percentile(0.99),
+            app.cpu.low_mean(0.01),
+            app.cpu.low_mean(0.001),
+            app.cpu.percentile(1.0),
         );
         println!(
             "[rewo-m3-live] final pos ({:.1},{:.1},{:.1}), corrections {}, columns {}",

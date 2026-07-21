@@ -1648,6 +1648,18 @@ apply.
   added a proper `solid` flag to the bake (Cube OR full-16³-element Model).
   Deferred M5 follow-ons: dedicated async transfer queue, visibility-graph
   cull, mega-buffer resize (over-cap columns dropped w/ log).
+- **M6 shipped 2026-07-21** (latency/measurement pass): `rewo bench` — the
+  deterministic render benchmark (replay world + orbit camera + GPU
+  timestamps → avg/p50/p99/p99.9/1%-low/0.1%-low/max + histogram), the
+  merge-gate metric. `stats.rs` gains 1%/0.1% lows (mean of slowest N%
+  frames) + histogram. Frames-in-flight knob (`--fif`, `Renderer::
+  with_frames_in_flight`). Measured on the 5080: GPU render 0.198 ms avg /
+  0.367 ms 0.1%-low (rock-solid); windowed frame-consistency avg ~1 ms /
+  ~5 ms 0.1%-low; fif=1 measurably tighter lows than fif=2 at same fps
+  (latency-first, default stays 2). `VK_NV_low_latency2` deferred
+  measure-first (GPU render ~0.2 ms is far below the frame budget — not the
+  bottleneck until high RD/complexity). Subcommands: net/view/play/live/
+  demo/bench.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

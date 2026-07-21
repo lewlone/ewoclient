@@ -80,6 +80,65 @@ impl StatsAccum {
         }
         self.ms.iter().sum::<f32>() / self.ms.len() as f32
     }
+
+    /// The gaming "1% / 0.1% low": the MEAN of the slowest `q` fraction of
+    /// frames (not the percentile *edge*). This is the frame-consistency
+    /// north-star — it captures how bad the worst frames actually are, which
+    /// a single percentile point hides.
+    pub fn low_mean(&self, q: f32) -> f32 {
+        if self.ms.is_empty() {
+            return 0.0;
+        }
+        let mut sorted = self.ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = ((sorted.len() as f32) * q).ceil() as usize;
+        let n = n.clamp(1, sorted.len());
+        let tail = &sorted[sorted.len() - n..];
+        tail.iter().sum::<f32>() / n as f32
+    }
+
+    pub fn len(&self) -> usize {
+        self.ms.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ms.is_empty()
+    }
+
+    /// A compact ASCII histogram of frame times over `[0, max_ms]` in
+    /// `buckets` bins, each row labeled by its upper edge + a bar + count.
+    pub fn histogram(&self, buckets: usize, max_ms: f32) -> String {
+        if self.ms.is_empty() {
+            return "(no samples)".into();
+        }
+        let mut counts = vec![0usize; buckets];
+        let mut over = 0usize;
+        for &v in &self.ms {
+            let b = ((v / max_ms) * buckets as f32) as usize;
+            if b < buckets {
+                counts[b] += 1;
+            } else {
+                over += 1;
+            }
+        }
+        let peak = counts.iter().copied().max().unwrap_or(1).max(1);
+        let mut out = String::new();
+        for (i, &c) in counts.iter().enumerate() {
+            let hi = (i + 1) as f32 * max_ms / buckets as f32;
+            let bar = (c * 40 / peak).min(40);
+            out.push_str(&format!(
+                "  <={:5.1}ms |{}{} {}\n",
+                hi,
+                "#".repeat(bar),
+                " ".repeat(40 - bar),
+                c
+            ));
+        }
+        if over > 0 {
+            out.push_str(&format!("  > {max_ms:.1}ms |{:40} {over}\n", ""));
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -96,6 +155,18 @@ mod tests {
         assert_eq!(s.percentile(0.5), 50.0);
         assert_eq!(s.percentile(0.99), 99.0);
         assert_eq!(s.percentile(1.0), 100.0);
+    }
+
+    #[test]
+    fn low_mean_averages_the_worst_tail() {
+        let mut s = StatsAccum::default();
+        for i in 1..=1000 {
+            s.push(i as f32);
+        }
+        // Worst 1% = the slowest 10 frames (991..=1000), mean 995.5.
+        assert!((s.low_mean(0.01) - 995.5).abs() < 0.01);
+        // Worst 0.1% = the single slowest frame (1000).
+        assert_eq!(s.low_mean(0.001), 1000.0);
     }
 
     #[test]

@@ -8,6 +8,12 @@ use crate::swapchain::Swapchain;
 use crate::world::{DepthTarget, WorldRenderer};
 use crate::{image_barrier, Gpu, FRAMES_IN_FLIGHT};
 
+impl Renderer {
+    pub fn frames_in_flight(&self) -> usize {
+        self.fif
+    }
+}
+
 pub enum RenderOutcome {
     Rendered,
     /// Swapchain is stale (resize/minimize race) — caller should `resize()`.
@@ -32,9 +38,10 @@ pub struct Renderer {
     query_pool: vk::QueryPool,
     cursor: usize,
     frames_submitted: u64,
+    fif: usize,
     preferred_present: vk::PresentModeKHR,
     depth: Option<DepthTarget>,
-    /// GPU time of the most recently *measured* frame (2 frames behind).
+    /// GPU time of the most recently *measured* frame (fif frames behind).
     pub last_gpu_ms: Option<f32>,
 }
 
@@ -45,12 +52,26 @@ impl Renderer {
         height: u32,
         preferred_present: vk::PresentModeKHR,
     ) -> Result<Self, String> {
+        Self::with_frames_in_flight(gpu, width, height, preferred_present, FRAMES_IN_FLIGHT)
+    }
+
+    /// M6 latency knob: fewer frames-in-flight (down to 1) shortens the CPU→
+    /// GPU→present queue depth (lower input-to-photon latency) at a possible
+    /// throughput cost. 2 is the default; 1 is the latency experiment.
+    pub fn with_frames_in_flight(
+        gpu: &mut Gpu,
+        width: u32,
+        height: u32,
+        preferred_present: vk::PresentModeKHR,
+        fif: usize,
+    ) -> Result<Self, String> {
+        let fif = fif.clamp(1, 3);
         let swapchain = Swapchain::new(gpu, width, height, preferred_present)?;
-        let (overlay, overlay_res) = OverlayPipeline::new(gpu, swapchain.format, FRAMES_IN_FLIGHT)?;
+        let (overlay, overlay_res) = OverlayPipeline::new(gpu, swapchain.format, fif)?;
         unsafe {
             let device = &gpu.device;
-            let mut frames = Vec::with_capacity(FRAMES_IN_FLIGHT);
-            for _ in 0..FRAMES_IN_FLIGHT {
+            let mut frames = Vec::with_capacity(fif);
+            for _ in 0..fif {
                 let pool = device
                     .create_command_pool(
                         &vk::CommandPoolCreateInfo::default()
@@ -90,7 +111,7 @@ impl Renderer {
                 .create_query_pool(
                     &vk::QueryPoolCreateInfo::default()
                         .query_type(vk::QueryType::TIMESTAMP)
-                        .query_count((FRAMES_IN_FLIGHT * 2) as u32),
+                        .query_count((fif * 2) as u32),
                     None,
                 )
                 .map_err(|e| format!("query pool: {e}"))?;
@@ -103,6 +124,7 @@ impl Renderer {
                 query_pool,
                 cursor: 0,
                 frames_submitted: 0,
+                fif,
                 preferred_present,
                 depth: None,
                 last_gpu_ms: None,
@@ -176,8 +198,8 @@ impl Renderer {
                 .wait_for_fences(&[frame.fence], true, u64::MAX)
                 .map_err(|e| format!("wait fence: {e}"))?;
 
-            // This slot's queries are from 2 frames ago and are complete now.
-            if self.frames_submitted >= FRAMES_IN_FLIGHT as u64 {
+            // This slot's queries are from `fif` frames ago, complete now.
+            if self.frames_submitted >= self.fif as u64 {
                 let mut ts = [0u64; 2];
                 if device
                     .get_query_pool_results(
@@ -376,7 +398,7 @@ impl Renderer {
                 Err(e) => return Err(format!("present: {e}")),
             }
 
-            self.cursor = (self.cursor + 1) % FRAMES_IN_FLIGHT;
+            self.cursor = (self.cursor + 1) % self.fif;
             self.frames_submitted += 1;
 
             if suboptimal {

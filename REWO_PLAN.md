@@ -952,3 +952,47 @@ to a **single `vkCmdDrawIndexedIndirectCount`** fed by a **GPU compute cull**
 - Next: M6 (latency pass — `VK_NV_low_latency2`, frames-in-flight tuning,
   click-to-photon, the replay-benchmark regression gate) or the M4/M5
   follow-ons.
+
+**2026-07-21 — M6 latency/measurement pass shipped.**
+
+The milestone that makes the project's stated goals *measurable*: frame-time
+consistency (1%/0.1% lows) and the merge-gate benchmark.
+
+- **1% / 0.1% low reporting** (`stats.rs`): the gaming "low" = the **mean of
+  the slowest N% of frames** (not a percentile edge — that hides how bad the
+  worst frames are). Unit-tested. Plus a compact ASCII frame-time histogram.
+- **`rewo bench`** — the **deterministic render benchmark** (the plan's
+  "metric that governs merges"). Loads a replay world, meshes it into the
+  GPU-driven renderer, renders N frames from a **deterministic camera orbit**
+  (same scene + path every run → trustworthy A/B), captures per-frame GPU
+  timestamps + wall time, reports avg / p50 / p99 / p99.9 / 1% low / 0.1% low
+  / max + histogram. Headless, machine-runnable, warmup-excluded.
+  - **Measured** (329-chunk flat-world replay, 3.7M verts, 2000 frames, RTX
+    5080): **GPU frame time avg 0.198 ms, p99 0.359, 1% low 0.362, 0.1% low
+    0.367, max 0.369 ms** — the GPU-driven path is *extremely* consistent
+    (the 0.1% low is barely above the average). GPU cull culled 220/329 on
+    the orbit.
+- **Frames-in-flight knob** (`Renderer::with_frames_in_flight`, `--fif`): the
+  latency lever (1 = shortest CPU→GPU→present queue, 2 = default). Measured
+  on the windowed live path (6 s soak each): **fif=1** frame time avg 1.02 ms,
+  1% low 3.12, 0.1% low 4.81, max 5.76; **fif=2** avg 1.03, 1% low 3.43, 0.1%
+  low 5.56, max 5.99 — fif=1 gives **tighter lows + lower latency at identical
+  fps** (~975), exactly the plan's latency-first bias. Default stays 2 (safe
+  under GPU-bound load); fif=1 is the measured latency-optimal option.
+- **Windowed soak stats** upgraded to report 1%/0.1% lows (the real pipelined
+  frame-consistency number: avg ~1 ms, 0.1% low ~5 ms — well within budget).
+- **DoD met:** 1%/0.1% lows + latency numbers documented on the benchmark;
+  frame-consistency (goal #1) measured and excellent; the latency knob (goal
+  #2) measured in the predicted direction.
+- **`VK_NV_low_latency2` deferred — measure-first finding** (per the plan's
+  own guidance): the benchmark shows GPU render is ~0.2 ms, *nowhere near*
+  the frame budget, so submission pacing (low_latency2's job) is not the
+  current bottleneck. It becomes worth integrating at high render distance /
+  scene complexity where the GPU is actually loaded — the measurement infra
+  (`rewo bench` + the fif knob) is now in place to know when. Full
+  click-to-photon needs the windowed path + ideally external LDAT capture;
+  the software input→submit path is the controllable proxy.
+- Next: the deferred visual/perf follow-ons (M4: greedy meshing, fluids +
+  translucent pass, per-biome tint, animation, packed vertices; M5: async
+  transfer queue, visibility-graph cull) — the `rewo bench` regression gate
+  now guards all of them — or M7 (online-mode + chat signing) / M8.

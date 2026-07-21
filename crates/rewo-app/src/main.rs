@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod bench_cmd;
 mod demo_cmd;
 mod live_cmd;
 mod net_cmd;
@@ -108,6 +109,9 @@ enum Command {
     /// M4 showcase: render a synthetic scene of varied block models to a PNG
     /// (no server) — the model/AO/tint verification artifact.
     Demo(demo_cmd::DemoArgs),
+    /// M6 benchmark: deterministic headless render of a replay world from an
+    /// orbit camera; reports frame-time 1%/0.1% lows (the merge-gate metric).
+    Bench(bench_cmd::BenchArgs),
 }
 
 fn main() {
@@ -123,6 +127,7 @@ fn main() {
         Some(Command::Play(play_args)) => play_cmd::run(play_args),
         Some(Command::Live(live_args)) => live_cmd::run(live_args),
         Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
+        Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),
