@@ -201,6 +201,39 @@ impl Slots {
     }
 }
 
+/// Which bone channel an assignment drives (OptiFine `rx`/`ry`/`rz` rotate
+/// radians, `tx`/`ty`/`tz` translate model px, `sx`/`sy`/`sz` scale).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Rx, Ry, Rz, Tx, Ty, Tz, Sx, Sy, Sz,
+}
+
+impl Channel {
+    pub fn parse(s: &str) -> Option<Channel> {
+        Some(match s {
+            "rx" => Channel::Rx, "ry" => Channel::Ry, "rz" => Channel::Rz,
+            "tx" => Channel::Tx, "ty" => Channel::Ty, "tz" => Channel::Tz,
+            "sx" => Channel::Sx, "sy" => Channel::Sy, "sz" => Channel::Sz,
+            _ => return None,
+        })
+    }
+}
+
+/// One assignment in a mob's animation program: either a `var.*` slot write
+/// (feeds later expressions the same frame) or a bone channel.
+pub enum Target {
+    Var(usize),
+    Bone { part: u16, channel: Channel },
+}
+
+/// A whole mob's animation: ordered assignments (vars first per the file
+/// order, then bones) + the user-var slot count. Evaluated top-to-bottom
+/// each frame — see `crate::entities` for application to the part transforms.
+pub struct AnimProgram {
+    pub steps: Vec<(Target, Program)>,
+    pub slot_count: usize,
+}
+
 /// A parsed expression, ready to evaluate against an [`AnimContext`].
 pub struct Program {
     ast: Expr,

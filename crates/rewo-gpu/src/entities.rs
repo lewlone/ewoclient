@@ -103,6 +103,9 @@ pub struct EntityDraw<'a> {
     /// Uniform model-scale multiplier on top of the baked scale — vanilla's
     /// per-entity render scale (slime/magma-cube `size`). 1.0 = as baked.
     pub scale_mul: f32,
+    /// Per-entity stable id for CEM `random(id)` (so a herd doesn't animate
+    /// in lockstep). Any stable-per-entity float; 0 is fine for stills.
+    pub anim_id: f32,
 }
 
 #[repr(C)]
@@ -239,6 +242,9 @@ pub struct MobModel {
     keyframes: Vec<mobs::KfAnim>,
     /// Model px → world blocks (vanilla 1/16 × the mob's render scale).
     scale: f32,
+    /// Resource-pack CEM animation program (M9c) — drives bone channels
+    /// per frame via the expression interpreter. `None` for built-ins.
+    cem: Option<crate::cem_anim::AnimProgram>,
 }
 
 struct GpuQuad {
@@ -385,6 +391,7 @@ impl EntityPass {
                 parts: m.parts,
                 keyframes: m.keyframes,
                 scale: m.scale / 16.0,
+                cem: m.cem,
             });
         }
         if debug_tex {
@@ -586,7 +593,7 @@ impl EntityPass {
             gesture: Option::None,
             shell: false,
         };
-        let xf = part_transforms(model, &ctx);
+        let xf = part_transforms(model, &ctx, None);
         Some(
             model
                 .quads
@@ -708,7 +715,29 @@ impl EntityPass {
             gesture: d.gesture,
             shell: d.shell,
         };
-        let xf = part_transforms(model, &ctx);
+        // Resource-pack CEM animation (M9c): evaluate the expression program
+        // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
+        // `part_transforms` alongside the built-in animation.
+        let cem_deltas = model.cem.as_ref().map(|prog| {
+            let mut actx = crate::cem_anim::AnimContext {
+                head_yaw: wrap_degrees(d.head_yaw - d.yaw),
+                head_pitch: d.pitch,
+                limb_swing: d.limb_swing,
+                limb_speed: d.limb_amount,
+                age: time * 20.0,
+                time: time * 20.0,
+                frame_time: 0.05,
+                is_on_ground: true,
+                is_alive: true,
+                is_child: false,
+                health: 20.0,
+                max_health: 20.0,
+                id: d.anim_id,
+                ..Default::default()
+            };
+            crate::cem::eval_program(prog, &mut actx, model.parts.len())
+        });
+        let xf = part_transforms(model, &ctx, cem_deltas.as_deref());
         // Per-entity render scale (slime/magma size) on top of the baked px→
         // block scale — vanilla scales the whole model uniformly by `size`.
         let s = model.scale * if d.scale_mul > 0.0 { d.scale_mul } else { 1.0 };
@@ -1164,7 +1193,11 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
 /// procedural deltas, exactly like vanilla's `offsetRotation`/`offsetPos`).
 /// Shared by rendering and the mobshot geometric prediction so the two can
 /// never disagree.
-fn part_transforms(model: &MobModel, ctx: &AnimCtx) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+fn part_transforms(
+    model: &MobModel,
+    ctx: &AnimCtx,
+    cem_deltas: Option<&[[f32; 6]]>,
+) -> Vec<([[f32; 3]; 3], [f32; 3])> {
     let n = model.parts.len();
     let mut drots = vec![[0.0f32; 3]; n];
     let mut doffs = vec![[0.0f32; 3]; n];
@@ -1172,6 +1205,19 @@ fn part_transforms(model: &MobModel, ctx: &AnimCtx) -> Vec<([[f32; 3]; 3], [f32;
         let (r, o) = anim_delta(p.anim, p.amp, ctx);
         drots[i] = r;
         doffs[i] = o;
+    }
+    // CEM program deltas: rx/ry/rz onto the rotation, tx/ty/tz onto the
+    // pivot offset (model px). Applied about the bone's pivot by the
+    // compose step below, exactly like the built-in deltas.
+    if let Some(deltas) = cem_deltas {
+        for (i, d) in deltas.iter().enumerate().take(n) {
+            drots[i][0] += d[0];
+            drots[i][1] += d[1];
+            drots[i][2] += d[2];
+            doffs[i][0] += d[3];
+            doffs[i][1] += d[4];
+            doffs[i][2] += d[5];
+        }
     }
     for kf in &model.keyframes {
         // The gate decides whether the rig plays this frame (vanilla's

@@ -2308,15 +2308,36 @@ gate green.**
 - Verified: 5 unit tests + a **corpus test that parses all 284 real
   expressions** from the FA creeper/cow/allay animation files with zero
   failures — the grammar covers real FA data, not just hand-picked cases.
-- **Next (M9c.2 — the runtime, a substantial slice)**: the CEM parser must
-  build a **named part tree** (currently flattens to STATIC_PART) so bone
-  channels (`head.rx`, `leg1.ry`, …) can target parts, and the per-frame
-  runtime must apply the evaluated channels to part rotations/offsets. The
-  hard design problem is reconciling OptiFine's JEM rotation *pivots* with
-  our model-space part system — the pivots don't map cleanly through the
-  static invert+fold transform (worked the creeper leg by hand; the hip
-  pivot needs its own derivation). This is where FA's motion actually comes
-  alive; the interpreter is its engine.
+**2026-07-22 — M9c.2: Fresh Animations runs (the CEM animation runtime).**
+
+- **FA mob animation works in Rewo.** The CEM parser now builds a **named
+  part tree** (one bone per top-level `.jem` part, boxes pivot-relative),
+  the `_animations.jpm` is parsed into an ordered program of
+  `var.*`/`bone.channel` assignments, and each frame the interpreter
+  evaluates it → per-bone `[rx,ry,rz,tx,ty,tz]` deltas that
+  `part_transforms` applies alongside the built-in animation.
+- **The pivot, solved**: OptiFine's `translate` IS the negated rotation
+  pivot, so `pivot = to_model(−translate)` — verified exact against vanilla
+  (zombie leg `[1.9,-12,0]`→hip `[1.9,12,0]`, body `[0,-24,0]`→`[0,0,0]`).
+  Bones rotate about it.
+- **The rotation convention**: the model is baked through a 180° Z-rotation
+  (that's what `invertAxis:"xy"` is), so conjugating the animation by it
+  **negates the X/Y rotation angles + translations**; Z passes through.
+  This was the fix that turned flung-apart limbs into a cohesive walk — the
+  FA zombie now strides (leg forward, body lean), arms attached at the
+  shoulders, legs at the hips.
+- `AnimContext` is filled from the entity state each frame (`limb_swing/
+  limb_speed/age/head_yaw/…`, per-entity `id` for `random(id)`), so a herd
+  doesn't animate in lockstep. `EntityDraw` gained `anim_id`.
+- Gates: no-pack facelabel **243/243** (CEM adds a `cem` field + `Anim`
+  marker but changes no built-in rendering), 22 rewo-gpu tests (incl. the
+  pivot + program-parse cases), demo byte-identical.
+- Known follow-ups: **submodel-based leg pivots** (creeper's foot-submodel
+  legs) are ~1–2 units off so they detach slightly — the flat-part rigs
+  (zombie/humanoids) are exact; per-face `uvNorth`, scale channels, the
+  jpm `"model"` geometry ref, and wiring the CEM anim `time` into `rewo
+  live` (mobshot uses `--time`/`--walk`) all remain. The engine is here;
+  these are polish.
 
 **2026-07-22 — baby mobs.**
 

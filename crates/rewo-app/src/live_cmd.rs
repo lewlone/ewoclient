@@ -410,6 +410,7 @@ fn collect_entities<'a>(
             shell,
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
+            anim_id: (id & 0xffff) as f32,
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids

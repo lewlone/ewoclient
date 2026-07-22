@@ -134,7 +134,7 @@ pub(crate) fn load_cem_overrides(
         if kind == EntityModelKind::Capsule {
             continue; // no matching model kind (variant/collar/… files)
         }
-        match rewo_gpu::cem::model_from_jem(&file.jem) {
+        match rewo_gpu::cem::model_from_jem(&file.jem, &pack.jpms) {
             Ok(model) => {
                 out.entry(kind).or_insert(model);
             }
@@ -162,6 +162,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         shell: false,
         skin_uv: None,
         scale_mul: 1.0,
+        anim_id: 0.0,
     }
 }
 

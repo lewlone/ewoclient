@@ -334,6 +334,9 @@ pub struct Model {
     /// Extra scale on top of the 1/16 px→block conversion (player 0.9375,
     /// wither skeleton 1.2, slime 2.0, …).
     pub scale: f32,
+    /// Resource-pack CEM animation program (M9c) — per-frame bone channels
+    /// driven by the OptiFine expression language. `None` for built-ins.
+    pub cem: Option<crate::cem_anim::AnimProgram>,
 }
 
 /// A static fold applied to cube vertices at build time: `v → R_zyx(rot)·v +
@@ -651,7 +654,26 @@ impl ModelBuilder {
             quads: self.quads,
             keyframes: self.keyframes,
             scale,
+            cem: None,
         }
+    }
+
+    /// A CEM part with an explicit pivot (M9c named-bone models). Returns the
+    /// part index; boxes added to it must be pivot-relative.
+    pub(crate) fn cem_part(&mut self, pivot: [f32; 3]) -> usize {
+        // CEM bones get their per-frame rotation/offset from the animation
+        // program (applied in `part_transforms` by part index), not a
+        // built-in `Anim` formula — so the marker is `None`.
+        self.parts.push(Part {
+            pivot,
+            rot: [0.0; 3],
+            anim: Anim::None,
+            amp: 1.0,
+            parent: None,
+            name: "",
+            show: Show::Always,
+        });
+        self.parts.len() - 1
     }
 }
 
