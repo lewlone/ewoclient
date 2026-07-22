@@ -37,7 +37,12 @@ pub fn model_from_jem(jem: &str) -> Result<Model, String> {
     let mut b = ModelBuilder::new();
     let mut boxes = 0usize;
     for part in models {
-        walk(&mut b, part, [0.0; 3], &mut boxes);
+        // A top-level part's `translate` is its rotation *pivot* (used by
+        // animations), NOT static positioning — its boxes sit at their raw
+        // coordinates. Only submodel translates accumulate. So each
+        // top-level part starts from a zero offset regardless of its own
+        // translate.
+        walk(&mut b, part, [0.0; 3], true, &mut boxes);
     }
     if boxes == 0 {
         return Err("jem: no boxes (geometry only in referenced .jpm?)".into());
@@ -46,11 +51,16 @@ pub fn model_from_jem(jem: &str) -> Result<Model, String> {
     Ok(b.finish(1.0))
 }
 
-/// Recurse a part/submodel: accumulate `translate` (raw sum down the tree),
-/// emit each box, then descend into submodels.
-fn walk(b: &mut ModelBuilder, node: &Value, parent_off: [f32; 3], boxes: &mut usize) {
-    let t = vec3(node.get("translate")).unwrap_or([0.0; 3]);
-    let off = [parent_off[0] + t[0], parent_off[1] + t[1], parent_off[2] + t[2]];
+/// Recurse a part/submodel: submodel `translate`s accumulate down the tree;
+/// a top-level part's translate is skipped (it's the rotation pivot, not
+/// static position — see `model_from_jem`). Emit each box, then descend.
+fn walk(b: &mut ModelBuilder, node: &Value, parent_off: [f32; 3], top_level: bool, boxes: &mut usize) {
+    let off = if top_level {
+        parent_off // ignore a top-level part's own translate (= pivot)
+    } else {
+        let t = vec3(node.get("translate")).unwrap_or([0.0; 3]);
+        [parent_off[0] + t[0], parent_off[1] + t[1], parent_off[2] + t[2]]
+    };
     if let Some(arr) = node.get("boxes").and_then(|v| v.as_array()) {
         for bx in arr {
             emit_box(b, bx, off);
@@ -59,7 +69,7 @@ fn walk(b: &mut ModelBuilder, node: &Value, parent_off: [f32; 3], boxes: &mut us
     }
     if let Some(subs) = node.get("submodels").and_then(|v| v.as_array()) {
         for sub in subs {
-            walk(b, sub, off, boxes);
+            walk(b, sub, off, false, boxes);
         }
     }
 }
@@ -109,22 +119,40 @@ fn vec3(v: Option<&Value>) -> Option<[f32; 3]> {
 mod tests {
     use super::*;
 
-    /// A one-box `.jem` (the creeper body): parses, produces the 6 box
-    /// faces on the static root, and lands them in y-down model space
-    /// (invertAxis:"xy" → 180° Z-rotation + BASE_Y fold).
+    fn y_span(m: &Model) -> (f32, f32) {
+        m.quads
+            .iter()
+            .flat_map(|q| q.pos.iter().map(|p| p[1]))
+            .fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)))
+    }
+
+    /// The vanilla creeper body: a top-level part whose `translate` is the
+    /// rotation pivot (IGNORED for static geometry). Box y[6,18] folds about
+    /// BASE_Y(24) → model y[6,18], reproducing the vanilla creeper body
+    /// exactly — proves invertAxis + the top-level-translate rule.
     #[test]
-    fn parses_a_single_box_into_six_faces() {
+    fn top_level_translate_is_the_pivot_not_position() {
         let jem = r#"{"textureSize":[64,32],"models":[
             {"part":"body","translate":[0,-7,0],"invertAxis":"xy",
              "boxes":[{"coordinates":[-4,6,-2,8,12,4],"textureOffset":[16,16]}]}]}"#;
         let m = model_from_jem(jem).unwrap();
         assert_eq!(m.quads.len(), 6, "one box → six faces");
-        // Box y in JEM [6,18] + translate -7 = [-1,11]; folded about BASE_Y
-        // (24) → model y [13,25] (feet-ward). Assert the vertical span landed
-        // right (proves the invertAxis/fold, not scrambled).
-        let ys: Vec<f32> = m.quads.iter().flat_map(|q| q.pos.iter().map(|p| p[1])).collect();
-        let (lo, hi) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y)));
-        assert!((lo - 13.0).abs() < 0.01 && (hi - 25.0).abs() < 0.01, "y span {lo}..{hi}");
+        let (lo, hi) = y_span(&m);
+        assert!((lo - 6.0).abs() < 0.01 && (hi - 18.0).abs() < 0.01, "y span {lo}..{hi}");
+    }
+
+    /// A submodel's `translate` DOES accumulate (positions nested geometry).
+    /// The creeper head cube (head2 under body, translate +18, box y[0,8])
+    /// lands at model y[-2,6] — the vanilla creeper head.
+    #[test]
+    fn submodel_translate_accumulates() {
+        let jem = r#"{"models":[
+            {"part":"body","translate":[0,-7,0],"invertAxis":"xy","submodels":[
+              {"id":"head2","translate":[0,18,0],"invertAxis":"xy",
+               "boxes":[{"coordinates":[-4,0,-4,8,8,8],"textureOffset":[0,0]}]}]}]}"#;
+        let m = model_from_jem(jem).unwrap();
+        let (lo, hi) = y_span(&m);
+        assert!((lo + 2.0).abs() < 0.01 && (hi - 6.0).abs() < 0.01, "head y span {lo}..{hi}");
     }
 
     #[test]

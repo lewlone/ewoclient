@@ -2266,22 +2266,33 @@ gate green.**
 - **Override pipeline**: `EntityPass::new_with_cem` swaps a kind's built-in
   model for its parsed CEM model, through the same UV-normalization + atlas
   bake. `mobshot --pack <zip>` is the inspection tool.
-- **Verified**: the FA creeper, pig, and cow render as correct, recognizable
-  mobs with textures mapped right — near-identical to their vanilla
-  built-ins (FA replicates vanilla geometry, so this is a real parser
-  correctness check, not a proxy). The **no-pack facelabel gate stays
-  243/243** — pack overrides are cleanly additive, zero regression. Parser
-  unit tests + demo byte-identical.
-- **Known limitation (the next slice, M9a.2)**: OptiFine CEM top-level
-  `part`s **inherit the vanilla part's pivot** (creeper body pivot 6,
-  humanoid leg pivot 12, …), and `translate` is relative to *that*.
-  Box-family mobs (small translates) render right under a single baseline;
-  humanoid / multi-limb rigs (zombie, skeleton, spider) need the per-mob
-  vanilla-pivot table to place limbs correctly — until then they're
-  misplaced. `--pack` is an explicit inspection flag; **`rewo live` does
-  not load packs**, so there's no gameplay regression. Animations (FA's
-  actual payoff — the `_animations.jpm` OptiFine expression language) are
-  M9c, and this parser is their prerequisite.
+- **The convention, cracked (M9a.2, same day)**: OptiFine's top-level
+  `part.translate` is the **rotation pivot** (used by animations), **not**
+  static position — a top-level part's boxes sit at their raw coordinates;
+  only **submodel** translates accumulate. So the map is
+  `render = [−(box+Σsub).x, 24 − (box+Σsub).y, (box+Σsub).z]` with the
+  top-level translate skipped. This reproduces the vanilla creeper
+  right-hind-leg *exactly* (x[-4,0] y[18,24] z[2,6]) and the vanilla
+  humanoid head/body/arms/legs — no per-mob pivot table needed; the pivots
+  fall out of the box coordinates. The whole thing is still one `Fold`
+  (180° Z-rotation + BASE_Y translate); the fix was a single line (don't
+  accumulate the top-level translate).
+- **Verified across body plans**: creeper, pig, cow, **zombie, skeleton,
+  spider, enderman, piglin** all render correct + recognizable with
+  textures mapped right — the humanoids that were stretched now have proper
+  heads/arms/legs. Near-identical to their vanilla built-ins (FA replicates
+  vanilla geometry — a real parser correctness check, not a proxy). The
+  **no-pack facelabel gate stays 243/243** — pack overrides are cleanly
+  additive, zero regression. Parser unit tests (top-level-pivot +
+  submodel-accumulate) + demo byte-identical.
+- **`--pack` is an explicit inspection flag**; `rewo live` doesn't load
+  packs yet (no gameplay regression — wiring it in is a small follow-up).
+  Not yet: per-face UV overrides (`uvNorth`…, e.g. creeper-eye detail —
+  box-UV `textureOffset` works), the `.jpm` `"model"` geometry reference
+  (FA's are pure animation containers), and rotated parts (`rotate` — none
+  seen in FA statics). Animations (FA's actual payoff — the
+  `_animations.jpm` OptiFine expression language) are **M9c**, and this
+  parser is their prerequisite.
 
 **2026-07-22 — baby mobs.**
 
