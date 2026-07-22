@@ -178,13 +178,21 @@ the code's author. Nothing below is settled truth.
   guardian/elder, bee, pufferfish, sniffer, breeze — are auto-detected as
   color-check-N/A because their vanilla textures reuse the same texels
   across face labels, and are skipped with a notice) + closeup sheets
-  (`--only`). Still open: entity *collision* is ignored (walk through
-  mobs), procedural anims beyond walk/head-look are static poses (spider
-  leg-wave, wing flaps, tentacles, tails, dragon flight), sheep wool
-  dye-tint deferred (white), slime/magma face + size need the translucent
-  pass + entity metadata, texture variants are fixed picks (tabby cat,
-  brown horse, creamy llama, lucy axolotl, temperate chicken/frog…), no
-  real per-player skins (M7), tags are depth-tested.
+  (`--only`). **Animations (2026-07-22 pass): every procedural vanilla
+  `setupAnim` is implemented formula-exact** — walk gaits + head-look plus
+  spider leg waves, wolf tail wag, golem triangle-wave limbs, blaze rod
+  orbits, ghast/squid tentacles, phantom/allay/vex/bee wing flaps, fish
+  tail sways, silverfish wiggles, wither side-head tracking (parts carry
+  base rotations, a parent hierarchy, and pivot-motion anims;
+  `set_entities` takes a time param, `mobshot` has `--time`/`--walk`).
+  Still open: entity *collision* is ignored (walk through mobs),
+  keyframe-rigged anims (frog/camel/sniffer/armadillo/rabbit walks, bat
+  flight, dragon flight, creaking/copper-golem gestures) need an
+  AnimationDefinition player and stay posed, sheep wool dye-tint deferred
+  (white), slime/magma face + size need the translucent pass + entity
+  metadata, texture variants are fixed picks (tabby cat, brown horse,
+  creamy llama, lucy axolotl, temperate chicken/frog…), no real
+  per-player skins (M7), tags are depth-tested.
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1917,3 +1925,43 @@ gate green.**
   Closeups eyeballed: dragon (spine scales, wings, purple eyes), warden
   chest glow, sniffer moss back, breeze funnel, wither triple skull,
   nautilus spiral, ravager horns, creaking eyes, happy ghast all read.
+
+**2026-07-22 — the animation pass: every procedural vanilla anim, exact.**
+
+- The part system generalized twice: parts carry **base Euler rotations**
+  (vanilla sums pose + setupAnim angles and composes ONE `rotateZYX` —
+  spider-leg splay + walk-wave now share a part), and parts form a
+  **runtime hierarchy** (`parent` links) so phantom wing *tips* bend on
+  their wing *bases* and vex arms/wings ride the π/20-tilted body. Some
+  anims also *move* pivots (vanilla repositions blaze rods and crawler
+  segments per frame). `part_transforms` composes it all and is shared by
+  `emit_model` AND the mobshot prediction, so the facelabel gate can never
+  disagree with the renderer (checked at the gate's fixed t=0 inputs —
+  still 246/246 green, still deterministic).
+- `set_draws`/`set_entities` gained a `time` parameter (vanilla
+  `ageInTicks` = seconds·20); `rewo live` passes real elapsed time,
+  `rewo mobshot` passes `--time` (sheet) and 0 (gate). `--walk swing,amt`
+  poses the walk-driven anims for stills.
+- Implemented from the decompiled `setupAnim` bodies, formula-exact:
+  spider 8-leg walk wave (yRot/zRot ± phases), wolf tail wag, iron golem
+  triangle-wave arms+legs (`triangleWave(pos,13)`), blaze rod ring orbits
+  (three counter-rotating rings + per-rod y-bob), ghast tentacle sway
+  (`0.2·sin(age·0.3+i)+0.4`), phantom two-segment wing flap + tail bob
+  (`flapTime·7.448451°`), allay hover-flap (`cos(age·20°+pos)·π·0.15+amt`
+  with the fly/idle blend), vex arm bob + wing flutter (`45.836624°`
+  rate), bee wing buzz (`120.32113°` rate, airborne pose with tucked π/4
+  legs), cod/tropical tail + salmon back-half sway (`−0.45/−0.25·
+  sin(0.6·age)`), pufferfish fin flutter, dolphin two-segment tail stroke
+  (gated on movement), silverfish/endermite segment wiggle (yRot AND x
+  displacement, per-species amplitudes), wither side heads now track the
+  look. Squid tentacles get a gentle curl (the entity-driven
+  `tentacleAngle` isn't on the wire — approximation noted).
+- Still keyframe-rigged in vanilla (NOT procedural — needs an
+  AnimationDefinition player, a separate follow-up): frog/camel/sniffer/
+  armadillo/rabbit walk cycles, bat flight, creaking/copper-golem/warden
+  gestures. Their poses stay static; their walk-gait approximations (where
+  given) remain.
+- Gates: 41 tests, `mobshot --check` 246/246 at t=0, demo byte-identical,
+  bench flat, 0 VUIDs. Animated sheet (`--time 0.42 --walk 2.2,0.8`)
+  eyeballed: golem mid-stride, spider leg wave, orbiting blaze rods,
+  curled squid, swept ghast tentacles, flapping phantom all read.

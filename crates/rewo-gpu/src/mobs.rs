@@ -65,11 +65,14 @@ impl Facing {
     }
 }
 
-/// Which animation drives a part. Angles are vanilla's `setupAnim` formulas,
-/// computed in [`crate::entities`] from the walk phase / head state.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Which animation drives a part. Angle/offset formulas are vanilla's
+/// `setupAnim` bodies, evaluated in [`crate::entities`] from the walk
+/// phase, head state, and wall-clock age (ticks). Payload variants carry
+/// the per-part constants vanilla bakes into its loops.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Anim {
-    /// Static geometry (any static pose was folded in at build time).
+    /// Static geometry (any static pose was folded in at build time, or
+    /// lives in the part's base `rot`).
     None,
     /// Look pitch about X + net head yaw about Y (vanilla `rotateZYX(0,y,x)`).
     Head,
@@ -84,18 +87,67 @@ pub enum Anim {
     QuadHindLeft,
     QuadFrontRight,
     QuadFrontLeft,
+    /// Spider walk: `yRot ±= −cos(2f + phase)·0.4·amt`,
+    /// `zRot ±= |sin(f + phase)|·0.4·amt` (left legs negate both).
+    SpiderLeg { left: bool, phase: f32 },
+    /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
+    TailWagY,
+    /// Iron golem limbs: `triangleWave(pos, 13)` on the raw walk position.
+    GolemArmRight,
+    GolemArmLeft,
+    GolemLegRight,
+    GolemLegLeft,
+    /// Blaze rod: vanilla re-*positions* the rod each frame —
+    /// `(cos(a)·r, y0 + cos((i·yf + age)·ys), sin(a)·r)` with
+    /// `a = a0 + age·π·speed + i·π/2`.
+    BlazeRod { ring: u8, idx: u8 },
+    /// Ghast tentacle sway: `xRot = 0.2·sin(age·0.3 + i) + 0.4`.
+    GhastTentacle { i: u8 },
+    /// Squid tentacle curl (approximation of the entity-driven
+    /// `tentacleAngle` swim pulse — the wire doesn't carry it).
+    SquidTentacle,
+    /// Phantom wings: `zRot = ±cos(age·7.448451°)·16°` (tips share it).
+    PhantomWing { left: bool },
+    /// Phantom tail segments: `xRot = −(5 + cos(2·flap)·5)°`.
+    PhantomTail,
+    /// Allay wings: `yRot = ∓π/4 ± (cos(age·20° + pos)·π·0.15 + amt)`,
+    /// `xRot = 0.43633·(1 − min(amt/0.3, 1))`.
+    AllayWing { left: bool },
+    /// Vex arms: `zRot = ±(π/5 + cos(age·5.5°)·0.1)`.
+    VexArm { left: bool },
+    /// Vex wings: `yRot = ±(1.0995574 + cos(age·45.836624°)·16.2°)`,
+    /// with the static x/z tilts from vanilla.
+    VexWing { left: bool },
+    /// Bee wings (airborne — our bees always hover):
+    /// `zRot = ±cos(age·120.32113°)·π·0.15`.
+    BeeWing { left: bool },
+    /// Fish tail sway: `yRot = −amp·sin(speed·age)`.
+    FishTail { amp: f32, speed: f32 },
+    /// Pufferfish blue fins: `zRot = ∓0.2 ± 0.4·sin(age·0.2)`.
+    PufferFin { left: bool },
+    /// Dolphin tail segments while swimming: `xRot = −k·cos(age·0.3)`.
+    DolphinTail { k: f32 },
+    /// Silverfish/endermite segment wiggle: `yRot = cos(age·0.9 +
+    /// i·0.15π)·π·ry·(1+|i−2|)`, `x += sin(same)·π·tx·|i−2|`.
+    /// `with_x` mirrors vanilla's wing layers that copy yRot only.
+    Crawl { i: u8, ry: f32, tx: f32, with_x: bool },
 }
 
-/// One articulated part: cubes attached to it rotate about `pivot` by the
-/// animation's angle. Static pose rotations never live here — they are folded
-/// into the quad vertices at build time — so an animated part's rest matrix
-/// is always identity (true for every vanilla mob we port; asserted in the
-/// builder).
+impl Eq for Anim {}
+
+/// One articulated part: cubes attached to it rotate about `pivot` inside
+/// the parent's frame (`parent` = an earlier part index, or the model
+/// root). `rot` is the vanilla `PartPose` base rotation; the animation's
+/// per-frame deltas are *summed onto it* and composed as one
+/// `rotateZYX(z, y, x)` — exactly vanilla's angle math. Some anims also
+/// displace the pivot (blaze rods, crawler segments).
 pub struct Part {
     pub pivot: [f32; 3],
+    pub rot: [f32; 3],
     pub anim: Anim,
     /// Angle multiplier (villager/enderman swing at half amplitude).
     pub amp: f32,
+    pub parent: Option<u16>,
 }
 
 /// One textured quad in part-local model px. UVs are in the mob's own
@@ -287,18 +339,40 @@ impl ModelBuilder {
         ModelBuilder {
             parts: vec![Part {
                 pivot: [0.0; 3],
+                rot: [0.0; 3],
                 anim: Anim::None,
                 amp: 1.0,
+                parent: None,
             }],
             quads: Vec::new(),
         }
     }
 
-    /// Register an animated part. Its rest transform is identity — vanilla
-    /// static pose rotations belong in cube folds, not here.
+    /// Register an animated part at the model root with no base rotation
+    /// (the common case).
     fn part(&mut self, pivot: [f32; 3], anim: Anim, amp: f32) -> usize {
-        debug_assert!(anim != Anim::None, "static geometry goes through folds");
-        self.parts.push(Part { pivot, anim, amp });
+        self.part_ext(pivot, [0.0; 3], anim, amp, None)
+    }
+
+    /// Register a part with a vanilla `PartPose` base rotation and/or a
+    /// parent part (runtime hierarchy — wing tips on wings, arms on a
+    /// tilted body). Parents must be registered first.
+    fn part_ext(
+        &mut self,
+        pivot: [f32; 3],
+        rot: [f32; 3],
+        anim: Anim,
+        amp: f32,
+        parent: Option<usize>,
+    ) -> usize {
+        debug_assert!(parent.is_none_or(|p| p < self.parts.len()));
+        self.parts.push(Part {
+            pivot,
+            rot,
+            anim,
+            amp,
+            parent: parent.map(|p| p as u16),
+        });
         self.parts.len() - 1
     }
 
@@ -960,22 +1034,24 @@ fn spider_like(scale: f32) -> Model {
     b.cube(head, 0, (32.0, 4.0), [-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], NONE);
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], 0.0, false, &[Fold::at([0.0, 15.0, 0.0])]);
     b.cube_f(STATIC_PART, 0, (0.0, 12.0), [-5.0, -4.0, -6.0], [10.0, 8.0, 12.0], 0.0, false, &[Fold::at([0.0, 15.0, 9.0])]);
-    // (pivot, yRot, zRot, mirror) per leg — right legs extend −X, left +X.
+    // (pivot, yRot, zRot, mirror, walk phase) per leg — right legs extend
+    // −X, left +X. The splay is the part's base pose; the walk wave adds
+    // yRot/zRot on top (vanilla `setupAnim` += deltas).
     const Z58: f32 = 0.58119464;
-    let legs: [([f32; 3], f32, f32, bool); 8] = [
-        ([-4.0, 15.0, 2.0], PI / 4.0, -PI / 4.0, false),
-        ([4.0, 15.0, 2.0], -PI / 4.0, PI / 4.0, true),
-        ([-4.0, 15.0, 1.0], PI / 8.0, -Z58, false),
-        ([4.0, 15.0, 1.0], -PI / 8.0, Z58, true),
-        ([-4.0, 15.0, 0.0], -PI / 8.0, -Z58, false),
-        ([4.0, 15.0, 0.0], PI / 8.0, Z58, true),
-        ([-4.0, 15.0, -1.0], -PI / 4.0, -PI / 4.0, false),
-        ([4.0, 15.0, -1.0], PI / 4.0, PI / 4.0, true),
+    let legs: [([f32; 3], f32, f32, bool, f32); 8] = [
+        ([-4.0, 15.0, 2.0], PI / 4.0, -PI / 4.0, false, 0.0),
+        ([4.0, 15.0, 2.0], -PI / 4.0, PI / 4.0, true, 0.0),
+        ([-4.0, 15.0, 1.0], PI / 8.0, -Z58, false, PI),
+        ([4.0, 15.0, 1.0], -PI / 8.0, Z58, true, PI),
+        ([-4.0, 15.0, 0.0], -PI / 8.0, -Z58, false, PI / 2.0),
+        ([4.0, 15.0, 0.0], PI / 8.0, Z58, true, PI / 2.0),
+        ([-4.0, 15.0, -1.0], -PI / 4.0, -PI / 4.0, false, PI * 1.5),
+        ([4.0, 15.0, -1.0], PI / 4.0, PI / 4.0, true, PI * 1.5),
     ];
-    for (pivot, ry, rz, left) in legs {
-        let fold = Fold::rot([0.0, ry, rz], pivot);
+    for (pivot, ry, rz, left, phase) in legs {
+        let p = b.part_ext(pivot, [0.0, ry, rz], Anim::SpiderLeg { left, phase }, 1.0, Option::None);
         let min = if left { [-1.0, -1.0, -1.0] } else { [-15.0, -1.0, -1.0] };
-        b.cube_f(STATIC_PART, 0, (18.0, 0.0), min, [16.0, 2.0, 2.0], 0.0, left, &[fold]);
+        b.cube_f(p, 0, (18.0, 0.0), min, [16.0, 2.0, 2.0], 0.0, left, NONE);
     }
     b.finish(scale)
 }
@@ -1129,8 +1205,9 @@ fn wolf() -> Model {
         let p = b.part(pivot, anim, 1.0);
         b.cube_f(p, 0, (0.0, 18.0), [0.0, 0.0, -1.0], [2.0, 8.0, 2.0], 0.0, mirror, NONE);
     }
-    let tail = Fold::rot([PI / 5.0, 0.0, 0.0], [-1.0, 12.0, 8.0]);
-    b.cube_f(STATIC_PART, 0, (9.0, 18.0), [0.0, 0.0, -1.0], [2.0, 8.0, 2.0], 0.0, false, &[tail]);
+    // Tail: π/5 hang + the walking side-to-side wag.
+    let tail = b.part_ext([-1.0, 12.0, 8.0], [PI / 5.0, 0.0, 0.0], Anim::TailWagY, 1.0, Option::None);
+    b.cube(tail, 0, (9.0, 18.0), [0.0, 0.0, -1.0], [2.0, 8.0, 2.0], NONE);
     b.finish(1.0)
 }
 
@@ -1143,7 +1220,8 @@ fn squid() -> Model {
         let angle = i as f32 * PI * 2.0 / 8.0;
         let pivot = [angle.cos() * 5.0, 15.0, angle.sin() * 5.0];
         let y_rot = -(i as f32) * PI * 2.0 / 8.0 + PI / 2.0;
-        b.cube_f(STATIC_PART, 0, (48.0, 0.0), [-1.0, 0.0, -1.0], [2.0, 18.0, 2.0], 0.0, false, &[Fold::rot([0.0, y_rot, 0.0], pivot)]);
+        let p = b.part_ext(pivot, [0.0, y_rot, 0.0], Anim::SquidTentacle, 1.0, Option::None);
+        b.cube(p, 0, (48.0, 0.0), [-1.0, 0.0, -1.0], [2.0, 18.0, 2.0], NONE);
     }
     b.finish(1.0)
 }
@@ -1366,38 +1444,48 @@ fn magma_cube() -> Model {
     b.finish(2.0)
 }
 
-/// `VexModel`: floating imp — head + tapered body + tiny arms + 0-thick
-/// wings, all lifted by the root's −2.5 offset.
+/// `VexModel`: floating imp — head + tapered body (tilted π/20) + bobbing
+/// arms + fluttering 0-thick wings, all lifted by the root's −2.5 offset.
 fn vex() -> Model {
     let mut b = ModelBuilder::new();
-    let root = Fold::at([0.0, -2.5, 0.0]);
     let head = b.part([0.0, 17.5, 0.0], Anim::Head, 1.0);
     b.cube(head, 0, (0.0, 0.0), [-2.5, -5.0, -2.5], [5.0, 5.0, 5.0], NONE);
-    let body = Fold::at([0.0, 20.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 10.0), [-1.5, 0.0, -1.0], [3.0, 4.0, 2.0], 0.0, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (0.0, 16.0), [-1.5, 1.0, -1.0], [3.0, 5.0, 2.0], -0.2, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (23.0, 0.0), [-1.25, -0.5, -1.0], [2.0, 4.0, 2.0], -0.1, false, &[Fold::at([-1.75, 0.25, 0.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (23.0, 6.0), [-0.75, -0.5, -1.0], [2.0, 4.0, 2.0], -0.1, false, &[Fold::at([1.75, 0.25, 0.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (16.0, 14.0), [0.0, 0.0, 0.0], [0.0, 5.0, 8.0], 0.0, true, &[Fold::at([0.5, 1.0, 1.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (16.0, 14.0), [0.0, 0.0, 0.0], [0.0, 5.0, 8.0], 0.0, false, &[Fold::at([-0.5, 1.0, 1.0]), body, root]);
+    // Body pose (0,20,0) under the root's (0,−2.5,0); setupAnim tilts it
+    // π/20 when not charging.
+    let body = b.part_ext([0.0, 17.5, 0.0], [PI / 20.0, 0.0, 0.0], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 10.0), [-1.5, 0.0, -1.0], [3.0, 4.0, 2.0], NONE);
+    b.cube_g(body, 0, (0.0, 16.0), [-1.5, 1.0, -1.0], [3.0, 5.0, 2.0], -0.2, NONE);
+    let arm_r = b.part_ext([-1.75, 0.25, 0.0], [0.0; 3], Anim::VexArm { left: false }, 1.0, Some(body));
+    b.cube_g(arm_r, 0, (23.0, 0.0), [-1.25, -0.5, -1.0], [2.0, 4.0, 2.0], -0.1, NONE);
+    let arm_l = b.part_ext([1.75, 0.25, 0.0], [0.0; 3], Anim::VexArm { left: true }, 1.0, Some(body));
+    b.cube_g(arm_l, 0, (23.0, 6.0), [-0.75, -0.5, -1.0], [2.0, 4.0, 2.0], -0.1, NONE);
+    let wing_l = b.part_ext([0.5, 1.0, 1.0], [0.0; 3], Anim::VexWing { left: true }, 1.0, Some(body));
+    b.cube_m(wing_l, 0, (16.0, 14.0), [0.0, 0.0, 0.0], [0.0, 5.0, 8.0], NONE);
+    let wing_r = b.part_ext([-0.5, 1.0, 1.0], [0.0; 3], Anim::VexWing { left: false }, 1.0, Some(body));
+    b.cube(wing_r, 0, (16.0, 14.0), [0.0, 0.0, 0.0], [0.0, 5.0, 8.0], NONE);
     b.finish(1.0)
 }
 
-/// `PhantomModel`: swept body + two-segment wings + tail, tilted head.
+/// `PhantomModel`: swept body + two-segment flapping wings + swaying tail,
+/// tilted head. The tips hang off the bases (runtime hierarchy) exactly as
+/// vanilla bends them.
 fn phantom() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::rot([-0.1, 0.0, 0.0], [0.0, 0.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 8.0), [-3.0, -2.0, -8.0], [5.0, 3.0, 9.0], 0.0, false, &[body]);
-    let tail_base = Fold::at([0.0, -2.0, 1.0]);
-    b.cube_f(STATIC_PART, 0, (3.0, 20.0), [-2.0, 0.0, 0.0], [3.0, 2.0, 6.0], 0.0, false, &[tail_base, body]);
-    b.cube_f(STATIC_PART, 0, (4.0, 29.0), [-1.0, 0.0, 0.0], [1.0, 1.0, 6.0], 0.0, false, &[Fold::at([0.0, 0.5, 6.0]), tail_base, body]);
-    let wl = Fold::rot([0.0, 0.0, 0.1], [2.0, -2.0, -8.0]);
-    b.cube_f(STATIC_PART, 0, (23.0, 12.0), [0.0, 0.0, 0.0], [6.0, 2.0, 9.0], 0.0, false, &[wl, body]);
-    b.cube_f(STATIC_PART, 0, (16.0, 24.0), [0.0, 0.0, 0.0], [13.0, 1.0, 9.0], 0.0, false, &[Fold::rot([0.0, 0.0, 0.1], [6.0, 0.0, 0.0]), wl, body]);
-    let wr = Fold::rot([0.0, 0.0, -0.1], [-3.0, -2.0, -8.0]);
-    b.cube_f(STATIC_PART, 0, (23.0, 12.0), [-6.0, 0.0, 0.0], [6.0, 2.0, 9.0], 0.0, true, &[wr, body]);
-    b.cube_f(STATIC_PART, 0, (16.0, 24.0), [-13.0, 0.0, 0.0], [13.0, 1.0, 9.0], 0.0, true, &[Fold::rot([0.0, 0.0, -0.1], [-6.0, 0.0, 0.0]), wr, body]);
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-4.0, -2.0, -5.0], [7.0, 3.0, 5.0], 0.0, false, &[Fold::rot([0.2, 0.0, 0.0], [0.0, 1.0, -7.0]), body]);
+    let body = b.part_ext([0.0, 0.0, 0.0], [-0.1, 0.0, 0.0], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 8.0), [-3.0, -2.0, -8.0], [5.0, 3.0, 9.0], NONE);
+    b.cube_f(body, 0, (0.0, 0.0), [-4.0, -2.0, -5.0], [7.0, 3.0, 5.0], 0.0, false, &[Fold::rot([0.2, 0.0, 0.0], [0.0, 1.0, -7.0])]);
+    let tail_base = b.part_ext([0.0, -2.0, 1.0], [0.0; 3], Anim::PhantomTail, 1.0, Some(body));
+    b.cube(tail_base, 0, (3.0, 20.0), [-2.0, 0.0, 0.0], [3.0, 2.0, 6.0], NONE);
+    let tail_tip = b.part_ext([0.0, 0.5, 6.0], [0.0; 3], Anim::PhantomTail, 1.0, Some(tail_base));
+    b.cube(tail_tip, 0, (4.0, 29.0), [-1.0, 0.0, 0.0], [1.0, 1.0, 6.0], NONE);
+    let wl = b.part_ext([2.0, -2.0, -8.0], [0.0; 3], Anim::PhantomWing { left: true }, 1.0, Some(body));
+    b.cube(wl, 0, (23.0, 12.0), [0.0, 0.0, 0.0], [6.0, 2.0, 9.0], NONE);
+    let wlt = b.part_ext([6.0, 0.0, 0.0], [0.0; 3], Anim::PhantomWing { left: true }, 1.0, Some(wl));
+    b.cube(wlt, 0, (16.0, 24.0), [0.0, 0.0, 0.0], [13.0, 1.0, 9.0], NONE);
+    let wr = b.part_ext([-3.0, -2.0, -8.0], [0.0; 3], Anim::PhantomWing { left: false }, 1.0, Some(body));
+    b.cube_m(wr, 0, (23.0, 12.0), [-6.0, 0.0, 0.0], [6.0, 2.0, 9.0], NONE);
+    let wrt = b.part_ext([-6.0, 0.0, 0.0], [0.0; 3], Anim::PhantomWing { left: false }, 1.0, Some(wr));
+    b.cube_m(wrt, 0, (16.0, 24.0), [-13.0, 0.0, 0.0], [13.0, 1.0, 9.0], NONE);
     b.finish(1.0)
 }
 
@@ -1453,13 +1541,19 @@ fn shulker() -> Model {
 }
 
 /// Segment-chain crawlers (`SilverfishModel` / `EndermiteModel`): boxes
-/// centered on a marching z placement.
-fn segmented(sizes: &[[f32; 3]], texs: &[(f32, f32)]) -> (ModelBuilder, Vec<f32>) {
+/// centered on a marching z placement, each segment a part on the vanilla
+/// wiggle (`ry`/`tx` amplitudes differ between the two species).
+fn segmented(sizes: &[[f32; 3]], texs: &[(f32, f32)], ry: f32, tx: f32) -> (ModelBuilder, Vec<f32>) {
     let mut b = ModelBuilder::new();
     let mut z = Vec::with_capacity(sizes.len());
     let mut placement = -3.5f32;
     for (i, s) in sizes.iter().enumerate() {
-        b.cube_f(STATIC_PART, 0, texs[i], [s[0] * -0.5, 0.0, s[2] * -0.5], *s, 0.0, false, &[Fold::at([0.0, 24.0 - s[1], placement])]);
+        let p = b.part(
+            [0.0, 24.0 - s[1], placement],
+            Anim::Crawl { i: i as u8, ry, tx, with_x: true },
+            1.0,
+        );
+        b.cube(p, 0, texs[i], [s[0] * -0.5, 0.0, s[2] * -0.5], *s, NONE);
         z.push(placement);
         if i + 1 < sizes.len() {
             placement += (s[2] + sizes[i + 1][2]) * 0.5;
@@ -1474,37 +1568,37 @@ fn silverfish() -> Model {
         [2.0, 2.0, 3.0], [2.0, 1.0, 2.0], [1.0, 1.0, 2.0],
     ];
     let texs = [(0.0, 0.0), (0.0, 4.0), (0.0, 9.0), (0.0, 16.0), (0.0, 22.0), (11.0, 0.0), (13.0, 4.0)];
-    let (mut b, z) = segmented(&sizes, &texs);
-    b.cube_f(STATIC_PART, 0, (20.0, 0.0), [-5.0, 0.0, -1.5], [10.0, 8.0, 3.0], 0.0, false, &[Fold::at([0.0, 16.0, z[2]])]);
-    b.cube_f(STATIC_PART, 0, (20.0, 11.0), [-3.0, 0.0, -1.5], [6.0, 4.0, 3.0], 0.0, false, &[Fold::at([0.0, 20.0, z[4]])]);
-    b.cube_f(STATIC_PART, 0, (20.0, 18.0), [-3.0, 0.0, -1.5], [6.0, 5.0, 2.0], 0.0, false, &[Fold::at([0.0, 19.0, z[1]])]);
+    let (mut b, z) = segmented(&sizes, &texs, 0.05, 0.2);
+    // Wing layers copy their source segment's wiggle (layer 0 yRot-only —
+    // vanilla doesn't move its x).
+    let l0 = b.part([0.0, 16.0, z[2]], Anim::Crawl { i: 2, ry: 0.05, tx: 0.2, with_x: false }, 1.0);
+    b.cube(l0, 0, (20.0, 0.0), [-5.0, 0.0, -1.5], [10.0, 8.0, 3.0], NONE);
+    let l1 = b.part([0.0, 20.0, z[4]], Anim::Crawl { i: 4, ry: 0.05, tx: 0.2, with_x: true }, 1.0);
+    b.cube(l1, 0, (20.0, 11.0), [-3.0, 0.0, -1.5], [6.0, 4.0, 3.0], NONE);
+    let l2 = b.part([0.0, 19.0, z[1]], Anim::Crawl { i: 1, ry: 0.05, tx: 0.2, with_x: true }, 1.0);
+    b.cube(l2, 0, (20.0, 18.0), [-3.0, 0.0, -1.5], [6.0, 5.0, 2.0], NONE);
     b.finish(1.0)
 }
 
 fn endermite() -> Model {
     let sizes: [[f32; 3]; 4] = [[4.0, 3.0, 2.0], [6.0, 4.0, 5.0], [3.0, 3.0, 1.0], [1.0, 2.0, 1.0]];
     let texs = [(0.0, 0.0), (0.0, 5.0), (0.0, 14.0), (0.0, 18.0)];
-    let (b, _) = segmented(&sizes, &texs);
+    let (b, _) = segmented(&sizes, &texs, 0.01, 0.1);
     b.finish(1.0)
 }
 
-/// `BlazeModel`: head + 12 orbiting rods in three rings at their rest
-/// positions.
+/// `BlazeModel`: head + 12 rods in three counter-rotating rings — the rod
+/// positions are fully animated (vanilla repositions them every frame).
 fn blaze() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
     b.cube(head, 0, (0.0, 0.0), [-4.0, -4.0, -4.0], [8.0, 8.0, 8.0], NONE);
-    let mut place = |angle0: f32, radius: f32, range: std::ops::Range<usize>, base_y: f32, y_freq: f32| {
-        let mut angle = angle0;
-        for i in range {
-            let off = [angle.cos() * radius, base_y + (i as f32 * y_freq).cos(), angle.sin() * radius];
-            b.cube_f(STATIC_PART, 0, (0.0, 16.0), [0.0, 0.0, 0.0], [2.0, 8.0, 2.0], 0.0, false, &[Fold::at(off)]);
-            angle += FRAC_PI_2;
+    for ring in 0..3u8 {
+        for idx in 0..4u8 {
+            let p = b.part([0.0; 3], Anim::BlazeRod { ring, idx }, 1.0);
+            b.cube(p, 0, (0.0, 16.0), [0.0, 0.0, 0.0], [2.0, 8.0, 2.0], NONE);
         }
-    };
-    place(0.0, 9.0, 0..4, -2.0, 0.5);
-    place(PI / 4.0, 7.0, 4..8, 2.0, 0.5);
-    place(0.47123894, 5.0, 8..12, 11.0, 0.75);
+    }
     b.finish(1.0)
 }
 
@@ -1540,11 +1634,12 @@ fn ghast() -> Model {
     let mut b = ModelBuilder::new();
     b.cube(STATIC_PART, 0, (0.0, 0.0), [-8.0, -8.0, -8.0], [16.0, 16.0, 16.0], &[Fold::at([0.0, 17.6, 0.0])]);
     let mut rng = JavaRandom::new(1660);
-    for i in 0..9i32 {
+    for i in 0..9u8 {
         let xo = ((i % 3) as f32 - (i / 3 % 2) as f32 * 0.5 + 0.25 - 1.0) * 5.0;
         let yo = ((i / 3) as f32 - 1.0) * 5.0;
         let len = (rng.next_int(7) + 8) as f32;
-        b.cube(STATIC_PART, 0, (0.0, 0.0), [-1.0, 0.0, -1.0], [2.0, len, 2.0], &[Fold::at([xo, 24.6, yo])]);
+        let p = b.part([xo, 24.6, yo], Anim::GhastTentacle { i }, 1.0);
+        b.cube(p, 0, (0.0, 0.0), [-1.0, 0.0, -1.0], [2.0, len, 2.0], NONE);
     }
     b.finish(4.5)
 }
@@ -1710,11 +1805,17 @@ fn bee() -> Model {
     b.cube_f(STATIC_PART, 0, (26.0, 7.0), [0.0, -1.0, 5.0], [0.0, 1.0, 2.0], 0.0, false, &[bone]);
     b.cube_f(STATIC_PART, 0, (2.0, 0.0), [1.5, -2.0, -3.0], [1.0, 2.0, 3.0], 0.0, false, &[Fold::at([0.0, -2.0, -5.0]), bone]);
     b.cube_f(STATIC_PART, 0, (2.0, 3.0), [-2.5, -2.0, -3.0], [1.0, 2.0, 3.0], 0.0, false, &[Fold::at([0.0, -2.0, -5.0]), bone]);
-    b.cube_f(STATIC_PART, 0, (0.0, 18.0), [-9.0, 0.0, 0.0], [9.0, 0.0, 6.0], 0.001, false, &[Fold::rot([0.0, -0.2618, 0.0], [-1.5, -4.0, -3.0]), bone]);
-    b.cube_f(STATIC_PART, 0, (0.0, 18.0), [0.0, 0.0, 0.0], [9.0, 0.0, 6.0], 0.001, true, &[Fold::rot([0.0, 0.2618, 0.0], [1.5, -4.0, -3.0]), bone]);
-    b.cube_f(STATIC_PART, 0, (26.0, 1.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[Fold::at([1.5, 3.0, -2.0]), bone]);
-    b.cube_f(STATIC_PART, 0, (26.0, 3.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[Fold::at([1.5, 3.0, 0.0]), bone]);
-    b.cube_f(STATIC_PART, 0, (26.0, 5.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[Fold::at([1.5, 3.0, 2.0]), bone]);
+    // Airborne pose (our bees always hover): wings flutter about Z with
+    // yRot reset to 0 (vanilla overrides the ±0.2618 rest splay in
+    // flight), legs tucked at π/4.
+    let wing_r = b.part([-1.5, 15.0, -3.0], Anim::BeeWing { left: false }, 1.0);
+    b.cube_g(wing_r, 0, (0.0, 18.0), [-9.0, 0.0, 0.0], [9.0, 0.0, 6.0], 0.001, NONE);
+    let wing_l = b.part([1.5, 15.0, -3.0], Anim::BeeWing { left: true }, 1.0);
+    b.cube_f(wing_l, 0, (0.0, 18.0), [0.0, 0.0, 0.0], [9.0, 0.0, 6.0], 0.001, true, NONE);
+    let legs = Fold::rot([PI / 4.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (26.0, 1.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[legs, Fold::at([1.5, 3.0, -2.0]), bone]);
+    b.cube_f(STATIC_PART, 0, (26.0, 3.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[legs, Fold::at([1.5, 3.0, 0.0]), bone]);
+    b.cube_f(STATIC_PART, 0, (26.0, 5.0), [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], 0.0, false, &[legs, Fold::at([1.5, 3.0, 2.0]), bone]);
     b.finish(1.0)
 }
 
@@ -1818,9 +1919,11 @@ fn dolphin() -> Model {
     b.cube_f(STATIC_PART, 0, (51.0, 0.0), [-0.5, 0.0, 8.0], [1.0, 4.0, 5.0], 0.0, false, &[Fold::rot([PI / 3.0, 0.0, 0.0], [0.0, 0.0, 0.0]), body]);
     b.cube_f(STATIC_PART, 0, (48.0, 20.0), [-0.5, -4.0, 0.0], [1.0, 4.0, 7.0], 0.0, true, &[Fold::rot([PI / 3.0, 0.0, PI * 2.0 / 3.0], [2.0, -2.0, 4.0]), body]);
     b.cube_f(STATIC_PART, 0, (48.0, 20.0), [-0.5, -4.0, 0.0], [1.0, 4.0, 7.0], 0.0, false, &[Fold::rot([PI / 3.0, 0.0, -PI * 2.0 / 3.0], [-2.0, -2.0, 4.0]), body]);
-    let tail = Fold::rot([-0.10471976, 0.0, 0.0], [0.0, -2.5, 11.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 19.0), [-2.0, -2.5, 0.0], [4.0, 5.0, 11.0], 0.0, false, &[tail, body]);
-    b.cube_f(STATIC_PART, 0, (19.0, 20.0), [-5.0, -0.5, 0.0], [10.0, 1.0, 6.0], 0.0, false, &[Fold::at([0.0, 0.0, 9.0]), tail, body]);
+    // Two-segment tail: both sway with the swim stroke, fin harder.
+    let tail = b.part_ext([0.0, 19.5, 6.0], [-0.10471976, 0.0, 0.0], Anim::DolphinTail { k: 0.1 }, 1.0, Option::None);
+    b.cube(tail, 0, (0.0, 19.0), [-2.0, -2.5, 0.0], [4.0, 5.0, 11.0], NONE);
+    let tail_fin = b.part_ext([0.0, 0.0, 9.0], [0.0; 3], Anim::DolphinTail { k: 0.2 }, 1.0, Some(tail));
+    b.cube(tail_fin, 0, (19.0, 20.0), [-5.0, -0.5, 0.0], [10.0, 1.0, 6.0], NONE);
     let head = Fold::at([0.0, -4.0, -3.0]);
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-4.0, -3.0, -3.0], [8.0, 7.0, 6.0], 0.0, false, &[head, body]);
     b.cube_f(STATIC_PART, 0, (0.0, 13.0), [-1.0, 2.0, -7.0], [2.0, 2.0, 4.0], 0.0, false, &[head, body]);
@@ -1854,7 +1957,8 @@ fn cod() -> Model {
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.0, -2.0, -1.0], [2.0, 3.0, 1.0], 0.0, false, &[Fold::at([0.0, 22.0, -3.0])]);
     b.cube_f(STATIC_PART, 0, (22.0, 1.0), [-2.0, 0.0, -1.0], [2.0, 0.0, 2.0], 0.0, false, &[Fold::rot([0.0, 0.0, -PI / 4.0], [-1.0, 23.0, 0.0])]);
     b.cube_f(STATIC_PART, 0, (22.0, 4.0), [0.0, 0.0, -1.0], [2.0, 0.0, 2.0], 0.0, false, &[Fold::rot([0.0, 0.0, PI / 4.0], [1.0, 23.0, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (22.0, 3.0), [0.0, -2.0, 0.0], [0.0, 4.0, 4.0], 0.0, false, &[Fold::at([0.0, 22.0, 7.0])]);
+    let tail = b.part([0.0, 22.0, 7.0], Anim::FishTail { amp: 0.45, speed: 0.6 }, 1.0);
+    b.cube(tail, 0, (22.0, 3.0), [0.0, -2.0, 0.0], [0.0, 4.0, 4.0], NONE);
     b.cube_f(STATIC_PART, 0, (20.0, -6.0), [0.0, -1.0, -1.0], [0.0, 1.0, 6.0], 0.0, false, &[Fold::at([0.0, 20.0, 0.0])]);
     b.finish(1.0)
 }
@@ -1862,13 +1966,14 @@ fn cod() -> Model {
 fn salmon() -> Model {
     let mut b = ModelBuilder::new();
     let front = Fold::at([0.0, 20.0, -7.2]);
-    let back = Fold::at([0.0, 20.0, 0.8]);
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.5, -2.5, 0.0], [3.0, 5.0, 8.0], 0.0, false, &[front]);
-    b.cube_f(STATIC_PART, 0, (0.0, 13.0), [-1.5, -2.5, 0.0], [3.0, 5.0, 8.0], 0.0, false, &[back]);
+    // The whole back half (+ its fins) sways while swimming.
+    let back = b.part([0.0, 20.0, 0.8], Anim::FishTail { amp: 0.25, speed: 0.6 }, 1.0);
+    b.cube(back, 0, (0.0, 13.0), [-1.5, -2.5, 0.0], [3.0, 5.0, 8.0], NONE);
+    b.cube_f(back, 0, (20.0, 10.0), [0.0, -2.5, 0.0], [0.0, 5.0, 6.0], 0.0, false, &[Fold::at([0.0, 0.0, 8.0])]);
+    b.cube_f(back, 0, (0.0, 2.0), [0.0, 0.0, 0.0], [0.0, 2.0, 4.0], 0.0, false, &[Fold::at([0.0, -4.5, -1.0])]);
     b.cube_f(STATIC_PART, 0, (22.0, 0.0), [-1.0, -2.0, -3.0], [2.0, 4.0, 3.0], 0.0, false, &[front]);
-    b.cube_f(STATIC_PART, 0, (20.0, 10.0), [0.0, -2.5, 0.0], [0.0, 5.0, 6.0], 0.0, false, &[Fold::at([0.0, 0.0, 8.0]), back]);
     b.cube_f(STATIC_PART, 0, (2.0, 1.0), [0.0, 0.0, 0.0], [0.0, 2.0, 3.0], 0.0, false, &[Fold::at([0.0, -4.5, 5.0]), front]);
-    b.cube_f(STATIC_PART, 0, (0.0, 2.0), [0.0, 0.0, 0.0], [0.0, 2.0, 4.0], 0.0, false, &[Fold::at([0.0, -4.5, -1.0]), back]);
     b.cube_f(STATIC_PART, 0, (-4.0, 0.0), [-2.0, 0.0, 0.0], [2.0, 0.0, 2.0], 0.0, false, &[Fold::rot([0.0, 0.0, -PI / 4.0], [-1.5, 21.5, -7.2])]);
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [0.0, 0.0, 0.0], [2.0, 0.0, 2.0], 0.0, false, &[Fold::rot([0.0, 0.0, PI / 4.0], [1.5, 21.5, -7.2])]);
     b.finish(1.0)
@@ -1878,8 +1983,10 @@ fn salmon() -> Model {
 fn pufferfish() -> Model {
     let mut b = ModelBuilder::new();
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], 0.0, false, &[Fold::at([0.0, 22.0, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (24.0, 0.0), [-2.0, 0.0, -1.0], [2.0, 1.0, 2.0], 0.0, false, &[Fold::at([-4.0, 15.0, -2.0])]);
-    b.cube_f(STATIC_PART, 0, (24.0, 3.0), [0.0, 0.0, -1.0], [2.0, 1.0, 2.0], 0.0, false, &[Fold::at([4.0, 15.0, -2.0])]);
+    let fin_r = b.part([-4.0, 15.0, -2.0], Anim::PufferFin { left: false }, 1.0);
+    b.cube(fin_r, 0, (24.0, 0.0), [-2.0, 0.0, -1.0], [2.0, 1.0, 2.0], NONE);
+    let fin_l = b.part([4.0, 15.0, -2.0], Anim::PufferFin { left: true }, 1.0);
+    b.cube(fin_l, 0, (24.0, 3.0), [0.0, 0.0, -1.0], [2.0, 1.0, 2.0], NONE);
     let spikes: [((f32, f32), [f32; 3], [f32; 3], [f32; 3], [f32; 3]); 10] = [
         ((15.0, 17.0), [-4.0, -1.0, 0.0], [8.0, 1.0, 0.0], [PI / 4.0, 0.0, 0.0], [0.0, 14.0, -4.0]),
         ((14.0, 16.0), [-4.0, -1.0, 0.0], [8.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.0, 14.0, 0.0]),
@@ -1902,7 +2009,8 @@ fn pufferfish() -> Model {
 fn tropical_fish() -> Model {
     let mut b = ModelBuilder::new();
     b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.0, -1.5, -3.0], [2.0, 3.0, 6.0], 0.0, false, &[Fold::at([0.0, 22.0, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (22.0, -6.0), [0.0, -1.5, 0.0], [0.0, 3.0, 6.0], 0.0, false, &[Fold::at([0.0, 22.0, 3.0])]);
+    let tail = b.part([0.0, 22.0, 3.0], Anim::FishTail { amp: 0.45, speed: 0.6 }, 1.0);
+    b.cube(tail, 0, (22.0, -6.0), [0.0, -1.5, 0.0], [0.0, 3.0, 6.0], NONE);
     b.cube_f(STATIC_PART, 0, (2.0, 16.0), [-2.0, -1.0, 0.0], [2.0, 2.0, 0.0], 0.0, false, &[Fold::rot([0.0, PI / 4.0, 0.0], [-1.0, 22.5, 0.0])]);
     b.cube_f(STATIC_PART, 0, (2.0, 12.0), [0.0, -1.0, 0.0], [2.0, 2.0, 0.0], 0.0, false, &[Fold::rot([0.0, -PI / 4.0, 0.0], [1.0, 22.5, 0.0])]);
     b.cube_f(STATIC_PART, 0, (10.0, -5.0), [0.0, -3.0, 0.0], [0.0, 3.0, 6.0], 0.0, false, &[Fold::at([0.0, 20.5, -3.0])]);
@@ -2100,13 +2208,13 @@ fn iron_golem() -> Model {
     let body = Fold::at([0.0, -7.0, 0.0]);
     b.cube_f(STATIC_PART, 0, (0.0, 40.0), [-9.0, -2.0, -6.0], [18.0, 12.0, 11.0], 0.0, false, &[body]);
     b.cube_f(STATIC_PART, 0, (0.0, 70.0), [-4.5, 10.0, -3.0], [9.0, 5.0, 6.0], 0.5, false, &[body]);
-    let arm_r = b.part([0.0, -7.0, 0.0], Anim::ArmRight, 0.5);
+    let arm_r = b.part([0.0, -7.0, 0.0], Anim::GolemArmRight, 1.0);
     b.cube(arm_r, 0, (60.0, 21.0), [-13.0, -2.5, -3.0], [4.0, 30.0, 6.0], NONE);
-    let arm_l = b.part([0.0, -7.0, 0.0], Anim::ArmLeft, 0.5);
+    let arm_l = b.part([0.0, -7.0, 0.0], Anim::GolemArmLeft, 1.0);
     b.cube(arm_l, 0, (60.0, 58.0), [9.0, -2.5, -3.0], [4.0, 30.0, 6.0], NONE);
-    let leg_r = b.part([-4.0, 11.0, 0.0], Anim::LegRight, 1.0);
+    let leg_r = b.part([-4.0, 11.0, 0.0], Anim::GolemLegRight, 1.0);
     b.cube(leg_r, 0, (37.0, 0.0), [-3.5, -3.0, -3.0], [6.0, 16.0, 5.0], NONE);
-    let leg_l = b.part([5.0, 11.0, 0.0], Anim::LegLeft, 1.0);
+    let leg_l = b.part([5.0, 11.0, 0.0], Anim::GolemLegLeft, 1.0);
     b.cube_m(leg_l, 0, (60.0, 0.0), [-3.5, -3.0, -3.0], [6.0, 16.0, 5.0], NONE);
     b.finish(1.0)
 }
@@ -2122,8 +2230,11 @@ fn allay() -> Model {
     b.cube_f(STATIC_PART, 0, (0.0, 16.0), [-1.5, 0.0, -1.0], [3.0, 5.0, 2.0], -0.2, false, &[body, root]);
     b.cube_f(STATIC_PART, 0, (23.0, 0.0), [-0.75, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, false, &[Fold::at([-1.75, 0.5, 0.0]), body, root]);
     b.cube_f(STATIC_PART, 0, (23.0, 6.0), [-0.25, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, false, &[Fold::at([1.75, 0.5, 0.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], 0.0, false, &[Fold::at([0.5, 0.0, 0.6]), body, root]);
-    b.cube_f(STATIC_PART, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], 0.0, false, &[Fold::at([-0.5, 0.0, 0.6]), body, root]);
+    // Wings hover-flap (allay wing pivots: root+body+(±0.5, 0, 0.6)).
+    let wing_l = b.part([0.5, 19.5, 0.6], Anim::AllayWing { left: true }, 1.0);
+    b.cube(wing_l, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], NONE);
+    let wing_r = b.part([-0.5, 19.5, 0.6], Anim::AllayWing { left: false }, 1.0);
+    b.cube(wing_r, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], NONE);
     b.finish(1.0)
 }
 
@@ -2295,8 +2406,12 @@ fn wither() -> Model {
     b.cube_f(STATIC_PART, 0, (12.0, 22.0), [0.0, 0.0, 0.0], [3.0, 6.0, 3.0], 0.0, false, &[tail]);
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
     b.cube(head, 0, (0.0, 0.0), [-4.0, -4.0, -4.0], [8.0, 8.0, 8.0], NONE);
-    b.cube_f(STATIC_PART, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], 0.0, false, &[Fold::at([-8.0, 4.0, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], 0.0, false, &[Fold::at([10.0, 4.0, 0.0])]);
+    // Side heads track the look too (vanilla gives them independent
+    // targets; sharing the net yaw reads right).
+    let head_r = b.part([-8.0, 4.0, 0.0], Anim::Head, 1.0);
+    b.cube(head_r, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], NONE);
+    let head_l = b.part([10.0, 4.0, 0.0], Anim::Head, 1.0);
+    b.cube(head_l, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], NONE);
     b.finish(1.0)
 }
 

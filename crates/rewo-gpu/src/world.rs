@@ -824,14 +824,16 @@ impl WorldRenderer {
     }
 
     /// Rebuild this frame's entity geometry (no-op until `init_entities`).
+    /// `time` (seconds) drives the ambient mob animations.
     pub fn set_entities(
         &mut self,
         draws: &[EntityDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
+        time: f32,
     ) {
         if let Some(pass) = self.entities.as_mut() {
-            pass.set_draws(draws, cam_right, cam_up);
+            pass.set_draws(draws, cam_right, cam_up, time);
         }
     }
 

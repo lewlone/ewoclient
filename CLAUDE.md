@@ -1665,7 +1665,15 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   auto-detected as color-check-N/A where vanilla reuses texels across
   faces — run it after any mob/UV change) + `rewo mobshot --out` contact
   sheet + `--only` closeups + live summon shots; demo PNG stayed
-  byte-identical, bench flat, 0 VUIDs.
+  byte-identical, bench flat, 0 VUIDs. **Animations: every procedural
+  vanilla `setupAnim` is formula-exact** (spider leg waves, golem
+  triangle-wave limbs, blaze rod orbits, ghast/squid tentacles,
+  phantom/allay/vex/bee wing flaps, fish tails, wolf tail wag, silverfish
+  wiggle, wither side heads) — parts have base rotations + a parent
+  hierarchy + pivot-motion anims; `set_entities` takes a time param
+  (`ageInTicks` = s·20); keyframe-rigged mobs (frog/camel/sniffer/bat/
+  dragon-flight/creaking…) need an AnimationDefinition player and stay
+  posed.
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 

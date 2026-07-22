@@ -589,7 +589,7 @@ fn run_headless(
     }
     world_renderer.set_selection(hit.map(|h| h.block));
     let (cr, cu) = camera_basis(yaw, pitch);
-    world_renderer.set_entities(&draws, cr, cu);
+    world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_camera(eye.to_array());
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
@@ -928,7 +928,8 @@ impl LiveApp {
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
         let draws = collect_entities(session, &self.etypes, alpha);
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
-        state.world_renderer.set_entities(&draws, cr, cu);
+        let anim_time = self.started.elapsed().as_secs_f32();
+        state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
         let extent = state.renderer.swapchain.extent;

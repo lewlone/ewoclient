@@ -60,6 +60,14 @@ pub struct MobshotArgs {
     /// closer 3/4 view — the detail-inspection artifact.
     #[arg(long)]
     only: Option<String>,
+    /// Sheet mode: ambient-animation time in seconds (wing flutter, rod
+    /// orbits, tentacle sway). The --check gate always uses 0.
+    #[arg(long, default_value_t = 0.0)]
+    time: f32,
+    /// Sheet mode: walk pose as "swing,amount" (drives leg/arm gaits,
+    /// spider leg waves, tail wags). The --check gate always uses 0.
+    #[arg(long)]
+    walk: Option<String>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -195,10 +203,10 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
 
             // Background-only pass, then the mob; classify only changed
             // pixels so sky/fog/chart can't leak into the counts.
-            wr.set_entities(&[], right, upv);
+            wr.set_entities(&[], right, upv, 0.0);
             off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
             let bg = off.read_rgba(gpu)?;
-            wr.set_entities(&[neutral_draw(kind)], right, upv);
+            wr.set_entities(&[neutral_draw(kind)], right, upv, 0.0);
             off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
             let img = off.read_rgba(gpu)?;
             if let Some(dir) = &args.out_dir {
@@ -392,11 +400,21 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let cols = 10usize;
     let (sx, sz) = (3.8f32, 6.5f32);
     let rows = kinds.len().div_ceil(cols);
+    let (walk_swing, walk_amt) = args
+        .walk
+        .as_deref()
+        .and_then(|s| {
+            let mut it = s.split(',');
+            Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+        })
+        .unwrap_or((0.0, 0.0));
     let draws: Vec<EntityDraw<'_>> = kinds
         .iter()
         .enumerate()
         .map(|(i, k)| {
             let mut d = neutral_draw(*k);
+            d.limb_swing = walk_swing;
+            d.limb_amount = walk_amt;
             let (row, col) = (i / cols, i % cols);
             let row_n = ((kinds.len() - row * cols).min(cols)) as f32;
             let stagger = if row % 2 == 1 { sx * 0.5 } else { 0.0 };
@@ -430,7 +448,7 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let vp = (proj * view).to_cols_array_2d();
     let right = dir.cross(Vec3::Y).normalize_or_zero().to_array();
     let up = right_up(dir);
-    wr.set_entities(&draws, right, up);
+    wr.set_entities(&draws, right, up, args.time);
 
     let ring = OverlayRing::default();
     let draw = overlay_offscreen(&ring);

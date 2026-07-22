@@ -486,35 +486,43 @@ impl EntityPass {
             .collect()
     }
 
-    /// The neutral-pose (yaw 0, origin, no walk/look) world-space quads of a
-    /// mob, with each quad's vanilla face label and world normal — the
-    /// geometric ground truth `rewo mobshot --check` compares renders
-    /// against. Uses the same transform as `emit_model` by construction.
+    /// The rest-pose (yaw 0, origin, no walk/look, time 0) world-space
+    /// quads of a mob, with each quad's vanilla face label and world normal
+    /// — the geometric ground truth `rewo mobshot --check` compares renders
+    /// against. Runs the SAME `part_transforms` as `emit_model` (with the
+    /// same zeroed inputs the check renders with), so the prediction can
+    /// never disagree with the renderer's math.
     pub fn neutral_quads(
         &self,
         kind: EntityModelKind,
     ) -> Option<Vec<([[f32; 3]; 4], Facing, [f32; 3])>> {
         let model = self.models[kind.index()].as_ref()?;
         let s = model.scale;
+        let ctx = AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+        };
+        let xf = part_transforms(model, &ctx);
         Some(
             model
                 .quads
                 .iter()
                 .map(|q| {
-                    let part = &model.parts[q.part as usize];
+                    let (m, o) = &xf[q.part as usize];
                     let mut pos = [[0f32; 3]; 4];
                     for (i, c) in q.pos.iter().enumerate() {
-                        let v = [
-                            c[0] + part.pivot[0],
-                            c[1] + part.pivot[1],
-                            c[2] + part.pivot[2],
-                        ];
+                        let r = mat_apply(m, *c);
+                        let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
                         // model → entity local, then the yaw-0 rotY(180°).
                         let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
                         pos[i] = [-e[0] * s, e[1] * s, -e[2] * s];
                     }
                     // Normals ride the same rotations (no translate).
-                    let n = q.normal;
+                    let n = mat_apply(m, q.normal);
                     (pos, q.facing, [n[0], -n[1], -n[2]])
                 })
                 .collect(),
@@ -522,12 +530,15 @@ impl EntityPass {
     }
 
     /// Rebuild this frame's vertex soup. `cam_right`/`cam_up` orient the
-    /// nametag billboards (world-space unit vectors from the camera).
+    /// nametag billboards (world-space unit vectors from the camera);
+    /// `time` (seconds) drives the ambient animations (wing flutter, rod
+    /// orbits, tentacle sway — vanilla's `ageInTicks` = `time · 20`).
     pub fn set_draws(
         &mut self,
         draws: &[EntityDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
+        time: f32,
     ) {
         self.cursor = (self.cursor + 1) % RING;
         let mut verts: Vec<Vertex> = Vec::with_capacity(1024);
@@ -536,7 +547,7 @@ impl EntityPass {
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
             if let Some(model) = &self.models[d.kind.index()] {
-                self.emit_model(&mut verts, d, model);
+                self.emit_model(&mut verts, d, model, time);
                 continue;
             }
             let base = d.color;
@@ -587,51 +598,36 @@ impl EntityPass {
     /// `rotY(180° − yaw) · scale(−1,−1,1) · translate(0,−1.501,0)` — scaled
     /// px→blocks and placed at the entity's feet. Texels ride the
     /// alpha-test (`discard`) path.
-    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, model: &MobModel) {
-        use mobs::Anim;
-        use std::f32::consts::PI;
+    fn emit_model(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        time: f32,
+    ) {
         let theta = (180.0 - d.yaw).to_radians();
         let (st, ct) = theta.sin_cos();
-        let pitch = d.pitch.to_radians();
-        // Vanilla head yaw is net-of-body (`netHeadYaw`), rotated about the
-        // head part's own pivot.
-        let net = wrap_degrees(d.head_yaw - d.yaw).to_radians();
-        let f = d.limb_swing * 0.6662;
-        let amt = d.limb_amount;
-        // Per-part rotation matrices from the vanilla swing formulas
-        // (arms ±2.0·0.5, legs ±1.4, diagonal quad gait; `amp` halves the
-        // swing for villager/enderman limbs).
-        let mats: Vec<[[f32; 3]; 3]> = model
-            .parts
-            .iter()
-            .map(|p| match p.anim {
-                Anim::None => IDENTITY3,
-                Anim::Head => mat_mul(rot_y(net), rot_x(pitch)),
-                Anim::ArmRight => rot_x((f + PI).cos() * 2.0 * amt * 0.5 * p.amp),
-                Anim::ArmLeft => rot_x(f.cos() * 2.0 * amt * 0.5 * p.amp),
-                Anim::LegRight | Anim::QuadHindRight | Anim::QuadFrontLeft => {
-                    rot_x(f.cos() * 1.4 * amt * p.amp)
-                }
-                Anim::LegLeft | Anim::QuadHindLeft | Anim::QuadFrontRight => {
-                    rot_x((f + PI).cos() * 1.4 * amt * p.amp)
-                }
-            })
-            .collect();
+        let ctx = AnimCtx {
+            pitch: d.pitch.to_radians(),
+            // Vanilla head yaw is net-of-body (`netHeadYaw`), rotated about
+            // the head part's own pivot.
+            net: wrap_degrees(d.head_yaw - d.yaw).to_radians(),
+            f: d.limb_swing * 0.6662,
+            pos: d.limb_swing,
+            amt: d.limb_amount,
+            age: time * 20.0,
+        };
+        let xf = part_transforms(model, &ctx);
         let s = model.scale;
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
-            let part = &model.parts[q.part as usize];
-            let m = &mats[q.part as usize];
+            let (m, o) = &xf[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
             for (i, corner) in q.pos.iter().enumerate() {
                 let r = mat_apply(m, *corner);
-                let v = [
-                    r[0] + part.pivot[0],
-                    r[1] + part.pivot[1],
-                    r[2] + part.pivot[2],
-                ];
+                let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
                 // model → entity local (px): scale(−1,−1,1) after the
                 // −1.501-block translate.
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
@@ -867,9 +863,173 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
     [v[0] / l, v[1] / l, v[2] / l]
 }
 
+// ---- per-part animation (vanilla setupAnim formulas) ---------------------
+
+/// Per-frame animation inputs, in vanilla's units: look angles in radians,
+/// `f` = walkAnimationPos·0.6662, `pos` = raw walkAnimationPos, `amt` =
+/// walkAnimationSpeed, `age` = ageInTicks (wall-clock seconds × 20).
+struct AnimCtx {
+    pitch: f32,
+    net: f32,
+    f: f32,
+    pos: f32,
+    amt: f32,
+    age: f32,
+}
+
+const DEG: f32 = std::f32::consts::PI / 180.0;
+
+/// Vanilla `Mth.triangleWave`.
+fn triangle_wave(a: f32, b: f32) -> f32 {
+    ((a.rem_euclid(b) - b * 0.5).abs() - b * 0.25) / (b * 0.25)
+}
+
+/// One part's `setupAnim` output: Euler deltas summed onto the base pose
+/// (composed as a single `rotateZYX`, exactly vanilla) + a pivot offset for
+/// the anims that move parts (blaze rods, crawler segments).
+fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
+    use mobs::Anim::*;
+    use std::f32::consts::PI;
+    let mut rot = [0.0f32; 3];
+    let mut off = [0.0f32; 3];
+    match anim {
+        None => {}
+        Head => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+        }
+        ArmRight => rot[0] = (c.f + PI).cos() * 2.0 * c.amt * 0.5 * amp,
+        ArmLeft => rot[0] = c.f.cos() * 2.0 * c.amt * 0.5 * amp,
+        LegRight | QuadHindRight | QuadFrontLeft => rot[0] = c.f.cos() * 1.4 * c.amt * amp,
+        LegLeft | QuadHindLeft | QuadFrontRight => rot[0] = (c.f + PI).cos() * 1.4 * c.amt * amp,
+        SpiderLeg { left, phase } => {
+            let swing = -((c.f * 2.0 + phase).cos()) * 0.4 * c.amt;
+            let step = (c.f + phase).sin().abs() * 0.4 * c.amt;
+            let dir = if left { -1.0 } else { 1.0 };
+            rot[1] = dir * swing;
+            rot[2] = dir * step;
+        }
+        TailWagY => rot[1] = c.f.cos() * 1.4 * c.amt,
+        GolemArmRight => rot[0] = (-0.2 + 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
+        GolemArmLeft => rot[0] = (-0.2 - 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
+        GolemLegRight => rot[0] = -1.5 * triangle_wave(c.pos, 13.0) * c.amt,
+        GolemLegLeft => rot[0] = 1.5 * triangle_wave(c.pos, 13.0) * c.amt,
+        BlazeRod { ring, idx } => {
+            // Vanilla repositions each rod: ring parameters (start angle,
+            // spin speed, radius, base y) + a per-rod bob. `i` is the rod's
+            // global 0..12 index in the y-bob term.
+            let i = ring as f32 * 4.0 + idx as f32;
+            let (a0, speed, r, y0) = match ring {
+                0 => (0.0, -0.1, 9.0, -2.0),
+                1 => (PI / 4.0, 0.03, 7.0, 2.0),
+                _ => (0.47123894, -0.05, 5.0, 11.0),
+            };
+            let a = a0 + c.age * PI * speed + idx as f32 * (PI / 2.0);
+            let y = if ring < 2 {
+                y0 + ((i * 2.0 + c.age) * 0.25).cos()
+            } else {
+                y0 + ((i * 1.5 + c.age) * 0.5).cos()
+            };
+            off = [a.cos() * r, y, a.sin() * r];
+        }
+        GhastTentacle { i } => rot[0] = 0.2 * (c.age * 0.3 + i as f32).sin() + 0.4,
+        SquidTentacle => rot[0] = 0.3 * (0.5 + 0.5 * (c.age * 0.2).sin()),
+        PhantomWing { left } => {
+            let flap = c.age * 7.448451 * DEG;
+            let z = flap.cos() * 16.0 * DEG;
+            rot[2] = if left { z } else { -z };
+        }
+        PhantomTail => {
+            let flap = c.age * 7.448451 * DEG;
+            rot[0] = -(5.0 + (flap * 2.0).cos() * 5.0) * DEG;
+        }
+        AllayWing { left } => {
+            let flap = (c.age * 20.0 * DEG + c.pos).cos() * PI * 0.15 + c.amt;
+            let fly = (c.amt / 0.3).min(1.0);
+            rot[0] = 0.43633232 * (1.0 - fly);
+            rot[1] = if left { PI / 4.0 - flap } else { -PI / 4.0 + flap };
+        }
+        VexArm { left } => {
+            let bob = (c.age * 5.5 * DEG).cos() * 0.1;
+            rot[2] = if left { -(PI / 5.0 + bob) } else { PI / 5.0 + bob };
+        }
+        VexWing { left } => {
+            let y = 1.0995574 + (c.age * 45.836624 * DEG).cos() * 16.2 * DEG;
+            rot[0] = 0.47123888;
+            rot[1] = if left { y } else { -y };
+            rot[2] = if left { -0.47123888 } else { 0.47123888 };
+        }
+        BeeWing { left } => {
+            let z = (c.age * 120.32113 * DEG).cos() * PI * 0.15;
+            rot[2] = if left { -z } else { z };
+        }
+        FishTail { amp: a, speed } => rot[1] = -a * (speed * c.age).sin(),
+        PufferFin { left } => {
+            let s = (c.age * 0.2).sin();
+            rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
+        }
+        DolphinTail { k } => {
+            let gate = (c.amt * 6.0).min(1.0);
+            rot[0] = -k * (c.age * 0.3).cos() * gate;
+        }
+        Crawl { i, ry, tx, with_x } => {
+            let ph = c.age * 0.9 + i as f32 * 0.15 * PI;
+            let w = (i as i32 - 2).abs() as f32;
+            rot[1] = ph.cos() * PI * ry * (1.0 + w);
+            if with_x {
+                off[0] = ph.sin() * PI * tx * w;
+            }
+        }
+    }
+    (rot, off)
+}
+
+/// Compose every part's global transform `(M, o)` — child-in-parent
+/// hierarchy with vanilla's `translate(pivot); rotateZYX(base + delta)`
+/// per level. Shared by rendering and the mobshot geometric prediction so
+/// the two can never disagree.
+fn part_transforms(model: &MobModel, ctx: &AnimCtx) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+    let mut out: Vec<([[f32; 3]; 3], [f32; 3])> = Vec::with_capacity(model.parts.len());
+    for p in &model.parts {
+        let (drot, doff) = anim_delta(p.anim, p.amp, ctx);
+        let e = [p.rot[0] + drot[0], p.rot[1] + drot[1], p.rot[2] + drot[2]];
+        let r = mat_zyx(e);
+        let pivot = [
+            p.pivot[0] + doff[0],
+            p.pivot[1] + doff[1],
+            p.pivot[2] + doff[2],
+        ];
+        let (m, o) = match p.parent {
+            Some(par) => {
+                let (pm, po) = &out[par as usize];
+                let gp = mat_apply(pm, pivot);
+                (mat_mul(*pm, r), [gp[0] + po[0], gp[1] + po[1], gp[2] + po[2]])
+            }
+            Option::None => (r, pivot),
+        };
+        out.push((m, o));
+    }
+    out
+}
+
 // ---- small math helpers for the per-part animation ----------------------
 
 const IDENTITY3: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// `rotateZYX(z, y, x)` as a matrix: `Rz·Ry·Rx` (x applied first) —
+/// matches `mobs::rotate_zyx`.
+fn mat_zyx(e: [f32; 3]) -> [[f32; 3]; 3] {
+    if e == [0.0; 3] {
+        return IDENTITY3;
+    }
+    mat_mul(mat_mul(rot_z(e[2]), rot_y(e[1])), rot_x(e[0]))
+}
+
+/// Rotation about Z.
+fn rot_z(a: f32) -> [[f32; 3]; 3] {
+    let (s, c) = a.sin_cos();
+    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+}
 
 /// Rotation about X (y-down model space, matches `mobs::rotate_zyx`).
 fn rot_x(a: f32) -> [[f32; 3]; 3] {
