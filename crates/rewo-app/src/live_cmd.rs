@@ -72,6 +72,10 @@ pub struct LiveArgs {
     /// Frames in flight (M6 latency knob): 1 = lowest latency, 2 = default.
     #[arg(long, default_value_t = 2)]
     fif: usize,
+    /// Load an OptiFine CEM resource-pack zip (M9): mobs render with the
+    /// pack's custom models. Also read from `REWO_PACK` if unset.
+    #[arg(long)]
+    pack: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -109,7 +113,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(6.0);
-            run_headless(session, baked, etypes, want_validation, out, settle, dirt_item)
+            run_headless(session, baked, etypes, want_validation, out, settle, dirt_item, args.pack.clone())
         }
         _ => run_windowed(session, baked, etypes, args, want_validation, dirt_item),
     }
@@ -415,6 +419,28 @@ fn collect_entities<'a>(
 }
 
 /// Borrow the baked mob-texture table into the entity pass's view type.
+/// Initialize the entity pass, optionally overriding mob models from an
+/// OptiFine CEM resource pack (`--pack` / `REWO_PACK`). Shared by the
+/// headless and windowed live paths (M9).
+pub(crate) fn init_entities_maybe_cem(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+    pack: &Option<PathBuf>,
+) -> Result<(), String> {
+    let pack = pack
+        .clone()
+        .or_else(|| std::env::var("REWO_PACK").ok().map(PathBuf::from));
+    match pack {
+        Some(path) => {
+            let cem = crate::mobshot_cmd::load_cem_overrides(&path)?;
+            log::info!("live: CEM pack {} → {} model overrides", path.display(), cem.len());
+            wr.init_entities_with_cem(gpu, font_data(baked), entity_textures(baked), cem)
+        }
+        None => wr.init_entities(gpu, font_data(baked), entity_textures(baked)),
+    }
+}
+
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
     MobTextures {
         entries: baked
@@ -592,13 +618,14 @@ fn run_headless(
     out: &std::path::Path,
     settle_seconds: f32,
     dirt_item: Option<i32>,
+    pack: Option<PathBuf>,
 ) -> Result<(), String> {
     let _ = dirt_item;
     let mut gpu = Gpu::new(None, want_validation)?;
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    world_renderer.init_entities(&mut gpu, font_data(&baked), entity_textures(&baked))?;
+    init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &pack)?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -911,6 +938,9 @@ struct LiveApp {
     gestures: GestureTracker,
     /// Async player-skin fetch + upload (online-mode real skins).
     skins: SkinLoader,
+    /// OptiFine CEM resource pack (M9) — mob-model overrides, applied at
+    /// entity-pass init.
+    pack: Option<PathBuf>,
     init_error: Option<String>,
 }
 
@@ -950,7 +980,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            world_renderer.init_entities(&mut gpu, font_data(&baked), entity_textures(&baked))?;
+            init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
@@ -1263,6 +1293,7 @@ fn run_windowed(
         debug: true,
         gestures: GestureTracker::default(),
         skins: SkinLoader::new(),
+        pack: args.pack.clone(),
         init_error: None,
     };
     event_loop

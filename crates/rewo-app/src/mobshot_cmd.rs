@@ -124,7 +124,7 @@ fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
 /// Parse a resource-pack's CEM `.jem` models into per-kind model overrides
 /// (M9). Files whose entity name doesn't map to a known model kind, or that
 /// fail to parse, are skipped with a notice.
-fn load_cem_overrides(
+pub(crate) fn load_cem_overrides(
     path: &std::path::Path,
 ) -> Result<std::collections::HashMap<EntityModelKind, rewo_gpu::mobs::Model>, String> {
     let pack = rewo_data::cem::load_pack(path)?;
