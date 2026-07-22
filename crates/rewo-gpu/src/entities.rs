@@ -259,6 +259,19 @@ impl EntityPass {
         font: Option<FontData<'_>>,
         tex: MobTextures<'_>,
     ) -> Result<Self, String> {
+        Self::new_with_cem(gpu, color_format, font, tex, std::collections::HashMap::new())
+    }
+
+    /// `new` plus resource-pack CEM model overrides (M9): a kind present in
+    /// `cem` uses that parsed `.jem` model instead of its built-in, going
+    /// through the same UV normalization + atlas bake.
+    pub fn new_with_cem(
+        gpu: &mut Gpu,
+        color_format: vk::Format,
+        font: Option<FontData<'_>>,
+        tex: MobTextures<'_>,
+        mut cem: std::collections::HashMap<EntityModelKind, mobs::Model>,
+    ) -> Result<Self, String> {
         let device = gpu.device.clone();
 
         // ---- combined atlas: font at (0,0), mob skins in 64×64 slots ----
@@ -320,7 +333,15 @@ impl EntityPass {
             let origins: Option<Vec<(u32, u32, u32, u32)>> =
                 def.textures.iter().map(|k| slots.get(k).copied()).collect();
             let Some(origins) = origins else { continue };
-            let m = (def.build)();
+            // Resource-pack CEM override (M9) takes this kind's model instead
+            // of the built-in; both normalize UVs the same way below.
+            let m = match cem.remove(&def.kind) {
+                Some(m) => {
+                    log::info!("cem: {:?} using pack model ({} quads)", def.kind, m.quads.len());
+                    m
+                }
+                None => (def.build)(),
+            };
             if debug_tex {
                 for q in &m.quads {
                     if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted) {

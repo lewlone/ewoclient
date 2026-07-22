@@ -2247,6 +2247,42 @@ gate green.**
   (cat/horse/sheep-colour…) are the same machinery at other indices —
   still fixed picks, a documented follow-up.
 
+**2026-07-22 — M9a: native CEM resource-pack models (foundation).**
+
+- The EMF-equivalent, first slice: load an OptiFine **CEM** resource pack
+  and render mobs with the pack's `.jem` models — no mod, just asset
+  loading. Verified against the user's real **Fresh Animations** packs.
+- **Pack loader** (`rewo-data/src/cem.rs`): reads a pack zip, pulls every
+  `assets/minecraft/optifine/cem/*.jem` (+ `.jpm`) as raw strings. FA
+  1.10.5 → 114 models, 89 jpm parts; 72 map to model kinds.
+- **JEM parser** (`rewo-gpu/src/cem.rs`): parses a `.jem` into the same
+  `Model` IR the built-ins use — `part`/`translate`/`invertAxis`/`boxes`
+  (`coordinates`, `textureOffset`, `sizeAdd`) + nested `submodels`. The
+  OptiFine map (negate X+Y for `invertAxis:"xy"`, fold Y about a baseline,
+  Z through) is exactly a **180° Z-rotation + Y-translate**, expressed as a
+  `Fold` so the existing `cube_f` box-UV emitter applies it per-vertex
+  (rotating normals / re-deriving shade for free). Calibrated against the
+  vanilla creeper.
+- **Override pipeline**: `EntityPass::new_with_cem` swaps a kind's built-in
+  model for its parsed CEM model, through the same UV-normalization + atlas
+  bake. `mobshot --pack <zip>` is the inspection tool.
+- **Verified**: the FA creeper, pig, and cow render as correct, recognizable
+  mobs with textures mapped right — near-identical to their vanilla
+  built-ins (FA replicates vanilla geometry, so this is a real parser
+  correctness check, not a proxy). The **no-pack facelabel gate stays
+  243/243** — pack overrides are cleanly additive, zero regression. Parser
+  unit tests + demo byte-identical.
+- **Known limitation (the next slice, M9a.2)**: OptiFine CEM top-level
+  `part`s **inherit the vanilla part's pivot** (creeper body pivot 6,
+  humanoid leg pivot 12, …), and `translate` is relative to *that*.
+  Box-family mobs (small translates) render right under a single baseline;
+  humanoid / multi-limb rigs (zombie, skeleton, spider) need the per-mob
+  vanilla-pivot table to place limbs correctly — until then they're
+  misplaced. `--pack` is an explicit inspection flag; **`rewo live` does
+  not load packs**, so there's no gameplay regression. Animations (FA's
+  actual payoff — the `_animations.jpm` OptiFine expression language) are
+  M9c, and this parser is their prerequisite.
+
 **2026-07-22 — baby mobs.**
 
 - Baby zombies / animals render at ~half scale instead of adult-sized.

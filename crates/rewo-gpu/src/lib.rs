@@ -15,6 +15,7 @@
 
 pub mod entities;
 pub mod anim_defs;
+pub mod cem;
 pub mod mobs;
 pub mod hud;
 pub mod offscreen;

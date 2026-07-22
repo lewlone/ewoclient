@@ -10,6 +10,7 @@
 
 pub mod assets;
 pub mod blocks;
+pub mod cem;
 pub mod entity_types;
 pub mod items;
 pub mod packets;

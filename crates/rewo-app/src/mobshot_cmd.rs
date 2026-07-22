@@ -83,6 +83,10 @@ pub struct MobshotArgs {
     /// from the profile.
     #[arg(long)]
     skin: Option<String>,
+    /// Load an OptiFine CEM resource-pack zip and render mobs with their
+    /// pack models (M9). Combine with `--only <mob>` to inspect one.
+    #[arg(long)]
+    pack: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -115,6 +119,30 @@ fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
         origin: [-4000.0, -4000.0],
         size: [8.0, 8.0],
     }
+}
+
+/// Parse a resource-pack's CEM `.jem` models into per-kind model overrides
+/// (M9). Files whose entity name doesn't map to a known model kind, or that
+/// fail to parse, are skipped with a notice.
+fn load_cem_overrides(
+    path: &std::path::Path,
+) -> Result<std::collections::HashMap<EntityModelKind, rewo_gpu::mobs::Model>, String> {
+    let pack = rewo_data::cem::load_pack(path)?;
+    let mut out = std::collections::HashMap::new();
+    for file in &pack.files {
+        let kind = rewo_gpu::mobs::kind_for_entity_name(&format!("minecraft:{}", file.entity));
+        if kind == EntityModelKind::Capsule {
+            continue; // no matching model kind (variant/collar/… files)
+        }
+        match rewo_gpu::cem::model_from_jem(&file.jem) {
+            Ok(model) => {
+                out.entry(kind).or_insert(model);
+            }
+            Err(e) => log::warn!("cem: {} skipped: {e}", file.entity),
+        }
+    }
+    println!("[mobshot] pack: {} CEM model(s) mapped to kinds", out.len());
+    Ok(out)
 }
 
 fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
@@ -389,7 +417,16 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let (w, h) = (2560u32, 1440u32);
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
+    // --pack: parse the pack's CEM .jem models, override the matching kinds.
+    let cem = match &args.pack {
+        Some(path) => load_cem_overrides(path)?,
+        None => std::collections::HashMap::new(),
+    };
+    if cem.is_empty() {
+        wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
+    } else {
+        wr.init_entities_with_cem(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked), cem)?;
+    }
     // --skin: fetch a real player skin, upload it, remember its UV offset +
     // model so the Player draw wears it (the M7c verification path).
     let player_skin: Option<([f32; 2], bool)> = match &args.skin {

@@ -15,3 +15,5 @@ bytemuck = { workspace = true }
 log = { workspace = true }
 png = { workspace = true }
 glam = { workspace = true }
+# M9 CEM: parse OptiFine .jem/.jpm entity models from resource packs.
+serde_json = { workspace = true }

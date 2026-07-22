@@ -794,6 +794,18 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// `init_entities` with resource-pack CEM model overrides (M9).
+    pub fn init_entities_with_cem(
+        &mut self,
+        gpu: &mut Gpu,
+        font: Option<FontData<'_>>,
+        tex: MobTextures<'_>,
+        cem: std::collections::HashMap<crate::mobs::EntityModelKind, crate::mobs::Model>,
+    ) -> Result<(), String> {
+        self.entities = Some(EntityPass::new_with_cem(gpu, self.color_format, font, tex, cem)?);
+        Ok(())
+    }
+
     /// The attached entity pass, if any — `rewo mobshot` uses it to iterate
     /// available mob models and their geometric ground truth.
     pub fn entity_pass(&self) -> Option<&EntityPass> {

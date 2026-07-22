@@ -493,7 +493,7 @@ pub struct ModelBuilder {
 }
 
 impl ModelBuilder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ModelBuilder {
             parts: vec![Part {
                 pivot: [0.0; 3],
@@ -592,7 +592,7 @@ impl ModelBuilder {
     /// are skipped — they rasterize nothing, and their UV rects are
     /// degenerate (vanilla even gives some negative offsets there).
     #[allow(clippy::too_many_arguments)]
-    fn cube_f(
+    pub(crate) fn cube_f(
         &mut self,
         part: usize,
         tex: usize,
@@ -645,7 +645,7 @@ impl ModelBuilder {
         self.cube_f(part, tex, uv, min, dims, grow, false, folds);
     }
 
-    fn finish(self, scale: f32) -> Model {
+    pub(crate) fn finish(self, scale: f32) -> Model {
         Model {
             parts: self.parts,
             quads: self.quads,
@@ -664,7 +664,7 @@ impl ModelBuilder {
 ///
 /// Keep `ALL` in the same order as the variants — `index()` is derived
 /// from it and the mobshot sheet iterates it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum EntityModelKind {
     Player,
     Zombie,
