@@ -96,6 +96,10 @@ pub struct EntityDraw<'a> {
     pub gesture: Option<(mobs::Gesture, f32)>,
     /// Armadillo shell swap (vanilla `isHidingInShell`).
     pub shell: bool,
+    /// Player skin: a normalized UV offset that relocates the (default-Steve)
+    /// player-model quads onto this player's uploaded skin slot. `None` →
+    /// the default skin. Ignored for non-player models.
+    pub skin_uv: Option<[f32; 2]>,
 }
 
 #[repr(C)]
@@ -111,6 +115,23 @@ struct Vertex {
 /// texture, one pipeline family.
 const ATLAS_W: u32 = 1024;
 const ATLAS_H: u32 = 1024;
+
+/// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
+/// rows (y 896..1024), filled at runtime as players' skins arrive. The mob
+/// packer is capped above it so it never collides.
+const SKIN_SLOT: u32 = 64;
+const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
+const SKIN_POOL_ROWS: u32 = 2;
+const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
+const SKIN_POOL_Y: u32 = ATLAS_H - SKIN_POOL_ROWS * SKIN_SLOT; // 896
+
+/// Atlas origin of dynamic skin slot `i` (0..SKIN_SLOTS).
+fn skin_slot_origin(i: u32) -> (u32, u32) {
+    (
+        (i % SKIN_POOL_COLS) * SKIN_SLOT,
+        SKIN_POOL_Y + (i / SKIN_POOL_COLS) * SKIN_SLOT,
+    )
+}
 
 /// Shelf-pack `sizes` into the atlas, avoiding the font block. Deterministic:
 /// callers pass entries sorted however they like; shelves grow downward,
@@ -130,7 +151,7 @@ fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
             if x < x_min {
                 x = x_min;
             }
-            if x + w <= ATLAS_W && y + h <= ATLAS_H {
+            if x + w <= ATLAS_W && y + h <= SKIN_POOL_Y {
                 break;
             }
             if x + w > ATLAS_W {
@@ -140,10 +161,10 @@ fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
                 shelf_h = 0;
                 continue;
             }
-            // Out of vertical space.
+            // Out of vertical space (the skin pool caps the packer).
             break;
         }
-        if x + w <= ATLAS_W && y + h <= ATLAS_H {
+        if x + w <= ATLAS_W && y + h <= SKIN_POOL_Y {
             out.push(Some((x, y)));
             x += w;
             shelf_h = shelf_h.max(h);
@@ -199,6 +220,12 @@ pub struct EntityPass {
     advance: [u8; 256],
     white_uv: [f32; 2],
     has_font: bool,
+    /// Atlas origin of the default "player" skin slot — the reference the
+    /// per-player skin UV offset is measured from.
+    player_origin: (u32, u32),
+    /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
+    /// never fills 32, and wrap-around just recycles the oldest slot).
+    skin_next: u32,
 }
 
 /// One mob model ready to draw: quads in part-local model px with
@@ -473,8 +500,28 @@ impl EntityPass {
                 advance,
                 white_uv,
                 has_font,
+                player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
+                skin_next: 0,
             })
         }
+    }
+
+    /// Reserve the next dynamic skin slot, upload a 64×64 RGBA skin into it,
+    /// and return the normalized UV offset relocating the default player
+    /// quads onto it (feed to `EntityDraw::skin_uv`). `rgba` must be
+    /// `64*64*4` bytes. Stalls on `wait_idle` — skins arrive rarely (once
+    /// per player at join), so the one-off is cheaper than tracking
+    /// per-frame fences against the shared atlas.
+    pub fn upload_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<[f32; 2], String> {
+        let slot = self.skin_next % SKIN_SLOTS;
+        self.skin_next += 1;
+        let (sx, sy) = skin_slot_origin(slot);
+        upload_region(gpu, self.image, rgba, sx, sy, SKIN_SLOT, SKIN_SLOT)?;
+        let (px, py) = self.player_origin;
+        Ok([
+            (sx as f32 - px as f32) / ATLAS_W as f32,
+            (sy as f32 - py as f32) / ATLAS_H as f32,
+        ])
     }
 
     /// Facelabel mode only: kinds whose textures paint conflicting face
@@ -672,10 +719,13 @@ impl EntityPass {
                 ];
             }
             let c = q.shade;
+            // Player skin: shift the (default-Steve) UVs onto this player's
+            // uploaded slot. Same 64² layout, so a constant offset suffices.
+            let du = d.skin_uv.unwrap_or([0.0, 0.0]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
-                    uv: q.uv[i],
+                    uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
                     color: [c, c, c, 1.0],
                 });
             }
@@ -1279,6 +1329,140 @@ fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32
         }
         _ => false,
     }
+}
+
+/// Copy `rgba` (`width*height*4`) into an already-initialized, already-
+/// sampled atlas `image` at offset (x, y): SHADER_READ_ONLY → TRANSFER_DST
+/// → SHADER_READ_ONLY, fence-waited. `wait_idle` first so no in-flight
+/// frame samples the atlas mid-write (rare call — see `upload_skin`).
+fn upload_region(
+    gpu: &mut Gpu,
+    image: vk::Image,
+    rgba: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let expect = (width * height * 4) as usize;
+    if rgba.len() != expect {
+        return Err(format!("upload_region: {} bytes, want {expect}", rgba.len()));
+    }
+    gpu.wait_idle();
+    unsafe {
+        let device = gpu.device.clone();
+        let staging = device
+            .create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(rgba.len() as u64)
+                    .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+            .map_err(|e| format!("skin staging: {e}"))?;
+        let sreq = device.get_buffer_memory_requirements(staging);
+        let mut salloc = gpu
+            .allocator
+            .allocate(&AllocationCreateDesc {
+                name: "skin-staging",
+                requirements: sreq,
+                location: MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("skin staging alloc: {e}"))?;
+        device
+            .bind_buffer_memory(staging, salloc.memory(), salloc.offset())
+            .map_err(|e| format!("skin staging bind: {e}"))?;
+        salloc.mapped_slice_mut().ok_or("skin staging not mapped")?[..rgba.len()]
+            .copy_from_slice(rgba);
+
+        let pool = device
+            .create_command_pool(
+                &vk::CommandPoolCreateInfo::default().queue_family_index(gpu.graphics_family),
+                None,
+            )
+            .map_err(|e| format!("skin pool: {e}"))?;
+        let cb = device
+            .allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+            .map_err(|e| format!("skin cb: {e}"))?[0];
+        device
+            .begin_command_buffer(
+                cb,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+            .map_err(|e| format!("skin begin: {e}"))?;
+        let range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let to_dst = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .image(image)
+            .subresource_range(range);
+        device.cmd_pipeline_barrier2(
+            cb,
+            &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_dst)),
+        );
+        device.cmd_copy_buffer_to_image(
+            cb,
+            staging,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[vk::BufferImageCopy::default()
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D { x: x as i32, y: y as i32, z: 0 })
+                .image_extent(vk::Extent3D { width, height, depth: 1 })],
+        );
+        let to_read = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image(image)
+            .subresource_range(range);
+        device.cmd_pipeline_barrier2(
+            cb,
+            &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_read)),
+        );
+        device.end_command_buffer(cb).map_err(|e| format!("skin end: {e}"))?;
+        let fence = device
+            .create_fence(&vk::FenceCreateInfo::default(), None)
+            .map_err(|e| format!("skin fence: {e}"))?;
+        let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
+        device
+            .queue_submit2(
+                gpu.graphics_queue,
+                &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                fence,
+            )
+            .map_err(|e| format!("skin submit: {e}"))?;
+        device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map_err(|e| format!("skin wait: {e}"))?;
+        device.destroy_fence(fence, None);
+        device.destroy_command_pool(pool, None);
+        device.destroy_buffer(staging, None);
+        let _ = gpu.allocator.free(salloc);
+    }
+    Ok(())
 }
 
 pub(crate) fn create_texture(

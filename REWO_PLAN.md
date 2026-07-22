@@ -209,8 +209,10 @@ the code's author. Nothing below is settled truth.
   (not a rig) and stays posed, sheep wool dye-tint deferred (white),
   slime/magma face + size need the translucent pass + entity metadata,
   texture variants are fixed picks (tabby cat, brown horse, creamy
-  llama, lucy axolotl, temperate chicken/frog…), no real per-player
-  skins (M7), tags are depth-tested.
+  llama, lucy axolotl, temperate chicken/frog…), ~~no real per-player
+  skins (M7)~~ **real per-player skins shipped (M7c, §15)** — slim + wide,
+  fetched from the profile `textures` property, uploaded into a 32-slot
+  atlas pool; tags are depth-tested.
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -2170,3 +2172,49 @@ gate green.**
   send an empty acknowledged set — fine for a bot, a chatty client
   echoing others' messages needs the seen-signature cache), profile-key
   expiry refresh mid-session, and resource-pack policy (D8).
+
+**2026-07-22 — M7c: real per-player skins.**
+
+- Online play now shows each player's **actual skin**, not the default
+  Steve. Verified headlessly against two real accounts.
+- **Decode** (`rewo-net/src/skins.rs`): the Player Info ADD_PLAYER
+  `textures` property (base64 JSON) → skin URL + `metadata.model=="slim"`.
+  Unit-tested against a real captured value (slim) + classic + cape-only +
+  garbage. `PlaySession` stores resolved skins by UUID and drains a
+  pending-fetch queue (`take_pending_skins`).
+- **Fetch** (`rewo-app/src/skin_fetch.rs`): a worker thread resolves a
+  username→UUID→profile→URL (Mojang API) or takes a raw URL, downloads the
+  PNG, and normalizes it to 64×64 RGBA (RGB/palette/grayscale via EXPAND;
+  legacy 64×32 top-anchored with a warn).
+- **Runtime atlas upload** (`rewo-gpu/src/entities.rs`): the entity atlas
+  reserves a **32-slot 64×64 skin pool** in its bottom two rows (the mob
+  packer is capped above it — still 243 facelabel views green).
+  `upload_skin` region-copies a fetched skin into a free slot
+  (`SHADER_READ_ONLY → TRANSFER_DST → SHADER_READ_ONLY`, `wait_idle`-fenced
+  — skins arrive rarely, so the one-off stall is cheaper than per-frame
+  fence tracking against the shared atlas) and returns a **normalized UV
+  offset**. The player model's quads are baked against the default-Steve
+  slot; adding the constant offset relocates sampling onto the player's
+  slot (same 64² layout, so one offset covers every quad).
+- **Slim + wide**: `PlayerModel.createMesh(_, slim)` transcribed exactly —
+  `player_model(slim)` shares head/body/legs and branches only the arm/
+  sleeve boxes (3-px vs 4-px). A new `EntityModelKind::PlayerSlim` (never
+  wire-mapped; the caller picks it from the profile's model) renders slim
+  skins on the narrow model. Overlay layers (hat/jacket/sleeves/pants) ride
+  along for free.
+- **Live wiring** (`rewo-app/src/live_cmd.rs`): a `SkinLoader` requests
+  each newly-announced skin once, uploads finished fetches into the atlas,
+  and `collect_entities` looks up each player's UUID → sets the draw's
+  `skin_uv` + Player/PlayerSlim kind.
+- **Verification** (`mobshot --skin <username|url>`): serverless, headless
+  — fetch a real skin, upload it, render the player model with it. `--only
+  player --skin lewlone` → the user's green-haired panda-hat slim skin;
+  `--skin Notch` → the classic wide skin; both distinct from the default
+  Steve, overlays + arm width correct. Gates: 25 crate tests (4 new skin-
+  decode), `mobshot --check` 243/243 (Player/PlayerSlim share the "player"
+  texture → the color checker marks it N/A, honest; geometry unchanged),
+  demo PNG byte-identical (`ee6e26f4…`), bench flat.
+- Leftover: the live per-player path is exercised by the same
+  `upload_player_skin` the mobshot verification proves, but a two-real-
+  players in-world capture (vs. the force-skin PNG) is still the user's to
+  eyeball; legacy 64×32 skins render with transparent lower-body faces.

@@ -138,6 +138,72 @@ fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
     (right.to_array(), up.to_array())
 }
 
+/// One resolved player skin: the atlas UV offset relocating the default
+/// player quads onto the uploaded slot, plus the arm model.
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerSkin {
+    uv: [f32; 2],
+    slim: bool,
+}
+
+pub(crate) type SkinRegistry = std::collections::HashMap<u128, PlayerSkin>;
+
+/// Async player-skin loader: a worker thread fetches + decodes skin PNGs
+/// off the render/tick path; the main loop uploads each result into the
+/// entity atlas and records its UV offset. Skins arrive rarely (once per
+/// player at join), so the per-skin `wait_idle` in the upload is cheap.
+pub(crate) struct SkinLoader {
+    req_tx: std::sync::mpsc::Sender<(u128, String, bool)>,
+    res_rx: std::sync::mpsc::Receiver<(u128, bool, Vec<u8>)>,
+    requested: std::collections::HashSet<u128>,
+    registry: SkinRegistry,
+}
+
+impl SkinLoader {
+    fn new() -> Self {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<(u128, String, bool)>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(u128, bool, Vec<u8>)>();
+        std::thread::Builder::new()
+            .name("rewo-skin-fetch".into())
+            .spawn(move || {
+                while let Ok((uuid, url, slim)) = req_rx.recv() {
+                    match crate::skin_fetch::fetch_rgba64(&url) {
+                        Ok(rgba) => {
+                            if res_tx.send((uuid, slim, rgba)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => log::warn!("skin: fetch {url} failed: {e}"),
+                    }
+                }
+            })
+            .ok();
+        Self {
+            req_tx,
+            res_rx,
+            requested: std::collections::HashSet::new(),
+            registry: SkinRegistry::new(),
+        }
+    }
+
+    /// Queue a skin fetch (once per UUID).
+    fn request(&mut self, uuid: u128, info: &rewo_net::skins::SkinInfo) {
+        if self.requested.insert(uuid) {
+            let _ = self.req_tx.send((uuid, info.url.clone(), info.slim));
+        }
+    }
+
+    /// Upload any fetched skins into the atlas + record their UV offsets.
+    fn poll_uploads(&mut self, gpu: &mut Gpu, wr: &mut WorldRenderer) {
+        while let Ok((uuid, slim, rgba)) = self.res_rx.try_recv() {
+            if let Some(uv) = wr.upload_player_skin(gpu, &rgba) {
+                self.registry.insert(uuid, PlayerSkin { uv, slim });
+                log::info!("skin: uploaded for {uuid:032x} ({} model)", if slim { "slim" } else { "wide" });
+            }
+        }
+    }
+}
+
 /// Tracks when each entity's gesture-driving state changed. The wire
 /// carries only the *current* pose/state — vanilla clients time the rigs
 /// from the transition instant, so we record it here.
@@ -231,6 +297,7 @@ fn collect_entities<'a>(
     alpha: f32,
     gestures: &mut GestureTracker,
     now: f32,
+    skins: &SkinRegistry,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -261,8 +328,14 @@ fn collect_entities<'a>(
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
+        // A player with a resolved skin wears it (slim → the Alex model);
+        // otherwise the default wide Steve.
+        let player_skin = if is_player { skins.get(&e.uuid) } else { None };
         let kind = if is_player {
-            EntityModelKind::Player
+            match player_skin {
+                Some(ps) if ps.slim => EntityModelKind::PlayerSlim,
+                _ => EntityModelKind::Player,
+            }
         } else {
             rewo_gpu::mobs::kind_for_entity_name(name)
         };
@@ -318,6 +391,7 @@ fn collect_entities<'a>(
             limb_amount,
             gesture,
             shell,
+            skin_uv: player_skin.map(|ps| ps.uv),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -632,7 +706,10 @@ fn run_headless(
     // Single-shot render: a fresh tracker sees every gesture at age 0 (use
     // REWO_FORCE_GESTURE for a specific rig time).
     let mut gestures = GestureTracker::default();
-    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0);
+    // Headless single-frame: skins can't finish fetching in time (use
+    // `mobshot --skin` for a deterministic real-skin PNG). Empty registry.
+    let skins = SkinRegistry::new();
+    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0, &skins);
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
         println!(
@@ -818,6 +895,8 @@ struct LiveApp {
     debug: bool,
     /// Per-entity gesture state-change clocks (pose-driven rigs).
     gestures: GestureTracker,
+    /// Async player-skin fetch + upload (online-mode real skins).
+    skins: SkinLoader,
     init_error: Option<String>,
 }
 
@@ -1061,10 +1140,17 @@ impl LiveApp {
             }
         }
 
+        // Player skins: request any newly-announced ones, upload any that
+        // finished fetching (real skins on online-mode servers).
+        for (uuid, info) in session.take_pending_skins() {
+            self.skins.request(uuid, &info);
+        }
+        self.skins.poll_uploads(&mut state.gpu, &mut state.world_renderer);
+
         // Entities: frame-interpolated snapshot + camera-billboarded tags.
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
         let anim_time = self.started.elapsed().as_secs_f32();
-        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time);
+        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry);
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
@@ -1162,6 +1248,7 @@ fn run_windowed(
         dirt_item,
         debug: true,
         gestures: GestureTracker::default(),
+        skins: SkinLoader::new(),
         init_error: None,
     };
     event_loop

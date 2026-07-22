@@ -1801,6 +1801,19 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   gotcha: Mojang's private key is PKCS#8 DER under a PKCS#1 label wrapped
   at 76 chars — strip the armor + parse DER directly (the rsa crate's
   strict RFC-7468 reader rejects it). Milestone detail in REWO_PLAN §15.
+- **M7c shipped 2026-07-22** (real player skins): online play shows each
+  player's actual skin. `rewo-net/src/skins.rs` decodes the Player Info
+  `textures` property → URL + slim/wide; `rewo-app/src/skin_fetch.rs`
+  fetches the PNG → 64×64 RGBA (username→profile resolution too); the
+  entity atlas reserves a 32-slot 64² skin pool and `EntityPass::
+  upload_skin` region-copies a fetched skin into it, returning a UV offset
+  that relocates the default-Steve player quads onto that slot. Slim
+  (`EntityModelKind::PlayerSlim`, vanilla 3-px arms) + wide, chosen from
+  the profile model; overlays ride along. Live wiring is a `SkinLoader`
+  worker thread + per-UUID registry in live_cmd. Verified headlessly with
+  `mobshot --skin <username|url>` — lewlone's slim skin + Notch's wide
+  skin, both distinct from default, overlays + arm width correct; facelabel
+  243/243, demo byte-identical, bench flat.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

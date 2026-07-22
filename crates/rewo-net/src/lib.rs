@@ -16,6 +16,7 @@ pub mod ids;
 pub mod metadata;
 pub mod play;
 pub mod record;
+pub mod skins;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

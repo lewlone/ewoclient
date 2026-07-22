@@ -77,6 +77,12 @@ pub struct MobshotArgs {
     /// visibility swap the gestures drive in live play).
     #[arg(long, default_value_t = false)]
     shell: bool,
+    /// Sheet mode: fetch a real player skin (a Minecraft username or a raw
+    /// texture URL) and render the Player model with it — the headless M7c
+    /// verification (`--only player --skin <name>`). Slim/wide is taken
+    /// from the profile.
+    #[arg(long)]
+    skin: Option<String>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -126,6 +132,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         limb_amount: 0.0,
         gesture: None,
         shell: false,
+        skin_uv: None,
     }
 }
 
@@ -382,6 +389,18 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
+    // --skin: fetch a real player skin, upload it, remember its UV offset +
+    // model so the Player draw wears it (the M7c verification path).
+    let player_skin: Option<([f32; 2], bool)> = match &args.skin {
+        Some(name) => {
+            let info = crate::skin_fetch::resolve(name)?;
+            let rgba = crate::skin_fetch::fetch_rgba64(&info.url)?;
+            let uv = wr.upload_player_skin(gpu, &rgba).ok_or("skin upload failed")?;
+            println!("[mobshot] skin: {name} → {} model, uploaded", if info.slim { "slim" } else { "wide" });
+            Some((uv, info.slim))
+        }
+        None => None,
+    };
     let pass = wr.entity_pass().expect("entity pass");
     let mut kinds = pass.available_kinds();
     if let Some(only) = &args.only {
@@ -390,6 +409,15 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         if kinds.is_empty() {
             return Err(format!("--only matched no mobs: {only}"));
         }
+    }
+    // With --skin, render the player row as the model the profile specifies.
+    if let Some((_, slim)) = player_skin {
+        for k in kinds.iter_mut() {
+            if matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+                *k = if slim { EntityModelKind::PlayerSlim } else { EntityModelKind::Player };
+            }
+        }
+        kinds.dedup();
     }
     println!(
         "[mobshot] {} models: {}",
@@ -443,6 +471,11 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             d.limb_amount = walk_amt;
             d.gesture = gesture;
             d.shell = args.shell;
+            if matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+                if let Some((uv, _)) = player_skin {
+                    d.skin_uv = Some(uv);
+                }
+            }
             let (row, col) = (i / cols, i % cols);
             let row_n = ((kinds.len() - row * cols).min(cols)) as f32;
             let stagger = if row % 2 == 1 { sx * 0.5 } else { 0.0 };

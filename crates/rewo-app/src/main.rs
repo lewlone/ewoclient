@@ -13,6 +13,7 @@ mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
+mod skin_fetch;
 mod stats;
 mod view_cmd;
 

@@ -2327,7 +2327,9 @@ dependencies = [
  "rewo-mesh",
  "rewo-net",
  "rewo-world",
+ "serde_json",
  "tracy-client",
+ "ureq",
  "winit",
 ]
 

@@ -754,11 +754,15 @@ pub enum EntityModelKind {
     CopperGolem,
     Nautilus,
     ZombieNautilus,
+    /// Slim-armed ("Alex") player — chosen per-entity from the profile's
+    /// skin model; never wire-mapped (players resolve to `Player` and the
+    /// caller swaps to this when the skin is slim).
+    PlayerSlim,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 89;
+    pub const COUNT: usize = 90;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -848,6 +852,7 @@ impl EntityModelKind {
         EntityModelKind::CopperGolem,
         EntityModelKind::Nautilus,
         EntityModelKind::ZombieNautilus,
+        EntityModelKind::PlayerSlim,
         EntityModelKind::Capsule,
     ];
 
@@ -945,6 +950,7 @@ impl EntityModelKind {
             EntityModelKind::CopperGolem => "copper_golem",
             EntityModelKind::Nautilus => "nautilus",
             EntityModelKind::ZombieNautilus => "zombie_nautilus",
+            EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Capsule => "capsule",
         }
     }
@@ -959,7 +965,11 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
         return EntityModelKind::Capsule;
     };
     for k in EntityModelKind::ALL {
-        if k != EntityModelKind::Player && k != EntityModelKind::Capsule && k.name() == short {
+        // Player variants are chosen by the caller (type id + skin model),
+        // never by the wire name; capsule is the fallback, not a match.
+        let picked_elsewhere =
+            matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim | EntityModelKind::Capsule);
+        if !picked_elsewhere && k.name() == short {
             return k;
         }
     }
@@ -977,6 +987,7 @@ pub struct MobDef {
 
 pub static MOBS: &[MobDef] = &[
     MobDef { kind: EntityModelKind::Player, textures: &["player"], build: player },
+    MobDef { kind: EntityModelKind::PlayerSlim, textures: &["player"], build: player_slim },
     MobDef { kind: EntityModelKind::Zombie, textures: &["zombie"], build: zombie },
     MobDef { kind: EntityModelKind::ZombieVillager, textures: &["zombie_villager"], build: zombie_villager },
     MobDef { kind: EntityModelKind::Husk, textures: &["husk"], build: husk },
@@ -1085,19 +1096,32 @@ fn humanoid_head_body(b: &mut ModelBuilder, tex: usize) -> usize {
     head
 }
 
-/// The wide ("Steve") player model: humanoid + PlayerModel's dedicated left
-/// limb rects + the four overlay layers (hat via `humanoid_head_body`).
+/// The wide ("Steve", 4-px arms) player model.
 fn player() -> Model {
+    player_model(false)
+}
+
+/// The slim ("Alex", 3-px arms) player model — same skin layout, narrower
+/// arm boxes (vanilla `PlayerModel.createMesh(_, slim=true)`).
+fn player_slim() -> Model {
+    player_model(true)
+}
+
+/// Shared `PlayerModel.createMesh` — head/hat/body/jacket/legs are identical
+/// between the two arm widths; only the arm + sleeve boxes differ.
+fn player_model(slim: bool) -> Model {
     let mut b = ModelBuilder::new();
     humanoid_head_body(&mut b, 0);
     // Jacket overlay on the body.
     b.cube_g(STATIC_PART, 0, (16.0, 32.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], 0.25, NONE);
+    // Arms: wide = 4-px box at min.x −3/−1; slim = 3-px box at min.x −2/−1.
+    let (aw, rmin, lmin) = if slim { (3.0, -2.0, -1.0) } else { (4.0, -3.0, -1.0) };
     let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
-    b.cube(arm_r, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
-    b.cube_g(arm_r, 0, (40.0, 32.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, NONE);
+    b.cube(arm_r, 0, (40.0, 16.0), [rmin, -2.0, -2.0], [aw, 12.0, 4.0], NONE);
+    b.cube_g(arm_r, 0, (40.0, 32.0), [rmin, -2.0, -2.0], [aw, 12.0, 4.0], 0.25, NONE);
     let arm_l = b.part([5.0, 2.0, 0.0], Anim::ArmLeft, 1.0);
-    b.cube(arm_l, 0, (32.0, 48.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
-    b.cube_g(arm_l, 0, (48.0, 48.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, NONE);
+    b.cube(arm_l, 0, (32.0, 48.0), [lmin, -2.0, -2.0], [aw, 12.0, 4.0], NONE);
+    b.cube_g(arm_l, 0, (48.0, 48.0), [lmin, -2.0, -2.0], [aw, 12.0, 4.0], 0.25, NONE);
     let leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
     b.cube(leg_r, 0, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], NONE);
     b.cube_g(leg_r, 0, (0.0, 32.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], 0.25, NONE);
@@ -2968,16 +2992,19 @@ mod tests {
         assert_eq!(kind_for_entity_name("minecraft:wither_skeleton"), EntityModelKind::WitherSkeleton);
         assert_eq!(kind_for_entity_name("minecraft:warden"), EntityModelKind::Warden);
         assert_eq!(kind_for_entity_name("minecraft:armor_stand"), EntityModelKind::Capsule);
-        // Every registry def's kind is reachable from its own wire name.
+        // Every registry def's kind is reachable from its own wire name —
+        // except the player variants, which the caller picks by type id +
+        // skin model, never by wire name.
         for def in MOBS {
-            if def.kind != EntityModelKind::Player {
-                assert_eq!(
-                    kind_for_entity_name(&format!("minecraft:{}", def.kind.name())),
-                    def.kind,
-                    "wire mapping for {:?}",
-                    def.kind
-                );
+            if matches!(def.kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+                continue;
             }
+            assert_eq!(
+                kind_for_entity_name(&format!("minecraft:{}", def.kind.name())),
+                def.kind,
+                "wire mapping for {:?}",
+                def.kind
+            );
         }
     }
 }

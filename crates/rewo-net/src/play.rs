@@ -62,6 +62,11 @@ pub struct PlaySession {
     /// Signed-chat signer (online-mode + a fetched player certificate).
     /// `None` → unsigned chat (offline servers, or a cert-fetch failure).
     signer: Option<crate::chat_sign::ChatSigner>,
+    /// Resolved player skins by profile UUID (from the Player Info
+    /// `textures` property). Online-mode only — offline servers send none.
+    player_skins: std::collections::HashMap<u128, crate::skins::SkinInfo>,
+    /// Newly-announced skins the app hasn't fetched yet (drained each frame).
+    pending_skins: Vec<(u128, crate::skins::SkinInfo)>,
 }
 
 impl<'a> Connection<'a> {
@@ -160,6 +165,8 @@ impl<'a> Connection<'a> {
             sequence: 0,
             ticks: 0,
             signer: None,
+            player_skins: std::collections::HashMap::new(),
+            pending_skins: Vec::new(),
         };
         // Online-mode: fetch a player certificate and announce the chat
         // session so `enforce-secure-profile` servers accept our chat. A
@@ -207,6 +214,12 @@ impl PlaySession {
     /// Drain the stale-column set (live renderer re-meshes these).
     pub fn take_dirty(&mut self) -> Vec<(i32, i32)> {
         self.dirty.drain().collect()
+    }
+
+    /// Drain newly-announced player skins (UUID → skin) for the app to
+    /// fetch + upload. Each skin is queued once (per value change).
+    pub fn take_pending_skins(&mut self) -> Vec<(u128, crate::skins::SkinInfo)> {
+        std::mem::take(&mut self.pending_skins)
     }
 
     /// Re-queue columns whose re-mesh was deferred (per-frame budget).
@@ -623,6 +636,7 @@ impl PlaySession {
     fn apply_player_info(&mut self, body: &[u8]) {
         let mut r = PacketReader::new(body);
         let mut names: Vec<(u128, String)> = Vec::new();
+        let mut skins: Vec<(u128, crate::skins::SkinInfo)> = Vec::new();
         let parse = (|| -> rewo_proto::Result<()> {
             let mask = r.u8()?;
             let has = |bit: u8| mask & (1u8 << bit) != 0;
@@ -634,8 +648,15 @@ impl PlaySession {
                     let name = r.string(16)?.to_string();
                     let props = r.count("profile properties", 1)?;
                     for _ in 0..props {
-                        let _name = r.string(64)?;
-                        let _value = r.string(32767)?;
+                        let prop = r.string(64)?;
+                        let value = r.string(32767)?;
+                        // Decode the `textures` property → skin URL + model,
+                        // so a player renders with their real skin.
+                        if prop == "textures" {
+                            if let Some(info) = crate::skins::decode_textures_property(&value) {
+                                skins.push((uuid, info));
+                            }
+                        }
                         if r.bool()? {
                             let _sig = r.string(1024)?;
                         }
@@ -681,6 +702,13 @@ impl PlaySession {
         }
         for (uuid, name) in names {
             self.world.entities.set_name(uuid, name);
+        }
+        for (uuid, info) in skins {
+            // Queue only genuinely-new skins so the app fetches each once.
+            if self.player_skins.get(&uuid) != Some(&info) {
+                self.player_skins.insert(uuid, info.clone());
+                self.pending_skins.push((uuid, info));
+            }
         }
     }
 

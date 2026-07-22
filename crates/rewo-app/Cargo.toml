@@ -21,6 +21,9 @@ bytemuck = { workspace = true }
 dirs = { workspace = true }
 png = { workspace = true }
 ash = { workspace = true }
+# M7c player skins — resolve username→skin URL + fetch the PNG.
+ureq = { workspace = true }
+serde_json = { workspace = true }
 winit = { workspace = true }
 raw-window-handle = { workspace = true }
 clap = { workspace = true }

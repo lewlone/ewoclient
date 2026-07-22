@@ -800,6 +800,20 @@ impl WorldRenderer {
         self.entities.as_ref()
     }
 
+    /// Upload a player's 64×64 skin into the entity atlas and return the UV
+    /// offset for its `EntityDraw::skin_uv`. `None` if the entity pass isn't
+    /// initialized (view/demo/bench paths).
+    pub fn upload_player_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
+        let pass = self.entities.as_mut()?;
+        match pass.upload_skin(gpu, rgba) {
+            Ok(uv) => Some(uv),
+            Err(e) => {
+                log::warn!("entities: skin upload failed: {e}");
+                None
+            }
+        }
+    }
+
     /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).
     pub fn init_hud(&mut self, gpu: &mut Gpu, sprites: &HudSpritesData<'_>) -> Result<(), String> {
         self.hud = Some(HudPass::new(gpu, self.color_format, sprites)?);
