@@ -73,6 +73,12 @@ sha2 = "0.10"
 sha1 = "0.10"
 urlencoding = "2"
 serde_json = "1"
+# Order-preserving map — used by rewo-gpu's CEM animation parser so an
+# `_animations.jpm` object's assignments keep file order (OptiFine evaluates
+# them top-to-bottom; a later expression reads a bone channel an earlier one
+# assigned). serde_json's default Map is a sorted BTreeMap, which would break
+# FA's mirror/derive expressions (`l_eye.sy: "r_eye.sy"`).
+indexmap = { version = "2", features = ["serde"] }
 
 # v2 phase C — native extraction (unzip natives JARs into per-instance
 # natives/). `zip` is sync; pure Rust; no compression-only deps we don't

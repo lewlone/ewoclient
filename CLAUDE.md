@@ -1569,6 +1569,26 @@ section below and REWO_PLAN §15. Everything is in the `rewo-*` crates and the
 launcher `Native` arm; none of it touches the `ewo-jni`/mixin/launcher-GUI
 machinery.*
 
+*Update (2026-07-23 session, Rewo): **M9d — CEM polish, the Fresh Animations
+detail rig.** Closed the M9c "polish left" list (foot-submodel pivots,
+per-face `uvNorth`, scale channels), which all shared one root cause: the
+parser only made top-level parts bones, so a FA rig's nested detail (head,
+eyes, feet) was flattened onto its parent and its animation channels skipped.
+Fix = a bone per `.jem` node. Three verified pieces (headless via
+`mobshot --pack` vs the real FA creeper/pig/zombie; no-pack gate stays
+243/243; 26 rewo-gpu tests): **per-face UVs** (`cube_f_faceuv` — the FA
+eyes/snout, previously box-UV garbage), **scale channels** (+ bone-channel
+reads + file-order via a new `indexmap` dep — serde_json's sorted `Map` broke
+FA's mirror expressions), and **submodels-as-bones** (head-look, eye blink,
+foot articulation now animate; box rest positions unchanged). Two more
+load-bearing asymmetries surfaced, both empirical-from-FA + vanilla-verified:
+a submodel's pivot is its accumulated *position* (`to_model(boxOff)`, e.g.
+creeper head2 → the neck), not −translate; and OptiFine translation
+**replaces** a bone's translate (subtract a per-bone rest baseline, else the
+pig head flings ~12u off the body — baseline is `invertAxis(pivot)` for
+top-level, own translate for submodel). Open: ETF random/emissive textures
+(M9b). Detail in REWO_PLAN §15 (M9d entry).*
+
 ---
 
 ## Rewo — from-scratch native Minecraft client (M0–M7 + M9 CEM shipped)

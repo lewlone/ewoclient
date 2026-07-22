@@ -337,6 +337,13 @@ pub struct Model {
     /// Resource-pack CEM animation program (M9c) — per-frame bone channels
     /// driven by the OptiFine expression language. `None` for built-ins.
     pub cem: Option<crate::cem_anim::AnimProgram>,
+    /// Per-bone translation *rest baseline* (indexed by part). OptiFine
+    /// animation `tx/ty/tz` *replace* a bone's translate rather than adding to
+    /// it (FA re-specifies rest + sway), so `eval_program` subtracts this
+    /// baseline from driven translation channels, leaving only the sway. The
+    /// value differs by bone kind — `invertAxis(pivot)` for a top-level part,
+    /// the own relative translate for a submodel. Empty for built-in mobs.
+    pub cem_translate: Vec<[f32; 3]>,
 }
 
 /// A static fold applied to cube vertices at build time: `v → R_zyx(rot)·v +
@@ -482,6 +489,20 @@ pub fn cube_faces(
     ]
 }
 
+/// Slot index for a face in the per-face UV override array
+/// ([`ModelBuilder::cube_f_faceuv`]). Must agree with the array the CEM
+/// parser builds in `emit_box`.
+const fn face_slot(f: Facing) -> usize {
+    match f {
+        Facing::North => 0,
+        Facing::South => 1,
+        Facing::East => 2,
+        Facing::West => 3,
+        Facing::Up => 4,
+        Facing::Down => 5,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Model builder
 // ---------------------------------------------------------------------------
@@ -606,8 +627,31 @@ impl ModelBuilder {
         mirror: bool,
         folds: &[Fold],
     ) {
+        self.cube_f_faceuv(part, tex, uv, min, dims, grow, mirror, folds, &[None; 6]);
+    }
+
+    /// Like [`cube_f`] but with optional per-face UV rects (OptiFine CEM
+    /// `uvNorth`/`uvSouth`/… — texture-pixel `[u0,v0,u1,v1]`). A face with an
+    /// override uses that rect through the *same* corner winding as the box-UV
+    /// path (so setting a face's override to its box-UV rect is a no-op);
+    /// faces left `None` fall back to the box-UV unwrap. Used by the CEM
+    /// parser for hand-placed detail — creeper/zombie eyes, the pig snout.
+    /// Reversed rects (`u0>u1`) mirror the face, exactly like OptiFine.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn cube_f_faceuv(
+        &mut self,
+        part: usize,
+        tex: usize,
+        uv: (f32, f32),
+        min: [f32; 3],
+        dims: [f32; 3],
+        grow: f32,
+        mirror: bool,
+        folds: &[Fold],
+        face_uv: &[Option<[f32; 4]>; 6],
+    ) {
         let [w, h, d] = dims;
-        for (facing, mut pos, uvs) in cube_faces(uv, min, dims, grow, mirror) {
+        for (facing, mut pos, mut uvs) in cube_faces(uv, min, dims, grow, mirror) {
             let area = match facing {
                 Facing::Down | Facing::Up => w * d,
                 Facing::West | Facing::East => d * h,
@@ -615,6 +659,16 @@ impl ModelBuilder {
             };
             if area == 0.0 {
                 continue;
+            }
+            if let Some([a, b, c, e]) = face_uv[face_slot(facing)] {
+                // Same corner assignment as cube_faces' `face` closure for
+                // rect (a,b,c,e): verts get [(c,b),(a,b),(a,e),(c,e)]. Mirror
+                // reverses to stay aligned with the (already-reversed) verts.
+                let mut ov = [[c, b], [a, b], [a, e], [c, e]];
+                if mirror {
+                    ov.reverse();
+                }
+                uvs = ov;
             }
             let mut normal = facing.normal();
             for f in folds {
@@ -655,21 +709,27 @@ impl ModelBuilder {
             keyframes: self.keyframes,
             scale,
             cem: None,
+            cem_translate: Vec::new(),
         }
     }
 
-    /// A CEM part with an explicit pivot (M9c named-bone models). Returns the
-    /// part index; boxes added to it must be pivot-relative.
-    pub(crate) fn cem_part(&mut self, pivot: [f32; 3]) -> usize {
-        // CEM bones get their per-frame rotation/offset from the animation
-        // program (applied in `part_transforms` by part index), not a
-        // built-in `Anim` formula — so the marker is `None`.
+    /// A CEM bone with an explicit pivot and optional parent bone (M9c
+    /// named-bone models — the `.jem` part/submodel tree). Returns the part
+    /// index; boxes added to it must be relative to the bone's *absolute*
+    /// pivot, and `pivot` is relative to the parent bone's pivot (root bones
+    /// pass their absolute pivot with `parent = None`), matching how
+    /// `part_transforms` composes the chain.
+    pub(crate) fn cem_part(&mut self, pivot: [f32; 3], parent: Option<usize>) -> usize {
+        debug_assert!(parent.is_none_or(|p| p < self.parts.len()));
+        // CEM bones get their per-frame rotation/offset/scale from the
+        // animation program (applied in `part_transforms` by part index), not
+        // a built-in `Anim` formula — so the marker is `None`.
         self.parts.push(Part {
             pivot,
             rot: [0.0; 3],
             anim: Anim::None,
             amp: 1.0,
-            parent: None,
+            parent: parent.map(|p| p as u16),
             name: "",
             show: Show::Always,
         });

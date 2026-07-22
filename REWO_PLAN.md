@@ -63,8 +63,16 @@ blow.** Headlines:
   −translate)`), NOT static position — only *submodel* translates
   accumulate; (2) the model is baked through a 180° Z-rotation
   (`invertAxis:"xy"`), so the animation's X/Y rotations + translations are
-  **negated**, Z passes through. CEM polish left: foot-submodel leg pivots
-  ~1px off, per-face `uvNorth`, scale channels.
+  **negated**, Z passes through. **M9d (2026-07-23, §15) closed the polish
+  list**: per-face UVs (creeper/zombie/pig eyes + pig snout), scale channels
+  (+ bone-channel reads + file-order via `indexmap`), and **submodels-as-bones**
+  (every `.jem` node is now a parented bone, so head-look/blink/feet animate;
+  the "~1px foot pivot" is subsumed). Two more asymmetries surfaced there:
+  a submodel's pivot is its *accumulated position* (`to_model(boxOff)`, not
+  −translate), and OptiFine translation **replaces** a bone's translate
+  (subtract a per-bone rest baseline, else the pig head flings off). CEM polish
+  left: **ETF random/emissive textures (M9b)** + per-face `uvUp/uvDown` winding
+  (visual-only-verified) + the `.jpm` `"model"` geometry ref.
 
 Original M0–M6 (still the foundation):
 - **M0** skeleton: ash 1.3 device + swapchain + frame-time overlay + GPU
@@ -2407,3 +2415,74 @@ gate green.**
   skipping the health FLOAT before it). Metadata unit tests for both the
   INT-size and BOOLEAN-baby readings at index 16. Gates: 27 crate tests,
   demo byte-identical, `mobshot --check` unaffected (mobshot passes 1.0).
+
+**2026-07-23 — M9d: CEM polish — per-face UVs, scale channels, and
+submodels-as-bones (Fresh Animations fully animates).**
+
+The M9c "polish left" list (foot-submodel pivots ~1px off, per-face
+`uvNorth`, scale channels) turned out to share **one** root cause and got
+closed together: the parser only made *top-level* parts into bones, so every
+FA rig's nested detail — the head, the eyes, the feet — was flattened onto
+its parent and its animation channels silently skipped. The fix is a
+bone-per-node tree. Three verified pieces (all headless via `mobshot --pack`
+against the real FA creeper/pig/zombie; no-pack facelabel gate stays
+**243/243**; 26 rewo-gpu tests, 8 new):
+
+- **Per-face UVs** (`mobs::cube_f_faceuv` + `cem::emit_box`): OptiFine
+  `uvNorth`/`uvSouth`/`uvEast`/`uvWest`/`uvUp`/`uvDown` texture-pixel rects
+  override the box-UV unwrap per face, wound identically to the box-UV `face`
+  closure (reversed rects → mirror, exactly like OptiFine). This is what the
+  FA creeper/zombie/pig eyes (flat `uvNorth` plane boxes) and the pig snout
+  (all sides) need — before, they sampled box-UV `(0,0)` garbage. `cube_f`
+  now delegates to `cube_f_faceuv` with all-`None`, so the thousands of
+  built-in callers are untouched.
+
+- **Scale channels + bone-channel reads + file order** (`cem_anim`/`cem`):
+  `sx/sy/sz` were parsed but dropped; now applied about the bone pivot as
+  `R·S` (vanilla's scale-innermost), propagating through the parent chain.
+  Two dependencies fell out of the real data: (1) FA expressions **read**
+  other bones' channels as variables (`"l_eye_white.sy": "r_eye_white.sy"`,
+  `"head2.sy": "head2.sx"`), so bone channels now intern a slot and publish
+  their value each frame; (2) FA relies on **file order** of a JSON object's
+  assignments, but `serde_json`'s default `Map` is a sorted `BTreeMap` — the
+  `_animations.jpm` blocks are now deserialized into `indexmap::IndexMap`
+  (added to rewo-gpu) so keys keep file order (a sorted map evaluated
+  `l_eye_white.sy` before `r_eye_white.sy` → the mirror read 0 → collapsed).
+
+- **Submodels-as-bones** (`cem::model_from_jem`/`add_node`): every `.jem`
+  node (top-level `part` *and* every submodel `id`) becomes a named,
+  parented bone in tree pre-order, so head-look (`head2`), eye blink, and
+  foot articulation animate. Box **rest positions are unchanged** (the
+  `submodel_translate_accumulates` test still holds); only the per-bone
+  pivot is new. **Two load-bearing asymmetries**, both derived empirically
+  from FA data + verified against vanilla, not guessed:
+  - **Pivot**: a top-level part's `translate` is the negated pivot
+    (`to_model(−translate)`, vanilla-exact); a submodel's `translate` is an
+    accumulated *position*, so its pivot sits there (`to_model(boxOff)`) —
+    creeper `head2` → the neck `[0,6,0]`, matching vanilla `head.offset(0,6,0)`.
+  - **Translation is REPLACE, not add**: OptiFine `tx/ty/tz` overwrite a
+    bone's translate; FA authors them as `rest + sway`. Adding them flung the
+    pig head ~12 units off the body. `eval_program` subtracts a per-bone rest
+    baseline (`Model::cem_translate`), so a rest re-spec nets zero and only
+    the sway remains. The baseline is **also** asymmetric — `invertAxis(pivot)`
+    for a top-level part (FA re-specifies the world pivot, e.g. the pig legs),
+    the own relative translate for a submodel. (FA's `-3.2` vs `-3` in a leg's
+    `tx` is an *intentional* stance offset, correctly kept as a +0.2 delta.)
+
+  Verified live: the FA creeper head sways naturally about the neck (smooth
+  6-frame filmstrip) and stays attached, the zombie/pig render as coherent
+  full-body FA mobs (head+snout+eyes+legs all attached), and an old-vs-new
+  diff localizes the change exactly to the head/eyes. Built-in mobs
+  (`cem = None`) are byte-identical (243/243 + demo unchanged).
+
+  Verification pack: reconstructed from the extracted FA `creeper/pig/zombie`
+  `.jem` + `_animations.jpm` under `%LOCALAPPDATA%/Temp/claude/fa-cem/` into a
+  standard `assets/minecraft/optifine/cem/` zip (the original download wasn't
+  on disk; the jems are genuine FA data).
+
+  **Still open (M9b / follow-ups)**: ETF random + emissive textures (a
+  separate subsystem — spider/enderman/blaze eyes, cow/pig random variants);
+  per-face UV winding for `uvUp`/`uvDown` verified only visually (creeper eyes
+  use `uvNorth`, which is exact); the `.jpm` `"model"` geometry reference
+  (FA's are pure animation containers). Foot-submodel pivots, per-face
+  `uvNorth`, and scale channels — the M9c leftover list — are now **done**.

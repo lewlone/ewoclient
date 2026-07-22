@@ -220,10 +220,14 @@ impl Channel {
 }
 
 /// One assignment in a mob's animation program: either a `var.*` slot write
-/// (feeds later expressions the same frame) or a bone channel.
+/// (feeds later expressions the same frame) or a bone channel. Bone channels
+/// also carry a `slot`: their evaluated value is published there each frame so
+/// later expressions can *read* `bone.channel` (FA mirrors left parts off the
+/// right, e.g. `"l_eye_white.sy": "r_eye_white.sy"`, and derives uniform
+/// scale, e.g. `"head2.sy": "head2.sx"`).
 pub enum Target {
     Var(usize),
-    Bone { part: u16, channel: Channel },
+    Bone { part: u16, channel: Channel, slot: usize },
 }
 
 /// A whole mob's animation: ordered assignments (vars first per the file

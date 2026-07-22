@@ -245,6 +245,9 @@ pub struct MobModel {
     /// Resource-pack CEM animation program (M9c) — drives bone channels
     /// per frame via the expression interpreter. `None` for built-ins.
     cem: Option<crate::cem_anim::AnimProgram>,
+    /// Per-bone own JEM translate baseline for the CEM replace-translation
+    /// semantics (see `mobs::Model::cem_translate`). Empty for built-ins.
+    cem_translate: Vec<[f32; 3]>,
 }
 
 struct GpuQuad {
@@ -392,6 +395,7 @@ impl EntityPass {
                 keyframes: m.keyframes,
                 scale: m.scale / 16.0,
                 cem: m.cem,
+                cem_translate: m.cem_translate,
             });
         }
         if debug_tex {
@@ -593,7 +597,7 @@ impl EntityPass {
             gesture: Option::None,
             shell: false,
         };
-        let xf = part_transforms(model, &ctx, None);
+        let xf = part_transforms(model, &ctx, None, None);
         Some(
             model
                 .quads
@@ -718,7 +722,7 @@ impl EntityPass {
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
         // `part_transforms` alongside the built-in animation.
-        let cem_deltas = model.cem.as_ref().map(|prog| {
+        let cem = model.cem.as_ref().map(|prog| {
             let mut actx = crate::cem_anim::AnimContext {
                 head_yaw: wrap_degrees(d.head_yaw - d.yaw),
                 head_pitch: d.pitch,
@@ -735,9 +739,13 @@ impl EntityPass {
                 id: d.anim_id,
                 ..Default::default()
             };
-            crate::cem::eval_program(prog, &mut actx, model.parts.len())
+            crate::cem::eval_program(prog, &mut actx, model.parts.len(), &model.cem_translate)
         });
-        let xf = part_transforms(model, &ctx, cem_deltas.as_deref());
+        let (cem_deltas, cem_scale) = match &cem {
+            Some((deltas, scale)) => (Some(deltas.as_slice()), Some(scale.as_slice())),
+            Option::None => (None, None),
+        };
+        let xf = part_transforms(model, &ctx, cem_deltas, cem_scale);
         // Per-entity render scale (slime/magma size) on top of the baked px→
         // block scale — vanilla scales the whole model uniformly by `size`.
         let s = model.scale * if d.scale_mul > 0.0 { d.scale_mul } else { 1.0 };
@@ -1197,6 +1205,7 @@ fn part_transforms(
     model: &MobModel,
     ctx: &AnimCtx,
     cem_deltas: Option<&[[f32; 6]]>,
+    cem_scale: Option<&[[f32; 3]]>,
 ) -> Vec<([[f32; 3]; 3], [f32; 3])> {
     let n = model.parts.len();
     let mut drots = vec![[0.0f32; 3]; n];
@@ -1265,7 +1274,18 @@ fn part_transforms(
             p.rot[1] + drots[i][1],
             p.rot[2] + drots[i][2],
         ];
-        let r = mat_zyx(e);
+        let mut r = mat_zyx(e);
+        // CEM scale channels (sx/sy/sz) scale the part's geometry about its
+        // pivot. Vanilla applies scale innermost (translate→rotate→scale), so
+        // fold it as `R·S`; children inherit the parent's `R·S`, scaling the
+        // whole subtree — exactly like vanilla's pose stack.
+        if let Some(sc) = cem_scale {
+            if let Some(&s) = sc.get(i) {
+                if s != [1.0, 1.0, 1.0] {
+                    r = mat_mul(r, scale_mat(s));
+                }
+            }
+        }
         let pivot = [
             p.pivot[0] + doffs[i][0],
             p.pivot[1] + doffs[i][1],
@@ -1313,6 +1333,11 @@ fn rot_x(a: f32) -> [[f32; 3]; 3] {
 fn rot_y(a: f32) -> [[f32; 3]; 3] {
     let (s, c) = a.sin_cos();
     [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+}
+
+/// Diagonal scale matrix (CEM `sx/sy/sz`, applied about the part pivot).
+fn scale_mat(s: [f32; 3]) -> [[f32; 3]; 3] {
+    [[s[0], 0.0, 0.0], [0.0, s[1], 0.0], [0.0, 0.0, s[2]]]
 }
 
 /// `a · b` (row-major; `b` applies to the vector first).
