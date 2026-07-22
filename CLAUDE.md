@@ -1671,9 +1671,15 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   phantom/allay/vex/bee wing flaps, fish tails, wolf tail wag, silverfish
   wiggle, wither side heads) — parts have base rotations + a parent
   hierarchy + pivot-motion anims; `set_entities` takes a time param
-  (`ageInTicks` = s·20); keyframe-rigged mobs (frog/camel/sniffer/bat/
-  dragon-flight/creaking…) need an AnimationDefinition player and stay
-  posed.
+  (`ageInTicks` = s·20). **The keyframe rigs run too**: vanilla
+  `AnimationDefinition`s machine-extracted by `tools/gen_anim_defs.ps1`
+  into generated `anim_defs.rs` (re-run after a version bump) + a
+  vanilla-exact evaluator (next-frame interpolation mode, catmullrom,
+  additive apply, per-mob `applyWalk` params) — frog/camel/sniffer/
+  armadillo/creaking/copper-golem walks, bat flight, breeze idle,
+  nautilus swim, rabbit hop. State-driven gesture rigs (warden roar,
+  sniffer dig, allay dance…) need entity pose state off the wire and
+  stay unplayed; dragon flight is bespoke procedural vanilla code, posed.
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 

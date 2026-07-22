@@ -135,6 +135,63 @@ pub enum Anim {
 
 impl Eq for Anim {}
 
+// ---------------------------------------------------------------------------
+// Keyframe animations (vanilla `AnimationDefinition` rigs)
+// ---------------------------------------------------------------------------
+
+/// Channel target — rotation deltas (radians) or pivot offsets (model px,
+/// vanilla's `posVec` y-negation already baked by the generator). Scale
+/// channels are dropped at generation time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KfTarget {
+    Rot,
+    Pos,
+}
+
+pub struct KfFrame {
+    pub t: f32,
+    pub v: [f32; 3],
+    /// This frame's interpolation — vanilla uses the *next* keyframe's mode
+    /// for each segment.
+    pub catmullrom: bool,
+}
+
+pub struct KfChannel {
+    pub part: &'static str,
+    pub target: KfTarget,
+    pub frames: &'static [KfFrame],
+}
+
+pub struct KfDef {
+    pub length: f32,
+    pub looping: bool,
+    pub channels: &'static [KfChannel],
+}
+
+/// How a keyframe animation advances — vanilla's driver call sites.
+#[derive(Clone, Copy)]
+pub enum KfDriver {
+    /// `applyWalk(pos, amt, speed_f, scale_f)`: t = pos·0.05·speed_f
+    /// seconds, value scale = min(amt·scale_f, 1).
+    Walk { speed_f: f32, scale_f: f32 },
+    /// The nautilus blend: `applyWalk(pos + age/age_div, amt + amt_add, …)`.
+    WalkPlusAge { age_div: f32, amt_add: f32, speed_f: f32, scale_f: f32 },
+    /// Continuous, age-driven at full scale (bat flight, breeze idle).
+    Age,
+    /// Age-driven, scaled by walk amount — the rabbit-hop approximation
+    /// (vanilla triggers HOP per jump; jump state isn't on our wire, so a
+    /// moving rabbit hops continuously).
+    AgeGatedByWalk { gate: f32 },
+}
+
+/// A keyframe animation attached to a model, channels resolved to part
+/// indices at build time.
+pub struct KfAnim {
+    pub def: &'static KfDef,
+    pub driver: KfDriver,
+    pub parts: Vec<u16>,
+}
+
 /// One articulated part: cubes attached to it rotate about `pivot` inside
 /// the parent's frame (`parent` = an earlier part index, or the model
 /// root). `rot` is the vanilla `PartPose` base rotation; the animation's
@@ -148,6 +205,9 @@ pub struct Part {
     /// Angle multiplier (villager/enderman swing at half amplitude).
     pub amp: f32,
     pub parent: Option<u16>,
+    /// Vanilla part name — only needed where keyframe channels target the
+    /// part; "" elsewhere.
+    pub name: &'static str,
 }
 
 /// One textured quad in part-local model px. UVs are in the mob's own
@@ -174,6 +234,8 @@ pub struct RawQuad {
 pub struct Model {
     pub parts: Vec<Part>,
     pub quads: Vec<RawQuad>,
+    /// Keyframe rigs playing on this model (channels part-resolved).
+    pub keyframes: Vec<KfAnim>,
     /// Extra scale on top of the 1/16 px→block conversion (player 0.9375,
     /// wither skeleton 1.2, slime 2.0, …).
     pub scale: f32,
@@ -332,6 +394,7 @@ pub const STATIC_PART: usize = 0;
 pub struct ModelBuilder {
     parts: Vec<Part>,
     quads: Vec<RawQuad>,
+    keyframes: Vec<KfAnim>,
 }
 
 impl ModelBuilder {
@@ -343,8 +406,10 @@ impl ModelBuilder {
                 anim: Anim::None,
                 amp: 1.0,
                 parent: None,
+                name: "",
             }],
             quads: Vec::new(),
+            keyframes: Vec::new(),
         }
     }
 
@@ -365,6 +430,20 @@ impl ModelBuilder {
         amp: f32,
         parent: Option<usize>,
     ) -> usize {
+        self.part_named("", pivot, rot, anim, amp, parent)
+    }
+
+    /// `part_ext` with the vanilla part name — required wherever a keyframe
+    /// channel targets the part.
+    fn part_named(
+        &mut self,
+        name: &'static str,
+        pivot: [f32; 3],
+        rot: [f32; 3],
+        anim: Anim,
+        amp: f32,
+        parent: Option<usize>,
+    ) -> usize {
         debug_assert!(parent.is_none_or(|p| p < self.parts.len()));
         self.parts.push(Part {
             pivot,
@@ -372,8 +451,26 @@ impl ModelBuilder {
             anim,
             amp,
             parent: parent.map(|p| p as u16),
+            name,
         });
         self.parts.len() - 1
+    }
+
+    /// Attach a keyframe rig; every channel's part name must exist (panics
+    /// at build otherwise — `registry_builds_clean` catches it).
+    fn keyframe(&mut self, def: &'static KfDef, driver: KfDriver) {
+        let parts = def
+            .channels
+            .iter()
+            .map(|ch| {
+                self.parts
+                    .iter()
+                    .position(|p| p.name == ch.part)
+                    .unwrap_or_else(|| panic!("keyframe part {:?} missing from model", ch.part))
+                    as u16
+            })
+            .collect();
+        self.keyframes.push(KfAnim { def, driver, parts });
     }
 
     /// Add one vanilla `addBox` to a part. `folds` reproduce nested static
@@ -441,6 +538,7 @@ impl ModelBuilder {
         Model {
             parts: self.parts,
             quads: self.quads,
+            keyframes: self.keyframes,
             scale,
         }
     }
@@ -1226,25 +1324,33 @@ fn squid() -> Model {
     b.finish(1.0)
 }
 
-/// `AdultRabbitModel`: fully static transcription (the hop keyframes are a
-/// follow-up) — tilted body with tail + head + ears, front legs, and the
-/// yaw-splayed haunches.
+/// `AdultRabbitModel`: tilted body with tail + head + ears, front legs,
+/// yaw-splayed haunches — hopping on the vanilla HOP rig (vanilla triggers
+/// it per jump; jump state isn't on the wire, so a moving rabbit hops
+/// continuously — see `KfDriver::AgeGatedByWalk`).
 fn rabbit() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::rot([-0.3927, 0.0, 0.0], [0.0, 23.0, 4.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-4.0, -6.0, -9.0], [8.0, 6.0, 10.0], 0.0, false, &[body]);
-    b.cube_f(STATIC_PART, 0, (20.0, 16.0), [-2.0, -3.0084, -1.0125], [4.0, 4.0, 4.0], 0.0, false, &[Fold::at([0.0, -4.9916, 0.0125]), body]);
-    let head = Fold::rot([0.3927, 0.0, 0.0], [0.0, -5.2929, -8.1213]);
-    b.cube_f(STATIC_PART, 0, (0.0, 16.0), [-2.5, -3.0, -4.0], [5.0, 5.0, 5.0], 0.0, false, &[head, body]);
-    b.cube_f(STATIC_PART, 0, (32.0, 0.0), [-1.0, -4.2929, -0.1213], [2.0, 5.0, 1.0], 0.0, false, &[Fold::at([1.5, -3.7071, -0.8787]), head, body]);
-    b.cube_f(STATIC_PART, 0, (26.0, 0.0), [-1.0, -4.2929, -0.1213], [2.0, 5.0, 1.0], 0.0, false, &[Fold::at([-1.5, -3.7071, -0.8787]), head, body]);
-    let front = Fold::at([0.0, -1.5349, -6.3108]);
-    b.cube_f(STATIC_PART, 0, (36.0, 18.0), [-0.9, -1.0, -0.9], [2.0, 4.0, 2.0], 0.0, false, &[Fold::rot([0.3927, 0.0, 0.0], [-2.0, 1.9239, 0.3827]), front, body]);
-    b.cube_f(STATIC_PART, 0, (44.0, 18.0), [-1.0, -1.0, -1.0], [2.0, 4.0, 2.0], 0.0, false, &[Fold::rot([0.3927, 0.0, 0.0], [2.0, 1.9239, 0.4827]), front, body]);
-    // Haunches under `backlegs` (0,23,4): pivot (∓3,0.5,0), then the haunch
-    // pose (0,−0.5,0) with the ±22.5° yaw splay.
-    b.cube_f(STATIC_PART, 0, (20.0, 24.0), [-1.0, 0.0, -5.0], [2.0, 1.0, 6.0], 0.0, false, &[Fold::rot([0.0, 0.3927, 0.0], [0.0, -0.5, 0.0]), Fold::at([-3.0, 0.5, 0.0]), Fold::at([0.0, 23.0, 4.0])]);
-    b.cube_f(STATIC_PART, 0, (36.0, 24.0), [-1.0, 0.0, -5.0], [2.0, 1.0, 6.0], 0.0, false, &[Fold::rot([0.0, -0.3927, 0.0], [0.0, -0.5, 0.0]), Fold::at([3.0, 0.5, 0.0]), Fold::at([0.0, 23.0, 4.0])]);
+    let body = b.part_named("body", [0.0, 23.0, 4.0], [-0.3927, 0.0, 0.0], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 0.0), [-4.0, -6.0, -9.0], [8.0, 6.0, 10.0], NONE);
+    let tail = b.part_named("tail", [0.0, -4.9916, 0.0125], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(tail, 0, (20.0, 16.0), [-2.0, -3.0084, -1.0125], [4.0, 4.0, 4.0], NONE);
+    let head = b.part_named("head", [0.0, -5.2929, -8.1213], [0.3927, 0.0, 0.0], Anim::None, 1.0, Some(body));
+    b.cube(head, 0, (0.0, 16.0), [-2.5, -3.0, -4.0], [5.0, 5.0, 5.0], NONE);
+    let ear_l = b.part_named("left_ear", [1.5, -3.7071, -0.8787], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_l, 0, (32.0, 0.0), [-1.0, -4.2929, -0.1213], [2.0, 5.0, 1.0], NONE);
+    let ear_r = b.part_named("right_ear", [-1.5, -3.7071, -0.8787], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_r, 0, (26.0, 0.0), [-1.0, -4.2929, -0.1213], [2.0, 5.0, 1.0], NONE);
+    let front = b.part_named("frontlegs", [0.0, -1.5349, -6.3108], [0.0; 3], Anim::None, 1.0, Some(body));
+    let fl_r = b.part_named("right_front_leg", [-2.0, 1.9239, 0.3827], [0.3927, 0.0, 0.0], Anim::None, 1.0, Some(front));
+    b.cube(fl_r, 0, (36.0, 18.0), [-0.9, -1.0, -0.9], [2.0, 4.0, 2.0], NONE);
+    let fl_l = b.part_named("left_front_leg", [2.0, 1.9239, 0.4827], [0.3927, 0.0, 0.0], Anim::None, 1.0, Some(front));
+    b.cube(fl_l, 0, (44.0, 18.0), [-1.0, -1.0, -1.0], [2.0, 4.0, 2.0], NONE);
+    let back = b.part_named("backlegs", [0.0, 23.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    let hl_r = b.part_named("right_hind_leg", [-3.0, 0.5, 0.0], [0.0; 3], Anim::None, 1.0, Some(back));
+    b.cube_f(hl_r, 0, (20.0, 24.0), [-1.0, 0.0, -5.0], [2.0, 1.0, 6.0], 0.0, false, &[Fold::rot([0.0, 0.3927, 0.0], [0.0, -0.5, 0.0])]);
+    let hl_l = b.part_named("left_hind_leg", [3.0, 0.5, 0.0], [0.0; 3], Anim::None, 1.0, Some(back));
+    b.cube_f(hl_l, 0, (36.0, 24.0), [-1.0, 0.0, -5.0], [2.0, 1.0, 6.0], 0.0, false, &[Fold::rot([0.0, -0.3927, 0.0], [0.0, -0.5, 0.0])]);
+    b.keyframe(&crate::anim_defs::RABBIT_HOP, KfDriver::AgeGatedByWalk { gate: 5.0 });
     b.finish(1.0)
 }
 
@@ -1699,23 +1805,27 @@ fn strider() -> Model {
 // Passives II — the overworld menagerie
 // ---------------------------------------------------------------------------
 
-/// `BatModel`: roosting pose as authored — small body, big ears, folded
-/// wings (0-thick plates).
+/// `BatModel`: small body, big ears, membrane wings — flying on the
+/// vanilla BAT_FLYING keyframe rig (our bats always render airborne).
 fn bat() -> Model {
     let mut b = ModelBuilder::new();
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.5, 0.0, -1.0], [3.0, 5.0, 2.0], 0.0, false, &[Fold::at([0.0, 17.0, 0.0])]);
-    let head = b.part([0.0, 17.0, 0.0], Anim::Head, 1.0);
+    let body = b.part_named("body", [0.0, 17.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 0.0), [-1.5, 0.0, -1.0], [3.0, 5.0, 2.0], NONE);
+    let head = b.part_named("head", [0.0, 17.0, 0.0], [0.0; 3], Anim::Head, 1.0, Option::None);
     b.cube(head, 0, (0.0, 7.0), [-2.0, -3.0, -1.0], [4.0, 3.0, 2.0], NONE);
     b.cube_f(head, 0, (1.0, 15.0), [-2.5, -4.0, 0.0], [3.0, 5.0, 0.0], 0.0, false, &[Fold::at([-1.5, -2.0, 0.0])]);
     b.cube_f(head, 0, (8.0, 15.0), [-0.1, -3.0, 0.0], [3.0, 5.0, 0.0], 0.0, false, &[Fold::at([1.1, -3.0, 0.0])]);
-    let body = Fold::at([0.0, 17.0, 0.0]);
-    let wr = Fold::at([-1.5, 0.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (12.0, 0.0), [-2.0, -2.0, 0.0], [2.0, 7.0, 0.0], 0.0, false, &[wr, body]);
-    b.cube_f(STATIC_PART, 0, (16.0, 0.0), [-6.0, -2.0, 0.0], [6.0, 8.0, 0.0], 0.0, false, &[Fold::at([-2.0, 0.0, 0.0]), wr, body]);
-    let wl = Fold::at([1.5, 0.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (12.0, 7.0), [0.0, -2.0, 0.0], [2.0, 7.0, 0.0], 0.0, false, &[wl, body]);
-    b.cube_f(STATIC_PART, 0, (16.0, 8.0), [0.0, -2.0, 0.0], [6.0, 8.0, 0.0], 0.0, false, &[Fold::at([2.0, 0.0, 0.0]), wl, body]);
-    b.cube_f(STATIC_PART, 0, (16.0, 16.0), [-1.5, 0.0, 0.0], [3.0, 2.0, 0.0], 0.0, false, &[Fold::at([0.0, 5.0, 0.0]), body]);
+    let wr = b.part_named("right_wing", [-1.5, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(wr, 0, (12.0, 0.0), [-2.0, -2.0, 0.0], [2.0, 7.0, 0.0], NONE);
+    let wrt = b.part_named("right_wing_tip", [-2.0, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(wr));
+    b.cube(wrt, 0, (16.0, 0.0), [-6.0, -2.0, 0.0], [6.0, 8.0, 0.0], NONE);
+    let wl = b.part_named("left_wing", [1.5, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(wl, 0, (12.0, 7.0), [0.0, -2.0, 0.0], [2.0, 7.0, 0.0], NONE);
+    let wlt = b.part_named("left_wing_tip", [2.0, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(wl));
+    b.cube(wlt, 0, (16.0, 8.0), [0.0, -2.0, 0.0], [6.0, 8.0, 0.0], NONE);
+    let feet = b.part_named("feet", [0.0, 5.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(feet, 0, (16.0, 16.0), [-1.5, 0.0, 0.0], [3.0, 2.0, 0.0], NONE);
+    b.keyframe(&crate::anim_defs::BAT_FLYING, KfDriver::Age);
     b.finish(1.0)
 }
 
@@ -1820,33 +1930,35 @@ fn bee() -> Model {
 }
 
 /// `FrogModel`: flat body/head plates, pop eyes, folded arms with hand
-/// plates, squat legs with feet.
+/// plates, squat legs with feet — walking on the vanilla FROG_WALK
+/// keyframe rig.
 fn frog() -> Model {
     let mut b = ModelBuilder::new();
-    let root = Fold::at([0.0, 24.0, 0.0]);
-    let body = Fold::at([0.0, -2.0, 4.0]);
-    b.cube_f(STATIC_PART, 0, (3.0, 1.0), [-3.5, -2.0, -8.0], [7.0, 3.0, 9.0], 0.0, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (23.0, 22.0), [-3.5, -1.0, -8.0], [7.0, 0.0, 9.0], 0.0, false, &[body, root]);
+    // root(0,24,0) → body(0,−2,4); head/eyes/croak/tongue ride the body.
+    let body = b.part_named("body", [0.0, 22.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (3.0, 1.0), [-3.5, -2.0, -8.0], [7.0, 3.0, 9.0], NONE);
+    b.cube(body, 0, (23.0, 22.0), [-3.5, -1.0, -8.0], [7.0, 0.0, 9.0], NONE);
     let head = Fold::at([0.0, -2.0, -1.0]);
-    b.cube_f(STATIC_PART, 0, (23.0, 13.0), [-3.5, -1.0, -7.0], [7.0, 0.0, 9.0], 0.0, false, &[head, body, root]);
-    b.cube_f(STATIC_PART, 0, (0.0, 13.0), [-3.5, -2.0, -7.0], [7.0, 3.0, 9.0], 0.0, false, &[head, body, root]);
+    b.cube_f(body, 0, (23.0, 13.0), [-3.5, -1.0, -7.0], [7.0, 0.0, 9.0], 0.0, false, &[head]);
+    b.cube_f(body, 0, (0.0, 13.0), [-3.5, -2.0, -7.0], [7.0, 3.0, 9.0], 0.0, false, &[head]);
     let eyes = Fold::at([-0.5, 0.0, 2.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([-1.5, -3.0, -6.5]), eyes, head, body, root]);
-    b.cube_f(STATIC_PART, 0, (0.0, 5.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([2.5, -3.0, -6.5]), eyes, head, body, root]);
-    b.cube_f(STATIC_PART, 0, (26.0, 5.0), [-3.5, -0.1, -2.9], [7.0, 2.0, 3.0], -0.1, false, &[Fold::at([0.0, -1.0, -5.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (17.0, 13.0), [-2.0, 0.0, -7.1], [4.0, 0.0, 7.0], 0.0, false, &[Fold::at([0.0, -1.01, 1.0]), body, root]);
-    let arm_l = Fold::at([4.0, -1.0, -6.5]);
-    b.cube_f(STATIC_PART, 0, (0.0, 32.0), [-1.0, 0.0, -1.0], [2.0, 3.0, 3.0], 0.0, false, &[arm_l, body, root]);
-    b.cube_f(STATIC_PART, 0, (18.0, 40.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([0.0, 3.0, -1.0]), arm_l, body, root]);
-    let arm_r = Fold::at([-4.0, -1.0, -6.5]);
-    b.cube_f(STATIC_PART, 0, (0.0, 38.0), [-1.0, 0.0, -1.0], [2.0, 3.0, 3.0], 0.0, false, &[arm_r, body, root]);
-    b.cube_f(STATIC_PART, 0, (2.0, 40.0), [-4.0, 0.01, -5.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([0.0, 3.0, 0.0]), arm_r, body, root]);
-    let leg_l = Fold::at([3.5, -3.0, 4.0]);
-    b.cube_f(STATIC_PART, 0, (14.0, 25.0), [-1.0, 0.0, -2.0], [3.0, 3.0, 4.0], 0.0, false, &[leg_l, root]);
-    b.cube_f(STATIC_PART, 0, (2.0, 32.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([2.0, 3.0, 0.0]), leg_l, root]);
-    let leg_r = Fold::at([-3.5, -3.0, 4.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 25.0), [-2.0, 0.0, -2.0], [3.0, 3.0, 4.0], 0.0, false, &[leg_r, root]);
-    b.cube_f(STATIC_PART, 0, (18.0, 32.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([-2.0, 3.0, 0.0]), leg_r, root]);
+    b.cube_f(body, 0, (0.0, 0.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([-1.5, -3.0, -6.5]), eyes, head]);
+    b.cube_f(body, 0, (0.0, 5.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([2.5, -3.0, -6.5]), eyes, head]);
+    b.cube_f(body, 0, (26.0, 5.0), [-3.5, -0.1, -2.9], [7.0, 2.0, 3.0], -0.1, false, &[Fold::at([0.0, -1.0, -5.0])]);
+    b.cube_f(body, 0, (17.0, 13.0), [-2.0, 0.0, -7.1], [4.0, 0.0, 7.0], 0.0, false, &[Fold::at([0.0, -1.01, 1.0])]);
+    let arm_l = b.part_named("left_arm", [4.0, -1.0, -6.5], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(arm_l, 0, (0.0, 32.0), [-1.0, 0.0, -1.0], [2.0, 3.0, 3.0], NONE);
+    b.cube_f(arm_l, 0, (18.0, 40.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([0.0, 3.0, -1.0])]);
+    let arm_r = b.part_named("right_arm", [-4.0, -1.0, -6.5], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(arm_r, 0, (0.0, 38.0), [-1.0, 0.0, -1.0], [2.0, 3.0, 3.0], NONE);
+    b.cube_f(arm_r, 0, (2.0, 40.0), [-4.0, 0.01, -5.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([0.0, 3.0, 0.0])]);
+    let leg_l = b.part_named("left_leg", [3.5, 21.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(leg_l, 0, (14.0, 25.0), [-1.0, 0.0, -2.0], [3.0, 3.0, 4.0], NONE);
+    b.cube_f(leg_l, 0, (2.0, 32.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([2.0, 3.0, 0.0])]);
+    let leg_r = b.part_named("right_leg", [-3.5, 21.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(leg_r, 0, (0.0, 25.0), [-2.0, 0.0, -2.0], [3.0, 3.0, 4.0], NONE);
+    b.cube_f(leg_r, 0, (18.0, 32.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([-2.0, 3.0, 0.0])]);
+    b.keyframe(&crate::anim_defs::FROG_WALK, KfDriver::Walk { speed_f: 1.5, scale_f: 2.5 });
     b.finish(1.0)
 }
 
@@ -1863,24 +1975,27 @@ fn tadpole() -> Model {
 /// and skipped here).
 fn armadillo() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 21.0, 4.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 20.0), [-4.0, -7.0, -10.0], [8.0, 8.0, 12.0], 0.3, false, &[body]);
-    b.cube_f(STATIC_PART, 0, (0.0, 40.0), [-4.0, -7.0, -10.0], [8.0, 8.0, 12.0], 0.0, false, &[body]);
-    b.cube_f(STATIC_PART, 0, (44.0, 53.0), [-0.5, -0.0865, 0.0933], [1.0, 6.0, 1.0], 0.0, false, &[Fold::rot([0.5061, 0.0, 0.0], [0.0, -3.0, 1.0]), body]);
-    let head = b.part([0.0, 19.0, -7.0], Anim::Head, 1.0);
+    let body = b.part_named("body", [0.0, 21.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube_g(body, 0, (0.0, 20.0), [-4.0, -7.0, -10.0], [8.0, 8.0, 12.0], 0.3, NONE);
+    b.cube(body, 0, (0.0, 40.0), [-4.0, -7.0, -10.0], [8.0, 8.0, 12.0], NONE);
+    let tail = b.part_named("tail", [0.0, -3.0, 1.0], [0.5061, 0.0, 0.0], Anim::None, 1.0, Some(body));
+    b.cube(tail, 0, (44.0, 53.0), [-0.5, -0.0865, 0.0933], [1.0, 6.0, 1.0], NONE);
+    // Head: body child at (0, −2, −11).
+    let head = b.part_named("head", [0.0, -2.0, -11.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube_f(head, 0, (43.0, 15.0), [-1.5, -1.0, -1.0], [3.0, 5.0, 2.0], 0.0, false, &[Fold::rot([-0.3927, 0.0, 0.0], [0.0, 0.0, 0.0])]);
     b.cube_f(head, 0, (43.0, 10.0), [-2.0, -3.0, 0.0], [2.0, 5.0, 0.0], 0.0, false, &[Fold::rot([0.1886, -0.3864, -0.0718], [-0.5, 0.0, -0.6]), Fold::at([-1.0, -1.0, 0.0])]);
     b.cube_f(head, 0, (47.0, 10.0), [0.0, -3.0, 0.0], [2.0, 5.0, 0.0], 0.0, false, &[Fold::rot([0.1886, 0.3864, 0.0718], [0.5, 1.0, -0.6]), Fold::at([1.0, -2.0, 0.0])]);
     let legs = [
-        ((51.0, 31.0), [-2.0, 21.0, 4.0], Anim::QuadHindRight),
-        ((42.0, 31.0), [2.0, 21.0, 4.0], Anim::QuadHindLeft),
-        ((51.0, 43.0), [-2.0, 21.0, -4.0], Anim::QuadFrontRight),
-        ((42.0, 43.0), [2.0, 21.0, -4.0], Anim::QuadFrontLeft),
+        ("right_hind_leg", (51.0, 31.0), [-2.0, 21.0, 4.0]),
+        ("left_hind_leg", (42.0, 31.0), [2.0, 21.0, 4.0]),
+        ("right_front_leg", (51.0, 43.0), [-2.0, 21.0, -4.0]),
+        ("left_front_leg", (42.0, 43.0), [2.0, 21.0, -4.0]),
     ];
-    for (uv, pivot, anim) in legs {
-        let p = b.part(pivot, anim, 1.0);
+    for (name, uv, pivot) in legs {
+        let p = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, Option::None);
         b.cube(p, 0, uv, [-1.0, 0.0, -1.0], [2.0, 3.0, 2.0], NONE);
     }
+    b.keyframe(&crate::anim_defs::ARMADILLO_WALK, KfDriver::Walk { speed_f: 16.5, scale_f: 2.5 });
     b.finish(1.0)
 }
 
@@ -2070,29 +2185,35 @@ fn polar_bear() -> Model {
 }
 
 /// `AdultCamelModel`: long body with hump + tail, towering neck/head,
-/// stilt legs.
+/// stilt legs — walking on the vanilla CAMEL_WALK keyframe rig (which also
+/// bobs the whole "root" and flicks the ears).
 fn camel() -> Model {
     let mut b = ModelBuilder::new();
+    let root = b.part_named("root", [0.0, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
     let body = Fold::at([0.0, 4.0, 9.5]);
-    b.cube_f(STATIC_PART, 0, (0.0, 25.0), [-7.5, -12.0, -23.5], [15.0, 12.0, 27.0], 0.0, false, &[body]);
-    b.cube_f(STATIC_PART, 0, (74.0, 0.0), [-4.5, -5.0, -5.5], [9.0, 5.0, 11.0], 0.0, false, &[Fold::at([0.0, -12.0, -10.0]), body]);
-    b.cube_f(STATIC_PART, 0, (122.0, 0.0), [-1.5, 0.0, 0.0], [3.0, 14.0, 0.0], 0.0, false, &[Fold::at([0.0, -9.0, 3.5]), body]);
-    let head = b.part([0.0, 1.0, -10.0], Anim::Head, 1.0);
+    b.cube_f(root, 0, (0.0, 25.0), [-7.5, -12.0, -23.5], [15.0, 12.0, 27.0], 0.0, false, &[body]);
+    b.cube_f(root, 0, (74.0, 0.0), [-4.5, -5.0, -5.5], [9.0, 5.0, 11.0], 0.0, false, &[Fold::at([0.0, -12.0, -10.0]), body]);
+    let tail = b.part_named("tail", [0.0, -5.0, 13.0], [0.0; 3], Anim::None, 1.0, Some(root));
+    b.cube(tail, 0, (122.0, 0.0), [-1.5, 0.0, 0.0], [3.0, 14.0, 0.0], NONE);
+    let head = b.part_named("head", [0.0, 1.0, -10.0], [0.0; 3], Anim::Head, 1.0, Some(root));
     b.cube(head, 0, (60.0, 24.0), [-3.5, -7.0, -15.0], [7.0, 8.0, 19.0], NONE);
     b.cube(head, 0, (21.0, 0.0), [-3.5, -21.0, -15.0], [7.0, 14.0, 7.0], NONE);
     b.cube(head, 0, (50.0, 0.0), [-2.5, -21.0, -21.0], [5.0, 5.0, 6.0], NONE);
-    b.cube_f(head, 0, (45.0, 0.0), [-0.5, 0.5, -1.0], [3.0, 1.0, 2.0], 0.0, false, &[Fold::at([2.5, -21.0, -9.5])]);
-    b.cube_f(head, 0, (67.0, 0.0), [-2.5, 0.5, -1.0], [3.0, 1.0, 2.0], 0.0, false, &[Fold::at([-2.5, -21.0, -9.5])]);
+    let ear_l = b.part_named("left_ear", [2.5, -21.0, -9.5], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_l, 0, (45.0, 0.0), [-0.5, 0.5, -1.0], [3.0, 1.0, 2.0], NONE);
+    let ear_r = b.part_named("right_ear", [-2.5, -21.0, -9.5], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_r, 0, (67.0, 0.0), [-2.5, 0.5, -1.0], [3.0, 1.0, 2.0], NONE);
     let legs = [
-        ((58.0, 16.0), [4.9, 1.0, 9.5], Anim::QuadHindLeft),
-        ((94.0, 16.0), [-4.9, 1.0, 9.5], Anim::QuadHindRight),
-        ((0.0, 0.0), [4.9, 1.0, -10.5], Anim::QuadFrontLeft),
-        ((0.0, 26.0), [-4.9, 1.0, -10.5], Anim::QuadFrontRight),
+        ("left_hind_leg", (58.0, 16.0), [4.9, 1.0, 9.5]),
+        ("right_hind_leg", (94.0, 16.0), [-4.9, 1.0, 9.5]),
+        ("left_front_leg", (0.0, 0.0), [4.9, 1.0, -10.5]),
+        ("right_front_leg", (0.0, 26.0), [-4.9, 1.0, -10.5]),
     ];
-    for (uv, pivot, anim) in legs {
-        let p = b.part(pivot, anim, 1.0);
+    for (name, uv, pivot) in legs {
+        let p = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, Some(root));
         b.cube(p, 0, uv, [-2.5, 2.0, -2.5], [5.0, 21.0, 5.0], NONE);
     }
+    b.keyframe(&crate::anim_defs::CAMEL_WALK, KfDriver::Walk { speed_f: 2.0, scale_f: 2.5 });
     b.finish(1.0)
 }
 
@@ -2267,36 +2388,38 @@ fn warden() -> Model {
     b.finish(1.0)
 }
 
-/// `SnifferModel` (192²): moss-backed barrel body on six legs, droopy head.
+/// `SnifferModel` (192²): moss-backed barrel body on six legs, droopy head
+/// — walking on the vanilla SNIFFER_WALK keyframe rig (body sway, ear
+/// flops, six-leg gait).
 fn sniffer() -> Model {
     let mut b = ModelBuilder::new();
-    let bone = Fold::at([0.0, 5.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (62.0, 68.0), [-12.5, -14.0, -20.0], [25.0, 29.0, 40.0], 0.0, false, &[bone]);
-    b.cube_f(STATIC_PART, 0, (62.0, 0.0), [-12.5, -14.0, -20.0], [25.0, 24.0, 40.0], 0.5, false, &[bone]);
-    b.cube_f(STATIC_PART, 0, (87.0, 68.0), [-12.5, 12.0, -20.0], [25.0, 0.0, 40.0], 0.0, false, &[bone]);
+    // bone(0,5,0) → body(0,0,0).
+    let body = b.part_named("body", [0.0, 5.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (62.0, 68.0), [-12.5, -14.0, -20.0], [25.0, 29.0, 40.0], NONE);
+    b.cube_g(body, 0, (62.0, 0.0), [-12.5, -14.0, -20.0], [25.0, 24.0, 40.0], 0.5, NONE);
+    b.cube(body, 0, (87.0, 68.0), [-12.5, 12.0, -20.0], [25.0, 0.0, 40.0], NONE);
     let legs = [
-        ((32.0, 87.0), [-7.5, 15.0, -15.0], Anim::QuadFrontRight),
-        ((32.0, 105.0), [-7.5, 15.0, 0.0], Anim::None),
-        ((32.0, 123.0), [-7.5, 15.0, 15.0], Anim::QuadHindRight),
-        ((0.0, 87.0), [7.5, 15.0, -15.0], Anim::QuadFrontLeft),
-        ((0.0, 105.0), [7.5, 15.0, 0.0], Anim::None),
-        ((0.0, 123.0), [7.5, 15.0, 15.0], Anim::QuadHindLeft),
+        ("right_front_leg", (32.0, 87.0), [-7.5, 15.0, -15.0]),
+        ("right_mid_leg", (32.0, 105.0), [-7.5, 15.0, 0.0]),
+        ("right_hind_leg", (32.0, 123.0), [-7.5, 15.0, 15.0]),
+        ("left_front_leg", (0.0, 87.0), [7.5, 15.0, -15.0]),
+        ("left_mid_leg", (0.0, 105.0), [7.5, 15.0, 0.0]),
+        ("left_hind_leg", (0.0, 123.0), [7.5, 15.0, 15.0]),
     ];
-    for (uv, pivot, anim) in legs {
-        if anim == Anim::None {
-            b.cube_f(STATIC_PART, 0, uv, [-3.5, -1.0, -4.0], [7.0, 10.0, 8.0], 0.0, false, &[Fold::at(pivot)]);
-        } else {
-            let p = b.part(pivot, anim, 1.0);
-            b.cube(p, 0, uv, [-3.5, -1.0, -4.0], [7.0, 10.0, 8.0], NONE);
-        }
+    for (name, uv, pivot) in legs {
+        let p = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, Option::None);
+        b.cube(p, 0, uv, [-3.5, -1.0, -4.0], [7.0, 10.0, 8.0], NONE);
     }
-    // Head: bone → body → head ⇒ absolute pivot (0, 11.5, −19.48).
-    let head = b.part([0.0, 11.5, -19.48], Anim::Head, 1.0);
+    // Head: body child at (0, 6.5, −19.48) — local pivot under `body`.
+    let head = b.part_named("head", [0.0, 6.5, -19.48], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube(head, 0, (8.0, 15.0), [-6.5, -7.5, -11.5], [13.0, 18.0, 11.0], NONE);
     b.cube(head, 0, (8.0, 4.0), [-6.5, 7.5, -11.5], [13.0, 0.0, 11.0], NONE);
-    b.cube_f(head, 0, (2.0, 0.0), [0.0, 0.0, -3.0], [1.0, 19.0, 7.0], 0.0, false, &[Fold::at([6.51, -7.5, -4.51])]);
-    b.cube_f(head, 0, (48.0, 0.0), [-1.0, 0.0, -3.0], [1.0, 19.0, 7.0], 0.0, false, &[Fold::at([-6.51, -7.5, -4.51])]);
+    let ear_l = b.part_named("left_ear", [6.51, -7.5, -4.51], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_l, 0, (2.0, 0.0), [0.0, 0.0, -3.0], [1.0, 19.0, 7.0], NONE);
+    let ear_r = b.part_named("right_ear", [-6.51, -7.5, -4.51], [0.0; 3], Anim::None, 1.0, Some(head));
+    b.cube(ear_r, 0, (48.0, 0.0), [-1.0, 0.0, -3.0], [1.0, 19.0, 7.0], NONE);
     b.cube_f(head, 0, (10.0, 45.0), [-6.5, -2.0, -9.0], [13.0, 2.0, 9.0], 0.0, false, &[Fold::at([0.0, -4.5, -11.5])]);
+    b.keyframe(&crate::anim_defs::SNIFFER_WALK, KfDriver::Walk { speed_f: 9.0, scale_f: 100.0 });
     b.finish(1.0)
 }
 
@@ -2304,29 +2427,31 @@ fn sniffer() -> Model {
 /// wind funnel on breeze_wind.png (texture 1).
 fn breeze() -> Model {
     let mut b = ModelBuilder::new();
-    let rods = Fold::at([0.0, 8.0, 0.0]);
+    let rods = b.part_named("rods", [0.0, 8.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
     let rod_poses: [([f32; 3], [f32; 3]); 3] = [
         ([2.5981, -3.0, 1.5], [-2.7489, -1.0472, 3.1416]),
         ([-2.5981, -3.0, 1.5], [-2.7489, 1.0472, 3.1416]),
         ([0.0, -3.0, -3.0], [0.3927, 0.0, 0.0]),
     ];
     for (off, rot) in rod_poses {
-        b.cube_f(STATIC_PART, 0, (0.0, 17.0), [-1.0, 0.0, -3.0], [2.0, 8.0, 2.0], 0.0, false, &[Fold::rot(rot, off), rods]);
+        b.cube_f(rods, 0, (0.0, 17.0), [-1.0, 0.0, -3.0], [2.0, 8.0, 2.0], 0.0, false, &[Fold::rot(rot, off)]);
     }
-    let head = b.part([0.0, 4.0, 0.0], Anim::Head, 1.0);
+    let head = b.part_named("head", [0.0, 4.0, 0.0], [0.0; 3], Anim::Head, 1.0, Option::None);
     b.cube(head, 0, (4.0, 24.0), [-5.0, -5.0, -4.2], [10.0, 3.0, 4.0], NONE);
     b.cube(head, 0, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], NONE);
-    // Wind funnel (three stacked swirl tiers, widest at the top).
+    // Wind funnel (three stacked swirl tiers, widest at the top) — the
+    // idle rig spins wind_mid/wind_top and bobs the head/rods.
     let wb = Fold::at([0.0, 24.0, 0.0]);
     b.cube_f(STATIC_PART, 1, (1.0, 83.0), [-2.5, -7.0, -2.5], [5.0, 7.0, 5.0], 0.0, false, &[wb]);
-    let wm = Fold::at([0.0, -7.0, 0.0]);
-    b.cube_f(STATIC_PART, 1, (74.0, 28.0), [-6.0, -6.0, -6.0], [12.0, 6.0, 12.0], 0.0, false, &[wm, wb]);
-    b.cube_f(STATIC_PART, 1, (78.0, 32.0), [-4.0, -6.0, -4.0], [8.0, 6.0, 8.0], 0.0, false, &[wm, wb]);
-    b.cube_f(STATIC_PART, 1, (49.0, 71.0), [-2.5, -6.0, -2.5], [5.0, 6.0, 5.0], 0.0, false, &[wm, wb]);
-    let wt = Fold::at([0.0, -6.0, 0.0]);
-    b.cube_f(STATIC_PART, 1, (0.0, 0.0), [-9.0, -8.0, -9.0], [18.0, 8.0, 18.0], 0.0, false, &[wt, wm, wb]);
-    b.cube_f(STATIC_PART, 1, (6.0, 6.0), [-6.0, -8.0, -6.0], [12.0, 8.0, 12.0], 0.0, false, &[wt, wm, wb]);
-    b.cube_f(STATIC_PART, 1, (105.0, 57.0), [-2.5, -8.0, -2.5], [5.0, 8.0, 5.0], 0.0, false, &[wt, wm, wb]);
+    let wm = b.part_named("wind_mid", [0.0, 17.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(wm, 1, (74.0, 28.0), [-6.0, -6.0, -6.0], [12.0, 6.0, 12.0], NONE);
+    b.cube(wm, 1, (78.0, 32.0), [-4.0, -6.0, -4.0], [8.0, 6.0, 8.0], NONE);
+    b.cube(wm, 1, (49.0, 71.0), [-2.5, -6.0, -2.5], [5.0, 6.0, 5.0], NONE);
+    let wt = b.part_named("wind_top", [0.0, -6.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(wm));
+    b.cube(wt, 1, (0.0, 0.0), [-9.0, -8.0, -9.0], [18.0, 8.0, 18.0], NONE);
+    b.cube(wt, 1, (6.0, 6.0), [-6.0, -8.0, -6.0], [12.0, 8.0, 12.0], NONE);
+    b.cube(wt, 1, (105.0, 57.0), [-2.5, -8.0, -2.5], [5.0, 8.0, 5.0], NONE);
+    b.keyframe(&crate::anim_defs::BREEZE_IDLE, KfDriver::Age);
     b.finish(1.0)
 }
 
@@ -2334,31 +2459,31 @@ fn breeze() -> Model {
 /// body, branch arms, root legs with 0-thick foot fans.
 fn creaking() -> Model {
     let mut b = ModelBuilder::new();
-    let root = Fold::at([0.0, 24.0, 0.0]);
-    let upper = Fold::at([-1.0, -19.0, 0.0]);
-    // Head chain: root → upper_body → head ⇒ pivot (−4, −6, 0).
-    let head = b.part([-4.0, -6.0, 0.0], Anim::Head, 1.0);
+    // root(0,24,0) → upper_body(−1,−19,0), driven by CREAKING_WALK.
+    let upper = b.part_named("upper_body", [-1.0, 5.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    let head = b.part_named("head", [-3.0, -11.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(upper));
     b.cube(head, 0, (0.0, 0.0), [-3.0, -10.0, -3.0], [6.0, 10.0, 6.0], NONE);
     b.cube(head, 0, (28.0, 31.0), [-3.0, -13.0, -3.0], [6.0, 3.0, 6.0], NONE);
     b.cube(head, 0, (12.0, 40.0), [3.0, -13.0, 0.0], [9.0, 14.0, 0.0], NONE);
     b.cube(head, 0, (34.0, 12.0), [-12.0, -14.0, 0.0], [9.0, 14.0, 0.0], NONE);
     let body = Fold::at([0.0, -7.0, 1.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 16.0), [0.0, -3.0, -3.0], [6.0, 13.0, 5.0], 0.0, false, &[body, upper, root]);
-    b.cube_f(STATIC_PART, 0, (24.0, 0.0), [-6.0, -4.0, -3.0], [6.0, 7.0, 5.0], 0.0, false, &[body, upper, root]);
-    let arm_r = Fold::at([-7.0, -9.5, 1.5]);
-    b.cube_f(STATIC_PART, 0, (22.0, 13.0), [-2.0, -1.5, -1.5], [3.0, 21.0, 3.0], 0.0, false, &[arm_r, upper, root]);
-    b.cube_f(STATIC_PART, 0, (46.0, 0.0), [-2.0, 19.5, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_r, upper, root]);
-    let arm_l = Fold::at([6.0, -9.0, 0.5]);
-    b.cube_f(STATIC_PART, 0, (30.0, 40.0), [0.0, -1.0, -1.5], [3.0, 16.0, 3.0], 0.0, false, &[arm_l, upper, root]);
-    b.cube_f(STATIC_PART, 0, (52.0, 12.0), [0.0, -5.0, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_l, upper, root]);
-    b.cube_f(STATIC_PART, 0, (52.0, 19.0), [0.0, 15.0, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_l, upper, root]);
-    let leg_l = b.part([1.5, 8.0, 0.5], Anim::LegLeft, 1.0);
+    b.cube_f(upper, 0, (0.0, 16.0), [0.0, -3.0, -3.0], [6.0, 13.0, 5.0], 0.0, false, &[body]);
+    b.cube_f(upper, 0, (24.0, 0.0), [-6.0, -4.0, -3.0], [6.0, 7.0, 5.0], 0.0, false, &[body]);
+    let arm_r = b.part_named("right_arm", [-7.0, -9.5, 1.5], [0.0; 3], Anim::None, 1.0, Some(upper));
+    b.cube(arm_r, 0, (22.0, 13.0), [-2.0, -1.5, -1.5], [3.0, 21.0, 3.0], NONE);
+    b.cube(arm_r, 0, (46.0, 0.0), [-2.0, 19.5, -1.5], [3.0, 4.0, 3.0], NONE);
+    let arm_l = b.part_named("left_arm", [6.0, -9.0, 0.5], [0.0; 3], Anim::None, 1.0, Some(upper));
+    b.cube(arm_l, 0, (30.0, 40.0), [0.0, -1.0, -1.5], [3.0, 16.0, 3.0], NONE);
+    b.cube(arm_l, 0, (52.0, 12.0), [0.0, -5.0, -1.5], [3.0, 4.0, 3.0], NONE);
+    b.cube(arm_l, 0, (52.0, 19.0), [0.0, 15.0, -1.5], [3.0, 4.0, 3.0], NONE);
+    let leg_l = b.part_named("left_leg", [1.5, 8.0, 0.5], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(leg_l, 0, (42.0, 40.0), [-1.5, 0.0, -1.5], [3.0, 16.0, 3.0], NONE);
     b.cube(leg_l, 0, (45.0, 55.0), [-1.5, 15.7, -4.5], [5.0, 0.0, 9.0], NONE);
-    let leg_r = b.part([-1.0, 6.5, 0.5], Anim::LegRight, 1.0);
+    let leg_r = b.part_named("right_leg", [-1.0, 6.5, 0.5], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(leg_r, 0, (0.0, 34.0), [-3.0, -1.5, -1.5], [3.0, 19.0, 3.0], NONE);
     b.cube(leg_r, 0, (45.0, 46.0), [-5.0, 17.2, -4.5], [5.0, 0.0, 9.0], NONE);
     b.cube(leg_r, 0, (12.0, 34.0), [-3.0, -4.5, -1.5], [3.0, 3.0, 3.0], NONE);
+    b.keyframe(&crate::anim_defs::CREAKING_WALK, KfDriver::Walk { speed_f: 1.0, scale_f: 1.0 });
     b.finish(1.0)
 }
 
@@ -2505,23 +2630,24 @@ fn happy_ghast() -> Model {
 /// mitten arms, stub legs. The whole mesh rides a +24 root translate.
 fn copper_golem() -> Model {
     let mut b = ModelBuilder::new();
-    let root = Fold::at([0.0, 24.0, 0.0]);
-    let body = Fold::at([0.0, -5.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 15.0), [-4.0, -6.0, -3.0], [8.0, 6.0, 6.0], 0.0, false, &[body, root]);
-    // Head chain: root → body → head ⇒ pivot (0, 13, 0).
-    let head = b.part([0.0, 13.0, 0.0], Anim::Head, 1.0);
+    // root translate(0,24,0) → body(0,−5,0); walk + idle rigs.
+    let body = b.part_named("body", [0.0, 19.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 15.0), [-4.0, -6.0, -3.0], [8.0, 6.0, 6.0], NONE);
+    let head = b.part_named("head", [0.0, -6.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube_g(head, 0, (0.0, 0.0), [-4.0, -5.0, -5.0], [8.0, 5.0, 10.0], 0.015, NONE);
     b.cube(head, 0, (56.0, 0.0), [-1.0, -2.0, -6.0], [2.0, 3.0, 2.0], NONE);
     b.cube_g(head, 0, (37.0, 8.0), [-1.0, -9.0, -1.0], [2.0, 4.0, 2.0], -0.015, NONE);
     b.cube_g(head, 0, (37.0, 0.0), [-2.0, -13.0, -2.0], [4.0, 4.0, 4.0], -0.015, NONE);
-    let arm_r = b.part([-4.0, 13.0, 0.0], Anim::ArmRight, 1.0);
+    let arm_r = b.part_named("right_arm", [-4.0, -6.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
     b.cube(arm_r, 0, (36.0, 16.0), [-3.0, -1.0, -2.0], [3.0, 10.0, 4.0], NONE);
-    let arm_l = b.part([4.0, 13.0, 0.0], Anim::ArmLeft, 1.0);
+    let arm_l = b.part_named("left_arm", [4.0, -6.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
     b.cube(arm_l, 0, (50.0, 16.0), [0.0, -1.0, -2.0], [3.0, 10.0, 4.0], NONE);
-    let leg_r = b.part([0.0, 19.0, 0.0], Anim::LegRight, 1.0);
+    let leg_r = b.part_named("right_leg", [0.0, 19.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(leg_r, 0, (0.0, 27.0), [-4.0, 0.0, -2.0], [4.0, 5.0, 4.0], NONE);
-    let leg_l = b.part([0.0, 19.0, 0.0], Anim::LegLeft, 1.0);
+    let leg_l = b.part_named("left_leg", [0.0, 19.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(leg_l, 0, (16.0, 27.0), [0.0, 0.0, -2.0], [4.0, 5.0, 4.0], NONE);
+    b.keyframe(&crate::anim_defs::COPPER_GOLEM_WALK, KfDriver::Walk { speed_f: 2.0, scale_f: 2.5 });
+    b.keyframe(&crate::anim_defs::COPPER_GOLEM_IDLE, KfDriver::Age);
     b.finish(1.0)
 }
 
@@ -2537,9 +2663,17 @@ fn nautilus() -> Model {
     let body = Fold::at([0.0, -8.5, 12.3]);
     b.cube_f(STATIC_PART, 0, (0.0, 54.0), [-5.0, -4.51, -3.0], [10.0, 8.0, 14.0], 0.0, false, &[body, root]);
     b.cube_f(STATIC_PART, 0, (0.0, 76.0), [-5.0, -4.51, 7.0], [10.0, 8.0, 0.0], 0.0, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (54.0, 54.0), [-5.0, -2.0, 0.0], [10.0, 4.0, 4.0], -0.001, false, &[Fold::at([0.0, -2.51, 7.0]), body, root]);
+    // The beak: upper/lower mouth slabs open and close on the swim rig.
+    // Absolute pivots: root + body + local pose.
+    let upper = b.part_named("upper_mouth", [0.0, 18.0, 13.3], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube_g(upper, 0, (54.0, 54.0), [-5.0, -2.0, 0.0], [10.0, 4.0, 4.0], -0.001, NONE);
     b.cube_f(STATIC_PART, 0, (54.0, 70.0), [-3.0, -2.0, -0.5], [6.0, 4.0, 4.0], 0.0, false, &[Fold::at([0.0, -0.51, 7.5]), body, root]);
-    b.cube_f(STATIC_PART, 0, (54.0, 62.0), [-5.0, -1.98, 0.0], [10.0, 4.0, 4.0], -0.001, false, &[Fold::at([0.0, 1.49, 7.0]), body, root]);
+    let lower = b.part_named("lower_mouth", [0.0, 21.99, 13.3], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube_g(lower, 0, (54.0, 62.0), [-5.0, -1.98, 0.0], [10.0, 4.0, 4.0], -0.001, NONE);
+    b.keyframe(
+        &crate::anim_defs::NAUTILUS_SWIMMING,
+        KfDriver::WalkPlusAge { age_div: 5.0, amt_add: 0.2, speed_f: 2.0, scale_f: 3.0 },
+    );
     b.finish(1.0)
 }
 

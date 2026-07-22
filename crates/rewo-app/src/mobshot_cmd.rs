@@ -293,7 +293,11 @@ fn predict_counts(
                 ];
                 for tri in [[0, 1, 2], [0, 2, 3]] {
                     if let Some(t) = ray_tri(eye, rd, p[tri[0]], p[tri[1]], p[tri[2]]) {
-                        if t < best.0 {
+                        // First-emitted wins near-ties — matches the
+                        // renderer, where coplanar faces of 0-thick plates
+                        // rasterize at equal depth and the strict depth
+                        // test keeps the first-drawn quad.
+                        if t < best.0 - 2e-5 {
                             best = (t, Some(*facing));
                         }
                     }

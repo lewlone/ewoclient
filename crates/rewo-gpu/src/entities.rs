@@ -201,6 +201,7 @@ pub struct EntityPass {
 pub struct MobModel {
     quads: Vec<GpuQuad>,
     parts: Vec<mobs::Part>,
+    keyframes: Vec<mobs::KfAnim>,
     /// Model px → world blocks (vanilla 1/16 × the mob's render scale).
     scale: f32,
 }
@@ -326,6 +327,7 @@ impl EntityPass {
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 parts: m.parts,
+                keyframes: m.keyframes,
                 scale: m.scale / 16.0,
             });
         }
@@ -984,20 +986,110 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     (rot, off)
 }
 
+/// Sample a keyframe channel at `t` seconds — vanilla `Entry.apply`: prev =
+/// last frame at-or-before, interpolation mode from the NEXT frame,
+/// catmull-rom over the surrounding four.
+fn kf_sample(frames: &[mobs::KfFrame], t: f32) -> [f32; 3] {
+    let mut prev = 0usize;
+    for (i, f) in frames.iter().enumerate() {
+        if t <= f.t {
+            break;
+        }
+        prev = i;
+    }
+    let next = (prev + 1).min(frames.len() - 1);
+    let (fp, fn_) = (&frames[prev], &frames[next]);
+    let alpha = if next != prev && fn_.t > fp.t {
+        ((t - fp.t) / (fn_.t - fp.t)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if fn_.catmullrom {
+        let p0 = &frames[prev.saturating_sub(1)].v;
+        let p3 = &frames[(next + 1).min(frames.len() - 1)].v;
+        let mut out = [0.0f32; 3];
+        for i in 0..3 {
+            out[i] = catmullrom(alpha, p0[i], fp.v[i], fn_.v[i], p3[i]);
+        }
+        out
+    } else {
+        let mut out = [0.0f32; 3];
+        for i in 0..3 {
+            out[i] = fp.v[i] + (fn_.v[i] - fp.v[i]) * alpha;
+        }
+        out
+    }
+}
+
+/// Vanilla `Mth.catmullrom`.
+fn catmullrom(a: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
+    0.5 * (2.0 * p1
+        + (p2 - p0) * a
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * a * a
+        + (3.0 * p1 - p0 - 3.0 * p2 + p3) * a * a * a)
+}
+
+/// A keyframe driver's (time seconds, value scale) — vanilla's
+/// `applyWalk`/`apply` call sites.
+fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
+    use mobs::KfDriver::*;
+    match driver {
+        Walk { speed_f, scale_f } => (c.pos * 0.05 * speed_f, (c.amt * scale_f).min(1.0)),
+        WalkPlusAge { age_div, amt_add, speed_f, scale_f } => (
+            (c.pos + c.age / age_div) * 0.05 * speed_f,
+            ((c.amt + amt_add) * scale_f).min(1.0),
+        ),
+        Age => (c.age * 0.05, 1.0),
+        AgeGatedByWalk { gate } => (c.age * 0.05, (c.amt * gate).min(1.0)),
+    }
+}
+
 /// Compose every part's global transform `(M, o)` — child-in-parent
 /// hierarchy with vanilla's `translate(pivot); rotateZYX(base + delta)`
-/// per level. Shared by rendering and the mobshot geometric prediction so
-/// the two can never disagree.
+/// per level, plus any keyframe-rig contributions (which ADD onto the
+/// procedural deltas, exactly like vanilla's `offsetRotation`/`offsetPos`).
+/// Shared by rendering and the mobshot geometric prediction so the two can
+/// never disagree.
 fn part_transforms(model: &MobModel, ctx: &AnimCtx) -> Vec<([[f32; 3]; 3], [f32; 3])> {
-    let mut out: Vec<([[f32; 3]; 3], [f32; 3])> = Vec::with_capacity(model.parts.len());
-    for p in &model.parts {
-        let (drot, doff) = anim_delta(p.anim, p.amp, ctx);
-        let e = [p.rot[0] + drot[0], p.rot[1] + drot[1], p.rot[2] + drot[2]];
+    let n = model.parts.len();
+    let mut drots = vec![[0.0f32; 3]; n];
+    let mut doffs = vec![[0.0f32; 3]; n];
+    for (i, p) in model.parts.iter().enumerate() {
+        let (r, o) = anim_delta(p.anim, p.amp, ctx);
+        drots[i] = r;
+        doffs[i] = o;
+    }
+    for kf in &model.keyframes {
+        let (mut t, scale) = kf_drive(kf.driver, ctx);
+        if scale <= 0.0 {
+            continue;
+        }
+        if kf.def.looping {
+            t = t.rem_euclid(kf.def.length);
+        }
+        for (ch, &pi) in kf.def.channels.iter().zip(&kf.parts) {
+            let v = kf_sample(ch.frames, t);
+            let dst = match ch.target {
+                mobs::KfTarget::Rot => &mut drots[pi as usize],
+                mobs::KfTarget::Pos => &mut doffs[pi as usize],
+            };
+            for i in 0..3 {
+                dst[i] += v[i] * scale;
+            }
+        }
+    }
+    let mut out: Vec<([[f32; 3]; 3], [f32; 3])> = Vec::with_capacity(n);
+    for (i, p) in model.parts.iter().enumerate() {
+        let e = [
+            p.rot[0] + drots[i][0],
+            p.rot[1] + drots[i][1],
+            p.rot[2] + drots[i][2],
+        ];
         let r = mat_zyx(e);
         let pivot = [
-            p.pivot[0] + doff[0],
-            p.pivot[1] + doff[1],
-            p.pivot[2] + doff[2],
+            p.pivot[0] + doffs[i][0],
+            p.pivot[1] + doffs[i][1],
+            p.pivot[2] + doffs[i][2],
         ];
         let (m, o) = match p.parent {
             Some(par) => {

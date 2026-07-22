@@ -185,14 +185,21 @@ the code's author. Nothing below is settled truth.
   tail sways, silverfish wiggles, wither side-head tracking (parts carry
   base rotations, a parent hierarchy, and pivot-motion anims;
   `set_entities` takes a time param, `mobshot` has `--time`/`--walk`).
+  **Keyframe rigs run too (same-day fourth pass)**: vanilla
+  `AnimationDefinition`s machine-extracted from the decompile
+  (`tools/gen_anim_defs.ps1` → generated `anim_defs.rs`) and played by a
+  vanilla-exact evaluator in `part_transforms` — frog/camel/sniffer/
+  armadillo/creaking/copper-golem walks, bat flight, breeze idle,
+  nautilus swim, rabbit hop (jump-state approximation, documented).
   Still open: entity *collision* is ignored (walk through mobs),
-  keyframe-rigged anims (frog/camel/sniffer/armadillo/rabbit walks, bat
-  flight, dragon flight, creaking/copper-golem gestures) need an
-  AnimationDefinition player and stay posed, sheep wool dye-tint deferred
-  (white), slime/magma face + size need the translucent pass + entity
-  metadata, texture variants are fixed picks (tabby cat, brown horse,
-  creamy llama, lucy axolotl, temperate chicken/frog…), no real
-  per-player skins (M7), tags are depth-tested.
+  state-driven gesture rigs (warden roar/dig, sniffer dig, armadillo
+  roll, frog tongue, allay dance) need entity pose/event state off the
+  wire and stay unplayed, dragon flight is bespoke procedural code (not
+  a rig) and stays posed, sheep wool dye-tint deferred (white),
+  slime/magma face + size need the translucent pass + entity metadata,
+  texture variants are fixed picks (tabby cat, brown horse, creamy
+  llama, lucy axolotl, temperate chicken/frog…), no real per-player
+  skins (M7), tags are depth-tested.
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1965,3 +1972,47 @@ gate green.**
   bench flat, 0 VUIDs. Animated sheet (`--time 0.42 --walk 2.2,0.8`)
   eyeballed: golem mid-stride, spider leg wave, orbiting blaze rods,
   curled squid, swept ghast tentacles, flapping phantom all read.
+
+**2026-07-22 — the keyframe player: vanilla AnimationDefinition rigs run.**
+
+- The last animation gap closed. Vanilla's keyframe rigs are *Java code*,
+  not assets — so **`tools/gen_anim_defs.ps1` machine-extracts them from
+  the decompile** into `crates/rewo-gpu/src/anim_defs.rs` (generated,
+  checked in; re-run after a version bump): 11 defs — FROG_WALK,
+  CAMEL_WALK, SNIFFER_WALK, ARMADILLO_WALK, BAT_FLYING, CREAKING_WALK,
+  COPPER_GOLEM_WALK + IDLE, NAUTILUS_SWIMMING, BREEZE_IDLE, RABBIT_HOP —
+  with `degreeVec`→radians, `posVec` y-negation, and scale-channel
+  omission baked at generation. Machine extraction, not hand transcription
+  — hundreds of keyframes with zero typo surface.
+- Runtime (`KfDef/KfChannel/KfFrame` in mobs.rs, evaluation in
+  `part_transforms`): vanilla-exact — prev/next frame search, the *next*
+  keyframe's interpolation mode, `Mth.catmullrom` over the surrounding 4,
+  looping via elapsed-mod-length, values ADD onto the pose
+  (`offsetRotation`/`offsetPos`). Drivers mirror the call sites:
+  `applyWalk(pos·50·speed_f ms, min(amt·scale_f, 1))` per mob's exact
+  params (sniffer's odd `(9, 100)`, nautilus's `pos + age/5, amt + 0.2`
+  blend), `Age` for bat flight/breeze idle/copper-golem idle, and an
+  `AgeGatedByWalk` approximation for RABBIT_HOP (vanilla triggers it per
+  jump; jump state isn't on the wire — a moving rabbit hops continuously,
+  documented).
+- The 10 rigged mobs were remodeled from fold-chains into **named part
+  trees** (`Part.name` + parent links) matching vanilla's bone names, so
+  channels resolve at build (`registry_builds_clean` fails loud on a
+  missing bone). Camel/sniffer/armadillo/creaking/copper-golem quad-gait
+  approximations were *deleted* — the real rigs drive their legs now.
+- One checker fix shaken out: 0-thick plates (bat wings) have coplanar
+  N/S faces; the renderer resolves them deterministically (strict depth
+  test → first-drawn wins) while the ray-cast tie-broke on float noise.
+  The prediction now keeps the first-emitted quad within a 2e-5 epsilon —
+  matching the renderer by construction. Gate: **246/246** with the rigs
+  live (t=0 rest pose is part of the checked geometry).
+- Gates: 41 tests, demo PNG byte-identical, 0 VUIDs; bench numbers this
+  run were contaminated by a game running on the box (~69% CPU) — the
+  bench path renders no entities and demo is byte-identical, so the
+  render path is provably untouched. Animated closeup eyeballed: bat
+  mid-flap, rabbit mid-hop (ears back), camel/creaking mid-stride,
+  copper-golem arm swing, breeze funnel spun, sniffer head-dip.
+- Still static (state-driven, not walk/idle): gesture rigs (warden
+  roar/dig, creaking attack, sniffer dig/sniff, armadillo roll, frog
+  tongue/croak, allay dance) — they need entity event/pose state off the
+  wire, not more animation machinery.
