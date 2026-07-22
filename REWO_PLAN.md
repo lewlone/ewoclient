@@ -2294,6 +2294,30 @@ gate green.**
   `_animations.jpm` OptiFine expression language) are **M9c**, and this
   parser is their prerequisite.
 
+**2026-07-22 — M9c.1: the CEM animation expression interpreter.**
+
+- The reusable core of Fresh Animations' `_animations.jpm`: a lexer +
+  Pratt parser + evaluator for the OptiFine expression language
+  (`rewo-gpu/src/cem_anim.rs`). Operators (arith/compare/bool, short-circuit
+  `&&`/`||`), functions (`sin/cos/clamp/min/max/abs/floor/torad/todeg/pow/
+  sqrt/random/between/equals/in` + variadic `if(c,a,b,…)`), constants
+  (`pi/true/false`), and the built-in variable set (`head_yaw/limb_swing/
+  limb_speed/age/is_on_ground/hurt_time/id/…` + user `var.*`/`varb.*` slots
+  interned across a mob's whole program). Parse once → AST; eval per frame
+  against an `AnimContext` the runtime fills from entity state.
+- Verified: 5 unit tests + a **corpus test that parses all 284 real
+  expressions** from the FA creeper/cow/allay animation files with zero
+  failures — the grammar covers real FA data, not just hand-picked cases.
+- **Next (M9c.2 — the runtime, a substantial slice)**: the CEM parser must
+  build a **named part tree** (currently flattens to STATIC_PART) so bone
+  channels (`head.rx`, `leg1.ry`, …) can target parts, and the per-frame
+  runtime must apply the evaluated channels to part rotations/offsets. The
+  hard design problem is reconciling OptiFine's JEM rotation *pivots* with
+  our model-space part system — the pivots don't map cleanly through the
+  static invert+fold transform (worked the creeper leg by hand; the hip
+  pivot needs its own derivation). This is where FA's motion actually comes
+  alive; the interpreter is its engine.
+
 **2026-07-22 — baby mobs.**
 
 - Baby zombies / animals render at ~half scale instead of adult-sized.
