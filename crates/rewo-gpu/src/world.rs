@@ -27,7 +27,7 @@ use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::entities::{EntityDraw, EntityPass, FontData};
+use crate::entities::{EntityDraw, EntityPass, EntityTextures, FontData};
 use crate::hud::{HudPass, HudSpritesData};
 use crate::text::{TextLine, TextPass};
 use crate::Gpu;
@@ -790,22 +790,9 @@ impl WorldRenderer {
         &mut self,
         gpu: &mut Gpu,
         font: Option<FontData<'_>>,
-        skin: Option<&[u8]>,
-        slime: Option<&[u8]>,
-        zombie: Option<&[u8]>,
-        cow: Option<&[u8]>,
-        pig: Option<&[u8]>,
+        tex: EntityTextures<'_>,
     ) -> Result<(), String> {
-        self.entities = Some(EntityPass::new(
-            gpu,
-            self.color_format,
-            font,
-            skin,
-            slime,
-            zombie,
-            cow,
-            pig,
-        )?);
+        self.entities = Some(EntityPass::new(gpu, self.color_format, font, tex)?);
         Ok(())
     }
 

@@ -138,15 +138,16 @@ the code's author. Nothing below is settled truth.
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
-  limb swing**), and **slimes** (green cube), **cows** + **pigs**
-  (quadruped, walking legs; pig has short legs + a snout), and
-  **zombies/husks/drowned** (humanoid, arms-forward pose) render as real
-  models — humanoids also **turn their heads** toward nearby players
-  (server-driven `rotate_head`, verified via a fixed-body/cranked-head A/B).
-  See the §15 entries. Still open within it: entity *collision* is ignored
-  (walk through mobs), some mobs are still capsules (sheep/chicken/… — each
-  needs its vanilla model dims + UVs; the entity atlas grew to 256×256 so
-  there's room, no texture-array refactor needed), slime face/size need
+  limb swing**), and **slimes** (green cube), **cows** + **pigs** + **sheep**
+  (quadruped, walking legs — pig has short legs + a snout, sheep has its own
+  body dims + an inflated white wool overlay), and **zombies/husks/drowned**
+  (humanoid, arms-forward pose) render as real models — humanoids also **turn
+  their heads** toward nearby players (server-driven `rotate_head`, verified
+  via a fixed-body/cranked-head A/B). See the §15 entries. Still open within
+  it: entity *collision* is ignored (walk through mobs), some mobs are still
+  capsules (chicken/… — each needs its vanilla model dims + UVs; the entity
+  atlas grew to 256×256 so there's room, no texture-array refactor needed),
+  sheep wool dye-tint is deferred (white only), slime face/size need
   the translucent pass + entity metadata, no real per-player skins (needs
   online-mode profile textures — M7), tags are depth-tested (vanilla shows
   them through walls).
@@ -1721,3 +1722,29 @@ capability).**
   unchanged) side by side confirm the generalized model serves both. Tests
   4+5+3+3+18 green; **demo byte-identical** (md5 match) + entities live-only
   so bench/view unaffected; 0 VUIDs.
+
+**2026-07-22 — the sheep (fifth mob; the farm-animal trio complete).**
+
+- The sheep has its **own body dims** (unlike the pig, which reused cow
+  dims): head 6×6×8, body 8×16×6, legSize 12 (vanilla `SheepModel`), plus the
+  iconic **inflated wool overlay** (vanilla `SheepFurModel`: head 6×6×6 +0.6,
+  body 8×16×6 +1.75, upper-legs 4×6×4 +0.5) sampling a second texture. So the
+  cow-only `quadruped_model_quads` was refactored: extracted `build_quad_parts
+  (parts, off_x, off_y)` (the xform + box-UV loop) as the shared builder;
+  cow/pig call it with their `(leg, snout)` parts (identical output — cow
+  renders byte-for-byte the same, re-verified), and `sheep_model_quads` builds
+  the sheep body (sheep slot) **plus** the 6-box wool overlay (wool slot) and
+  concatenates. The wool renders on top; transparent wool texels alpha-discard
+  to show the body, and the inflation puts the wool just outside the body so
+  reversed-Z sorts it in front — vanilla's fleece look. Wool dye-tint deferred
+  (white for v1).
+- Infra: **grew the atlas usage** (two 64×32 sheep slots in the lower half;
+  generalized `blit_64` → `blit_tex(…, w, h)` for the 64×32 sheep textures),
+  and **replaced `EntityPass::new`'s 8-positional-`Option<&[u8]>` texture
+  list with an `EntityTextures` struct** (one named field per skin — call
+  sites can't transpose them; `entity_textures(&baked)` builds it). New
+  `EntityModelKind::Sheep`; `minecraft:sheep` maps to it.
+- **Verified** with a summon render: a fluffy white sheep (wool body/head +
+  the tan lower legs showing beneath the wool upper-legs), and a re-rendered
+  **cow unchanged** by the refactor. Tests 4+5+3 green; **demo byte-identical**
+  (full md5 `ee6e26f4…`); entities live-only so bench/view unaffected; 0 VUIDs.

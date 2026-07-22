@@ -101,6 +101,26 @@ const COW_Y: u32 = 64;
 /// The 64×64 pig skin sits in the lower-left of the grown atlas.
 const PIG_X: u32 = 0;
 const PIG_Y: u32 = 128;
+/// The two 64×32 sheep textures (sheared body, then wool overlay) sit to the
+/// right of the pig in the lower half.
+const SHEEP_X: u32 = 64;
+const SHEEP_Y: u32 = 128;
+const SHEEP_WOOL_X: u32 = 64;
+const SHEEP_WOOL_Y: u32 = 160;
+
+/// Borrowed mob skin slices for `EntityPass::new` — one field per baked
+/// texture so call sites can't transpose them (the positional list had grown
+/// to eight `Option<&[u8]>`). Each `None` degrades that mob to the capsule.
+#[derive(Default)]
+pub struct EntityTextures<'a> {
+    pub skin: Option<&'a [u8]>,
+    pub slime: Option<&'a [u8]>,
+    pub zombie: Option<&'a [u8]>,
+    pub cow: Option<&'a [u8]>,
+    pub pig: Option<&'a [u8]>,
+    pub sheep: Option<&'a [u8]>,
+    pub sheep_wool: Option<&'a [u8]>,
+}
 
 /// Which model to render for an entity.
 #[derive(Clone, Copy, PartialEq)]
@@ -113,6 +133,8 @@ pub enum EntityModelKind {
     Cow,
     /// Quadruped model with short legs + a snout, the pig texture.
     Pig,
+    /// Sheep — quadruped body + an inflated wool overlay (fleece).
+    Sheep,
     /// Green slime cube (needs the slime texture).
     Slime,
     /// Colored capsule fallback (mobs without a bespoke model).
@@ -145,6 +167,8 @@ pub struct EntityPass {
     cow_quads: Vec<PlayerQuad>,
     /// Pig: the short-legged quadruped + snout, UVs into the pig skin slot.
     pig_quads: Vec<PlayerQuad>,
+    /// Sheep: quadruped body (sheep slot) + inflated wool overlay (wool slot).
+    sheep_quads: Vec<PlayerQuad>,
     /// Slime model quads (green cube, atlas UVs into the slime region).
     slime_quads: Vec<PlayerQuad>,
     // Font metrics (identity values when no font was provided).
@@ -157,6 +181,7 @@ pub struct EntityPass {
     has_zombie: bool,
     has_cow: bool,
     has_pig: bool,
+    has_sheep: bool,
 }
 
 /// Which articulated part a model quad belongs to — sets its rotation pivot
@@ -192,12 +217,9 @@ impl EntityPass {
         gpu: &mut Gpu,
         color_format: vk::Format,
         font: Option<FontData<'_>>,
-        skin: Option<&[u8]>,
-        slime: Option<&[u8]>,
-        zombie: Option<&[u8]>,
-        cow: Option<&[u8]>,
-        pig: Option<&[u8]>,
+        tex: EntityTextures<'_>,
     ) -> Result<Self, String> {
+        let EntityTextures { skin, slime, zombie, cow, pig, sheep, sheep_wool } = tex;
         let device = gpu.device.clone();
 
         // ---- combined atlas: font at (0,0), player skin at (SKIN_X,0) ----
@@ -247,6 +269,9 @@ impl EntityPass {
         let has_cow = blit_64(&mut atlas, cow, ZOMBIE_X, COW_Y);
         // Pig skin (64×64) in the grown lower half at (PIG_X, PIG_Y).
         let has_pig = blit_64(&mut atlas, pig, PIG_X, PIG_Y);
+        // Sheep body + wool (each 64×32). The sheep needs both to look right.
+        let has_sheep = blit_tex(&mut atlas, sheep, SHEEP_X, SHEEP_Y, 64, 32)
+            & blit_tex(&mut atlas, sheep_wool, SHEEP_WOOL_X, SHEEP_WOOL_Y, 64, 32);
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
             (white_texel.0 as f32 + 0.5) / ATLAS_W as f32,
@@ -375,6 +400,7 @@ impl EntityPass {
                 zombie_quads: cuboid_quads(&humanoid_cuboids(), ZOMBIE_X as f32, 0.0),
                 cow_quads: quadruped_model_quads(ZOMBIE_X as f32, COW_Y as f32, 12.0, false),
                 pig_quads: quadruped_model_quads(PIG_X as f32, PIG_Y as f32, 6.0, true),
+                sheep_quads: sheep_model_quads(),
                 slime_quads: slime_model_quads(),
                 cell,
                 advance,
@@ -385,6 +411,7 @@ impl EntityPass {
                 has_zombie,
                 has_cow,
                 has_pig,
+                has_sheep,
             })
         }
     }
@@ -422,6 +449,10 @@ impl EntityPass {
                 }
                 EntityModelKind::Pig if self.has_pig => {
                     self.emit_model(&mut verts, d, &self.pig_quads, 1.0 / 16.0, 0.0);
+                    continue;
+                }
+                EntityModelKind::Sheep if self.has_sheep => {
+                    self.emit_model(&mut verts, d, &self.sheep_quads, 1.0 / 16.0, 0.0);
                     continue;
                 }
                 EntityModelKind::Slime if self.has_slime => {
@@ -852,23 +883,47 @@ fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
     out
 }
 
-/// The quadruped model (cow/pig/sheep share the shape), from vanilla
-/// `QuadrupedModel::createBodyMesh` (cow `legSize=12`, pig `legSize=6`).
-/// Built in vanilla local coords with each part's rotation + pose applied,
-/// then converted to this crate's convention (feet-up y, front +Z:
-/// `(-x, 24-y, -z)`). The body is a box rotated 90° about X (lies
-/// horizontal) — the reason this needs the per-vertex transform rather than
-/// plain `cuboid_quads`. `leg` is the leg length (vanilla legSize) — it also
-/// sets the head/body pose height (18/17 − legSize). `snout` adds the pig's
-/// nose box (rides the head pose). The 4 legs animate (diagonal gait); head
-/// + body are static (head-look is a follow-up).
+/// One box in a quadruped model: (min, max, size, uv, rot_x, pose, part) in
+/// vanilla local coords (feet-down y, front −Z). `size` is the UV sub-rect
+/// size (unchanged by inflation); `min`/`max` are the geometry, so an
+/// inflated wool box passes expanded min/max but the base `size`.
+type QuadPart = ([f32; 3], [f32; 3], [f32; 3], (f32, f32), f32, [f32; 3], LimbPart);
+
+/// Build quads for a quadruped part list, UVs into the (off_x, off_y) atlas
+/// slot. Each part is rotated about X by `rot_x`, offset by `pose`, then
+/// converted vanilla→my (feet-up y, front +Z: `(-x, 24-y, -z)`). The body box
+/// is rotated 90° about X (lies horizontal) — the reason this needs the
+/// per-vertex transform rather than plain `cuboid_quads`. Shared by every
+/// quadruped mob (cow/pig/sheep) and the sheep's wool overlay.
+fn build_quad_parts(parts: &[QuadPart], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
+    let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
+        let (c, s) = (rot_x.cos(), rot_x.sin());
+        let (y, z) = (p[1], p[2]);
+        let v = [p[0] + pose[0], y * c - z * s + pose[1], y * s + z * c + pose[2]];
+        [-v[0], 24.0 - v[1], -v[2]]
+    };
+    let mut out = Vec::with_capacity(parts.len() * 6);
+    for &(min, max, size, uv, rot_x, pose, part) in parts {
+        for (mut pos, uv, shade) in box_uv_faces(min, max, size, uv, off_x, off_y) {
+            for p in &mut pos {
+                *p = xform(*p, rot_x, pose);
+            }
+            out.push(PlayerQuad { pos, uv, shade, part });
+        }
+    }
+    out
+}
+
+/// The cow/pig quadruped, from vanilla `QuadrupedModel::createBodyMesh`
+/// (cow `legSize=12`, pig `legSize=6`). `leg` also sets the head/body pose
+/// height (18/17 − legSize). `snout` adds the pig's nose box (rides the head
+/// pose). The 4 legs animate (diagonal gait); head + body static (head-look
+/// is a follow-up).
 fn quadruped_model_quads(off_x: f32, off_y: f32, leg: f32, snout: bool) -> Vec<PlayerQuad> {
     use std::f32::consts::FRAC_PI_2;
     use LimbPart::*;
-    // (min, max, size, uv, rot_x, pose, part) in vanilla local coords.
-    type Part = ([f32; 3], [f32; 3], [f32; 3], (f32, f32), f32, [f32; 3], LimbPart);
     #[rustfmt::skip]
-    let mut parts: Vec<Part> = vec![
+    let mut parts: Vec<QuadPart> = vec![
         // head
         ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.], Body),
         // body — rotated 90° about X so it lies horizontal
@@ -880,26 +935,48 @@ fn quadruped_model_quads(off_x: f32, off_y: f32, leg: f32, snout: bool) -> Vec<P
         ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.], QuadFrontLeft),
     ];
     if snout {
-        // Pig snout: vanilla texOffs(16,16) addBox(-2,0,-9, 4,3,1), same head
-        // pose so it rides on the head's front face.
+        // Pig snout: vanilla texOffs(16,16) addBox(-2,0,-9, 4,3,1), riding the
+        // head pose.
         parts.push(([-2., 0., -9.], [2., 3., -8.], [4., 3., 1.], (16., 16.), 0.0, [0., 18. - leg, -6.], Body));
     }
-    // Rotate a local vertex about X, add the pose, convert vanilla→my.
-    let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
-        let (c, s) = (rot_x.cos(), rot_x.sin());
-        let (y, z) = (p[1], p[2]);
-        let v = [p[0] + pose[0], y * c - z * s + pose[1], y * s + z * c + pose[2]];
-        [-v[0], 24.0 - v[1], -v[2]]
-    };
-    let mut out = Vec::with_capacity(parts.len() * 6);
-    for (min, max, size, uv, rot_x, pose, part) in parts {
-        for (mut pos, uv, shade) in box_uv_faces(min, max, size, uv, off_x, off_y) {
-            for p in &mut pos {
-                *p = xform(*p, rot_x, pose);
-            }
-            out.push(PlayerQuad { pos, uv, shade, part });
-        }
-    }
+    build_quad_parts(&parts, off_x, off_y)
+}
+
+/// The sheep — its own body dims (head 6×6×8, body 8×16×6, legSize 12) from
+/// vanilla `SheepModel`, plus the inflated wool overlay from `SheepFurModel`
+/// (head 6×6×6 +0.6, body 8×16×6 +1.75, upper-legs 4×6×4 +0.5). The body
+/// samples the sheep slot; the wool the wool slot, drawn on top — transparent
+/// wool texels discard (alpha-test) to show the body beneath. Wool dye tint
+/// is deferred; white wool for v1.
+fn sheep_model_quads() -> Vec<PlayerQuad> {
+    use std::f32::consts::FRAC_PI_2;
+    use LimbPart::*;
+    #[rustfmt::skip]
+    let body: [QuadPart; 6] = [
+        // head 6×6×8 at (0,6,-8)
+        ([-3.,-4.,-6.], [3.,2.,2.], [6.,6.,8.], (0.,0.), 0.0, [0., 6., -8.], Body),
+        // body 8×16×6 rotated 90° at (0,5,2)
+        ([-4.,-10.,-7.], [4.,6.,-1.], [8.,16.,6.], (28.,8.), FRAC_PI_2, [0., 5., 2.], Body),
+        // legs 4×12×4 (legSize 12)
+        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [-3., 12., 7.], QuadBackRight),
+        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [ 3., 12., 7.], QuadBackLeft),
+        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [-3., 12., -5.], QuadFrontRight),
+        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [ 3., 12., -5.], QuadFrontLeft),
+    ];
+    #[rustfmt::skip]
+    let wool: [QuadPart; 6] = [
+        // fleece head 6×6×6 +0.6 at (0,6,-8)
+        ([-3.6,-4.6,-4.6], [3.6,2.6,2.6], [6.,6.,6.], (0.,0.), 0.0, [0., 6., -8.], Body),
+        // fleece body 8×16×6 +1.75 rotated 90° at (0,5,2)
+        ([-5.75,-11.75,-8.75], [5.75,7.75,0.75], [8.,16.,6.], (28.,8.), FRAC_PI_2, [0., 5., 2.], Body),
+        // fleece upper-legs 4×6×4 +0.5
+        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [-3., 12., 7.], QuadBackRight),
+        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [ 3., 12., 7.], QuadBackLeft),
+        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [-3., 12., -5.], QuadFrontRight),
+        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [ 3., 12., -5.], QuadFrontLeft),
+    ];
+    let mut out = build_quad_parts(&body, SHEEP_X as f32, SHEEP_Y as f32);
+    out.extend(build_quad_parts(&wool, SHEEP_WOOL_X as f32, SHEEP_WOOL_Y as f32));
     out
 }
 
@@ -952,20 +1029,26 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Blit a 64×64 RGBA entity skin into the atlas at (x, y). Returns whether
+/// Blit a `w`×`h` RGBA entity skin into the atlas at (x, y). Returns whether
 /// it was present + correctly sized.
-fn blit_64(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32) -> bool {
+fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32) -> bool {
+    let (w, h) = (w as usize, h as usize);
     match tex {
-        Some(px) if px.len() == 64 * 64 * 4 => {
-            for row in 0..64usize {
-                let src = row * 64 * 4;
+        Some(px) if px.len() == w * h * 4 => {
+            for row in 0..h {
+                let src = row * w * 4;
                 let dst = ((y as usize + row) * ATLAS_W as usize + x as usize) * 4;
-                atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+                atlas[dst..dst + w * 4].copy_from_slice(&px[src..src + w * 4]);
             }
             true
         }
         _ => false,
     }
+}
+
+/// Blit a 64×64 RGBA entity skin into the atlas at (x, y).
+fn blit_64(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32) -> bool {
+    blit_tex(atlas, tex, x, y, 64, 64)
 }
 
 pub(crate) fn create_texture(

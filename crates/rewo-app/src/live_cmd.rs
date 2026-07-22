@@ -25,7 +25,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rewo_data::assets::{self, BakedFont};
 use rewo_data::entity_types::EntityTypes;
 use rewo_data::{DataPaths, GameData};
-use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, FontData};
+use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, EntityTextures, FontData};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
@@ -167,6 +167,7 @@ fn collect_entities<'a>(
         );
         let is_cow = name == "minecraft:cow";
         let is_pig = name == "minecraft:pig";
+        let is_sheep = name == "minecraft:sheep";
         let kind = if is_player {
             EntityModelKind::Player
         } else if is_zombie {
@@ -175,6 +176,8 @@ fn collect_entities<'a>(
             EntityModelKind::Cow
         } else if is_pig {
             EntityModelKind::Pig
+        } else if is_sheep {
+            EntityModelKind::Sheep
         } else if is_slime {
             EntityModelKind::Slime
         } else {
@@ -207,6 +210,20 @@ fn collect_entities<'a>(
         });
     }
     out
+}
+
+/// Gather the baked mob skins into the borrowed struct `EntityPass::new`
+/// wants (one field per texture — no positional transposition risk).
+fn entity_textures(baked: &assets::BakedAssets) -> EntityTextures<'_> {
+    EntityTextures {
+        skin: baked.player_skin.as_deref(),
+        slime: baked.slime_tex.as_deref(),
+        zombie: baked.zombie_tex.as_deref(),
+        cow: baked.cow_tex.as_deref(),
+        pig: baked.pig_tex.as_deref(),
+        sheep: baked.sheep_tex.as_deref(),
+        sheep_wool: baked.sheep_wool_tex.as_deref(),
+    }
 }
 
 fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
@@ -377,7 +394,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref(), baked.pig_tex.as_deref())?;
+    world_renderer.init_entities(&mut gpu, font_data(&baked), entity_textures(&baked))?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -718,7 +735,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            world_renderer.init_entities(&mut gpu, font_data(&baked), baked.player_skin.as_deref(), baked.slime_tex.as_deref(), baked.zombie_tex.as_deref(), baked.cow_tex.as_deref(), baked.pig_tex.as_deref())?;
+            world_renderer.init_entities(&mut gpu, font_data(&baked), entity_textures(&baked))?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;

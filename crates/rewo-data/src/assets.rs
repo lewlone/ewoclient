@@ -107,6 +107,10 @@ pub struct BakedAssets {
     pub cow_tex: Option<Vec<u8>>,
     /// Pig entity texture (64×64 RGBA) — quadruped w/ short legs + a snout.
     pub pig_tex: Option<Vec<u8>>,
+    /// Sheep body texture (64×32 RGBA) — the sheared quadruped body.
+    pub sheep_tex: Option<Vec<u8>>,
+    /// Sheep wool texture (64×32 RGBA) — the inflated fleece overlay layer.
+    pub sheep_wool_tex: Option<Vec<u8>>,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
@@ -205,6 +209,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let zombie_tex = bake_entity_tex(&mut jar, "entity/zombie/zombie.png", 64, 64);
     let cow_tex = bake_entity_tex(&mut jar, "entity/cow/cow_temperate.png", 64, 64);
     let pig_tex = bake_entity_tex(&mut jar, "entity/pig/pig_temperate.png", 64, 64);
+    let sheep_tex = bake_entity_tex(&mut jar, "entity/sheep/sheep.png", 64, 32);
+    let sheep_wool_tex = bake_entity_tex(&mut jar, "entity/sheep/sheep_wool.png", 64, 32);
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
@@ -313,6 +319,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         zombie_tex,
         cow_tex,
         pig_tex,
+        sheep_tex,
+        sheep_wool_tex,
         hud,
         stats,
     })
