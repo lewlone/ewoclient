@@ -19,6 +19,15 @@ pub struct EntityMeta {
     /// Shared flags byte (index 0): 0x01 on-fire, 0x02 crouching, 0x08
     /// sprinting, 0x10 swimming, 0x20 invisible, 0x40 glowing, 0x80 elytra.
     pub flags: Option<u8>,
+    /// Entity pose ordinal (index 6, POSE serializer): STANDING=0,
+    /// FALL_FLYING, SLEEPING, SWIMMING, SPIN_ATTACK, CROUCHING,
+    /// LONG_JUMPING, DYING, CROAKING, USING_TONGUE, SITTING, ROARING,
+    /// SNIFFING, EMERGING, DIGGING, SLIDING, SHOOTING, INHALING.
+    pub pose: Option<u8>,
+    /// Mob gesture state (index 17 on sniffer/armadillo/copper golem —
+    /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
+    /// is depends on the entity type; the caller knows the kind.
+    pub gesture_state: Option<u8>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -46,6 +55,10 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
                     }
                 }
             }
+            (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
+            // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
+            // at their shared first-own-field index.
+            (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),
             _ => {
                 if !skip_value(r, ty) {
                     break; // unknown/complex type — stop (already have ours)
@@ -61,8 +74,17 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
 fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
     match ty {
         // varint-shaped: INT, DIRECTION, BLOCK_STATE, OPTIONAL_BLOCK_STATE,
-        // OPTIONAL_UNSIGNED_INT, POSE, CAT/COW/WOLF/… variant enums.
-        1 | 12 | 14 | 15 | 19 | 20 | 21..=41 => r.varint().is_ok(),
+        // OPTIONAL_UNSIGNED_INT, POSE, CAT/COW/WOLF/… variant enums,
+        // painting variant, mob state enums, humanoid arm.
+        1 | 12 | 14 | 15 | 19 | 20 | 21..=32 | 34 | 35..=38 | 42 => r.varint().is_ok(),
+        // OPTIONAL_GLOBAL_POS: bool + dimension identifier + block pos.
+        33 => match r.bool() {
+            Ok(true) => r.string(32767).is_ok() && r.take(8).is_ok(),
+            Ok(false) => true,
+            Err(_) => false,
+        },
+        39 => r.take(12).is_ok(), // VECTOR3 (3× f32)
+        40 => r.take(16).is_ok(), // QUATERNION (4× f32)
         2 => r.varlong().is_ok(),               // LONG
         3 => r.take(4).is_ok(),                 // FLOAT
         4 => r.string(32767).is_ok(),           // STRING

@@ -472,6 +472,12 @@ impl PlaySession {
                 if meta.custom_name.is_some() {
                     self.world.entities.set_custom_name(eid, meta.custom_name);
                 }
+                if let Some(p) = meta.pose {
+                    self.world.entities.set_pose(eid, p);
+                }
+                if let Some(s) = meta.gesture_state {
+                    self.world.entities.set_gesture_state(eid, s);
+                }
             }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);

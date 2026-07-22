@@ -1677,9 +1677,18 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   vanilla-exact evaluator (next-frame interpolation mode, catmullrom,
   additive apply, per-mob `applyWalk` params) — frog/camel/sniffer/
   armadillo/creaking/copper-golem walks, bat flight, breeze idle,
-  nautilus swim, rabbit hop. State-driven gesture rigs (warden roar,
-  sniffer dig, allay dance…) need entity pose state off the wire and
-  stay unplayed; dragon flight is bespoke procedural vanilla code, posed.
+  nautilus swim, rabbit hop. **Gesture rigs run too**: Pose metadata
+  (index 6) + sniffer/armadillo state enums (index 17) decoded; a
+  `GestureTracker` times rigs from the observed state change;
+  `KfGate::{During, Unless, NotShell}` + `KfDriver::GestureAge` + part
+  `Show` visibility rules play warden roar/sniff/emerge/dig, frog
+  croak/tongue (+throat pouch), breeze shoot/slide/inhale/jump, sniffer
+  dig/sniff/happy/rise + the SEARCHING walk-swap, armadillo
+  roll/scared/unroll with the shell-ball swap (verify with
+  `rewo mobshot --gesture name[,age] [--shell]` or
+  `REWO_FORCE_GESTURE`). Entity-*event*-driven anims (warden attack,
+  allay dance…) still need the entity_event packet; dragon flight is
+  bespoke procedural vanilla code, posed.
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 

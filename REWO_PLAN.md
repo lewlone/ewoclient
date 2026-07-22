@@ -191,11 +191,22 @@ the code's author. Nothing below is settled truth.
   vanilla-exact evaluator in `part_transforms` — frog/camel/sniffer/
   armadillo/creaking/copper-golem walks, bat flight, breeze idle,
   nautilus swim, rabbit hop (jump-state approximation, documented).
+  **Gesture rigs run too (fifth pass)**: entity Pose metadata (index 6)
+  + sniffer/armadillo state enums (index 17) are decoded, a
+  `GestureTracker` times each rig from the observed state change
+  (vanilla clocks from the transition; wire carries only current state),
+  and `KfGate::{During, Unless, NotShell}` + `KfDriver::GestureAge` +
+  part `Show` rules play warden roar/sniff/emerge/dig, frog croak
+  (+throat pouch visibility)/tongue, breeze shoot/slide/inhale/jump,
+  sniffer dig/long-sniff/happy/rise + the SEARCHING walk-swap, and the
+  armadillo roll/scared/unroll **with the shell-ball visibility swap**
+  (`mobshot --gesture name[,age] [--shell]`,
+  `REWO_FORCE_GESTURE=name[,age]`).
   Still open: entity *collision* is ignored (walk through mobs),
-  state-driven gesture rigs (warden roar/dig, sniffer dig, armadillo
-  roll, frog tongue, allay dance) need entity pose/event state off the
-  wire and stay unplayed, dragon flight is bespoke procedural code (not
-  a rig) and stays posed, sheep wool dye-tint deferred (white),
+  entity-*event*-driven anims (armadillo re-peek event 64, warden
+  attack/sonic-boom, creaking attack, allay dance) need the
+  entity_event/jukebox packets, dragon flight is bespoke procedural code
+  (not a rig) and stays posed, sheep wool dye-tint deferred (white),
   slime/magma face + size need the translucent pass + entity metadata,
   texture variants are fixed picks (tabby cat, brown horse, creamy
   llama, lucy axolotl, temperate chicken/frog…), no real per-player
@@ -2016,3 +2027,56 @@ gate green.**
   roar/dig, creaking attack, sniffer dig/sniff, armadillo roll, frog
   tongue/croak, allay dance) — they need entity event/pose state off the
   wire, not more animation machinery.
+
+**2026-07-22 — gesture rigs: pose/state one-shots live off the wire.**
+
+- The state-driven animation gap closed. **Wire side**: metadata decode
+  gained the Pose serializer (index 6, type 20 — the `Pose.java` id order:
+  ROARING=11, SNIFFING=12, EMERGING=13, DIGGING=14, CROAKING=8,
+  USING_TONGUE=9, SLIDING=15, SHOOTING=16, INHALING=17, LONG_JUMPING=6)
+  and the mob-state enums at index 17 (SNIFFER_STATE=35 /
+  ARMADILLO_STATE=36 / COPPER_GOLEM_STATE=37 varint ordinals);
+  `EntityTable` stores both per entity, cleared on remove.
+- **Timing**: the wire carries only the *current* state — vanilla times
+  the rigs from the transition (`AnimationState.start(tickCount)`). A
+  `GestureTracker` in `rewo live` records the instant each entity's
+  pose/state changes; age-in-seconds feeds the rig clock. Entering
+  armadillo SCARED pre-advances the clock 2.5 s — vanilla's
+  `fastForward(SCARED.animationDuration())` — landing the non-looping
+  PEEK rig on its held tucked-ball end pose.
+- **Gate/driver split** in `KfAnim` (mirrors the `setupAnim` call
+  patterns exactly): `KfGate::{Always, During(g), Unless(g), NotShell}` ×
+  `KfDriver::GestureAge` (one-shot `apply(state, age)`, holds last frame
+  past the end) — so the sniffer's SEARCHING is a *walk-driven swap*
+  (`During(Searching)` + `Walk{9,100}` replacing the normal walk's
+  `Unless(Searching)`), the armadillo walk yields while balled
+  (`NotShell`), and dig/roar/croak/… are `During + GestureAge`. 19
+  gesture defs extracted (WARDEN_ROAR/SNIFF/EMERGE/DIG, FROG_CROAK/
+  TONGUE, BREEZE_SHOOT/SLIDE/INHALE/JUMP, SNIFFER_DIG/LONGSNIFF/HAPPY/
+  STAND_UP/SNIFF_SEARCH, ARMADILLO_ROLL_UP/ROLL_OUT/PEEK; SNIFFSNIFF is
+  scale-only → no rig, noted).
+- **Visibility rules** (`Show` on parts, filtered in `emit_model` AND
+  `neutral_quads` so the facelabel prediction can't disagree): armadillo
+  shell swap — hiding shows the `cube` ball and hides body cubes/tail/
+  hind legs exactly like vanilla's `skipDraw` (head + front legs keep
+  rendering, tucked *inside* by the held rig — `Show::{ShellOnly,
+  NotShell}`); frog `croaking_body` is `Show::During(FrogCroak)`
+  (vanilla's `isStarted()` visibility). Shell timing per state:
+  ROLLING balls after 5 ticks, SCARED always, UNROLLING opens at
+  tick 26 (`shouldHideInShell` per-state overrides, transcribed).
+  The frog's head became a real named part (FROG_TONGUE tilts it open) —
+  rest-pose geometry identical.
+- **Knobs**: `rewo mobshot --gesture name[,age] [--shell]` renders any
+  rig at any clock (names via `Gesture::from_name`);
+  `REWO_FORCE_GESTURE=name[,age]` pins live/headless sessions.
+- Gates: 11 rewo-gpu tests, `mobshot --check` **246/246**, demo PNG
+  byte-identical (`ee6e26f4…`), bench clean this run (GPU avg 0.227 ms /
+  0.1%-low 0.533 ms — last session's spike confirmed as the reported
+  machine contamination). Closeups eyeballed: warden roar (arms flung,
+  mouth cavity), frog tongue-out + croak throat pouch, sniffer dig
+  (head buried) + search walk, breeze shoot funnel whip, armadillo
+  mid-tuck and full ball (body/legs/tail hidden, head tucked inside).
+- Not wired (needs wire signals we don't decode yet): entity *events*
+  (armadillo re-peek event 64, warden attack/sonic-boom, creaking
+  attack), allay dance (jukebox proximity), breeze SLIDE_BACK (no pose).
+  All are additive on the same gate/driver machinery.

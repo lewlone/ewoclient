@@ -133,13 +133,99 @@ fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
     (right.to_array(), up.to_array())
 }
 
+/// Tracks when each entity's gesture-driving state changed. The wire
+/// carries only the *current* pose/state — vanilla clients time the rigs
+/// from the transition instant, so we record it here.
+#[derive(Default)]
+pub(crate) struct GestureTracker {
+    map: std::collections::HashMap<i32, (rewo_gpu::mobs::Gesture, f32)>,
+}
+
+impl GestureTracker {
+    /// Record `wanted` for this entity at `now` seconds; returns the active
+    /// gesture + its age. `head_start` pre-advances a *newly entered*
+    /// gesture's clock (vanilla's SCARED `fastForward`).
+    fn update(
+        &mut self,
+        id: i32,
+        wanted: Option<rewo_gpu::mobs::Gesture>,
+        now: f32,
+        head_start: f32,
+    ) -> Option<(rewo_gpu::mobs::Gesture, f32)> {
+        match wanted {
+            None => {
+                self.map.remove(&id);
+                None
+            }
+            Some(g) => {
+                let start = match self.map.get(&id) {
+                    Some((cur, t0)) if *cur == g => *t0,
+                    _ => {
+                        let t0 = now - head_start;
+                        self.map.insert(id, (g, t0));
+                        t0
+                    }
+                };
+                Some((g, now - start))
+            }
+        }
+    }
+}
+
+/// Wire state → gesture for the rigged kinds. Pose ordinals are
+/// `Pose.java`'s ids; state ordinals are the `Sniffer.State` /
+/// `ArmadilloState` enum orders (metadata index 17).
+fn wanted_gesture(kind: EntityModelKind, pose: u8, state: u8) -> Option<rewo_gpu::mobs::Gesture> {
+    use rewo_gpu::mobs::Gesture::*;
+    Some(match kind {
+        EntityModelKind::Warden => match pose {
+            11 => WardenRoar,
+            12 => WardenSniff,
+            13 => WardenEmerge,
+            14 => WardenDig,
+            _ => return None,
+        },
+        EntityModelKind::Frog => match pose {
+            8 => FrogCroak,
+            9 => FrogTongue,
+            _ => return None,
+        },
+        EntityModelKind::Breeze => match pose {
+            6 => BreezeJump,
+            15 => BreezeSlide,
+            16 => BreezeShoot,
+            17 => BreezeInhale,
+            _ => return None,
+        },
+        EntityModelKind::Sniffer => match state {
+            1 => SnifferFeelingHappy,
+            2 => SnifferScenting,
+            3 => SnifferSniffing,
+            4 => SnifferSearching,
+            5 => SnifferDigging,
+            6 => SnifferRising,
+            _ => return None,
+        },
+        EntityModelKind::Armadillo => match state {
+            1 => ArmadilloRoll,
+            2 => ArmadilloScared,
+            3 => ArmadilloUnroll,
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
 /// Snapshot every tracked entity into this frame's draw list. `alpha` is
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
-/// everything else gets mauve, sized by the type table.
+/// everything else gets mauve, sized by the type table. `now` is the
+/// render clock in seconds — the gesture rigs' time base.
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
     alpha: f32,
+    gestures: &mut GestureTracker,
+    now: f32,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -155,6 +241,16 @@ fn collect_entities<'a>(
     // yaw to body-yaw + this offset, so a PNG can prove head-look turns the
     // head independently of the body without depending on live server AI.
     let force_head: Option<f32> = std::env::var("REWO_FORCE_HEAD").ok().and_then(|s| s.trim().parse().ok());
+    // Headless-only knob: `REWO_FORCE_GESTURE=<name>[,<age_s>]` pins every
+    // gesture-rigged mob into that state (mobshot names, e.g.
+    // "warden_roar,1.5") — deterministic gesture PNGs without server AI.
+    let force_gesture: Option<(rewo_gpu::mobs::Gesture, f32)> =
+        std::env::var("REWO_FORCE_GESTURE").ok().and_then(|s| {
+            let mut it = s.split(',');
+            let g = rewo_gpu::mobs::Gesture::from_name(it.next()?.trim())?;
+            let age = it.next().and_then(|a| a.trim().parse().ok()).unwrap_or(0.0);
+            Some((g, age))
+        });
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(alpha);
@@ -171,6 +267,32 @@ fn collect_entities<'a>(
             etypes.dimensions(e.type_id)
         };
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
+        // Gesture: wire pose/state → rig, timed from the observed change.
+        let gesture = force_gesture.or_else(|| {
+            let wanted = wanted_gesture(
+                kind,
+                session.world.entities.pose(id),
+                session.world.entities.gesture_state(id),
+            );
+            // Entering SCARED starts the peek rig at its held ball pose —
+            // vanilla `fastForward(SCARED.animationDuration())` = 2.5 s.
+            let head_start = if wanted == Some(rewo_gpu::mobs::Gesture::ArmadilloScared) {
+                2.5
+            } else {
+                0.0
+            };
+            gestures.update(id, wanted, now, head_start)
+        });
+        // Armadillo shell swap (vanilla `shouldHideInShell` per state):
+        // ROLLING balls up after 5 ticks, SCARED always, UNROLLING opens
+        // at tick 26.
+        let shell = kind == EntityModelKind::Armadillo
+            && match gesture {
+                Some((rewo_gpu::mobs::Gesture::ArmadilloRoll, age)) => age > 0.25,
+                Some((rewo_gpu::mobs::Gesture::ArmadilloScared, _)) => true,
+                Some((rewo_gpu::mobs::Gesture::ArmadilloUnroll, age)) => age < 1.3,
+                _ => false,
+            };
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
@@ -189,8 +311,13 @@ fn collect_entities<'a>(
             pitch: e.pitch,
             limb_swing,
             limb_amount,
+            gesture,
+            shell,
         });
     }
+    // Drop tracker entries for despawned entities (recycled server ids
+    // must not inherit a stale gesture clock).
+    gestures.map.retain(|id, _| session.world.entities.get(*id).is_some());
     out
 }
 
@@ -497,7 +624,10 @@ fn run_headless(
     // pitch) — unless REWO_LOOK_ENTITY=1, which aims at the nearest entity
     // so the verification PNG is guaranteed to frame it.
     let eye = player_eye(&session);
-    let draws = collect_entities(&session, &etypes, 1.0);
+    // Single-shot render: a fresh tracker sees every gesture at age 0 (use
+    // REWO_FORCE_GESTURE for a specific rig time).
+    let mut gestures = GestureTracker::default();
+    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0);
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
         println!(
@@ -681,6 +811,8 @@ struct LiveApp {
     dirt_item: Option<i32>,
     /// F3 debug overlay visible (toggled by the F3 key). Default on.
     debug: bool,
+    /// Per-entity gesture state-change clocks (pose-driven rigs).
+    gestures: GestureTracker,
     init_error: Option<String>,
 }
 
@@ -926,9 +1058,9 @@ impl LiveApp {
 
         // Entities: frame-interpolated snapshot + camera-billboarded tags.
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
-        let draws = collect_entities(session, &self.etypes, alpha);
-        let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let anim_time = self.started.elapsed().as_secs_f32();
+        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time);
+        let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
@@ -1024,6 +1156,7 @@ fn run_windowed(
         hotbar_slot: 0,
         dirt_item,
         debug: true,
+        gestures: GestureTracker::default(),
         init_error: None,
     };
     event_loop

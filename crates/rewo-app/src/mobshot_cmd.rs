@@ -68,6 +68,15 @@ pub struct MobshotArgs {
     /// spider leg waves, tail wags). The --check gate always uses 0.
     #[arg(long)]
     walk: Option<String>,
+    /// Sheet mode: pose/state gesture as "name[,age_s]" (e.g.
+    /// "warden_roar,1.5") — plays the one-shot rig at that clock on every
+    /// mob it applies to. Names match `Gesture::from_name`.
+    #[arg(long)]
+    gesture: Option<String>,
+    /// Sheet mode: render the armadillo hiding in its shell (the
+    /// visibility swap the gestures drive in live play).
+    #[arg(long, default_value_t = false)]
+    shell: bool,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -115,6 +124,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         pitch: 0.0,
         limb_swing: 0.0,
         limb_amount: 0.0,
+        gesture: None,
+        shell: false,
     }
 }
 
@@ -412,6 +423,17 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
         })
         .unwrap_or((0.0, 0.0));
+    let gesture = match args.gesture.as_deref() {
+        Some(s) => {
+            let mut it = s.split(',');
+            let name = it.next().unwrap_or("").trim();
+            let g = rewo_gpu::mobs::Gesture::from_name(name)
+                .ok_or_else(|| format!("unknown --gesture {name:?}"))?;
+            let age = it.next().and_then(|a| a.trim().parse().ok()).unwrap_or(0.0);
+            Some((g, age))
+        }
+        None => None,
+    };
     let draws: Vec<EntityDraw<'_>> = kinds
         .iter()
         .enumerate()
@@ -419,6 +441,8 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             let mut d = neutral_draw(*k);
             d.limb_swing = walk_swing;
             d.limb_amount = walk_amt;
+            d.gesture = gesture;
+            d.shell = args.shell;
             let (row, col) = (i / cols, i % cols);
             let row_n = ((kinds.len() - row * cols).min(cols)) as f32;
             let stagger = if row % 2 == 1 { sx * 0.5 } else { 0.0 };

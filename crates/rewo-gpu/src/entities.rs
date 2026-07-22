@@ -91,6 +91,11 @@ pub struct EntityDraw<'a> {
     /// — arms and legs swing about their pivots. 0 amount = neutral pose.
     pub limb_swing: f32,
     pub limb_amount: f32,
+    /// Active pose/state gesture + seconds since it started (drives the
+    /// one-shot keyframe rigs — warden roar, sniffer dig, …).
+    pub gesture: Option<(mobs::Gesture, f32)>,
+    /// Armadillo shell swap (vanilla `isHidingInShell`).
+    pub shell: bool,
 }
 
 #[repr(C)]
@@ -507,12 +512,23 @@ impl EntityPass {
             pos: 0.0,
             amt: 0.0,
             age: 0.0,
+            gesture: Option::None,
+            shell: false,
         };
         let xf = part_transforms(model, &ctx);
         Some(
             model
                 .quads
                 .iter()
+                // Rest pose: no shell, no gesture — shell-only and
+                // gesture-only parts don't render, so exclude them from the
+                // geometric prediction too.
+                .filter(|q| {
+                    matches!(
+                        model.parts[q.part as usize].show,
+                        mobs::Show::Always | mobs::Show::NotShell
+                    )
+                })
                 .map(|q| {
                     let (m, o) = &xf[q.part as usize];
                     let mut pos = [[0f32; 3]; 4];
@@ -618,12 +634,25 @@ impl EntityPass {
             pos: d.limb_swing,
             amt: d.limb_amount,
             age: time * 20.0,
+            gesture: d.gesture,
+            shell: d.shell,
         };
         let xf = part_transforms(model, &ctx);
         let s = model.scale;
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
+            }
+            match model.parts[q.part as usize].show {
+                mobs::Show::Always => {}
+                mobs::Show::ShellOnly if !d.shell => continue,
+                mobs::Show::NotShell if d.shell => continue,
+                mobs::Show::During(g)
+                    if !matches!(d.gesture, Some((active, _)) if active == g) =>
+                {
+                    continue
+                }
+                _ => {}
             }
             let (m, o) = &xf[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
@@ -877,6 +906,10 @@ struct AnimCtx {
     pos: f32,
     amt: f32,
     age: f32,
+    /// Active gesture + its age in seconds (one-shot rigs).
+    gesture: Option<(mobs::Gesture, f32)>,
+    /// Armadillo shell swap.
+    shell: bool,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -1041,6 +1074,11 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
         ),
         Age => (c.age * 0.05, 1.0),
         AgeGatedByWalk { gate } => (c.age * 0.05, (c.amt * gate).min(1.0)),
+        // Only reachable under KfGate::During — the gesture is active.
+        GestureAge => match c.gesture {
+            Some((_, age)) => (age, 1.0),
+            Option::None => (0.0, 0.0),
+        },
     }
 }
 
@@ -1060,6 +1098,26 @@ fn part_transforms(model: &MobModel, ctx: &AnimCtx) -> Vec<([[f32; 3]; 3], [f32;
         doffs[i] = o;
     }
     for kf in &model.keyframes {
+        // The gate decides whether the rig plays this frame (vanilla's
+        // `setupAnim` call patterns); the driver decides where in time.
+        match kf.gate {
+            mobs::KfGate::Always => {}
+            mobs::KfGate::During(g) => {
+                if !matches!(ctx.gesture, Some((active, _)) if active == g) {
+                    continue;
+                }
+            }
+            mobs::KfGate::Unless(g) => {
+                if matches!(ctx.gesture, Some((active, _)) if active == g) {
+                    continue;
+                }
+            }
+            mobs::KfGate::NotShell => {
+                if ctx.shell {
+                    continue;
+                }
+            }
+        }
         let (mut t, scale) = kf_drive(kf.driver, ctx);
         if scale <= 0.0 {
             continue;

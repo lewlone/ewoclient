@@ -19,7 +19,27 @@ $targets = @(
     @{ File = "CopperGolemAnimation.java"; Const = "COPPER_GOLEM_IDLE" },
     @{ File = "NautilusAnimation.java";    Const = "SWIMMING"; Rename = "NAUTILUS_SWIMMING" },
     @{ File = "BreezeAnimation.java";      Const = "IDLE"; Rename = "BREEZE_IDLE" },
-    @{ File = "RabbitAnimation.java";      Const = "HOP"; Rename = "RABBIT_HOP" }
+    @{ File = "RabbitAnimation.java";      Const = "HOP"; Rename = "RABBIT_HOP" },
+    # Gesture rigs (pose/state-driven one-shots).
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_EMERGE" },
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_DIG" },
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_ROAR" },
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_SNIFF" },
+    @{ File = "FrogAnimation.java";        Const = "FROG_CROAK" },
+    @{ File = "FrogAnimation.java";        Const = "FROG_TONGUE" },
+    @{ File = "BreezeAnimation.java";      Const = "SHOOT"; Rename = "BREEZE_SHOOT" },
+    @{ File = "BreezeAnimation.java";      Const = "SLIDE"; Rename = "BREEZE_SLIDE" },
+    @{ File = "BreezeAnimation.java";      Const = "INHALE"; Rename = "BREEZE_INHALE" },
+    @{ File = "BreezeAnimation.java";      Const = "JUMP"; Rename = "BREEZE_JUMP" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_DIG" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_LONGSNIFF" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_SNIFFSNIFF" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_SNIFF_SEARCH" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_HAPPY" },
+    @{ File = "SnifferAnimation.java";     Const = "SNIFFER_STAND_UP" },
+    @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_ROLL_UP" },
+    @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_PEEK" },
+    @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_ROLL_OUT" }
 )
 
 $out = New-Object System.Text.StringBuilder

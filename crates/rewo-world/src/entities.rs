@@ -128,6 +128,12 @@ pub struct EntityTable {
     /// Custom names from entity metadata, keyed by entity id (a named mob
     /// shows this above its model). Cleared on entity removal.
     custom_names: HashMap<i32, String>,
+    /// Entity pose ordinals from metadata index 6 (warden roar, frog
+    /// croak, breeze shoot…). Cleared on entity removal.
+    poses: HashMap<i32, u8>,
+    /// Mob-specific gesture states (sniffer/armadillo enum ordinals at
+    /// metadata index 17). Cleared on entity removal.
+    gesture_states: HashMap<i32, u8>,
 }
 
 impl EntityTable {
@@ -138,6 +144,8 @@ impl EntityTable {
     pub fn remove(&mut self, id: i32) {
         self.map.remove(&id);
         self.custom_names.remove(&id);
+        self.poses.remove(&id);
+        self.gesture_states.remove(&id);
     }
 
     /// Set / clear an entity's metadata custom name.
@@ -154,6 +162,24 @@ impl EntityTable {
 
     pub fn custom_name(&self, id: i32) -> Option<&str> {
         self.custom_names.get(&id).map(|s| s.as_str())
+    }
+
+    /// Entity pose ordinal from metadata (index 6) — STANDING=0 default.
+    pub fn set_pose(&mut self, id: i32, pose: u8) {
+        self.poses.insert(id, pose);
+    }
+
+    pub fn pose(&self, id: i32) -> u8 {
+        self.poses.get(&id).copied().unwrap_or(0)
+    }
+
+    /// Mob gesture state (sniffer/armadillo/… enum ordinal at index 17).
+    pub fn set_gesture_state(&mut self, id: i32, state: u8) {
+        self.gesture_states.insert(id, state);
+    }
+
+    pub fn gesture_state(&self, id: i32) -> u8 {
+        self.gesture_states.get(&id).copied().unwrap_or(0)
     }
 
     pub fn len(&self) -> usize {

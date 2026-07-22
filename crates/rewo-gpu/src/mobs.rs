@@ -182,13 +182,106 @@ pub enum KfDriver {
     /// (vanilla triggers HOP per jump; jump state isn't on our wire, so a
     /// moving rabbit hops continuously).
     AgeGatedByWalk { gate: f32 },
+    /// Seconds since the gating gesture's state change, full scale —
+    /// vanilla's `apply(animationState, ageInTicks)` one-shots. Only
+    /// meaningful under [`KfGate::During`].
+    GestureAge,
+}
+
+/// A pose/state-driven one-shot animation — vanilla `AnimationState`s
+/// started by wire-visible entity state (Pose metadata, sniffer/armadillo
+/// state enums). The rig plays from the state-change instant; non-looping
+/// rigs hold their last frame while the state persists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gesture {
+    WardenRoar,
+    WardenSniff,
+    WardenEmerge,
+    WardenDig,
+    FrogCroak,
+    FrogTongue,
+    BreezeShoot,
+    BreezeSlide,
+    BreezeInhale,
+    BreezeJump,
+    SnifferFeelingHappy,
+    SnifferScenting,
+    SnifferSniffing,
+    SnifferSearching,
+    SnifferDigging,
+    SnifferRising,
+    ArmadilloRoll,
+    /// SCARED — the peek rig, entered fast-forwarded to its held ball pose
+    /// (vanilla `fastForward(SCARED.animationDuration())`).
+    ArmadilloScared,
+    ArmadilloUnroll,
+}
+
+impl Gesture {
+    /// For the mobshot `--gesture` knob.
+    pub fn from_name(s: &str) -> Option<Gesture> {
+        Some(match s {
+            "warden_roar" => Gesture::WardenRoar,
+            "warden_sniff" => Gesture::WardenSniff,
+            "warden_emerge" => Gesture::WardenEmerge,
+            "warden_dig" => Gesture::WardenDig,
+            "frog_croak" => Gesture::FrogCroak,
+            "frog_tongue" => Gesture::FrogTongue,
+            "breeze_shoot" => Gesture::BreezeShoot,
+            "breeze_slide" => Gesture::BreezeSlide,
+            "breeze_inhale" => Gesture::BreezeInhale,
+            "breeze_jump" => Gesture::BreezeJump,
+            "sniffer_happy" => Gesture::SnifferFeelingHappy,
+            "sniffer_scenting" => Gesture::SnifferScenting,
+            "sniffer_sniffing" => Gesture::SnifferSniffing,
+            "sniffer_searching" => Gesture::SnifferSearching,
+            "sniffer_digging" => Gesture::SnifferDigging,
+            "sniffer_rising" => Gesture::SnifferRising,
+            "armadillo_roll" => Gesture::ArmadilloRoll,
+            "armadillo_scared" => Gesture::ArmadilloScared,
+            "armadillo_unroll" => Gesture::ArmadilloUnroll,
+        _ => return None,
+        })
+    }
+}
+
+/// Part visibility rule — the armadillo swaps between its body and the
+/// rolled-up ball exactly like vanilla's `setupAnim` visibility toggles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Show {
+    Always,
+    /// Only while the entity is hiding in its shell.
+    ShellOnly,
+    /// Hidden while the entity is hiding in its shell.
+    NotShell,
+    /// Only while this gesture is active (frog `croaking_body`, shown by
+    /// vanilla's `croakAnimationState.isStarted()` check).
+    During(Gesture),
+}
+
+/// When a keyframe animation plays — vanilla's `setupAnim` call patterns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KfGate {
+    /// Every frame (walk rigs, breeze idle).
+    Always,
+    /// Only while the entity's gesture matches. With [`KfDriver::GestureAge`]
+    /// this is vanilla's `apply(animationState, age)` one-shot; with a walk
+    /// driver it's a state-conditional walk swap (sniffer SNIFF_SEARCH).
+    During(Gesture),
+    /// Suppressed while the gesture is active (the sniffer walk yields to
+    /// the search-walk: `if (isSearching) … else walk`).
+    Unless(Gesture),
+    /// Suppressed while hiding in the shell (armadillo walk).
+    NotShell,
 }
 
 /// A keyframe animation attached to a model, channels resolved to part
-/// indices at build time.
+/// indices at build time. `gate` decides *whether* it plays this frame;
+/// `driver` decides *where in time* it samples.
 pub struct KfAnim {
     pub def: &'static KfDef,
     pub driver: KfDriver,
+    pub gate: KfGate,
     pub parts: Vec<u16>,
 }
 
@@ -208,6 +301,8 @@ pub struct Part {
     /// Vanilla part name — only needed where keyframe channels target the
     /// part; "" elsewhere.
     pub name: &'static str,
+    /// Visibility rule (armadillo shell swap); `Show::Always` elsewhere.
+    pub show: Show,
 }
 
 /// One textured quad in part-local model px. UVs are in the mob's own
@@ -407,6 +502,7 @@ impl ModelBuilder {
                 amp: 1.0,
                 parent: None,
                 name: "",
+                show: Show::Always,
             }],
             quads: Vec::new(),
             keyframes: Vec::new(),
@@ -452,13 +548,28 @@ impl ModelBuilder {
             amp,
             parent: parent.map(|p| p as u16),
             name,
+            show: Show::Always,
         });
         self.parts.len() - 1
+    }
+
+    /// Set a part's visibility rule (armadillo shell swap).
+    fn show(&mut self, part: usize, show: Show) {
+        self.parts[part].show = show;
     }
 
     /// Attach a keyframe rig; every channel's part name must exist (panics
     /// at build otherwise — `registry_builds_clean` catches it).
     fn keyframe(&mut self, def: &'static KfDef, driver: KfDriver) {
+        self.keyframe_gated(def, driver, KfGate::Always);
+    }
+
+    /// Attach a pose/state-driven one-shot rig (vanilla `apply(state, age)`).
+    fn keyframe_gesture(&mut self, def: &'static KfDef, gesture: Gesture) {
+        self.keyframe_gated(def, KfDriver::GestureAge, KfGate::During(gesture));
+    }
+
+    fn keyframe_gated(&mut self, def: &'static KfDef, driver: KfDriver, gate: KfGate) {
         let parts = def
             .channels
             .iter()
@@ -470,7 +581,7 @@ impl ModelBuilder {
                     as u16
             })
             .collect();
-        self.keyframes.push(KfAnim { def, driver, parts });
+        self.keyframes.push(KfAnim { def, driver, gate, parts });
     }
 
     /// Add one vanilla `addBox` to a part. `folds` reproduce nested static
@@ -1938,14 +2049,19 @@ fn frog() -> Model {
     let body = b.part_named("body", [0.0, 22.0, 4.0], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(body, 0, (3.0, 1.0), [-3.5, -2.0, -8.0], [7.0, 3.0, 9.0], NONE);
     b.cube(body, 0, (23.0, 22.0), [-3.5, -1.0, -8.0], [7.0, 0.0, 9.0], NONE);
-    let head = Fold::at([0.0, -2.0, -1.0]);
-    b.cube_f(body, 0, (23.0, 13.0), [-3.5, -1.0, -7.0], [7.0, 0.0, 9.0], 0.0, false, &[head]);
-    b.cube_f(body, 0, (0.0, 13.0), [-3.5, -2.0, -7.0], [7.0, 3.0, 9.0], 0.0, false, &[head]);
+    // Real part (not a fold): FROG_TONGUE tilts the head open.
+    let head = b.part_named("head", [0.0, -2.0, -1.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(head, 0, (23.0, 13.0), [-3.5, -1.0, -7.0], [7.0, 0.0, 9.0], NONE);
+    b.cube(head, 0, (0.0, 13.0), [-3.5, -2.0, -7.0], [7.0, 3.0, 9.0], NONE);
     let eyes = Fold::at([-0.5, 0.0, 2.0]);
-    b.cube_f(body, 0, (0.0, 0.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([-1.5, -3.0, -6.5]), eyes, head]);
-    b.cube_f(body, 0, (0.0, 5.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([2.5, -3.0, -6.5]), eyes, head]);
-    b.cube_f(body, 0, (26.0, 5.0), [-3.5, -0.1, -2.9], [7.0, 2.0, 3.0], -0.1, false, &[Fold::at([0.0, -1.0, -5.0])]);
-    b.cube_f(body, 0, (17.0, 13.0), [-2.0, 0.0, -7.1], [4.0, 0.0, 7.0], 0.0, false, &[Fold::at([0.0, -1.01, 1.0])]);
+    b.cube_f(head, 0, (0.0, 0.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([-1.5, -3.0, -6.5]), eyes]);
+    b.cube_f(head, 0, (0.0, 5.0), [-1.5, -1.0, -1.5], [3.0, 2.0, 3.0], 0.0, false, &[Fold::at([2.5, -3.0, -6.5]), eyes]);
+    let croak = b.part_named("croaking_body", [0.0, -1.0, -5.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube_g(croak, 0, (26.0, 5.0), [-3.5, -0.1, -2.9], [7.0, 2.0, 3.0], -0.1, NONE);
+    // Vanilla: `croakingBody.visible = croakAnimationState.isStarted()`.
+    b.show(croak, Show::During(Gesture::FrogCroak));
+    let tongue = b.part_named("tongue", [0.0, -1.01, 1.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(tongue, 0, (17.0, 13.0), [-2.0, 0.0, -7.1], [4.0, 0.0, 7.0], NONE);
     let arm_l = b.part_named("left_arm", [4.0, -1.0, -6.5], [0.0; 3], Anim::None, 1.0, Some(body));
     b.cube(arm_l, 0, (0.0, 32.0), [-1.0, 0.0, -1.0], [2.0, 3.0, 3.0], NONE);
     b.cube_f(arm_l, 0, (18.0, 40.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([0.0, 3.0, -1.0])]);
@@ -1959,6 +2075,10 @@ fn frog() -> Model {
     b.cube(leg_r, 0, (0.0, 25.0), [-2.0, 0.0, -2.0], [3.0, 3.0, 4.0], NONE);
     b.cube_f(leg_r, 0, (18.0, 32.0), [-4.0, 0.01, -4.0], [8.0, 0.0, 8.0], 0.0, false, &[Fold::at([-2.0, 3.0, 0.0])]);
     b.keyframe(&crate::anim_defs::FROG_WALK, KfDriver::Walk { speed_f: 1.5, scale_f: 2.5 });
+    // Croak/tongue gestures (their throat-puff scale channels are dropped
+    // — the remaining pos/rot movement plays).
+    b.keyframe_gesture(&crate::anim_defs::FROG_CROAK, Gesture::FrogCroak);
+    b.keyframe_gesture(&crate::anim_defs::FROG_TONGUE, Gesture::FrogTongue);
     b.finish(1.0)
 }
 
@@ -1991,11 +2111,36 @@ fn armadillo() -> Model {
         ("right_front_leg", (51.0, 43.0), [-2.0, 21.0, -4.0]),
         ("left_front_leg", (42.0, 43.0), [2.0, 21.0, -4.0]),
     ];
+    let mut hind = Vec::new();
     for (name, uv, pivot) in legs {
         let p = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, Option::None);
         b.cube(p, 0, uv, [-1.0, 0.0, -1.0], [2.0, 3.0, 2.0], NONE);
+        if name.contains("hind") {
+            hind.push(p);
+        }
     }
-    b.keyframe(&crate::anim_defs::ARMADILLO_WALK, KfDriver::Walk { speed_f: 16.5, scale_f: 2.5 });
+    // The rolled-up ball — vanilla's visibility swap: while hiding in the
+    // shell the ball shows and the body cubes / hind legs / tail hide
+    // (head + front legs tuck inside via the roll rig).
+    let ball = b.part_named("cube", [0.0, 24.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(ball, 0, (0.0, 0.0), [-5.0, -10.0, -6.0], [10.0, 10.0, 10.0], NONE);
+    b.show(ball, Show::ShellOnly);
+    b.show(body, Show::NotShell);
+    b.show(tail, Show::NotShell);
+    for p in hind {
+        b.show(p, Show::NotShell);
+    }
+    // Walk yields while balled: `if (!isHidingInShell) applyWalk(…)`.
+    b.keyframe_gated(
+        &crate::anim_defs::ARMADILLO_WALK,
+        KfDriver::Walk { speed_f: 16.5, scale_f: 2.5 },
+        KfGate::NotShell,
+    );
+    b.keyframe_gesture(&crate::anim_defs::ARMADILLO_ROLL_UP, Gesture::ArmadilloRoll);
+    b.keyframe_gesture(&crate::anim_defs::ARMADILLO_ROLL_OUT, Gesture::ArmadilloUnroll);
+    // SCARED holds the peek rig's end pose (the tucked ball) — the caller
+    // enters the gesture with +2.5 s on the clock, vanilla's fastForward.
+    b.keyframe_gesture(&crate::anim_defs::ARMADILLO_PEEK, Gesture::ArmadilloScared);
     b.finish(1.0)
 }
 
@@ -2367,24 +2512,27 @@ fn allay() -> Model {
 /// 28-px arms, stubby legs.
 fn warden() -> Model {
     let mut b = ModelBuilder::new();
-    let bone = Fold::at([0.0, 24.0, 0.0]);
-    let body = Fold::at([0.0, -21.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-9.0, -13.0, -4.0], [18.0, 21.0, 11.0], 0.0, false, &[body, bone]);
-    b.cube_f(STATIC_PART, 0, (90.0, 11.0), [-2.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, false, &[Fold::at([-7.0, -2.0, -4.0]), body, bone]);
-    b.cube_f(STATIC_PART, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, &[Fold::at([7.0, -2.0, -4.0]), body, bone]);
-    // Head chain: bone → body → head ⇒ absolute pivot (0, −10, 0).
-    let head = b.part([0.0, -10.0, 0.0], Anim::Head, 1.0);
+    // bone(0,24,0) → body(0,−21,0), targeted by the gesture rigs.
+    let body = b.part_named("body", [0.0, 3.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(body, 0, (0.0, 0.0), [-9.0, -13.0, -4.0], [18.0, 21.0, 11.0], NONE);
+    b.cube_f(body, 0, (90.0, 11.0), [-2.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, false, &[Fold::at([-7.0, -2.0, -4.0])]);
+    b.cube_f(body, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, &[Fold::at([7.0, -2.0, -4.0])]);
+    let head = b.part_named("head", [0.0, -13.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube(head, 0, (0.0, 32.0), [-8.0, -16.0, -5.0], [16.0, 16.0, 10.0], NONE);
     b.cube_f(head, 0, (52.0, 32.0), [-16.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([-8.0, -12.0, 0.0])]);
     b.cube_f(head, 0, (58.0, 0.0), [0.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([8.0, -12.0, 0.0])]);
-    let arm_r = b.part([-13.0, -10.0, 1.0], Anim::ArmRight, 1.0);
+    let arm_r = b.part_named("right_arm", [-13.0, -13.0, 1.0], [0.0; 3], Anim::ArmRight, 1.0, Some(body));
     b.cube(arm_r, 0, (44.0, 50.0), [-4.0, 0.0, -4.0], [8.0, 28.0, 8.0], NONE);
-    let arm_l = b.part([13.0, -10.0, 1.0], Anim::ArmLeft, 1.0);
+    let arm_l = b.part_named("left_arm", [13.0, -13.0, 1.0], [0.0; 3], Anim::ArmLeft, 1.0, Some(body));
     b.cube(arm_l, 0, (0.0, 58.0), [-4.0, 0.0, -4.0], [8.0, 28.0, 8.0], NONE);
-    let leg_r = b.part([-5.9, 11.0, 0.0], Anim::LegRight, 1.0);
+    let leg_r = b.part_named("right_leg", [-5.9, 11.0, 0.0], [0.0; 3], Anim::LegRight, 1.0, Option::None);
     b.cube(leg_r, 0, (76.0, 48.0), [-3.1, 0.0, -3.0], [6.0, 13.0, 6.0], NONE);
-    let leg_l = b.part([5.9, 11.0, 0.0], Anim::LegLeft, 1.0);
+    let leg_l = b.part_named("left_leg", [5.9, 11.0, 0.0], [0.0; 3], Anim::LegLeft, 1.0, Option::None);
     b.cube(leg_l, 0, (76.0, 76.0), [-2.9, 0.0, -3.0], [6.0, 13.0, 6.0], NONE);
+    b.keyframe_gesture(&crate::anim_defs::WARDEN_ROAR, Gesture::WardenRoar);
+    b.keyframe_gesture(&crate::anim_defs::WARDEN_SNIFF, Gesture::WardenSniff);
+    b.keyframe_gesture(&crate::anim_defs::WARDEN_EMERGE, Gesture::WardenEmerge);
+    b.keyframe_gesture(&crate::anim_defs::WARDEN_DIG, Gesture::WardenDig);
     b.finish(1.0)
 }
 
@@ -2419,7 +2567,16 @@ fn sniffer() -> Model {
     let ear_r = b.part_named("right_ear", [-6.51, -7.5, -4.51], [0.0; 3], Anim::None, 1.0, Some(head));
     b.cube(ear_r, 0, (48.0, 0.0), [-1.0, 0.0, -3.0], [1.0, 19.0, 7.0], NONE);
     b.cube_f(head, 0, (10.0, 45.0), [-6.5, -2.0, -9.0], [13.0, 2.0, 9.0], 0.0, false, &[Fold::at([0.0, -4.5, -11.5])]);
-    b.keyframe(&crate::anim_defs::SNIFFER_WALK, KfDriver::Walk { speed_f: 9.0, scale_f: 100.0 });
+    // Vanilla swaps walks: `if (isSearching) sniffSearch.applyWalk(…) else
+    // walk.applyWalk(…)` — both walk-driven, gated on the SEARCHING state.
+    let walk = KfDriver::Walk { speed_f: 9.0, scale_f: 100.0 };
+    b.keyframe_gated(&crate::anim_defs::SNIFFER_WALK, walk, KfGate::Unless(Gesture::SnifferSearching));
+    b.keyframe_gated(&crate::anim_defs::SNIFFER_SNIFF_SEARCH, walk, KfGate::During(Gesture::SnifferSearching));
+    b.keyframe_gesture(&crate::anim_defs::SNIFFER_DIG, Gesture::SnifferDigging);
+    b.keyframe_gesture(&crate::anim_defs::SNIFFER_LONGSNIFF, Gesture::SnifferSniffing);
+    b.keyframe_gesture(&crate::anim_defs::SNIFFER_HAPPY, Gesture::SnifferFeelingHappy);
+    b.keyframe_gesture(&crate::anim_defs::SNIFFER_STAND_UP, Gesture::SnifferRising);
+    // SCENTING's SNIFFSNIFF rig is scale-channel-only (dropped) — no rig.
     b.finish(1.0)
 }
 
@@ -2427,7 +2584,8 @@ fn sniffer() -> Model {
 /// wind funnel on breeze_wind.png (texture 1).
 fn breeze() -> Model {
     let mut b = ModelBuilder::new();
-    let rods = b.part_named("rods", [0.0, 8.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    let body = b.part_named("body", [0.0, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    let rods = b.part_named("rods", [0.0, 8.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
     let rod_poses: [([f32; 3], [f32; 3]); 3] = [
         ([2.5981, -3.0, 1.5], [-2.7489, -1.0472, 3.1416]),
         ([-2.5981, -3.0, 1.5], [-2.7489, 1.0472, 3.1416]),
@@ -2436,14 +2594,15 @@ fn breeze() -> Model {
     for (off, rot) in rod_poses {
         b.cube_f(rods, 0, (0.0, 17.0), [-1.0, 0.0, -3.0], [2.0, 8.0, 2.0], 0.0, false, &[Fold::rot(rot, off)]);
     }
-    let head = b.part_named("head", [0.0, 4.0, 0.0], [0.0; 3], Anim::Head, 1.0, Option::None);
+    let head = b.part_named("head", [0.0, 4.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube(head, 0, (4.0, 24.0), [-5.0, -5.0, -4.2], [10.0, 3.0, 4.0], NONE);
     b.cube(head, 0, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], NONE);
     // Wind funnel (three stacked swirl tiers, widest at the top) — the
-    // idle rig spins wind_mid/wind_top and bobs the head/rods.
-    let wb = Fold::at([0.0, 24.0, 0.0]);
-    b.cube_f(STATIC_PART, 1, (1.0, 83.0), [-2.5, -7.0, -2.5], [5.0, 7.0, 5.0], 0.0, false, &[wb]);
-    let wm = b.part_named("wind_mid", [0.0, 17.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    // idle rig spins wind_mid/wind_top and bobs the head/rods; the shoot/
+    // slide/inhale gestures whip the whole funnel.
+    let wb = b.part_named("wind_bottom", [0.0, 24.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
+    b.cube(wb, 1, (1.0, 83.0), [-2.5, -7.0, -2.5], [5.0, 7.0, 5.0], NONE);
+    let wm = b.part_named("wind_mid", [0.0, -7.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(wb));
     b.cube(wm, 1, (74.0, 28.0), [-6.0, -6.0, -6.0], [12.0, 6.0, 12.0], NONE);
     b.cube(wm, 1, (78.0, 32.0), [-4.0, -6.0, -4.0], [8.0, 6.0, 8.0], NONE);
     b.cube(wm, 1, (49.0, 71.0), [-2.5, -6.0, -2.5], [5.0, 6.0, 5.0], NONE);
@@ -2452,6 +2611,10 @@ fn breeze() -> Model {
     b.cube(wt, 1, (6.0, 6.0), [-6.0, -8.0, -6.0], [12.0, 8.0, 12.0], NONE);
     b.cube(wt, 1, (105.0, 57.0), [-2.5, -8.0, -2.5], [5.0, 8.0, 5.0], NONE);
     b.keyframe(&crate::anim_defs::BREEZE_IDLE, KfDriver::Age);
+    b.keyframe_gesture(&crate::anim_defs::BREEZE_SHOOT, Gesture::BreezeShoot);
+    b.keyframe_gesture(&crate::anim_defs::BREEZE_SLIDE, Gesture::BreezeSlide);
+    b.keyframe_gesture(&crate::anim_defs::BREEZE_INHALE, Gesture::BreezeInhale);
+    b.keyframe_gesture(&crate::anim_defs::BREEZE_JUMP, Gesture::BreezeJump);
     b.finish(1.0)
 }
 
