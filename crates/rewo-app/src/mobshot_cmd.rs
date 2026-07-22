@@ -119,7 +119,17 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
-    let kinds = wr.entity_pass().expect("entity pass").available_kinds();
+    let mut kinds = wr.entity_pass().expect("entity pass").available_kinds();
+    // Textures that reuse the same texels across face labels (breeze wind's
+    // concentric shells) can't be color-checked — skip those mobs loudly.
+    let ambiguous = wr.entity_pass().expect("entity pass").debug_ambiguous_kinds().to_vec();
+    for k in &ambiguous {
+        println!(
+            "[mobshot] SKIP {:?}: texture reuses rects across face labels — facelabel check N/A",
+            k
+        );
+    }
+    kinds.retain(|k| !ambiguous.contains(k));
     if let Some(dir) = &args.out_dir {
         std::fs::create_dir_all(dir).map_err(|e| format!("out-dir: {e}"))?;
     }

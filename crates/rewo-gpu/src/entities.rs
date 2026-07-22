@@ -186,6 +186,9 @@ pub struct EntityPass {
     /// Built mob models, indexed by `EntityModelKind::index()`. `None` =
     /// texture missing (or the capsule kind) → capsule fallback.
     models: Vec<Option<MobModel>>,
+    /// Facelabel mode: kinds excluded from the color check (see
+    /// `debug_ambiguous_kinds`). Empty outside debug-texture mode.
+    debug_ambiguous: Vec<EntityModelKind>,
     // Font metrics (identity values when no font was provided).
     cell: u32,
     advance: [u8; 256],
@@ -268,6 +271,15 @@ impl EntityPass {
 
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
+        // Facelabel mode: textures where different face labels paint the
+        // same texel (vanilla reuses some regions across faces — the breeze
+        // wind funnel's concentric shells) can't be verified by color; the
+        // checker skips the kinds that sample them.
+        let mut painted: std::collections::HashMap<(u32, u32), [u8; 3]> =
+            std::collections::HashMap::new();
+        let mut ambiguous_tex: std::collections::HashSet<&'static str> =
+            std::collections::HashSet::new();
+        let mut debug_ambiguous: Vec<EntityModelKind> = Vec::new();
         for def in mobs::MOBS {
             let origins: Option<Vec<(u32, u32, u32, u32)>> =
                 def.textures.iter().map(|k| slots.get(k).copied()).collect();
@@ -275,7 +287,16 @@ impl EntityPass {
             let m = (def.build)();
             if debug_tex {
                 for q in &m.quads {
-                    paint_debug_rect(&mut atlas, origins[q.tex], q);
+                    if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted) {
+                        if ambiguous_tex.insert(def.textures[q.tex]) {
+                            log::info!(
+                                "mob debug-tex: {} ({:?} {:?} quad) repaints a texel with a new label",
+                                def.textures[q.tex],
+                                def.kind,
+                                q.facing
+                            );
+                        }
+                    }
                 }
             }
             let quads = m
@@ -307,6 +328,13 @@ impl EntityPass {
                 parts: m.parts,
                 scale: m.scale / 16.0,
             });
+        }
+        if debug_tex {
+            for def in mobs::MOBS {
+                if def.textures.iter().any(|k| ambiguous_tex.contains(k)) {
+                    debug_ambiguous.push(def.kind);
+                }
+            }
         }
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
@@ -433,12 +461,20 @@ impl EntityPass {
                 text_verts: 0,
                 capsule: unit_capsule(),
                 models,
+                debug_ambiguous,
                 cell,
                 advance,
                 white_uv,
                 has_font,
             })
         }
+    }
+
+    /// Facelabel mode only: kinds whose textures paint conflicting face
+    /// labels onto shared texels (vanilla region reuse) — the color check
+    /// cannot apply to them.
+    pub fn debug_ambiguous_kinds(&self) -> &[EntityModelKind] {
+        &self.debug_ambiguous
     }
 
     /// Kinds with a built model (all textures were present).
@@ -873,8 +909,15 @@ fn wrap_degrees(deg: f32) -> f32 {
 
 /// Fill a quad's UV bounding rect in the atlas with its face-label color
 /// (facelabel verification mode). Sub-pixel rects round outward; rects are
-/// clamped to the texture's slot.
-fn paint_debug_rect(atlas: &mut [u8], slot: (u32, u32, u32, u32), q: &mobs::RawQuad) {
+/// clamped to the texture's slot. Returns `false` if a texel was already
+/// painted a *different* label (rect reuse across faces — the check can't
+/// apply to that texture).
+fn paint_debug_rect(
+    atlas: &mut [u8],
+    slot: (u32, u32, u32, u32),
+    q: &mobs::RawQuad,
+    painted: &mut std::collections::HashMap<(u32, u32), [u8; 3]>,
+) -> bool {
     let (ox, oy, tw, th) = slot;
     let (min_u, max_u) = q
         .uv
@@ -884,15 +927,22 @@ fn paint_debug_rect(atlas: &mut [u8], slot: (u32, u32, u32, u32), q: &mobs::RawQ
         .uv
         .iter()
         .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
-    let [r, g, b] = q.facing.debug_color();
+    let color = q.facing.debug_color();
+    let [r, g, b] = color;
     let (x0, x1) = ((min_u.floor().max(0.0)) as u32, (max_u.ceil().max(0.0) as u32).min(tw));
     let (y0, y1) = ((min_v.floor().max(0.0)) as u32, (max_v.ceil().max(0.0) as u32).min(th));
+    let mut clean = true;
     for y in y0..y1 {
         for x in x0..x1 {
+            match painted.insert((ox + x, oy + y), color) {
+                Some(prev) if prev != color => clean = false,
+                _ => {}
+            }
             let i = (((oy + y) * ATLAS_W + ox + x) * 4) as usize;
             atlas[i..i + 4].copy_from_slice(&[r, g, b, 255]);
         }
     }
+    clean
 }
 
 /// sRGB component → linear (CPU-side color prep; discipline #1).

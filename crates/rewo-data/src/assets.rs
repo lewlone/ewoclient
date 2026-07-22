@@ -201,6 +201,18 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("snow_golem", "entity/snow_golem/snow_golem.png", 64, 64),
     ("iron_golem", "entity/iron_golem/iron_golem.png", 128, 128),
     ("allay", "entity/allay/allay.png", 32, 32),
+    ("warden", "entity/warden/warden.png", 128, 128),
+    ("sniffer", "entity/sniffer/sniffer.png", 192, 192),
+    ("breeze", "entity/breeze/breeze.png", 32, 32),
+    ("breeze_wind", "entity/breeze/breeze_wind.png", 128, 128),
+    ("creaking", "entity/creaking/creaking.png", 64, 64),
+    ("ravager", "entity/illager/ravager.png", 128, 128),
+    ("wither", "entity/wither/wither.png", 64, 64),
+    ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
+    ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    ("copper_golem", "entity/copper_golem/copper_golem.png", 64, 64),
+    ("nautilus", "entity/nautilus/nautilus.png", 128, 128),
+    ("zombie_nautilus", "entity/nautilus/zombie_nautilus.png", 128, 128),
 ];
 
 /// A decoded GUI sprite: RGBA8 + pixel dimensions.

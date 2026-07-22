@@ -166,18 +166,25 @@ the code's author. Nothing below is settled truth.
   fox, goat, bee, frog + tadpole, armadillo, axolotl, dolphin, turtle,
   cod/salmon/pufferfish/tropical fish, panda, polar bear (1.2×), camel,
   llama/trader llama, parrot, horse/donkey/mule/skeleton+zombie horse,
-  snow/iron golem, allay. Unknown types still fall back to capsules
-  (remaining: warden, sniffer, breeze, creaking, ravager, wither, dragon,
-  happy ghast, copper golem, nautilus — each is a model fn + texture row
-  away). Entity atlas is 1024² with a shelf packer (16²..192² textures).
-  Verified by the **`rewo mobshot --check` facelabel gate** (231/231
-  mob-views) + closeup sheets (`--only`). Still open: entity *collision*
-  is ignored (walk through mobs), procedural anims beyond walk/head-look
-  are static poses (spider leg-wave, wing flaps, tentacles, tails),
-  sheep wool dye-tint deferred (white), slime/magma face + size need the
-  translucent pass + entity metadata, texture variants are fixed picks
-  (tabby cat, brown horse, creamy llama, lucy axolotl, temperate
-  chicken/frog…), no real per-player skins (M7), tags are depth-tested.
+  snow/iron golem, allay — and (third pass, same day) **the rest**:
+  warden, sniffer (192²), breeze (+its 128² wind-funnel texture),
+  creaking, ravager, wither, **ender dragon** (256², full 30-cube mesh
+  with membrane wings), happy ghast (4.0×), copper golem (mind its
+  root's +24 translate), nautilus + zombie nautilus. **88 mob models
+  total** — every living vanilla mob; capsules remain only for object
+  entities (armor stands, boats, minecarts, projectiles). Entity atlas is
+  1024² with a shelf packer (16²..256² textures). Verified by the
+  **`rewo mobshot --check` facelabel gate** (246/246 mob-views; 6 mobs —
+  guardian/elder, bee, pufferfish, sniffer, breeze — are auto-detected as
+  color-check-N/A because their vanilla textures reuse the same texels
+  across face labels, and are skipped with a notice) + closeup sheets
+  (`--only`). Still open: entity *collision* is ignored (walk through
+  mobs), procedural anims beyond walk/head-look are static poses (spider
+  leg-wave, wing flaps, tentacles, tails, dragon flight), sheep wool
+  dye-tint deferred (white), slime/magma face + size need the translucent
+  pass + entity metadata, texture variants are fixed picks (tabby cat,
+  brown horse, creamy llama, lucy axolotl, temperate chicken/frog…), no
+  real per-player skins (M7), tags are depth-tested.
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1883,3 +1890,30 @@ gate green.**
   blaze rings, hoglin tusks+bristles, piglin snout/ears, horse, iron
   golem, witch hat stack, camel, strider, fox/cat/axolotl/turtle/frog/
   bee/dolphin/parrot/allay all read correctly.
+
+**2026-07-22 — the rest: 77 → 88, every living vanilla mob modeled.**
+
+- Third same-day pass: warden (tendril plates, ribcage overlays), sniffer
+  (192² — six legs, moss-back plate), breeze (head + 3 rods on breeze.png
+  **plus the wind funnel on breeze_wind.png as texture 1** — first
+  two-texture mob beyond the overlay pattern), creaking (twig crown,
+  0-thick foot fans), ravager, wither (3 skulls; the tail pose is
+  *computed* in vanilla — `6.9 + cos(0.204)·10` — transcribed exactly),
+  **ender dragon** (256²: head+jaw, 5+12 spine segments, 24×24×64 body,
+  two-segment wings with 0-thick membrane skins at negative texOffs,
+  3-segment legs ×2 sides), happy ghast (body + inner cube + 9 dangling
+  legs, mesh-scale 4.0), copper golem (the whole mesh rides a
+  `transformed(p → p.translated(0,24,0))` root — easy to miss), nautilus
+  (+ zombie nautilus texture reuse).
+- The facelabel checker gained **ambiguity auto-detection**: painting
+  tracks per-texel labels, and a texture where two different labels hit
+  the same texel (vanilla region reuse — breeze wind's concentric
+  shells, bee antennae rows, pufferfish spikes, sniffer plates,
+  guardian tail) marks its mobs color-check-N/A; the gate skips them
+  loudly instead of failing on paint races. 82 of 88 mobs remain under
+  the strict gate — **246/246 views green** — and all 88 share the same
+  verbatim Cube port those 246 views validate.
+- Gates re-run: 41 tests, demo PNG byte-identical, bench flat, 0 VUIDs.
+  Closeups eyeballed: dragon (spine scales, wings, purple eyes), warden
+  chest glow, sniffer moss back, breeze funnel, wither triple skull,
+  nautilus spiral, ravager horns, creaking eyes, happy ghast all read.

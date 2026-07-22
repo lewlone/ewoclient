@@ -460,11 +460,22 @@ pub enum EntityModelKind {
     SnowGolem,
     IronGolem,
     Allay,
+    Warden,
+    Sniffer,
+    Breeze,
+    Creaking,
+    Ravager,
+    Wither,
+    EnderDragon,
+    HappyGhast,
+    CopperGolem,
+    Nautilus,
+    ZombieNautilus,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 78;
+    pub const COUNT: usize = 89;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -543,6 +554,17 @@ impl EntityModelKind {
         EntityModelKind::SnowGolem,
         EntityModelKind::IronGolem,
         EntityModelKind::Allay,
+        EntityModelKind::Warden,
+        EntityModelKind::Sniffer,
+        EntityModelKind::Breeze,
+        EntityModelKind::Creaking,
+        EntityModelKind::Ravager,
+        EntityModelKind::Wither,
+        EntityModelKind::EnderDragon,
+        EntityModelKind::HappyGhast,
+        EntityModelKind::CopperGolem,
+        EntityModelKind::Nautilus,
+        EntityModelKind::ZombieNautilus,
         EntityModelKind::Capsule,
     ];
 
@@ -629,6 +651,17 @@ impl EntityModelKind {
             EntityModelKind::SnowGolem => "snow_golem",
             EntityModelKind::IronGolem => "iron_golem",
             EntityModelKind::Allay => "allay",
+            EntityModelKind::Warden => "warden",
+            EntityModelKind::Sniffer => "sniffer",
+            EntityModelKind::Breeze => "breeze",
+            EntityModelKind::Creaking => "creaking",
+            EntityModelKind::Ravager => "ravager",
+            EntityModelKind::Wither => "wither",
+            EntityModelKind::EnderDragon => "ender_dragon",
+            EntityModelKind::HappyGhast => "happy_ghast",
+            EntityModelKind::CopperGolem => "copper_golem",
+            EntityModelKind::Nautilus => "nautilus",
+            EntityModelKind::ZombieNautilus => "zombie_nautilus",
             EntityModelKind::Capsule => "capsule",
         }
     }
@@ -737,6 +770,17 @@ pub static MOBS: &[MobDef] = &[
     MobDef { kind: EntityModelKind::SnowGolem, textures: &["snow_golem"], build: snow_golem },
     MobDef { kind: EntityModelKind::IronGolem, textures: &["iron_golem"], build: iron_golem },
     MobDef { kind: EntityModelKind::Allay, textures: &["allay"], build: allay },
+    MobDef { kind: EntityModelKind::Warden, textures: &["warden"], build: warden },
+    MobDef { kind: EntityModelKind::Sniffer, textures: &["sniffer"], build: sniffer },
+    MobDef { kind: EntityModelKind::Breeze, textures: &["breeze", "breeze_wind"], build: breeze },
+    MobDef { kind: EntityModelKind::Creaking, textures: &["creaking"], build: creaking },
+    MobDef { kind: EntityModelKind::Ravager, textures: &["ravager"], build: ravager },
+    MobDef { kind: EntityModelKind::Wither, textures: &["wither"], build: wither },
+    MobDef { kind: EntityModelKind::EnderDragon, textures: &["ender_dragon"], build: ender_dragon },
+    MobDef { kind: EntityModelKind::HappyGhast, textures: &["happy_ghast"], build: happy_ghast },
+    MobDef { kind: EntityModelKind::CopperGolem, textures: &["copper_golem"], build: copper_golem },
+    MobDef { kind: EntityModelKind::Nautilus, textures: &["nautilus"], build: nautilus },
+    MobDef { kind: EntityModelKind::ZombieNautilus, textures: &["zombie_nautilus"], build: nautilus },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2084,6 +2128,307 @@ fn allay() -> Model {
 }
 
 // ---------------------------------------------------------------------------
+// The last holdouts — bosses, deep-dark, 26.x newcomers
+// ---------------------------------------------------------------------------
+
+/// `WardenModel` (128²): huge ribbed body, tendril plates on the skull,
+/// 28-px arms, stubby legs.
+fn warden() -> Model {
+    let mut b = ModelBuilder::new();
+    let bone = Fold::at([0.0, 24.0, 0.0]);
+    let body = Fold::at([0.0, -21.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-9.0, -13.0, -4.0], [18.0, 21.0, 11.0], 0.0, false, &[body, bone]);
+    b.cube_f(STATIC_PART, 0, (90.0, 11.0), [-2.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, false, &[Fold::at([-7.0, -2.0, -4.0]), body, bone]);
+    b.cube_f(STATIC_PART, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, &[Fold::at([7.0, -2.0, -4.0]), body, bone]);
+    // Head chain: bone → body → head ⇒ absolute pivot (0, −10, 0).
+    let head = b.part([0.0, -10.0, 0.0], Anim::Head, 1.0);
+    b.cube(head, 0, (0.0, 32.0), [-8.0, -16.0, -5.0], [16.0, 16.0, 10.0], NONE);
+    b.cube_f(head, 0, (52.0, 32.0), [-16.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([-8.0, -12.0, 0.0])]);
+    b.cube_f(head, 0, (58.0, 0.0), [0.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([8.0, -12.0, 0.0])]);
+    let arm_r = b.part([-13.0, -10.0, 1.0], Anim::ArmRight, 1.0);
+    b.cube(arm_r, 0, (44.0, 50.0), [-4.0, 0.0, -4.0], [8.0, 28.0, 8.0], NONE);
+    let arm_l = b.part([13.0, -10.0, 1.0], Anim::ArmLeft, 1.0);
+    b.cube(arm_l, 0, (0.0, 58.0), [-4.0, 0.0, -4.0], [8.0, 28.0, 8.0], NONE);
+    let leg_r = b.part([-5.9, 11.0, 0.0], Anim::LegRight, 1.0);
+    b.cube(leg_r, 0, (76.0, 48.0), [-3.1, 0.0, -3.0], [6.0, 13.0, 6.0], NONE);
+    let leg_l = b.part([5.9, 11.0, 0.0], Anim::LegLeft, 1.0);
+    b.cube(leg_l, 0, (76.0, 76.0), [-2.9, 0.0, -3.0], [6.0, 13.0, 6.0], NONE);
+    b.finish(1.0)
+}
+
+/// `SnifferModel` (192²): moss-backed barrel body on six legs, droopy head.
+fn sniffer() -> Model {
+    let mut b = ModelBuilder::new();
+    let bone = Fold::at([0.0, 5.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (62.0, 68.0), [-12.5, -14.0, -20.0], [25.0, 29.0, 40.0], 0.0, false, &[bone]);
+    b.cube_f(STATIC_PART, 0, (62.0, 0.0), [-12.5, -14.0, -20.0], [25.0, 24.0, 40.0], 0.5, false, &[bone]);
+    b.cube_f(STATIC_PART, 0, (87.0, 68.0), [-12.5, 12.0, -20.0], [25.0, 0.0, 40.0], 0.0, false, &[bone]);
+    let legs = [
+        ((32.0, 87.0), [-7.5, 15.0, -15.0], Anim::QuadFrontRight),
+        ((32.0, 105.0), [-7.5, 15.0, 0.0], Anim::None),
+        ((32.0, 123.0), [-7.5, 15.0, 15.0], Anim::QuadHindRight),
+        ((0.0, 87.0), [7.5, 15.0, -15.0], Anim::QuadFrontLeft),
+        ((0.0, 105.0), [7.5, 15.0, 0.0], Anim::None),
+        ((0.0, 123.0), [7.5, 15.0, 15.0], Anim::QuadHindLeft),
+    ];
+    for (uv, pivot, anim) in legs {
+        if anim == Anim::None {
+            b.cube_f(STATIC_PART, 0, uv, [-3.5, -1.0, -4.0], [7.0, 10.0, 8.0], 0.0, false, &[Fold::at(pivot)]);
+        } else {
+            let p = b.part(pivot, anim, 1.0);
+            b.cube(p, 0, uv, [-3.5, -1.0, -4.0], [7.0, 10.0, 8.0], NONE);
+        }
+    }
+    // Head: bone → body → head ⇒ absolute pivot (0, 11.5, −19.48).
+    let head = b.part([0.0, 11.5, -19.48], Anim::Head, 1.0);
+    b.cube(head, 0, (8.0, 15.0), [-6.5, -7.5, -11.5], [13.0, 18.0, 11.0], NONE);
+    b.cube(head, 0, (8.0, 4.0), [-6.5, 7.5, -11.5], [13.0, 0.0, 11.0], NONE);
+    b.cube_f(head, 0, (2.0, 0.0), [0.0, 0.0, -3.0], [1.0, 19.0, 7.0], 0.0, false, &[Fold::at([6.51, -7.5, -4.51])]);
+    b.cube_f(head, 0, (48.0, 0.0), [-1.0, 0.0, -3.0], [1.0, 19.0, 7.0], 0.0, false, &[Fold::at([-6.51, -7.5, -4.51])]);
+    b.cube_f(head, 0, (10.0, 45.0), [-6.5, -2.0, -9.0], [13.0, 2.0, 9.0], 0.0, false, &[Fold::at([0.0, -4.5, -11.5])]);
+    b.finish(1.0)
+}
+
+/// `BreezeModel`: head + three orbiting rods on breeze.png, the swirling
+/// wind funnel on breeze_wind.png (texture 1).
+fn breeze() -> Model {
+    let mut b = ModelBuilder::new();
+    let rods = Fold::at([0.0, 8.0, 0.0]);
+    let rod_poses: [([f32; 3], [f32; 3]); 3] = [
+        ([2.5981, -3.0, 1.5], [-2.7489, -1.0472, 3.1416]),
+        ([-2.5981, -3.0, 1.5], [-2.7489, 1.0472, 3.1416]),
+        ([0.0, -3.0, -3.0], [0.3927, 0.0, 0.0]),
+    ];
+    for (off, rot) in rod_poses {
+        b.cube_f(STATIC_PART, 0, (0.0, 17.0), [-1.0, 0.0, -3.0], [2.0, 8.0, 2.0], 0.0, false, &[Fold::rot(rot, off), rods]);
+    }
+    let head = b.part([0.0, 4.0, 0.0], Anim::Head, 1.0);
+    b.cube(head, 0, (4.0, 24.0), [-5.0, -5.0, -4.2], [10.0, 3.0, 4.0], NONE);
+    b.cube(head, 0, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], NONE);
+    // Wind funnel (three stacked swirl tiers, widest at the top).
+    let wb = Fold::at([0.0, 24.0, 0.0]);
+    b.cube_f(STATIC_PART, 1, (1.0, 83.0), [-2.5, -7.0, -2.5], [5.0, 7.0, 5.0], 0.0, false, &[wb]);
+    let wm = Fold::at([0.0, -7.0, 0.0]);
+    b.cube_f(STATIC_PART, 1, (74.0, 28.0), [-6.0, -6.0, -6.0], [12.0, 6.0, 12.0], 0.0, false, &[wm, wb]);
+    b.cube_f(STATIC_PART, 1, (78.0, 32.0), [-4.0, -6.0, -4.0], [8.0, 6.0, 8.0], 0.0, false, &[wm, wb]);
+    b.cube_f(STATIC_PART, 1, (49.0, 71.0), [-2.5, -6.0, -2.5], [5.0, 6.0, 5.0], 0.0, false, &[wm, wb]);
+    let wt = Fold::at([0.0, -6.0, 0.0]);
+    b.cube_f(STATIC_PART, 1, (0.0, 0.0), [-9.0, -8.0, -9.0], [18.0, 8.0, 18.0], 0.0, false, &[wt, wm, wb]);
+    b.cube_f(STATIC_PART, 1, (6.0, 6.0), [-6.0, -8.0, -6.0], [12.0, 8.0, 12.0], 0.0, false, &[wt, wm, wb]);
+    b.cube_f(STATIC_PART, 1, (105.0, 57.0), [-2.5, -8.0, -2.5], [5.0, 8.0, 5.0], 0.0, false, &[wt, wm, wb]);
+    b.finish(1.0)
+}
+
+/// `CreakingModel`: gnarled tree humanoid — twig-crowned head, split-log
+/// body, branch arms, root legs with 0-thick foot fans.
+fn creaking() -> Model {
+    let mut b = ModelBuilder::new();
+    let root = Fold::at([0.0, 24.0, 0.0]);
+    let upper = Fold::at([-1.0, -19.0, 0.0]);
+    // Head chain: root → upper_body → head ⇒ pivot (−4, −6, 0).
+    let head = b.part([-4.0, -6.0, 0.0], Anim::Head, 1.0);
+    b.cube(head, 0, (0.0, 0.0), [-3.0, -10.0, -3.0], [6.0, 10.0, 6.0], NONE);
+    b.cube(head, 0, (28.0, 31.0), [-3.0, -13.0, -3.0], [6.0, 3.0, 6.0], NONE);
+    b.cube(head, 0, (12.0, 40.0), [3.0, -13.0, 0.0], [9.0, 14.0, 0.0], NONE);
+    b.cube(head, 0, (34.0, 12.0), [-12.0, -14.0, 0.0], [9.0, 14.0, 0.0], NONE);
+    let body = Fold::at([0.0, -7.0, 1.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 16.0), [0.0, -3.0, -3.0], [6.0, 13.0, 5.0], 0.0, false, &[body, upper, root]);
+    b.cube_f(STATIC_PART, 0, (24.0, 0.0), [-6.0, -4.0, -3.0], [6.0, 7.0, 5.0], 0.0, false, &[body, upper, root]);
+    let arm_r = Fold::at([-7.0, -9.5, 1.5]);
+    b.cube_f(STATIC_PART, 0, (22.0, 13.0), [-2.0, -1.5, -1.5], [3.0, 21.0, 3.0], 0.0, false, &[arm_r, upper, root]);
+    b.cube_f(STATIC_PART, 0, (46.0, 0.0), [-2.0, 19.5, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_r, upper, root]);
+    let arm_l = Fold::at([6.0, -9.0, 0.5]);
+    b.cube_f(STATIC_PART, 0, (30.0, 40.0), [0.0, -1.0, -1.5], [3.0, 16.0, 3.0], 0.0, false, &[arm_l, upper, root]);
+    b.cube_f(STATIC_PART, 0, (52.0, 12.0), [0.0, -5.0, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_l, upper, root]);
+    b.cube_f(STATIC_PART, 0, (52.0, 19.0), [0.0, 15.0, -1.5], [3.0, 4.0, 3.0], 0.0, false, &[arm_l, upper, root]);
+    let leg_l = b.part([1.5, 8.0, 0.5], Anim::LegLeft, 1.0);
+    b.cube(leg_l, 0, (42.0, 40.0), [-1.5, 0.0, -1.5], [3.0, 16.0, 3.0], NONE);
+    b.cube(leg_l, 0, (45.0, 55.0), [-1.5, 15.7, -4.5], [5.0, 0.0, 9.0], NONE);
+    let leg_r = b.part([-1.0, 6.5, 0.5], Anim::LegRight, 1.0);
+    b.cube(leg_r, 0, (0.0, 34.0), [-3.0, -1.5, -1.5], [3.0, 19.0, 3.0], NONE);
+    b.cube(leg_r, 0, (45.0, 46.0), [-5.0, 17.2, -4.5], [5.0, 0.0, 9.0], NONE);
+    b.cube(leg_r, 0, (12.0, 34.0), [-3.0, -4.5, -1.5], [3.0, 3.0, 3.0], NONE);
+    b.finish(1.0)
+}
+
+/// `RavagerModel` (128²): armored bull — horned head on a thick neck,
+/// rotated slab body, 37-px legs.
+fn ravager() -> Model {
+    let mut b = ModelBuilder::new();
+    let neck = Fold::at([0.0, -7.0, 5.5]);
+    b.cube_f(STATIC_PART, 0, (68.0, 73.0), [-5.0, -1.0, -18.0], [10.0, 10.0, 18.0], 0.0, false, &[neck]);
+    // Head: neck child at (0, 16, −17) ⇒ absolute pivot (0, 9, −11.5).
+    let head = b.part([0.0, 9.0, -11.5], Anim::Head, 1.0);
+    b.cube(head, 0, (0.0, 0.0), [-8.0, -20.0, -14.0], [16.0, 20.0, 16.0], NONE);
+    b.cube(head, 0, (0.0, 0.0), [-2.0, -6.0, -18.0], [4.0, 8.0, 4.0], NONE);
+    b.cube_f(head, 0, (74.0, 55.0), [0.0, -14.0, -2.0], [2.0, 14.0, 4.0], 0.0, false, &[Fold::rot([1.0995574, 0.0, 0.0], [-10.0, -14.0, -8.0])]);
+    b.cube_f(head, 0, (74.0, 55.0), [0.0, -14.0, -2.0], [2.0, 14.0, 4.0], 0.0, true, &[Fold::rot([1.0995574, 0.0, 0.0], [8.0, -14.0, -8.0])]);
+    b.cube_f(head, 0, (0.0, 36.0), [-8.0, 0.0, -16.0], [16.0, 3.0, 16.0], 0.0, false, &[Fold::at([0.0, -2.0, 2.0])]);
+    let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 1.0, 2.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 55.0), [-7.0, -10.0, -7.0], [14.0, 16.0, 20.0], 0.0, false, &[body]);
+    b.cube_f(STATIC_PART, 0, (0.0, 91.0), [-6.0, 6.0, -7.0], [12.0, 13.0, 18.0], 0.0, false, &[body]);
+    let legs = [
+        ((96.0, 0.0), [-8.0, -13.0, 18.0], false, Anim::QuadHindRight),
+        ((96.0, 0.0), [8.0, -13.0, 18.0], true, Anim::QuadHindLeft),
+        ((64.0, 0.0), [-8.0, -13.0, -5.0], false, Anim::QuadFrontRight),
+        ((64.0, 0.0), [8.0, -13.0, -5.0], true, Anim::QuadFrontLeft),
+    ];
+    for (uv, pivot, mirror, anim) in legs {
+        let p = b.part(pivot, anim, 1.0);
+        b.cube_f(p, 0, uv, [-4.0, 0.0, -4.0], [8.0, 37.0, 8.0], 0.0, mirror, NONE);
+    }
+    b.finish(1.0)
+}
+
+/// `WitherBossModel`: three skulls over a floating spine + ribs + tail.
+fn wither() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube(STATIC_PART, 0, (0.0, 16.0), [-10.0, 3.9, -0.5], [20.0, 3.0, 3.0], NONE);
+    let spine = Fold::rot([0.20420352, 0.0, 0.0], [-2.0, 6.9, -0.5]);
+    b.cube_f(STATIC_PART, 0, (0.0, 22.0), [0.0, 0.0, 0.0], [3.0, 10.0, 3.0], 0.0, false, &[spine]);
+    b.cube_f(STATIC_PART, 0, (24.0, 22.0), [-4.0, 1.5, 0.5], [11.0, 2.0, 2.0], 0.0, false, &[spine]);
+    b.cube_f(STATIC_PART, 0, (24.0, 22.0), [-4.0, 4.0, 0.5], [11.0, 2.0, 2.0], 0.0, false, &[spine]);
+    b.cube_f(STATIC_PART, 0, (24.0, 22.0), [-4.0, 6.5, 0.5], [11.0, 2.0, 2.0], 0.0, false, &[spine]);
+    // Tail pose: vanilla computes it from the spine angle.
+    let a = 0.20420352f32;
+    let tail = Fold::rot([0.83252203, 0.0, 0.0], [-2.0, 6.9 + a.cos() * 10.0, -0.5 + a.sin() * 10.0]);
+    b.cube_f(STATIC_PART, 0, (12.0, 22.0), [0.0, 0.0, 0.0], [3.0, 6.0, 3.0], 0.0, false, &[tail]);
+    let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
+    b.cube(head, 0, (0.0, 0.0), [-4.0, -4.0, -4.0], [8.0, 8.0, 8.0], NONE);
+    b.cube_f(STATIC_PART, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], 0.0, false, &[Fold::at([-8.0, 4.0, 0.0])]);
+    b.cube_f(STATIC_PART, 0, (32.0, 0.0), [-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], 0.0, false, &[Fold::at([10.0, 4.0, 0.0])]);
+    b.finish(1.0)
+}
+
+/// `EnderDragonModel` (256²): the full dragon — head + jaw, 5 neck and 12
+/// tail spine segments, 24×24×64 body, two-segment wings with 0-thick
+/// membrane skins, three-segment legs. Static pose (vanilla's animation is
+/// procedural flight).
+fn ender_dragon() -> Model {
+    let mut b = ModelBuilder::new();
+    // Head (+ jaw folded in).
+    let head = b.part([0.0, 20.0, -62.0], Anim::Head, 1.0);
+    b.cube(head, 0, (176.0, 44.0), [-6.0, -1.0, -24.0], [12.0, 5.0, 16.0], NONE);
+    b.cube(head, 0, (112.0, 30.0), [-8.0, -8.0, -10.0], [16.0, 16.0, 16.0], NONE);
+    b.cube_m(head, 0, (0.0, 0.0), [-5.0, -12.0, -4.0], [2.0, 4.0, 6.0], NONE);
+    b.cube_m(head, 0, (112.0, 0.0), [-5.0, -3.0, -22.0], [2.0, 2.0, 4.0], NONE);
+    b.cube_m(head, 0, (0.0, 0.0), [3.0, -12.0, -4.0], [2.0, 4.0, 6.0], NONE);
+    b.cube_m(head, 0, (112.0, 0.0), [3.0, -3.0, -22.0], [2.0, 2.0, 4.0], NONE);
+    b.cube_f(head, 0, (176.0, 65.0), [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0], 0.0, false, &[Fold::at([0.0, 4.0, -8.0])]);
+    // Neck + tail spine segments (10³ box + top scale).
+    let mut spine = |off: [f32; 3]| {
+        b.cube_f(STATIC_PART, 0, (192.0, 104.0), [-5.0, -5.0, -5.0], [10.0, 10.0, 10.0], 0.0, false, &[Fold::at(off)]);
+        b.cube_f(STATIC_PART, 0, (48.0, 0.0), [-1.0, -9.0, -3.0], [2.0, 4.0, 6.0], 0.0, false, &[Fold::at(off)]);
+    };
+    for i in 0..5 {
+        spine([0.0, 20.0, -12.0 - i as f32 * 10.0]);
+    }
+    for i in 0..12 {
+        spine([0.0, 10.0, 60.0 + i as f32 * 10.0]);
+    }
+    let body = Fold::at([0.0, 3.0, 8.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-12.0, 1.0, -16.0], [24.0, 24.0, 64.0], 0.0, false, &[body]);
+    for z in [-10.0, 10.0, 30.0] {
+        b.cube_f(STATIC_PART, 0, (220.0, 53.0), [-1.0, -5.0, z], [2.0, 6.0, 12.0], 0.0, false, &[body]);
+    }
+    // Wings: bone + membrane, tip child; the right side mirrors geometry.
+    let wl = Fold::at([12.0, 2.0, -6.0]);
+    b.cube_f(STATIC_PART, 0, (112.0, 88.0), [0.0, -4.0, -4.0], [56.0, 8.0, 8.0], 0.0, true, &[wl, body]);
+    b.cube_f(STATIC_PART, 0, (-56.0, 88.0), [0.0, 0.0, 2.0], [56.0, 0.0, 56.0], 0.0, true, &[wl, body]);
+    let wlt = Fold::at([56.0, 0.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (112.0, 136.0), [0.0, -2.0, -2.0], [56.0, 4.0, 4.0], 0.0, true, &[wlt, wl, body]);
+    b.cube_f(STATIC_PART, 0, (-56.0, 144.0), [0.0, 0.0, 2.0], [56.0, 0.0, 56.0], 0.0, true, &[wlt, wl, body]);
+    let wr = Fold::at([-12.0, 2.0, -6.0]);
+    b.cube_f(STATIC_PART, 0, (112.0, 88.0), [-56.0, -4.0, -4.0], [56.0, 8.0, 8.0], 0.0, false, &[wr, body]);
+    b.cube_f(STATIC_PART, 0, (-56.0, 88.0), [-56.0, 0.0, 2.0], [56.0, 0.0, 56.0], 0.0, false, &[wr, body]);
+    let wrt = Fold::at([-56.0, 0.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (112.0, 136.0), [-56.0, -2.0, -2.0], [56.0, 4.0, 4.0], 0.0, false, &[wrt, wr, body]);
+    b.cube_f(STATIC_PART, 0, (-56.0, 144.0), [-56.0, 0.0, 2.0], [56.0, 0.0, 56.0], 0.0, false, &[wrt, wr, body]);
+    // Legs: (upper, tip, foot) chains per side.
+    let mut leg = |sx: f32| {
+        let front = Fold::rot([1.3, 0.0, 0.0], [12.0 * sx, 17.0, -6.0]);
+        b.cube_f(STATIC_PART, 0, (112.0, 104.0), [-4.0, -4.0, -4.0], [8.0, 24.0, 8.0], 0.0, false, &[front, body]);
+        let ftip = Fold::rot([-0.5, 0.0, 0.0], [0.0, 20.0, -1.0]);
+        b.cube_f(STATIC_PART, 0, (226.0, 138.0), [-3.0, -1.0, -3.0], [6.0, 24.0, 6.0], 0.0, false, &[ftip, front, body]);
+        b.cube_f(STATIC_PART, 0, (144.0, 104.0), [-4.0, 0.0, -12.0], [8.0, 4.0, 16.0], 0.0, false, &[Fold::rot([0.75, 0.0, 0.0], [0.0, 23.0, 0.0]), ftip, front, body]);
+        let rear = Fold::rot([1.0, 0.0, 0.0], [16.0 * sx, 13.0, 34.0]);
+        b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-8.0, -4.0, -8.0], [16.0, 32.0, 16.0], 0.0, false, &[rear, body]);
+        let rtip = Fold::rot([0.5, 0.0, 0.0], [0.0, 32.0, -4.0]);
+        b.cube_f(STATIC_PART, 0, (196.0, 0.0), [-6.0, -2.0, 0.0], [12.0, 32.0, 12.0], 0.0, false, &[rtip, rear, body]);
+        b.cube_f(STATIC_PART, 0, (112.0, 0.0), [-9.0, 0.0, -20.0], [18.0, 6.0, 24.0], 0.0, false, &[Fold::rot([0.75, 0.0, 0.0], [0.0, 31.0, 4.0]), rtip, rear, body]);
+    };
+    leg(1.0);
+    leg(-1.0);
+    b.finish(1.0)
+}
+
+/// `HappyGhastModel`: the tame ghast — body + big inner cube, nine short
+/// dangling legs. Mesh-scaled 4.0 (ground-anchored ≡ our scale).
+fn happy_ghast() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = Fold::at([0.0, 16.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-8.0, -8.0, -8.0], [16.0, 16.0, 16.0], 0.0, false, &[body]);
+    b.cube_f(STATIC_PART, 0, (0.0, 32.0), [-8.0, -16.0, -8.0], [16.0, 16.0, 16.0], -0.5, false, &[Fold::at([0.0, 8.0, 0.0]), body]);
+    let legs: [([f32; 3], f32); 9] = [
+        ([-3.75, 7.0, -5.0], 5.0),
+        ([1.25, 7.0, -5.0], 7.0),
+        ([6.25, 7.0, -5.0], 4.0),
+        ([-6.25, 7.0, 0.0], 5.0),
+        ([-1.25, 7.0, 0.0], 5.0),
+        ([3.75, 7.0, 0.0], 7.0),
+        ([-3.75, 7.0, 5.0], 8.0),
+        ([1.25, 7.0, 5.0], 8.0),
+        ([6.25, 7.0, 5.0], 5.0),
+    ];
+    for (off, len) in legs {
+        b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.0, 0.0, -1.0], [2.0, len, 2.0], 0.0, false, &[Fold::at(off), body]);
+    }
+    b.finish(4.0)
+}
+
+/// `CopperGolemModel`: the little statue — antennaed head, slab body,
+/// mitten arms, stub legs. The whole mesh rides a +24 root translate.
+fn copper_golem() -> Model {
+    let mut b = ModelBuilder::new();
+    let root = Fold::at([0.0, 24.0, 0.0]);
+    let body = Fold::at([0.0, -5.0, 0.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 15.0), [-4.0, -6.0, -3.0], [8.0, 6.0, 6.0], 0.0, false, &[body, root]);
+    // Head chain: root → body → head ⇒ pivot (0, 13, 0).
+    let head = b.part([0.0, 13.0, 0.0], Anim::Head, 1.0);
+    b.cube_g(head, 0, (0.0, 0.0), [-4.0, -5.0, -5.0], [8.0, 5.0, 10.0], 0.015, NONE);
+    b.cube(head, 0, (56.0, 0.0), [-1.0, -2.0, -6.0], [2.0, 3.0, 2.0], NONE);
+    b.cube_g(head, 0, (37.0, 8.0), [-1.0, -9.0, -1.0], [2.0, 4.0, 2.0], -0.015, NONE);
+    b.cube_g(head, 0, (37.0, 0.0), [-2.0, -13.0, -2.0], [4.0, 4.0, 4.0], -0.015, NONE);
+    let arm_r = b.part([-4.0, 13.0, 0.0], Anim::ArmRight, 1.0);
+    b.cube(arm_r, 0, (36.0, 16.0), [-3.0, -1.0, -2.0], [3.0, 10.0, 4.0], NONE);
+    let arm_l = b.part([4.0, 13.0, 0.0], Anim::ArmLeft, 1.0);
+    b.cube(arm_l, 0, (50.0, 16.0), [0.0, -1.0, -2.0], [3.0, 10.0, 4.0], NONE);
+    let leg_r = b.part([0.0, 19.0, 0.0], Anim::LegRight, 1.0);
+    b.cube(leg_r, 0, (0.0, 27.0), [-4.0, 0.0, -2.0], [4.0, 5.0, 4.0], NONE);
+    let leg_l = b.part([0.0, 19.0, 0.0], Anim::LegLeft, 1.0);
+    b.cube(leg_l, 0, (16.0, 27.0), [0.0, 0.0, -2.0], [4.0, 5.0, 4.0], NONE);
+    b.finish(1.0)
+}
+
+/// `NautilusModel` (128²): spiral shell + soft body with layered tentacle
+/// slabs. The zombie variant shares the mesh.
+fn nautilus() -> Model {
+    let mut b = ModelBuilder::new();
+    let root = Fold::at([0.0, 29.0, -6.0]);
+    let shell = Fold::at([0.0, -13.0, 5.0]);
+    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-7.0, -10.0, -7.0], [14.0, 10.0, 16.0], 0.0, false, &[shell, root]);
+    b.cube_f(STATIC_PART, 0, (0.0, 26.0), [-7.0, 0.0, -7.0], [14.0, 8.0, 20.0], 0.0, false, &[shell, root]);
+    b.cube_f(STATIC_PART, 0, (48.0, 26.0), [-7.0, 0.0, 6.0], [14.0, 8.0, 0.0], 0.0, false, &[shell, root]);
+    let body = Fold::at([0.0, -8.5, 12.3]);
+    b.cube_f(STATIC_PART, 0, (0.0, 54.0), [-5.0, -4.51, -3.0], [10.0, 8.0, 14.0], 0.0, false, &[body, root]);
+    b.cube_f(STATIC_PART, 0, (0.0, 76.0), [-5.0, -4.51, 7.0], [10.0, 8.0, 0.0], 0.0, false, &[body, root]);
+    b.cube_f(STATIC_PART, 0, (54.0, 54.0), [-5.0, -2.0, 0.0], [10.0, 4.0, 4.0], -0.001, false, &[Fold::at([0.0, -2.51, 7.0]), body, root]);
+    b.cube_f(STATIC_PART, 0, (54.0, 70.0), [-3.0, -2.0, -0.5], [6.0, 4.0, 4.0], 0.0, false, &[Fold::at([0.0, -0.51, 7.5]), body, root]);
+    b.cube_f(STATIC_PART, 0, (54.0, 62.0), [-5.0, -1.98, 0.0], [10.0, 4.0, 4.0], -0.001, false, &[Fold::at([0.0, 1.49, 7.0]), body, root]);
+    b.finish(1.0)
+}
+
+// ---------------------------------------------------------------------------
 // Tests — the hand-computed vanilla ground truth from the handoff §3
 // ---------------------------------------------------------------------------
 
@@ -2209,7 +2554,8 @@ mod tests {
         assert_eq!(kind_for_entity_name("minecraft:glow_squid"), EntityModelKind::GlowSquid);
         assert_eq!(kind_for_entity_name("minecraft:magma_cube"), EntityModelKind::MagmaCube);
         assert_eq!(kind_for_entity_name("minecraft:wither_skeleton"), EntityModelKind::WitherSkeleton);
-        assert_eq!(kind_for_entity_name("minecraft:warden"), EntityModelKind::Capsule);
+        assert_eq!(kind_for_entity_name("minecraft:warden"), EntityModelKind::Warden);
+        assert_eq!(kind_for_entity_name("minecraft:armor_stand"), EntityModelKind::Capsule);
         // Every registry def's kind is reachable from its own wire name.
         for def in MOBS {
             if def.kind != EntityModelKind::Player {
