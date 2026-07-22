@@ -2332,12 +2332,18 @@ gate green.**
 - Gates: no-pack facelabel **243/243** (CEM adds a `cem` field + `Anim`
   marker but changes no built-in rendering), 22 rewo-gpu tests (incl. the
   pivot + program-parse cases), demo byte-identical.
-- Known follow-ups: **submodel-based leg pivots** (creeper's foot-submodel
-  legs) are ~1–2 units off so they detach slightly — the flat-part rigs
-  (zombie/humanoids) are exact; per-face `uvNorth`, scale channels, the
-  jpm `"model"` geometry ref, and wiring the CEM anim `time` into `rewo
-  live` (mobshot uses `--time`/`--walk`) all remain. The engine is here;
-  these are polish.
+- **Verified across body plans** (mobshot `--walk`/`--time`): zombie
+  strides, pig + cow walk as cohesive quadrupeds, creeper cohesive — all
+  limbs attached, swinging. **Live is wired** too: `rewo live --pack`
+  threads the animation clock (`emit_model` gets `time`; `limb_swing` from
+  entity motion), so mobs animate in actual play; the 72 CEM overrides load
+  live.
+- Known follow-ups (polish): **foot-submodel leg pivots** (creeper) are
+  ~1 px off vs the flat-part rigs (zombie/humanoids, which are exact) — a
+  small offset, not the gross detachment the rotation-convention fix cured;
+  per-face `uvNorth` (creeper-eye detail), scale channels, and the jpm
+  `"model"` geometry ref remain. The engine is done; these are finishing
+  touches.
 
 **2026-07-22 — baby mobs.**
 
