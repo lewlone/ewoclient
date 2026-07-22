@@ -1642,7 +1642,11 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   from `SheepFurModel`; extracted `build_quad_parts` as the shared quadruped
   builder, and replaced `EntityPass::new`'s 8 positional texture params with
   an `EntityTextures` struct). The mob registry spans humanoid/cube/quadruped.
-  Also un-broke `rewo view` (stale M2 bake-sanity check).
+  Also un-broke `rewo view` (stale M2 bake-sanity check). **⚠️ The mob
+  textures are BROKEN** (shape-right, UV-scrambled — the cow has no face);
+  `box_uv_faces` is a non-faithful MC box-UV unwrap shared by all mobs. Redo
+  brief: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md). Lesson: the
+  pass verified silhouette+colour only, never texture-face correctness.
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

@@ -138,12 +138,19 @@ the code's author. Nothing below is settled truth.
   render pass + bitmap-font nametags — and **players render as the real
   textured model** (12-cuboid wide model incl. overlay layers, Steve
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
-  limb swing**), and **slimes** (green cube), **cows** + **pigs** + **sheep**
-  (quadruped, walking legs — pig has short legs + a snout, sheep has its own
-  body dims + an inflated white wool overlay), and **zombies/husks/drowned**
-  (humanoid, arms-forward pose) render as real models — humanoids also **turn
-  their heads** toward nearby players (server-driven `rotate_head`, verified
-  via a fixed-body/cranked-head A/B). See the §15 entries. Still open within
+  limb swing**), and **slimes**, **cows**, **pigs**, **sheep**, and
+  **zombies/husks/drowned** render as **model-shaped** mobs with correct
+  silhouettes + animation (walk-swing, humanoid head-look). **⚠️ BROKEN: the
+  mob TEXTURE mapping is wrong** — `box_uv_faces` (entities.rs) is a
+  non-faithful reimplementation of MC's box-UV unwrap, so every mob's faces
+  are scrambled (the cow has no readable face). All mobs share the path → all
+  are wrong. **Redo brief: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md)**
+  (root cause + the verbatim vanilla `Cube` algorithm + a mandatory
+  face-labeled verification method). The `emit_model` rotation/animation layer
+  is correct and reusable; the model *builders* + the UV unwrap are what must
+  be replaced. Cautionary note for the whole project: the pass that shipped
+  these called them "verified" off silhouette+colour alone — texture-face
+  correctness was never checked. See the §15 entries. Still open within
   it: entity *collision* is ignored (walk through mobs), some mobs are still
   capsules (chicken/… — each needs its vanilla model dims + UVs; the entity
   atlas grew to 256×256 so there's room, no texture-array refactor needed),
@@ -1748,3 +1755,22 @@ capability).**
   the tan lower legs showing beneath the wool upper-legs), and a re-rendered
   **cow unchanged** by the refactor. Tests 4+5+3 green; **demo byte-identical**
   (full md5 `ee6e26f4…`); entities live-only so bench/view unaffected; 0 VUIDs.
+
+**2026-07-22 — mob textures are wrong; redo handed off.**
+
+- User review of the shipped mobs: the textures are **scrambled** (the cow has
+  no readable face). Correct: the mob models are *shape*-right but *UV*-wrong.
+- Root cause: `box_uv_faces` (entities.rs) is a hand-rolled approximation of
+  MC's box-UV unwrap that gets the face→sub-rect mapping and the per-face
+  vertex→UV-corner ordering wrong (and has no mirror / UP-flip). Every mob
+  shares it, so every mob is wrong. The geometry/animation layer is fine.
+- **The verification failure that let this ship:** the mob passes checked
+  silhouette + dominant colour ("pink & squat = pig") and called that
+  "verified." That can't detect a scrambled UV map. Going forward, mob/texture
+  work must verify **texture-face correspondence** (a face-labeled debug
+  texture rendered from 3 angles), not just shape.
+- Full redo brief written: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md)
+  — the verbatim vanilla `Cube`/`Polygon` algorithm to port, the file/symbol
+  inventory, the per-mob vanilla model sources, the mandatory verification
+  method, and the keep/don't-touch + traps list. The redo itself is handed to
+  a separate stronger pass (user's call).
