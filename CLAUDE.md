@@ -1642,11 +1642,23 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   from `SheepFurModel`; extracted `build_quad_parts` as the shared quadruped
   builder, and replaced `EntityPass::new`'s 8 positional texture params with
   an `EntityTextures` struct). The mob registry spans humanoid/cube/quadruped.
-  Also un-broke `rewo view` (stale M2 bake-sanity check). **⚠️ The mob
-  textures are BROKEN** (shape-right, UV-scrambled — the cow has no face);
-  `box_uv_faces` is a non-faithful MC box-UV unwrap shared by all mobs. Redo
-  brief: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md). Lesson: the
-  pass verified silhouette+colour only, never texture-face correctness.
+  Also un-broke `rewo view` (stale M2 bake-sanity check). The mob textures
+  those passes shipped were UV-scrambled (verified by silhouette+colour only
+  — the "verify the property, not a proxy" lesson); **fixed 2026-07-22 by
+  the mob redo**: `crates/rewo-gpu/src/mobs.rs` is a verbatim port of
+  vanilla `ModelPart.Cube`/`Polygon` + vanilla's exact entity transform
+  (the old path was also X-mirrored), all mob meshes re-transcribed from the
+  26.2 decompile (the 26.2 cow is its own mesh, not the generic quadruped),
+  and the set grew to **21 mobs** (player, zombie, husk, drowned, skeleton,
+  stray, wither skeleton, creeper, spider, cave spider, enderman, slime,
+  cow, pig, sheep, chicken, wolf, squid, glow squid, rabbit, villager).
+  Verified by the new serverless **`rewo mobshot --check` facelabel gate**
+  (face-colored debug textures vs a perspective ray-cast of the same
+  geometry — occlusion-exact; 63/63 mob-views green; run it after any
+  mob/UV change) + `rewo mobshot --out` contact sheet + live summon shots;
+  demo PNG stayed byte-identical, bench flat, 0 VUIDs.
+  [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
+  record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 
 - **M0 shipped 2026-07-21** (`crates/rewo-gpu` + `crates/rewo-app`, binary
   `rewo`): ash 1.3 device + MAILBOX swapchain + frame-time strip-chart

@@ -25,7 +25,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rewo_data::assets::{self, BakedFont};
 use rewo_data::entity_types::EntityTypes;
 use rewo_data::{DataPaths, GameData};
-use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, EntityTextures, FontData};
+use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, FontData, MobTexEntry, MobTextures};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
@@ -160,30 +160,12 @@ fn collect_entities<'a>(
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
-        let is_slime = name == "minecraft:slime" || name == "minecraft:magma_cube";
-        let is_zombie = matches!(
-            name,
-            "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombie_villager"
-        );
-        let is_cow = name == "minecraft:cow";
-        let is_pig = name == "minecraft:pig";
-        let is_sheep = name == "minecraft:sheep";
         let kind = if is_player {
             EntityModelKind::Player
-        } else if is_zombie {
-            EntityModelKind::Zombie
-        } else if is_cow {
-            EntityModelKind::Cow
-        } else if is_pig {
-            EntityModelKind::Pig
-        } else if is_sheep {
-            EntityModelKind::Sheep
-        } else if is_slime {
-            EntityModelKind::Slime
         } else {
-            EntityModelKind::Capsule
+            rewo_gpu::mobs::kind_for_entity_name(name)
         };
-        let (w, h) = if is_slime {
+        let (w, h) = if kind == EntityModelKind::Slime {
             (1.0, 1.0) // fixed medium slime (real size needs metadata)
         } else {
             etypes.dimensions(e.type_id)
@@ -212,21 +194,23 @@ fn collect_entities<'a>(
     out
 }
 
-/// Gather the baked mob skins into the borrowed struct `EntityPass::new`
-/// wants (one field per texture — no positional transposition risk).
-fn entity_textures(baked: &assets::BakedAssets) -> EntityTextures<'_> {
-    EntityTextures {
-        skin: baked.player_skin.as_deref(),
-        slime: baked.slime_tex.as_deref(),
-        zombie: baked.zombie_tex.as_deref(),
-        cow: baked.cow_tex.as_deref(),
-        pig: baked.pig_tex.as_deref(),
-        sheep: baked.sheep_tex.as_deref(),
-        sheep_wool: baked.sheep_wool_tex.as_deref(),
+/// Borrow the baked mob-texture table into the entity pass's view type.
+pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
+    MobTextures {
+        entries: baked
+            .mob_textures
+            .iter()
+            .map(|t| MobTexEntry {
+                key: t.key,
+                w: t.w,
+                h: t.h,
+                rgba: &t.rgba,
+            })
+            .collect(),
     }
 }
 
-fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
+pub(crate) fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
     baked.font.as_ref().map(|f: &BakedFont| FontData {
         atlas: &f.atlas,
         size: f.atlas_size,
@@ -563,10 +547,11 @@ fn run_headless(
             (e.pos[0] - eye.x).powi(2) + (e.pos[1] - eye.y).powi(2) + (e.pos[2] - eye.z).powi(2)
         };
         let look = std::env::var("REWO_LOOK").ok();
-        let pref = |e: &&EntityDraw| match look.as_deref() {
-            Some("slime") => e.kind == EntityModelKind::Slime,
-            Some("zombie") => e.kind == EntityModelKind::Zombie,
-            Some("cow") => e.kind == EntityModelKind::Cow,
+        let look_kind = look
+            .as_deref()
+            .map(|s| rewo_gpu::mobs::kind_for_entity_name(&format!("minecraft:{s}")));
+        let pref = |e: &&EntityDraw| match look_kind {
+            Some(k) if k != EntityModelKind::Capsule => e.kind == k,
             _ => e.name.is_some(),
         };
         // REWO_LOOK_HIGH: among the preferred kind, take the highest one

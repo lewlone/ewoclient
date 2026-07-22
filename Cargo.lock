@@ -2176,6 +2176,7 @@ dependencies = [
  "env_logger",
  "glam",
  "log",
+ "png",
  "raw-window-handle",
  "rewo-data",
  "rewo-gpu",

@@ -9,6 +9,7 @@
 
 mod bench_cmd;
 mod demo_cmd;
+mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
@@ -112,6 +113,9 @@ enum Command {
     /// M6 benchmark: deterministic headless render of a replay world from an
     /// orbit camera; reports frame-time 1%/0.1% lows (the merge-gate metric).
     Bench(bench_cmd::BenchArgs),
+    /// Mob-model verification: contact sheet of every mob (no server), or
+    /// `--check` for the facelabel texture-correspondence gate.
+    Mobshot(mobshot_cmd::MobshotArgs),
 }
 
 fn main() {
@@ -128,6 +132,7 @@ fn main() {
         Some(Command::Live(live_args)) => live_cmd::run(live_args),
         Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
         Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
+        Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

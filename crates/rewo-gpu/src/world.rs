@@ -27,7 +27,7 @@ use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::entities::{EntityDraw, EntityPass, EntityTextures, FontData};
+use crate::entities::{EntityDraw, EntityPass, FontData, MobTextures};
 use crate::hud::{HudPass, HudSpritesData};
 use crate::text::{TextLine, TextPass};
 use crate::Gpu;
@@ -781,19 +781,23 @@ impl WorldRenderer {
         self.camera_eye = eye;
     }
 
-    /// Attach the entity pass (player model / capsules + nametags).
+    /// Attach the entity pass (mob models / capsules + nametags).
     /// Callers that never attach it (demo/view/bench snapshots) pay
-    /// nothing. `skin` = flat 64×64 RGBA (players fall back to capsules
-    /// without it).
-    #[allow(clippy::too_many_arguments)]
+    /// nothing. Mobs whose textures are missing fall back to capsules.
     pub fn init_entities(
         &mut self,
         gpu: &mut Gpu,
         font: Option<FontData<'_>>,
-        tex: EntityTextures<'_>,
+        tex: MobTextures<'_>,
     ) -> Result<(), String> {
         self.entities = Some(EntityPass::new(gpu, self.color_format, font, tex)?);
         Ok(())
+    }
+
+    /// The attached entity pass, if any — `rewo mobshot` uses it to iterate
+    /// available mob models and their geometric ground truth.
+    pub fn entity_pass(&self) -> Option<&EntityPass> {
+        self.entities.as_ref()
     }
 
     /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).

@@ -70,6 +70,11 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
 - `rewo bench --replay FILE --frames N` — **the regression gate**: run it
   before/after any render change; a change that worsens the 0.1% low is a
   regression even if avg fps rises.
+- `rewo mobshot [--out png]` — serverless contact sheet of every mob model
+  (no server); `rewo mobshot --check` is **the mob-texture gate**: facelabel
+  textures (`REWO_MOB_DEBUG_TEX`) rendered from front/left/top per mob, each
+  view's dominant color asserted against a perspective ray-cast of the same
+  geometry's face labels (occlusion-exact). Run it after ANY mob/UV change.
 - **The test server**: a local offline flat-world vanilla 26.2 server the
   assistant sets up + runs at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
   (online-mode=false, flat, port 25599). Wipe `world/` for a clean run; the
@@ -140,24 +145,28 @@ the code's author. Nothing below is settled truth.
   default skin from the jar, whole-body yaw + head pitch + **walk-cycle
   limb swing**), and **slimes**, **cows**, **pigs**, **sheep**, and
   **zombies/husks/drowned** render as **model-shaped** mobs with correct
-  silhouettes + animation (walk-swing, humanoid head-look). **⚠️ BROKEN: the
-  mob TEXTURE mapping is wrong** — `box_uv_faces` (entities.rs) is a
-  non-faithful reimplementation of MC's box-UV unwrap, so every mob's faces
-  are scrambled (the cow has no readable face). All mobs share the path → all
-  are wrong. **Redo brief: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md)**
-  (root cause + the verbatim vanilla `Cube` algorithm + a mandatory
-  face-labeled verification method). The `emit_model` rotation/animation layer
-  is correct and reusable; the model *builders* + the UV unwrap are what must
-  be replaced. Cautionary note for the whole project: the pass that shipped
-  these called them "verified" off silhouette+colour alone — texture-face
-  correctness was never checked. See the §15 entries. Still open within
-  it: entity *collision* is ignored (walk through mobs), some mobs are still
-  capsules (chicken/… — each needs its vanilla model dims + UVs; the entity
-  atlas grew to 256×256 so there's room, no texture-array refactor needed),
-  sheep wool dye-tint is deferred (white only), slime face/size need
-  the translucent pass + entity metadata, no real per-player skins (needs
-  online-mode profile textures — M7), tags are depth-tested (vanilla shows
-  them through walls).
+  silhouettes + animation (walk-swing, humanoid head-look). The 2026-07-22
+  scrambled-texture bug (`box_uv_faces`, a non-faithful box-UV approximation)
+  was **fixed by the mob redo (2026-07-22)**: `rewo-gpu/src/mobs.rs` is now a
+  **verbatim port of vanilla `ModelPart.Cube`/`Polygon`** (per-face vertex
+  arrays, UV columns, UP-flip, mirror reversal) plus vanilla's exact entity
+  transform (`rotY(180−yaw)·scale(−1,−1,1)·translate(0,−1.501,0)` — the old
+  path also had the X sign mirrored), with every mob mesh transcribed from
+  the 26.2 decompile (the 26.2 cow is its own mesh — horns/muzzle/udder —
+  not the generic quadruped). **21 mob models ship**: player, zombie, husk,
+  drowned(+outer layer), skeleton, stray(+overlay), wither skeleton (1.2×),
+  creeper, spider, cave spider (0.7×), enderman, slime, cow, pig,
+  sheep(+wool), chicken, wolf, squid, glow squid, rabbit, villager; unknown
+  types still fall back to capsules. Verified by the **`rewo mobshot --check`
+  facelabel gate** (63/63 mob-views) + live summon renders. Still open:
+  entity *collision* is ignored (walk through mobs), more mobs whenever
+  wanted (cat/horse/goat/fox/bee/bat/iron golem/wandering trader/… are
+  capsules; the registry makes each a ~30-line model fn + a texture-table
+  row), spider leg-wave/chicken wing-flap/squid tentacle/wolf tail anims are
+  static poses, magma cube borrows the slime look, sheep wool dye-tint is
+  deferred (white only), slime face/size need the translucent pass + entity
+  metadata, no real per-player skins (needs online-mode profile textures —
+  M7), tags are depth-tested (vanilla shows them through walls).
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1774,3 +1783,64 @@ capability).**
   inventory, the per-mob vanilla model sources, the mandatory verification
   method, and the keep/don't-touch + traps list. The redo itself is handed to
   a separate stronger pass (user's call).
+
+**2026-07-22 — the mob redo shipped: faithful Cube port, 21 mobs, facelabel
+gate green.**
+
+- **`crates/rewo-gpu/src/mobs.rs` (new)** — verbatim port of vanilla
+  `ModelPart.Cube` + `Polygon` from the 26.2 decompile: the 8 corners, the
+  per-face vertex arrays, the UV column table, the UP-face v-flip, mirror =
+  swap-X + reverse-vertex-array. Models are authored in **vanilla model
+  space** (y-down px, front −Z) and rendered through vanilla's exact
+  transform chain `rotY(180°−yaw) · scale(−1,−1,1) · translate(0,−1.501,0)`
+  — the decompile of `LivingEntityRenderer.render` settled the order, and
+  exposed that the old path's `(−x, 24−y, −z)` conversion had the **X sign
+  wrong** (every mob was also left/right-mirrored on top of the scrambled
+  UVs). Unit tests pin the humanoid head's 6 faces to hand-computed vanilla
+  UV corners, the mirror/grow semantics, and the world orientation.
+- **Part/animation model**: cubes attach to `Part`s (pivot + `Anim` kind +
+  amplitude); static pose rotations (quadruped bodies, zombie arms, spider
+  leg splay, villager arm cross, rabbit pose chains) fold into quad vertices
+  at build via `Fold` chains — animated parts always rest at identity, so
+  `emit_model` is just per-part `rotateZYX(0, netHeadYaw, pitch)` /
+  `Rx(swing)` about the pivot. Head yaw is now vanilla's **net-of-body**
+  rotation about the head's own pivot (was: absolute yaw about the model
+  origin, which only worked because humanoid necks sit at x=z=0).
+- **21 mob models** transcribed from the decompiled 26.2 meshes (each fn
+  cites its class): player (wide + overlays), zombie/husk (1.0625×)/drowned
+  (+outer layer), skeleton/stray (+overlay)/wither skeleton (1.2×), creeper,
+  spider/cave spider (0.7×), enderman (half-amp swing), slime, **cow (26.2's
+  own mesh: 8×8×6 head + muzzle + horns, 12×18×10 body + udder, legs at ±4
+  — not the generic quadruped the first pass guessed)**, pig (quadruped
+  legSize 6 + snout), sheep + wool (mirrorRight legs per source), chicken
+  (beak + wattle), wolf (skull/ears/snout + two body segments + tail),
+  squid (8 tentacles), rabbit (full static pose-chain transcription),
+  villager (nose + hat rim + robe + crossed arms + half-swing legs).
+- **Texture plumbing generalized**: rewo-data bakes a keyed
+  `MobTexture` table (`MOB_TEXTURE_SPECS`, 24 entries incl. chicken_temperate
+  / pig_temperate / cow_temperate 26.x names); the entity atlas grew to
+  512×512 with fixed 64×64 slots around the font block; `EntityPass` builds
+  every registry mob whose textures are present (missing → capsule,
+  warn-once). `EntityModelKind` + `kind_for_entity_name` live in mobs.rs.
+- **Verification (the part that failed last time)**: new **`rewo mobshot`**
+  subcommand — serverless offscreen render. `--check` paints every box-UV
+  face rect a per-label color, renders each mob front/left/top, and asserts
+  the rendered dominant color equals the label predicted by a
+  **perspective ray-cast of the same geometry** (same eye/fov → occlusion
+  and projection match exactly; near-ties accepted only when the rendered
+  label's predicted share is ≥80% of max). **63/63 mob-views pass.** The
+  checker caught real subtleties along the way: a chicken from above
+  correctly shows its rotated body's *South* rect; a villager's hat rim
+  wins its top view; a zombie's hat beats its outstretched arms only under
+  perspective. Contact sheet (`--out`) + live summon shots (cow with
+  forced head-look 35° + walk gait; enderman; creeper; villager) verified
+  by eye — the cow has its face back.
+- **Gates**: all crate tests green (41 across rewo-*), `rewo demo` PNG
+  **byte-identical** (`ee6e26f4…`), bench percentiles flat (GPU 0.25 ms avg
+  / 1.1 ms 0.1%-low), 0 VUIDs with validation on (mobshot runs it), live
+  smoke on the flat-world testserver (summons + a horizon full of
+  naturally-spawned mobs rendering as models).
+- Deleted: `box_uv_faces`, `cuboid_quads`, `humanoid_cuboids`,
+  `quadruped_model_quads`, `build_quad_parts`, `sheep_model_quads`,
+  `slime_model_quads`, the per-mob `EntityTextures` fields, and rewo-data's
+  duplicate `bake_player_skin`.

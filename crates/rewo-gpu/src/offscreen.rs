@@ -327,8 +327,9 @@ impl Offscreen {
         Ok(())
     }
 
-    /// Copy the last rendered frame to the readback buffer and encode a PNG.
-    pub fn save_png(&mut self, gpu: &Gpu, path: &Path) -> Result<(), String> {
+    /// Copy the last rendered frame to the readback buffer and return the
+    /// raw RGBA8 pixels (row-major, `extent.width × extent.height`).
+    pub fn read_rgba(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String> {
         unsafe {
             let device = &gpu.device;
             device
@@ -395,20 +396,24 @@ impl Offscreen {
             let len = (self.extent.width * self.extent.height * 4) as usize;
             let alloc = self.readback_alloc.as_ref().ok_or("readback alloc gone")?;
             let mapped = alloc.mapped_slice().ok_or("readback not host-visible")?;
-            let pixels = &mapped[..len];
-
-            let file = std::fs::File::create(path).map_err(|e| format!("create {path:?}: {e}"))?;
-            let writer = std::io::BufWriter::new(file);
-            let mut encoder = png::Encoder::new(writer, self.extent.width, self.extent.height);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut png_writer = encoder
-                .write_header()
-                .map_err(|e| format!("png header: {e}"))?;
-            png_writer
-                .write_image_data(pixels)
-                .map_err(|e| format!("png data: {e}"))?;
+            Ok(mapped[..len].to_vec())
         }
+    }
+
+    /// Copy the last rendered frame to the readback buffer and encode a PNG.
+    pub fn save_png(&mut self, gpu: &Gpu, path: &Path) -> Result<(), String> {
+        let pixels = self.read_rgba(gpu)?;
+        let file = std::fs::File::create(path).map_err(|e| format!("create {path:?}: {e}"))?;
+        let writer = std::io::BufWriter::new(file);
+        let mut encoder = png::Encoder::new(writer, self.extent.width, self.extent.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut png_writer = encoder
+            .write_header()
+            .map_err(|e| format!("png header: {e}"))?;
+        png_writer
+            .write_image_data(&pixels)
+            .map_err(|e| format!("png data: {e}"))?;
         Ok(())
     }
 

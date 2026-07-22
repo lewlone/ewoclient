@@ -1,12 +1,20 @@
-//! Entity pass — capsules + floating nametags (REWO_PLAN correction #11's
-//! v1 scope: "entities as capsules + nametags"; the player-model port is a
-//! later track).
+//! Entity pass — textured mob models + capsule fallback + floating
+//! nametags.
+//!
+//! Mob geometry comes from [`crate::mobs`] — a faithful port of vanilla's
+//! `ModelPart.Cube` (see that module for the coordinate contract). This
+//! module owns everything GPU-side: the shared atlas (font + all mob skins,
+//! shelf-packed 64×64 slots), per-frame animation (vanilla `setupAnim`
+//! angles about each part's pivot), the vanilla entity transform
+//! (`rotY(180−yaw) · scale(−1,−1,1) · translate(0,−1.501,0)`), and the
+//! draw pipelines.
 //!
 //! Deliberately simple: geometry is a **CPU-built world-space triangle
-//! soup** rebuilt every frame — capsule shells (~500 verts each) and
-//! camera-billboarded glyph quads. Entity counts are dozens, not thousands,
-//! so building on the CPU costs microseconds and avoids instancing +
-//! billboard shaders entirely; revisit if entity counts ever grow 100×.
+//! soup** rebuilt every frame — model quads, capsule shells (~500 verts
+//! each), and camera-billboarded glyph quads. Entity counts are dozens, not
+//! thousands, so building on the CPU costs microseconds and avoids
+//! instancing + billboard shaders entirely; revisit if entity counts ever
+//! grow 100×.
 //!
 //! One vertex format (pos, uv, rgba) through one shader family: glyphs
 //! sample the font atlas, solid geometry (capsules, tag backgrounds)
@@ -18,13 +26,22 @@
 //! Buffers are a 2-slot ring flipped on each `set_draws`: with the frame
 //! driver fence-pacing at most 2 frames in flight, the slot being rewritten
 //! retired two submissions ago.
+//!
+//! Verification knob: `REWO_MOB_DEBUG_TEX=1` replaces every mob texture
+//! with facelabel colors (each box-UV face rect painted its
+//! [`mobs::Facing::debug_color`]) — `rewo mobshot --check` renders each mob
+//! and asserts the rendered dominant color matches the geometric
+//! prediction, proving texture-face correspondence end-to-end.
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
+use crate::mobs::{self, Facing};
 use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
+
+pub use crate::mobs::EntityModelKind;
 
 const VERTEX_STRIDE: u64 = 36; // 3 pos + 2 uv + 4 rgba f32s
 /// ~500 capsules' worth (a flat-world slime herd alone reaches 129
@@ -64,10 +81,9 @@ pub struct EntityDraw<'a> {
     pub kind: EntityModelKind,
     /// Body yaw (degrees, MC convention) — rotates the whole model.
     pub yaw: f32,
-    /// Head yaw (degrees) — the head yaws to this absolute angle instead of
-    /// the body's, so a mob can turn its head toward the viewer. Only the
-    /// humanoid head articulates (pivot at x=z=0), so this is the head's
-    /// whole-model Y-rotation; equal to `yaw` leaves the head aligned.
+    /// Head yaw (degrees, absolute). The head part rotates about its own
+    /// pivot by the net `head_yaw − yaw` (vanilla `netHeadYaw`); equal to
+    /// `yaw` leaves the head aligned with the body.
     pub head_yaw: f32,
     /// Look pitch (degrees) — tilts the head about the neck.
     pub pitch: f32,
@@ -85,60 +101,40 @@ struct Vertex {
     color: [f32; 4],
 }
 
-/// Combined entity atlas layout: the font occupies (0,0)..(128,128), the
-/// 64×64 player skin sits at (SKIN_X, 0). One texture, one pipeline family.
-const ATLAS_W: u32 = 256;
-/// 256 tall: the top half (0..128) holds font + player/slime/zombie/cow
-/// skins; the bottom half (128..256) is the expansion room for more mob
-/// textures (pig at (PIG_X, PIG_Y), …).
-const ATLAS_H: u32 = 256;
-const SKIN_X: u32 = 128;
-const SLIME_Y: u32 = 64;
-/// The 64×64 zombie skin sits at (ZOMBIE_X, 0), right of the player skin;
-/// the 64×64 cow skin sits below it at (ZOMBIE_X, COW_Y).
-const ZOMBIE_X: u32 = 192;
-const COW_Y: u32 = 64;
-/// The 64×64 pig skin sits in the lower-left of the grown atlas.
-const PIG_X: u32 = 0;
-const PIG_Y: u32 = 128;
-/// The two 64×32 sheep textures (sheared body, then wool overlay) sit to the
-/// right of the pig in the lower half.
-const SHEEP_X: u32 = 64;
-const SHEEP_Y: u32 = 128;
-const SHEEP_WOOL_X: u32 = 64;
-const SHEEP_WOOL_Y: u32 = 160;
-
-/// Borrowed mob skin slices for `EntityPass::new` — one field per baked
-/// texture so call sites can't transpose them (the positional list had grown
-/// to eight `Option<&[u8]>`). Each `None` degrades that mob to the capsule.
-#[derive(Default)]
-pub struct EntityTextures<'a> {
-    pub skin: Option<&'a [u8]>,
-    pub slime: Option<&'a [u8]>,
-    pub zombie: Option<&'a [u8]>,
-    pub cow: Option<&'a [u8]>,
-    pub pig: Option<&'a [u8]>,
-    pub sheep: Option<&'a [u8]>,
-    pub sheep_wool: Option<&'a [u8]>,
+/// Combined entity atlas: the font occupies (0,0)..(128,128); every mob
+/// texture gets a 64×64 slot (64×32 textures use the slot's top half).
+/// One texture, one pipeline family.
+const ATLAS_W: u32 = 512;
+const ATLAS_H: u32 = 512;
+/// Fixed 64×64 slot origins around the font block: 12 slots right of the
+/// font (x 128.., two rows), then 48 slots in the lower half — far more
+/// than the registry needs, so packing stays a table lookup.
+fn slot_origin(i: usize) -> Option<(u32, u32)> {
+    let i = i as u32;
+    if i < 12 {
+        Some((128 + (i % 6) * 64, (i / 6) * 64))
+    } else if i < 60 {
+        let j = i - 12;
+        Some(((j % 8) * 64, 128 + (j / 8) * 64))
+    } else {
+        None
+    }
 }
 
-/// Which model to render for an entity.
-#[derive(Clone, Copy, PartialEq)]
-pub enum EntityModelKind {
-    /// Textured wide player model (needs the skin).
-    Player,
-    /// Humanoid model with the zombie texture + arms-forward pose.
-    Zombie,
-    /// Quadruped model (cow legs) with the cow texture.
-    Cow,
-    /// Quadruped model with short legs + a snout, the pig texture.
-    Pig,
-    /// Sheep — quadruped body + an inflated wool overlay (fleece).
-    Sheep,
-    /// Green slime cube (needs the slime texture).
-    Slime,
-    /// Colored capsule fallback (mobs without a bespoke model).
-    Capsule,
+/// One baked mob texture, keyed by the registry names in
+/// [`mobs::MobDef::textures`] (e.g. "cow", "sheep_wool").
+pub struct MobTexEntry<'a> {
+    pub key: &'static str,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: &'a [u8],
+}
+
+/// Borrowed view of the baked mob-texture table for `EntityPass::new`. A
+/// missing entry degrades that mob to the capsule fallback.
+#[derive(Default)]
+pub struct MobTextures<'a> {
+    pub entries: Vec<MobTexEntry<'a>>,
 }
 
 pub struct EntityPass {
@@ -159,57 +155,34 @@ pub struct EntityPass {
     text_verts: u32,
     /// Unit capsule shell: (position [0..1 y, ±0.5 xz], normal).
     capsule: Vec<([f32; 3], [f32; 3])>,
-    /// Player model quads (model px, atlas-normalized UVs, baked shade).
-    player_quads: Vec<PlayerQuad>,
-    /// Zombie: the same humanoid geometry, UVs into the zombie skin slot.
-    zombie_quads: Vec<PlayerQuad>,
-    /// Cow: the quadruped model, UVs into the cow skin slot.
-    cow_quads: Vec<PlayerQuad>,
-    /// Pig: the short-legged quadruped + snout, UVs into the pig skin slot.
-    pig_quads: Vec<PlayerQuad>,
-    /// Sheep: quadruped body (sheep slot) + inflated wool overlay (wool slot).
-    sheep_quads: Vec<PlayerQuad>,
-    /// Slime model quads (green cube, atlas UVs into the slime region).
-    slime_quads: Vec<PlayerQuad>,
+    /// Built mob models, indexed by `EntityModelKind::index()`. `None` =
+    /// texture missing (or the capsule kind) → capsule fallback.
+    models: Vec<Option<MobModel>>,
     // Font metrics (identity values when no font was provided).
     cell: u32,
     advance: [u8; 256],
     white_uv: [f32; 2],
     has_font: bool,
-    has_skin: bool,
-    has_slime: bool,
-    has_zombie: bool,
-    has_cow: bool,
-    has_pig: bool,
-    has_sheep: bool,
 }
 
-/// Which articulated part a model quad belongs to — sets its rotation pivot
-/// and swing formula. Humanoid parts pivot at z=0; the quadruped legs pivot
-/// at their own z (front vs. back), with the diagonal gait.
-#[derive(Clone, Copy, PartialEq)]
-enum LimbPart {
-    Body,
-    Head,
-    ArmRight,
-    ArmLeft,
-    LegRight,
-    LegLeft,
-    // Quadruped legs (pivot y=12; z per front/back). Diagonal gait:
-    // back-right + front-left in phase, back-left + front-right opposite.
-    QuadBackRight,
-    QuadBackLeft,
-    QuadFrontRight,
-    QuadFrontLeft,
+/// One mob model ready to draw: quads in part-local model px with
+/// atlas-normalized UVs, the animated parts, and the px→block scale.
+pub struct MobModel {
+    quads: Vec<GpuQuad>,
+    parts: Vec<mobs::Part>,
+    /// Model px → world blocks (vanilla 1/16 × the mob's render scale).
+    scale: f32,
 }
 
-/// One face of the player model, pre-unwrapped: corners in model pixels
-/// (y 0..32, feet at 0), UVs already atlas-normalized, per-face shade.
-struct PlayerQuad {
+struct GpuQuad {
     pos: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     shade: f32,
-    part: LimbPart,
+    part: u16,
+    /// Vanilla face label + static-folded model-space normal — kept for the
+    /// mobshot facelabel verification (`neutral_quads`).
+    facing: Facing,
+    normal: [f32; 3],
 }
 
 impl EntityPass {
@@ -217,16 +190,15 @@ impl EntityPass {
         gpu: &mut Gpu,
         color_format: vk::Format,
         font: Option<FontData<'_>>,
-        tex: EntityTextures<'_>,
+        tex: MobTextures<'_>,
     ) -> Result<Self, String> {
-        let EntityTextures { skin, slime, zombie, cow, pig, sheep, sheep_wool } = tex;
         let device = gpu.device.clone();
 
-        // ---- combined atlas: font at (0,0), player skin at (SKIN_X,0) ----
+        // ---- combined atlas: font at (0,0), mob skins in 64×64 slots ----
         let mut atlas = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
         let (cell, advance, white_texel, has_font) = match &font {
             Some(f) => {
-                let side = f.size.min(ATLAS_H).min(SKIN_X) as usize;
+                let side = f.size.min(128) as usize;
                 for row in 0..side {
                     let src = row * f.size as usize * 4;
                     let dst = row * ATLAS_W as usize * 4;
@@ -240,38 +212,62 @@ impl EntityPass {
         // whether or not a font was blitted (the cell is zeroed either way).
         let wi = ((white_texel.1 * ATLAS_W + white_texel.0) * 4) as usize;
         atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
-        let has_skin = match skin {
-            Some(px) if px.len() == 64 * 64 * 4 => {
-                for row in 0..64usize {
-                    let src = row * 64 * 4;
-                    let dst = (row * ATLAS_W as usize + SKIN_X as usize) * 4;
-                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
-                }
-                true
+
+        // Pack every provided mob texture into its slot.
+        let mut slots: std::collections::HashMap<&'static str, (u32, u32)> =
+            std::collections::HashMap::new();
+        for (i, e) in tex.entries.iter().enumerate() {
+            let Some((x, y)) = slot_origin(i) else {
+                log::warn!("entities: atlas slots exhausted at {}", e.key);
+                break;
+            };
+            if e.w <= 64 && e.h <= 64 && blit_tex(&mut atlas, Some(e.rgba), x, y, e.w, e.h) {
+                slots.insert(e.key, (x, y));
+            } else {
+                log::warn!("entities: mob texture {} bad size {}×{}", e.key, e.w, e.h);
             }
-            _ => false,
-        };
-        // Slime texture (64×32) below the skin at (SKIN_X, SLIME_Y).
-        let has_slime = match slime {
-            Some(px) if px.len() == 64 * 32 * 4 => {
-                for row in 0..32usize {
-                    let src = row * 64 * 4;
-                    let dst = ((SLIME_Y as usize + row) * ATLAS_W as usize + SKIN_X as usize) * 4;
-                    atlas[dst..dst + 64 * 4].copy_from_slice(&px[src..src + 64 * 4]);
+        }
+
+        // Facelabel verification mode: replace every mob texture with per-
+        // face solid colors so a render proves texture-face correspondence.
+        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").map_or(false, |v| v == "1");
+
+        // Build each registry mob whose textures are all present.
+        let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
+        for def in mobs::MOBS {
+            let origins: Option<Vec<(u32, u32)>> =
+                def.textures.iter().map(|k| slots.get(k).copied()).collect();
+            let Some(origins) = origins else { continue };
+            let m = (def.build)();
+            if debug_tex {
+                for q in &m.quads {
+                    paint_debug_rect(&mut atlas, origins[q.tex], q);
                 }
-                true
             }
-            _ => false,
-        };
-        // Zombie skin (64×64) at (ZOMBIE_X, 0), right of the player skin.
-        let has_zombie = blit_64(&mut atlas, zombie, ZOMBIE_X, 0);
-        // Cow skin (64×64) at (ZOMBIE_X, COW_Y), below the zombie.
-        let has_cow = blit_64(&mut atlas, cow, ZOMBIE_X, COW_Y);
-        // Pig skin (64×64) in the grown lower half at (PIG_X, PIG_Y).
-        let has_pig = blit_64(&mut atlas, pig, PIG_X, PIG_Y);
-        // Sheep body + wool (each 64×32). The sheep needs both to look right.
-        let has_sheep = blit_tex(&mut atlas, sheep, SHEEP_X, SHEEP_Y, 64, 32)
-            & blit_tex(&mut atlas, sheep_wool, SHEEP_WOOL_X, SHEEP_WOOL_Y, 64, 32);
+            let quads = m
+                .quads
+                .iter()
+                .map(|q| {
+                    let (ox, oy) = origins[q.tex];
+                    let uv = q.uv.map(|[u, v]| {
+                        [(ox as f32 + u) / ATLAS_W as f32, (oy as f32 + v) / ATLAS_H as f32]
+                    });
+                    GpuQuad {
+                        pos: q.pos,
+                        uv,
+                        shade: q.shade,
+                        part: q.part as u16,
+                        facing: q.facing,
+                        normal: q.normal,
+                    }
+                })
+                .collect();
+            models[def.kind.index()] = Some(MobModel {
+                quads,
+                parts: m.parts,
+                scale: m.scale / 16.0,
+            });
+        }
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let white_uv = [
             (white_texel.0 as f32 + 0.5) / ATLAS_W as f32,
@@ -396,24 +392,57 @@ impl EntityPass {
                 solid_verts: 0,
                 text_verts: 0,
                 capsule: unit_capsule(),
-                player_quads: cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0),
-                zombie_quads: cuboid_quads(&humanoid_cuboids(), ZOMBIE_X as f32, 0.0),
-                cow_quads: quadruped_model_quads(ZOMBIE_X as f32, COW_Y as f32, 12.0, false),
-                pig_quads: quadruped_model_quads(PIG_X as f32, PIG_Y as f32, 6.0, true),
-                sheep_quads: sheep_model_quads(),
-                slime_quads: slime_model_quads(),
+                models,
                 cell,
                 advance,
                 white_uv,
                 has_font,
-                has_skin,
-                has_slime,
-                has_zombie,
-                has_cow,
-                has_pig,
-                has_sheep,
             })
         }
+    }
+
+    /// Kinds with a built model (all textures were present).
+    pub fn available_kinds(&self) -> Vec<EntityModelKind> {
+        EntityModelKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| self.models[k.index()].is_some())
+            .collect()
+    }
+
+    /// The neutral-pose (yaw 0, origin, no walk/look) world-space quads of a
+    /// mob, with each quad's vanilla face label and world normal — the
+    /// geometric ground truth `rewo mobshot --check` compares renders
+    /// against. Uses the same transform as `emit_model` by construction.
+    pub fn neutral_quads(
+        &self,
+        kind: EntityModelKind,
+    ) -> Option<Vec<([[f32; 3]; 4], Facing, [f32; 3])>> {
+        let model = self.models[kind.index()].as_ref()?;
+        let s = model.scale;
+        Some(
+            model
+                .quads
+                .iter()
+                .map(|q| {
+                    let part = &model.parts[q.part as usize];
+                    let mut pos = [[0f32; 3]; 4];
+                    for (i, c) in q.pos.iter().enumerate() {
+                        let v = [
+                            c[0] + part.pivot[0],
+                            c[1] + part.pivot[1],
+                            c[2] + part.pivot[2],
+                        ];
+                        // model → entity local, then the yaw-0 rotY(180°).
+                        let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                        pos[i] = [-e[0] * s, e[1] * s, -e[2] * s];
+                    }
+                    // Normals ride the same rotations (no translate).
+                    let n = q.normal;
+                    (pos, q.facing, [n[0], -n[1], -n[2]])
+                })
+                .collect(),
+        )
     }
 
     /// Rebuild this frame's vertex soup. `cam_right`/`cam_up` orient the
@@ -430,38 +459,9 @@ impl EntityPass {
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
-            match d.kind {
-                EntityModelKind::Player if self.has_skin => {
-                    // Vanilla RenderPlayer scale: 0.9375 model→world, /16 px.
-                    self.emit_model(&mut verts, d, &self.player_quads, 0.9375 / 16.0, 0.0);
-                    continue;
-                }
-                EntityModelKind::Zombie if self.has_zombie => {
-                    // Same humanoid geometry; arms held forward (−75°) — the
-                    // iconic zombie pose. Slightly taller than a player.
-                    self.emit_model(&mut verts, d, &self.zombie_quads, 1.0 / 16.0, -1.3);
-                    continue;
-                }
-                EntityModelKind::Cow if self.has_cow => {
-                    // Quadruped, standard mob 1/16 model scale.
-                    self.emit_model(&mut verts, d, &self.cow_quads, 1.0 / 16.0, 0.0);
-                    continue;
-                }
-                EntityModelKind::Pig if self.has_pig => {
-                    self.emit_model(&mut verts, d, &self.pig_quads, 1.0 / 16.0, 0.0);
-                    continue;
-                }
-                EntityModelKind::Sheep if self.has_sheep => {
-                    self.emit_model(&mut verts, d, &self.sheep_quads, 1.0 / 16.0, 0.0);
-                    continue;
-                }
-                EntityModelKind::Slime if self.has_slime => {
-                    // 8px outer cube → ~1 block (size-2 slime); no metadata
-                    // for the real size, so a fixed medium slime.
-                    self.emit_model(&mut verts, d, &self.slime_quads, 1.0 / 8.0, 0.0);
-                    continue;
-                }
-                _ => {}
+            if let Some(model) = &self.models[d.kind.index()] {
+                self.emit_model(&mut verts, d, model);
+                continue;
             }
             let base = d.color;
             for (p, n) in &self.capsule {
@@ -506,69 +506,66 @@ impl EntityPass {
         }
     }
 
-    /// A textured cuboid model (player, zombie, slime, …): each quad rotates
-    /// about its part's pivot (head pitch, arm/leg walk swing — no-ops for
-    /// parts that don't articulate), then the whole model yaws by `d.yaw`.
-    /// `arm_forward` (radians) adds a static shoulder rotation — 0 for a
-    /// player, −1.3 for a zombie's held-out arms. Model pixels × `s` → world
-    /// blocks. Texels ride the alpha-test (`discard`) path.
-    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, quads: &[PlayerQuad], s: f32, arm_forward: f32) {
-        let yaw = d.yaw.to_radians();
-        let (cy, sy) = (yaw.cos(), yaw.sin());
-        // The head yaws to its own absolute angle (server-steered toward
-        // nearby players); every other part uses the body yaw. Because the
-        // humanoid neck pivot is at x=z=0, this absolute head yaw about the
-        // origin is exactly "head-relative-to-body about the neck, then body".
-        let head_yaw = d.head_yaw.to_radians();
-        let (cyh, syh) = (head_yaw.cos(), head_yaw.sin());
+    /// Draw one mob model: per-part vanilla `setupAnim` rotation about the
+    /// part's pivot in model space, then vanilla's entity transform —
+    /// `rotY(180° − yaw) · scale(−1,−1,1) · translate(0,−1.501,0)` — scaled
+    /// px→blocks and placed at the entity's feet. Texels ride the
+    /// alpha-test (`discard`) path.
+    fn emit_model(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, model: &MobModel) {
+        use mobs::Anim;
+        use std::f32::consts::PI;
+        let theta = (180.0 - d.yaw).to_radians();
+        let (st, ct) = theta.sin_cos();
         let pitch = d.pitch.to_radians();
-        // Vanilla HumanoidModel.setupAnim: opposite-phase diagonal gait,
-        // arms ±2.0 rad · amount, legs ±1.4 rad · amount, at the 0.6662
-        // walk frequency. Head rotation is the look pitch.
+        // Vanilla head yaw is net-of-body (`netHeadYaw`), rotated about the
+        // head part's own pivot.
+        let net = wrap_degrees(d.head_yaw - d.yaw).to_radians();
         let f = d.limb_swing * 0.6662;
         let amt = d.limb_amount;
-        use std::f32::consts::PI;
-        for q in quads {
+        // Per-part rotation matrices from the vanilla swing formulas
+        // (arms ±2.0·0.5, legs ±1.4, diagonal quad gait; `amp` halves the
+        // swing for villager/enderman limbs).
+        let mats: Vec<[[f32; 3]; 3]> = model
+            .parts
+            .iter()
+            .map(|p| match p.anim {
+                Anim::None => IDENTITY3,
+                Anim::Head => mat_mul(rot_y(net), rot_x(pitch)),
+                Anim::ArmRight => rot_x((f + PI).cos() * 2.0 * amt * 0.5 * p.amp),
+                Anim::ArmLeft => rot_x(f.cos() * 2.0 * amt * 0.5 * p.amp),
+                Anim::LegRight | Anim::QuadHindRight | Anim::QuadFrontLeft => {
+                    rot_x(f.cos() * 1.4 * amt * p.amp)
+                }
+                Anim::LegLeft | Anim::QuadHindLeft | Anim::QuadFrontRight => {
+                    rot_x((f + PI).cos() * 1.4 * amt * p.amp)
+                }
+            })
+            .collect();
+        let s = model.scale;
+        for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
-            // (pivot_y, pivot_z, xrot). Quadruped legs pivot at their own z
-            // (front ≈ +5, back ≈ −7) so they swing about their tops.
-            let (pivot_y, pivot_z, xrot) = match q.part {
-                LimbPart::Body => (0.0, 0.0, 0.0),
-                LimbPart::Head => (24.0, 0.0, pitch),
-                LimbPart::ArmRight => (24.0, 0.0, arm_forward + (f + PI).cos() * 2.0 * amt),
-                LimbPart::ArmLeft => (24.0, 0.0, arm_forward + f.cos() * 2.0 * amt),
-                LimbPart::LegRight => (12.0, 0.0, f.cos() * 1.4 * amt),
-                LimbPart::LegLeft => (12.0, 0.0, (f + PI).cos() * 1.4 * amt),
-                LimbPart::QuadBackRight => (12.0, -7.0, f.cos() * 1.2 * amt),
-                LimbPart::QuadBackLeft => (12.0, -7.0, (f + PI).cos() * 1.2 * amt),
-                LimbPart::QuadFrontRight => (12.0, 5.0, (f + PI).cos() * 1.2 * amt),
-                LimbPart::QuadFrontLeft => (12.0, 5.0, f.cos() * 1.2 * amt),
-            };
-            let (cx_, sx_) = (xrot.cos(), xrot.sin());
+            let part = &model.parts[q.part as usize];
+            let m = &mats[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
             for (i, corner) in q.pos.iter().enumerate() {
-                let mut p = *corner;
-                // Local rotation about X at the part pivot (+angle tilts the
-                // front face toward −Y — look-down / leg-forward).
-                if xrot != 0.0 {
-                    let (dy, dz) = (p[1] - pivot_y, p[2] - pivot_z);
-                    p[1] = pivot_y + dy * cx_ - dz * sx_;
-                    p[2] = pivot_z + dy * sx_ + dz * cx_;
-                }
-                // Whole-model yaw: front (+Z) → MC look dir (−sin, 0, cos).
-                // Head parts use the head's own yaw so the model can look
-                // around independently of its body.
-                // NB: use distinct names — `s` is the model→world scale below.
-                let (x, z) = (p[0], p[2]);
-                let (cyaw, syaw) = if q.part == LimbPart::Head { (cyh, syh) } else { (cy, sy) };
-                p[0] = x * cyaw - z * syaw;
-                p[2] = x * syaw + z * cyaw;
+                let r = mat_apply(m, *corner);
+                let v = [
+                    r[0] + part.pivot[0],
+                    r[1] + part.pivot[1],
+                    r[2] + part.pivot[2],
+                ];
+                // model → entity local (px): scale(−1,−1,1) after the
+                // −1.501-block translate.
+                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                // rotY(180° − yaw).
+                let x = e[0] * ct + e[2] * st;
+                let z = -e[0] * st + e[2] * ct;
                 p4[i] = [
-                    d.pos[0] + p[0] * s,
-                    d.pos[1] + p[1] * s,
-                    d.pos[2] + p[2] * s,
+                    d.pos[0] + x * s,
+                    d.pos[1] + e[1] * s,
+                    d.pos[2] + z * s,
                 ];
             }
             let c = q.shade;
@@ -794,230 +791,67 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
     [v[0] / l, v[1] / l, v[2] / l]
 }
 
-/// The wide ("Steve") player model, ported from `ewo-jni/src/skin.rs`
-/// (Phase F's battle-tested viewer): 6 base cuboids + 6 inflated overlay
-/// layers, standard box-UV unwrap, per-face shades. Model pixels: feet at
-/// y=0, head top at y=32; UVs normalized into the skin's atlas slot.
-/// A model cuboid: box (feet-up y, front +Z) + box-UV origin + limb part.
-struct Cuboid {
-    min: [f32; 3],
-    max: [f32; 3],
-    size: [f32; 3],
-    uv: (f32, f32),
-    part: LimbPart,
+// ---- small math helpers for the per-part animation ----------------------
+
+const IDENTITY3: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Rotation about X (y-down model space, matches `mobs::rotate_zyx`).
+fn rot_x(a: f32) -> [[f32; 3]; 3] {
+    let (s, c) = a.sin_cos();
+    [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
 }
 
-/// Box-UV a single cuboid into its 6 faces (positions in the box's own
-/// frame + atlas-normalized UVs + per-face shade). The caller may transform
-/// the positions (the quadruped's rotated body needs this).
-fn box_uv_faces(
-    min: [f32; 3],
-    max: [f32; 3],
-    size: [f32; 3],
-    uv: (f32, f32),
-    off_x: f32,
-    off_y: f32,
-) -> [([[f32; 3]; 4], [[f32; 2]; 4], f32); 6] {
-    let t = |u: f32, v: f32| -> [f32; 2] {
-        [(off_x + u) / ATLAS_W as f32, (off_y + v) / ATLAS_H as f32]
-    };
-    let [x0, y0, z0] = min;
-    let [x1, y1, z1] = max;
-    let [sw, sh, sd] = size;
-    let (u, v) = uv;
-    // Box-UV sub-rect origins (identical to skin.rs::cuboid_faces).
-    let (tu, tv) = (u + sd, v); // top
-    let (du, dv) = (u + sd + sw, v); // bottom
-    let (ru, rv) = (u, v + sd); // right (-X)
-    let (fu, fv) = (u + sd, v + sd); // front (+Z)
-    let (lu, lv) = (u + sd + sw, v + sd); // left (+X)
-    let (bu, bv) = (u + 2.0 * sd + sw, v + sd); // back (-Z)
+/// Rotation about Y.
+fn rot_y(a: f32) -> [[f32; 3]; 3] {
+    let (s, c) = a.sin_cos();
+    [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+}
+
+/// `a · b` (row-major; `b` applies to the vector first).
+fn mat_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0f32; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    out
+}
+
+fn mat_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     [
-        (
-            [[x0, y1, z1], [x1, y1, z1], [x1, y0, z1], [x0, y0, z1]],
-            [t(fu, fv), t(fu + sw, fv), t(fu + sw, fv + sh), t(fu, fv + sh)],
-            0.80, // front
-        ),
-        (
-            [[x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [x1, y0, z0]],
-            [t(bu, bv), t(bu + sw, bv), t(bu + sw, bv + sh), t(bu, bv + sh)],
-            0.62, // back
-        ),
-        (
-            [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
-            [t(tu, tv), t(tu + sw, tv), t(tu + sw, tv + sd), t(tu, tv + sd)],
-            1.0, // top
-        ),
-        (
-            [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
-            [t(du, dv), t(du + sw, dv), t(du + sw, dv + sd), t(du, dv + sd)],
-            0.50, // bottom
-        ),
-        (
-            [[x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [x0, y0, z0]],
-            [t(ru, rv), t(ru + sd, rv), t(ru + sd, rv + sh), t(ru, rv + sh)],
-            0.68, // right (-X)
-        ),
-        (
-            [[x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [x1, y0, z1]],
-            [t(lu, lv), t(lu + sd, lv), t(lu + sd, lv + sh), t(lu, lv + sh)],
-            0.68, // left (+X)
-        ),
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
     ]
 }
 
-/// Unwrap cuboids into per-face quads with standard Minecraft box-UV,
-/// offset into the given atlas texture slot (`off_x`, `off_y` in atlas px).
-fn cuboid_quads(cuboids: &[Cuboid], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
-    let mut out = Vec::with_capacity(cuboids.len() * 6);
-    for c in cuboids {
-        for (pos, uv, shade) in box_uv_faces(c.min, c.max, c.size, c.uv, off_x, off_y) {
-            out.push(PlayerQuad {
-                pos,
-                uv,
-                shade,
-                part: c.part,
-            });
+/// Wrap to [−180, 180) — vanilla `Mth.wrapDegrees` for the net head yaw.
+fn wrap_degrees(deg: f32) -> f32 {
+    (deg + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// Fill a quad's UV bounding rect in the atlas with its face-label color
+/// (facelabel verification mode). Sub-pixel rects round outward; rects are
+/// clamped to the texture's 64×64 slot.
+fn paint_debug_rect(atlas: &mut [u8], origin: (u32, u32), q: &mobs::RawQuad) {
+    let (min_u, max_u) = q
+        .uv
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+    let (min_v, max_v) = q
+        .uv
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+    let [r, g, b] = q.facing.debug_color();
+    let (x0, x1) = ((min_u.floor().max(0.0)) as u32, (max_u.ceil().min(64.0)) as u32);
+    let (y0, y1) = ((min_v.floor().max(0.0)) as u32, (max_v.ceil().min(64.0)) as u32);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (((origin.1 + y) * ATLAS_W + origin.0 + x) * 4) as usize;
+            atlas[i..i + 4].copy_from_slice(&[r, g, b, 255]);
         }
     }
-    out
-}
-
-/// One box in a quadruped model: (min, max, size, uv, rot_x, pose, part) in
-/// vanilla local coords (feet-down y, front −Z). `size` is the UV sub-rect
-/// size (unchanged by inflation); `min`/`max` are the geometry, so an
-/// inflated wool box passes expanded min/max but the base `size`.
-type QuadPart = ([f32; 3], [f32; 3], [f32; 3], (f32, f32), f32, [f32; 3], LimbPart);
-
-/// Build quads for a quadruped part list, UVs into the (off_x, off_y) atlas
-/// slot. Each part is rotated about X by `rot_x`, offset by `pose`, then
-/// converted vanilla→my (feet-up y, front +Z: `(-x, 24-y, -z)`). The body box
-/// is rotated 90° about X (lies horizontal) — the reason this needs the
-/// per-vertex transform rather than plain `cuboid_quads`. Shared by every
-/// quadruped mob (cow/pig/sheep) and the sheep's wool overlay.
-fn build_quad_parts(parts: &[QuadPart], off_x: f32, off_y: f32) -> Vec<PlayerQuad> {
-    let xform = |p: [f32; 3], rot_x: f32, pose: [f32; 3]| -> [f32; 3] {
-        let (c, s) = (rot_x.cos(), rot_x.sin());
-        let (y, z) = (p[1], p[2]);
-        let v = [p[0] + pose[0], y * c - z * s + pose[1], y * s + z * c + pose[2]];
-        [-v[0], 24.0 - v[1], -v[2]]
-    };
-    let mut out = Vec::with_capacity(parts.len() * 6);
-    for &(min, max, size, uv, rot_x, pose, part) in parts {
-        for (mut pos, uv, shade) in box_uv_faces(min, max, size, uv, off_x, off_y) {
-            for p in &mut pos {
-                *p = xform(*p, rot_x, pose);
-            }
-            out.push(PlayerQuad { pos, uv, shade, part });
-        }
-    }
-    out
-}
-
-/// The cow/pig quadruped, from vanilla `QuadrupedModel::createBodyMesh`
-/// (cow `legSize=12`, pig `legSize=6`). `leg` also sets the head/body pose
-/// height (18/17 − legSize). `snout` adds the pig's nose box (rides the head
-/// pose). The 4 legs animate (diagonal gait); head + body static (head-look
-/// is a follow-up).
-fn quadruped_model_quads(off_x: f32, off_y: f32, leg: f32, snout: bool) -> Vec<PlayerQuad> {
-    use std::f32::consts::FRAC_PI_2;
-    use LimbPart::*;
-    #[rustfmt::skip]
-    let mut parts: Vec<QuadPart> = vec![
-        // head
-        ([-4.,-4.,-8.], [4.,4.,0.], [8.,8.,8.], (0.,0.), 0.0, [0., 18.-leg, -6.], Body),
-        // body — rotated 90° about X so it lies horizontal
-        ([-5.,-10.,-7.], [5.,6.,1.], [10.,16.,8.], (28.,8.), FRAC_PI_2, [0., 17.-leg, 2.], Body),
-        // legs: right-hind, left-hind, right-front, left-front
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, 7.], QuadBackRight),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, 7.], QuadBackLeft),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [-3., 24.-leg, -5.], QuadFrontRight),
-        ([-2.,0.,-2.], [2.,leg,2.], [4.,leg,4.], (0.,16.), 0.0, [ 3., 24.-leg, -5.], QuadFrontLeft),
-    ];
-    if snout {
-        // Pig snout: vanilla texOffs(16,16) addBox(-2,0,-9, 4,3,1), riding the
-        // head pose.
-        parts.push(([-2., 0., -9.], [2., 3., -8.], [4., 3., 1.], (16., 16.), 0.0, [0., 18. - leg, -6.], Body));
-    }
-    build_quad_parts(&parts, off_x, off_y)
-}
-
-/// The sheep — its own body dims (head 6×6×8, body 8×16×6, legSize 12) from
-/// vanilla `SheepModel`, plus the inflated wool overlay from `SheepFurModel`
-/// (head 6×6×6 +0.6, body 8×16×6 +1.75, upper-legs 4×6×4 +0.5). The body
-/// samples the sheep slot; the wool the wool slot, drawn on top — transparent
-/// wool texels discard (alpha-test) to show the body beneath. Wool dye tint
-/// is deferred; white wool for v1.
-fn sheep_model_quads() -> Vec<PlayerQuad> {
-    use std::f32::consts::FRAC_PI_2;
-    use LimbPart::*;
-    #[rustfmt::skip]
-    let body: [QuadPart; 6] = [
-        // head 6×6×8 at (0,6,-8)
-        ([-3.,-4.,-6.], [3.,2.,2.], [6.,6.,8.], (0.,0.), 0.0, [0., 6., -8.], Body),
-        // body 8×16×6 rotated 90° at (0,5,2)
-        ([-4.,-10.,-7.], [4.,6.,-1.], [8.,16.,6.], (28.,8.), FRAC_PI_2, [0., 5., 2.], Body),
-        // legs 4×12×4 (legSize 12)
-        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [-3., 12., 7.], QuadBackRight),
-        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [ 3., 12., 7.], QuadBackLeft),
-        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [-3., 12., -5.], QuadFrontRight),
-        ([-2.,0.,-2.], [2.,12.,2.], [4.,12.,4.], (0.,16.), 0.0, [ 3., 12., -5.], QuadFrontLeft),
-    ];
-    #[rustfmt::skip]
-    let wool: [QuadPart; 6] = [
-        // fleece head 6×6×6 +0.6 at (0,6,-8)
-        ([-3.6,-4.6,-4.6], [3.6,2.6,2.6], [6.,6.,6.], (0.,0.), 0.0, [0., 6., -8.], Body),
-        // fleece body 8×16×6 +1.75 rotated 90° at (0,5,2)
-        ([-5.75,-11.75,-8.75], [5.75,7.75,0.75], [8.,16.,6.], (28.,8.), FRAC_PI_2, [0., 5., 2.], Body),
-        // fleece upper-legs 4×6×4 +0.5
-        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [-3., 12., 7.], QuadBackRight),
-        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [ 3., 12., 7.], QuadBackLeft),
-        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [-3., 12., -5.], QuadFrontRight),
-        ([-2.5,-0.5,-2.5], [2.5,6.5,2.5], [4.,6.,4.], (0.,16.), 0.0, [ 3., 12., -5.], QuadFrontLeft),
-    ];
-    let mut out = build_quad_parts(&body, SHEEP_X as f32, SHEEP_Y as f32);
-    out.extend(build_quad_parts(&wool, SHEEP_WOOL_X as f32, SHEEP_WOOL_Y as f32));
-    out
-}
-
-/// The wide humanoid model (Steve/zombie share it), ported from
-/// `ewo-jni/src/skin.rs`: 6 base cuboids + 6 inflated overlay layers. Model
-/// pixels: feet at y=0, head top at y=32. The 64×64 texture layout is the
-/// same for the player skin and the zombie skin — only the atlas offset
-/// differs — so both call `cuboid_quads` with these cuboids.
-fn humanoid_cuboids() -> [Cuboid; 12] {
-    use LimbPart::*;
-    #[rustfmt::skip]
-    let cuboids = [
-        // Base layer: head, body, right/left arm, right/left leg.
-        Cuboid { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: Head },
-        Cuboid { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0), part: Body },
-        Cuboid { min: [-8.0, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (40.0, 16.0), part: ArmRight },
-        Cuboid { min: [4.0, 12.0, -2.0], max: [8.0, 24.0, 2.0], size: [4.0, 12.0, 4.0], uv: (32.0, 48.0), part: ArmLeft },
-        Cuboid { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0), part: LegRight },
-        Cuboid { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0), part: LegLeft },
-        // Overlay layer (hat/jacket/sleeves/pants), inflated 0.25.
-        Cuboid { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0), part: Head },
-        Cuboid { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0), part: Body },
-        Cuboid { min: [-8.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (40.0, 32.0), part: ArmRight },
-        Cuboid { min: [3.75, 11.75, -2.25], max: [8.25, 24.25, 2.25], size: [4.0, 12.0, 4.0], uv: (48.0, 48.0), part: ArmLeft },
-        Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0), part: LegRight },
-        Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0), part: LegLeft },
-    ];
-    cuboids
-}
-
-/// The slime cube, from vanilla `SlimeModel` converted to this crate's
-/// convention (feet-up y, front +Z): the 8³ outer body cube. Vanilla's
-/// inner cube + eyes/mouth live inside a *translucent* outer shell; we
-/// render the outer opaque, so the face is a follow-up (needs the entity
-/// translucent pass). UVs into the slime atlas slot; all one Body part.
-fn slime_model_quads() -> Vec<PlayerQuad> {
-    #[rustfmt::skip]
-    let cuboids = [
-        Cuboid { min: [-4.0, 0.0, -4.0], max: [4.0, 8.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0), part: LimbPart::Body },
-    ];
-    cuboid_quads(&cuboids, SKIN_X as f32, SLIME_Y as f32)
 }
 
 /// sRGB component → linear (CPU-side color prep; discipline #1).
@@ -1044,11 +878,6 @@ fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32
         }
         _ => false,
     }
-}
-
-/// Blit a 64×64 RGBA entity skin into the atlas at (x, y).
-fn blit_64(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32) -> bool {
-    blit_tex(atlas, tex, x, y, 64, 64)
 }
 
 pub(crate) fn create_texture(
@@ -1351,29 +1180,37 @@ mod tests {
     }
 
     #[test]
-    fn player_model_unwraps_the_face_where_the_face_is() {
-        let quads = cuboid_quads(&humanoid_cuboids(), SKIN_X as f32, 0.0);
-        assert_eq!(quads.len(), 72, "12 cuboids × 6 faces");
-        // Head cuboid (first), front face (first): skin px (8,8)..(16,16),
-        // offset into the atlas's skin slot.
-        let front = &quads[0];
-        assert!(front.part == LimbPart::Head);
-        // Legs/arms mapped to distinct parts (drives the swing).
-        assert!(quads.iter().any(|q| q.part == LimbPart::LegRight));
-        assert!(quads.iter().any(|q| q.part == LimbPart::ArmLeft));
-        let u0 = (SKIN_X as f32 + 8.0) / ATLAS_W as f32;
-        let v0 = 8.0 / ATLAS_H as f32;
-        assert_eq!(front.uv[0], [u0, v0]);
-        assert_eq!(
-            front.uv[2],
-            [(SKIN_X as f32 + 16.0) / ATLAS_W as f32, 16.0 / ATLAS_H as f32]
-        );
-        // Model bounds: feet at 0, hat top at 32.5 model px.
-        let top = quads
-            .iter()
-            .flat_map(|q| q.pos.iter())
-            .map(|p| p[1])
-            .fold(f32::MIN, f32::max);
-        assert_eq!(top, 32.5);
+    fn wrap_degrees_matches_vanilla() {
+        assert_eq!(wrap_degrees(0.0), 0.0);
+        assert_eq!(wrap_degrees(190.0), -170.0);
+        assert_eq!(wrap_degrees(-190.0), 170.0);
+        assert_eq!(wrap_degrees(360.0), 0.0);
+        // body 350, head 10 → net +20 (turned left of body), not −340.
+        assert_eq!(wrap_degrees(10.0 - 350.0), 20.0);
+    }
+
+    #[test]
+    fn head_anim_matrix_matches_vanilla_rotate_zyx() {
+        // Ry(net)·Rx(pitch) must equal mobs::rotate_zyx(v, [pitch, net, 0]).
+        let (pitch, net) = (0.6f32, -1.1f32);
+        let m = mat_mul(rot_y(net), rot_x(pitch));
+        for v in [[1.0, 0.0, 0.0], [0.3, -0.7, 0.9], [0.0, 1.0, -1.0]] {
+            let a = mat_apply(&m, v);
+            let b = mobs::rotate_zyx(v, [pitch, net, 0.0]);
+            for i in 0..3 {
+                assert!((a[i] - b[i]).abs() < 1e-5, "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn slot_origins_stay_inside_atlas_and_clear_of_font() {
+        let mut i = 0;
+        while let Some((x, y)) = slot_origin(i) {
+            assert!(x + 64 <= ATLAS_W && y + 64 <= ATLAS_H, "slot {i} out of atlas");
+            assert!(x >= 128 || y >= 128, "slot {i} overlaps the font block");
+            i += 1;
+        }
+        assert!(i >= 26, "need at least 26 slots for the registry textures");
     }
 }

@@ -95,27 +95,57 @@ pub struct BakedAssets {
     /// the `.mcmeta` frame order + timing. The layer itself holds frame 0;
     /// the renderer re-uploads frames on the 20 Hz tick.
     pub animations: Vec<AnimatedLayer>,
-    /// The default wide-model player skin (Steve, 64×64 RGBA) — offline
-    /// servers carry no skin data, so every player renders with it until
-    /// real profile-texture fetching lands (needs online mode).
-    pub player_skin: Option<Vec<u8>>,
-    /// Slime entity texture (64×32 RGBA) for the slime mob model.
-    pub slime_tex: Option<Vec<u8>>,
-    /// Zombie entity texture (64×64 RGBA) — reuses the player model geometry.
-    pub zombie_tex: Option<Vec<u8>>,
-    /// Cow entity texture (64×64 RGBA) for the quadruped mob model.
-    pub cow_tex: Option<Vec<u8>>,
-    /// Pig entity texture (64×64 RGBA) — quadruped w/ short legs + a snout.
-    pub pig_tex: Option<Vec<u8>>,
-    /// Sheep body texture (64×32 RGBA) — the sheared quadruped body.
-    pub sheep_tex: Option<Vec<u8>>,
-    /// Sheep wool texture (64×32 RGBA) — the inflated fleece overlay layer.
-    pub sheep_wool_tex: Option<Vec<u8>>,
+    /// Every mob skin the entity pass's model registry wants, keyed by the
+    /// registry's texture names (`rewo_gpu::mobs::MobDef::textures`).
+    /// Missing jar entries are simply absent — those mobs render as
+    /// capsules. "player" is the default wide Steve skin (offline servers
+    /// carry no skin data, so every player wears it until online-mode
+    /// profile fetching lands).
+    pub mob_textures: Vec<MobTexture>,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
     pub stats: BakeStats,
 }
+
+/// One decoded mob skin: RGBA8 + dimensions, keyed for the model registry.
+pub struct MobTexture {
+    pub key: &'static str,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Every mob texture the entity model registry can use: (key, jar path,
+/// width, height). Keep the keys in sync with `rewo_gpu::mobs::MOBS` —
+/// a key absent here (or missing from the jar) degrades that mob to the
+/// capsule fallback, never an error.
+const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
+    ("player", "entity/player/wide/steve.png", 64, 64),
+    ("zombie", "entity/zombie/zombie.png", 64, 64),
+    ("husk", "entity/zombie/husk.png", 64, 64),
+    ("drowned", "entity/zombie/drowned.png", 64, 64),
+    ("drowned_outer", "entity/zombie/drowned_outer_layer.png", 64, 64),
+    ("skeleton", "entity/skeleton/skeleton.png", 64, 32),
+    ("stray", "entity/skeleton/stray.png", 64, 32),
+    ("stray_overlay", "entity/skeleton/stray_overlay.png", 64, 32),
+    ("wither_skeleton", "entity/skeleton/wither_skeleton.png", 64, 32),
+    ("creeper", "entity/creeper/creeper.png", 64, 32),
+    ("spider", "entity/spider/spider.png", 64, 32),
+    ("cave_spider", "entity/spider/cave_spider.png", 64, 32),
+    ("enderman", "entity/enderman/enderman.png", 64, 32),
+    ("slime", "entity/slime/slime.png", 64, 32),
+    ("cow", "entity/cow/cow_temperate.png", 64, 64),
+    ("pig", "entity/pig/pig_temperate.png", 64, 64),
+    ("sheep", "entity/sheep/sheep.png", 64, 32),
+    ("sheep_wool", "entity/sheep/sheep_wool.png", 64, 32),
+    ("chicken", "entity/chicken/chicken_temperate.png", 64, 32),
+    ("wolf", "entity/wolf/wolf.png", 64, 32),
+    ("squid", "entity/squid/squid.png", 64, 32),
+    ("glow_squid", "entity/squid/glow_squid.png", 64, 32),
+    ("rabbit", "entity/rabbit/rabbit_brown.png", 64, 64),
+    ("villager", "entity/villager/villager.png", 64, 64),
+];
 
 /// A decoded GUI sprite: RGBA8 + pixel dimensions.
 pub struct HudSprite {
@@ -201,16 +231,13 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     if font.is_none() {
         log::warn!("rewo-data: font/ascii.png missing — nametags disabled");
     }
-    let player_skin = bake_player_skin(&mut jar);
-    if player_skin.is_none() {
-        log::warn!("rewo-data: steve.png missing — players render as capsules");
+    let mut mob_textures = Vec::with_capacity(MOB_TEXTURE_SPECS.len());
+    for &(key, path, w, h) in MOB_TEXTURE_SPECS {
+        match bake_entity_tex(&mut jar, path, w, h) {
+            Some(rgba) => mob_textures.push(MobTexture { key, w, h, rgba }),
+            None => log::warn!("rewo-data: {path} missing — {key} renders as a capsule"),
+        }
     }
-    let slime_tex = bake_entity_tex(&mut jar, "entity/slime/slime.png", 64, 32);
-    let zombie_tex = bake_entity_tex(&mut jar, "entity/zombie/zombie.png", 64, 64);
-    let cow_tex = bake_entity_tex(&mut jar, "entity/cow/cow_temperate.png", 64, 64);
-    let pig_tex = bake_entity_tex(&mut jar, "entity/pig/pig_temperate.png", 64, 64);
-    let sheep_tex = bake_entity_tex(&mut jar, "entity/sheep/sheep.png", 64, 32);
-    let sheep_wool_tex = bake_entity_tex(&mut jar, "entity/sheep/sheep_wool.png", 64, 32);
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
@@ -314,13 +341,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         grass_tint,
         foliage_tint,
         font,
-        player_skin,
-        slime_tex,
-        zombie_tex,
-        cow_tex,
-        pig_tex,
-        sheep_tex,
-        sheep_wool_tex,
+        mob_textures,
         hud,
         stats,
     })
@@ -401,36 +422,6 @@ fn decode_png_any(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
         png::ColorType::Indexed => return None,
     }
     Some((rgba, info.width, info.height))
-}
-
-/// The bundled wide-model default skin, as flat 64×64 RGBA.
-fn bake_player_skin(jar: Jar) -> Option<Vec<u8>> {
-    let mut bytes = Vec::new();
-    jar.by_name("assets/minecraft/textures/entity/player/wide/steve.png")
-        .ok()?
-        .read_to_end(&mut bytes)
-        .ok()?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()?];
-    let info = reader.next_frame(&mut buf).ok()?;
-    if info.width != 64 || info.height != 64 {
-        return None;
-    }
-    let n = 64 * 64;
-    let mut rgba = vec![0u8; n * 4];
-    match info.color_type {
-        png::ColorType::Rgba => rgba.copy_from_slice(&buf[..n * 4]),
-        png::ColorType::Rgb => {
-            for i in 0..n {
-                rgba[i * 4..i * 4 + 3].copy_from_slice(&buf[i * 3..i * 3 + 3]);
-                rgba[i * 4 + 3] = 255;
-            }
-        }
-        _ => return None,
-    }
-    Some(rgba)
 }
 
 /// Extract + measure the legacy bitmap font from the jar.
