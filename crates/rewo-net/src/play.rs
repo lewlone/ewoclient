@@ -514,6 +514,9 @@ impl PlaySession {
                 if let Some(s) = meta.gesture_state {
                     self.world.entities.set_gesture_state(eid, s);
                 }
+                if let Some(sz) = meta.size {
+                    self.world.entities.set_size(eid, sz);
+                }
             }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);

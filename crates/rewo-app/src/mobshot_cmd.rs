@@ -133,6 +133,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         gesture: None,
         shell: false,
         skin_uv: None,
+        scale_mul: 1.0,
     }
 }
 

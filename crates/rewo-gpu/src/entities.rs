@@ -100,6 +100,9 @@ pub struct EntityDraw<'a> {
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
     pub skin_uv: Option<[f32; 2]>,
+    /// Uniform model-scale multiplier on top of the baked scale — vanilla's
+    /// per-entity render scale (slime/magma-cube `size`). 1.0 = as baked.
+    pub scale_mul: f32,
 }
 
 #[repr(C)]
@@ -685,7 +688,9 @@ impl EntityPass {
             shell: d.shell,
         };
         let xf = part_transforms(model, &ctx);
-        let s = model.scale;
+        // Per-entity render scale (slime/magma size) on top of the baked px→
+        // block scale — vanilla scales the whole model uniformly by `size`.
+        let s = model.scale * if d.scale_mul > 0.0 { d.scale_mul } else { 1.0 };
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;

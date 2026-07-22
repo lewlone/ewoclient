@@ -207,7 +207,8 @@ the code's author. Nothing below is settled truth.
   attack/sonic-boom, creaking attack, allay dance) need the
   entity_event/jukebox packets, dragon flight is bespoke procedural code
   (not a rig) and stays posed, sheep wool dye-tint deferred (white),
-  slime/magma face + size need the translucent pass + entity metadata,
+  slime/magma **size now decoded** (metadata index 16 → linear model
+  scale, §15) — their face detail still needs the translucent pass;
   texture variants are fixed picks (tabby cat, brown horse, creamy
   llama, lucy axolotl, temperate chicken/frog…), ~~no real per-player
   skins (M7)~~ **real per-player skins shipped (M7c, §15)** — slim + wide,
@@ -2218,3 +2219,30 @@ gate green.**
   `upload_player_skin` the mobshot verification proves, but a two-real-
   players in-world capture (vs. the force-skin PNG) is still the user's to
   eyeball; legacy 64×32 skins render with transparent lower-body faces.
+
+**2026-07-22 — metadata-driven slime / magma-cube size.**
+
+- Slimes and magma cubes now render at their **actual size**, not a fixed
+  medium — the "fragile entity-specific metadata index" the decoder
+  deferred is now pinned exactly. `AbstractCubeMob.ID_SIZE` sits at
+  **metadata index 16** (Entity defines fields 0..7, LivingEntity 8..14,
+  Mob 15, AbstractCubeMob 16 — and the already-working `DATA_POSE=6`
+  cross-checks the count), INT serializer. `metadata.rs` captures it,
+  `EntityTable` stores per-entity size, `play.rs` applies it.
+- Rendering: vanilla `AbstractCubeMobRenderer` scales the whole model
+  uniformly by `size`. `EntityDraw` gains a `scale_mul` applied to the
+  baked px→block scale in `emit_model`; the slime model stays baked at its
+  size-2 look, so `scale_mul = size/2` (size 2 → 1.0, no default-case
+  regression) and the bbox is `0.51 × size`. Non-cube mobs pass 1.0.
+- Verified live on the flat-world test server (op'd summons): a `{Size:6}`
+  slime renders ~3 blocks tall beside horizon-distant naturals; Size:1 vs
+  Size:2 vs Size:4 scenes show the exact vanilla 1:2:4 ratio (a broken
+  decode would render every slime identical). Plus a metadata unit test
+  (index 16 → size). Gates: 26 crate tests, `mobshot --check` 243/243,
+  demo byte-identical (`ee6e26f4…`), 0 VUIDs.
+- The metadata delta stream can still bail before index 16 if a complex
+  serializer (effect particles, index 10) precedes it in the same packet —
+  plain cube mobs never send that, so it's reached in practice; a
+  PARTICLES skip would harden it. Baby-scale + per-family variant enums
+  (cat/horse/sheep-colour…) are the same machinery at other indices —
+  still fixed picks, a documented follow-up.

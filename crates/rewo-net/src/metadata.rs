@@ -28,6 +28,11 @@ pub struct EntityMeta {
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
     pub gesture_state: Option<u8>,
+    /// Slime / magma-cube size (index 16, INT — `AbstractCubeMob.ID_SIZE`;
+    /// the model + bbox scale linearly by it). The index is exact: Entity
+    /// defines 0..7, LivingEntity 8..14, Mob 15, AbstractCubeMob 16 (and
+    /// DATA_POSE=6 cross-checks the count). Only meaningful on cube mobs.
+    pub size: Option<i32>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -56,6 +61,7 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
                 }
             }
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
+            (16, 1) => meta.size = r.varint().ok(), // AbstractCubeMob.ID_SIZE (INT)
             // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
             // at their shared first-own-field index.
             (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),
@@ -153,5 +159,17 @@ mod tests {
         let mut r = PacketReader::new(&[0xFF]);
         let m = parse(&mut r);
         assert!(m.custom_name.is_none() && m.flags.is_none());
+    }
+
+    #[test]
+    fn reads_cube_mob_size_at_index_16() {
+        // A slime size update: index 16, INT serializer (type 1), value 4.
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(&[0x00, 0x00, 0x00]); // idx0 BYTE flags=0
+        b.extend_from_slice(&[0x10, 0x01, 0x04]); // idx16 INT size=4
+        b.push(0xFF);
+        let mut r = PacketReader::new(&b);
+        let m = parse(&mut r);
+        assert_eq!(m.size, Some(4));
     }
 }

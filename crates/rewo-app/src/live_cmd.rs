@@ -339,11 +339,16 @@ fn collect_entities<'a>(
         } else {
             rewo_gpu::mobs::kind_for_entity_name(name)
         };
-        let (w, h) = if matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube) {
-            (1.0, 1.0) // fixed medium slime/magma (real size needs metadata)
-        } else {
-            etypes.dimensions(e.type_id)
+        // Slime / magma-cube size (metadata index 16, vanilla default 1;
+        // the model + bbox scale linearly by it). Our slime model is baked
+        // at the size-2 look, so scale_mul = size/2 (size 2 → 1.0).
+        let cube_size = matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube)
+            .then(|| session.world.entities.size(id).unwrap_or(2).clamp(1, 32));
+        let (w, h) = match cube_size {
+            Some(sz) => (0.51 * sz as f32, 0.51 * sz as f32),
+            None => etypes.dimensions(e.type_id),
         };
+        let scale_mul = cube_size.map_or(1.0, |sz| sz as f32 / 2.0);
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         // Gesture: wire pose/state → rig, timed from the observed change.
         let gesture = force_gesture.or_else(|| {
@@ -392,6 +397,7 @@ fn collect_entities<'a>(
             gesture,
             shell,
             skin_uv: player_skin.map(|ps| ps.uv),
+            scale_mul,
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids

@@ -134,6 +134,8 @@ pub struct EntityTable {
     /// Mob-specific gesture states (sniffer/armadillo enum ordinals at
     /// metadata index 17). Cleared on entity removal.
     gesture_states: HashMap<i32, u8>,
+    /// Slime / magma-cube size (metadata index 16). Cleared on removal.
+    sizes: HashMap<i32, i32>,
 }
 
 impl EntityTable {
@@ -146,6 +148,7 @@ impl EntityTable {
         self.custom_names.remove(&id);
         self.poses.remove(&id);
         self.gesture_states.remove(&id);
+        self.sizes.remove(&id);
     }
 
     /// Set / clear an entity's metadata custom name.
@@ -180,6 +183,16 @@ impl EntityTable {
 
     pub fn gesture_state(&self, id: i32) -> u8 {
         self.gesture_states.get(&id).copied().unwrap_or(0)
+    }
+
+    /// Slime / magma-cube size (index 16). Vanilla default is 1; callers
+    /// choose their own fallback for entities that never sent it.
+    pub fn set_size(&mut self, id: i32, size: i32) {
+        self.sizes.insert(id, size);
+    }
+
+    pub fn size(&self, id: i32) -> Option<i32> {
+        self.sizes.get(&id).copied()
     }
 
     pub fn len(&self) -> usize {
