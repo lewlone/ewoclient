@@ -33,8 +33,40 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M6 all shipped, verified, pushed
+### Where it is: M0–M7 shipped + M9 (CEM/Fresh Animations), all pushed
 
+**Latest (2026-07-22, one long session): M7 online-mode, real skins,
+metadata mob detail, and the whole M9 CEM stack — see §15 for the blow-by-
+blow.** Headlines:
+- **M7 online-mode** — login encryption (RSA→sessionserver join→AES-128-
+  CFB8) + **signed chat** (player cert → chat_session_update → SHA256withRSA
+  chain). Verified with the user's REAL account on an `enforce-secure-
+  profile` server (chat logged with no `[Not Secure]`). `crypt.rs` +
+  `chat_sign.rs`; account handoff via `REWO_ACCESS_TOKEN/UUID/USERNAME`
+  (`ewolauncher --mint-rewo-env` prints them). The offline path is
+  unchanged (offline servers ignore the auth).
+- **M7c real player skins** — decode the Player Info `textures` property →
+  fetch the PNG → upload into a 32-slot atlas pool at runtime → relocate the
+  player quads via a UV offset. Slim + wide models. `mobshot --skin
+  <user|url>` verifies serverless.
+- **Metadata mob detail** — slime/magma **size** + **baby** scaling, both at
+  metadata **index 16** (polymorphic: INT=size, BOOLEAN=baby; serializer
+  type disambiguates). `EntityDraw.scale_mul`.
+- **M9 native CEM (the EMF/ETF-equivalent) — models AND animations run**
+  from a real OptiFine resource pack, no mod. `rewo-data/src/cem.rs` (pack
+  zip loader), `rewo-gpu/src/cem.rs` (JEM→Model, named bones), `cem_anim.rs`
+  (the OptiFine expression interpreter). Verified on the user's **Fresh
+  Animations** pack: all body plans render + **animate** (zombie strides,
+  pig/cow walk). `mobshot --pack <zip> [--walk sw,amt --time t]` +
+  `rewo live --pack`. **Two load-bearing CEM facts**: (1) a top-level
+  `.jem` `part.translate` is the *rotation pivot* (`pivot = to_model(
+  −translate)`), NOT static position — only *submodel* translates
+  accumulate; (2) the model is baked through a 180° Z-rotation
+  (`invertAxis:"xy"`), so the animation's X/Y rotations + translations are
+  **negated**, Z passes through. CEM polish left: foot-submodel leg pivots
+  ~1px off, per-face `uvNorth`, scale channels.
+
+Original M0–M6 (still the foundation):
 - **M0** skeleton: ash 1.3 device + swapchain + frame-time overlay + GPU
   timestamps.
 - **M1** protocol: full Handshake→Login(offline)→Config→Play, chunk/light/
@@ -74,12 +106,20 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   (no server); `rewo mobshot --check` is **the mob-texture gate**: facelabel
   textures (`REWO_MOB_DEBUG_TEX`) rendered from front/left/top per mob, each
   view's dominant color asserted against a perspective ray-cast of the same
-  geometry's face labels (occlusion-exact). Run it after ANY mob/UV change.
-- **The test server**: a local offline flat-world vanilla 26.2 server the
-  assistant sets up + runs at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
-  (online-mode=false, flat, port 25599). Wipe `world/` for a clean run; the
-  same username respawns at its last logout position (repeat runs drift —
-  not a bug).
+  geometry's face labels (occlusion-exact). Run it after ANY mob/UV change
+  (must stay 243/243). Also: `--only <mobs>` (closeups), `--walk sw,amt` +
+  `--time t` (pose the animation), `--skin <user|url>` (real player skin,
+  M7c), `--pack <zip>` (render OptiFine CEM models + animations, M9),
+  `--gesture name[,age]` / `--shell` (gesture rigs).
+- **The test servers**: local flat-world vanilla 26.2 servers the assistant
+  sets up + runs. **Offline** at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
+  (online-mode=false, port 25599, bot is op'd as `RewoOp` for
+  `REWO_SUMMON`); **online** at `…/testserver-online/` (online-mode=true,
+  `enforce-secure-profile=true`, port 25600) for M7 verification (join with
+  `ewolauncher --mint-rewo-env` env). Start with the temurin-25 JRE at
+  `%APPDATA%/EwoClient/jdks/temurin-25/`. Wipe `world/` for a clean run.
+  **Gotcha**: `Stop-Process` by `-like '*testserver*'` won't match — the
+  java command line is just `java -jar server.jar`, no cwd; kill by PID.
 - Ground truth for wire formats / physics constants is the **decompiled
   26.2 jar** at `%APPDATA%/EwoClient/rewo/26.2/decompiled/` (Mojmap) + the
   datagen reports under `…/datagen/generated/reports/` — NOT community docs
@@ -278,16 +318,16 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-Strongest candidates, roughly by value: (a) ~~M7 online-mode + chat
-signing~~ — **shipped 2026-07-22** (§15), Rewo now joins the user's
-Frogsy network; (b) **async
-transfer queue + staging ring** — the remaining §4 deviation; (c) the
-visual follow-ons (greedy, fluids, biome tint, packed vertices, texture
-animation); (d) **M9 native CEM/ETF** (resource-pack entity models +
-textures — planned 2026-07-22 at the user's ask, see §12). Shipped
-2026-07-21: meshing-off-thread, the Native `live` arm (UI eyeball still
-the user's), and entity rendering (capsules + nametags). Confirm
-direction with the user before diving in.
+Shipped 2026-07-22 (all §15): **M7 online-mode + signed chat** (Rewo joins
+Frogsy), **M7c real player skins**, **metadata mob size/baby**, and the
+**M9 CEM stack** (Fresh Animations models + animations run natively).
+Remaining candidates, roughly by value: (a) **CEM polish** — foot-submodel
+leg pivots ~1px off, per-face `uvNorth` (creeper-eye detail), scale
+channels, ETF random/emissive textures (M9b); (b) **entity collision** (you
+walk through mobs) — a real gameplay gap; (c) **async transfer queue +
+staging ring** — the last perf micro-deviation (§4); (d) visual follow-ons
+(greedy meshing, biome tint, packed vertices). Confirm direction with the
+user before diving in.
 
 ---
 

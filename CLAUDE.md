@@ -1554,9 +1554,24 @@ Verified live: **RSS stable ~108 MB** (was climbing ~2.6 GB/hr), renders
 identically. `LEAK_HUNT_INSTRUMENT` diagnostics intentionally left in pending a
 final strip.*
 
+*Update (2026-07-22 session, all Rewo — one long session, 13 commits): **M7
+online-mode** (login encryption + signed chat, verified on the user's real
+account against an enforce-secure-profile server), **M7c real player skins**
+(slim + wide, live-fetched into a runtime atlas pool), **metadata mob detail**
+(slime/magma size + baby, both at SynchedEntityData index 16, polymorphic by
+serializer type), and the whole **M9 native CEM stack** (the EMF/ETF-
+equivalent): Rewo now loads an OptiFine resource pack and renders both the
+custom mob **models** and their **animations** — verified end-to-end on the
+user's real Fresh Animations pack, all body plans walking, no mod loader. The
+two load-bearing CEM conventions (top-level translate = pivot; invertAxis:"xy"
+= a 180° Z-rotation → negate the animation's X/Y) are documented in the Rewo
+section below and REWO_PLAN §15. Everything is in the `rewo-*` crates and the
+launcher `Native` arm; none of it touches the `ewo-jni`/mixin/launcher-GUI
+machinery.*
+
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M7 shipped)
+## Rewo — from-scratch native Minecraft client (M0–M7 + M9 CEM shipped)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1814,6 +1829,36 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `mobshot --skin <username|url>` — lewlone's slim skin + Notch's wide
   skin, both distinct from default, overlays + arm width correct; facelabel
   243/243, demo byte-identical, bench flat.
+- **Metadata mob detail shipped 2026-07-22**: slime/magma **size** + **baby**
+  scaling. Both live at SynchedEntityData **index 16** (polymorphic — INT
+  there is `AbstractCubeMob.ID_SIZE`, BOOLEAN there is `AgeableMob`/`Zombie`
+  `DATA_BABY_ID`; the serializer type disambiguates in one decode). Index
+  pinned by counting `defineId` up the hierarchy (Entity 0–7, LivingEntity
+  8–14, Mob 15, subclass 16; cross-checked by the working `DATA_POSE=6`).
+  `EntityDraw.scale_mul` scales the model (slime = size/2; baby ×0.5, a
+  documented uniform approximation — vanilla keeps the head bigger).
+- **M9 native CEM shipped 2026-07-22** (the EMF/ETF-equivalent — the answer
+  to "can we do it without mods": yes): Rewo loads an OptiFine CEM resource
+  pack and renders both the **custom mob models** and their **animations**,
+  no mod loader. Stack: `rewo-data/src/cem.rs` (pack-zip loader → raw
+  `.jem`/`.jpm` strings), `rewo-gpu/src/cem.rs` (JEM→`Model` with named
+  bones + the `_animations.jpm` → program parse), `rewo-gpu/src/cem_anim.rs`
+  (the OptiFine expression-language interpreter — lexer+Pratt parser+eval,
+  parses all 284 real FA expressions). `EntityPass::new_with_cem` overrides
+  a kind's built-in model; `part_transforms` applies the per-frame bone
+  deltas. `mobshot --pack <zip> [--walk sw,amt --time t]` + `rewo live
+  --pack` (also `REWO_PACK`). **Two load-bearing CEM conventions** (learned
+  the hard way, don't re-derive): (1) a top-level `.jem` `part.translate` is
+  the *rotation pivot*, NOT static position → boxes sit at raw coords, only
+  *submodel* translates accumulate, and `pivot = to_model(−translate)`
+  (verified exact vs vanilla); (2) the model bakes through a 180° Z-rotation
+  (that's what `invertAxis:"xy"` is), so the animation's X/Y rotation angles
+  + translations are **negated**, Z passes through — this is what turns
+  flung-apart limbs into a cohesive walk. Verified on the user's real Fresh
+  Animations pack: all body plans render + animate (zombie strides, pig/cow
+  walk), no-pack facelabel gate stays 243/243 (additive). Polish left:
+  foot-submodel leg pivots ~1px off (flat humanoid rigs exact), per-face
+  `uvNorth`, scale channels, ETF textures (M9b). Detail in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
