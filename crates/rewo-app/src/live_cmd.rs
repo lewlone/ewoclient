@@ -344,11 +344,19 @@ fn collect_entities<'a>(
         // at the size-2 look, so scale_mul = size/2 (size 2 → 1.0).
         let cube_size = matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube)
             .then(|| session.world.entities.size(id).unwrap_or(2).clamp(1, 32));
-        let (w, h) = match cube_size {
+        let (mut w, mut h) = match cube_size {
             Some(sz) => (0.51 * sz as f32, 0.51 * sz as f32),
             None => etypes.dimensions(e.type_id),
         };
-        let scale_mul = cube_size.map_or(1.0, |sz| sz as f32 / 2.0);
+        let mut scale_mul = cube_size.map_or(1.0, |sz| sz as f32 / 2.0);
+        // Baby mobs (ageable / zombie families) render at ~half scale.
+        // Uniform approximation — vanilla keeps the head proportionally
+        // larger (a per-part transform), deferred.
+        if !is_player && session.world.entities.is_baby(id) {
+            scale_mul *= 0.5;
+            w *= 0.5;
+            h *= 0.5;
+        }
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         // Gesture: wire pose/state → rig, timed from the observed change.
         let gesture = force_gesture.or_else(|| {

@@ -517,6 +517,9 @@ impl PlaySession {
                 if let Some(sz) = meta.size {
                     self.world.entities.set_size(eid, sz);
                 }
+                if let Some(baby) = meta.baby {
+                    self.world.entities.set_baby(eid, baby);
+                }
             }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);

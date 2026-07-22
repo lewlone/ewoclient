@@ -2243,6 +2243,29 @@ gate green.**
 - The metadata delta stream can still bail before index 16 if a complex
   serializer (effect particles, index 10) precedes it in the same packet —
   plain cube mobs never send that, so it's reached in practice; a
-  PARTICLES skip would harden it. Baby-scale + per-family variant enums
+  PARTICLES skip would harden it. Per-family variant enums
   (cat/horse/sheep-colour…) are the same machinery at other indices —
   still fixed picks, a documented follow-up.
+
+**2026-07-22 — baby mobs.**
+
+- Baby zombies / animals render at ~half scale instead of adult-sized.
+  `AgeableMob.DATA_BABY_ID` and `Zombie.DATA_BABY_ID` both sit at
+  **metadata index 16** too — but as BOOLEAN, not INT. Index 16 is
+  polymorphic: INT there = a cube-mob size, BOOLEAN there = baby, and the
+  **serializer type disambiguates** in one decode (`(16,1)`→size,
+  `(16,8)`→baby). No need to enumerate which entity kinds are ageable —
+  any mob that sends BOOLEAN-at-16 is a baby.
+- `metadata.rs` decodes it, `EntityTable` tracks a baby set, `collect_
+  entities` multiplies `scale_mul` (and the bbox) by 0.5 for non-player
+  babies — reusing the exact `scale_mul` machinery the slime-size work
+  added. **Uniform** scale: vanilla keeps the head proportionally larger
+  (a per-part transform), a documented approximation (like squid tentacles
+  / rabbit-hop).
+- Verified live: an adult zombie and a `{IsBaby:1b}` zombie side by side —
+  the baby is unmistakably half height. The baby flag arrives in a
+  follow-up `set_entity_data` packet, so a too-short settle can miss it;
+  the debug run confirmed `baby=Some(true)` decoded (raw `…10 08 01 ff`,
+  skipping the health FLOAT before it). Metadata unit tests for both the
+  INT-size and BOOLEAN-baby readings at index 16. Gates: 27 crate tests,
+  demo byte-identical, `mobshot --check` unaffected (mobshot passes 1.0).

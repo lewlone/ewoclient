@@ -136,6 +136,8 @@ pub struct EntityTable {
     gesture_states: HashMap<i32, u8>,
     /// Slime / magma-cube size (metadata index 16). Cleared on removal.
     sizes: HashMap<i32, i32>,
+    /// Baby flag (index 16 BOOLEAN, ageable / zombie mobs). Cleared on removal.
+    babies: std::collections::HashSet<i32>,
 }
 
 impl EntityTable {
@@ -149,6 +151,7 @@ impl EntityTable {
         self.poses.remove(&id);
         self.gesture_states.remove(&id);
         self.sizes.remove(&id);
+        self.babies.remove(&id);
     }
 
     /// Set / clear an entity's metadata custom name.
@@ -193,6 +196,19 @@ impl EntityTable {
 
     pub fn size(&self, id: i32) -> Option<i32> {
         self.sizes.get(&id).copied()
+    }
+
+    /// Baby flag (index 16 BOOLEAN). `set` toggles membership.
+    pub fn set_baby(&mut self, id: i32, baby: bool) {
+        if baby {
+            self.babies.insert(id);
+        } else {
+            self.babies.remove(&id);
+        }
+    }
+
+    pub fn is_baby(&self, id: i32) -> bool {
+        self.babies.contains(&id)
     }
 
     pub fn len(&self) -> usize {
