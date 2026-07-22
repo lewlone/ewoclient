@@ -101,24 +101,52 @@ struct Vertex {
     color: [f32; 4],
 }
 
-/// Combined entity atlas: the font occupies (0,0)..(128,128); every mob
-/// texture gets a 64×64 slot (64×32 textures use the slot's top half).
-/// One texture, one pipeline family.
-const ATLAS_W: u32 = 512;
-const ATLAS_H: u32 = 512;
-/// Fixed 64×64 slot origins around the font block: 12 slots right of the
-/// font (x 128.., two rows), then 48 slots in the lower half — far more
-/// than the registry needs, so packing stays a table lookup.
-fn slot_origin(i: usize) -> Option<(u32, u32)> {
-    let i = i as u32;
-    if i < 12 {
-        Some((128 + (i % 6) * 64, (i / 6) * 64))
-    } else if i < 60 {
-        let j = i - 12;
-        Some(((j % 8) * 64, 128 + (j / 8) * 64))
-    } else {
-        None
+/// Combined entity atlas: the font occupies (0,0)..(128,128); mob textures
+/// (16² tadpole up to 192² sniffer-class skins) shelf-pack around it. One
+/// texture, one pipeline family.
+const ATLAS_W: u32 = 1024;
+const ATLAS_H: u32 = 1024;
+
+/// Shelf-pack `sizes` into the atlas, avoiding the font block. Deterministic:
+/// callers pass entries sorted however they like; shelves grow downward,
+/// each shelf as tall as its tallest member. Returns per-entry origins
+/// (`None` if the atlas overflowed — practically unreachable at 1024²).
+fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
+    let (mut x, mut y, mut shelf_h) = (128u32, 0u32, 0u32);
+    let mut out = Vec::with_capacity(sizes.len());
+    for &(w, h) in sizes {
+        if w > ATLAS_W || h > ATLAS_H {
+            out.push(None);
+            continue;
+        }
+        loop {
+            // Inside the font's rows, usable x starts at 128.
+            let x_min = if y < 128 { 128 } else { 0 };
+            if x < x_min {
+                x = x_min;
+            }
+            if x + w <= ATLAS_W && y + h <= ATLAS_H {
+                break;
+            }
+            if x + w > ATLAS_W {
+                // New shelf.
+                y += shelf_h.max(1);
+                x = 0;
+                shelf_h = 0;
+                continue;
+            }
+            // Out of vertical space.
+            break;
+        }
+        if x + w <= ATLAS_W && y + h <= ATLAS_H {
+            out.push(Some((x, y)));
+            x += w;
+            shelf_h = shelf_h.max(h);
+        } else {
+            out.push(None);
+        }
     }
+    out
 }
 
 /// One baked mob texture, keyed by the registry names in
@@ -213,18 +241,24 @@ impl EntityPass {
         let wi = ((white_texel.1 * ATLAS_W + white_texel.0) * 4) as usize;
         atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
 
-        // Pack every provided mob texture into its slot.
-        let mut slots: std::collections::HashMap<&'static str, (u32, u32)> =
+        // Shelf-pack every provided mob texture (tallest first for tight
+        // shelves; the key map keeps lookups order-independent).
+        let mut order: Vec<usize> = (0..tex.entries.len()).collect();
+        order.sort_by_key(|&i| {
+            let e = &tex.entries[i];
+            (std::cmp::Reverse(e.h), std::cmp::Reverse(e.w), e.key)
+        });
+        let sizes: Vec<(u32, u32)> = order.iter().map(|&i| (tex.entries[i].w, tex.entries[i].h)).collect();
+        let origins = pack_shelves(&sizes);
+        let mut slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> =
             std::collections::HashMap::new();
-        for (i, e) in tex.entries.iter().enumerate() {
-            let Some((x, y)) = slot_origin(i) else {
-                log::warn!("entities: atlas slots exhausted at {}", e.key);
-                break;
-            };
-            if e.w <= 64 && e.h <= 64 && blit_tex(&mut atlas, Some(e.rgba), x, y, e.w, e.h) {
-                slots.insert(e.key, (x, y));
-            } else {
-                log::warn!("entities: mob texture {} bad size {}×{}", e.key, e.w, e.h);
+        for (slot, &i) in order.iter().enumerate() {
+            let e = &tex.entries[i];
+            match origins[slot] {
+                Some((x, y)) if blit_tex(&mut atlas, Some(e.rgba), x, y, e.w, e.h) => {
+                    slots.insert(e.key, (x, y, e.w, e.h));
+                }
+                _ => log::warn!("entities: mob texture {} ({}×{}) didn't pack", e.key, e.w, e.h),
             }
         }
 
@@ -235,7 +269,7 @@ impl EntityPass {
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
         for def in mobs::MOBS {
-            let origins: Option<Vec<(u32, u32)>> =
+            let origins: Option<Vec<(u32, u32, u32, u32)>> =
                 def.textures.iter().map(|k| slots.get(k).copied()).collect();
             let Some(origins) = origins else { continue };
             let m = (def.build)();
@@ -248,9 +282,15 @@ impl EntityPass {
                 .quads
                 .iter()
                 .map(|q| {
-                    let (ox, oy) = origins[q.tex];
+                    let (ox, oy, tw, th) = origins[q.tex];
+                    // Clamp into the texture rect — a couple of vanilla fin
+                    // rects stray outside their texture (clamp-sampler
+                    // behavior); unclamped they'd bleed into atlas neighbors.
                     let uv = q.uv.map(|[u, v]| {
-                        [(ox as f32 + u) / ATLAS_W as f32, (oy as f32 + v) / ATLAS_H as f32]
+                        [
+                            (ox as f32 + u.clamp(0.0, tw as f32)) / ATLAS_W as f32,
+                            (oy as f32 + v.clamp(0.0, th as f32)) / ATLAS_H as f32,
+                        ]
                     });
                     GpuQuad {
                         pos: q.pos,
@@ -833,8 +873,9 @@ fn wrap_degrees(deg: f32) -> f32 {
 
 /// Fill a quad's UV bounding rect in the atlas with its face-label color
 /// (facelabel verification mode). Sub-pixel rects round outward; rects are
-/// clamped to the texture's 64×64 slot.
-fn paint_debug_rect(atlas: &mut [u8], origin: (u32, u32), q: &mobs::RawQuad) {
+/// clamped to the texture's slot.
+fn paint_debug_rect(atlas: &mut [u8], slot: (u32, u32, u32, u32), q: &mobs::RawQuad) {
+    let (ox, oy, tw, th) = slot;
     let (min_u, max_u) = q
         .uv
         .iter()
@@ -844,11 +885,11 @@ fn paint_debug_rect(atlas: &mut [u8], origin: (u32, u32), q: &mobs::RawQuad) {
         .iter()
         .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
     let [r, g, b] = q.facing.debug_color();
-    let (x0, x1) = ((min_u.floor().max(0.0)) as u32, (max_u.ceil().min(64.0)) as u32);
-    let (y0, y1) = ((min_v.floor().max(0.0)) as u32, (max_v.ceil().min(64.0)) as u32);
+    let (x0, x1) = ((min_u.floor().max(0.0)) as u32, (max_u.ceil().max(0.0) as u32).min(tw));
+    let (y0, y1) = ((min_v.floor().max(0.0)) as u32, (max_v.ceil().max(0.0) as u32).min(th));
     for y in y0..y1 {
         for x in x0..x1 {
-            let i = (((origin.1 + y) * ATLAS_W + origin.0 + x) * 4) as usize;
+            let i = (((oy + y) * ATLAS_W + ox + x) * 4) as usize;
             atlas[i..i + 4].copy_from_slice(&[r, g, b, 255]);
         }
     }
@@ -1204,13 +1245,35 @@ mod tests {
     }
 
     #[test]
-    fn slot_origins_stay_inside_atlas_and_clear_of_font() {
-        let mut i = 0;
-        while let Some((x, y)) = slot_origin(i) {
-            assert!(x + 64 <= ATLAS_W && y + 64 <= ATLAS_H, "slot {i} out of atlas");
-            assert!(x >= 128 || y >= 128, "slot {i} overlaps the font block");
-            i += 1;
+    fn shelf_packing_avoids_font_and_overlaps() {
+        // A realistic mix: several 64², 64×32, a couple of 128², one 192².
+        let mut sizes: Vec<(u32, u32)> = Vec::new();
+        sizes.push((192, 192));
+        for _ in 0..8 {
+            sizes.push((128, 128));
         }
-        assert!(i >= 26, "need at least 26 slots for the registry textures");
+        for _ in 0..30 {
+            sizes.push((64, 64));
+        }
+        for _ in 0..25 {
+            sizes.push((64, 32));
+        }
+        sizes.push((16, 16));
+        // Sorted tallest-first like the constructor does.
+        sizes.sort_by_key(|&(w, h)| (std::cmp::Reverse(h), std::cmp::Reverse(w)));
+        let placed = pack_shelves(&sizes);
+        let mut rects: Vec<(u32, u32, u32, u32)> = Vec::new();
+        for (i, p) in placed.iter().enumerate() {
+            let (w, h) = sizes[i];
+            let (x, y) = p.expect("everything must pack at 1024²");
+            assert!(x + w <= ATLAS_W && y + h <= ATLAS_H);
+            // Never inside the font block.
+            assert!(x >= 128 || y >= 128, "({x},{y}) overlaps font");
+            for &(rx, ry, rw, rh) in &rects {
+                let overlap = x < rx + rw && rx < x + w && y < ry + rh && ry < y + h;
+                assert!(!overlap, "({x},{y},{w},{h}) overlaps ({rx},{ry},{rw},{rh})");
+            }
+            rects.push((x, y, w, h));
+        }
     }
 }

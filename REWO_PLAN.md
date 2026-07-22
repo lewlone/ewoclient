@@ -153,20 +153,31 @@ the code's author. Nothing below is settled truth.
   transform (`rotY(180−yaw)·scale(−1,−1,1)·translate(0,−1.501,0)` — the old
   path also had the X sign mirrored), with every mob mesh transcribed from
   the 26.2 decompile (the 26.2 cow is its own mesh — horns/muzzle/udder —
-  not the generic quadruped). **21 mob models ship**: player, zombie, husk,
-  drowned(+outer layer), skeleton, stray(+overlay), wither skeleton (1.2×),
-  creeper, spider, cave spider (0.7×), enderman, slime, cow, pig,
-  sheep(+wool), chicken, wolf, squid, glow squid, rabbit, villager; unknown
-  types still fall back to capsules. Verified by the **`rewo mobshot --check`
-  facelabel gate** (63/63 mob-views) + live summon renders. Still open:
-  entity *collision* is ignored (walk through mobs), more mobs whenever
-  wanted (cat/horse/goat/fox/bee/bat/iron golem/wandering trader/… are
-  capsules; the registry makes each a ~30-line model fn + a texture-table
-  row), spider leg-wave/chicken wing-flap/squid tentacle/wolf tail anims are
-  static poses, magma cube borrows the slime look, sheep wool dye-tint is
-  deferred (white only), slime face/size need the translucent pass + entity
-  metadata, no real per-player skins (needs online-mode profile textures —
-  M7), tags are depth-tested (vanilla shows them through walls).
+  not the generic quadruped). **77 mob models ship** (2026-07-22 second
+  pass, "all the mobs"): the full zombie/skeleton families (incl. bogged
+  w/ head mushrooms + parched), creeper, spiders, enderman, slime + proper
+  layered magma cube, farm set (cow/mooshroom/pig/sheep+wool/chicken),
+  wolf, squids, rabbit, villager/wandering trader/witch (64×128 hat
+  stack)/zombie villager, illager quartet (crossed-arm vindicator/evoker/
+  illusioner, armed pillager), vex, phantom, guardian + elder (2.35×),
+  shulker, silverfish/endermite segment chains, blaze (12 rods),
+  ghast (4.5×, tentacle lengths from vanilla's seeded `Random(1660)` —
+  a Java-LCG port), piglin family, hoglin/zoglin, strider, bat, cat/ocelot,
+  fox, goat, bee, frog + tadpole, armadillo, axolotl, dolphin, turtle,
+  cod/salmon/pufferfish/tropical fish, panda, polar bear (1.2×), camel,
+  llama/trader llama, parrot, horse/donkey/mule/skeleton+zombie horse,
+  snow/iron golem, allay. Unknown types still fall back to capsules
+  (remaining: warden, sniffer, breeze, creaking, ravager, wither, dragon,
+  happy ghast, copper golem, nautilus — each is a model fn + texture row
+  away). Entity atlas is 1024² with a shelf packer (16²..192² textures).
+  Verified by the **`rewo mobshot --check` facelabel gate** (231/231
+  mob-views) + closeup sheets (`--only`). Still open: entity *collision*
+  is ignored (walk through mobs), procedural anims beyond walk/head-look
+  are static poses (spider leg-wave, wing flaps, tentacles, tails),
+  sheep wool dye-tint deferred (white), slime/magma face + size need the
+  translucent pass + entity metadata, texture variants are fixed picks
+  (tabby cat, brown horse, creamy llama, lucy axolotl, temperate
+  chicken/frog…), no real per-player skins (M7), tags are depth-tested.
 - **Collision is full-cube only** — slabs/stairs/fences have no collision
   (you walk through them). "Expected" for the M3 subset, but a real gap.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
@@ -1844,3 +1855,31 @@ gate green.**
   `quadruped_model_quads`, `build_quad_parts`, `sheep_model_quads`,
   `slime_model_quads`, the per-mob `EntityTextures` fields, and rewo-data's
   duplicate `bake_player_skin`.
+
+**2026-07-22 — "all the mobs": the roster grows 21 → 77, gate 231/231.**
+
+- Same-day second pass on the new builder. ~40 new model fns transcribed
+  from the decompile (each cites its class), plus texture-variant reuses
+  (mooshroom=cow, wandering trader=villager, parched=skeleton,
+  zoglin=hoglin, ocelot=cat, trader llama=llama, elder=guardian×2.35,
+  horse family shares `AbstractEquineModel` ± donkey ears).
+- Infra: entity atlas 512² → **1024² with a shelf packer** (tallest-first,
+  font block reserved; textures 16² tadpole → 192²-class); per-texture
+  **UV clamping** (a few vanilla fin rects stray negative/out-of-texture —
+  clamp-sampler behavior, else they'd bleed into atlas neighbors);
+  zero-area faces of plate boxes (fins/wings/0-thick bristles) skipped at
+  build. Vanilla mechanics captured: `MeshTransformer.scaling` is
+  ground-anchored (`y'=k·y+24.016(1−k)`) ≡ our `Model.scale` (ghast 4.5,
+  polar bear 1.2, elder 2.35 need no special casing);
+  `PartDefinition.addOrReplaceChild` **preserves replaced children** (the
+  witch keeps the villager nose/hat); ghast tentacle lengths reproduce
+  vanilla's seeded `Random(1660)` via an exact Java-LCG port.
+- `kind_for_entity_name` is now generated from the kind names (1:1 with
+  wire ids; unit test asserts every registry def round-trips).
+  `rewo mobshot --only <names>` renders closeup sheets for detail review.
+- Gates: **231/231 facelabel views** (the perspective ray-cast reference
+  scaled to 77 mobs unchanged), 41 crate tests, demo PNG byte-identical,
+  bench flat, 0 VUIDs. Closeups eyeballed: guardian spikes/eye/tail,
+  blaze rings, hoglin tusks+bristles, piglin snout/ears, horse, iron
+  golem, witch hat stack, camel, strider, fox/cat/axolotl/turtle/frog/
+  bee/dolphin/parrot/allay all read correctly.

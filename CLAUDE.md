@@ -1649,14 +1649,19 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   vanilla `ModelPart.Cube`/`Polygon` + vanilla's exact entity transform
   (the old path was also X-mirrored), all mob meshes re-transcribed from the
   26.2 decompile (the 26.2 cow is its own mesh, not the generic quadruped),
-  and the set grew to **21 mobs** (player, zombie, husk, drowned, skeleton,
-  stray, wither skeleton, creeper, spider, cave spider, enderman, slime,
-  cow, pig, sheep, chicken, wolf, squid, glow squid, rabbit, villager).
+  and the set grew to **77 mobs** (same-day "all the mobs" pass: full
+  zombie/skeleton/illager/piglin families, witch, guardian+elder, shulker,
+  blaze, ghast 4.5×, silverfish/endermite, phantom, vex, hoglin/zoglin,
+  strider, magma cube, all farm + overworld passives incl. cat/fox/goat/
+  bee/frog/armadillo/axolotl/dolphin/turtle/fish×4/panda/polar bear/camel/
+  llama/parrot/horse family/bat, snow+iron golem, allay; leftovers
+  warden/sniffer/breeze/creaking/ravager/wither/dragon/happy ghast/
+  copper golem/nautilus stay capsules). Atlas 1024² + shelf packer.
   Verified by the new serverless **`rewo mobshot --check` facelabel gate**
   (face-colored debug textures vs a perspective ray-cast of the same
-  geometry — occlusion-exact; 63/63 mob-views green; run it after any
-  mob/UV change) + `rewo mobshot --out` contact sheet + live summon shots;
-  demo PNG stayed byte-identical, bench flat, 0 VUIDs.
+  geometry — occlusion-exact; 231/231 mob-views green; run it after any
+  mob/UV change) + `rewo mobshot --out` contact sheet + `--only` closeups
+  + live summon shots; demo PNG stayed byte-identical, bench flat, 0 VUIDs.
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 

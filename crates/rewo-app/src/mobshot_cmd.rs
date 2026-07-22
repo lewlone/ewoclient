@@ -56,6 +56,10 @@ pub struct MobshotArgs {
     /// With --check: also dump each per-view debug render here.
     #[arg(long)]
     out_dir: Option<PathBuf>,
+    /// Sheet mode: render only these mobs (comma-separated kind names) in a
+    /// closer 3/4 view — the detail-inspection artifact.
+    #[arg(long)]
+    only: Option<String>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
@@ -341,22 +345,42 @@ fn kind_name(k: EntityModelKind) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> Result<(), String> {
-    let (w, h) = (1600u32, 900u32);
+    let (w, h) = (2560u32, 1440u32);
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
-    let kinds = wr.entity_pass().expect("entity pass").available_kinds();
+    let pass = wr.entity_pass().expect("entity pass");
+    let mut kinds = pass.available_kinds();
+    if let Some(only) = &args.only {
+        let wanted: Vec<&str> = only.split(',').map(str::trim).collect();
+        kinds.retain(|k| wanted.contains(&k.name()));
+        if kinds.is_empty() {
+            return Err(format!("--only matched no mobs: {only}"));
+        }
+    }
     println!(
         "[mobshot] {} models: {}",
         kinds.len(),
         kinds.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ")
     );
+    // Short mobs in the front rows, giants (ghast, golem, camel) in the
+    // back — nothing hides behind something taller.
+    let height_of = |k: &rewo_gpu::mobs::EntityModelKind| -> f32 {
+        pass.neutral_quads(*k)
+            .map(|qs| {
+                qs.iter()
+                    .flat_map(|(pos, _, _)| pos.iter().map(|p| p[1]))
+                    .fold(0.0f32, f32::max)
+            })
+            .unwrap_or(2.0)
+    };
+    kinds.sort_by(|a, b| height_of(a).total_cmp(&height_of(b)));
 
     // Grid facing the camera (mobs face +Z at yaw 0; camera sits south).
     // Rows step away from the camera; odd rows stagger half a column so
     // nobody hides directly behind the mob in front.
-    let cols = 7usize;
-    let (sx, sz) = (3.4f32, 6.0f32);
+    let cols = 10usize;
+    let (sx, sz) = (3.8f32, 6.5f32);
     let rows = kinds.len().div_ceil(cols);
     let draws: Vec<EntityDraw<'_>> = kinds
         .iter()
@@ -375,8 +399,16 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         })
         .collect();
 
-    let center = Vec3::new(0.0, 1.0, -((rows as f32 - 1.0) * sz) / 2.0);
-    let eye = center + Vec3::new(0.0, 7.5, (rows as f32) * sz * 0.5 + 10.0);
+    let max_h = kinds.iter().map(|k| height_of(k)).fold(2.0f32, f32::max);
+    let center = Vec3::new(0.0, (max_h * 0.45).max(1.0), -((rows as f32 - 1.0) * sz) / 2.0);
+    let eye = if args.only.is_some() {
+        // Closeup: 3/4 view fitted to the row width + tallest mob.
+        let span = (kinds.len().min(cols) as f32) * sx;
+        let dist = (span * 0.55).max(max_h * 1.9) + 3.0;
+        center + Vec3::new(dist * 0.4, dist * 0.35, dist)
+    } else {
+        center + Vec3::new(0.0, 11.0, (rows as f32) * sz * 0.6 + 12.0)
+    };
     let dir = (center - eye).normalize();
     wr.set_camera(eye.to_array());
     let view = Mat4::look_to_rh(eye, dir, Vec3::Y);

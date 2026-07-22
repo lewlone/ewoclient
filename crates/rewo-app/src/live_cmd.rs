@@ -165,8 +165,8 @@ fn collect_entities<'a>(
         } else {
             rewo_gpu::mobs::kind_for_entity_name(name)
         };
-        let (w, h) = if kind == EntityModelKind::Slime {
-            (1.0, 1.0) // fixed medium slime (real size needs metadata)
+        let (w, h) = if matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube) {
+            (1.0, 1.0) // fixed medium slime/magma (real size needs metadata)
         } else {
             etypes.dimensions(e.type_id)
         };
