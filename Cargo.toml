@@ -91,6 +91,13 @@ ash-window = "0.13"
 gpu-allocator = "0.28"
 tracy-client = "0.18"
 png = "0.18"
+# Rewo M7 — online-mode login encryption (REWO_PLAN §12 M7): AES-128-CFB8
+# stream cipher (hand-rolled CFB8 over the `aes` block core) + RSA-PKCS1v15
+# for the key exchange. Sync like everything else.
+aes = "0.8"
+# `sha2` feature = the SHA-256 DigestInfo prefix for SHA256withRSA chat
+# signing (M7b); also gives PKCS#1/PKCS#8 key parsing.
+rsa = { version = "0.9", features = ["sha2"] }
 
 # Internal
 ewo-core = { path = "crates/ewo-core" }

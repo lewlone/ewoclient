@@ -83,15 +83,20 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let baked = assets::bake(&jar, &paths.blocks_json())?;
     let solid: Vec<bool> = baked.solid.clone();
     let global_bits = data.blocks.global_palette_bits;
+    // Launcher account handoff — online-mode servers need it, offline
+    // servers ignore it. The explicit --username wins for the name.
+    let auth = rewo_net::crypt::OnlineAuth::from_env();
     let username = args
         .username
         .clone()
+        .or_else(|| auth.as_ref().map(|a| a.username.clone()))
+        // Offline launcher handoff sets the name without a token.
         .or_else(|| std::env::var("REWO_USERNAME").ok())
         .unwrap_or_else(|| "RewoLive".into());
 
     let dirt_item = data.items.id("dirt");
     let conn = Connection::connect(&args.host, args.port, &data)?;
-    let session = conn.into_play(&args.host, args.port, &username, solid, global_bits)?;
+    let session = conn.into_play(&args.host, args.port, &username, auth.as_ref(), solid, global_bits)?;
     log::info!("live: session up, opening window…");
     let etypes = data.entity_types;
 

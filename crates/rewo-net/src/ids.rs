@@ -19,6 +19,7 @@ pub struct Ids {
     // handshake / login
     pub sb_handshake_intention: i32,
     pub sb_login_hello: i32,
+    pub sb_login_key: i32,
     pub sb_login_acknowledged: i32,
     pub cb_login_compression: i32,
     pub cb_login_finished: i32,
@@ -78,6 +79,7 @@ pub struct Ids {
     pub sb_play_client_tick_end: Option<i32>,
     pub sb_play_chat: Option<i32>,
     pub sb_play_chat_command: Option<i32>,
+    pub sb_play_chat_session_update: Option<i32>,
     pub sb_play_set_creative_slot: Option<i32>,
     pub sb_play_set_carried_item: Option<i32>,
     pub sb_play_player_action: i32,
@@ -98,6 +100,7 @@ impl Ids {
         Ok(Self {
             sb_handshake_intention: req!(p, State::Handshake, S, "intention"),
             sb_login_hello: req!(p, L, S, "hello"),
+            sb_login_key: req!(p, L, S, "key"),
             sb_login_acknowledged: req!(p, L, S, "login_acknowledged"),
             cb_login_compression: req!(p, L, C, "login_compression"),
             cb_login_finished: req!(p, L, C, "login_finished"),
@@ -157,6 +160,7 @@ impl Ids {
             sb_play_client_tick_end: opt!(p, P, S, "client_tick_end"),
             sb_play_chat: opt!(p, P, S, "chat"),
             sb_play_chat_command: opt!(p, P, S, "chat_command"),
+            sb_play_chat_session_update: opt!(p, P, S, "chat_session_update"),
             sb_play_set_creative_slot: opt!(p, P, S, "set_creative_mode_slot"),
             sb_play_set_carried_item: opt!(p, P, S, "set_carried_item"),
             sb_play_player_action: req!(p, P, S, "player_action"),

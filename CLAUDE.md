@@ -1556,7 +1556,7 @@ final strip.*
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M6 shipped)
+## Rewo — from-scratch native Minecraft client (M0–M7 shipped)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1784,6 +1784,23 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   measure-first (GPU render ~0.2 ms is far below the frame budget — not the
   bottleneck until high RD/complexity). Subcommands: net/view/play/live/
   demo/bench.
+- **M7 shipped 2026-07-22** (online-mode): the offline-only restriction is
+  gone. `rewo-net/src/crypt.rs` — the login-encryption handshake
+  (RSA-PKCS1v15 key exchange → Mojang session join with the BigInteger
+  server hash → AES-128-CFB8 both directions, all KAT-tested), wired as a
+  `NetStream` that ciphers at the Read/Write seam and splits per-direction.
+  `rewo-net/src/chat_sign.rs` — signed chat: fetch the player certificate
+  (`api.minecraftservices.com/player/certificates`), announce
+  `chat_session_update`, SHA256withRSA-sign each message over the verbatim
+  `PlayerChatMessage.updateSignature` layout with a chain index. Account
+  handoff via `crypt::OnlineAuth::from_env` (REWO_ACCESS_TOKEN/UUID/
+  USERNAME); `ewolauncher --mint-rewo-env` refreshes + prints them
+  headlessly. **Verified with the user's real account** on an
+  `enforce-secure-profile` server: session join + AES + a signed chat
+  message that logged with no `[Not Secure]` prefix (0 corrections). Cert
+  gotcha: Mojang's private key is PKCS#8 DER under a PKCS#1 label wrapped
+  at 76 chars — strip the armor + parse DER directly (the rsa crate's
+  strict RFC-7468 reader rejects it). Milestone detail in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

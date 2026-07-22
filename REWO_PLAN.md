@@ -223,8 +223,11 @@ the code's author. Nothing below is settled truth.
   unproven).
 - **Only the overworld dimension is tested.** Nether/end (different
   min_y/height via the registry parse) is coded but unexercised.
-- **No online-mode / encryption / chat signing** — offline servers only
-  (M7). Unsigned chat is kicked on `enforce-secure-profile` servers.
+- ~~**No online-mode / encryption / chat signing**~~ — **shipped M7
+  (2026-07-22)**: AES-128-CFB8 login encryption + Mojang session join +
+  SHA256withRSA signed chat, verified on an `enforce-secure-profile`
+  server with the user's real account (§15). Leftovers: last-seen chat
+  tracking (empty acknowledged set), mid-session key-expiry refresh.
 - **Reversed-Z frustum-plane math** (Gribb–Hartmann on the reversed-Z
   matrix) culls correctly *empirically* (216/329, render is correct) but a
   reviewer should verify the near/far plane semantics are exactly right, not
@@ -272,15 +275,16 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-Strongest candidates, roughly by value: (a) **M7 online-mode + chat
-signing** — needed to play on the user's Frogsy network; (b) **async
+Strongest candidates, roughly by value: (a) ~~M7 online-mode + chat
+signing~~ — **shipped 2026-07-22** (§15), Rewo now joins the user's
+Frogsy network; (b) **async
 transfer queue + staging ring** — the remaining §4 deviation; (c) the
 visual follow-ons (greedy, fluids, biome tint, packed vertices, texture
-animation); (d) the player-model port (capsules → real player model —
-`skin.rs` cuboid geometry is the reference). Shipped 2026-07-21:
-meshing-off-thread, the Native `live` arm (UI eyeball still the user's),
-and entity rendering (capsules + nametags). Confirm direction with the
-user before diving in.
+animation); (d) **M9 native CEM/ETF** (resource-pack entity models +
+textures — planned 2026-07-22 at the user's ask, see §12). Shipped
+2026-07-21: meshing-off-thread, the Native `live` arm (UI eyeball still
+the user's), and entity rendering (capsules + nametags). Confirm
+direction with the user before diving in.
 
 ---
 
@@ -830,16 +834,49 @@ Sizes: S ≈ a session, M ≈ a few, L ≈ many, XL = the grind.
   instrumentation, replay-benchmark histogram regression gate wired into the
   dev loop. DoD: documented 1%/0.1% lows + latency numbers on the benchmark;
   this is where goals #1/#2 are demonstrated, not asserted.
-- **M7 — Online-mode + hardening.** (M/L) Encryption + sessionserver join
-  with the launcher token (live on Frogsy); **chat signing** (player
-  certificates + signed chain) for `enforce-secure-profile` servers;
-  resource-pack policy (D8) implemented; config re-entry, transfer/cookies,
-  reconnect UX; per-frame work caps re-audited under real network jitter.
-  DoD: full session on an online-mode server with enforcement on.
+- **M7 — Online-mode + hardening.** ✅ **core shipped 2026-07-22** (§15):
+  AES-128-CFB8 encryption + sessionserver join with the launcher token +
+  **chat signing** (player certificates + signed chain) for
+  `enforce-secure-profile` servers. DoD met: full session on an
+  online-mode server with enforcement on, using the user's real account.
+  Leftovers (additive): resource-pack policy (D8), transfer/cookies +
+  reconnect UX, last-seen chat tracking, mid-session key-expiry refresh.
 - **M8 — Advanced (optional, A/B'd).** HZB occlusion; mesh-shader path vs
-  M5 baseline; Velvet overlay (Skia-Vulkan, §9.4); player/mob model +
-  animation port; local relight; shader/PBR track. Each lands only if the
-  replay benchmark says it pays.
+  M5 baseline; Velvet overlay (Skia-Vulkan, §9.4); ~~player/mob model +
+  animation port~~ (shipped 2026-07-21/22 — 88 mobs + full animation
+  stack, see §15); local relight; shader/PBR track. Each lands only if
+  the replay benchmark says it pays.
+- **M9 — Native resource-pack entity models + textures (CEM/ETF).** (M)
+  What EMF/ETF do as Fabric mods, built in as plain asset loading — no
+  mod system. Rewo is unusually well-positioned: a `.jem` part tree
+  (pivot/rotate/box-UV cubes) is structurally our `Model` IR, every box
+  goes through the same verbatim `cube_faces` port the facelabel gate
+  validates, and OptiFine's animation-expression variables
+  (`limb_swing/limb_speed/age/head_yaw/head_pitch/hurt_time…`) are
+  already on `AnimCtx` where `part_transforms` composes deltas.
+  Ladder inside the milestone:
+  - **M9a — pack plumbing + CEM static models**: resource-pack stack
+    layered over the client jar in `assets::bake` (jar < pack₁ < pack₂);
+    `.jem`/`.jpm` parser building `Model` at bake; per-entity override
+    registry (`optifine/cem/<entity>.jem`). OptiFine axis/pivot quirks
+    ("translate" semantics, attach, jpm includes) are the known jank —
+    EMF's author documents them.
+  - **M9b — ETF textures**: `optifine/random/entity/*.properties`
+    variant lists + weights + conditions (name/biome/baby…), picked
+    UUID-stable per entity (a `tex_variant` on `EntityDraw` + more atlas
+    entries); emissive `_e.png` overlays as always-fullbright quads (a
+    per-quad light-ignore flag — vertex color already carries light).
+    This also subsumes the "texture variants are fixed picks" gap (cat/
+    horse/llama/axolotl/frog/… variants become per-entity choices).
+  - **M9c — animation expressions**: OptiFine's expression language
+    (parser → AST, evaluated per part per frame in `part_transforms`
+    alongside `Anim`/`KfAnim`) — the piece that makes Fresh
+    Animations-class packs work.
+  DoD: a real published CEM pack renders its custom models headlessly
+  (`mobshot --only` closeups with the pack loaded); random-texture +
+  emissive packs verified the same way; facelabel gate still 246/246
+  with no pack loaded (pack content is additive, never a regression
+  surface). Rough effort: M9a 1–2 days, M9b 1 day, M9c 2–3 days.
 
 Sequencing note: launcher integration lands **in M1**, so all subsequent
 work is exercised through the real launcher with a real account.
@@ -2080,3 +2117,56 @@ gate green.**
   (armadillo re-peek event 64, warden attack/sonic-boom, creaking
   attack), allay dance (jukebox proximity), breeze SLIDE_BACK (no pose).
   All are additive on the same gate/driver machinery.
+
+**2026-07-22 — M7: online-mode login encryption + signed chat.**
+
+- **The offline-only restriction is gone.** Rewo now joins `online-mode`
+  and `enforce-secure-profile` servers with the launcher's real account,
+  verified end-to-end against the user's own account (`lewlone`) on a
+  local Paper 26.2 server.
+- **M7a — login encryption** (`rewo-net/src/crypt.rs`). The clientbound
+  login `hello` (encryption request) is answered: a 16-byte shared secret
+  is generated, the Mojang session-join is POSTed
+  (`sessionserver…/session/minecraft/join` with the Java-`BigInteger`
+  server hash — the signed-hex quirk, KAT-tested against the Notch/jeb_/
+  simon vectors), the secret + verify-token are RSA-PKCS1v15-encrypted
+  into the `key` packet, and from the next byte on the whole stream is
+  **AES-128-CFB8** both directions. The cipher is a hand-rolled CFB8 over
+  the `aes` block core (NIST SP 800-38A F.3.7 KAT-tested), wired as a
+  `NetStream` wrapper that ciphers transparently at the `Read`/`Write`
+  seam and **splits into read/write halves each carrying its direction's
+  state** (the play-phase reader thread just gets the decrypt half).
+- **M7b — signed chat** (`rewo-net/src/chat_sign.rs`). On entering Play
+  with an account, the client fetches its per-session key pair +
+  certificate (`api.minecraftservices.com/player/certificates`), announces
+  the public half in `chat_session_update`, and signs every message:
+  SHA256withRSA over the verbatim `PlayerChatMessage.updateSignature`
+  layout (header `int(1)` + link `sender/session/index` + body
+  `salt/ts_secs/len/content` + `lastSeen`), with a strictly-incrementing
+  chain index. **Proof**: on `enforce-secure-profile=true` the message
+  logged `<lewlone> rewo signed chat works` with **no `[Not Secure]`
+  prefix** — an unverified message gets tagged or kicked, so a clean
+  prefix means the signature validated against the announced key. Cert
+  gotcha (cost a round): Mojang labels the private key `RSA PRIVATE KEY`
+  (PKCS#1) but ships PKCS#8 DER wrapped at 76 chars — both trip the rsa
+  crate's strict RFC-7468 reader, so we strip the armor ourselves and
+  parse the DER directly (PKCS#8 → PKCS#1 fallback). Fetch/parse failures
+  are non-fatal (fall back to unsigned chat with a warning).
+- **Account handoff**: `crypt::OnlineAuth::from_env` reads the launcher's
+  existing `REWO_ACCESS_TOKEN` / `REWO_UUID` / `REWO_USERNAME` contract;
+  `into_play` takes `Option<&OnlineAuth>`. The launcher grew a headless
+  `ewolauncher --mint-rewo-env` (refreshes the active account's MC token
+  via the existing auth chain, prints the three env lines) so the
+  verification harness needs no live browser sign-in.
+- **Verification server**: a second dir `testserver-online/`
+  (online-mode=true, enforce-secure-profile=true, port 25600) beside the
+  offline one. `rewo play` on it: **0 corrections over 520 ticks**,
+  place/dig verified, encryption + session-join + signed chat all logged
+  clean.
+- Gates unaffected (render path untouched): 11 rewo-gpu + 10 rewo-net (2
+  crypto KATs + the signed-layout guard) + 18 rewo-world tests,
+  `mobshot --check` 246/246, demo PNG byte-identical (`ee6e26f4…`).
+- Not yet wired (M7 leftovers, additive): last-seen message tracking (we
+  send an empty acknowledged set — fine for a bot, a chatty client
+  echoing others' messages needs the seen-signature cache), profile-key
+  expiry refresh mid-session, and resource-pack policy (D8).

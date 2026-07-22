@@ -23,8 +23,11 @@ pub struct PlayArgs {
     host: String,
     #[arg(long, default_value_t = 25599)]
     port: u16,
-    #[arg(long, default_value = "RewoBot")]
-    username: String,
+    /// Player name. Defaults to the launcher handoff's profile name when
+    /// an account is present (online-mode servers verify the name against
+    /// the session join), else "RewoBot".
+    #[arg(long)]
+    username: Option<String>,
     #[arg(long, default_value = "26.2")]
     version: String,
     /// Total session length in seconds.
@@ -60,11 +63,22 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     };
 
     let dirt_item = data.items.id("dirt");
+    // Launcher account handoff (REWO_ACCESS_TOKEN/UUID/USERNAME) — lets the
+    // bot harness join online-mode servers; offline servers ignore it. An
+    // online-mode server verifies the hello name against the session join,
+    // so the profile name wins unless --username overrides it.
+    let auth = rewo_net::crypt::OnlineAuth::from_env();
+    let username = args
+        .username
+        .clone()
+        .or_else(|| auth.as_ref().map(|a| a.username.clone()))
+        .unwrap_or_else(|| "RewoBot".into());
     let conn = Connection::connect(&args.host, args.port, &data)?;
     let mut session = conn.into_play(
         &args.host,
         args.port,
-        &args.username,
+        &username,
+        auth.as_ref(),
         solid,
         data.blocks.global_palette_bits,
     )?;

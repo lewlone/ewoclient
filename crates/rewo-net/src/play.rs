@@ -9,7 +9,6 @@
 //! physics-parity meter (REWO_PLAN.md M3 DoD: "corrections rare").
 
 use std::io::Write as _;
-use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,7 +23,7 @@ use crate::ids::Ids;
 use crate::Connection;
 
 pub struct PlaySession {
-    writer: TcpStream,
+    writer: crate::NetStream,
     codec: FrameCodec,
     rx: Receiver<Vec<u8>>,
     pub ids: Ids,
@@ -60,19 +59,25 @@ pub struct PlaySession {
     last_input_flags: u8,
     sequence: i32,
     pub ticks: u64,
+    /// Signed-chat signer (online-mode + a fetched player certificate).
+    /// `None` → unsigned chat (offline servers, or a cert-fetch failure).
+    signer: Option<crate::chat_sign::ChatSigner>,
 }
 
 impl<'a> Connection<'a> {
-    /// Login (offline) + configuration, then split into a live session.
+    /// Login + configuration, then split into a live session. `auth`
+    /// answers an online-mode server's encryption request (M7); `None`
+    /// keeps the M1 offline behavior.
     pub fn into_play(
         mut self,
         host: &str,
         port: u16,
         username: &str,
+        auth: Option<&crate::crypt::OnlineAuth>,
         solid: Vec<bool>,
         global_bits: u32,
     ) -> Result<PlaySession, String> {
-        self.login_offline(host, port, username)?;
+        self.login(host, port, username, auth)?;
         let mut stats = crate::SessionStats {
             packets_in: 0,
             bytes_in: 0,
@@ -86,11 +91,12 @@ impl<'a> Connection<'a> {
         };
         self.run_configuration(&mut stats)?;
 
-        let reader_stream = self
+        // Split the (possibly encrypted) stream — each half carries its
+        // direction's CFB8 state.
+        let (reader_stream, writer) = self
             .stream
-            .try_clone()
+            .split()
             .map_err(|e| format!("split socket: {e}"))?;
-        let writer = self.stream;
         let codec = FrameCodec {
             compression_threshold: self.codec.compression_threshold,
         };
@@ -124,7 +130,7 @@ impl<'a> Connection<'a> {
             world.shape = *shape;
         }
         let dim_shapes = self.dim_shapes.clone();
-        let session = PlaySession {
+        let mut session = PlaySession {
             writer,
             codec,
             rx,
@@ -153,7 +159,24 @@ impl<'a> Connection<'a> {
             last_input_flags: 0,
             sequence: 0,
             ticks: 0,
+            signer: None,
         };
+        // Online-mode: fetch a player certificate and announce the chat
+        // session so `enforce-secure-profile` servers accept our chat. A
+        // fetch failure is non-fatal — chat falls back to unsigned.
+        if let Some(auth) = auth {
+            match crate::chat_sign::ChatSigner::fetch(auth) {
+                Ok(signer) => {
+                    session.signer = Some(signer);
+                    if let Err(e) = session.announce_chat_session() {
+                        log::warn!("net: chat_session_update failed: {e}");
+                    } else {
+                        log::info!("net: chat session announced (signed chat enabled)");
+                    }
+                }
+                Err(e) => log::warn!("net: player certificate fetch failed ({e}); unsigned chat"),
+            }
+        }
         Ok(session)
     }
 }
@@ -690,21 +713,54 @@ impl PlaySession {
 
     // -- gameplay actions --------------------------------------------------
 
+    /// Announce the chat session (public certificate + session id) so
+    /// signed chat is accepted. Wire (decompiled
+    /// `ServerboundChatSessionUpdatePacket` → `RemoteChatSession.Data` →
+    /// `ProfilePublicKey.Data`): sessionId UUID, expiry Instant, pubkey
+    /// byte-array, Mojang key-signature byte-array.
+    fn announce_chat_session(&mut self) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_chat_session_update else {
+            return Err("chat_session_update packet unavailable".into());
+        };
+        let signer = self.signer.as_ref().expect("signer set before announce");
+        let mut p = PacketWriter::packet(id);
+        p.uuid(signer.session_id);
+        p.i64(signer.expires_at_ms);
+        p.varint(signer.public_key_der.len() as i32).raw(&signer.public_key_der);
+        p.varint(signer.key_signature.len() as i32).raw(&signer.key_signature);
+        self.send(p)
+    }
+
     pub fn send_chat(&mut self, message: &str) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_chat else {
             return Err("chat packet unavailable".into());
         };
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let millis = now.as_millis() as i64;
+        // A signature commits to the seconds-precision timestamp + a random
+        // salt; both must go on the wire exactly as signed.
+        let (salt, signature) = match self.signer.as_mut() {
+            Some(signer) => {
+                let mut salt_bytes = [0u8; 8];
+                rand::Rng::fill(&mut rand::thread_rng(), &mut salt_bytes);
+                let salt = i64::from_be_bytes(salt_bytes);
+                let sig = signer.sign(message, salt, now.as_secs() as i64, &[]);
+                (salt, Some(sig))
+            }
+            None => (0, None),
+        };
         let mut p = PacketWriter::packet(id);
-        p.string(message)
-            .i64(millis) // Instant
-            .i64(0) // salt
-            .bool(false); // no signature (unsigned until M7)
+        p.string(message).i64(millis).i64(salt);
+        match &signature {
+            Some(sig) => {
+                p.bool(true).raw(sig); // MessageSignature: fixed 256 bytes
+            }
+            None => {
+                p.bool(false);
+            }
+        }
         p.varint(0); // last-seen offset
-        p.raw(&[0, 0, 0]); // FixedBitSet(20) acknowledged
+        p.raw(&[0, 0, 0]); // FixedBitSet(20) acknowledged — none
         p.u8(0); // checksum 0 = skip verification
         self.send(p)
     }

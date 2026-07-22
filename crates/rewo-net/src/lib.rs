@@ -10,12 +10,14 @@
 //! real client this runs on the net thread (REWO_PLAN.md §4); for the M1
 //! soak/replay tools it runs on its own driver.
 
+pub mod chat_sign;
+pub mod crypt;
 pub mod ids;
 pub mod metadata;
 pub mod play;
 pub mod record;
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
@@ -51,8 +53,70 @@ pub struct SessionStats {
     pub loaded_columns: usize,
 }
 
+/// The connection's byte stream: plain TCP until the login `key` packet,
+/// AES-128-CFB8 in both directions after. One type serves the synchronous
+/// connection AND the split halves (a half simply has one cipher `None`).
+pub(crate) struct NetStream {
+    inner: TcpStream,
+    enc: Option<crypt::Cfb8>,
+    dec: Option<crypt::Cfb8>,
+    /// Encrypt scratch (Write::write must not mutate the caller's buffer).
+    wbuf: Vec<u8>,
+}
+
+impl NetStream {
+    fn new(inner: TcpStream) -> Self {
+        Self { inner, enc: None, dec: None, wbuf: Vec::new() }
+    }
+
+    /// Turn on AES-128-CFB8 both ways (call right after sending `key` —
+    /// every subsequent byte on the wire is ciphered).
+    fn enable_encryption(&mut self, secret: &[u8; 16]) {
+        self.enc = Some(crypt::Cfb8::new(secret));
+        self.dec = Some(crypt::Cfb8::new(secret));
+    }
+
+    /// Split into (read half, write half) for the play-phase reader thread.
+    /// Each half carries its direction's cipher state.
+    fn split(self) -> std::io::Result<(NetStream, NetStream)> {
+        let read_inner = self.inner.try_clone()?;
+        let read_half = Self { inner: read_inner, enc: None, dec: self.dec, wbuf: Vec::new() };
+        let write_half = Self { inner: self.inner, enc: self.enc, dec: None, wbuf: self.wbuf };
+        Ok((read_half, write_half))
+    }
+}
+
+impl Read for NetStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if let Some(d) = self.dec.as_mut() {
+            d.decrypt(&mut buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+impl Write for NetStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.enc.as_mut() {
+            None => self.inner.write(buf),
+            Some(e) => {
+                self.wbuf.clear();
+                self.wbuf.extend_from_slice(buf);
+                e.encrypt(&mut self.wbuf);
+                self.inner.write_all(&self.wbuf)?;
+                Ok(buf.len())
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 pub struct Connection<'a> {
-    stream: TcpStream,
+    stream: NetStream,
     codec: FrameCodec,
     state: State,
     ids: Ids,
@@ -74,7 +138,7 @@ impl<'a> Connection<'a> {
         stream.set_nodelay(true).ok();
         let ids = Ids::resolve(&data.packets)?;
         Ok(Self {
-            stream,
+            stream: NetStream::new(stream),
             codec: FrameCodec::default(),
             state: State::Handshake,
             ids,
@@ -120,6 +184,19 @@ impl<'a> Connection<'a> {
     // -- handshake + login -------------------------------------------------
 
     pub fn login_offline(&mut self, host: &str, port: u16, username: &str) -> Result<(), String> {
+        self.login(host, port, username, None)
+    }
+
+    /// Handshake + Login. With `auth`, an online-mode server's encryption
+    /// request is answered (session join + AES handshake); without it,
+    /// online-mode servers fail loud.
+    pub fn login(
+        &mut self,
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: Option<&crypt::OnlineAuth>,
+    ) -> Result<(), String> {
         // Handshake: protocol, host, port, intent=2 (login).
         let mut hs = PacketWriter::packet(self.ids.sb_handshake_intention);
         hs.varint(PROTOCOL_VERSION).string(host).u16(port).varint(2);
@@ -128,7 +205,7 @@ impl<'a> Connection<'a> {
 
         // Login hello: name + profile UUID (offline: zero — server assigns).
         let mut hello = PacketWriter::packet(self.ids.sb_login_hello);
-        hello.string(username).uuid(0);
+        hello.string(username).uuid(auth.map_or(0, |a| a.uuid));
         self.send(hello)?;
 
         // Drain login until we acknowledge → Configuration.
@@ -158,13 +235,52 @@ impl<'a> Connection<'a> {
                     return Err(format!("login disconnect: {reason}"));
                 }
                 x if x == self.ids.cb_login_hello => {
-                    return Err("server requested encryption (online mode) — M7".into());
+                    self.handle_encryption_request(body, auth)?;
                 }
                 other => {
                     log::debug!("net: ignoring login packet id {other}");
                 }
             }
         }
+    }
+
+    /// Clientbound login `hello` = the encryption request. Wire (decompiled
+    /// `ClientboundHelloPacket`): server-id string, pubkey byte array
+    /// (X.509 DER), verify-token byte array, `should_authenticate` bool.
+    fn handle_encryption_request(
+        &mut self,
+        body: usize,
+        auth: Option<&crypt::OnlineAuth>,
+    ) -> Result<(), String> {
+        let (server_id, pubkey, token, should_auth) = {
+            let mut r = PacketReader::new(&self.packet[body..]);
+            let sid = r.string(20).map_err(de)?;
+            let key = r.byte_array(4096).map_err(de)?.to_vec();
+            let tok = r.byte_array(4096).map_err(de)?.to_vec();
+            let sa = r.bool().map_err(de)?;
+            (sid, key, tok, sa)
+        };
+        let mut secret = [0u8; 16];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut secret[..]);
+        if should_auth {
+            let auth = auth.ok_or(
+                "server is online-mode but no account was provided \
+                 (REWO_ACCESS_TOKEN / REWO_UUID / REWO_USERNAME)",
+            )?;
+            let hash = crypt::server_hash(&server_id, &secret, &pubkey);
+            crypt::session_join(auth, &hash)?;
+            log::info!("net: mojang session join ok (server hash {hash})");
+        }
+        let enc_secret = crypt::rsa_encrypt(&pubkey, &secret)?;
+        let enc_token = crypt::rsa_encrypt(&pubkey, &token)?;
+        let mut key = PacketWriter::packet(self.ids.sb_login_key);
+        key.varint(enc_secret.len() as i32).raw(&enc_secret);
+        key.varint(enc_token.len() as i32).raw(&enc_token);
+        self.send(key)?;
+        // Every byte after the key packet is ciphered, both directions.
+        self.stream.enable_encryption(&secret);
+        log::info!("net: encryption enabled (AES-128-CFB8)");
+        Ok(())
     }
 
     // -- configuration -----------------------------------------------------
