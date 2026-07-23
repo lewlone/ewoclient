@@ -2885,28 +2885,58 @@ dropped — which looks exactly like a light bug, because the structure never
 appears), and `--still` suppresses the movement script so the gate stays inside
 whatever was built. The op account is `RewoOp`, not `RewoBot`.
 
-**Left open.** `useShapeForLightOcclusion` face merging is tested per-side
-rather than as a true shape union — the two differ only for complementary
-partial faces meeting, which no vanilla pair produces. Blocks outside the
-curated collision families have no boxes, so their faces never occlude
-(farmland, dirt path). No `section_blocks_update` handler
-exists, so a multi-block server edit relights only via its individual updates.
+**M10 finished (same day).** Three gaps closed and one flaw in the gate.
 
-**Copper collections closed (same day).** `WeatheringCopperCollection` was the
-last family gap. The extractor now reads the id tables in
-`references/BlockItemIds.java` rather than guessing at the irregular naming —
-`createSimpleCopper("copper_bulb")` plus the one hand-written
-`ByState("copper_block", "copper", "copper", "copper")` — and applies
-`WeatheringCopperCollection.PREFIXES` (`""`/`exposed_`/`weathered_`/`oxidized_`
-and their `waxed_` twins). Each generated name carries its **weather-state
-index**, which is what makes the per-state
-`litBlockEmission(switch (p) { case EXPOSED -> 12; … })` resolve — a copper
-bulb is 15/12/8/4 as it oxidises, and without the state it emitted nothing.
-Colour families read their base names from the same tables
-(`createSimpleColored("shulker_box")`) instead of stripping `DYED_` off the
-field name, and single blocks resolve through their id reference too, which
-fixed two cases where the field name is **not** the registry name
-(`POTTED_AZALEA` → `potted_azalea_bush`). Unresolved names: 0. Tables grew to
-53 emitters / 18 lit-conditional / 244 non-occluding / 188 sky overrides.
-Gate stays **EXACT** on the village and on a room lit only by copper bulbs
-(block 11 at the bot = 15 − 4 steps; it would have read 0 before).
+*`section_blocks_update` was entirely unhandled* — a world-sync bug well beyond
+lighting. Single-block edits arrive as `block_update` (wired); a `/fill`, an
+explosion, a piston, a growing tree or another player building arrives as a
+multi-block section update, and Rewo dropped it, so any edit to an
+already-loaded chunk never appeared. **It hid behind the harness**: a structure
+built right after a `tp` is already present when the chunks stream in. A run
+padded with paced no-ops until the chunks are definitely loaded exposed it — a
+4-block fill read `state 0` before and `state 1` after. The bit unpacking
+(section x in bits 42..63, z in 20..41, y in 0..19; in-section **x is the high
+nibble, z the middle, y the low**) is extracted into pure functions with tests,
+because getting it wrong lands edits in the wrong chunk and reads as "some
+blocks never update".
+
+*Property-driven emission.* Nine blocks compute `lightLevel` from block-state
+properties and were approximated by their max literal — an unlit candle emitted
+12. The generator now carries the seven rules, each **keyed by a source
+signature** so a rewritten expression stops matching rather than silently
+keeping a stale rule, and emits `STATE_EMISSION`. Verified per state: candles
+`lit ? 3 × candles : 0` (with the 16 dyed variants), glow berries 14 on
+`berries`, sea pickles `3 + 3 × pickles` while waterlogged, respawn anchor
+`floor(charges/4 × 15)` = 0/3/7/11/15, light blocks the `level` property,
+vaults 6 inactive / 12 otherwise, trial spawners 0/4/8/8/8/0. One approximation
+remains, documented: glow lichen's "any face" predicate held at 7 — a lichen
+with no faces cannot be placed.
+
+*Shape occlusion for the rest of `useShapeForLightOcclusion`.* Occlusion is
+computed from the collision boxes, so a block with **no boxes has no occluding
+faces**. `farmland`, `dirt_path` and `sculk_sensor` had none and let light fall
+through where vanilla stops it at their full bottom face; they and the rest of
+that set (sculk shrieker, shelf, pistons) joined the curated family list.
+Physics parity unchanged at 0 corrections — they carry real vanilla collision
+shapes, so this makes collision more correct too.
+
+*The gate could grade itself.* `--light-check` diffs a recomputation against the
+**stored** light, and incremental relighting *writes* that store — so a world
+built during the session was compared against our own engine, not the server's.
+New `--no-relight` keeps the store purely server-authoritative. This matters
+because **a vanilla server sends no light packets for ordinary block edits at
+all** (exactly why a client needs this engine), so the honest protocol is:
+build in one run, join fresh in a second, and grade the chunk-load light.
+
+Two artifacts worth remembering from the verification: farmland **reverts to
+dirt** when unhydrated, and the server leaves stale block-light *inside* the
+now-opaque cell — 17 phantom mismatches that are invisible in practice (light
+inside a solid block is never sampled). `dirt_path` is the stable stand-in.
+
+Verified **EXACT** — 884,736 cells, both channels, 0 mismatches — on the village
+spawn, a pre-built sealed room graded from a fresh join, and a live session
+whose room is built entirely through section updates with incremental
+relighting active. 79 tests; demo, mobshot 243/243, bench unchanged.
+
+**Still open (not M10):** the per-side vs true-shape-union face merge (differs
+only for complementary partial faces meeting, which no vanilla pair produces).

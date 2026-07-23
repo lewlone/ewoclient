@@ -1904,9 +1904,20 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   recomputes loaded columns and diffs against the server's own light engine —
   the lighting equivalent of `CORRECTIONS`; **884,736 cells, 0 mismatches**
   on flat terrain, a village, an enclosed shaft, and a sealed torch-lit room.
-  It immediately caught a long-standing decode bug: the chunk payload's
-  `empty_sky` mask was read and **discarded**, so every section above the
-  terrain silently read sky-0. Detail + open items in REWO_PLAN §15.
+  It immediately caught two long-standing bugs beyond lighting: the chunk
+  payload's `empty_sky` mask was read and **discarded**, so every section above
+  the terrain silently read sky-0; and **`section_blocks_update` was entirely
+  unhandled**, so any multi-block edit to an already-loaded chunk (a `/fill`,
+  an explosion, a piston, another player building) never appeared at all —
+  hidden by the harness, because a structure built right after a `tp` is
+  already there when the chunks stream in. M10 also added property-driven
+  emission (candles `lit ? 3 × candles : 0`, glow berries, sea pickles, light
+  blocks, vaults, trial spawners — each rule keyed by a source signature so a
+  version bump fails loud) and shape occlusion for the rest of vanilla's
+  `useShapeForLightOcclusion` set. **Gate caveat**: `--light-check` diffs
+  against the *stored* light, which incremental relighting writes — pass
+  `--no-relight`, or build in one run and grade from a fresh join, or the
+  engine grades itself. Detail + open items in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
