@@ -2640,9 +2640,17 @@ mis-read of the pack. The other 26 (`var.distance` on enderman/evoker/fox/
 goat) do drive real behaviour. Head/eye *tracking* comes from `head_yaw` off
 the wire, not from `player_pos`.
 
-**Known remaining (not fixed).** Outliers still to triage: phantom, cod,
-shulker, salmon, wither_skeleton (bat's is FA's spread-wing pose, not a
-defect).
+**Outliers triaged — all FA design, no structural defects.** The mobs the
+audit still ranks far from vanilla were checked one by one against their
+built-in counterpart: **phantom** (wings attached + symmetric, a raised flap
+phase vs vanilla's flat glide), **cod** and **salmon** (angled/curved swim
+poses, body-tail-fins intact), **shulker** (rendered with the shell *open*
+where vanilla shows it closed), **wither_skeleton** (arms out, from FA's
+`var.bow` / `is_aggressive` branch — attached and symmetric; the plain
+skeleton scores 0%/1%), and **bat** (spread wings). None shows detached or
+exploded geometry. This is the expected end state: a large animated-audit
+divergence on these mobs measures FA's *intent*, not a bug — which is why the
+rest-pose audit is the geometry gate and the animated one is only a pointer.
 
 **Methodology note (worth keeping).** The *rest-pose* audit is the valid
 detector for **geometry** bugs, because FA replicates vanilla geometry. The
