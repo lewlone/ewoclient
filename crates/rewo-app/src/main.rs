@@ -14,6 +14,7 @@ mod live_cmd;
 mod net_cmd;
 mod play_cmd;
 mod skin_fetch;
+mod skyshot_cmd;
 mod stats;
 mod view_cmd;
 
@@ -117,6 +118,9 @@ enum Command {
     /// Mob-model verification: contact sheet of every mob (no server), or
     /// `--check` for the facelabel texture-correspondence gate.
     Mobshot(mobshot_cmd::MobshotArgs),
+    /// M12 sky verification: render sun/moon/stars/sunrise + the zenith tint
+    /// headless (no server) and assert their pixel properties with `--check`.
+    Skyshot(skyshot_cmd::SkyshotArgs),
 }
 
 fn main() {
@@ -134,6 +138,7 @@ fn main() {
         Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
         Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
         Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
+        Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

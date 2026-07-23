@@ -263,6 +263,11 @@ pub struct WorldRenderer {
     // -- entities + HUD (optional passes; drawn after terrain in `draw`) --
     color_format: vk::Format,
     entities: Option<EntityPass>,
+    /// Sun/moon/star pass (M12), drawn between the gradient sky and terrain.
+    /// `None` when celestial textures were unavailable (degrade to bare sky).
+    celestial: Option<crate::celestial::CelestialPass>,
+    /// Current clear-weather celestial state (set by `set_celestial`).
+    celestial_state: crate::celestial::CelestialState,
     hud: Option<HudPass>,
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
@@ -667,6 +672,8 @@ impl WorldRenderer {
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
                 entities: None,
+                celestial: None,
+                celestial_state: crate::celestial::CelestialState::default(),
                 hud: None,
                 hud_state: None,
                 text: None,
@@ -823,6 +830,30 @@ impl WorldRenderer {
     pub fn set_sky_tint(&mut self, sky: [f32; 3], fog: [f32; 3]) {
         self.sky_tint = sky;
         self.fog_tint = fog;
+    }
+
+    /// Attach the celestial pass (sun/moon/stars/sunrise, M12). Callers that
+    /// never attach it render the bare gradient sky. Textures come from the
+    /// user's own client jar (`assets::CelestialTextures`).
+    pub fn init_celestial(
+        &mut self,
+        gpu: &mut Gpu,
+        tex: &crate::celestial::CelestialTextures,
+    ) -> Result<(), String> {
+        self.celestial = Some(crate::celestial::CelestialPass::new(gpu, self.color_format, tex)?);
+        Ok(())
+    }
+
+    /// Update the clear-weather celestial state for this frame (angles in
+    /// radians, sunrise colour linear rgb + straight alpha).
+    pub fn set_celestial(&mut self, state: crate::celestial::CelestialState) {
+        self.celestial_state = state;
+    }
+
+    /// The attached celestial pass, if any (`rewo skyshot` reports its
+    /// accepted-star count through this).
+    pub fn celestial_pass(&self) -> Option<&crate::celestial::CelestialPass> {
+        self.celestial.as_ref()
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -1276,6 +1307,16 @@ impl WorldRenderer {
     /// translucent water (CPU-sorted back-to-front) → nametag text.
     pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
         self.draw_sky(gpu, cb, view_proj, extent);
+        // Sun/moon/stars/sunrise (M12), between the gradient sky and terrain,
+        // in rotation-only sky space: `view_proj · T(eye)` cancels the camera
+        // translation so the bodies sit at infinity. Terrain then overwrites
+        // them via reversed-Z where it exists.
+        if let Some(celestial) = &self.celestial {
+            let sky_vp = (glam::Mat4::from_cols_array_2d(&view_proj)
+                * glam::Mat4::from_translation(glam::Vec3::from_array(self.camera_eye)))
+            .to_cols_array_2d();
+            celestial.draw(gpu, cb, sky_vp, extent, &self.celestial_state);
+        }
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
@@ -1385,7 +1426,14 @@ impl WorldRenderer {
                 SKY_HORIZON[2] * self.sky_tint[2],
                 1.0,
             ],
-            zenith: [SKY_ZENITH[0], SKY_ZENITH[1], SKY_ZENITH[2], 1.0],
+            // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc.
+            // Tinting only the horizon left a blue zenith at midnight.
+            zenith: [
+                SKY_ZENITH[0] * self.sky_tint[0],
+                SKY_ZENITH[1] * self.sky_tint[1],
+                SKY_ZENITH[2] * self.sky_tint[2],
+                1.0,
+            ],
         };
         let device = &gpu.device;
         unsafe {
@@ -1546,6 +1594,9 @@ impl WorldRenderer {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        if let Some(mut pass) = self.celestial.take() {
+            pass.destroy(gpu);
+        }
         if let Some(mut pass) = self.entities.take() {
             pass.destroy(gpu);
         }

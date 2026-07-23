@@ -15,6 +15,10 @@ bytemuck = { workspace = true }
 log = { workspace = true }
 png = { workspace = true }
 glam = { workspace = true }
+# fdlibm-derived scalar math: `libm::sin` matches Java's `StrictMath.sin`
+# (hence `(float)Math.sin`) bit-for-bit, which the platform libm on Windows
+# does not — required for bit-exact star geometry vs the JOML oracle (M12).
+libm = "0.2"
 # M9 CEM: parse OptiFine .jem/.jpm entity models from resource packs.
 serde = { workspace = true }
 serde_json = { workspace = true }

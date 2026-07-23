@@ -131,6 +131,9 @@ pub struct BakedAssets {
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
+    /// Sun + 8 moon-phase textures from `environment/celestial/`. `None` if the
+    /// jar lacks them — the sky then renders without sun/moon (M12).
+    pub celestial: Option<CelestialTextures>,
     pub stats: BakeStats,
 }
 
@@ -248,6 +251,36 @@ pub struct HudSprite {
     pub h: u32,
 }
 
+/// A decoded RGBA8 image + its pixel dimensions (celestial textures).
+pub struct DecodedImage {
+    pub rgba: Vec<u8>,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The clear-weather Overworld celestial textures, loaded from the user's own
+/// client jar (never redistributed). 26.2 moved these under `celestial/`
+/// (`SkyRenderer` builds the `CELESTIALS` atlas from `sun` + `moon/<phase>`).
+/// The `moons` array is indexed by `MoonPhase.index()` (0 = full moon), which
+/// is the order `buildMoonPhases` iterates `MoonPhase.values()`.
+pub struct CelestialTextures {
+    pub sun: DecodedImage,
+    pub moons: [DecodedImage; 8],
+}
+
+/// Moon-phase texture basenames in `MoonPhase` declaration/index order
+/// (`MoonPhase.values()`), so `moons[i]` is phase `i`.
+const MOON_PHASE_FILES: [&str; 8] = [
+    "full_moon",       // 0
+    "waning_gibbous",  // 1
+    "third_quarter",   // 2
+    "waning_crescent", // 3
+    "new_moon",        // 4
+    "waxing_crescent", // 5
+    "first_quarter",   // 6
+    "waxing_gibbous",  // 7
+];
+
 /// The HUD sprite set (1.20.2+ individual sprite files).
 pub struct HudSprites {
     pub hotbar: HudSprite,
@@ -337,6 +370,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let hud = bake_hud(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
+    }
+    let celestial = bake_celestial(&mut jar);
+    if celestial.is_none() {
+        log::warn!("rewo-data: celestial textures missing — no sun/moon");
     }
 
     let mut baker = Baker {
@@ -536,8 +573,32 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         mob_textures,
         hud,
+        celestial,
         stats,
     })
+}
+
+/// Load the sun + 8 moon-phase textures from the jar's `environment/celestial/`
+/// (26.2 layout). Any missing file → no celestials (degrade, not error).
+fn bake_celestial(jar: Jar) -> Option<CelestialTextures> {
+    let load = |jar: Jar, rel: &str| -> Option<DecodedImage> {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!("assets/minecraft/textures/environment/{rel}"))
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        Some(DecodedImage { rgba, w, h })
+    };
+    let sun = load(jar, "celestial/sun.png")?;
+    // `array::try_from` over a Vec would need Debug on the element; build by
+    // index instead, bailing (→ no celestials) if any phase is absent.
+    let mut moons: Vec<DecodedImage> = Vec::with_capacity(8);
+    for name in MOON_PHASE_FILES {
+        moons.push(load(jar, &format!("celestial/moon/{name}.png"))?);
+    }
+    let moons: [DecodedImage; 8] = moons.try_into().ok()?;
+    Some(CelestialTextures { sun, moons })
 }
 
 /// Extract an entity texture of a known size to flat RGBA (mob models).

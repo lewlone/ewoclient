@@ -5,6 +5,7 @@
 //! and a deterministic world digest (for replay-equivalence in the DoD).
 //! Prediction/physics land in M3; this is the read model.
 
+pub mod celestial;
 pub mod chunk;
 pub mod daylight;
 pub mod dimension;

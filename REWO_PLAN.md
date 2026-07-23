@@ -3002,3 +3002,171 @@ M10 light gate still EXACT.
 **Left open:** the block-light flicker (vanilla jitters `blockFactor` slightly
 per frame), gamma/brightness and night-vision/darkness terms of the lightmap,
 and the sun/moon/stars — the sky is still a gradient with no celestial bodies.
+
+### 2026-07-23 — M12: the sun, moon, stars, and the sunrise fan
+
+M11 left the sky a bare gradient. M12 draws the clear-weather Overworld
+celestials — sun, moon (all eight phases), stars, and the sunrise/sunset fan —
+in a Vulkan pass between the gradient sky and the terrain, driven by the exact
+26.2 timeline and a smooth, server-driven world clock. It also closes the M11
+`SKY_COLOR` tint bug (the zenith was left blue at midnight) and roots out a
+frozen-clock bug the M11 day/night code was quietly sitting on.
+
+**The timeline, ported not approximated** (`rewo-world/src/celestial.rs`). The
+sun/moon/star **angles** are not a naive lerp: `Timelines.OVERWORLD_DAY` gives
+each `ANGLE_DEGREES` track two keyframes that *both sit at tick 6000* (values
+360 and 0), and `KeyframeTrackSampler.bakeSegments` turns that into a
+wrap-around segment pair spanning `[6000 − 24000 .. 6000]` and `[6000 .. 6000 +
+24000]`. The lerp across those carries the symmetric cubic-bezier ease
+`symmetricCubicBezier(0.362, 0.241)`, so the module ports `EasingType.CubicBezier`
+verbatim — `curveFromControls`, the 4-iteration Newton-Raphson `solve_t` (step
+clamped to ±0.25, tolerance 1e-5) with the bisection fallback, all constants
+matching the decompile. Star brightness and the sunrise colour use the default
+LINEAR keyframe ease; the sunrise track is an `ARGB_COLOR` override interpolated
+by `ARGB.srgbLerp` — a plain componentwise `Mth.lerpInt` **including alpha**,
+which is what settles the "RGB vs ARGB" question (all four channels move in
+gamma space, floored not rounded). Moon phase is `floor(t / 24000) mod 8` done
+with Euclidean arithmetic so negative ticks wrap like `Math.floorMod`. The
+module carries 15 unit tests pinning the wrap semantics, the bezier fixed
+points/monotonicity, the moon-leads-sun-by-180 relation, and the channel-by-
+channel sunrise lerp.
+
+**The render pass** (`rewo-gpu/src/celestial.rs` + four shaders). Drawn in
+`LevelRenderer.addSkyPass` order — sunrise → sun → moon → stars — in
+rotation-only sky space (`view_proj · T(eye)` cancels the camera translation so
+the bodies sit at infinity), no depth (terrain overwrites them via reversed-Z
+where it exists). The transform chains are the decompiled ones: a shared base
+`Y(−90°)`, then per body `X(angle)`; the sun adds `T(0,100,0)·scale(30,1,30)`,
+the moon `scale(20,1,20)`; the sunrise fan uses its own pose
+`X(90°)·Z(angle+90°)·scale(z=alpha)` with no `Y(−90°)`. The moon UV winding is
+reversed vs the sun (`buildMoonPhases`) and the phase selects a base vertex into
+an 8-cell atlas. Blend functions match `RenderPipelines`: CELESTIAL and STARS
+use `OVERLAY` (colour `src=SRC_ALPHA dst=ONE`, additive by alpha), SUNRISE_SUNSET
+uses `TRANSLUCENT`; the fragment discards fully-transparent texels so a
+zero-alpha sun never touches the attachment. The sun + eight moon-phase textures
+come from the user's own client jar (`environment/celestial/sun.png` +
+`moon/<phase>.png`, one file per phase, `MoonPhase.index()` order); a jar without
+them degrades to a bare sky rather than erroring.
+
+**Stars are generated bit-for-bit** (`buildStars`). A seed-10842
+`SingleThreadedRandomSource`/`BitRandomSource` 48-bit LCG produces 1500
+candidates; each is rejected if its squared length is `≤ 0.010000001` or `≥ 1.0`,
+and the accepted count is *reported*, never forced to 1500 — it comes out to
+**780 accepted / 4680 triangle indices**. Reaching bit-exactness against an
+independent Java oracle compiled on the real JOML 1.10.8 jar required porting
+JOML's exact scalar op order: `org.joml.Runtime.HAS_Math_fma` is **false** by
+default, so `org.joml.Math.fma` is a plain **non-fused** `a*b + c`, making
+`Vector3f.lengthSquared` the right-associative `x*x + (y*y + z*z)` — distinct by
+up to 2 ULP from both a true FMA and the left-associative `Mth.lengthSquared`
+the rejection test uses. `invsqrt`, the float `sin`, and `cosFromSin` (computed
+entirely in float, with the float-literal constants) are likewise ported;
+`libm::sin` (fdlibm-derived, added as a dep) matches Java's `Math.sin` at the
+`(float)` cast where the platform libm on Windows drifts. The accepted set, its
+first quad's raw f32 bits, and an FNV-1a-64 fingerprint `fef182656c6fe202` are
+pinned against the oracle.
+
+**The sunrise fan uses the `Mth` sine table, not platform trig.**
+`buildSunriseFan` calls `Mth.sin`/`Mth.cos`, which index a 65,536-entry table
+(`SIN[i] = (float)Math.sin(i / 10430.378350470453)`, cosine offset a quarter
+turn), and `renderSunriseAndSunset` picks the fan's side from `Mth.sin(sunAngle)
+< 0`. This is load-bearing at the half-turn: `Mth.sin(π)` reads the tiny
+*positive* table entry `SIN[32768] ≈ 1.2e-16`, so the boundary resolves to fan
+angle 0°, whereas platform `sin(π_f32)` is slightly negative (its argument rounds
+just past π) and would wrongly flip to 180°. Only the 17 selected indices are
+evaluated; the 18 logical fan vertices are pinned by fingerprint
+`75280003503b2a33`.
+
+**The `SKY_COLOR` zenith fix.** Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the
+whole sky disc; M11 tinted only the horizon, so midnight kept a blue zenith.
+`draw_sky` now scales the zenith colour by the sky tint too.
+
+**The frozen-clock bug and its fix.** M11's day/night code read `day_ticks`
+from `set_time` and held the last value when a packet carried no clock state.
+But `MinecraftServer.forceGameTimeSynchronization` broadcasts `SetTime(gameTime,
+Map.of())` every 20 ticks with an **empty** clock map — only a real change (join,
+`/time set`) carries an explicit state. So the game time advanced while the
+day/night clock stayed frozen; a first repair that re-derived from the sync
+alone then moved only at the 20-tick packet cadence, in visible jumps. The final
+repair ports 26.2's `ClientClockManager` (`rewo-net/src/play.rs`): a `WorldClock`
+with `total`/`partial`(f32)/`rate`/`last_game_time`, advanced from the same two
+places vanilla advances it — `apply_set_time` (the `handleUpdates` path: advance
+by the game-time delta first, so an *empty* update still moves the cycle, then
+let any explicit overworld state overwrite it) and `local_tick_time` (the
+per-tick `ClientLevel.tickTime` local `+1`). Because each `advance` re-bases its
+delta on `last_game_time`, running both is not double-counting: an empty sync at
+the already-predicted game time advances by zero, leaving exactly the one local
+`+1`. The primitive semantics are ported exactly: `gameTime − lastTickGameTime`
+is wrapping `long` subtraction; `Mth.floor` returns a Java **`int`** (so the
+floor narrows to `i32` — saturating, `NaN → 0` — before widening to
+`long fullTicks`, since a direct `as i64` would saturate to the wrong bounds);
+`(float)(newPartialTicks − fullTicks)` truncates the carry back to `f32` so it
+rounds bit-for-bit the way the client keeps it; `totalTicks += fullTicks` wraps.
+The two clocks (overworld + the_end) are still matched by registry id captured
+from Configuration, and `holderRegistry` still writes the id raw.
+
+**Verification — `rewo skyshot --check`**, a new permanent serverless headless
+gate (`rewo-app/src/skyshot_cmd.rs`, 256², validation layers on). It never
+asserts "looks right"; every check reconstructs the property independently:
+
+- *Zenith/whole-gradient tint (permanent M11 regression).* Both the up view and
+  the level view must scale by a requested tint `[0.35, 0.60, 0.80]`; measured
+  ratios were zenith **0.349 / 0.600 / 0.798** and horizon **0.348 / 0.599 /
+  0.799** (attachment decoded sRGB→linear before the ratio). A midnight zenith
+  must be near-black and a noon zenith blue-and-bright — the M11 bug fails this.
+- *Phase / alpha / discard / UV orientation (synthetic textures over black).*
+  The phase-0 moon (alpha 128) reads centre RGBA **[169, 27, 27, 128]**; phases
+  1–7 identify to their synthetic centre colours exactly; a zero-alpha sun over
+  black reads **[0, 0, 0, 255]** (the discard witness — an RGB-only write mask or
+  a wrong alpha blend would leave alpha at the sun's 0). The phase-7 8×8
+  orientation texture maps screen-TL→texture-BR **[255,255,30]**,
+  screen-TR→TR **[30,255,30]**, screen-BL→BL **[30,30,255]**, screen-BR→TL
+  **[255,30,30]**, all d²=0 — pinning the reversed moon UV winding a solid
+  colour can't catch.
+- *Projected transform + size oracle.* The sun/moon quad corners are pushed
+  through the decompiled chain reconstructed in f64 *inside the test* (never via
+  a `CelestialPass` helper) and projected through the known up-camera at a
+  nontrivial +15° angle. The scale-independent shared model-centre lands at
+  **(176.982, 128)**; the sun envelope expected `(122.577, 66.262)..(240.898,
+  189.738)` read back **(123, 66)..(241, 190)**, the moon expected `(139.790,
+  88.006)..(218.386, 167.994)` read back **(140, 88)..(218, 168)** — a swapped
+  30/20 or a flipped sign moves the envelope > 17 px and fails.
+- *Sunrise-fan placement oracle.* An isolated fan over black with a controlled
+  positive sun angle (fan angle 0 → bright centre on the −X horizon), a distinctly
+  non-1 alpha 0.5 (so a dropped `scale(z=alpha)` roughly doubles the height), and
+  a warm colour. The analytic above-horizon band is y **97.533..128**; the −X
+  read-back full-x bbox is y **98..129** over **7,936** warm pixels, while the
+  opposite +X heading shows **0** comparable above-horizon warm pixels — rejecting
+  a wrong X/Z order, a flipped sign, a dropped alpha scale, or the fan on the
+  opposite horizon.
+- *Accepted star count* reported as **780 / 4680**.
+
+**Gates.** All release unit tests green: **142** across world 44, net 41, gpu
+33, data 5, mesh 8, proto 11. `skyshot --check` green with validation layers on.
+`mobshot --check` 243/243. The demo PNG is byte-identical to baseline
+(SHA-256 `2CC56B4ACBFB92CB91398C27E5C4735885ABFF9331F66B7DC83BDBC002246635`).
+`bench`: GPU avg 0.228 ms, p50 0.220, p99 0.394, p99.9 0.648, max 0.677 (GPU 1%
+low 0.490, 0.1% 0.672); wall avg 0.363, p50 0.325, p99 0.748, p99.9 1.576, max
+1.714 (wall 1% 0.991, 0.1% 1.651). Canonical light gate still EXACT — 884,736
+cells, block 0, sky 0 — and the world clock advanced **+278 over 280 ticks** on
+that run, the headless proof the frozen-clock fix works (`rewo play` now prints
+`world clock: start → end (advance …)`; a frozen clock reads `advance 0`).
+
+**Honest failure history.** The first canonical physics run after the clock
+change came back **RED with CORRECTIONS 1** (clock +598/600). An immediate,
+unchanged repeat was **CORRECTIONS 0** (clock +598/600), so the named parity
+gate passes — but the transient red is recorded here, not concealed, because a
+one-off correction that vanishes on repeat is exactly the kind of thing worth
+leaving a trace of. On that clean repeat an unrelated PLACE verification reported
+still-air while the DIG verify succeeded, so the action script that run was not
+wholly green even though the physics meter was; the celestial/clock properties
+are what M12 verifies, and those are solid. The test server was stopped
+afterward.
+
+**Left open** (unchanged from the standing list, none touched by M12): the
+remaining lightmap terms (block-light flicker, gamma/brightness,
+night-vision/darkness); per-biome sky/fog/water tint; the geometry-side
+performance work (greedy meshing, packed vertices); Nether/End are coded but
+untested (dimension-specific `ambientLight` unwired); entity-*event*-driven
+animations need the `entity_event` packet; face-occlusion merging is tested
+per-side rather than as a true shape union; and `glow_lichen`'s any-face
+emission stays approximated at 7.

@@ -25,6 +25,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rewo_data::assets::{self, BakedFont};
 use rewo_data::entity_types::EntityTypes;
 use rewo_data::{DataPaths, GameData};
+use rewo_gpu::celestial::{CelestialImage, CelestialState, CelestialTextures};
 use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, FontData, MobTexEntry, MobTextures};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
@@ -639,6 +640,7 @@ fn run_headless(
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &pack)?;
+    init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -860,6 +862,7 @@ fn run_headless(
     world_renderer.set_camera(eye.to_array());
     // Day/night: the server's world clock drives vanilla's keyframed timeline.
     apply_daylight(&mut world_renderer, session.day_ticks);
+    world_renderer.set_celestial(celestial_state_of(session.day_ticks));
     world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
@@ -998,6 +1001,7 @@ impl ApplicationHandler for LiveApp {
                 &baked.layers,
             )?;
             init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
+            init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
@@ -1232,6 +1236,7 @@ impl LiveApp {
         state.world_renderer.set_selection(hit.map(|h| h.block));
         state.world_renderer.set_camera(eye.to_array());
         apply_daylight(&mut state.world_renderer, session.day_ticks);
+        state.world_renderer.set_celestial(celestial_state_of(session.day_ticks));
         state
             .world_renderer
             .set_hud(session.health, session.food, self.hotbar_slot);
@@ -1608,4 +1613,47 @@ fn apply_daylight(wr: &mut WorldRenderer, day_ticks: Option<i64>) {
     let sky = daylight_of(day_ticks);
     wr.set_lightmap(sky.light_factor, sky.light_color);
     wr.set_sky_tint(sky.sky_color, sky.fog_color);
+}
+
+fn init_celestial_if_present(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+) -> Result<(), String> {
+    if let Some(cel) = &baked.celestial {
+        wr.init_celestial(gpu, &to_gpu_celestial(cel))?;
+    }
+    Ok(())
+}
+
+fn to_gpu_celestial(cel: &assets::CelestialTextures) -> CelestialTextures<'_> {
+    fn img(i: &assets::DecodedImage) -> CelestialImage<'_> {
+        CelestialImage { rgba: &i.rgba, w: i.w, h: i.h }
+    }
+    CelestialTextures {
+        sun: img(&cel.sun),
+        moons: std::array::from_fn(|k| img(&cel.moons[k])),
+    }
+}
+
+/// Exact clear-weather Overworld celestial timeline. Before the first server
+/// time packet, noon matches the existing `SkyLighting::DAY` fallback.
+fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
+    let c = rewo_world::celestial::celestial_at(day_ticks.unwrap_or(6000));
+    let argb = c.sunrise_sunset_color;
+    let ch = |sh: u32| ((argb >> sh) & 0xFF) as f32 / 255.0;
+    CelestialState {
+        sun_angle: c.sun_angle_rad(),
+        moon_angle: c.moon_angle_rad(),
+        star_angle: c.star_angle_rad(),
+        star_brightness: c.star_brightness,
+        moon_phase: c.moon_phase,
+        sunrise_rgba: [
+            srgb_to_linear(ch(16)),
+            srgb_to_linear(ch(8)),
+            srgb_to_linear(ch(0)),
+            ch(24),
+        ],
+        rain_brightness: 1.0,
+    }
 }

@@ -47,10 +47,30 @@ pub struct PlaySession {
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
-    /// World-clock tick from `set_time`, driving the day/night cycle
-    /// (`rewo_world::daylight`). `None` until the first packet arrives, which
-    /// the renderer reads as full daylight.
+    /// World-clock tick driving the day/night cycle (`rewo_world::daylight`).
+    /// `None` until the first `set_time` arrives, which the renderer reads as
+    /// full daylight. Refreshed from two places, exactly as vanilla runs them:
+    /// `set_time` (`handleUpdates`) and the per-tick local advance
+    /// (`ClientLevel.tickTime`). Derived from `overworld_clock` once a real
+    /// clock state exists; otherwise a `gameTime` best-effort.
     pub day_ticks: Option<i64>,
+    /// The overworld world clock, ported from 26.2 `ClientClockManager`. It is
+    /// advanced from the same two places vanilla advances it: `set_time`
+    /// (`handleUpdates` — advance by the game-time delta, then any explicit
+    /// clock state overwrites it) and the per-tick `ClientLevel.tickTime`
+    /// (advance one game tick locally). The local advance is what keeps the
+    /// day/night cycle smooth between the server's 20-tick syncs instead of
+    /// jumping. `None` until the first explicit overworld clock state
+    /// establishes it.
+    overworld_clock: Option<WorldClock>,
+    /// The client's authoritative game-time counter (`ClientLevel`'s
+    /// `clientLevelData.getGameTime()`). `None` until the first `set_time`
+    /// establishes it; a server sync resets it to the packet value and every
+    /// running client tick increments it by one (`ClientLevel.tickTime`). This
+    /// is the game time the local world-clock advance runs against — keeping it
+    /// in lockstep with `overworld_clock.last_game_time` is what makes a sync at
+    /// the already-predicted time a zero-delta no-op (no double count).
+    game_time: Option<i64>,
     /// Columns whose mesh is stale (new chunk / block edit). The live
     /// renderer drains this to know what to re-mesh; the bot ignores it.
     dirty: std::collections::HashSet<(i32, i32)>,
@@ -173,6 +193,8 @@ impl<'a> Connection<'a> {
             teleports: 0,
             block_updates: 0,
             day_ticks: None,
+            overworld_clock: None,
+            game_time: None,
             dirty: std::collections::HashSet::new(),
             light: rewo_world::light::LightEngine::new(),
             light_emission: Vec::new(),
@@ -297,6 +319,18 @@ impl PlaySession {
         self.drain_inbound()?;
         if self.disconnect.is_some() {
             return Ok(());
+        }
+        // `ClientLevel.tickTime`: once the level exists, every running client
+        // tick bumps the game time by one and ticks the world clock against it.
+        // This is what advances the day/night cycle smoothly between the
+        // server's 20-tick `set_time` syncs — the sync-only path moved the clock
+        // in visible jumps and fell short of the elapsed ticks. Runs even before
+        // spawn, exactly like vanilla's `ClientLevel.tick` after the level
+        // exists. A sync processed above in `drain_inbound` already re-anchored
+        // `game_time`, so this is the one and only local `+1` for the tick.
+        if let Some((game_time, day)) = local_tick_time(self.game_time, &mut self.overworld_clock) {
+            self.game_time = Some(game_time);
+            self.day_ticks = Some(day);
         }
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
@@ -517,34 +551,54 @@ impl PlaySession {
             // formula. Body: `i64 gameTime`, then a VarInt-counted map of
             // `Holder<WorldClock>` → `{VarLong totalTicks, f32 partial,
             // f32 rate}`.
+            //
+            // `MinecraftServer.forceGameTimeSynchronization` broadcasts
+            // `SetTime(gameTime, Map.of())` every 20 ticks with an *empty* map;
+            // the client is expected to run each stored clock forward itself
+            // (`ClientClockManager.tick`). Only a real change (join, `/time`
+            // set) carries an explicit clock state. Holding the last total on
+            // an empty map — the previous behaviour — froze the celestials.
             let mut r = PacketReader::new(body);
             if let (Ok(game_time), Ok(count)) = (r.i64(), r.varint()) {
                 // A vanilla server sends BOTH the overworld and the_end
-                // clocks, so the entries must be matched by id — taking the
-                // first one picks whichever the map happened to serialise
-                // first. The key is a raw registry id (`ByteBufCodecs
-                // .holderRegistry` writes it plain; the `id + 1` /
-                // direct-holder scheme belongs to a different codec).
-                let mut ticks = None;
+                // clocks, so entries are matched by id — the key is a raw
+                // registry id (`ByteBufCodecs.holderRegistry` writes it plain;
+                // the `id + 1` / direct-holder scheme belongs to a different
+                // codec).
+                let mut entries: Vec<(i32, i64, f32, f32)> = Vec::new();
                 for _ in 0..count.max(0) {
                     let (holder, total, partial, rate) =
                         (r.varint(), r.varlong(), r.f32(), r.f32());
-                    let (Ok(holder), Ok(total), Ok(_), Ok(_)) = (holder, total, partial, rate)
+                    let (Ok(holder), Ok(total), Ok(partial), Ok(rate)) =
+                        (holder, total, partial, rate)
                     else {
                         break;
                     };
-                    if Some(holder) == self.overworld_clock_id {
-                        ticks = Some(total);
-                    }
+                    entries.push((holder, total, partial, rate));
                 }
-                // Clock states are only sent when they change (the join packet
-                // carries them, later ticks do not), so hold the last value.
-                if let Some(t) = ticks {
-                    self.day_ticks = Some(t);
-                } else if self.day_ticks.is_none() {
-                    self.day_ticks = Some(game_time);
-                }
-                log::debug!("net: set_time game={game_time} clocks={count} day_ticks={:?}", self.day_ticks);
+                // `ClientLevel.setGameTime`: the server's game time is
+                // authoritative. The per-tick local increment continues from
+                // here, and because this re-anchors `game_time` (and the clock's
+                // `last_game_time` via the advance below) the same client tick's
+                // local `+1` is not double-counted.
+                self.game_time = Some(game_time);
+                apply_set_time(
+                    &mut self.overworld_clock,
+                    self.overworld_clock_id,
+                    game_time,
+                    &entries,
+                );
+                // Use the ported clock's total once it exists; before any real
+                // clock state, fall back to `gameTime` (best-effort for a
+                // server that never registers one).
+                self.day_ticks = Some(match &self.overworld_clock {
+                    Some(clock) => clock.total,
+                    None => game_time,
+                });
+                log::debug!(
+                    "net: set_time game={game_time} clocks={count} day_ticks={:?}",
+                    self.day_ticks
+                );
             }
         } else if Some(id) == ids.cb_play_block_ack {
             // Sequence ack — server confirms our predicted change. We don't
@@ -591,7 +645,11 @@ impl PlaySession {
         } else if id == ids.cb_play_move_entity_rot {
             let mut r = PacketReader::new(body);
             let parse = (|| -> rewo_proto::Result<(i32, f32, f32)> {
-                Ok((r.varint()?, packed_degrees(r.i8()?), packed_degrees(r.i8()?)))
+                Ok((
+                    r.varint()?,
+                    packed_degrees(r.i8()?),
+                    packed_degrees(r.i8()?),
+                ))
             })();
             if let Ok((eid, yaw, pitch)) = parse {
                 if let Some(e) = self.world.entities.get_mut(eid) {
@@ -753,14 +811,42 @@ impl PlaySession {
         let rel = |bit: i32| relatives & (1 << bit) != 0;
         // Relative bits (decompiled Relative enum order): X=0 Y=1 Z=2
         // Y_ROT=3 X_ROT=4, deltas 5..7, rotate-delta 8.
-        self.player.x = if rel(0) { self.player.x + vals[0] } else { vals[0] };
-        self.player.y = if rel(1) { self.player.y + vals[1] } else { vals[1] };
-        self.player.z = if rel(2) { self.player.z + vals[2] } else { vals[2] };
+        self.player.x = if rel(0) {
+            self.player.x + vals[0]
+        } else {
+            vals[0]
+        };
+        self.player.y = if rel(1) {
+            self.player.y + vals[1]
+        } else {
+            vals[1]
+        };
+        self.player.z = if rel(2) {
+            self.player.z + vals[2]
+        } else {
+            vals[2]
+        };
         self.player.yaw = if rel(3) { self.player.yaw + yaw } else { yaw };
-        self.player.pitch = if rel(4) { self.player.pitch + pitch } else { pitch };
-        self.player.vx = if rel(5) { self.player.vx + vals[3] } else { vals[3] };
-        self.player.vy = if rel(6) { self.player.vy + vals[4] } else { vals[4] };
-        self.player.vz = if rel(7) { self.player.vz + vals[5] } else { vals[5] };
+        self.player.pitch = if rel(4) {
+            self.player.pitch + pitch
+        } else {
+            pitch
+        };
+        self.player.vx = if rel(5) {
+            self.player.vx + vals[3]
+        } else {
+            vals[3]
+        };
+        self.player.vy = if rel(6) {
+            self.player.vy + vals[4]
+        } else {
+            vals[4]
+        };
+        self.player.vz = if rel(7) {
+            self.player.vz + vals[5]
+        } else {
+            vals[5]
+        };
 
         let mut ack = PacketWriter::packet(self.ids.sb_play_accept_teleport);
         ack.varint(teleport_id);
@@ -911,8 +997,10 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.uuid(signer.session_id);
         p.i64(signer.expires_at_ms);
-        p.varint(signer.public_key_der.len() as i32).raw(&signer.public_key_der);
-        p.varint(signer.key_signature.len() as i32).raw(&signer.key_signature);
+        p.varint(signer.public_key_der.len() as i32)
+            .raw(&signer.public_key_der);
+        p.varint(signer.key_signature.len() as i32)
+            .raw(&signer.key_signature);
         self.send(p)
     }
 
@@ -920,7 +1008,9 @@ impl PlaySession {
         let Some(id) = self.ids.sb_play_chat else {
             return Err("chat packet unavailable".into());
         };
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
         let millis = now.as_millis() as i64;
         // A signature commits to the seconds-precision timestamp + a random
         // salt; both must go on the wire exactly as signed.
@@ -1066,6 +1156,141 @@ impl PlaySession {
     }
 }
 
+/// The overworld world clock, ported from 26.2 `ClientClockManager.WorldClock`.
+/// The renderer reads `total`; `partial`/`rate`/`last_game_time` are the
+/// integration state that lets an empty `set_time` map advance the clock.
+///
+/// `partial` is stored as `f32` to match vanilla `ClockInstance.partialTick`
+/// exactly. Each `advance` widens it to `f64` for the multiply-and-floor, then
+/// truncates the remainder back to `f32` (`(float)(newPartialTicks - fullTicks)`)
+/// — keeping the storage width identical to vanilla means the fractional carry
+/// rounds bit-for-bit the way the client does, rather than accumulating extra
+/// precision the client never keeps. `total`/`last_game_time` stay exact.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorldClock {
+    total: i64,
+    partial: f32,
+    rate: f32,
+    last_game_time: i64,
+}
+
+impl WorldClock {
+    /// Establish a clock from an explicit wire state observed at `game_time`
+    /// (`WorldClock.Data` → the stored clock).
+    fn from_state(game_time: i64, total: i64, partial: f32, rate: f32) -> Self {
+        WorldClock {
+            total,
+            partial,
+            rate,
+            last_game_time: game_time,
+        }
+    }
+
+    /// Vanilla `ClientClockManager.tick`, transcribed exactly:
+    ///
+    /// ```text
+    /// long   gameTimeDelta   = gameTime - lastTickGameTime;         // long: wraps
+    /// double newPartialTicks = instance.partialTick + (double)gameTimeDelta * instance.rate;
+    /// long   fullTicks       = Mth.floor(newPartialTicks);          // Mth.floor returns int, widened to long
+    /// instance.partialTick   = (float)(newPartialTicks - fullTicks);
+    /// instance.totalTicks   += fullTicks;                           // long: wraps
+    /// ```
+    ///
+    /// Three primitive-semantics details are load-bearing, each with a matching
+    /// Rust idiom:
+    ///
+    /// * `gameTime - lastTickGameTime` is `long` subtraction and wraps
+    ///   two's-complement; `wrapping_sub` matches it (and dodges a debug-overflow
+    ///   panic) before the delta is widened to `f64`.
+    /// * `Mth.floor(double)` returns a Java **`int`** (`(int)Math.floor(v)`),
+    ///   which `long fullTicks` then widens. The `double → int` narrowing
+    ///   saturates to `i32::MIN`/`i32::MAX` and maps `NaN` to `0` — semantics
+    ///   Rust's `as i32` cast reproduces exactly. Flooring straight to `i64`
+    ///   would instead saturate to the far larger `i64` bounds, diverging for
+    ///   out-of-`i32`-range or `NaN` `newPartialTicks`, so we floor to `i32`
+    ///   first and widen. The `(float)(newPartialTicks - fullTicks)` remainder is
+    ///   likewise taken against that `i32`-derived `fullTicks` (widened back to
+    ///   `double`), not the true `f64` floor — so an out-of-range value carries
+    ///   the same (possibly `±inf`) `f32` the client keeps.
+    /// * `totalTicks += fullTicks` is `long` addition and wraps; `wrapping_add`
+    ///   matches it.
+    ///
+    /// The stored `f32` `partial` is widened to `f64` for the multiply-and-floor,
+    /// then the remainder is truncated back to `f32` — the widen-compute-narrow
+    /// round-trip is what keeps the carry bit-identical to the client. `Mth.floor`
+    /// and `f64::floor` both round toward negative infinity, so a negative `rate`
+    /// borrows a whole tick from `total` and leaves a positive carry. A `rate` of
+    /// 0 (paused world) leaves `total` unchanged; a fractional `rate` accumulates
+    /// until a whole tick rolls over.
+    fn advance(&mut self, game_time: i64) {
+        // `gameTime - lastTickGameTime` is `long` arithmetic; wrap it the same
+        // way (and avoid a debug-overflow panic) before widening to `f64`.
+        let delta = game_time.wrapping_sub(self.last_game_time) as f64;
+        let new_partial = self.partial as f64 + delta * self.rate as f64;
+        // `Mth.floor` returns an `int`, so narrow to `i32` (saturating, NaN → 0)
+        // before widening to the `long fullTicks`. A direct `as i64` would
+        // saturate to the wrong bounds for out-of-`i32`-range / NaN inputs.
+        let full_i32 = new_partial.floor() as i32;
+        let full = i64::from(full_i32);
+        // `(float)(newPartialTicks - fullTicks)`: the remainder is against the
+        // i32-derived `fullTicks` (widened to `double`), exactly like Java.
+        self.partial = (new_partial - full as f64) as f32;
+        // `totalTicks += fullTicks` is wrapping `long` addition.
+        self.total = self.total.wrapping_add(full);
+        self.last_game_time = game_time;
+    }
+}
+
+/// Apply one `set_time` to the overworld clock, in vanilla
+/// `ClientClockManager.handleUpdates` order: **advance** the stored clock by the
+/// game-time delta first (so an empty update still moves the day/night cycle),
+/// then let any explicit overworld clock state in the packet **overwrite** it.
+/// Matching this order is load-bearing: a packet that both syncs and re-sets the
+/// clock must land on the explicit value, not the advanced one.
+fn apply_set_time(
+    clock: &mut Option<WorldClock>,
+    overworld_id: Option<i32>,
+    game_time: i64,
+    entries: &[(i32, i64, f32, f32)],
+) {
+    if let Some(c) = clock.as_mut() {
+        c.advance(game_time);
+    }
+    for &(holder, total, partial, rate) in entries {
+        if Some(holder) == overworld_id {
+            *clock = Some(WorldClock::from_state(game_time, total, partial, rate));
+        }
+    }
+}
+
+/// One `ClientLevel.tickTime`, transcribed: read the stored game-time, bump it
+/// by one (`clientLevelData.getGameTime() + 1L`), advance the overworld clock
+/// against the new value (`ClientClockManager.tick(gameTime)`), and hand back
+/// the game-time to store plus the day-tick the renderer should read.
+///
+/// The `+ 1L` is `long` addition and wraps two's-complement, so `wrapping_add`
+/// matches it. A `None` game-time means no `set_time` has arrived yet — vanilla
+/// only runs `tickTime` once the level exists — so there is nothing to tick and
+/// this is a no-op (`None`), leaving the renderer on full daylight.
+///
+/// This is deliberately the twin of `apply_set_time` (the `handleUpdates`
+/// path), not a merge of it: vanilla runs both against the same clock on any
+/// tick a sync arrives — the sync advances-then-reanchors the clock to the
+/// server value, and this local `+1` then continues from it. Because each
+/// `advance` re-bases its delta on `last_game_time`, running both is not
+/// double-counting: an empty sync at the already-predicted game time advances
+/// the clock by zero, leaving exactly this one local `+1`. If no explicit
+/// overworld clock exists yet, the day-tick falls back to the raw game time
+/// (best-effort), still advancing one per tick rather than only on packets.
+fn local_tick_time(game_time: Option<i64>, clock: &mut Option<WorldClock>) -> Option<(i64, i64)> {
+    let next = game_time?.wrapping_add(1);
+    if let Some(c) = clock.as_mut() {
+        c.advance(next);
+    }
+    let day = clock.as_ref().map(|c| c.total).unwrap_or(next);
+    Some((next, day))
+}
+
 fn write_position(p: &mut PacketWriter, x: i32, y: i32, z: i32) {
     let v: u64 = (((x as i64 & 0x3ff_ffff) as u64) << 38)
         | (((z as i64 & 0x3ff_ffff) as u64) << 12)
@@ -1207,7 +1432,11 @@ mod push_tests {
 /// chunk, which reads as "some blocks never update".
 fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
     let v = packed as i64;
-    ((v >> 42) as i32, ((v << 44) >> 44) as i32, ((v << 22) >> 42) as i32)
+    (
+        (v >> 42) as i32,
+        ((v << 44) >> 44) as i32,
+        ((v << 22) >> 42) as i32,
+    )
 }
 
 /// Unpack a 12-bit in-section position: **x is bits 8..11, z is 4..7, y is
@@ -1229,7 +1458,13 @@ mod section_update_tests {
 
     #[test]
     fn section_pos_roundtrips_including_negatives() {
-        for (x, y, z) in [(0, 0, 0), (1, 2, 3), (-1, -1, -1), (-3000, -4, 2999), (100, 19, -100)] {
+        for (x, y, z) in [
+            (0, 0, 0),
+            (1, 2, 3),
+            (-1, -1, -1),
+            (-3000, -4, 2999),
+            (100, 19, -100),
+        ] {
             assert_eq!(
                 unpack_section_pos(as_long(x as i64, y as i64, z as i64)),
                 (x, y, z),
@@ -1243,7 +1478,11 @@ mod section_update_tests {
         // Vanilla packs `x << 8 | z << 4 | y`.
         for (x, y, z) in [(0, 0, 0), (15, 15, 15), (1, 2, 3), (9, 4, 7)] {
             let packed = (x << 8) | (z << 4) | y;
-            assert_eq!(unpack_section_offset(packed), (x, y, z), "offset ({x},{y},{z})");
+            assert_eq!(
+                unpack_section_offset(packed),
+                (x, y, z),
+                "offset ({x},{y},{z})"
+            );
         }
     }
 
@@ -1253,5 +1492,349 @@ mod section_update_tests {
         let packed: u64 = (1234u64 << 12) | ((5 << 8) | (6 << 4) | 7);
         assert_eq!(packed >> 12, 1234);
         assert_eq!(unpack_section_offset((packed & 4095) as i32), (5, 7, 6));
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{apply_set_time, local_tick_time, WorldClock};
+
+    const OVERWORLD: Option<i32> = Some(0);
+
+    /// The join packet establishes the clock from an explicit state — total and
+    /// last-game-time come straight from the wire. (The real server session
+    /// showed `game=138341` establishing `total=189121`.)
+    #[test]
+    fn initial_explicit_state_establishes_the_clock() {
+        let mut clock = None;
+        apply_set_time(&mut clock, OVERWORLD, 138341, &[(0, 189121, 0.0, 1.0)]);
+        let c = clock.expect("clock established");
+        assert_eq!(c.total, 189121);
+        assert_eq!(c.last_game_time, 138341);
+        assert_eq!(c.partial, 0.0);
+        assert_eq!(c.rate, 1.0);
+    }
+
+    /// The 20-tick `forceGameTimeSynchronization` sync carries an EMPTY map; at
+    /// rate 1 it must advance `total` by the exact game-time delta. This is the
+    /// frozen-clock regression: the old code held the last total here.
+    #[test]
+    fn empty_map_advances_by_the_game_time_delta_at_rate_one() {
+        let mut clock = Some(WorldClock::from_state(138341, 189121, 0.0, 1.0));
+        // The real diagnostic's game times after the join, deltas 3/20/20/20.
+        for (game_time, expected_total) in [
+            (138344, 189124),
+            (138364, 189144),
+            (138384, 189164),
+            (138404, 189184),
+        ] {
+            apply_set_time(&mut clock, OVERWORLD, game_time, &[]);
+            let c = clock.unwrap();
+            assert_eq!(c.total, expected_total, "at game {game_time}");
+            assert_eq!(c.last_game_time, game_time);
+        }
+    }
+
+    /// A paused world (`/tick freeze`, or `doDaylightCycle false` reported as
+    /// rate 0) must NOT advance on empty syncs, however large the delta.
+    #[test]
+    fn paused_rate_zero_holds_total() {
+        let mut clock = Some(WorldClock::from_state(1000, 500, 0.0, 0.0));
+        apply_set_time(&mut clock, OVERWORLD, 1020, &[]);
+        apply_set_time(&mut clock, OVERWORLD, 5000, &[]);
+        let c = clock.unwrap();
+        assert_eq!(c.total, 500, "paused clock frozen");
+        assert_eq!(c.last_game_time, 5000, "still anchors to gameTime");
+    }
+
+    /// A fractional rate proves the floor + partial carry: at rate 0.5 a
+    /// single-tick advance banks half a tick, and the second single tick rolls
+    /// the carry over into one whole `total` tick.
+    #[test]
+    fn fractional_rate_floors_and_carries_the_remainder() {
+        let mut clock = Some(WorldClock::from_state(0, 0, 0.0, 0.5));
+
+        apply_set_time(&mut clock, OVERWORLD, 1, &[]); // +0.5 → floor 0, carry 0.5
+        let c = clock.unwrap();
+        assert_eq!(c.total, 0, "half a tick banks nothing yet");
+        assert!((c.partial - 0.5).abs() < 1e-9, "carry {}", c.partial);
+
+        apply_set_time(&mut clock, OVERWORLD, 2, &[]); // 0.5 + 0.5 = 1.0 → floor 1
+        let c = clock.unwrap();
+        assert_eq!(c.total, 1, "carry rolls into one whole tick");
+        assert!(c.partial.abs() < 1e-9, "carry reset, got {}", c.partial);
+    }
+
+    /// A negative `rate` (a clock running backward) proves the floor rounds
+    /// toward negative infinity, not toward zero: starting at partial 0.25, one
+    /// tick at rate -0.5 gives newPartial -0.25, `floor(-0.25) == -1` (NOT 0), so
+    /// `total` BORROWS a whole tick (10 → 9) and the remainder is a POSITIVE
+    /// `-0.25 - (-1) == 0.75`. A truncate-toward-zero floor would wrongly leave
+    /// `total` at 10 with a negative carry.
+    #[test]
+    fn negative_rate_floors_toward_negative_infinity_with_positive_carry() {
+        let mut clock = Some(WorldClock::from_state(0, 10, 0.25, -0.5));
+
+        apply_set_time(&mut clock, OVERWORLD, 1, &[]); // 0.25 - 0.5 = -0.25 → floor -1
+        let c = clock.unwrap();
+        assert_eq!(c.total, 9, "borrowed one whole tick from total");
+        assert!(
+            (c.partial - 0.75).abs() < 1e-6,
+            "positive carry {}",
+            c.partial
+        );
+        assert_eq!(c.last_game_time, 1);
+    }
+
+    /// Vanilla `handleUpdates` order: a packet that both advances (non-empty
+    /// game-time delta) AND carries an explicit overworld state must land on the
+    /// explicit value — the advance happens first and is then overwritten.
+    #[test]
+    fn explicit_state_overwrites_after_the_advance() {
+        let mut clock = Some(WorldClock::from_state(100, 5000, 0.0, 1.0));
+        // Delta 20 would advance to 5020, but the explicit reset wins.
+        apply_set_time(&mut clock, OVERWORLD, 120, &[(0, 0, 0.0, 1.0)]);
+        let c = clock.unwrap();
+        assert_eq!(c.total, 0, "explicit /time set overrides the advance");
+        assert_eq!(c.last_game_time, 120);
+    }
+
+    /// The_end's clock is present in the map but must not touch the overworld —
+    /// entries are matched by registry id, and the overworld still advances.
+    #[test]
+    fn a_non_overworld_entry_only_advances_the_overworld() {
+        let mut clock = Some(WorldClock::from_state(100, 5000, 0.0, 1.0));
+        // id 1 is the_end; the overworld advances by the delta, id 1 ignored.
+        apply_set_time(&mut clock, OVERWORLD, 120, &[(1, 999, 0.0, 1.0)]);
+        assert_eq!(
+            clock.unwrap().total,
+            5020,
+            "overworld advanced, the_end skipped"
+        );
+    }
+
+    /// `Mth.floor` returns a Java `int`, so a `newPartialTicks` past `i32::MAX`
+    /// must saturate `fullTicks` to `i32::MAX` — NOT the far larger `i64::MAX` a
+    /// direct `f64 as i64` cast would give. At rate 1 a 5-billion-tick delta
+    /// (well past `i32::MAX ≈ 2.147e9`) banks exactly `i32::MAX` whole ticks and
+    /// carries the ~2.85e9 remainder against that saturated value. The buggy
+    /// direct-i64 path would instead bank the full 5e9 and carry 0.
+    #[test]
+    fn huge_positive_partial_saturates_full_to_i32_max() {
+        let mut clock = Some(WorldClock::from_state(0, 0, 0.0, 1.0));
+        // delta = 5_000_000_000 (exact in f64), newPartialTicks = 5e9.
+        apply_set_time(&mut clock, OVERWORLD, 5_000_000_000, &[]);
+        let c = clock.unwrap();
+        assert_eq!(
+            c.total,
+            i64::from(i32::MAX),
+            "double→int saturates to i32::MAX, not i64::MAX (direct i64 would be 5e9)"
+        );
+        assert!(
+            c.partial.is_finite() && c.partial > 2.8e9,
+            "remainder taken against the i32-saturated full, not the true floor (got {})",
+            c.partial
+        );
+        assert_eq!(c.last_game_time, 5_000_000_000);
+    }
+
+    /// A `NaN` rate poisons the arithmetic: `newPartialTicks` is `NaN`,
+    /// `Mth.floor`'s `double→int` narrowing maps `NaN` to `0` (so `total` holds),
+    /// and the `(float)(NaN - 0)` carry is `NaN`. This must not panic.
+    #[test]
+    fn nan_rate_floors_to_zero_and_poisons_the_carry() {
+        let mut clock = Some(WorldClock::from_state(0, 100, 0.0, f32::NAN));
+        apply_set_time(&mut clock, OVERWORLD, 1, &[]);
+        let c = clock.unwrap();
+        assert_eq!(
+            c.total, 100,
+            "NaN floors to 0 (NaN→int is 0), total unchanged"
+        );
+        assert!(
+            c.partial.is_nan(),
+            "NaN rate poisons the carry, got {}",
+            c.partial
+        );
+        assert_eq!(c.last_game_time, 1);
+    }
+
+    /// `gameTime - lastTickGameTime` is `long` subtraction that wraps
+    /// two's-complement — `i64::MAX - i64::MIN` wraps to `-1`, not a debug panic.
+    /// At rate 1 that -1 delta borrows exactly one whole tick from `total`.
+    #[test]
+    fn delta_subtraction_wraps_rather_than_panics() {
+        let mut clock = Some(WorldClock::from_state(i64::MIN, 5000, 0.0, 1.0));
+        // i64::MAX.wrapping_sub(i64::MIN) == -1 → newPartialTicks = -1.0.
+        apply_set_time(&mut clock, OVERWORLD, i64::MAX, &[]);
+        let c = clock.unwrap();
+        assert_eq!(
+            c.total, 4999,
+            "wrapped delta of -1 borrows one tick, no panic"
+        );
+        assert_eq!(c.last_game_time, i64::MAX);
+    }
+
+    /// `totalTicks += fullTicks` is `long` addition that wraps two's-complement —
+    /// `i64::MAX + 1` wraps to `i64::MIN`, not a debug overflow panic.
+    #[test]
+    fn total_addition_wraps_rather_than_panics() {
+        let mut clock = Some(WorldClock::from_state(0, i64::MAX, 0.0, 1.0));
+        // delta 1 at rate 1 → fullTicks 1 → i64::MAX.wrapping_add(1).
+        apply_set_time(&mut clock, OVERWORLD, 1, &[]);
+        let c = clock.unwrap();
+        assert_eq!(
+            c.total,
+            i64::MIN,
+            "wrapping_add overflow wraps to i64::MIN, no panic"
+        );
+        assert_eq!(c.last_game_time, 1);
+    }
+
+    // -- `ClientLevel.tickTime`: the local per-tick advance -----------------
+
+    /// Before the first `set_time` the client game-time is `None`, so
+    /// `ClientLevel.tickTime` has nothing to run — the local tick is a no-op and
+    /// the renderer keeps reading full daylight.
+    #[test]
+    fn local_tick_before_first_set_time_is_a_no_op() {
+        let mut clock = None;
+        assert_eq!(local_tick_time(None, &mut clock), None);
+        assert!(clock.is_none());
+    }
+
+    /// After an explicit join establishes the clock, each running client tick
+    /// advances it by exactly one — N local ticks add N. This is the path the
+    /// sync-only clock lacked: it moved in 20-tick jumps and fell short of the
+    /// elapsed ticks (the measured +75 over 80 ticks).
+    #[test]
+    fn join_then_n_local_ticks_advance_n() {
+        let mut clock = None;
+        // Join carries an explicit overworld state; `set_time` also anchors the
+        // client game-time to the packet value (the `setGameTime` step).
+        apply_set_time(&mut clock, OVERWORLD, 1000, &[(0, 5000, 0.0, 1.0)]);
+        let mut game_time = Some(1000);
+        for i in 1..=64 {
+            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
+            game_time = Some(gt);
+            assert_eq!(gt, 1000 + i, "game_time advances one per tick");
+            assert_eq!(day, 5000 + i, "day_ticks advances one per tick at rate 1");
+        }
+        assert_eq!(clock.unwrap().total, 5064);
+        assert_eq!(game_time, Some(1064));
+    }
+
+    /// The no-double-count invariant: the 20-tick `forceGameTimeSynchronization`
+    /// sync at the game time the client already predicted contributes a
+    /// zero-delta advance on its own, leaving exactly the one local `+1` for
+    /// that tick. (In `PlaySession::tick` the sync is drained before the local
+    /// advance, so both run against the same clock in one tick.)
+    #[test]
+    fn empty_sync_at_predicted_time_adds_zero_then_one_local_tick() {
+        // The client has locally ticked its clock up to game 1020 (clock 5020).
+        let mut clock = Some(WorldClock::from_state(1020, 5020, 0.0, 1.0));
+        let game_time = Some(1020);
+
+        // A drained empty sync carries the *already-predicted* game time 1020 →
+        // `setGameTime` is a no-op and `handleUpdates` advances by delta 0.
+        apply_set_time(&mut clock, OVERWORLD, 1020, &[]);
+        assert_eq!(
+            clock.unwrap().total,
+            5020,
+            "empty sync at the predicted time adds zero"
+        );
+
+        // Then this tick's single local `+1`.
+        let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
+        assert_eq!(gt, 1021);
+        assert_eq!(day, 5021, "exactly one tick banked, no double count");
+    }
+
+    /// A server sync whose game time DIFFERS from the client's prediction
+    /// re-anchors the clock to the server value (a forward jump banks the gap, a
+    /// backward jump borrows it), and the same tick's local `+1` then continues
+    /// from the corrected value.
+    #[test]
+    fn server_correction_reanchors_then_local_tick() {
+        // Forward correction: the client predicted 1000, the server is at 1005.
+        let mut clock = Some(WorldClock::from_state(1000, 5000, 0.0, 1.0));
+        apply_set_time(&mut clock, OVERWORLD, 1005, &[]); // advance delta +5
+        assert_eq!(
+            clock.unwrap().total,
+            5005,
+            "forward re-anchor banks the 5-tick gap"
+        );
+        let (gt, day) = local_tick_time(Some(1005), &mut clock).unwrap();
+        assert_eq!(
+            (gt, day),
+            (1006, 5006),
+            "local +1 continues from the correction"
+        );
+
+        // Backward correction: the client predicted 2000, the server is at 1997.
+        let mut clock = Some(WorldClock::from_state(2000, 9000, 0.0, 1.0));
+        apply_set_time(&mut clock, OVERWORLD, 1997, &[]); // advance delta -3
+        assert_eq!(
+            clock.unwrap().total,
+            8997,
+            "backward re-anchor borrows the 3-tick gap"
+        );
+        let (gt, day) = local_tick_time(Some(1997), &mut clock).unwrap();
+        assert_eq!(
+            (gt, day),
+            (1998, 8998),
+            "local +1 continues from the correction"
+        );
+    }
+
+    /// A paused world (rate 0) advances the client game-time counter every tick
+    /// but leaves the clock `total` frozen — the day/night cycle holds while the
+    /// world keeps counting ticks (and the clock still re-anchors to `gameTime`).
+    #[test]
+    fn rate_zero_holds_total_while_game_time_advances() {
+        let mut clock = Some(WorldClock::from_state(1000, 500, 0.0, 0.0));
+        let mut game_time = Some(1000);
+        for i in 1..=10 {
+            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
+            game_time = Some(gt);
+            assert_eq!(gt, 1000 + i, "game_time still counts up");
+            assert_eq!(day, 500, "paused clock frozen");
+        }
+        let c = clock.unwrap();
+        assert_eq!(c.total, 500);
+        assert_eq!(c.last_game_time, 1010, "clock still re-anchors to gameTime");
+    }
+
+    /// The local `+1` is Java `long` addition (`getGameTime() + 1L`) and wraps
+    /// two's-complement: at `i64::MAX` the next tick's game-time is `i64::MIN`,
+    /// no debug-overflow panic. The clock's own wrapping delta then reads +1
+    /// across the boundary (`i64::MIN.wrapping_sub(i64::MAX) == 1`).
+    #[test]
+    fn local_game_time_wraps_at_i64_max() {
+        let mut clock = Some(WorldClock::from_state(i64::MAX, 5000, 0.0, 1.0));
+        let (gt, day) = local_tick_time(Some(i64::MAX), &mut clock).unwrap();
+        assert_eq!(gt, i64::MIN, "game_time wraps to i64::MIN, no panic");
+        assert_eq!(
+            day, 5001,
+            "clock's wrapping delta reads one tick across the wrap"
+        );
+        assert_eq!(clock.unwrap().last_game_time, i64::MIN);
+    }
+
+    /// Best-effort fallback: a server that sends `set_time` but never an
+    /// overworld clock state leaves `overworld_clock` `None`; the local tick
+    /// still advances the day-tick by falling back to the raw game time (one per
+    /// tick), rather than only jumping on packets.
+    #[test]
+    fn no_explicit_clock_falls_back_to_game_time_each_tick() {
+        let mut clock: Option<WorldClock> = None;
+        // `set_time` with an entry for the_end (id 1) only — overworld unmatched.
+        apply_set_time(&mut clock, OVERWORLD, 200, &[(1, 999, 0.0, 1.0)]);
+        assert!(clock.is_none(), "no overworld clock established");
+        let mut game_time = Some(200);
+        for i in 1..=5 {
+            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
+            game_time = Some(gt);
+            assert_eq!(day, 200 + i, "fallback day-tick advances one per tick");
+        }
     }
 }

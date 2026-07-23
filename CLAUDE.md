@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M7 + M9 CEM shipped)
+## Rewo — from-scratch native Minecraft client (M0–M12 shipped: online play, native CEM, client light, day/night + celestials)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1939,6 +1939,53 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   block's **own** cell (inside a solid block = always dark), so since
   grass_block renders as a Model the entire ground plane of every overworld
   was lighting at zero — hidden by the old floor. Detail in REWO_PLAN §15.
+- **M12 sun/moon/stars/sunrise shipped 2026-07-23** — the sky was a bare
+  gradient; M12 draws the clear-weather Overworld celestials in a Vulkan pass
+  between the gradient sky and terrain. `rewo-world/src/celestial.rs` ports the
+  exact 26.2 `Timelines.OVERWORLD_DAY`: the sun/moon/star **angle** tracks carry
+  `symmetricCubicBezier(0.362, 0.241)` over a two-keyframes-at-tick-6000
+  wrap-around pair (a naive lerp would freeze the sun), so `EasingType.CubicBezier`
+  is ported verbatim (Newton-Raphson `solve_t` + bisection fallback); star
+  brightness + the sunrise `ARGB_COLOR` track use linear ease, the latter
+  interpolated by `srgbLerp` (componentwise `Mth.lerpInt`, **alpha included** —
+  that settles RGB-vs-ARGB). `rewo-gpu/src/celestial.rs` + four shaders draw
+  sunrise→sun→moon→stars in `addSkyPass` order, rotation-only sky space
+  (`view_proj·T(eye)`), no depth, with the decompiled transform chains (base
+  `Y(−90°)`, per-body `X(angle)`, sun `T(0,100,0)·scale(30,1,30)`, moon
+  `scale(20,1,20)`, fan `X(90°)·Z(angle+90°)·scale(z=alpha)`), OVERLAY/TRANSLUCENT
+  blends, reversed moon UV winding, and an 8-cell atlas. Textures come from the
+  user's own client jar — sun + **eight separate moon-phase files**
+  (`environment/celestial/moon/<phase>.png`, `MoonPhase.index()` order); no jar,
+  no celestials. **Stars are generated bit-for-bit** vs a JOML 1.10.8 Java oracle
+  (seed-10842 `BitRandomSource` LCG, reject sq-length `≤0.010000001`/`≥1.0` →
+  **780 accepted / 4680 indices**, fingerprint `fef182656c6fe202`): the catch is
+  JOML's `Math.fma` is **non-fused** by default, so `lengthSquared` is the
+  right-associative `x*x+(y*y+z*z)` (2 ULP off a true FMA), and `libm::sin` (new
+  dep, fdlibm) matches Java's `(float)Math.sin` where Windows' libm drifts. The
+  sunrise fan samples the **`Mth` 65,536-entry sine table**, not platform trig —
+  load-bearing at the half-turn, where `Mth.sin(π)` is a tiny *positive* table
+  entry so the fan stays on side 0° while platform `sin(π_f32)` is negative and
+  would flip (fan fingerprint `75280003503b2a33`). M12 also fixed the M11
+  `SKY_COLOR` bug (only the horizon was tinted → blue midnight zenith; the zenith
+  now scales by the sky tint too) and a **frozen-clock** bug: the server
+  broadcasts `SetTime(gameTime, empty map)` every 20 ticks (only join/`/time`
+  carry a clock state), so `day_ticks` froze while game time advanced. The fix
+  ports 26.2's `ClientClockManager` — a `WorldClock` advanced from both
+  `apply_set_time` (advance-then-overwrite, so an empty sync still moves the
+  cycle) and a per-tick `ClientLevel.tickTime` local `+1`; running both isn't
+  double-counting because each `advance` re-bases on `last_game_time`. Java
+  primitive semantics are exact (`Mth.floor` returns an **`int`** → narrow to
+  `i32` before widening `long fullTicks`; `partial` truncates back to `f32`;
+  wrapping `long` arithmetic). Verified by a new permanent serverless gate
+  **`rewo skyshot --check`** (validation layers on) that reconstructs each
+  transform independently in f64 and asserts read-back pixel properties (zenith
+  tint ratios, phase/alpha/discard/UV-winding, projected sun/moon envelopes,
+  analytic sunrise-fan footprint, the 780/4680 star count) — not a "looks right"
+  proxy. Gates: **142** unit tests green (world 44, net 41, gpu 33, data 5, mesh
+  8, proto 11), skyshot green, mobshot 243/243, demo PNG byte-identical, bench
+  GPU 0.228 ms avg, light gate EXACT, world clock advanced +278/280 ticks.
+  In-game visual parity is **not** claimed (no eyeball pass); the properties the
+  gate checks are what M12 verifies. Detail in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

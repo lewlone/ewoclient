@@ -2359,6 +2359,7 @@ dependencies = [
  "glam",
  "gpu-allocator",
  "indexmap",
+ "libm",
  "log",
  "png",
  "raw-window-handle",

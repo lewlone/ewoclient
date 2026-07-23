@@ -133,6 +133,11 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     // Tick index at which the server first spawned us — the action clock is
     // relative to spawn, not connect (chunk streaming can take a second).
     let mut spawn_tick: Option<u64> = None;
+    // Earliest world-clock value observed, so the summary can show the day/night
+    // clock actually advanced over the session (start → end → advance). This is
+    // the headless proof of the frozen-clock fix — an empty `set_time` every 20
+    // ticks used to hold the value; a live session now shows a non-zero advance.
+    let mut clock_start: Option<i64> = None;
 
     for tick_n in 0..total_ticks {
         let deadline = start + TICK * (tick_n as u32 + 1);
@@ -153,6 +158,9 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }
+        if clock_start.is_none() {
+            clock_start = session.day_ticks;
+        }
         // Real-time pacing so the server sees a genuine 20 Hz client.
         let now = Instant::now();
         if now < deadline {
@@ -160,7 +168,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         }
     }
 
-    report(&mut session, &acted, &args, baked.as_ref(), &data);
+    report(&mut session, &acted, &args, baked.as_ref(), &data, clock_start);
     if !session.spawned {
         return Err("never spawned (no initial position from server)".into());
     }
@@ -307,6 +315,7 @@ fn report(
     args: &PlayArgs,
     baked: Option<&assets::BakedAssets>,
     data: &GameData,
+    clock_start: Option<i64>,
 ) {
     let (px, py, pz) = (session.player.x, session.player.y, session.player.z);
     let ground = session.world.block_state_at(px.floor() as i32, py as i32 - 1, pz.floor() as i32);
@@ -322,6 +331,15 @@ fn report(
         session.teleports, session.corrections
     );
     println!("[rewo-m3] block_updates received: {}", session.block_updates);
+    // World-clock progress: an advance of ~1 per game tick elapsed proves the
+    // day/night clock is running; a frozen clock reads `advance 0` here.
+    match (clock_start, session.day_ticks) {
+        (Some(start), Some(end)) => println!(
+            "[rewo-m3] world clock: start {start} → end {end}  (advance {} over the session)",
+            end - start
+        ),
+        _ => println!("[rewo-m3] world clock: no set_time observed"),
+    }
     println!(
         "[rewo-m3] actions — walk:{} sprint:{} jump:{} look:{} dig:{} place:{} chat:{} give:{}",
         acted.walked,
