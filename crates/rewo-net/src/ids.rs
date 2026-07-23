@@ -54,6 +54,9 @@ pub struct Ids {
     pub cb_play_position: i32,
     pub cb_play_chunk_batch_finished: i32,
     pub cb_play_level_chunk: i32,
+    /// Lighting changed without the chunk being resent (torch placed, cave
+    /// mined into). Optional: a server that never sends it is still correct.
+    pub cb_play_light_update: Option<i32>,
     pub cb_play_forget_chunk: i32,
     pub cb_play_block_update: i32,
     pub cb_play_add_entity: i32,
@@ -135,6 +138,7 @@ impl Ids {
             cb_play_position: req!(p, P, C, "player_position"),
             cb_play_chunk_batch_finished: req!(p, P, C, "chunk_batch_finished"),
             cb_play_level_chunk: req!(p, P, C, "level_chunk_with_light"),
+            cb_play_light_update: opt!(p, P, C, "light_update"),
             cb_play_forget_chunk: req!(p, P, C, "forget_level_chunk"),
             cb_play_block_update: req!(p, P, C, "block_update"),
             cb_play_add_entity: req!(p, P, C, "add_entity"),

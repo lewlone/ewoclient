@@ -82,6 +82,21 @@ impl World {
         col.brightness_at(&self.shape, x & 15, y, z & 15)
     }
 
+    /// Separate (block, sky) light — the F3 readout. An unloaded column
+    /// reports full sky so the readout matches `brightness_at`'s fallback.
+    pub fn light_at(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
+        let Some(col) = self.columns.get(&(x >> 4, z >> 4)) else {
+            return (0, 15);
+        };
+        col.light_at(&self.shape, x & 15, y, z & 15)
+    }
+
+    /// Mutable column access — the `light_update` path re-lights an already
+    /// loaded column in place.
+    pub fn column_mut(&mut self, cx: i32, cz: i32) -> Option<&mut chunk::Column> {
+        self.columns.get_mut(&(cx, cz)).map(std::sync::Arc::make_mut)
+    }
+
     pub fn column(&self, cx: i32, cz: i32) -> Option<&chunk::Column> {
         self.columns.get(&(cx, cz)).map(|c| c.as_ref())
     }

@@ -271,11 +271,11 @@ the code's author. Nothing below is settled truth.
   each will likely need decompile-derived constants (§13 risk).
 - **Entities are now world-lit** (2026-07-23, §15) — they were rendering at a
   fixed directional shade, identical in a cave and at noon.
-- **Light decode beyond flat-world-full-skylight is unverified.** The M1
-  Y-mask light distribution renders the flat world correctly, but caves/
-  overhangs/mixed light are untested (the earlier "black patches" were the
-  vertex double-add, not light — so light itself is *plausibly* fine but
-  unproven).
+- ~~**Light decode beyond flat-world-full-skylight is unverified**~~ —
+  **VERIFIED CORRECT 2026-07-23 (§15)**: measured in a sealed torch-lit room
+  (sky 0, block light peaking at the torch with exact 1-per-block falloff) and
+  under open sky (sky 15). The real gap is different and still open: **there is
+  no client-side light engine**, so lighting never changes after chunk load.
 - **Only the overworld dimension is tested.** Nether/end (different
   min_y/height via the registry parse) is coded but unexercised.
 - ~~**No online-mode / encryption / chat signing**~~ — **shipped M7
@@ -2748,3 +2748,44 @@ are preserved.
 Note this is the *client-side* lightmap only — there is still no time-of-day
 sky darkening (blocks don't have it either), so "night" doesn't dim anything
 yet. Consistent with the block path, which is the point.
+
+**2026-07-23 — cave light: the decode is correct; the missing piece is a
+client light engine.**
+
+The §0.0 "light decode beyond flat-world is unverified" item is now measured
+rather than assumed, with two new headless diagnostics:
+
+- `World::light_at(x,y,z) -> (block, sky)` — the two sources separately (the
+  existing `brightness_at` is their max). Surfaced as a vanilla-style
+  **`Light: N (S sky, B block)`** line in the F3 overlay.
+- `rewo play --light-at "x,y,z"` reports light at a fixed world coordinate in
+  the run summary, plus a short `+x` profile at the bot. Fixed coordinates
+  matter: the bot wanders, so "light near the bot" is not reproducible.
+
+**The decode is correct.** In a sealed stone room with one torch at
+`(46,-59,46)`, sampled two blocks above it: sky **0** everywhere and block
+light `8 9 10 11 12 11` across x=42..47 — the peak of 12 exactly over the
+torch column (14 − 2 for the vertical distance) falling 1 per block either
+side, i.e. textbook vanilla propagation. Under open sky, `sky 15, block 0`.
+The Y-mask distribution, nibble indexing and sky-vs-block array ordering are
+all right.
+
+**The actual gap: lighting never changes after chunk load.** Place a torch
+mid-session and the client's block light stays 0. Instrumenting the packet
+stream shows **zero `light_update` packets** — because vanilla clients run
+their **own light engine**: the server ships light with chunk data and then
+leaves subsequent block edits to the client. So this was never a decode bug.
+
+Shipped here: a `light_update` handler anyway (`chunk::apply_light_update` +
+`World::column_mut`), since servers do send it in some situations (chunk-border
+relight) and it re-meshes the neighbourhood on arrival. It is correct but inert
+against a vanilla server for ordinary block edits.
+
+**Still open — the client light engine.** Needs BFS block-light propagation
+(add on placement, removal-then-repropagate on break) and sky-light re-flood on
+column changes. Two prerequisites worth recording: per-state **luminance is not
+in any datagen report** (blocks.json has no light field), so it has to come
+from the decompile or a curated table, the same situation as collision shapes;
+and light **opacity** would need more than the existing `solid` flag (vanilla
+glass is a full cube but blocks no light). Until it lands, lighting is correct
+as of chunk load and frozen thereafter.

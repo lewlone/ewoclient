@@ -1394,6 +1394,16 @@ fn build_text(
             format!("XYZ: {:.3} / {:.3} / {:.3}", p.x, p.y, p.z),
             format!("Block: {bx} {by} {bz}   [{rbx} {} {rbz}]", by.rem_euclid(16)),
             format!("Chunk: {cx} {cz}"),
+            {
+                // Vanilla F3's "Client Light" — sampled at the eye, the same
+                // cell entity lighting uses.
+                let (bl, sl) = session.world.light_at(
+                    bx as i32,
+                    p.eye_y().floor() as i32,
+                    bz as i32,
+                );
+                format!("Light: {} ({sl} sky, {bl} block)", bl.max(sl))
+            },
             format!(
                 "Facing: {} {}  ({:.1} / {:.1})",
                 compass(p.yaw),

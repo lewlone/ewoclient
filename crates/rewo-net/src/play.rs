@@ -393,6 +393,27 @@ impl PlaySession {
                 }
                 Err(e) => log::error!("play: chunk decode failed: {e}"),
             }
+        } else if Some(id) == ids.cb_play_light_update {
+            // Lighting changed without a chunk resend (torch placed, cave
+            // mined into). Without this the client's light is frozen at
+            // chunk-load, so a freshly lit cave stays black.
+            let shape = self.world.shape;
+            let mut r = PacketReader::new(body);
+            match (r.varint(), r.varint()) {
+                (Ok(cx), Ok(cz)) => {
+                    if let Some(col) = self.world.column_mut(cx, cz) {
+                        if let Err(e) = rewo_world::chunk::apply_light_update(&mut r, col) {
+                            log::error!("play: light_update decode failed: {e}");
+                        } else {
+                            // Re-light means re-mesh: vertex colours bake the
+                            // light in, so the neighbourhood must remesh too.
+                            self.mark_dirty_around(cx, cz);
+                        }
+                    }
+                    let _ = shape;
+                }
+                _ => log::error!("play: light_update: bad chunk coords"),
+            }
         } else if id == ids.cb_play_forget_chunk {
             let mut r = PacketReader::new(body);
             if let Ok(v) = r.i64() {

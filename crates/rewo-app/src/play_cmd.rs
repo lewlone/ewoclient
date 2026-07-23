@@ -38,6 +38,12 @@ pub struct PlayArgs {
     /// to exercise partial collision shapes against the server's own physics.
     #[arg(long)]
     setup: Option<String>,
+    /// Report light at a fixed world coordinate ("x,y,z") in the summary,
+    /// instead of only at the bot. Removes the bot's wandering from the
+    /// measurement — the deterministic way to check the light decode, and to
+    /// see whether a runtime change (a torch placed by --setup) reaches us.
+    #[arg(long)]
+    light_at: Option<String>,
     /// Send a chat line partway through.
     #[arg(long, default_value = "rewo bot online")]
     chat: String,
@@ -124,7 +130,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         }
     }
 
-    report(&session, &acted);
+    report(&session, &acted, &args);
     if !session.spawned {
         return Err("never spawned (no initial position from server)".into());
     }
@@ -256,7 +262,7 @@ fn feet_block(session: &PlaySession) -> (i32, i32, i32) {
 }
 
 
-fn report(session: &PlaySession, acted: &Actions) {
+fn report(session: &PlaySession, acted: &Actions, args: &PlayArgs) {
     let (px, py, pz) = (session.player.x, session.player.y, session.player.z);
     let ground = session.world.block_state_at(px.floor() as i32, py as i32 - 1, pz.floor() as i32);
     println!("[rewo-m3] play session summary");
@@ -283,6 +289,36 @@ fn report(session: &PlaySession, acted: &Actions) {
         acted.gave_block,
     );
     // Prove build/dig mutated the server world: query the echoed states.
+    // Light readout at the bot's final position — the headless check for the
+    // light decode. In a sealed, torch-lit room sky must be 0 and block must
+    // fall off by 1 per block from the torch; under open sky it's 15/0.
+    {
+        let p = &session.player;
+        let (bx, by, bz) = (p.x.floor() as i32, p.eye_y().floor() as i32, p.z.floor() as i32);
+        let (bl, sl) = session.world.light_at(bx, by, bz);
+        println!("[rewo-m3] LIGHT @ ({bx},{by},{bz}) = {} (sky {sl}, block {bl})", bl.max(sl));
+        // A short horizontal profile makes block-light falloff visible.
+        let profile: Vec<String> = (0..6)
+            .map(|d| {
+                let (b, sk) = session.world.light_at(bx + d, by, bz);
+                format!("{}:{}/{}", d, b, sk)
+            })
+            .collect();
+        println!("[rewo-m3] LIGHT profile +x (block/sky): {}", profile.join("  "));
+        if let Some(spec) = args.light_at.as_deref() {
+            let n: Vec<i32> = spec.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            if let [x, y, z] = n[..] {
+                let (b, sk) = session.world.light_at(x, y, z);
+                let st = session.world.block_state_at(x, y, z);
+                println!(
+                    "[rewo-m3] LIGHT at ({x},{y},{z}) = {} (sky {sk}, block {b})  state {st}",
+                    b.max(sk)
+                );
+            } else {
+                println!("[rewo-m3] LIGHT at: bad --light-at {spec:?} (want \"x,y,z\")");
+            }
+        }
+    }
     if let Some((x, y, z)) = acted.placed_at {
         let s = session.world.block_state_at(x, y, z);
         println!(

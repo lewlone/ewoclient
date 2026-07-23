@@ -103,6 +103,22 @@ impl Column {
         section.block_light(x, ly, z).max(section.sky_light(x, ly, z))
     }
 
+    /// Separate (block, sky) light at section-local x/z — the F3 readout and
+    /// anything that needs the two sources apart, unlike `brightness_at`
+    /// which is their max. Above the build height sky is full; below the
+    /// world both are 0. A missing section means "not sent", which for light
+    /// means zero, not fullbright.
+    pub fn light_at(&self, shape: &DimensionShape, lx: i32, y: i32, lz: i32) -> (u8, u8) {
+        let Some(si) = shape.section_index(y) else {
+            return if y >= shape.min_y + shape.height { (0, 15) } else { (0, 0) };
+        };
+        let Some(section) = self.sections.get(si) else {
+            return (0, 0);
+        };
+        let (x, ly, z) = (lx, y & 15, lz);
+        (section.block_light(x, ly, z), section.sky_light(x, ly, z))
+    }
+
     /// True when the section at index has no visible content — lets the
     /// mesher skip air. Overrides count as content.
     pub fn section_is_trivial(&self, idx: usize) -> bool {
@@ -188,6 +204,18 @@ impl Column {
 
 /// Decode a full Level Chunk With Light packet body (reader positioned right
 /// after the packet id).
+/// Apply a `light_update` packet to an existing column.
+///
+/// The server sends these whenever lighting changes without the chunk being
+/// resent — a torch placed, a block mined into a cave, sky light re-flooding.
+/// Without it the client's light is only ever correct as of chunk load, so a
+/// freshly lit cave stays pitch black. The payload after the chunk coords is
+/// byte-for-byte the same structure `level_chunk_with_light` carries, so the
+/// same reader handles it.
+pub fn apply_light_update(r: &mut PacketReader, col: &mut Column) -> Result<()> {
+    read_light_into(r, &mut col.sections)
+}
+
 pub fn read_level_chunk(
     r: &mut PacketReader,
     shape: &DimensionShape,
