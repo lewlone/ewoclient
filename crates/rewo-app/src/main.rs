@@ -9,6 +9,7 @@
 
 mod bench_cmd;
 mod demo_cmd;
+mod lightmapshot_cmd;
 mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
@@ -121,6 +122,10 @@ enum Command {
     /// M12 sky verification: render sun/moon/stars/sunrise + the zenith tint
     /// headless (no server) and assert their pixel properties with `--check`.
     Skyshot(skyshot_cmd::SkyshotArgs),
+    /// M13 lightmap verification: render terrain, water and entity cases
+    /// through the production Vulkan paths (no server) and assert their pixel
+    /// properties against independent CPU expectations with `--check`.
+    Lightmapshot(lightmapshot_cmd::LightmapshotArgs),
 }
 
 fn main() {
@@ -139,6 +144,7 @@ fn main() {
         Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
         Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
         Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
+        Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

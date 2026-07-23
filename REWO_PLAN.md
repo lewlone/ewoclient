@@ -9,12 +9,14 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M6 shipped + headlessly verified (2026-07-21), all pushed.**
+**Status: M0–M13 shipped + headlessly verified (2026-07-23). M0–M9 are
+pushed (`origin/main` @ `973ea5e`); the M10–M13 light-and-sky arc is reviewed
+local work based on M12 commit `06dd3eb`, intentionally not yet pushed.**
 See §0.0 for the fresh-session handoff and §15 for the per-milestone log.
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, 2026-07-21)
+## 0.0 HANDOFF — read this first (fresh session, 2026-07-23)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -33,9 +35,33 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M7 shipped + M9 (CEM/Fresh Animations), all pushed
+### Where it is: M0–M13 shipped; M0–M9 pushed, M10–M13 reviewed local
 
-**Latest (2026-07-22, one long session): M7 online-mode, real skins,
+**Latest (2026-07-23): the light-and-sky arc — M10 client light, M11 vanilla
+lightmap + day/night, M12 celestials, M13 the remaining lightmap terms. See
+§15 for the blow-by-blow.**
+- **M10 client light engine (server-exact)** — the two-phase block+sky flood
+  fill, transcribed from the decompile, so a placed torch lights and a dug
+  tunnel brightens (a vanilla server sends no light for ordinary edits). Gate
+  `rewo play --light-check`: **884,736 cells, 0 mismatches, both channels** vs
+  the server's own engine.
+- **M11 vanilla lightmap + day/night** — the real `l/(4-3l)` curve with block
+  and sky kept separate and *added* (not `max`ed), no floor (an unlit cave is
+  black), plus 26.x's keyframed `Timelines.OVERWORLD_DAY` sky-darken as a
+  uniform (a sunrise costs one push constant, not a remesh).
+- **M12 sun/moon/stars/sunrise + a smooth clock** — the clear-weather
+  celestials in a Vulkan pass between sky and terrain: sun, moon through all
+  eight phases, bit-exact JOML/LCG stars (780/4680), and the `Mth`-sine-table
+  sunrise fan, all on the ported 26.2 `Timelines.OVERWORLD_DAY` cubic-bezier
+  tracks. A `ClientClockManager` port drives a smooth world clock (fixing a
+  frozen-clock bug in the M11 code). Gate: **`rewo skyshot --check`**.
+- **M13 complete 26.2 lightmap** — the exact four-draw block flicker, gamma,
+  night vision and darkness terms, plus the minimal local-player effect packet
+  state that drives them. Terrain, water and entities consume one resolved RGB
+  lightmap state. Gate: **`rewo lightmapshot --check`**, a validation-on Vulkan
+  readback oracle that proves each term and rejects the old wrong block tint.
+
+**Earlier (2026-07-22, one long session): M7 online-mode, real skins,
 metadata mob detail, and the whole M9 CEM stack — see §15 for the blow-by-
 blow.** Headlines:
 - **M7 online-mode** — login encryption (RSA→sessionserver join→AES-128-
@@ -119,6 +145,13 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   `--time t` (pose the animation), `--skin <user|url>` (real player skin,
   M7c), `--pack <zip>` (render OptiFine CEM models + animations, M9),
   `--gesture name[,age]` / `--shell` (gesture rigs).
+- `rewo skyshot --check` — **the sky gate** (M12): a serverless headless pass
+  (validation layers on) that reconstructs each celestial transform in f64 and
+  asserts read-back pixel properties — zenith tint, phase/alpha/discard/UV
+  winding, the projected sun/moon envelopes, the analytic sunrise-fan
+  footprint, and the 780/4680 star count. Run after any sky/celestial/lightmap
+  change (`--out-dir <dir>` also dumps the rendered frames as an eyeball
+  artifact).
 - **The test servers**: local flat-world vanilla 26.2 servers the assistant
   sets up + runs. **Offline** at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
   (online-mode=false, port 25599, bot is op'd as `RewoOp` for
@@ -274,8 +307,11 @@ the code's author. Nothing below is settled truth.
 - ~~**Light decode beyond flat-world-full-skylight is unverified**~~ —
   **VERIFIED CORRECT 2026-07-23 (§15)**: measured in a sealed torch-lit room
   (sky 0, block light peaking at the torch with exact 1-per-block falloff) and
-  under open sky (sky 15). The real gap is different and still open: **there is
-  no client-side light engine**, so lighting never changes after chunk load.
+  under open sky (sky 15). ~~The real gap is different and still open: there is
+  no client-side light engine, so lighting never changes after chunk load.~~ —
+  **RESOLVED M10 (§15)**: the two-phase block+sky flood fill relights and
+  remeshes affected columns on every client edit, server-exact (gate
+  `rewo play --light-check`: 884,736 cells, 0 mismatches).
 - **Only the overworld dimension is tested.** Nether/end (different
   min_y/height via the registry parse) is coded but unexercised.
 - ~~**No online-mode / encryption / chat signing**~~ — **shipped M7
@@ -308,9 +344,10 @@ the code's author. Nothing below is settled truth.
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
   CCW). Cosmetic; the demo + normal angles are clean. (Much less visible
   now — the horizon fog covers the far field.)
-- **Sky is gradient + distance fog only** — no sun/moon/clouds/stars, no
-  time-of-day or per-biome sky color (§7 lists those; shipped the gradient
-  + fog, deferred the rest).
+- ~~**Sky is gradient + distance fog only**~~ — **RESOLVED M10–M12 (§15)**:
+  time-of-day sky/fog darkening (M11) + the clear-weather celestials — sun,
+  moon (all eight phases), stars, and the sunrise fan (M12). Still deferred:
+  clouds and per-biome sky color (§7).
 - **HUD is crosshair + hotbar + hearts + hunger only** — no item icons in
   the hotbar slots (needs item models), no XP bar, no armor/air, no
   effect icons, no gamemode-awareness (creative shows hearts/hunger).
@@ -3170,3 +3207,108 @@ untested (dimension-specific `ambientLight` unwired); entity-*event*-driven
 animations need the `entity_event` packet; face-occlusion merging is tested
 per-side rather than as a true shape union; and `glow_lichen`'s any-face
 emission stays approximated at 7.
+
+### 2026-07-23 — M13: the complete 26.2 lightmap
+
+M11 deliberately stopped at the static lightmap curve. M13 closes the four
+remaining terms from the 26.2 client itself: block-light flicker, the user's
+gamma/brightness option, night vision and darkness. The ground truth was
+`LightmapRenderStateExtractor`, `Lightmap`, `GameRenderer`, `LivingEntity`,
+`MobEffectInstance`, `Blendable`, and the clientbound update/remove-effect
+packet classes under the decompiled jar, plus
+`assets/minecraft/shaders/core/lightmap.fsh`. No wiki-derived behavior is in
+this pass.
+
+**Exact state and order.** `rewo-world/src/lightmap.rs` owns the Java-compatible
+48-bit `LegacyRandomSource`, the four-float flicker update and its damped
+accumulator, the 65,536-entry `Mth` sine table, night-vision duration envelope,
+darkness blend/cosine terms, and an independent CPU transcription of the
+shader. The shader order is load-bearing: curve the two 0–15 levels with
+`l/(4-3l)`; seed from max(ambient, night vision); add sky; apply the parabolic
+block tint; apply boss color; subtract darkness; clamp; apply `notGamma`; then
+mix by brightness. `GameRenderer` passes a fixed partial tick **1.0** to the
+extractor—using render interpolation here was an initially plausible but wrong
+implementation caught during review. Gamma defaults to vanilla's **0.5** and
+darkness-effect scale to **1.0**, both exposed as validated `rewo live` flags.
+
+The jar shader also corrected an older transcription error: block tint is
+`-10100 = 0xFFFFD88C`, RGB **255/216/140**, not the previously used
+`0xFFD86C`. Night vision is `0x999999`; ambient remains black in the currently
+tested Overworld. The CPU black sample intentionally retains the shader's
+`0/0` NaN semantics rather than inventing a zero guard; the production
+R8G8B8A8_SRGB store is separately measured by the oracle as `(0,0,0)`.
+
+**Effect protocol state.** `rewo-net/src/effects.rs` parses the 26.2
+local-player update/remove-effect packet layouts, captures night-vision and
+darkness registry raw IDs during Configuration, and tracks only the visual
+state the lightmap consumes. The login player entity id gates ticking; finite
+durations decrement on the same client-tick side as vanilla, removal is
+immediate, night vision follows the exact 200-tick envelope, and darkness uses
+the 22-tick blend state. Replacements copy the prior blend state even when the
+new effect itself is non-blended—the decompiled `forceAddEffect` behavior that
+an intuitive reset would get wrong. Blend interpolation is not clamped.
+
+**One state, every consumer.** `WorldLightmapState` occupies the existing
+128-byte push-constant budget. Terrain and water run the same GLSL include;
+entity vertices receive the same resolved RGB rather than a scalar light. The
+headless and windowed loops advance one flicker stream per successful client
+tick and resolve one state for terrain, water and entities each frame, avoiding
+three subtly different copies of the formula.
+
+**Permanent property oracle: `rewo lightmapshot --check`.** This is a
+serverless production-pipeline Vulkan readback with validation layers required
+and reported **ON**; it fails closed if validation is unavailable unless the
+caller explicitly opts out. Synthetic white textures isolate the lightmap and
+independent CPU expectations grade the rendered bytes. The matrix proves the
+correct warm tint (actual/expected **117,109,89**, with the old blue value 19
+levels farther away), block-factor response (max-channel delta **37**), gamma
+monotonicity at 0/.5/1 (luma **119.49→163.48→195.55**), night vision over
+black (**203,203,203**), black NaN store (**0,0,0**), positive/zero/doubled
+darkness at fixed partial 1 (double-option expected and actual
+**0.11215252**), water/opaque equality (delta **0**), and production entity
+geometry's normalized RGB (actual **1/.8467/.5511**, CPU
+**1/.8477/.5508**, 2,416 lit pixels). A green result is not a screenshot or a
+proxy: changing the old tint, term order, gamma, effect state, water include or
+entity channel transport breaks a named property.
+
+**The uncompromised M10 gate found an adjacent real bug.** The first final
+`--light-check --no-relight` run was red: **884,736 cells, block 0, sky 7**,
+all seven water cells stored by vanilla at 14 but recomputed at 15. A clean
+server reload reproduced it. The asset baker's special fluid branch had
+`continue`d before the common light assignment, silently leaving water
+dampening at 0 although decompiled `LiquidBlock.propagatesSkylightDown()` is
+false and `BlockBehaviour.getLightDampening()` therefore returns 1. The same
+branch also left lava emission at 0 despite the generated table's 15. The
+small repair reads those facts from the generated tables before the branch;
+its focused regression test pins water `(emission 0, dampening 1)` and lava
+`(15,1)`. Generated code was not hand-edited. The unchanged live oracle then
+returned **884,736 cells, block 0, sky 0 EXACT**, twice, including a fresh join
+after the final physics run.
+
+**Final gates.** Release tests: **180/180** across world 58, net 60, gpu 37,
+data 6, mesh 8 and proto 11, plus **10/10** app tests. `lightmapshot` and
+`skyshot` green with Vulkan validation ON; `mobshot` **243/243**. The demo PNG
+remains byte-identical at SHA-256
+`2CC56B4ACBFB92CB91398C27E5C4735885ABFF9331F66B7DC83BDBC002246635`.
+Physics is **CORRECTIONS: 0** over 600 ticks; final lighting is the exact result
+above. Replay produced one clean sample at GPU avg **0.236 ms**, p50 0.222,
+1%/0.1% tail means **0.816/0.982 ms**. Three later unchanged samples were
+system-noisier: avg **0.266–0.277**, p50 **0.224–0.231**, tail means
+**1.573–1.798 / 2.063–2.668 ms**. The stable median and the fact that the
+fluid-bake repair does not affect the replay argue against a rendering-cost
+regression, but the tail variance is recorded, not relabeled green. The test
+server was stopped and port 25599 verified free.
+
+**Honest failure history.** Besides the seven-cell water failure that caused
+the fluid fix, the final physics run's named correction meter passed but its
+auxiliary PLACE probe again read still-air while DIG succeeded, the same
+intermittent harness artifact recorded in M12. A post-restart still run also
+showed one expected spawn/teleport correction once; the unchanged canonical
+run returned zero. These did not weaken any M13 assertion, but they remain in
+the durable record.
+
+**Left open after M13:** per-biome sky/fog/foliage/water tint; greedy meshing
+and packed vertices; Nether/End verification and dimension ambient light;
+entity-event animations; true shape-union face occlusion; and glow lichen's
+any-face emission approximation. Clouds/weather and HUD completeness remain
+separate future visual work.

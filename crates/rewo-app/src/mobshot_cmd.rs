@@ -175,8 +175,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,
-        // Stills are fullbright — no world to sample.
-        light: 1.0,
+        // Stills are fullbright because there is no world lightmap to sample.
+        light: [1.0, 1.0, 1.0],
     }
 }
 
@@ -520,7 +520,8 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         .enumerate()
         .map(|(i, k)| {
             let mut d = neutral_draw(*k);
-            d.light = args.light.clamp(0.0, 1.0);
+            let light = args.light.clamp(0.0, 1.0);
+            d.light = [light, light, light];
             d.limb_swing = walk_swing;
             d.limb_amount = walk_amt;
             d.gesture = gesture;

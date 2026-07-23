@@ -11,6 +11,7 @@ pub mod daylight;
 pub mod dimension;
 pub mod entities;
 pub mod light;
+pub mod lightmap;
 pub mod palette;
 pub mod physics;
 pub mod raycast;

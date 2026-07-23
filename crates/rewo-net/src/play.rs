@@ -107,6 +107,10 @@ pub struct PlaySession {
     player_skins: std::collections::HashMap<u128, crate::skins::SkinInfo>,
     /// Newly-announced skins the app hasn't fetched yet (drained each frame).
     pending_skins: Vec<(u128, crate::skins::SkinInfo)>,
+    /// Local player's night-vision / darkness effects, driving the camera
+    /// lightmap (M13). Fed by `update_mob_effect` / `remove_mob_effect` and one
+    /// `tick()` per client tick.
+    visual_effects: crate::effects::VisualEffects,
 }
 
 impl<'a> Connection<'a> {
@@ -176,6 +180,8 @@ impl<'a> Connection<'a> {
         }
         let dim_shapes = self.dim_shapes.clone();
         let overworld_clock_id = self.overworld_clock_id;
+        let visual_effects =
+            crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
         let mut session = PlaySession {
             writer,
             codec,
@@ -217,6 +223,7 @@ impl<'a> Connection<'a> {
             signer: None,
             player_skins: std::collections::HashMap::new(),
             pending_skins: Vec::new(),
+            visual_effects,
         };
         // Online-mode: fetch a player certificate and announce the chat
         // session so `enforce-secure-profile` servers accept our chat. A
@@ -332,6 +339,17 @@ impl PlaySession {
             self.game_time = Some(game_time);
             self.day_ticks = Some(day);
         }
+        // Advance the local player's visual effects once per client tick.
+        // Vanilla increments the player's `tickCount` in
+        // `ClientLevel.tickNonPassenger` *before* `entity.tick()`, which later
+        // reaches the effects via `LivingEntity.baseTick` → `tickEffects`
+        // (client branch). `VisualEffects::tick` keeps that order (count first,
+        // then effects). Gating is on the player *entity existing* (login has
+        // set its id), NOT on `self.spawned` (movement readiness): the local
+        // entity is created at login, so effects tick from then on — but
+        // `VisualEffects::tick` no-ops until `set_player_id`, so calling it
+        // before login (no local entity yet, as in vanilla) does nothing.
+        self.visual_effects.tick();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         if self.spawned {
@@ -355,6 +373,18 @@ impl PlaySession {
         }
         self.ticks += 1;
         Ok(())
+    }
+
+    /// The local player's visual-effect tracker (night vision + darkness),
+    /// read-only — the app builds a `rewo_world::lightmap::LightmapState` from
+    /// this plus the day/night `SkyLighting`.
+    pub fn visual_effects(&self) -> &crate::effects::VisualEffects {
+        &self.visual_effects
+    }
+
+    /// A read-only snapshot of the camera lightmap effects at `partial`.
+    pub fn visual_effect_snapshot(&self, partial: f32) -> crate::effects::VisualEffectSnapshot {
+        self.visual_effects.snapshot(partial)
     }
 
     /// Decompiled `LocalPlayer.sendPosition` cadence + tick_end + input.
@@ -609,6 +639,10 @@ impl PlaySession {
             self.apply_login_shape(body);
             let p = PacketWriter::packet(self.ids.sb_play_player_loaded);
             self.send(p)?;
+        } else if id == ids.cb_play_update_mob_effect {
+            self.visual_effects.apply_update(body);
+        } else if id == ids.cb_play_remove_mob_effect {
+            self.visual_effects.apply_remove(body);
         } else if id == ids.cb_play_add_entity {
             let mut r = PacketReader::new(body);
             let _ = crate::read_add_entity(&mut r, &mut self.world);
@@ -958,8 +992,15 @@ impl PlaySession {
     #[allow(dead_code)]
     fn apply_login_shape(&mut self, body: &[u8]) {
         let mut r = PacketReader::new(body);
+        // The first `int` is the local player's entity id (big-endian, NOT a
+        // varint). Only effects targeting it drive the camera lightmap. If it is
+        // truncated the reader is already past the buffer, so there is nothing
+        // to parse — bail rather than run the dimension-holder parse on garbage.
+        let Ok(player_id) = r.i32() else {
+            return;
+        };
+        self.visual_effects.set_player_id(player_id);
         let parse = (|| -> rewo_proto::Result<i32> {
-            r.i32()?;
             r.bool()?;
             let n = r.count("dims", 1)?;
             for _ in 0..n {

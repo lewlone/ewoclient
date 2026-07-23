@@ -12,8 +12,8 @@ layout(push_constant) uniform PC {
     mat4 view_proj;
     vec4 cam_fog; // xyz camera pos, w = fog start
     vec4 fog_col; // xyz fog color (linear), w = fog end
-    vec4 light;   // x = sky factor (time of day), y = block factor
-    vec4 sky_col; // xyz sky light color (white by day, blue at night)
+    vec4 light;   // sky factor, block factor, brightness factor, darkness scale
+    vec4 sky_col; // xyz sky light color (white by day, blue at night), w = night-vision factor
 } pc;   // 128 bytes — the guaranteed push-constant budget is now full,
         // so anything further has to move into a UBO.
 
@@ -31,7 +31,7 @@ void main() {
     if (c.a < 0.5) {
         discard;
     }
-    vec3 lm = lm_light(v_layer, pc.light.x, pc.light.y, pc.sky_col.rgb);
+    vec3 lm = lm_light(v_layer, pc.light, pc.sky_col);
     vec3 rgb = c.rgb * v_color * lm;
     float dist = distance(pc.cam_fog.xyz, v_worldpos);
     float fog = clamp((dist - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);

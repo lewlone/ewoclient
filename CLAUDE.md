@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M12 shipped: online play, native CEM, client light, day/night + celestials)
+## Rewo — from-scratch native Minecraft client (M0–M13 shipped: online play, native CEM, server light, complete lightmap + celestials)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1986,6 +1986,26 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   GPU 0.228 ms avg, light gate EXACT, world clock advanced +278/280 ticks.
   In-game visual parity is **not** claimed (no eyeball pass); the properties the
   gate checks are what M12 verifies. Detail in REWO_PLAN §15.
+- **M13 complete 26.2 lightmap shipped 2026-07-23** — ports the remaining
+  `LightmapRenderStateExtractor`/`lightmap.fsh` terms: the exact four-draw
+  LegacyRandom block flicker, gamma (default 0.5), night vision, darkness and
+  its 22-tick blend state. The extractor partial is fixed **1.0**, not render
+  interpolation. The full shader order is preserved, and the actual block tint
+  is **0xFFFFD88C (255/216/140)**; M11's 0xFFD86C blue was wrong. Configuration
+  captures the two effect registry raw IDs; update/remove packets affect only
+  the local player, with exact duration/replacement semantics. One resolved RGB
+  lightmap state now drives terrain, water and entities. Permanent gate:
+  **`rewo lightmapshot --check`**, a validation-required production Vulkan
+  readback matrix that independently proves tint, block factor, gamma ramp,
+  night vision, black NaN store, darkness, water parity and entity RGB. It
+  caught an adjacent asset-bake bug in the uncompromised M10 oracle: the fluid
+  branch skipped light assignment, so water dampening was 0 (must be 1) and
+  lava emission 0 (must be 15). Fixed from generated tables, not by editing
+  generated code. Final gates: **180/180** six-crate tests + 10 app tests,
+  lightmapshot/skyshot validation ON, mobshot 243/243, byte-identical demo,
+  physics corrections 0, light **884,736 cells / 0 mismatches**. Replay median
+  remained ~0.23 ms but later tail samples were system-noisy; exact numbers and
+  the honest red-to-green water history are in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

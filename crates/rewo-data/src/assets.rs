@@ -335,6 +335,34 @@ pub struct BakeStats {
     pub textures: usize,
 }
 
+/// Light `(emission, dampening)` for a fluid state.
+///
+/// Fluids are classified by name and `continue` before the shared per-state
+/// light block, so this reproduces the two facts that block would otherwise
+/// assign, read from the same generated tables it uses:
+///   * emission from [`block_light::EMISSION`] (lava is pinned to 15; water is
+///     absent → 0), and
+///   * dampening from vanilla `BlockBehaviour.getLightDampening`
+///     (`isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1`). A fluid is
+///     never a solid render cube and never in `DAMPENING_OVERRIDE`, so the
+///     result is purely `propagatesSkylightDown ? 0 : 1`; both fluids carry
+///     `SKY_PROPAGATE = 0` (`LiquidBlock.propagatesSkylightDown` = false) → 1.
+fn fluid_light(lava: bool) -> (u8, u8) {
+    let name = if lava { "minecraft:lava" } else { "minecraft:water" };
+    let emission = crate::block_light::EMISSION
+        .iter()
+        .find(|&&(b, _)| b == name)
+        .map_or(0, |&(_, e)| e);
+    // 1 = always propagates; anything else (0 = never, 2 = only-if-not-
+    // waterlogged, which fluids never carry) means dampening 1.
+    let propagates = matches!(
+        crate::block_light::SKY_PROPAGATE.iter().find(|&&(b, _)| b == name),
+        Some(&(_, 1))
+    );
+    let dampening = if propagates { 0 } else { 1 };
+    (emission, dampening)
+}
+
 pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String> {
     let file = std::fs::File::open(client_jar)
         .map_err(|e| format!("open {}: {e}", client_jar.display()))?;
@@ -442,6 +470,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     .and_then(|l| l.parse::<u8>().ok())
                     .unwrap_or(0);
                 render[id as usize] = RenderKind::Fluid { layer, level, lava };
+                // Fluids skip the shared per-state light block below (they
+                // `continue`), so assign their light here from the same tables.
+                let (e, d) = fluid_light(lava);
+                emission[id as usize] = e;
+                dampening[id as usize] = d;
                 stats.fluid_states += 1;
             }
             continue;
@@ -1602,6 +1635,16 @@ mod tests {
         // Full 16-wide top face → uv spans 0..1.
         let uv = default_uv([0.0, 0.0, 0.0], [16.0, 8.0, 16.0], 0);
         assert_eq!(uv, [0.0, 0.0, 16.0, 16.0]);
+    }
+
+    #[test]
+    fn fluid_light_matches_vanilla() {
+        // A full bake needs the client jar + blocks.json, so test the exact
+        // fluid light assignment in isolation. Water: no emission, and
+        // LiquidBlock.propagatesSkylightDown = false → getLightDampening = 1.
+        // Lava: block_light::EMISSION pins it to 15, same dampening.
+        assert_eq!(fluid_light(false), (0, 1), "water = (emission 0, dampening 1)");
+        assert_eq!(fluid_light(true), (15, 1), "lava = (emission 15, dampening 1)");
     }
 
     #[test]

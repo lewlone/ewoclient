@@ -58,12 +58,12 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 30
-cargo test --release -p rewo-net   --lib   # 23
-cargo test --release -p rewo-gpu   --lib   # 27
-cargo test --release -p rewo-data  --lib   # 5
+cargo test --release -p rewo-world --lib   # 58
+cargo test --release -p rewo-net   --lib   # 60
+cargo test --release -p rewo-gpu   --lib   # 37
+cargo test --release -p rewo-data  --lib   # 6
 cargo test --release -p rewo-mesh  --lib   # 8
-cargo test --release -p rewo-proto --lib   # 11   → 104 total
+cargo test --release -p rewo-proto --lib   # 11   → 180 total
 ```
 
 ```bash
@@ -72,6 +72,14 @@ cargo test --release -p rewo-proto --lib   # 11   → 104 total
 Facelabel gate: face-coloured debug textures vs a perspective ray-cast of the
 same geometry, occlusion-exact, serverless. **243/243.** Run after any mob,
 model or UV change.
+
+```bash
+./target/release/rewo.exe lightmapshot --check
+./target/release/rewo.exe skyshot --check
+```
+Permanent serverless Vulkan property oracles, validation layers on. The first
+checks the complete 26.2 lightmap matrix across terrain, water and entities;
+the second checks the sky/celestial transforms, textures and alpha behavior.
 
 ```bash
 ./target/release/rewo.exe demo --out C:/tmp/demo.png
@@ -158,24 +166,25 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M11` shipped, verified, committed. HEAD is `327fd3b`.
+`M0–M13` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M13 light-and-sky arc is reviewed local work, not yet
+pushed**. M12 is commit `06dd3eb`; see `REWO_PLAN.md` §15 for M13's exact
+ground truth and measured gates.
 
 A playable online client: joins online-mode servers with signed chat, real
 player skins, 88 vanilla mob models with formula-exact procedural and keyframe
 animation, native OptiFine CEM (Fresh Animations runs with no mod loader),
 GPU-driven rendering, a server-exact client light engine, vanilla's lightmap
-curve and a real day/night cycle.
+curve and a real day/night cycle — with the clear-weather celestials (sun,
+moon through all eight phases, stars, and the sunrise/sunset fan) driven by a
+smooth server-driven world clock.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
-`bench`, `mobshot`.
+`bench`, `mobshot`, `skyshot`, `lightmapshot`.
 
 **Open work**, roughly in descending obviousness:
 
-- Sun, moon and stars — the sky is still a bare gradient, which is the most
-  visible thing missing now that night is dark.
-- The remaining lightmap terms: block-light flicker, gamma/brightness,
-  night-vision and darkness effects.
 - Per-biome tint (currently the plains colormap centre everywhere).
 - Greedy meshing, packed vertices (both deferred, both interact with AO).
 - Nether and End are untested; dimension-specific `ambientLight` is not wired.

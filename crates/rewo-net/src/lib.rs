@@ -12,6 +12,7 @@
 
 pub mod chat_sign;
 pub mod crypt;
+pub mod effects;
 pub mod ids;
 pub mod metadata;
 pub mod play;
@@ -130,6 +131,12 @@ pub struct Connection<'a> {
     /// Registry id of the `minecraft:overworld` world clock (see
     /// `parse_registry_data`); `None` on a server that syncs no clocks.
     overworld_clock_id: Option<i32>,
+    /// Raw `minecraft:mob_effect` registry ids for `night_vision` / `darkness`,
+    /// captured from `registry_data` (never assumed from bootstrap order) so the
+    /// M13 lightmap can match the effect packets. `None` until config syncs the
+    /// registry.
+    night_vision_id: Option<i32>,
+    darkness_id: Option<i32>,
 }
 
 impl<'a> Connection<'a> {
@@ -152,6 +159,8 @@ impl<'a> Connection<'a> {
             recorder: None,
             dim_shapes: Vec::new(),
             overworld_clock_id: None,
+            night_vision_id: None,
+            darkness_id: None,
         })
     }
 
@@ -381,6 +390,10 @@ impl<'a> Connection<'a> {
         // clock, and `set_time` keys its clock map by raw registry id. The id
         // is capture-able here rather than assumed from bootstrap order.
         let is_clock = registry == "minecraft:world_clock";
+        // The M13 camera lightmap keys night-vision / darkness off their raw
+        // `mob_effect` registry ids, captured here rather than assumed from
+        // bootstrap order (exactly like the world clock above).
+        let is_mob_effect = registry == "minecraft:mob_effect";
         if is_dim {
             self.dim_shapes.clear();
         }
@@ -388,6 +401,13 @@ impl<'a> Connection<'a> {
             let Ok(_entry_name) = r.identifier() else { return };
             if is_clock && _entry_name == "minecraft:overworld" {
                 self.overworld_clock_id = Some(idx as i32);
+            }
+            if is_mob_effect {
+                match _entry_name.as_str() {
+                    "minecraft:night_vision" => self.night_vision_id = Some(idx as i32),
+                    "minecraft:darkness" => self.darkness_id = Some(idx as i32),
+                    _ => {}
+                }
             }
             let has_nbt = r.bool().unwrap_or(false);
             if !has_nbt {

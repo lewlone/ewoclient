@@ -30,11 +30,14 @@ use rewo_gpu::entities::{srgb_to_linear, EntityDraw, EntityModelKind, FontData, 
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::renderer::{RenderOutcome, Renderer};
-use rewo_gpu::world::WorldRenderer;
+use rewo_gpu::world::{WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_mesh::pool::{MeshPool, MeshTables};
 use rewo_net::play::PlaySession;
 use rewo_net::Connection;
+use rewo_world::lightmap::{
+    darkness_lightmap, night_vision_intensity, sample, BlockLightFlicker, LightmapState,
+};
 use rewo_world::physics::{TickInput, EYE_HEIGHT};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -77,11 +80,35 @@ pub struct LiveArgs {
     /// pack's custom models. Also read from `REWO_PACK` if unset.
     #[arg(long)]
     pack: Option<PathBuf>,
+    /// Brightness gamma (`Options.gamma`, default 0.5) — the notGamma lift
+    /// weight in the camera lightmap (M13). Must be in `[0, 1]`.
+    #[arg(long, default_value_t = 0.5)]
+    gamma: f32,
+    /// Darkness mob-effect scale (`Options.darknessEffectScale`, default 1.0)
+    /// — scales the Darkness pulse in the camera lightmap (M13). `[0, 1]`.
+    #[arg(long = "darkness-effect-scale", default_value_t = 1.0)]
+    darkness_effect_scale: f32,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
 }
 
+/// Reject a `[0, 1]` option before any I/O so a bad `--gamma` /
+/// `--darkness-effect-scale` fails fast with a named error (M13).
+fn validate_unit(name: &str, v: f32) -> Result<(), String> {
+    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+        return Err(format!(
+            "--{name} must be a finite value in [0, 1], got {v}"
+        ));
+    }
+    Ok(())
+}
+
 pub fn run(args: LiveArgs) -> Result<(), String> {
+    // M13 camera-lightmap options — validate BEFORE loading/baking/connecting
+    // so a bad value fails fast without any side effects.
+    validate_unit("gamma", args.gamma)?;
+    validate_unit("darkness-effect-scale", args.darkness_effect_scale)?;
+
     let data = GameData::load_for_version(&args.version)?;
     let jar = client_jar_path(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
@@ -124,7 +151,18 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(6.0);
-            run_headless(session, baked, etypes, want_validation, out, settle, dirt_item, args.pack.clone())
+            run_headless(
+                session,
+                baked,
+                etypes,
+                want_validation,
+                out,
+                settle,
+                dirt_item,
+                args.pack.clone(),
+                args.gamma,
+                args.darkness_effect_scale,
+            )
         }
         _ => run_windowed(session, baked, etypes, args, want_validation, dirt_item),
     }
@@ -313,7 +351,7 @@ fn collect_entities<'a>(
     gestures: &mut GestureTracker,
     now: f32,
     skins: &SkinRegistry,
-    sky: rewo_world::daylight::SkyLighting,
+    lightmap: &LightmapState,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -423,7 +461,7 @@ fn collect_entities<'a>(
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
-            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], sky),
+            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -633,6 +671,8 @@ fn run_headless(
     settle_seconds: f32,
     dirt_item: Option<i32>,
     pack: Option<PathBuf>,
+    gamma: f32,
+    darkness_option: f32,
 ) -> Result<(), String> {
     let _ = dirt_item;
     let mut gpu = Gpu::new(None, want_validation)?;
@@ -655,9 +695,13 @@ fn run_headless(
     let idle = TickInput::default();
     let mut tick = 0u64;
     let mut summoned = false;
+    // The block-light flicker (M13): a 48-bit LCG advanced exactly once per
+    // successful 20 Hz client tick, mirroring `LightmapRenderStateExtractor`.
+    let mut flicker = BlockLightFlicker::random();
     while start.elapsed().as_secs_f32() < settle_seconds {
         let deadline = start + Duration::from_millis(50) * (tick as u32 + 1);
         session.tick(&idle)?;
+        flicker.tick();
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }
@@ -765,7 +809,22 @@ fn run_headless(
     // Headless single-frame: skins can't finish fetching in time (use
     // `mobshot --skin` for a deterministic real-skin PNG). Empty registry.
     let skins = SkinRegistry::new();
-    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0, &skins, daylight_of(session.day_ticks));
+    // Resolve ONE camera lightmap for this frame at a FIXED partial of 1.0,
+    // matching vanilla `GameRenderer` (lines 376-386):
+    // `lightmapRenderStateExtractor.extract(lightmapRenderState, 1.0F)`. Feed
+    // the identical value to both the entity-light sampler and the renderer
+    // uniform, so mobs and terrain share a lightmap.
+    let partial = 1.0;
+    let snapshot = session.visual_effect_snapshot(partial);
+    let lightmap = resolve_lightmap(
+        session.day_ticks,
+        flicker.block_factor(),
+        snapshot,
+        gamma,
+        darkness_option,
+        partial,
+    );
+    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0, &skins, &lightmap);
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
         println!(
@@ -860,8 +919,8 @@ fn run_headless(
     // Before `set_entities`: the entity pass reads the eye as the CEM
     // `player_pos_*`, which FA aims mob eyes/heads with.
     world_renderer.set_camera(eye.to_array());
-    // Day/night: the server's world clock drives vanilla's keyframed timeline.
-    apply_daylight(&mut world_renderer, session.day_ticks);
+    // Day/night + effects: push the one resolved lightmap plus the sky/fog tint.
+    apply_lightmap(&mut world_renderer, &lightmap, session.day_ticks);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
     world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
@@ -956,6 +1015,13 @@ struct LiveApp {
     debug: bool,
     /// Per-entity gesture state-change clocks (pose-driven rigs).
     gestures: GestureTracker,
+    /// Block-light flicker (M13): ticked once per successful 20 Hz tick,
+    /// mirroring vanilla's `LightmapRenderStateExtractor`.
+    flicker: BlockLightFlicker,
+    /// `Options.gamma` — the camera-lightmap notGamma lift weight (M13).
+    gamma: f32,
+    /// `Options.darknessEffectScale` — the Darkness-effect pulse scale (M13).
+    darkness_option: f32,
     /// Async player-skin fetch + upload (online-mode real skins).
     skins: SkinLoader,
     /// OptiFine CEM resource pack (M9) — mob-model overrides, applied at
@@ -1141,6 +1207,8 @@ impl LiveApp {
                 event_loop.exit();
                 return;
             }
+            // Advance the block-light flicker exactly once per successful tick.
+            self.flicker.tick();
             ran_tick = true;
         }
         if let Some(reason) = session.disconnect.clone() {
@@ -1215,13 +1283,30 @@ impl LiveApp {
         // Entities: frame-interpolated snapshot + camera-billboarded tags.
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
         let anim_time = self.started.elapsed().as_secs_f32();
-        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry, daylight_of(session.day_ticks));
+        // Resolve ONE camera lightmap for this frame at a FIXED partial of 1.0
+        // — not the entity-interpolation `alpha`. Vanilla `GameRenderer` (lines
+        // 376-386) calls `lightmapRenderStateExtractor.extract(lightmapRenderState,
+        // 1.0F)` with a hard-coded 1.0F, so the camera lightmap is resolved at
+        // the tick boundary regardless of the frame's partial tick. Entity
+        // position interpolation still uses `alpha` (below); only the lightmap /
+        // effect snapshot is pinned to 1.0. This matches the headless path.
+        let lightmap_partial = 1.0;
+        let snapshot = session.visual_effect_snapshot(lightmap_partial);
+        let lightmap = resolve_lightmap(
+            session.day_ticks,
+            self.flicker.block_factor(),
+            snapshot,
+            self.gamma,
+            self.darkness_option,
+            lightmap_partial,
+        );
+        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry, &lightmap);
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.
         state.world_renderer.set_camera(eye.to_array());
-        apply_daylight(&mut state.world_renderer, session.day_ticks);
+        apply_lightmap(&mut state.world_renderer, &lightmap, session.day_ticks);
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
@@ -1234,8 +1319,8 @@ impl LiveApp {
             REACH,
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
-        state.world_renderer.set_camera(eye.to_array());
-        apply_daylight(&mut state.world_renderer, session.day_ticks);
+        // Camera + lightmap were already set above from the same eye/state this
+        // frame — don't duplicate them. Celestial still tracks the world clock.
         state.world_renderer.set_celestial(celestial_state_of(session.day_ticks));
         state
             .world_renderer
@@ -1319,6 +1404,9 @@ fn run_windowed(
         dirt_item,
         debug: true,
         gestures: GestureTracker::default(),
+        flicker: BlockLightFlicker::random(),
+        gamma: args.gamma,
+        darkness_option: args.darkness_effect_scale,
         skins: SkinLoader::new(),
         pack: args.pack.clone(),
         init_error: None,
@@ -1559,40 +1647,40 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
         .collect()
 }
 
-/// World-light brightness `0..1` for an entity, sampled at `(x, eye_y, z)`.
+/// Per-channel world-light RGB `0..1` for an entity, sampled at `(x, eye_y, z)`
+/// through the shared camera `LightmapState` (M13).
 ///
 /// Vanilla samples entity light at `BlockPos.containing(x, eyeY, z)` rather
 /// than the feet, and that detail is load-bearing: the feet block is usually
 /// the floor the entity stands *in* (light 0), which would render every mob
-/// pitch black. The 15 → brightness curve is the mesher's own
-/// (`0.25 + 0.75·l/15`), so a mob matches the blocks around it instead of
-/// floating in its own lighting.
+/// pitch black. Sampling at the eye and running the block/sky levels through
+/// the exact same `rewo_world::lightmap::sample` the terrain shader mirrors
+/// keeps a mob lit identically to the blocks around it.
 fn entity_light(
     world: &rewo_world::World,
     x: f64,
     eye_y: f64,
     z: f64,
-    sky: rewo_world::daylight::SkyLighting,
-) -> f32 {
-    // Mirrors `shaders/lightmap.glsl` so a mob matches the blocks around it:
-    // both channels through vanilla's curve, added, with the sky half scaled
-    // by the time of day. Without the scale, mobs stay noon-bright at
-    // midnight while the ground around them goes dark.
-    //
-    // Sampled at the EYE, not the feet — the feet block is the floor the
-    // entity stands in, which is unlit, and sampling it renders every mob
-    // black.
-    let (block, sky_level) = world.light_at(
+    state: &LightmapState,
+) -> [f32; 3] {
+    let (block, sky) = world.light_at(
         x.floor() as i32,
         eye_y.floor() as i32,
         z.floor() as i32,
     );
-    let curve = |l: u8| {
-        let v = l as f32 / 15.0;
-        v / (4.0 - 3.0 * v)
-    };
-    let lit = curve(block) * rewo_gpu::world::BLOCK_LIGHT_FACTOR + curve(sky_level) * sky.light_factor;
-    lit.clamp(0.0, 1.0)
+    let mut rgb = sample(block, sky, state);
+    // The shader's genuine `0/0` black-texel path yields NaN (see
+    // `rewo_world::lightmap::sample`'s docs). Map ONLY nonfinite components to
+    // 0 so a NaN can't poison the CPU entity-vertex transport. This is a CPU
+    // vertex-safety guard, NOT a claimed vanilla rule: the production
+    // terrain-store behaviour for that NaN is still to be pinned by the later
+    // M13 Vulkan black-NaN readback oracle.
+    for c in &mut rgb {
+        if !c.is_finite() {
+            *c = 0.0;
+        }
+    }
+    rgb
 }
 
 /// The cycle state for a world-clock tick, defaulting to full daylight
@@ -1604,14 +1692,63 @@ fn daylight_of(day_ticks: Option<i64>) -> rewo_world::daylight::SkyLighting {
     )
 }
 
-/// Push the time-of-day lighting into the renderer.
+/// Resolve the full camera `LightmapState` for one frame (M13).
 ///
-/// `None` (before the first `set_time`, or a fixed-time dimension) is full
-/// daylight, which is what the renderer defaults to anyway — passing it
-/// explicitly keeps the two paths from drifting.
-fn apply_daylight(wr: &mut WorldRenderer, day_ticks: Option<i64>) {
+/// The three independent clocks fold into one uniform: the day/night timeline
+/// (`day_ticks` → sky factor + colour), the block-light flicker (already
+/// advanced into `block_factor`), and the mob-effect `snapshot` (night vision +
+/// darkness). `gamma` / `darkness_option` are the player's validated options.
+/// Pure — the single seam the tests pin.
+fn resolve_lightmap(
+    day_ticks: Option<i64>,
+    block_factor: f32,
+    snapshot: rewo_net::effects::VisualEffectSnapshot,
+    gamma: f32,
+    darkness_option: f32,
+    partial: f32,
+) -> LightmapState {
     let sky = daylight_of(day_ticks);
-    wr.set_lightmap(sky.light_factor, sky.light_color);
+    let night_vision_factor = snapshot
+        .night_vision_duration
+        .map_or(0.0, |d| night_vision_intensity(d, partial));
+    let (brightness_factor, darkness_scale) = darkness_lightmap(
+        gamma,
+        darkness_option,
+        snapshot.darkness_blend_factor,
+        snapshot.tick_count,
+        partial,
+    );
+    LightmapState {
+        sky_factor: sky.light_factor,
+        block_factor,
+        sky_light_color: sky.light_color,
+        brightness_factor,
+        darkness_scale,
+        night_vision_factor,
+    }
+}
+
+/// Convert the CPU `LightmapState` into the GPU renderer's mirror. The two
+/// structs carry identical fields (only `sky_light_color`/`sky_color` differ in
+/// name), so this is a field-for-field copy.
+fn to_world_lightmap(s: &LightmapState) -> WorldLightmapState {
+    WorldLightmapState {
+        sky_factor: s.sky_factor,
+        block_factor: s.block_factor,
+        sky_color: s.sky_light_color,
+        brightness_factor: s.brightness_factor,
+        darkness_scale: s.darkness_scale,
+        night_vision_factor: s.night_vision_factor,
+    }
+}
+
+/// Push one resolved lightmap into the renderer: the full lightmap uniform plus
+/// the day/night sky/fog gradient tint (a separate concern from the lightmap).
+/// `set_lightmap_state` already carries the sky factor + colour, so this does
+/// NOT also call `set_lightmap` — no duplicate set.
+fn apply_lightmap(wr: &mut WorldRenderer, state: &LightmapState, day_ticks: Option<i64>) {
+    wr.set_lightmap_state(to_world_lightmap(state));
+    let sky = daylight_of(day_ticks);
     wr.set_sky_tint(sky.sky_color, sky.fog_color);
 }
 
@@ -1655,5 +1792,111 @@ fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
             ch(24),
         ],
         rain_brightness: 1.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rewo_net::effects::VisualEffectSnapshot;
+
+    /// A snapshot with no active effects and a given player tick count.
+    fn no_effects(tick_count: i32) -> VisualEffectSnapshot {
+        VisualEffectSnapshot {
+            night_vision_duration: None,
+            darkness_blend_factor: 0.0,
+            tick_count,
+        }
+    }
+
+    #[test]
+    fn neutral_state_with_gamma_half() {
+        // No day/night clock, resting flicker (1.4), no effects, gamma 0.5:
+        // full daylight sky, gamma flows straight through to brightness, and
+        // every effect term is off.
+        let s = resolve_lightmap(None, 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        assert_eq!(s.sky_factor, 1.0);
+        assert_eq!(s.block_factor, 1.4);
+        assert_eq!(s.sky_light_color, [1.0, 1.0, 1.0]);
+        assert_eq!(s.brightness_factor, 0.5);
+        assert_eq!(s.darkness_scale, 0.0);
+        assert_eq!(s.night_vision_factor, 0.0);
+    }
+
+    #[test]
+    fn night_vision_duration_drives_the_factor() {
+        // Absent → 0.
+        assert_eq!(
+            resolve_lightmap(None, 1.4, no_effects(0), 0.5, 1.0, 0.0).night_vision_factor,
+            0.0
+        );
+        // Infinite (`-1`) and > 200 ticks both pin to the full 1.0 seed.
+        let inf = VisualEffectSnapshot { night_vision_duration: Some(-1), ..no_effects(0) };
+        assert_eq!(
+            resolve_lightmap(None, 1.4, inf, 0.5, 1.0, 0.0).night_vision_factor,
+            1.0
+        );
+        let long = VisualEffectSnapshot { night_vision_duration: Some(400), ..no_effects(0) };
+        assert_eq!(
+            resolve_lightmap(None, 1.4, long, 0.5, 1.0, 0.0).night_vision_factor,
+            1.0
+        );
+        // Within the last 200 ticks it pulses below 1.0 (the fade-out).
+        let ending = VisualEffectSnapshot { night_vision_duration: Some(200), ..no_effects(0) };
+        let nv = resolve_lightmap(None, 1.4, ending, 0.5, 1.0, 0.0).night_vision_factor;
+        assert!(nv > 0.0 && nv < 1.0, "expected a pulsing NV factor, got {nv}");
+    }
+
+    #[test]
+    fn darkness_lowers_brightness_and_raises_scale() {
+        // Partial darkness (blend 0.3) at the pulse peak (tick 0, cos = 1):
+        // brightness drops below gamma, darkness scale goes positive.
+        let partial_dark = VisualEffectSnapshot { darkness_blend_factor: 0.3, ..no_effects(0) };
+        let s = resolve_lightmap(None, 1.4, partial_dark, 0.5, 1.0, 0.0);
+        assert!(s.brightness_factor < 0.5, "brightness {} should dip below gamma", s.brightness_factor);
+        assert!(s.brightness_factor > 0.0, "brightness {} should stay positive", s.brightness_factor);
+        assert!(s.darkness_scale > 0.0, "darkness {} should be positive", s.darkness_scale);
+
+        // Full darkness (blend 1.0): brightness floors to 0 (gamma - 1), and
+        // the darkness subtraction maxes at 0.45 * option. This pins the
+        // brightness-vs-darkness ordering: as darkness climbs, brightness sinks.
+        let full_dark = VisualEffectSnapshot { darkness_blend_factor: 1.0, ..no_effects(0) };
+        let s = resolve_lightmap(None, 1.4, full_dark, 0.5, 1.0, 0.0);
+        assert_eq!(s.brightness_factor, 0.0);
+        assert!((s.darkness_scale - 0.45).abs() < 1e-4, "darkness {} ~ 0.45", s.darkness_scale);
+        assert!(s.darkness_scale > s.brightness_factor);
+    }
+
+    #[test]
+    fn day_ticks_drive_the_sky_half() {
+        // Midnight (tick 18000) dims and blues the sky half, independent of
+        // the block factor (a torch stays as bright).
+        let s = resolve_lightmap(Some(18000), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        assert_eq!(s.sky_factor, 0.24);
+        assert_eq!(s.sky_light_color, [0.48, 0.48, 1.0]);
+        assert_eq!(s.block_factor, 1.4);
+    }
+
+    #[test]
+    fn world_lightmap_conversion_is_field_for_field() {
+        let s = resolve_lightmap(Some(18000), 1.7, no_effects(0), 0.5, 1.0, 0.0);
+        let w = to_world_lightmap(&s);
+        assert_eq!(w.sky_factor, s.sky_factor);
+        assert_eq!(w.block_factor, s.block_factor);
+        assert_eq!(w.sky_color, s.sky_light_color);
+        assert_eq!(w.brightness_factor, s.brightness_factor);
+        assert_eq!(w.darkness_scale, s.darkness_scale);
+        assert_eq!(w.night_vision_factor, s.night_vision_factor);
+    }
+
+    #[test]
+    fn validate_unit_bounds() {
+        assert!(validate_unit("gamma", 0.0).is_ok());
+        assert!(validate_unit("gamma", 1.0).is_ok());
+        assert!(validate_unit("gamma", 0.5).is_ok());
+        assert!(validate_unit("gamma", -0.01).is_err());
+        assert!(validate_unit("gamma", 1.01).is_err());
+        assert!(validate_unit("gamma", f32::NAN).is_err());
+        assert!(validate_unit("gamma", f32::INFINITY).is_err());
     }
 }

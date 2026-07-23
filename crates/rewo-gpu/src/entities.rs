@@ -67,6 +67,8 @@ pub struct FontData<'a> {
 }
 
 /// One entity to draw this frame — position already frame-interpolated.
+pub type EntityLight = [f32; 3];
+
 pub struct EntityDraw<'a> {
     /// Feet-center world position.
     pub pos: [f32; 3],
@@ -106,11 +108,11 @@ pub struct EntityDraw<'a> {
     /// Per-entity stable id for CEM `random(id)` (so a herd doesn't animate
     /// in lockstep). Any stable-per-entity float; 0 is fine for stills.
     pub anim_id: f32,
-    /// World-light brightness multiplier `0..1`, sampled by the caller at the
-    /// entity's **eye** and mapped through the same curve the mesher uses for
-    /// blocks (`0.25 + 0.75·light/15`) so a mob matches the blocks around it.
-    /// `1.0` = fullbright, which is what still renders (mobshot) want.
-    pub light: f32,
+    /// Per-channel world-light color in `0..1`, sampled by the caller at the
+    /// entity's **eye** with the same lightmap formula used for blocks. RGB is
+    /// retained so warm block light and cool sky light tint the model exactly;
+    /// `[1.0, 1.0, 1.0]` is fullbright for serverless still renders.
+    pub light: EntityLight,
 }
 
 #[repr(C)]
@@ -731,6 +733,7 @@ impl EntityPass {
                 continue;
             }
             let base = d.color;
+            let [light_r, light_g, light_b] = d.light;
             for (p, n) in &self.capsule {
                 if verts.len() >= MAX_VERTS {
                     break;
@@ -744,9 +747,9 @@ impl EntityPass {
                     ],
                     uv: self.white_uv,
                     color: [
-                        base[0] * shade * d.light,
-                        base[1] * shade * d.light,
-                        base[2] * shade * d.light,
+                        base[0] * shade * light_r,
+                        base[1] * shade * light_g,
+                        base[2] * shade * light_b,
                         1.0,
                     ],
                 });
@@ -917,8 +920,9 @@ impl EntityPass {
                     d.pos[2] + z * s,
                 ];
             }
-            // Directional face shade × the entity's world light.
-            let c = q.shade * d.light;
+            // Directional face shade × the entity's per-channel world light.
+            let [light_r, light_g, light_b] = d.light;
+            let c = [q.shade * light_r, q.shade * light_g, q.shade * light_b];
             // Player skin: shift the (default-Steve) UVs onto this player's
             // uploaded slot. Same 64² layout, so a constant offset suffices.
             let du = d.skin_uv.unwrap_or([0.0, 0.0]);
@@ -926,7 +930,7 @@ impl EntityPass {
                 verts.push(Vertex {
                     pos: p4[i],
                     uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
-                    color: [c, c, c, 1.0],
+                    color: [c[0], c[1], c[2], 1.0],
                 });
             }
         }

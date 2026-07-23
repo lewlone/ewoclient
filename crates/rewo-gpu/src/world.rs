@@ -69,12 +69,14 @@ struct WorldPush {
     cam_fog: [f32; 4],
     /// xyz fog color (linear = sky horizon), w = fog end distance.
     fog_col: [f32; 4],
-    /// x = sky-light factor (the time of day), y = block-light factor.
-    /// Vanilla's lightmap scales the sky half of the light by the time of
-    /// day; keeping it a uniform is what makes a sunrise cost one push
-    /// instead of remeshing the world.
+    /// The scalar lightmap uniforms, packed to fill the spare push lanes:
+    /// x = SkyFactor (time of day), y = BlockFactor, z = BrightnessFactor
+    /// (gamma minus the darkness effect), w = DarknessScale. Vanilla scales
+    /// only the sky half by the time of day, so a sunrise is one push, not a
+    /// remesh.
     light: [f32; 4],
-    /// xyz sky-light colour — white by day, blue at night.
+    /// xyz sky-light colour (white by day, blue at night); w = the
+    /// night-vision factor (the ambient seed `max(black, nvColor*w)`).
     sky_col: [f32; 4],
 }
 // 128 bytes: exactly the push-constant size Vulkan guarantees. Anything
@@ -102,10 +104,74 @@ const SELECT_RING: usize = 2;
 /// The horizon is also the terrain's fog color for a seamless far edge.
 const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
 
-/// Vanilla's `blockFactor = blockLightFlicker + 1.4` (the flicker is a small
-/// per-frame jitter we do not reproduce, so this is its resting value).
+/// Vanilla's resting `blockFactor` (`blockLightFlicker + 1.4` with zero
+/// flicker) — the default `WorldLightmapState::block_factor`.
 pub const BLOCK_LIGHT_FACTOR: f32 = 1.4;
 const SKY_ZENITH: [f32; 3] = [0.147, 0.319, 0.890];
+
+/// The already-resolved lightmap uniforms driving `shaders/lightmap.glsl` —
+/// the GPU mirror of `rewo_world::lightmap::LightmapState`, minus the fields
+/// this scope pins to Overworld constants in the shader (ambient = black,
+/// block tint = `0xFFD88C`, night-vision colour = `0x999999`, boss darkening
+/// = 0). `WorldRenderer` stores one and sends it every frame via `push_world`.
+///
+/// `Default` is deliberately **term-neutral** for demo/view/bench: full sky
+/// factor, the vanilla resting `1.4` block factor, white sky light, and every
+/// accessibility/effect term disabled. Live gamma `0.5` is supplied by the
+/// app; the M13 correction to vanilla's exact block tint remains intentional.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldLightmapState {
+    /// `SkyFactor` — scales the sky half of the light. Default `1.0`.
+    pub sky_factor: f32,
+    /// `BlockFactor` — `blockLightFlicker + 1.4`. Default the resting `1.4`.
+    pub block_factor: f32,
+    /// `SkyLightColor` — white by day, blue at night. Default white.
+    pub sky_color: [f32; 3],
+    /// `BrightnessFactor` — the player's gamma minus the darkness effect (the
+    /// `notGamma` mix weight). Default `0.0`.
+    pub brightness_factor: f32,
+    /// `DarknessScale` — the Darkness mob-effect subtraction. Default `0.0`.
+    pub darkness_scale: f32,
+    /// `NightVisionFactor` — the ambient night-vision seed. Default `0.0`.
+    pub night_vision_factor: f32,
+}
+
+impl Default for WorldLightmapState {
+    fn default() -> Self {
+        Self {
+            sky_factor: 1.0,
+            block_factor: BLOCK_LIGHT_FACTOR,
+            sky_color: [1.0, 1.0, 1.0],
+            brightness_factor: 0.0,
+            darkness_scale: 0.0,
+            night_vision_factor: 0.0,
+        }
+    }
+}
+
+impl WorldLightmapState {
+    /// Pack into the world push-constant `(light, sky_col)` vec4 pair exactly
+    /// as `push_world` sends them: `light = [sky, block, brightness, darkness]`,
+    /// `sky_col = [r, g, b, night_vision]`. Pure — no GPU state — so it is the
+    /// unit-testable seam for the push layout (NOT a proxy for the shader math,
+    /// which is verified against `rewo_world::lightmap` and the readback oracle).
+    pub fn push_words(&self) -> ([f32; 4], [f32; 4]) {
+        (
+            [
+                self.sky_factor,
+                self.block_factor,
+                self.brightness_factor,
+                self.darkness_scale,
+            ],
+            [
+                self.sky_color[0],
+                self.sky_color[1],
+                self.sky_color[2],
+                self.night_vision_factor,
+            ],
+        )
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
@@ -278,13 +344,11 @@ pub struct WorldRenderer {
     text_lines: Vec<OwnedTextLine>,
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
-    /// Time-of-day scale on sky light (`SKY_LIGHT_FACTOR`): 1.0 at midday,
-    /// 0.24 at midnight. Set by `set_lightmap`.
-    sky_factor: f32,
+    /// The resolved lightmap uniforms (sky/block factors, sky colour, gamma,
+    /// darkness, night vision). Set by `set_lightmap` / `set_lightmap_state`.
+    lightmap: WorldLightmapState,
     sky_tint: [f32; 3],
     fog_tint: [f32; 3],
-    /// Sky-light colour — white by day, blue at night.
-    sky_color: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
     // -- animated texture layers (water/lava; `anim_tick`) --
@@ -679,10 +743,9 @@ impl WorldRenderer {
                 text: None,
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
-                sky_factor: 1.0,
+                lightmap: WorldLightmapState::default(),
                 sky_tint: [1.0; 3],
                 fog_tint: [1.0; 3],
-                sky_color: [1.0, 1.0, 1.0],
                 fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
@@ -819,8 +882,16 @@ impl WorldRenderer {
     /// a torch is as bright at midnight as at noon, which is the whole point
     /// of keeping the two channels separate through to the shader.
     pub fn set_lightmap(&mut self, sky_factor: f32, sky_color: [f32; 3]) {
-        self.sky_factor = sky_factor;
-        self.sky_color = sky_color;
+        self.lightmap.sky_factor = sky_factor;
+        self.lightmap.sky_color = sky_color;
+    }
+
+    /// Set the full resolved lightmap state (sky/block factors, sky colour,
+    /// gamma/brightness, darkness, night vision) in one shot — the exact
+    /// mirror of vanilla's `LightmapInfo`. `set_lightmap` is the day/night-only
+    /// convenience that touches just the sky factor + colour.
+    pub fn set_lightmap_state(&mut self, state: WorldLightmapState) {
+        self.lightmap = state;
     }
 
     /// Multiply the sky gradient and the distance-fog colour by the time of
@@ -1276,6 +1347,7 @@ impl WorldRenderer {
 
     /// Push the world/fog constants (view_proj + camera + fog band).
     fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
+        let (light, sky_col) = self.lightmap.push_words();
         let push = WorldPush {
             view_proj,
             cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
@@ -1285,8 +1357,8 @@ impl WorldRenderer {
                 SKY_HORIZON[2] * self.fog_tint[2],
                 self.fog[1],
             ],
-            light: [self.sky_factor, BLOCK_LIGHT_FACTOR, 0.0, 0.0],
-            sky_col: [self.sky_color[0], self.sky_color[1], self.sky_color[2], 0.0],
+            light,
+            sky_col,
         };
         unsafe {
             device.cmd_push_constants(
@@ -2419,4 +2491,72 @@ pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4
         [0.0, 0.0, 0.0, -1.0],
         [0.0, 0.0, near, 0.0],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These pin the CPU-side push layout only. The lightmap shader math is NOT
+    // re-implemented here (that would be a proxy oracle) — it is a line-for-line
+    // port of `rewo_world::lightmap::sample`, which carries the IEEE bit pins,
+    // and its GPU store is the job of the M13 Vulkan readback oracle.
+
+    #[test]
+    fn lightmap_default_is_visually_neutral() {
+        let s = WorldLightmapState::default();
+        assert_eq!(s.sky_factor, 1.0);
+        assert_eq!(s.block_factor, BLOCK_LIGHT_FACTOR);
+        assert_eq!(s.block_factor, 1.4);
+        assert_eq!(s.sky_color, [1.0, 1.0, 1.0]);
+        assert_eq!(s.brightness_factor, 0.0);
+        assert_eq!(s.darkness_scale, 0.0);
+        assert_eq!(s.night_vision_factor, 0.0);
+    }
+
+    #[test]
+    fn lightmap_default_push_words_match_neutral() {
+        let (light, sky_col) = WorldLightmapState::default().push_words();
+        // light = [sky, block, brightness, darkness]
+        assert_eq!(light, [1.0, 1.4, 0.0, 0.0]);
+        // sky_col = [r, g, b, night_vision]
+        assert_eq!(sky_col, [1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn lightmap_push_words_lane_order() {
+        // Distinct values catch any transposed lane.
+        let s = WorldLightmapState {
+            sky_factor: 0.24,
+            block_factor: 1.5,
+            sky_color: [0.1, 0.2, 0.3],
+            brightness_factor: 0.5,
+            darkness_scale: 0.45,
+            night_vision_factor: 1.0,
+        };
+        let (light, sky_col) = s.push_words();
+        assert_eq!(light, [0.24, 1.5, 0.5, 0.45]);
+        assert_eq!(sky_col, [0.1, 0.2, 0.3, 1.0]);
+    }
+
+    #[test]
+    fn set_lightmap_touches_only_sky_factor_and_colour() {
+        // The day/night convenience must not disturb the effect terms.
+        let mut s = WorldLightmapState {
+            brightness_factor: 0.5,
+            darkness_scale: 0.45,
+            night_vision_factor: 1.0,
+            block_factor: 1.5,
+            ..Default::default()
+        };
+        // Mirror `set_lightmap`'s field writes without a live renderer.
+        s.sky_factor = 0.24;
+        s.sky_color = [0.1, 0.2, 0.3];
+        assert_eq!(s.sky_factor, 0.24);
+        assert_eq!(s.sky_color, [0.1, 0.2, 0.3]);
+        assert_eq!(s.brightness_factor, 0.5);
+        assert_eq!(s.darkness_scale, 0.45);
+        assert_eq!(s.night_vision_factor, 1.0);
+        assert_eq!(s.block_factor, 1.5);
+    }
 }
