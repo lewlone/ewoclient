@@ -1918,6 +1918,27 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   against the *stored* light, which incremental relighting writes — pass
   `--no-relight`, or build in one run and grade from a fresh join, or the
   engine grades itself. Detail + open items in REWO_PLAN §15.
+- **M11 vanilla lightmap + day/night shipped 2026-07-23** — M10 made the light
+  *values* right; they were still rendered through an invented formula.
+  `shaders/lightmap.glsl` now transcribes vanilla's: block and sky stay
+  **separate** to the fragment shader (packed into the spare bits of the
+  per-vertex layer word, `layer | block<<16 | sky<<20`, so the vertex doesn't
+  grow), each goes through the curve `l/(4-3l)`, and they are **added** — not
+  `max`ed — with block tinted warm. There is **no floor**, so an unlit cave is
+  finally black (the old `0.25 + 0.75*l` could never go below 25%).
+  `rewo-world/src/daylight.rs` transcribes 26.x's keyframed
+  `Timelines.OVERWORLD_DAY` (the hard-coded `getSkyDarken` is gone): sky light
+  1.0→0.24 and white→blue at night, sky gradient and fog darkening with it.
+  Because the factor is a **uniform**, a sunrise costs one push constant, not
+  a remesh — and a torch stays as bright at midnight as at noon. Wire gotchas:
+  `set_time` is now `gameTime` + a **map of clock states**, a server sends
+  **two** clocks (overworld *and* the_end — match by registry id, don't take
+  the first), `ByteBufCodecs.holderRegistry` writes the id **raw** (the `id+1`
+  scheme is a different codec), and clock states are only sent when they
+  change. It also fixed a real long-standing bug: `emit_model` sampled the
+  block's **own** cell (inside a solid block = always dark), so since
+  grass_block renders as a Model the entire ground plane of every overworld
+  was lighting at zero — hidden by the old floor. Detail in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
