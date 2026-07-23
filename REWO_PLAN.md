@@ -2789,3 +2789,107 @@ from the decompile or a curated table, the same situation as collision shapes;
 and light **opacity** would need more than the existing `solid` flag (vanilla
 glass is a full cube but blocks no light). Until it lands, lighting is correct
 as of chunk load and frozen thereafter.
+
+### 2026-07-23 — M10: the client light engine shipped (server-exact)
+
+**Done, and measured against vanilla's own light engine.** The previous entry's
+two prerequisites both got resolved, neither by a curated table.
+
+**The rules — transcribed, not guessed.** All four come from the decompile and
+are worth keeping here, because every one of them is somewhere a naive
+implementation goes wrong:
+
+```
+BlockBehaviour.getLightDampening:
+    isSolidRender ? 15 : (propagatesSkylightDown ? 0 : 1)
+    propagatesSkylightDown = !fullCubeShape && fluidState.isEmpty()
+LightEngine:78          step cost into a cell = max(1, dampening)
+LightEngine.getLightDampeningInto
+                        a face passes NO light (16) when the two adjacent
+                        occlusion shapes together cover it — binary, not graded
+ChunkSkyLightSources.isEdgeOccluded
+                        the sky column descends while dampening == 0 AND the
+                        horizontal face between the two cells is not occluded
+```
+
+Note the middle two: a stair or slab has `dampening 0` yet still casts a real
+shadow, purely through face occlusion. Vanilla's "cost 3 through a stair" that
+showed up in the gate was not a graded cost at all — it was light **detouring
+around** a blocked face and arriving two steps later.
+
+**Opacity turned out to be mostly derivable.** `isShapeFullBlock` is the
+collision-shape query already baked for M-collision, and fluid-ness is known,
+so the rule collapses to needing exactly two imported facts:
+
+```
+if canOcclude && full_cube → 15    (stone)
+elif !full_cube && !fluid  → 0     (torch, slab, air)
+else                       → 1     (glass, leaves, water)
+```
+
+Note the `1` — glass/leaves/water **dampen by one**, neither 0 nor 15. A
+curated "transparent set" gets this wrong in both directions. And
+`RenderKind::Cube` is **not** a valid opacity proxy: glass, leaves and ice all
+bake as `Cube`.
+
+**`tools/gen_block_light.py`** is the extractor (the `gen_anim_defs.ps1`
+precedent — re-run after a version bump). It pulls emission and `noOcclusion()`
+out of the `Blocks.java` registrations, inlining helper factories like
+`leavesProperties`. Two facts are *virtual method overrides* rather than
+builder calls, so it also maps block → implementation class (from the
+registration lambda) → override, resolved up the `extends` chain:
+`propagatesSkylightDown` (**TransparentBlock returns true — sky passes glass at
+full strength**, and `StainedGlassBlock extends TransparentBlock` inherits it)
+and `getLightDampening` (leaves pin 1, tinted glass 15). All override bodies
+reduce to three forms: `true`, `false`, and "not waterlogged"
+(`getFluidState().isEmpty()` and `!getValue(WATERLOGGED)` are the same
+predicate). Colour families registered through `ColorCollection` are not
+fields, so they are expanded to their 16 dye names — and **every generated name
+is validated against `blocks.json`**, which makes the naming convention checked
+rather than assumed. Nine state-dependent emission forms (candles, cave vines,
+vaults…) are approximated and **listed in the generated header**; nothing is
+silently defaulted.
+
+**Face coverage** is baked per state by rasterising each face of the collision
+boxes at 16×16. Every vanilla shape lies on 1/16 boundaries, so this is exact
+for the shapes that matter and avoids carrying a `VoxelShape` algebra.
+`useShapeForLightOcclusion` is *derived* (`canOcclude && !full_cube`) rather
+than scraped: its only observable effect is through face coverage, and a block
+vanilla leaves out of that list essentially never covers a whole face (a fence
+post is 6/16 wide), so a false positive is inert.
+
+**A real decode bug fell out of the gate.** The chunk light payload's
+`empty_sky` / `empty_block` masks were read and **discarded**, so a section in
+neither mask stayed `None` and read as 0. Vanilla reads those as full-bright:
+the server only sends sky arrays for sections near terrain (measured: `sky=[1,2]`,
+`empty_sky=[0]`, sections 2..23 in neither), so **everything above the terrain
+was silently sky-0**. `Column::sky_full_above` now tracks the boundary, set from
+the masks and re-set by `light_update`. This had been invisible for a long time
+because on the flat test world the player stands where real arrays exist — it
+took a second, independent implementation to disagree with the decoder.
+
+**The gate: `rewo play --light-check`.** Recompute the loaded columns from
+scratch and diff against the server's authoritative light — the lighting
+equivalent of the `CORRECTIONS` physics meter, and the "verify the property,
+not a proxy" answer for lighting. **884,736 cells, both channels, 0 mismatches**
+on: flat terrain, a village (natural stairs/slabs/panes), an enclosed shaft, and
+a sealed stone room with torch + glowstone + glass skylight + leaves + stairs +
+slab. The engine is wired into `PlaySession` (`set_light_tables` →
+`relight` on every block update), so `rewo live` relights its own edits and
+marks exactly the affected columns for remesh.
+
+Two harness fixes came with it, both of which had silently faked results
+earlier: `--setup` now accepts `;`-separated commands **paced one per 250 ms**
+(firing them in one tick trips the server's chat rate limit and the tail is
+dropped — which looks exactly like a light bug, because the structure never
+appears), and `--still` suppresses the movement script so the gate stays inside
+whatever was built. The op account is `RewoOp`, not `RewoBot`.
+
+**Left open.** `useShapeForLightOcclusion` face merging is tested per-side
+rather than as a true shape union — the two differ only for complementary
+partial faces meeting, which no vanilla pair produces. Blocks outside the
+curated collision families have no boxes, so their faces never occlude
+(farmland, dirt path). `WeatheringCopperCollection` families are not expanded
+by the extractor (irregular naming: `copper_block` vs `exposed_copper`); the
+copper bulb's emission is therefore missing. No `section_blocks_update` handler
+exists, so a multi-block server edit relights only via its individual updates.
