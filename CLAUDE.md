@@ -1879,6 +1879,31 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   walk), no-pack facelabel gate stays 243/243 (additive). Polish left:
   foot-submodel leg pivots ~1px off (flat humanoid rigs exact), per-face
   `uvNorth`, scale channels, ETF textures (M9b). Detail in REWO_PLAN §15.
+- **M10 client light engine shipped 2026-07-23** — a placed torch now lights,
+  a dug tunnel now brightens. Vanilla clients recompute light for their own
+  edits (the server only sends authoritative light at chunk load), so
+  `rewo-world/src/light.rs` is the two-phase flood fill (decrease → increase)
+  over block + sky, bounded by loaded columns; wired into `PlaySession` so
+  `rewo live` relights and remeshes exactly the affected columns. Every rule
+  is transcribed from the decompile: `dampening = isSolidRender ? 15 :
+  (propagatesSkylightDown ? 0 : 1)`, step cost `max(1, dampening)`, **a face
+  passes no light when the two occlusion shapes cover it** (this, not a graded
+  cost, is why a `dampening 0` stair still shadows), and the sky column
+  descends only while the edge is unoccluded. Data comes from a new machine
+  extractor **`tools/gen_block_light.py`** (re-run after a version bump): it
+  maps block → implementation class → the `propagatesSkylightDown` /
+  `getLightDampening` **overrides** up the `extends` chain (glass returns
+  true — sky passes it at full strength; leaves pin 1), expands
+  `ColorCollection` dye families, and **validates every generated name against
+  blocks.json**. Two traps worth remembering: `RenderKind::Cube` is **not** an
+  opacity proxy (glass/leaves/ice all bake as `Cube`), and glass/leaves/water
+  dampen by **1** — neither 0 nor 15. The gate **`rewo play --light-check`**
+  recomputes loaded columns and diffs against the server's own light engine —
+  the lighting equivalent of `CORRECTIONS`; **884,736 cells, 0 mismatches**
+  on flat terrain, a village, an enclosed shaft, and a sealed torch-lit room.
+  It immediately caught a long-standing decode bug: the chunk payload's
+  `empty_sky` mask was read and **discarded**, so every section above the
+  terrain silently read sky-0. Detail + open items in REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
