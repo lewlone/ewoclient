@@ -29,9 +29,14 @@ pub struct PlaySession {
     pub ids: Ids,
     pub world: World,
     pub player: PlayerState,
-    /// state id → collides-as-full-cube. Callers build it (assets bake or a
-    /// "non-air is solid" fallback for known-flat test worlds).
-    pub solid: Vec<bool>,
+    /// state id → collision boxes in block-local `0..1` (`BakedAssets::
+    /// collide`): empty = no collision, one unit box = a full cube, several =
+    /// a stair. An id past the end falls back to "non-air is a full cube",
+    /// which is what the flat test worlds want when no bake is supplied.
+    pub collide: Vec<Vec<[f32; 6]>>,
+    /// Per entity-type `(width, height, pushable)` for entity collision.
+    /// Empty disables pushing (the harnesses that don't care about mobs).
+    pub entity_push: Vec<(f32, f32, bool)>,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     dim_shapes: Vec<DimensionShape>,
@@ -79,7 +84,7 @@ impl<'a> Connection<'a> {
         port: u16,
         username: &str,
         auth: Option<&crate::crypt::OnlineAuth>,
-        solid: Vec<bool>,
+        collide: Vec<Vec<[f32; 6]>>,
         global_bits: u32,
     ) -> Result<PlaySession, String> {
         self.login(host, port, username, auth)?;
@@ -142,7 +147,8 @@ impl<'a> Connection<'a> {
             ids: self.ids,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
-            solid,
+            collide,
+            entity_push: Vec::new(),
             global_bits,
             dim_shapes,
             spawned: false,
@@ -246,14 +252,22 @@ impl PlaySession {
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         if self.spawned {
-            let solid = std::mem::take(&mut self.solid);
+            // Vanilla order: `LivingEntity.aiStep` pushes entities apart
+            // *before* `travel`, so the shove lands in this tick's movement.
+            self.push_from_entities();
+            let collide = std::mem::take(&mut self.collide);
             let world = &self.world;
-            let is_solid = |x: i32, y: i32, z: i32| -> bool {
+            let shapes = |x: i32, y: i32, z: i32| -> &[[f32; 6]] {
                 let state = world.block_state_at(x, y, z);
-                solid.get(state as usize).copied().unwrap_or(state != 0)
+                match collide.get(state as usize) {
+                    Some(boxes) => boxes.as_slice(),
+                    // No table (flat test worlds): non-air collides as a cube.
+                    None if state != 0 => FULL_CUBE,
+                    None => &[],
+                }
             };
-            physics::tick(&mut self.player, input, &is_solid);
-            self.solid = solid;
+            physics::tick(&mut self.player, input, &shapes);
+            self.collide = collide;
             self.send_movement(input)?;
         }
         self.ticks += 1;
@@ -852,10 +866,15 @@ impl PlaySession {
         reach: f64,
     ) -> Option<rewo_world::raycast::RayHit> {
         let world = &self.world;
-        let solid = &self.solid;
+        let collide = &self.collide;
         rewo_world::raycast::cast(eye, dir, reach, |x, y, z| {
             let s = world.block_state_at(x, y, z);
-            solid.get(s as usize).copied().unwrap_or(s != 0)
+            // Targetable = has any collision shape (so slabs/stairs are
+            // mineable), with the same non-air fallback as physics.
+            match collide.get(s as usize) {
+                Some(boxes) => !boxes.is_empty(),
+                None => s != 0,
+            }
         })
     }
 
@@ -931,4 +950,114 @@ fn read_move_delta(r: &mut PacketReader) -> rewo_proto::Result<(i32, f64, f64, f
 /// `Mth.unpackDegrees`: packed byte angle → degrees.
 fn packed_degrees(b: i8) -> f32 {
     b as f32 * (360.0 / 256.0)
+}
+
+/// The unit cube, for blocks with no entry in the collision table.
+static FULL_CUBE: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+
+impl PlaySession {
+    /// Vanilla `Entity.push`: entities whose bounding boxes overlap shove each
+    /// other apart horizontally. Only the *player* is moved here — the server
+    /// owns every other entity's position, so pushing them client-side would
+    /// just be corrected away.
+    ///
+    /// The math is vanilla's verbatim, including its quirk: `dd` is
+    /// `absMax(xa, za)` and then **square-rooted** — the sqrt of the larger
+    /// component, not the vector length. Porting it as a true normalize would
+    /// give a different push strength.
+    fn push_from_entities(&mut self) {
+        if self.entity_push.is_empty() {
+            return;
+        }
+        let (px, py, pz) = (self.player.x, self.player.y, self.player.z);
+        let phw = rewo_world::physics::PLAYER_HALF_WIDTH;
+        let ph = rewo_world::physics::PLAYER_HEIGHT;
+        let (mut ax, mut az) = (0.0f64, 0.0f64);
+        for (_id, e) in self.world.entities.iter() {
+            let Some(&(w, h, pushable)) = self.entity_push.get(e.type_id.max(0) as usize) else {
+                continue;
+            };
+            if !pushable {
+                continue;
+            }
+            let hw = w as f64 * 0.5;
+            // Bounding-box overlap — vanilla selects entities intersecting ours.
+            if e.x + hw <= px - phw || e.x - hw >= px + phw {
+                continue;
+            }
+            if e.z + hw <= pz - phw || e.z - hw >= pz + phw {
+                continue;
+            }
+            if e.y + h as f64 <= py || e.y >= py + ph {
+                continue;
+            }
+            let (xa, za) = push_delta(e.x - px, e.z - pz);
+            // `this.push(-xa, 0, -za)` — we move away from them.
+            ax -= xa;
+            az -= za;
+        }
+        self.player.vx += ax;
+        self.player.vz += az;
+    }
+}
+
+/// The horizontal shove one entity applies to another, from vanilla
+/// `Entity.push(Entity)`. `dx`/`dz` are `other − self`; the result is the
+/// impulse applied to *other* (self gets its negation).
+///
+/// Verbatim vanilla, quirk included: `dd` is `absMax(dx, dz)` and is then
+/// **square-rooted** — the sqrt of the larger component, not the vector
+/// length. Writing it as a normalize (the "obvious" reading) changes the push
+/// strength, so it is kept literal.
+fn push_delta(dx: f64, dz: f64) -> (f64, f64) {
+    /// `Entity.push` scales the unit shove by this (vanilla `0.05F`).
+    const PUSH_SPEED: f64 = 0.05;
+    let dd = dx.abs().max(dz.abs());
+    if dd < 0.01 {
+        return (0.0, 0.0);
+    }
+    let dd = dd.sqrt();
+    let pow = (1.0 / dd).min(1.0);
+    (dx / dd * pow * PUSH_SPEED, dz / dd * pow * PUSH_SPEED)
+}
+
+#[cfg(test)]
+mod push_tests {
+    use super::push_delta;
+
+    /// Below vanilla's 0.01 threshold nothing happens (exactly-overlapping
+    /// entities would otherwise divide by ~0).
+    #[test]
+    fn coincident_entities_do_not_push() {
+        assert_eq!(push_delta(0.0, 0.0), (0.0, 0.0));
+        assert_eq!(push_delta(0.005, -0.004), (0.0, 0.0));
+    }
+
+    /// Vanilla's math, computed by hand for a 1-block separation along +x:
+    /// dd = sqrt(absMax(1,0)) = 1, pow = min(1, 1/1) = 1,
+    /// so the impulse is 1/1 * 1 * 0.05 = 0.05 on x and 0 on z.
+    #[test]
+    fn unit_separation_matches_vanilla() {
+        let (x, z) = push_delta(1.0, 0.0);
+        assert!((x - 0.05).abs() < 1e-12, "x={x}");
+        assert_eq!(z, 0.0);
+    }
+
+    /// The push is directional and symmetric under negation.
+    #[test]
+    fn push_is_antisymmetric() {
+        let (ax, az) = push_delta(0.4, -0.3);
+        let (bx, bz) = push_delta(-0.4, 0.3);
+        assert!((ax + bx).abs() < 1e-12 && (az + bz).abs() < 1e-12);
+        assert!(ax > 0.0 && az < 0.0, "points away along the separation");
+    }
+
+    /// Closer than one block, `pow = 1/dd > 1` is clamped to 1 — so the shove
+    /// never exceeds PUSH_SPEED in magnitude per axis component.
+    #[test]
+    fn close_range_push_is_clamped() {
+        let (x, z) = push_delta(0.05, 0.0);
+        assert!(x <= 0.05 + 1e-12, "clamped, got {x}");
+        assert!(x > 0.0 && z == 0.0);
+    }
 }

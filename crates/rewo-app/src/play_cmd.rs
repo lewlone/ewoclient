@@ -33,6 +33,11 @@ pub struct PlayArgs {
     /// Total session length in seconds.
     #[arg(long, default_value_t = 40.0)]
     seconds: f32,
+    /// Server command (without the leading `/`) to run once, right after
+    /// spawn — world setup for a parity run, e.g. paving the floor with slabs
+    /// to exercise partial collision shapes against the server's own physics.
+    #[arg(long)]
+    setup: Option<String>,
     /// Send a chat line partway through.
     #[arg(long, default_value = "rewo bot online")]
     chat: String,
@@ -48,11 +53,11 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     // resolved to a full cube collides. Non-baked (partial/plants) fall
     // through to "non-air is solid" in the session, which is right for the
     // flat-world test.
-    let solid = match client_jar_path(&args.version) {
+    let collide = match client_jar_path(&args.version) {
         Some(jar) => {
             let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
             match assets::bake(&jar, &paths.blocks_json()) {
-                Ok(baked) => baked.solid,
+                Ok(baked) => baked.collide,
                 Err(e) => {
                     log::warn!("play: asset bake failed ({e}); using non-air-is-solid");
                     Vec::new()
@@ -79,9 +84,11 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         args.port,
         &username,
         auth.as_ref(),
-        solid,
+        collide,
         data.blocks.global_palette_bits,
     )?;
+    // Entity collision: per-type footprint + whether it shoves (living only).
+    session.entity_push = crate::live_cmd::entity_push_table(&data.entity_types);
     log::info!("play: entered live session, waiting for spawn…");
 
     let start = Instant::now();
@@ -126,6 +133,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
 
 #[derive(Default)]
 struct Actions {
+    setup: bool,
     walked: bool,
     sprinted: bool,
     jumped: bool,
@@ -209,6 +217,15 @@ fn drive(
                 acted.dug_at = Some(target);
                 acted.dug = true;
             }
+        }
+    }
+    if let Some(cmd) = args.setup.as_deref() {
+        if !acted.setup && secs >= 1.0 {
+            match session.send_command(cmd) {
+                Ok(()) => log::info!("play: setup → /{cmd}"),
+                Err(e) => log::warn!("play: setup failed: {e}"),
+            }
+            acted.setup = true;
         }
     }
     if secs >= 22.0 && !acted.chatted {

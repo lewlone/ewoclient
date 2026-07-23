@@ -61,6 +61,31 @@ impl EntityTypes {
         }
     }
 
+    /// Whether this entity type shoves other entities out of the way.
+    ///
+    /// Vanilla `Entity.isPushable()` is **false** by default and only
+    /// `LivingEntity` overrides it to true, so items, arrows, displays and
+    /// armor stands never push. This is the same rule expressed as an
+    /// exclusion list over the registry names, since the wire gives us type
+    /// ids rather than class hierarchies.
+    pub fn pushable(&self, id: i32) -> bool {
+        let name = self.name(id).unwrap_or("");
+        let short = name.strip_prefix("minecraft:").unwrap_or(name);
+        // Projectiles, drops, markers and decorations — never pushable.
+        const NOT_LIVING: &[&str] = &[
+            "item", "experience_orb", "arrow", "spectral_arrow", "trident",
+            "snowball", "egg", "ender_pearl", "eye_of_ender", "potion",
+            "experience_bottle", "fireball", "small_fireball", "dragon_fireball",
+            "wither_skull", "wind_charge", "breeze_wind_charge", "llama_spit",
+            "shulker_bullet", "fishing_bobber", "firework_rocket", "tnt",
+            "falling_block", "lightning_bolt", "area_effect_cloud", "painting",
+            "item_frame", "glow_item_frame", "leash_knot", "marker",
+            "interaction", "text_display", "block_display", "item_display",
+            "armor_stand", "end_crystal", "evoker_fangs", "ominous_item_spawner",
+        ];
+        !NOT_LIVING.contains(&short)
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }

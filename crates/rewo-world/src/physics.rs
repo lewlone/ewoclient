@@ -83,10 +83,15 @@ impl PlayerState {
     }
 }
 
-/// One vanilla tick. `solid(bx, by, bz)` answers "is this block a full
-/// collision cube" — M3 collides against full cubes only (partial shapes
+/// One vanilla tick. `shapes(bx, by, bz)` returns that block's collision
+/// boxes in block-local `0..1` — empty for no collision, one unit box for a
+/// full cube, several for stairs. (Was a full-cube-only bool; partial shapes
 /// arrive with the M4 model data).
-pub fn tick(state: &mut PlayerState, input: &TickInput, solid: &dyn Fn(i32, i32, i32) -> bool) {
+pub fn tick<'s>(
+    state: &mut PlayerState,
+    input: &TickInput,
+    shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
+) {
     // -- jump (LivingEntity.aiStep: before travel) -------------------------
     if input.jump && state.on_ground {
         state.vy = state.vy.max(JUMP_POWER);
@@ -131,7 +136,7 @@ pub fn tick(state: &mut PlayerState, input: &TickInput, solid: &dyn Fn(i32, i32,
     }
 
     // -- collide move (Entity.move) ---------------------------------------
-    collide_move(state, solid);
+    collide_move(state, shapes);
 
     // -- gravity + drag (travel tail) --------------------------------------
     state.vy -= GRAVITY;
@@ -151,22 +156,22 @@ pub fn tick(state: &mut PlayerState, input: &TickInput, solid: &dyn Fn(i32, i32,
 
 /// Axis-separated AABB collision (vanilla order: Y, then X, then Z), with a
 /// 0.6 step-up retry on horizontal block.
-fn collide_move(state: &mut PlayerState, solid: &dyn Fn(i32, i32, i32) -> bool) {
+fn collide_move<'s>(state: &mut PlayerState, shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]]) {
     let (dx, dy, dz) = (state.vx, state.vy, state.vz);
-    let (mx, my, mz) = collide(state, dx, dy, dz, solid);
+    let (mx, my, mz) = collide(state, dx, dy, dz, shapes);
 
     // Step-up: horizontally blocked while on the ground → retry from +0.6.
     let blocked_x = mx != dx;
     let blocked_z = mz != dz;
     let (mx, my, mz) = if (blocked_x || blocked_z) && (state.on_ground || dy.abs() < 1e-9) {
-        let (sx, sy, sz) = collide(state, dx, STEP_HEIGHT, dz, solid);
+        let (sx, sy, sz) = collide(state, dx, STEP_HEIGHT, dz, shapes);
         if sx * sx + sz * sz > mx * mx + mz * mz {
             // Settle back down onto the step.
             let mut stepped = *state;
             stepped.x += sx;
             stepped.y += sy;
             stepped.z += sz;
-            let (_, down, _) = collide(&stepped, 0.0, -STEP_HEIGHT, 0.0, solid);
+            let (_, down, _) = collide(&stepped, 0.0, -STEP_HEIGHT, 0.0, shapes);
             (sx, sy + down, sz)
         } else {
             (mx, my, mz)
@@ -192,12 +197,12 @@ fn collide_move(state: &mut PlayerState, solid: &dyn Fn(i32, i32, i32) -> bool) 
 }
 
 /// Clip a movement vector against solid blocks, Y then X then Z.
-fn collide(
+fn collide<'s>(
     state: &PlayerState,
     dx: f64,
     dy: f64,
     dz: f64,
-    solid: &dyn Fn(i32, i32, i32) -> bool,
+    shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
 ) -> (f64, f64, f64) {
     let mut min = [
         state.x - PLAYER_HALF_WIDTH,
@@ -209,23 +214,23 @@ fn collide(
         state.y + PLAYER_HEIGHT,
         state.z + PLAYER_HALF_WIDTH,
     ];
-    let my = clip_axis(1, dy, &min, &max, solid);
+    let my = clip_axis(1, dy, &min, &max, shapes);
     min[1] += my;
     max[1] += my;
-    let mx = clip_axis(0, dx, &min, &max, solid);
+    let mx = clip_axis(0, dx, &min, &max, shapes);
     min[0] += mx;
     max[0] += mx;
-    let mz = clip_axis(2, dz, &min, &max, solid);
+    let mz = clip_axis(2, dz, &min, &max, shapes);
     (mx, my, mz)
 }
 
 /// Move an AABB along one axis, stopping at the first solid block face.
-fn clip_axis(
+fn clip_axis<'s>(
     axis: usize,
     delta: f64,
     min: &[f64; 3],
     max: &[f64; 3],
-    solid: &dyn Fn(i32, i32, i32) -> bool,
+    shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
 ) -> f64 {
     if delta == 0.0 {
         return 0.0;
@@ -252,27 +257,36 @@ fn clip_axis(
     for bx in lo[0]..=hi[0] {
         for by in lo[1]..=hi[1] {
             for bz in lo[2]..=hi[2] {
-                if !solid(bx, by, bz) {
-                    continue;
-                }
-                let bmin = [bx as f64, by as f64, bz as f64];
-                let bmax = [bmin[0] + 1.0, bmin[1] + 1.0, bmin[2] + 1.0];
-                // Overlap on the two non-motion axes?
-                let overlaps = (0..3).all(|a| {
-                    a == axis || (max[a] > bmin[a] + EPS && min[a] < bmax[a] - EPS)
-                });
-                if !overlaps {
-                    continue;
-                }
-                if moved > 0.0 {
-                    let gap = bmin[axis] - max[axis];
-                    if gap >= -EPS && gap < moved {
-                        moved = gap.max(0.0);
+                // Each box of the block's shape clips independently — a stair
+                // is two, a fence one tall post, a full cube one unit box.
+                for b in shapes(bx, by, bz) {
+                    let bmin = [
+                        bx as f64 + b[0] as f64,
+                        by as f64 + b[1] as f64,
+                        bz as f64 + b[2] as f64,
+                    ];
+                    let bmax = [
+                        bx as f64 + b[3] as f64,
+                        by as f64 + b[4] as f64,
+                        bz as f64 + b[5] as f64,
+                    ];
+                    // Overlap on the two non-motion axes?
+                    let overlaps = (0..3).all(|a| {
+                        a == axis || (max[a] > bmin[a] + EPS && min[a] < bmax[a] - EPS)
+                    });
+                    if !overlaps {
+                        continue;
                     }
-                } else {
-                    let gap = bmax[axis] - min[axis];
-                    if gap <= EPS && gap > moved {
-                        moved = gap.min(0.0);
+                    if moved > 0.0 {
+                        let gap = bmin[axis] - max[axis];
+                        if gap >= -EPS && gap < moved {
+                            moved = gap.max(0.0);
+                        }
+                    } else {
+                        let gap = bmax[axis] - min[axis];
+                        if gap <= EPS && gap > moved {
+                            moved = gap.min(0.0);
+                        }
                     }
                 }
             }
@@ -285,9 +299,54 @@ fn clip_axis(
 mod tests {
     use super::*;
 
+    /// Full-cube / empty shapes, so the bool worlds below read as before.
+    const FULL: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+    const EMPTY: &[[f32; 6]] = &[];
+    fn cube(solid: bool) -> &'static [[f32; 6]] {
+        if solid { FULL } else { EMPTY }
+    }
+
     /// Flat floor: solid at y = -1 and below.
-    fn floor(_x: i32, y: i32, _z: i32) -> bool {
-        y < 0
+    fn floor(_x: i32, y: i32, _z: i32) -> &'static [[f32; 6]] {
+        cube(y < 0)
+    }
+
+    /// Partial shapes: a floor of bottom slabs is half a block tall, so the
+    /// player settles on the slab's top face — not on a full cube, and not
+    /// through it. Before per-block shapes, a slab had no collision at all.
+    #[test]
+    fn stands_on_a_slab() {
+        const SLAB: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
+        let world = |_x: i32, y: i32, _z: i32| if y == -1 { SLAB } else { EMPTY };
+        let mut p = PlayerState::at(0.5, 2.0, 0.5);
+        for _ in 0..80 {
+            tick(&mut p, &TickInput::default(), &world);
+        }
+        assert!(p.on_ground, "landed on the slab");
+        assert!((p.y + 0.5).abs() < 1e-6, "settles on the slab top (y=-0.5), got {}", p.y);
+    }
+
+    /// A fence is a thin post but collides 1.5 blocks tall, so walking into
+    /// one stops you — and the 0.6 step-up can't climb it.
+    #[test]
+    fn fence_post_blocks_movement() {
+        const POST: &[[f32; 6]] = &[[0.375, 0.0, 0.375, 0.625, 1.5, 0.625]];
+        let world = |_x: i32, y: i32, z: i32| {
+            if y < 0 {
+                FULL
+            } else if z == 2 && y == 0 {
+                POST
+            } else {
+                EMPTY
+            }
+        };
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        for _ in 0..60 {
+            tick(&mut p, &fwd, &world);
+        }
+        assert!(p.horizontal_collision, "stopped by the fence post");
+        assert!(p.z < 2.375 - PLAYER_HALF_WIDTH + 1e-6, "did not pass the post, z={}", p.z);
     }
 
     fn settle(state: &mut PlayerState) {
@@ -375,7 +434,7 @@ mod tests {
     #[test]
     fn wall_blocks_and_sets_collision_flag() {
         // Floor plus a wall at z = 2.
-        let world = |x: i32, y: i32, z: i32| -> bool { y < 0 || (z == 2 && y < 3 && x.abs() < 8) };
+        let world = |x: i32, y: i32, z: i32| cube(y < 0 || (z == 2 && y < 3 && x.abs() < 8));
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         for _ in 0..40 {
             tick(&mut p, &TickInput::default(), &world);
@@ -400,13 +459,7 @@ mod tests {
     #[test]
     fn jumps_up_single_block_ledge() {
         // Floor, with a raised floor (one block higher) from z >= 3.
-        let world = |_x: i32, y: i32, z: i32| -> bool {
-            if z >= 3 {
-                y < 1
-            } else {
-                y < 0
-            }
-        };
+        let world = |_x: i32, y: i32, z: i32| cube(if z >= 3 { y < 1 } else { y < 0 });
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         for _ in 0..40 {
             tick(&mut p, &TickInput::default(), &world);

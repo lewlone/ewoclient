@@ -82,6 +82,13 @@ pub struct BakedAssets {
     /// overlay element, but collides as a solid cube). Drives the client's
     /// M3 full-cube collision, independent of the render fast-path.
     pub solid: Vec<bool>,
+    /// Per-state collision boxes in block-local `0..1`
+    /// (`[minx,miny,minz,maxx,maxy,maxz]`); empty = the block has no
+    /// collision. A `solid` state is the unit cube. Non-full-cube shapes come
+    /// from the model geometry for a curated set of families (see
+    /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
+    /// on a slab and can't walk through a fence.
+    pub collide: Vec<Vec<[f32; 6]>>,
     /// RGBA8 16×16 texels per layer (sRGB).
     pub layers: Vec<Vec<u8>>,
     pub layer_names: Vec<String>,
@@ -267,6 +274,8 @@ pub struct BakedFont {
 
 #[derive(Default, Debug)]
 pub struct BakeStats {
+    /// States given a non-full-cube collision shape from their model.
+    pub shaped_collision_states: usize,
     pub cube_states: usize,
     pub model_states: usize,
     pub fluid_states: usize,
@@ -324,6 +333,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
     let mut solid = vec![false; max_id + 1];
+    let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
     let mut stats = BakeStats::default();
 
@@ -384,16 +394,32 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 }
                 _ => stats.invisible_states += 1,
             }
+            // Collision shape: a solid state is the unit cube; otherwise a
+            // curated family may collide with its model geometry. Everything
+            // else stays empty (today's behaviour).
+            collide[id as usize] = if solid[id as usize] {
+                vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+            } else if let (Some(tall), Some(bs)) = (model_collision(short), bs.as_ref()) {
+                let refs = baker.state_refs(bs, props);
+                let boxes = baker.collision_boxes(&refs, tall);
+                if !boxes.is_empty() {
+                    stats.shaped_collision_states += 1;
+                }
+                boxes
+            } else {
+                Vec::new()
+            };
         }
     }
 
     stats.textures = baker.layers.len();
     log::info!(
-        "rewo-data: baked {} cubes + {} models ({} invisible), {} textures",
+        "rewo-data: baked {} cubes + {} models ({} invisible), {} textures, {} shaped-collision states",
         stats.cube_states,
         stats.model_states,
         stats.invisible_states,
-        stats.textures
+        stats.textures,
+        stats.shaped_collision_states
     );
 
     if !baker.animations.is_empty() {
@@ -402,6 +428,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     Ok(BakedAssets {
         render,
         solid,
+        collide,
         models,
         layers: baker.layers,
         layer_names: baker.layer_names,
@@ -628,14 +655,7 @@ impl<'a> Baker<'a> {
         foliage: bool,
         models: &mut Vec<Vec<Quad>>,
     ) -> Option<(RenderKind, bool)> {
-        let refs: Vec<ModelRef> = match bs {
-            BlockState::Variants(v) => pick_variant(v, props).into_iter().collect(),
-            BlockState::Multipart(parts) => parts
-                .iter()
-                .filter(|p| multipart_applies(p, props))
-                .filter_map(|p| model_ref(p.get("apply")?))
-                .collect(),
-        };
+        let refs = self.state_refs(bs, props);
         if refs.is_empty() {
             return None;
         }
@@ -662,6 +682,57 @@ impl<'a> Baker<'a> {
         let idx = models.len() as u32;
         models.push(quads);
         Some((RenderKind::Model(idx), is_solid))
+    }
+
+    /// The model refs a blockstate resolves to for these properties.
+    fn state_refs(
+        &self,
+        bs: &BlockState,
+        props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Vec<ModelRef> {
+        match bs {
+            BlockState::Variants(v) => pick_variant(v, props).into_iter().collect(),
+            BlockState::Multipart(parts) => parts
+                .iter()
+                .filter(|p| multipart_applies(p, props))
+                .filter_map(|p| model_ref(p.get("apply")?))
+                .collect(),
+        }
+    }
+
+    /// Collision boxes for one state, in block-local `0..1`, taken from the
+    /// referenced models' elements and rotated by each ref's blockstate
+    /// rotation (stairs/fences pick a rotated model per facing, so the shape
+    /// has to rotate with it). `tall` raises the boxes to 1.5 — vanilla's
+    /// fence/wall collision is taller than the model so players can't jump it.
+    fn collision_boxes(&mut self, refs: &[ModelRef], tall: bool) -> Vec<[f32; 6]> {
+        let mut out = Vec::new();
+        for r in refs {
+            let Some(resolved) = self.resolve_model(&r.model) else { continue };
+            for el in resolved.elements.clone() {
+                let (Some(from), Some(to)) = (box_coords(&el, "from"), box_coords(&el, "to"))
+                else {
+                    continue;
+                };
+                let mut b = [
+                    from[0] / 16.0,
+                    from[1] / 16.0,
+                    from[2] / 16.0,
+                    to[0] / 16.0,
+                    to[1] / 16.0,
+                    to[2] / 16.0,
+                ];
+                b = rotate_box(b, r.x, r.y);
+                if tall {
+                    b[4] = b[4].max(1.5);
+                }
+                // Skip zero-thickness planes (decorative overlays).
+                if (b[3] - b[0]) > 1e-4 && (b[4] - b[1]) > 1e-4 && (b[5] - b[2]) > 1e-4 {
+                    out.push(b);
+                }
+            }
+        }
+        out
     }
 
     /// True if the model (or a parent) has any element spanning the full
@@ -1385,4 +1456,75 @@ mod tests {
         assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
         assert_eq!(adv[32], 4, "blank space cell advances 4");
     }
+}
+
+/// Rotate a block-local `0..1` box by a blockstate rotation (multiples of 90°
+/// about X then Y, vanilla's `x`/`y` model fields). Axis-aligned boxes stay
+/// axis-aligned at right angles, so this is a corner swap, not a real rotation.
+fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
+    let mut lo = [b[0], b[1], b[2]];
+    let mut hi = [b[3], b[4], b[5]];
+    let steps = |d: i32| ((d % 360) + 360) % 360 / 90;
+    for _ in 0..steps(x_deg) {
+        // x rotation: y -> z, z -> -y (about the block centre)
+        let (l, h) = (lo, hi);
+        lo[1] = 1.0 - h[2];
+        hi[1] = 1.0 - l[2];
+        lo[2] = l[1];
+        hi[2] = h[1];
+    }
+    for _ in 0..steps(y_deg) {
+        // y rotation: x -> z, z -> -x
+        let (l, h) = (lo, hi);
+        lo[0] = 1.0 - h[2];
+        hi[0] = 1.0 - l[2];
+        lo[2] = l[0];
+        hi[2] = h[0];
+    }
+    [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+}
+
+/// Whether a non-full-cube block should collide using its *model* geometry,
+/// and whether that shape is fence-tall.
+///
+/// Vanilla stores collision shapes in Java code, not in any datagen report, so
+/// there is no ground-truth table to generate from (unlike the entity
+/// hierarchies in `rewo-gpu::vanilla_hier`). Deriving shapes for *every* block
+/// would be wrong in the obvious direction — torches, plants, rails and
+/// redstone all have models but no collision, so the player would bump into
+/// flowers. This list is therefore deliberately conservative: it names only
+/// families whose model matches vanilla's collision closely, and everything
+/// outside it keeps the previous behaviour (a full cube when `solid`, else
+/// nothing). It can only ever *add* collision where we're confident.
+fn model_collision(short: &str) -> Option<bool> {
+    // Fence-likes: vanilla collides them 1.5 blocks tall so they can't be
+    // jumped. Checked before `_fence` since `_fence_gate` also ends in `_gate`.
+    if short.ends_with("_fence") || short == "fence" || short.ends_with("_fence_gate")
+        || short.ends_with("_wall") || short == "wall"
+    {
+        return Some(true);
+    }
+    // `_trapdoor` must precede `_door` — it also ends with "door".
+    let model_shaped = short.ends_with("_slab")
+        || short.ends_with("_stairs")
+        || short.ends_with("_trapdoor")
+        || short.ends_with("_door")
+        || short.ends_with("_carpet")
+        || short == "snow"
+        || short.ends_with("_bed")
+        || short.ends_with("chest")
+        || short.ends_with("_shulker_box")
+        || short == "shulker_box"
+        || short.ends_with("cauldron")
+        || short.ends_with("anvil")
+        || short == "hopper"
+        || short == "composter"
+        || short == "stonecutter"
+        || short == "enchanting_table"
+        || short == "end_portal_frame"
+        || short == "daylight_detector"
+        || short == "grindstone"
+        || short == "lectern"
+        || short == "cake";
+    model_shaped.then_some(false)
 }

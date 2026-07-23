@@ -262,8 +262,10 @@ the code's author. Nothing below is settled truth.
   skins (M7)~~ **real per-player skins shipped (M7c, §15)** — slim + wide,
   fetched from the profile `textures` property, uploaded into a 32-slot
   atlas pool; tags are depth-tested.
-- **Collision is full-cube only** — slabs/stairs/fences have no collision
-  (you walk through them). "Expected" for the M3 subset, but a real gap.
+- ~~**Collision is full-cube only**~~ / ~~**entity collision is ignored**~~ —
+  **RESOLVED 2026-07-23 (§15)**: per-block collision *shapes* (slabs, stairs,
+  fences, trapdoors, carpets, …) and vanilla entity pushing. Verified live:
+  **0 corrections** walking on a slab floor and with a mob shoving the player.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
   cobwebs, stairs-vs-sneak, ladders, ice, slabs-as-steps, etc. untested —
   each will likely need decompile-derived constants (§13 risk).
@@ -2658,3 +2660,60 @@ detector for **geometry** bugs, because FA replicates vanilla geometry. The
 to animate differently from vanilla, so divergence there mixes intent with
 defect. Read them together: low rest + high animated = FA design; high rest =
 geometry bug; and for a specific fix, compare the same mob before/after.
+
+**2026-07-23 — collision: per-block shapes + entity pushing.**
+
+Two long-standing §0.0 gaps, both verified against the live 26.2 server with
+the `rewo play` corrections meter (the physics-parity DoD).
+
+- **Per-block collision shapes.** Collision was a per-state `solid` bool, so
+  every block was either a full cube or nothing — you fell through slabs and
+  walked through fences. `BakedAssets` now carries `collide: Vec<Vec<[f32;6]>>`
+  (block-local `0..1` boxes; empty = no collision) and `physics::tick` takes
+  `shapes(x,y,z) -> &[[f32;6]]` instead of a bool, clipping against each box.
+  **19,665 states** get a real shape.
+
+  Vanilla keeps collision shapes in Java code — no datagen report has them, so
+  unlike `vanilla_hier` there is nothing to generate from. Shapes are therefore
+  taken from the **model** geometry, gated by a curated family list
+  (`model_collision`): slabs, stairs, walls, fences (+gates), trapdoors, doors,
+  carpets, snow, beds, chests, cauldrons, … Everything outside the list keeps
+  the old behaviour, so the change can only *add* collision where the model is
+  known to match. That gate is the load-bearing part: deriving shapes for
+  *every* block would be wrong in the obvious direction — torches, plants and
+  rails have models but no collision, and the player would bump into flowers.
+  Model boxes are rotated by the blockstate's `x`/`y` (stairs pick a rotated
+  model per facing), and fence-likes are raised to 1.5 as vanilla does so they
+  can't be jumped.
+
+  Spot-checked against vanilla's real shapes: `stone_slab` `[0,0,0,1,0.5,1]`,
+  `oak_stairs` `[0,0,0,1,.5,1] + [0,.5,0,1,1,.5]`, `oak_fence`
+  `[.375,0,.375,.625,1.5,.625]`, `oak_trapdoor` 3/16 thick, `white_carpet`
+  1/16 — and `torch`/`dandelion` correctly **empty**.
+
+- **Entity pushing.** A verbatim port of `Entity.push(Entity)`: entities whose
+  bounding boxes overlap shove each other apart horizontally, applied before
+  `travel` exactly as `LivingEntity.aiStep` does. Only the player is moved —
+  the server owns every other entity, so pushing them client-side would just be
+  corrected away. Vanilla's quirk is preserved literally: `dd` is
+  `absMax(dx,dz)` and then **square-rooted** (the sqrt of the larger component,
+  not the vector length), so the "obvious" normalize would give the wrong
+  strength. Only *living* entities push — `Entity.isPushable()` is false by
+  default and only `LivingEntity` overrides it — expressed as
+  `EntityTypes::pushable`, an exclusion list over registry names (items,
+  projectiles, displays, armor stands).
+
+Verification: 5 new unit tests (standing on a slab settles at exactly y=−0.5;
+a fence post blocks and can't be stepped over; the push math's threshold,
+unit-separation value, antisymmetry and clamp), plus live runs — **0
+corrections** over 800 ticks walking on a slab floor, with a fence wall, and
+with a cow shoving the player; place/dig still verify. A probe confirmed the
+shove actually fires in-session (`dv=(0.0395, 0.0395)` off a cow at ~0.62
+separation, which is exactly `sqrt(0.624)×0.05`).
+
+`rewo play --setup "<command>"` was added to run one server command after
+spawn — how the slab floor / fence wall / mob were staged for those runs.
+(A first attempt used `fill … hollow`, which fills the box's *floor and
+ceiling* too and so buried the player in fences; the server then shoved it out
+for 508 "corrections". A parity meter only means anything when the setup
+doesn't corrupt the premise.)

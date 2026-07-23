@@ -85,7 +85,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let jar = client_jar_path(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
-    let solid: Vec<bool> = baked.solid.clone();
+    // Per-state collision shapes (slabs/stairs/fences, not just full cubes).
+    let collide: Vec<Vec<[f32; 6]>> = baked.collide.clone();
     let global_bits = data.blocks.global_palette_bits;
     // Launcher account handoff — online-mode servers need it, offline
     // servers ignore it. The explicit --username wins for the name.
@@ -100,7 +101,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
 
     let dirt_item = data.items.id("dirt");
     let conn = Connection::connect(&args.host, args.port, &data)?;
-    let session = conn.into_play(&args.host, args.port, &username, auth.as_ref(), solid, global_bits)?;
+    let mut session = conn.into_play(&args.host, args.port, &username, auth.as_ref(), collide, global_bits)?;
+    // Entity collision: per-type footprint + whether it shoves (living only).
+    session.entity_push = entity_push_table(&data.entity_types);
     log::info!("live: session up, opening window…");
     let etypes = data.entity_types;
 
@@ -1514,4 +1517,16 @@ fn digit_key(code: KeyCode) -> Option<u8> {
         KeyCode::Digit9 => 8,
         _ => return None,
     })
+}
+
+/// Per entity-type `(width, height, pushable)` for entity collision, indexed
+/// by type id. Vanilla only lets living entities shove, so items/projectiles/
+/// displays are excluded (see `EntityTypes::pushable`).
+pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f32, f32, bool)> {
+    (0..types.len() as i32)
+        .map(|id| {
+            let (w, h) = types.dimensions(id);
+            (w, h, types.pushable(id))
+        })
+        .collect()
 }
