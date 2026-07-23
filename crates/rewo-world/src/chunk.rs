@@ -55,6 +55,31 @@ impl Section {
     pub fn sky_light(&self, x: i32, y: i32, z: i32) -> u8 {
         Self::nibble(&self.sky_light, x, y, z).unwrap_or(0)
     }
+
+    /// Write one nibble, allocating the layer on first write. A section the
+    /// server sent no data for is all-zero, which is the correct starting
+    /// point for both channels (the sky pass seeds its own sources).
+    fn set_nibble(arr: &mut Option<Vec<u8>>, x: i32, y: i32, z: i32, level: u8) {
+        let arr = arr.get_or_insert_with(|| vec![0u8; 2048]);
+        let idx = ((y as usize) << 8) | ((z as usize) << 4) | x as usize;
+        let Some(byte) = arr.get_mut(idx / 2) else {
+            return;
+        };
+        let level = level & 0x0f;
+        *byte = if idx & 1 == 0 {
+            (*byte & 0xf0) | level
+        } else {
+            (*byte & 0x0f) | (level << 4)
+        };
+    }
+
+    pub fn set_block_light(&mut self, x: i32, y: i32, z: i32, level: u8) {
+        Self::set_nibble(&mut self.block_light, x, y, z, level);
+    }
+
+    pub fn set_sky_light(&mut self, x: i32, y: i32, z: i32, level: u8) {
+        Self::set_nibble(&mut self.sky_light, x, y, z, level);
+    }
 }
 
 #[derive(Clone)]
@@ -62,6 +87,15 @@ pub struct Column {
     pub cx: i32,
     pub cz: i32,
     sections: Vec<Section>,
+    /// Section index at/above which a *missing* sky array means full-bright.
+    ///
+    /// The server sends sky arrays only for sections near terrain: bits set in
+    /// `sky_mask` carry data, bits in `empty_sky_mask` are explicitly zero, and
+    /// sections in **neither** mask are simply "everything above the terrain".
+    /// Vanilla's `SkyLightSectionStorage` reads those as 15, so a client that
+    /// defaults them to 0 renders the whole sky-lit volume above the terrain as
+    /// pitch black. Set from the masks in `read_light_into`.
+    sky_full_above: usize,
 }
 
 impl Column {
@@ -100,14 +134,48 @@ impl Column {
             return 15;
         };
         let (x, ly, z) = (lx, y & 15, lz);
-        section.block_light(x, ly, z).max(section.sky_light(x, ly, z))
+        section
+            .block_light(x, ly, z)
+            .max(self.sky_light_in(si, section, x, ly, z))
     }
 
     /// Separate (block, sky) light at section-local x/z — the F3 readout and
     /// anything that needs the two sources apart, unlike `brightness_at`
     /// which is their max. Above the build height sky is full; below the
-    /// world both are 0. A missing section means "not sent", which for light
-    /// means zero, not fullbright.
+    /// world both are 0.
+    /// Write one channel's light at a column-local `(lx, y, lz)`.
+    /// Returns whether the stored value actually changed, so the light engine
+    /// can track exactly which columns need remeshing.
+    pub fn set_light(
+        &mut self,
+        shape: &DimensionShape,
+        ch: crate::light::Channel,
+        lx: i32,
+        y: i32,
+        lz: i32,
+        level: u8,
+    ) -> bool {
+        let Some(si) = shape.section_index(y) else {
+            return false;
+        };
+        let ly = y.rem_euclid(16);
+        let Some(section) = self.sections.get_mut(si) else {
+            return false;
+        };
+        let before = match ch {
+            crate::light::Channel::Block => section.block_light(lx, ly, lz),
+            crate::light::Channel::Sky => section.sky_light(lx, ly, lz),
+        };
+        if before == level {
+            return false;
+        }
+        match ch {
+            crate::light::Channel::Block => section.set_block_light(lx, ly, lz, level),
+            crate::light::Channel::Sky => section.set_sky_light(lx, ly, lz, level),
+        }
+        true
+    }
+
     pub fn light_at(&self, shape: &DimensionShape, lx: i32, y: i32, lz: i32) -> (u8, u8) {
         let Some(si) = shape.section_index(y) else {
             return if y >= shape.min_y + shape.height { (0, 15) } else { (0, 0) };
@@ -116,7 +184,19 @@ impl Column {
             return (0, 0);
         };
         let (x, ly, z) = (lx, y & 15, lz);
-        (section.block_light(x, ly, z), section.sky_light(x, ly, z))
+        (
+            section.block_light(x, ly, z),
+            self.sky_light_in(si, section, x, ly, z),
+        )
+    }
+
+    /// Sky light, applying the "no array above the terrain means 15" rule.
+    fn sky_light_in(&self, si: usize, section: &Section, x: i32, y: i32, z: i32) -> u8 {
+        match Section::nibble(&section.sky_light, x, y, z) {
+            Some(v) => v,
+            None if si >= self.sky_full_above => 15,
+            None => 0,
+        }
     }
 
     /// True when the section at index has no visible content — lets the
@@ -198,7 +278,14 @@ impl Column {
         let sections = (0..shape.section_count())
             .map(|_| Section::empty_lit())
             .collect();
-        Column { cx, cz, sections }
+        Column {
+            cx,
+            cz,
+            sections,
+            // Synthetic columns carry explicit full-bright sky arrays, so the
+            // "missing means 15" rule never applies.
+            sky_full_above: usize::MAX,
+        }
     }
 }
 
@@ -213,7 +300,10 @@ impl Column {
 /// byte-for-byte the same structure `level_chunk_with_light` carries, so the
 /// same reader handles it.
 pub fn apply_light_update(r: &mut PacketReader, col: &mut Column) -> Result<()> {
-    read_light_into(r, &mut col.sections)
+    // A light update re-states the masks, so the sky boundary moves with it
+    // (building a roof pushes the topmost data section upward).
+    col.sky_full_above = read_light_into(r, &mut col.sections)?;
+    Ok(())
 }
 
 pub fn read_level_chunk(
@@ -282,9 +372,14 @@ pub fn read_level_chunk_bits(
     // Light data: 4 BitSets + 2 update lists. Distribute nibble arrays to
     // sections using the sky/block Y masks. The masks cover
     // `section_count + 2` bits (one below, one above the buildable range).
-    read_light_into(r, &mut sections)?;
+    let sky_full_above = read_light_into(r, &mut sections)?;
 
-    Ok(Column { cx, cz, sections })
+    Ok(Column {
+        cx,
+        cz,
+        sections,
+        sky_full_above,
+    })
 }
 
 fn read_bitset(r: &mut PacketReader) -> Result<Vec<u64>> {
@@ -300,10 +395,14 @@ fn bitset_get(words: &[u64], i: usize) -> bool {
     words.get(i / 64).map(|w| (w >> (i % 64)) & 1 == 1).unwrap_or(false)
 }
 
-fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<()> {
+/// Decode the four light bitsets + the nibble arrays into `sections`.
+///
+/// Returns the section index at/above which a missing sky array means
+/// full-bright — see `Column::sky_full_above`.
+fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<usize> {
     let sky_mask = read_bitset(r)?;
     let block_mask = read_bitset(r)?;
-    let _empty_sky = read_bitset(r)?;
+    let empty_sky = read_bitset(r)?;
     let _empty_block = read_bitset(r)?;
 
     // Sky updates, then block updates: VarInt count, each [VarInt 2048, bytes].
@@ -323,7 +422,15 @@ fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<()>
     // below the world). Arrays appear in mask-bit order.
     distribute(&sky_mask, &sky_arrays, sections, true);
     distribute(&block_mask, &block_arrays, sections, false);
-    Ok(())
+
+    // Everything above the topmost section the server said anything about is
+    // open sky. Bit `i` is section `i - 1`, so the highest mentioned section
+    // is `top_bit - 1` and the first implicit-full one is `top_bit`.
+    let top_bit = (0..sky_mask.len().max(empty_sky.len()) * 64)
+        .filter(|b| bitset_get(&sky_mask, *b) || bitset_get(&empty_sky, *b))
+        .max()
+        .unwrap_or(0);
+    Ok(top_bit)
 }
 
 fn distribute(mask: &[u64], arrays: &[Vec<u8>], sections: &mut [Section], sky: bool) {

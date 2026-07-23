@@ -8,6 +8,7 @@
 pub mod chunk;
 pub mod dimension;
 pub mod entities;
+pub mod light;
 pub mod palette;
 pub mod physics;
 pub mod raycast;

@@ -89,6 +89,25 @@ pub struct BakedAssets {
     /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
     /// on a slab and can't walk through a fence.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// Per-state light emission 0..15 (`torch` = 14, `glowstone` = 15).
+    /// Extracted from the decompile by `tools/gen_block_light.py`; see
+    /// [`crate::block_light`].
+    pub emission: Vec<u8>,
+    /// Per-state light dampening 0..15 — vanilla `BlockBehaviour
+    /// .getLightDampening`: `isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1`.
+    /// Substituting what the bake already knows, that is
+    /// `canOcclude && full_cube ? 15 : (!full_cube && !fluid ? 0 : 1)`, which is
+    /// why glass/leaves/water come out at 1 rather than 0 or 15. The light
+    /// engine's per-step cost is `max(1, dampening)`.
+    pub dampening: Vec<u8>,
+    /// Per-state bitmask of the six faces the block's occlusion shape fully
+    /// covers, in [`FACE_DIRS`] order. Vanilla blocks light across a face when
+    /// the two adjacent occlusion shapes together cover it
+    /// (`LightEngine.getLightDampeningInto` → 16, i.e. "no light passes"), which
+    /// is what makes a stair or slab cast a proper shadow even though its
+    /// `dampening` is 0. Non-full-cube shapes only — a full cube is already
+    /// handled by dampening 15.
+    pub face_occludes: Vec<u8>,
     /// RGBA8 16×16 texels per layer (sRGB).
     pub layers: Vec<Vec<u8>>,
     pub layer_names: Vec<String>,
@@ -334,8 +353,22 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut render = vec![RenderKind::Invisible; max_id + 1];
     let mut solid = vec![false; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
+    let mut emission = vec![0u8; max_id + 1];
+    let mut dampening = vec![0u8; max_id + 1];
+    let mut face_occludes = vec![0u8; max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
     let mut stats = BakeStats::default();
+
+    let no_occlude: std::collections::HashSet<&str> =
+        crate::block_light::NO_OCCLUDE.iter().copied().collect();
+    let const_emission: HashMap<&str, u8> =
+        crate::block_light::EMISSION.iter().copied().collect();
+    let lit_emission: HashMap<&str, u8> =
+        crate::block_light::LIT_EMISSION.iter().copied().collect();
+    let sky_propagate: HashMap<&str, u8> =
+        crate::block_light::SKY_PROPAGATE.iter().copied().collect();
+    let damp_override: HashMap<&str, u8> =
+        crate::block_light::DAMPENING_OVERRIDE.iter().copied().collect();
 
     for (block_name, def) in blocks {
         let states = def
@@ -409,6 +442,49 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             } else {
                 Vec::new()
             };
+
+            // Light. Vanilla's rule (BlockBehaviour.getLightDampening) is
+            //     isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1
+            // with propagatesSkylightDown = !fullCubeShape && no fluid. The
+            // bake already knows the shape (`solid`) and the fluid-ness, so
+            // the only imported fact is `canOcclude`.
+            let full_cube = solid[id as usize];
+            let fluid = matches!(render[id as usize], RenderKind::Fluid { .. });
+            // `propagatesSkylightDown` defaults to "not a full cube and no
+            // fluid", but 16 block classes override it — glass returns true so
+            // sky passes it at full strength, fences return "not waterlogged".
+            let waterlogged =
+                props.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) == Some("true");
+            let propagates = match sky_propagate.get(block_name.as_str()) {
+                Some(0) => false,
+                Some(1) => true,
+                Some(_) => !waterlogged,
+                None => !full_cube && !fluid,
+            };
+            dampening[id as usize] = if let Some(&d) = damp_override.get(block_name.as_str()) {
+                d
+            } else if full_cube && !no_occlude.contains(block_name.as_str()) {
+                15
+            } else if propagates {
+                0
+            } else {
+                1
+            };
+            // Directional occlusion for non-full-cube shapes (slab, stair,
+            // …). `useShapeForLightOcclusion` is derived rather than scraped:
+            // its only effect is through face coverage, and a block vanilla
+            // leaves out of that list essentially never covers a whole face
+            // (a fence post is 6/16 wide), so a false positive is inert.
+            if !full_cube && !no_occlude.contains(block_name.as_str()) {
+                face_occludes[id as usize] = face_coverage(&collide[id as usize]);
+            }
+            emission[id as usize] = if let Some(&e) = const_emission.get(block_name.as_str()) {
+                e
+            } else if props.and_then(|p| p.get("lit")).and_then(|v| v.as_str()) == Some("true") {
+                lit_emission.get(block_name.as_str()).copied().unwrap_or(0)
+            } else {
+                0
+            };
         }
     }
 
@@ -429,6 +505,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         render,
         solid,
         collide,
+        emission,
+        dampening,
+        face_occludes,
         models,
         layers: baker.layers,
         layer_names: baker.layer_names,
@@ -1527,4 +1606,75 @@ fn model_collision(short: &str) -> Option<bool> {
         || short == "lectern"
         || short == "cake";
     model_shaped.then_some(false)
+}
+
+/// Neighbour offsets matching the bit order of [`BakedAssets::face_occludes`]
+/// and the light engine's neighbour loop: −X, +X, −Y, +Y, −Z, +Z.
+pub const FACE_DIRS: [(i32, i32, i32); 6] = [
+    (-1, 0, 0),
+    (1, 0, 0),
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+];
+
+/// Which of the six faces this box list fully covers.
+///
+/// Vanilla compares real `VoxelShape`s; every vanilla block shape lies on
+/// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
+/// cell is covered gives the same answer for the shapes that matter, without
+/// carrying a shape algebra. Boxes are block-local `0..1`.
+fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
+    if boxes.is_empty() {
+        return 0;
+    }
+    const EPS: f32 = 1.0e-4;
+    let mut mask = 0u8;
+    for (f, (dx, dy, dz)) in FACE_DIRS.iter().enumerate() {
+        // The two axes spanning this face, and the plane the face sits on.
+        let (axis, positive) = match (dx, dy, dz) {
+            (-1, 0, 0) => (0, false),
+            (1, 0, 0) => (0, true),
+            (0, -1, 0) => (1, false),
+            (0, 1, 0) => (1, true),
+            (0, 0, -1) => (2, false),
+            _ => (2, true),
+        };
+        let (u_axis, v_axis) = match axis {
+            0 => (1, 2),
+            1 => (0, 2),
+            _ => (0, 1),
+        };
+        let mut covered = [[false; 16]; 16];
+        for b in boxes {
+            // Only boxes flush with this face occlude across it.
+            let flush = if positive {
+                b[axis + 3] >= 1.0 - EPS
+            } else {
+                b[axis] <= EPS
+            };
+            if !flush {
+                continue;
+            }
+            let (u0, u1) = (b[u_axis], b[u_axis + 3]);
+            let (v0, v1) = (b[v_axis], b[v_axis + 3]);
+            for (ui, row) in covered.iter_mut().enumerate() {
+                let uc = (ui as f32 + 0.5) / 16.0;
+                if uc < u0 || uc > u1 {
+                    continue;
+                }
+                for (vi, cell) in row.iter_mut().enumerate() {
+                    let vc = (vi as f32 + 0.5) / 16.0;
+                    if vc >= v0 && vc <= v1 {
+                        *cell = true;
+                    }
+                }
+            }
+        }
+        if covered.iter().all(|row| row.iter().all(|c| *c)) {
+            mask |= 1 << f;
+        }
+    }
+    mask
 }

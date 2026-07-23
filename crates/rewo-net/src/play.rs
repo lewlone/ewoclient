@@ -47,6 +47,14 @@ pub struct PlaySession {
     /// Columns whose mesh is stale (new chunk / block edit). The live
     /// renderer drains this to know what to re-mesh; the bot ignores it.
     dirty: std::collections::HashSet<(i32, i32)>,
+    /// Client-side lighting. The server sends authoritative light on chunk
+    /// load but never for individual edits, so every block change is relit
+    /// here — see `rewo_world::light`. Empty tables (the default) disable it,
+    /// which keeps the headless protocol tests independent of the asset bake.
+    light: rewo_world::light::LightEngine,
+    light_emission: Vec<u8>,
+    light_dampening: Vec<u8>,
+    light_faces: Vec<u8>,
     /// Columns the server dropped — the renderer frees their GPU buffers.
     removed: Vec<(i32, i32)>,
     pub chat_log: Vec<String>,
@@ -156,6 +164,10 @@ impl<'a> Connection<'a> {
             teleports: 0,
             block_updates: 0,
             dirty: std::collections::HashSet::new(),
+            light: rewo_world::light::LightEngine::new(),
+            light_emission: Vec::new(),
+            light_dampening: Vec::new(),
+            light_faces: Vec::new(),
             removed: Vec::new(),
             chat_log: Vec::new(),
             health: 20.0,
@@ -218,6 +230,33 @@ impl PlaySession {
     }
 
     /// Drain the stale-column set (live renderer re-meshes these).
+    /// Install the per-state light tables from the asset bake, enabling
+    /// client-side relighting of block edits.
+    pub fn set_light_tables(&mut self, emission: Vec<u8>, dampening: Vec<u8>, faces: Vec<u8>) {
+        self.light_emission = emission;
+        self.light_dampening = dampening;
+        self.light_faces = faces;
+    }
+
+    /// Apply a block change and relight around it, marking every column whose
+    /// light moved for remesh. `old` is the state before the write.
+    fn relight(&mut self, x: i32, y: i32, z: i32, old: u32, new: u32) {
+        if self.light_dampening.is_empty() {
+            return;
+        }
+        let tables = rewo_world::light::LightTables {
+            emission: &self.light_emission,
+            dampening: &self.light_dampening,
+            face_occludes: &self.light_faces,
+        };
+        for (cx, cz) in self
+            .light
+            .on_block_change(&mut self.world, tables, x, y, z, old, new)
+        {
+            self.dirty.insert((cx, cz));
+        }
+    }
+
     pub fn take_dirty(&mut self) -> Vec<(i32, i32)> {
         self.dirty.drain().collect()
     }
@@ -425,7 +464,9 @@ impl PlaySession {
         } else if id == ids.cb_play_block_update {
             let mut r = PacketReader::new(body);
             if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
+                let old = self.world.block_state_at(x, y, z);
                 self.world.set_block(x, y, z, state as u32);
+                self.relight(x, y, z, old, state as u32);
                 self.block_updates += 1;
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");

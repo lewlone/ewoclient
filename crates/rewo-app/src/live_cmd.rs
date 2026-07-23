@@ -104,6 +104,13 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let mut session = conn.into_play(&args.host, args.port, &username, auth.as_ref(), collide, global_bits)?;
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = entity_push_table(&data.entity_types);
+    // Client-side relighting of our own edits — the server only sends light
+    // on chunk load, never for a placed torch or a broken roof.
+    session.set_light_tables(
+        baked.emission.clone(),
+        baked.dampening.clone(),
+        baked.face_occludes.clone(),
+    );
     log::info!("live: session up, opening window…");
     let etypes = data.entity_types;
 
