@@ -2940,3 +2940,65 @@ relighting active. 79 tests; demo, mobshot 243/243, bench unchanged.
 
 **Still open (not M10):** the per-side vs true-shape-union face merge (differs
 only for complementary partial faces meeting, which no vanilla pair produces).
+
+### 2026-07-23 — M11: vanilla's lightmap + the day/night cycle
+
+M10 produced correct light *values*; they were then rendered through an
+invented formula. `max(block, sky) / 15` into `0.25 + 0.75 * l` is wrong three
+ways against `assets/minecraft/shaders/core/lightmap.fsh` in the client jar:
+vanilla **adds** the two channels rather than taking their max, the ramp is
+`l / (4 - 3l)` (far darker at low levels than a straight line), and there is
+**no floor** — an unlit cave is genuinely black, where ours bottomed out at 25%
+so no interior could ever be dark.
+
+`shaders/lightmap.glsl` transcribes it: each channel through the curve, sky
+scaled by a time-of-day factor, block tinted warm (`BLOCK_LIGHT_TINT`
+0xFFD86C) fading to white at both ends via the parabolic mix, summed and
+clamped. The two levels ride in the **spare bits of the existing per-vertex
+layer word** (`layer | block << 16 | sky << 20`), so the vertex does not grow
+and the mesh carries no time-of-day state — the fragment masks the low 16 bits
+for the texture index. Keeping the channels separate to the shader is what
+makes a sunrise a uniform update instead of a remesh, and why a torch is as
+bright at midnight as at noon.
+
+**Day/night.** 26.x dropped the hard-coded `getSkyDarken` for a keyframed
+timeline over a registered world clock. `rewo-world/src/daylight.rs`
+transcribes `Timelines.OVERWORLD_DAY` — a 24000-tick period carrying
+SKY_LIGHT_FACTOR (1.0 → 0.24), SKY_LIGHT_COLOR (white → blue), SKY_COLOR and
+FOG_COLOR (→ near black), sampled with the linear easing `KeyframeTrack`
+defaults to. The sky gradient and fog darken with the ground, or night would
+be dark terrain under a noon-blue sky.
+
+Three wire details that had to be measured, not assumed:
+- `set_time` changed shape: `i64 gameTime` + a **map of per-clock states**
+  (`Holder<WorldClock>` → `{VarLong totalTicks, f32 partial, f32 rate}`).
+- A vanilla server sends **two** clocks (`overworld` and `the_end`). Taking the
+  first entry picks whichever serialised first — here `the_end`, whose ticks
+  track the game time closely enough to look plausible. Match by registry id;
+  the overworld id is captured from the Configuration registry data rather than
+  assumed from bootstrap order.
+- **`ByteBufCodecs.holderRegistry` writes the id RAW.** The `id + 1` /
+  direct-holder encoding belongs to `holder(...)`, a different codec.
+- Clock states are sent only when they change (the join packet carries them,
+  later ticks send an empty map), so the last value must be held.
+
+**A real bug the old formula was hiding.** `emit_model` sampled the block's
+**own** cell — the inside of a solid block, always dark. `grass_block` renders
+as a Model (cube + overlay), so the entire ground plane of every overworld was
+lighting at zero; the old 0.25 floor plus a `.max(1)` made it merely dim rather
+than black, so it had never been noticed. It now samples the cell the quad
+faces, as vanilla's `renderModelFaceFlat` does. Found by forcing the lightmap
+to 1.0 in the shader and watching the ground reappear — the general trick when
+a render looks wrong: disable one term and see which one owns the pixel.
+
+Verified headlessly: noon vs midnight differ as expected — sky (144,178,242) →
+(84,121,193), ground (75,110,66) → (22,36,30), mobs dimming with the world; and
+a sealed torch-lit room shows warm falloff into real darkness. The demo PNG is
+**byte-identical** across both commits, which is the proof the refactor is
+neutral where it should be (under open sky the new curve returns exactly 1.0,
+as the old one did). 104 tests, mobshot 243/243, bench 0.232 ms, 0 corrections,
+M10 light gate still EXACT.
+
+**Left open:** the block-light flicker (vanilla jitters `blockFactor` slightly
+per frame), gamma/brightness and night-vision/darkness terms of the lightmap,
+and the sun/moon/stars — the sky is still a gradient with no celestial bodies.
