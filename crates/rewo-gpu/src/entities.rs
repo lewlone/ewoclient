@@ -106,6 +106,11 @@ pub struct EntityDraw<'a> {
     /// Per-entity stable id for CEM `random(id)` (so a herd doesn't animate
     /// in lockstep). Any stable-per-entity float; 0 is fine for stills.
     pub anim_id: f32,
+    /// World-light brightness multiplier `0..1`, sampled by the caller at the
+    /// entity's **eye** and mapped through the same curve the mesher uses for
+    /// blocks (`0.25 + 0.75·light/15`) so a mob matches the blocks around it.
+    /// `1.0` = fullbright, which is what still renders (mobshot) want.
+    pub light: f32,
 }
 
 #[repr(C)]
@@ -738,7 +743,12 @@ impl EntityPass {
                         d.pos[2] + p[2] * d.width,
                     ],
                     uv: self.white_uv,
-                    color: [base[0] * shade, base[1] * shade, base[2] * shade, 1.0],
+                    color: [
+                        base[0] * shade * d.light,
+                        base[1] * shade * d.light,
+                        base[2] * shade * d.light,
+                        1.0,
+                    ],
                 });
             }
         }
@@ -907,7 +917,8 @@ impl EntityPass {
                     d.pos[2] + z * s,
                 ];
             }
-            let c = q.shade;
+            // Directional face shade × the entity's world light.
+            let c = q.shade * d.light;
             // Player skin: shift the (default-Steve) UVs onto this player's
             // uploaded slot. Same 64² layout, so a constant offset suffices.
             let du = d.skin_uv.unwrap_or([0.0, 0.0]);

@@ -414,6 +414,7 @@ fn collect_entities<'a>(
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
+            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2]),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -1529,4 +1530,21 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
             (w, h, types.pushable(id))
         })
         .collect()
+}
+
+/// World-light brightness `0..1` for an entity, sampled at `(x, eye_y, z)`.
+///
+/// Vanilla samples entity light at `BlockPos.containing(x, eyeY, z)` rather
+/// than the feet, and that detail is load-bearing: the feet block is usually
+/// the floor the entity stands *in* (light 0), which would render every mob
+/// pitch black. The 15 → brightness curve is the mesher's own
+/// (`0.25 + 0.75·l/15`), so a mob matches the blocks around it instead of
+/// floating in its own lighting.
+fn entity_light(world: &rewo_world::World, x: f64, eye_y: f64, z: f64) -> f32 {
+    let l = world.brightness_at(
+        x.floor() as i32,
+        eye_y.floor() as i32,
+        z.floor() as i32,
+    ) as f32;
+    0.25 + 0.75 * (l / 15.0)
 }

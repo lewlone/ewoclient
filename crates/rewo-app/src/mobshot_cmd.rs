@@ -75,6 +75,11 @@ pub struct MobshotArgs {
     /// in game. No effect without a pack.
     #[arg(long, default_value_t = 0.0)]
     settle: f32,
+    /// Sheet mode: world-light multiplier `0..1` applied to the mob, as the
+    /// live client samples from the world. 1.0 (default) is fullbright; lower
+    /// shows how a mob reads in shade without needing a server.
+    #[arg(long, default_value_t = 1.0)]
+    light: f32,
     /// Sheet mode: pose/state gesture as "name[,age_s]" (e.g.
     /// "warden_roar,1.5") — plays the one-shot rig at that clock on every
     /// mob it applies to. Names match `Gesture::from_name`.
@@ -170,6 +175,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,
+        // Stills are fullbright — no world to sample.
+        light: 1.0,
     }
 }
 
@@ -513,6 +520,7 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         .enumerate()
         .map(|(i, k)| {
             let mut d = neutral_draw(*k);
+            d.light = args.light.clamp(0.0, 1.0);
             d.limb_swing = walk_swing;
             d.limb_amount = walk_amt;
             d.gesture = gesture;

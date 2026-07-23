@@ -269,6 +269,8 @@ the code's author. Nothing below is settled truth.
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
   cobwebs, stairs-vs-sneak, ladders, ice, slabs-as-steps, etc. untested —
   each will likely need decompile-derived constants (§13 risk).
+- **Entities are now world-lit** (2026-07-23, §15) — they were rendering at a
+  fixed directional shade, identical in a cave and at noon.
 - **Light decode beyond flat-world-full-skylight is unverified.** The M1
   Y-mask light distribution renders the flat world correctly, but caves/
   overhangs/mixed light are untested (the earlier "black patches" were the
@@ -2717,3 +2719,32 @@ spawn — how the slab floor / fence wall / mob were staged for those runs.
 ceiling* too and so buried the player in fences; the server then shoved it out
 for 508 "corrections". A parity meter only means anything when the setup
 doesn't corrupt the premise.)
+
+**2026-07-23 — entity lighting.**
+
+Entities rendered at a fixed directional shade — the same brightness in a
+sealed cave as at noon — while blocks around them were lit. `EntityDraw` gains
+`light: f32`, multiplied into the vertex colour on both the model and capsule
+paths, and `live_cmd::entity_light` samples it from the world.
+
+Two details make it match rather than merely darken:
+- **Sample at the eye, not the feet.** Vanilla uses
+  `BlockPos.containing(x, eyeY, z)`; the feet block is usually the floor the
+  entity stands *in* (light 0), so sampling there renders every mob black.
+- **Reuse the mesher's curve** — `0.25 + 0.75·max(block,sky)/15`, the exact
+  expression the block mesher uses — so a mob reads as part of its
+  surroundings instead of floating in its own lighting.
+
+Nametags stay fullbright (vanilla does the same). Still renders default to
+`light = 1.0`, so `mobshot` and the facelabel gate are untouched.
+
+Verified: a probe in a live session read `raw=15 → 1.000` for a cow under open
+sky and `raw=4 → 0.450` / `raw=11 → 0.800` for entities under a stone roof —
+i.e. the value tracks the real world light per entity. New `mobshot --light
+<0..1>` renders the same mobs at a chosen level without a server; at 0.45 the
+cow and creeper are visibly darker while directional shading and readability
+are preserved.
+
+Note this is the *client-side* lightmap only — there is still no time-of-day
+sky darkening (blocks don't have it either), so "night" doesn't dim anything
+yet. Consistent with the block path, which is the point.
