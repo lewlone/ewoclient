@@ -1893,9 +1893,12 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   extractor **`tools/gen_block_light.py`** (re-run after a version bump): it
   maps block → implementation class → the `propagatesSkylightDown` /
   `getLightDampening` **overrides** up the `extends` chain (glass returns
-  true — sky passes it at full strength; leaves pin 1), expands
-  `ColorCollection` dye families, and **validates every generated name against
-  blocks.json**. Two traps worth remembering: `RenderKind::Cube` is **not** an
+  true — sky passes it at full strength; leaves pin 1), expands the
+  `ColorCollection` **and `WeatheringCopperCollection`** families by reading
+  the id tables in `references/BlockItemIds.java` (the copper naming is
+  irregular — `copper_block` but `exposed_copper` — and each name carries its
+  weather-state index so a copper bulb's per-state 15/12/8/4 resolves), and
+  **validates every generated name against blocks.json** (0 unresolved). Two traps worth remembering: `RenderKind::Cube` is **not** an
   opacity proxy (glass/leaves/ice all bake as `Cube`), and glass/leaves/water
   dampen by **1** — neither 0 nor 15. The gate **`rewo play --light-check`**
   recomputes loaded columns and diffs against the server's own light engine —

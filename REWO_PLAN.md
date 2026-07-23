@@ -2889,7 +2889,24 @@ whatever was built. The op account is `RewoOp`, not `RewoBot`.
 rather than as a true shape union — the two differ only for complementary
 partial faces meeting, which no vanilla pair produces. Blocks outside the
 curated collision families have no boxes, so their faces never occlude
-(farmland, dirt path). `WeatheringCopperCollection` families are not expanded
-by the extractor (irregular naming: `copper_block` vs `exposed_copper`); the
-copper bulb's emission is therefore missing. No `section_blocks_update` handler
+(farmland, dirt path). No `section_blocks_update` handler
 exists, so a multi-block server edit relights only via its individual updates.
+
+**Copper collections closed (same day).** `WeatheringCopperCollection` was the
+last family gap. The extractor now reads the id tables in
+`references/BlockItemIds.java` rather than guessing at the irregular naming —
+`createSimpleCopper("copper_bulb")` plus the one hand-written
+`ByState("copper_block", "copper", "copper", "copper")` — and applies
+`WeatheringCopperCollection.PREFIXES` (`""`/`exposed_`/`weathered_`/`oxidized_`
+and their `waxed_` twins). Each generated name carries its **weather-state
+index**, which is what makes the per-state
+`litBlockEmission(switch (p) { case EXPOSED -> 12; … })` resolve — a copper
+bulb is 15/12/8/4 as it oxidises, and without the state it emitted nothing.
+Colour families read their base names from the same tables
+(`createSimpleColored("shulker_box")`) instead of stripping `DYED_` off the
+field name, and single blocks resolve through their id reference too, which
+fixed two cases where the field name is **not** the registry name
+(`POTTED_AZALEA` → `potted_azalea_bush`). Unresolved names: 0. Tables grew to
+53 emitters / 18 lit-conditional / 244 non-occluding / 188 sky overrides.
+Gate stays **EXACT** on the village and on a room lit only by copper bulbs
+(block 11 at the bot = 15 − 4 steps; it would have read 0 before).
