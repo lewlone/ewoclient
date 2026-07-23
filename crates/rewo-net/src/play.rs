@@ -40,10 +40,17 @@ pub struct PlaySession {
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     dim_shapes: Vec<DimensionShape>,
+    /// Registry id of the overworld world clock — `set_time` keys its clock
+    /// map by raw id, and the map also carries `the_end`'s clock.
+    overworld_clock_id: Option<i32>,
     pub spawned: bool,
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
+    /// World-clock tick from `set_time`, driving the day/night cycle
+    /// (`rewo_world::daylight`). `None` until the first packet arrives, which
+    /// the renderer reads as full daylight.
+    pub day_ticks: Option<i64>,
     /// Columns whose mesh is stale (new chunk / block edit). The live
     /// renderer drains this to know what to re-mesh; the bot ignores it.
     dirty: std::collections::HashSet<(i32, i32)>,
@@ -148,6 +155,7 @@ impl<'a> Connection<'a> {
             world.shape = *shape;
         }
         let dim_shapes = self.dim_shapes.clone();
+        let overworld_clock_id = self.overworld_clock_id;
         let mut session = PlaySession {
             writer,
             codec,
@@ -159,10 +167,12 @@ impl<'a> Connection<'a> {
             entity_push: Vec::new(),
             global_bits,
             dim_shapes,
+            overworld_clock_id,
             spawned: false,
             corrections: 0,
             teleports: 0,
             block_updates: 0,
+            day_ticks: None,
             dirty: std::collections::HashSet::new(),
             light: rewo_world::light::LightEngine::new(),
             light_emission: Vec::new(),
@@ -499,6 +509,42 @@ impl PlaySession {
                 self.block_updates += applied;
                 self.mark_dirty_around(sx, sz);
                 log::debug!("net: section_blocks_update ({sx},{sy},{sz}) × {applied}");
+            }
+        } else if id == ids.cb_play_set_time {
+            // 26.x replaced the old `(worldAge, timeOfDay)` pair with a game
+            // time plus a map of per-clock states — the day/night cycle is now
+            // a timeline over a registered `WorldClock`, not a hard-coded
+            // formula. Body: `i64 gameTime`, then a VarInt-counted map of
+            // `Holder<WorldClock>` → `{VarLong totalTicks, f32 partial,
+            // f32 rate}`.
+            let mut r = PacketReader::new(body);
+            if let (Ok(game_time), Ok(count)) = (r.i64(), r.varint()) {
+                // A vanilla server sends BOTH the overworld and the_end
+                // clocks, so the entries must be matched by id — taking the
+                // first one picks whichever the map happened to serialise
+                // first. The key is a raw registry id (`ByteBufCodecs
+                // .holderRegistry` writes it plain; the `id + 1` /
+                // direct-holder scheme belongs to a different codec).
+                let mut ticks = None;
+                for _ in 0..count.max(0) {
+                    let (holder, total, partial, rate) =
+                        (r.varint(), r.varlong(), r.f32(), r.f32());
+                    let (Ok(holder), Ok(total), Ok(_), Ok(_)) = (holder, total, partial, rate)
+                    else {
+                        break;
+                    };
+                    if Some(holder) == self.overworld_clock_id {
+                        ticks = Some(total);
+                    }
+                }
+                // Clock states are only sent when they change (the join packet
+                // carries them, later ticks do not), so hold the last value.
+                if let Some(t) = ticks {
+                    self.day_ticks = Some(t);
+                } else if self.day_ticks.is_none() {
+                    self.day_ticks = Some(game_time);
+                }
+                log::debug!("net: set_time game={game_time} clocks={count} day_ticks={:?}", self.day_ticks);
             }
         } else if Some(id) == ids.cb_play_block_ack {
             // Sequence ack — server confirms our predicted change. We don't

@@ -6,6 +6,7 @@
 //! Prediction/physics land in M3; this is the read model.
 
 pub mod chunk;
+pub mod daylight;
 pub mod dimension;
 pub mod entities;
 pub mod light;

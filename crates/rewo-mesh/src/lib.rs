@@ -459,9 +459,13 @@ fn emit_model(
     let Some(quads) = models.get(model_idx as usize) else {
         return;
     };
-    // Model quads get flat (per-face) shading + the block's own cell light;
-    // AO on arbitrary quads is an M4-followon.
-    let (own_block, own_sky) = world.light_at(wx, y, wz);
+    // Model quads get flat (per-face) shading; AO on arbitrary quads is an
+    // M4-followon. Light is sampled from the cell the quad FACES, not the
+    // block's own — vanilla's `renderModelFaceFlat` does the same. Sampling
+    // the block's own cell reads the inside of a solid block, which is always
+    // dark: grass_block renders as a Model (cube + overlay), so the whole
+    // ground plane of an overworld would light at zero.
+    let own_light = world.light_at(wx, y, wz);
     for quad in quads {
         if quad.cull >= 0 {
             let (dx, dy, dz) = FACE_OFFSETS[quad.cull as usize];
@@ -473,6 +477,15 @@ fn emit_model(
             FACE_SHADE[quad.dir as usize]
         } else {
             1.0
+        };
+        // A quad facing into a solid neighbour (an interior face) has nothing
+        // to sample, so it keeps the block's own cell.
+        let (odx, ody, odz) = FACE_OFFSETS[quad.dir as usize];
+        let (nbx, nby, nbz) = (wx + odx, y + ody, wz + odz);
+        let (own_block, own_sky) = if is_full_cube(table, world.block_state_at(nbx, nby, nbz)) {
+            own_light
+        } else {
+            world.light_at(nbx, nby, nbz)
         };
         let c = shade;
         let base_idx = vertices.len() as u32;

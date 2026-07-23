@@ -276,6 +276,8 @@ pub struct WorldRenderer {
     /// Time-of-day scale on sky light (`SKY_LIGHT_FACTOR`): 1.0 at midday,
     /// 0.24 at midnight. Set by `set_lightmap`.
     sky_factor: f32,
+    sky_tint: [f32; 3],
+    fog_tint: [f32; 3],
     /// Sky-light colour — white by day, blue at night.
     sky_color: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
@@ -671,6 +673,8 @@ impl WorldRenderer {
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
                 sky_factor: 1.0,
+                sky_tint: [1.0; 3],
+                fog_tint: [1.0; 3],
                 sky_color: [1.0, 1.0, 1.0],
                 fog: parse_fog_env(),
                 tex_size,
@@ -810,6 +814,15 @@ impl WorldRenderer {
     pub fn set_lightmap(&mut self, sky_factor: f32, sky_color: [f32; 3]) {
         self.sky_factor = sky_factor;
         self.sky_color = sky_color;
+    }
+
+    /// Multiply the sky gradient and the distance-fog colour by the time of
+    /// day (vanilla's `SKY_COLOR` / `FOG_COLOR` modifier tracks, both → near
+    /// black at night). Without this the ground would darken at dusk while the
+    /// sky stayed noon-blue.
+    pub fn set_sky_tint(&mut self, sky: [f32; 3], fog: [f32; 3]) {
+        self.sky_tint = sky;
+        self.fog_tint = fog;
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -1235,7 +1248,12 @@ impl WorldRenderer {
         let push = WorldPush {
             view_proj,
             cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
-            fog_col: [SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], self.fog[1]],
+            fog_col: [
+                SKY_HORIZON[0] * self.fog_tint[0],
+                SKY_HORIZON[1] * self.fog_tint[1],
+                SKY_HORIZON[2] * self.fog_tint[2],
+                self.fog[1],
+            ],
             light: [self.sky_factor, BLOCK_LIGHT_FACTOR, 0.0, 0.0],
             sky_col: [self.sky_color[0], self.sky_color[1], self.sky_color[2], 0.0],
         };
@@ -1361,7 +1379,12 @@ impl WorldRenderer {
             .to_cols_array_2d();
         let push = SkyPush {
             inv_view_proj: inv,
-            horizon: [SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], 1.0],
+            horizon: [
+                SKY_HORIZON[0] * self.sky_tint[0],
+                SKY_HORIZON[1] * self.sky_tint[1],
+                SKY_HORIZON[2] * self.sky_tint[2],
+                1.0,
+            ],
             zenith: [SKY_ZENITH[0], SKY_ZENITH[1], SKY_ZENITH[2], 1.0],
         };
         let device = &gpu.device;

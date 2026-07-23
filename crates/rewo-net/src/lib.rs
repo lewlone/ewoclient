@@ -127,6 +127,9 @@ pub struct Connection<'a> {
     pub recorder: Option<record::Recorder>,
     // Dimension shapes indexed by registry order (from dimension_type registry).
     dim_shapes: Vec<DimensionShape>,
+    /// Registry id of the `minecraft:overworld` world clock (see
+    /// `parse_registry_data`); `None` on a server that syncs no clocks.
+    overworld_clock_id: Option<i32>,
 }
 
 impl<'a> Connection<'a> {
@@ -148,6 +151,7 @@ impl<'a> Connection<'a> {
             packet: Vec::new(),
             recorder: None,
             dim_shapes: Vec::new(),
+            overworld_clock_id: None,
         })
     }
 
@@ -373,11 +377,18 @@ impl<'a> Connection<'a> {
             return;
         };
         let is_dim = registry == "minecraft:dimension_type";
+        // The day/night timeline runs on the `minecraft:overworld` world
+        // clock, and `set_time` keys its clock map by raw registry id. The id
+        // is capture-able here rather than assumed from bootstrap order.
+        let is_clock = registry == "minecraft:world_clock";
         if is_dim {
             self.dim_shapes.clear();
         }
-        for _ in 0..count {
+        for idx in 0..count {
             let Ok(_entry_name) = r.identifier() else { return };
+            if is_clock && _entry_name == "minecraft:overworld" {
+                self.overworld_clock_id = Some(idx as i32);
+            }
             let has_nbt = r.bool().unwrap_or(false);
             if !has_nbt {
                 if is_dim {

@@ -312,6 +312,7 @@ fn collect_entities<'a>(
     gestures: &mut GestureTracker,
     now: f32,
     skins: &SkinRegistry,
+    sky: rewo_world::daylight::SkyLighting,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -421,7 +422,7 @@ fn collect_entities<'a>(
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
-            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2]),
+            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], sky),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -762,7 +763,7 @@ fn run_headless(
     // Headless single-frame: skins can't finish fetching in time (use
     // `mobshot --skin` for a deterministic real-skin PNG). Empty registry.
     let skins = SkinRegistry::new();
-    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0, &skins);
+    let draws = collect_entities(&session, &etypes, 1.0, &mut gestures, 0.0, &skins, daylight_of(session.day_ticks));
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
         println!(
@@ -857,6 +858,8 @@ fn run_headless(
     // Before `set_entities`: the entity pass reads the eye as the CEM
     // `player_pos_*`, which FA aims mob eyes/heads with.
     world_renderer.set_camera(eye.to_array());
+    // Day/night: the server's world clock drives vanilla's keyframed timeline.
+    apply_daylight(&mut world_renderer, session.day_ticks);
     world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
@@ -1208,12 +1211,13 @@ impl LiveApp {
         // Entities: frame-interpolated snapshot + camera-billboarded tags.
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);
         let anim_time = self.started.elapsed().as_secs_f32();
-        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry);
+        let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry, daylight_of(session.day_ticks));
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.
         state.world_renderer.set_camera(eye.to_array());
+        apply_daylight(&mut state.world_renderer, session.day_ticks);
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
@@ -1227,6 +1231,7 @@ impl LiveApp {
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
         state.world_renderer.set_camera(eye.to_array());
+        apply_daylight(&mut state.world_renderer, session.day_ticks);
         state
             .world_renderer
             .set_hud(session.health, session.food, self.hotbar_slot);
@@ -1557,11 +1562,50 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
 /// pitch black. The 15 → brightness curve is the mesher's own
 /// (`0.25 + 0.75·l/15`), so a mob matches the blocks around it instead of
 /// floating in its own lighting.
-fn entity_light(world: &rewo_world::World, x: f64, eye_y: f64, z: f64) -> f32 {
-    let l = world.brightness_at(
+fn entity_light(
+    world: &rewo_world::World,
+    x: f64,
+    eye_y: f64,
+    z: f64,
+    sky: rewo_world::daylight::SkyLighting,
+) -> f32 {
+    // Mirrors `shaders/lightmap.glsl` so a mob matches the blocks around it:
+    // both channels through vanilla's curve, added, with the sky half scaled
+    // by the time of day. Without the scale, mobs stay noon-bright at
+    // midnight while the ground around them goes dark.
+    //
+    // Sampled at the EYE, not the feet — the feet block is the floor the
+    // entity stands in, which is unlit, and sampling it renders every mob
+    // black.
+    let (block, sky_level) = world.light_at(
         x.floor() as i32,
         eye_y.floor() as i32,
         z.floor() as i32,
-    ) as f32;
-    0.25 + 0.75 * (l / 15.0)
+    );
+    let curve = |l: u8| {
+        let v = l as f32 / 15.0;
+        v / (4.0 - 3.0 * v)
+    };
+    let lit = curve(block) * rewo_gpu::world::BLOCK_LIGHT_FACTOR + curve(sky_level) * sky.light_factor;
+    lit.clamp(0.0, 1.0)
+}
+
+/// The cycle state for a world-clock tick, defaulting to full daylight
+/// before the first `set_time` (and for fixed-time dimensions).
+fn daylight_of(day_ticks: Option<i64>) -> rewo_world::daylight::SkyLighting {
+    day_ticks.map_or(
+        rewo_world::daylight::SkyLighting::DAY,
+        rewo_world::daylight::sky_lighting,
+    )
+}
+
+/// Push the time-of-day lighting into the renderer.
+///
+/// `None` (before the first `set_time`, or a fixed-time dimension) is full
+/// daylight, which is what the renderer defaults to anyway — passing it
+/// explicitly keeps the two paths from drifting.
+fn apply_daylight(wr: &mut WorldRenderer, day_ticks: Option<i64>) {
+    let sky = daylight_of(day_ticks);
+    wr.set_lightmap(sky.light_factor, sky.light_color);
+    wr.set_sky_tint(sky.sky_color, sky.fog_color);
 }
