@@ -843,8 +843,10 @@ fn run_headless(
     }
     world_renderer.set_selection(hit.map(|h| h.block));
     let (cr, cu) = camera_basis(yaw, pitch);
-    world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
+    // Before `set_entities`: the entity pass reads the eye as the CEM
+    // `player_pos_*`, which FA aims mob eyes/heads with.
     world_renderer.set_camera(eye.to_array());
+    world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
@@ -1197,12 +1199,15 @@ impl LiveApp {
         let anim_time = self.started.elapsed().as_secs_f32();
         let draws = collect_entities(session, &self.etypes, alpha, &mut self.gestures, anim_time, &self.skins.registry);
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
+        let eye = player_eye(session);
+        // Before `set_entities`: the entity pass reads the eye as the CEM
+        // `player_pos_*`, which FA aims mob eyes/heads with.
+        state.world_renderer.set_camera(eye.to_array());
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
         let extent = state.renderer.swapchain.extent;
         let aspect = extent.width.max(1) as f32 / extent.height.max(1) as f32;
-        let eye = player_eye(session);
         // Targeted block for the selection outline.
         let hit = session.target_block(
         eye_f64(session),

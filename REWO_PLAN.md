@@ -2624,10 +2624,25 @@ Fixed by giving the state a home and the clock real values:
 Unit-tested directly: an integrator advances `1, 2, 3` across frames and
 **holds** when re-evaluated at the same `frame_counter`.
 
+**`player_pos_*` — the last hole in the data feed.** The entity pass never
+received the camera position, so those builtins read 0. `WorldRenderer`
+already tracked `camera_eye` (for the translucent sort + fog), so it is now
+handed to `set_draws` and fed to the interpreter; `live_cmd` was reordered so
+`set_camera` precedes `set_entities` (it ran after, which would have served a
+frame-stale eye). Verified at runtime: a real `cam_pos` reaches the pass.
+
+Worth recording so nobody re-hunts it: **65 FA expressions use `player_pos`,
+and 39 are a z-fighting depth bias** — e.g. the pig's
+`right_eye.tz = -8 − clamp(dist,0,128)/1000`, ~0.1 px at 128 blocks, i.e.
+deliberately sub-pixel. So this fix is *invisible* on those mobs by design
+(a still render is byte-identical), and expecting a visual delta there is a
+mis-read of the pack. The other 26 (`var.distance` on enderman/evoker/fox/
+goat) do drive real behaviour. Head/eye *tracking* comes from `head_yaw` off
+the wire, not from `player_pos`.
+
 **Known remaining (not fixed).** Outliers still to triage: phantom, cod,
 shulker, salmon, wither_skeleton (bat's is FA's spread-wing pose, not a
-defect). `player_pos_x/z` are 0 because the entity pass never receives the
-camera position, so eye-tracking can't work.
+defect).
 
 **Methodology note (worth keeping).** The *rest-pose* audit is the valid
 detector for **geometry** bugs, because FA replicates vanilla geometry. The

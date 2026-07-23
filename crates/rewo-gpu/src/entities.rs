@@ -244,6 +244,9 @@ pub struct EntityPass {
     frame_counter: f32,
     frame_dt: f32,
     prev_time: f32,
+    /// Camera eye in world space — the interpreter's `player_pos_*`. FA aims
+    /// eyes and heads by comparing it against the mob's own `pos_*`.
+    cam_pos: [f32; 3],
 }
 
 /// Generations an unseen entity's CEM state survives before being pruned —
@@ -593,6 +596,7 @@ impl EntityPass {
                 frame_counter: 0.0,
                 frame_dt: 1.0 / 20.0,
                 prev_time: f32::NAN,
+                cam_pos: [0.0; 3],
             })
         }
     }
@@ -695,7 +699,9 @@ impl EntityPass {
         cam_right: [f32; 3],
         cam_up: [f32; 3],
         time: f32,
+        cam_pos: [f32; 3],
     ) {
+        self.cam_pos = cam_pos;
         self.cursor = (self.cursor + 1) % RING;
         let mut verts: Vec<Vertex> = Vec::with_capacity(1024);
 
@@ -821,13 +827,15 @@ impl EntityPass {
                 health: 20.0,
                 max_health: 20.0,
                 id: d.anim_id,
-                // World position + body yaw: FA derives eye-tracking and its
-                // turn-detection vars from these. `player_pos_*` needs the
-                // camera position, which this pass doesn't receive — left 0
-                // (documented gap), unlike the rest which are exact.
+                // World position + body yaw, and the viewer's position: FA
+                // aims eyes/heads by comparing `player_pos_*` against `pos_*`,
+                // and derives its turn-detection vars from `rot_y`.
                 pos_x: d.pos[0],
                 pos_y: d.pos[1],
                 pos_z: d.pos[2],
+                player_pos_x: self.cam_pos[0],
+                player_pos_y: self.cam_pos[1],
+                player_pos_z: self.cam_pos[2],
                 rot_y: d.yaw.to_radians(),
                 ..Default::default()
             };

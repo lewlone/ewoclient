@@ -859,7 +859,7 @@ impl WorldRenderer {
         time: f32,
     ) {
         if let Some(pass) = self.entities.as_mut() {
-            pass.set_draws(draws, cam_right, cam_up, time);
+            pass.set_draws(draws, cam_right, cam_up, time, self.camera_eye);
         }
     }
 
