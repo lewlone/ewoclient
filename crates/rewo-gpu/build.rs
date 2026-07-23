@@ -24,9 +24,13 @@ fn main() {
         ("shaders/text.frag", "text.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
+        println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");
         let output = Command::new(&glslc)
-            .args(["--target-env=vulkan1.3", "-O", src, "-o"])
+            // `-Ishaders` lets passes share `lightmap.glsl` — the vanilla
+            // lightmap formula has to read identically in the world and water
+            // passes or translucent blocks light differently from solid ones.
+            .args(["--target-env=vulkan1.3", "-O", "-Ishaders", src, "-o"])
             .arg(out.join(dst))
             .output()
             .unwrap_or_else(|e| panic!("could not run {glslc:?}: {e}"));

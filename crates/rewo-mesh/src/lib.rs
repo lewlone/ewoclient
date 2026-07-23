@@ -102,6 +102,22 @@ const FACE_AXES: [(usize, usize, (i32, i32, i32)); 6] = [
 /// AO level 0..3 → brightness.
 const AO_LEVELS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
 
+/// Pack a texture layer with the two light channels.
+///
+/// Vanilla keeps block and sky light **separate** all the way to the shader:
+/// they are combined additively there, and the sky half is scaled by the time
+/// of day (`SKY_LIGHT_FACTOR`). Collapsing them to one number in the mesh
+/// would bake the time of day into the geometry and force a full remesh at
+/// every sunrise.
+///
+/// The layer index needs 16 bits (a few thousand layers) and each channel
+/// needs 4, so all three ride in the existing `u32` — the vertex does not
+/// grow. Layout: `layer | block << 16 | sky << 20`.
+pub fn pack_layer(layer: u32, block: u8, sky: u8) -> u32 {
+    debug_assert!(layer <= 0xFFFF, "texture layer {layer} exceeds 16 bits");
+    (layer & 0xFFFF) | ((block as u32 & 15) << 16) | ((sky as u32 & 15) << 20)
+}
+
 fn is_full_cube(table: &[RenderKind], state: u32) -> bool {
     matches!(table.get(state as usize), Some(RenderKind::Cube { .. }))
 }
@@ -260,23 +276,23 @@ fn emit_fluid(
     let (z0, z1) = (wz as f32, wz as f32 + 1.0);
     let yf = y as f32;
 
-    // Face brightness mirrors the cube path (the cell the face looks into);
-    // lava is fullbright.
-    let light = |x: i32, yy: i32, z: i32| -> f32 {
+    // Face light mirrors the cube path (the cell the face looks into); lava
+    // emits its own block light, so it stays bright in an unlit cave.
+    let light = |x: i32, yy: i32, z: i32| -> (u8, u8) {
         if lava {
-            1.0
+            (15, 0)
         } else {
-            world.brightness_at(x, yy, z) as f32 / 15.0
+            world.light_at(x, yy, z)
         }
     };
-    let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade: f32, l: f32| {
-        let c = shade * (0.25 + 0.75 * l);
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade: f32, l: (u8, u8)| {
+        let c = shade;
         let base = vertices.len() as u32;
         for (pos, uv) in p {
             vertices.push(MeshVertex {
                 pos,
                 uv,
-                layer: layer as u32,
+                layer: pack_layer(layer as u32, l.0, l.1),
                 color: [c, c, c],
             });
         }
@@ -379,8 +395,8 @@ fn emit_cube(
         if is_full_cube(table, world.block_state_at(nx, ny, nz)) {
             continue;
         }
-        let light = world.brightness_at(nx, ny, nz) as f32 / 15.0;
-        let base = FACE_SHADE[face] * (0.25 + 0.75 * light);
+        let (lb, ls) = world.light_at(nx, ny, nz);
+        let base = FACE_SHADE[face];
         let (uu, vv, (fnx, fny, fnz)) = FACE_AXES[face];
         let base_idx = vertices.len() as u32;
         for (corner, uv) in FACE_CORNERS[face] {
@@ -413,7 +429,7 @@ fn emit_cube(
             vertices.push(MeshVertex {
                 pos: [wx as f32 + corner[0], y as f32 + corner[1], wz as f32 + corner[2]],
                 uv,
-                layer: faces[face] as u32,
+                layer: pack_layer(faces[face] as u32, lb, ls),
                 color: [c, c, c],
             });
         }
@@ -445,7 +461,7 @@ fn emit_model(
     };
     // Model quads get flat (per-face) shading + the block's own cell light;
     // AO on arbitrary quads is an M4-followon.
-    let own_light = world.brightness_at(wx, y, wz).max(1) as f32 / 15.0;
+    let (own_block, own_sky) = world.light_at(wx, y, wz);
     for quad in quads {
         if quad.cull >= 0 {
             let (dx, dy, dz) = FACE_OFFSETS[quad.cull as usize];
@@ -458,7 +474,7 @@ fn emit_model(
         } else {
             1.0
         };
-        let c = shade * (0.25 + 0.75 * own_light);
+        let c = shade;
         let base_idx = vertices.len() as u32;
         for i in 0..4 {
             vertices.push(MeshVertex {
@@ -468,7 +484,7 @@ fn emit_model(
                     wz as f32 + quad.verts[i][2],
                 ],
                 uv: quad.uv[i],
-                layer: quad.layer as u32,
+                layer: pack_layer(quad.layer as u32, own_block, own_sky),
                 color: [c, c, c],
             });
         }

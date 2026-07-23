@@ -69,7 +69,17 @@ struct WorldPush {
     cam_fog: [f32; 4],
     /// xyz fog color (linear = sky horizon), w = fog end distance.
     fog_col: [f32; 4],
+    /// x = sky-light factor (the time of day), y = block-light factor.
+    /// Vanilla's lightmap scales the sky half of the light by the time of
+    /// day; keeping it a uniform is what makes a sunrise cost one push
+    /// instead of remeshing the world.
+    light: [f32; 4],
+    /// xyz sky-light colour — white by day, blue at night.
+    sky_col: [f32; 4],
 }
+// 128 bytes: exactly the push-constant size Vulkan guarantees. Anything
+// further has to move into a uniform buffer.
+const _: () = assert!(std::mem::size_of::<WorldPush>() == 128);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -91,6 +101,10 @@ const SELECT_RING: usize = 2;
 /// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
 /// The horizon is also the terrain's fog color for a seamless far edge.
 const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
+
+/// Vanilla's `blockFactor = blockLightFlicker + 1.4` (the flicker is a small
+/// per-frame jitter we do not reproduce, so this is its resting value).
+pub const BLOCK_LIGHT_FACTOR: f32 = 1.4;
 const SKY_ZENITH: [f32; 3] = [0.147, 0.319, 0.890];
 
 #[repr(C)]
@@ -259,6 +273,11 @@ pub struct WorldRenderer {
     text_lines: Vec<OwnedTextLine>,
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
+    /// Time-of-day scale on sky light (`SKY_LIGHT_FACTOR`): 1.0 at midday,
+    /// 0.24 at midnight. Set by `set_lightmap`.
+    sky_factor: f32,
+    /// Sky-light colour — white by day, blue at night.
+    sky_color: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
     // -- animated texture layers (water/lava; `anim_tick`) --
@@ -651,6 +670,8 @@ impl WorldRenderer {
                 text: None,
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
+                sky_factor: 1.0,
+                sky_color: [1.0, 1.0, 1.0],
                 fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
@@ -779,6 +800,16 @@ impl WorldRenderer {
     /// column sorting. Callers that never render water can skip it.
     pub fn set_camera(&mut self, eye: [f32; 3]) {
         self.camera_eye = eye;
+    }
+
+    /// Set the time-of-day lightmap state: `sky_factor` scales the sky half
+    /// of the light (vanilla `SKY_LIGHT_FACTOR`, 1.0 midday → 0.24 midnight)
+    /// and `sky_color` tints it (white → blue). Block light is unaffected —
+    /// a torch is as bright at midnight as at noon, which is the whole point
+    /// of keeping the two channels separate through to the shader.
+    pub fn set_lightmap(&mut self, sky_factor: f32, sky_color: [f32; 3]) {
+        self.sky_factor = sky_factor;
+        self.sky_color = sky_color;
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -1205,6 +1236,8 @@ impl WorldRenderer {
             view_proj,
             cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
             fog_col: [SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], self.fog[1]],
+            light: [self.sky_factor, BLOCK_LIGHT_FACTOR, 0.0, 0.0],
+            sky_col: [self.sky_color[0], self.sky_color[1], self.sky_color[2], 0.0],
         };
         unsafe {
             device.cmd_push_constants(
