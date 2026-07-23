@@ -232,7 +232,23 @@ pub struct EntityPass {
     /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
     /// never fills 32, and wrap-around just recycles the oldest slot).
     skin_next: u32,
+    /// Per-entity CEM variable state, persisted across frames (see [`CemVars`]).
+    cem_state: std::collections::HashMap<u64, CemVars>,
+    /// Frame generation, bumped once per `set_draws`; entities not drawn for
+    /// `CEM_STATE_TTL` generations are dropped so despawns can't leak.
+    generation: u64,
+    /// Monotonic frame count and the real per-frame delta, handed to the
+    /// interpreter as `frame_counter` / `frame_time`. FA integrates against
+    /// `frame_time` and uses `frame_counter` for its same-frame guard, so both
+    /// must be real values rather than constants.
+    frame_counter: f32,
+    frame_dt: f32,
+    prev_time: f32,
 }
+
+/// Generations an unseen entity's CEM state survives before being pruned —
+/// long enough that a briefly-culled mob keeps its integrators.
+const CEM_STATE_TTL: u64 = 600;
 
 /// One mob model ready to draw: quads in part-local model px with
 /// atlas-normalized UVs, the animated parts, and the px→block scale.
@@ -245,9 +261,36 @@ pub struct MobModel {
     /// Resource-pack CEM animation program (M9c) — drives bone channels
     /// per frame via the expression interpreter. `None` for built-ins.
     cem: Option<crate::cem_anim::AnimProgram>,
-    /// Per-bone own JEM translate baseline for the CEM replace-translation
-    /// semantics (see `mobs::Model::cem_translate`). Empty for built-ins.
+    /// Per-bone translation rest baseline for the CEM replace semantics
+    /// (see `mobs::Model::cem_translate`). Empty for built-ins.
     cem_translate: Vec<[f32; 3]>,
+    /// Per-bone top-level flag — top-level parts and submodels state their
+    /// animated translation in different frames, so the runtime must know
+    /// which a bone is.
+    cem_top: Vec<bool>,
+}
+
+/// One entity's CEM variable slots, carried across frames.
+///
+/// FA's animation variables are **integrators** — `var.run = var.run ±
+/// rate*frame_time`, `var.t_jump`, `var.air`, `var.tr` — and each is gated by
+/// `varb.pfc = frame_counter == var.pre_frame_counter`, a "same frame" check.
+/// They therefore only advance when both their own value *and*
+/// `var.pre_frame_counter` survive to the next frame. Re-zeroing the slots each
+/// frame made `pfc` compare `0 == 0`, so every integrator was pinned at its
+/// initial value and all smoothing / transition behaviour was inert.
+#[derive(Default)]
+struct CemVars {
+    slots: Vec<f32>,
+    /// Frame generation this entity was last drawn on (for pruning).
+    seen: u64,
+}
+
+/// Key for [`CemVars`]: model kind + the caller's stable per-entity id. The
+/// kind is part of the key so a re-used id on a different model can't inherit
+/// a slot layout that no longer matches.
+fn cem_key(d: &EntityDraw<'_>) -> u64 {
+    ((d.kind.index() as u64) << 32) | d.anim_id.to_bits() as u64
 }
 
 struct GpuQuad {
@@ -345,7 +388,14 @@ impl EntityPass {
             // Resource-pack CEM override (M9) takes this kind's model instead
             // of the built-in; both normalize UVs the same way below.
             let m = match cem.remove(&def.kind) {
-                Some(m) => {
+                Some(mut m) => {
+                    // A pack model replaces the geometry but must keep this
+                    // kind's *render scale* — packs author vanilla model-px,
+                    // and vanilla applies a per-mob multiplier on top (ghast
+                    // 4.5×, elder guardian 2.35×, slime 2×, cave spider 0.7×).
+                    // `model_from_jem` can't know it, so inherit it here or
+                    // every scaled mob renders at the wrong size.
+                    m.scale = (def.build)().scale;
                     log::info!("cem: {:?} using pack model ({} quads)", def.kind, m.quads.len());
                     m
                 }
@@ -396,6 +446,7 @@ impl EntityPass {
                 scale: m.scale / 16.0,
                 cem: m.cem,
                 cem_translate: m.cem_translate,
+                cem_top: m.cem_top,
             });
         }
         if debug_tex {
@@ -537,6 +588,11 @@ impl EntityPass {
                 has_font,
                 player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
                 skin_next: 0,
+                cem_state: std::collections::HashMap::new(),
+                generation: 0,
+                frame_counter: 0.0,
+                frame_dt: 1.0 / 20.0,
+                prev_time: f32::NAN,
             })
         }
     }
@@ -643,11 +699,24 @@ impl EntityPass {
         self.cursor = (self.cursor + 1) % RING;
         let mut verts: Vec<Vertex> = Vec::with_capacity(1024);
 
+        // Advance the animation clock. `frame_time` drives FA's integrators and
+        // `frame_counter` its same-frame guard, so both must be real. `time` is
+        // wall-clock seconds; a still render repeats the same value, hence the
+        // fallback tick.
+        let dt = if self.prev_time.is_finite() { time - self.prev_time } else { 0.0 };
+        self.prev_time = time;
+        self.frame_dt = if dt > 0.0 { dt.min(0.25) } else { 1.0 / 20.0 };
+        self.frame_counter += 1.0;
+        self.generation = self.generation.wrapping_add(1);
+        // Taken out of `self` so `emit_model` can borrow it mutably alongside
+        // the immutable model borrow; put back below.
+        let mut cem_state = std::mem::take(&mut self.cem_state);
+
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
             if let Some(model) = &self.models[d.kind.index()] {
-                self.emit_model(&mut verts, d, model, time);
+                self.emit_model(&mut verts, d, model, time, &mut cem_state);
                 continue;
             }
             let base = d.color;
@@ -667,6 +736,10 @@ impl EntityPass {
                 });
             }
         }
+        // Drop state for entities that have been gone a while (despawns).
+        let gen = self.generation;
+        cem_state.retain(|_, v| gen.wrapping_sub(v.seen) < CEM_STATE_TTL);
+        self.cem_state = cem_state;
         let solid = verts.len();
 
         if self.has_font {
@@ -704,6 +777,7 @@ impl EntityPass {
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
+        cem_state: &mut std::collections::HashMap<u64, CemVars>,
     ) {
         let theta = (180.0 - d.yaw).to_radians();
         let (st, ct) = theta.sin_cos();
@@ -722,27 +796,67 @@ impl EntityPass {
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
         // `part_transforms` alongside the built-in animation.
-        let cem = model.cem.as_ref().map(|prog| {
+        // `REWO_CEM_NOANIM=1` skips it, rendering the pack model's *rest pose*
+        // — the diagnostic that separates a static-geometry bug from an
+        // animation bug when a CEM mob looks malformed.
+        let cem = model.cem.as_ref().filter(|_| !cem_noanim()).map(|prog| {
+            // Reload this entity's variable slots so FA's integrators continue
+            // where they left off (see `CemVars`), then hand them straight back.
+            let entry = cem_state.entry(cem_key(d)).or_default();
+            entry.seen = self.generation;
+            let carried = std::mem::take(&mut entry.slots);
             let mut actx = crate::cem_anim::AnimContext {
+                user: carried,
+                frame_time: self.frame_dt,
+                frame_counter: self.frame_counter,
                 head_yaw: wrap_degrees(d.head_yaw - d.yaw),
                 head_pitch: d.pitch,
                 limb_swing: d.limb_swing,
                 limb_speed: d.limb_amount,
                 age: time * 20.0,
                 time: time * 20.0,
-                frame_time: 0.05,
                 is_on_ground: true,
                 is_alive: true,
                 is_child: false,
                 health: 20.0,
                 max_health: 20.0,
                 id: d.anim_id,
+                // World position + body yaw: FA derives eye-tracking and its
+                // turn-detection vars from these. `player_pos_*` needs the
+                // camera position, which this pass doesn't receive — left 0
+                // (documented gap), unlike the rest which are exact.
+                pos_x: d.pos[0],
+                pos_y: d.pos[1],
+                pos_z: d.pos[2],
+                rot_y: d.yaw.to_radians(),
                 ..Default::default()
             };
-            crate::cem::eval_program(prog, &mut actx, model.parts.len(), &model.cem_translate)
+            let frame = crate::cem::eval_program(
+                prog,
+                &mut actx,
+                model.parts.len(),
+                &model.cem_translate,
+            );
+            // Hand the (now-advanced) slots back for the next frame.
+            cem_state
+                .entry(cem_key(d))
+                .or_default()
+                .slots = std::mem::take(&mut actx.user);
+            frame
+        });
+        // A hidden bone hides its subtree. Parts are in tree pre-order, so one
+        // forward pass ANDs each child with its parent.
+        let cem_visible = cem.as_ref().map(|f| {
+            let mut vis = f.visible.clone();
+            for i in 0..vis.len() {
+                if let Some(p) = model.parts[i].parent {
+                    vis[i] &= vis[p as usize];
+                }
+            }
+            vis
         });
         let (cem_deltas, cem_scale) = match &cem {
-            Some((deltas, scale)) => (Some(deltas.as_slice()), Some(scale.as_slice())),
+            Some(f) => (Some(f.deltas.as_slice()), Some(f.scale.as_slice())),
             Option::None => (None, None),
         };
         let xf = part_transforms(model, &ctx, cem_deltas, cem_scale);
@@ -752,6 +866,10 @@ impl EntityPass {
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
+            }
+            // CEM `bone.visible` (goat horns, bee stinger, sheared faces …).
+            if cem_visible.as_ref().is_some_and(|v| !v[q.part as usize]) {
+                continue;
             }
             match model.parts[q.part as usize].show {
                 mobs::Show::Always => {}
@@ -1357,6 +1475,14 @@ fn mat_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
         m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
     ]
+}
+
+/// `REWO_CEM_NOANIM=1` → render CEM pack models in their rest pose (skip the
+/// animation program). Diagnostic knob: isolates static-geometry bugs from
+/// animation bugs. Read once.
+fn cem_noanim() -> bool {
+    static NOANIM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NOANIM.get_or_init(|| std::env::var("REWO_CEM_NOANIM").is_ok_and(|v| v == "1"))
 }
 
 /// Wrap to [−180, 180) — vanilla `Mth.wrapDegrees` for the net head yaw.

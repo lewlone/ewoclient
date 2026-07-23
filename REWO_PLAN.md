@@ -2461,13 +2461,12 @@ against the real FA creeper/pig/zombie; no-pack facelabel gate stays
     accumulated *position*, so its pivot sits there (`to_model(boxOff)`) —
     creeper `head2` → the neck `[0,6,0]`, matching vanilla `head.offset(0,6,0)`.
   - **Translation is REPLACE, not add**: OptiFine `tx/ty/tz` overwrite a
-    bone's translate; FA authors them as `rest + sway`. Adding them flung the
+    bone's position; FA authors them as `rest + sway`. Adding them flung the
     pig head ~12 units off the body. `eval_program` subtracts a per-bone rest
-    baseline (`Model::cem_translate`), so a rest re-spec nets zero and only
-    the sway remains. The baseline is **also** asymmetric — `invertAxis(pivot)`
-    for a top-level part (FA re-specifies the world pivot, e.g. the pig legs),
-    the own relative translate for a submodel. (FA's `-3.2` vs `-3` in a leg's
-    `tx` is an *intentional* stance offset, correctly kept as a +0.2 delta.)
+    baseline (`Model::cem_translate`) so a rest re-spec nets zero.
+    **⚠️ M9d got the sign of this wrong — corrected in M9e below.** (FA's
+    `-3.2` vs `-3` in a leg's `tx` is an *intentional* stance offset,
+    correctly kept as a small delta.)
 
   Verified live: the FA creeper head sways naturally about the neck (smooth
   6-frame filmstrip) and stays attached, the zombie/pig render as coherent
@@ -2486,3 +2485,153 @@ against the real FA creeper/pig/zombie; no-pack facelabel gate stays
   use `uvNorth`, which is exact); the `.jpm` `"model"` geometry reference
   (FA's are pure animation containers). Foot-submodel pivots, per-face
   `uvNorth`, and scale channels — the M9c leftover list — are now **done**.
+
+**2026-07-23 — M9e: the CEM audit — five more bugs, found by measuring.**
+
+M9d was signed off on *appearance* ("it reads like a pig"), and the user
+correctly rejected that: several FA mobs were visibly malformed. The lesson
+from [[feedback_verify_property_not_proxy]] applies to packs too, so the
+verification was mechanized instead:
+
+- **`rewo mobshot` audit** (`scratchpad/audit.py`, reusable): render each of
+  the 71 FA-overridden mobs **twice** — vanilla built-in (independently
+  gate-verified at 243/243) vs the FA CEM pack — measure the silhouette
+  bounding box, and rank by divergence. FA replicates vanilla geometry
+  closely, so a large divergence is a strong bug signal. `rest` mode
+  (`REWO_CEM_NOANIM=1`, also a new runtime knob) compares the CEM **rest
+  pose** to separate static-geometry bugs from animation bugs.
+- **Corpus scans** over the real pack for (a) every identifier the animations
+  reference vs the interpreter's builtin set, and (b) every JSON key the
+  `.jem`/`.jpm` files use vs the keys the parser reads.
+
+Five bugs surfaced, none of them visible by inspection:
+
+1. **`rotate` ignored** — **71/119 models, 234 parts**. FA lays quadruped
+   bodies flat with a dedicated `"rotation"` submodel carrying `[-90,0,0]`;
+   dropping it left the pig/cow/sheep body standing *vertically*. This was
+   the reported malformation. Applied as the bone's base pose (`Part::rot`),
+   conjugated like the animation (X/Y negate, Z through).
+2. **`mirrorTexture:"u"` ignored** — **174 parts** (`left_arm`, `left_leg`,
+   `left_eye`…). It is exactly vanilla's cube `mirror` flag; the CEM path
+   hardcoded `false`, so every left-side part sampled un-mirrored texels.
+3. **CEM override discarded the kind's render scale** — `model_from_jem` ends
+   at `finish(1.0)`, so ghast (4.5×), elder guardian (2.35×), slime (2×) and
+   cave spider (0.7×) rendered 2–3× wrong. The override now inherits the
+   built-in's scale.
+4. **Ten builtins silently read 0** — `pos_x`/`pos_z` (95 mobs),
+   `player_pos_x/z` (88), `rot_y` (50), `is_ridden` (34), `is_sitting`,
+   `is_in_lava`, `is_tamed`, `is_on_shoulder`. Unknown identifiers fell
+   through to a never-written user slot. **Systemic fix**: `parse_anim` now
+   **warns** on any identifier that is neither a `var.*` slot nor a readable
+   `bone.channel` — this whole class of silent corruption can no longer hide.
+   Unknown identifiers across the pack: **23 → 0**.
+5. **`bone.visible` unimplemented** — 13 sites (goat horns, bee stinger,
+   bogged mushrooms, donkey chests, a sheared snow golem's face). Added as a
+   `Channel`, returned per-bone in the new `CemFrame`, and propagated down the
+   parent chain (hiding a bone hides its subtree).
+
+**The translation sign error (the important one).** M9d's "subtract a rest
+baseline" only *approximates* OptiFine's replace semantics — it holds when
+FA's anim base equals the jem rest (the pig) and fails when FA deliberately
+**repositions** a bone (the spider plants its legs on the ground with
+`ty=23.5` against a rest pivot of `15`, and flew apart instead).
+
+Root cause: **translation values are stated in model space — identity map, NO
+X/Y negation**, unlike rotation angles, which the 180° Z bake *does* negate.
+Proof: the pig leg's anim base `(-3.2, 24, 7)` equals its model pivot
+`(-3, 24, 7)` on all three axes; a negating map would require `(3, -24, 7)`.
+M9d negated *and* tuned a baseline to cancel at rest, so **rest looked right
+while every sway moved the wrong way**, and repositioned bones were displaced
+by twice the error.
+
+The final rule — `delta = anim − baseline`, evaluated **identically for every
+channel and every bone**, with the baseline recording the frame each node kind
+states its position in:
+
+| node kind | baseline | verified on |
+|---|---|---|
+| top-level `part` | `pivot_abs` (as-is) | pig `leg1` ty=24 → Δ0; spider `leg1` ty=23.5 → Δ+8.5 |
+| submodel | `invertAxis(own_translate)` = `[-t.x, -t.y, t.z]` | pig `head2` ty=−12 → Δ0; pig `snout` ty=1 → Δ0 |
+
+Two wrong turns are worth recording, because both *look* right at rest:
+- Using `−box_off` instead of `invertAxis(own_translate)` for submodels.
+  They coincide only for a **first-level** submodel, so deeper ones detached
+  (the pig's snout floated below the body).
+- Keeping M9d's negation for submodels while making top-level identity. That
+  freezes rest correctly but **inverts every submodel sway**, so mobs whose
+  limbs FA repositions flew apart (the axolotl went to 292% divergence).
+
+Both are ruled out by the four calibration points above; a rest-only check
+cannot distinguish them, which is exactly why the audit had to compare
+*animated* renders too.
+
+Gates: no-pack facelabel **243/243** throughout (pack overrides stay purely
+additive), 26 rewo-gpu tests. Measured against vanilla, animated: **pig
+1%/2%, cow 1%/3%, cave spider 0%/2%, spider 1%/13%, creeper 9%/1%,
+chicken 2%/9%** (dW/dH). `Model` gained `cem_names`/`cem_top` for diagnostics
+and `REWO_CEM_NOANIM=1` renders a pack's rest pose.
+
+**Top-level parts inherit VANILLA's hierarchy (the last piece).** A `.jem`'s
+top-level parts map onto *vanilla model parts*, and a pack states an animated
+part's position relative to whatever parent **vanilla** gives it — not the
+`.jem` nesting. The vex is the clean case: its `right_arm` is top-level in the
+`.jem`, but `VexModel` makes it a **child of `body`**, so FA writes
+`right_arm.ty = 0.6` against the body (whose pivot sits 0.5 away). Read as
+absolute, the arms floated 18 px above the mob.
+
+Fixed by machine-extracting vanilla's hierarchies from the decompile —
+`tools/gen_vanilla_hierarchy.py` → generated `rewo-gpu/src/vanilla_hier.rs`
+(**66 models with real nesting**), the same generate-from-ground-truth pattern
+as `gen_anim_defs.ps1`; re-run it after a version bump. `model_from_jem_for`
+takes the entity name, parents each top-level bone to its vanilla parent when
+both ends are present in the `.jem` (topologically ordered, since
+`part_transforms` composes in index order and `.jem` order doesn't guarantee
+parents first), and the top-level baseline becomes **`rel_pivot`** — the
+pivot relative to that parent bone. For a part vanilla keeps at root level
+`rel_pivot == pivot_abs`, so the rule is unchanged for flat models.
+
+That last property is why the result is clean: **3 improved, 0 worsened, 68
+unchanged** — vex 166%→**10%**, frog 172%→**23%**, allay 36%→**19%**. Zero
+regressions is the signature of a correct fix; the earlier per-node-type
+attempt scored 18 improved / 20 worsened, which was the tell that it was
+curve-fitting rather than modelling.
+
+**Persistent variable state (the animation clock).** A pack's variables are
+**integrators** — `var.run = var.run ± rate*frame_time`, plus `var.air`,
+`var.t_jump`, `var.t_land`, `var.tr` — and every one is gated by
+`varb.pfc = frame_counter == var.pre_frame_counter`, a "same frame" check that
+holds them when the program is evaluated twice in one frame. `eval_program`
+cleared `ctx.user` each frame, which was worse than losing the accumulator:
+`var.pre_frame_counter` reset to 0 and `frame_counter` was never set, so the
+guard compared `0 == 0` and **pinned every integrator at its initial value** —
+all smoothing and transition behaviour was inert, not merely restarted.
+
+Fixed by giving the state a home and the clock real values:
+- `EntityPass` keeps `cem_state: HashMap<u64, CemVars>`, keyed by model kind +
+  `EntityDraw::anim_id` (kind included so a recycled id can't inherit a slot
+  layout that no longer matches). Slots are handed to the interpreter and taken
+  back each frame; entries unseen for `CEM_STATE_TTL` (600) generations are
+  pruned so despawns can't leak.
+- `eval_program` **resizes without clearing**, so the carried values survive.
+- `frame_counter` increments per `set_draws` and `frame_time` is the real
+  inter-frame delta (clamped, with a 1/20 fallback for still renders) — FA
+  integrates against both.
+- `mobshot --settle <seconds>` steps a 20 Hz clock before the shot so a still
+  renders the converged pose instead of frame 1. Verified: settling 3 s moves
+  ~13.7k px on the pig and creeper (previously bit-identical, because the
+  integrators were frozen), and the settled poses stay coherent.
+
+Unit-tested directly: an integrator advances `1, 2, 3` across frames and
+**holds** when re-evaluated at the same `frame_counter`.
+
+**Known remaining (not fixed).** Outliers still to triage: phantom, cod,
+shulker, salmon, wither_skeleton (bat's is FA's spread-wing pose, not a
+defect). `player_pos_x/z` are 0 because the entity pass never receives the
+camera position, so eye-tracking can't work.
+
+**Methodology note (worth keeping).** The *rest-pose* audit is the valid
+detector for **geometry** bugs, because FA replicates vanilla geometry. The
+*animated* audit is NOT a quality metric on its own — Fresh Animations exists
+to animate differently from vanilla, so divergence there mixes intent with
+defect. Read them together: low rest + high animated = FA design; high rest =
+geometry bug; and for a specific fix, compare the same mob before/after.

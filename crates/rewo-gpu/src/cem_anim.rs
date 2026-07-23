@@ -43,7 +43,8 @@ pub enum Var {
     HeadYaw, HeadPitch, LimbSwing, LimbSpeed, Age, Time, FrameTime, FrameCounter,
     IsOnGround, IsInWater, IsRiding, IsChild, IsAggressive, IsHurt, IsAlive,
     IsSneaking, IsSprinting, IsBurning, HurtTime, DeathTime, Health, MaxHealth,
-    Id, PosY, PlayerPosY, SwingProgress, Pi,
+    Id, PosX, PosY, PosZ, PlayerPosX, PlayerPosY, PlayerPosZ, RotY,
+    IsRidden, IsSitting, IsInLava, IsTamed, IsOnShoulder, SwingProgress, Pi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,8 +86,20 @@ pub struct AnimContext {
     pub health: f32,
     pub max_health: f32,
     pub id: f32,
+    pub pos_x: f32,
     pub pos_y: f32,
+    pub pos_z: f32,
+    pub player_pos_x: f32,
     pub player_pos_y: f32,
+    pub player_pos_z: f32,
+    /// Entity body yaw in **radians** (OptiFine `rot_y`). FA derives its
+    /// turn-detection vars (`var.tr`/`var.tp`/`var.tq`) from it.
+    pub rot_y: f32,
+    pub is_ridden: bool,
+    pub is_sitting: bool,
+    pub is_in_lava: bool,
+    pub is_tamed: bool,
+    pub is_on_shoulder: bool,
     pub swing_progress: f32,
     /// User `var.*` slots (indexed by the program's slot table).
     pub user: Vec<f32>,
@@ -119,8 +132,18 @@ impl AnimContext {
             Var::Health => self.health,
             Var::MaxHealth => self.max_health,
             Var::Id => self.id,
+            Var::PosX => self.pos_x,
             Var::PosY => self.pos_y,
+            Var::PosZ => self.pos_z,
+            Var::PlayerPosX => self.player_pos_x,
             Var::PlayerPosY => self.player_pos_y,
+            Var::PlayerPosZ => self.player_pos_z,
+            Var::RotY => self.rot_y,
+            Var::IsRidden => b(self.is_ridden),
+            Var::IsSitting => b(self.is_sitting),
+            Var::IsInLava => b(self.is_in_lava),
+            Var::IsTamed => b(self.is_tamed),
+            Var::IsOnShoulder => b(self.is_on_shoulder),
             Var::SwingProgress => self.swing_progress,
             Var::Pi => std::f32::consts::PI,
         }
@@ -152,8 +175,18 @@ fn builtin_var(name: &str) -> Option<Var> {
         "health" => Var::Health,
         "max_health" => Var::MaxHealth,
         "id" => Var::Id,
+        "pos_x" => Var::PosX,
         "pos_y" => Var::PosY,
+        "pos_z" => Var::PosZ,
+        "player_pos_x" => Var::PlayerPosX,
         "player_pos_y" => Var::PlayerPosY,
+        "player_pos_z" => Var::PlayerPosZ,
+        "rot_y" => Var::RotY,
+        "is_ridden" => Var::IsRidden,
+        "is_sitting" => Var::IsSitting,
+        "is_in_lava" => Var::IsInLava,
+        "is_tamed" => Var::IsTamed,
+        "is_on_shoulder" => Var::IsOnShoulder,
         "swing_progress" | "limb_swing_amount" => Var::SwingProgress,
         "pi" => Var::Pi,
         _ => return None,
@@ -199,13 +232,22 @@ impl Slots {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+
+    /// Every interned name. Anything here that isn't a `var.*`/`varb.*` user
+    /// slot or a readable `bone.channel` is an identifier the interpreter
+    /// doesn't implement — it silently evaluates to 0 and quietly corrupts
+    /// whatever it feeds. `cem::parse_anim` uses this to warn instead.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(|s| s.as_str())
+    }
 }
 
 /// Which bone channel an assignment drives (OptiFine `rx`/`ry`/`rz` rotate
-/// radians, `tx`/`ty`/`tz` translate model px, `sx`/`sy`/`sz` scale).
+/// radians, `tx`/`ty`/`tz` translate model px, `sx`/`sy`/`sz` scale,
+/// `visible` shows/hides the bone and its subtree).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    Rx, Ry, Rz, Tx, Ty, Tz, Sx, Sy, Sz,
+    Rx, Ry, Rz, Tx, Ty, Tz, Sx, Sy, Sz, Visible,
 }
 
 impl Channel {
@@ -214,6 +256,9 @@ impl Channel {
             "rx" => Channel::Rx, "ry" => Channel::Ry, "rz" => Channel::Rz,
             "tx" => Channel::Tx, "ty" => Channel::Ty, "tz" => Channel::Tz,
             "sx" => Channel::Sx, "sy" => Channel::Sy, "sz" => Channel::Sz,
+            // FA toggles optional geometry with this: goat horns, bee stinger,
+            // bogged mushrooms, donkey chests, a sheared snow golem's face.
+            "visible" => Channel::Visible,
             _ => return None,
         })
     }

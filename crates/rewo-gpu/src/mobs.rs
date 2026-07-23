@@ -344,6 +344,12 @@ pub struct Model {
     /// value differs by bone kind — `invertAxis(pivot)` for a top-level part,
     /// the own relative translate for a submodel. Empty for built-in mobs.
     pub cem_translate: Vec<[f32; 3]>,
+    /// Per-bone `.jem` name (top-level `part` / submodel `id`), index-aligned
+    /// with `parts`. Diagnostics only (`REWO_CEM_DUMP`). Empty for built-ins.
+    pub cem_names: Vec<String>,
+    /// Per-bone flag: is this a top-level `part` (vs a submodel)? The two obey
+    /// different translate conventions, so the runtime needs to tell them apart.
+    pub cem_top: Vec<bool>,
 }
 
 /// A static fold applied to cube vertices at build time: `v → R_zyx(rot)·v +
@@ -710,6 +716,8 @@ impl ModelBuilder {
             scale,
             cem: None,
             cem_translate: Vec::new(),
+            cem_names: Vec::new(),
+            cem_top: Vec::new(),
         }
     }
 
@@ -719,14 +727,15 @@ impl ModelBuilder {
     /// pivot, and `pivot` is relative to the parent bone's pivot (root bones
     /// pass their absolute pivot with `parent = None`), matching how
     /// `part_transforms` composes the chain.
-    pub(crate) fn cem_part(&mut self, pivot: [f32; 3], parent: Option<usize>) -> usize {
+    pub(crate) fn cem_part(&mut self, pivot: [f32; 3], rot: [f32; 3], parent: Option<usize>) -> usize {
         debug_assert!(parent.is_none_or(|p| p < self.parts.len()));
         // CEM bones get their per-frame rotation/offset/scale from the
         // animation program (applied in `part_transforms` by part index), not
-        // a built-in `Anim` formula — so the marker is `None`.
+        // a built-in `Anim` formula — so the marker is `None`. `rot` is the
+        // node's static `.jem` `rotate` (a base pose the animation adds onto).
         self.parts.push(Part {
             pivot,
-            rot: [0.0; 3],
+            rot,
             anim: Anim::None,
             amp: 1.0,
             parent: parent.map(|p| p as u16),

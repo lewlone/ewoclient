@@ -50,6 +50,22 @@ fn to_model_pt(v: [f32; 3]) -> [f32; 3] {
 /// creeper head submodel pivots at the neck. Box rest positions are identical
 /// either way; only the per-bone rotation pivot differs.
 pub fn model_from_jem(jem: &str, jpms: &HashMap<String, String>) -> Result<Model, String> {
+    model_from_jem_for("", jem, jpms)
+}
+
+/// [`model_from_jem`] with the entity name, so top-level parts can inherit
+/// **vanilla's** part hierarchy (`vanilla_hier`). A `.jem`'s top-level parts
+/// map onto vanilla model parts, and a pack states an animated part's position
+/// relative to whatever parent vanilla gives it — the vex's `right_arm` is a
+/// child of `body` in `VexModel`, so FA writes `right_arm.ty = 0.6` against the
+/// body. Treating it as absolute put the arms 18 px above the mob. Passing `""`
+/// (or an unknown name) keeps every top-level part at the model root, which is
+/// correct for the flat models that make up most of the registry.
+pub fn model_from_jem_for(
+    entity: &str,
+    jem: &str,
+    jpms: &HashMap<String, String>,
+) -> Result<Model, String> {
     let root: Value = serde_json::from_str(jem).map_err(|e| format!("jem parse: {e}"))?;
     let models = root
         .get("models")
@@ -62,14 +78,64 @@ pub fn model_from_jem(jem: &str, jpms: &HashMap<String, String>) -> Result<Model
     // Per-bone own JEM translate (index 0 = the static root). Threaded to the
     // animation runtime so translation channels *replace* rather than add.
     let mut translates: Vec<[f32; 3]> = vec![[0.0; 3]];
+    let mut names: Vec<String> = vec![String::new()];
+    let mut tops: Vec<bool> = vec![false];
     let mut anim_ref: Option<String> = None;
     for part in models {
         // The root part usually carries only the `"model"` animation ref.
         if let Some(m) = part.get("model").and_then(|v| v.as_str()) {
             anim_ref.get_or_insert_with(|| m.to_string());
         }
+    }
+    // Vanilla parent of a top-level part, when both ends exist in this `.jem`.
+    let hier = crate::vanilla_hier::parents_for(entity);
+    let top_name = |p: &Value| {
+        p.get("part").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+    let present: Vec<String> = models.iter().map(top_name).collect();
+    let vanilla_parent = |name: &str| -> Option<String> {
+        hier.iter()
+            .find(|(c, _)| *c == name)
+            .map(|(_, p)| p.to_string())
+            .filter(|p| present.iter().any(|n| n == p))
+    };
+    // Emit parents before children — `part_transforms` composes in index order,
+    // so a bone's parent must already exist. `.jem` order doesn't guarantee it.
+    let mut order: Vec<usize> = Vec::with_capacity(models.len());
+    let mut placed: Vec<bool> = vec![false; models.len()];
+    for _ in 0..models.len() {
+        for i in 0..models.len() {
+            if placed[i] {
+                continue;
+            }
+            let ready = match vanilla_parent(&present[i]) {
+                Some(p) => present.iter().position(|n| *n == p).is_some_and(|j| placed[j]),
+                None => true,
+            };
+            if ready {
+                placed[i] = true;
+                order.push(i);
+            }
+        }
+    }
+    // A hierarchy cycle would leave nodes unplaced; fall back to file order.
+    for i in 0..models.len() {
+        if !placed[i] {
+            order.push(i);
+        }
+    }
+    // Top-level bone index + absolute pivot, by name, for vanilla parenting.
+    let mut top_bones: HashMap<String, (usize, [f32; 3])> = HashMap::new();
+    for &i in &order {
+        let part = &models[i];
         let t = vec3(part.get("translate")).unwrap_or([0.0; 3]);
-        add_node(&mut b, part, None, [0.0; 3], t, t, t, true, &mut bones, &mut translates, &mut boxes);
+        let (parent_bone, parent_pivot) = vanilla_parent(&present[i])
+            .and_then(|p| top_bones.get(&p).copied())
+            .map_or((None, [0.0; 3]), |(bone, piv)| (Some(bone), piv));
+        let pivot_abs = to_model_pt([-t[0], -t[1], -t[2]]);
+        let mut c = NodeCtx { bones: &mut bones, translates: &mut translates, names: &mut names, tops: &mut tops, boxes: &mut boxes };
+        let bone = add_node(&mut b, part, parent_bone, parent_pivot, t, t, t, true, &mut c);
+        top_bones.insert(present[i].clone(), (bone, pivot_abs));
     }
     if boxes == 0 {
         return Err("jem: no boxes (geometry only in referenced .jpm?)".into());
@@ -77,6 +143,8 @@ pub fn model_from_jem(jem: &str, jpms: &HashMap<String, String>) -> Result<Model
     let mut model = b.finish(1.0);
     debug_assert_eq!(translates.len(), model.parts.len(), "translate baseline per bone");
     model.cem_translate = translates;
+    model.cem_names = names;
+    model.cem_top = tops;
     // Attach the animation program if the pack ships one for this mob.
     if let Some(name) = anim_ref {
         if let Some(src) = jpms.get(&name) {
@@ -94,6 +162,15 @@ pub fn model_from_jem(jem: &str, jpms: &HashMap<String, String>) -> Result<Model
 /// top-level ancestor's translate (excluded from box placement — it's the
 /// top-level pivot). `parent_pivot` is the parent bone's *absolute* pivot, so a
 /// bone stores its pivot relative to its parent for the compose step.
+/// Per-model accumulators threaded through the recursion.
+struct NodeCtx<'a> {
+    bones: &'a mut HashMap<String, usize>,
+    translates: &'a mut Vec<[f32; 3]>,
+    names: &'a mut Vec<String>,
+    tops: &'a mut Vec<bool>,
+    boxes: &'a mut usize,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn add_node(
     b: &mut ModelBuilder,
@@ -104,10 +181,8 @@ fn add_node(
     own_t: [f32; 3],
     top_t: [f32; 3],
     is_top: bool,
-    bones: &mut HashMap<String, usize>,
-    translates: &mut Vec<[f32; 3]>,
-    boxes: &mut usize,
-) {
+    c: &mut NodeCtx<'_>,
+) -> usize {
     // Box offset: submodel translates accumulate; the top-level translate is
     // the pivot, so it's removed (`acc_t − top_t` == 0 for the top level).
     let box_off = [acc_t[0] - top_t[0], acc_t[1] - top_t[1], acc_t[2] - top_t[2]];
@@ -123,42 +198,88 @@ fn add_node(
         pivot_abs[1] - parent_pivot[1],
         pivot_abs[2] - parent_pivot[2],
     ];
-    let bone = b.cem_part(rel_pivot, parent_bone);
-    debug_assert_eq!(translates.len(), bone, "translate vec tracks bone index");
-    // Rest baseline for the replace-translation semantics: FA re-specifies a
-    // top-level part's *world pivot* (so baseline = invertAxis of the pivot)
-    // but a submodel's *own relative translate*. `eval_program` subtracts this
-    // so a rest re-spec nets zero; only the sway remains.
+    // Static `rotate` (degrees, JEM frame) — FA lays quadruped bodies flat
+    // with a dedicated `"rotation"` submodel carrying e.g. `[-90,0,0]`. It
+    // conjugates through the 180° Z bake exactly like the animation channels:
+    // X/Y negate, Z passes. 71 of FA's 119 models use it (234 parts), so
+    // dropping it put limbs in visibly wrong places.
+    let rot = vec3(node.get("rotate")).map_or([0.0; 3], |r| {
+        [
+            -r[0].to_radians(),
+            -r[1].to_radians(),
+            r[2].to_radians(),
+        ]
+    });
+    let bone = b.cem_part(rel_pivot, rot, parent_bone);
+    debug_assert_eq!(c.translates.len(), bone, "translate vec tracks bone index");
+    // Rest value of this bone's translation channels, in the frame the
+    // animation states them in. OptiFine `tx/ty/tz` REPLACE the position, so
+    // the displacement is `anim − baseline` (identity — see `eval_program`).
+    // The two node kinds state it against different references, each verified
+    // on two real FA bones:
+    //   top-level → its pivot RELATIVE TO ITS PARENT bone (the model root for
+    //               a part vanilla keeps at root level, so pig leg ty=24 ==
+    //               pivot 24; spider leg ty=23.5 vs pivot 15 is a deliberate
+    //               +8.5; vex right_arm ty=0.6 == its 0.5 offset from `body`)
+    //   submodel  → its OWN translate, X/Y negated (pig head2 ty=-12 == −(+12);
+    //               pig snout ty=1 == −(−1))
+    // NB: it must be the node's own translate, not the accumulated `box_off` —
+    // those coincide only for a first-level submodel, and using `box_off`
+    // detached deeper ones like the snout.
     let baseline = if is_top {
-        [-pivot_abs[0], -pivot_abs[1], pivot_abs[2]]
+        rel_pivot
     } else {
-        own_t
+        [-own_t[0], -own_t[1], own_t[2]]
     };
-    translates.push(baseline);
+    c.translates.push(baseline);
+    c.tops.push(is_top);
     // Register by name: top-level `part`, submodel `id`.
     let key = if is_top { "part" } else { "id" };
-    if let Some(name) = node.get(key).and_then(|v| v.as_str()) {
-        bones.entry(name.to_string()).or_insert(bone);
+    let name = node.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    c.names.push(name.to_string());
+    if !name.is_empty() {
+        c.bones.entry(name.to_string()).or_insert(bone);
     }
+    // `mirrorTexture:"u"` mirrors the texture horizontally on this node's
+    // boxes — exactly vanilla's cube `mirror` flag, and what FA uses so a
+    // left limb can reuse the right one's texels (174 parts in FA v1.10.3:
+    // left_arm/left_leg/left_eye/…). "v" (vertical) isn't in FA and isn't
+    // expressible through the vanilla box-UV emitter, so it warns.
+    let mirror = match node.get("mirrorTexture").and_then(|v| v.as_str()) {
+        Some(s) if s.contains('v') => {
+            log::warn!("cem: mirrorTexture {s:?} — only 'u' supported, ignoring 'v'");
+            s.contains('u')
+        }
+        Some(s) => s.contains('u'),
+        None => false,
+    };
     if let Some(arr) = node.get("boxes").and_then(|v| v.as_array()) {
         for bx in arr {
-            emit_box(b, bx, box_off, bone, pivot_abs);
-            *boxes += 1;
+            emit_box(b, bx, box_off, bone, pivot_abs, mirror);
+            *c.boxes += 1;
         }
     }
     if let Some(subs) = node.get("submodels").and_then(|v| v.as_array()) {
         for sub in subs {
             let st = vec3(sub.get("translate")).unwrap_or([0.0; 3]);
             let child_acc = [acc_t[0] + st[0], acc_t[1] + st[1], acc_t[2] + st[2]];
-            add_node(b, sub, Some(bone), pivot_abs, child_acc, st, top_t, false, bones, translates, boxes);
+            add_node(b, sub, Some(bone), pivot_abs, child_acc, st, top_t, false, c);
         }
     }
+    bone
 }
 
 /// Emit one CEM box onto bone `part`, pivot-relative. The JEM→model map
 /// (180° Z-rotation + BASE_Y fold) then a −pivot shift are two `Fold`s the
 /// `cube_f` box-UV emitter applies per-vertex.
-fn emit_box(b: &mut ModelBuilder, bx: &Value, off: [f32; 3], part: usize, pivot: [f32; 3]) {
+fn emit_box(
+    b: &mut ModelBuilder,
+    bx: &Value,
+    off: [f32; 3],
+    part: usize,
+    pivot: [f32; 3],
+    mirror: bool,
+) {
     let Some(c) = bx.get("coordinates").and_then(|v| v.as_array()) else { return };
     if c.len() < 6 {
         return;
@@ -188,7 +309,7 @@ fn emit_box(b: &mut ModelBuilder, bx: &Value, off: [f32; 3], part: usize, pivot:
     let jmin = [min[0] + off[0], min[1] + off[1], min[2] + off[2]];
     let to_model = Fold::rot([0.0, 0.0, std::f32::consts::PI], [0.0, BASE_Y, 0.0]);
     let unpivot = Fold::at([-pivot[0], -pivot[1], -pivot[2]]);
-    b.cube_f_faceuv(part, 0, uv, jmin, dims, grow, false, &[to_model, unpivot], &face_uv);
+    b.cube_f_faceuv(part, 0, uv, jmin, dims, grow, mirror, &[to_model, unpivot], &face_uv);
 }
 
 /// Read a `uv<Face>` key as a texture-pixel rect `[u0,v0,u1,v1]`, or `None`
@@ -254,6 +375,21 @@ fn parse_anim(src: &str, bones: &HashMap<String, usize>) -> Result<AnimProgram, 
             steps.push((target, prog));
         }
     }
+    // Any interned name that isn't a user var or a readable `bone.channel` is
+    // an identifier we don't implement: it reads 0 and silently corrupts the
+    // expressions it feeds. Warn loudly — this class of bug (missing
+    // `pos_x`/`rot_y`/… ) is invisible otherwise.
+    for name in slots.names() {
+        if name.starts_with("var.") || name.starts_with("varb.") {
+            continue;
+        }
+        let readable_bone = name
+            .rsplit_once('.')
+            .is_some_and(|(b, c)| bones.contains_key(b) && Channel::parse(c).is_some());
+        if !readable_bone {
+            log::warn!("cem: unsupported variable {name:?} — evaluates to 0");
+        }
+    }
     Ok(AnimProgram { steps, slot_count: slots.len() })
 }
 
@@ -270,11 +406,16 @@ pub fn eval_program(
     ctx: &mut AnimContext,
     part_count: usize,
     translates: &[[f32; 3]],
-) -> (Vec<[f32; 6]>, Vec<[f32; 3]>) {
-    ctx.user.clear();
+) -> CemFrame {
+    // Resize WITHOUT clearing: `ctx.user` arrives holding this entity's slots
+    // from the previous frame. FA's variables are integrators guarded by
+    // `varb.pfc = frame_counter == var.pre_frame_counter`, so wiping them here
+    // both lost the accumulated value and made the guard compare `0 == 0` —
+    // pinning every integrator and leaving all smoothing inert.
     ctx.user.resize(prog.slot_count, 0.0);
     let mut out = vec![[0.0f32; 6]; part_count];
     let mut scale = vec![[1.0f32; 3]; part_count];
+    let mut visible = vec![true; part_count];
     for (target, program) in &prog.steps {
         let v = program.eval(ctx);
         match target {
@@ -300,21 +441,40 @@ pub fn eval_program(
                     Channel::Rx => add6(&mut out, *part, 0, -v),
                     Channel::Ry => add6(&mut out, *part, 1, -v),
                     Channel::Rz => add6(&mut out, *part, 2, v),
-                    // Translation *replaces* the bone's translate (FA authors
-                    // rest + sway). Subtract the own-translate baseline so a
-                    // rest re-specification nets to zero — leaving only sway.
-                    Channel::Tx => set_t(&mut out, *part, 3, -v - base[0]),
-                    Channel::Ty => set_t(&mut out, *part, 4, -v - base[1]),
+                    // Translation *replaces* the bone's position, stated in
+                    // the frame `cem_translate` records, so the displacement is
+                    // a plain `anim − baseline` (identity: no X/Y negation,
+                    // unlike the rotation channels). Zero when FA merely
+                    // re-states rest; a real move when FA repositions — the
+                    // spider planting its legs at ty=23.5 against a pivot of 15.
+                    Channel::Tx => set_t(&mut out, *part, 3, v - base[0]),
+                    Channel::Ty => set_t(&mut out, *part, 4, v - base[1]),
                     Channel::Tz => set_t(&mut out, *part, 5, v - base[2]),
                     // Scale is an assignment (last write wins), not additive.
                     Channel::Sx => set_scale(&mut scale, *part, 0, v),
                     Channel::Sy => set_scale(&mut scale, *part, 1, v),
                     Channel::Sz => set_scale(&mut scale, *part, 2, v),
+                    Channel::Visible => {
+                        if let Some(s) = visible.get_mut(*part as usize) {
+                            *s = v != 0.0;
+                        }
+                    }
                 }
             }
         }
     }
-    (out, scale)
+    CemFrame { deltas: out, scale, visible }
+}
+
+/// One frame of evaluated CEM bone channels, indexed by part.
+pub struct CemFrame {
+    /// `[rx, ry, rz, tx, ty, tz]` — radians / model px, summed onto the base.
+    pub deltas: Vec<[f32; 6]>,
+    /// `[sx, sy, sz]` multipliers about the pivot (default `1.0`).
+    pub scale: Vec<[f32; 3]>,
+    /// Per-bone visibility (default `true`). Hiding a bone hides its subtree —
+    /// the caller propagates down the parent chain.
+    pub visible: Vec<bool>,
 }
 
 /// Add `v` into the `i`-th slot of `part` (rotation deltas accumulate onto the
@@ -530,27 +690,29 @@ mod tests {
         let m = model_from_jem(jem, &jpms).unwrap();
         let prog = m.cem.as_ref().expect("animation attached");
         let mut ctx = crate::cem_anim::AnimContext::default();
-        let (deltas, scale) = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
+        let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
         // parts: 0 = static root, 1 = "root" (anim holder), 2 = r_eye_white, 3 = l_eye_white.
-        assert_eq!(scale[2][1], 3.0, "r_eye_white.sy = 3");
-        assert_eq!(scale[3][1], 3.0, "l_eye_white.sy mirrors r — requires file order");
-        assert_eq!(scale[2][0], 1.0, "unassigned scale axis stays 1");
-        assert!((deltas[2][0] + 0.25).abs() < 1e-6, "rx negated by the 180°Z fold");
+        assert_eq!(f.scale[2][1], 3.0, "r_eye_white.sy = 3");
+        assert_eq!(f.scale[3][1], 3.0, "l_eye_white.sy mirrors r — requires file order");
+        assert_eq!(f.scale[2][0], 1.0, "unassigned scale axis stays 1");
+        assert!((f.deltas[2][0] + 0.25).abs() < 1e-6, "rx negated by the 180°Z fold");
     }
 
-    /// OptiFine translation channels *replace* a bone's translate; FA
-    /// re-specifies rest (+ sway). A submodel whose anim re-specifies exactly
-    /// its rest position must net to ZERO translation delta — adding it (the
-    /// bug) flung the pig's head ~12 units off the body.
+    /// OptiFine translation channels *replace* a bone's position, stated in
+    /// model space. Two properties: re-stating rest nets ZERO displacement
+    /// (else the pig's head flings off the body), and a deliberate
+    /// reposition moves by exactly the stated difference, with the correct
+    /// sign (the spider's legs reach the ground rather than flying up).
     #[test]
     fn translation_channels_replace_not_add() {
+        // Submodel: rest anim value is [-box_off.x, -box_off.y, box_off.z];
+        // here box_off = [0,12,-6] so rest states ty=-12, tz=-6.
         let jem = r#"{"models":[
             {"part":"root","model":"a.jpm"},
             {"part":"body","translate":[0,-8,0],"submodels":[
               {"id":"head2","translate":[0,12,-6],
                "boxes":[{"coordinates":[-4,-4,-8,8,8,8],"textureOffset":[0,0]}]}]}]}"#;
         let mut jpms = HashMap::new();
-        // ty=-12, tz=-6 == invertAxis of the jem translate [0,12,-6] (rest).
         jpms.insert(
             "a.jpm".to_string(),
             r#"{"animations":[{"head2.ty":"-12","head2.tz":"-6","head2.tx":"0"}]}"#.to_string(),
@@ -558,14 +720,76 @@ mod tests {
         let m = model_from_jem(jem, &jpms).unwrap();
         let prog = m.cem.as_ref().expect("animation attached");
         let mut ctx = crate::cem_anim::AnimContext::default();
-        let (deltas, _) = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
+        let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
         // parts: 0 static root, 1 "root" anim-holder, 2 body, 3 head2.
-        let d = &deltas[3];
+        let d = &f.deltas[3];
         assert!(
             d[3].abs() < 1e-4 && d[4].abs() < 1e-4 && d[5].abs() < 1e-4,
-            "rest re-spec must net zero translation delta, got tx/ty/tz {:?}",
+            "rest re-spec must net zero displacement, got tx/ty/tz {:?}",
             &d[3..6]
         );
+
+        // Top-level: rest anim value IS the model pivot. A leg at translate
+        // [-19,-9,-4] pivots at [-19,15,4]; FA states ty=23.5 to plant it on
+        // the ground, so the displacement must be +8.5 (down), not −8.5.
+        let jem2 = r#"{"models":[
+            {"part":"root","model":"b.jpm"},
+            {"part":"leg1","translate":[-19,-9,-4],
+             "boxes":[{"coordinates":[-1,0,-1,2,10,2],"textureOffset":[0,0]}]}]}"#;
+        let mut jpms2 = HashMap::new();
+        jpms2.insert("b.jpm".to_string(), r#"{"animations":[{"leg1.ty":"23.5"}]}"#.to_string());
+        let m2 = model_from_jem(jem2, &jpms2).unwrap();
+        let mut ctx2 = crate::cem_anim::AnimContext::default();
+        let f2 = eval_program(
+            m2.cem.as_ref().unwrap(),
+            &mut ctx2,
+            m2.parts.len(),
+            &m2.cem_translate,
+        );
+        // parts: 0 static root, 1 "root", 2 leg1.
+        assert!(
+            (f2.deltas[2][4] - 8.5).abs() < 1e-4,
+            "repositioning leg must move +8.5 (toward the ground), got {}",
+            f2.deltas[2][4]
+        );
+    }
+
+    /// FA's variables are integrators gated by a same-frame check
+    /// (`varb.pfc = frame_counter == var.pre_frame_counter`), so they only
+    /// advance when their values *and* `var.pre_frame_counter` survive to the
+    /// next frame. Re-zeroing the slots made the guard compare `0 == 0`, which
+    /// pinned every integrator and left all smoothing inert.
+    #[test]
+    fn user_variables_persist_and_integrate_across_frames() {
+        let jem = r#"{"models":[
+            {"part":"root","model":"a.jpm"},
+            {"part":"head","translate":[0,-24,0],
+             "boxes":[{"coordinates":[-4,0,-4,8,8,8],"textureOffset":[0,0]}]}]}"#;
+        let mut jpms = HashMap::new();
+        jpms.insert(
+            "a.jpm".to_string(),
+            r#"{"animations":[{
+                "varb.pfc":"frame_counter == var.pre_frame_counter",
+                "var.pre_frame_counter":"frame_counter",
+                "var.acc":"if(varb.pfc, var.acc, var.acc +1)",
+                "head.rz":"var.acc"
+            }]}"#
+                .to_string(),
+        );
+        let m = model_from_jem(jem, &jpms).unwrap();
+        let prog = m.cem.as_ref().expect("animation attached");
+        // One context reused across frames = the persisted per-entity slots.
+        let mut ctx = crate::cem_anim::AnimContext::default();
+        let mut seen = Vec::new();
+        for frame in 1..=3 {
+            ctx.frame_counter = frame as f32;
+            let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
+            seen.push(f.deltas[2][2]); // parts: 0 static, 1 root, 2 head; rz
+        }
+        assert_eq!(seen, vec![1.0, 2.0, 3.0], "integrator advances once per frame");
+        // Re-evaluating the SAME frame must hold the value, not double-step.
+        let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
+        assert_eq!(f.deltas[2][2], 3.0, "same frame_counter holds the integrator");
     }
 
     #[test]

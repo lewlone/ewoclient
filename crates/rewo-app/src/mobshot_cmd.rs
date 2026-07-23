@@ -68,6 +68,13 @@ pub struct MobshotArgs {
     /// spider leg waves, tail wags). The --check gate always uses 0.
     #[arg(long)]
     walk: Option<String>,
+    /// Sheet mode: seconds of animation to simulate at 20 Hz before rendering.
+    /// A resource pack's variables are integrators that converge over time
+    /// (CEM `var.run`, `var.air`, …), so a single frame catches them barely
+    /// off zero; settling first renders the steady-state pose you actually see
+    /// in game. No effect without a pack.
+    #[arg(long, default_value_t = 0.0)]
+    settle: f32,
     /// Sheet mode: pose/state gesture as "name[,age_s]" (e.g.
     /// "warden_roar,1.5") — plays the one-shot rig at that clock on every
     /// mob it applies to. Names match `Gesture::from_name`.
@@ -134,7 +141,7 @@ pub(crate) fn load_cem_overrides(
         if kind == EntityModelKind::Capsule {
             continue; // no matching model kind (variant/collar/… files)
         }
-        match rewo_gpu::cem::model_from_jem(&file.jem, &pack.jpms) {
+        match rewo_gpu::cem::model_from_jem_for(&file.entity, &file.jem, &pack.jpms) {
             Ok(model) => {
                 out.entry(kind).or_insert(model);
             }
@@ -548,7 +555,15 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let vp = (proj * view).to_cols_array_2d();
     let right = dir.cross(Vec3::Y).normalize_or_zero().to_array();
     let up = right_up(dir);
-    wr.set_entities(&draws, right, up, args.time);
+    // Settle the pack's animation integrators before the shot: CEM variables
+    // accumulate frame-to-frame, so one evaluation leaves them barely off zero.
+    // Stepping a 20 Hz clock up to `--time` converges them the way live play
+    // does. Cheap (vertex-soup rebuild only) and a no-op at the default 0.
+    let steps = (args.settle * 20.0).round().max(0.0) as usize;
+    for i in 0..steps {
+        wr.set_entities(&draws, right, up, args.time + i as f32 / 20.0);
+    }
+    wr.set_entities(&draws, right, up, args.time + args.settle);
 
     let ring = OverlayRing::default();
     let draw = overlay_offscreen(&ring);
