@@ -4,20 +4,13 @@
 //! Re-run after a version bump; see the script header for the
 //! extraction rules and why this cannot come from a datagen report.
 //!
-//! 53 constant emitters, 18 lit-conditional,
-//! 244 non-occluding, 188 sky-propagation
-//! overrides, 12 dampening overrides.
+//! 49 constant emitters, 18 lit-conditional,
+//! 276 non-occluding, 188 sky-propagation
+//! overrides, 12 dampening overrides,
+//! 24 property-driven emitters.
 //!
 //! Approximated (state-dependent emission):
-//!   - candle: lightLevel() form not understood
-//!   - cave_vines: state-dependent, used max=14
-//!   - cave_vines_plant: state-dependent, used max=14
 //!   - glow_lichen: state-dependent, used max=7
-//!   - light: lightLevel() form not understood
-//!   - respawn_anchor: state-dependent, used max=15
-//!   - sea_pickle: state-dependent, used max=3
-//!   - trial_spawner: lightLevel() form not understood
-//!   - vault: lightLevel() form not understood
 
 /// Blocks whose light emission is the same in every state.
 pub const EMISSION: &[(&str, u8)] = &[
@@ -25,8 +18,6 @@ pub const EMISSION: &[(&str, u8)] = &[
     ("minecraft:beacon", 15),
     ("minecraft:brewing_stand", 1),
     ("minecraft:brown_mushroom", 1),
-    ("minecraft:cave_vines", 14),
-    ("minecraft:cave_vines_plant", 14),
     ("minecraft:conduit", 15),
     ("minecraft:copper_lantern", 15),
     ("minecraft:copper_torch", 14),
@@ -55,11 +46,9 @@ pub const EMISSION: &[(&str, u8)] = &[
     ("minecraft:ochre_froglight", 15),
     ("minecraft:oxidized_copper_lantern", 15),
     ("minecraft:pearlescent_froglight", 15),
-    ("minecraft:respawn_anchor", 15),
     ("minecraft:sculk_catalyst", 6),
     ("minecraft:sculk_sensor", 1),
     ("minecraft:sea_lantern", 15),
-    ("minecraft:sea_pickle", 3),
     ("minecraft:shroomlight", 15),
     ("minecraft:small_amethyst_bud", 1),
     ("minecraft:soul_fire", 10),
@@ -96,6 +85,41 @@ pub const LIT_EMISSION: &[(&str, u8)] = &[
     ("minecraft:waxed_oxidized_copper_bulb", 4),
     ("minecraft:waxed_weathered_copper_bulb", 8),
     ("minecraft:weathered_copper_bulb", 8),
+];
+
+/// Emission that depends on block-state properties.
+///
+/// `(block, gate property, gate value, value property, [(value, emission)])`.
+/// The state emits the mapped value only when the gate property equals
+/// `gate value` (an empty gate always passes); an unlisted value emits 0.
+/// Takes precedence over EMISSION and LIT_EMISSION. Each rule is keyed in
+/// the generator by a source signature, so a rewritten expression stops
+/// matching rather than silently keeping a stale rule.
+pub const STATE_EMISSION: &[(&str, &str, &str, &str, &[(&str, u8)])] = &[
+    ("minecraft:black_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:blue_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:brown_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:cave_vines", "", "", "berries", &[("true", 14)]),
+    ("minecraft:cave_vines_plant", "", "", "berries", &[("true", 14)]),
+    ("minecraft:cyan_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:gray_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:green_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:light", "", "", "level", &[("0", 0), ("1", 1), ("2", 2), ("3", 3), ("4", 4), ("5", 5), ("6", 6), ("7", 7), ("8", 8), ("9", 9), ("10", 10), ("11", 11), ("12", 12), ("13", 13), ("14", 14), ("15", 15)]),
+    ("minecraft:light_blue_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:light_gray_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:lime_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:magenta_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:orange_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:pink_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:purple_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:red_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:respawn_anchor", "", "", "charges", &[("1", 3), ("2", 7), ("3", 11), ("4", 15)]),
+    ("minecraft:sea_pickle", "waterlogged", "true", "pickles", &[("1", 6), ("2", 9), ("3", 12), ("4", 15)]),
+    ("minecraft:trial_spawner", "", "", "trial_spawner_state", &[("waiting_for_players", 4), ("active", 8), ("waiting_for_reward_ejection", 8), ("ejecting_reward", 8)]),
+    ("minecraft:vault", "", "", "vault_state", &[("inactive", 6), ("active", 12), ("unlocking", 12), ("ejecting", 12)]),
+    ("minecraft:white_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    ("minecraft:yellow_candle", "lit", "true", "candles", &[("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
 ];
 
 /// How a block answers `propagatesSkylightDown`, when its class
@@ -327,13 +351,19 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:birch_leaves",
     "minecraft:birch_trapdoor",
     "minecraft:black_bed",
+    "minecraft:black_candle",
+    "minecraft:black_shulker_box",
     "minecraft:black_stained_glass",
     "minecraft:black_stained_glass_pane",
     "minecraft:blue_bed",
+    "minecraft:blue_candle",
+    "minecraft:blue_shulker_box",
     "minecraft:blue_stained_glass",
     "minecraft:blue_stained_glass_pane",
     "minecraft:brewing_stand",
     "minecraft:brown_bed",
+    "minecraft:brown_candle",
+    "minecraft:brown_shulker_box",
     "minecraft:brown_stained_glass",
     "minecraft:brown_stained_glass_pane",
     "minecraft:campfire",
@@ -357,6 +387,8 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:crimson_door",
     "minecraft:crimson_trapdoor",
     "minecraft:cyan_bed",
+    "minecraft:cyan_candle",
+    "minecraft:cyan_shulker_box",
     "minecraft:cyan_stained_glass",
     "minecraft:cyan_stained_glass_pane",
     "minecraft:dark_oak_door",
@@ -383,9 +415,13 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:glass",
     "minecraft:glass_pane",
     "minecraft:gray_bed",
+    "minecraft:gray_candle",
+    "minecraft:gray_shulker_box",
     "minecraft:gray_stained_glass",
     "minecraft:gray_stained_glass_pane",
     "minecraft:green_bed",
+    "minecraft:green_candle",
+    "minecraft:green_shulker_box",
     "minecraft:green_stained_glass",
     "minecraft:green_stained_glass_pane",
     "minecraft:honey_block",
@@ -402,17 +438,25 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:lantern",
     "minecraft:light",
     "minecraft:light_blue_bed",
+    "minecraft:light_blue_candle",
+    "minecraft:light_blue_shulker_box",
     "minecraft:light_blue_stained_glass",
     "minecraft:light_blue_stained_glass_pane",
     "minecraft:light_gray_bed",
+    "minecraft:light_gray_candle",
+    "minecraft:light_gray_shulker_box",
     "minecraft:light_gray_stained_glass",
     "minecraft:light_gray_stained_glass_pane",
     "minecraft:lightning_rod",
     "minecraft:lily_pad",
     "minecraft:lime_bed",
+    "minecraft:lime_candle",
+    "minecraft:lime_shulker_box",
     "minecraft:lime_stained_glass",
     "minecraft:lime_stained_glass_pane",
     "minecraft:magenta_bed",
+    "minecraft:magenta_candle",
+    "minecraft:magenta_shulker_box",
     "minecraft:magenta_stained_glass",
     "minecraft:magenta_stained_glass_pane",
     "minecraft:mangrove_door",
@@ -424,6 +468,8 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:oak_leaves",
     "minecraft:oak_trapdoor",
     "minecraft:orange_bed",
+    "minecraft:orange_candle",
+    "minecraft:orange_shulker_box",
     "minecraft:orange_stained_glass",
     "minecraft:orange_stained_glass_pane",
     "minecraft:oxidized_copper_bars",
@@ -440,6 +486,8 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:pale_oak_trapdoor",
     "minecraft:piglin_head",
     "minecraft:pink_bed",
+    "minecraft:pink_candle",
+    "minecraft:pink_shulker_box",
     "minecraft:pink_stained_glass",
     "minecraft:pink_stained_glass_pane",
     "minecraft:player_head",
@@ -484,9 +532,13 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:potted_wither_rose",
     "minecraft:powder_snow",
     "minecraft:purple_bed",
+    "minecraft:purple_candle",
+    "minecraft:purple_shulker_box",
     "minecraft:purple_stained_glass",
     "minecraft:purple_stained_glass_pane",
     "minecraft:red_bed",
+    "minecraft:red_candle",
+    "minecraft:red_shulker_box",
     "minecraft:red_stained_glass",
     "minecraft:red_stained_glass_pane",
     "minecraft:sea_pickle",
@@ -549,10 +601,14 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:weathered_copper_trapdoor",
     "minecraft:weathered_lightning_rod",
     "minecraft:white_bed",
+    "minecraft:white_candle",
+    "minecraft:white_shulker_box",
     "minecraft:white_stained_glass",
     "minecraft:white_stained_glass_pane",
     "minecraft:wither_skeleton_skull",
     "minecraft:yellow_bed",
+    "minecraft:yellow_candle",
+    "minecraft:yellow_shulker_box",
     "minecraft:yellow_stained_glass",
     "minecraft:yellow_stained_glass_pane",
     "minecraft:zombie_head",

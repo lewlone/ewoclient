@@ -369,6 +369,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         crate::block_light::SKY_PROPAGATE.iter().copied().collect();
     let damp_override: HashMap<&str, u8> =
         crate::block_light::DAMPENING_OVERRIDE.iter().copied().collect();
+    let state_emission: HashMap<&str, (&str, &str, &str, &[(&str, u8)])> =
+        crate::block_light::STATE_EMISSION
+            .iter()
+            .map(|&(b, gate, gv, vp, map)| (b, (gate, gv, vp, map)))
+            .collect();
 
     for (block_name, def) in blocks {
         let states = def
@@ -478,9 +483,23 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
                 face_occludes[id as usize] = face_coverage(&collide[id as usize]);
             }
-            emission[id as usize] = if let Some(&e) = const_emission.get(block_name.as_str()) {
+            // Emission. A property-driven rule (a candle's `3 × candles`, a
+            // glow berry's `berries`, a light block's `level`) wins over the
+            // constant tables; see `block_light::STATE_EMISSION`.
+            let prop = |name: &str| props.and_then(|p| p.get(name)).and_then(|v| v.as_str());
+            emission[id as usize] = if let Some(&(gate, gate_val, value_prop, map)) =
+                state_emission.get(block_name.as_str())
+            {
+                if !gate.is_empty() && prop(gate) != Some(gate_val) {
+                    0
+                } else {
+                    prop(value_prop)
+                        .and_then(|v| map.iter().find(|(k, _)| *k == v))
+                        .map_or(0, |&(_, e)| e)
+                }
+            } else if let Some(&e) = const_emission.get(block_name.as_str()) {
                 e
-            } else if props.and_then(|p| p.get("lit")).and_then(|v| v.as_str()) == Some("true") {
+            } else if prop("lit") == Some("true") {
                 lit_emission.get(block_name.as_str()).copied().unwrap_or(0)
             } else {
                 0
@@ -1604,7 +1623,20 @@ fn model_collision(short: &str) -> Option<bool> {
         || short == "daylight_detector"
         || short == "grindstone"
         || short == "lectern"
-        || short == "cake";
+        || short == "cake"
+        // The rest of vanilla's `useShapeForLightOcclusion` set. These carry
+        // real collision shapes too, but they earn their place here because
+        // light occlusion is computed from these boxes: a block with no boxes
+        // has no occluding faces, so farmland would let light fall straight
+        // through it where vanilla stops it at the full bottom face.
+        || short == "farmland"
+        || short == "dirt_path"
+        || short == "sculk_sensor"
+        || short == "sculk_shrieker"
+        || short == "shelf"
+        || short == "piston"
+        || short == "sticky_piston"
+        || short == "piston_head";
     model_shaped.then_some(false)
 }
 

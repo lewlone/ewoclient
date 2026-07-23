@@ -56,6 +56,14 @@ pub struct PlayArgs {
     /// tables or flood fill, measured against vanilla's own engine.
     #[arg(long, default_value_t = false)]
     light_check: bool,
+    /// Do not relight our own edits. `--light-check` compares the recomputed
+    /// light against whatever is stored, and incremental relighting *writes*
+    /// that store — so a world built during the session would have the gate
+    /// grading our engine against itself. This flag keeps the stored light
+    /// purely server-authoritative, which is the only comparison that proves
+    /// anything.
+    #[arg(long, default_value_t = false)]
+    no_relight: bool,
     /// Send a chat line partway through.
     #[arg(long, default_value = "rewo bot online")]
     chat: String,
@@ -110,7 +118,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     session.entity_push = crate::live_cmd::entity_push_table(&data.entity_types);
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
-    if let Some(b) = baked.as_ref() {
+    if let (Some(b), false) = (baked.as_ref(), args.no_relight) {
         session.set_light_tables(
             b.emission.clone(),
             b.dampening.clone(),

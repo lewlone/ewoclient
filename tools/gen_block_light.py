@@ -84,6 +84,38 @@ COPPER_PREFIXES = [
 ]
 WEATHER_STATES = ["UNAFFECTED", "EXPOSED", "WEATHERED", "OXIDIZED"]
 
+# Blocks whose `lightLevel` is a function of block-state properties rather than
+# a constant. Each rule is keyed by a SIGNATURE — a substring the registration
+# must still contain — so a version bump that rewrites the expression stops
+# matching and the block drops back to the reported approximation instead of
+# silently keeping a stale rule.
+#
+# (signature, gate property, gate value, value property, [(value, emission)])
+# An empty gate always passes; a value not in the map emits 0.
+STATE_RULES = [
+    # CaveVines.emission(14): `berries ? 14 : 0`
+    ("CaveVines.emission(14)", "", "", "berries", [("true", 14)]),
+    # CandleBlock.LIGHT_EMISSION: `lit ? 3 * candles : 0`
+    ("CandleBlock.LIGHT_EMISSION", "lit", "true", "candles",
+     [("1", 3), ("2", 6), ("3", 9), ("4", 12)]),
+    # SeaPickleBlock: `isDead ? 0 : 3 + 3 * pickles`, dead == not waterlogged
+    ("SeaPickleBlock.isDead", "waterlogged", "true", "pickles",
+     [("1", 6), ("2", 9), ("3", 12), ("4", 15)]),
+    # RespawnAnchorBlock.getScaledChargeLevel(state, 15): floor(charges/4 * 15)
+    ("RespawnAnchorBlock.getScaledChargeLevel", "", "", "charges",
+     [("1", 3), ("2", 7), ("3", 11), ("4", 15)]),
+    # LightBlock.LIGHT_EMISSION: the `level` property itself
+    ("LightBlock.LIGHT_EMISSION", "", "", "level",
+     [(str(i), i) for i in range(16)]),
+    # TrialSpawnerState.lightLevel(), from the enum constructor
+    ("TrialSpawnerBlock.STATE", "", "", "trial_spawner_state",
+     [("waiting_for_players", 4), ("active", 8),
+      ("waiting_for_reward_ejection", 8), ("ejecting_reward", 8)]),
+    # VaultState.LightLevel: HALF_LIT(6) for inactive, LIT(12) otherwise
+    ("VaultBlock.STATE", "", "", "vault_state",
+     [("inactive", 6), ("active", 12), ("unlocking", 12), ("ejecting", 12)]),
+]
+
 # How a `propagatesSkylightDown` override body maps to a per-state value.
 CONST_TRUE, CONST_FALSE, NOT_WATERLOGGED = 1, 0, 2
 
@@ -289,6 +321,7 @@ def main():
     damp_over = {}      # name -> forced dampening
     unparsed = []
     missing = []
+    state_rules = {}   # name -> (gate_prop, gate_val, prop, map)
 
     def record(name, expanded, cls, state_idx=None):
         """Record every light fact for one registry name."""
@@ -297,8 +330,14 @@ def main():
             return
         if "noOcclusion()" in expanded:
             no_occlude.append(name)
+        for sig, gp, gv, vp, mapping in STATE_RULES:
+            if sig in expanded:
+                state_rules[name] = (gp, gv, vp, mapping)
+                break
         const, lit = parse_emission(expanded, state_idx)
-        if const == "?":
+        if name in state_rules:
+            pass  # a property rule wins over any constant reading
+        elif const == "?":
             # State-dependent forms we do not model exactly (cave vines,
             # vaults, …). Take the max literal so the block still lights.
             inner = balanced(expanded, expanded.index("lightLevel(") + len("lightLevel"))
@@ -353,8 +392,12 @@ def main():
             print(f"  no id table for BlockItemIds.{ref.group(1)}", file=sys.stderr)
             continue
         cls = impl_class(body)
+        expanded = body
+        for hname, hbody in helpers.items():
+            if hname + "(" in expanded:
+                expanded += "\n" + hbody
         for name, state_idx in names:
-            record(name, body, cls, state_idx)
+            record(name, expanded, cls, state_idx)
 
     if missing:
         print(
@@ -375,7 +418,8 @@ def main():
     out.write("//! extraction rules and why this cannot come from a datagen report.\n//!\n")
     out.write(f"//! {len(emission)} constant emitters, {len(lit_emission)} lit-conditional,\n")
     out.write(f"//! {len(no_occlude)} non-occluding, {len(propagate)} sky-propagation\n")
-    out.write(f"//! overrides, {len(damp_over)} dampening overrides.\n")
+    out.write(f"//! overrides, {len(damp_over)} dampening overrides,\n")
+    out.write(f"//! {len(state_rules)} property-driven emitters.\n")
     if unparsed:
         out.write("//!\n//! Approximated (state-dependent emission):\n")
         for u in sorted(unparsed):
@@ -392,6 +436,21 @@ def main():
     out.write("pub const LIT_EMISSION: &[(&str, u8)] = &[\n")
     for k in sorted(lit_emission):
         out.write(f'    ("minecraft:{k}", {lit_emission[k]}),\n')
+    out.write("];\n\n")
+
+    out.write("/// Emission that depends on block-state properties.\n")
+    out.write("///\n")
+    out.write("/// `(block, gate property, gate value, value property, [(value, emission)])`.\n")
+    out.write("/// The state emits the mapped value only when the gate property equals\n")
+    out.write("/// `gate value` (an empty gate always passes); an unlisted value emits 0.\n")
+    out.write("/// Takes precedence over EMISSION and LIT_EMISSION. Each rule is keyed in\n")
+    out.write("/// the generator by a source signature, so a rewritten expression stops\n")
+    out.write("/// matching rather than silently keeping a stale rule.\n")
+    out.write("pub const STATE_EMISSION: &[(&str, &str, &str, &str, &[(&str, u8)])] = &[\n")
+    for k in sorted(state_rules):
+        gp, gv, vp, mapping = state_rules[k]
+        pairs = ", ".join(f'("{v}", {e})' for v, e in mapping)
+        out.write(f'    ("minecraft:{k}", "{gp}", "{gv}", "{vp}", &[{pairs}]),\n')
     out.write("];\n\n")
 
     out.write("/// How a block answers `propagatesSkylightDown`, when its class\n")
@@ -421,7 +480,8 @@ def main():
     print(
         f"[gen_block_light] {len(emission)} emitters, {len(lit_emission)} lit, "
         f"{len(no_occlude)} no-occlude, {len(propagate)} sky-overrides, "
-        f"{len(damp_over)} damp-overrides, {len(unparsed)} approximated, "
+        f"{len(damp_over)} damp-overrides, {len(state_rules)} state-rules, "
+        f"{len(unparsed)} approximated, "
         f"{len(missing)} unknown-name",
         file=sys.stderr,
     )

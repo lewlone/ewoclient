@@ -471,6 +471,35 @@ impl PlaySession {
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
+        } else if id == ids.cb_play_section_blocks_update {
+            // Multi-block change within one 16³ section — what the server
+            // sends for a `/fill`, an explosion, a piston, or a growing tree.
+            // Without this, any edit to an already-loaded chunk is invisible:
+            // single-block edits arrive as `block_update`, everything else
+            // arrives here.
+            //
+            // Body (ClientboundSectionBlocksUpdatePacket): a packed section
+            // position long, a VarInt count, then one VarLong per change
+            // holding `stateId << 12 | posInSection`.
+            let mut r = PacketReader::new(body);
+            if let (Ok(section), Ok(count)) = (r.u64(), r.varint()) {
+                let (sx, sy, sz) = unpack_section_pos(section);
+                let mut applied = 0;
+                for _ in 0..count.max(0) {
+                    let Ok(packed) = r.varlong() else { break };
+                    let packed = packed as u64;
+                    let state = (packed >> 12) as u32;
+                    let (ox, oy, oz) = unpack_section_offset((packed & 4095) as i32);
+                    let (x, y, z) = (sx * 16 + ox, sy * 16 + oy, sz * 16 + oz);
+                    let old = self.world.block_state_at(x, y, z);
+                    self.world.set_block(x, y, z, state);
+                    self.relight(x, y, z, old, state);
+                    applied += 1;
+                }
+                self.block_updates += applied;
+                self.mark_dirty_around(sx, sz);
+                log::debug!("net: section_blocks_update ({sx},{sy},{sz}) × {applied}");
+            }
         } else if Some(id) == ids.cb_play_block_ack {
             // Sequence ack — server confirms our predicted change. We don't
             // predict yet (M3 applies the server's block_update), so this is
@@ -1121,5 +1150,62 @@ mod push_tests {
         let (x, z) = push_delta(0.05, 0.0);
         assert!(x <= 0.05 + 1e-12, "clamped, got {x}");
         assert!(x > 0.0 && z == 0.0);
+    }
+}
+
+/// Unpack `SectionPos.asLong`: x in bits 42..63, z in 20..41, y in 0..19.
+///
+/// All three are signed and two are narrower than a register, so each is
+/// shifted left to put its sign bit at the top before the arithmetic shift
+/// right sign-extends it. Getting this wrong places edits in a different
+/// chunk, which reads as "some blocks never update".
+fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
+    let v = packed as i64;
+    ((v >> 42) as i32, ((v << 44) >> 44) as i32, ((v << 22) >> 42) as i32)
+}
+
+/// Unpack a 12-bit in-section position: **x is bits 8..11, z is 4..7, y is
+/// 0..3** (`SectionPos.sectionRelative{X,Y,Z}`). Note the order — y is the
+/// low nibble, not x.
+fn unpack_section_offset(pos: i32) -> (i32, i32, i32) {
+    ((pos >> 8) & 15, pos & 15, (pos >> 4) & 15)
+}
+
+#[cfg(test)]
+mod section_update_tests {
+    use super::*;
+
+    /// Mirrors `SectionPos.asLong`, so the test states the encoding
+    /// independently of the decoder under test.
+    fn as_long(x: i64, y: i64, z: i64) -> u64 {
+        (((x & 0x3F_FFFF) << 42) | (y & 0xF_FFFF) | ((z & 0x3F_FFFF) << 20)) as u64
+    }
+
+    #[test]
+    fn section_pos_roundtrips_including_negatives() {
+        for (x, y, z) in [(0, 0, 0), (1, 2, 3), (-1, -1, -1), (-3000, -4, 2999), (100, 19, -100)] {
+            assert_eq!(
+                unpack_section_pos(as_long(x as i64, y as i64, z as i64)),
+                (x, y, z),
+                "section ({x},{y},{z})"
+            );
+        }
+    }
+
+    #[test]
+    fn section_offset_uses_the_x_z_y_nibble_order() {
+        // Vanilla packs `x << 8 | z << 4 | y`.
+        for (x, y, z) in [(0, 0, 0), (15, 15, 15), (1, 2, 3), (9, 4, 7)] {
+            let packed = (x << 8) | (z << 4) | y;
+            assert_eq!(unpack_section_offset(packed), (x, y, z), "offset ({x},{y},{z})");
+        }
+    }
+
+    #[test]
+    fn a_change_entry_splits_into_state_and_position() {
+        // Wire form: `stateId << 12 | posInSection`.
+        let packed: u64 = (1234u64 << 12) | ((5 << 8) | (6 << 4) | 7);
+        assert_eq!(packed >> 12, 1234);
+        assert_eq!(unpack_section_offset((packed & 4095) as i32), (5, 7, 6));
     }
 }
