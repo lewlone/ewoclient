@@ -62,9 +62,9 @@ cargo test --release -p rewo-world --lib   # 81
 cargo test --release -p rewo-net   --lib   # 67
 cargo test --release -p rewo-gpu   --lib   # 37
 cargo test --release -p rewo-data  --lib   # 9
-cargo test --release -p rewo-mesh  --lib   # 10
-cargo test --release -p rewo-proto --lib   # 11   → 215 total
-cargo test --release -p rewo-app           # 10   (app-level)
+cargo test --release -p rewo-mesh  --lib   # 32
+cargo test --release -p rewo-proto --lib   # 11   → 237 total
+cargo test --release -p rewo-app           # 19   (app-level)
 ```
 
 ```bash
@@ -78,6 +78,7 @@ model or UV change.
 ./target/release/rewo.exe lightmapshot --check
 ./target/release/rewo.exe skyshot --check
 ./target/release/rewo.exe tintshot --check
+./target/release/rewo.exe meshshot --check
 ```
 Permanent serverless Vulkan property oracles, validation layers on (each fails
 closed if validation is unavailable). The first checks the complete 26.2
@@ -90,6 +91,13 @@ light/dark **[106,112,57]**/**[76,118,60]**, spruce/birch
 **[97,153,97]**/**[128,167,85]**), a raw-quart camera sky/fog Gaussian (fog
 boundary **0xffac2d6d**, A inherits / B overrides), and a fully-fogged terrain
 readback. **0 VUIDs.** Run after any biome, tint, colormap or chunk-biome change.
+
+`meshshot` is M15's permanent CPU geometry oracle. It expands production
+greedy rectangles back to unit faces and compares them with the frozen
+pre-greedy mesher by direction, owning block, atlas layer + block/sky light,
+four AO codes and tint. It also pins exact model/water/lava legacy controls,
+material/light/tint seams, section crossing, deterministic output, and the
+top-face 1×1 exclusion. Run after any mesh format or merge-policy change.
 
 ```bash
 ./target/release/rewo.exe demo --out C:/tmp/demo.png
@@ -176,11 +184,11 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M14` shipped and verified. **M0–M9 are pushed** (`origin/main` @
-`973ea5e`); the **M10–M14 arc (light, sky, and per-biome color) is reviewed
-local work, not yet pushed**. M12 is commit `06dd3eb`; the M14 milestone is
-frozen. See `REWO_PLAN.md` §15 for each milestone's exact ground truth and
-measured gates.
+`M0–M15` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M15 arc is reviewed local work, not yet pushed**. M12 is
+commit `06dd3eb`; M14 is `88b5112`; M15 is the geometry-performance milestone.
+See `REWO_PLAN.md` §15 for each milestone's exact ground truth and measured
+gates.
 
 A playable online client: joins online-mode servers with signed chat, real
 player skins, 88 vanilla mob models with formula-exact procedural and keyframe
@@ -191,15 +199,17 @@ through all eight phases, stars, and the sunrise/sunset fan) driven by a smooth
 server-driven world clock — and now **per-biome color**: grass/foliage/water
 tint (exact radius-2 mean, dark_forest + swamp modifiers, spruce/birch
 constants), retained 4×4×4 section biomes, and biome-driven camera sky/fog via a
-raw-quart Gaussian feeding per-frame GPU base uniforms.
+raw-quart Gaussian feeding per-frame GPU base uniforms. M15 replaces the
+36-byte vertex with an exact 28-byte ABI and greedily merges five safe cube-face
+directions, reducing the canonical replay upload from 149.13 to 109.39 MiB
+(−26.65%) without changing the canonical demo image.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
-`bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`.
+`bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`.
 
 **Open work**, roughly in descending obviousness:
 
-- Greedy meshing, packed vertices (both deferred, both interact with AO).
 - Nether and End are untested; general dimension-transition / respawn base
   selection and dimension-specific `ambientLight` are not wired. (Biome blend
   radius is fixed at vanilla's default 2 — not yet a setting.)

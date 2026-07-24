@@ -10,6 +10,7 @@
 mod bench_cmd;
 mod demo_cmd;
 mod lightmapshot_cmd;
+mod meshshot_cmd;
 mod tintshot_cmd;
 mod mobshot_cmd;
 mod live_cmd;
@@ -132,6 +133,9 @@ enum Command {
     /// through Vulkan (no server), and assert grass/foliage/water tint + sky/fog
     /// against independent expectations with `--check`.
     Tintshot(tintshot_cmd::TintshotArgs),
+    /// M15 geometry oracle: compare production greedy rectangles with the
+    /// frozen unit-face reference and pin every merge boundary (no server).
+    Meshshot(meshshot_cmd::MeshshotArgs),
 }
 
 fn main() {
@@ -152,6 +156,7 @@ fn main() {
         Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
         Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
         Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
+        Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

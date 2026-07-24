@@ -44,12 +44,29 @@ pub struct OwnedTextLine {
 }
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
-const VERTEX_STRIDE: u64 = 36;
-/// Mega-buffer capacities. 4M verts (144 MB) + 6M indices (24 MB) covers a
-/// large render distance; over-cap columns are dropped with a log.
-const MAX_VERTS: u64 = 4_000_000;
-const MAX_INDICES: u64 = 6_000_000;
-const MAX_COLUMNS: usize = 8192;
+
+// -- Arena capacity facts (public so tooling can report utilization without
+//    duplicating these numbers; see `rewo bench --mesh-runs`). Changing a value
+//    here changes the allocator, not just the report. --------------------------
+
+/// Bytes per uploaded vertex. Must equal `size_of::<rewo_mesh::MeshVertex>()`;
+/// `rewo bench` asserts the two agree, since a silent mismatch would corrupt
+/// every upload offset. M15 packed layout: pos f32x3 (0), uv f32x2 (12),
+/// light u32 (20), tint u32 (24). UV stayed f32 because fluid surface UVs
+/// (`1 - k/9`) are not representable in f16 — see `rewo_mesh::MeshVertex`.
+pub const VERTEX_STRIDE: u64 = 28;
+/// Mega-buffer capacities. 4M verts (4M × 28 B = 112 MB) + 6M indices
+/// (6M × 4 B = 24 MB) covers a large render distance; over-cap columns are
+/// dropped with a log.
+///
+/// **Opaque and translucent geometry share these pools** — both suballocate
+/// from the same vertex and index free lists — so any utilization figure must
+/// sum opaque + translucent, not report the opaque set alone.
+pub const MAX_VERTS: u64 = 4_000_000;
+/// Shared index-arena capacity (see [`MAX_VERTS`] — same sharing rule).
+pub const MAX_INDICES: u64 = 6_000_000;
+/// Per-column metadata slots (the third capacity pool: the cull/draw SSBO).
+pub const MAX_COLUMNS: usize = 8192;
 
 /// One animated texture-array layer (mirror of rewo-data's
 /// `AnimatedLayer` — this crate stays free of a rewo-data dependency).
@@ -202,9 +219,9 @@ struct CullPush {
 }
 
 struct Slot {
-    vtx_off: u64,   // in vertices
+    vtx_off: u64, // in vertices
     vtx_len: u64,
-    idx_off: u64,   // in indices
+    idx_off: u64, // in indices
     idx_len: u64,
     // Translucent (water) region — zero-length when the column has none.
     tvtx_off: u64,
@@ -558,11 +575,7 @@ impl WorldRenderer {
             }
 
             // ---- compute cull descriptor + pipeline ----
-            let cull_bindings = [
-                storage_binding(0),
-                storage_binding(1),
-                storage_binding(2),
-            ];
+            let cull_bindings = [storage_binding(0), storage_binding(1), storage_binding(2)];
             let cull_set_layout = device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&cull_bindings),
@@ -860,8 +873,7 @@ impl WorldRenderer {
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
                 cb,
-                &vk::DependencyInfo::default()
-                    .image_memory_barriers(std::slice::from_ref(&to_dst)),
+                &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_dst)),
             );
             device.cmd_copy_buffer_to_image(
                 cb,
@@ -939,7 +951,11 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         tex: &crate::celestial::CelestialTextures,
     ) -> Result<(), String> {
-        self.celestial = Some(crate::celestial::CelestialPass::new(gpu, self.color_format, tex)?);
+        self.celestial = Some(crate::celestial::CelestialPass::new(
+            gpu,
+            self.color_format,
+            tex,
+        )?);
         Ok(())
     }
 
@@ -976,7 +992,13 @@ impl WorldRenderer {
         tex: MobTextures<'_>,
         cem: std::collections::HashMap<crate::mobs::EntityModelKind, crate::mobs::Model>,
     ) -> Result<(), String> {
-        self.entities = Some(EntityPass::new_with_cem(gpu, self.color_format, font, tex, cem)?);
+        self.entities = Some(EntityPass::new_with_cem(
+            gpu,
+            self.color_format,
+            font,
+            tex,
+            cem,
+        )?);
         Ok(())
     }
 
@@ -1221,8 +1243,7 @@ impl WorldRenderer {
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                 .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                 .dst_stage_mask(
-                    vk::PipelineStageFlags2::VERTEX_INPUT
-                        | vk::PipelineStageFlags2::INDEX_INPUT,
+                    vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::INDEX_INPUT,
                 )
                 .dst_access_mask(
                     vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
@@ -1378,7 +1399,12 @@ impl WorldRenderer {
         let (light, sky_col) = self.lightmap.push_words();
         let push = WorldPush {
             view_proj,
-            cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
+            cam_fog: [
+                self.camera_eye[0],
+                self.camera_eye[1],
+                self.camera_eye[2],
+                self.fog[0],
+            ],
             fog_col: [
                 self.fog_base[0] * self.fog_tint[0],
                 self.fog_base[1] * self.fog_tint[1],
@@ -1405,7 +1431,13 @@ impl WorldRenderer {
     /// In-pass draws, in blend-correct order: gradient sky (background) →
     /// opaque terrain (indirect) → opaque entity capsules/models →
     /// translucent water (CPU-sorted back-to-front) → nametag text.
-    pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         self.draw_sky(gpu, cb, view_proj, extent);
         // Sun/moon/stars/sunrise (M12), between the gradient sky and terrain,
         // in rotation-only sky space: `view_proj · T(eye)` cancels the camera
@@ -1454,19 +1486,48 @@ impl WorldRenderer {
 
     /// The block-selection wireframe: the 12 edges of the targeted block,
     /// slightly inflated to avoid z-fighting, depth-tested against terrain.
-    fn draw_selection(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    fn draw_selection(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         let Some(b) = self.selection else { return };
-        let (x0, y0, z0) = (b[0] as f32 - 0.002, b[1] as f32 - 0.002, b[2] as f32 - 0.002);
-        let (x1, y1, z1) = (b[0] as f32 + 1.002, b[1] as f32 + 1.002, b[2] as f32 + 1.002);
+        let (x0, y0, z0) = (
+            b[0] as f32 - 0.002,
+            b[1] as f32 - 0.002,
+            b[2] as f32 - 0.002,
+        );
+        let (x1, y1, z1) = (
+            b[0] as f32 + 1.002,
+            b[1] as f32 + 1.002,
+            b[2] as f32 + 1.002,
+        );
         // 8 corners → 12 edges → 24 line vertices.
         let c = [
-            [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], // bottom
-            [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], // top
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y0, z1],
+            [x0, y0, z1], // bottom
+            [x0, y1, z0],
+            [x1, y1, z0],
+            [x1, y1, z1],
+            [x0, y1, z1], // top
         ];
         let edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0), // bottom loop
-            (4, 5), (5, 6), (6, 7), (7, 4), // top loop
-            (0, 4), (1, 5), (2, 6), (3, 7), // verticals
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0), // bottom loop
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4), // top loop
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7), // verticals
         ];
         let mut verts = [[0f32; 3]; 24];
         for (i, &(a, bb)) in edges.iter().enumerate() {
@@ -1514,7 +1575,13 @@ impl WorldRenderer {
     /// Fullscreen gradient sky — drawn first, no depth test/write, so the
     /// terrain (reversed-Z GREATER, cleared 0.0) draws over it and the fog
     /// fade meets a matching horizon color.
-    fn draw_sky(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    fn draw_sky(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         let inv = glam::Mat4::from_cols_array_2d(&view_proj)
             .inverse()
             .to_cols_array_2d();
@@ -1565,7 +1632,13 @@ impl WorldRenderer {
     /// "per-section back-to-front CPU sort; intra-section artifacts
     /// accepted v1". Column counts with water are small; the indirect path
     /// stays opaque-only.
-    fn draw_translucent(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    fn draw_translucent(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         let planes = frustum_planes(&view_proj);
         let visible = |mn: &[f32; 4], mx: &[f32; 4]| -> bool {
             planes.iter().all(|p| {
@@ -1626,7 +1699,13 @@ impl WorldRenderer {
         }
     }
 
-    fn draw_terrain(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    fn draw_terrain(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -1966,9 +2045,12 @@ fn build_line_pipeline(
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
             .color_write_mask(
-                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -2046,7 +2128,8 @@ fn build_sky_pipeline(
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -2124,9 +2207,10 @@ fn build_graphics_pipeline(
                 .location(2)
                 .format(vk::Format::R32_UINT)
                 .offset(20),
+            // Packed tint RGB + reserved flags; the shader reconstructs color.
             vk::VertexInputAttributeDescription::default()
                 .location(3)
-                .format(vk::Format::R32G32B32_SFLOAT)
+                .format(vk::Format::R32_UINT)
                 .offset(24),
         ];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
@@ -2161,7 +2245,8 @@ fn build_graphics_pipeline(
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -2234,7 +2319,10 @@ fn upload_texture_array(
             &vec![255u8; (tex_size * tex_size * 4) as usize],
         )]
     } else {
-        layers.iter().map(|l| generate_mips(tex_size, mip_levels, l)).collect()
+        layers
+            .iter()
+            .map(|l| generate_mips(tex_size, mip_levels, l))
+            .collect()
     };
     for mip in 0..mip_levels as usize {
         mip_offsets.push(staging_data.len() as u64);
@@ -2268,7 +2356,9 @@ fn upload_texture_array(
         device
             .bind_buffer_memory(staging, staging_alloc.memory(), staging_alloc.offset())
             .map_err(|e| format!("staging bind: {e}"))?;
-        staging_alloc.mapped_slice_mut().ok_or("staging not mapped")?[..staging_data.len()]
+        staging_alloc
+            .mapped_slice_mut()
+            .ok_or("staging not mapped")?[..staging_data.len()]
             .copy_from_slice(&staging_data);
 
         let pool = device
@@ -2354,7 +2444,9 @@ fn upload_texture_array(
             cb,
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_read)),
         );
-        device.end_command_buffer(cb).map_err(|e| format!("end: {e}"))?;
+        device
+            .end_command_buffer(cb)
+            .map_err(|e| format!("end: {e}"))?;
         let fence = device
             .create_fence(&vk::FenceCreateInfo::default(), None)
             .map_err(|e| format!("fence: {e}"))?;
@@ -2366,7 +2458,9 @@ fn upload_texture_array(
                 fence,
             )
             .map_err(|e| format!("submit: {e}"))?;
-        device.wait_for_fences(&[fence], true, u64::MAX).map_err(|e| format!("wait: {e}"))?;
+        device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map_err(|e| format!("wait: {e}"))?;
         device.destroy_fence(fence, None);
         device.destroy_command_pool(pool, None);
         device.destroy_buffer(staging, None);
@@ -2474,7 +2568,8 @@ impl DepthTarget {
                 );
             gpu.device.cmd_pipeline_barrier2(
                 cb,
-                &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier)),
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&barrier)),
             );
         }
     }

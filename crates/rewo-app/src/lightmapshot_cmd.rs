@@ -6,12 +6,18 @@
 //! `world.frag` and `water.frag`) computes from a vertex's packed
 //! `(block, sky)` levels.
 //!
-//! This is a **TERRAIN + WATER + ENTITY** matrix. The terrain/water cases
-//! render the same large white quad — as opaque terrain geometry or as
+//! This is a **TERRAIN + WATER + COLOR + ENTITY** matrix. The terrain/water
+//! cases render the same large white quad — as opaque terrain geometry or as
 //! translucent water geometry — through the real `WorldRenderer`, then compare
 //! the GPU readback against an independent CPU lightmap. It is a
-//! GPU-vs-independent-CPU oracle, never a "looks right" proxy. The final case
-//! proves the **entity** light transport: entities don't sample the lightmap
+//! GPU-vs-independent-CPU oracle, never a "looks right" proxy. The color case
+//! covers the one thing an all-white matrix structurally cannot: M15 stopped
+//! storing the per-vertex colour and now reconstructs it in `world.vert` from
+//! the packed shade/AO codes plus tint bytes, so that product exists only on
+//! the GPU — and an exact-white quad reconstructs to `1.0 * 1.0 * (255/255)`,
+//! the single input under which a broken reconstruction still reads correct.
+//!
+//! The final case proves the **entity** light transport: entities don't sample the lightmap
 //! texture — the caller hands each `EntityDraw` a per-channel `light: [f32; 3]`
 //! (its own eye's lightmap colour), and entity vertex generation multiplies
 //! the model's directional face shade by it before the production shader. That case renders one capsule lit by
@@ -27,15 +33,17 @@
 //!   vertex colour are both 1.0, the fragment's `c.rgb * v_color * lm` reduces
 //!   to exactly the lightmap `lm`; the `R8G8B8A8_SRGB` attachment then encodes
 //!   it linear→sRGB on store. For the water pass the texel alpha is 255, so the
-//!   blend collapses to the opaque result (the write mask is RGB only).
+//!   blend collapses to the opaque result (the write mask is RGB only). The
+//!   color case is the deliberate exception: it drives the same quad with
+//!   non-white shade/AO/tint, so `c.rgb * v_color * lm` stays `color * lm`.
 //! - Sample an interior centre patch → the actual sRGB bytes.
 //! - Independently compute the expected lightmap from
 //!   `rewo_world::lightmap::sample(block, sky, ..)` with the *matching* state,
 //!   encode linear→sRGB with the standard piecewise formula, round to bytes.
 //! - Require each channel within ±2, and assert the case-specific property
 //!   (warm tint, block-factor response, gamma ramp, night-vision lift, the
-//!   black-texel NaN store, the darkness terms, water==opaque, entity
-//!   `[f32; 3]` light transport).
+//!   black-texel NaN store, the darkness terms, water==opaque, the packed
+//!   vertex-colour reconstruction, entity `[f32; 3]` light transport).
 
 use std::path::PathBuf;
 
@@ -46,7 +54,7 @@ use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::{perspective_reverse_z, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
-use rewo_mesh::{pack_layer, MeshVertex};
+use rewo_mesh::{pack_layer, MeshVertex, TINT_WHITE};
 use rewo_world::lightmap::{darkness_lightmap, mth_cos, sample, LightmapState};
 
 use crate::stats::OverlayRing;
@@ -156,9 +164,9 @@ fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
 
     if failures.is_empty() {
         if args.check {
-            println!("[lightmapshot] CHECK OK — terrain + water + entity lightmap matrix verified");
+            println!("[lightmapshot] CHECK OK — terrain + water + packed color + entity lightmap matrix verified");
         } else {
-            println!("[lightmapshot] PASS — terrain + water + entity lightmap matrix verified (assertion mode off)");
+            println!("[lightmapshot] PASS — terrain + water + packed color + entity lightmap matrix verified (assertion mode off)");
         }
         Ok(())
     } else {
@@ -420,12 +428,110 @@ fn run_cases(
         }
     }
 
+    // --- Case 8: the M15 packed vertex colour. Every case above renders an
+    // exact-white quad so it isolates the lightmap — which also means none of
+    // them exercises the reconstruction `world.vert` now performs. M15 stopped
+    // storing the per-vertex colour and rebuilt it on the GPU from the discrete
+    // shade/AO codes plus lossless tint bytes; white is precisely the input
+    // (`1.0 * 1.0 * 255/255`) under which a broken reconstruction still reads
+    // correct, so only a non-white render can grade it.
+    //
+    // The inputs are chosen non-degenerate in every factor: shade 1 (0.5, not
+    // the 1.0 identity), AO 1 (0.65, not the AO_NONE identity), and a tint whose
+    // three bytes differ and none of which is 255. A dropped shade bit, a
+    // swapped AO index, a channel transpose, or a regression in the `/255`
+    // divide `world.vert`'s `precise` qualifier protects all move the result.
+    {
+        const SHADE: u8 = 1; // FACE_SHADE[1] == 0.5
+        const AO: u8 = 1; // AO_LEVELS[1] == 0.65
+        const TINT: [u8; 3] = [120, 200, 60];
+        // Mid-lit and non-clamped, so the colour factors show up as real
+        // dimming rather than saturating against the top of the range.
+        const BLOCK: u8 = 12;
+        const SKY: u8 = 8;
+        let gs = WorldLightmapState {
+            block_factor: 1.0,
+            brightness_factor: 0.5,
+            ..Default::default()
+        };
+
+        // Pin the packing round-trip on the CPU *before* grading pixels, so a
+        // bit-layout regression fails as itself rather than as a colour
+        // mismatch. Release asserts — lightmapshot runs in release, where a
+        // `debug_assert!` would silently compile out.
+        let probe = MeshVertex::new([0.0, 64.0, 0.0], [0.0, 0.0], 0, BLOCK, SKY, SHADE, AO, TINT);
+        assert_eq!(probe.shade_code(), SHADE, "shade code must survive packing");
+        assert_eq!(probe.ao_code(), AO, "AO code must survive packing");
+        assert_eq!(probe.tint_rgb(), TINT, "tint bytes must survive packing");
+        assert_eq!(
+            probe.light & 0x00FF_FFFF,
+            pack_layer(0, BLOCK, SKY),
+            "the shade/AO bits must not disturb the historical layer/light word"
+        );
+        let scalar = rewo_mesh::FACE_SHADE[SHADE as usize] * rewo_mesh::AO_LEVELS[AO as usize];
+        let color: [f32; 3] = std::array::from_fn(|c| scalar * (TINT[c] as f32 / 255.0));
+        println!(
+            "[lightmapshot] packed-colour inputs: shade {SHADE} (×{:.2}) · AO {AO} (×{:.2}) · tint {TINT:?} → colour ({:.4}, {:.4}, {:.4})",
+            rewo_mesh::FACE_SHADE[SHADE as usize],
+            rewo_mesh::AO_LEVELS[AO as usize],
+            color[0],
+            color[1],
+            color[2]
+        );
+
+        // (a) Absolute: the texel is white, so the stored linear value is
+        //     `colour * lm` — graded against the independent CPU product.
+        let name_c = "packed-color-b12s8";
+        let (ec, lmc) = expected_srgb_colored(BLOCK, SKY, &cpu_state(&gs), color);
+        let ac = render_quad_colored(
+            gpu, off, wr, view_proj, draw, name_c, BLOCK, SKY, gs, false, args, SHADE, AO, TINT,
+        )?;
+        compare_case(failures, name_c, ac, ec, lmc);
+
+        // (b) Ratio, independent of the CPU lightmap: render the SAME cell as
+        //     the exact-white quad and take the per-channel linear ratio. The
+        //     lightmap is identical in both renders, so it divides out and what
+        //     remains is purely the reconstructed colour — this check still
+        //     holds even if `sample` itself were wrong, which the absolute
+        //     comparison above cannot say.
+        let name_w = "packed-color-white-b12s8";
+        let aw = render_quad(
+            gpu, off, wr, view_proj, draw, name_w, BLOCK, SKY, gs, false, args,
+        )?;
+        const RATIO_TOL: f32 = 0.03;
+        // Below this the white reference is too dark for the sRGB byte
+        // quantization to carry a meaningful ratio; report rather than grade.
+        const RATIO_FLOOR: f32 = 0.05;
+        for c in 0..3 {
+            let white_lin = srgb_to_linear(aw[c] as f32 / 255.0);
+            let colored_lin = srgb_to_linear(ac[c] as f32 / 255.0);
+            if white_lin < RATIO_FLOOR {
+                failures.push(format!(
+                    "packed-color channel {c}: white reference linear {white_lin:.4} < {RATIO_FLOOR} — too dark to grade the ratio"
+                ));
+                continue;
+            }
+            let ratio = colored_lin / white_lin;
+            let e = (ratio - color[c]).abs();
+            println!(
+                "[lightmapshot] packed-color channel {c}: colored/white linear ratio {ratio:.4} vs reconstructed {:.4} (|Δ| {e:.4})",
+                color[c]
+            );
+            if e > RATIO_TOL {
+                failures.push(format!(
+                    "packed-color channel {c}: linear ratio {ratio:.4} vs reconstructed colour {:.4} (|Δ| {e:.4} > {RATIO_TOL})",
+                    color[c]
+                ));
+            }
+        }
+    }
+
     // The terrain/water quad in column 0 is no longer needed and would occlude
     // the capsule, so drop it and let its buffers retire before the entity pass.
     wr.remove_column(gpu, 0, 0);
     gpu.wait_idle();
 
-    // --- Case 8: entity light transport. Entities don't sample the lightmap
+    // --- Case 9: entity light transport. Entities don't sample the lightmap
     // texture; the caller hands each `EntityDraw` a per-channel `light: [f32;3]`
     // (its eye's lightmap colour) and CPU vertex generation multiplies the
     // model's scalar directional face shade by it. The production entity
@@ -587,39 +693,86 @@ fn render_quad(
     translucent: bool,
     args: &LightmapshotArgs,
 ) -> Result<[u8; 3], String> {
+    // Shade code 0 (`FACE_SHADE[0] == 1.0`) + AO_NONE (`AO_LEVELS[3] == 1.0`) +
+    // white tint bytes reconstruct to EXACTLY (1,1,1) in the vertex shader:
+    // `1.0 * 1.0 * (255/255)`. This quad must stay pure white so it isolates the
+    // lightmap; the assertions below pin that on the CPU side too. They are
+    // `assert_eq!`, not `debug_assert_eq!` — lightmapshot runs in release, where
+    // a debug assertion would silently compile out.
+    let probe = MeshVertex::new(
+        [0.0, 64.0, 0.0],
+        [0.0, 0.0],
+        0,
+        block,
+        sky,
+        0,
+        rewo_mesh::AO_NONE,
+        TINT_WHITE,
+    );
+    assert_eq!(
+        probe.reconstructed_color(),
+        [1.0, 1.0, 1.0],
+        "the lightmap probe quad must decode to exact white"
+    );
+    assert_eq!(
+        probe.light & 0x00FF_FFFF,
+        pack_layer(0, block, sky),
+        "packed light word must preserve the pack_layer lower 24 bits"
+    );
+
+    render_quad_colored(
+        gpu,
+        off,
+        wr,
+        view_proj,
+        draw,
+        name,
+        block,
+        sky,
+        gpu_state,
+        translucent,
+        args,
+        0,
+        rewo_mesh::AO_NONE,
+        TINT_WHITE,
+    )
+}
+
+/// The general form of [`render_quad`]: the same upload → render → readback,
+/// with the quad's per-vertex colour left to the caller via `shade_code`,
+/// `ao_code` and `tint_rgb`. Passing `(0, AO_NONE, TINT_WHITE)` reproduces the
+/// exact-white probe quad.
+#[allow(clippy::too_many_arguments)]
+fn render_quad_colored(
+    gpu: &mut Gpu,
+    off: &mut Offscreen,
+    wr: &mut WorldRenderer,
+    view_proj: [[f32; 4]; 4],
+    draw: &OverlayDraw,
+    name: &str,
+    block: u8,
+    sky: u8,
+    gpu_state: WorldLightmapState,
+    translucent: bool,
+    args: &LightmapshotArgs,
+    shade_code: u8,
+    ao_code: u8,
+    tint_rgb: [u8; 3],
+) -> Result<[u8; 3], String> {
     wr.set_lightmap_state(gpu_state);
 
-    // One large top-facing white quad inside column 0 (x,z ∈ [0,16]) at y=64,
-    // packed with the case's block/sky levels. Winding is irrelevant (the
-    // world pipeline culls no faces).
-    let layer_word = pack_layer(0, block, sky);
-    let color = [1.0f32, 1.0, 1.0];
+    // One large top-facing quad inside column 0 (x,z ∈ [0,16]) at y=64, packed
+    // with the case's block/sky levels. Winding is irrelevant (the world
+    // pipeline culls no faces).
     let y = 64.0f32;
+    let vert = |pos: [f32; 3], uv: [f32; 2]| {
+        MeshVertex::new(pos, uv, 0, block, sky, shade_code, ao_code, tint_rgb)
+    };
     let verts = [
-        MeshVertex {
-            pos: [0.0, y, 0.0],
-            uv: [0.0, 0.0],
-            layer: layer_word,
-            color,
-        },
-        MeshVertex {
-            pos: [16.0, y, 0.0],
-            uv: [1.0, 0.0],
-            layer: layer_word,
-            color,
-        },
-        MeshVertex {
-            pos: [16.0, y, 16.0],
-            uv: [1.0, 1.0],
-            layer: layer_word,
-            color,
-        },
-        MeshVertex {
-            pos: [0.0, y, 16.0],
-            uv: [0.0, 1.0],
-            layer: layer_word,
-            color,
-        },
+        vert([0.0, y, 0.0], [0.0, 0.0]),
+        vert([16.0, y, 0.0], [1.0, 0.0]),
+        vert([16.0, y, 16.0], [1.0, 1.0]),
+        vert([0.0, y, 16.0], [0.0, 1.0]),
     ];
     let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
     let vertex_bytes: &[u8] = bytemuck::cast_slice(&verts);
@@ -682,6 +835,31 @@ fn expected_srgb(block: u8, sky: u8, cpu: &LightmapState) -> ([u8; 3], [f32; 3])
     let lm = sample(block, sky, cpu);
     let px: [u8; 3] =
         std::array::from_fn(|c| (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8);
+    (px, lm)
+}
+
+/// [`expected_srgb`] with a non-white per-vertex colour folded in.
+///
+/// The fragment computes `c.rgb * v_color * lm` and the synthetic texel is
+/// white, so the stored linear value is `colour * lm`. `expected_srgb` is
+/// exactly this specialized to a white colour; passing `[1.0; 3]` here
+/// reproduces it. `colour` is derived independently from the legacy
+/// `FACE_SHADE`/`AO_LEVELS` tables and the raw tint bytes — not from
+/// `MeshVertex`'s own accessor — which is what makes this an independent
+/// oracle for the packed-colour case rather than a restatement of the GPU's
+/// own arithmetic.
+fn expected_srgb_colored(
+    block: u8,
+    sky: u8,
+    cpu: &LightmapState,
+    color: [f32; 3],
+) -> ([u8; 3], [f32; 3]) {
+    let lm = sample(block, sky, cpu);
+    let px: [u8; 3] = std::array::from_fn(|c| {
+        (linear_to_srgb(lm[c] * color[c]) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    });
     (px, lm)
 }
 

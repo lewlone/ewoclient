@@ -481,13 +481,13 @@ fn check_tint_ratio(
     // constant-plains (a fixed grass-green, not our red/cyan/etc.).
     let dom = (0..3).max_by(|&a, &b| exp[a].total_cmp(&exp[b])).unwrap();
     for v in &verts {
-        let k = v.color[dom] / exp[dom].max(1e-6);
+        let k = v.reconstructed_color()[dom] / exp[dom].max(1e-6);
         let pred = [exp[0] * k, exp[1] * k, exp[2] * k];
-        let ok = (0..3).all(|c| approx(v.color[c], pred[c]));
+        let ok = (0..3).all(|c| approx(v.reconstructed_color()[c], pred[c]));
         if !ok {
             failures.push(format!(
                 "{name}: vertex color {:?} not the {expect_argb:#08x} ratio (k={k:.3} → {pred:?})",
-                v.color,
+                v.reconstructed_color(),
             ));
             return;
         }
@@ -528,31 +528,34 @@ fn check_exact_tint(
     let top = verts
         .iter()
         .max_by(|a, b| {
-            let (sa, sb): (f32, f32) = (a.color.iter().sum(), b.color.iter().sum());
+            let (sa, sb): (f32, f32) = (
+                a.reconstructed_color().iter().sum(),
+                b.reconstructed_color().iter().sum(),
+            );
             sa.total_cmp(&sb)
         })
         .unwrap();
-    if (0..3).any(|c| (top.color[c] - exp[c]).abs() > 0.5 / 255.0) {
+    if (0..3).any(|c| (top.reconstructed_color()[c] - exp[c]).abs() > 0.5 / 255.0) {
         failures.push(format!(
             "{name}: top-face tint {:?} != exact {expect:?}/255 ({exp:?})",
-            top.color
+            top.reconstructed_color()
         ));
         return;
     }
     let dom = (0..3).max_by(|&a, &b| exp[a].total_cmp(&exp[b])).unwrap();
     for v in &verts {
-        let k = v.color[dom] / exp[dom].max(1e-6);
-        if (0..3).any(|c| !approx(v.color[c], exp[c] * k)) {
+        let k = v.reconstructed_color()[dom] / exp[dom].max(1e-6);
+        if (0..3).any(|c| !approx(v.reconstructed_color()[c], exp[c] * k)) {
             failures.push(format!(
                 "{name}: vertex {:?} is not a face-shade of {expect:?} (k={k:.3})",
-                v.color
+                v.reconstructed_color()
             ));
             return;
         }
     }
     println!(
         "[tintshot] {name}: exact tint {expect:?}/255 (top face {:?}); {} tinted verts, all shades",
-        top.color,
+        top.reconstructed_color(),
         verts.len()
     );
 }
@@ -714,7 +717,7 @@ fn check_raw_vs_legacy(
     if let Some(v) = tinted_verts(legacy, x, y, z).first() {
         failures.push(format!(
             "raw-vs-legacy: legacy path is tinted ({:?}), expected white",
-            v.color
+            v.reconstructed_color()
         ));
     }
     println!("[tintshot] raw-vs-legacy: legacy→layer {pretint} white, biome→layer {raw} tinted");
@@ -1316,7 +1319,8 @@ fn render_sky(
 // ---------------------------------------------------------------------------
 
 /// Tinted vertices of the block at (x,y,z): within the unit cube + a non-white
-/// color (the biome path multiplies `MeshVertex.color` by the tint).
+/// color (the biome path carries the tint bytes; `reconstructed_color()`
+/// mirrors the vertex shader's `shade * ao * tint/255`).
 fn tinted_verts<'a>(
     mesh: &'a rewo_mesh::ColumnMesh,
     x: i32,
@@ -1332,7 +1336,8 @@ fn tinted_verts<'a>(
             && v.pos[2] <= z as f32 + 1.01
     };
     let is_tinted = |v: &MeshVertex| {
-        (v.color[0] - v.color[1]).abs() > 1e-4 || (v.color[1] - v.color[2]).abs() > 1e-4
+        (v.reconstructed_color()[0] - v.reconstructed_color()[1]).abs() > 1e-4
+            || (v.reconstructed_color()[1] - v.reconstructed_color()[2]).abs() > 1e-4
     };
     mesh.vertices
         .iter()
@@ -1354,7 +1359,7 @@ fn top_face_layers(mesh: &rewo_mesh::ColumnMesh, x: i32, y: i32, z: i32) -> Vec<
                 && v.pos[2] >= z as f32 - 0.01
                 && v.pos[2] <= z as f32 + 1.01
         })
-        .map(|v| (v.layer & 0xFFFF) as u16)
+        .map(|v| v.layer_index())
         .collect()
 }
 

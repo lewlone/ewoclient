@@ -9,9 +9,9 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M13 shipped + headlessly verified (2026-07-23). M0–M9 are
-pushed (`origin/main` @ `973ea5e`); the M10–M13 light-and-sky arc is reviewed
-local work based on M12 commit `06dd3eb`, intentionally not yet pushed.**
+**Status: M0–M15 shipped + headlessly verified (2026-07-24). M0–M9 are
+pushed (`origin/main` @ `973ea5e`); M10–M15 are reviewed local work,
+intentionally not yet pushed. M14 is commit `88b5112`.**
 See §0.0 for the fresh-session handoff and §15 for the per-milestone log.
 
 ---
@@ -35,11 +35,23 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M13 shipped; M0–M9 pushed, M10–M13 reviewed local
+### Where it is: M0–M15 shipped; M0–M9 pushed, M10–M15 reviewed local
 
-**Latest (2026-07-23): the light-and-sky arc — M10 client light, M11 vanilla
-lightmap + day/night, M12 celestials, M13 the remaining lightmap terms. See
+**Latest (2026-07-24): M14 per-biome color and M15 geometry performance. See
 §15 for the blow-by-blow.**
+- **M15 exact packed ABI + conservative greedy cubes** — `MeshVertex` is now
+  28 bytes (position f32×3, UV f32×2, packed light/shade/AO u32, packed tint
+  u32), with shader-SPIR-V build guards preserving exact `/255` reconstruction.
+  Full cube faces merge only when block state, packed light, tint and uniform AO
+  are identical. Five directions merge; top faces deliberately remain unit
+  quads because enabling them changed 11 canonical-demo pixels (10 owned by UV
+  interpolation/nearest sampling, one by coverage). The replay drops
+  149.13→109.39 MiB (−26.65%) and 3,723,192→3,373,772 vertices (−9.38%). Gate:
+  **`rewo meshshot --check`**, an exact expanded-surface oracle against the
+  frozen pre-greedy mesher, plus a byte-identical canonical demo.
+- **M14 per-biome color** — exact grass/foliage/water tint and biome camera
+  sky/fog, including retained section biome palettes and a permanent Vulkan
+  `tintshot` oracle.
 - **M10 client light engine (server-exact)** — the two-phase block+sky flood
   fill, transcribed from the decompile, so a placed torch lights and a dug
   tunnel brightens (a vanilla server sends no light for ordinary edits). Gate
@@ -325,11 +337,12 @@ the code's author. Nothing below is settled truth.
   just approximately — it's used on both CPU (M4 legacy) and GPU (M5 cull).
 
 **Visual/perf follow-ons (all now guarded by `rewo bench`):**
-- No **greedy meshing** (3.7M verts for 329 flat chunks — high; conflicts
-  with per-vertex AO, hence deferred).
+- ~~No **greedy meshing**~~ — **RESOLVED M15 (§15)** for five safe full-cube
+  directions. Merge keys include exact block state/light/tint and require
+  uniform AO; top faces stay 1×1 because merging them changes sampled pixels.
 - **AO only on cube faces**, not model quads.
-- **Per-biome tint** is a fixed plains color (no biome variation; water
-  tint likewise fixed plains #3F76E4).
+- ~~**Per-biome tint** was a fixed plains color~~ — **RESOLVED M14 (§15)** for
+  grass/foliage/water plus biome camera sky/fog.
 - ~~No fluids + no translucent pass~~ — **RESOLVED 2026-07-21**: water
   (translucent, corner-height surfaces) + lava (opaque fullbright) with a
   CPU-sorted back-to-front translucent pass. See §15. Still open within
@@ -339,7 +352,8 @@ the code's author. Nothing below is settled truth.
   frame order + frametime drive per-layer re-uploads on the 20 Hz tick
   (water ripples, lava churns; `demo --anim-tick N` is the deterministic
   check). Frame *interpolation* (lava's `interpolate` flag) not done.
-- **36-byte vertices**, not the packed 8–12 B the plan targets.
+- ~~**36-byte vertices**~~ — **RESOLVED M15 (§15)** with an exact 28-byte ABI.
+  A smaller f16-UV format was measured and rejected because it changed pixels.
 - **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
   CCW). Cosmetic; the demo + normal angles are clean. (Much less visible
@@ -367,16 +381,15 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-Shipped 2026-07-22 (all §15): **M7 online-mode + signed chat** (Rewo joins
-Frogsy), **M7c real player skins**, **metadata mob size/baby**, and the
-**M9 CEM stack** (Fresh Animations models + animations run natively).
-Remaining candidates, roughly by value: (a) **CEM polish** — foot-submodel
-leg pivots ~1px off, per-face `uvNorth` (creeper-eye detail), scale
-channels, ETF random/emissive textures (M9b); (b) **entity collision** (you
-walk through mobs) — a real gameplay gap; (c) **async transfer queue +
-staging ring** — the last perf micro-deviation (§4); (d) visual follow-ons
-(greedy meshing, biome tint, packed vertices). Confirm direction with the
-user before diving in.
+After M15, the most concrete remaining correctness work is: (a) general
+**Nether/End + respawn/dimension-transition verification**, including dimension
+ambient light; (b) **entity-event animations** such as warden attack/allay
+dance; (c) true shape-union face occlusion and glow-lichen's any-face emission;
+(d) the explicitly excluded redstone/stem/lily `BlockColors`. Visual/product
+work includes clouds/weather, HUD completeness and ETF random/emissive textures.
+The async transfer/staging-ring idea remains measure-first; M15 already closes
+greedy cube meshing and vertex packing. Confirm direction with the user before
+diving in.
 
 ---
 
@@ -3455,3 +3468,93 @@ and dimension-transition base selection plus dimension ambient; entity-event
 animations; true shape-union face occlusion; glow-lichen any-face emission; and
 clouds/weather and HUD completeness. Per-biome tint is now shipped and off the
 open list.
+
+### 2026-07-24 — M15: exact packed vertex ABI + conservative greedy cube meshing
+
+M15 closes the two long-deferred geometry-performance items without weakening
+visual or semantic verification. The pre-M15 replay contained **3,723,192
+vertices / 5,584,788 indices**, uploaded **149.13 MiB**, and used **93.080%** of
+the shared arena. Its 36-byte vertex redundantly stored three float color lanes
+whose values were exactly face shade × AO × an 8-bit tint.
+
+**Packing, including the rejected version.** A 24-byte candidate using f16 UVs
+was implemented and rejected: the canonical demo changed **6 pixels**, maximum
+channel delta **25**, because fluid UV `1/9` crossed a nearest-sampling boundary.
+The shipped ABI is therefore an exact **28 bytes**: position `f32×3` at byte 0,
+UV `f32×2` at 12, light at 20, tint at 24. The light word keeps its existing
+low 24 bits (`layer16 | block4 | sky4`) and uses bits 24–26 for the six face
+shade codes and 27–28 for the four AO codes. Tint stores the three original
+u8 channels losslessly. The vertex shader reconstructs
+`FACE_SHADE[shade] * AO_LEVELS[ao] * tint_rgb / 255.0` with `precise` values.
+`rewo-gpu/build.rs` parses the final optimized SPIR-V and refuses a build unless
+the exact float-255 constant, `OpFDiv`, and `NoContraction` decorations survive;
+this prevents a compiler rewrite to a reciprocal from silently moving a color
+across an sRGB byte boundary. `lightmapshot` adds a non-identity packed-color GPU
+probe whose expectation uses the legacy formula independently of the production
+reconstructor. Shade codes 6–7 fail closed. Packing alone kept all counts and
+the canonical demo exact while reducing upload to **120.72 MiB (−19.1%)**.
+
+**Greedy policy.** The frozen `mesh_column_reference` remains the unit-face
+control used only by tests/oracles. Production greedily merges only full
+`RenderKind::Cube` faces and only when the merge key is identical: owning block
+state id, the exact packed light word, and exact tint word. All four AO corners
+must be equal; a non-uniform face falls back to the original unit quad. Models
+and fluids continue through their byte-identical legacy emitters. Rectangles are
+deterministic, never cross a column boundary, may cross section boundaries, and
+scale the original face UV basis with their width/height while preserving
+winding. The mesher exports measured census fields (`visible_cube_faces`,
+`greedy_candidate_faces`, `greedy_quads`, `unit_fallback_faces`) with checked
+invariants.
+
+Only **down/north/south/west/east** merge. Top (`+Y`) faces are a permanent
+1×1 exclusion, not an unfinished optimization: enabling all six directions
+reduced the demo from 2,584 to 2,312 vertices but changed **11 pixels**, maximum
+channel delta **35**. Direction isolation showed horizontal-only/up-only owned
+the red result; down-only and the other five directions were byte-identical.
+Forcing world UV constant reduced the difference to one pixel, proving UV
+interpolation plus nearest sampling owned ten pixels while one remained a
+topology/coverage difference. The shipped five-direction policy preserves the
+canonical PNG exactly. Do not re-enable top merging without a new property-level
+texture-sampling solution and a stronger proof.
+
+**Permanent oracle: `rewo meshshot --check`.** This is serverless and CPU-only.
+It meshes an adversarial cube fixture through both production and the frozen
+reference, decodes each optimized rectangle, expands it to sorted unit faces,
+and compares direction, owning block, atlas layer plus block/sky light, all four
+AO codes, and tint word. The fixture measures **854 reference faces/quads → 265
+optimized quads (−69.0%)**: 854 visible = 632 candidates + 222 fallbacks, 43
+greedy rectangles, four section-crossing rectangles, maximum safe-face area 60,
+and 211 top faces all area 1. It pins exact material, block-light, sky-light and
+tint seams, a non-uniform-AO fallback inside a plane that still merges elsewhere,
+four-run determinism, and byte-identical non-cube controls: model 256v/384i,
+water 256v/384i translucent, lava 192v/288i opaque. Oracle failure exits nonzero
+even without `--check`; `MESHSHOT: OK` prints only after every property passes.
+
+**Measured replay result.** The production capture now contains **3,373,772
+vertices / 5,060,658 indices**, uploaded **109.39 MiB**, largest column 400.3
+KiB, arena use **84.344%**. Relative to packed-only this is −349,420 vertices
+(**−9.38%**) and −11.33 MiB (**−9.39%**); relative to M14 it is −39.74 MiB
+(**−26.65%**). The capture census is 172,456 visible cube faces = 87,992
+candidates + 84,464 fallbacks, with 637 rectangles (**99.3% candidate-quad
+reduction**). Four serial diagnostic mesh runs were noisy (144.6/149.9/159.9/
+160.3 ms; median 154.9 ms); these are per-column wall costs, not production
+rayon throughput. Final GPU replay was avg **0.232 ms**, p50 0.203, p99 0.892,
+p99.9 1.521, max 1.977, 1% low 1.208, 0.1% low 1.848. Tail samples were
+system-noisy/worse than some M14 samples, so M15 claims the deterministic byte
+and geometry reductions, **not** a latency-tail improvement.
+
+**Final gates.** Release libraries **237/237** (world 81, net 67, gpu 37, data
+9, mesh 32, proto 11) plus app **19/19**. `meshshot`, `tintshot`, `lightmapshot`
+and `skyshot` green; Vulkan gates validation ON. `mobshot` **243/243**. Two demo
+renders both SHA-256
+`2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635`.
+Physics: 600 ticks, **CORRECTIONS 0**, PLACE and DIG verified. Independent
+`--no-relight` lighting: **884,736 cells, block 0, sky 0 EXACT**. The dedicated
+test server was stopped and port 25599 verified free. The work touched only
+`rewo-*`; generated sources were not hand-edited.
+
+**Left open after M15:** general Nether/End and dimension-transition/respawn
+base selection plus dimension ambient; entity-event animations; true shape-union
+face occlusion; glow-lichen any-face emission; redstone/stem/lily-pad
+`BlockColors`; clouds/weather and HUD completeness. Packed vertices and greedy
+cube meshing are now shipped and off the open list.

@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M14 shipped: online play, native CEM, server light, complete lightmap + celestials, per-biome color)
+## Rewo — from-scratch native Minecraft client (M0–M15 shipped: online play, native CEM, exact light/color, packed + greedy geometry)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -2048,6 +2048,25 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   dimension-transition / Nether-End base selection untested; redstone/stem/lily
   `BlockColors` explicitly out of M14. Honest history + exact numbers in
   REWO_PLAN §15 (incl. the first oracle rejected as insufficient and strengthened).
+- **M15 exact packed ABI + conservative greedy cubes shipped 2026-07-24.**
+  `MeshVertex` is **28 bytes**: position f32×3, exact UV f32×2, packed
+  `layer16|block4|sky4|shade3|AO2`, and packed tint RGB. A 24-byte f16-UV
+  candidate was rejected after changing 6 canonical-demo pixels (max Δ25).
+  The final shader reconstructs the legacy shade×AO×tint formula exactly; the
+  shader build parses optimized SPIR-V and requires float 255, `OpFDiv`, and
+  `NoContraction`. Full cube faces greedily merge only across identical block
+  state, packed light and tint with uniform AO. Models/fluids remain
+  byte-identical. **Never merge +Y/top faces** without a new proof: enabling
+  them changed 11 demo pixels (10 UV interpolation/nearest-sampling, one
+  coverage); the other five directions are byte-identical. Permanent gate
+  `rewo meshshot --check` expands rectangles to reference unit faces and pins
+  direction/block/layer/light/AO/tint seams plus exact model/water/lava controls.
+  Oracle fixture: 854→265 quads (−69.0%). Replay: 149.13→109.39 MiB
+  (**−26.65%**), 3,723,192→3,373,772 vertices (−9.38%), arena 93.080→84.344%;
+  final GPU avg 0.232 ms, but noisy tails mean no latency improvement is
+  claimed. Gates: **237/237** six-crate + **19/19** app, all property gates
+  green, demo exact, physics corrections 0, light 884,736/0. Full failure
+  history and measurements: REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
