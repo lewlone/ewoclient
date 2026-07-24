@@ -6,7 +6,7 @@ use ash::vk;
 use crate::overlay::{OverlayDraw, OverlayFrameRes, OverlayPipeline};
 use crate::swapchain::Swapchain;
 use crate::world::{DepthTarget, WorldRenderer};
-use crate::{image_barrier, Gpu, FRAMES_IN_FLIGHT};
+use crate::{image_barrier, Gpu, FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT};
 
 impl Renderer {
     pub fn frames_in_flight(&self) -> usize {
@@ -65,7 +65,10 @@ impl Renderer {
         preferred_present: vk::PresentModeKHR,
         fif: usize,
     ) -> Result<Self, String> {
-        let fif = fif.clamp(1, 3);
+        // The clamp bound is `MAX_FRAMES_IN_FLIGHT` because every per-frame ring
+        // in `WorldRenderer` is sized from that same constant — raising one
+        // without the other would reintroduce the write-under-read hazard.
+        let fif = fif.clamp(1, MAX_FRAMES_IN_FLIGHT);
         let swapchain = Swapchain::new(gpu, width, height, preferred_present)?;
         let (overlay, overlay_res) = OverlayPipeline::new(gpu, swapchain.format, fif)?;
         unsafe {

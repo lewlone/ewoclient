@@ -14,7 +14,10 @@ use rewo_net::skins::SkinInfo;
 /// Minecraft username, resolved via Mojang's profile API.
 pub fn resolve(name_or_url: &str) -> Result<SkinInfo, String> {
     if name_or_url.starts_with("http") {
-        return Ok(SkinInfo { url: name_or_url.to_string(), slim: false });
+        return Ok(SkinInfo {
+            url: name_or_url.to_string(),
+            slim: false,
+        });
     }
     // username → uuid
     let url = format!("https://api.mojang.com/users/profiles/minecraft/{name_or_url}");
@@ -23,7 +26,9 @@ pub fn resolve(name_or_url: &str) -> Result<SkinInfo, String> {
         .map_err(|e| format!("resolve {name_or_url}: {e}"))?
         .into_json()
         .map_err(|e| format!("resolve json: {e}"))?;
-    let id = json["id"].as_str().ok_or("resolve: no id (unknown username?)")?;
+    let id = json["id"]
+        .as_str()
+        .ok_or("resolve: no id (unknown username?)")?;
     // uuid → profile → textures property
     let purl = format!("https://sessionserver.mojang.com/session/minecraft/profile/{id}");
     let profile: serde_json::Value = ureq::get(&purl)
@@ -31,13 +36,16 @@ pub fn resolve(name_or_url: &str) -> Result<SkinInfo, String> {
         .map_err(|e| format!("profile {id}: {e}"))?
         .into_json()
         .map_err(|e| format!("profile json: {e}"))?;
-    let props = profile["properties"].as_array().ok_or("profile: no properties")?;
+    let props = profile["properties"]
+        .as_array()
+        .ok_or("profile: no properties")?;
     let tex = props
         .iter()
         .find(|p| p["name"].as_str() == Some("textures"))
         .and_then(|p| p["value"].as_str())
         .ok_or("profile: no textures property")?;
-    rewo_net::skins::decode_textures_property(tex).ok_or_else(|| "profile: no skin in textures".into())
+    rewo_net::skins::decode_textures_property(tex)
+        .ok_or_else(|| "profile: no skin in textures".into())
 }
 
 /// Download a skin PNG and normalize it to a 64×64×4 RGBA buffer.
@@ -58,9 +66,13 @@ fn decode_png_to_64(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().map_err(|e| format!("skin png: {e}"))?;
-    let bufsize = reader.output_buffer_size().ok_or("skin png: bad buffer size")?;
+    let bufsize = reader
+        .output_buffer_size()
+        .ok_or("skin png: bad buffer size")?;
     let mut buf = vec![0u8; bufsize];
-    let info = reader.next_frame(&mut buf).map_err(|e| format!("skin frame: {e}"))?;
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("skin frame: {e}"))?;
     let (w, h) = (info.width as usize, info.height as usize);
     let channels = match info.color_type {
         png::ColorType::Rgba => 4,
@@ -70,7 +82,9 @@ fn decode_png_to_64(bytes: &[u8]) -> Result<Vec<u8>, String> {
         png::ColorType::Indexed => return Err("skin png still indexed after EXPAND".into()),
     };
     if w != 64 || (h != 64 && h != 32) {
-        return Err(format!("skin png is {w}×{h}, expected 64×64 (or legacy 64×32)"));
+        return Err(format!(
+            "skin png is {w}×{h}, expected 64×64 (or legacy 64×32)"
+        ));
     }
     if h == 32 {
         log::warn!("skin_fetch: legacy 64×32 skin — lower body/arm faces will be transparent");

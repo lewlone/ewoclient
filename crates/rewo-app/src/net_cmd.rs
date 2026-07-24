@@ -77,7 +77,10 @@ pub fn run(args: NetArgs) -> Result<(), String> {
             record: record_path,
             query,
         } => soak(&data, &host, port, &username, seconds, record_path, query),
-        Mode::Replay { file, expect_digest } => replay(&data, &file, expect_digest),
+        Mode::Replay {
+            file,
+            expect_digest,
+        } => replay(&data, &file, expect_digest),
     }
 }
 
@@ -92,16 +95,11 @@ fn soak(
 ) -> Result<(), String> {
     let mut conn = Connection::connect(host, port, data)?;
     if let Some(path) = &record_path {
-        conn.recorder = Some(
-            record::Recorder::create(path).map_err(|e| format!("create recording: {e}"))?,
-        );
+        conn.recorder =
+            Some(record::Recorder::create(path).map_err(|e| format!("create recording: {e}"))?);
     }
-    let (stats, world) = conn.run_session(
-        host,
-        port,
-        username,
-        Duration::from_secs_f32(seconds),
-    )?;
+    let (stats, world) =
+        conn.run_session(host, port, username, Duration::from_secs_f32(seconds))?;
 
     println!("[rewo-m1] soak against {host}:{port} for {seconds:.0}s");
     println!("[rewo-m1] reached play: {}", stats.reached_play);

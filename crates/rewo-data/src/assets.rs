@@ -250,6 +250,10 @@ pub struct BakedAssets {
     /// Sun + 8 moon-phase textures from `environment/celestial/`. `None` if the
     /// jar lacks them — the sky then renders without sun/moon (M12).
     pub celestial: Option<CelestialTextures>,
+    /// `environment/end_sky.png`, the texture `SkyRenderer.renderEndSky` tiles
+    /// over the End skybox cube (M16). `None` if the jar lacks it — the End
+    /// then draws no sky at all rather than an invented flat colour.
+    pub end_sky: Option<DecodedImage>,
     pub stats: BakeStats,
 }
 
@@ -519,6 +523,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
+    let end_sky = bake_env_texture(&mut jar, "end_sky.png");
+    if end_sky.is_none() {
+        log::warn!("rewo-data: environment/end_sky.png missing — no End skybox");
+    }
     let celestial = bake_celestial(&mut jar);
     if celestial.is_none() {
         log::warn!("rewo-data: celestial textures missing — no sun/moon");
@@ -742,8 +750,20 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         mob_textures,
         hud,
         celestial,
+        end_sky,
         stats,
     })
+}
+
+/// Decode one `assets/minecraft/textures/environment/<rel>` image, or `None`.
+fn bake_env_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("assets/minecraft/textures/environment/{rel}"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let (rgba, w, h) = decode_png_any(&bytes)?;
+    Some(DecodedImage { rgba, w, h })
 }
 
 /// Load the sun + 8 moon-phase textures from the jar's `environment/celestial/`

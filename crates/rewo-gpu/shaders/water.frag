@@ -8,6 +8,12 @@
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_tex;
 
+// Same `LightmapExtra` UBO as world.frag — translucent and opaque geometry MUST
+// resolve the identical lightmap, ambient included.
+layout(set = 0, binding = 1) uniform LightmapExtra {
+    vec4 ambient; // xyz = AmbientColor (RGB24/255), w unused (std140 pad)
+} lmx;
+
 layout(push_constant) uniform PC {
     mat4 view_proj;
     vec4 cam_fog; // xyz camera pos, w = fog start
@@ -26,7 +32,7 @@ layout(location = 0) out vec4 out_color;
 void main() {
     // Low 16 bits = texture layer, upper bits = the two light levels.
     vec4 c = texture(u_tex, vec3(v_uv, float(v_layer & 0xFFFFu)));
-    vec3 lm = lm_light(v_layer, pc.light, pc.sky_col);
+    vec3 lm = lm_light(v_layer, pc.light, pc.sky_col, lmx.ambient.rgb);
     vec3 rgb = c.rgb * v_color * lm;
     float dist = distance(pc.cam_fog.xyz, v_worldpos);
     float fog = clamp((dist - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);

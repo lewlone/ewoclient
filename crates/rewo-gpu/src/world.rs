@@ -97,8 +97,44 @@ struct WorldPush {
     sky_col: [f32; 4],
 }
 // 128 bytes: exactly the push-constant size Vulkan guarantees. Anything
-// further has to move into a uniform buffer.
+// further has to move into a uniform buffer — which is what M16's dimension
+// ambient colour does (see `WorldLightmapExtra` / `LIGHTMAP_UBO_RING`).
 const _: () = assert!(std::mem::size_of::<WorldPush>() == 128);
+
+/// The spill-over uniform block for the world/water lightmap: everything that
+/// no longer fits in [`WorldPush`]'s full 128 bytes. Mirrors `LightmapExtra` in
+/// `shaders/world.frag` / `shaders/water.frag` (std140: one `vec4`).
+///
+/// It exists because M16 made `AmbientColor` a per-dimension value rather than
+/// a shader constant, and quantizing it into a spare push lane would have
+/// silently lossy-encoded a canonical input.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct WorldLightmapExtra {
+    /// xyz = `AmbientColor` (RGB24/255), w unused (std140 vec4 padding).
+    ambient: [f32; 4],
+}
+const _: () = assert!(std::mem::size_of::<WorldLightmapExtra>() == 16);
+
+/// One `WorldLightmapExtra` slot per frame that can be in flight. The block is
+/// written by the CPU at record time, so a frame must not scribble on a slot a
+/// still-queued frame's command buffer is reading — the same hazard, and the
+/// same remedy, as [`SELECT_RING`].
+///
+/// Sized from [`crate::MAX_FRAMES_IN_FLIGHT`], **not** `FRAMES_IN_FLIGHT`.
+/// [`WorldRenderer::draw`] advances the cursor once per call and the windowed
+/// driver calls it exactly once per frame, so slot `n` is rewritten at frame
+/// `n + RING`; the driver's fence only guarantees frame `n + fif` has retired.
+/// With `fif` a runtime knob (`live --frames-in-flight`, clamped to
+/// `1..=MAX_FRAMES_IN_FLIGHT`) and the `WorldRenderer` holding no reference to
+/// the `Renderer` that drives it, `RING >= max fif` is what makes
+/// `RING >= fif` hold for every legal configuration. `ring_slot_is_retired`
+/// states the property; `lightmap_ubo_ring_outlives_every_frame_in_flight`
+/// exhaustively checks it.
+///
+/// The offscreen oracle path (`Offscreen::render`) submits and waits per frame,
+/// so it is safe at any ring length; only the windowed path needs this.
+const LIGHTMAP_UBO_RING: usize = crate::MAX_FRAMES_IN_FLIGHT;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -113,6 +149,21 @@ struct SkyPush {
 struct LinePush {
     view_proj: [[f32; 4]; 4],
     color: [f32; 4],
+}
+
+/// Is the [`LIGHTMAP_UBO_RING`] slot that a draw writes guaranteed to have been
+/// released by the GPU?
+///
+/// The windowed driver waits on frame `n - fif`'s fence before recording frame
+/// `n`, so every frame at least `fif` back has retired; a draw reuses the slot
+/// last written `ring` draws ago. The write is therefore safe exactly when
+/// `ring >= fif`. Pure, so the invariant is checkable without a device — which
+/// is all it is for, hence `cfg(test)`: the production path satisfies it by
+/// construction (`LIGHTMAP_UBO_RING == MAX_FRAMES_IN_FLIGHT`) rather than by
+/// asking at runtime.
+#[cfg(test)]
+const fn ring_slot_is_retired(ring: usize, fif: usize) -> bool {
+    ring >= fif
 }
 
 const SELECT_RING: usize = 2;
@@ -135,14 +186,37 @@ const ZENITH_RATIO: [f32; 3] = [
     SKY_ZENITH[2] / SKY_HORIZON[2],
 ];
 
+/// Which sky the world pass draws — `DimensionType.Skybox`, as consumed by
+/// `LevelRenderer.addSkyPass`.
+///
+/// Named independently of `rewo_world::dimension::Skybox` so this crate keeps
+/// no dependency on rewo-world; the app maps one to the other.
+///
+/// - [`SkyMode::Overworld`] — gradient sky disc + the M12 celestial pass
+///   (`renderSkyDisc` → `renderSunriseAndSunset` → `renderSunMoonAndStars`).
+/// - [`SkyMode::None`] — `addSkyPass` adds **no pass at all**
+///   (`if (state.skybox != Skybox.NONE)`), so neither gradient nor celestials.
+/// - [`SkyMode::End`] — `SkyRenderer.renderEndSky` only: the textured ±100
+///   cube. The end *flash* that follows it is out of scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SkyMode {
+    /// The pre-M16 behaviour, and the default for every serverless path.
+    #[default]
+    Overworld,
+    None,
+    End,
+}
+
 /// The already-resolved lightmap uniforms driving `shaders/lightmap.glsl` —
 /// the GPU mirror of `rewo_world::lightmap::LightmapState`, minus the fields
-/// this scope pins to Overworld constants in the shader (ambient = black,
-/// block tint = `0xFFD88C`, night-vision colour = `0x999999`, boss darkening
-/// = 0). `WorldRenderer` stores one and sends it every frame via `push_world`.
+/// this scope pins to attribute-default constants in the shader (block tint =
+/// `0xFFD88C`, night-vision colour = `0x999999`, boss darkening = 0).
+/// `WorldRenderer` stores one and sends it every frame via `push_world` plus
+/// the `LightmapExtra` uniform buffer.
 ///
 /// `Default` is deliberately **term-neutral** for demo/view/bench: full sky
-/// factor, the vanilla resting `1.4` block factor, white sky light, and every
+/// factor, the vanilla resting `1.4` block factor, white sky light, the
+/// `EnvironmentAttributes` ambient default (black), and every
 /// accessibility/effect term disabled. Live gamma `0.5` is supplied by the
 /// app; the M13 correction to vanilla's exact block tint remains intentional.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -153,6 +227,11 @@ pub struct WorldLightmapState {
     pub block_factor: f32,
     /// `SkyLightColor` — white by day, blue at night. Default white.
     pub sky_color: [f32; 3],
+    /// `AmbientColor` — the dimension's `visual/ambient_light_color` as
+    /// RGB24/255 (Overworld `#0a0a0a`, Nether `#302821`, End `#3f473f`).
+    /// Default is the *attribute* codec default, black, so the serverless
+    /// paths render exactly as they did before M16.
+    pub ambient_color: [f32; 3],
     /// `BrightnessFactor` — the player's gamma minus the darkness effect (the
     /// `notGamma` mix weight). Default `0.0`.
     pub brightness_factor: f32,
@@ -168,6 +247,7 @@ impl Default for WorldLightmapState {
             sky_factor: 1.0,
             block_factor: BLOCK_LIGHT_FACTOR,
             sky_color: [1.0, 1.0, 1.0],
+            ambient_color: [0.0, 0.0, 0.0],
             brightness_factor: 0.0,
             darkness_scale: 0.0,
             night_vision_factor: 0.0,
@@ -196,6 +276,17 @@ impl WorldLightmapState {
                 self.night_vision_factor,
             ],
         )
+    }
+
+    /// The `LightmapExtra` uniform block's contents: the ambient colour in xyz,
+    /// zero in the std140 pad. Pure — the unit-testable seam for the UBO layout.
+    fn extra_words(&self) -> [f32; 4] {
+        [
+            self.ambient_color[0],
+            self.ambient_color[1],
+            self.ambient_color[2],
+            0.0,
+        ]
     }
 }
 
@@ -314,7 +405,14 @@ pub struct WorldRenderer {
     /// The targeted block (world coords), or `None` — set each frame.
     selection: Option<[i32; 3]>,
     tex_pool: vk::DescriptorPool,
-    tex_set: vk::DescriptorSet,
+    /// One set per frame in flight: identical texture binding, but each points
+    /// at its own `LightmapExtra` uniform slot (see [`LIGHTMAP_UBO_RING`]).
+    tex_sets: [vk::DescriptorSet; LIGHTMAP_UBO_RING],
+    /// The `LightmapExtra` uniform buffers, one per ring slot, host-mapped.
+    lm_bufs: [vk::Buffer; LIGHTMAP_UBO_RING],
+    lm_allocs: [Option<Allocation>; LIGHTMAP_UBO_RING],
+    /// Which ring slot this frame writes and binds. Advanced once per `draw`.
+    lm_cursor: usize,
     sampler: vk::Sampler,
     image: vk::Image,
     image_alloc: Option<Allocation>,
@@ -360,6 +458,13 @@ pub struct WorldRenderer {
     celestial: Option<crate::celestial::CelestialPass>,
     /// Current clear-weather celestial state (set by `set_celestial`).
     celestial_state: crate::celestial::CelestialState,
+    /// The End skybox pass (M16). `None` until `init_end_sky` supplies
+    /// `textures/environment/end_sky.png` — a missing asset degrades to no sky
+    /// contribution at all, never to an invented flat colour.
+    end_sky: Option<crate::end_sky::EndSkyPass>,
+    /// Which sky `draw` renders (`DimensionType.Skybox`). Default
+    /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
+    sky_mode: SkyMode,
     hud: Option<HudPass>,
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
@@ -475,48 +580,136 @@ impl WorldRenderer {
                 .map_err(|e| format!("sampler: {e}"))?;
 
             // ---- graphics descriptor + pipeline ----
-            let tex_bindings = [vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+            // Binding 0: the block texture array. Binding 1: the small
+            // `LightmapExtra` UBO carrying the dimension ambient colour — the
+            // push block is exactly full at 128 bytes, so this is where a new
+            // canonical lightmap input has to live.
+            let tex_bindings = [
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            ];
             let tex_set_layout = device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_bindings),
                     None,
                 )
                 .map_err(|e| format!("tex set layout: {e}"))?;
-            let tex_pool_sizes = [vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)];
+            let ring = LIGHTMAP_UBO_RING as u32;
+            let tex_pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(ring),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(ring),
+            ];
             let tex_pool = device
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(1)
+                        .max_sets(ring)
                         .pool_sizes(&tex_pool_sizes),
                     None,
                 )
                 .map_err(|e| format!("tex pool: {e}"))?;
             let tex_layouts = [tex_set_layout];
-            let tex_set = device
+            let ring_layouts = [tex_set_layout; LIGHTMAP_UBO_RING];
+            let allocated = device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(tex_pool)
-                        .set_layouts(&tex_layouts),
+                        .set_layouts(&ring_layouts),
                 )
-                .map_err(|e| format!("tex set: {e}"))?[0];
+                .map_err(|e| format!("tex set: {e}"))?;
+            let tex_sets: [vk::DescriptorSet; LIGHTMAP_UBO_RING] =
+                std::array::from_fn(|i| allocated[i]);
+
+            // One host-mapped uniform buffer per ring slot.
+            let mut lm_bufs = [vk::Buffer::null(); LIGHTMAP_UBO_RING];
+            let mut lm_allocs: [Option<Allocation>; LIGHTMAP_UBO_RING] =
+                std::array::from_fn(|_| None);
+            for i in 0..LIGHTMAP_UBO_RING {
+                let buf = device
+                    .create_buffer(
+                        &vk::BufferCreateInfo::default()
+                            .size(std::mem::size_of::<WorldLightmapExtra>() as u64)
+                            .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                        None,
+                    )
+                    .map_err(|e| format!("lightmap ubo: {e}"))?;
+                let req = device.get_buffer_memory_requirements(buf);
+                let mut alloc = gpu
+                    .allocator
+                    .allocate(&AllocationCreateDesc {
+                        name: "world-lightmap-extra",
+                        requirements: req,
+                        location: MemoryLocation::CpuToGpu,
+                        linear: true,
+                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+                    })
+                    .map_err(|e| format!("lightmap ubo alloc: {e}"))?;
+                device
+                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+                    .map_err(|e| format!("lightmap ubo bind: {e}"))?;
+                // The host mapping is MANDATORY, established here once. A slot
+                // that could not be mapped would make every later
+                // `write_lightmap_extra` a no-op and the shader would read the
+                // previous dimension's ambient forever — a silent wrong render.
+                // Refuse to construct instead; from this point on the mapping is
+                // an invariant, not a condition.
+                if alloc.mapped_slice_mut().is_none() {
+                    return Err(format!(
+                        "lightmap ubo slot {i}: CpuToGpu allocation is not host-mapped"
+                    ));
+                }
+                lm_bufs[i] = buf;
+                lm_allocs[i] = Some(alloc);
+            }
+
             let image_info = [vk::DescriptorImageInfo::default()
                 .sampler(sampler)
                 .image_view(view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::default()
-                    .dst_set(tex_set)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&image_info)],
-                &[],
-            );
+            // `buffer_info` slices must outlive the update call, so build them
+            // all up front rather than inside the loop.
+            let buf_infos: [[vk::DescriptorBufferInfo; 1]; LIGHTMAP_UBO_RING] =
+                std::array::from_fn(|i| {
+                    [vk::DescriptorBufferInfo::default()
+                        .buffer(lm_bufs[i])
+                        .offset(0)
+                        .range(std::mem::size_of::<WorldLightmapExtra>() as u64)]
+                });
+            let mut writes: Vec<vk::WriteDescriptorSet> = Vec::new();
+            for i in 0..LIGHTMAP_UBO_RING {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(tex_sets[i])
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&image_info),
+                );
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(tex_sets[i])
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(&buf_infos[i]),
+                );
+            }
+            device.update_descriptor_sets(&writes, &[]);
+            // Seed every slot with the default state so a first frame that
+            // never reaches `draw` still binds initialized memory.
+            for i in 0..LIGHTMAP_UBO_RING {
+                write_lightmap_extra(&mut lm_allocs[i], &WorldLightmapState::default());
+            }
 
             // view_proj is read in the vertex stage, the fog fields in the
             // fragment stage — one range spanning both.
@@ -734,7 +927,10 @@ impl WorldRenderer {
                 select_cursor: 0,
                 selection: None,
                 tex_pool,
-                tex_set,
+                tex_sets,
+                lm_bufs,
+                lm_allocs,
+                lm_cursor: 0,
                 sampler,
                 image,
                 image_alloc: Some(image_alloc),
@@ -767,6 +963,8 @@ impl WorldRenderer {
                 entities: None,
                 celestial: None,
                 celestial_state: crate::celestial::CelestialState::default(),
+                end_sky: None,
+                sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
                 text: None,
@@ -969,6 +1167,41 @@ impl WorldRenderer {
     /// accepted-star count through this).
     pub fn celestial_pass(&self) -> Option<&crate::celestial::CelestialPass> {
         self.celestial.as_ref()
+    }
+
+    /// Attach the End skybox pass (M16), from the user's own client jar's
+    /// `assets/minecraft/textures/environment/end_sky.png`. Without it,
+    /// [`SkyMode::End`] draws nothing — `end_sky_ready` reports which.
+    pub fn init_end_sky(
+        &mut self,
+        gpu: &mut Gpu,
+        tex: &crate::end_sky::EndSkyImage,
+    ) -> Result<(), String> {
+        self.end_sky = Some(crate::end_sky::EndSkyPass::new(
+            gpu,
+            self.color_format,
+            tex,
+        )?);
+        Ok(())
+    }
+
+    /// Whether [`SkyMode::End`] can actually draw its cube. A caller that wants
+    /// the End sky and gets `false` is missing the jar asset — the renderer
+    /// never substitutes an approximation.
+    pub fn end_sky_ready(&self) -> bool {
+        self.end_sky.is_some()
+    }
+
+    /// Select the dimension's skybox (`DimensionType.Skybox` →
+    /// `LevelRenderer.addSkyPass`). The live paths set this every frame from
+    /// `PlaySession::active_dimension_type`, so a dimension change or respawn
+    /// takes effect on the next frame with no other bookkeeping.
+    pub fn set_sky_mode(&mut self, mode: SkyMode) {
+        self.sky_mode = mode;
+    }
+
+    pub fn sky_mode(&self) -> SkyMode {
+        self.sky_mode
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -1438,16 +1671,36 @@ impl WorldRenderer {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        self.draw_sky(gpu, cb, view_proj, extent);
-        // Sun/moon/stars/sunrise (M12), between the gradient sky and terrain,
-        // in rotation-only sky space: `view_proj · T(eye)` cancels the camera
-        // translation so the bodies sit at infinity. Terrain then overwrites
-        // them via reversed-Z where it exists.
-        if let Some(celestial) = &self.celestial {
-            let sky_vp = (glam::Mat4::from_cols_array_2d(&view_proj)
-                * glam::Mat4::from_translation(glam::Vec3::from_array(self.camera_eye)))
-            .to_cols_array_2d();
-            celestial.draw(gpu, cb, sky_vp, extent, &self.celestial_state);
+        // Advance the `LightmapExtra` ring once per frame and publish this
+        // frame's ambient colour into the slot the terrain/water draws will
+        // bind. Done here (not in `set_lightmap_state`) so exactly one slot is
+        // consumed per frame regardless of how often the state was set.
+        self.lm_cursor = (self.lm_cursor + 1) % LIGHTMAP_UBO_RING;
+        write_lightmap_extra(&mut self.lm_allocs[self.lm_cursor], &self.lightmap);
+
+        // `LevelRenderer.addSkyPass`: NONE adds no pass at all, END draws only
+        // the textured cube, otherwise the gradient disc + celestials.
+        // Rotation-only sky space: `view_proj · T(eye)` cancels the camera
+        // translation so the sky sits at infinity. Terrain then overwrites it
+        // via reversed-Z where it exists.
+        let sky_vp = (glam::Mat4::from_cols_array_2d(&view_proj)
+            * glam::Mat4::from_translation(glam::Vec3::from_array(self.camera_eye)))
+        .to_cols_array_2d();
+        match self.sky_mode {
+            SkyMode::None => {}
+            SkyMode::End => {
+                if let Some(end) = &self.end_sky {
+                    end.draw(gpu, cb, sky_vp, extent);
+                }
+            }
+            SkyMode::Overworld => {
+                self.draw_sky(gpu, cb, view_proj, extent);
+                // Sun/moon/stars/sunrise (M12), between the gradient sky and
+                // terrain.
+                if let Some(celestial) = &self.celestial {
+                    celestial.draw(gpu, cb, sky_vp, extent, &self.celestial_state);
+                }
+            }
         }
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
@@ -1687,7 +1940,7 @@ impl WorldRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_layout,
                 0,
-                &[self.tex_set],
+                &[self.tex_sets[self.lm_cursor]],
                 &[],
             );
             self.push_world(device, cb, view_proj);
@@ -1721,7 +1974,7 @@ impl WorldRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_layout,
                 0,
-                &[self.tex_set],
+                &[self.tex_sets[self.lm_cursor]],
                 &[],
             );
             self.push_world(device, cb, view_proj);
@@ -1777,6 +2030,9 @@ impl WorldRenderer {
         if let Some(mut pass) = self.celestial.take() {
             pass.destroy(gpu);
         }
+        if let Some(mut pass) = self.end_sky.take() {
+            pass.destroy(gpu);
+        }
         if let Some(mut pass) = self.entities.take() {
             pass.destroy(gpu);
         }
@@ -1806,6 +2062,9 @@ impl WorldRenderer {
             for b in self.select_bufs {
                 device.destroy_buffer(b, None);
             }
+            for b in self.lm_bufs {
+                device.destroy_buffer(b, None);
+            }
             device.destroy_pipeline_layout(self.graphics_layout, None);
             device.destroy_descriptor_pool(self.tex_pool, None);
             device.destroy_descriptor_set_layout(self.tex_set_layout, None);
@@ -1831,6 +2090,9 @@ impl WorldRenderer {
         for a in self.select_allocs.iter_mut() {
             slot_allocs.push(a.take());
         }
+        for a in self.lm_allocs.iter_mut() {
+            slot_allocs.push(a.take());
+        }
         for a in [
             self.image_alloc.take(),
             self.vbuf_alloc.take(),
@@ -1850,6 +2112,34 @@ impl WorldRenderer {
 }
 
 // -- helpers -----------------------------------------------------------------
+
+/// Publish one `WorldLightmapState`'s spill-over fields into a host-mapped
+/// `LightmapExtra` slot.
+///
+/// **Invariant: the slot is mapped.** [`WorldRenderer::new`] allocates all
+/// `LIGHTMAP_UBO_RING` slots `CpuToGpu` and *fails construction* if any of them
+/// comes back unmapped, and the allocations are only taken back by `destroy` /
+/// `take_allocations`. So a missing mapping here can only mean a draw was
+/// recorded against a torn-down renderer.
+///
+/// It is deliberately not swallowed. Skipping the write leaves the descriptor
+/// pointing at whatever the slot last held — i.e. the *previous dimension's*
+/// ambient — and the frame would render confidently wrong. That is precisely
+/// the failure mode this UBO exists to eliminate, so it fails loudly instead.
+fn write_lightmap_extra(alloc: &mut Option<Allocation>, state: &WorldLightmapState) {
+    let block = WorldLightmapExtra {
+        ambient: state.extra_words(),
+    };
+    let slice = alloc
+        .as_mut()
+        .and_then(|a| a.mapped_slice_mut())
+        .expect(
+            "LightmapExtra slot has no host mapping — WorldRenderer::new establishes one for \
+             every slot, so this is a draw recorded after destroy()/take_allocations()",
+        );
+    let bytes = bytemuck::bytes_of(&block);
+    slice[..bytes.len()].copy_from_slice(bytes);
+}
 
 fn storage_binding(binding: u32) -> vk::DescriptorSetLayoutBinding<'static> {
     vk::DescriptorSetLayoutBinding::default()
@@ -2636,6 +2926,10 @@ mod tests {
         assert_eq!(s.brightness_factor, 0.0);
         assert_eq!(s.darkness_scale, 0.0);
         assert_eq!(s.night_vision_factor, 0.0);
+        // The ambient default is the `EnvironmentAttributes` codec default
+        // (black), NOT the Overworld dimension's `#0a0a0a` — that is what keeps
+        // demo/view/bench byte-identical across M16.
+        assert_eq!(s.ambient_color, [0.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -2657,10 +2951,79 @@ mod tests {
             brightness_factor: 0.5,
             darkness_scale: 0.45,
             night_vision_factor: 1.0,
+            ambient_color: [0.6, 0.7, 0.8],
         };
         let (light, sky_col) = s.push_words();
         assert_eq!(light, [0.24, 1.5, 0.5, 0.45]);
         assert_eq!(sky_col, [0.1, 0.2, 0.3, 1.0]);
+        // The ambient must NOT have displaced a push lane — the block is full.
+        assert!(!light.contains(&0.6) && !sky_col.contains(&0.8));
+    }
+
+    /// The `LightmapExtra` UBO layout: ambient in xyz, zero in the std140 pad,
+    /// and exactly one `vec4` on the wire. Distinct channel values catch a
+    /// transpose; the block size catches a struct that grew silently.
+    #[test]
+    fn lightmap_extra_words_carry_the_ambient_colour() {
+        let s = WorldLightmapState {
+            ambient_color: [48.0 / 255.0, 40.0 / 255.0, 33.0 / 255.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            s.extra_words(),
+            [48.0 / 255.0, 40.0 / 255.0, 33.0 / 255.0, 0.0]
+        );
+        assert_eq!(WorldLightmapState::default().extra_words(), [0.0; 4]);
+        assert_eq!(std::mem::size_of::<WorldLightmapExtra>(), 16);
+        // The push block stays exactly at the guaranteed budget.
+        assert_eq!(std::mem::size_of::<WorldPush>(), 128);
+    }
+
+    /// The ring must have one slot per frame in flight — fewer would let a
+    /// recording frame overwrite the ambient a queued frame is still reading.
+    #[test]
+    fn lightmap_ubo_ring_covers_the_frames_in_flight() {
+        // Must cover the LARGEST frames-in-flight the M6 knob can select, not
+        // just the default — `WorldRenderer` cannot see which one is in use.
+        assert_eq!(LIGHTMAP_UBO_RING, crate::MAX_FRAMES_IN_FLIGHT);
+        assert!(LIGHTMAP_UBO_RING >= crate::FRAMES_IN_FLIGHT);
+        assert!(LIGHTMAP_UBO_RING >= 2);
+
+        // The property itself, not just the constant: `draw` pre-increments the
+        // cursor, so draw n binds slot (n + 1) % RING. When the driver records
+        // frame n it has waited only on frame n - fif's fence, so frames
+        // n-1 .. n-fif+1 are still reading. None of them may share n's slot.
+        let slot = |n: usize| (n + 1) % LIGHTMAP_UBO_RING;
+        for fif in 1..=crate::MAX_FRAMES_IN_FLIGHT {
+            assert!(
+                ring_slot_is_retired(LIGHTMAP_UBO_RING, fif),
+                "ring {LIGHTMAP_UBO_RING} cannot serve frames-in-flight {fif}"
+            );
+            for n in fif..fif + 64 {
+                for back in 1..fif {
+                    assert_ne!(
+                        slot(n),
+                        slot(n - back),
+                        "fif {fif}: draw {n} would overwrite the LightmapExtra slot \
+                         frame {} is still reading",
+                        n - back
+                    );
+                }
+            }
+        }
+        // The guard has teeth: the pre-M16-sized ring of 2 genuinely fails at
+        // `live --frames-in-flight 3`, which is why the constant moved.
+        assert!(!ring_slot_is_retired(2, 3));
+        assert!(ring_slot_is_retired(2, 2));
+    }
+
+    /// `SkyMode` must default to the pre-M16 Overworld sky, so every serverless
+    /// path (demo/view/bench/meshshot) keeps drawing exactly what it did.
+    #[test]
+    fn sky_mode_defaults_to_overworld() {
+        assert_eq!(SkyMode::default(), SkyMode::Overworld);
+        assert_ne!(SkyMode::None, SkyMode::Overworld);
+        assert_ne!(SkyMode::End, SkyMode::Overworld);
     }
 
     #[test]
@@ -2677,6 +3040,7 @@ mod tests {
         s.sky_factor = 0.24;
         s.sky_color = [0.1, 0.2, 0.3];
         assert_eq!(s.sky_factor, 0.24);
+        assert_eq!(s.ambient_color, [0.0, 0.0, 0.0], "set_lightmap must not touch ambient");
         assert_eq!(s.sky_color, [0.1, 0.2, 0.3]);
         assert_eq!(s.brightness_factor, 0.5);
         assert_eq!(s.darkness_scale, 0.45);

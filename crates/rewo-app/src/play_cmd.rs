@@ -70,9 +70,50 @@ pub struct PlayArgs {
     /// Skip the block dig/place actions (movement-only run).
     #[arg(long, default_value_t = false)]
     no_build: bool,
+    /// M16's authoritative live dimension gate: drive Overworld → Nether → End
+    /// → Overworld from inside this one session, issuing the server commands
+    /// itself, and validate the dimension property at each checkpoint. Forces a
+    /// deterministic still/no-build/no-chat path (see `dimension_check`) and
+    /// refuses `--setup`, whose paced command stream would race this one for
+    /// the server's chat rate limiter. Needs the op account (`--username
+    /// RewoOp`): a non-op's commands are silently rejected, which this gate
+    /// turns into a timeout rather than a skipped check.
+    #[arg(long, default_value_t = false)]
+    dimension_check: bool,
 }
 
+/// The shortest session the M16 live gate can complete in: four settle windows
+/// plus three transitions, at the bounds `dimension_check` uses. A run that
+/// cannot finish would report a partial matrix, which is exactly the "skipped
+/// check that looks green" this gate exists to prevent.
+const DIMENSION_CHECK_MIN_SECONDS: f32 = 90.0;
+
+/// The op account. Only this name is in the test server's `ops.json`, and a
+/// non-op's commands are *silently* rejected.
+const OP_USERNAME: &str = "RewoOp";
+
 pub fn run(args: PlayArgs) -> Result<(), String> {
+    if args.dimension_check {
+        // Reject rather than reconcile: `--setup`'s paced stream and this
+        // gate's commands would share the server's chat rate limiter, and a
+        // dropped command here is invisible.
+        if args.setup.is_some() {
+            return Err(
+                "--dimension-check and --setup cannot be combined: both pace server \
+                 commands, and the loser's tail is silently dropped. Run them separately."
+                    .into(),
+            );
+        }
+        if args.seconds < DIMENSION_CHECK_MIN_SECONDS {
+            return Err(format!(
+                "--dimension-check needs --seconds >= {DIMENSION_CHECK_MIN_SECONDS:.0} \
+                 (given {:.0}): four settle windows and three bounded transitions do not \
+                 fit in a shorter session, and a truncated run would print a partial \
+                 matrix.",
+                args.seconds
+            ));
+        }
+    }
     let data = GameData::load_for_version(&args.version)?;
 
     // Build the state→solid table from the asset bake: any block that
@@ -92,7 +133,10 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         }
         None => None,
     };
-    let collide = baked.as_ref().map(|b| b.collide.clone()).unwrap_or_default();
+    let collide = baked
+        .as_ref()
+        .map(|b| b.collide.clone())
+        .unwrap_or_default();
 
     let dirt_item = data.items.id("dirt");
     // Launcher account handoff (REWO_ACCESS_TOKEN/UUID/USERNAME) — lets the
@@ -138,6 +182,24 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     }
     log::info!("play: entered live session, waiting for spawn…");
 
+    // M16 live gate. Built after login so it addresses its commands to the name
+    // the session actually joined with — never a hardcoded account.
+    let mut dim_check = args.dimension_check.then(|| {
+        if username != OP_USERNAME {
+            log::warn!(
+                "play --dimension-check: joined as {username:?}, not the op account \
+                 {OP_USERNAME:?}. A non-op's commands are silently rejected by the \
+                 server; this gate will time out rather than skip a check."
+            );
+        }
+        log::info!(
+            "play --dimension-check: deterministic path — movement, build actions, the \
+             scripted chat and --setup are all off for this run; commands target \
+             {username:?}"
+        );
+        crate::dimension_check::DimensionCheck::new(&username)
+    });
+
     let start = Instant::now();
     let total_ticks = (args.seconds / 0.05) as u64;
     let mut acted = Actions::default();
@@ -157,17 +219,29 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
             log::info!("play: spawned at tick {tick_n}, running the action script");
         }
 
-        // Movement input + one-shot actions, on a spawn-relative clock.
-        let input = if let Some(st) = spawn_tick {
-            let secs = (tick_n - st) as f32 * 0.05;
-            drive(&mut session, &args, secs, dirt_item, &mut acted)?
-        } else {
-            TickInput::default()
+        // Movement input + one-shot actions, on a spawn-relative clock. The
+        // dimension gate owns the whole session instead: no movement, no build,
+        // no scripted chat, so the only thing that moves the player is the
+        // server's own teleport.
+        let input = match (&dim_check, spawn_tick) {
+            (Some(_), _) => TickInput::default(),
+            (None, Some(st)) => {
+                let secs = (tick_n - st) as f32 * 0.05;
+                drive(&mut session, &args, secs, dirt_item, &mut acted)?
+            }
+            (None, None) => TickInput::default(),
         };
 
         session.tick(&input)?;
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
+        }
+        if let Some(dc) = dim_check.as_mut() {
+            dc.tick(&mut session, tick_n)?;
+            if dc.finished() {
+                log::info!("play --dimension-check: all checkpoints reached at tick {tick_n}");
+                break;
+            }
         }
         if clock_start.is_none() {
             clock_start = session.day_ticks;
@@ -179,9 +253,21 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         }
     }
 
-    report(&mut session, &acted, &args, baked.as_ref(), &data, clock_start);
+    report(
+        &mut session,
+        &acted,
+        &args,
+        baked.as_ref(),
+        &data,
+        clock_start,
+    );
     if !session.spawned {
         return Err("never spawned (no initial position from server)".into());
+    }
+    if let Some(dc) = dim_check.as_ref() {
+        // Fails closed: an incomplete matrix is a failure, and `report` says so
+        // in both the summary line and the exit code.
+        dc.report(&session)?;
     }
     Ok(())
 }
@@ -258,7 +344,10 @@ fn drive(
                 // beside the bot (not inside it, so the server accepts it).
                 let target = (fx + 1, fy, fz);
                 match session.use_item_on(fx + 1, fy - 1, fz, 1) {
-                    Ok(()) => log::info!("play: place → {target:?} (on top of {:?})", (fx + 1, fy - 1, fz)),
+                    Ok(()) => log::info!(
+                        "play: place → {target:?} (on top of {:?})",
+                        (fx + 1, fy - 1, fz)
+                    ),
                     Err(e) => log::warn!("play: place failed: {e}"),
                 }
                 acted.placed_at = Some(target);
@@ -281,9 +370,17 @@ fn drive(
     // the server's chat rate limit and the tail is silently dropped — which
     // looks exactly like a light bug, because the structure never appears.
     if let Some(cmd) = args.setup.as_deref() {
-        let cmds: Vec<&str> = cmd.split(';').map(str::trim).filter(|c| !c.is_empty()).collect();
+        let cmds: Vec<&str> = cmd
+            .split(';')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
         let due = ((secs - 1.0) / 0.25).floor();
-        if secs >= 1.0 && due >= 0.0 && (due as usize) < cmds.len() && acted.setup_sent <= due as usize {
+        if secs >= 1.0
+            && due >= 0.0
+            && (due as usize) < cmds.len()
+            && acted.setup_sent <= due as usize
+        {
             let one = cmds[due as usize];
             match session.send_command(one) {
                 Ok(()) => log::info!("play: setup → /{one}"),
@@ -319,7 +416,6 @@ fn feet_block(session: &PlaySession) -> (i32, i32, i32) {
     )
 }
 
-
 fn report(
     session: &mut PlaySession,
     acted: &Actions,
@@ -329,9 +425,14 @@ fn report(
     clock_start: Option<i64>,
 ) {
     let (px, py, pz) = (session.player.x, session.player.y, session.player.z);
-    let ground = session.world.block_state_at(px.floor() as i32, py as i32 - 1, pz.floor() as i32);
+    let ground = session
+        .world
+        .block_state_at(px.floor() as i32, py as i32 - 1, pz.floor() as i32);
     println!("[rewo-m3] play session summary");
-    println!("[rewo-m3] spawned: {}  ticks: {}", session.spawned, session.ticks);
+    println!(
+        "[rewo-m3] spawned: {}  ticks: {}",
+        session.spawned, session.ticks
+    );
     println!(
         "[rewo-m3] final pos: ({:.2}, {:.2}, {:.2})  on_ground: {}",
         px, py, pz, session.player.on_ground
@@ -341,7 +442,10 @@ fn report(
         "[rewo-m3] teleports: {}  CORRECTIONS: {}  (physics-parity meter — lower is better)",
         session.teleports, session.corrections
     );
-    println!("[rewo-m3] block_updates received: {}", session.block_updates);
+    println!(
+        "[rewo-m3] block_updates received: {}",
+        session.block_updates
+    );
     // World-clock progress: an advance of ~1 per game tick elapsed proves the
     // day/night clock is running; a frozen clock reads `advance 0` here.
     match (clock_start, session.day_ticks) {
@@ -368,9 +472,16 @@ fn report(
     // fall off by 1 per block from the torch; under open sky it's 15/0.
     {
         let p = &session.player;
-        let (bx, by, bz) = (p.x.floor() as i32, p.eye_y().floor() as i32, p.z.floor() as i32);
+        let (bx, by, bz) = (
+            p.x.floor() as i32,
+            p.eye_y().floor() as i32,
+            p.z.floor() as i32,
+        );
         let (bl, sl) = session.world.light_at(bx, by, bz);
-        println!("[rewo-m3] LIGHT @ ({bx},{by},{bz}) = {} (sky {sl}, block {bl})", bl.max(sl));
+        println!(
+            "[rewo-m3] LIGHT @ ({bx},{by},{bz}) = {} (sky {sl}, block {bl})",
+            bl.max(sl)
+        );
         // A short horizontal profile makes block-light falloff visible.
         let profile: Vec<String> = (0..6)
             .map(|d| {
@@ -378,9 +489,15 @@ fn report(
                 format!("{}:{}/{}", d, b, sk)
             })
             .collect();
-        println!("[rewo-m3] LIGHT profile +x (block/sky): {}", profile.join("  "));
+        println!(
+            "[rewo-m3] LIGHT profile +x (block/sky): {}",
+            profile.join("  ")
+        );
         if let Some(spec) = args.light_at.as_deref() {
-            let n: Vec<i32> = spec.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            let n: Vec<i32> = spec
+                .split(',')
+                .filter_map(|v| v.trim().parse().ok())
+                .collect();
             if let [x, y, z] = n[..] {
                 let (b, sk) = session.world.light_at(x, y, z);
                 let st = session.world.block_state_at(x, y, z);
@@ -403,21 +520,32 @@ fn report(
         let s = session.world.block_state_at(x, y, z);
         println!(
             "[rewo-m3] PLACE verify @ ({x},{y},{z}) = state {s} {}",
-            if s != 0 { "(non-air ✓ block appeared)" } else { "(still air ✗)" }
+            if s != 0 {
+                "(non-air ✓ block appeared)"
+            } else {
+                "(still air ✗)"
+            }
         );
     }
     if let Some((x, y, z)) = acted.dug_at {
         let s = session.world.block_state_at(x, y, z);
         println!(
             "[rewo-m3] DIG verify @ ({x},{y},{z}) = state {s} {}",
-            if s == 0 { "(air ✓ block removed)" } else { "(still solid ✗)" }
+            if s == 0 {
+                "(air ✓ block removed)"
+            } else {
+                "(still solid ✗)"
+            }
         );
     }
     println!("[rewo-m3] chat received: {} lines", session.chat_log.len());
     for line in session.chat_log.iter().take(6) {
         println!("[rewo-m3]   > {line}");
     }
-    println!("[rewo-m3] loaded columns: {}", session.world.loaded_columns());
+    println!(
+        "[rewo-m3] loaded columns: {}",
+        session.world.loaded_columns()
+    );
 }
 
 fn client_jar_path(version: &str) -> Option<std::path::PathBuf> {
@@ -528,11 +656,20 @@ fn light_parity_check(
                     }
                     if got_s != want_s {
                         let d = got_s as i32 - want_s as i32;
-                        if d > 0 { brighter += 1 } else { darker += 1 }
+                        if d > 0 {
+                            brighter += 1
+                        } else {
+                            darker += 1
+                        }
                         max_delta = max_delta.max(d.abs());
-                        if worst.as_ref().map_or(true, |(lv, _)| want_s.max(got_s) > *lv) {
-                            let n = data.blocks.block_name(
-                                session.world.block_state_at(x, y, z)).unwrap_or("?");
+                        if worst
+                            .as_ref()
+                            .map_or(true, |(lv, _)| want_s.max(got_s) > *lv)
+                        {
+                            let n = data
+                                .blocks
+                                .block_name(session.world.block_state_at(x, y, z))
+                                .unwrap_or("?");
                             worst = Some((
                                 want_s.max(got_s),
                                 format!("({x},{y},{z}) {n}: want s{want_s} got s{got_s}"),

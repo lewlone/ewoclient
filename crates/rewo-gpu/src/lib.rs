@@ -14,6 +14,7 @@
 //!   (device → surface → debug → instance, after a wait_idle).
 
 pub mod celestial;
+pub mod end_sky;
 pub mod entities;
 pub mod anim_defs;
 pub mod cem;
@@ -38,6 +39,17 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 /// CPU frames in flight. 2 for latency (REWO_PLAN.md §8); tunable to 1 in
 /// the M6 latency pass.
 pub const FRAMES_IN_FLIGHT: usize = 2;
+
+/// The largest value [`renderer::Renderer::with_frames_in_flight`] will accept
+/// — the M6 knob clamps into `1..=MAX_FRAMES_IN_FLIGHT`.
+///
+/// Any per-frame ring a `WorldRenderer` owns must be at least this long, not
+/// merely [`FRAMES_IN_FLIGHT`] long: the renderer's fence wait only guarantees
+/// that frame `n - fif` has retired, so a ring shorter than the *actual* `fif`
+/// would let a recording frame overwrite a slot an in-flight frame still reads.
+/// `WorldRenderer` has no handle on the `Renderer` that drives it, so it sizes
+/// its rings for the worst case the knob permits.
+pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 

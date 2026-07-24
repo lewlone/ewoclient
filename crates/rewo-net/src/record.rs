@@ -77,30 +77,35 @@ pub fn replay(
     ids: &crate::ids::Ids,
 ) -> Result<(rewo_world::World, u64), String> {
     use rewo_proto::reader::PacketReader;
-    use rewo_world::dimension::DimensionShape;
+    use rewo_world::dimension::{DimensionShape, DimensionTypeDef};
 
     let packets = read_all(path)?;
     let mut world = rewo_world::World::new(DimensionShape::OVERWORLD);
-    let mut dim_shapes: Vec<DimensionShape> = Vec::new();
+    let mut dim_types: Vec<DimensionTypeDef> = Vec::new();
     let mut chunks = 0u64;
 
     for p in &packets {
         if p.state != State::Play {
-            // Replay dimension registry from config so the shape resolves.
+            // Replay the dimension registry from config so the login holder
+            // resolves. Same parser as the live path — a replay must not be
+            // able to derive a different shape from the same bytes.
             if p.state == State::Configuration && p.id == ids.cb_config_registry_data {
-                parse_registry_shapes(&p.body, &mut dim_shapes);
+                if let Some(defs) =
+                    crate::dimension_parse::parse_dimension_registry_packet(&p.body)?
+                {
+                    dim_types = defs;
+                }
             }
             continue;
         }
         if p.id == ids.cb_play_login {
             let mut r = PacketReader::new(&p.body);
-            if let Some(shape) = read_login_shape(&mut r, &dim_shapes) {
-                world.shape = shape;
+            if let Some(def) = read_login_dimension(&mut r, &dim_types) {
+                world.apply_dimension_type(&def);
             }
         } else if p.id == ids.cb_play_level_chunk {
             let mut r = PacketReader::new(&p.body);
-            if let Ok(col) =
-                rewo_world::chunk::read_level_chunk(&mut r, &world.shape, &data.blocks)
+            if let Ok(col) = rewo_world::chunk::read_level_chunk(&mut r, &world.shape, &data.blocks)
             {
                 world.insert_column(col.cx, col.cz, col);
                 chunks += 1;
@@ -120,66 +125,29 @@ pub fn replay(
     Ok((world, chunks))
 }
 
-fn parse_registry_shapes(
-    body: &[u8],
-    dim_shapes: &mut Vec<rewo_world::dimension::DimensionShape>,
-) {
-    use rewo_proto::nbt::Nbt;
-    use rewo_proto::reader::PacketReader;
-    use rewo_world::dimension::DimensionShape;
-    let mut r = PacketReader::new(body);
-    let Ok(registry) = r.identifier() else { return };
-    if registry != "minecraft:dimension_type" {
-        return;
-    }
-    let Ok(count) = r.count("registry entries", 1) else {
-        return;
-    };
-    dim_shapes.clear();
-    for _ in 0..count {
-        if r.identifier().is_err() {
-            return;
-        }
-        let has_nbt = r.bool().unwrap_or(false);
-        if !has_nbt {
-            dim_shapes.push(DimensionShape::OVERWORLD);
-            continue;
-        }
-        let Ok(nbt) = r.nbt() else { return };
-        let min_y = nbt.get("min_y").and_then(Nbt::as_i64).unwrap_or(-64) as i32;
-        let height = nbt.get("height").and_then(Nbt::as_i64).unwrap_or(384) as i32;
-        dim_shapes.push(DimensionShape { min_y, height });
-    }
-}
-
-fn read_login_shape(
+/// Read a recorded login packet's prefix and resolve the dimension-type
+/// definition it names. The registry parse lives in `crate::dimension_parse`
+/// and the selection in `crate::login_dimension_type` — replay derives its
+/// shape from the same two functions the live session does, never a second
+/// implementation of either.
+fn read_login_dimension(
     r: &mut rewo_proto::reader::PacketReader,
-    dim_shapes: &[rewo_world::dimension::DimensionShape],
-) -> Option<rewo_world::dimension::DimensionShape> {
-    r.i32().ok()?; // player id
-    r.bool().ok()?; // hardcore
-    let dim_count = r.count("dimensions", 1).ok()?;
-    for _ in 0..dim_count {
-        r.identifier().ok()?;
-    }
-    r.varint().ok()?; // max players
-    r.varint().ok()?; // view dist
-    r.varint().ok()?; // sim dist
-    r.bool().ok()?; // reduced debug
-    r.bool().ok()?; // show death
-    r.bool().ok()?; // limited crafting
+    dim_types: &[rewo_world::dimension::DimensionTypeDef],
+) -> Option<rewo_world::dimension::DimensionTypeDef> {
+    crate::spawn_info::read_login_prefix(r).ok()?;
     // The dimension-type holder is the raw 0-based registry id (holderRegistry
     // idMapper — see `crate::parse_login_dimension_holder`); there is no
     // `0=inline`/`id+1` convention.
     let holder = r.varint().ok()?;
-    Some(crate::login_dimension_shape(holder, dim_shapes))
+    Some(crate::login_dimension_type(holder, dim_types).into_owned())
 }
 
 /// Read all recorded packets back into memory.
 pub fn read_all(path: &std::path::Path) -> Result<Vec<RecordedPacket>, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open recording: {e}"))?;
     let mut magic = [0u8; 8];
-    file.read_exact(&mut magic).map_err(|e| format!("read magic: {e}"))?;
+    file.read_exact(&mut magic)
+        .map_err(|e| format!("read magic: {e}"))?;
     if &magic != MAGIC {
         return Err("not a rewo recording".into());
     }
@@ -198,7 +166,8 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<RecordedPacket>, String> {
             return Err("negative record length".into());
         }
         let mut body = vec![0u8; len as usize];
-        file.read_exact(&mut body).map_err(|e| format!("read body: {e}"))?;
+        file.read_exact(&mut body)
+            .map_err(|e| format!("read body: {e}"))?;
         out.push(RecordedPacket { state, id, body });
     }
     Ok(out)

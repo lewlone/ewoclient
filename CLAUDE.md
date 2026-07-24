@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M15 shipped: online play, native CEM, exact light/color, packed + greedy geometry)
+## Rewo — from-scratch native Minecraft client (M0–M16 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -2067,6 +2067,41 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   claimed. Gates: **237/237** six-crate + **19/19** app, all property gates
   green, demo exact, physics corrections 0, light 884,736/0. Full failure
   history and measurements: REWO_PLAN §15.
+- **M16 dimensions shipped + verified 2026-07-24.** It is committed locally on
+  branch `codex/rewo-m16-dimensions` and not pushed. The vanilla test server was
+  stopped and port 25599 verified free after the final gates. The
+  `minecraft:dimension_type` registry is now parsed once
+  (`rewo-net/src/dimension_parse.rs`), kept in **raw wire order** — the vector
+  index *is* the holder id, nothing selects by name — and actually consumed:
+  per-dimension vertical shape (the Nether is 0..256, not −64..384; the stale
+  Overworld shape mis-decoded every Nether chunk), `has_skylight`, `skybox`,
+  ambient light, Nether cardinal face shade, sky/fog/ambient/sky-light colours
+  and factor, `has_fixed_time`, and `has_day_timeline`. Plus the End sky pass
+  (`rewo-gpu/src/end_sky.rs`), spawn info, and a transition that discards the
+  old world and refences the mesh pool by generation.
+  **Three load-bearing facts.** (1) `has_day_timeline` is **independent of
+  `has_fixed_time`** — separate `DimensionType` members; deriving one from the
+  other happens to be right for all four vanilla dimensions and is still wrong.
+  It comes from the `timelines` holder set, expanded through
+  `data/minecraft/tags/timeline/*.json`. (2) The Nether sets **no**
+  `sky_color`/`fog_color`; absence must stay `None`, because the attribute's
+  literal `0` default would read as opaque black to the biome colour stack.
+  (3) A malformed entry is a connection error — never a substituted Overworld.
+  Gates: **`rewo dimensioncheck --check`** (serverless) grades four independent
+  inputs — a captured Configuration `registry_data` packet, the bundled
+  transcription, the **real decompiled datagen JSON** read by
+  `rewo-app/src/dimension_json.rs` (a `serde_json` reader sharing no code with
+  the NBT parser), and a hand-written `EXPECT` table that grades all three and
+  is itself graded by the JSON — then the world/mesh binding and the generation
+  fence; it fails closed on a missing recording or decompile. **`rewo play
+  --dimension-check`** is the live gate: 4/4 checkpoints, 3/3 transitions, 329
+  columns discarded/requeued each, 0 decode failures, 0 settled corrections.
+  Measured: **344 unit tests** (proto 11, world 93, data 9, net 102, mesh 38,
+  gpu 44, app 47), `mobshot` 243/243, all Vulkan oracles green with validation
+  ON / 0 VUIDs, demo SHA-256 byte-identical to M15, physics 600 ticks
+  CORRECTIONS 0, light 884,736 cells / 0 mismatches, release build green.
+  Replay GPU avg 0.240 ms with a system-noisy tail — **no** latency improvement
+  claimed. Full detail: REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

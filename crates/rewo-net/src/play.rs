@@ -15,11 +15,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rewo_proto::frame::FrameCodec;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::dimension::DimensionShape;
+use rewo_world::dimension::{CardinalLightType, DimensionShape, DimensionTypeDef, Skybox};
 use rewo_world::physics::{self, PlayerState, TickInput};
 use rewo_world::World;
 
 use crate::ids::Ids;
+use crate::spawn_info::{read_login_prefix, CommonPlayerSpawnInfo, RespawnInfo};
 use crate::Connection;
 
 pub struct PlaySession {
@@ -39,7 +40,9 @@ pub struct PlaySession {
     pub entity_push: Vec<(f32, f32, bool)>,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
-    dim_shapes: Vec<DimensionShape>,
+    /// The `minecraft:dimension_type` registry in raw wire order — index *is*
+    /// the holder registry id. `apply_login_shape` selects from it.
+    dim_types: Vec<DimensionTypeDef>,
     /// Registry id of the overworld world clock — `set_time` keys its clock
     /// map by raw id, and the map also carries `the_end`'s clock.
     overworld_clock_id: Option<i32>,
@@ -115,12 +118,441 @@ pub struct PlaySession {
     /// play-login packet supplies the `biomeZoomSeed` + dimension holder; the
     /// full `BiomeContext` is then built and attached to `world`.
     pending_biome_registry: Option<rewo_world::biome::BiomeRegistry>,
-    dim_attrs: Vec<(Option<i32>, Option<i32>)>,
     colormaps: rewo_world::biome::Colormaps,
     /// Biome container global-palette width (`BiomeRegistry::global_bits`).
     biome_global_bits: u32,
     /// `CommonPlayerSpawnInfo.seed` — the `biomeZoomSeed` driving the fiddle.
     pub biome_zoom_seed: Option<i64>,
+    /// The `ResourceKey<Level>` identifier of the dimension we are actually in
+    /// (`"minecraft:the_nether"`), taken from `CommonPlayerSpawnInfo.dimension`
+    /// — the *level*, which is not the same thing as the dimension **type**
+    /// entry's registry name. Two levels can share one type (a datapack world
+    /// built on `minecraft:overworld`), so the level key is the only field that
+    /// answers "which world am I in". `None` until login.
+    pub active_dimension_key: Option<String>,
+    /// The raw 0-based `minecraft:dimension_type` registry id login/respawn
+    /// named, kept exactly as it arrived so a diagnostic can say *which slot*
+    /// was selected rather than only what it resolved to. `None` until login.
+    pub active_dimension_holder: Option<i32>,
+    /// The dimension-type definition currently applied to `world` — the one
+    /// selected by `active_dimension_holder`, cloned so the active shape,
+    /// lighting contract and base sky/fog can be re-read (and compared against
+    /// the next one) without re-indexing `dim_types`. `None` until login.
+    pub active_dimension_type: Option<DimensionTypeDef>,
+    /// Bumped every time the active dimension actually changes. Anything that
+    /// caches per-dimension state (meshes, light, column buffers) can compare
+    /// against a stored generation to know its cache is from a stale world.
+    /// Login establishes generation 0; only a real change increments it.
+    pub dimension_generation: u64,
+    /// Every observed dimension change, oldest first — a diagnostic trail, not
+    /// session state. Empty until the first change.
+    pub dimension_transitions: Vec<DimensionTransition>,
+    /// Chunk columns the decoder rejected. A non-zero count after a dimension
+    /// change is the signature of a wrong vertical shape (the exact failure M16
+    /// exists to prevent), so it is counted rather than only logged.
+    pub chunk_decode_failures: u64,
+}
+
+/// One observed change of the active dimension, recorded for diagnostics.
+///
+/// This is deliberately a *record* and not a command: nothing here drives the
+/// world: the fields are the small set that must be inspectable after the fact
+/// when a dimension change goes wrong (which level we left, which we entered,
+/// which registry slot named it, and the three properties whose disagreement
+/// mis-decodes every subsequent chunk). `ClientboundRespawnPacket` is the only
+/// thing that appends one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DimensionTransition {
+    /// The level key we left, or `None` if this is the first dimension.
+    pub old_key: Option<String>,
+    /// The level key we entered (`CommonPlayerSpawnInfo.dimension`).
+    pub new_key: String,
+    /// The raw dimension-type holder the packet named.
+    pub holder: i32,
+    /// The registry name of the dimension **type** that holder resolved to —
+    /// which is not the level key above, and is `rewo:unresolved_dimension_type/N`
+    /// when the holder resolved to nothing.
+    pub type_name: String,
+    /// The new dimension's vertical shape — a change here invalidates every
+    /// loaded column's section indexing.
+    pub shape: DimensionShape,
+    /// The new dimension's lighting contract.
+    pub has_sky_light: bool,
+    /// The new dimension's skybox.
+    pub skybox: Skybox,
+    /// The new dimension's `ambient_light` scalar floor.
+    pub ambient_light: f32,
+    /// The new dimension's cardinal-light selector.
+    pub cardinal_light_type: CardinalLightType,
+    /// Whether the new dimension's synced `timelines` holder set contains
+    /// `minecraft:day`.
+    pub has_day_timeline: bool,
+    /// `dimension_generation` *after* this transition.
+    pub generation: u64,
+
+    // -- discard/reset witnesses -------------------------------------------
+    //
+    // These are the fields that answer "was the world we left actually thrown
+    // away", and they are recorded here rather than inferred by an observer
+    // because only the transition itself can see the *old* world. Coordinate
+    // comparison cannot answer it: two dimensions load identical column
+    // coordinates, so an old column that survived would look exactly like a
+    // newly-streamed one.
+    /// How many columns the world we left had loaded, counted before the
+    /// replacement.
+    pub old_columns: usize,
+    /// How many coordinates this transition pushed onto the renderer's removal
+    /// queue. Equal to `old_columns` — every column the old level held must be
+    /// handed to the renderer to free, or its GPU buffer is orphaned.
+    pub queued_for_removal: usize,
+    /// The removal queue's length after the push. `>= queued_for_removal`; it
+    /// is the queue the app actually drains, so this is what proves the
+    /// coordinates landed in it.
+    pub removal_queue_len: usize,
+    /// Columns loaded in the replacement world, immediately after it was built.
+    /// `0` — a fresh `ClientLevel` has no chunks, and this is the witness that
+    /// the old map went away rather than being carried across.
+    pub new_world_columns: usize,
+    /// The re-mesh queue's length after the change. `0` — every entry named a
+    /// column of the level we left.
+    pub dirty_after: usize,
+    /// Whether the world clock, its game time and the derived day tick all
+    /// returned to their pre-`set_time` state, as a fresh level's do.
+    pub clock_reset: bool,
+}
+
+/// What one decoded `CommonPlayerSpawnInfo` resolves the active dimension to.
+#[derive(Clone, Debug, PartialEq)]
+struct ActiveDimension {
+    /// `CommonPlayerSpawnInfo.dimension` — the level key, verbatim.
+    key: String,
+    /// The raw registry id the packet named, verbatim (it may not resolve).
+    holder: i32,
+    /// The registry entry that id selected, or the named unresolved fallback.
+    def: DimensionTypeDef,
+}
+
+/// Resolve a decoded spawn info and apply it to `world`, returning the active
+/// dimension it establishes.
+///
+/// Split out of `apply_login_shape` for one reason: everything here is pure
+/// world+registry state with no socket in sight, so the selection rules that
+/// actually matter — raw id indexing, and the level key coming from the packet
+/// rather than from the selected entry's registry name — are directly testable.
+///
+/// The two identifiers involved are genuinely different things and are kept
+/// apart deliberately: `spawn.dimension_type` selects a *dimension type* by raw
+/// 0-based registry id (`crate::login_dimension_type`), while `spawn.dimension`
+/// is the `ResourceKey<Level>` of the world itself. Taking the key from the
+/// selected entry's `name` would report `minecraft:overworld` for every
+/// datapack level built on the overworld type.
+fn apply_spawn_info(
+    world: &mut World,
+    dim_types: &[DimensionTypeDef],
+    spawn: &CommonPlayerSpawnInfo,
+) -> ActiveDimension {
+    // One selection, one definition: the vertical shape, the lighting contract
+    // and the biome layer's base sky/fog all come from the same registry entry,
+    // so they cannot disagree about which dimension we are in.
+    let def = crate::login_dimension_type(spawn.dimension_type, dim_types).into_owned();
+    world.apply_dimension_type(&def);
+    ActiveDimension {
+        key: spawn.dimension.clone(),
+        holder: spawn.dimension_type,
+        def,
+    }
+}
+
+/// Every piece of session state a **dimension change** re-points, borrowed as
+/// one group.
+///
+/// It exists for the same reason `apply_spawn_info` does: the transition is
+/// pure world + registry state with no socket in sight, so
+/// `PlaySession::apply_respawn` builds one of these out of its own fields and
+/// the tests build one out of plain locals. The field list is not incidental —
+/// it *is* the answer to "what does entering a new dimension invalidate", and
+/// anything missing from it is state that would survive into a world it was
+/// never computed for.
+///
+/// What is deliberately **not** here is everything a respawn must preserve: the
+/// synced registries, the baked assets, the connection and its chat signer, the
+/// player-skin table and the session counters all belong to the *session*, not
+/// to the level, and vanilla's `handleRespawn` leaves every one of them alone.
+struct WorldTransition<'a> {
+    world: &'a mut World,
+    /// Columns queued for re-mesh, and columns the renderer must free. On a
+    /// dimension change every loaded column is dropped, so the whole old
+    /// coordinate set moves out of `world` into `removed` and `dirty` empties.
+    dirty: &'a mut std::collections::HashSet<(i32, i32)>,
+    removed: &'a mut Vec<(i32, i32)>,
+    /// Replaced wholesale: its queues and touched-set hold coordinates in the
+    /// *old* vertical shape.
+    light: &'a mut rewo_world::light::LightEngine,
+    day_ticks: &'a mut Option<i64>,
+    overworld_clock: &'a mut Option<WorldClock>,
+    game_time: &'a mut Option<i64>,
+    biome_zoom_seed: &'a mut Option<i64>,
+    /// The parsed biome registry, *retained* across the change — it is a synced
+    /// global registry, not a per-level table — plus the colormaps, so the new
+    /// level's `BiomeContext` is rebuilt from the same entries against the new
+    /// dimension's base sky/fog and the new `biomeZoomSeed`.
+    biome_registry: Option<&'a rewo_world::biome::BiomeRegistry>,
+    colormaps: &'a rewo_world::biome::Colormaps,
+    active_key: &'a mut Option<String>,
+    active_holder: &'a mut Option<i32>,
+    active_type: &'a mut Option<DimensionTypeDef>,
+    generation: &'a mut u64,
+    transitions: &'a mut Vec<DimensionTransition>,
+}
+
+impl WorldTransition<'_> {
+    /// Apply a decoded respawn's spawn info, returning whether the active
+    /// dimension actually changed — the `boolean dimensionChanged` of
+    /// `ClientPacketListener.handleRespawn`, and every consequence vanilla hangs
+    /// off it.
+    fn apply_respawn(
+        &mut self,
+        dim_types: &[DimensionTypeDef],
+        spawn: &CommonPlayerSpawnInfo,
+    ) -> bool {
+        // `boolean dimensionChanged = dimensionKey != oldDimensionKey`. Vanilla
+        // compares interned `ResourceKey<Level>` identities; over the wire the
+        // key *is* its identifier, so exact string equality is that same test.
+        // No active dimension at all (a respawn that somehow precedes login)
+        // counts as a change — there is no world we could be claiming to stay
+        // in.
+        if self.active_key.as_deref() == Some(spawn.dimension.as_str()) {
+            // Same level. Vanilla builds no new `ClientLevel` here, so there is
+            // nothing to invalidate: the columns, the entity table, the biome
+            // context, the clock and the light engine all belong to a level that
+            // did not go anywhere, and neither the generation counter nor the
+            // transition history moves (this is not a transition).
+            //
+            // Nothing re-reads `spawn.dimension_type` either. The packet still
+            // carries a holder, but applying it would re-point the *shape* and
+            // the lighting contract behind chunks that were decoded against the
+            // old ones — the exact mis-decode this milestone exists to prevent.
+            // Vanilla's old `ClientLevel` keeps the `DimensionType` it was
+            // constructed with, so `active_holder` / `active_type` keep it too.
+            //
+            // `spawn.seed()` is likewise retained rather than applied: the seed
+            // is the level's `biomeZoomSeed`, fixed at `new ClientLevel(...)`,
+            // and no new level was built. Storing the packet's seed while the
+            // `BiomeContext` still holds the old one would make
+            // `biome_zoom_seed` disagree with the tint actually being drawn.
+            return false;
+        }
+
+        // Every loaded column belongs to the world we are leaving. The whole
+        // coordinate set is collected *before* the replacement — after it the
+        // old map is gone, and the renderer would hold one orphaned GPU buffer
+        // per column it was never told about.
+        //
+        // The three counts are the transition's own witnesses: nothing outside
+        // this function can see the world we are leaving, and no coordinate
+        // comparison could stand in for them (both dimensions load column 0,0).
+        let old_columns = self.world.loaded_columns();
+        let removal_queue_before = self.removed.len();
+        self.removed.extend(self.world.column_coords());
+        let removal_queue_len = self.removed.len();
+        let queued_for_removal = removal_queue_len - removal_queue_before;
+        self.dirty.clear();
+
+        // One selection for the whole change, exactly as at login: shape,
+        // lighting contract and base sky/fog come from a single registry entry.
+        let def = crate::login_dimension_type(spawn.dimension_type, dim_types).into_owned();
+        // `this.level = new ClientLevel(...)`: a fresh, empty level bound to the
+        // new dimension type. Replacing the whole struct rather than re-pointing
+        // the old one is what drops the old columns *and* the old entity table
+        // in one move — the entities we were tracking live in the world we left,
+        // exactly as vanilla's discarded `ClientLevel` takes them with it.
+        *self.world = World::for_dimension(&def);
+        // The light engine's queues and touched-set are coordinates in the old
+        // vertical shape; a fresh engine is the only correct carry-over.
+        *self.light = rewo_world::light::LightEngine::new();
+        // The clock is `ClientLevel` state and goes with the level: the world
+        // clock, the game time it integrates against, and the day-tick derived
+        // from them. The new level has not been told a time yet, so all three
+        // return to their pre-`set_time` state and the renderer reads full
+        // daylight until the next sync arrives.
+        *self.day_ticks = None;
+        *self.overworld_clock = None;
+        *self.game_time = None;
+
+        // `spawnInfo.seed()` is the new level's `biomeZoomSeed`.
+        *self.biome_zoom_seed = Some(spawn.seed);
+        attach_biome_context(
+            self.world,
+            self.biome_registry,
+            self.colormaps,
+            &def,
+            spawn.seed,
+        );
+
+        let old_key = self.active_key.replace(spawn.dimension.clone());
+        *self.active_holder = Some(spawn.dimension_type);
+        // A counter, not an index: its overflow is a wrap rather than a panic.
+        // A cache comparing itself against a wrapped generation is no worse off
+        // than one comparing against any other stale value.
+        *self.generation = self.generation.wrapping_add(1);
+        self.transitions.push(DimensionTransition {
+            old_key,
+            new_key: spawn.dimension.clone(),
+            holder: spawn.dimension_type,
+            type_name: def.name.clone(),
+            shape: def.shape,
+            has_sky_light: def.has_sky_light,
+            skybox: def.skybox,
+            ambient_light: def.ambient_light,
+            cardinal_light_type: def.cardinal_light_type,
+            has_day_timeline: def.has_day_timeline,
+            generation: *self.generation,
+            old_columns,
+            queued_for_removal,
+            removal_queue_len,
+            new_world_columns: self.world.loaded_columns(),
+            dirty_after: self.dirty.len(),
+            clock_reset: self.day_ticks.is_none()
+                && self.overworld_clock.is_none()
+                && self.game_time.is_none(),
+        });
+        *self.active_type = Some(def);
+        true
+    }
+}
+
+/// The local-player state one respawn recreates, borrowed as one group — the
+/// `newPlayer` half of `handleRespawn`, kept apart from [`WorldTransition`]
+/// because vanilla runs it on **both** paths, changed dimension or not.
+///
+/// `newPlayer` is a genuinely fresh `LocalPlayer`, so the default for every
+/// field here is the constructor's value; only what `handleRespawn` explicitly
+/// copies over survives. Two of vanilla's carry-overs have no Rewo
+/// representation at all and are documented no-ops rather than guessed at:
+///
+/// * `dataToKeep` bit 1 (`KEEP_ATTRIBUTE_MODIFIERS`) chooses between
+///   `assignAllValues` and `assignBaseValues` on the player's `AttributeMap`.
+///   Rewo has no attribute map — movement speed and the rest are the physics
+///   port's constants — so neither branch has anything to assign.
+/// * bit 2's `getEntityData().assignValues(...)` copies the old player's
+///   non-default `SynchedEntityData` entries. Rewo does not model a
+///   `SynchedEntityData` map for the *local* player (`metadata` is parsed for
+///   other entities only), but it does hold one of its entries as a plain
+///   field: **health** is `LivingEntity.DATA_HEALTH_ID`, so bit 2 carries it
+///   over and is honoured below. Food is not synched data — it lives in
+///   `FoodData`, which `handleRespawn` never copies — so it always resets to the
+///   fresh player's value. Bit 2's other three statements — delta movement and
+///   both rotations — are represented exactly and are applied below.
+struct LocalPlayerRespawn<'a> {
+    player: &'a mut PlayerState,
+    health: &'a mut f32,
+    food: &'a mut i32,
+    dead: &'a mut bool,
+    spawned: &'a mut bool,
+    // `LocalPlayer`'s own `sendPosition` bookkeeping.
+    last_pos: &'a mut (f64, f64, f64),
+    last_rot: &'a mut (f32, f32),
+    reminder: &'a mut u32,
+    last_on_ground: &'a mut bool,
+    last_horiz: &'a mut bool,
+    last_input_flags: &'a mut u8,
+}
+
+impl LocalPlayerRespawn<'_> {
+    /// `keep_entity_data` is `packet.shouldKeep((byte)2)`.
+    fn apply(&mut self, keep_entity_data: bool) {
+        // Position is not copied on *either* path: the new entity is built at
+        // `Vec3.ZERO`, and the no-keep path's `resetPos` only ever scans upward
+        // from there. That scan (`while !noCollision`) is not reproduced — it
+        // queries collision against a level that, on a dimension change, has no
+        // chunks at all, where vanilla's loop breaks on its first iteration and
+        // leaves exactly this origin. The `player_position` teleport the server
+        // sends next is authoritative either way, and `spawned` is cleared below
+        // so nothing is sent from the origin in the meantime.
+        self.player.x = 0.0;
+        self.player.y = 0.0;
+        self.player.z = 0.0;
+        // A fresh entity has not collided with anything yet.
+        self.player.on_ground = false;
+        self.player.horizontal_collision = false;
+        if !keep_entity_data {
+            // `resetPos()` → `setDeltaMovement(Vec3.ZERO)` and `setXRot(0.0F)`,
+            // then `handleRespawn`'s own `setYRot(-180.0F)`.
+            self.player.vx = 0.0;
+            self.player.vy = 0.0;
+            self.player.vz = 0.0;
+            self.player.pitch = 0.0;
+            self.player.yaw = -180.0;
+        }
+        // else: `setDeltaMovement(oldPlayer.getDeltaMovement())`, `setYRot`,
+        // `setXRot` — velocity and both rotations survive verbatim, so there is
+        // nothing to write.
+
+        // `xLast`/`yLast`/`zLast`, `yRotLast`/`xRotLast`, `positionReminder`,
+        // `lastOnGround` and `lastHorizontalCollision` are plain fields of the
+        // new `LocalPlayer`, so they start at zero on both paths — including the
+        // keep path, where the preserved rotation therefore reads as "rotated"
+        // on the next tick and is re-sent. `lastSentInput` is the one that is
+        // not: the constructor takes `oldPlayer.getLastSentInput()` when bit 2
+        // is set and `Input.EMPTY` otherwise.
+        *self.last_pos = (0.0, 0.0, 0.0);
+        *self.last_rot = (0.0, 0.0);
+        *self.reminder = 0;
+        *self.last_on_ground = false;
+        *self.last_horiz = false;
+        if !keep_entity_data {
+            *self.last_input_flags = 0;
+        }
+
+        // A fresh `LocalPlayer` starts at full health with a fresh `FoodData`,
+        // and its `deathTime` is 0. Health is the one of those three that bit 2
+        // reaches: it is a `SynchedEntityData` entry
+        // (`LivingEntity.DATA_HEALTH_ID`), so `assignValues` carries the old
+        // player's value across verbatim when the bit is set. `FoodData` is a
+        // plain field of `Player` that `handleRespawn` never touches, so food is
+        // always the fresh 20. The server's `set_health` re-states both
+        // immediately either way.
+        if !keep_entity_data {
+            *self.health = 20.0;
+        }
+        *self.food = 20;
+        *self.dead = false;
+        // `setClientLoaded(false)` + `startWaitingForNewLevel`: the client is
+        // not a live participant again until the level is ready, which for us is
+        // the `player_position` teleport that follows. Holding `spawned` low
+        // until then keeps physics from running against the origin above, keeps
+        // movement from being sent from it, and keeps the respawn teleport out
+        // of the `corrections` physics-parity meter.
+        *self.spawned = false;
+    }
+}
+
+/// Build the `BiomeContext` from the synced registry + one dimension's base
+/// sky/fog + a `biomeZoomSeed`, and attach it to `world`. The registry is cloned
+/// rather than consumed, so this is idempotent and a later dimension change can
+/// rebuild against the same entries.
+///
+/// A free function (not a `PlaySession` method) so the respawn transition can
+/// call it with no session in reach.
+fn attach_biome_context(
+    world: &mut World,
+    registry: Option<&rewo_world::biome::BiomeRegistry>,
+    colormaps: &rewo_world::biome::Colormaps,
+    def: &DimensionTypeDef,
+    seed: i64,
+) {
+    let Some(reg_template) = registry else {
+        return;
+    };
+    let mut reg = reg_template.clone();
+    // `None` stays `None`: the Nether sets neither, and the biome layer
+    // must fall through to its own colour rather than to opaque black.
+    reg.dimension_sky = def.sky_color;
+    reg.dimension_fog = def.fog_color;
+    let ctx =
+        rewo_world::biome::BiomeContext::new(std::sync::Arc::new(reg), colormaps.clone(), seed);
+    world.set_biome_context(std::sync::Arc::new(ctx));
+    log::info!("net: biome context attached (seed={seed})");
 }
 
 impl<'a> Connection<'a> {
@@ -184,12 +616,16 @@ impl<'a> Connection<'a> {
             })
             .map_err(|e| format!("spawn reader: {e}"))?;
 
-        let mut world = World::new(DimensionShape::OVERWORLD);
-        // Dimension shapes were collected during configuration.
-        if let Some(shape) = self.dim_shapes.first() {
-            world.shape = *shape;
-        }
-        let dim_shapes = self.dim_shapes.clone();
+        // A plain Overworld placeholder, and deliberately *only* that: the
+        // dimension registry is synced by now, but the login packet has not yet
+        // said which entry we joined, and registry slot 0 is not the join
+        // dimension in any guaranteed sense (a vanilla server may send the
+        // Nether first). Applying slot 0 here would dress a guess up as a
+        // resolved dimension; the placeholder cannot, because no chunk can
+        // arrive before `apply_login_shape` replaces it and the active-dimension
+        // fields below stay `None` until it does.
+        let world = World::new(DimensionShape::OVERWORLD);
+        let dim_types = self.dim_types.clone();
         let overworld_clock_id = self.overworld_clock_id;
         let visual_effects =
             crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
@@ -200,9 +636,10 @@ impl<'a> Connection<'a> {
         let pending_biome_registry = if self.biome_defs.is_empty() {
             None
         } else {
-            Some(rewo_world::biome::BiomeRegistry::new(self.biome_defs.clone()))
+            Some(rewo_world::biome::BiomeRegistry::new(
+                self.biome_defs.clone(),
+            ))
         };
-        let dim_attrs = self.dim_attrs.clone();
         let biome_global_bits = pending_biome_registry
             .as_ref()
             .map(|r| r.global_bits)
@@ -217,7 +654,7 @@ impl<'a> Connection<'a> {
             collide,
             entity_push: Vec::new(),
             global_bits,
-            dim_shapes,
+            dim_types,
             overworld_clock_id,
             spawned: false,
             corrections: 0,
@@ -250,10 +687,16 @@ impl<'a> Connection<'a> {
             pending_skins: Vec::new(),
             visual_effects,
             pending_biome_registry,
-            dim_attrs,
             colormaps,
             biome_global_bits,
             biome_zoom_seed: None,
+            // No dimension is active until the login packet names one.
+            active_dimension_key: None,
+            active_dimension_holder: None,
+            active_dimension_type: None,
+            dimension_generation: 0,
+            dimension_transitions: Vec::new(),
+            chunk_decode_failures: 0,
         };
         // Online-mode: fetch a player certificate and announce the chat
         // session so `enforce-secure-profile` servers accept our chat. A
@@ -344,6 +787,15 @@ impl PlaySession {
     /// How many columns are currently queued for re-mesh (cheap peek).
     pub fn dirty_len(&self) -> usize {
         self.dirty.len()
+    }
+
+    /// The synced `minecraft:dimension_type` registry in raw wire order — index
+    /// *is* the holder id. Read-only: nothing outside the session may select a
+    /// dimension, but a gate has to be able to check that the holder a packet
+    /// named really is the slot it resolved to, **derived from this registry**
+    /// rather than from an assumed numeric order.
+    pub fn dimension_types(&self) -> &[DimensionTypeDef] {
+        &self.dim_types
     }
 
     /// Drain the dropped-column list (renderer frees their buffers).
@@ -539,7 +991,14 @@ impl PlaySession {
                     // New column changes its own + its neighbors' edge faces.
                     self.mark_dirty_around(cx, cz);
                 }
-                Err(e) => log::error!("play: chunk decode failed: {e}"),
+                Err(e) => {
+                    // Counted, not just logged: a decode failure here is what a
+                    // wrong vertical shape looks like from the outside, so the
+                    // count is the meter for "we are decoding chunks against
+                    // the dimension we are actually in".
+                    self.chunk_decode_failures = self.chunk_decode_failures.wrapping_add(1);
+                    log::error!("play: chunk decode failed: {e}");
+                }
             }
         } else if Some(id) == ids.cb_play_chunks_biomes {
             // Biomes changed for already-loaded chunks (`/fillbiome`, worldgen
@@ -554,7 +1013,9 @@ impl PlaySession {
                     let Ok(packed) = r.i64() else { break };
                     let (cx, cz) = (packed as i32, (packed >> 32) as i32);
                     // Cap = ClientboundChunksBiomesPacket's TWO_MEGABYTES.
-                    let Ok(buf) = r.byte_array(2_097_152) else { break };
+                    let Ok(buf) = r.byte_array(2_097_152) else {
+                        break;
+                    };
                     let mut br = PacketReader::new(buf);
                     match rewo_world::chunk::read_chunk_biomes(&mut br, &shape, biome_bits) {
                         Ok(containers) => {
@@ -695,9 +1156,11 @@ impl PlaySession {
             // just observed for the parity meter.
             log::debug!("net: block_changed_ack");
         } else if id == ids.cb_play_login {
-            self.apply_login_shape(body);
+            self.apply_login_shape(body)?;
             let p = PacketWriter::packet(self.ids.sb_play_player_loaded);
             self.send(p)?;
+        } else if id == ids.cb_play_respawn {
+            self.apply_respawn(body)?;
         } else if id == ids.cb_play_update_mob_effect {
             self.visual_effects.apply_update(body);
         } else if id == ids.cb_play_remove_mob_effect {
@@ -1048,70 +1511,156 @@ impl PlaySession {
         }
     }
 
-    fn apply_login_shape(&mut self, body: &[u8]) {
+    /// `ClientboundLoginPacket`: establish the active dimension.
+    ///
+    /// Fallible on purpose. Everything downstream of this packet — the vertical
+    /// shape every chunk is decoded against, the lighting contract, the biome
+    /// layer's base sky/fog — is derived from bytes read here, so a body we
+    /// cannot decode has exactly one safe outcome: fail, rather than leave the
+    /// pre-login Overworld placeholder in place while the server starts sending
+    /// chunks for something else. The caller propagates the error and the
+    /// `player_loaded` reply is never sent.
+    fn apply_login_shape(&mut self, body: &[u8]) -> Result<(), String> {
         let mut r = PacketReader::new(body);
-        // The first `int` is the local player's entity id (big-endian, NOT a
-        // varint). Only effects targeting it drive the camera lightmap. If it is
-        // truncated the reader is already past the buffer, so there is nothing
-        // to parse — bail rather than run the dimension-holder parse on garbage.
-        let Ok(player_id) = r.i32() else {
-            return;
-        };
+        // The prefix ends on the first byte of the embedded
+        // `CommonPlayerSpawnInfo` and yields the local player's entity id (only
+        // effects targeting it drive the camera lightmap).
+        let player_id =
+            read_login_prefix(&mut r).map_err(|e| format!("play login: prefix: {e}"))?;
+        // One shared spawn-info decoder for login and respawn — no second,
+        // partial decoder anywhere: the dimension holder is
+        // `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry` =
+        // `idMapper`, i.e. the **raw 0-based registry id** with NO inline/`id+1`
+        // case (unlike `ByteBufCodecs.holder`), and `seed` is the
+        // `biomeZoomSeed`.
+        let spawn = CommonPlayerSpawnInfo::read(&mut r)
+            .map_err(|e| format!("play login: spawn info: {e}"))?;
         self.visual_effects.set_player_id(player_id);
-        // Parse the login prefix + `CommonPlayerSpawnInfo`. The dimension-type
-        // holder is `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry`
-        // = `idMapper` — it writes the **raw 0-based registry id**, with NO
-        // inline/`id+1` case (unlike `ByteBufCodecs.holder`). So the id is a
-        // direct index and the dimension ResourceKey + `long seed`
-        // (= `biomeZoomSeed`) always follow it immediately.
-        let parse = (|| -> rewo_proto::Result<(i32, i64)> {
-            r.bool()?; // hardcore
-            let n = r.count("dims", 1)?;
-            for _ in 0..n {
-                r.identifier()?;
-            }
-            r.varint()?; // max players
-            r.varint()?; // view dist
-            r.varint()?; // sim dist
-            r.bool()?; // reduced debug
-            r.bool()?; // show death
-            r.bool()?; // limited crafting
-            let holder = r.varint()?; // dimension-type raw registry id (0-based)
-            r.identifier()?; // dimension ResourceKey
-            let seed = r.i64()?; // biomeZoomSeed
-            Ok((holder, seed))
-        })();
-        if let Ok((holder, seed)) = parse {
-            self.world.shape = crate::login_dimension_shape(holder, &self.dim_shapes);
-            self.biome_zoom_seed = Some(seed);
-            self.build_biome_context(holder, seed);
-        }
+        let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
+        self.biome_zoom_seed = Some(spawn.seed);
+        self.build_biome_context(&active.def, spawn.seed);
+        log::info!(
+            "net: play login — level {} on dimension type {} (holder {}): min_y={} \
+             height={} sky_light={} skybox={:?} cardinal={}",
+            active.key,
+            active.def.name,
+            active.holder,
+            active.def.shape.min_y,
+            active.def.shape.height,
+            active.def.has_sky_light,
+            active.def.skybox,
+            active.def.cardinal_light_type.name(),
+        );
+        // Login *establishes* the active dimension at generation 0; it is not a
+        // transition, so neither the counter nor the history moves. Only a later
+        // change — a respawn that names a different level — records one.
+        self.active_dimension_key = Some(active.key);
+        self.active_dimension_holder = Some(active.holder);
+        self.active_dimension_type = Some(active.def);
+        Ok(())
     }
 
-    /// Build the `BiomeContext` from the parsed registry + this dimension's base
-    /// sky/fog + the `biomeZoomSeed`, and attach it to the world. `holder` is a
-    /// raw 0-based dimension-type id (see `apply_login_shape`). The registry is
-    /// cloned (not consumed) so this is idempotent; respawn is not yet wired to
-    /// call it, so a mid-session dimension change keeps the join dimension's
-    /// base sky/fog.
-    fn build_biome_context(&mut self, holder: i32, seed: i64) {
-        let Some(reg_template) = self.pending_biome_registry.as_ref() else {
-            return;
-        };
-        let mut reg = reg_template.clone();
-        if holder >= 0 {
-            if let Some((sky, fog)) = self.dim_attrs.get(holder as usize).copied() {
-                reg.dimension_sky = sky;
-                reg.dimension_fog = fog;
-            }
+    /// `ClientboundRespawnPacket` — the mid-session twin of `apply_login_shape`,
+    /// and the only packet that changes which dimension we are in.
+    ///
+    /// Fallible for the same reason login is: everything downstream of this
+    /// packet is derived from bytes read here. The whole body is decoded
+    /// **first**, through the one shared `RespawnInfo::parse` (which rejects a
+    /// short body *and* a long one), and nothing is applied until it succeeds —
+    /// so a malformed respawn leaves the session in the dimension it was already
+    /// in rather than half-way into a new one. The caller propagates the error.
+    fn apply_respawn(&mut self, body: &[u8]) -> Result<(), String> {
+        let info = RespawnInfo::parse(body).map_err(|e| format!("play respawn: {e}"))?;
+        let spawn = &info.spawn;
+        let changed = WorldTransition {
+            world: &mut self.world,
+            dirty: &mut self.dirty,
+            removed: &mut self.removed,
+            light: &mut self.light,
+            day_ticks: &mut self.day_ticks,
+            overworld_clock: &mut self.overworld_clock,
+            game_time: &mut self.game_time,
+            biome_zoom_seed: &mut self.biome_zoom_seed,
+            biome_registry: self.pending_biome_registry.as_ref(),
+            colormaps: &self.colormaps,
+            active_key: &mut self.active_dimension_key,
+            active_holder: &mut self.active_dimension_holder,
+            active_type: &mut self.active_dimension_type,
+            generation: &mut self.dimension_generation,
+            transitions: &mut self.dimension_transitions,
         }
-        let ctx = rewo_world::biome::BiomeContext::new(
-            std::sync::Arc::new(reg),
-            self.colormaps.clone(),
+        .apply_respawn(&self.dim_types, spawn);
+
+        // The local player is recreated on both paths — vanilla's `newPlayer`
+        // is built before the `dimensionChanged` branch is over with.
+        LocalPlayerRespawn {
+            player: &mut self.player,
+            health: &mut self.health,
+            food: &mut self.food,
+            dead: &mut self.dead,
+            spawned: &mut self.spawned,
+            last_pos: &mut self.last_pos,
+            last_rot: &mut self.last_rot,
+            reminder: &mut self.reminder,
+            last_on_ground: &mut self.last_on_ground,
+            last_horiz: &mut self.last_horiz,
+            last_input_flags: &mut self.last_input_flags,
+        }
+        .apply(info.should_keep(RespawnInfo::KEEP_ENTITY_DATA));
+
+        // Same reason, same both-paths placement: the fresh `LocalPlayer` has
+        // an empty `activeEffects` and a `tickCount` of 0. Neither is
+        // `SynchedEntityData`, so `dataToKeep` bit 2 cannot carry them and the
+        // server re-sends whatever effects still apply. The registry ids and the
+        // (unchanged) local entity id are kept.
+        self.visual_effects.reset_for_respawn();
+
+        if changed {
+            let def = self
+                .active_dimension_type
+                .as_ref()
+                .expect("a changed dimension always sets the active type");
+            log::info!(
+                "net: respawn — dimension change to level {} on dimension type {} \
+                 (holder {}): min_y={} height={} sky_light={} skybox={:?} \
+                 cardinal={} generation={} data_to_keep={}",
+                spawn.dimension,
+                def.name,
+                spawn.dimension_type,
+                def.shape.min_y,
+                def.shape.height,
+                def.has_sky_light,
+                def.skybox,
+                def.cardinal_light_type.name(),
+                self.dimension_generation,
+                info.data_to_keep,
+            );
+        } else {
+            log::info!(
+                "net: respawn — same level {} retained (data_to_keep={})",
+                spawn.dimension,
+                info.data_to_keep,
+            );
+        }
+        // `notifyPlayerLoaded`: `setClientLoaded(false)` above means the next
+        // ready level announces itself again. Rewo has no level-loading tracker,
+        // so — exactly as on the login path — the announcement goes out as soon
+        // as the packet is applied.
+        let p = PacketWriter::packet(self.ids.sb_play_player_loaded);
+        self.send(p)
+    }
+
+    /// Attach the join dimension's `BiomeContext`. A dimension change rebuilds
+    /// it through the same [`attach_biome_context`], so the base sky/fog always
+    /// belongs to the dimension we are actually in.
+    fn build_biome_context(&mut self, def: &DimensionTypeDef, seed: i64) {
+        attach_biome_context(
+            &mut self.world,
+            self.pending_biome_registry.as_ref(),
+            &self.colormaps,
+            def,
             seed,
         );
-        self.world.set_biome_context(std::sync::Arc::new(ctx));
-        log::info!("net: biome context attached (seed={seed})");
     }
 
     // -- gameplay actions --------------------------------------------------
@@ -1624,6 +2173,601 @@ mod section_update_tests {
         let packed: u64 = (1234u64 << 12) | ((5 << 8) | (6 << 4) | 7);
         assert_eq!(packed >> 12, 1234);
         assert_eq!(unpack_section_offset((packed & 4095) as i32), (5, 7, 6));
+    }
+}
+
+#[cfg(test)]
+mod login_dimension_tests {
+    use super::*;
+    use crate::dimension_parse::builtin as fx;
+    use crate::spawn_info::GlobalPos;
+
+    /// A registry in a **deliberately non name-sorted** wire order: the Nether
+    /// is holder 0 and the Overworld is holder 2. Any name-keyed shortcut in the
+    /// selection path fails immediately here.
+    fn registry() -> Vec<DimensionTypeDef> {
+        crate::dimension_parse::parse_dimension_registry_packet(&fx::registry_packet(&[
+            ("minecraft:the_nether", fx::the_nether()),
+            ("minecraft:the_end", fx::the_end()),
+            ("minecraft:overworld", fx::overworld()),
+        ]))
+        .expect("fixture registry must parse")
+        .expect("packet is the dimension_type registry")
+    }
+
+    /// A spawn info naming `level` on dimension-type holder `holder`, with every
+    /// other field filled in so nothing about the case under test depends on a
+    /// default.
+    fn spawn(holder: i32, level: &str) -> CommonPlayerSpawnInfo {
+        CommonPlayerSpawnInfo {
+            dimension_type: holder,
+            dimension: level.into(),
+            seed: 0x0bad_f00d_dead_beefu64 as i64,
+            game_type: 1,
+            previous_game_type: Some(0),
+            is_debug: false,
+            is_flat: false,
+            last_death_location: Some(GlobalPos {
+                dimension: "minecraft:overworld".into(),
+                x: -3,
+                y: -59,
+                z: 7,
+            }),
+            portal_cooldown: 0,
+            sea_level: 63,
+        }
+    }
+
+    /// The pre-login world is a plain Overworld placeholder, so a test that
+    /// lands on the Nether cannot pass by accident.
+    fn placeholder_world() -> World {
+        let world = World::new(DimensionShape::OVERWORLD);
+        assert_eq!(world.shape, DimensionShape::OVERWORLD);
+        assert!(world.has_sky_light());
+        world
+    }
+
+    /// Raw holder 0 is the **first synced entry**, never "inline" and never a
+    /// default: here that entry is the Nether, so the resolved shape is 0..256
+    /// with no skylight rather than the placeholder's -64..320 with skylight.
+    #[test]
+    fn raw_holder_zero_selects_the_first_entry_even_when_it_is_the_nether() {
+        let defs = registry();
+        assert_eq!(defs[0].name, "minecraft:the_nether", "fixture precondition");
+        let mut world = placeholder_world();
+        let active = apply_spawn_info(&mut world, &defs, &spawn(0, "minecraft:the_nether"));
+
+        assert_eq!(active.holder, 0);
+        assert_eq!(active.def.name, "minecraft:the_nether");
+        assert_eq!(active.def.shape, DimensionShape::NETHER);
+        assert!(!active.def.has_sky_light);
+        assert_eq!(active.def.skybox, Skybox::None);
+        // …and the world is now decoding chunks against exactly that.
+        assert_eq!(world.shape, DimensionShape::NETHER);
+        assert_ne!(world.shape, DimensionShape::OVERWORLD);
+        assert!(!world.has_sky_light());
+        assert_eq!(
+            world.cardinal_light_type(),
+            rewo_world::dimension::CardinalLightType::Nether
+        );
+    }
+
+    /// The active level key is `CommonPlayerSpawnInfo.dimension`, NOT the
+    /// selected dimension **type**'s registry name. A datapack level built on
+    /// the vanilla overworld type shares that type's name with
+    /// `minecraft:overworld` — reading the key off `def.name` would report the
+    /// wrong world for every such level, and would be indistinguishable from
+    /// correct on a vanilla-only server.
+    #[test]
+    fn active_level_key_comes_from_the_spawn_info_not_the_type_name() {
+        let defs = registry();
+        let mut world = placeholder_world();
+        let active = apply_spawn_info(&mut world, &defs, &spawn(2, "rewo:mining_world"));
+
+        assert_eq!(active.key, "rewo:mining_world");
+        assert_eq!(active.def.name, "minecraft:overworld");
+        assert_ne!(
+            active.key, active.def.name,
+            "key is the level, not the type"
+        );
+        // The type still resolved normally — the two identifiers are separate,
+        // not alternatives.
+        assert_eq!(active.holder, 2);
+        assert_eq!(world.shape, DimensionShape::OVERWORLD);
+        assert!(world.has_sky_light());
+    }
+
+    /// A holder the synced registry does not contain degrades to the *named*
+    /// unresolved fallback, and the packet's own level key and holder id survive
+    /// verbatim — the diagnostic must still say which world the server claimed.
+    #[test]
+    fn an_unresolved_holder_keeps_the_packets_key_and_holder() {
+        let defs = registry();
+        let mut world = placeholder_world();
+        let active = apply_spawn_info(&mut world, &defs, &spawn(99, "rewo:mining_world"));
+
+        assert_eq!(active.key, "rewo:mining_world");
+        assert_eq!(active.holder, 99);
+        assert_eq!(active.def.name, "rewo:unresolved_dimension_type/99");
+        assert!(
+            defs.iter().all(|d| d.name != active.def.name),
+            "the fallback must never claim to be a synced entry"
+        );
+        assert_eq!(active.def.shape, DimensionShape::OVERWORLD);
+    }
+}
+
+#[cfg(test)]
+mod respawn_tests {
+    use super::*;
+    use crate::dimension_parse::builtin as fx;
+    use crate::spawn_info::GlobalPos;
+    use rewo_world::entities::EntityState;
+
+    /// The same deliberately non name-sorted registry the login tests use:
+    /// Nether 0, the_end 1, Overworld 2. Any name-keyed shortcut fails here.
+    fn registry() -> Vec<DimensionTypeDef> {
+        crate::dimension_parse::parse_dimension_registry_packet(&fx::registry_packet(&[
+            ("minecraft:the_nether", fx::the_nether()),
+            ("minecraft:the_end", fx::the_end()),
+            ("minecraft:overworld", fx::overworld()),
+        ]))
+        .expect("fixture registry must parse")
+        .expect("packet is the dimension_type registry")
+    }
+
+    const NETHER_HOLDER: i32 = 0;
+    const OVERWORLD_HOLDER: i32 = 2;
+
+    fn spawn(holder: i32, level: &str, seed: i64) -> CommonPlayerSpawnInfo {
+        CommonPlayerSpawnInfo {
+            dimension_type: holder,
+            dimension: level.into(),
+            seed,
+            game_type: 1,
+            previous_game_type: Some(0),
+            is_debug: false,
+            is_flat: false,
+            last_death_location: Some(GlobalPos {
+                dimension: "minecraft:overworld".into(),
+                x: -3,
+                y: -59,
+                z: 7,
+            }),
+            portal_cooldown: 0,
+            sea_level: 63,
+        }
+    }
+
+    /// The world-side session state as plain locals: a `PlaySession` owns a
+    /// socket and cannot be built in a test, but [`WorldTransition`] borrows
+    /// exactly these fields and nothing else.
+    struct Harness {
+        world: World,
+        dirty: std::collections::HashSet<(i32, i32)>,
+        removed: Vec<(i32, i32)>,
+        light: rewo_world::light::LightEngine,
+        day_ticks: Option<i64>,
+        overworld_clock: Option<WorldClock>,
+        game_time: Option<i64>,
+        biome_zoom_seed: Option<i64>,
+        colormaps: rewo_world::biome::Colormaps,
+        key: Option<String>,
+        holder: Option<i32>,
+        ty: Option<DimensionTypeDef>,
+        generation: u64,
+        transitions: Vec<DimensionTransition>,
+    }
+
+    /// A live-looking Overworld session: **three** loaded columns (two of them
+    /// also queued for re-mesh), an entity, a running world clock, and a
+    /// generation already past 0 so an increment can't be confused with a reset.
+    const OLD_COLUMNS: [(i32, i32); 3] = [(0, 0), (1, -2), (-3, 5)];
+
+    fn overworld_session(defs: &[DimensionTypeDef], generation: u64) -> Harness {
+        let mut world = World::for_dimension(&defs[OVERWORLD_HOLDER as usize]);
+        for (cx, cz) in OLD_COLUMNS {
+            world.ensure_column(cx, cz);
+        }
+        world
+            .entities
+            .add(7, EntityState::new(1, 42, 8.0, 70.0, 8.0, 0.0, 0.0));
+        assert_eq!(world.loaded_columns(), 3, "precondition");
+        assert!(world.has_sky_light(), "precondition");
+        Harness {
+            world,
+            dirty: [(0, 0), (1, -2)].into_iter().collect(),
+            removed: Vec::new(),
+            light: rewo_world::light::LightEngine::new(),
+            day_ticks: Some(189_121),
+            overworld_clock: Some(WorldClock::from_state(138_341, 189_121, 0.25, 1.0)),
+            game_time: Some(138_341),
+            biome_zoom_seed: Some(0x0bad_f00d),
+            colormaps: rewo_world::biome::Colormaps::neutral(),
+            key: Some("minecraft:overworld".into()),
+            holder: Some(OVERWORLD_HOLDER),
+            ty: Some(defs[OVERWORLD_HOLDER as usize].clone()),
+            generation,
+            transitions: Vec::new(),
+        }
+    }
+
+    impl Harness {
+        fn respawn(&mut self, defs: &[DimensionTypeDef], spawn: &CommonPlayerSpawnInfo) -> bool {
+            WorldTransition {
+                world: &mut self.world,
+                dirty: &mut self.dirty,
+                removed: &mut self.removed,
+                light: &mut self.light,
+                day_ticks: &mut self.day_ticks,
+                overworld_clock: &mut self.overworld_clock,
+                game_time: &mut self.game_time,
+                biome_zoom_seed: &mut self.biome_zoom_seed,
+                biome_registry: None,
+                colormaps: &self.colormaps,
+                active_key: &mut self.key,
+                active_holder: &mut self.holder,
+                active_type: &mut self.ty,
+                generation: &mut self.generation,
+                transitions: &mut self.transitions,
+            }
+            .apply_respawn(defs, spawn)
+        }
+    }
+
+    /// Overworld → Nether: every old column is queued for the renderer to free,
+    /// the world is a *fresh* Nether (0..256, no sky light, no columns, no
+    /// entities), and the per-level clock/dirty/light state is back to its
+    /// pre-`set_time` values.
+    #[test]
+    fn a_changed_key_rebuilds_the_world_and_queues_every_old_column() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 4);
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", -1)));
+
+        // Every old coordinate reached `removed` — exactly once, and only those.
+        let mut removed = s.removed.clone();
+        removed.sort_unstable();
+        let mut expected = OLD_COLUMNS;
+        expected.sort_unstable();
+        assert_eq!(removed, expected, "the renderer must free all three");
+
+        // A fresh Nether, not a re-pointed Overworld.
+        assert_eq!(s.world.shape, DimensionShape::NETHER);
+        assert_ne!(s.world.shape, DimensionShape::OVERWORLD);
+        assert!(!s.world.has_sky_light());
+        assert_eq!(s.world.loaded_columns(), 0, "old columns are gone");
+        assert_eq!(s.world.entities.len(), 0, "entities go with the old world");
+
+        // Light-relevant state: the lighting contract is the Nether's, so an
+        // unloaded read is dark rather than the Overworld's impossible sky 15 —
+        // and the fresh engine has nothing queued from the old shape.
+        assert_eq!(s.world.light_at(0, 70, 0), (0, 0));
+        assert_eq!(s.world.brightness_at(0, 70, 0), 0);
+        let tables = rewo_world::light::LightTables {
+            emission: &[],
+            dampening: &[],
+            face_occludes: &[],
+        };
+        assert!(
+            s.light
+                .on_block_change(&mut s.world, tables, 0, 70, 0, 0, 0)
+                .is_empty(),
+            "a fresh engine touches nothing in an empty world"
+        );
+
+        // Per-level state cleared.
+        assert!(s.dirty.is_empty(), "no stale column is queued for re-mesh");
+        assert_eq!(s.day_ticks, None);
+        assert_eq!(s.overworld_clock, None);
+        assert_eq!(s.game_time, None);
+
+        // The new dimension, and the seed the biome layer fiddles with.
+        assert_eq!(s.key.as_deref(), Some("minecraft:the_nether"));
+        assert_eq!(s.holder, Some(NETHER_HOLDER));
+        assert_eq!(
+            s.ty.as_ref().map(|d| d.name.as_str()),
+            Some("minecraft:the_nether")
+        );
+        assert_eq!(s.biome_zoom_seed, Some(-1));
+
+        // Generation incremented by exactly one, and the history is exact.
+        assert_eq!(s.generation, 5);
+        assert_eq!(
+            s.transitions,
+            vec![DimensionTransition {
+                old_key: Some("minecraft:overworld".into()),
+                new_key: "minecraft:the_nether".into(),
+                holder: NETHER_HOLDER,
+                type_name: "minecraft:the_nether".into(),
+                shape: DimensionShape::NETHER,
+                has_sky_light: false,
+                skybox: Skybox::None,
+                ambient_light: 0.1,
+                cardinal_light_type: CardinalLightType::Nether,
+                has_day_timeline: false,
+                generation: 5,
+                // The witnesses: three loaded columns left, three queued for the
+                // renderer to free, none carried into the replacement, no stale
+                // re-mesh entry, and the whole clock back to pre-`set_time`.
+                old_columns: 3,
+                queued_for_removal: 3,
+                removal_queue_len: 3,
+                new_world_columns: 0,
+                dirty_after: 0,
+                clock_reset: true,
+            }]
+        );
+    }
+
+    /// The discard witnesses are *measurements*, not constants: with a
+    /// pre-loaded removal queue the transition still reports exactly what it
+    /// pushed, and the queue length grows to hold both.
+    ///
+    /// This is the property no observer outside the transition can check —
+    /// coordinates cannot prove it, because the Nether loads column (0,0) too.
+    #[test]
+    fn the_discard_witnesses_count_this_transitions_own_push() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 0);
+        // A column the app has not drained yet, from an earlier unload.
+        s.removed.push((99, 99));
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
+        let t = &s.transitions[0];
+        assert_eq!(t.old_columns, 3, "the world we left had three columns");
+        assert_eq!(t.queued_for_removal, 3, "this transition pushed three");
+        assert_eq!(t.removal_queue_len, 4, "the pre-existing entry is still queued");
+        assert_eq!(t.new_world_columns, 0);
+        assert_eq!(t.dirty_after, 0);
+        assert!(t.clock_reset);
+        assert_eq!(t.type_name, "minecraft:the_nether");
+        assert_eq!(t.cardinal_light_type, CardinalLightType::Nether);
+        assert_eq!(t.ambient_light, 0.1);
+        assert!(!t.has_day_timeline);
+        assert_eq!(s.removed.len(), 4);
+    }
+
+    /// A respawn naming the level we are already in (the ordinary death
+    /// respawn): the world, its columns, the clock, the generation and the
+    /// history all survive untouched — and so do the dimension type and the
+    /// seed, because vanilla builds no new `ClientLevel` to apply them to.
+    #[test]
+    fn a_same_key_respawn_retains_the_world_generation_and_history() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 4);
+        let digest = s.world.digest();
+        // A same-key packet that nonetheless names a *different* holder and
+        // seed: neither may be applied behind the retained chunks.
+        assert!(!s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:overworld", 999)));
+
+        assert_eq!(s.world.loaded_columns(), 3, "columns retained");
+        assert_eq!(s.world.digest(), digest, "the world is untouched");
+        assert_eq!(s.world.shape, DimensionShape::OVERWORLD);
+        assert!(s.world.has_sky_light());
+        assert_eq!(s.world.entities.len(), 1, "entities retained");
+        assert!(s.removed.is_empty(), "nothing to free");
+        assert_eq!(s.dirty.len(), 2, "re-mesh queue retained");
+
+        assert_eq!(s.day_ticks, Some(189_121));
+        assert_eq!(s.game_time, Some(138_341));
+        assert_eq!(s.overworld_clock.unwrap().total, 189_121);
+
+        assert_eq!(s.holder, Some(OVERWORLD_HOLDER), "type not re-applied");
+        assert_eq!(
+            s.ty.as_ref().map(|d| d.name.as_str()),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(s.biome_zoom_seed, Some(0x0bad_f00d), "seed retained");
+        assert_eq!(s.generation, 4, "not a transition");
+        assert!(s.transitions.is_empty(), "history unmoved");
+    }
+
+    /// The generation is a counter, not an index: at `u64::MAX` it wraps to 0
+    /// rather than panicking on overflow, and the recorded transition carries
+    /// the wrapped value.
+    #[test]
+    fn the_generation_wraps_at_u64_max() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, u64::MAX);
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 0)));
+        assert_eq!(s.generation, 0);
+        assert_eq!(s.transitions[0].generation, 0);
+    }
+
+    /// Two changes in a row: the history is append-only and oldest-first, and
+    /// the second transition's `old_key` is the first's `new_key`.
+    #[test]
+    fn successive_changes_append_an_oldest_first_history() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 0);
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 1)));
+        assert!(s.respawn(&defs, &spawn(OVERWORLD_HOLDER, "rewo:mining_world", 2)));
+
+        assert_eq!(s.generation, 2);
+        assert_eq!(s.transitions.len(), 2);
+        assert_eq!(s.transitions[0].new_key, "minecraft:the_nether");
+        assert_eq!(
+            s.transitions[1].old_key.as_deref(),
+            Some("minecraft:the_nether")
+        );
+        assert_eq!(s.transitions[1].new_key, "rewo:mining_world");
+        // The level key is the packet's, the type is the holder's — a datapack
+        // level on the vanilla overworld type keeps both straight.
+        assert_eq!(s.key.as_deref(), Some("rewo:mining_world"));
+        assert_eq!(
+            s.ty.as_ref().map(|d| d.name.as_str()),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(s.world.shape, DimensionShape::OVERWORLD);
+        assert!(s.world.has_sky_light());
+    }
+
+    // -- the local player --------------------------------------------------
+
+    /// A player mid-flight, so nothing below can pass by starting at a default.
+    fn moving_player() -> PlayerState {
+        PlayerState {
+            vx: 0.25,
+            vy: -0.6,
+            vz: -0.125,
+            yaw: 137.5,
+            pitch: -22.5,
+            on_ground: true,
+            horizontal_collision: true,
+            ..PlayerState::at(120.5, 71.0, -33.25)
+        }
+    }
+
+    struct PlayerHarness {
+        player: PlayerState,
+        health: f32,
+        food: i32,
+        dead: bool,
+        spawned: bool,
+        last_pos: (f64, f64, f64),
+        last_rot: (f32, f32),
+        reminder: u32,
+        last_on_ground: bool,
+        last_horiz: bool,
+        last_input_flags: u8,
+    }
+
+    fn player_harness() -> PlayerHarness {
+        PlayerHarness {
+            player: moving_player(),
+            health: 3.5,
+            food: 6,
+            dead: true,
+            spawned: true,
+            last_pos: (120.5, 71.0, -33.25),
+            last_rot: (137.5, -22.5),
+            reminder: 13,
+            last_on_ground: true,
+            last_horiz: true,
+            last_input_flags: 0b0101_0001,
+        }
+    }
+
+    impl PlayerHarness {
+        fn respawn(&mut self, keep_entity_data: bool) {
+            LocalPlayerRespawn {
+                player: &mut self.player,
+                health: &mut self.health,
+                food: &mut self.food,
+                dead: &mut self.dead,
+                spawned: &mut self.spawned,
+                last_pos: &mut self.last_pos,
+                last_rot: &mut self.last_rot,
+                reminder: &mut self.reminder,
+                last_on_ground: &mut self.last_on_ground,
+                last_horiz: &mut self.last_horiz,
+                last_input_flags: &mut self.last_input_flags,
+            }
+            .apply(keep_entity_data);
+        }
+    }
+
+    /// `dataToKeep` bit 2 (`shouldKeep((byte)2)`): the statements Rewo can
+    /// represent — `setDeltaMovement(old)`, `setYRot(old)`, `setXRot(old)`, and
+    /// the `assignValues` health entry — carry over bit-exactly, and the
+    /// constructor's `lastSentInput` is the old player's rather than
+    /// `Input.EMPTY`.
+    #[test]
+    fn keeping_entity_data_preserves_velocity_and_both_rotations() {
+        let mut h = player_harness();
+        h.respawn(true);
+
+        let old = moving_player();
+        assert_eq!(
+            (h.player.vx, h.player.vy, h.player.vz),
+            (old.vx, old.vy, old.vz)
+        );
+        assert_eq!(h.player.yaw, old.yaw);
+        assert_eq!(h.player.pitch, old.pitch);
+        assert_eq!(h.last_input_flags, 0b0101_0001, "old lastSentInput kept");
+
+        // Everything else is still the fresh entity's — bit 2 keeps entity
+        // *data*, not the entity's position or its send-cadence bookkeeping.
+        assert_eq!((h.player.x, h.player.y, h.player.z), (0.0, 0.0, 0.0));
+        assert!(!h.player.on_ground && !h.player.horizontal_collision);
+        assert_eq!(h.last_pos, (0.0, 0.0, 0.0));
+        assert_eq!(h.last_rot, (0.0, 0.0));
+        assert_eq!(h.reminder, 0);
+        assert!(!h.last_on_ground && !h.last_horiz);
+        // Health is `SynchedEntityData`, so bit 2 preserves the old player's
+        // non-default value exactly; food is `FoodData` and is always fresh.
+        assert_eq!(h.health, 3.5, "DATA_HEALTH_ID carried by assignValues");
+        assert_eq!(h.food, 20, "FoodData is not synched data — always fresh");
+        assert!(!h.dead);
+        assert!(
+            !h.spawned,
+            "not a live participant until the teleport lands"
+        );
+    }
+
+    /// `dataToKeep` 0: `resetPos()` zeroes the delta movement and the X rotation,
+    /// `handleRespawn` then sets the Y rotation to -180, and the constructor
+    /// supplies everything else — including `Input.EMPTY`.
+    #[test]
+    fn without_keep_the_player_is_the_freshly_constructed_one() {
+        let mut h = player_harness();
+        h.respawn(false);
+
+        assert_eq!((h.player.vx, h.player.vy, h.player.vz), (0.0, 0.0, 0.0));
+        assert_eq!(h.player.pitch, 0.0, "resetPos setXRot(0)");
+        assert_eq!(h.player.yaw, -180.0, "handleRespawn setYRot(-180)");
+        assert_eq!(h.last_input_flags, 0, "Input.EMPTY");
+        assert_eq!((h.player.x, h.player.y, h.player.z), (0.0, 0.0, 0.0));
+        assert!(!h.player.on_ground && !h.player.horizontal_collision);
+        assert_eq!(h.last_pos, (0.0, 0.0, 0.0));
+        assert_eq!(h.last_rot, (0.0, 0.0));
+        assert_eq!(h.reminder, 0);
+        assert!(!h.last_on_ground && !h.last_horiz);
+        // No bit 2 → no `assignValues`, so the harness's non-default 3.5 health
+        // is gone and the fresh player's 20 stands.
+        assert_eq!((h.health, h.food), (20.0, 20));
+        assert!(!h.dead);
+        assert!(!h.spawned);
+    }
+
+    /// Bit 1 (`KEEP_ATTRIBUTE_MODIFIERS`) selects `assignAllValues` vs
+    /// `assignBaseValues` on an `AttributeMap` Rewo does not model, so it is a
+    /// documented no-op: the two masks that differ only in bit 1 must land on
+    /// identical player state.
+    #[test]
+    fn the_attribute_modifier_bit_is_a_no_op() {
+        for (a, b) in [
+            (0u8, RespawnInfo::KEEP_ATTRIBUTE_MODIFIERS),
+            (RespawnInfo::KEEP_ENTITY_DATA, RespawnInfo::KEEP_ALL_DATA),
+        ] {
+            let keeps_entity_data = |m: u8| m & RespawnInfo::KEEP_ENTITY_DATA != 0;
+            let mut x = player_harness();
+            x.respawn(keeps_entity_data(a));
+            let mut y = player_harness();
+            y.respawn(keeps_entity_data(b));
+            assert_eq!(
+                (
+                    x.player.vx,
+                    x.player.vy,
+                    x.player.vz,
+                    x.player.yaw,
+                    x.player.pitch
+                ),
+                (
+                    y.player.vx,
+                    y.player.vy,
+                    y.player.vz,
+                    y.player.yaw,
+                    y.player.pitch
+                ),
+                "dataToKeep {a} and {b} differ only in the attribute bit"
+            );
+            assert_eq!(x.last_input_flags, y.last_input_flags);
+            assert_eq!(
+                (x.health, x.food, x.dead, x.spawned),
+                (y.health, y.food, y.dead, y.spawned)
+            );
+        }
     }
 }
 

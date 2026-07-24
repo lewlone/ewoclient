@@ -55,7 +55,9 @@ use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::{perspective_reverse_z, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_mesh::{pack_layer, MeshVertex, TINT_WHITE};
-use rewo_world::lightmap::{darkness_lightmap, mth_cos, sample, LightmapState};
+use rewo_world::lightmap::{
+    darkness_lightmap, mth_cos, rgb24_to_vec3, sample, LightmapState, DEFAULT_AMBIENT_COLOR,
+};
 
 use crate::stats::OverlayRing;
 
@@ -164,9 +166,9 @@ fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
 
     if failures.is_empty() {
         if args.check {
-            println!("[lightmapshot] CHECK OK — terrain + water + packed color + entity lightmap matrix verified");
+            println!("[lightmapshot] CHECK OK — terrain + water + packed color + dimension ambient + entity lightmap matrix verified");
         } else {
-            println!("[lightmapshot] PASS — terrain + water + packed color + entity lightmap matrix verified (assertion mode off)");
+            println!("[lightmapshot] PASS — terrain + water + packed color + dimension ambient + entity lightmap matrix verified (assertion mode off)");
         }
         Ok(())
     } else {
@@ -526,6 +528,195 @@ fn run_cases(
         }
     }
 
+    // --- Case 10 (M16): the per-dimension `AmbientColor`.
+    //
+    // `LightmapRenderStateExtractor.extract` reads `AmbientColor` from the
+    // camera's attribute probe (`EnvironmentAttributes.AMBIENT_LIGHT_COLOR`),
+    // so it is a per-dimension value, not the shader constant the pre-M16 code
+    // baked in. It reaches the GPU through the world pass's small
+    // `LightmapExtra` uniform buffer, because `WorldPush` is exactly at
+    // Vulkan's guaranteed 128-byte push budget.
+    //
+    // The colours are the built-in dimension types' literal attribute values
+    // (`data/minecraft/dimension_type/*.json`), converted by
+    // `ARGB.vector3fFromRGB24` (a plain /255, no sRGB decode).
+    {
+        // Overworld #0a0a0a, Nether #302821, End #3f473f.
+        const OW: i32 = 0xFF0A_0A0Au32 as i32;
+        const NETHER: i32 = 0xFF30_2821u32 as i32;
+        const END: i32 = 0xFF3F_473Fu32 as i32;
+        let amb = |argb: i32| rgb24_to_vec3(argb);
+        println!(
+            "[lightmapshot] ambient sources: OW {:?} Nether {:?} End {:?} (default {:?})",
+            amb(OW),
+            amb(NETHER),
+            amb(END),
+            DEFAULT_AMBIENT_COLOR
+        );
+        // Release assert: the attribute default really is black, so every case
+        // above (which leaves `ambient_color` at its default) is unaffected.
+        assert_eq!(
+            WorldLightmapState::default().ambient_color,
+            DEFAULT_AMBIENT_COLOR,
+            "the GPU state default must stay the attribute default"
+        );
+        assert_eq!(DEFAULT_AMBIENT_COLOR, [0.0, 0.0, 0.0]);
+
+        // (a) The unlit texel. block 0, sky 0, no night vision, gamma 0: the
+        //     whole lightmap IS the ambient (`max(ambient, nv*0)`, nothing
+        //     added, notGamma mixed in at weight 0). Graded against the CPU.
+        let mut unlit: Vec<(&str, [u8; 3])> = Vec::new();
+        for (tag, argb) in [("ow", OW), ("nether", NETHER), ("end", END)] {
+            let name = format!("ambient-{tag}-b0s0");
+            let gs = WorldLightmapState {
+                ambient_color: amb(argb),
+                ..Default::default()
+            };
+            let (e, lm) = expected_srgb(0, 0, &cpu_state(&gs));
+            let a = render_quad(gpu, off, wr, view_proj, draw, &name, 0, 0, gs, false, args)?;
+            compare_case(failures, &name, a, e, lm);
+            unlit.push((tag, a));
+        }
+
+        // (b) The mutation/sensitivity check: the SAME unlit cell with the
+        //     default (black) ambient stores ~black (the documented 0/0 NaN
+        //     path). So the ambient term genuinely owns these pixels — a shader
+        //     that ignored the new uniform would render all four identically.
+        let black = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "ambient-default-b0s0",
+            0,
+            0,
+            WorldLightmapState::default(),
+            false,
+            args,
+        )?;
+        println!(
+            "[lightmapshot] ambient-default-b0s0 readback ({}, {}, {}) — the black-ambient baseline",
+            black[0], black[1], black[2]
+        );
+        for (tag, a) in &unlit {
+            let d = max_delta(*a, black);
+            println!("[lightmapshot] ambient {tag} vs black-ambient max channel Δ {d}");
+            // Even the Overworld's dim #0a0a0a is 10/255 linear ≈ sRGB 89.
+            if d < 20 {
+                failures.push(format!(
+                    "ambient {tag}: only Δ{d} vs the black-ambient baseline (<20) — the ambient uniform does not own the pixel"
+                ));
+            }
+        }
+        // And the three dimensions must be distinguishable from each other, so
+        // the check cannot pass on a single hard-coded non-black constant.
+        for (i, (ta, a)) in unlit.iter().enumerate() {
+            for (tb, b) in unlit.iter().skip(i + 1) {
+                let d = max_delta(*a, *b);
+                if d < 10 {
+                    failures.push(format!(
+                        "ambient {ta} vs {tb}: max channel Δ{d} (<10) — dimensions not distinguishable"
+                    ));
+                }
+            }
+        }
+        // The End's ambient is greenish (#3f473f: G > R == B); the readback must
+        // carry that ordering, which a channel transpose in the UBO would break.
+        let end_px = unlit[2].1;
+        if !(end_px[1] > end_px[0] && end_px[0] == end_px[2]) {
+            failures.push(format!(
+                "ambient end: readback {end_px:?} does not carry #3f473f's G>R==B ordering"
+            ));
+        }
+
+        // (c) A mid-lit, non-clamped cell — ambient must also shift a pixel
+        //     that already has real sky and block light, not just the black
+        //     texel. Both CPU-graded, and measurably apart from each other.
+        let mid_amb = WorldLightmapState {
+            ambient_color: amb(NETHER),
+            ..Default::default()
+        };
+        let (em, lmm) = expected_srgb(4, 4, &cpu_state(&mid_amb));
+        let am = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "ambient-nether-b4s4",
+            4,
+            4,
+            mid_amb,
+            false,
+            args,
+        )?;
+        compare_case(failures, "ambient-nether-b4s4", am, em, lmm);
+        let ap = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "ambient-default-b4s4",
+            4,
+            4,
+            WorldLightmapState::default(),
+            false,
+            args,
+        )?;
+        let dm = max_delta(am, ap);
+        println!("[lightmapshot] ambient mid-lit (b4s4) nether vs default max channel Δ {dm}");
+        if dm < 10 {
+            failures.push(format!(
+                "ambient mid-lit: nether vs default differ by only {dm} (<10)"
+            ));
+        }
+
+        // (d) The translucent pass reads the SAME uniform buffer. Opaque and
+        //     water geometry must resolve an identical lightmap — the alpha-255
+        //     texel collapses the blend to the opaque result.
+        let water_amb = WorldLightmapState {
+            ambient_color: amb(END),
+            ..Default::default()
+        };
+        let (ew, lmw) = expected_srgb(4, 4, &cpu_state(&water_amb));
+        let aw = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "ambient-end-water-b4s4",
+            4,
+            4,
+            water_amb,
+            true,
+            args,
+        )?;
+        compare_case(failures, "ambient-end-water-b4s4", aw, ew, lmw);
+        let ao = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "ambient-end-opaque-b4s4",
+            4,
+            4,
+            water_amb,
+            false,
+            args,
+        )?;
+        let dw = max_delta(aw, ao);
+        println!("[lightmapshot] ambient water vs opaque max channel Δ {dw}");
+        if dw > CHANNEL_TOL {
+            failures.push(format!(
+                "ambient water vs opaque differ by {dw} (>{CHANNEL_TOL}) — water.frag missed the ambient uniform"
+            ));
+        }
+    }
+
     // The terrain/water quad in column 0 is no longer needed and would occlude
     // the capsule, so drop it and let its buffers retire before the entity pass.
     wr.remove_column(gpu, 0, 0);
@@ -822,6 +1013,7 @@ fn cpu_state(g: &WorldLightmapState) -> LightmapState {
         sky_factor: g.sky_factor,
         block_factor: g.block_factor,
         sky_light_color: g.sky_color,
+        ambient_color: g.ambient_color,
         brightness_factor: g.brightness_factor,
         darkness_scale: g.darkness_scale,
         night_vision_factor: g.night_vision_factor,

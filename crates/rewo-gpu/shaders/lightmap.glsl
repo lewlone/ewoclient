@@ -33,10 +33,15 @@ float lm_parabolic_mix(float level) {
 // `packed` is the vertex layer word; `light` = [SkyFactor, BlockFactor,
 // BrightnessFactor, DarknessScale] and `sky_col` = [SkyLightColor.rgb,
 // NightVisionFactor], exactly as `WorldRenderer::push_world` packs them.
-// AmbientColor (Overworld black), NightVisionColor (0x999999), BlockLightTint
-// (0xFFD88C) and the boss-overlay darkening factor (neutral 0) are the fixed
-// Overworld constants baked in below.
-vec3 lm_light(uint packed, vec4 light, vec4 sky_col) {
+//
+// `ambient` is the resolved dimension `AmbientColor`
+// (`EnvironmentAttributes.AMBIENT_LIGHT_COLOR`, RGB24/255). The push-constant
+// budget is exactly full at 128 bytes, so it arrives through the world pass's
+// small `LightmapExtra` uniform buffer (set 0, binding 1) rather than being
+// packed lossily into a spare lane. NightVisionColor (0x999999), BlockLightTint
+// (0xFFD88C) and the boss-overlay darkening factor (neutral 0) remain the fixed
+// attribute-default constants baked in below.
+vec3 lm_light(uint packed, vec4 light, vec4 sky_col, vec3 ambient) {
     float block_level = float((packed >> 16) & 15u) / 15.0;
     float sky_level = float((packed >> 20) & 15u) / 15.0;
 
@@ -50,10 +55,10 @@ vec3 lm_light(uint packed, vec4 light, vec4 sky_col) {
     float block_brightness = get_brightness(block_level) * block_factor;
     float sky_brightness = get_brightness(sky_level) * sky_factor;
 
-    // Ambient with or without night vision: max(AmbientColor, nvColor*nvFactor).
-    // Overworld AmbientColor is black; NightVisionColor is 0x999999 (153/255).
+    // Ambient with or without night vision: max(AmbientColor, nvColor*nvFactor),
+    // in the source's argument order. NightVisionColor is 0x999999 (153/255).
     const vec3 NIGHT_VISION_COLOR = vec3(153.0 / 255.0);
-    vec3 color = max(vec3(0.0), NIGHT_VISION_COLOR * night_vision_factor);
+    vec3 color = max(ambient, NIGHT_VISION_COLOR * night_vision_factor);
 
     // Add sky light.
     color += sky_color * sky_brightness;

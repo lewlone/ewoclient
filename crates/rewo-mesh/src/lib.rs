@@ -122,8 +122,12 @@ const AO_MASK: u32 = 0b11;
 /// Pack the discrete shade/AO codes into the high bits of a `pack_layer` word.
 pub fn pack_light_word(layer: u32, block: u8, sky: u8, shade_code: u8, ao_code: u8) -> u32 {
     // Release assert, not `debug_assert!`: `SHADE_MASK` is 3 bits (0..=7) while
-    // `FACE_SHADE` has 6 entries, so codes 6 and 7 fit the mask and would pack
-    // silently — then index out of bounds in `MeshVertex::reconstructed_color`.
+    // `FACE_SHADE` has 7 entries, so the reserved code 7 fits the mask and would
+    // pack silently — then index out of bounds in
+    // `MeshVertex::reconstructed_color` (and in `world.vert`, where an
+    // out-of-range constant-array index is undefined). 0..=6 are the valid
+    // codes; 7 fails closed here, at the one boundary every emitter goes
+    // through.
     assert!(
         (shade_code as usize) < FACE_SHADE.len(),
         "shade_code {} out of range: FACE_SHADE has {} entries (valid 0..={})",
@@ -285,7 +289,53 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
 ];
 /// Directional face shade, indexed by the vertex's 3-bit shade code.
 /// **Mirrored verbatim in `shaders/world.vert`** — keep both in sync.
-pub const FACE_SHADE: [f32; 6] = [1.0, 0.5, 0.8, 0.8, 0.6, 0.6];
+///
+/// Codes 0..=5 are the M15 assignment and are frozen: they are exactly
+/// `CardinalLighting::DEFAULT` in the mesher's face order `[up, down, north,
+/// south, west, east]`, so under the default table a face's code *is* its
+/// direction and code 0 doubles as the `shade: false` identity
+/// (`FACE_SHADE[0] == 1.0`). Nothing may renumber them — every Overworld mesh
+/// byte and the greedy oracle's expansion (which reads the code back as a face
+/// direction) depend on it.
+///
+/// M16 appends **code 6 = 0.9**, the one factor `CardinalLighting::NETHER`
+/// introduces (its up *and* down). Code 7 stays reserved: it is inside the
+/// 3-bit mask but outside this table, and [`pack_light_word`] rejects it in
+/// release builds rather than letting it index out of bounds here or in the
+/// shader.
+pub const FACE_SHADE: [f32; 7] = [1.0, 0.5, 0.8, 0.8, 0.6, 0.6, 0.9];
+
+/// **The one face → shade-code mapping**, driven by the world's dimension.
+///
+/// Both mesher paths, all three geometry kinds (cube, model, fluid) and the
+/// greedy merge key resolve a face's shade through here, so a face's stored
+/// code cannot depend on which emitter produced it.
+///
+/// The rule is a lookup, not a search: a face whose dimension leaves its factor
+/// at the default keeps its historical code — which is what makes every
+/// Overworld/default mesh byte-identical to pre-M16, including the two pairs
+/// (north/south, west/east) that share a value and would otherwise collapse
+/// onto one code. Only a face the dimension actually moves (Nether up/down,
+/// 1.0/0.5 → 0.9) looks the new factor up, and finds code 6.
+///
+/// Fail-closed: a factor that is in no `FACE_SHADE` entry has no representable
+/// code, so this panics rather than packing a wrong shade. Vanilla ships
+/// exactly the two tables `CardinalLightType` names, so that is unreachable
+/// today — it exists so a third table cannot be added silently.
+pub fn face_shade_code(world: &World, face: usize) -> u8 {
+    let want = world.cardinal_light().by_mesh_face(face);
+    if FACE_SHADE[face] == want {
+        return face as u8;
+    }
+    match FACE_SHADE.iter().position(|f| *f == want) {
+        Some(code) => code as u8,
+        None => panic!(
+            "cardinal light factor {want} for face {face} has no FACE_SHADE code \
+             (dimension {:?}); add it to FACE_SHADE *and* shaders/world.vert",
+            world.cardinal_light_type()
+        ),
+    }
+}
 
 /// Unit-cube face corners + UV, matching asset face order.
 const FACE_CORNERS: [[([f32; 3], [f32; 2]); 4]; 6] = [
@@ -863,7 +913,7 @@ pub fn mesh_column(
                                                 cf.layer as u32,
                                                 cf.lb,
                                                 cf.ls,
-                                                face as u8,
+                                                cf.shade,
                                                 cf.ao[0],
                                             ),
                                             tint: pack_tint(cf.tint_rgb, 0),
@@ -1065,7 +1115,9 @@ fn emit_fluid(
         }
     };
     // Fluid faces carry flat directional shade and no AO, so the AO code is the
-    // identity level (AO_LEVELS[AO_NONE] == 1.0).
+    // identity level (AO_LEVELS[AO_NONE] == 1.0). The shade is the active
+    // dimension's code for the face's direction (M16) — identity under the
+    // default table, so the five call sites below read as the old literals.
     let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade_code: u8, l: (u8, u8)| {
         let base = vertices.len() as u32;
         for (pos, uv) in p {
@@ -1092,7 +1144,7 @@ fn emit_fluid(
                 ([x1, yf + h11, z1], [1.0, 1.0]),
                 ([x0, yf + h01, z1], [0.0, 1.0]),
             ],
-            0,
+            face_shade_code(world, 0),
             light(wx, y + 1, wz),
         );
     }
@@ -1145,7 +1197,7 @@ fn emit_fluid(
         if same(nx, y, nz) || is_full_cube(table, world.block_state_at(nx, y, nz)) {
             continue;
         }
-        quad(corners, face as u8, light(nx, y, nz));
+        quad(corners, face_shade_code(world, face), light(nx, y, nz));
     }
     // Bottom — against anything that isn't fluid or a full cube.
     if !same(wx, y - 1, wz) && !is_full_cube(table, world.block_state_at(wx, y - 1, wz)) {
@@ -1156,7 +1208,7 @@ fn emit_fluid(
                 ([x1, yf, z1], [1.0, 1.0]),
                 ([x1, yf, z0], [1.0, 0.0]),
             ],
-            1,
+            face_shade_code(world, 1),
             light(wx, y - 1, wz),
         );
     }
@@ -1173,6 +1225,9 @@ struct CubeFace {
     ls: u8,
     /// AO code per `FACE_CORNERS[face]` index.
     ao: [u8; 4],
+    /// [`face_shade_code`] for this face under the world's dimension. Resolved
+    /// once, here, so the greedy merge key and the unit quad cannot disagree.
+    shade: u8,
 }
 
 /// Resolve one cube face, or `None` if a full-cube neighbour culls it.
@@ -1244,6 +1299,7 @@ fn cube_face(
         lb,
         ls,
         ao,
+        shade: face_shade_code(world, face),
     })
 }
 
@@ -1269,7 +1325,7 @@ fn push_cube_face(
             f.layer as u32,
             f.lb,
             f.ls,
-            face as u8,
+            f.shade,
             f.ao[i],
             f.tint_rgb,
         ));
@@ -1341,9 +1397,17 @@ fn emit_model(
                 continue;
             }
         }
-        // `shade: false` means an unshaded quad; FACE_SHADE[0] is exactly 1.0,
-        // so code 0 reproduces the old `1.0` multiplier bit-for-bit.
-        let shade_code = if quad.shade { quad.dir } else { 0 };
+        // A shaded quad takes its direction's code under the active dimension
+        // (M16), which is the identity `quad.dir` in every default-lit world.
+        // `shade: false` means an unshaded quad and stays code 0 in *every*
+        // dimension: FACE_SHADE[0] is exactly 1.0, so it reproduces the old
+        // `1.0` multiplier bit-for-bit — vanilla's unshaded quads ignore
+        // cardinal lighting the same way.
+        let shade_code = if quad.shade {
+            face_shade_code(world, quad.dir as usize)
+        } else {
+            0
+        };
         // A quad facing into a solid neighbour (an interior face) has nothing
         // to sample, so it keeps the block's own cell.
         let (odx, ody, odz) = FACE_OFFSETS[quad.dir as usize];
@@ -1478,7 +1542,17 @@ pub(crate) fn expand_unit_faces(
 pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFace>, String> {
     let mut out = Vec::new();
     for q in qs.iter().copied() {
+        // The decoder recovers a quad's direction from its shade code, which is
+        // only a bijection under `CardinalLighting::DEFAULT` (M16: the Nether
+        // maps up *and* down onto code 6). The oracle column is a default-lit
+        // world, so this holds there; anything else is refused rather than
+        // indexed out of `FACE_AXES`.
         let face = q[0].shade_code() as usize;
+        if face >= FACE_OFFSETS.len() {
+            return Err(format!(
+                "shade code {face} is not a face direction — unit-face expansion only decodes DEFAULT cardinal lighting"
+            ));
+        }
         let (au, av, _) = FACE_AXES[face];
         let an = 3 - au - av; // the remaining axis: 0+1+2 == 3
         let plane = q[0].pos[an];
@@ -2792,29 +2866,29 @@ mod tests {
     }
 
     /// An out-of-range shade code is rejected **at the packing boundary**, in
-    /// release builds too. `SHADE_MASK` is 3 bits, so 6 survives masking intact
-    /// — nothing downstream of `pack_light_word` would notice until
-    /// `MeshVertex::reconstructed_color` indexed `FACE_SHADE[6]` out of bounds.
+    /// release builds too. `SHADE_MASK` is 3 bits, so the reserved code 7
+    /// survives masking intact — nothing downstream of `pack_light_word` would
+    /// notice until `MeshVertex::reconstructed_color` indexed `FACE_SHADE[7]`
+    /// out of bounds (and `world.vert` did the same, where it is undefined
+    /// rather than a panic).
     #[test]
-    fn pack_light_word_rejects_out_of_range_shade_code() {
-        // The mask alone cannot catch 6: it round-trips through SHADE_MASK.
+    fn pack_light_word_rejects_the_reserved_shade_code() {
+        // The mask alone cannot catch 7: it round-trips through SHADE_MASK.
         assert_eq!(
-            6u32 & SHADE_MASK,
-            6,
-            "mask would accept 6 — assert must not"
+            7u32 & SHADE_MASK,
+            7,
+            "mask would accept 7 — the assert must not"
         );
 
-        let too_big = std::panic::catch_unwind(|| pack_light_word(0, 0, 0, 6, AO_NONE));
-        assert!(too_big.is_err(), "shade_code 6 must panic at pack time");
+        let reserved = std::panic::catch_unwind(|| pack_light_word(0, 0, 0, 7, AO_NONE));
+        assert!(reserved.is_err(), "shade_code 7 must panic at pack time");
 
-        // The boundary is exactly FACE_SHADE.len(): the last valid code packs.
-        let last_valid = std::panic::catch_unwind(|| {
-            pack_light_word(0, 0, 0, FACE_SHADE.len() as u8 - 1, AO_NONE)
-        });
-        assert!(
-            last_valid.is_ok(),
-            "shade_code 5 is valid and must not panic"
-        );
+        // 0..=6 are the valid codes, and the boundary is exactly FACE_SHADE.len().
+        for code in 0..FACE_SHADE.len() as u8 {
+            let ok = std::panic::catch_unwind(move || pack_light_word(0, 0, 0, code, AO_NONE));
+            assert!(ok.is_ok(), "shade_code {code} is valid and must not panic");
+        }
+        assert_eq!(FACE_SHADE.len(), 7, "codes 0..=6 exist, 7 is reserved");
     }
 
     /// UV transport is **exact for every family the mesher emits** — there is no
@@ -3126,6 +3200,7 @@ mod tests {
                 lb: 5,
                 ls: 9,
                 ao: [2; 4],
+                shade: face as u8,
             };
             let (mut lv, mut li) = (Vec::new(), Vec::new());
             push_cube_face(&mut lv, &mut li, 4, -9, 6, face, &cf);
@@ -3755,6 +3830,417 @@ mod tests {
             rep.water_only.translucent_vertices, rep.lava_only.opaque_vertices,
             "the water and lava controls look like the same geometry"
         );
+    }
+
+    // -- M16 dimension cardinal lighting ------------------------------------
+
+    /// A Nether-lit world: the `the_nether` shape *and* `CardinalLighting::NETHER`.
+    fn nether_world() -> World {
+        use rewo_world::dimension::CardinalLightType;
+        let mut w = World::new(DimensionShape::NETHER);
+        w.set_cardinal_light_type(CardinalLightType::Nether);
+        w.ensure_column(0, 0);
+        w
+    }
+
+    /// The face direction of a **fluid** quad, from the plane it lies in
+    /// relative to its own block. `emit_fluid` winds its four sides identically
+    /// (unlike the cube emitter), so their normals cannot tell north from south
+    /// — the plane can, and it is still independent of the shade code.
+    fn fluid_face_of_quad(q: &[MeshVertex; 4], block: [i32; 3]) -> usize {
+        let constant = |axis: usize| q.iter().all(|v| v.pos[axis] == q[0].pos[axis]);
+        if constant(0) {
+            if q[0].pos[0] == block[0] as f32 {
+                4
+            } else {
+                5
+            }
+        } else if constant(2) {
+            if q[0].pos[2] == block[2] as f32 {
+                2
+            } else {
+                3
+            }
+        } else {
+            assert!(constant(1), "a fluid quad must be planar on one axis");
+            // The bottom sits exactly on the block floor; the surface rides
+            // above it at the fluid height.
+            if q[0].pos[1] == block[1] as f32 {
+                1
+            } else {
+                0
+            }
+        }
+    }
+
+    /// The face direction a **cube or model** quad faces, recovered from its
+    /// winding — independent of the shade code, so it can grade the shade code.
+    fn face_of_quad(q: &[MeshVertex; 4]) -> usize {
+        let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let e1 = sub(q[1].pos, q[0].pos);
+        let e2 = sub(q[2].pos, q[0].pos);
+        let n = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let n = [n[0] / len, n[1] / len, n[2] / len];
+        // The mesher winds every face so the CCW normal points *into* the block.
+        FACE_OFFSETS
+            .iter()
+            .position(|off| n == [-off.0 as f32, -off.1 as f32, -off.2 as f32])
+            .unwrap_or_else(|| panic!("quad normal {n:?} is not axis-aligned"))
+    }
+
+    /// The mapping itself, against the transcribed tables, for both dimensions.
+    #[test]
+    fn face_shade_code_is_the_dimension_cardinal_table() {
+        use rewo_world::dimension::CardinalLighting;
+
+        // DEFAULT: the code IS the direction, and codes 0..=5 keep their exact
+        // M15 values — this is what makes every Overworld mesh byte unchanged.
+        let d = World::new(DimensionShape::OVERWORLD);
+        for face in 0..6 {
+            assert_eq!(
+                face_shade_code(&d, face),
+                face as u8,
+                "default face {face} must keep its historical code"
+            );
+            assert_eq!(
+                FACE_SHADE[face_shade_code(&d, face) as usize],
+                CardinalLighting::DEFAULT.by_mesh_face(face),
+                "default face {face} factor"
+            );
+        }
+        assert_eq!(FACE_SHADE[..6], [1.0, 0.5, 0.8, 0.8, 0.6, 0.6]);
+
+        // NETHER: up and down move to the appended code 6; the four sides are
+        // unchanged, so they must keep their own codes rather than collapsing
+        // onto whichever entry happens to share their value first.
+        let n = nether_world();
+        assert_eq!(face_shade_code(&n, 0), 6, "nether up");
+        assert_eq!(face_shade_code(&n, 1), 6, "nether down");
+        for face in 2..6 {
+            assert_eq!(
+                face_shade_code(&n, face),
+                face as u8,
+                "nether side {face} is not moved by the dimension"
+            );
+        }
+        for face in 0..6 {
+            assert_eq!(
+                FACE_SHADE[face_shade_code(&n, face) as usize],
+                CardinalLighting::NETHER.by_mesh_face(face),
+                "nether face {face} factor"
+            );
+        }
+        assert_eq!(FACE_SHADE[6], 0.9, "code 6 is the Nether up/down factor");
+    }
+
+    /// Code 6 reconstructs exactly the legacy float sequence at 0.9 — the same
+    /// claim `reconstruction_matches_legacy_formula_for_every_shade_and_ao`
+    /// makes for 0..=5, stated on its own for the new entry.
+    #[test]
+    fn shade_code_six_reconstructs_the_nether_factor() {
+        for ao in 0..AO_LEVELS.len() {
+            for rgb in [[255u8, 255, 255], [100, 0, 0], [1, 2, 3], [91, 163, 163]] {
+                let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 6, ao as u8, rgb);
+                assert_eq!(v.shade_code(), 6, "code 6 survives packing");
+                let c = 0.9f32 * AO_LEVELS[ao];
+                let legacy = [
+                    c * (rgb[0] as f32 / 255.0),
+                    c * (rgb[1] as f32 / 255.0),
+                    c * (rgb[2] as f32 / 255.0),
+                ];
+                let got = v.reconstructed_color();
+                for i in 0..3 {
+                    assert_eq!(
+                        got[i].to_bits(),
+                        legacy[i].to_bits(),
+                        "ao {ao} rgb {rgb:?} channel {i}: {got:?} vs {legacy:?}"
+                    );
+                }
+            }
+        }
+        // And it is distinguishable from every frozen code, so it cannot be a
+        // renumbering of one of them.
+        for code in 0..6 {
+            assert_ne!(FACE_SHADE[code], FACE_SHADE[6], "code {code} vs 6");
+        }
+    }
+
+    /// A Nether cube: its top *and* bottom carry code 6 (0.9), its four sides
+    /// keep their own codes, and both mesher paths agree. The bottom plane still
+    /// merges — the resolved code rides in the merge key, so faces that share it
+    /// coalesce and faces that do not, cannot.
+    #[test]
+    fn nether_cube_top_and_bottom_use_code_six() {
+        let mut w = nether_world();
+        plate(&mut w, 4, 5, 10, 4, 5, 1); // a 2×2 plate of STONE
+        let table = cube_table();
+
+        for (what, m) in [
+            (
+                "reference",
+                mesh_column_reference(&w, &table, &[], 0, 0).expect("reference"),
+            ),
+            (
+                "optimized",
+                mesh_column(&w, &table, &[], 0, 0).expect("optimized"),
+            ),
+        ] {
+            let qs = quads(&m.vertices, &m.indices);
+            assert!(!qs.is_empty(), "{what}: nothing meshed");
+            let mut seen = [0usize; 6];
+            for q in &qs {
+                let face = face_of_quad(q);
+                seen[face] += 1;
+                let want = if face <= 1 { 6 } else { face as u8 };
+                for v in q {
+                    assert_eq!(
+                        v.shade_code(),
+                        want,
+                        "{what}: face {face} must carry shade code {want}"
+                    );
+                    assert_eq!(
+                        FACE_SHADE[v.shade_code() as usize],
+                        if face <= 1 {
+                            0.9
+                        } else if face <= 3 {
+                            0.8
+                        } else {
+                            0.6
+                        },
+                        "{what}: face {face} shade factor"
+                    );
+                }
+            }
+            for face in 0..6 {
+                assert!(seen[face] > 0, "{what}: face {face} emitted no quad");
+            }
+        }
+
+        // The optimized path still merges the bottom plane into one 2×2
+        // rectangle, all of it at code 6.
+        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let downs: Vec<_> = quads(&o.vertices, &o.indices)
+            .into_iter()
+            .filter(|q| face_of_quad(q) == 1)
+            .collect();
+        assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
+        assert_eq!(downs[0][0].shade_code(), 6);
+        let span = |q: &[MeshVertex; 4], axis: usize| {
+            let lo = q.iter().map(|v| v.pos[axis]).fold(f32::MAX, f32::min);
+            let hi = q.iter().map(|v| v.pos[axis]).fold(f32::MIN, f32::max);
+            hi - lo
+        };
+        assert_eq!((span(&downs[0], 0), span(&downs[0], 2)), (2.0, 2.0));
+        // Up faces never merge (M15 carve-out), and each still carries code 6.
+        let ups: Vec<_> = quads(&o.vertices, &o.indices)
+            .into_iter()
+            .filter(|q| face_of_quad(q) == 0)
+            .collect();
+        assert_eq!(ups.len(), 4, "one unit quad per top");
+        for q in &ups {
+            assert_eq!(q[0].shade_code(), 6);
+            assert_eq!((span(q, 0), span(q, 2)), (1.0, 1.0));
+        }
+    }
+
+    /// Model quads and fluid faces take the same mapping: a shaded quad follows
+    /// the dimension, an unshaded one stays code 0 in *every* dimension.
+    #[test]
+    fn nether_model_and_fluid_faces_use_the_dimension_mapping() {
+        use rewo_data::assets::Quad;
+
+        let quad_at = |dir: u8, shade: bool, y: f32| Quad {
+            verts: [[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            layer: 7,
+            raw_layer: 7,
+            cull: -1,
+            dir,
+            tint: TintSource::None,
+            shade,
+        };
+        // Three quads: shaded up (moved by the Nether), shaded north (not
+        // moved), unshaded up (never shaded at all).
+        let models = vec![vec![
+            quad_at(0, true, 0.0),
+            quad_at(2, true, 0.5),
+            quad_at(0, false, 1.0),
+        ]];
+        let table = oracle_model_table();
+
+        for (what, mut w, want) in [
+            (
+                "default",
+                {
+                    let mut w = World::new(DimensionShape::OVERWORLD);
+                    w.ensure_column(0, 0);
+                    w
+                },
+                [0u8, 2, 0],
+            ),
+            ("nether", nether_world(), [6, 2, 0]),
+        ] {
+            w.set_block(4, 10, 4, 1);
+            let m = mesh_column(&w, &table, &models, 0, 0).expect("model meshed");
+            let codes: Vec<u8> = quads(&m.vertices, &m.indices)
+                .iter()
+                .map(|q| q[0].shade_code())
+                .collect();
+            assert_eq!(codes, want, "{what}: model quad shade codes");
+            // Every quad's four vertices agree (the code is per-quad).
+            for q in quads(&m.vertices, &m.indices) {
+                assert!(q.iter().all(|v| v.shade_code() == q[0].shade_code()));
+            }
+        }
+
+        // Fluids: a water source's top and bottom move to code 6 in the Nether,
+        // its sides do not; in a default world every face keeps its direction.
+        let ftable = fluid_table();
+        for (what, mut w, up_down) in [
+            (
+                "default",
+                {
+                    let mut w = World::new(DimensionShape::OVERWORLD);
+                    w.ensure_column(0, 0);
+                    w
+                },
+                [0u8, 1],
+            ),
+            ("nether", nether_world(), [6, 6]),
+        ] {
+            w.set_block(4, 10, 4, 2); // a lone water source: all six faces visible
+            let m = mesh_column(&w, &ftable, &[], 0, 0).expect("fluid meshed");
+            let qs = quads(&m.tvertices, &m.tindices);
+            assert_eq!(qs.len(), 6, "{what}: a lone source emits six faces");
+            let mut seen = [false; 6];
+            for q in &qs {
+                let face = fluid_face_of_quad(q, [4, 10, 4]);
+                assert!(!seen[face], "{what}: face {face} emitted twice");
+                seen[face] = true;
+                let want = match face {
+                    0 => up_down[0],
+                    1 => up_down[1],
+                    f => f as u8,
+                };
+                for v in q {
+                    assert_eq!(v.shade_code(), want, "{what}: fluid face {face}");
+                }
+            }
+        }
+    }
+
+    /// **The default-world byte guarantee.** In a `CardinalLighting::DEFAULT`
+    /// world the shade byte of every emitted vertex is exactly the pre-M16 rule
+    /// — the face's own direction index for cube and fluid faces, `quad.dir` (or
+    /// 0 when unshaded) for model quads — on a fixture that runs all three
+    /// paths through both meshers. The direction is recovered from the quad's
+    /// winding, so nothing about it comes from the shade code being graded.
+    ///
+    /// The shade code is the only vertex field M16 touches, so this pins the
+    /// whole default output byte-identical to M15. `check_greedy_oracle`'s
+    /// unchanged report (see `production_greedy_oracle_passes_and_measures_a_real_fixture`)
+    /// is the second half of that claim: its decoder reads the shade code back
+    /// *as* a face direction on the adversarial column.
+    #[test]
+    fn default_world_shade_bytes_are_the_legacy_per_direction_codes() {
+        use rewo_data::assets::Quad;
+
+        let mut table = cube_table();
+        table.push(RenderKind::Fluid {
+            layer: 30,
+            raw_layer: 30,
+            level: 0,
+            lava: false,
+        }); // 3
+        table.push(RenderKind::Fluid {
+            layer: 31,
+            raw_layer: 31,
+            level: 0,
+            lava: true,
+        }); // 4
+        table.push(RenderKind::Model(0)); // 5
+        let models = vec![vec![Quad {
+            verts: [
+                [0.2, 0.0, 0.2],
+                [0.8, 0.0, 0.2],
+                [0.8, 1.0, 0.2],
+                [0.2, 1.0, 0.2],
+            ],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            layer: 40,
+            raw_layer: 40,
+            cull: -1,
+            dir: 2,
+            tint: TintSource::None,
+            shade: true,
+        }]];
+
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        plate(&mut w, 1, 14, 62, 1, 14, 1);
+        plate(&mut w, 4, 9, 63, 4, 9, 2);
+        w.set_block(2, 63, 2, 1); // an AO discontinuity, so fallbacks run too
+        w.set_block(12, 63, 12, 5); // model
+        w.set_block(11, 63, 3, 3); // water
+        w.set_block(3, 63, 11, 4); // lava
+
+        // The mapping is the identity here, which is precisely the pre-M16
+        // constant every emitter used to write.
+        for face in 0..6 {
+            assert_eq!(face_shade_code(&w, face), face as u8);
+        }
+
+        for (what, m) in [
+            (
+                "reference",
+                mesh_column_reference(&w, &table, &models, 0, 0).expect("reference"),
+            ),
+            (
+                "optimized",
+                mesh_column(&w, &table, &models, 0, 0).expect("optimized"),
+            ),
+        ] {
+            let mut checked = 0usize;
+            for (stream, qs) in [
+                ("opaque", quads(&m.vertices, &m.indices)),
+                ("translucent", quads(&m.tvertices, &m.tindices)),
+            ] {
+                for q in &qs {
+                    // Three emitters, three ways to recover the direction the
+                    // shade byte is supposed to encode. Layer 40 is the model
+                    // quad, whose direction is declared (`dir: 2`) rather than
+                    // geometric; 30/31 are the two fluid cells, graded by plane;
+                    // everything else is a cube face, graded by winding.
+                    let want = match q[0].layer_index() {
+                        40 => 2,
+                        30 => fluid_face_of_quad(q, [11, 63, 3]) as u8,
+                        31 => fluid_face_of_quad(q, [3, 63, 11]) as u8,
+                        _ => face_of_quad(q) as u8,
+                    };
+                    for v in q {
+                        assert_eq!(
+                            v.shade_code(),
+                            want,
+                            "{what}/{stream}: shade byte is not the legacy per-direction code"
+                        );
+                        assert!(
+                            v.shade_code() < 6,
+                            "{what}/{stream}: a default world must never emit an M16 code"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+            assert!(
+                checked > 100,
+                "{what}: fixture is too small: {checked} quads"
+            );
+        }
     }
 
     /// An all-air column yields nothing from both mesher paths.

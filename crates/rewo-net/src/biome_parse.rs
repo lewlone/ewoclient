@@ -1,9 +1,10 @@
-//! Parse the `minecraft:worldgen/biome` + `minecraft:dimension_type` registry
-//! NBT into `rewo_world::biome` types.
+//! Parse the `minecraft:worldgen/biome` registry NBT into
+//! `rewo_world::biome` types. The `minecraft:dimension_type` registry has its
+//! own module ([`crate::dimension_parse`]) — the two share only
+//! [`parse_color`], because they share the colour *codec*, not the entry shape.
 //!
 //! Wire shape (captured from the live 26.2 server's `registry_data`, matched to
-//! the `Biome.NETWORK_CODEC` / `BiomeSpecialEffects.CODEC` /
-//! `DimensionType.NETWORK_CODEC` codecs):
+//! the `Biome.NETWORK_CODEC` / `BiomeSpecialEffects.CODEC` codecs):
 //!
 //! ```text
 //! biome compound:
@@ -58,6 +59,13 @@ fn parse_hex_color(s: &str) -> Option<i32> {
 
 /// A bare `STRING_RGB_COLOR` value: the `#rrggbb` string form (what vanilla
 /// sends) or the `INT` fallback form.
+///
+/// `withAlternative` writes with its *primary* arm, so a real server always
+/// emits the hex string, and `hexColor(6).xmap(ARGB::opaque, …)` makes that
+/// value opaque. The `INT` arm is `RGB_COLOR_CODEC` = a bare `Codec.INT` with
+/// no `ARGB.opaque`; we force alpha there too, which is a deliberate
+/// deviation — it keeps every colour in this crate opaque-ARGB, and vanilla's
+/// writer never takes that arm.
 pub fn parse_color(n: &Nbt) -> Option<i32> {
     match n {
         Nbt::String(s) => parse_hex_color(s),

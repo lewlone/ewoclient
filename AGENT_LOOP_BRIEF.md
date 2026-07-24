@@ -58,14 +58,16 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 81
-cargo test --release -p rewo-net   --lib   # 67
-cargo test --release -p rewo-gpu   --lib   # 37
+cargo test --release -p rewo-world --lib   # 93
+cargo test --release -p rewo-net   --lib   # 102
+cargo test --release -p rewo-gpu   --lib   # 44
 cargo test --release -p rewo-data  --lib   # 9
-cargo test --release -p rewo-mesh  --lib   # 32
-cargo test --release -p rewo-proto --lib   # 11   → 237 total
-cargo test --release -p rewo-app           # 19   (app-level)
+cargo test --release -p rewo-mesh  --lib   # 38
+cargo test --release -p rewo-proto --lib   # 11   → 297 lib
+cargo test --release -p rewo-app           # 47   (app-level) → 344 total
 ```
+(`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
+`rewo-*` ones individually.)
 
 ```bash
 ./target/release/rewo.exe mobshot --check
@@ -98,6 +100,31 @@ pre-greedy mesher by direction, owning block, atlas layer + block/sky light,
 four AO codes and tint. It also pins exact model/water/lava legacy controls,
 material/light/tint seams, section crossing, deterministic output, and the
 top-face 1×1 exclusion. Run after any mesh format or merge-policy change.
+
+```bash
+./target/release/rewo.exe dimensioncheck --check
+```
+M16's permanent **serverless** dimension oracle, CPU-only. It grades four
+mutually-independent inputs: a **captured** vanilla Configuration
+`registry_data` packet (production parser), the **bundled** built-in
+transcription, the **real decompiled datagen JSON** under
+`…/26.2/decompiled/data/minecraft/dimension_type/` (read by
+`rewo-app/src/dimension_json.rs`, a `serde_json` reader sharing no code with the
+NBT parser, with `has_day_timeline` resolved by expanding
+`data/minecraft/tags/timeline/*.json`), and a hand-written `EXPECT` table that
+grades all three and is itself graded by the JSON. Then the world binding
+(16 shape + 16 light probes), the mesh binding (96 vertices, Nether shade codes
+`[2,3,4,5,6]`, max sky 0) and the mesh pool generation fence (`[0,1]`). Fails
+closed on a missing recording or a missing/malformed decompile
+(`--decompiled <dir>` overrides). Run after any dimension, registry, world-shape
+or cardinal-shade change.
+
+```bash
+./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
+```
+The live dimension gate: the paced Overworld→Nether→End→Overworld route.
+**4/4 checkpoints, 3/3 transitions**, each discarding and requeueing 329
+columns, chunk decode failures 0, settled corrections 0.
 
 ```bash
 ./target/release/rewo.exe demo --out C:/tmp/demo.png
@@ -175,6 +202,17 @@ listed because they are invisible in the output.
 - **Absolute coordinates beat `~` after a `tp`.** The `~` resolves against
   wherever the entity is when the command executes, which may not be where you
   think.
+- **A fixture graded against its own transcription proves nothing.** M16's
+  `dimensioncheck` test was named
+  `the_bundled_transcription_matches_the_decompiled_json` while only comparing
+  the bundled built-ins to a handwritten table — the decompiled JSON was never
+  opened. Senior review caught it. If a check's *name* claims a file is the
+  oracle, the check must read that file, and the reading must not go through
+  the code under test.
+- **Fixed time and the day timeline are different fields.** `has_fixed_time`
+  and the `timelines` holder set are independent members of `DimensionType`;
+  deriving one from the other happens to give the right answer for all four
+  vanilla dimensions and is still wrong. The tag files decide the timeline.
 
 When a render looks wrong, the fastest diagnostic is to **force one term to a
 constant** (e.g. `lm = vec3(1.0)`) and see which term owns the pixel. That
@@ -184,11 +222,12 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M15` shipped and verified. **M0–M9 are pushed** (`origin/main` @
-`973ea5e`); the **M10–M15 arc is reviewed local work, not yet pushed**. M12 is
-commit `06dd3eb`; M14 is `88b5112`; M15 is the geometry-performance milestone.
-See `REWO_PLAN.md` §15 for each milestone's exact ground truth and measured
-gates.
+`M0–M16` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M16 arc is reviewed local work, not yet pushed** (M12 is
+`06dd3eb`, M14 `88b5112`, M15 `5b0f437`; M16 is the current local commit on
+branch `codex/rewo-m16-dimensions`). M16 is green on every gate; its vanilla
+test server was stopped and port 25599 verified free. See
+`REWO_PLAN.md` §15 for each milestone's exact ground truth and measured gates.
 
 A playable online client: joins online-mode servers with signed chat, real
 player skins, 88 vanilla mob models with formula-exact procedural and keyframe
@@ -202,17 +241,25 @@ constants), retained 4×4×4 section biomes, and biome-driven camera sky/fog via
 raw-quart Gaussian feeding per-frame GPU base uniforms. M15 replaces the
 36-byte vertex with an exact 28-byte ABI and greedily merges five safe cube-face
 directions, reducing the canonical replay upload from 149.13 to 109.39 MiB
-(−26.65%) without changing the canonical demo image.
+(−26.65%) without changing the canonical demo image. **M16 makes the
+`dimension_type` registry a consumed contract**: per-dimension vertical shape
+(the Nether's 0..256 mis-decoded every chunk before), sky channel, skybox,
+ambient light, cardinal face shade, sky/fog/ambient/sky-light colours, fixed
+time and a tag-resolved day timeline — selected by raw holder id — plus the End
+sky pass and a world/mesh transition that discards and refences by generation.
+The canonical demo PNG is byte-identical to M15.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
-`bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`.
+`bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
+`dimensioncheck`.
 
 **Open work**, roughly in descending obviousness:
 
-- Nether and End are untested; general dimension-transition / respawn base
-  selection and dimension-specific `ambientLight` are not wired. (Biome blend
-  radius is fixed at vanilla's default 2 — not yet a setting.)
+- Custom (datapack) dimension types are parsed but unexercised; the
+  `{modifier, argument}` arm of an attribute override is a deliberate hard
+  error rather than a modelled case. (Biome blend radius is fixed at vanilla's
+  default 2 — not yet a setting.)
 - Entity-*event* animations (warden attack, allay dance) need the
   `entity_event` packet; dragon flight is bespoke procedural code, still posed.
 - Face-occlusion merging is tested per-side rather than as a true shape union

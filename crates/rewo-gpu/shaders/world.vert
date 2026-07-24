@@ -29,7 +29,12 @@ layout(location = 2) out vec3 v_color;
 layout(location = 3) out vec3 v_worldpos;
 
 // Mirrored verbatim from rewo-mesh (`FACE_SHADE` / `AO_LEVELS`) — keep in sync.
-const float FACE_SHADE[6] = float[6](1.0, 0.5, 0.8, 0.8, 0.6, 0.6);
+// Codes 0..5 are frozen (CardinalLighting.DEFAULT in mesher face order, with 0
+// doubling as the unshaded identity); M16 appended code 6 = 0.9, the Nether's
+// up/down factor. Code 7 is reserved and is never emitted: `pack_light_word`
+// asserts against it in release builds, which is what keeps the 3-bit index
+// below inside this array.
+const float FACE_SHADE[7] = float[7](1.0, 0.5, 0.8, 0.8, 0.6, 0.6, 0.9);
 const float AO_LEVELS[4] = float[4](0.45, 0.65, 0.82, 1.0);
 
 void main() {

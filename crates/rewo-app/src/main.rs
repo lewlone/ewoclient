@@ -9,6 +9,9 @@
 
 mod bench_cmd;
 mod demo_cmd;
+mod dimension_check;
+mod dimension_json;
+mod dimensioncheck_cmd;
 mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
@@ -136,6 +139,10 @@ enum Command {
     /// M15 geometry oracle: compare production greedy rectangles with the
     /// frozen unit-face reference and pin every merge boundary (no server).
     Meshshot(meshshot_cmd::MeshshotArgs),
+    /// M16 dimension oracle: grade a captured 26.2 `dimension_type` registry
+    /// against the bundled built-ins and the decompiled JSON, and prove every
+    /// entry binds to the world shape, sky channel and mesh shade (no server).
+    Dimensioncheck(dimensioncheck_cmd::DimensioncheckArgs),
 }
 
 fn main() {
@@ -157,6 +164,7 @@ fn main() {
         Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
         Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
+        Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

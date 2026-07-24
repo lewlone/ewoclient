@@ -22,26 +22,28 @@
 //! - `net/minecraft/util/Mth.java` — the 65 536-entry sine table
 //!   ([`mth_sin`] / [`mth_cos`]).
 //! - `net/minecraft/world/attribute/EnvironmentAttributes.java` — the default
-//!   light colours, baked in as the Overworld constants below.
+//!   light colours, baked in as the constants below.
 //!
-//! Scope: this ports the **clear-sky Overworld** lightmap. Deliberately out
-//! of scope here (later, per-context work): the end-flash sky boost and
-//! boss-overlay world-darkening (`BossOverlayWorldDarkeningFactor` is pinned
-//! neutral `0.0`), conduit-power water vision, and the biome/dimension
-//! variation + interpolation the attribute probe applies to the ambient / sky
-//! / tint / night-vision colours. `LightmapState` carries the already-resolved
-//! sky colour + factor so a caller can drive day/night; the fixed colours here
-//! are the Overworld defaults.
+//! Scope: this ports the clear-sky lightmap. Deliberately out of scope here
+//! (later, per-context work): the end-flash sky boost and boss-overlay
+//! world-darkening (`BossOverlayWorldDarkeningFactor` is pinned neutral `0.0`),
+//! conduit-power water vision, and the *positional* (biome) interpolation the
+//! attribute probe applies to the tint / night-vision colours.
+//! `LightmapState` carries the already-resolved sky colour + factor **and the
+//! resolved dimension ambient colour** (M16), so a caller can drive both
+//! day/night and a dimension change; the remaining fixed colours are the
+//! attribute defaults.
 
 /// A compact, already-resolved lightmap uniform — the CPU mirror of the
 /// shader's `LightmapInfo` block, minus the fields this scope pins to
-/// constants (ambient = Overworld black, block tint = the default warm tint,
-/// night-vision colour = `0x999999`, boss darkening = `0`).
+/// constants (block tint = the default warm tint, night-vision colour =
+/// `0x999999`, boss darkening = `0`).
 ///
 /// `Default` is deliberately **visually neutral** so the old `demo`/`view`
 /// replay paths — which predate any day/night driving — render exactly as
 /// before: full sky factor, the vanilla `1.4` block factor, white sky light,
-/// and every accessibility/effect term disabled. The live gamma of `0.5`
+/// **the `EnvironmentAttributes` ambient default (black)**, and every
+/// accessibility/effect term disabled. The live gamma of `0.5`
 /// (`Options.gamma` default) is *not* baked into `Default`; rewo-app sets
 /// `brightness_factor` from the player's actual gamma option later.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,6 +56,17 @@ pub struct LightmapState {
     /// `SkyLightColor` — `EnvironmentAttributes.SKY_LIGHT_COLOR`, default
     /// white (`-1` → `1,1,1`); the day/night timeline tints it blue at night.
     pub sky_light_color: [f32; 3],
+    /// `AmbientColor` — `EnvironmentAttributes.AMBIENT_LIGHT_COLOR` as
+    /// `ARGB.vector3fFromRGB24` (a plain `/255`, **no** sRGB decode).
+    ///
+    /// This is the *dimension* attribute, not a constant: the attribute's
+    /// codec default is `-16777216` (`0xFF000000` → black), and that is what
+    /// [`LightmapState::default`] carries, but the built-in dimensions all
+    /// override it — Overworld `#0a0a0a`, Nether `#302821`, End `#3f473f`
+    /// (`data/minecraft/dimension_type/*.json`). No timeline track keyframes
+    /// `visual/ambient_light_color` in 26.2 (`timeline/day.json` carries sky /
+    /// fog / celestial tracks only), so within a dimension it is constant.
+    pub ambient_color: [f32; 3],
     /// `BrightnessFactor` — the player's gamma option, minus the darkness
     /// effect (the `notGamma` mix weight). Default `0.0`.
     pub brightness_factor: f32,
@@ -69,6 +82,7 @@ impl Default for LightmapState {
             sky_factor: 1.0,
             block_factor: 1.4,
             sky_light_color: [1.0, 1.0, 1.0],
+            ambient_color: DEFAULT_AMBIENT_COLOR,
             brightness_factor: 0.0,
             darkness_scale: 0.0,
             night_vision_factor: 0.0,
@@ -76,12 +90,30 @@ impl Default for LightmapState {
     }
 }
 
-// --- lightmap.fsh constants (Overworld defaults, exact) ---
+// --- lightmap.fsh constants (attribute defaults, exact) ---
 
-/// `AmbientColor` — `EnvironmentAttributes.AMBIENT_LIGHT_COLOR` default
-/// `-16777216` (`0xFF000000`) → RGB24 `0x000000`. The Overworld has no
-/// ambient floor; an unlit texel is genuinely black.
-const AMBIENT_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
+/// The `EnvironmentAttributes.AMBIENT_LIGHT_COLOR` **codec default**,
+/// `-16777216` (`0xFF000000`) → RGB24 `0x000000`.
+///
+/// This is the value a dimension that sets no `minecraft:visual/
+/// ambient_light_color` attribute resolves to — not "the Overworld's ambient".
+/// The Overworld dimension type *does* set the attribute, to `#0a0a0a`; the
+/// distinction is exactly why this is a `LightmapState` field and not a
+/// constant folded into [`sample`]. Keeping the default at the codec default
+/// leaves the serverless `demo` / `view` / `bench` paths — which have no
+/// dimension registry at all — byte-identical to their pre-M16 output.
+pub const DEFAULT_AMBIENT_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
+
+/// `ARGB.vector3fFromRGB24(int)` — the low 24 bits as `r/255, g/255, b/255`.
+/// A plain divide, **not** an sRGB decode: vanilla feeds these straight into
+/// the lightmap shader's linear arithmetic, and the alpha byte is discarded.
+pub fn rgb24_to_vec3(argb: i32) -> [f32; 3] {
+    [
+        ((argb >> 16) & 0xFF) as f32 / 255.0,
+        ((argb >> 8) & 0xFF) as f32 / 255.0,
+        (argb & 0xFF) as f32 / 255.0,
+    ]
+}
 
 /// `NightVisionColor` — `EnvironmentAttributes.NIGHT_VISION_COLOR` default
 /// `-6710887` (`0xFF999999`) → RGB24 `0x999999` → `153/255` per channel.
@@ -127,7 +159,7 @@ fn mix(x: f32, y: f32, a: f32) -> f32 {
 /// does, it is treated as 15 rather than producing an out-of-range texel.
 ///
 /// Returns linear RGB in `[0, 1]` — except for the genuine `0/0` path: a
-/// fully-dark texel (both levels 0, Overworld ambient black, no night vision)
+/// fully-dark texel (both levels 0, ambient black, no night vision)
 /// makes `notGamma` compute `0.0/0.0 = NaN`. With `brightness_factor == 0`
 /// the final `mix(color, NaN, 0.0)` is still `NaN` (IEEE `NaN * 0.0 = NaN`).
 /// This is the exact source/CPU result of the shader math, faithfully
@@ -145,10 +177,12 @@ pub fn sample(block_level: u8, sky_level: u8, state: &LightmapState) -> [f32; 3]
     let sky_brightness = get_brightness(sky_level) * state.sky_factor;
 
     // Ambient with or without night vision: max(ambient, nvColor * nvFactor).
+    // `ambient` is the resolved dimension attribute, in the source's argument
+    // order (`max(AmbientColor, NightVisionColor * NightVisionFactor)`).
     let mut color = [0.0f32; 3];
     for i in 0..3 {
         let night_vision = NIGHT_VISION_COLOR[i] * state.night_vision_factor;
-        color[i] = AMBIENT_COLOR[i].max(night_vision);
+        color[i] = state.ambient_color[i].max(night_vision);
     }
 
     // Add sky light.
@@ -413,6 +447,133 @@ mod tests {
         assert_eq!(s.brightness_factor, 0.0);
         assert_eq!(s.darkness_scale, 0.0);
         assert_eq!(s.night_vision_factor, 0.0);
+        // The ambient default is the ATTRIBUTE codec default (0xFF000000 →
+        // black), NOT the Overworld dimension's `#0a0a0a`. That distinction is
+        // what keeps the serverless demo/view/bench paths byte-identical.
+        assert_eq!(s.ambient_color, [0.0, 0.0, 0.0]);
+        assert_eq!(s.ambient_color, DEFAULT_AMBIENT_COLOR);
+        assert_eq!(
+            rgb24_to_vec3(crate::dimension::DEFAULT_AMBIENT_LIGHT_COLOR),
+            s.ambient_color
+        );
+        assert_ne!(
+            rgb24_to_vec3(0x0A0A0A),
+            s.ambient_color,
+            "the Overworld dimension's #0a0a0a is a dimension attribute, not the default"
+        );
+    }
+
+    /// `ARGB.vector3fFromRGB24` is a plain `/255` on the low 24 bits — no sRGB
+    /// decode, alpha discarded. Pinned on the three built-in ambient colours.
+    #[test]
+    fn rgb24_to_vec3_is_a_plain_divide() {
+        assert_eq!(rgb24_to_vec3(0xFF00_0000u32 as i32), [0.0, 0.0, 0.0]);
+        // Overworld #0a0a0a = 10/255 per channel.
+        let ow = rgb24_to_vec3(0xFF0A_0A0Au32 as i32);
+        assert_eq!(bits(ow[0]), (10.0f32 / 255.0).to_bits());
+        assert_eq!(ow, [10.0 / 255.0; 3]);
+        // Nether #302821 = (48, 40, 33)/255 — the alpha byte must not leak in.
+        assert_eq!(
+            rgb24_to_vec3(0xFF30_2821u32 as i32),
+            [48.0 / 255.0, 40.0 / 255.0, 33.0 / 255.0]
+        );
+        // End #3f473f = (63, 71, 63)/255.
+        assert_eq!(
+            rgb24_to_vec3(0xFF3F_473Fu32 as i32),
+            [63.0 / 255.0, 71.0 / 255.0, 63.0 / 255.0]
+        );
+        // sRGB decode would give ~0.0144, not 40/255 ≈ 0.1569 — reject it.
+        assert!(rgb24_to_vec3(0xFF30_2821u32 as i32)[1] > 0.15);
+    }
+
+    /// The ambient term must OWN the fully-unlit pixel, not merely ride along
+    /// in the struct: with block 0 / sky 0 and no night vision the whole
+    /// lightmap colour IS the ambient colour (nothing else contributes), so a
+    /// Nether ambient renders `#302821`'s exact float triple where the default
+    /// renders the 0/0 NaN.
+    #[test]
+    fn ambient_owns_the_unlit_pixel() {
+        const NETHER_AMBIENT: i32 = 0xFF30_2821u32 as i32;
+        let s = LightmapState {
+            ambient_color: rgb24_to_vec3(NETHER_AMBIENT),
+            ..Default::default()
+        };
+        let out = sample(0, 0, &s);
+        // brightness_factor is 0, so notGamma is mixed in at weight 0 and the
+        // result is exactly the ambient — bit-for-bit.
+        assert_eq!(bits(out[0]), (48.0f32 / 255.0).to_bits());
+        assert_eq!(bits(out[1]), (40.0f32 / 255.0).to_bits());
+        assert_eq!(bits(out[2]), (33.0f32 / 255.0).to_bits());
+        // Same texel with the default (black) ambient is the documented NaN —
+        // so this is a genuine behaviour change owned by the new field.
+        assert!(sample(0, 0, &LightmapState::default())[0].is_nan());
+    }
+
+    /// Ambient is a floor under `max`, not an addend: once sky/block light
+    /// exceeds it the pixel is unchanged, and night vision at full strength
+    /// (0.6 grey) wins over the Nether's darker ambient channels.
+    #[test]
+    fn ambient_is_a_max_floor_in_source_order() {
+        let nether = rgb24_to_vec3(0xFF30_2821u32 as i32);
+        // Full sky: both states clamp to white — ambient cannot brighten past it.
+        let a = sample(0, 15, &LightmapState { ambient_color: nether, ..Default::default() });
+        let b = sample(0, 15, &LightmapState::default());
+        assert_eq!(a, b, "a saturated texel is unaffected by ambient");
+
+        // Night vision 1.0 seeds (0.6, 0.6, 0.6) — above every Nether channel,
+        // so `max` picks night vision and the two agree exactly.
+        let nv = LightmapState {
+            ambient_color: nether,
+            night_vision_factor: 1.0,
+            ..Default::default()
+        };
+        let nv_default = LightmapState {
+            night_vision_factor: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(sample(0, 0, &nv), sample(0, 0, &nv_default));
+
+        // A *brighter* ambient than the night-vision seed wins instead, which
+        // proves the `max` is evaluated per channel and not short-circuited.
+        let bright = LightmapState {
+            ambient_color: [0.9, 0.1, 0.1],
+            night_vision_factor: 1.0,
+            ..Default::default()
+        };
+        let out = sample(0, 0, &bright);
+        assert_eq!(bits(out[0]), 0.9f32.to_bits(), "red takes the ambient");
+        assert_eq!(
+            bits(out[1]),
+            (153.0f32 / 255.0).to_bits(),
+            "green takes the night-vision seed"
+        );
+    }
+
+    /// A mid-lit texel: ambient shifts a pixel that is neither black nor
+    /// clamped, so the End's greenish `#3f473f` is visible on top of real sky
+    /// and block light. Bit-pinned against the source expression evaluated in
+    /// the same order.
+    #[test]
+    fn ambient_shifts_a_mid_lit_texel() {
+        let end = rgb24_to_vec3(0xFF3F_473Fu32 as i32);
+        let s = LightmapState {
+            ambient_color: end,
+            ..Default::default()
+        };
+        let plain = sample(4, 4, &LightmapState::default());
+        let lit = sample(4, 4, &s);
+        for c in 0..3 {
+            assert!(
+                lit[c] > plain[c] + 0.2,
+                "channel {c}: ambient must lift the mid texel ({} vs {})",
+                lit[c],
+                plain[c]
+            );
+        }
+        // The End ambient's green channel is the brightest, so the mid texel's
+        // green lead over red must GROW versus the default (which is warm-red
+        // dominated by the block tint).
+        assert!(lit[1] - lit[0] > plain[1] - plain[0]);
     }
 
     #[test]

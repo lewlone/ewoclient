@@ -13,13 +13,16 @@
 pub mod biome_parse;
 pub mod chat_sign;
 pub mod crypt;
+pub mod dimension_parse;
 pub mod effects;
 pub mod ids;
 pub mod metadata;
 pub mod play;
 pub mod record;
 pub mod skins;
+pub mod spawn_info;
 
+use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -30,7 +33,7 @@ use rewo_proto::frame::FrameCodec;
 use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::dimension::DimensionShape;
+use rewo_world::dimension::{DimensionShape, DimensionTypeDef};
 use rewo_world::World;
 
 use ids::Ids;
@@ -51,33 +54,40 @@ fn de(e: rewo_proto::ProtoError) -> String {
 /// `0=inline`/`id+1` convention (that belongs to the different
 /// `ByteBufCodecs.holder` codec). Shared by the live `Connection`, the replay
 /// path, and the unit tests.
+///
+/// The holder is the *first* field of the embedded `CommonPlayerSpawnInfo`, so
+/// this is `spawn_info::read_login_prefix` plus one VarInt — callers that need
+/// the rest of the block read it with `CommonPlayerSpawnInfo::read` instead.
 pub(crate) fn parse_login_dimension_holder(packet: &[u8]) -> rewo_proto::Result<i32> {
     let mut r = PacketReader::new(packet);
-    r.i32()?; // player entity id
-    r.bool()?; // hardcore
-    let dim_count = r.count("dimensions", 1)?;
-    for _ in 0..dim_count {
-        r.identifier()?;
-    }
-    r.varint()?; // max players
-    r.varint()?; // view dist
-    r.varint()?; // sim dist
-    r.bool()?; // reduced debug info
-    r.bool()?; // show death screen
-    r.bool()?; // do limited crafting
+    spawn_info::read_login_prefix(&mut r)?;
     r.varint() // dimension-type holder (raw 0-based registry id)
 }
 
-/// Resolve the dimension shape from a raw 0-based holder id, defaulting to the
-/// overworld shape when the holder is out of range (or negative).
-pub(crate) fn login_dimension_shape(holder: i32, dim_shapes: &[DimensionShape]) -> DimensionShape {
-    if holder < 0 {
-        return DimensionShape::OVERWORLD;
+/// Select the synced dimension-type definition a login / respawn packet names,
+/// by **raw 0-based registry id** — the vector index *is* the holder id, so
+/// this is a direct index and never a name lookup.
+///
+/// The borrowed arm is the only one that can be a real registry entry. The
+/// owned arm is [`DimensionTypeDef::unresolved_holder`], reached solely when the
+/// *packet* names a holder the synced registry does not contain (negative, or
+/// past the end) — a registry entry that fails to parse never gets this far,
+/// because `dimension_parse` fails the connection instead.
+pub(crate) fn login_dimension_type(
+    holder: i32,
+    dim_types: &[DimensionTypeDef],
+) -> Cow<'_, DimensionTypeDef> {
+    if holder >= 0 {
+        if let Some(def) = dim_types.get(holder as usize) {
+            return Cow::Borrowed(def);
+        }
     }
-    dim_shapes
-        .get(holder as usize)
-        .copied()
-        .unwrap_or(DimensionShape::OVERWORLD)
+    log::warn!(
+        "net: dimension-type holder {holder} is not in the synced registry \
+         ({} entries) — falling back to an unresolved Overworld-shaped world",
+        dim_types.len()
+    );
+    Cow::Owned(DimensionTypeDef::unresolved_holder(holder))
 }
 
 /// Outcome of a soak/replay session.
@@ -106,7 +116,12 @@ pub(crate) struct NetStream {
 
 impl NetStream {
     fn new(inner: TcpStream) -> Self {
-        Self { inner, enc: None, dec: None, wbuf: Vec::new() }
+        Self {
+            inner,
+            enc: None,
+            dec: None,
+            wbuf: Vec::new(),
+        }
     }
 
     /// Turn on AES-128-CFB8 both ways (call right after sending `key` —
@@ -120,8 +135,18 @@ impl NetStream {
     /// Each half carries its direction's cipher state.
     fn split(self) -> std::io::Result<(NetStream, NetStream)> {
         let read_inner = self.inner.try_clone()?;
-        let read_half = Self { inner: read_inner, enc: None, dec: self.dec, wbuf: Vec::new() };
-        let write_half = Self { inner: self.inner, enc: self.enc, dec: None, wbuf: self.wbuf };
+        let read_half = Self {
+            inner: read_inner,
+            enc: None,
+            dec: self.dec,
+            wbuf: Vec::new(),
+        };
+        let write_half = Self {
+            inner: self.inner,
+            enc: self.enc,
+            dec: None,
+            wbuf: self.wbuf,
+        };
         Ok((read_half, write_half))
     }
 }
@@ -164,8 +189,11 @@ pub struct Connection<'a> {
     scratch: Vec<u8>,
     packet: Vec<u8>,
     pub recorder: Option<record::Recorder>,
-    // Dimension shapes indexed by registry order (from dimension_type registry).
-    dim_shapes: Vec<DimensionShape>,
+    /// The `minecraft:dimension_type` registry in raw wire order — index *is*
+    /// the holder registry id. One vector of unified definitions, not the
+    /// M14-era parallel `dim_shapes` / `dim_attrs` pair that a holder id could
+    /// index inconsistently.
+    dim_types: Vec<DimensionTypeDef>,
     /// Registry id of the `minecraft:overworld` world clock (see
     /// `parse_registry_data`); `None` on a server that syncs no clocks.
     overworld_clock_id: Option<i32>,
@@ -177,16 +205,12 @@ pub struct Connection<'a> {
     darkness_id: Option<i32>,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
     biome_defs: Vec<rewo_world::biome::BiomeDef>,
-    /// Per-dimension base `(sky_color, fog_color)` from each `dimension_type`
-    /// entry's `attributes`, parallel to `dim_shapes`. The active dimension's
-    /// pair becomes the biome positional layer's base.
-    dim_attrs: Vec<(Option<i32>, Option<i32>)>,
 }
 
 impl<'a> Connection<'a> {
     pub fn connect(host: &str, port: u16, data: &'a GameData) -> Result<Self, String> {
-        let stream = TcpStream::connect((host, port))
-            .map_err(|e| format!("connect {host}:{port}: {e}"))?;
+        let stream =
+            TcpStream::connect((host, port)).map_err(|e| format!("connect {host}:{port}: {e}"))?;
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| format!("set timeout: {e}"))?;
@@ -201,12 +225,11 @@ impl<'a> Connection<'a> {
             scratch: Vec::new(),
             packet: Vec::new(),
             recorder: None,
-            dim_shapes: Vec::new(),
+            dim_types: Vec::new(),
             overworld_clock_id: None,
             night_vision_id: None,
             darkness_id: None,
             biome_defs: Vec::new(),
-            dim_attrs: Vec::new(),
         })
     }
 
@@ -365,7 +388,7 @@ impl<'a> Connection<'a> {
             .varint(1) // main hand: right
             .bool(false) // text filtering
             .bool(true); // allow server listings
-        // particle status enum (0 = all) — 26.x added field.
+                         // particle status enum (0 = all) — 26.x added field.
         info.varint(0);
         self.send(info)
     }
@@ -380,9 +403,7 @@ impl<'a> Connection<'a> {
             self.record_inbound(id, body);
             match id {
                 x if x == self.ids.cb_config_keep_alive => {
-                    let ka = i64::from_be_bytes(
-                        self.packet[body..body + 8].try_into().unwrap(),
-                    );
+                    let ka = i64::from_be_bytes(self.packet[body..body + 8].try_into().unwrap());
                     let mut resp = PacketWriter::packet(self.ids.sb_config_keep_alive);
                     resp.i64(ka);
                     self.send(resp)?;
@@ -402,7 +423,7 @@ impl<'a> Connection<'a> {
                     self.send(resp)?;
                 }
                 x if x == self.ids.cb_config_registry_data => {
-                    self.parse_registry_data(body);
+                    self.parse_registry_data(body)?;
                 }
                 x if x == self.ids.cb_config_finish => {
                     let ack = PacketWriter::packet(self.ids.sb_config_finish);
@@ -425,13 +446,27 @@ impl<'a> Connection<'a> {
         }
     }
 
-    fn parse_registry_data(&mut self, body: usize) {
+    /// Decode one Configuration `registry_data` packet.
+    ///
+    /// The `minecraft:dimension_type` registry is the one that can fail the
+    /// connection: it is the only registry here whose entries the client
+    /// *must* understand exactly (a wrong vertical shape mis-decodes every
+    /// chunk, a wrong `has_skylight` invents light), so `dimension_parse`
+    /// returns a `Result` and it propagates. The remaining registries are
+    /// id-capture only and stay tolerant.
+    fn parse_registry_data(&mut self, body: usize) -> Result<(), String> {
         let mut r = PacketReader::new(&self.packet[body..]);
-        let Ok(registry) = r.identifier() else { return };
-        let Ok(count) = r.count("registry entries", 1) else {
-            return;
+        let Ok(registry) = r.identifier() else {
+            return Ok(());
         };
-        let is_dim = registry == "minecraft:dimension_type";
+        let Ok(count) = r.count("registry entries", 1) else {
+            return Ok(());
+        };
+        if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
+            self.dim_types = dimension_parse::parse_dimension_registry(&mut r, count)?;
+            log::info!("net: {} dimension type(s) synced", self.dim_types.len());
+            return Ok(());
+        }
         // The day/night timeline runs on the `minecraft:overworld` world
         // clock, and `set_time` keys its clock map by raw registry id. The id
         // is capture-able here rather than assumed from bootstrap order.
@@ -442,15 +477,13 @@ impl<'a> Connection<'a> {
         let is_mob_effect = registry == "minecraft:mob_effect";
         // M14: the biome registry, in raw wire order, drives per-biome tint.
         let is_biome = registry == "minecraft:worldgen/biome";
-        if is_dim {
-            self.dim_shapes.clear();
-            self.dim_attrs.clear();
-        }
         if is_biome {
             self.biome_defs.clear();
         }
         for idx in 0..count {
-            let Ok(entry_name) = r.identifier() else { return };
+            let Ok(entry_name) = r.identifier() else {
+                return Ok(());
+            };
             if is_clock && entry_name == "minecraft:overworld" {
                 self.overworld_clock_id = Some(idx as i32);
             }
@@ -463,10 +496,6 @@ impl<'a> Connection<'a> {
             }
             let has_nbt = r.bool().unwrap_or(false);
             if !has_nbt {
-                if is_dim {
-                    self.dim_shapes.push(DimensionShape::OVERWORLD);
-                    self.dim_attrs.push((None, None));
-                }
                 if is_biome {
                     // A biome with no NBT is degenerate; keep raw order intact
                     // with a neutral default so indices still line up.
@@ -475,25 +504,18 @@ impl<'a> Connection<'a> {
                 }
                 continue;
             }
-            let Ok(nbt) = r.nbt() else { return };
-            if is_dim {
-                let min_y = nbt.get("min_y").and_then(Nbt::as_i64).unwrap_or(-64) as i32;
-                let height = nbt.get("height").and_then(Nbt::as_i64).unwrap_or(384) as i32;
-                self.dim_shapes.push(DimensionShape { min_y, height });
-                self.dim_attrs
-                    .push(crate::biome_parse::attribute_sky_fog(nbt.get("attributes")));
-            }
+            let Ok(nbt) = r.nbt() else {
+                return Ok(());
+            };
             if is_biome {
                 self.biome_defs
                     .push(crate::biome_parse::parse_biome(&entry_name, &nbt));
             }
         }
-        if is_dim {
-            log::info!("net: {} dimension type(s) synced", self.dim_shapes.len());
-        }
         if is_biome {
             log::info!("net: {} biome(s) synced", self.biome_defs.len());
         }
+        Ok(())
     }
 
     fn answer_cookie_request(&mut self, body: usize, resp_id: i32) -> Result<(), String> {
@@ -605,12 +627,19 @@ impl<'a> Connection<'a> {
 
     fn handle_play_login(&mut self, world: &mut World, body: usize) -> Result<(), String> {
         let holder = parse_login_dimension_holder(&self.packet[body..]).map_err(de)?;
-        let shape = login_dimension_shape(holder, &self.dim_shapes);
-        world.shape = shape;
+        let def = login_dimension_type(holder, &self.dim_types);
+        // The world was created before login, so re-point it at the dimension
+        // we actually joined. It holds no columns yet, which is what makes an
+        // in-place `apply_dimension_type` sound here.
+        world.apply_dimension_type(&def);
         log::info!(
-            "net: play login — dimension shape min_y={} height={}",
-            shape.min_y,
-            shape.height
+            "net: play login — dimension {} (holder {holder}): min_y={} height={} \
+             sky_light={} cardinal={}",
+            def.name,
+            def.shape.min_y,
+            def.shape.height,
+            def.has_sky_light,
+            def.cardinal_light_type.name(),
         );
         // Signal we've loaded (keeps some servers from stalling).
         let loaded = PacketWriter::packet(self.ids.sb_play_player_loaded);
@@ -711,8 +740,8 @@ pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_p
     let y = r.f64()?;
     let z = r.f64()?;
     skip_lpvec3(r)?; // movement (LpVec3, variable length)
-    // Wire order (decompiled read): xRot (pitch) first, THEN yRot (yaw),
-    // then yHeadRot — packed-degree bytes.
+                     // Wire order (decompiled read): xRot (pitch) first, THEN yRot (yaw),
+                     // then yHeadRot — packed-degree bytes.
     let pitch = r.i8()? as f32 * (360.0 / 256.0);
     let yaw = r.i8()? as f32 * (360.0 / 256.0);
     let head_yaw = r.i8()? as f32 * (360.0 / 256.0);
@@ -764,39 +793,128 @@ mod tests {
 
     #[test]
     fn login_holder_is_raw_zero_based() {
-        let dims = ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"];
-        // Holder 0 = the FIRST dimension type (overworld), NOT "inline".
-        assert_eq!(parse_login_dimension_holder(&login_prefix(0, &dims)).unwrap(), 0);
-        assert_eq!(parse_login_dimension_holder(&login_prefix(1, &dims)).unwrap(), 1);
-        assert_eq!(parse_login_dimension_holder(&login_prefix(2, &dims)).unwrap(), 2);
-    }
-
-    #[test]
-    fn login_shape_indexes_holder_directly() {
-        let shapes = [
-            DimensionShape { min_y: -64, height: 384 }, // index 0 = overworld
-            DimensionShape { min_y: 0, height: 256 },   // index 1 = nether
-            DimensionShape { min_y: 0, height: 256 },   // index 2 = end
+        let dims = [
+            "minecraft:overworld",
+            "minecraft:the_nether",
+            "minecraft:the_end",
         ];
-        // Holder 0 → dim_shapes[0] (overworld), not a special-cased default and
-        // not dim_shapes[-1].
-        assert_eq!(login_dimension_shape(0, &shapes), shapes[0]);
-        assert_eq!(login_dimension_shape(1, &shapes), shapes[1]);
-        // Out of range → the overworld fallback, no panic.
-        assert_eq!(login_dimension_shape(9, &shapes), DimensionShape::OVERWORLD);
-        assert_eq!(login_dimension_shape(-1, &shapes), DimensionShape::OVERWORLD);
+        // Holder 0 = the FIRST dimension type (overworld), NOT "inline".
+        assert_eq!(
+            parse_login_dimension_holder(&login_prefix(0, &dims)).unwrap(),
+            0
+        );
+        assert_eq!(
+            parse_login_dimension_holder(&login_prefix(1, &dims)).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_login_dimension_holder(&login_prefix(2, &dims)).unwrap(),
+            2
+        );
+    }
+
+    /// The registry the selection tests index, in a **deliberately non
+    /// name-sorted** wire order: the Nether is holder 0 and the Overworld is
+    /// holder 3. Any name-keyed shortcut fails immediately here.
+    fn registry() -> Vec<DimensionTypeDef> {
+        use crate::dimension_parse::builtin as fx;
+        let body = fx::registry_packet(&[
+            ("minecraft:the_nether", fx::the_nether()),
+            ("minecraft:the_end", fx::the_end()),
+            ("minecraft:overworld_caves", fx::overworld_caves()),
+            ("minecraft:overworld", fx::overworld()),
+        ]);
+        crate::dimension_parse::parse_dimension_registry_packet(&body)
+            .unwrap()
+            .unwrap()
     }
 
     #[test]
-    fn login_holder_end_to_end_zero_resolves_first_shape() {
+    fn login_selects_the_definition_by_raw_id_not_by_name() {
+        let defs = registry();
+        // Holder 0 is the FIRST synced entry — here the Nether, not a
+        // special-cased default and not `dim_types[-1]`.
+        let zero = login_dimension_type(0, &defs);
+        assert!(matches!(zero, Cow::Borrowed(_)), "holder 0 must resolve");
+        assert_eq!(zero.name, "minecraft:the_nether");
+        assert_eq!(zero.shape, DimensionShape::NETHER);
+        assert!(!zero.has_sky_light);
+        // …and every other slot follows the wire order too.
+        assert_eq!(login_dimension_type(1, &defs).name, "minecraft:the_end");
+        assert_eq!(
+            login_dimension_type(2, &defs).name,
+            "minecraft:overworld_caves"
+        );
+        let three = login_dimension_type(3, &defs);
+        assert_eq!(three.name, "minecraft:overworld");
+        assert_eq!(three.shape, DimensionShape::OVERWORLD);
+        assert!(three.has_sky_light);
+    }
+
+    /// The same registry sent in a different order must give different holders
+    /// the same *definitions* — i.e. selection is order-based, not name-based.
+    #[test]
+    fn raw_id_selection_is_order_based_not_name_based() {
+        use crate::dimension_parse::builtin as fx;
+        let reversed =
+            crate::dimension_parse::parse_dimension_registry_packet(&fx::registry_packet(&[
+                ("minecraft:overworld", fx::overworld()),
+                ("minecraft:overworld_caves", fx::overworld_caves()),
+                ("minecraft:the_end", fx::the_end()),
+                ("minecraft:the_nether", fx::the_nether()),
+            ]))
+            .unwrap()
+            .unwrap();
+        let defs = registry();
+        // Holder 0 names the Nether in one order and the Overworld in the
+        // other. A name-keyed implementation would return the same entry both
+        // times; an order-keyed one cannot.
+        assert_eq!(login_dimension_type(0, &defs).name, "minecraft:the_nether");
+        assert_eq!(
+            login_dimension_type(0, &reversed).name,
+            "minecraft:overworld"
+        );
+        assert_ne!(
+            login_dimension_type(0, &defs).shape,
+            login_dimension_type(0, &reversed).shape
+        );
+        // The Nether is holder 0 in one and holder 3 in the other, and both
+        // resolve to the identical definition.
+        assert_eq!(
+            login_dimension_type(0, &defs).into_owned(),
+            login_dimension_type(3, &reversed).into_owned()
+        );
+    }
+
+    #[test]
+    fn out_of_range_holders_get_the_named_fallback_not_a_vanilla_claim() {
+        let defs = registry();
+        for holder in [4, 9, -1, i32::MIN] {
+            let d = login_dimension_type(holder, &defs);
+            assert!(
+                matches!(d, Cow::Owned(_)),
+                "holder {holder} must not resolve"
+            );
+            assert_eq!(d.name, format!("rewo:unresolved_dimension_type/{holder}"));
+            // Degrades to the pre-M16 Overworld behaviour…
+            assert_eq!(d.shape, DimensionShape::OVERWORLD);
+            // …without ever claiming to *be* a synced entry.
+            assert!(defs.iter().all(|e| e.name != d.name));
+        }
+    }
+
+    #[test]
+    fn login_holder_end_to_end_zero_resolves_the_first_entry() {
         // The full path: parse a realistic prefix (holder 0) then resolve. The
-        // pre-fix "0 = inline → OVERWORLD default" bug would coincidentally give
-        // the same shape here, so this pins that holder 0 indexes dim_shapes[0]
-        // specifically by making [0] distinct from OVERWORLD.
-        let distinct = DimensionShape { min_y: -32, height: 128 };
-        let shapes = [distinct];
-        let holder = parse_login_dimension_holder(&login_prefix(0, &["minecraft:overworld"])).unwrap();
-        assert_eq!(login_dimension_shape(holder, &shapes), distinct);
-        assert_ne!(distinct, DimensionShape::OVERWORLD);
+        // pre-fix "0 = inline → OVERWORLD default" bug would have produced the
+        // Overworld shape; here holder 0 is the Nether, so the two are
+        // distinguishable.
+        let defs = registry();
+        let holder =
+            parse_login_dimension_holder(&login_prefix(0, &["minecraft:overworld"])).unwrap();
+        assert_eq!(holder, 0);
+        let d = login_dimension_type(holder, &defs);
+        assert_eq!(d.shape, DimensionShape::NETHER);
+        assert_ne!(d.shape, DimensionShape::OVERWORLD);
     }
 }

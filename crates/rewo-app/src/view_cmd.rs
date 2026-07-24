@@ -117,7 +117,11 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
     // solid geometry. Not necessarily `Cube` — since M4 grass_block bakes as
     // a `Model` (cube + overlay element); `baked.solid` is the flag that
     // covers both (the same distinction that fixed the M5 collision bug).
-    for name in ["minecraft:grass_block", "minecraft:dirt", "minecraft:bedrock"] {
+    for name in [
+        "minecraft:grass_block",
+        "minecraft:dirt",
+        "minecraft:bedrock",
+    ] {
         if let Some(state) = data.blocks.default_state(name) {
             let visible = !matches!(
                 baked.render.get(state as usize),
@@ -159,7 +163,13 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
     let want_validation = cfg!(debug_assertions) && !args.no_validation;
     match &args.out {
         Some(out) => render_headless(
-            &baked, &meshes, eye, args.yaw, args.pitch, want_validation, out,
+            &baked,
+            &meshes,
+            eye,
+            args.yaw,
+            args.pitch,
+            want_validation,
+            out,
         ),
         None => render_windowed(baked, meshes, eye, args, want_validation),
     }
@@ -178,11 +188,9 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
 fn default_eye(world: &World) -> Vec3 {
     let coords = world.column_coords();
     let n = coords.len().max(1) as f32;
-    let (sx, sz) = coords
-        .iter()
-        .fold((0.0f32, 0.0f32), |(ax, az), (cx, cz)| {
-            (ax + *cx as f32 * 16.0 + 8.0, az + *cz as f32 * 16.0 + 8.0)
-        });
+    let (sx, sz) = coords.iter().fold((0.0f32, 0.0f32), |(ax, az), (cx, cz)| {
+        (ax + *cx as f32 * 16.0 + 8.0, az + *cz as f32 * 16.0 + 8.0)
+    });
     let (cx, cz) = (sx / n, sz / n);
     let mut surface = world.shape.min_y;
     for y in (world.shape.min_y..world.shape.min_y + world.shape.height).rev() {

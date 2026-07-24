@@ -21,7 +21,7 @@ pub mod raycast;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dimension::DimensionShape;
+use dimension::{CardinalLightType, CardinalLighting, DimensionShape, DimensionTypeDef};
 
 /// The whole client-visible world for one dimension.
 ///
@@ -29,6 +29,11 @@ use dimension::DimensionShape;
 /// readers — mesh workers, collision queries — clone the handle and get a
 /// stable immutable view; writers go through `Arc::make_mut`, which only
 /// deep-clones a column in the rare case a worker still holds it.
+///
+/// A `World` is bound to exactly one dimension, the way vanilla's `ClientLevel`
+/// is: `shape`, [`World::has_sky_light`] and [`World::cardinal_light`] all come
+/// from the same `DimensionType`. A dimension change replaces the whole struct
+/// rather than mutating these in place — see `rewo_net::play`.
 pub struct World {
     pub shape: DimensionShape,
     columns: HashMap<(i32, i32), Arc<chunk::Column>>,
@@ -38,16 +43,79 @@ pub struct World {
     /// no-biome worlds (the demo) — the mesher then keeps the legacy pre-tinted
     /// path, so those renders stay byte-identical.
     biome: Option<Arc<biome::BiomeContext>>,
+    /// `DimensionType.hasSkyLight`. When false the sky channel has no engine at
+    /// all — the server sends no sky data and `light::LightEngine` never seeds
+    /// or recomputes it, so a Nether column can't report the impossible sky 15
+    /// a stale Overworld world produced.
+    has_sky_light: bool,
+    /// `DimensionType.cardinalLightType`, and the table it resolves to. The
+    /// mesher reads these to pick each face's shade code.
+    cardinal_light_type: CardinalLightType,
+    cardinal_light: CardinalLighting,
 }
 
 impl World {
+    /// A world with the Overworld lighting contract (sky light on, DEFAULT
+    /// cardinal lighting). Every pre-M16 caller — demos, tests, snapshot
+    /// renders — keeps its exact behaviour through this constructor.
     pub fn new(shape: DimensionShape) -> Self {
         Self {
             shape,
             columns: HashMap::new(),
             entities: entities::EntityTable::default(),
             biome: None,
+            has_sky_light: true,
+            cardinal_light_type: CardinalLightType::DEFAULT,
+            cardinal_light: CardinalLighting::DEFAULT,
         }
+    }
+
+    /// A fresh, empty world configured for one dimension-type entry — the
+    /// `new ClientLevel(...)` of `handleLogin` / `handleRespawn`.
+    pub fn for_dimension(def: &DimensionTypeDef) -> Self {
+        Self {
+            shape: def.shape,
+            columns: HashMap::new(),
+            entities: entities::EntityTable::default(),
+            biome: None,
+            has_sky_light: def.has_sky_light,
+            cardinal_light_type: def.cardinal_light_type,
+            cardinal_light: def.cardinal_light,
+        }
+    }
+
+    /// Re-point an existing world at a dimension type **without** touching its
+    /// columns. Only valid when the dimension key did not change (a same-key
+    /// respawn, or the login packet configuring the world it was handed);
+    /// a real dimension change must build a fresh world, because the old
+    /// columns were generated for the old vertical shape.
+    pub fn apply_dimension_type(&mut self, def: &DimensionTypeDef) {
+        self.shape = def.shape;
+        self.has_sky_light = def.has_sky_light;
+        self.cardinal_light_type = def.cardinal_light_type;
+        self.cardinal_light = def.cardinal_light;
+    }
+
+    /// `DimensionType.hasSkyLight`.
+    pub fn has_sky_light(&self) -> bool {
+        self.has_sky_light
+    }
+
+    pub fn set_has_sky_light(&mut self, has_sky_light: bool) {
+        self.has_sky_light = has_sky_light;
+    }
+
+    pub fn cardinal_light(&self) -> CardinalLighting {
+        self.cardinal_light
+    }
+
+    pub fn cardinal_light_type(&self) -> CardinalLightType {
+        self.cardinal_light_type
+    }
+
+    pub fn set_cardinal_light_type(&mut self, t: CardinalLightType) {
+        self.cardinal_light_type = t;
+        self.cardinal_light = t.get();
     }
 
     /// Attach (or replace) the biome color context.
@@ -97,33 +165,63 @@ impl World {
     }
 
     /// Combined light level 0..15 at world coords (max of block + sky).
-    /// Unloaded or above-world positions read as full-bright.
+    /// Unloaded or above-world positions read as full-bright — but only in a
+    /// sky-lit dimension. A no-skylight dimension has no sky channel at all, so
+    /// the out-of-bounds read is dark; reporting 15 there is the "impossible
+    /// Nether sky" the stale-world path produced at every column edge.
     pub fn brightness_at(&self, x: i32, y: i32, z: i32) -> u8 {
         let Some(col) = self.columns.get(&(x >> 4, z >> 4)) else {
-            return 15;
+            return self.unloaded_sky();
         };
-        col.brightness_at(&self.shape, x & 15, y, z & 15)
+        if self.has_sky_light {
+            col.brightness_at(&self.shape, x & 15, y, z & 15)
+        } else {
+            // `Column::light_at` deliberately uses the Overworld-compatible
+            // full-sky fallback for an absent sparse section. A dimension
+            // without a sky light engine must override that fallback even
+            // inside a loaded column; only the stored block channel exists.
+            col.light_at(&self.shape, x & 15, y, z & 15).0
+        }
     }
 
     /// Separate (block, sky) light — the F3 readout. An unloaded column
-    /// reports full sky so the readout matches `brightness_at`'s fallback.
+    /// reports the same sky fallback as `brightness_at`.
     pub fn light_at(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
         let Some(col) = self.columns.get(&(x >> 4, z >> 4)) else {
-            return (0, 15);
+            return (0, self.unloaded_sky());
         };
-        col.light_at(&self.shape, x & 15, y, z & 15)
+        let (block, sky) = col.light_at(&self.shape, x & 15, y, z & 15);
+        (block, if self.has_sky_light { sky } else { 0 })
+    }
+
+    /// The sky level an unloaded column reads as: full-bright where a sky
+    /// channel exists, dark where it does not.
+    fn unloaded_sky(&self) -> u8 {
+        if self.has_sky_light {
+            15
+        } else {
+            0
+        }
     }
 
     /// Mutable column access — the `light_update` path re-lights an already
     /// loaded column in place.
     pub fn column_mut(&mut self, cx: i32, cz: i32) -> Option<&mut chunk::Column> {
-        self.columns.get_mut(&(cx, cz)).map(std::sync::Arc::make_mut)
+        self.columns
+            .get_mut(&(cx, cz))
+            .map(std::sync::Arc::make_mut)
     }
 
     pub fn column(&self, cx: i32, cz: i32) -> Option<&chunk::Column> {
         self.columns.get(&(cx, cz)).map(|c| c.as_ref())
     }
 
+    /// Every loaded column's coordinate, as an **owned** vec.
+    ///
+    /// Owned rather than an iterator on purpose: the caller that needs all of
+    /// them at once is the dimension transition in `rewo_net::play`, which
+    /// queues them for the renderer to free and then *replaces the whole
+    /// `World`* — a borrow of `self.columns` could not outlive that.
     pub fn column_coords(&self) -> Vec<(i32, i32)> {
         self.columns.keys().copied().collect()
     }
@@ -149,6 +247,12 @@ impl World {
             columns,
             entities: entities::EntityTable::default(),
             biome: self.biome.clone(),
+            // A mesh worker must see the *same* lighting contract as the world
+            // it was snapshotted from, or a Nether column would mesh with
+            // Overworld cardinal shade.
+            has_sky_light: self.has_sky_light,
+            cardinal_light_type: self.cardinal_light_type,
+            cardinal_light: self.cardinal_light,
         }
     }
 

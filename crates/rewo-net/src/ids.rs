@@ -52,6 +52,14 @@ pub struct Ids {
     pub cb_play_ping: i32,
     pub cb_play_login: i32,
     pub cb_play_position: i32,
+    /// Dimension change / death respawn (`ClientboundRespawnPacket`), carrying
+    /// the same `CommonPlayerSpawnInfo` the login packet does. Required: it is
+    /// the only announcement that the world's vertical shape and lighting
+    /// contract just changed, so a missing name is a version mismatch that must
+    /// fail loud rather than leave us decoding the Nether as the Overworld.
+    /// Decoded by `spawn_info::RespawnInfo` and applied by
+    /// `play::PlaySession::apply_respawn`.
+    pub cb_play_respawn: i32,
     pub cb_play_chunk_batch_finished: i32,
     pub cb_play_level_chunk: i32,
     /// Lighting changed without the chunk being resent (torch placed, cave
@@ -147,6 +155,7 @@ impl Ids {
             cb_play_ping: req!(p, P, C, "ping"),
             cb_play_login: req!(p, P, C, "login"),
             cb_play_position: req!(p, P, C, "player_position"),
+            cb_play_respawn: req!(p, P, C, "respawn"),
             cb_play_chunk_batch_finished: req!(p, P, C, "chunk_batch_finished"),
             cb_play_level_chunk: req!(p, P, C, "level_chunk_with_light"),
             cb_play_light_update: opt!(p, P, C, "light_update"),

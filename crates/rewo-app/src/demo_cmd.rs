@@ -10,8 +10,8 @@ use glam::{Mat4, Vec3};
 use rewo_data::{assets, DataPaths, GameData};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
-use rewo_gpu::Gpu;
 use rewo_gpu::world::WorldRenderer;
+use rewo_gpu::Gpu;
 use rewo_world::dimension::DimensionShape;
 use rewo_world::World;
 
@@ -35,16 +35,16 @@ pub struct DemoArgs {
 
 /// Blocks to showcase — each exercises a different model family.
 const SHOWCASE: &[&str] = &[
-    "minecraft:cobblestone",   // plain cube
-    "minecraft:oak_slab",      // half box + cullfaces
-    "minecraft:oak_stairs",    // multi-box + variant rotation
-    "minecraft:oak_fence",     // multipart (post only, no connections)
-    "minecraft:glass",         // cutout cube
-    "minecraft:oak_log",       // pillar (axis)
-    "minecraft:torch",         // thin box, no shade
-    "minecraft:poppy",         // cross plant (45° rescale)
-    "minecraft:dandelion",     // cross plant
-    "minecraft:crafting_table",// directional side textures
+    "minecraft:cobblestone",    // plain cube
+    "minecraft:oak_slab",       // half box + cullfaces
+    "minecraft:oak_stairs",     // multi-box + variant rotation
+    "minecraft:oak_fence",      // multipart (post only, no connections)
+    "minecraft:glass",          // cutout cube
+    "minecraft:oak_log",        // pillar (axis)
+    "minecraft:torch",          // thin box, no shade
+    "minecraft:poppy",          // cross plant (45° rescale)
+    "minecraft:dandelion",      // cross plant
+    "minecraft:crafting_table", // directional side textures
 ];
 
 pub fn run(args: DemoArgs) -> Result<(), String> {
@@ -60,7 +60,10 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
 
     // -- build the synthetic scene ----------------------------------------
     let mut world = World::new(DimensionShape::OVERWORLD);
-    let grass = data.blocks.default_state("minecraft:grass_block").unwrap_or(9);
+    let grass = data
+        .blocks
+        .default_state("minecraft:grass_block")
+        .unwrap_or(9);
     let dirt = data.blocks.default_state("minecraft:dirt").unwrap_or(10);
     // A grass-over-dirt platform: 3 rows behind the showcase line plus a
     // 4-row apron in front (z −4..−1) that hosts the fluid pools.

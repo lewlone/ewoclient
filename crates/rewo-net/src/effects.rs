@@ -282,14 +282,35 @@ impl VisualEffects {
 
     /// Record the local player's entity id (from the login packet). Once set,
     /// [`tick`](Self::tick) begins advancing and effect packets targeting this
-    /// id are tracked. A later call **replaces** the id outright (a re-login /
-    /// respawn hands a fresh entity id); it does NOT clear `tick_count` or the
-    /// tracked effects. In practice the login packet arrives once before any
-    /// effect packet, so this is only ever the initial set — but the replace
-    /// semantics are the safe default and never drop a legitimately-tracked
-    /// effect on the ground.
+    /// id are tracked. A later call **replaces** the id outright (a re-login
+    /// hands a fresh entity id); it does NOT clear `tick_count` or the tracked
+    /// effects — clearing on a respawn is
+    /// [`reset_for_respawn`](Self::reset_for_respawn)'s job, and a respawn keeps
+    /// the same entity id anyway. In practice the login packet arrives once
+    /// before any effect packet, so this is only ever the initial set — but the
+    /// replace semantics are the safe default and never drop a
+    /// legitimately-tracked effect on the ground.
     pub fn set_player_id(&mut self, id: i32) {
         self.player_id = Some(id);
+    }
+
+    /// `ClientPacketListener.handleRespawn` builds a genuinely fresh
+    /// `LocalPlayer`, on both the changed-dimension and same-dimension paths.
+    /// Active `MobEffectInstance`s live in `LivingEntity.activeEffects`, not in
+    /// `SynchedEntityData`, so `dataToKeep` bit 2 does not carry them; nor does
+    /// anything carry `Entity.tickCount`, which the new entity starts at 0. The
+    /// server re-sends whatever effects still apply, so dropping ours is the
+    /// faithful behaviour rather than a lossy one.
+    ///
+    /// Deliberately minimal: only the per-life state clears. The captured
+    /// `mob_effect` registry ids belong to the *connection* (they came from
+    /// `registry_data` during configuration and a respawn never re-syncs them),
+    /// and the local entity id is unchanged by a respawn — so both survive, and
+    /// a post-respawn update for the same player id still lands.
+    pub fn reset_for_respawn(&mut self) {
+        self.night_vision = None;
+        self.darkness = None;
+        self.tick_count = 0;
     }
 
     /// Which tracked slot (if any) a raw registry id maps to.
@@ -789,6 +810,57 @@ mod tests {
         }
         assert_eq!(t.tick_count(), 7);
         assert_eq!(t.snapshot(0.0).tick_count, 7);
+    }
+
+    #[test]
+    fn respawn_clears_effects_and_the_pulse_phase() {
+        let mut t = tracker();
+        t.on_update(UpdateEffect {
+            entity_id: PLAYER,
+            effect_id: NV_ID,
+            amplifier: 0,
+            duration: 400,
+            flags: 8,
+        });
+        t.on_update(UpdateEffect {
+            entity_id: PLAYER,
+            effect_id: DARK_ID,
+            amplifier: 0,
+            duration: 400,
+            flags: 0,
+        });
+        for _ in 0..9 {
+            t.tick();
+        }
+        assert_eq!(t.night_vision_duration(), Some(391));
+        assert!(t.darkness_blend_factor(0.0) > 0.0);
+        assert_eq!(t.tick_count(), 9);
+
+        // The fresh `LocalPlayer` has no active effects and tickCount 0.
+        t.reset_for_respawn();
+        let snap = t.snapshot(0.0);
+        assert_eq!(snap.night_vision_duration, None, "activeEffects cleared");
+        assert_eq!(snap.darkness_blend_factor, 0.0, "blend state cleared too");
+        assert_eq!(snap.tick_count, 0, "Entity.tickCount starts fresh");
+
+        // Registry ids and the player id survive: the server's re-sent effects
+        // for the same entity still land, and ticking resumes from 0.
+        t.apply_update(&update_body(PLAYER, NV_ID, 0, 200, 8));
+        assert_eq!(t.night_vision_duration(), Some(200));
+        t.tick();
+        assert_eq!(t.tick_count(), 1);
+        assert_eq!(t.night_vision_duration(), Some(199));
+    }
+
+    #[test]
+    fn respawn_before_login_keeps_the_tracker_inert() {
+        // No player id yet → reset changes nothing observable and does not
+        // make `tick` start counting.
+        let mut t = VisualEffects::new(Some(NV_ID), Some(DARK_ID));
+        t.reset_for_respawn();
+        t.tick();
+        assert_eq!(t.tick_count(), 0);
+        assert_eq!(t.night_vision_duration(), None);
     }
 
     #[test]

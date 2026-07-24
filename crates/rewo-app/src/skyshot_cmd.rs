@@ -37,10 +37,11 @@ use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use rewo_data::{assets, DataPaths};
 use rewo_gpu::celestial::{CelestialImage, CelestialState, CelestialTextures};
+use rewo_gpu::end_sky::{end_sky_linear_rgba, EndSkyImage, END_SKY_COLOR_ARGB};
 use rewo_gpu::entities::srgb_to_linear;
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
-use rewo_gpu::world::WorldRenderer;
+use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_world::{celestial, daylight};
 
@@ -793,14 +794,310 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
     // heading sweep here.
 
     wr.destroy(gpu);
+
+    // -- Section M16: DimensionType.Skybox modes ----------------------------
+    run_sky_mode_cases(gpu, &mut off, baked, &draw, args, w, h, &mut failures)?;
     let fails: Vec<&str> = failures.iter().map(|s| s.as_str()).collect();
     finish(gpu, off, &fails)
+}
+
+/// The M16 `DimensionType.Skybox` policy, end to end through the production
+/// renderer (`LevelRenderer.addSkyPass`):
+///
+/// - **OVERWORLD** — gradient disc + celestials, unchanged. Graded as "a sky
+///   contribution is present" against the very same frame in NONE mode, so this
+///   is a differential test rather than a restatement of the legacy cases
+///   (which still run above, untouched).
+/// - **NONE** — `addSkyPass` adds no pass at all, so the attachment must still
+///   hold the *clear* value exactly, in every heading, in every pixel. That is
+///   the actual absence of a sky contribution, not "it looks dark".
+/// - **END** — `SkyRenderer.renderEndSky`: the ±100 textured cube at the
+///   constant colour `-14145496` (`0xFF282828`). Two oracles:
+///   (a) a **synthetic** solid texture, where every rendered pixel has one
+///       independently-computable exact value and the closed cube must cover
+///       100% of the frame from any heading; and
+///   (b) the **production jar** `end_sky.png`, where NEAREST sampling means
+///       every pixel must be exactly one of the texture's own texels scaled by
+///       the constant — an exact set-membership test that also proves the
+///       texture is really tiled (more than one distinct value appears) and
+///       really darkened (no pixel is the raw texel).
+///
+/// End flashes are out of scope and are not rendered or checked.
+#[allow(clippy::too_many_arguments)]
+fn run_sky_mode_cases(
+    gpu: &mut Gpu,
+    off: &mut Offscreen,
+    baked: &assets::BakedAssets,
+    draw: &OverlayDraw,
+    args: &SkyshotArgs,
+    w: u32,
+    h: u32,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    if let Some(cel) = &baked.celestial {
+        wr.init_celestial(gpu, &to_gpu_textures(cel))?;
+    }
+    wr.set_camera([0.0, 0.0, 0.0]);
+    let up = up_view(w, h);
+
+    // (1) OVERWORLD: noon, sun at the zenith — the legacy path, unchanged.
+    wr.set_sky_mode(SkyMode::Overworld);
+    apply_sky(&mut wr, NOON);
+    wr.set_celestial(state_at(NOON));
+    off.render(gpu, Some((&mut wr, up)), draw, CLEAR)?;
+    let ow = off.read_rgba(gpu)?;
+    dump(args, off, gpu, "mode-overworld");
+    let ow_centre = center_avg(&ow, w, h, 8);
+    println!(
+        "[skyshot] mode OVERWORLD: zenith centre rgb {:?} (luma {:.1})",
+        ow_centre.map(|v| v.round() as i32),
+        luma_f(ow_centre)
+    );
+    if luma_f(ow_centre) < 30.0 {
+        failures.push(format!(
+            "mode OVERWORLD: zenith centre {ow_centre:?} carries no sky contribution"
+        ));
+    }
+
+    // (2) NONE: identical state, only the mode changes. Nothing may draw — not
+    //     the gradient, not the sun that was plainly visible a frame ago.
+    wr.set_sky_mode(SkyMode::None);
+    off.render(gpu, Some((&mut wr, up)), draw, CLEAR)?;
+    let none = off.read_rgba(gpu)?;
+    dump(args, off, gpu, "mode-none");
+    let clear_px: [u8; 4] = std::array::from_fn(|c| (CLEAR[c] * 255.0).round() as u8);
+    let mut dirty = 0usize;
+    for px in none.chunks(4) {
+        if px[0] != clear_px[0] || px[1] != clear_px[1] || px[2] != clear_px[2] {
+            dirty += 1;
+        }
+    }
+    println!(
+        "[skyshot] mode NONE: {dirty} of {} pixels differ from the clear value {clear_px:?}",
+        none.len() / 4
+    );
+    if dirty != 0 {
+        failures.push(format!(
+            "mode NONE: {dirty} pixels wrote sky — addSkyPass must add no pass at all"
+        ));
+    }
+    // ...and the mode really was the only difference: OVERWORLD did write.
+    if max_channel_delta(&ow, &none) < 20 {
+        failures.push(
+            "mode NONE vs OVERWORLD are indistinguishable — the mode is not driving the pass"
+                .into(),
+        );
+    }
+    // A level heading too, so the check is not a zenith-only accident.
+    let horiz = horizon_view(w, h, 0.0);
+    off.render(gpu, Some((&mut wr, horiz)), draw, CLEAR)?;
+    let none_h = off.read_rgba(gpu)?;
+    if none_h
+        .chunks(4)
+        .any(|px| px[0] != clear_px[0] || px[1] != clear_px[1] || px[2] != clear_px[2])
+    {
+        failures.push("mode NONE: the horizon heading wrote sky pixels".into());
+    }
+
+    // (3) END, synthetic solid texture: an exact per-pixel value + full cover.
+    const SYN: [u8; 3] = [200, 120, 60];
+    let syn_rgba: Vec<u8> = (0..16 * 16)
+        .flat_map(|_| [SYN[0], SYN[1], SYN[2], 255])
+        .collect();
+    wr.init_end_sky(
+        gpu,
+        &EndSkyImage {
+            rgba: &syn_rgba,
+            w: 16,
+            h: 16,
+        },
+    )?;
+    if !wr.end_sky_ready() {
+        failures.push("END: init_end_sky did not attach a pass".into());
+    }
+    wr.set_sky_mode(SkyMode::End);
+    // The constant `-14145496` = 0xFF282828, linearized for our sRGB target.
+    let k = end_sky_linear_rgba();
+    println!(
+        "[skyshot] END constant {:#010x} -> linear rgb ({:.6}, {:.6}, {:.6}) alpha {:.1}",
+        END_SKY_COLOR_ARGB, k[0], k[1], k[2], k[3]
+    );
+    let expect_syn: [u8; 3] = std::array::from_fn(|c| {
+        let lin = srgb_to_linear(SYN[c] as f32 / 255.0) * k[c];
+        (linear_to_srgb(lin) * 255.0).round().clamp(0.0, 255.0) as u8
+    });
+    // Every heading sees the inside of a closed cube: 100% coverage, one value.
+    for (tag, vp) in [
+        ("up", up),
+        ("north", horizon_view(w, h, 0.0)),
+        ("east", horizon_view(w, h, std::f32::consts::FRAC_PI_2)),
+        (
+            "down",
+            view(w, h, Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 0.0, -1.0)),
+        ),
+    ] {
+        off.render(gpu, Some((&mut wr, vp)), draw, CLEAR)?;
+        let img = off.read_rgba(gpu)?;
+        if tag == "up" {
+            dump(args, off, gpu, "mode-end-synthetic");
+        }
+        let mut bad = 0usize;
+        let mut worst = 0i32;
+        for px in img.chunks(4) {
+            let d = (0..3)
+                .map(|c| (px[c] as i32 - expect_syn[c] as i32).abs())
+                .max()
+                .unwrap_or(0);
+            if d > 2 {
+                bad += 1;
+                worst = worst.max(d);
+            }
+        }
+        println!(
+            "[skyshot] END synthetic {tag}: expected {expect_syn:?}, {bad} of {} pixels off (worst Δ {worst})",
+            img.len() / 4
+        );
+        if bad != 0 {
+            failures.push(format!(
+                "END synthetic {tag}: {bad} pixels != {expect_syn:?} (worst Δ {worst}) — the cube is not closed, or the colour/UV/blend is wrong"
+            ));
+        }
+    }
+    // Guard: the constant must actually darken. The raw texel would be SYN.
+    if expect_syn == SYN {
+        failures.push("END: the -14145496 constant is not being applied".into());
+    }
+
+    // (4) END, the production jar texture. NEAREST + the constant means every
+    //     pixel is exactly one texel of end_sky.png scaled by k.
+    match &baked.end_sky {
+        None => failures.push(
+            "END: the jar bake has no environment/end_sky.png — the End skybox cannot be verified"
+                .into(),
+        ),
+        Some(img) => {
+            let mut wr2 = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+            wr2.set_camera([0.0, 0.0, 0.0]);
+            wr2.init_end_sky(
+                gpu,
+                &EndSkyImage {
+                    rgba: &img.rgba,
+                    w: img.w,
+                    h: img.h,
+                },
+            )?;
+            wr2.set_sky_mode(SkyMode::End);
+            // The independently-derived palette: every distinct texel, scaled.
+            let mut palette: Vec<[u8; 3]> = Vec::new();
+            let mut raw: Vec<[u8; 3]> = Vec::new();
+            for t in img.rgba.chunks(4) {
+                let rawc = [t[0], t[1], t[2]];
+                if !raw.contains(&rawc) {
+                    raw.push(rawc);
+                    palette.push(std::array::from_fn(|c| {
+                        let lin = srgb_to_linear(t[c] as f32 / 255.0) * k[c];
+                        (linear_to_srgb(lin) * 255.0).round().clamp(0.0, 255.0) as u8
+                    }));
+                }
+            }
+            println!(
+                "[skyshot] END production: end_sky.png {}x{} -> {} distinct texels",
+                img.w,
+                img.h,
+                palette.len()
+            );
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let frame = off.read_rgba(gpu)?;
+            dump(args, off, gpu, "mode-end-production");
+            let mut off_palette = 0usize;
+            let mut worst = 0i32;
+            let mut seen: Vec<usize> = Vec::new();
+            for px in frame.chunks(4) {
+                let mut best = (usize::MAX, i32::MAX);
+                for (i, p) in palette.iter().enumerate() {
+                    let d = (0..3)
+                        .map(|c| (px[c] as i32 - p[c] as i32).abs())
+                        .max()
+                        .unwrap_or(0);
+                    if d < best.1 {
+                        best = (i, d);
+                    }
+                }
+                if best.1 > 2 {
+                    off_palette += 1;
+                    worst = worst.max(best.1);
+                } else if !seen.contains(&best.0) {
+                    seen.push(best.0);
+                }
+            }
+            println!(
+                "[skyshot] END production: {off_palette} of {} pixels outside the scaled palette (worst Δ {worst}); {} distinct palette entries rendered",
+                frame.len() / 4,
+                seen.len()
+            );
+            if off_palette != 0 {
+                failures.push(format!(
+                    "END production: {off_palette} pixels are not a scaled end_sky.png texel (worst Δ {worst})"
+                ));
+            }
+            // >1 distinct value proves the texture is sampled and tiled rather
+            // than collapsed to a flat fill (the failure mode a flat-colour
+            // stand-in would look identical to).
+            if seen.len() < 2 {
+                failures.push(format!(
+                    "END production: only {} distinct value(s) rendered — end_sky.png is not being sampled/tiled",
+                    seen.len()
+                ));
+            }
+            // ...and the constant really darkened them. Per-pixel identity is
+            // not usable here (end_sky.png is dark enough that a darkened texel
+            // can coincide with some OTHER raw texel), so compare the two
+            // distributions' ceilings instead: the brightest rendered pixel must
+            // sit at the scaled palette's ceiling, well below the raw one. The
+            // second assertion is what makes the first meaningful.
+            let max_luma = |set: &[[u8; 3]]| set.iter().map(|p| luma(*p)).fold(0.0f32, f32::max);
+            let raw_ceiling = max_luma(&raw);
+            let scaled_ceiling = max_luma(&palette);
+            let rendered_ceiling = frame
+                .chunks(4)
+                .map(|px| luma([px[0], px[1], px[2]]))
+                .fold(0.0f32, f32::max);
+            println!(
+                "[skyshot] END production: luma ceilings raw {raw_ceiling:.1} scaled {scaled_ceiling:.1} rendered {rendered_ceiling:.1}"
+            );
+            if raw_ceiling - scaled_ceiling < 10.0 {
+                failures.push(format!(
+                    "END production: raw ceiling {raw_ceiling:.1} and scaled ceiling {scaled_ceiling:.1} are too close to grade the darkening"
+                ));
+            } else if rendered_ceiling > scaled_ceiling + 2.0 {
+                failures.push(format!(
+                    "END production: brightest rendered pixel {rendered_ceiling:.1} exceeds the scaled ceiling {scaled_ceiling:.1} (raw {raw_ceiling:.1}) — the -14145496 constant was dropped"
+                ));
+            }
+            wr2.destroy(gpu);
+        }
+    }
+
+    wr.destroy(gpu);
+    Ok(())
+}
+
+/// Max per-channel byte difference across two full RGBA frames.
+fn max_channel_delta(a: &[u8], b: &[u8]) -> i32 {
+    a.chunks(4)
+        .zip(b.chunks(4))
+        .flat_map(|(x, y)| (0..3).map(move |c| (x[c] as i32 - y[c] as i32).abs()))
+        .max()
+        .unwrap_or(0)
 }
 
 fn finish(gpu: &mut Gpu, mut off: Offscreen, failures: &[&str]) -> Result<(), String> {
     off.destroy(gpu);
     if failures.is_empty() {
-        println!("[skyshot] CHECK OK — sky zenith tint + sun/moon/stars/sunrise verified");
+        println!(
+            "[skyshot] CHECK OK — sky zenith tint + sun/moon/stars/sunrise + skybox modes verified"
+        );
         Ok(())
     } else {
         for f in failures {

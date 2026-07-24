@@ -169,9 +169,16 @@ impl LightEngine {
         // -- sky light ------------------------------------------------------
         // Only the (x,z) column's open-sky extent can change, so recompute
         // that one column's sources and diff against what is stored.
-        self.update_sky_column(world, t, x, z, old, new, y);
-        self.run_decrease(world, t, Channel::Sky);
-        self.run_increase(world, t, Channel::Sky);
+        //
+        // A dimension with `hasSkyLight == false` has no sky light engine in
+        // vanilla at all: the server never sends sky data and the client never
+        // computes any. Running the flood there would invent sky light out of
+        // the world's zero-initialised arrays, so the whole channel is skipped.
+        if world.has_sky_light() {
+            self.update_sky_column(world, t, x, z, old, new, y);
+            self.run_decrease(world, t, Channel::Sky);
+            self.run_increase(world, t, Channel::Sky);
+        }
 
         self.touched.iter().copied().collect()
     }
@@ -395,7 +402,7 @@ impl LightEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dimension::DimensionShape;
+    use crate::dimension::{DimensionShape, DimensionTypeDef};
 
     /// State 0 = air (dampening 0), 1 = stone (15), 2 = torch (emits 14).
     const EMISSION: &[u8] = &[0, 0, 14];
@@ -498,5 +505,60 @@ mod tests {
             w.light_at(8, 9, 8).1 < 15,
             "the cell under a one-block lid is no longer a direct source"
         );
+    }
+
+    /// A Nether-shaped dimension type: the roofed, sky-light-less case. Built
+    /// from `unresolved_holder` (whose fields are the Overworld's) with the two
+    /// that matter here overridden, so the test states exactly what it depends
+    /// on.
+    fn nether_def() -> DimensionTypeDef {
+        DimensionTypeDef {
+            name: "minecraft:the_nether".into(),
+            shape: DimensionShape::NETHER,
+            has_sky_light: false,
+            ..DimensionTypeDef::unresolved_holder(0)
+        }
+    }
+
+    #[test]
+    fn a_dimension_without_sky_light_never_seeds_the_sky_channel() {
+        // The regression guard for `on_block_change`'s `has_sky_light` gate.
+        // These columns are wide open — in the Overworld every cell would be a
+        // level-15 sky source — but the Nether has no sky light engine at all,
+        // so the channel must stay at the zero the arrays were born with.
+        let mut w = World::for_dimension(&nether_def());
+        assert!(!w.has_sky_light());
+        w.ensure_column(0, 0);
+        w.ensure_column(-1, 0);
+        let mut e = LightEngine::new();
+
+        // Edit 1: place a torch in open air. Block light floods; sky must not.
+        w.set_block(8, 20, 8, 2);
+        e.on_block_change(&mut w, tables(), 8, 20, 8, 0, 2);
+        assert_eq!(w.light_at(8, 20, 8).0, 14, "block light still works");
+        for y in [0, 20, 40, DimensionShape::NETHER.height - 1] {
+            assert_eq!(
+                w.light_at(8, y, 8).1,
+                0,
+                "sky stays unseeded at y={y} with has_sky_light = false"
+            );
+        }
+
+        // Edit 2: a solid lid — the column-shape change that on the Overworld
+        // path runs the sky decrease/increase passes. Still nothing to run.
+        w.set_block(8, 30, 8, 1);
+        e.on_block_change(&mut w, tables(), 8, 30, 8, 0, 1);
+        for y in 0..DimensionShape::NETHER.height {
+            assert_eq!(w.light_at(8, y, 8).1, 0, "sky still 0 at y={y}");
+            assert_eq!(w.light_at(-1, y, 8).1, 0, "and in the neighbour column");
+        }
+
+        // Edit 3: break the lid again — the "sky just opened up" branch, which
+        // is the one that would seed 15s into every cell of the column.
+        w.set_block(8, 30, 8, 0);
+        e.on_block_change(&mut w, tables(), 8, 30, 8, 1, 0);
+        for y in 0..DimensionShape::NETHER.height {
+            assert_eq!(w.light_at(8, y, 8).1, 0, "no 15s invented at y={y}");
+        }
     }
 }

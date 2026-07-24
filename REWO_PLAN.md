@@ -9,9 +9,10 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M15 shipped + headlessly verified (2026-07-24). M0–M9 are
-pushed (`origin/main` @ `973ea5e`); M10–M15 are reviewed local work,
-intentionally not yet pushed. M14 is commit `88b5112`.**
+**Status: M0–M16 shipped + headlessly verified (2026-07-24). M0–M9 are
+pushed (`origin/main` @ `973ea5e`); M10–M16 are reviewed local work,
+intentionally not yet pushed. M14 is commit `88b5112`; M15 is `5b0f437`;
+M16 is the current local commit on `codex/rewo-m16-dimensions`.**
 See §0.0 for the fresh-session handoff and §15 for the per-milestone log.
 
 ---
@@ -35,10 +36,24 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M15 shipped; M0–M9 pushed, M10–M15 reviewed local
+### Where it is: M0–M16 shipped; M0–M9 pushed, M10–M16 reviewed local
 
-**Latest (2026-07-24): M14 per-biome color and M15 geometry performance. See
-§15 for the blow-by-blow.**
+**M16 is verified and committed locally** on branch
+`codex/rewo-m16-dimensions`; it is not pushed. The vanilla test server was
+stopped and port 25599 verified free after the final live gates.
+
+**Latest (2026-07-24): M16 dimensions (Nether/End/caves, the whole transition),
+M14 per-biome color and M15 geometry performance. See §15 for the blow-by-blow.**
+- **M16 dimensions** — the `minecraft:dimension_type` registry is now parsed,
+  raw-holder-id-selected and *consumed*: per-dimension vertical shape (the
+  Nether's 0..256 vs the Overworld's −64..384, which mis-decoded every Nether
+  chunk before), `has_skylight`, `skybox`, ambient light, cardinal (Nether) face
+  shade, sky/fog/ambient/sky-light colours + factor, `has_fixed_time`, and a
+  `has_day_timeline` resolved from the `timelines` holder set — **independent of
+  `has_fixed_time`**, which is a separate `DimensionType` member. Plus the End
+  sky pass, the world/mesh discard-and-refence transition, and spawn info.
+  Gates: **`rewo dimensioncheck --check`** (serverless) and **`rewo play
+  --dimension-check`** (live, paced).
 - **M15 exact packed ABI + conservative greedy cubes** — `MeshVertex` is now
   28 bytes (position f32×3, UV f32×2, packed light/shade/AO u32, packed tint
   u32), with shader-SPIR-V build guards preserving exact `/255` reconstruction.
@@ -164,6 +179,23 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   footprint, and the 780/4680 star count. Run after any sky/celestial/lightmap
   change (`--out-dir <dir>` also dumps the rendered frames as an eyeball
   artifact).
+- `rewo dimensioncheck --check` — **the serverless dimension gate** (M16). It
+  grades three independent inputs against each other: a **captured** vanilla
+  Configuration `registry_data` packet (read out of a recording by the
+  production parser), the **bundled** built-in transcription, and the **real
+  decompiled datagen JSON** at
+  `…/26.2/decompiled/data/minecraft/dimension_type/*.json`, read by
+  `rewo-app/src/dimension_json.rs` — a `serde_json` reader that shares no code
+  with the NBT parser, extracts every client-consumed raw field itself, applies
+  a default only where the codec proves one, and resolves `has_day_timeline`
+  through the shipped `data/minecraft/tags/timeline/*.json`. A hand-written
+  `EXPECT` table grades all three and is itself graded by the JSON. It then
+  proves the world/mesh binding and the mesh pool's generation fence. Fails
+  closed on a missing recording *or* a missing/malformed decompile
+  (`--decompiled <dir>` overrides the version-derived path).
+- `rewo play --dimension-check` — **the live dimension gate** (M16): the paced
+  Overworld→Nether→End→Overworld route, checking the level key, the respawn
+  boundary, column discard/requeue, generation fencing and settled corrections.
 - **The test servers**: local flat-world vanilla 26.2 servers the assistant
   sets up + runs. **Offline** at `%APPDATA%/EwoClient/rewo/26.2/testserver/`
   (online-mode=false, port 25599, bot is op'd as `RewoOp` for
@@ -324,8 +356,14 @@ the code's author. Nothing below is settled truth.
   **RESOLVED M10 (§15)**: the two-phase block+sky flood fill relights and
   remeshes affected columns on every client edit, server-exact (gate
   `rewo play --light-check`: 884,736 cells, 0 mismatches).
-- **Only the overworld dimension is tested.** Nether/end (different
-  min_y/height via the registry parse) is coded but unexercised.
+- ~~**Only the overworld dimension is tested.**~~ — **RESOLVED M16 (§15,
+  uncommitted)**: the Nether, the End and `overworld_caves` are parsed from the
+  synced registry, selected by raw holder id, and exercised both serverlessly
+  (`rewo dimensioncheck --check`) and live (`rewo play --dimension-check`,
+  4/4 checkpoints, 3/3 transitions). Still open within it: dimensions the
+  registry can express but vanilla does not ship (custom datapack dimension
+  types) are parsed but unexercised, and the `{modifier, argument}` arm of an
+  attribute override is a deliberate hard error rather than a modelled case.
 - ~~**No online-mode / encryption / chat signing**~~ — **shipped M7
   (2026-07-22)**: AES-128-CFB8 login encryption + Mojang session join +
   SHA256withRSA signed chat, verified on an `enforce-secure-profile`
@@ -381,15 +419,15 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-After M15, the most concrete remaining correctness work is: (a) general
-**Nether/End + respawn/dimension-transition verification**, including dimension
-ambient light; (b) **entity-event animations** such as warden attack/allay
-dance; (c) true shape-union face occlusion and glow-lichen's any-face emission;
-(d) the explicitly excluded redstone/stem/lily `BlockColors`. Visual/product
-work includes clouds/weather, HUD completeness and ETF random/emissive textures.
-The async transfer/staging-ring idea remains measure-first; M15 already closes
-greedy cube meshing and vertex packing. Confirm direction with the user before
-diving in.
+After M16, the most concrete remaining correctness work is: (a) **entity-event
+animations** such as warden attack/allay dance; (b) true shape-union face
+occlusion and glow-lichen's any-face emission; (c) the explicitly excluded
+redstone/stem/lily `BlockColors`; (d) physics parity outside the on-foot
+flat-world subset (water, ladders, ice, cobwebs). Visual/product work includes
+clouds/weather, HUD completeness and ETF random/emissive textures. The async
+transfer/staging-ring idea remains measure-first; M15 closed greedy cube meshing
+and vertex packing, and M16 closed Nether/End + the dimension transition.
+Confirm direction with the user before diving in.
 
 ---
 
@@ -3558,3 +3596,107 @@ base selection plus dimension ambient; entity-event animations; true shape-union
 face occlusion; glow-lichen any-face emission; redstone/stem/lily-pad
 `BlockColors`; clouds/weather and HUD completeness. Packed vertices and greedy
 cube meshing are now shipped and off the open list.
+
+### 2026-07-24 — M16: dimensions (Nether/End/caves) and the whole transition — SHIPPED + VERIFIED
+
+M16 makes the `minecraft:dimension_type` registry a *consumed* contract rather
+than a parsed-and-ignored one. Before it, every Nether chunk mis-decoded: the
+client used the Overworld's −64..384 shape for a 0..256 dimension, so section
+indexing was off by four sections and the stale full-bright sky nibbles reached
+the GPU. The work is complete, every gate below is green, and it is committed
+locally on `codex/rewo-m16-dimensions` (not pushed). The vanilla test server was
+stopped after the final gates and port 25599 was verified free.
+
+**What ships.** `rewo-net/src/dimension_parse.rs` is the single parser for the
+synced registry, in **raw wire order** — the vector index *is* the holder id a
+login/respawn packet names, and nothing selects by name or value. It reads
+`min_y`/`height`/`has_skylight`/`ambient_light` as required fields, `skybox` /
+`cardinal_light` / `has_fixed_time` as optional fields with exactly the codec's
+default, and the `EnvironmentAttributeMap` overrides for sky/fog/ambient/
+sky-light colour and sky-light factor. Absence is preserved where it matters:
+the Nether sets no `sky_color`/`fog_color` at all, and collapsing that into the
+attribute's literal `0` would tint the whole biome colour stack opaque black.
+A malformed entry is a connection error, never a substituted Overworld.
+`has_day_timeline` is resolved from the `timelines` holder set and is
+**independent of `has_fixed_time`** — they are separate `DimensionType`
+members, and a codec-valid entry can have both. Downstream: per-dimension
+`World` shape/sky channel/cardinal table, the Nether face-shade codes, the End
+sky pass (`rewo-gpu/src/end_sky.rs`), spawn info, and a world/mesh transition
+that discards the old world and refences the mesh pool by generation.
+
+**The serverless oracle, `rewo dimensioncheck --check`.** Three inputs that can
+disagree, plus a fourth that grades them:
+1. a **captured** vanilla Configuration `registry_data` packet, pulled out of a
+   recording *by content* and parsed by the production parser;
+2. the **bundled** built-in transcription, encoded to wire bytes and pushed
+   through the same entry point;
+3. the **real decompiled datagen JSON** —
+   `…/26.2/decompiled/data/minecraft/dimension_type/{overworld,overworld_caves,
+   the_end,the_nether}.json` — read by `rewo-app/src/dimension_json.rs`, a
+   `serde_json` reader that shares no code with the NBT parser, extracts every
+   client-consumed raw field itself, applies a default **only** where the codec
+   proves one (and reports which fields were defaulted), and resolves the day
+   timeline by expanding `data/minecraft/tags/timeline/*.json`;
+4. the hand-written `EXPECT` table, which grades all three and is itself graded
+   by the JSON — so a stale table cannot certify a capture, and a JSON reader
+   and a parser that mis-read the *same* field are still caught by a value a
+   human wrote down.
+
+The day-cycle mapping is **proved from the shipped tag files**, not asserted:
+`#minecraft:in_overworld` expands to `{day, early_game, moon,
+villager_schedule}` and `#minecraft:in_{nether,end}` to `{villager_schedule}`
+(both via `#minecraft:universal`), so only the two Overworld entries carry
+`minecraft:day`. A holder-set entry with no file under `timeline/` or
+`tags/timeline/` is an error. The oracle then drives the world binding, the
+mesh binding and the mesh pool's generation fence, and fails closed on a
+missing recording *or* a missing/malformed decompile (`--decompiled <dir>`
+overrides the version-derived path; a bogus one exits 1 naming the directory).
+
+**A senior-review finding fixed before this entry was written.** The test then
+named `the_bundled_transcription_matches_the_decompiled_json` compared the
+transcription only against the handwritten `EXPECT` table — the decompiled JSON
+was never read, so the claim was not executable. It is now: `dimension_json.rs`
+reads the files, and the runtime gate and five renamed/added tests
+(`the_bundled_transcription_matches_the_decompiled_json_files`,
+`the_expectation_table_matches_the_decompiled_json_files`,
+`the_json_oracle_rejects_a_drifted_transcription`,
+`the_day_timeline_is_resolved_from_the_decompiled_tag_files`,
+`a_missing_decompile_is_an_error`) all exercise them. The oracle's own
+anti-vacuity test drifts one field at a time and asserts the diagnostic names
+the field and the file.
+
+**Measured results.**
+- Unit tests **344** (proto 11, world 93, data 9, net 102, mesh 38, gpu 44,
+  app 47). The app count was **37** before this fix added ten tests; the other
+  crates are unchanged.
+- `rewo dimensioncheck --check`: 4 captured entries exact against all three
+  other inputs, world binding 16 shape/section-index probes + 16 light probes,
+  mesh binding 96 vertices, Nether shade codes `[2,3,4,5,6]` and max sky nibble
+  0, generation fence outputs `[0,1]`.
+- Live dimension gate: **4/4 checkpoints, 3/3 transitions**, each discarding
+  and requeueing **329 columns** (cumulative queue 987), new worlds 0 columns,
+  chunk decode failures **0**, settled corrections **0**, teleports 4; the
+  Nether's loaded and sparse sky maxima both **0**.
+- `mobshot` **243/243**; `lightmapshot`, `skyshot`, `tintshot`, `meshshot`
+  green, Vulkan validation **ON / 0 VUIDs**.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15**.
+- Replay GPU avg **0.240 ms**, p50 0.207, p99 1.107, p99.9 2.357, max 2.622,
+  1% low 1.683, 0.1% low 2.533. The tail was **system-noisy**; M16 claims no
+  latency improvement, only that the dimension work did not change the
+  rendered bytes.
+- Physics: 600 ticks, **CORRECTIONS 0**, clock +598. (The optional place
+  verification printed still air while dig verified — reported honestly; the
+  named physics property is corrections.)
+- Independent `--no-relight` light parity: **884,736 cells, block 0, sky 0
+  mismatches**.
+- Release build green.
+
+**Left open after M16:** custom datapack dimension types are parsed but
+unexercised; the
+`{modifier, argument}` attribute arm is a deliberate hard error rather than a
+modelled case; entity-event animations; true shape-union face occlusion;
+glow-lichen any-face emission; redstone/stem/lily-pad `BlockColors`; physics
+parity outside the on-foot flat-world subset; clouds/weather and HUD
+completeness.
