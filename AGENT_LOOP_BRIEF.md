@@ -144,7 +144,14 @@ GPU. Watch the 1%/0.1% lows, not the average.
 ./target/release/rewo.exe play --username RewoOp --seconds 30
 ```
 Physics parity: **`CORRECTIONS: 0`**. A `tp` in `--setup` costs exactly one
-correction — that is the teleport, not a regression.
+correction — that is the teleport, not a regression. This build-enabled gate
+also **fails closed** on the scripted build actions (M16.1): it proves the
+server-observed final state — the placed cell is `minecraft:dirt`, the dug cell
+is air — from the `block_update` the server echoes for both `pos` and
+`pos.relative(direction)` on every use-item-on, and **exits 1** if either
+property is unproven. The `ACCEPT …` lines are the proof; the `actions sent …`
+line is only packets attempted. `--no-build` and `--dimension-check` never
+attempt these actions and are exempt.
 
 ```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 14 \
@@ -209,6 +216,16 @@ listed because they are invisible in the output.
   opened. Senior review caught it. If a check's *name* claims a file is the
   oracle, the check must read that file, and the reading must not go through
   the code under test.
+- **A block placed beside the player can land inside the player.** 26.2
+  `BlockItem.canPlace` rejects a placement whose cell overlaps any entity
+  (`isUnobstructed(state, clickedPos, placementContext(player))`). The bot's
+  0.6-wide body reaches to `fx+1.3`, so placing at the adjacent cell `(fx+1, fy)`
+  failed intermittently — about one run in four, whenever the resting sub-block x
+  was ≥ 0.7 — and looked like a protocol bug when the packets were byte-perfect.
+  Place two cells out (`fx+2`), which the footprint can never reach. The server
+  still sends a `block_update` for the target on *rejection* too (air), so the
+  client's observation is authoritative either way — grade the exact block, not
+  "non-air", and let the gate exit nonzero.
 - **Fixed time and the day timeline are different fields.** `has_fixed_time`
   and the `timelines` holder set are independent members of `DimensionType`;
   deriving one from the other happens to give the right answer for all four

@@ -3700,3 +3700,71 @@ modelled case; entity-event animations; true shape-union face occlusion;
 glow-lichen any-face emission; redstone/stem/lily-pad `BlockColors`; physics
 parity outside the on-foot flat-world subset; clouds/weather and HUD
 completeness.
+
+### 2026-07-24 — M16.1: the play gate's build actions now fail closed — SHIPPED + VERIFIED
+
+M16 left one honest red result deferred (see the M16 entry's physics line): the
+`rewo play` build-enabled gate printed "PLACE verify … still air ✗" on roughly
+one run in four yet still exited 0, and its `place:true`/`give:true` booleans
+meant only "a packet was sent". M16.1 fixes both the intermittent placement and
+the fail-open gate. No protocol/network bytes changed — the packets were already
+byte-correct against the decompile — so this is a **pre-M16 harness + gate
+defect** (the place action and the `state != 0` proxy both date to M3), not a
+protocol bug.
+
+**Root cause (decompile evidence).** The harness placed dirt against the top of
+the grass block *one* to the east and landed it at `(fx+1, fy)` — the cell
+directly beside the bot's feet, at feet level. 26.2 `BlockItem.canPlace`
+(`net/minecraft/world/item/BlockItem.java`) gates every placement on
+`context.getLevel().isUnobstructed(state, clickedPos, CollisionContext.placementContext(player))`.
+The player's 0.6-wide AABB, centred on a sub-block x anywhere in `[fx, fx+1)`,
+reaches east to at most `fx+1.3`, so whenever the bot's fractional x was ≥ 0.7
+its own body occupied the target cell and the server rejected the placement —
+intermittently, because the resting sub-block x after the scripted
+walk/sprint/jump varies run to run. `ServerPlayerGameMode.useItemOn` returns
+`PASS` for the obstructed (or empty-hand) case and nothing is placed. Dig never
+hits this: `handleBlockBreakAction` has no obstruction check.
+
+The client's *observation* was never wrong. 26.2
+`ServerGamePacketListenerImpl.handleUseItemOn` (lines ~1397–1398) sends the
+acting player a `ClientboundBlockUpdatePacket` for **both** `pos` and
+`pos.relative(direction)` on every use-item-on, accepted or not — so Rewo's
+world already held the server-authoritative truth (dirt on success, air on
+rejection). The bug was that the gate graded "any non-air = success" and never
+touched the exit code.
+
+**The fix.**
+- **Placement geometry** (`rewo-app/src/play_cmd.rs`, `drive`): place *two* east,
+  landing dirt at `(fx+2, fy)`. Column `fx+2` starts at `fx+2 > fx+1.3`, so the
+  footprint can never touch it; the placement is now always geometrically valid
+  and a resulting air state is a real bug. This is a correctness fix to *where we
+  place*, not a moved verification target.
+- **Fail closed** (`build_acceptance` + the pure `evaluate_build_actions`): after
+  the session, a build-enabled, non-`--dimension-check` run reads the server's
+  own world at the recorded targets and proves the **exact** property — the
+  placed cell is `minecraft:dirt`'s default state (resolved from the block
+  table, not "non-air"), the dug cell is air — printing `ACCEPT …` lines with
+  expected-vs-actual state/identity and returning `Err` (process exit 1) if
+  either is unproven or never ran. `--no-build` (the lighting gate) and
+  `--dimension-check` never attempt these actions and are exempt. The actions
+  line is relabelled "packets attempted — NOT proof" to separate send from
+  server-observed success.
+- **Acceptance tests** (`rewo-app` `play_cmd::tests`, +6): the regression guard
+  is `placement_reverting_to_air_turns_the_gate_red` — flip the proven dirt
+  state to air and the gate must go red; a wrong-but-non-air block, an un-broken
+  dig, a never-run action and an unresolvable dirt state are all red too.
+
+**Measured results.**
+- Unit tests **350** (proto 11, world 93, data 9, net 102, mesh 38, gpu 44,
+  app **53** — was 47; the six new tests are the acceptance logic; no other
+  crate changed).
+- Four live 30 s `--username RewoOp` sessions, all **CORRECTIONS 0**, exit 0,
+  `ACCEPT place … state 10 (minecraft:dirt) ✓` and `ACCEPT dig … state 0 (air)
+  ✓` on every one — the previous ~1-in-4 air result did not recur.
+- Fail-closed proven live: a 16 s build run (place fires at 15 s, dig would fire
+  at 18 s) prints `ACCEPT place … ✓` then `ACCEPT ✗ dig: action never ran` and
+  **exits 1**.
+- Canonical light gate `--seconds 14 --no-build --still --light-check
+  --no-relight`: **884,736 cells, block 0, sky 0 mismatches, ✓ EXACT**, exit 0,
+  no ACCEPT lines (placement correctly not required).
+- Release build green. Test server stopped, port 25599 verified free.
