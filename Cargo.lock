@@ -2328,6 +2328,7 @@ dependencies = [
  "rewo-gpu",
  "rewo-mesh",
  "rewo-net",
+ "rewo-proto",
  "rewo-world",
  "serde_json",
  "tracy-client",

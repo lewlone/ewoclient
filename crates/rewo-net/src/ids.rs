@@ -60,6 +60,9 @@ pub struct Ids {
     pub cb_play_forget_chunk: i32,
     pub cb_play_block_update: i32,
     pub cb_play_section_blocks_update: i32,
+    /// Biomes changed for already-loaded chunks (`/fillbiome`, world-gen
+    /// re-send). Optional: a server that never sends it is still correct.
+    pub cb_play_chunks_biomes: Option<i32>,
     pub cb_play_set_time: i32,
     pub cb_play_add_entity: i32,
     pub cb_play_remove_entities: i32,
@@ -150,6 +153,7 @@ impl Ids {
             cb_play_forget_chunk: req!(p, P, C, "forget_level_chunk"),
             cb_play_block_update: req!(p, P, C, "block_update"),
             cb_play_section_blocks_update: req!(p, P, C, "section_blocks_update"),
+            cb_play_chunks_biomes: opt!(p, P, C, "chunks_biomes"),
             cb_play_set_time: req!(p, P, C, "set_time"),
             cb_play_add_entity: req!(p, P, C, "add_entity"),
             cb_play_remove_entities: req!(p, P, C, "remove_entities"),

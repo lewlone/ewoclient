@@ -10,6 +10,7 @@
 mod bench_cmd;
 mod demo_cmd;
 mod lightmapshot_cmd;
+mod tintshot_cmd;
 mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
@@ -126,6 +127,11 @@ enum Command {
     /// through the production Vulkan paths (no server) and assert their pixel
     /// properties against independent CPU expectations with `--check`.
     Lightmapshot(lightmapshot_cmd::LightmapshotArgs),
+    /// M14 biome-tint verification: build a deterministic multi-biome scene,
+    /// mesh it through the production `mesh_column`, render terrain + sky/fog
+    /// through Vulkan (no server), and assert grass/foliage/water tint + sky/fog
+    /// against independent expectations with `--check`.
+    Tintshot(tintshot_cmd::TintshotArgs),
 }
 
 fn main() {
@@ -145,6 +151,7 @@ fn main() {
         Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
         Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
         Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
+        Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

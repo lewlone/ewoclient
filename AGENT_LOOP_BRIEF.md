@@ -58,12 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 58
-cargo test --release -p rewo-net   --lib   # 60
+cargo test --release -p rewo-world --lib   # 81
+cargo test --release -p rewo-net   --lib   # 67
 cargo test --release -p rewo-gpu   --lib   # 37
-cargo test --release -p rewo-data  --lib   # 6
-cargo test --release -p rewo-mesh  --lib   # 8
-cargo test --release -p rewo-proto --lib   # 11   → 180 total
+cargo test --release -p rewo-data  --lib   # 9
+cargo test --release -p rewo-mesh  --lib   # 10
+cargo test --release -p rewo-proto --lib   # 11   → 215 total
+cargo test --release -p rewo-app           # 10   (app-level)
 ```
 
 ```bash
@@ -76,10 +77,19 @@ model or UV change.
 ```bash
 ./target/release/rewo.exe lightmapshot --check
 ./target/release/rewo.exe skyshot --check
+./target/release/rewo.exe tintshot --check
 ```
-Permanent serverless Vulkan property oracles, validation layers on. The first
-checks the complete 26.2 lightmap matrix across terrain, water and entities;
-the second checks the sky/celestial transforms, textures and alpha behavior.
+Permanent serverless Vulkan property oracles, validation layers on (each fails
+closed if validation is unavailable). The first checks the complete 26.2
+lightmap matrix across terrain, water and entities; the second the sky/celestial
+transforms, textures and alpha; the third (M14) the per-biome tint end to end —
+production jar bake + synthetic single/indirect/direct biome containers +
+production `mesh_column` + Vulkan readback, with independent Temurin-25-verified
+vectors (boundary **[91,163,163]**, dark_forest **[147,26,5]**, swamp
+light/dark **[106,112,57]**/**[76,118,60]**, spruce/birch
+**[97,153,97]**/**[128,167,85]**), a raw-quart camera sky/fog Gaussian (fog
+boundary **0xffac2d6d**, A inherits / B overrides), and a fully-fogged terrain
+readback. **0 VUIDs.** Run after any biome, tint, colormap or chunk-biome change.
 
 ```bash
 ./target/release/rewo.exe demo --out C:/tmp/demo.png
@@ -166,34 +176,40 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M13` shipped and verified. **M0–M9 are pushed** (`origin/main` @
-`973ea5e`); the **M10–M13 light-and-sky arc is reviewed local work, not yet
-pushed**. M12 is commit `06dd3eb`; see `REWO_PLAN.md` §15 for M13's exact
-ground truth and measured gates.
+`M0–M14` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M14 arc (light, sky, and per-biome color) is reviewed
+local work, not yet pushed**. M12 is commit `06dd3eb`; the M14 milestone is
+frozen. See `REWO_PLAN.md` §15 for each milestone's exact ground truth and
+measured gates.
 
 A playable online client: joins online-mode servers with signed chat, real
 player skins, 88 vanilla mob models with formula-exact procedural and keyframe
 animation, native OptiFine CEM (Fresh Animations runs with no mod loader),
 GPU-driven rendering, a server-exact client light engine, vanilla's lightmap
-curve and a real day/night cycle — with the clear-weather celestials (sun,
-moon through all eight phases, stars, and the sunrise/sunset fan) driven by a
-smooth server-driven world clock.
+curve and a real day/night cycle with clear-weather celestials (sun, moon
+through all eight phases, stars, and the sunrise/sunset fan) driven by a smooth
+server-driven world clock — and now **per-biome color**: grass/foliage/water
+tint (exact radius-2 mean, dark_forest + swamp modifiers, spruce/birch
+constants), retained 4×4×4 section biomes, and biome-driven camera sky/fog via a
+raw-quart Gaussian feeding per-frame GPU base uniforms.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
-`bench`, `mobshot`, `skyshot`, `lightmapshot`.
+`bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`.
 
 **Open work**, roughly in descending obviousness:
 
-- Per-biome tint (currently the plains colormap centre everywhere).
 - Greedy meshing, packed vertices (both deferred, both interact with AO).
-- Nether and End are untested; dimension-specific `ambientLight` is not wired.
+- Nether and End are untested; general dimension-transition / respawn base
+  selection and dimension-specific `ambientLight` are not wired. (Biome blend
+  radius is fixed at vanilla's default 2 — not yet a setting.)
 - Entity-*event* animations (warden attack, allay dance) need the
   `entity_event` packet; dragon flight is bespoke procedural code, still posed.
 - Face-occlusion merging is tested per-side rather than as a true shape union
   — differs only for complementary partial faces, which no vanilla pair
   produces.
 - `glow_lichen`'s "any face" emission predicate is approximated at a constant 7.
+- Redstone/stem/lily-pad `BlockColors` were explicitly out of M14.
 
 ---
 

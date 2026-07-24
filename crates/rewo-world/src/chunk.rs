@@ -26,6 +26,10 @@ use crate::palette::{Container, ContainerKind};
 pub struct Section {
     pub non_empty: i16,
     states: Container,
+    /// 4×4×4 biome cells (`PalettedContainer` biome strategy). Cell index is
+    /// `(y<<2 | z)<<2 | x` with x/y/z ∈ 0..3 (`QuartPos` local). The palette
+    /// values are global biome-registry indices.
+    biomes: Container,
     /// 2048-byte nibble arrays (4096 cells), if present for this section.
     block_light: Option<Vec<u8>>,
     sky_light: Option<Vec<u8>>,
@@ -79,6 +83,18 @@ impl Section {
 
     pub fn set_sky_light(&mut self, x: i32, y: i32, z: i32, level: u8) {
         Self::set_nibble(&mut self.sky_light, x, y, z, level);
+    }
+
+    /// Biome registry index at a **section-local** quart (`qx`,`qy`,`qz` ∈ 0..3).
+    /// Cell index is `(y<<2 | z)<<2 | x` (`PalettedContainer` biome strategy).
+    pub fn biome_at(&self, qx: i32, qy: i32, qz: i32) -> u16 {
+        let idx = (((qy & 3) << 2 | (qz & 3)) << 2 | (qx & 3)) as usize;
+        self.biomes.get(idx) as u16
+    }
+
+    /// Replace this section's biome container (the `chunks_biomes` packet).
+    pub fn set_biomes(&mut self, biomes: Container) {
+        self.biomes = biomes;
     }
 }
 
@@ -190,6 +206,32 @@ impl Column {
         )
     }
 
+    /// Raw quart→biome lookup within this column (`LevelChunk.getNoiseBiome`).
+    /// `qx`/`qz` are **world** quart coords whose chunk is this column; `qy` is
+    /// a world quart, clamped into the build range like vanilla. Returns the
+    /// global biome-registry index, or 0 above/below a sensible fallback.
+    pub fn noise_biome_at_quart(&self, shape: &DimensionShape, qx: i32, qy: i32, qz: i32) -> u16 {
+        let min_quart = shape.min_y >> 2; // QuartPos.fromBlock(min_y)
+        let max_quart = min_quart + (shape.height >> 2) - 1;
+        let clamped_y = qy.clamp(min_quart, max_quart);
+        let Some(si) = shape.section_index(clamped_y << 2) else {
+            return 0;
+        };
+        let Some(section) = self.sections.get(si) else {
+            return 0;
+        };
+        section.biome_at(qx, clamped_y, qz)
+    }
+
+    /// Replace this column's per-section biome containers (`chunks_biomes`
+    /// packet). `new_biomes` is one container per section, bottom-to-top; extra
+    /// or missing entries are ignored so a partial packet can't panic.
+    pub fn set_biomes(&mut self, new_biomes: Vec<crate::palette::Container>) {
+        for (section, biomes) in self.sections.iter_mut().zip(new_biomes) {
+            section.set_biomes(biomes);
+        }
+    }
+
     /// Sky light, applying the "no array above the terrain means 15" rule.
     fn sky_light_in(&self, si: usize, section: &Section, x: i32, y: i32, z: i32) -> u8 {
         match Section::nibble(&section.sky_light, x, y, z) {
@@ -264,6 +306,9 @@ impl Section {
         Section {
             non_empty: 0,
             states: Container::single(0),
+            // Synthetic scenes carry no biome data — a single-value container of
+            // registry index 0. With no biome context attached this is inert.
+            biomes: Container::single(0),
             block_light: None,
             sky_light: Some(vec![0xFF; 2048]), // both nibbles = 15
             overrides: std::collections::HashMap::new(),
@@ -311,15 +356,33 @@ pub fn read_level_chunk(
     shape: &DimensionShape,
     blocks: &Blocks,
 ) -> Result<Column> {
-    read_level_chunk_bits(r, shape, blocks.global_palette_bits)
+    // 7 is a safe biome upper bound for 26.2: `Mth.ceillog2(66)` = 7 for the
+    // full vanilla biome registry, so a *direct* biome palette never needs
+    // more. Callers holding the real biome registry width pass it to
+    // `read_level_chunk_bits2`.
+    read_level_chunk_bits2(r, shape, blocks.global_palette_bits, 7)
 }
 
-/// Same decode, taking the global-palette width directly (for callers that
-/// don't hold a `Blocks` table — the play session stores the number).
+/// Same decode, taking the block-state global-palette width directly (for
+/// callers that don't hold a `Blocks` table — the play session stores the
+/// number). Uses a safe biome-bits upper bound.
 pub fn read_level_chunk_bits(
     r: &mut PacketReader,
     shape: &DimensionShape,
     global_bits: u32,
+) -> Result<Column> {
+    read_level_chunk_bits2(r, shape, global_bits, 7)
+}
+
+/// Decode with both the block-state and biome global-palette widths. `biome_bits`
+/// is the biome registry's `ceil_log2(count)` (`BiomeRegistry::global_bits`);
+/// it only matters for a *direct* biome container (>3 distinct biomes in a
+/// section's 64 cells), which single-biome flat worlds never produce.
+pub fn read_level_chunk_bits2(
+    r: &mut PacketReader,
+    shape: &DimensionShape,
+    global_bits: u32,
+    biome_bits: u32,
 ) -> Result<Column> {
     let cx = r.i32()?;
     let cz = r.i32()?;
@@ -346,14 +409,18 @@ pub fn read_level_chunk_bits(
         let non_empty = sr.i16()?;
         let _fluid_count = sr.i16()?;
         let states = Container::read(&mut sr, ContainerKind::BlockStates { global_bits })?;
-        // Biomes container follows; decode + discard for M1 (biome tint is
-        // M4). global_bits is a safe upper bound — a section using a *direct*
-        // biome palette (>8 distinct biomes in 64 cells) never occurs in the
-        // flat-world test; registry-derived biome bits lands with M4 tint.
-        let _biomes = Container::read(&mut sr, ContainerKind::Biomes { global_bits: 7 })?;
+        // Biomes container follows — a 4×4×4 quart grid. Retained for biome
+        // tint (M14); the palette maps to global biome-registry indices.
+        let biomes = Container::read(
+            &mut sr,
+            ContainerKind::Biomes {
+                global_bits: biome_bits,
+            },
+        )?;
         sections.push(Section {
             non_empty,
             states,
+            biomes,
             block_light: None,
             sky_light: None,
             overrides: std::collections::HashMap::new(),
@@ -380,6 +447,28 @@ pub fn read_level_chunk_bits(
         sections,
         sky_full_above,
     })
+}
+
+/// Parse the `chunks_biomes` per-chunk buffer: one biome `Container` per
+/// section, bottom-to-top, with no framing between them (decompiled
+/// `ClientboundChunksBiomesPacket` writes `section.getBiomes().write(buffer)`
+/// for every section back-to-back).
+pub fn read_chunk_biomes(
+    r: &mut PacketReader,
+    shape: &DimensionShape,
+    biome_bits: u32,
+) -> Result<Vec<Container>> {
+    let n = shape.section_count();
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(Container::read(
+            r,
+            ContainerKind::Biomes {
+                global_bits: biome_bits,
+            },
+        )?);
+    }
+    Ok(out)
 }
 
 fn read_bitset(r: &mut PacketReader) -> Result<Vec<u64>> {
@@ -431,6 +520,155 @@ fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<usi
         .max()
         .unwrap_or(0);
     Ok(top_bit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::World;
+    use rewo_proto::writer::PacketWriter;
+
+    /// Pack `values` the SimpleBitStorage way (mirrors palette.rs test helper).
+    fn pack(values: &[u32], bits: u32) -> Vec<u8> {
+        let vpl = (64 / bits) as usize;
+        let mut out = Vec::new();
+        for chunk in values.chunks(vpl) {
+            let mut word: u64 = 0;
+            for (i, &v) in chunk.iter().enumerate() {
+                word |= (v as u64) << (i as u32 * bits);
+            }
+            out.extend_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+
+    /// Biome cell index `(y<<2 | z)<<2 | x` for section-local quart coords.
+    fn bidx(qx: usize, qy: usize, qz: usize) -> usize {
+        ((qy << 2 | qz) << 2 | qx) as usize
+    }
+
+    /// A biome container buffer holding `cells` (64 entries) as a direct palette
+    /// at `bits` wide (bits > 3 → the direct/global strategy).
+    fn direct_biome_buf(cells: &[u32; 64], bits: u32) -> Vec<u8> {
+        let mut w = PacketWriter::default();
+        w.u8(bits as u8);
+        w.raw(&pack(cells, bits));
+        w.buf
+    }
+
+    fn shape_1section() -> DimensionShape {
+        DimensionShape { min_y: 0, height: 16 }
+    }
+
+    /// x/y/z axes are read independently and in the exact vanilla order.
+    #[test]
+    fn biome_container_xyz_orientation() {
+        let mut cells = [0u32; 64];
+        cells[bidx(1, 0, 0)] = 11; // +x
+        cells[bidx(0, 0, 1)] = 22; // +z
+        cells[bidx(0, 1, 0)] = 33; // +y
+        cells[bidx(3, 3, 3)] = 44; // far corner
+        let buf = direct_biome_buf(&cells, 15);
+        let mut r = PacketReader::new(&buf);
+        let containers = read_chunk_biomes(&mut r, &shape_1section(), 15).unwrap();
+        assert_eq!(containers.len(), 1);
+
+        let shape = shape_1section();
+        let mut world = World::new(shape);
+        world.ensure_column(0, 0);
+        world.apply_chunks_biomes(0, 0, containers);
+
+        // World quart (qx,qy,qz) in chunk 0 → the same section-local cell.
+        assert_eq!(world.noise_biome_at_quart(1, 0, 0), 11);
+        assert_eq!(world.noise_biome_at_quart(0, 0, 1), 22);
+        assert_eq!(world.noise_biome_at_quart(0, 1, 0), 33);
+        assert_eq!(world.noise_biome_at_quart(3, 3, 3), 44);
+        assert_eq!(world.noise_biome_at_quart(0, 0, 0), 0);
+    }
+
+    /// The real 26.2 direct biome width is 7 bits (`ceil_log2(66)`). Encode a
+    /// 7-bit direct palette carrying id 65 (the highest that a 7-bit registry
+    /// index can hold before 66's ceil pushes to 7) and read it back — a
+    /// fake bits=15 fixture would hide a width-derivation bug.
+    #[test]
+    fn biome_direct_palette_7_bit_id_65() {
+        let mut cells = [0u32; 64];
+        cells[bidx(2, 1, 3)] = 65; // a high biome id, still ≤ 2^7 - 1
+        cells[bidx(0, 0, 0)] = 1;
+        let buf = direct_biome_buf(&cells, 7);
+        let mut r = PacketReader::new(&buf);
+        // Read with the registry-derived width (7), not a padded fixture.
+        let containers = read_chunk_biomes(&mut r, &shape_1section(), 7).unwrap();
+        assert!(r.is_empty(), "7-bit direct storage consumed exactly");
+        let mut world = World::new(shape_1section());
+        world.ensure_column(0, 0);
+        world.apply_chunks_biomes(0, 0, containers);
+        assert_eq!(world.noise_biome_at_quart(2, 1, 3), 65);
+        assert_eq!(world.noise_biome_at_quart(0, 0, 0), 1);
+    }
+
+    /// Negative world quarts resolve to the correct column + local quart.
+    #[test]
+    fn biome_negative_world_quart() {
+        // Chunk -1 covers world quarts -4..-1; local x = qx & 3.
+        let mut cells = [0u32; 64];
+        cells[bidx(3, 0, 3)] = 77; // local (3,0,3) = world quart (-1,0,-1)
+        let buf = direct_biome_buf(&cells, 15);
+        let mut r = PacketReader::new(&buf);
+        let containers = read_chunk_biomes(&mut r, &shape_1section(), 15).unwrap();
+
+        let mut world = World::new(shape_1section());
+        world.ensure_column(-1, -1);
+        world.apply_chunks_biomes(-1, -1, containers);
+        assert_eq!(world.noise_biome_at_quart(-1, 0, -1), 77);
+        // A quart in an unloaded column falls back to 0.
+        assert_eq!(world.noise_biome_at_quart(50, 0, 50), 0);
+    }
+
+    /// The build-range Y clamp: a quart above the top reads the top section's
+    /// quart, below the bottom reads the bottom (vanilla `getNoiseBiome` clamp).
+    #[test]
+    fn biome_vertical_clamp() {
+        let mut cells = [0u32; 64];
+        cells[bidx(0, 3, 0)] = 99; // top quart of the (only) section
+        cells[bidx(0, 0, 0)] = 5; // bottom quart
+        let buf = direct_biome_buf(&cells, 15);
+        let mut r = PacketReader::new(&buf);
+        let containers = read_chunk_biomes(&mut r, &shape_1section(), 15).unwrap();
+        let mut world = World::new(shape_1section());
+        world.ensure_column(0, 0);
+        world.apply_chunks_biomes(0, 0, containers);
+        // max_quart = 3; qy=100 clamps to 3.
+        assert_eq!(world.noise_biome_at_quart(0, 100, 0), 99);
+        // min_quart = 0; qy=-100 clamps to 0.
+        assert_eq!(world.noise_biome_at_quart(0, -100, 0), 5);
+    }
+
+    /// Single-value + indirect biome palettes decode (chunks_biomes replacement).
+    #[test]
+    fn biome_single_and_indirect_palette() {
+        // Single-value container: bits=0, one varint = registry id 7.
+        let mut w = PacketWriter::default();
+        w.u8(0).varint(7);
+        let mut r = PacketReader::new(&w.buf);
+        let c = read_chunk_biomes(&mut r, &shape_1section(), 7).unwrap();
+        let mut world = World::new(shape_1section());
+        world.ensure_column(0, 0);
+        world.apply_chunks_biomes(0, 0, c);
+        assert_eq!(world.noise_biome_at_quart(2, 1, 3), 7, "single fills the grid");
+
+        // Indirect (bits=1) palette [3, 9]; cell 0 → index 1 (=9), rest 0 (=3).
+        let mut indices = [0u32; 64];
+        indices[bidx(1, 0, 0)] = 1;
+        let mut w2 = PacketWriter::default();
+        w2.u8(1).varint(2).varint(3).varint(9);
+        w2.raw(&pack(&indices, 1));
+        let mut r2 = PacketReader::new(&w2.buf);
+        let c2 = read_chunk_biomes(&mut r2, &shape_1section(), 7).unwrap();
+        world.apply_chunks_biomes(0, 0, c2); // replacement
+        assert_eq!(world.noise_biome_at_quart(1, 0, 0), 9); // palette[1]
+        assert_eq!(world.noise_biome_at_quart(0, 0, 0), 3); // palette[0]
+    }
 }
 
 fn distribute(mask: &[u64], arrays: &[Vec<u8>], sections: &mut [Section], sky: bool) {

@@ -4,7 +4,7 @@
 //! and `height`); the game's Login packet references one by registry index.
 
 /// Vertical extent of a dimension, in blocks/sections.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DimensionShape {
     pub min_y: i32,
     pub height: i32,

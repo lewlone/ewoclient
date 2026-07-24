@@ -5,6 +5,8 @@
 //! and a deterministic world digest (for replay-equivalence in the DoD).
 //! Prediction/physics land in M3; this is the read model.
 
+pub mod biome;
+pub mod biome_noise;
 pub mod celestial;
 pub mod chunk;
 pub mod daylight;
@@ -31,6 +33,11 @@ pub struct World {
     pub shape: DimensionShape,
     columns: HashMap<(i32, i32), Arc<chunk::Column>>,
     pub entities: entities::EntityTable,
+    /// Per-biome color context (registry + colormaps + `biomeZoomSeed`), behind
+    /// an `Arc` so `snapshot_3x3` clones it for free. `None` for synthetic /
+    /// no-biome worlds (the demo) — the mesher then keeps the legacy pre-tinted
+    /// path, so those renders stay byte-identical.
+    biome: Option<Arc<biome::BiomeContext>>,
 }
 
 impl World {
@@ -39,7 +46,19 @@ impl World {
             shape,
             columns: HashMap::new(),
             entities: entities::EntityTable::default(),
+            biome: None,
         }
+    }
+
+    /// Attach (or replace) the biome color context.
+    pub fn set_biome_context(&mut self, ctx: Arc<biome::BiomeContext>) {
+        self.biome = Some(ctx);
+    }
+
+    /// The biome context, if any — the mesher checks this to choose the
+    /// dynamic-tint vs legacy-layer path.
+    pub fn biome_context(&self) -> Option<&Arc<biome::BiomeContext>> {
+        self.biome.as_ref()
     }
 
     pub fn insert_column(&mut self, cx: i32, cz: i32, column: chunk::Column) {
@@ -129,6 +148,58 @@ impl World {
             shape: self.shape,
             columns,
             entities: entities::EntityTable::default(),
+            biome: self.biome.clone(),
+        }
+    }
+
+    /// Raw quart→biome lookup (`NoiseBiomeSource.getNoiseBiome`): resolve the
+    /// column from the quart, then read its section biome container. Unloaded
+    /// columns fall back to biome index 0. Used by both the fiddle (block tint)
+    /// and the Gaussian (camera sky/fog).
+    pub fn noise_biome_at_quart(&self, qx: i32, qy: i32, qz: i32) -> u16 {
+        let cx = qx >> 2;
+        let cz = qz >> 2;
+        match self.columns.get(&(cx, cz)) {
+            Some(col) => col.noise_biome_at_quart(&self.shape, qx, qy, qz),
+            None => 0,
+        }
+    }
+
+    /// `ClientLevel.calculateBlockTint` for a resolver at world (x,y,z). `None`
+    /// when no biome context is attached (synthetic world). `radius` is the
+    /// `biomeBlendRadius` option (default 2).
+    pub fn block_tint(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        resolver: biome::ColorResolver,
+        radius: i32,
+    ) -> Option<[u8; 3]> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.block_tint(x, y, z, resolver, radius, &|qx, qy, qz| {
+            self.noise_biome_at_quart(qx, qy, qz)
+        }))
+    }
+
+    /// Camera `visual/sky_color` at the eye (opaque ARGB), or `None` with no
+    /// biome context. The caller applies the day/night timeline multiply.
+    pub fn camera_sky(&self, eye: [f64; 3]) -> Option<i32> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.camera_sky(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
+    }
+
+    /// Camera `visual/fog_color` at the eye (opaque ARGB), or `None`.
+    pub fn camera_fog(&self, eye: [f64; 3]) -> Option<i32> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.camera_fog(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
+    }
+
+    /// Apply a `chunks_biomes` packet to a loaded column (replace its section
+    /// biome palettes). No-op if the column isn't loaded.
+    pub fn apply_chunks_biomes(&mut self, cx: i32, cz: i32, biomes: Vec<palette::Container>) {
+        if let Some(col) = self.columns.get_mut(&(cx, cz)) {
+            Arc::make_mut(col).set_biomes(biomes);
         }
     }
 

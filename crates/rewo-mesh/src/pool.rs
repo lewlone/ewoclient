@@ -141,7 +141,8 @@ mod tests {
                 RenderKind::Invisible,
                 RenderKind::Cube {
                     faces: [0; 6],
-                    tint: [false; 6],
+                    raw_faces: [0; 6],
+                    tint: [rewo_data::assets::TintSource::None; 6],
                 },
             ],
             models: Vec::new(),
@@ -184,7 +185,10 @@ mod tests {
         let mut pool = MeshPool::new(tables()).unwrap();
         let world = one_block_world();
         assert!(pool.submit(&world, 0, 0));
-        assert!(!pool.submit(&world, 0, 0), "in-flight column must be refused");
+        assert!(
+            !pool.submit(&world, 0, 0),
+            "in-flight column must be refused"
+        );
         let _ = recv_blocking(&mut pool);
         assert!(pool.submit(&world, 0, 0), "drained column must resubmit");
         let _ = recv_blocking(&mut pool);

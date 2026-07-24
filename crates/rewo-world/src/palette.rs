@@ -111,8 +111,11 @@ impl Container {
         };
 
         // Direct storage uses the global-palette width regardless of the
-        // byte the server sent; indirect uses the byte value.
-        let storage_bits = if indirect { bits } else { kind.global_bits() };
+        // byte the server sent; indirect uses the byte value. The width is
+        // clamped to >= 1: a single-biome registry has `ceil_log2(1) == 0`, and
+        // although such a section never sends a direct container, a 0-bit
+        // `read_bit_storage` would divide by zero.
+        let storage_bits = if indirect { bits } else { kind.global_bits().max(1) };
         let cells = read_bit_storage(r, storage_bits, entry_count)?;
 
         Ok(Self {

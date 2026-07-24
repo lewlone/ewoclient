@@ -128,8 +128,21 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         .unwrap_or_else(|| "RewoLive".into());
 
     let dirt_item = data.items.id("dirt");
+    let colormaps = rewo_world::biome::Colormaps::from_pixels(
+        baked.grass_colormap.clone(),
+        baked.foliage_colormap.clone(),
+        baked.dry_foliage_colormap.clone(),
+    );
     let conn = Connection::connect(&args.host, args.port, &data)?;
-    let mut session = conn.into_play(&args.host, args.port, &username, auth.as_ref(), collide, global_bits)?;
+    let mut session = conn.into_play(
+        &args.host,
+        args.port,
+        &username,
+        auth.as_ref(),
+        collide,
+        global_bits,
+        colormaps,
+    )?;
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = entity_push_table(&data.entity_types);
     // Client-side relighting of our own edits — the server only sends light
@@ -921,6 +934,7 @@ fn run_headless(
     world_renderer.set_camera(eye.to_array());
     // Day/night + effects: push the one resolved lightmap plus the sky/fog tint.
     apply_lightmap(&mut world_renderer, &lightmap, session.day_ticks);
+    apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
     world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
@@ -1307,6 +1321,7 @@ impl LiveApp {
         // `player_pos_*`, which FA aims mob eyes/heads with.
         state.world_renderer.set_camera(eye.to_array());
         apply_lightmap(&mut state.world_renderer, &lightmap, session.day_ticks);
+        apply_biome_sky_fog(&mut state.world_renderer, session);
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
@@ -1750,6 +1765,27 @@ fn apply_lightmap(wr: &mut WorldRenderer, state: &LightmapState, day_ticks: Opti
     wr.set_lightmap_state(to_world_lightmap(state));
     let sky = daylight_of(day_ticks);
     wr.set_sky_tint(sky.sky_color, sky.fog_color);
+}
+
+/// M14: push the camera biome sky/fog base color. It composes with the existing
+/// `set_sky_tint` day/night multiply inside the renderer (`sky_base * sky_tint`)
+/// and is a per-frame uniform, so a biome/time change never remeshes. No biome
+/// context (offline non-biome server) leaves the GPU's default fixed sky.
+fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession) {
+    let eye = eye_f64(session);
+    if let Some(sky) = session.world.camera_sky(eye) {
+        let fog = session.world.camera_fog(eye).unwrap_or(sky);
+        wr.set_sky_fog_base(argb_to_linear(sky), argb_to_linear(fog));
+    }
+}
+
+/// Opaque ARGB int (biome sky/fog color, sRGB) → linear RGB the GPU sky base
+/// wants (the SRGB attachment re-encodes on store).
+fn argb_to_linear(argb: i32) -> [f32; 3] {
+    let r = ((argb >> 16) & 0xFF) as f32 / 255.0;
+    let g = ((argb >> 8) & 0xFF) as f32 / 255.0;
+    let b = (argb & 0xFF) as f32 / 255.0;
+    [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)]
 }
 
 fn init_celestial_if_present(

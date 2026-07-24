@@ -111,6 +111,16 @@ pub struct PlaySession {
     /// lightmap (M13). Fed by `update_mob_effect` / `remove_mob_effect` and one
     /// `tick()` per client tick.
     visual_effects: crate::effects::VisualEffects,
+    /// M14 biome tint. The parsed registry (raw order) waits here until the
+    /// play-login packet supplies the `biomeZoomSeed` + dimension holder; the
+    /// full `BiomeContext` is then built and attached to `world`.
+    pending_biome_registry: Option<rewo_world::biome::BiomeRegistry>,
+    dim_attrs: Vec<(Option<i32>, Option<i32>)>,
+    colormaps: rewo_world::biome::Colormaps,
+    /// Biome container global-palette width (`BiomeRegistry::global_bits`).
+    biome_global_bits: u32,
+    /// `CommonPlayerSpawnInfo.seed` — the `biomeZoomSeed` driving the fiddle.
+    pub biome_zoom_seed: Option<i64>,
 }
 
 impl<'a> Connection<'a> {
@@ -125,6 +135,7 @@ impl<'a> Connection<'a> {
         auth: Option<&crate::crypt::OnlineAuth>,
         collide: Vec<Vec<[f32; 6]>>,
         global_bits: u32,
+        colormaps: rewo_world::biome::Colormaps,
     ) -> Result<PlaySession, String> {
         self.login(host, port, username, auth)?;
         let mut stats = crate::SessionStats {
@@ -182,6 +193,20 @@ impl<'a> Connection<'a> {
         let overworld_clock_id = self.overworld_clock_id;
         let visual_effects =
             crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
+        // Biome registry parsed during configuration; the `biomeZoomSeed` +
+        // dimension holder arrive with the play-login packet (`apply_login_shape`).
+        // Access the field directly (not a `&self` method) — `self.stream` was
+        // already moved by `split()`, so `self` is partially moved here.
+        let pending_biome_registry = if self.biome_defs.is_empty() {
+            None
+        } else {
+            Some(rewo_world::biome::BiomeRegistry::new(self.biome_defs.clone()))
+        };
+        let dim_attrs = self.dim_attrs.clone();
+        let biome_global_bits = pending_biome_registry
+            .as_ref()
+            .map(|r| r.global_bits)
+            .unwrap_or(7);
         let mut session = PlaySession {
             writer,
             codec,
@@ -224,6 +249,11 @@ impl<'a> Connection<'a> {
             player_skins: std::collections::HashMap::new(),
             pending_skins: Vec::new(),
             visual_effects,
+            pending_biome_registry,
+            dim_attrs,
+            colormaps,
+            biome_global_bits,
+            biome_zoom_seed: None,
         };
         // Online-mode: fetch a player certificate and announce the chat
         // session so `enforce-secure-profile` servers accept our chat. A
@@ -497,7 +527,12 @@ impl PlaySession {
         } else if id == ids.cb_play_level_chunk {
             let shape = self.world.shape;
             let mut r = PacketReader::new(body);
-            match rewo_world::chunk::read_level_chunk_bits(&mut r, &shape, self.global_bits) {
+            match rewo_world::chunk::read_level_chunk_bits2(
+                &mut r,
+                &shape,
+                self.global_bits,
+                self.biome_global_bits,
+            ) {
                 Ok(col) => {
                     let (cx, cz) = (col.cx, col.cz);
                     self.world.insert_column(cx, cz, col);
@@ -505,6 +540,30 @@ impl PlaySession {
                     self.mark_dirty_around(cx, cz);
                 }
                 Err(e) => log::error!("play: chunk decode failed: {e}"),
+            }
+        } else if Some(id) == ids.cb_play_chunks_biomes {
+            // Biomes changed for already-loaded chunks (`/fillbiome`, worldgen
+            // re-send). Body: a list of {ChunkPos (packed long), VarInt-length
+            // byte array of per-section biome containers}. Replace the loaded
+            // column's biome palettes and remesh the 3×3 (tint reads neighbors).
+            let shape = self.world.shape;
+            let biome_bits = self.biome_global_bits;
+            let mut r = PacketReader::new(body);
+            if let Ok(n) = r.count("chunk biomes", 12) {
+                for _ in 0..n {
+                    let Ok(packed) = r.i64() else { break };
+                    let (cx, cz) = (packed as i32, (packed >> 32) as i32);
+                    // Cap = ClientboundChunksBiomesPacket's TWO_MEGABYTES.
+                    let Ok(buf) = r.byte_array(2_097_152) else { break };
+                    let mut br = PacketReader::new(buf);
+                    match rewo_world::chunk::read_chunk_biomes(&mut br, &shape, biome_bits) {
+                        Ok(containers) => {
+                            self.world.apply_chunks_biomes(cx, cz, containers);
+                            self.mark_dirty_around(cx, cz);
+                        }
+                        Err(e) => log::error!("play: chunks_biomes decode failed: {e}"),
+                    }
+                }
             }
         } else if Some(id) == ids.cb_play_light_update {
             // Lighting changed without a chunk resend (torch placed, cave
@@ -989,7 +1048,6 @@ impl PlaySession {
         }
     }
 
-    #[allow(dead_code)]
     fn apply_login_shape(&mut self, body: &[u8]) {
         let mut r = PacketReader::new(body);
         // The first `int` is the local player's entity id (big-endian, NOT a
@@ -1000,27 +1058,60 @@ impl PlaySession {
             return;
         };
         self.visual_effects.set_player_id(player_id);
-        let parse = (|| -> rewo_proto::Result<i32> {
-            r.bool()?;
+        // Parse the login prefix + `CommonPlayerSpawnInfo`. The dimension-type
+        // holder is `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry`
+        // = `idMapper` — it writes the **raw 0-based registry id**, with NO
+        // inline/`id+1` case (unlike `ByteBufCodecs.holder`). So the id is a
+        // direct index and the dimension ResourceKey + `long seed`
+        // (= `biomeZoomSeed`) always follow it immediately.
+        let parse = (|| -> rewo_proto::Result<(i32, i64)> {
+            r.bool()?; // hardcore
             let n = r.count("dims", 1)?;
             for _ in 0..n {
                 r.identifier()?;
             }
-            r.varint()?;
-            r.varint()?;
-            r.varint()?;
-            r.bool()?;
-            r.bool()?;
-            r.bool()?;
-            r.varint()
+            r.varint()?; // max players
+            r.varint()?; // view dist
+            r.varint()?; // sim dist
+            r.bool()?; // reduced debug
+            r.bool()?; // show death
+            r.bool()?; // limited crafting
+            let holder = r.varint()?; // dimension-type raw registry id (0-based)
+            r.identifier()?; // dimension ResourceKey
+            let seed = r.i64()?; // biomeZoomSeed
+            Ok((holder, seed))
         })();
-        if let Ok(holder) = parse {
-            if holder > 0 {
-                if let Some(shape) = self.dim_shapes.get((holder - 1) as usize) {
-                    self.world.shape = *shape;
-                }
+        if let Ok((holder, seed)) = parse {
+            self.world.shape = crate::login_dimension_shape(holder, &self.dim_shapes);
+            self.biome_zoom_seed = Some(seed);
+            self.build_biome_context(holder, seed);
+        }
+    }
+
+    /// Build the `BiomeContext` from the parsed registry + this dimension's base
+    /// sky/fog + the `biomeZoomSeed`, and attach it to the world. `holder` is a
+    /// raw 0-based dimension-type id (see `apply_login_shape`). The registry is
+    /// cloned (not consumed) so this is idempotent; respawn is not yet wired to
+    /// call it, so a mid-session dimension change keeps the join dimension's
+    /// base sky/fog.
+    fn build_biome_context(&mut self, holder: i32, seed: i64) {
+        let Some(reg_template) = self.pending_biome_registry.as_ref() else {
+            return;
+        };
+        let mut reg = reg_template.clone();
+        if holder >= 0 {
+            if let Some((sky, fog)) = self.dim_attrs.get(holder as usize).copied() {
+                reg.dimension_sky = sky;
+                reg.dimension_fog = fog;
             }
         }
+        let ctx = rewo_world::biome::BiomeContext::new(
+            std::sync::Arc::new(reg),
+            self.colormaps.clone(),
+            seed,
+        );
+        self.world.set_biome_context(std::sync::Arc::new(ctx));
+        log::info!("net: biome context attached (seed={seed})");
     }
 
     // -- gameplay actions --------------------------------------------------

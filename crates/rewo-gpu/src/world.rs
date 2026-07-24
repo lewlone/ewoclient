@@ -102,12 +102,21 @@ const SELECT_RING: usize = 2;
 
 /// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
 /// The horizon is also the terrain's fog color for a seamless far edge.
-const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
+pub const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
 
 /// Vanilla's resting `blockFactor` (`blockLightFlicker + 1.4` with zero
 /// flicker) — the default `WorldLightmapState::block_factor`.
 pub const BLOCK_LIGHT_FACTOR: f32 = 1.4;
 const SKY_ZENITH: [f32; 3] = [0.147, 0.319, 0.890];
+
+/// The zenith-to-horizon gradient ratio (`SKY_ZENITH / SKY_HORIZON`). When the
+/// biome sky color drives the base (M14), the zenith keeps this fixed gradient
+/// shape: `zenith = sky_base * ZENITH_RATIO`. `[0.308, 0.5, 1.0]`.
+const ZENITH_RATIO: [f32; 3] = [
+    SKY_ZENITH[0] / SKY_HORIZON[0],
+    SKY_ZENITH[1] / SKY_HORIZON[1],
+    SKY_ZENITH[2] / SKY_HORIZON[2],
+];
 
 /// The already-resolved lightmap uniforms driving `shaders/lightmap.glsl` —
 /// the GPU mirror of `rewo_world::lightmap::LightmapState`, minus the fields
@@ -349,6 +358,13 @@ pub struct WorldRenderer {
     lightmap: WorldLightmapState,
     sky_tint: [f32; 3],
     fog_tint: [f32; 3],
+    /// Biome sky/fog base color, LINEAR (M14). Defaults to the `SKY_HORIZON`
+    /// constant so the sky/demo/skyshot render exactly as before until the live
+    /// app supplies the camera biome color. The horizon = `sky_base`, the zenith
+    /// = `sky_base * ZENITH_RATIO`, both then multiplied by the day/night
+    /// `sky_tint`; fog = `fog_base * fog_tint`.
+    sky_base: [f32; 3],
+    fog_base: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
     // -- animated texture layers (water/lava; `anim_tick`) --
@@ -746,6 +762,8 @@ impl WorldRenderer {
                 lightmap: WorldLightmapState::default(),
                 sky_tint: [1.0; 3],
                 fog_tint: [1.0; 3],
+                sky_base: SKY_HORIZON,
+                fog_base: SKY_HORIZON,
                 fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
@@ -901,6 +919,16 @@ impl WorldRenderer {
     pub fn set_sky_tint(&mut self, sky: [f32; 3], fog: [f32; 3]) {
         self.sky_tint = sky;
         self.fog_tint = fog;
+    }
+
+    /// Set the camera biome sky/fog base color (LINEAR), M14. The horizon and
+    /// (ratio-derived) zenith are then multiplied by the day/night `sky_tint`,
+    /// and the fog by `fog_tint` — so this composes with the timeline and never
+    /// requires a remesh (it is a per-frame uniform). Passing `SKY_HORIZON`
+    /// restores the pre-M14 fixed sky.
+    pub fn set_sky_fog_base(&mut self, sky_linear: [f32; 3], fog_linear: [f32; 3]) {
+        self.sky_base = sky_linear;
+        self.fog_base = fog_linear;
     }
 
     /// Attach the celestial pass (sun/moon/stars/sunrise, M12). Callers that
@@ -1352,9 +1380,9 @@ impl WorldRenderer {
             view_proj,
             cam_fog: [self.camera_eye[0], self.camera_eye[1], self.camera_eye[2], self.fog[0]],
             fog_col: [
-                SKY_HORIZON[0] * self.fog_tint[0],
-                SKY_HORIZON[1] * self.fog_tint[1],
-                SKY_HORIZON[2] * self.fog_tint[2],
+                self.fog_base[0] * self.fog_tint[0],
+                self.fog_base[1] * self.fog_tint[1],
+                self.fog_base[2] * self.fog_tint[2],
                 self.fog[1],
             ],
             light,
@@ -1493,17 +1521,18 @@ impl WorldRenderer {
         let push = SkyPush {
             inv_view_proj: inv,
             horizon: [
-                SKY_HORIZON[0] * self.sky_tint[0],
-                SKY_HORIZON[1] * self.sky_tint[1],
-                SKY_HORIZON[2] * self.sky_tint[2],
+                self.sky_base[0] * self.sky_tint[0],
+                self.sky_base[1] * self.sky_tint[1],
+                self.sky_base[2] * self.sky_tint[2],
                 1.0,
             ],
             // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc.
-            // Tinting only the horizon left a blue zenith at midnight.
+            // Tinting only the horizon left a blue zenith at midnight. The zenith
+            // keeps the fixed gradient ratio off the (biome) base color.
             zenith: [
-                SKY_ZENITH[0] * self.sky_tint[0],
-                SKY_ZENITH[1] * self.sky_tint[1],
-                SKY_ZENITH[2] * self.sky_tint[2],
+                self.sky_base[0] * ZENITH_RATIO[0] * self.sky_tint[0],
+                self.sky_base[1] * ZENITH_RATIO[1] * self.sky_tint[1],
+                self.sky_base[2] * ZENITH_RATIO[2] * self.sky_tint[2],
                 1.0,
             ],
         };

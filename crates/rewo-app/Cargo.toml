@@ -16,6 +16,7 @@ rewo-net = { workspace = true }
 rewo-data = { workspace = true }
 rewo-world = { workspace = true }
 rewo-mesh = { workspace = true }
+rewo-proto = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 dirs = { workspace = true }

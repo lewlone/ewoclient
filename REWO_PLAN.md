@@ -3312,3 +3312,146 @@ and packed vertices; Nether/End verification and dimension ambient light;
 entity-event animations; true shape-union face occlusion; and glow lichen's
 any-face emission approximation. Clouds/weather and HUD completeness remain
 separate future visual work.
+
+### 2026-07-24 — M14: per-biome color (grass/foliage/water tint + camera sky/fog)
+
+M0–M13 rendered every terrain block through one global tint baked at asset time;
+the world had no biomes. M14 makes color depend on where you stand. Ground truth
+was the 26.2 decompile and datagen only: `RegistryData`, `Biome` /
+`BiomeSpecialEffects` / `BlockColors` / `BlockTintSources`, `BiomeManager`,
+`ClientLevel.calculateBlockTint` + `BlockTintCache`, `PalettedContainer` /
+`SimpleBitStorage`, `ClientboundChunksBiomesPacket`, `EnvironmentAttributeProbe`
+/ `GaussianSampler` / `SpatialAttributeInterpolator`, `DimensionType.STREAM_CODEC`
+/ `ByteBufCodecs.holderRegistry`, and `ARGB.srgbLerp`. No wiki-derived behavior.
+
+**Registry + the dimension-holder correction.** The Configuration live registry
+is decoded in raw wire order — **66 biomes, 4 dimension types** — and their
+special-effects colors and temperature/downfall drive resolution. The play-login
+dimension is a `holderRegistry`/idMapper reference: a **raw 0-based** id, NOT
+`ByteBufCodecs.holder`'s inline/`id+1` convention. Production review found the
+code was treating it with the inline/`id+1` scheme; correcting that adjacent
+protocol bug was a prerequisite for selecting the right dimension sky/fog base,
+and the fix was carried through the login path, replay and tests. The final
+diagnostic attached the live context with `biomeZoomSeed`
+**6105022145440815208**.
+
+**Section biomes retained.** Biome containers are kept per section as a 4×4×4
+grid indexed `((y<<2)|z)<<2|x`. The paletted-container strategy byte follows
+26.2 exactly: **0** single-value, **1..3** indirect, **>3** direct at the
+registry's `ceilLog2` width (66 → **7 bits**; a focused test round-trips id 65).
+Both the initial level-chunk biome payload and the `ClientboundChunksBiomesPacket`
+replacement are supported; a biome change or chunk load dirties the 3×3 column
+neighborhood for remesh.
+
+**Dynamic block tint.** `ClientLevel.calculateBlockTint` is transcribed as the
+exact **radius-2, 5×5 same-Y integer channel mean** over the fiddled
+`BiomeManager.getBiome` lookups, for the grass, foliage, dry-foliage and water
+resolvers. Grass carries the `dark_forest` bit formula and the `swamp`
+noise/threshold exactly; spruce and birch leaves are the **fixed** `FoliageColor`
+constants (not the colormap); doubleTallGrass UPPER samples `pos.below()`. Tinted
+faces select the **raw** (un-tinted) atlas layer and multiply the resolved biome
+color into `MeshVertex.color` alongside face shade and AO — **no vertex-ABI
+growth**. A synthetic / no-biome-context world deliberately keeps the legacy
+pre-tinted layers with a white color, so the demo path is byte-identical.
+
+**Per-job tint cache.** The decompiled `ClientLevel` wraps `calculateBlockTint`
+in a `BlockTintCache` because each result averages a 5×5 window of `getBiome`
+lookups, each running 8 fiddled corner-distance evaluations; the mesher asked for
+a block's tint once per tinted face / model quad / fluid face (up to six times
+for one leaf cube). M14 adds a `TintCache` local to a single `mesh_column` job,
+keyed by the **canonical sampled position + resolver** — `GrassBelow`
+canonicalizes to Grass at `y-1`, and `Constant` tints bypass it. It mirrors
+vanilla's performance rationale without a global cache, lock, or invalidation
+dance: the cache is dropped with the job, so a concurrent `chunks_biomes` / reload
+can never observe a stale entry. The benefit is structural (fewer resolutions),
+not separately benchmarked.
+
+**Camera sky/fog is a deliberately separate path.** It is NOT the block fiddle.
+`EnvironmentAttributeProbe` runs a raw-quart **6³ Gaussian** with kernel
+`[0,1,4,6,4,1,0]` in z/x/y loop order, groups samples by biome identity in
+insertion order (`Reference2DoubleArrayMap`), and blends with integer
+`ARGB.srgbLerp`: the dimension base first, then a biome's positional override.
+The GPU receives the resolved sky/fog **base colors as per-frame uniforms**, so a
+camera move or a time-of-day change never forces a remesh. Rewo's existing
+gradient sky and day/night timeline (M11/M12) still drive the actual sky render —
+M14 only feeds it the biome-correct base; this is **not** a claim that the whole
+sky renderer is a formula-exact vanilla renderer.
+
+**Permanent oracle: `rewo tintshot --check`.** Serverless, Vulkan validation
+**required and ON** (fails closed otherwise). It bakes the real 26.2 jar assets,
+installs synthetic single/indirect/direct biome containers through the production
+`chunks_biomes` path, runs the production `mesh_column`, and reads back the
+production Vulkan framebuffer. Expectations are independent of the graded methods:
+override constants, an inline colormap index, oracle vectors derived from the
+decompiled algorithms and **verified under Temurin 25 then pinned** (no committed
+JVM file), and a separate Gaussian reference shared by sky and fog. Pinned
+values: boundary grass **[91,163,163]** (the exact 5×5 fiddle mean at an A/B
+edge), dark_forest **[147,26,5]**, swamp light **[106,112,57]**, swamp dark
+**[76,118,60]**, spruce **[97,153,97]**, birch **[128,167,85]**; raw-vs-legacy
+atlas layers **499/500**; camera sky boundary **0xff7f807f** and camera fog
+boundary **0xffac2d6d** (biome A inherits the dimension fog, B overrides); GPU
+grass **[147,0,0]**, water **[0,0,139]**, biome sky **[254,128,0]** vs default
+**[183,209,242]**, and a fully-fogged untinted terrain plane reading green
+**[0,255,0]** then blue **[0,0,255]** under a deliberately distinct **red** sky;
+**0 VUIDs**. A green run rejects constant-plains output, an axis transpose,
+nearest-neighbor / wrong-fiddle / wrong-radius / wrong-mean, wrong colormap
+indexing, a missing family override, spruce/birch treated as foliage, a wrong
+grass modifier, a raw/legacy layer mixup, camera sampling via the block fiddle, a
+missing fog inheritance/override/Gaussian, and dropped GPU mesh/sky/fog plumbing.
+
+**Known scoped deviations / exclusions.** Biome blend radius is fixed at vanilla's
+default **2** (not yet a setting). Modifier-form custom-datapack sky/fog
+attributes are not applied — vanilla 26.2 ships these as bare overrides, which is
+what M14 handles. The `EnvironmentAttributeProbe` last/new per-tick history is
+omitted; the spatial result is sampled per frame instead. Respawn and dimension
+transitions, and general Nether/End base selection, remain untested/unwired.
+Redstone, stem and lily-pad `BlockColors` were explicitly out of M14. Greedy
+meshing and packed vertices remain excluded.
+
+**Final gates (independently run after code freeze).** Six release libraries
+**215/215** — world 81, net 67, gpu 37, data 9, mesh 10, proto 11 — plus app
+**10/10**; pre-existing warnings only. `tintshot` validation ON, exit 0, **0
+VUIDs**; `lightmapshot` and `skyshot` each validation ON, exit 0, 0 VUIDs;
+`mobshot` **243/243**. The demo PNG is byte-identical at SHA-256
+**`2CC56B4ACBFB92CB91398C27E5C4735885ABFF9331F66B7DC83BDBC002246635`**. Canonical
+physics: **600 ticks, CORRECTIONS 0**, clock +598, with walk/sprint/jump/look/dig
+/place/chat/give all true — **PLACE and DIG both verified** this run. Canonical
+lighting `--no-relight`: **9 columns, 884,736 cells, block 0 sky 0 EXACT**,
+CORRECTIONS 0, clock +278. A short final info join decoded **66 biomes, 4
+dimension types**, attached the context, **CORRECTIONS 0**, no chunk-decode
+errors. Four replay samples: GPU avg **0.238–0.241 ms**, p50 0.223–0.224, 1% low
+0.756–0.810, 0.1% low 0.868–0.970; serialized wall avg 0.544–0.549, 1% low
+1.532–1.927, 0.1% low 3.345–3.837. The replay world has **no biome context**, so
+it guards neutral rendering and does **not** measure the new tint cache's
+live-meshing benefit. The test server was stopped and port 25599 verified free;
+temp logs removed.
+
+**Honest failure / correction history.** The first `tintshot` reached green only
+after eight harness failures and a Vulkan teardown validation leak were fixed —
+the ratio helper inspected the wrong channel, sampling windows hit the
+unloaded-biome-0 fallback, blocks were set before `ensure_column`, and an early
+return skipped GPU cleanup. A senior review then **rejected that first green
+oracle as insufficient**: the boundary check only asserted "both colors present";
+it claimed birch and both grass modifiers but exercised only spruce and no
+modifier; and the GPU pass proved sky but never a fogged terrain plane. The
+strengthened oracle pins the exact JVM-verified vectors, exercises real birch and
+both dark_forest and swamp branches, adds an independent fog Gaussian, and reads
+back a real fully-fogged terrain plane under a distinct sky. The dimension-holder
+inline/`id+1` bug (above) was another review find, corrected in code, replay and
+tests. Review also flagged the repeated 25×8 per-face tint resolution; the per-job
+cache was added before the final gates. This history is recorded, not concealed.
+
+Two operational notes: repository-wide `cargo fmt --check` remains **red** on
+pre-existing, untouched formatting drift (about 33 files) — new files and hunks
+are formatted and `git -c core.whitespace=cr-at-eol diff --check` is green, so
+global fmt is **not** claimed green. And the first final server-stop verification
+briefly showed port 25599 occupied by an unrelated concurrent `pvpsoft` vanilla
+fixture that appeared after the Rewo diagnostic; its command line was verified, it
+was not killed by this task, its owner cleaned it up, and the final port check was
+free — this never overlapped the canonical Rewo physics/light runs.
+
+**Left open after M14:** greedy meshing and packed vertices; general Nether/End
+and dimension-transition base selection plus dimension ambient; entity-event
+animations; true shape-union face occlusion; glow-lichen any-face emission; and
+clouds/weather and HUD completeness. Per-biome tint is now shipped and off the
+open list.

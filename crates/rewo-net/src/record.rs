@@ -156,7 +156,6 @@ fn read_login_shape(
     r: &mut rewo_proto::reader::PacketReader,
     dim_shapes: &[rewo_world::dimension::DimensionShape],
 ) -> Option<rewo_world::dimension::DimensionShape> {
-    use rewo_world::dimension::DimensionShape;
     r.i32().ok()?; // player id
     r.bool().ok()?; // hardcore
     let dim_count = r.count("dimensions", 1).ok()?;
@@ -169,12 +168,11 @@ fn read_login_shape(
     r.bool().ok()?; // reduced debug
     r.bool().ok()?; // show death
     r.bool().ok()?; // limited crafting
+    // The dimension-type holder is the raw 0-based registry id (holderRegistry
+    // idMapper — see `crate::parse_login_dimension_holder`); there is no
+    // `0=inline`/`id+1` convention.
     let holder = r.varint().ok()?;
-    if holder > 0 {
-        dim_shapes.get((holder - 1) as usize).copied()
-    } else {
-        Some(DimensionShape::OVERWORLD)
-    }
+    Some(crate::login_dimension_shape(holder, dim_shapes))
 }
 
 /// Read all recorded packets back into memory.

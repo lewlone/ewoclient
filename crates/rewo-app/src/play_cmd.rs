@@ -105,6 +105,16 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         .clone()
         .or_else(|| auth.as_ref().map(|a| a.username.clone()))
         .unwrap_or_else(|| "RewoBot".into());
+    let colormaps = baked
+        .as_ref()
+        .map(|b| {
+            rewo_world::biome::Colormaps::from_pixels(
+                b.grass_colormap.clone(),
+                b.foliage_colormap.clone(),
+                b.dry_foliage_colormap.clone(),
+            )
+        })
+        .unwrap_or_else(rewo_world::biome::Colormaps::neutral);
     let conn = Connection::connect(&args.host, args.port, &data)?;
     let mut session = conn.into_play(
         &args.host,
@@ -113,6 +123,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         auth.as_ref(),
         collide,
         data.blocks.global_palette_bits,
+        colormaps,
     )?;
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = crate::live_cmd::entity_push_table(&data.entity_types);

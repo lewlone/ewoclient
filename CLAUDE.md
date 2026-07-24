@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M13 shipped: online play, native CEM, server light, complete lightmap + celestials)
+## Rewo — from-scratch native Minecraft client (M0–M14 shipped: online play, native CEM, server light, complete lightmap + celestials, per-biome color)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -2006,6 +2006,48 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   physics corrections 0, light **884,736 cells / 0 mismatches**. Replay median
   remained ~0.23 ms but later tail samples were system-noisy; exact numbers and
   the honest red-to-green water history are in REWO_PLAN §15.
+- **M14 per-biome color shipped 2026-07-24** — grass/foliage/water tint +
+  biome-driven camera sky/fog. The Configuration registry decodes in raw wire
+  order (**66 biomes, 4 dimension types**); section biomes are retained 4×4×4
+  (index `((y<<2)|z)<<2|x`, strategy bits 0 single / 1–3 indirect / >3 direct at
+  registry `ceilLog2` = 7 for 66), from both the level-chunk payload and the
+  `chunks_biomes` replacement (changes/load dirty 3×3). Dynamic tint is the exact
+  **radius-2 5×5 integer mean** over the fiddled `BiomeManager.getBiome` for
+  grass/foliage/dry-foliage/water, with `dark_forest`+`swamp` grass modifiers,
+  fixed spruce/birch constants, tall-grass UPPER sampling below; tinted faces use
+  the **raw atlas layer** + `MeshVertex.color` (no ABI growth), and a no-biome
+  world keeps the legacy pre-tinted layers so the demo stays byte-identical. A
+  per-`mesh_column` **`TintCache`** (canonical key = sampled pos+resolver,
+  GrassBelow→Grass@y-1, constants bypass) mirrors vanilla's `BlockTintCache`
+  without a global lock/invalidation. Camera sky/fog is a **separate** path — the
+  raw-quart 6³ Gaussian (kernel `[0,1,4,6,4,1,0]`, integer `ARGB.srgbLerp`,
+  dimension base then biome override) feeding **per-frame GPU base uniforms** (no
+  remesh); Rewo's existing gradient/timeline sky still renders it, so this is
+  *not* a formula-exact whole-sky claim. **Load-bearing protocol fix**: the play
+  login dimension holder is `holderRegistry`/idMapper **raw 0-based**, NOT
+  `ByteBufCodecs.holder`'s inline/`id+1` — correcting that adjacent bug was
+  required to select the dimension sky/fog base. Permanent gate:
+  **`rewo tintshot --check`** (serverless, validation-required Vulkan readback of
+  the production jar-bake + synthetic single/indirect/direct biome containers +
+  `mesh_column`), pinning Temurin-25-verified vectors — boundary
+  **[91,163,163]**, dark_forest **[147,26,5]**, swamp light/dark
+  **[106,112,57]**/**[76,118,60]**, spruce/birch **[97,153,97]**/**[128,167,85]**,
+  camera fog boundary **0xffac2d6d** (A inherits / B overrides), fully-fogged
+  terrain green→blue under a red sky, **0 VUIDs**; it rejects constant-plains,
+  axis transpose, wrong fiddle/radius/mean, spruce/birch-as-foliage, wrong
+  modifiers, raw/legacy mixup, block-fiddle camera sampling, and dropped GPU
+  plumbing. Final gates: **215/215** six-crate tests (world 81, net 67, gpu 37,
+  data 9, mesh 10, proto 11) + **10/10** app; tintshot/lightmapshot/skyshot
+  validation ON exit 0 0 VUIDs, mobshot 243/243, byte-identical demo, physics
+  **CORRECTIONS 0** over 600 ticks (PLACE+DIG both verified), light **884,736
+  cells / block 0 sky 0 EXACT**. Replay (no biome context — guards neutral
+  rendering, does not measure the tint cache) GPU avg ~0.238–0.241 ms.
+  **Scoped exclusions**: biome blend radius fixed at vanilla default 2;
+  modifier-form custom-datapack sky/fog attrs not applied (26.2 uses bare
+  overrides); probe per-tick history omitted (sampled per frame); respawn /
+  dimension-transition / Nether-End base selection untested; redstone/stem/lily
+  `BlockColors` explicitly out of M14. Honest history + exact numbers in
+  REWO_PLAN §15 (incl. the first oracle rejected as insufficient and strengthened).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -38,14 +38,18 @@ const FACE_NORMALS: [[f32; 3]; 6] = [
 pub struct Quad {
     pub verts: [[f32; 3]; 4],
     pub uv: [[f32; 2]; 4],
+    /// Pre-tinted texture layer (legacy path: synthetic / no-biome worlds).
     pub layer: u16,
+    /// Raw (untinted) texture layer for the M14 biome path — equals `layer`
+    /// for untinted faces. Used with a dynamic per-vertex tint color.
+    pub raw_layer: u16,
     /// Face index (0..5) this quad is culled against when that neighbor is a
     /// full opaque cube, or -1 to never cull.
     pub cull: i8,
     /// Face index for directional shading.
     pub dir: u8,
-    /// Biome-tint this quad (grass/foliage color).
-    pub tint: bool,
+    /// Which biome color this quad's `tintindex` layer draws (biome path).
+    pub tint: TintSource,
     /// Apply directional face shading (false for plants/torches).
     pub shade: bool,
 }
@@ -54,11 +58,13 @@ pub struct Quad {
 #[derive(Clone, Debug)]
 pub enum RenderKind {
     Invisible,
-    /// Full opaque 16³ cube — [up,down,north,south,west,east] layers + a
-    /// per-face tint flag. Fast path (face-cull + AO in the mesher).
+    /// Full opaque 16³ cube — [up,down,north,south,west,east] pre-tinted layers,
+    /// their raw (untinted) counterparts for the biome path, and a per-face tint
+    /// source. Fast path (face-cull + AO in the mesher).
     Cube {
         faces: [u16; 6],
-        tint: [bool; 6],
+        raw_faces: [u16; 6],
+        tint: [TintSource; 6],
     },
     /// Water/lava — geometry comes from the mesher's fluid path (corner
     /// heights, not a model; vanilla hardcodes fluid rendering the same
@@ -67,11 +73,114 @@ pub enum RenderKind {
     /// opaque mesh at full bright.
     Fluid {
         layer: u16,
+        /// Raw (untinted) fluid layer for the biome water tint. Equals `layer`
+        /// for lava (which is never tinted).
+        raw_layer: u16,
         level: u8,
         lava: bool,
     },
     /// General model — index into `BakedAssets::models`.
     Model(u32),
+}
+
+/// Which biome color a face's `tintindex` layer draws — the metadata the M14
+/// dynamic-tint mesh path reads (a faithful transcription of the decompiled
+/// `BlockColors.createDefault` registrations + `BlockTintSources`, keyed by
+/// block + model `tintindex`, NOT by filename). `None` means the face is never
+/// biome-tinted. Present only for the biome path; the legacy pre-tinted layers
+/// keep the synthetic/no-biome (demo) render byte-identical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TintSource {
+    None,
+    /// `getAverageGrassColor(pos)` — grass_block, fern, short_grass, bush,
+    /// potted_fern, tall grass/large fern (lower half), sugar cane, pink
+    /// petals/wildflowers layer 1.
+    Grass,
+    /// `doubleTallGrass` UPPER half: `getAverageGrassColor(pos.below())`.
+    GrassBelow,
+    /// `getAverageFoliageColor(pos)` — oak/jungle/acacia/dark_oak leaves, vine,
+    /// mangrove leaves.
+    Foliage,
+    /// `getAverageDryFoliageColor(pos)` — leaf_litter.
+    DryFoliage,
+    /// `getAverageWaterColor(pos)` — the water fluid.
+    Water,
+    /// A constant color, NOT a biome colormap — spruce/birch leaves
+    /// (`BlockTintSources.constant`). Stored opaque `[r,g,b]`.
+    Constant([u8; 3]),
+}
+
+const fn rgb_of(argb: i32) -> [u8; 3] {
+    [
+        ((argb >> 16) & 0xFF) as u8,
+        ((argb >> 8) & 0xFF) as u8,
+        (argb & 0xFF) as u8,
+    ]
+}
+
+/// `FoliageColor.FOLIAGE_EVERGREEN` (-10380959) — the spruce-leaves constant.
+const SPRUCE_LEAF: TintSource = TintSource::Constant(rgb_of(-10380959));
+/// `FoliageColor.FOLIAGE_BIRCH` (-8345771) — the birch-leaves constant.
+const BIRCH_LEAF: TintSource = TintSource::Constant(rgb_of(-8345771));
+
+/// The per-`tintindex` tint sources for a block, transcribed from
+/// `BlockColors.createDefault`. The model face's `tintindex` selects the layer;
+/// a tintindex past the list (or an untinted block) is `None`. `block` is the
+/// short id (no `minecraft:`).
+fn block_color_layers(block: &str) -> &'static [TintSource] {
+    use TintSource::*;
+    match block {
+        // grass()/doubleTallGrass()/grassBlock()/sugarCane() → grass resolver.
+        // (large_fern/tall_grass upper-half → GrassBelow is applied per-state.)
+        "large_fern" | "tall_grass" => &[Grass],
+        "fern" | "short_grass" | "potted_fern" | "bush" => &[Grass],
+        "grass_block" => &[Grass],
+        "sugar_cane" => &[Grass],
+        // pink_petals/wildflowers: [BLANK, grass()] — layer 1 is the tinted one.
+        "pink_petals" | "wildflowers" => &[None, Grass],
+        // Constant leaves — NOT the foliage colormap.
+        "spruce_leaves" => &[SPRUCE_LEAF],
+        "birch_leaves" => &[BIRCH_LEAF],
+        // foliage() resolver.
+        "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves" | "vine"
+        | "mangrove_leaves" => &[Foliage],
+        // dryFoliage() resolver.
+        "leaf_litter" => &[DryFoliage],
+        // water()/waterParticles() → water resolver (the fluid path handles
+        // WATER itself; WATER_CAULDRON is a model face).
+        "water_cauldron" => &[Water],
+        _ => &[],
+    }
+}
+
+/// Resolve a face's tint source from its `tintindex` value + the block's
+/// layers, applying the tall-grass UPPER → `GrassBelow` rule.
+fn resolve_tint_source(layers: &[TintSource], tintindex: Option<i64>, upper_half: bool) -> TintSource {
+    let Some(ti) = tintindex else {
+        return TintSource::None;
+    };
+    let src = layers.get(ti as usize).copied().unwrap_or(TintSource::None);
+    if upper_half && src == TintSource::Grass {
+        TintSource::GrassBelow
+    } else {
+        src
+    }
+}
+
+/// A model face's `tintindex` value (the layer selector), if present.
+fn tintindex_of(face: &serde_json::Value) -> Option<i64> {
+    face.get("tintindex").and_then(|t| t.as_i64())
+}
+
+/// Per-state tint metadata threaded through the baker.
+#[derive(Clone, Copy)]
+struct TintInfo {
+    /// Legacy filename-based pre-tint input (kept so the demo is byte-identical).
+    foliage: bool,
+    /// This block's `BlockColors` tint layers, selected by a face's `tintindex`.
+    layers: &'static [TintSource],
+    /// Tall-grass / large-fern UPPER half → grass samples `pos.below()`.
+    upper_half: bool,
 }
 
 pub struct BakedAssets {
@@ -111,9 +220,16 @@ pub struct BakedAssets {
     /// RGBA8 16×16 texels per layer (sRGB).
     pub layers: Vec<Vec<u8>>,
     pub layer_names: Vec<String>,
-    /// Baked plains-biome tint colors (colormap centers).
+    /// Baked plains-biome tint colors (colormap centers). Kept for the legacy
+    /// pre-tinted path (synthetic / no-biome worlds → demo byte-identical).
     pub grass_tint: [u8; 3],
     pub foliage_tint: [u8; 3],
+    /// Full biome colormaps (`65536` ARGB ints indexed `y<<8|x`) for the M14
+    /// per-biome tint. Empty if the jar lacks the PNG — the biome engine then
+    /// falls back to the vanilla default map color for that channel.
+    pub grass_colormap: Vec<i32>,
+    pub foliage_colormap: Vec<i32>,
+    pub dry_foliage_colormap: Vec<i32>,
     /// The vanilla bitmap font (ascii.png) for nametags/HUD text. `None`
     /// only if the jar somehow lacks it — callers degrade to no text.
     pub font: Option<BakedFont>,
@@ -384,6 +500,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let grass_tint = colormap_center(&mut jar, "grass").unwrap_or([124, 189, 107]);
     let foliage_tint = colormap_center(&mut jar, "foliage").unwrap_or([89, 174, 48]);
+    // Full colormaps for the M14 per-biome tint (empty → default map color).
+    let grass_colormap = colormap_pixels(&mut jar, "grass").unwrap_or_default();
+    let foliage_colormap = colormap_pixels(&mut jar, "foliage").unwrap_or_default();
+    let dry_foliage_colormap = colormap_pixels(&mut jar, "dry_foliage").unwrap_or_default();
     let font = bake_font(&mut jar);
     if font.is_none() {
         log::warn!("rewo-data: font/ascii.png missing — nametags disabled");
@@ -450,12 +570,19 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         // renderer) — classify by name, keyed on the `level` property.
         if short == "water" || short == "lava" {
             let lava = short == "lava";
-            let layer = if lava {
-                baker.layer_for("block/lava_still", TintKind::None)
+            let (layer, raw_layer) = if lava {
+                // Lava is never biome-tinted: raw == pre-tinted.
+                let l = baker.layer_for("block/lava_still", TintKind::None);
+                (l, l)
             } else {
-                baker.layer_for("block/water_still", TintKind::Water)
+                // Water: pre-tinted (legacy #3F76E4) + a raw copy for the biome
+                // water tint path.
+                (
+                    baker.layer_for("block/water_still", TintKind::Water),
+                    baker.layer_for("block/water_still", TintKind::None),
+                )
             };
-            let Some(layer) = layer else {
+            let (Some(layer), Some(raw_layer)) = (layer, raw_layer) else {
                 log::warn!("rewo-data: {short}_still texture missing — fluid invisible");
                 continue;
             };
@@ -469,7 +596,12 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     .and_then(|l| l.as_str())
                     .and_then(|l| l.parse::<u8>().ok())
                     .unwrap_or(0);
-                render[id as usize] = RenderKind::Fluid { layer, level, lava };
+                render[id as usize] = RenderKind::Fluid {
+                    layer,
+                    raw_layer,
+                    level,
+                    lava,
+                };
                 // Fluids skip the shared per-state light block below (they
                 // `continue`), so assign their light here from the same tables.
                 let (e, d) = fluid_light(lava);
@@ -488,7 +620,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             let props = state.get("properties").and_then(|p| p.as_object());
             let resolved = bs
                 .as_ref()
-                .and_then(|bs| baker.resolve_state(bs, props, foliage, &mut models));
+                .and_then(|bs| baker.resolve_state(bs, props, foliage, short, &mut models));
             match resolved {
                 Some((k @ RenderKind::Cube { .. }, is_solid)) => {
                     render[id as usize] = k;
@@ -603,6 +735,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         animations: baker.animations,
         grass_tint,
         foliage_tint,
+        grass_colormap,
+        foliage_colormap,
+        dry_foliage_colormap,
         font,
         mob_textures,
         hud,
@@ -845,12 +980,25 @@ impl<'a> Baker<'a> {
         bs: &BlockState,
         props: Option<&serde_json::Map<String, serde_json::Value>>,
         foliage: bool,
+        block: &str,
         models: &mut Vec<Vec<Quad>>,
     ) -> Option<(RenderKind, bool)> {
         let refs = self.state_refs(bs, props);
         if refs.is_empty() {
             return None;
         }
+
+        // M14 tint metadata for this state: the block's BlockColors layers +
+        // whether this is the tall-grass UPPER half (which samples pos.below()).
+        let upper_half = props
+            .and_then(|p| p.get("half"))
+            .and_then(|h| h.as_str())
+            == Some("upper");
+        let tint = TintInfo {
+            foliage,
+            layers: block_color_layers(block),
+            upper_half,
+        };
 
         // Collision solidity: any referenced model with a full 16³ element
         // makes this a solid cube (grass_block renders as a Model due to its
@@ -859,14 +1007,14 @@ impl<'a> Baker<'a> {
 
         // Fast path: a single, unrotated, full-cube model.
         if refs.len() == 1 && refs[0].x == 0 && refs[0].y == 0 {
-            if let Some(cube) = self.try_cube(&refs[0].model, foliage) {
+            if let Some(cube) = self.try_cube(&refs[0].model, tint) {
                 return Some((cube, true));
             }
         }
 
         let mut quads = Vec::new();
         for r in &refs {
-            self.append_model_quads(r, foliage, &mut quads);
+            self.append_model_quads(r, tint, &mut quads);
         }
         if quads.is_empty() {
             return None;
@@ -940,7 +1088,7 @@ impl<'a> Baker<'a> {
     }
 
     /// If `model` is a full 16³ cube with all six faces, return a Cube.
-    fn try_cube(&mut self, model: &str, foliage: bool) -> Option<RenderKind> {
+    fn try_cube(&mut self, model: &str, tint: TintInfo) -> Option<RenderKind> {
         let resolved = self.resolve_model(model)?;
         if resolved.elements.len() != 1 {
             return None;
@@ -956,27 +1104,30 @@ impl<'a> Baker<'a> {
         }
         let faces = el.get("faces")?.as_object()?;
         let mut layers = [0u16; 6];
-        let mut tint = [false; 6];
+        let mut raw_layers = [0u16; 6];
+        let mut tints = [TintSource::None; 6];
         for (i, name) in FACE_NAMES.iter().enumerate() {
             let face = faces.get(*name)?;
             let tex = face.get("texture")?.as_str()?;
             let tex_name = resolve_texture_var(tex, &resolved.textures)?;
-            layers[i] = self.layer_for(&tex_name, foliage_of(&tex_name, foliage))?;
-            tint[i] = face.get("tintindex").is_some();
+            layers[i] = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage))?;
+            raw_layers[i] = self.layer_for(&tex_name, TintKind::None)?;
+            tints[i] = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
         }
         Some(RenderKind::Cube {
             faces: layers,
-            tint,
+            raw_faces: raw_layers,
+            tint: tints,
         })
     }
 
-    fn append_model_quads(&mut self, r: &ModelRef, foliage: bool, out: &mut Vec<Quad>) {
+    fn append_model_quads(&mut self, r: &ModelRef, tint: TintInfo, out: &mut Vec<Quad>) {
         let Some(resolved) = self.resolve_model(&r.model) else {
             return;
         };
         let shade_default = resolved.ambient_occlusion; // proxy; real shade is per-element
         for el in &resolved.elements {
-            self.element_quads(el, &resolved.textures, r.x, r.y, foliage, shade_default, out);
+            self.element_quads(el, &resolved.textures, r.x, r.y, tint, shade_default, out);
         }
     }
 
@@ -987,7 +1138,7 @@ impl<'a> Baker<'a> {
         textures: &HashMap<String, String>,
         rot_x: i32,
         rot_y: i32,
-        foliage: bool,
+        tint: TintInfo,
         _shade_default: bool,
         out: &mut Vec<Quad>,
     ) {
@@ -1009,10 +1160,13 @@ impl<'a> Baker<'a> {
             let Some(tex_name) = resolve_texture_var(tex, textures) else {
                 continue;
             };
-            let Some(layer) = self.layer_for(&tex_name, foliage_of(&tex_name, foliage)) else {
+            let Some(layer) = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage)) else {
                 continue;
             };
-            let tint = face.get("tintindex").is_some();
+            let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
+                continue;
+            };
+            let tint_src = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
             let has_cull = face.get("cullface").is_some();
 
             // Corners in 0..16, then transforms, then /16.
@@ -1047,9 +1201,10 @@ impl<'a> Baker<'a> {
                 verts: fverts,
                 uv,
                 layer,
+                raw_layer,
                 cull,
                 dir,
-                tint,
+                tint: tint_src,
                 shade,
             });
         }
@@ -1602,6 +1757,44 @@ fn colormap_center(jar: Jar, name: &str) -> Option<[u8; 3]> {
     Some([buf[i], buf[i + 1], buf[i + 2]])
 }
 
+/// Decode a full biome colormap PNG (`grass.png` / `foliage.png` /
+/// `dry_foliage.png`, 256×256) into `65536` ARGB ints indexed `y<<8 | x` —
+/// exactly the `pixels` array vanilla feeds `GrassColor.init` (via
+/// `NativeImage.makePixelArray` → `ARGB.fromABGR(getPixelABGR)` = ARGB). A
+/// non-256-wide image is placed by the natural `y<<8 | x` layout;
+/// `ColorMapColorUtil.get` only ever indexes `y<<8|x`, so a 256-wide map lines
+/// up 1:1.
+pub fn colormap_pixels(jar: Jar, name: &str) -> Option<Vec<i32>> {
+    let path = format!("assets/minecraft/textures/colormap/{name}.png");
+    let mut bytes = Vec::new();
+    jar.by_name(&path).ok()?.read_to_end(&mut bytes).ok()?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let ch = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        _ => return None,
+    };
+    // Build a 256×256 = 65536 ARGB array (the size the index space needs).
+    let mut pixels = vec![0i32; 256 * 256];
+    for y in 0..h.min(256) {
+        for x in 0..w.min(256) {
+            let i = (y * w + x) * ch;
+            let r = buf[i] as i32;
+            let g = buf[i + 1] as i32;
+            let b = buf[i + 2] as i32;
+            let a = if ch == 4 { buf[i + 3] as i32 } else { 255 };
+            pixels[(y << 8) | x] =
+                ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+        }
+    }
+    Some(pixels)
+}
+
 fn tint_rgb(rgba: &mut [u8], color: [u8; 3]) {
     for px in rgba.chunks_exact_mut(4) {
         for c in 0..3 {
@@ -1620,6 +1813,57 @@ mod tests {
         assert_eq!(snap_face([0.0, -0.9, 0.1]), 1); // down
         assert_eq!(snap_face([0.0, 0.0, -1.0]), 2); // north
         assert_eq!(snap_face([1.0, 0.0, 0.0]), 5); // east
+    }
+
+    // M14: tint family comes from BlockColors (block id + tintindex), NOT the
+    // texture filename. These pin the decompiled `BlockColors.createDefault`.
+    #[test]
+    fn block_color_layers_follow_blockcolors_not_filename() {
+        use TintSource::*;
+        assert_eq!(block_color_layers("grass_block"), &[Grass]);
+        assert_eq!(block_color_layers("short_grass"), &[Grass]);
+        assert_eq!(block_color_layers("fern"), &[Grass]);
+        assert_eq!(block_color_layers("sugar_cane"), &[Grass]);
+        assert_eq!(
+            block_color_layers("oak_leaves"),
+            &[Foliage],
+            "oak leaves use the foliage colormap"
+        );
+        assert_eq!(block_color_layers("leaf_litter"), &[DryFoliage]);
+        // pink_petals/wildflowers: layer 0 blank, layer 1 grass.
+        assert_eq!(block_color_layers("pink_petals"), &[None, Grass]);
+        // stone / dirt / any untinted block → no tint.
+        assert_eq!(block_color_layers("stone"), &[] as &[TintSource]);
+        assert_eq!(block_color_layers("dirt"), &[] as &[TintSource]);
+    }
+
+    #[test]
+    fn spruce_and_birch_leaves_are_constant_not_foliage() {
+        // The load-bearing "preserve constant spruce/birch" requirement: these
+        // must be a fixed color, not the foliage colormap.
+        assert_eq!(block_color_layers("spruce_leaves"), &[SPRUCE_LEAF]);
+        assert_eq!(block_color_layers("birch_leaves"), &[BIRCH_LEAF]);
+        // FoliageColor.FOLIAGE_EVERGREEN = -10380959, FOLIAGE_BIRCH = -8345771.
+        assert_eq!(SPRUCE_LEAF, TintSource::Constant(rgb_of(-10380959)));
+        assert_eq!(BIRCH_LEAF, TintSource::Constant(rgb_of(-8345771)));
+        assert_ne!(block_color_layers("spruce_leaves"), &[TintSource::Foliage]);
+    }
+
+    #[test]
+    fn resolve_tint_source_by_tintindex_and_half() {
+        use TintSource::*;
+        let petals = block_color_layers("pink_petals"); // [None, Grass]
+        // tintindex 0 → blank, tintindex 1 → grass.
+        assert_eq!(resolve_tint_source(petals, Some(0), false), None);
+        assert_eq!(resolve_tint_source(petals, Some(1), false), Grass);
+        // No tintindex on the face → never tinted.
+        assert_eq!(resolve_tint_source(&[Grass], Option::None, false), None);
+        // Out-of-range tintindex → None.
+        assert_eq!(resolve_tint_source(&[Grass], Some(5), false), None);
+        // Tall-grass UPPER half turns Grass into GrassBelow (samples pos.below()).
+        assert_eq!(resolve_tint_source(&[Grass], Some(0), true), GrassBelow);
+        // But a non-grass source is unaffected by the half.
+        assert_eq!(resolve_tint_source(&[Foliage], Some(0), true), Foliage);
     }
 
     #[test]
