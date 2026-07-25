@@ -16,6 +16,8 @@ pub mod components;
 pub mod entity_classes;
 pub mod entity_types;
 pub mod items;
+pub mod item_geometry;
+pub mod item_models;
 pub mod item_tags;
 pub mod packets;
 pub mod server_jar;
