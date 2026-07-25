@@ -102,6 +102,9 @@ pub struct EntityDraw<'a> {
     pub events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap (vanilla `isHidingInShell`).
     pub shell: bool,
+    /// Allay dance inputs (`Some` only for a dancing Allay); `None` for every
+    /// other entity and a non-dancing Allay (ordinary head-look / upright pose).
+    pub allay_dance: Option<mobs::AllayDance>,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -671,6 +674,7 @@ impl EntityPass {
             gesture: Option::None,
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
+            allay_dance: Option::None,
         };
         let xf = part_transforms(model, &ctx, None, None);
         Some(
@@ -820,6 +824,7 @@ impl EntityPass {
             gesture: d.gesture,
             events: d.events,
             shell: d.shell,
+            allay_dance: d.allay_dance,
         };
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
@@ -1175,6 +1180,9 @@ struct AnimCtx {
     events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap.
     shell: bool,
+    /// Allay dance inputs (`Some` only for a dancing Allay) — drives
+    /// [`mobs::Anim::AllayRoot`] / [`mobs::Anim::AllayHead`].
+    allay_dance: Option<mobs::AllayDance>,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -1249,6 +1257,37 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             rot[0] = 0.43633232 * (1.0 - fly);
             rot[1] = if left { PI / 4.0 - flap } else { -PI / 4.0 + flap };
         }
+        AllayRoot => {
+            // AllayModel `state.isDancing` branch, `this.root`. Idle → 0 (the
+            // model stays upright; the else-branch never touches root).
+            if let Some(dance) = c.allay_dance {
+                // danceSpeed = ageInTicks·8° + animationSpeed (walkAnimationSpeed).
+                let dance_speed = c.age * 8.0 * DEG + c.amt;
+                let spin = dance.spinning_progress;
+                // root.yRot = isSpinning ? 4π·spin : 0 (unchanged reset value).
+                rot[1] = if dance.is_spinning { PI * 4.0 * spin } else { 0.0 };
+                // root.zRot = danceFrequency·(1 − spin), danceFreq = cos(dS)·16°.
+                rot[2] = dance_speed.cos() * 16.0 * DEG * (1.0 - spin);
+            }
+        }
+        AllayHead => match c.allay_dance {
+            // Dancing: head tilts with the beat (xRot stays 0), scaled down as
+            // the spin ramps in. head.yRot = cos(dS)·30°·(1−spin),
+            // head.zRot = cos(dS)·14°·(1−spin).
+            Some(dance) => {
+                let dance_speed = c.age * 8.0 * DEG + c.amt;
+                let spin = dance.spinning_progress;
+                let cos_ds = dance_speed.cos();
+                rot[1] = cos_ds * 30.0 * DEG * (1.0 - spin);
+                rot[2] = cos_ds * 14.0 * DEG * (1.0 - spin);
+            }
+            // Not dancing: the ordinary look (identical to `Anim::Head`).
+            // `Option::None` — the `use mobs::Anim::*` glob shadows a bare `None`.
+            Option::None => {
+                rot[0] = c.pitch;
+                rot[1] = c.net;
+            }
+        },
         VexArm { left } => {
             let bob = (c.age * 5.5 * DEG).cos() * 0.1;
             rot[2] = if left { -(PI / 5.0 + bob) } else { PI / 5.0 + bob };
@@ -1366,6 +1405,9 @@ pub struct OracleInputs {
     pub events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap.
     pub shell: bool,
+    /// Allay dance inputs (`Some` only for a dancing Allay) — the `danceshot`
+    /// oracle feeds these to prove the `AllayRoot`/`AllayHead` pose math.
+    pub allay_dance: Option<mobs::AllayDance>,
 }
 
 /// The per-part animation deltas (added rotation radians ZYX + pivot offset
@@ -1390,6 +1432,7 @@ pub fn oracle_part_deltas(
         gesture: inputs.gesture,
         events: inputs.events,
         shell: inputs.shell,
+        allay_dance: inputs.allay_dance,
     };
     let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
     Some(

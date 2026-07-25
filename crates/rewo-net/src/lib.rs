@@ -834,6 +834,83 @@ pub fn route_entity_event(
     }
 }
 
+/// Apply one `ClientboundSetEntityDataPacket` body (VarInt entity id + a
+/// `SynchedEntityData` delta stream) to the entity table.
+///
+/// **Missing entity → whole packet dropped.** Vanilla
+/// `ClientPacketListener.handleSetEntityData` does
+/// `Entity e = level.getEntity(id); if (e != null) e.getEntityData().assignValues(...)`
+/// — an untracked id mutates no state at all. So this looks the entity up first
+/// and returns before parsing/applying anything if it's absent.
+///
+/// **Kind-aware disambiguation of the polymorphic index-16 BOOLEAN** lives here,
+/// not in the byte parser: `Allay.DATA_DANCING` shares slot 16 + serializer 8
+/// with the modeled baby path (`AgeableMob`/`Zombie.DATA_BABY_ID`), so the raw
+/// bit ([`metadata::EntityMeta::bool16`]) routes to `set_dancing` iff the entity
+/// is the Allay type, else to `set_baby` (the pre-existing modeled path). This
+/// does not claim exhaustive ownership of slot 16 across every entity — only the
+/// Allay-vs-baby split the client renders.
+///
+/// Not public: reached only through [`route_set_entity_data`] so packet-id
+/// selection is exercised (the `danceshot` oracle drives that seam).
+pub(crate) fn apply_set_entity_data(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    allay_type_id: Option<i32>,
+) {
+    let mut r = PacketReader::new(body);
+    let Ok(eid) = r.varint() else {
+        return;
+    };
+    // Vanilla drops metadata for an entity it isn't tracking (getEntity == null).
+    // The type id is also what disambiguates the index-16 BOOLEAN below.
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    let meta = crate::metadata::parse(&mut r);
+    if meta.custom_name.is_some() {
+        entities.set_custom_name(eid, meta.custom_name);
+    }
+    if let Some(p) = meta.pose {
+        entities.set_pose(eid, p);
+    }
+    if let Some(s) = meta.gesture_state {
+        entities.set_gesture_state(eid, s);
+    }
+    if let Some(sz) = meta.size {
+        entities.set_size(eid, sz);
+    }
+    if let Some(b) = meta.bool16 {
+        // Slot 16 BOOLEAN → `DATA_DANCING` on an Allay, otherwise the modeled
+        // baby path (`AgeableMob`/`Zombie.DATA_BABY_ID`). The kind decides.
+        if allay_type_id == Some(type_id) {
+            entities.set_dancing(eid, b);
+        } else {
+            entities.set_baby(eid, b);
+        }
+    }
+}
+
+/// The narrowest clientbound-play dispatch seam for entity metadata: routes a
+/// single `(packet id, body)` to [`apply_set_entity_data`] iff `id` is the
+/// resolved `set_entity_data` id, returning whether it matched. Mirrors
+/// [`route_entity_event`] so [`play::PlaySession`] and the `danceshot` oracle
+/// drive packet-id → metadata routing through the same production code.
+pub fn route_set_entity_data(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    allay_type_id: Option<i32>,
+) -> bool {
+    if id == ids.cb_play_set_entity_data {
+        apply_set_entity_data(body, entities, allay_type_id);
+        true
+    } else {
+        false
+    }
+}
+
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
 /// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
 /// (byte0 & 4) continuation flag set, read a trailing VarInt.
@@ -1114,5 +1191,81 @@ mod entity_event_tests {
         let mut t = table();
         apply_entity_event(&body(1, 4), &mut t, None, None, 10);
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+    }
+}
+
+#[cfg(test)]
+mod set_entity_data_tests {
+    use super::apply_set_entity_data;
+    use rewo_world::entities::{EntityState, EntityTable};
+
+    const ALLAY: i32 = 400;
+    const ZOMBIE: i32 = 500;
+
+    /// A `ClientboundSetEntityDataPacket` body: VarInt entity id then the
+    /// `SynchedEntityData` delta stream (index u8 + serializer VarInt + value)
+    /// terminated by 0xFF. Built independently of any writer under test. `eid`
+    /// is kept < 128 so its VarInt is a single byte.
+    fn body(eid: u8, index: u8, serializer: u8, value: &[u8]) -> Vec<u8> {
+        let mut b = vec![eid, index, serializer];
+        b.extend_from_slice(value);
+        b.push(0xFF);
+        b
+    }
+
+    /// Index-16 BOOLEAN carrying `true` — polymorphic (dancing on an Allay,
+    /// baby elsewhere).
+    fn index16_bool_true(eid: u8) -> Vec<u8> {
+        body(eid, 16, 8, &[0x01])
+    }
+
+    #[test]
+    fn index16_boolean_on_an_allay_is_dancing_not_baby() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, ALLAY, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&index16_bool_true(1), &mut t, Some(ALLAY));
+        // The bit drives dancing (rendered from `tick_lerp`) — NOT baby. At
+        // dancing_ticks=0, isSpinning() = 0 % 55 < 15 = true (vanilla reads the
+        // pre-increment counter the instant dancing flips on).
+        assert_eq!(t.allay_dance_render(1, 1.0), Some((true, 0.0)));
+        assert!(!t.is_baby(1), "the Allay's index-16 BOOLEAN must not set baby");
+    }
+
+    #[test]
+    fn index16_boolean_on_a_non_allay_is_baby_not_dancing() {
+        let mut t = EntityTable::default();
+        t.add(2, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&index16_bool_true(2), &mut t, Some(ALLAY));
+        assert!(t.is_baby(2), "a zombie's index-16 BOOLEAN is DATA_BABY_ID");
+        assert_eq!(t.allay_dance_render(2, 1.0), None, "a zombie never dances");
+    }
+
+    #[test]
+    fn index16_int_is_size_regardless_of_kind() {
+        // A slime size update: index 16, INT (serializer 1), value 4. The INT
+        // serializer means size, never the polymorphic BOOLEAN.
+        let mut t = EntityTable::default();
+        t.add(3, EntityState::new(0, 600, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(3, 16, 1, &[0x04]), &mut t, Some(ALLAY));
+        assert_eq!(t.size(3), Some(4));
+        assert!(!t.is_baby(3));
+        assert_eq!(t.allay_dance_render(3, 1.0), None);
+    }
+
+    #[test]
+    fn dancing_toggles_off_and_untracked_ids_are_inert() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, ALLAY, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&index16_bool_true(1), &mut t, Some(ALLAY));
+        t.tick_lerp();
+        assert!(t.allay_dance_render(1, 1.0).is_some());
+        // A false update stops the dance.
+        apply_set_entity_data(&body(1, 16, 8, &[0x00]), &mut t, Some(ALLAY));
+        assert_eq!(t.allay_dance_render(1, 1.0), None);
+        // Vanilla drops metadata for an untracked id (getEntity == null): no
+        // state mutation at all — NOT a baby fallback.
+        apply_set_entity_data(&index16_bool_true(9), &mut t, Some(ALLAY));
+        assert!(!t.is_baby(9), "untracked id must not be marked baby");
+        assert_eq!(t.allay_dance_render(9, 1.0), None, "untracked id must not dance");
     }
 }

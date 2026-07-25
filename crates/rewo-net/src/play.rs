@@ -46,6 +46,10 @@ pub struct PlaySession {
     /// entity events" — correct for tests that never render a warden.
     pub warden_type_id: Option<i32>,
     pub armadillo_type_id: Option<i32>,
+    /// The Allay's protocol type id, resolved once at setup — the client
+    /// disambiguates the polymorphic index-16 BOOLEAN (`DATA_DANCING` vs
+    /// `DATA_BABY_ID`) by it. `None` before setup (nothing routes to dancing).
+    pub allay_type_id: Option<i32>,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
@@ -663,6 +667,7 @@ impl<'a> Connection<'a> {
             entity_push: Vec::new(),
             warden_type_id: None,
             armadillo_type_id: None,
+            allay_type_id: None,
             global_bits,
             dim_types,
             overworld_clock_id,
@@ -1276,26 +1281,16 @@ impl PlaySession {
                     }
                 }
             }
-        } else if id == ids.cb_play_set_entity_data {
-            let mut r = PacketReader::new(body);
-            if let Ok(eid) = r.varint() {
-                let meta = crate::metadata::parse(&mut r);
-                if meta.custom_name.is_some() {
-                    self.world.entities.set_custom_name(eid, meta.custom_name);
-                }
-                if let Some(p) = meta.pose {
-                    self.world.entities.set_pose(eid, p);
-                }
-                if let Some(s) = meta.gesture_state {
-                    self.world.entities.set_gesture_state(eid, s);
-                }
-                if let Some(sz) = meta.size {
-                    self.world.entities.set_size(eid, sz);
-                }
-                if let Some(baby) = meta.baby {
-                    self.world.entities.set_baby(eid, baby);
-                }
-            }
+        } else if crate::route_set_entity_data(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.allay_type_id,
+        ) {
+            // Entity metadata (custom name, pose, gesture state, cube size, and
+            // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
+            // Allay dance counters then advance in `tick_lerp`.
         } else if crate::route_entity_event(
             id,
             body,

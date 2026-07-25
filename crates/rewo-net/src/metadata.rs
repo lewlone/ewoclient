@@ -33,11 +33,16 @@ pub struct EntityMeta {
     /// defines 0..7, LivingEntity 8..14, Mob 15, AbstractCubeMob 16 (and
     /// DATA_POSE=6 cross-checks the count). Only meaningful on cube mobs.
     pub size: Option<i32>,
-    /// Baby flag (index 16, BOOLEAN — `AgeableMob.DATA_BABY_ID` /
-    /// `Zombie.DATA_BABY_ID`, both at the same first-subclass slot). Index
-    /// 16 is polymorphic: INT there is a cube size, BOOLEAN there is baby —
-    /// the serializer type disambiguates.
-    pub baby: Option<bool>,
+    /// Raw index-16 BOOLEAN value — **polymorphic by entity kind**, which the
+    /// byte parser cannot know. The client models two uses of this slot: the
+    /// baby path (`AgeableMob`/`Zombie.DATA_BABY_ID` → baby) and
+    /// `Allay.DATA_DANCING` (→ dancing); both are BOOLEAN (serializer id 8). The
+    /// serializer type separates INT-size from BOOLEAN, but not baby from
+    /// dancing — that needs the kind, so the caller
+    /// ([`crate::route_set_entity_data`]) routes this raw bit to `set_baby` or
+    /// `set_dancing`. This is not a claim that slot 16 is baby-or-dancing for
+    /// every entity — only for the kinds the client renders.
+    pub bool16: Option<bool>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -67,7 +72,7 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
             }
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
             (16, 1) => meta.size = r.varint().ok(), // AbstractCubeMob.ID_SIZE (INT)
-            (16, 8) => meta.baby = r.u8().ok().map(|b| b != 0), // AgeableMob/Zombie DATA_BABY_ID
+            (16, 8) => meta.bool16 = r.u8().ok().map(|b| b != 0), // baby (ageable/zombie) or dancing (allay)
             // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
             // at their shared first-own-field index.
             (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),
@@ -177,18 +182,20 @@ mod tests {
         let mut r = PacketReader::new(&b);
         let m = parse(&mut r);
         assert_eq!(m.size, Some(4));
-        assert_eq!(m.baby, None, "INT at 16 is size, not baby");
+        assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
     }
 
     #[test]
-    fn reads_baby_flag_at_index_16() {
-        // A baby zombie/animal: index 16, BOOLEAN serializer (type 8), true.
+    fn reads_index16_boolean_raw_without_disambiguating() {
+        // Index 16, BOOLEAN serializer (type 8), true. The parser exposes the
+        // raw bit; whether it means baby (ageable/zombie) or dancing (allay) is
+        // the kind-aware caller's decision, not the byte parser's.
         let mut b: Vec<u8> = Vec::new();
-        b.extend_from_slice(&[0x10, 0x08, 0x01]); // idx16 BOOLEAN baby=true
+        b.extend_from_slice(&[0x10, 0x08, 0x01]); // idx16 BOOLEAN = true
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
         let m = parse(&mut r);
-        assert_eq!(m.baby, Some(true));
-        assert_eq!(m.size, None, "BOOLEAN at 16 is baby, not size");
+        assert_eq!(m.bool16, Some(true));
+        assert_eq!(m.size, None, "BOOLEAN at 16 is not an INT size");
     }
 }

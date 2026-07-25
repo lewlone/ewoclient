@@ -155,6 +155,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // the id alone can't name the animation.
     session.warden_type_id = data.entity_types.id_of("minecraft:warden");
     session.armadillo_type_id = data.entity_types.id_of("minecraft:armadillo");
+    // The Allay's type id disambiguates its index-16 `DATA_DANCING` from the
+    // modeled baby path at the same slot (both index 16, both BOOLEAN).
+    session.allay_type_id = data.entity_types.id_of("minecraft:allay");
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(
@@ -449,6 +452,27 @@ fn wanted_gesture(kind: EntityModelKind, pose: u8, state: u8) -> Option<rewo_gpu
     })
 }
 
+/// Resolve an entity's Allay dance render inputs — the production seam shared by
+/// the live collector and the `danceshot` oracle, so the kind gate + the
+/// counter → `(is_spinning, spinning_progress)` → [`rewo_gpu::mobs::AllayDance`]
+/// mapping are the same code the gate proves. `Some` only for an Allay-kind
+/// entity that is currently dancing; every other kind is inert here even if the
+/// entity somehow carried a dance clock.
+pub(crate) fn resolve_allay_dance(
+    kind: EntityModelKind,
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    alpha: f32,
+) -> Option<rewo_gpu::mobs::AllayDance> {
+    (kind == EntityModelKind::Allay)
+        .then(|| entities.allay_dance_render(id, alpha))
+        .flatten()
+        .map(|(is_spinning, spinning_progress)| rewo_gpu::mobs::AllayDance {
+            is_spinning,
+            spinning_progress,
+        })
+}
+
 /// Snapshot every tracked entity into this frame's draw list. `alpha` is
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
 /// everything else gets mauve, sized by the type table. `now` is the
@@ -560,6 +584,10 @@ fn collect_entities<'a>(
                 Some((rewo_gpu::mobs::Gesture::ArmadilloUnroll, age)) => age < 1.3,
                 _ => false,
             };
+        // Allay dance (index-16 `DATA_DANCING` metadata → client counters).
+        // Shared with the `danceshot` oracle so the kind gate + counter mapping
+        // are exercised by the gate and can't regress here silently.
+        let allay_dance = resolve_allay_dance(kind, &session.world.entities, id, alpha);
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
@@ -581,6 +609,7 @@ fn collect_entities<'a>(
             gesture,
             events,
             shell,
+            allay_dance,
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
@@ -2170,6 +2199,22 @@ mod tests {
         assert!(!mesh_output_is_stale(7, 7));
         assert!(mesh_output_is_stale(6, 7));
         assert!(mesh_output_is_stale(u64::MAX, 0));
+    }
+
+    #[test]
+    fn resolve_allay_dance_gates_on_kind() {
+        use rewo_world::entities::{EntityState, EntityTable};
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_dancing(1, true);
+        t.tick_lerp();
+        // The Allay kind resolves the live dance from the counters.
+        assert!(resolve_allay_dance(EntityModelKind::Allay, &t, 1, 1.0).is_some());
+        // A non-Allay kind is inert even though the entity carries a dance clock
+        // — the kind gate must survive the extraction.
+        assert!(resolve_allay_dance(EntityModelKind::Zombie, &t, 1, 1.0).is_none());
+        // No dance entry at all → None regardless of kind.
+        assert!(resolve_allay_dance(EntityModelKind::Allay, &t, 999, 1.0).is_none());
     }
 
     /// The three built-in dimension types, with exactly the fields M16's light

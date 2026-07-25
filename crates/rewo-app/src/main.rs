@@ -8,6 +8,7 @@
 //! and writes a PNG — the self-check harness for machines/agents.
 
 mod bench_cmd;
+mod danceshot_cmd;
 mod demo_cmd;
 mod dimension_check;
 mod dimension_json;
@@ -149,6 +150,12 @@ enum Command {
     /// path and assert the warden attack/sonic and armadillo peek animations
     /// against independent decompiled literals with `--check` (no server, no GPU).
     Eventshot(eventshot_cmd::EventshotArgs),
+    /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
+    /// real packet routing → kind-aware DANCING/BABY disambiguation → client
+    /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
+    /// dance transforms against independent decompiled formulas with `--check`
+    /// (no server, no GPU).
+    Danceshot(danceshot_cmd::DanceshotArgs),
 }
 
 fn main() {
@@ -172,6 +179,7 @@ fn main() {
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
+        Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

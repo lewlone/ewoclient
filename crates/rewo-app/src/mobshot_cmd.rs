@@ -89,6 +89,12 @@ pub struct MobshotArgs {
     /// visibility swap the gestures drive in live play).
     #[arg(long, default_value_t = false)]
     shell: bool,
+    /// Sheet mode: pose the Allay dancing at this `spinningProgress` (0..1) —
+    /// `is_spinning = progress > 0` (so `0` = the swaying pose, a positive value
+    /// = the spin at that progress). Combine with `--time` for the beat phase.
+    /// The `--check` gate never dances (that is `danceshot`'s job).
+    #[arg(long)]
+    dance: Option<f32>,
     /// Sheet mode: fetch a real player skin (a Minecraft username or a raw
     /// texture URL) and render the Player model with it — the headless M7c
     /// verification (`--only player --skin <name>`). Slim/wide is taken
@@ -173,6 +179,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        allay_dance: None,
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,
@@ -527,6 +534,12 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             d.limb_amount = walk_amt;
             d.gesture = gesture;
             d.shell = args.shell;
+            if *k == EntityModelKind::Allay {
+                d.allay_dance = args.dance.map(|spin| rewo_gpu::mobs::AllayDance {
+                    is_spinning: spin > 0.0,
+                    spinning_progress: spin,
+                });
+            }
             if matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
                 if let Some((uv, _)) = player_skin {
                     d.skin_uv = Some(uv);

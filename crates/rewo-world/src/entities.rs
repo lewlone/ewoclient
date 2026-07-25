@@ -52,6 +52,73 @@ impl EntityEvent {
 /// event has never fired for this entity (so its rig contributes nothing).
 type EntityEventStarts = [Option<i64>; EntityEvent::COUNT];
 
+/// Vanilla `Allay` dance loop length (`DANCING_LOOP_DURATION`) — the
+/// spin-then-sway period in ticks.
+const ALLAY_DANCING_LOOP: f32 = 55.0;
+/// Vanilla `Allay` spin sub-window / progress denominator
+/// (`SPINNING_ANIMATION_DURATION`).
+const ALLAY_SPINNING_DURATION: f32 = 15.0;
+
+/// Client-side Allay dance state — the exact counters `Allay.tick()` runs on
+/// the client (`dancingAnimationTicks` / `spinningAnimationTicks` /
+/// `spinningAnimationTicks0`) plus the `DATA_DANCING` metadata flag that gates
+/// them. These are NOT derivable from a single receipt tick (unlike the M17
+/// entity events): `spinning_ticks` ramps *up* while spinning and *down* while
+/// not, clamped to `0..=15`, so its per-tick history is load-bearing. The
+/// model reads `isSpinning()` (a step function of `dancing_ticks`) and
+/// `getSpinningProgress()` (the interpolated `spinning_ticks`).
+#[derive(Clone, Copy, Debug, Default)]
+struct AllayDance {
+    /// `Allay.isDancing()` = the `DATA_DANCING` (index-16 BOOLEAN) metadata.
+    dancing: bool,
+    /// `dancingAnimationTicks` — increments each dancing tick, 0 otherwise;
+    /// `isSpinning()` = `dancing_ticks % 55 < 15`. Held as f32 to mirror
+    /// vanilla's float modulo exactly (it only ever holds integers).
+    dancing_ticks: f32,
+    /// `spinningAnimationTicks` — ramps toward 15 while spinning, toward 0
+    /// otherwise, clamped `0..=15`.
+    spinning_ticks: f32,
+    /// `spinningAnimationTicks0` — the previous tick's `spinning_ticks`, the
+    /// lerp base for `getSpinningProgress(partial)`.
+    spinning_ticks0: f32,
+}
+
+impl AllayDance {
+    /// `dancing_ticks % 55 < 15` — vanilla `Allay.isSpinning()`, read at render
+    /// from the current (post-tick) counter.
+    fn is_spinning(&self) -> bool {
+        self.dancing_ticks.rem_euclid(ALLAY_DANCING_LOOP) < ALLAY_SPINNING_DURATION
+    }
+
+    /// Advance one client tick — a verbatim port of the client branch of
+    /// `Allay.tick()`. `dancing_ticks` increments *before* `is_spinning()`
+    /// reads it (vanilla's statement order), and `spinning_ticks0` snapshots
+    /// the previous value before the ramp.
+    fn tick(&mut self) {
+        if self.dancing {
+            self.dancing_ticks += 1.0;
+            self.spinning_ticks0 = self.spinning_ticks;
+            if self.is_spinning() {
+                self.spinning_ticks += 1.0;
+            } else {
+                self.spinning_ticks -= 1.0;
+            }
+            self.spinning_ticks = self.spinning_ticks.clamp(0.0, ALLAY_SPINNING_DURATION);
+        } else {
+            self.dancing_ticks = 0.0;
+            self.spinning_ticks = 0.0;
+            self.spinning_ticks0 = 0.0;
+        }
+    }
+
+    /// `getSpinningProgress(partial)` = `lerp(partial, ticks0, ticks) / 15`.
+    fn spinning_progress(&self, alpha: f32) -> f32 {
+        let a = alpha.clamp(0.0, 1.0);
+        (self.spinning_ticks0 + (self.spinning_ticks - self.spinning_ticks0) * a)
+            / ALLAY_SPINNING_DURATION
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
     pub uuid: u128,
@@ -176,6 +243,12 @@ pub struct EntityTable {
     sizes: HashMap<i32, i32>,
     /// Baby flag (index 16 BOOLEAN, ageable / zombie mobs). Cleared on removal.
     babies: std::collections::HashSet<i32>,
+    /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
+    /// An entry is created lazily when `set_dancing` is first called (the
+    /// server only sends `DATA_DANCING` once it flips off its `false` default);
+    /// its counters advance each tick in [`Self::tick_lerp`]. Cleared on removal
+    /// AND on (re-)add, so a reused id can't inherit a stale dance clock.
+    dances: HashMap<i32, AllayDance>,
     /// Model-visible entity-event receipt ticks (warden attack/sonic boom,
     /// armadillo peek). Cleared on removal AND on (re-)add, so a reused entity
     /// id can never inherit a previous occupant's animation timing — vanilla's
@@ -188,8 +261,9 @@ impl EntityTable {
         // A fresh entity at this id inherits no stale event timing — the
         // packet stream sends `remove_entities` before reusing an id, but a
         // dropped removal must not leave one warden's attack clock running on
-        // its replacement.
+        // its replacement. The Allay dance clock dies with the entity too.
         self.events.remove(&id);
+        self.dances.remove(&id);
         self.map.insert(id, state);
     }
 
@@ -201,6 +275,7 @@ impl EntityTable {
         self.sizes.remove(&id);
         self.babies.remove(&id);
         self.events.remove(&id);
+        self.dances.remove(&id);
     }
 
     /// Stamp a model-visible entity event's receipt tick — an unconditional
@@ -274,6 +349,27 @@ impl EntityTable {
         self.babies.contains(&id)
     }
 
+    /// Set an Allay's `DATA_DANCING` flag (index-16 BOOLEAN). Creates the dance
+    /// entry on first call and only flips its `dancing` field — vanilla's
+    /// `setDancing` just writes the metadata; the counter reset on a false flag
+    /// happens on the next [`Self::tick_lerp`], exactly like `Allay.tick()`.
+    /// Only the kind-aware router calls this (for the Allay type), so the
+    /// `dances` map holds Allays only.
+    pub fn set_dancing(&mut self, id: i32, dancing: bool) {
+        self.dances.entry(id).or_default().dancing = dancing;
+    }
+
+    /// Render-frame Allay dance inputs: `Some((is_spinning, spinning_progress))`
+    /// iff the entity is currently dancing, else `None`. `is_spinning` is the
+    /// step function `dancing_ticks % 55 < 15`; `spinning_progress` is the
+    /// partial-tick-interpolated `spinning_ticks / 15`. Mirrors the
+    /// `AllayRenderState` fields the model consumes.
+    pub fn allay_dance_render(&self, id: i32, alpha: f32) -> Option<(bool, f32)> {
+        let d = self.dances.get(&id)?;
+        d.dancing
+            .then(|| (d.is_spinning(), d.spinning_progress(alpha)))
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -294,10 +390,15 @@ impl EntityTable {
         self.map.iter().map(|(id, e)| (*id, e))
     }
 
-    /// Advance every entity's interpolation one 20 Hz tick.
+    /// Advance every entity's interpolation one 20 Hz tick, plus the Allay
+    /// dance counters (vanilla `Allay.tick()` runs on the client every tick).
+    /// The `dances` map holds only Allays, so advancing all of them is exact.
     pub fn tick_lerp(&mut self) {
         for e in self.map.values_mut() {
             e.tick();
+        }
+        for d in self.dances.values_mut() {
+            d.tick();
         }
     }
 
@@ -392,6 +493,84 @@ mod tests {
         // not inherit the previous entity's peek clock.
         t.add(7, EntityState::new(1, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(t.event_start(7, EntityEvent::ArmadilloPeek), None);
+    }
+
+    #[test]
+    fn allay_dance_counters_track_vanilla_tick() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        // No dance flag yet → the render helper is None (not dancing).
+        assert_eq!(t.allay_dance_render(1, 1.0), None);
+        // Server sends DATA_DANCING=true; counters have not advanced yet, so
+        // the render helper reports "dancing, at-start" (isSpinning() reads the
+        // pre-increment dancing_ticks=0, so 0 % 55 < 15 → true).
+        t.set_dancing(1, true);
+        assert_eq!(t.allay_dance_render(1, 1.0), Some((true, 0.0)));
+        // Five dancing ticks: dancing_ticks=5, spinning_ticks ramps 0→5,
+        // spinning_ticks0=4 (the previous tick's value).
+        for _ in 0..5 {
+            t.tick_lerp();
+        }
+        let (spinning, prog) = t.allay_dance_render(1, 1.0).unwrap();
+        assert!(spinning, "5 % 55 < 15 → spinning");
+        assert!((prog - 5.0 / 15.0).abs() < 1e-6, "progress @alpha=1 = 5/15: {prog}");
+        // Partial-tick interpolation blends spinning_ticks0=4 → spinning_ticks=5.
+        let half = t.allay_dance_render(1, 0.5).unwrap().1;
+        assert!((half - 4.5 / 15.0).abs() < 1e-6, "progress @alpha=0.5 = 4.5/15: {half}");
+        // Tick 15 crosses out of the spin window (15 % 55 = 15, not < 15), so
+        // spinning flips off and spinning_ticks starts ramping back down.
+        for _ in 5..15 {
+            t.tick_lerp();
+        }
+        let (spinning15, _) = t.allay_dance_render(1, 1.0).unwrap();
+        assert!(!spinning15, "15 % 55 = 15 is NOT < 15 → not spinning");
+        // A full loop later (tick 55) re-enters the spin window.
+        for _ in 15..55 {
+            t.tick_lerp();
+        }
+        assert!(
+            t.allay_dance_render(1, 1.0).unwrap().0,
+            "55 % 55 = 0 < 15 → spinning again"
+        );
+    }
+
+    #[test]
+    fn dance_flag_false_resets_counters_next_tick() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_dancing(1, true);
+        for _ in 0..7 {
+            t.tick_lerp();
+        }
+        assert!(t.allay_dance_render(1, 1.0).is_some());
+        // Flag off: the render helper reports None immediately (isDancing() is
+        // the metadata flag), and the counters zero on the next tick.
+        t.set_dancing(1, false);
+        assert_eq!(t.allay_dance_render(1, 1.0), None, "not dancing → None");
+        t.tick_lerp();
+        // Dancing again from a clean slate — counters restart at 0.
+        t.set_dancing(1, true);
+        assert_eq!(t.allay_dance_render(1, 1.0), Some((true, 0.0)));
+        t.tick_lerp();
+        let (_, prog) = t.allay_dance_render(1, 1.0).unwrap();
+        assert!((prog - 1.0 / 15.0).abs() < 1e-6, "one tick after restart: 1/15, got {prog}");
+    }
+
+    #[test]
+    fn dance_state_clears_on_removal_and_readd() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_dancing(1, true);
+        t.tick_lerp();
+        assert!(t.allay_dance_render(1, 1.0).is_some());
+        t.remove(1);
+        assert_eq!(t.allay_dance_render(1, 1.0), None, "removal clears the dance");
+        // A reused id (dropped despawn, new occupant) must not inherit the clock.
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_dancing(1, true);
+        t.tick_lerp();
+        let (_, prog) = t.allay_dance_render(1, 1.0).unwrap();
+        assert!((prog - 1.0 / 15.0).abs() < 1e-6, "fresh occupant restarts at 1/15, got {prog}");
     }
 
     #[test]

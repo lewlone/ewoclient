@@ -113,6 +113,18 @@ pub enum Anim {
     /// Allay wings: `yRot = ∓π/4 ± (cos(age·20° + pos)·π·0.15 + amt)`,
     /// `xRot = 0.43633·(1 − min(amt/0.3, 1))`.
     AllayWing { left: bool },
+    /// Allay dance ROOT (`AllayModel` `state.isDancing` branch, `this.root`):
+    /// while dancing, `yRot = isSpinning ? 4π·spin : 0`, `zRot =
+    /// cos(danceSpeed)·16°·(1−spin)`, where `danceSpeed = ageInTicks·8° +
+    /// animationSpeed` and `spin = spinningProgress`. Idle → 0 (the whole model
+    /// stays upright). Only the whole-body root carries it, so a spin rotates
+    /// head+body+arms+wings together.
+    AllayRoot,
+    /// Allay dance HEAD (`AllayModel`, `this.head`): while dancing,
+    /// `yRot = cos(danceSpeed)·30°·(1−spin)`, `zRot = cos(danceSpeed)·14°·(1−spin)`
+    /// (xRot stays 0). While NOT dancing it is the ordinary look:
+    /// `xRot = pitch`, `yRot = netHeadYaw` — i.e. `Anim::Head`.
+    AllayHead,
     /// Vex arms: `zRot = ±(π/5 + cos(age·5.5°)·0.1)`.
     VexArm { left: bool },
     /// Vex wings: `yRot = ±(1.0995574 + cos(age·45.836624°)·16.2°)`,
@@ -134,6 +146,18 @@ pub enum Anim {
 }
 
 impl Eq for Anim {}
+
+/// Per-frame Allay dance inputs — the `AllayRenderState` fields the model
+/// consumes, resolved from the client dance counters
+/// (`EntityTable::allay_dance_render`). Present only for a *dancing* Allay;
+/// `None` selects the ordinary head-look / upright-root pose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AllayDance {
+    /// `state.isSpinning` — the step function `dancingAnimationTicks % 55 < 15`.
+    pub is_spinning: bool,
+    /// `state.spinningProgress` — the interpolated `spinningAnimationTicks / 15`.
+    pub spinning_progress: f32,
+}
 
 // ---------------------------------------------------------------------------
 // Keyframe animations (vanilla `AnimationDefinition` rigs)
@@ -2660,21 +2684,33 @@ fn iron_golem() -> Model {
 }
 
 /// `AllayModel`: the vex's friendly cousin — same body plan, upright wings.
+///
+/// A real `root → {head, body → {arms, wings}}` hierarchy (vanilla's exact
+/// `PartDefinition` tree) so the dance's whole-body root rotation
+/// (`Anim::AllayRoot`) propagates to every part and the head's dance/look
+/// (`Anim::AllayHead`) rotates about its own pivot on top. With no dance and a
+/// neutral look this is byte-identical at rest to the old folded model — every
+/// part's composed pivot is the same, so the facelabel gate is unchanged.
 fn allay() -> Model {
     let mut b = ModelBuilder::new();
-    let root = Fold::at([0.0, 23.5, 0.0]);
-    let head = b.part([0.0, 19.51, 0.0], Anim::Head, 1.0);
+    // root (vanilla PartPose.offset(0, 23.5, 0)) — the dance pivot.
+    let root = b.part_named("root", [0.0, 23.5, 0.0], [0.0; 3], Anim::AllayRoot, 1.0, None);
+    // head child (offset(0, -3.99, 0)) — dance tilt while dancing, look otherwise.
+    let head = b.part_named("head", [0.0, -3.99, 0.0], [0.0; 3], Anim::AllayHead, 1.0, Some(root));
     b.cube(head, 0, (0.0, 0.0), [-2.5, -5.0, -2.5], [5.0, 5.0, 5.0], NONE);
-    let body = Fold::at([0.0, -4.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (0.0, 10.0), [-1.5, 0.0, -1.0], [3.0, 4.0, 2.0], 0.0, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (0.0, 16.0), [-1.5, 0.0, -1.0], [3.0, 5.0, 2.0], -0.2, false, &[body, root]);
-    b.cube_f(STATIC_PART, 0, (23.0, 0.0), [-0.75, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, false, &[Fold::at([-1.75, 0.5, 0.0]), body, root]);
-    b.cube_f(STATIC_PART, 0, (23.0, 6.0), [-0.25, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, false, &[Fold::at([1.75, 0.5, 0.0]), body, root]);
-    // Wings hover-flap (allay wing pivots: root+body+(±0.5, 0, 0.6)).
-    let wing_l = b.part([0.5, 19.5, 0.6], Anim::AllayWing { left: true }, 1.0);
-    b.cube(wing_l, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], NONE);
-    let wing_r = b.part([-0.5, 19.5, 0.6], Anim::AllayWing { left: false }, 1.0);
+    // body child (offset(0, -4, 0)) — the arm/wing parent (vanilla's body).
+    let body = b.part_named("body", [0.0, -4.0, 0.0], [0.0; 3], Anim::None, 1.0, Some(root));
+    b.cube(body, 0, (0.0, 10.0), [-1.5, 0.0, -1.0], [3.0, 4.0, 2.0], NONE);
+    b.cube_g(body, 0, (0.0, 16.0), [-1.5, 0.0, -1.0], [3.0, 5.0, 2.0], -0.2, NONE);
+    let arm_r = b.part_named("right_arm", [-1.75, 0.5, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube_g(arm_r, 0, (23.0, 0.0), [-0.75, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, NONE);
+    let arm_l = b.part_named("left_arm", [1.75, 0.5, 0.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube_g(arm_l, 0, (23.0, 6.0), [-0.25, -0.5, -1.0], [1.0, 4.0, 2.0], -0.01, NONE);
+    // Wings hover-flap, children of body (vanilla offset(±0.5, 0, 0.6)).
+    let wing_r = b.part_named("right_wing", [-0.5, 0.0, 0.6], [0.0; 3], Anim::AllayWing { left: false }, 1.0, Some(body));
     b.cube(wing_r, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], NONE);
+    let wing_l = b.part_named("left_wing", [0.5, 0.0, 0.6], [0.0; 3], Anim::AllayWing { left: true }, 1.0, Some(body));
+    b.cube(wing_l, 0, (16.0, 14.0), [0.0, 1.0, 0.0], [0.0, 5.0, 8.0], NONE);
     b.finish(1.0)
 }
 

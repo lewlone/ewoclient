@@ -175,6 +175,10 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     // sonic boom, armadillo peek).
     session.warden_type_id = data.entity_types.id_of("minecraft:warden");
     session.armadillo_type_id = data.entity_types.id_of("minecraft:armadillo");
+    // The Allay's type id disambiguates its index-16 `DATA_DANCING` from the
+    // modeled baby path at the same slot — every production PlaySession consumer
+    // needs it, not just `live_cmd`.
+    session.allay_type_id = data.entity_types.id_of("minecraft:allay");
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     if let (Some(b), false) = (baked.as_ref(), args.no_relight) {
