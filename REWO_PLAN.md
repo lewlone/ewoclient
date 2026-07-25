@@ -1140,9 +1140,32 @@ in §15 and the entry here becomes history.)*
 > **static helper** and `AvatarRenderer:168` calls it. Grep found the
 > assignment; it could not show who called the enclosing method.
 >
-> Carried forward, in the order they unblock things: **item entities**
-> (`ITEM_STACK` serializer + `GROUND` display context), then **block-entity
-> rendering** (chest family first — the most common invisible block).
+> **Both carried items were then closed in the same session** — `37daed9`
+> (item entities) and `5e3b2e1` (chests render), so nothing from M23–M25's
+> planned scope is outstanding.
+>
+> - *Item entities* needed exactly what the correction predicted: the
+>   `ITEM_STACK` serializer (which also forced `metadata::parse` to take the
+>   component ids, since it is the one serializer whose **skip** needs external
+>   data) and `display.ground`. One thing the plan did not predict:
+>   `ItemEntityRenderer` extends `EntityRenderer`, not `LivingEntityRenderer`,
+>   so a ground item has **no** `scale(-1,-1,1)` / `-1.501` flip and needed its
+>   own emitter rather than a flag on the held path. `itemshot` 18 → 28.
+> - *Chest rendering* baked block-entity models into the held-item shape —
+>   quads in 0..16 with their own texture is already what both are — so they
+>   reuse the pool, atlas and UV lookup. The transform is separate for the same
+>   flip reason. `blockentityshot` 21 → 32. Double chests
+>   (`DoubleBlockCombiner` pairing), the lid angle (`block_event`) and the other
+>   ten Invisible types remain, each named in the registry rather than silently
+>   absent.
+>
+> Still open across the whole arc, in rough order of leverage:
+> **`block_event` decoding** (one packet; unblocks chest lids, bells and
+> spawner spin at once), **the remaining ten Invisible block-entity types**
+> (shulker boxes, banners, heads, decorated pots — each already named by the
+> registry), **double-chest pairing** (`DoubleBlockCombiner`), and
+> **world-space text**, which is the single thing standing between the client
+> and legible signs.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
