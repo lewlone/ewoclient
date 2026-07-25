@@ -797,6 +797,7 @@ pub(crate) fn apply_entity_event(
     warden_type_id: Option<i32>,
     armadillo_type_id: Option<i32>,
     tick: i64,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
 ) {
     use rewo_world::entities::EntityEvent;
     let mut r = PacketReader::new(body);
@@ -810,6 +811,14 @@ pub(crate) fn apply_entity_event(
         return;
     };
     let is = |want: Option<i32>| want == Some(type_id);
+    // Event 3 is the death event, and it is **kind-independent** — every
+    // `LivingEntity` handles it. `LivingEntity.handleEntityEvent(3)` plays the
+    // death sound and then, for anything that is not a `Player`, sets health to
+    // zero and calls `die()`. The living gate matters because the switch lives
+    // on `LivingEntity`: a boat or an arrow never reaches it (M24).
+    if event == 3 && classes.is_some_and(|c| c.is_living(type_id)) {
+        entities.kill(eid, classes.is_some_and(|c| c.is_player(type_id)));
+    }
     let mapped = match event {
         4 if is(warden_type_id) => Some(EntityEvent::WardenAttack),
         62 if is(warden_type_id) => Some(EntityEvent::WardenSonicBoom),
@@ -838,9 +847,10 @@ pub fn route_entity_event(
     warden_type_id: Option<i32>,
     armadillo_type_id: Option<i32>,
     tick: i64,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
 ) -> bool {
     if id == ids.cb_play_entity_event {
-        apply_entity_event(body, entities, warden_type_id, armadillo_type_id, tick);
+        apply_entity_event(body, entities, warden_type_id, armadillo_type_id, tick, classes);
         true
     } else {
         false
@@ -1038,6 +1048,13 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(flags) = meta.living_flags {
         if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
             entities.set_living_flags(eid, flags);
+        }
+    }
+    // Slot 9 FLOAT → `LivingEntity.DATA_HEALTH_ID` (M24 death). Same living
+    // gate as slot 8, for the same reason.
+    if let Some(health) = meta.health {
+        if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
+            entities.set_health(eid, health);
         }
     }
     // Slot 15 BYTE → `Mob.DATA_MOB_FLAGS_ID`. Gated on the type actually being
@@ -1574,7 +1591,7 @@ mod entity_event_tests {
     }
 
     fn apply(t: &mut EntityTable, entity: i32, event: i8, tick: i64) {
-        apply_entity_event(&body(entity, event), t, Some(WARDEN), Some(ARMADILLO), tick);
+        apply_entity_event(&body(entity, event), t, Some(WARDEN), Some(ARMADILLO), tick, None);
     }
 
     #[test]
@@ -1637,9 +1654,9 @@ mod entity_event_tests {
     fn a_truncated_body_is_ignored() {
         let mut t = table();
         // Only 3 of the 4 id bytes — the decode must not panic or record.
-        apply_entity_event(&[0, 0, 0], &mut t, Some(WARDEN), Some(ARMADILLO), 10);
+        apply_entity_event(&[0, 0, 0], &mut t, Some(WARDEN), Some(ARMADILLO), 10, None);
         // Full id but no event byte.
-        apply_entity_event(&1i32.to_be_bytes(), &mut t, Some(WARDEN), Some(ARMADILLO), 10);
+        apply_entity_event(&1i32.to_be_bytes(), &mut t, Some(WARDEN), Some(ARMADILLO), 10, None);
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
     }
 
@@ -1650,7 +1667,7 @@ mod entity_event_tests {
         let mut t = table();
         let mut b = body(1, 4);
         b.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-        apply_entity_event(&b, &mut t, Some(WARDEN), Some(ARMADILLO), 33);
+        apply_entity_event(&b, &mut t, Some(WARDEN), Some(ARMADILLO), 33, None);
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(33));
     }
 
@@ -1658,7 +1675,7 @@ mod entity_event_tests {
     fn no_type_ids_configured_means_no_interpretation() {
         // The headless protocol harnesses leave the kind ids unset.
         let mut t = table();
-        apply_entity_event(&body(1, 4), &mut t, None, None, 10);
+        apply_entity_event(&body(1, 4), &mut t, None, None, 10, None);
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
     }
 }

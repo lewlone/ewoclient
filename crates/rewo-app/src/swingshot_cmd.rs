@@ -1315,6 +1315,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         name: None,
         kind,
         yaw: 0.0,
+        death_time: 0.0,
         head_yaw: 0.0,
         pitch: 0.0,
         limb_swing: 7.5,

@@ -83,6 +83,11 @@ pub struct EntityDraw<'a> {
     pub kind: EntityModelKind,
     /// Body yaw (degrees, MC convention) — rotates the whole model.
     pub yaw: f32,
+    /// `LivingEntityRenderer`'s `state.deathTime` — the partial-tick-interpolated
+    /// death clock, `0` for a living entity (M24). Drives the topple in
+    /// [`death_flip_degrees`], applied between the model transform and the body
+    /// yaw exactly where `setupRotations` runs it.
+    pub death_time: f32,
     /// Head yaw (degrees, absolute). The head part rotates about its own
     /// pivot by the net `head_yaw − yaw` (vanilla `netHeadYaw`); equal to
     /// `yaw` leaves the head aligned with the body.
@@ -895,17 +900,24 @@ impl EntityPass {
             }
             let base = d.color;
             let [light_r, light_g, light_b] = d.light;
+            // The death topple is a `LivingEntityRenderer` rotation, not a
+            // model one, so it applies to the capsule fallback exactly as it
+            // does to a real model. The capsule is built in entity-local
+            // metres with y in 0..1 and xz in ±0.5, so the roll is taken about
+            // the feet — which is where `setupRotations` rotates, the whole
+            // model hanging off the entity origin (M24).
+            let (sr, cr) = death_roll(d).sin_cos();
             for (p, n) in &self.capsule {
                 if verts.len() >= MAX_VERTS {
                     break;
                 }
                 let shade = 0.55 + 0.45 * (n[0] * sun[0] + n[1] * sun[1] + n[2] * sun[2]).max(0.0);
+                // Scale to metres first, so the rotation is rigid rather than
+                // shearing a non-cubic capsule.
+                let (lx, ly, lz) = (p[0] * d.width, p[1] * d.height, p[2] * d.width);
+                let (lx, ly) = (lx * cr - ly * sr, lx * sr + ly * cr);
                 verts.push(Vertex {
-                    pos: [
-                        d.pos[0] + p[0] * d.width,
-                        d.pos[1] + p[1] * d.height,
-                        d.pos[2] + p[2] * d.width,
-                    ],
+                    pos: [d.pos[0] + lx, d.pos[1] + ly, d.pos[2] + lz],
                     uv: self.white_uv,
                     color: [base[0] * shade, base[1] * shade, base[2] * shade, 1.0],
                     light_hurt: [light_r, light_g, light_b, hurt],
@@ -1026,6 +1038,11 @@ impl EntityPass {
                 // The same model -> entity-local -> world chain the mob quads
                 // take, so an item cannot drift from the arm holding it.
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                // The same death topple the body takes — `setupRotations`
+                // rotates the entity, and `ItemInHandLayer` hangs off the arm
+                // *inside* that rotation, so a corpse's sword falls with it.
+                let (sr, cr) = death_roll(d).sin_cos();
+                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
                 let x = e[0] * ct + e[2] * st;
                 let z = -e[0] * st + e[2] * ct;
                 p4[i] = [
@@ -1057,6 +1074,13 @@ impl EntityPass {
     ) {
         let theta = (180.0 - d.yaw).to_radians();
         let (st, ct) = theta.sin_cos();
+        // M24 death topple. `LivingEntityRenderer.setupRotations` pushes
+        // `Axis.ZP.rotationDegrees(fall * getFlipDegrees())` *after* the body
+        // yaw, and `submit` then pushes `scale(-1,-1,1)` and the -1.501
+        // translate. A PoseStack transforms the coordinate system, so a point
+        // runs that chain in reverse: model transform, then this roll, then the
+        // yaw — which is precisely the seam between `e` and the rotY below.
+        let (sr, cr) = death_roll(d).sin_cos();
         let ctx = AnimCtx {
             pitch: d.pitch.to_radians(),
             // Vanilla head yaw is net-of-body (`netHeadYaw`), rotated about
@@ -1167,6 +1191,9 @@ impl EntityPass {
                 // model → entity local (px): scale(−1,−1,1) after the
                 // −1.501-block translate.
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                // rotZ(fall · flipDegrees) — the death topple, identity while
+                // alive because `death_roll` is then exactly 0.
+                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
                 // rotY(180° − yaw).
                 let x = e[0] * ct + e[2] * st;
                 let z = -e[0] * st + e[2] * ct;
@@ -2146,6 +2173,51 @@ fn apply_pose_effect(
 /// `Mth.lerp(delta, start, end)` — `start + delta * (end - start)`.
 fn lerp(delta: f32, start: f32, end: f32) -> f32 {
     start + delta * (end - start)
+}
+
+/// `LivingEntityRenderer.getFlipDegrees()` — the angle a dead entity topples
+/// through, in degrees.
+///
+/// 90 by default; exactly three renderers override it, and all three answer
+/// 180 because their models are already lying flat and roll right over.
+/// Written as an exhaustive-by-listing match rather than a default so that a
+/// mob added later cannot silently inherit an unverified 90.
+pub fn death_flip_degrees(kind: mobs::EntityModelKind) -> f32 {
+    use mobs::EntityModelKind as K;
+    match kind {
+        // `SpiderRenderer`, `CaveSpider` (a `SpiderRenderer`),
+        // `SilverfishRenderer`, `EndermiteRenderer`.
+        K::Spider | K::CaveSpider | K::Silverfish | K::Endermite => 180.0,
+        _ => 90.0,
+    }
+}
+
+/// The death topple angle in radians:
+///
+/// ```text
+/// float fall = (state.deathTime - 1.0F) / 20.0F * 1.6F;
+/// fall = Mth.sqrt(fall);
+/// if (fall > 1.0F) fall = 1.0F;
+/// poseStack.mulPose(Axis.ZP.rotationDegrees(fall * this.getFlipDegrees()));
+/// ```
+///
+/// Two details are worth not smoothing over. `deathTime` is guarded at `> 0`
+/// by the extractor, so the first dying frame feeds `1 + partialTicks` and the
+/// numerator starts at `partialTicks` — the topple begins from zero rather
+/// than jumping. And `Mth.sqrt` of a *negative* argument is NaN, which cannot
+/// happen here for the same reason: the guard keeps the numerator ≥ 0.
+fn death_roll(d: &EntityDraw<'_>) -> f32 {
+    death_roll_for(d.kind, d.death_time)
+}
+
+/// [`death_roll`] by its two real inputs, so the gate can drive the production
+/// curve without building a whole [`EntityDraw`].
+pub fn death_roll_for(kind: mobs::EntityModelKind, death_time: f32) -> f32 {
+    if death_time <= 0.0 {
+        return 0.0;
+    }
+    let fall = (((death_time - 1.0) / 20.0 * 1.6).max(0.0)).sqrt().min(1.0);
+    (fall * death_flip_degrees(kind)).to_radians()
 }
 
 /// `AnimationUtils.bobModelPart(part, ageInTicks, scale)`:

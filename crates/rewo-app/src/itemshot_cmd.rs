@@ -323,6 +323,7 @@ fn check_render(
             name: None,
             kind: EntityModelKind::Player,
             yaw: 0.0,
+            death_time: 0.0,
             head_yaw: 0.0,
             pitch: 0.0,
             limb_swing: 0.0,

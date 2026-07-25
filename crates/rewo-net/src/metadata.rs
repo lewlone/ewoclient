@@ -36,6 +36,14 @@ pub struct EntityMeta {
     /// never sent; `onSyncedDataUpdated` reconstructs it the moment this bit
     /// flips on, from the held item's `getUseDuration`.
     pub living_flags: Option<u8>,
+    /// `LivingEntity.DATA_HEALTH_ID` — index 9, **FLOAT** (M24 death).
+    ///
+    /// The slot right after the flags byte, and pinned by the same counting
+    /// argument: `Entity` owns 0..7, `LivingEntity` declares the flags at 8 and
+    /// health at 9. `isDeadOrDying()` is `getHealth() <= 0 || dead`, so this is
+    /// what starts the death clock for an entity the client watches die rather
+    /// than being told about.
+    pub health: Option<f32>,
     /// Mob gesture state (index 17 on sniffer/armadillo/copper golem —
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
@@ -116,6 +124,11 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
             // BYTE at 8 = `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, the first
             // LivingEntity-owned slot. Unambiguous: Entity owns 0..7.
             (8, 0) => meta.living_flags = r.u8().ok(),
+            // FLOAT at 9 = `LivingEntity.DATA_HEALTH_ID`. Same counting
+            // argument as index 8, and the serializer narrows it further —
+            // a direct `Entity` subclass would have to claim slot 9 with a
+            // FLOAT to collide, which the caller's living gate rules out.
+            (9, 3) => meta.health = r.f32().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

@@ -310,6 +310,7 @@ fn warden_event_deltas(
         Some(warden_tid()),
         Some(armadillo_tid()),
         START_TICK,
+        None,
     );
     let (dtick, alpha) = split_age(age);
     let mut gestures = GestureTracker::default();
@@ -362,6 +363,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             10,
+            None,
         );
         let got = t.event_start(1, EntityEvent::WardenAttack);
         c.record(
@@ -381,6 +383,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             11,
+            None,
         );
         let got = t.event_start(1, EntityEvent::WardenSonicBoom);
         c.record(
@@ -400,6 +403,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             12,
+            None,
         );
         let got = t.event_start(2, EntityEvent::ArmadilloPeek);
         c.record(
@@ -421,6 +425,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             20,
+            None,
         );
         let got = t.event_start(1, EntityEvent::WardenAttack);
         c.record(
@@ -441,6 +446,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             21,
+            None,
         );
         let got = t.event_start(999, EntityEvent::WardenAttack);
         c.record(
@@ -463,6 +469,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             22,
+            None,
         );
         route_entity_event(
             ev,
@@ -472,6 +479,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             22,
+            None,
         );
         let a = t.event_start(2, EntityEvent::WardenAttack);
         let p = t.event_start(1, EntityEvent::ArmadilloPeek);
@@ -493,6 +501,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             23,
+            None,
         );
         let a = t.event_start(1, EntityEvent::WardenAttack);
         let s = t.event_start(1, EntityEvent::WardenSonicBoom);
@@ -515,6 +524,7 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             24,
+            None,
         );
         let a = t.event_start(1, EntityEvent::WardenAttack);
         let s = t.event_start(1, EntityEvent::WardenSonicBoom);
@@ -541,6 +551,7 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, ev: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             10,
+            None,
         );
         route_entity_event(
             ev,
@@ -550,6 +561,7 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, ev: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             55,
+            None,
         );
         let got = t.event_start(1, EntityEvent::WardenAttack);
         c.record(
@@ -570,6 +582,7 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, ev: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             30,
+            None,
         );
         let before = t.event_start(1, EntityEvent::WardenAttack);
         t.remove(1);
@@ -593,6 +606,7 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, ev: i32) {
             Some(warden_tid()),
             Some(armadillo_tid()),
             40,
+            None,
         );
         let before = t.event_start(1, EntityEvent::WardenAttack);
         add(&mut t, 1, warden_tid());
@@ -769,6 +783,7 @@ fn check_roar_ownership(c: &mut Checker, ids: &Ids, ev: i32) {
         Some(warden_tid()),
         Some(armadillo_tid()),
         105,
+        None,
     );
     let (roar1, ev1) = resolve_mob_anim(
         EntityModelKind::Warden,
@@ -893,6 +908,7 @@ fn check_armadillo_scared(c: &mut Checker, ids: &Ids, ev: i32) {
         Some(warden_tid()),
         Some(armadillo_tid()),
         START_TICK + 5,
+        None,
     );
     let (g_restart, _) = resolve_mob_anim(
         EntityModelKind::Armadillo,

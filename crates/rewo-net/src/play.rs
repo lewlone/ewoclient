@@ -1368,6 +1368,7 @@ impl PlaySession {
             self.warden_type_id,
             self.armadillo_type_id,
             self.ticks as i64,
+            self.entity_classes.as_deref(),
         ) {
             // Model-visible entity events (warden attack/sonic boom, armadillo
             // peek) were stamped with the current tick — the renderer measures

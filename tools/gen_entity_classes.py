@@ -112,6 +112,13 @@ ANCESTRY_SETS = [
         "that run `IllagerModel.setupAnim`'s arm-pose switch rather than the",
         "humanoid/undead rigs.",
     ]),
+    ("PLAYER", "Player", [
+        "Registry names whose class descends from `Player`. Death entity-event 3",
+        "runs `if (!(this instanceof Player)) { setHealth(0); die(...); }`, so a",
+        "player must be excluded from the client-side kill. `Mannequin` shares",
+        "the `Avatar` base but is NOT a `Player`, which is exactly the",
+        "distinction a hand-written 'is it the player type id' check would miss.",
+    ]),
 ]
 
 

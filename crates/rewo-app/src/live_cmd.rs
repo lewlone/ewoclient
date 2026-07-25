@@ -1042,6 +1042,8 @@ fn collect_entities<'a>(
             },
             kind,
             yaw: e.yaw,
+            // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
+            death_time: session.world.entities.death_state(id).render_death_time(alpha),
             head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
             pitch: e.pitch,
             limb_swing,
@@ -1054,7 +1056,9 @@ fn collect_entities<'a>(
             arm_poses,
             mob,
             // M21: `hasRedOverlay` — the damage flash.
-            hurt: session.world.entities.hurt_state(id).has_red_overlay(),
+            // `hasRedOverlay = hurtTime > 0 || deathTime > 0` — the whole
+            // disjunction as of M24; M21 shipped only the first term.
+            hurt: session.world.entities.has_red_overlay(id),
             // M22: what each arm is holding.
             held: resolve_held_items(&session.world.entities, id, item_names),
             skin_uv: player_skin.map(|ps| ps.uv),

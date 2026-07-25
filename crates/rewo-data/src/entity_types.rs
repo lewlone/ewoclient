@@ -143,6 +143,9 @@ pub struct EntityClasses {
     spellcaster: std::collections::HashSet<i32>,
     /// `AbstractIllager` descendants — the `IllagerModel` arm-pose switch.
     illager: std::collections::HashSet<i32>,
+    /// `Player` descendants — excluded from death entity-event 3's
+    /// client-side `setHealth(0) + die()` (M24).
+    player: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -183,6 +186,7 @@ impl EntityClasses {
         let raider = resolve_set(table::RAIDER, "raider")?;
         let spellcaster = resolve_set(table::SPELLCASTER_ILLAGER, "spellcaster")?;
         let illager = resolve_set(table::ILLAGER, "illager")?;
+        let player = resolve_set(table::PLAYER, "player")?;
         // A swing-ticking type that is not living would mean the generator's
         // own invariant broke between generation and resolution.
         if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
@@ -214,6 +218,20 @@ impl EntityClasses {
                 "entity_classes: type {bad} is a raider but not a mob"
             ));
         }
+        // A `Player` is a `LivingEntity` but never a `Mob` — the Avatar branch
+        // of the hierarchy. Both directions are asserted because the death
+        // event's exclusion depends on the set being neither empty nor
+        // accidentally widened to every humanoid.
+        if let Some(bad) = player.iter().find(|id| !living.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a player but not living"
+            ));
+        }
+        if let Some(bad) = player.iter().find(|id| mob.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a player and a mob"
+            ));
+        }
         Ok(Self {
             living,
             swing_ticking,
@@ -221,6 +239,7 @@ impl EntityClasses {
             raider,
             spellcaster,
             illager,
+            player,
         })
     }
 
@@ -239,6 +258,7 @@ impl EntityClasses {
             raider: Default::default(),
             spellcaster: Default::default(),
             illager: Default::default(),
+            player: Default::default(),
         }
     }
 
@@ -258,6 +278,7 @@ impl EntityClasses {
             raider: raider.iter().copied().collect(),
             spellcaster: spellcaster.iter().copied().collect(),
             illager: illager.iter().copied().collect(),
+            player: Default::default(),
         }
     }
 
@@ -283,6 +304,16 @@ impl EntityClasses {
     /// switch instead of the humanoid/undead rigs.
     pub fn is_illager(&self, type_id: i32) -> bool {
         self.illager.contains(&type_id)
+    }
+
+    /// `entity instanceof Player` — the exclusion in death entity-event 3's
+    /// `if (!(this instanceof Player)) { setHealth(0); die(...); }`.
+    ///
+    /// A set rather than an equality against the player type id: `Mannequin`
+    /// shares the `Avatar` base and is *not* a `Player`, so the distinction is
+    /// a hierarchy question the machine extractor answers.
+    pub fn is_player(&self, type_id: i32) -> bool {
+        self.player.contains(&type_id)
     }
 
     /// `entity instanceof LivingEntity`.

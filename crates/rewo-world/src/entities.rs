@@ -509,6 +509,10 @@ pub struct EntityTable {
     /// `LivingEntity` that never sent it has the `0` default, i.e. not using.
     /// Cleared on removal, so a reused id cannot inherit a use clock.
     uses: HashMap<i32, UseState>,
+    /// Death state (index 9 FLOAT health, plus entity-event 3) — M24. Absent
+    /// means `DeathState::ALIVE`, which is exact: `entityData.define` seeds
+    /// health at 1.0. Cleared on removal.
+    deaths: HashMap<i32, DeathState>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -628,11 +632,71 @@ impl UseState {
 }
 
 impl HurtState {
-    /// `LivingEntityRenderer`: `state.hasRedOverlay = entity.hurtTime > 0 ||
-    /// entity.deathTime > 0`. Rewo does not model `deathTime` (the death
-    /// animation is its own feature), so only the first term applies.
+    /// The *hurt* half of `LivingEntityRenderer`'s
+    /// `state.hasRedOverlay = entity.hurtTime > 0 || entity.deathTime > 0`.
+    ///
+    /// M21 shipped only this term because `deathTime` was unmodelled; M24 adds
+    /// the other one. The two live on different state, so the disjunction is
+    /// assembled by the caller ([`EntityTable::has_red_overlay`]) rather than
+    /// here — this method deliberately answers only what it can see.
     pub fn has_red_overlay(self) -> bool {
         self.hurt_time > 0
+    }
+}
+
+/// `LivingEntity`'s death state (M24) — the client's own death clock.
+///
+/// Like the item-use clock, `deathTime` is **not** synchronised: the server
+/// sends the entity's health (or a death entity-event), and every client counts
+/// the 20 ticks itself. `LivingEntity.tick` runs
+/// `if (isDeadOrDying() && level().shouldTickDeath(this)) tickDeath();`, and
+/// `tickDeath` is just `this.deathTime++` plus a server-side removal at 20.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeathState {
+    /// `LivingEntity.getHealth()` — `DATA_HEALTH_ID`, metadata index 9.
+    /// `1.0` is the `entityData.define` default, which is what an entity that
+    /// has not sent health yet reads as.
+    pub health: f32,
+    /// `LivingEntity.dead`, set by `die()`. Entity-event 3 calls it on the
+    /// client for every non-player, so a mob can be dying with health that has
+    /// not been re-sent.
+    pub dead: bool,
+    /// `LivingEntity.deathTime`, counted up locally once dying.
+    pub death_time: i32,
+}
+
+impl DeathState {
+    /// The state of an entity that has sent nothing: `entityData.define(
+    /// DATA_HEALTH_ID, 1.0F)`, so **not** dying. A `Default` of `0.0` health
+    /// would make every freshly-spawned entity read as dead.
+    pub const ALIVE: DeathState = DeathState {
+        health: 1.0,
+        dead: false,
+        death_time: 0,
+    };
+
+    /// `LivingEntity.isDeadOrDying()` — `getHealth() <= 0.0F || this.dead`.
+    pub fn is_dead_or_dying(self) -> bool {
+        self.health <= 0.0 || self.dead
+    }
+
+    /// `LivingEntityRenderer`:
+    /// `state.deathTime = entity.deathTime > 0 ? entity.deathTime + partialTicks : 0`.
+    ///
+    /// Note the guard is on the **integer** count, so the first rendered frame
+    /// after `tickDeath` sees `1 + alpha`, never a fractional value below 1.
+    pub fn render_death_time(self, alpha: f32) -> f32 {
+        if self.death_time > 0 {
+            self.death_time as f32 + alpha
+        } else {
+            0.0
+        }
+    }
+}
+
+impl Default for DeathState {
+    fn default() -> Self {
+        DeathState::ALIVE
     }
 }
 
@@ -739,6 +803,7 @@ impl EntityTable {
         self.mob_state.remove(&id);
         self.hurts.remove(&id);
         self.uses.remove(&id);
+        self.deaths.remove(&id);
         self.clear_swing(id);
     }
 
@@ -843,6 +908,76 @@ impl EntityTable {
         let d = self.dances.get(&id)?;
         d.dancing
             .then(|| (d.is_spinning(), d.spinning_progress(alpha)))
+    }
+
+    // -- death (M24) ---------------------------------------------------------
+
+    /// Apply `LivingEntity.DATA_HEALTH_ID` (metadata index 9, FLOAT).
+    ///
+    /// Vanilla's setter clamps to `[0, getMaxHealth()]`, but that clamp is on
+    /// the *writing* side (`setHealth`); what arrives over the wire is the
+    /// already-clamped value, so it is stored as sent. Only the sign matters
+    /// here: `isDeadOrDying()` tests `<= 0`.
+    pub fn set_health(&mut self, id: i32, health: f32) {
+        self.deaths.entry(id).or_default().health = health;
+    }
+
+    /// `LivingEntity.handleEntityEvent(3)` — the death event.
+    ///
+    /// ```text
+    /// case 3:
+    ///    <play the death sound>
+    ///    if (!(this instanceof Player)) { this.setHealth(0.0F); this.die(...); }
+    /// ```
+    ///
+    /// The player exclusion is vanilla's, not a simplification: a dying player
+    /// keeps whatever health the server last sent and never gets `dead` set by
+    /// this path. The sound is not modelled (Rewo has no audio), so the two
+    /// model-visible halves are what this applies.
+    pub fn kill(&mut self, id: i32, is_player: bool) {
+        if is_player {
+            return;
+        }
+        let st = self.deaths.entry(id).or_default();
+        st.health = 0.0;
+        // `die()` early-returns when already dead, so a repeated event cannot
+        // restart anything — and `deathTime` is deliberately left alone, which
+        // is why a second event does not rewind the topple.
+        st.dead = true;
+    }
+
+    /// `LivingEntity.tick`: `if (isDeadOrDying() && level().shouldTickDeath(this))
+    /// tickDeath();`, and `tickDeath` is `this.deathTime++`.
+    ///
+    /// **`shouldTickDeath` is not modelled and is treated as true.** On a client
+    /// it is a simulation-distance test — `entity.chunkPosition()
+    /// .getChessboardDistance(player.chunkPosition()) <= serverSimulationDistance`
+    /// — and Rewo does not retain the login packet's simulation distance. The
+    /// consequence is bounded and worth stating: an entity dying *outside* the
+    /// server's simulation distance would topple here and stand still in
+    /// vanilla. Inside it, which is every entity close enough to look at, the
+    /// two agree.
+    fn tick_deaths(&mut self) {
+        for st in self.deaths.values_mut() {
+            if st.is_dead_or_dying() {
+                st.death_time += 1;
+            }
+        }
+    }
+
+    /// The entity's death state. Absent is [`DeathState::ALIVE`].
+    pub fn death_state(&self, id: i32) -> DeathState {
+        self.deaths.get(&id).copied().unwrap_or_default()
+    }
+
+    /// `LivingEntityRenderer`:
+    /// `state.hasRedOverlay = entity.hurtTime > 0 || entity.deathTime > 0`.
+    ///
+    /// The whole disjunction, assembled from the two clocks that own its
+    /// terms. M21 shipped the first; this is the milestone that closes the
+    /// exclusion it stated.
+    pub fn has_red_overlay(&self, id: i32) -> bool {
+        self.hurt_state(id).has_red_overlay() || self.death_state(id).death_time > 0
     }
 
     // -- item use (M23) ------------------------------------------------------
@@ -1220,6 +1355,7 @@ impl EntityTable {
             d.tick();
         }
         self.tick_uses();
+        self.tick_deaths();
         self.tick_swings();
         // `LivingEntity.baseTick`: `if (this.hurtTime > 0) this.hurtTime--;`
         // The entry is dropped once it reaches 0 so an entity that has healed
@@ -1984,6 +2120,45 @@ mod m21_hurt_tests {
             UseState::default(),
             "a reused id must not inherit a use clock"
         );
+    }
+
+    #[test]
+    fn health_alone_starts_the_death_clock() {
+        // `isDeadOrDying()` is `getHealth() <= 0 || dead`, so a health update
+        // is enough — the client does not need the death entity-event.
+        let mut t = t();
+        t.set_health(1, 0.0);
+        assert!(t.death_state(1).is_dead_or_dying());
+        assert!(!t.death_state(1).dead, "health alone must not set `dead`");
+        t.tick_lerp();
+        t.tick_lerp();
+        assert_eq!(t.death_state(1).death_time, 2);
+    }
+
+    #[test]
+    fn healing_back_above_zero_stops_the_clock_where_it_stood() {
+        // Vanilla never rewinds `deathTime`; it simply stops incrementing when
+        // the entity is no longer dying. Worth pinning because "reset on heal"
+        // is the intuitive-but-wrong behaviour.
+        let mut t = t();
+        t.set_health(1, 0.0);
+        t.tick_lerp();
+        t.tick_lerp();
+        t.set_health(1, 5.0);
+        t.tick_lerp();
+        assert_eq!(t.death_state(1).death_time, 2);
+        assert!(!t.death_state(1).is_dead_or_dying());
+    }
+
+    #[test]
+    fn the_death_event_survives_a_health_update() {
+        // `die()` sets `dead`, which `isDeadOrDying()` ORs in — so a server
+        // that re-sends full health after the death event does not resurrect
+        // the corpse.
+        let mut t = t();
+        t.kill(1, false);
+        t.set_health(1, 20.0);
+        assert!(t.death_state(1).is_dead_or_dying(), "`dead` is sticky");
     }
 
     #[test]
