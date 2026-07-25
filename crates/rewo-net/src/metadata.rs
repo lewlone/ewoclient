@@ -24,6 +24,18 @@ pub struct EntityMeta {
     /// LONG_JUMPING, DYING, CROAKING, USING_TONGUE, SITTING, ROARING,
     /// SNIFFING, EMERGING, DIGGING, SLIDING, SHOOTING, INHALING.
     pub pose: Option<u8>,
+    /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS` — index 8, **BYTE** (M23
+    /// item-use state). Bit `1` is `isUsingItem()`, bit `2` selects the hand
+    /// (`getUsedItemHand()` → set means OFF_HAND), bit `4` is auto-spin-attack.
+    ///
+    /// Index 8 is exact and needs no kind gate: `Entity` defines 0..7 and this
+    /// is the *first* `LivingEntity` slot (`LivingEntity:179`), so nothing else
+    /// can claim it — the same counting argument that pins `DATA_POSE` to 6.
+    ///
+    /// **This one bit is the whole M23 unlock.** `useItemRemainingTicks` is
+    /// never sent; `onSyncedDataUpdated` reconstructs it the moment this bit
+    /// flips on, from the held item's `getUseDuration`.
+    pub living_flags: Option<u8>,
     /// Mob gesture state (index 17 on sniffer/armadillo/copper golem —
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
@@ -101,6 +113,9 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
                 }
             }
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
+            // BYTE at 8 = `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, the first
+            // LivingEntity-owned slot. Unambiguous: Entity owns 0..7.
+            (8, 0) => meta.living_flags = r.u8().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

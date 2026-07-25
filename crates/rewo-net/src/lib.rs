@@ -1030,6 +1030,16 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_baby(eid, b);
         }
     }
+    // Slot 8 BYTE → `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (M23 item use).
+    // Gated on the type actually being a `LivingEntity`: `Entity` owns 0..7, so
+    // slot 8 is the *first* slot any direct subclass may claim — an
+    // `AbstractArrow` puts its own flags byte there with the same serializer,
+    // and bit 1 there does not mean "using an item".
+    if let Some(flags) = meta.living_flags {
+        if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
+            entities.set_living_flags(eid, flags);
+        }
+    }
     // Slot 15 BYTE → `Mob.DATA_MOB_FLAGS_ID`. Gated on the type actually being
     // a `Mob`: an `ArmorStand` puts unrelated client flags at the same index
     // with the same serializer, and bit 2 there does not mean left-handed.
@@ -1216,10 +1226,22 @@ pub(crate) fn apply_set_equipment(
             let item = match slot {
                 WireSlot::Empty => HandItem::Empty,
                 WireSlot::Stack(s) => match item_stack::resolve_swing(&s, &data.prototypes) {
-                    SwingResolution::Exact(swing) => HandItem::Held(HeldItem {
-                        item_id: s.item_id,
-                        swing,
-                    }),
+                    // A stack whose swing resolves has a walked patch and a
+                    // registered item, which is exactly what `resolve_use`
+                    // needs too — so the `None` arm below is unreachable in
+                    // practice and is still written as a suppression rather
+                    // than a default, because "unreachable" is not "impossible".
+                    SwingResolution::Exact(swing) => {
+                        match item_stack::resolve_use(&s, &data.use_profiles) {
+                            Some(use_profile) => HandItem::Held(HeldItem {
+                                item_id: s.item_id,
+                                swing,
+                                use_profile,
+                                charged: s.charged.is_charged(),
+                            }),
+                            None => HandItem::Unknown,
+                        }
+                    }
                     SwingResolution::Unknown(why) => {
                         warn_unknown_swing(s.item_id, why);
                         HandItem::Unknown
@@ -1784,10 +1806,12 @@ mod animate_tests {
         let comps = DataComponentIds {
             swing_animation: 40,
             damage: 3,
+            charged_projectiles: 7,
         };
         let data = super::item_stack::SwingWireData {
             prototypes: unreachable_prototypes(),
             components: comps,
+            use_profiles: unreachable_use_profiles(),
         };
         apply_set_equipment(&equipment_body(5, 0, 949), &mut t, &data, Some(&classes()));
         assert_eq!(t.hand_item(5, InteractionHand::MainHand), HandItem::Empty);
@@ -1804,6 +1828,13 @@ mod animate_tests {
         let items = rewo_data::items::Items::load(&paths.registries_json())
             .expect("registries.json for the equipment gate test");
         rewo_data::swing_anim::SwingAnimations::resolve(&items).expect("prototypes")
+    }
+
+    fn unreachable_use_profiles() -> rewo_data::use_item::UseProfiles {
+        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+        let items = rewo_data::items::Items::load(&paths.registries_json())
+            .expect("registries.json for the equipment gate test");
+        rewo_data::use_item::UseProfiles::resolve(&items).expect("use profiles")
     }
 
     /// A one-slot `ClientboundSetEquipmentPacket` body with a plain stack.

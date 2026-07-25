@@ -12,13 +12,17 @@
 use std::collections::HashMap;
 
 use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType};
+use rewo_data::use_item::{ItemUseAnimation, UseProfile};
 
 /// Vanilla's interpolation step count for tracked entities.
 const LERP_STEPS: u32 = 3;
 
 /// `net.minecraft.world.InteractionHand`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InteractionHand {
+    /// The enum's first constant, and what `getUsedItemHand()` returns when the
+    /// flags byte's bit 2 is clear.
+    #[default]
     MainHand,
     OffHand,
 }
@@ -50,6 +54,15 @@ pub struct HeldItem {
     /// `ItemStack.getSwingAnimation()` — the prototype value from the item id,
     /// or a `DataComponentPatch` override when the server sent one.
     pub swing: SwingAnimation,
+    /// `getUseDuration()` / `getUseAnimation()`, resolved from the item id
+    /// (M23). Drives the client-side use clock and the eight use-driven arm
+    /// poses.
+    pub use_profile: UseProfile,
+    /// `CrossbowItem.isCharged(stack)` — the patch's
+    /// `minecraft:charged_projectiles` list is non-empty. The sole gate on
+    /// `ArmPose::CrossbowHold`, and the one held-item property that comes from
+    /// the *stack* rather than the item id.
+    pub charged: bool,
 }
 
 /// What a hand holds, including the case where the wire said something this
@@ -88,6 +101,37 @@ impl HandItem {
     pub fn held(self) -> Option<HeldItem> {
         match self {
             HandItem::Held(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// `getItemInHand(hand)`'s use profile, or `None` when unknowable.
+    ///
+    /// The empty hand answers [`UseProfile::UNUSABLE`], which is exact:
+    /// `ItemStack.EMPTY` carries no components, so `Item.getUseDuration`'s
+    /// final `else` returns 0 and `getUseAnimation`'s returns `NONE`.
+    pub fn use_profile(self) -> Option<UseProfile> {
+        match self {
+            HandItem::Empty => Some(UseProfile::UNUSABLE),
+            HandItem::Held(i) => Some(i.use_profile),
+            HandItem::Unknown => None,
+        }
+    }
+
+    /// `CrossbowItem.isCharged(getItemInHand(hand))`. An empty hand holds no
+    /// crossbow, and an unknowable stack must not be claimed charged.
+    pub fn is_charged(self) -> bool {
+        matches!(self, HandItem::Held(i) if i.charged)
+    }
+
+    /// The item id, for `ItemStack.isSameItem` — which compares only the item,
+    /// not the components. `None` covers both the empty stack (`Items.AIR`) and
+    /// the unresolvable one, which `updatingUsingItem` must treat as "not the
+    /// same as what I started using": that is the direction that stops use
+    /// rather than inventing a countdown.
+    pub fn same_item_key(self) -> Option<i32> {
+        match self {
+            HandItem::Held(i) => Some(i.item_id),
             _ => None,
         }
     }
@@ -460,6 +504,11 @@ pub struct EntityTable {
     sizes: HashMap<i32, i32>,
     /// Baby flag (index 16 BOOLEAN, ageable / zombie mobs). Cleared on removal.
     babies: std::collections::HashSet<i32>,
+    /// Item-use state (index 8 BYTE, `DATA_LIVING_ENTITY_FLAGS`) — M23. An
+    /// entry exists only once the flags byte has been seen, which is exact: a
+    /// `LivingEntity` that never sent it has the `0` default, i.e. not using.
+    /// Cleared on removal, so a reused id cannot inherit a use clock.
+    uses: HashMap<i32, UseState>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -508,6 +557,74 @@ pub struct HurtState {
     pub hurt_time: i32,
     /// `LivingEntity.hurtDuration` — 10 for every `handleDamageEvent`.
     pub hurt_duration: i32,
+}
+
+/// `LivingEntity`'s item-use state (M23) — the pair of fields
+/// `onSyncedDataUpdated` reconstructs from the `DATA_LIVING_ENTITY_FLAGS` bit,
+/// plus the flag itself.
+///
+/// **Why this can exist at all.** `useItemRemaining` is never transmitted. The
+/// server sends only the flags byte; the client derives the countdown from the
+/// item the entity is holding. So a remote entity's eating / drawing / blocking
+/// progress is exactly reproducible from data Rewo already receives — the
+/// premise that blocked this through M19, M20 and M22 was simply wrong.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UseState {
+    /// `isUsingItem()` — bit 1 of the flags byte.
+    pub using: bool,
+    /// `getUsedItemHand()` — bit 2 selects OFF_HAND.
+    pub hand: InteractionHand,
+    /// `LivingEntity.useItem`, reduced to what the client reads back:
+    /// `None` is `ItemStack.EMPTY`, `Some(id)` is the item it started using.
+    /// `updatingUsingItem` compares this against the *current* hand item each
+    /// tick and stops using when they differ.
+    pub item_id: Option<i32>,
+    /// `useItem.getUseDuration(this)` at the moment use started — the value
+    /// `getTicksUsingItem()` subtracts `remaining` from.
+    pub duration: i32,
+    /// `LivingEntity.useItemRemaining`.
+    ///
+    /// **Deliberately unclamped, and it can go negative.**
+    /// `updateUsingItem` runs `--this.useItemRemaining` unconditionally; only
+    /// the *completion* branch after it is server-side. A client whose server
+    /// has not yet cleared the flag keeps counting down past zero, and
+    /// `getTicksUsingItem()` keeps growing with it — which the spear pose's
+    /// sway term actually reads. Flooring this at 0 would be a plausible
+    /// tidying that changed rendered output.
+    pub remaining: i32,
+}
+
+impl UseState {
+    /// `LivingEntity.getUseItemRemainingTicks()`.
+    pub fn remaining_ticks(self) -> i32 {
+        self.remaining
+    }
+
+    /// `LivingEntity.getTicksUsingItem()`:
+    /// `isUsingItem() ? useItem.getUseDuration(this) - getUseItemRemainingTicks() : 0`.
+    pub fn ticks_using_item(self) -> i32 {
+        if self.using {
+            self.duration - self.remaining
+        } else {
+            0
+        }
+    }
+
+    /// `LivingEntity.getTicksUsingItem(partialTicks)`:
+    /// `!isUsingItem() ? 0.0F : getTicksUsingItem() + partialTicks`.
+    pub fn ticks_using_item_partial(self, alpha: f32) -> f32 {
+        if self.using {
+            self.ticks_using_item() as f32 + alpha
+        } else {
+            0.0
+        }
+    }
+
+    /// Whether a use-driven arm pose is reachable at all:
+    /// `getUsedItemHand() == hand && getUseItemRemainingTicks() > 0`.
+    pub fn poses_hand(self, hand: InteractionHand) -> bool {
+        self.using && self.hand == hand && self.remaining > 0
+    }
 }
 
 impl HurtState {
@@ -621,6 +738,7 @@ impl EntityTable {
         self.dances.remove(&id);
         self.mob_state.remove(&id);
         self.hurts.remove(&id);
+        self.uses.remove(&id);
         self.clear_swing(id);
     }
 
@@ -725,6 +843,127 @@ impl EntityTable {
         let d = self.dances.get(&id)?;
         d.dancing
             .then(|| (d.is_spinning(), d.spinning_progress(alpha)))
+    }
+
+    // -- item use (M23) ------------------------------------------------------
+
+    /// Apply `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (metadata index 8, BYTE),
+    /// reproducing `onSyncedDataUpdated`'s client branch verbatim:
+    ///
+    /// ```text
+    /// if (isUsingItem() && useItem.isEmpty()) {
+    ///    useItem = getItemInHand(getUsedItemHand());
+    ///    if (!useItem.isEmpty()) useItemRemaining = useItem.getUseDuration(this);
+    /// } else if (!isUsingItem() && !useItem.isEmpty()) {
+    ///    useItem = ItemStack.EMPTY;
+    ///    useItemRemaining = 0;
+    /// }
+    /// ```
+    ///
+    /// Three consequences the shape encodes, each of which a naive
+    /// "start a timer when the bit is set" would get wrong:
+    ///
+    /// 1. A **repeated** `using = true` does not restart the clock, because
+    ///    `useItem` is no longer empty and the first branch does not run.
+    /// 2. Starting with an **empty hand** leaves `useItem` empty, so a *later*
+    ///    flags update can still latch an item — the branch is guarded on
+    ///    `useItem.isEmpty()`, not on the flag having changed.
+    /// 3. The hand is read at latch time and again every tick, so a hand swap
+    ///    mid-use is caught by [`Self::tick_uses`], not here.
+    ///
+    /// The caller gates this on the entity actually being a `LivingEntity`:
+    /// index 8 is the first slot a direct `Entity` subclass may claim too (an
+    /// `AbstractArrow` puts its own BYTE there), so the serializer alone does
+    /// not disambiguate it.
+    pub fn set_living_flags(&mut self, id: i32, flags: u8) {
+        let using = flags & 1 != 0;
+        let hand = if flags & 2 != 0 {
+            InteractionHand::OffHand
+        } else {
+            InteractionHand::MainHand
+        };
+        let held = self.hand_item(id, hand);
+        let st = self.uses.entry(id).or_default();
+        st.using = using;
+        st.hand = hand;
+        if using && st.item_id.is_none() {
+            // `useItem = getItemInHand(usedHand)`. An unresolvable stack has no
+            // known duration, so it latches nothing and the pose stays
+            // suppressed — the same fail-closed answer M19 gives a swing.
+            if let (Some(held_item), Some(profile)) = (held.held(), held.use_profile()) {
+                st.item_id = Some(held_item.item_id);
+                st.duration = profile.duration;
+                st.remaining = profile.duration;
+            }
+        } else if !using && st.item_id.is_some() {
+            st.item_id = None;
+            st.duration = 0;
+            st.remaining = 0;
+        }
+    }
+
+    /// `LivingEntity.updatingUsingItem`, once per tick:
+    ///
+    /// ```text
+    /// if (isUsingItem()) {
+    ///    if (ItemStack.isSameItem(getItemInHand(getUsedItemHand()), useItem)) {
+    ///       useItem = getItemInHand(getUsedItemHand());
+    ///       updateUsingItem(useItem);          // --useItemRemaining
+    ///    } else {
+    ///       stopUsingItem();                   // useItem = EMPTY; remaining = 0
+    ///    }
+    /// }
+    /// ```
+    ///
+    /// Note `stopUsingItem` does **not** clear the using flag on a client —
+    /// that half sits inside a `!level().isClientSide()` guard — so an entity
+    /// whose held item changed mid-use stays flagged as using with an empty
+    /// `useItem`, and can latch again on a later flags update.
+    fn tick_uses(&mut self) {
+        for (id, st) in self.uses.iter_mut() {
+            if !st.using {
+                continue;
+            }
+            let held = self
+                .hands
+                .get(id)
+                .map(|h| h[hand_slot(st.hand)])
+                .unwrap_or_default();
+            // `ItemStack.isSameItem` compares only the item. An empty
+            // `useItem` matches an empty hand (both are `Items.AIR`) but never
+            // an unresolvable one, which has no known item.
+            let same = match st.item_id {
+                Some(item_id) => held.same_item_key() == Some(item_id),
+                None => held == HandItem::Empty,
+            };
+            if same {
+                st.remaining -= 1;
+            } else {
+                st.item_id = None;
+                st.duration = 0;
+                st.remaining = 0;
+            }
+        }
+    }
+
+    /// The entity's item-use state. Absent means the flags byte was never
+    /// received, which is exactly the `0` default: not using.
+    pub fn use_state(&self, id: i32) -> UseState {
+        self.uses.get(&id).copied().unwrap_or_default()
+    }
+
+    /// `AvatarRenderer.getArmPose`'s use-animation branch input: the animation
+    /// of the item in `hand`, but only while that hand is the one actually in
+    /// use and the countdown has not run out.
+    ///
+    /// `None` when no use pose applies — either the gate is closed or the held
+    /// stack is unresolvable.
+    pub fn use_animation(&self, id: i32, hand: InteractionHand) -> Option<ItemUseAnimation> {
+        let st = self.use_state(id);
+        if !st.poses_hand(hand) {
+            return None;
+        }
+        self.hand_item(id, hand).use_profile().map(|p| p.animation)
     }
 
     // -- combat swings (M19) ------------------------------------------------
@@ -980,6 +1219,7 @@ impl EntityTable {
         for d in self.dances.values_mut() {
             d.tick();
         }
+        self.tick_uses();
         self.tick_swings();
         // `LivingEntity.baseTick`: `if (this.hurtTime > 0) this.hurtTime--;`
         // The entry is dropped once it reaches 0 so an entity that has healed
@@ -1247,6 +1487,8 @@ mod tests {
         HandItem::Held(HeldItem {
             item_id,
             swing: SwingAnimation::new(kind, duration),
+            use_profile: UseProfile::UNUSABLE,
+            charged: false,
         })
     }
 
@@ -1637,6 +1879,111 @@ mod m21_hurt_tests {
         assert_eq!(t.hurt_state(1), HurtState::default());
         t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(t.hurt_state(1), HurtState::default(), "a reused id must not inherit it");
+    }
+
+    /// A usable item, for the M23 clock tests.
+    fn usable(item_id: i32, duration: i32) -> HandItem {
+        HandItem::Held(HeldItem {
+            item_id,
+            swing: SwingAnimation::DEFAULT,
+            use_profile: UseProfile {
+                duration,
+                animation: ItemUseAnimation::Block,
+            },
+            charged: false,
+        })
+    }
+
+    #[test]
+    fn the_use_clock_runs_down_and_can_go_negative() {
+        // `updateUsingItem` runs `--useItemRemaining` unconditionally; only the
+        // completion branch after it is server-side. So a client whose server
+        // has not yet cleared the flag counts past zero, and
+        // `getTicksUsingItem()` keeps growing — which the spear sway reads.
+        let mut t = t();
+        t.set_hand_item(1, InteractionHand::MainHand, usable(7, 3));
+        t.set_living_flags(1, 1);
+        assert_eq!(t.use_state(1).remaining, 3);
+        for _ in 0..5 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.use_state(1).remaining, -2, "must not floor at zero");
+        assert_eq!(t.use_state(1).ticks_using_item(), 5);
+        assert!(
+            !t.use_state(1).poses_hand(InteractionHand::MainHand),
+            "a run-out clock closes the pose gate"
+        );
+    }
+
+    #[test]
+    fn re_sending_the_using_flag_does_not_restart_the_clock() {
+        let mut t = t();
+        t.set_hand_item(1, InteractionHand::MainHand, usable(7, 40));
+        t.set_living_flags(1, 1);
+        t.tick_lerp();
+        t.set_living_flags(1, 1);
+        assert_eq!(
+            t.use_state(1).remaining,
+            39,
+            "onSyncedDataUpdated's latch is guarded on useItem.isEmpty()"
+        );
+        // Clearing and re-setting *does* restart it, because the clear empties
+        // `useItem` and re-opens that guard.
+        t.set_living_flags(1, 0);
+        t.set_living_flags(1, 1);
+        assert_eq!(t.use_state(1).remaining, 40);
+    }
+
+    #[test]
+    fn starting_with_an_empty_hand_latches_nothing_but_stays_armed() {
+        // `useItem = getItemInHand(...)` assigns EMPTY, and the duration write
+        // is guarded on `!useItem.isEmpty()` — so the guard stays open and a
+        // later flags update can still latch.
+        let mut t = t();
+        t.set_living_flags(1, 1);
+        assert!(t.use_state(1).using);
+        assert_eq!(t.use_state(1).remaining, 0);
+        t.set_hand_item(1, InteractionHand::MainHand, usable(7, 40));
+        t.set_living_flags(1, 1);
+        assert_eq!(t.use_state(1).remaining, 40);
+    }
+
+    #[test]
+    fn an_unresolvable_hand_latches_no_use_clock() {
+        // Same fail-closed rule the swing applies: no known duration means no
+        // derived countdown, so the pose stays suppressed rather than guessed.
+        let mut t = t();
+        t.set_hand_item(1, InteractionHand::MainHand, HandItem::Unknown);
+        t.set_living_flags(1, 1);
+        assert!(t.use_state(1).using);
+        assert_eq!(t.use_state(1).item_id, None);
+        assert_eq!(t.use_state(1).remaining, 0);
+    }
+
+    #[test]
+    fn the_off_hand_bit_selects_the_hand_that_poses() {
+        let mut t = t();
+        t.set_hand_item(1, InteractionHand::OffHand, usable(7, 40));
+        t.set_living_flags(1, 0b11);
+        let st = t.use_state(1);
+        assert_eq!(st.hand, InteractionHand::OffHand);
+        assert_eq!(st.remaining, 40);
+        assert!(st.poses_hand(InteractionHand::OffHand));
+        assert!(!st.poses_hand(InteractionHand::MainHand));
+    }
+
+    #[test]
+    fn removing_an_entity_drops_its_use_clock() {
+        let mut t = t();
+        t.set_hand_item(1, InteractionHand::MainHand, usable(7, 40));
+        t.set_living_flags(1, 1);
+        t.remove(1);
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(
+            t.use_state(1),
+            UseState::default(),
+            "a reused id must not inherit a use clock"
+        );
     }
 
     #[test]

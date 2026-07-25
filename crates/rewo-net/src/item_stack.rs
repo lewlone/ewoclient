@@ -22,9 +22,11 @@
 //!
 //! 1. *Alignment.* Each added component's value is encoded with its own stream
 //!    codec, so skipping one requires knowing that codec. This decoder
-//!    transcribes exactly two of the 111 registered component codecs —
-//!    `minecraft:swing_animation` and `minecraft:damage` (a bare VarInt, and by
-//!    far the most common thing a vanilla server patches onto a held weapon).
+//!    transcribes exactly three of the 111 registered component codecs —
+//!    `minecraft:swing_animation`, `minecraft:damage` (a bare VarInt, and by
+//!    far the most common thing a vanilla server patches onto a held weapon)
+//!    and `minecraft:charged_projectiles` (M23, a nested list of item
+//!    templates, each with its own patch — so the walk recurses, bounded).
 //!    The first entry it cannot walk leaves the reader parked mid-value:
 //!    [`PatchOutcome::Unwalkable`], and **the enclosing packet must stop** —
 //!    every later slot would be parsed out of garbage.
@@ -42,6 +44,7 @@
 
 use rewo_data::components::DataComponentIds;
 use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType, SwingAnimations};
+use rewo_data::use_item::{UseProfile, UseProfiles};
 use rewo_proto::reader::PacketReader;
 
 /// Everything the equipment decoder needs that is resolved once, from the
@@ -50,6 +53,10 @@ use rewo_proto::reader::PacketReader;
 pub struct SwingWireData {
     pub prototypes: SwingAnimations,
     pub components: DataComponentIds,
+    /// Item → `getUseDuration` / `getUseAnimation` (M23). Resolved from the
+    /// same reports at the same moment as `prototypes`, and for the same
+    /// reason: neither value is on the wire.
+    pub use_profiles: UseProfiles,
 }
 
 /// What a fully-walked `DataComponentPatch` said about
@@ -105,6 +112,41 @@ pub struct WireStack {
     /// [`resolve_swing`], not here.
     pub item_id: i32,
     pub patch: PatchOutcome,
+    /// What the patch said about `minecraft:charged_projectiles` (M23).
+    ///
+    /// Tracked beside [`Self::patch`] rather than inside it because the two
+    /// answer different questions and fail independently: the swing resolution
+    /// is about an item's *prototype*, this is about a per-stack override that
+    /// only ever arrives as a patch.
+    pub charged: PatchCharged,
+}
+
+/// What a stack's `DataComponentPatch` said about
+/// `minecraft:charged_projectiles`.
+///
+/// The value is reduced to "is the projectile list non-empty", because that is
+/// all `CrossbowItem.isCharged` asks:
+/// `!getOrDefault(CHARGED_PROJECTILES, ChargedProjectiles.EMPTY).isEmpty()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PatchCharged {
+    /// The patch did not mention the component, so the item prototype answers.
+    /// Every vanilla prototype is `ChargedProjectiles.EMPTY`, so this reads as
+    /// *not charged*.
+    #[default]
+    Absent,
+    /// The patch set it: `true` when the list has at least one projectile.
+    Set(bool),
+    /// The patch *removed* it. `getOrDefault` then hands back
+    /// `ChargedProjectiles.EMPTY` — not charged.
+    Removed,
+}
+
+impl PatchCharged {
+    /// `CrossbowItem.isCharged(stack)`. `Absent` and `Removed` both resolve
+    /// through `ChargedProjectiles.EMPTY`, so both are `false`.
+    pub const fn is_charged(self) -> bool {
+        matches!(self, PatchCharged::Set(true))
+    }
 }
 
 /// Why a stack's swing animation could not be resolved exactly.
@@ -138,13 +180,23 @@ pub fn read_optional(r: &mut PacketReader, ids: DataComponentIds) -> Result<Wire
         return Ok(WireSlot::Empty);
     }
     let item_id = r.varint().map_err(|_| ())?;
-    let patch = read_patch(r, ids)?;
+    let (patch, charged) = read_patch(r, ids)?;
     Ok(WireSlot::Stack(WireStack {
         count,
         item_id,
         patch,
+        charged,
     }))
 }
+
+/// How deep a `charged_projectiles` chain may nest before the walk gives up.
+///
+/// A projectile is itself an `ItemStackTemplate` with its own patch, which
+/// could in principle carry `charged_projectiles` again. Vanilla never does
+/// that, but the wire is not vanilla — a hostile server could nest until the
+/// stack overflowed. The walk is bounded and reports [`PatchOutcome::Unwalkable`]
+/// at the limit, which is the same fail-closed answer an unknown codec gets.
+const MAX_PATCH_DEPTH: u32 = 4;
 
 /// `DataComponentPatch.STREAM_CODEC.decode`, walked to the end whenever every
 /// entry's codec is known.
@@ -153,11 +205,26 @@ pub fn read_optional(r: &mut PacketReader, ids: DataComponentIds) -> Result<Wire
 /// from the middle of it: the entries after the swing component still have to
 /// be consumed, or the reader would be left mid-patch while the caller believed
 /// it was aligned.
-fn read_patch(r: &mut PacketReader, ids: DataComponentIds) -> Result<PatchOutcome, ()> {
+fn read_patch(
+    r: &mut PacketReader,
+    ids: DataComponentIds,
+) -> Result<(PatchOutcome, PatchCharged), ()> {
+    read_patch_at(r, ids, 0)
+}
+
+fn read_patch_at(
+    r: &mut PacketReader,
+    ids: DataComponentIds,
+    depth: u32,
+) -> Result<(PatchOutcome, PatchCharged), ()> {
     let added = r.varint().map_err(|_| ())?;
     let removed = r.varint().map_err(|_| ())?;
     if added == 0 && removed == 0 {
-        return Ok(PatchOutcome::Walked(PatchSwing::Absent)); // DataComponentPatch.EMPTY
+        // DataComponentPatch.EMPTY
+        return Ok((
+            PatchOutcome::Walked(PatchSwing::Absent),
+            PatchCharged::Absent,
+        ));
     }
     // The decoder sizes its map with `min(added + removed, 65536)`; a nonsense
     // count here is a malformed body, not a huge patch.
@@ -165,6 +232,7 @@ fn read_patch(r: &mut PacketReader, ids: DataComponentIds) -> Result<PatchOutcom
         return Err(());
     }
     let mut swing = PatchSwing::Absent;
+    let mut charged = PatchCharged::Absent;
     for _ in 0..added {
         let ty = r.varint().map_err(|_| ())?;
         if ty == ids.swing_animation {
@@ -178,17 +246,65 @@ fn read_patch(r: &mut PacketReader, ids: DataComponentIds) -> Result<PatchOutcom
             r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT
             continue;
         }
+        if ty == ids.charged_projectiles {
+            match read_projectile_list(r, ids, depth)? {
+                Some(non_empty) => charged = PatchCharged::Set(non_empty),
+                // A nested patch this decoder cannot walk. The reader is parked
+                // mid-value, so the whole enclosing stack is unwalkable — the
+                // charge answer is lost with it.
+                None => return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent)),
+            }
+            continue;
+        }
         // An un-transcribed codec: the reader stops here, mid-value.
-        return Ok(PatchOutcome::Unwalkable);
+        return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent));
     }
     for _ in 0..removed {
-        if r.varint().map_err(|_| ())? == ids.swing_animation {
-            // A component cannot be both set and removed in one patch (the
-            // patch is a map), so this cannot contradict an earlier `Set`.
+        let ty = r.varint().map_err(|_| ())?;
+        // A component cannot be both set and removed in one patch (the patch is
+        // a map), so neither of these can contradict an earlier `Set`.
+        if ty == ids.swing_animation {
             swing = PatchSwing::Removed;
         }
+        if ty == ids.charged_projectiles {
+            charged = PatchCharged::Removed;
+        }
     }
-    Ok(PatchOutcome::Walked(swing))
+    Ok((PatchOutcome::Walked(swing), charged))
+}
+
+/// `ByteBufCodecs.list(1024)` of `ItemStackTemplate.STREAM_CODEC`, which is
+/// `composite(Item.STREAM_CODEC, VAR_INT count, DataComponentPatch.STREAM_CODEC)`.
+///
+/// Returns `Some(list is non-empty)` when the whole list was walked, or `None`
+/// when a nested patch could not be — in which case the reader is parked.
+///
+/// Note this is `ItemStackTemplate`, **not** `ItemStack`: there is no
+/// leading optional-count, and the count is a plain VarInt in the middle.
+/// Reading it as an optional stack would desynchronise the whole packet.
+fn read_projectile_list(
+    r: &mut PacketReader,
+    ids: DataComponentIds,
+    depth: u32,
+) -> Result<Option<bool>, ()> {
+    if depth >= MAX_PATCH_DEPTH {
+        return Ok(None);
+    }
+    let len = r.varint().map_err(|_| ())?;
+    // `ChargedProjectiles` rejects more than 1024 items and the codec's list is
+    // size-limited to the same, so anything else is a malformed body.
+    if !(0..=1024).contains(&len) {
+        return Err(());
+    }
+    for _ in 0..len {
+        r.varint().map_err(|_| ())?; // Item.STREAM_CODEC — raw registry id
+        r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT — count
+        let (outcome, _) = read_patch_at(r, ids, depth + 1)?;
+        if outcome == PatchOutcome::Unwalkable {
+            return Ok(None);
+        }
+    }
+    Ok(Some(len > 0))
 }
 
 /// The value `ItemStack.getSwingAnimation()` would return for a decoded stack,
@@ -215,6 +331,21 @@ pub fn resolve_swing(stack: &WireStack, prototypes: &SwingAnimations) -> SwingRe
     }
 }
 
+/// The value `ItemStack.getUseDuration()` / `getUseAnimation()` would return
+/// for a decoded stack (M23), or `None` when it cannot be known.
+///
+/// Simpler than [`resolve_swing`] because there is no patch arm: the three
+/// components the base rule reads (`consumable`, `blocks_attacks`,
+/// `kinetic_weapon`) are all ones this decoder cannot walk, so a stack that
+/// patched any of them is already [`PatchOutcome::Unwalkable`] and never gets
+/// here. What remains is the prototype, keyed by item id.
+pub fn resolve_use(stack: &WireStack, profiles: &UseProfiles) -> Option<UseProfile> {
+    match stack.patch {
+        PatchOutcome::Unwalkable => None,
+        PatchOutcome::Walked(_) => profiles.of(stack.item_id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +353,7 @@ mod tests {
     const IDS: DataComponentIds = DataComponentIds {
         swing_animation: 40,
         damage: 3,
+        charged_projectiles: 7,
     };
 
     fn varint(v: i32, out: &mut Vec<u8>) {

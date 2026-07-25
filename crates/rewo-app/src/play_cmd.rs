@@ -303,6 +303,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.swing_data = Some(rewo_net::item_stack::SwingWireData {
         prototypes: rewo_data::swing_anim::SwingAnimations::resolve(&data.items)?,
         components: data.components,
+        use_profiles: rewo_data::use_item::UseProfiles::resolve(&data.items)?,
     });
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.

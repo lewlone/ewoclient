@@ -24,6 +24,8 @@ pub mod packets;
 pub mod server_jar;
 pub mod swing_anim;
 pub mod swing_anim_table;
+pub mod use_item;
+pub mod use_item_table;
 
 use std::path::{Path, PathBuf};
 
@@ -75,6 +77,8 @@ pub struct GameData {
     pub entity_types: entity_types::EntityTypes,
     /// Item id → prototype `minecraft:swing_animation` (M19 combat swings).
     pub swing_animations: swing_anim::SwingAnimations,
+    /// Item id → `getUseDuration` / `getUseAnimation` (M23 item use).
+    pub use_profiles: use_item::UseProfiles,
     /// Data-component registry ids an item-stack patch is keyed by.
     pub components: components::DataComponentIds,
     /// Which entity types are living, and which tick a combat swing (M19).
@@ -88,6 +92,7 @@ impl GameData {
         let items = items::Items::load(&paths.registries_json())?;
         let entity_types = entity_types::EntityTypes::load(&paths.registries_json())?;
         let swing_animations = swing_anim::SwingAnimations::resolve(&items)?;
+        let use_profiles = use_item::UseProfiles::resolve(&items)?;
         let components = components::DataComponentIds::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         Ok(Self {
@@ -96,6 +101,7 @@ impl GameData {
             items,
             entity_types,
             swing_animations,
+            use_profiles,
             components,
             entity_classes,
         })

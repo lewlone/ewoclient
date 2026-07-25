@@ -24,6 +24,16 @@ pub struct DataComponentIds {
     /// weapon, and being able to *skip* it is what lets the walk reach a swing
     /// override that follows it.
     pub damage: i32,
+    /// `minecraft:charged_projectiles` — `ItemStackTemplate.STREAM_CODEC`
+    /// under `ByteBufCodecs.list(1024)`. Read for `CrossbowItem.isCharged`,
+    /// which is `!getOrDefault(CHARGED_PROJECTILES, EMPTY).isEmpty()` and is
+    /// the sole gate on `ArmPose::CrossbowHold` (M23).
+    ///
+    /// Unlike the other two this one *must* be walked rather than merely
+    /// skipped-past: a crossbow is only ever charged by a patch, so before M23
+    /// every charged crossbow made its stack unresolvable and suppressed the
+    /// entity's whole combat pose.
+    pub charged_projectiles: i32,
 }
 
 impl DataComponentIds {
@@ -45,11 +55,13 @@ impl DataComponentIds {
         let ids = Self {
             swing_animation: id("minecraft:swing_animation")?,
             damage: id("minecraft:damage")?,
+            charged_projectiles: id("minecraft:charged_projectiles")?,
         };
         log::info!(
-            "rewo-data: data components — swing_animation={} damage={}",
+            "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",
             ids.swing_animation,
-            ids.damage
+            ids.damage,
+            ids.charged_projectiles
         );
         Ok(ids)
     }

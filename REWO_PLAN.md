@@ -1093,6 +1093,217 @@ work is exercised through the real launcher with a real account.
 
 ---
 
+## 16. Forward plan — M23 to M25
+
+*(Placed before §15 deliberately: the status log is append-only and must stay
+last. This section is the forward plan; when a milestone ships, its record goes
+in §15 and the entry here becomes history.)*
+
+M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
+the damage flash, the item in the hand — and **each one shipped with a stated
+exclusion**. Read together, those exclusions name one blocker three times:
+
+| Exclusion | Shipped in | Blamed on |
+|---|---|---|
+| the eight use-driven `ArmPose`s | M19 | "item-use state is not synchronised" |
+| illager `CROSSBOW_HOLD` / `CROSSBOW_CHARGE` | M20 | same |
+| `animateUseItem` + `thirdPersonAttackItem` | M22 | same |
+
+**That blocker is not real, and M23 is the correction.** `useItemRemainingTicks`
+is not synchronised because it does not need to be — the client *derives* it.
+The sequence below therefore starts by retiring three milestones' worth of debt,
+which also shrinks the two that follow.
+
+Ordering is by leverage, not by size.
+
+---
+
+### M23 — item-use state (the backlog unlock)
+
+**The finding.** `LivingEntity.onSyncedDataUpdated` reconstructs the entire use
+clock client-side from a single metadata bit:
+
+```java
+} else if (DATA_LIVING_ENTITY_FLAGS.equals(accessor) && this.level().isClientSide()) {
+   if (this.isUsingItem() && this.useItem.isEmpty()) {
+      this.useItem = this.getItemInHand(this.getUsedItemHand());
+      if (!this.useItem.isEmpty()) {
+         this.useItemRemaining = this.useItem.getUseDuration(this);   // derived
+      }
+   } else if (!this.isUsingItem() && !this.useItem.isEmpty()) {
+      this.useItem = ItemStack.EMPTY;
+      this.useItemRemaining = 0;
+   }
+}
+```
+
+`updateUsingItem` then decrements it once per tick. Every input already exists
+in Rewo: the metadata decoder, the equipment decoder, and a per-entity tick.
+
+**Confirmed ground truth.**
+
+| Fact | Source |
+|---|---|
+| `DATA_LIVING_ENTITY_FLAGS` = index 8, BYTE | `LivingEntity:179` — `defineId(LivingEntity.class, BYTE)`, the first `LivingEntity` slot after `Entity`'s 0..7 |
+| bit 1 = using, bit 2 = off-hand | `isUsingItem()` `& 1`; `getUsedItemHand()` `& 2 ? OFF_HAND : MAIN_HAND` |
+| `getTicksUsingItem()` = `getUseDuration() - useItemRemaining` | `LivingEntity:3595` |
+| base `getUseDuration` reads components | `Item:310` — `CONSUMABLE.consumeTicks()`, else `BLOCKS_ATTACKS`/`KINETIC_WEAPON` ? 72000 : 0 |
+| `consumeTicks()` = `(int)(consumeSeconds * 20)` | `Consumable:100`, default `consumeSeconds` 1.6 |
+| base `getUseAnimation` reads components | `Item:299` — `CONSUMABLE.animation()`, else `BLOCKS_ATTACKS` -> BLOCK, else `KINETIC_WEAPON` -> SPEAR, else NONE |
+| only **8** item classes override either | `BowItem` 72000/BOW, `BrushItem` 200/BRUSH, `BundleItem` 200/BUNDLE, `CrossbowItem` 72000/CROSSBOW, `EnderEyeItem` 0, `InstrumentItem` `floor(useDuration*20)`/TOOT_HORN, `SpyglassItem` 1200/SPYGLASS, `TridentItem` 72000/TRIDENT |
+| `CROSSBOW_HOLD` gate is `isCharged` | `CrossbowItem:101` — `CHARGED_PROJECTILES` non-empty; a **synchronised** component, so it is on the wire |
+| illager charge duration | `IllagerRenderer:22` + `CrossbowItem:245` — `floor(modifyCrossbowChargingTime(1.25) * 20)` |
+
+The component values come from the datagen per-item report, the same source
+`gen_swing_animations.py` already reads. Counted on the real jar:
+`minecraft:consumable` on 43 items, `blocks_attacks` on 1, `kinetic_weapon` on 7.
+So the table is small, exact, and machine-extractable.
+
+**Work items.**
+
+1. `tools/gen_use_items.py` -> a generated `use_item_table.rs`: per item, the
+   `(use_duration, use_animation)` pair, base-component rule plus the 8 class
+   overrides. Fails loud on an unknown `ItemUseAnimation` name, a missing report
+   tree, or an override class whose literal no longer parses.
+2. Decode metadata index 8 (BYTE) in the entity table; add the use clock —
+   start on the rising edge at the derived duration, decrement per tick, clear
+   on the falling edge. This mirrors `onSyncedDataUpdated` exactly, including
+   that a *repeated* true does not restart it.
+3. Extend the `ArmPose` derivation to the full eleven, in
+   `AvatarRenderer.getArmPose`'s order: empty -> charged-crossbow hold ->
+   the eight use-animation cases -> STAB-while-swinging -> spear tag -> item.
+4. The pose bodies, from `HumanoidModel.poseRightArm`/`poseLeftArm`.
+   `BOW_AND_ARROW` and the two crossbow poses **write to both arms**, which the
+   current per-arm pipeline cannot express — that restructuring is part of the
+   milestone, not a reason to defer them again.
+5. Illager `CROSSBOW_HOLD` / `CROSSBOW_CHARGE` via `AnimationUtils`.
+
+**Gate.** Extend `swingshot` (arm poses live there) and `itemshot` (the
+item-side animation) rather than adding a twelfth oracle — a property belongs
+with its subject. New witnesses must include the clock's edge behaviour
+(rising, repeated-true, falling, entity removal) and at least one
+mutation partner per pose, not merely a classification assertion. The M20
+lesson applies: asserting that a pose was *selected* does not prove the pose
+*math*.
+
+**Honest risk.** `InstrumentItem`'s duration reads an `Instrument` registry
+value, not a literal. If that registry is not resolvable from the reports,
+TOOT_HORN's duration is unknowable and must suppress rather than guess.
+
+---
+
+### M24 — death, and things on the ground
+
+Two halves of "what happens when something dies", both cheap on M21/M22
+groundwork.
+
+**Death** completes an M21 exclusion that was stated rather than implied:
+`hasRedOverlay = entity.hurtTime > 0 || entity.deathTime > 0`
+(`LivingEntityRenderer:281`) — M21 shipped only the first term.
+
+```java
+if (state.deathTime > 0.0F) {                       // LivingEntityRenderer:164
+   float fall = (state.deathTime - 1.0F) / 20.0F * 1.6F;
+   fall = Mth.sqrt(fall);
+   if (fall > 1.0F) fall = 1.0F;
+   poseStack.mulPose(Axis.ZP.rotationDegrees(fall * this.getFlipDegrees()));
+}
+```
+
+`getFlipDegrees()` is 90 by default and overridden by exactly three renderers
+(`EndermiteRenderer`, `SilverfishRenderer`, `SpiderRenderer`) — a three-entry
+exception table, so it can be exact rather than approximate.
+`state.deathTime = entity.deathTime > 0 ? entity.deathTime + partialTicks : 0`
+(`:297`); `tickDeath` increments it and the server removes the entity at 20
+(`LivingEntity:572`). Health arrives as `DATA_HEALTH_ID`, **index 9, FLOAT**
+(`LivingEntity:180`, the slot after the flags byte).
+
+**Item entities** are nearly free after M22 — the same models, a new placement:
+
+```java
+float bob  = Mth.sin(state.ageInTicks / 10.0F + state.bobOffset) * 0.1F + 0.1F;
+float spin = ItemEntity.getSpin(state.ageInTicks, state.bobOffset);  // age/20 + offset
+poseStack.translate(0.0F, bob + minOffsetY, 0.0F);
+poseStack.mulPose(Axis.YP.rotation(spin));
+```
+
+with `minOffsetY = -modelBoundingBox.minY + 0.0625` and stack-count copies
+jittered by +/-0.15 from a seeded `RandomSource`.
+
+**The one thing that cannot be exact, and why that is fine.** `bobOffs` is
+`random.nextFloat() * 2 * PI` (`ItemEntity:54`) — rolled by *whichever* client
+constructs the entity, never sent. There is no server truth to match. Rewo will
+roll it deterministically per entity id, which is as vanilla as vanilla is; the
+gate must therefore assert the bob/spin *formula* given an offset, and must not
+pretend to assert the offset itself.
+
+**Gate.** Extend `hurtshot` for the overlay's second term and the topple
+rotation (it already owns the overlay); item entities get render witnesses in
+`itemshot`, whose models they reuse.
+
+---
+
+### M25 — block entities (the largest remaining world gap)
+
+**Verified, not assumed.** Two checks establish the gap is real and total:
+
+```json
+// assets/minecraft/models/block/chest.json — the entire file
+{ "textures": { "particle": "minecraft:block/oak_planks" } }
+```
+
+No `elements`, so a chest bakes to **nothing**. And `grep` for block-entity
+handling across `rewo-net`, `rewo-world` and `rewo-mesh` returns **zero** hits —
+they are not decoded at all. `chunk.rs:430` walks the payload's block-entity
+list purely for alignment and discards every field:
+
+```rust
+// Block entities: VarInt count, [u8 packedXZ, i16 y, VarInt type, NBT].
+let be_count = r.count("block entities", 1)?;
+for _ in 0..be_count { let _packed_xz = r.u8()?; let _y = r.i16()?;
+                       let _type = r.varint()?; let _nbt = r.nbt()?; }
+```
+
+So every chest, sign, banner, bed, shulker box and decorated pot in every world
+Rewo has ever rendered has been invisible.
+
+**Scope is the design.** Vanilla ships **33** renderers under
+`client/renderer/blockentity/`. Transcribing all of them is not one milestone,
+and a partial set that fails *open* would render a silent subset while claiming
+coverage. M25 therefore follows the mob-redo precedent: a **fail-closed
+registry** where every vanilla block-entity type is either first-class or
+explicitly listed as unsupported, and a type in neither list is an error.
+
+First-class set (chosen because each is model + texture with no dynamic text or
+bespoke shader): **chest / trapped / ender** (single and double), **shulker
+boxes**, **beds**, **decorated pots**. Everything else — signs, banners,
+beacons, conduits, spawners, end portals, skulls, bells, lecterns, campfires,
+pistons, brushable blocks, enchanting tables, vaults, shelves — is registered
+unsupported with a one-line reason.
+
+**Work items.** Decode the block-entity list (position, type, NBT) into the
+column and honour the `block_entity_data` packet; a registry keyed by the
+type-registry id resolved *by name*, so a version renumber fails loud; the
+model transcriptions; the render pass.
+
+**Honest risk.** Sign text is the reason signs are excluded, and it is worth
+naming: Rewo's font pass (`TextPass`) is screen-space, so a sign needs a
+world-space text path that does not exist yet. That is a milestone of its own,
+not a corner of this one.
+
+---
+
+### Deliberately not proposed
+
+- **Particles** — a whole subsystem, and every existing gate is geometry-based;
+  it would need a new verification approach before it could be shipped honestly.
+- **Sound** — outside a renderer's scope.
+- **First-person hand / GUI** — needs an inventory model Rewo does not have.
+- **Weather and clouds** — self-contained, so it can slot in anywhere; that
+  makes it filler rather than part of an arc.
+
+---
+
 ## 15. Status log
 
 **2026-07-21 — plan v1 + M0 shipped.**

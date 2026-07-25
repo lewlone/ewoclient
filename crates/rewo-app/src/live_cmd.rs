@@ -176,6 +176,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.swing_data = Some(rewo_net::item_stack::SwingWireData {
         prototypes: data.swing_animations,
         components: data.components,
+        use_profiles: data.use_profiles,
     });
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
@@ -542,65 +543,182 @@ pub(crate) fn resolve_attack_anim(
     }
 }
 
-/// `AvatarRenderer.getArmPose` for both arms, plus the handedness
-/// `setupAnim`'s pose dispatch reads — the *hold* baseline applied before
-/// `setupAttackAnimation`.
+/// `AvatarRenderer.getArmPose` / `HumanoidMobRenderer.getArmPose` for both
+/// arms, plus every `HumanoidRenderState` field the pose dispatch reads — the
+/// *hold* baseline applied before `setupAttackAnimation`.
 ///
 /// Shared by the live collector and the `swingshot` oracle for the same reason
 /// as [`resolve_attack_anim`]: the gate must prove the mapping the client
 /// actually renders through, not a parallel copy of it.
 ///
-/// Vanilla computes a pose per *hand* and then selects by arm
-/// (`getMainArm() == arm ? mainHandPose : offHandPose`);
-/// [`rewo_world::entities::EntityTable::item_by_arm`] is that selection, so
-/// resolving per arm here is the same function. The `mainHandPose.isTwoHanded()`
-/// override that rewrites the off-hand pose cannot fire: none of the three
-/// modelled poses is two-handed, and adding one would fail
-/// [`rewo_gpu::mobs::ArmPose::is_two_handed`]'s exhaustive match first.
+/// **Two different functions, selected by renderer.** This was collapsed to one
+/// through M22 and is split here, because the two disagree on the common case:
 ///
-/// Only the poses reachable without item-use state are produced — the other
-/// eight need `getUsedItemHand()` / `getUseItemRemainingTicks()`, which no
-/// packet carries for a remote entity (see [`rewo_gpu::mobs::ArmPose`]).
+/// - `AvatarRenderer.getArmPose` (players) runs the full eleven-pose ladder and
+///   falls through to `ITEM`.
+/// - `HumanoidMobRenderer.getArmPose` (every humanoid mob) checks only
+///   STAB-while-swinging and the `minecraft:spears` tag, and otherwise returns
+///   **`EMPTY`** — so an armed zombie's arm hangs at its walk pose, not 18°
+///   higher. Subclasses layer on top: skeletons add `BOW_AND_ARROW`, the
+///   drowned adds `THROW_TRIDENT`.
+///
+/// **Vanilla computes a pose per *hand*, then selects by arm.** Resolving
+/// directly per arm is *not* the same function once two-handed poses exist:
+/// `if (mainHandPose.isTwoHanded()) offHandPose = offHandItem.isEmpty() ? EMPTY
+/// : ITEM` rewrites the off-hand pose from the main hand's, which has no
+/// per-arm expression. So the per-hand shape is transcribed literally.
 pub(crate) fn resolve_arm_poses(
     entities: &rewo_world::entities::EntityTable,
     id: i32,
+    kind: rewo_gpu::mobs::EntityModelKind,
     spears: &rewo_data::item_tags::ItemTag,
+    bow_item: Option<i32>,
+    crossbow_item: Option<i32>,
 ) -> rewo_gpu::mobs::ArmPoses {
     use rewo_data::swing_anim::SwingAnimationType;
-    use rewo_gpu::mobs::{ArmPose, ArmPoses};
-    use rewo_world::entities::{HandItem, HumanoidArm};
+    use rewo_data::use_item::ItemUseAnimation as A;
+    use rewo_gpu::mobs::{ArmPose, ArmPoses, EntityModelKind as K};
+    use rewo_world::entities::{HandItem, HumanoidArm, InteractionHand};
 
     let swinging = entities.is_swinging(id);
+    let is_avatar = matches!(kind, K::Player | K::PlayerSlim);
+    let use_state = entities.use_state(id);
     let mut known = true;
-    let mut pose_of = |arm: HumanoidArm| -> ArmPose {
-        match entities.item_by_arm(id, arm) {
-            HandItem::Empty => ArmPose::Empty,
-            // Unknowable item → suppress the whole baseline rather than pose
-            // from a guess, exactly as the swing itself is suppressed.
+
+    // `AvatarRenderer.getArmPose(avatar, itemInHand, hand)` — the per-hand
+    // ladder, in vanilla's order. The order is load-bearing: the
+    // charged-crossbow hold is tested *before* the use gate, so a crossbow that
+    // is already charged holds rather than charges.
+    let avatar_pose = |hand: InteractionHand, known: &mut bool| -> ArmPose {
+        let held = match entities.hand_item(id, hand) {
+            HandItem::Empty => return ArmPose::Empty,
             HandItem::Unknown => {
-                known = false;
-                ArmPose::Empty
+                *known = false;
+                return ArmPose::Empty;
             }
-            HandItem::Held(item) => {
-                if item.swing.kind == SwingAnimationType::Stab && swinging {
-                    // `attack != null && attack.type() == STAB && avatar.swinging`
-                    ArmPose::Spear
-                } else if spears.contains(item.item_id) {
-                    // `else return item.is(ItemTags.SPEARS) ? SPEAR : ITEM;`
-                    ArmPose::Spear
-                } else {
-                    ArmPose::Item
-                }
+            HandItem::Held(h) => h,
+        };
+        if !swinging && Some(held.item_id) == crossbow_item && held.charged {
+            return ArmPose::CrossbowHold;
+        }
+        if use_state.poses_hand(hand) {
+            // `switch (itemInHand.getUseAnimation())`. EAT, DRINK, BUNDLE and
+            // NONE have no case, so they fall out of the switch and continue to
+            // the STAB / spear-tag tail below — they are not poses.
+            match held.use_profile.animation {
+                A::Block => return ArmPose::Block,
+                A::Bow => return ArmPose::BowAndArrow,
+                A::Trident => return ArmPose::ThrowTrident,
+                A::Crossbow => return ArmPose::CrossbowCharge,
+                A::Spyglass => return ArmPose::Spyglass,
+                A::TootHorn => return ArmPose::TootHorn,
+                A::Brush => return ArmPose::Brush,
+                A::Spear => return ArmPose::Spear,
+                A::None | A::Eat | A::Drink | A::Bundle => {}
             }
         }
+        if held.swing.kind == SwingAnimationType::Stab && swinging {
+            ArmPose::Spear
+        } else if spears.contains(held.item_id) {
+            ArmPose::Spear
+        } else {
+            ArmPose::Item
+        }
     };
-    let right = pose_of(HumanoidArm::Right);
-    let left = pose_of(HumanoidArm::Left);
+
+    // `HumanoidMobRenderer.getArmPose(mob, arm)` plus the two subclass
+    // overrides Rewo's kinds can reach. Takes an *arm*, not a hand: the mob
+    // path never rewrites the off-hand pose, so there is nothing to express
+    // per-hand.
+    let mob_pose = |arm: HumanoidArm, known: &mut bool| -> ArmPose {
+        // `AbstractSkeletonRenderer`: main arm && isAggressive && main hand is
+        // a bow. Checked first because it short-circuits `super.getArmPose`.
+        let skeletal = matches!(
+            kind,
+            K::Skeleton | K::Stray | K::Bogged | K::WitherSkeleton | K::Parched
+        );
+        if skeletal
+            && entities.main_arm(id) == arm
+            && entities.mob_state(id).is_aggressive()
+            && entities
+                .hand_item(id, InteractionHand::MainHand)
+                .held()
+                .is_some_and(|h| Some(h.item_id) == bow_item)
+        {
+            return ArmPose::BowAndArrow;
+        }
+        let held = match entities.item_by_arm(id, arm) {
+            HandItem::Empty => return ArmPose::Empty,
+            HandItem::Unknown => {
+                *known = false;
+                return ArmPose::Empty;
+            }
+            HandItem::Held(h) => h,
+        };
+        // `DrownedRenderer`: main arm && isAggressive && holding a trident.
+        // Reached through the trident's own use animation rather than an item
+        // id, which is exact — `TridentItem` is the only thing that answers
+        // `ItemUseAnimation.TRIDENT`.
+        if kind == K::Drowned
+            && entities.main_arm(id) == arm
+            && entities.mob_state(id).is_aggressive()
+            && held.use_profile.animation == A::Trident
+        {
+            return ArmPose::ThrowTrident;
+        }
+        if held.swing.kind == SwingAnimationType::Stab && swinging {
+            ArmPose::Spear
+        } else if spears.contains(held.item_id) {
+            ArmPose::Spear
+        } else {
+            // The mob path's fall-through is EMPTY, not ITEM.
+            ArmPose::Empty
+        }
+    };
+
+    let (right, left) = if is_avatar {
+        let main = avatar_pose(InteractionHand::MainHand, &mut known);
+        let mut off = avatar_pose(InteractionHand::OffHand, &mut known);
+        // `if (mainHandPose.isTwoHanded()) offHandPose = offHandItem.isEmpty()
+        //      ? EMPTY : ITEM;`
+        if main.is_two_handed() {
+            off = match entities.hand_item(id, InteractionHand::OffHand) {
+                HandItem::Empty => ArmPose::Empty,
+                _ => ArmPose::Item,
+            };
+        }
+        // `return avatar.getMainArm() == arm ? mainHandPose : offHandPose;`
+        if entities.main_arm(id) == HumanoidArm::Right {
+            (main, off)
+        } else {
+            (off, main)
+        }
+    } else {
+        (
+            mob_pose(HumanoidArm::Right, &mut known),
+            mob_pose(HumanoidArm::Left, &mut known),
+        )
+    };
+
+    // `HumanoidMobRenderer.extractHumanoidRenderState` — a static helper, so
+    // players carry these too (`AvatarRenderer:168` calls it).
+    let charging = right == ArmPose::CrossbowCharge || left == ArmPose::CrossbowCharge;
     ArmPoses {
         right,
         left,
         right_handed: entities.main_arm(id) == HumanoidArm::Right,
         known,
+        using_item: use_state.using,
+        main_hand_used: use_state.hand == InteractionHand::MainHand,
+        ticks_using_item: use_state.ticks_using_item_partial(0.0),
+        // `CrossbowItem.getChargeDuration(entity.getUseItem(), entity)`. The
+        // helper computes it unconditionally, but only the CROSSBOW_CHARGE pose
+        // reads it, and an enchanted crossbow never gets this far.
+        max_crossbow_charge: if charging {
+            ArmPoses::CROSSBOW_CHARGE_DURATION
+        } else {
+            0.0
+        },
     }
 }
 
@@ -900,7 +1018,14 @@ fn collect_entities<'a>(
         // with the `swingshot` oracle for the same reason as the dance above.
         let attack = resolve_attack_anim(&session.world.entities, id, alpha);
         // The hold pose the swing is layered onto. Same sharing rule as above.
-        let arm_poses = resolve_arm_poses(&session.world.entities, id, spears);
+        let arm_poses = resolve_arm_poses(
+            &session.world.entities,
+            id,
+            kind,
+            spears,
+            bow_item,
+            crossbow_item_id(),
+        );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
         out.push(EntityDraw {
@@ -2596,6 +2721,8 @@ mod tests {
             HandItem::Held(HeldItem {
                 item_id: 1329,
                 swing: SwingAnimation::new(SwingAnimationType::Stab, 19),
+                use_profile: rewo_data::use_item::UseProfile::UNUSABLE,
+                charged: false,
             }),
         );
         t.swing(1, InteractionHand::OffHand, true);

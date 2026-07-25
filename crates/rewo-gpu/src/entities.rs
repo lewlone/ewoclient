@@ -1734,9 +1734,7 @@ fn humanoid_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx,
             // added on top of this baseline, not instead of it. Omitting the
             // stage renders every armed entity from an unarmed baseline: an
             // `ITEM` arm sits π/10 (18°) higher with its walk swing unhalved.
-            if c.arm_poses.poses_arm(left) {
-                apply_arm_pose(rot, c.arm_poses.for_arm(left), left, c);
-            }
+            apply_pose_stage(rot, left, c);
             let a = c.attack;
             if a.attack_time <= 0.0 {
                 // `bobModelPart` still runs — it is outside the attack guard.
@@ -1936,44 +1934,218 @@ fn illager_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx) 
 /// clamps through it, so the round trip is reproduced with the same constant.
 const RAD_TO_DEG: f32 = 180.0 / std::f32::consts::PI;
 
-/// `HumanoidModel.poseRightArm` / `poseLeftArm`, for the three
-/// [`mobs::ArmPose`]s Rewo models.
+/// `HumanoidModel.setupAnim`'s pose stage, for one arm — the whole dispatch,
+/// not one case of it.
+///
+/// Vanilla calls `poseRightArm` / `poseLeftArm` in a definite order, and three
+/// of the eleven cases write to **both** arms. So computing one arm's rotation
+/// means replaying the dispatch and applying every running pose's contribution
+/// *to this arm*, in vanilla's order — a later both-arm pose legitimately
+/// overwrites what an earlier one-arm pose assigned.
+fn apply_pose_stage(rot: &mut [f32; 3], left: bool, c: &AnimCtx) {
+    let p = c.arm_poses;
+    if !p.known {
+        return;
+    }
+    let o = p.order();
+    apply_pose_effect(rot, p.for_arm(o.first_left), o.first_left, left, c);
+    if o.second_runs {
+        let second_left = !o.first_left;
+        apply_pose_effect(rot, p.for_arm(second_left), second_left, left, c);
+    }
+}
+
+/// One `pose{Right,Left}Arm` case's effect **on the arm `target_left`**.
+///
+/// `pose_left` is the arm the case was invoked for; `target_left` is the arm
+/// whose rotation is being computed. When they differ, only a
+/// [`mobs::ArmPose::writes_both_arms`] pose contributes anything.
 ///
 /// Vanilla *assigns* these rotations, and the humanoid arm's rest rotation is
 /// zero, so an assignment to the delta is the assignment — the same identity
-/// `setupAttackAnimation`'s body yaw relies on. None of the three writes to the
-/// other arm or to the pivot, which is what lets a per-arm pipeline express
-/// them at all.
-fn apply_arm_pose(rot: &mut [f32; 3], pose: mobs::ArmPose, left: bool, c: &AnimCtx) {
+/// `setupAttackAnimation`'s body yaw relies on.
+fn apply_arm_pose(
+    rot: &mut [f32; 3],
+    pose: mobs::ArmPose,
+    pose_left: bool,
+    target_left: bool,
+    c: &AnimCtx,
+) {
+    apply_pose_effect(rot, pose, pose_left, target_left, c)
+}
+
+fn apply_pose_effect(
+    rot: &mut [f32; 3],
+    pose: mobs::ArmPose,
+    pose_left: bool,
+    target_left: bool,
+    c: &AnimCtx,
+) {
+    use std::f32::consts::PI;
+    let own = pose_left == target_left;
+    if !own && !pose.writes_both_arms() {
+        return;
+    }
+    // `holdingInRightArm` — the boolean every mirrored case keys off.
+    let right_handed_pose = !pose_left;
     match pose {
         // `case EMPTY: arm.yRot = 0.0F;`
         mobs::ArmPose::Empty => rot[1] = 0.0,
         // `case ITEM: arm.xRot = arm.xRot * 0.5F - (float)(Math.PI / 10);
         //            arm.yRot = 0.0F;`
         mobs::ArmPose::Item => {
-            rot[0] = rot[0] * 0.5 - std::f32::consts::PI / 10.0;
+            rot[0] = rot[0] * 0.5 - PI / 10.0;
+            rot[1] = 0.0;
+        }
+        // `case BLOCK: this.poseBlockingArm(arm, right);`
+        //
+        // ```text
+        // arm.xRot = arm.xRot * 0.5F - 0.9424779F
+        //          + Mth.clamp(head.xRot, -PI*4/9, 0.43633232F);
+        // arm.yRot = (right ? -30 : 30) * (PI/180)
+        //          + Mth.clamp(head.yRot, -PI/6, PI/6);
+        // ```
+        mobs::ArmPose::Block => {
+            rot[0] = rot[0] * 0.5 - 0.942_477_9
+                + c.pitch.clamp(-(PI * 4.0 / 9.0), 0.436_332_32);
+            let yaw = if right_handed_pose { -30.0 } else { 30.0 };
+            rot[1] = yaw * DEG + c.net.clamp(-PI / 6.0, PI / 6.0);
+        }
+        // `case BOW_AND_ARROW:` — writes both arms. The 0.4 nudge lands on the
+        // arm that is *not* holding the bow, with the sign following which arm
+        // that is; both arms take the same xRot.
+        //
+        // ```text
+        // right: rightArm.yRot = -0.1F + head.yRot;        leftArm.yRot = 0.1F + head.yRot + 0.4F;
+        // left:  rightArm.yRot = -0.1F + head.yRot - 0.4F; leftArm.yRot = 0.1F + head.yRot;
+        //        both.xRot = -PI/2 + head.xRot;
+        // ```
+        mobs::ArmPose::BowAndArrow => {
+            let base = if target_left { 0.1 } else { -0.1 };
+            let nudge = if own {
+                0.0
+            } else if target_left {
+                0.4
+            } else {
+                -0.4
+            };
+            rot[1] = base + c.net + nudge;
+            rot[0] = -PI / 2.0 + c.pitch;
+        }
+        // `case THROW_TRIDENT: arm.xRot = arm.xRot * 0.5F - (float)Math.PI;
+        //                     arm.yRot = 0.0F;`
+        mobs::ArmPose::ThrowTrident => {
+            rot[0] = rot[0] * 0.5 - PI;
+            rot[1] = 0.0;
+        }
+        // `AnimationUtils.animateCrossbowCharge(rightArm, leftArm,
+        //      maxCrossbowChargeDuration, ticksUsingItem, holdingInRightArm)`:
+        //
+        // ```text
+        // holdingArm.yRot = holdingInRightArm ? -0.8F : 0.8F;
+        // holdingArm.xRot = -0.97079635F;
+        // pullingArm.xRot = holdingArm.xRot;
+        // useTicks   = Mth.clamp(ticksUsingItem, 0, max);
+        // lerpAlpha  = useTicks / max;
+        // pullingArm.yRot = Mth.lerp(a, 0.4F, 0.85F) * (holdingInRightArm ? 1 : -1);
+        // pullingArm.xRot = Mth.lerp(a, pullingArm.xRot, -PI/2);
+        // ```
+        //
+        // The `max <= 0` guard is a divide-by-zero backstop, not a modelled
+        // state: whenever this pose is selected the charge duration is the
+        // literal 25, because the pose is only reachable through the use
+        // branch and an enchanted crossbow is suppressed upstream. Vanilla
+        // would evaluate `0.0F / 0.0F` and drive both arms to NaN, so the
+        // guard is written rather than left to chance.
+        mobs::ArmPose::CrossbowCharge => {
+            let max = c.arm_poses.max_crossbow_charge;
+            if !(max > 0.0) {
+                return;
+            }
+            // `own` here means "this is the holding arm": the case is invoked
+            // for the arm that holds the crossbow.
+            if own {
+                rot[1] = if right_handed_pose { -0.8 } else { 0.8 };
+                rot[0] = -0.970_796_35;
+            } else {
+                let alpha = c.arm_poses.ticks_using_item.clamp(0.0, max) / max;
+                let sign = if right_handed_pose { 1.0 } else { -1.0 };
+                rot[1] = lerp(alpha, 0.4, 0.85) * sign;
+                rot[0] = lerp(alpha, -0.970_796_35, -PI / 2.0);
+            }
+        }
+        // `AnimationUtils.animateCrossbowHold(rightArm, leftArm, head,
+        //                                     holdingInRightArm)`:
+        //
+        // ```text
+        // holdingArm.yRot  = (holdingInRightArm ? -0.3F : 0.3F) + head.yRot;
+        // shootingArm.yRot = (holdingInRightArm ?  0.6F : -0.6F) + head.yRot;
+        // holdingArm.xRot  = -PI/2 + head.xRot + 0.1F;
+        // shootingArm.xRot = -1.5F + head.xRot;
+        // ```
+        mobs::ArmPose::CrossbowHold => {
+            if own {
+                rot[1] = (if right_handed_pose { -0.3 } else { 0.3 }) + c.net;
+                rot[0] = -PI / 2.0 + c.pitch + 0.1;
+            } else {
+                rot[1] = (if right_handed_pose { 0.6 } else { -0.6 }) + c.net;
+                rot[0] = -1.5 + c.pitch;
+            }
+        }
+        // ```text
+        // arm.xRot = Mth.clamp(head.xRot - 1.9198622F
+        //                      - (isCrouching ? PI/12 : 0), -2.4F, 3.3F);
+        // arm.yRot = head.yRot -/+ PI/12;      // right subtracts, left adds
+        // ```
+        //
+        // The crouch term is inert: Rewo does not model `isCrouching` (it is
+        // declared unmodelled alongside swim and fall-flying), so the flag is
+        // false and the subtraction is a no-op — the same "exactly vanilla for
+        // the states we reach" argument the spear pose already makes.
+        mobs::ArmPose::Spyglass => {
+            rot[0] = (c.pitch - 1.919_862_2).clamp(-2.4, 3.3);
+            rot[1] = c.net + if right_handed_pose { -PI / 12.0 } else { PI / 12.0 };
+        }
+        // ```text
+        // arm.xRot = Mth.clamp(head.xRot, -1.2F, 1.2F) - 1.4835298F;
+        // arm.yRot = head.yRot -/+ PI/6;
+        // ```
+        mobs::ArmPose::TootHorn => {
+            rot[0] = c.pitch.clamp(-1.2, 1.2) - 1.483_529_8;
+            rot[1] = c.net + if right_handed_pose { -PI / 6.0 } else { PI / 6.0 };
+        }
+        // `case BRUSH: arm.xRot = arm.xRot * 0.5F - (float)(Math.PI / 5);
+        //             arm.yRot = 0.0F;`
+        mobs::ArmPose::Brush => {
+            rot[0] = rot[0] * 0.5 - PI / 5.0;
             rot[1] = 0.0;
         }
         // `case SPEAR: SpearAnimations.thirdPersonHandUse(arm, head,
         //              holdingInRightArm, useItemStack, state);`
         mobs::ArmPose::Spear => {
-            let invert = if left { -1.0 } else { 1.0 };
+            let invert = if pose_left { -1.0 } else { 1.0 };
             rot[1] = -0.1 * invert + c.net;
             rot[0] = -std::f32::consts::FRAC_PI_2 + c.pitch + 0.8;
             // `if (state.isFallFlying || state.swimAmount > 0.0F)
             //      arm.xRot -= 0.9599311F;`
             // Rewo models neither flag, so both are false and the duck is
-            // unreachable — declared alongside crouch, swim and item-use.
+            // unreachable — declared alongside crouch and swim.
             rot[1] = DEG * (rot[1] * RAD_TO_DEG).clamp(-60.0, 60.0);
             rot[0] = DEG * (rot[0] * RAD_TO_DEG).clamp(-120.0, 30.0);
             // The remainder of `thirdPersonHandUse` — the KINETIC_WEAPON sway
-            // and raise terms — is gated on `!(state.ticksUsingItem <= 0.0F)`.
-            // For an entity that is not using an item that value is 0, so the
-            // whole block is skipped: omitting it here is *exactly* vanilla,
-            // not an approximation of it. It is also the only part that would
-            // touch `zRot`, which is why the idle bob still lands unmodified.
+            // and raise terms — is gated on `!(state.ticksUsingItem <= 0.0F)`,
+            // where `ticksUsingItem` is `HumanoidRenderState.ticksUsingItem(arm)`
+            // — the *per-arm* accessor, which additionally requires the used
+            // hand to be this arm's. M23 supplies that input for humanoid mobs;
+            // the sway itself is not transcribed (see the milestone's stated
+            // exclusions), so this stays the unconditional half.
         }
     }
+}
+
+/// `Mth.lerp(delta, start, end)` — `start + delta * (end - start)`.
+fn lerp(delta: f32, start: f32, end: f32) -> f32 {
+    start + delta * (end - start)
 }
 
 /// `AnimationUtils.bobModelPart(part, ageInTicks, scale)`:

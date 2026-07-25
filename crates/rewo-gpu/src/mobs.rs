@@ -253,14 +253,14 @@ impl Default for SwingPose {
 /// SPEAR(false,true)
 /// ```
 ///
-/// **Rewo models the three that are reachable without item-use state.**
-/// `AvatarRenderer.getArmPose` only returns the other eight while
-/// `getUsedItemHand() == hand && getUseItemRemainingTicks() > 0` (or for a
-/// charged crossbow held), and neither the use-item hand nor the remaining
-/// ticks is synchronised for a remote entity — so those eight are suppressed
-/// rather than approximated, exactly as an unresolvable item is. `BOW_AND_ARROW`
-/// is additionally the one case whose pose body writes to *both* arms, which
-/// the per-arm pipeline here could not express without restructuring.
+/// **Rewo models all eleven as of M23.** Through M19-M22 only the three
+/// reachable without item-use state were modelled, on the stated grounds that
+/// "neither the use-item hand nor the remaining ticks is synchronised for a
+/// remote entity". The first half of that is wrong — the hand *is* synchronised,
+/// in `DATA_LIVING_ENTITY_FLAGS` bit 2 — and the second half is beside the
+/// point, because `LivingEntity.onSyncedDataUpdated` **derives** the remaining
+/// ticks client-side rather than receiving them. See
+/// [`rewo_data::use_item`](../../rewo_data/use_item/index.html).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ArmPose {
     /// Empty hand. `arm.yRot = 0`.
@@ -270,36 +270,93 @@ pub enum ArmPose {
     /// entity**, and so the overwhelmingly common combat case.
     /// `arm.xRot = arm.xRot * 0.5 − π/10; arm.yRot = 0`.
     Item,
+    /// Shield raised (`ItemUseAnimation.BLOCK`). `poseBlockingArm`.
+    Block,
+    /// Bow drawn. **Writes both arms** — the only pose that does so without
+    /// being a crossbow.
+    BowAndArrow,
+    /// Trident wound up. `arm.xRot = arm.xRot * 0.5 − π`.
+    ThrowTrident,
+    /// Crossbow being cranked. **Writes both arms**, and is the only pose that
+    /// reads the use clock's *elapsed* count rather than merely being gated on
+    /// it.
+    CrossbowCharge,
+    /// Charged crossbow held ready. **Writes both arms.** The only use-driven
+    /// pose that is *not* gated on the use clock: its condition is
+    /// `!swinging && item is CROSSBOW && CrossbowItem.isCharged(item)`.
+    CrossbowHold,
+    /// Spyglass raised to the eye.
+    Spyglass,
+    /// Goat horn at the lips.
+    TootHorn,
+    /// Brush angled down.
+    Brush,
     /// A spear: either `swing_animation` is STAB and the entity is swinging, or
-    /// the item is in `minecraft:spears`. Poses through the unconditional half
-    /// of `SpearAnimations.thirdPersonHandUse`.
+    /// the item is in `minecraft:spears`, or the item is in use with
+    /// `ItemUseAnimation.SPEAR`. Poses through
+    /// `SpearAnimations.thirdPersonHandUse`.
     Spear,
 }
 
 impl ArmPose {
-    /// Vanilla's `twoHanded` flag. All three modelled poses are one-handed;
-    /// this is a real match rather than a `false` so that adding a two-handed
-    /// pose later cannot silently inherit the wrong answer.
+    /// Vanilla's `twoHanded` flag, transcribed from the enum's constructor
+    /// arguments (`HumanoidModel:488`).
     pub const fn is_two_handed(self) -> bool {
         match self {
-            ArmPose::Empty | ArmPose::Item | ArmPose::Spear => false,
+            ArmPose::BowAndArrow | ArmPose::CrossbowCharge | ArmPose::CrossbowHold => true,
+            ArmPose::Empty
+            | ArmPose::Item
+            | ArmPose::Block
+            | ArmPose::ThrowTrident
+            | ArmPose::Spyglass
+            | ArmPose::TootHorn
+            | ArmPose::Brush
+            | ArmPose::Spear => false,
         }
     }
 
-    /// Vanilla's `affectsOffhandPose` flag. `SPEAR` sets it, so a spear in one
-    /// hand stops the *other* arm from being posed at all.
+    /// Vanilla's `affectsOffhandPose` flag. When set, posing this arm
+    /// **suppresses the other arm's pose entirely** — which is exactly why the
+    /// three both-arm poses can write the other arm without being overwritten.
     pub const fn affects_offhand_pose(self) -> bool {
         match self {
-            ArmPose::Empty | ArmPose::Item => false,
-            ArmPose::Spear => true,
+            ArmPose::BowAndArrow
+            | ArmPose::ThrowTrident
+            | ArmPose::CrossbowCharge
+            | ArmPose::CrossbowHold
+            | ArmPose::Spear => true,
+            ArmPose::Empty
+            | ArmPose::Item
+            | ArmPose::Block
+            | ArmPose::Spyglass
+            | ArmPose::TootHorn
+            | ArmPose::Brush => false,
         }
+    }
+
+    /// Whether this pose's body assigns rotations to the arm it was *not*
+    /// called for.
+    ///
+    /// Not a vanilla flag — vanilla just writes both fields inside the case —
+    /// but the per-arm pipeline here needs to know, because computing the left
+    /// arm may require running the right arm's pose body.
+    ///
+    /// It coincides with [`Self::is_two_handed`] for all eleven, and is kept
+    /// separate anyway: they mean different things, and a future pose that
+    /// writes both arms without being two-handed would silently inherit the
+    /// wrong answer from a shared flag.
+    pub const fn writes_both_arms(self) -> bool {
+        matches!(
+            self,
+            ArmPose::BowAndArrow | ArmPose::CrossbowCharge | ArmPose::CrossbowHold
+        )
     }
 }
 
 /// Both arms' [`ArmPose`] plus the handedness that decides which arm vanilla
 /// poses first — the `HumanoidRenderState` fields `setupAnim`'s pose dispatch
 /// reads.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ArmPoses {
     /// `state.rightArmPose`.
     pub right: ArmPose,
@@ -312,6 +369,51 @@ pub struct ArmPoses {
     /// swing, for the same reason: a guessed baseline is a wrong pose rendered
     /// confidently.
     pub known: bool,
+    /// `state.isUsingItem` (M23) — `LivingEntity.isUsingItem()`.
+    ///
+    /// Populated by `HumanoidMobRenderer.extractHumanoidRenderState`, which is
+    /// a **static helper**, not an override: `AvatarRenderer:168` calls it too
+    /// (as do the armour-stand, enderman and giant renderers). So a player
+    /// carries the same use render state a zombie does, and both reach the
+    /// `isUsingItem` dispatch branch.
+    pub using_item: bool,
+    /// `state.useItemHand == InteractionHand.MAIN_HAND` (M23). Only read when
+    /// [`Self::using_item`] is set. Defaults to `true`, matching
+    /// `HumanoidRenderState`'s `useItemHand = InteractionHand.MAIN_HAND`.
+    pub main_hand_used: bool,
+    /// `state.ticksUsingItem` — `getTicksUsingItem(partialTicks)`.
+    pub ticks_using_item: f32,
+    /// `state.maxCrossbowChargeDuration` — `CrossbowItem.getChargeDuration`,
+    /// i.e. `floor(modifyCrossbowChargingTime(stack, user, 1.25F) * 20)`.
+    ///
+    /// Rewo decodes no enchantments, so the modifier is the identity and this
+    /// is the literal `floor(1.25 * 20) = 25` whenever the pose is
+    /// [`ArmPose::CrossbowCharge`]. That is not an approximation: an enchanted
+    /// crossbow patches `minecraft:enchantments`, which the stack decoder
+    /// cannot walk, so such a stack resolves to
+    /// [`rewo_world::entities::HandItem::Unknown`] and suppresses the whole
+    /// baseline before it ever reaches this field.
+    ///
+    /// `0` means "not set" — the `HumanoidRenderState` default, which is what
+    /// every pose other than `CROSSBOW_CHARGE` leaves it at.
+    pub max_crossbow_charge: f32,
+}
+
+/// Which arm `setupAnim`'s dispatch poses first, and whether it poses the
+/// second at all.
+///
+/// Vanilla writes this as two nested branches that each call
+/// `pose{Right,Left}Arm` in a definite order. The order is not decorative: a
+/// pose that writes *both* arms lands on top of whatever the other arm's pose
+/// already assigned, so reproducing the sequence is what makes a bow-drawing
+/// off-hand override a main-hand item pose rather than the reverse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PoseOrder {
+    /// The arm posed unconditionally (`true` = left).
+    pub first_left: bool,
+    /// Whether the *other* arm is posed after it — vanilla's
+    /// `if (!firstPose.affectsOffhandPose())`.
+    pub second_runs: bool,
 }
 
 impl ArmPoses {
@@ -322,7 +424,19 @@ impl ArmPoses {
         left: ArmPose::Empty,
         right_handed: true,
         known: true,
+        using_item: false,
+        main_hand_used: true,
+        ticks_using_item: 0.0,
+        max_crossbow_charge: 0.0,
     };
+
+    /// `CrossbowItem.getChargeDuration(stack, user)` with no enchantment
+    /// modifier: `Mth.floor(1.25F * 20.0F)`.
+    ///
+    /// A literal rather than a computation because the input it would take —
+    /// `EnchantmentHelper.modifyCrossbowChargingTime` — needs the stack's
+    /// enchantments, and a stack carrying any is already suppressed upstream.
+    pub const CROSSBOW_CHARGE_DURATION: f32 = 25.0;
 
     pub const fn for_arm(self, left: bool) -> ArmPose {
         if left {
@@ -348,32 +462,54 @@ impl ArmPoses {
     /// }
     /// ```
     ///
-    /// The `isUsingItem == true` branch is unreachable here — Rewo never sets
-    /// it (see [`ArmPose`]). Vanilla runs the two calls in a definite order,
-    /// which does not matter for the modelled subset because each of `EMPTY`,
-    /// `ITEM` and `SPEAR` writes only to its own arm; `BOW_AND_ARROW` is the
-    /// pose that would break that, and it is excluded.
+    /// …and, since M23, the `isUsingItem == true` branch that precedes it:
+    ///
+    /// ```text
+    /// if (state.isUsingItem) {
+    ///    boolean mainHandUsed = state.useItemHand == InteractionHand.MAIN_HAND;
+    ///    if (mainHandUsed == rightHanded) {
+    ///       poseRightArm(state);
+    ///       if (!rightArmPose.affectsOffhandPose()) poseLeftArm(state);
+    ///    } else {
+    ///       poseLeftArm(state);
+    ///       if (!leftArmPose.affectsOffhandPose()) poseRightArm(state);
+    ///    }
+    /// }
+    /// ```
+    ///
+    /// Through M22 this branch was documented as unreachable, because Rewo
+    /// never set `isUsingItem`. M23 sets it, so it is transcribed.
+    pub const fn order(self) -> PoseOrder {
+        let first_left = if self.using_item {
+            // `mainHandUsed == rightHanded` → right arm first. The equality is
+            // the point: a left-handed entity using its main hand is using its
+            // *left* arm.
+            self.main_hand_used != self.right_handed
+        } else {
+            let two_handed_offhand = if self.right_handed {
+                self.left.is_two_handed()
+            } else {
+                self.right.is_two_handed()
+            };
+            self.right_handed != two_handed_offhand
+        };
+        let first = if first_left { self.left } else { self.right };
+        PoseOrder {
+            first_left,
+            second_runs: !first.affects_offhand_pose(),
+        }
+    }
+
+    /// Whether `setupAnim` calls `pose{Left,Right}Arm` for this arm at all.
     pub const fn poses_arm(self, left: bool) -> bool {
         if !self.known {
             return false;
         }
-        let two_handed_offhand = if self.right_handed {
-            self.left.is_two_handed()
-        } else {
-            self.right.is_two_handed()
-        };
-        if self.right_handed != two_handed_offhand {
-            // poseLeftArm unconditionally; the right arm only if the left pose
-            // does not claim the offhand.
-            if left {
-                true
-            } else {
-                !self.left.affects_offhand_pose()
-            }
-        } else if left {
-            !self.right.affects_offhand_pose()
-        } else {
+        let o = self.order();
+        if o.first_left == left {
             true
+        } else {
+            o.second_runs
         }
     }
 }
@@ -3416,6 +3552,7 @@ mod tests {
             left,
             right_handed,
             known: true,
+            ..ArmPoses::EMPTY
         };
         // Nothing two-handed and nothing claiming the offhand: both posed.
         for (r, l) in [(Empty, Empty), (Item, Item), (Empty, Item), (Item, Empty)] {

@@ -72,7 +72,7 @@ use rewo_world::entities::{EntityState, EntityTable, InteractionHand};
 
 /// Total named properties this gate asserts. Locked so a skipped property fails
 /// the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 77;
+const EXPECTED_WITNESSES: usize = 97;
 
 /// Degrees → radians, the factor `SpearAnimations` writes inline as `Math.PI/180`.
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -119,6 +119,7 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     let wire = SwingWireData {
         prototypes: SwingAnimations::resolve(&items)?,
         components,
+        use_profiles: rewo_data::use_item::UseProfiles::resolve(&items)?,
     };
     let classes = EntityClasses::resolve(&entity_types)?;
     let player_tid = entity_types.player_id;
@@ -159,6 +160,12 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
         .id("minecraft:crossbow")
         .ok_or("registries.json: no minecraft:crossbow")?;
     let _ = crate::live_cmd::CROSSBOW_ITEM.set(Some(crossbow));
+    // M23: the items whose getUseAnimation reaches each use-driven arm pose.
+    let use_item = |name: &str| -> Result<i32, String> {
+        items
+            .id(name)
+            .ok_or_else(|| format!("registries.json: no {name}"))
+    };
 
     println!(
         "[swingshot] ids: animate={animate_id} set_equipment={equip_id} \
@@ -181,6 +188,12 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
         animate_id,
         equip_id,
         sed_id,
+        shield: use_item("minecraft:shield")?,
+        spyglass: use_item("minecraft:spyglass")?,
+        goat_horn: use_item("minecraft:goat_horn")?,
+        brush: use_item("minecraft:brush")?,
+        trident: use_item("minecraft:trident")?,
+        apple: use_item("minecraft:apple")?,
         wrong_id,
         player_tid,
         zombie_tid,
@@ -212,6 +225,7 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     check_pose(&mut c, &ctx);
     check_arm_poses(&mut c, &ctx);
     check_mob_rigs(&mut c, &ctx);
+    check_item_use(&mut c, &ctx);
     check_integration(&mut c, &ctx);
 
     println!(
@@ -265,6 +279,14 @@ struct Ctx {
     /// pillager rigs (M20).
     bow: i32,
     crossbow: i32,
+    /// The items whose `getUseAnimation` reaches each of the eight
+    /// use-driven arm poses (M23), resolved from the real registry.
+    shield: i32,
+    spyglass: i32,
+    goat_horn: i32,
+    brush: i32,
+    trident: i32,
+    apple: i32,
     skeleton_tid: i32,
     pillager_tid: i32,
     vindicator_tid: i32,
@@ -407,12 +429,8 @@ fn expect_attack(
     e.left_rot[0] = f.cos() * 2.0 * walk_amount * 0.5;
     // Then the hold pose, exactly where `setupAnim` runs its dispatch: after
     // the walk assignment and before `setupAttackAnimation`.
-    if want_poses_arm(poses, false) {
-        expect_pose_arm(&mut e.right_rot, poses.right, false, head_y_rot, head_x_rot);
-    }
-    if want_poses_arm(poses, true) {
-        expect_pose_arm(&mut e.left_rot, poses.left, true, head_y_rot, head_x_rot);
-    }
+    expect_pose_stage(&mut e.right_rot, poses, false, head_y_rot, head_x_rot);
+    expect_pose_stage(&mut e.left_rot, poses, true, head_y_rot, head_x_rot);
     if attack_time <= 0.0 {
         // `if (!(attackTime <= 0.0F))` — the attack is skipped, but the arm
         // bob at the end of `setupAnim` is not.
@@ -559,11 +577,39 @@ enum Stack {
     OverrideThenDamage(i32, u8, i32, i32),
     /// Item whose patch leads with a component this decoder cannot walk.
     Unwalkable(i32),
+    /// A crossbow whose patch sets `minecraft:charged_projectiles` to a
+    /// one-entry list — `CrossbowItem.isCharged` true (M23). The nested value
+    /// is an `ItemStackTemplate`: item id, count, then its own patch.
+    Charged(i32, i32),
+    /// The same component set to an **empty** list, which `isCharged` reads as
+    /// not charged. The distinguishing case: present but empty must not read
+    /// as charged just because the component was mentioned.
+    ChargedEmpty(i32),
 }
 
 fn push_stack(b: &mut Vec<u8>, s: &Stack, comp: DataComponentIds) {
     match s {
         Stack::Empty => varint(0, b),
+        Stack::Charged(item, projectile) => {
+            varint(1, b);
+            varint(*item, b);
+            varint(1, b); // one added component
+            varint(0, b);
+            varint(comp.charged_projectiles, b);
+            varint(1, b); // ByteBufCodecs.list length
+            varint(*projectile, b); // Item.STREAM_CODEC
+            varint(1, b); // VAR_INT count
+            varint(0, b); // nested patch: 0 added
+            varint(0, b); // nested patch: 0 removed
+        }
+        Stack::ChargedEmpty(item) => {
+            varint(1, b);
+            varint(*item, b);
+            varint(1, b);
+            varint(0, b);
+            varint(comp.charged_projectiles, b);
+            varint(0, b); // empty list
+        }
         Stack::Plain(item) => {
             varint(1, b);
             varint(*item, b);
@@ -712,6 +758,7 @@ fn pose(
     limb_amount: f32,
     spears: &ItemTag,
     bow: Option<i32>,
+    crossbow: Option<i32>,
 ) -> (
     SwingPose,
     ArmPoses,
@@ -720,7 +767,7 @@ fn pose(
     let attack = crate::live_cmd::resolve_attack_anim(t, eid, alpha);
     // The SAME app resolver `collect_entities` uses — the gate must not build
     // its own `ArmPoses`, or it would stop proving the live mapping.
-    let arm_poses = crate::live_cmd::resolve_arm_poses(t, eid, spears);
+    let arm_poses = crate::live_cmd::resolve_arm_poses(t, eid, kind, spears, bow, crossbow);
     // M20: the same app resolver the collector uses for the mob rigs.
     let mob = crate::live_cmd::resolve_mob_combat(t, eid, kind, bow);
     let deltas = oracle_part_deltas(
@@ -749,52 +796,173 @@ fn pose(
 
 /// `ArmPose`'s `twoHanded` constructor argument. `EMPTY(false,…)`,
 /// `ITEM(false,…)`, `SPEAR(false,…)`.
-fn want_two_handed(_p: ArmPose) -> bool {
-    false
+fn want_two_handed(p: ArmPose) -> bool {
+    matches!(
+        p,
+        ArmPose::BowAndArrow | ArmPose::CrossbowCharge | ArmPose::CrossbowHold
+    )
 }
 
-/// `ArmPose`'s `affectsOffhandPose` constructor argument. `EMPTY(…,false)`,
-/// `ITEM(…,false)`, `SPEAR(…,true)`.
+/// `ArmPose`'s `affectsOffhandPose` constructor argument, transcribed
+/// independently from `HumanoidModel:488` — never read off the production
+/// `ArmPose::affects_offhand_pose`.
 fn want_affects_offhand(p: ArmPose) -> bool {
-    matches!(p, ArmPose::Spear)
+    matches!(
+        p,
+        ArmPose::BowAndArrow
+            | ArmPose::ThrowTrident
+            | ArmPose::CrossbowCharge
+            | ArmPose::CrossbowHold
+            | ArmPose::Spear
+    )
 }
 
-/// `setupAnim`'s pose dispatch, `isUsingItem == false` branch — whether
-/// `pose{Left,Right}Arm` is called for this arm at all.
+/// Which arm `setupAnim` poses first, and whether the second runs — **both**
+/// dispatch branches, including the `isUsingItem` one M23 made reachable.
+fn want_pose_order(p: ArmPoses) -> (bool, bool) {
+    let first_left = if p.using_item {
+        // `mainHandUsed == rightHanded` → right first.
+        p.main_hand_used != p.right_handed
+    } else {
+        let two_handed_offhand = if p.right_handed {
+            want_two_handed(p.left)
+        } else {
+            want_two_handed(p.right)
+        };
+        p.right_handed != two_handed_offhand
+    };
+    let first = if first_left { p.left } else { p.right };
+    (first_left, !want_affects_offhand(first))
+}
+
+/// Whether `pose{Left,Right}Arm` is called for this arm at all.
 fn want_poses_arm(p: ArmPoses, left: bool) -> bool {
     if !p.known {
         return false;
     }
-    let two_handed_offhand = if p.right_handed {
-        want_two_handed(p.left)
-    } else {
-        want_two_handed(p.right)
-    };
-    if p.right_handed != two_handed_offhand {
-        if left {
-            true
-        } else {
-            !want_affects_offhand(p.left)
-        }
-    } else if left {
-        !want_affects_offhand(p.right)
-    } else {
+    let (first_left, second_runs) = want_pose_order(p);
+    if first_left == left {
         true
+    } else {
+        second_runs
     }
 }
 
-/// `poseRightArm` / `poseLeftArm` for the three modelled poses, plus the
-/// unconditional half of `SpearAnimations.thirdPersonHandUse`.
-fn expect_pose_arm(rot: &mut [f32; 3], pose: ArmPose, left: bool, head_yaw: f32, head_pitch: f32) {
+/// The whole pose stage for one arm: replay the dispatch and apply every
+/// running case's effect on this arm, in vanilla's order.
+fn expect_pose_stage(rot: &mut [f32; 3], p: ArmPoses, left: bool, head_yaw: f32, head_pitch: f32) {
+    if !p.known {
+        return;
+    }
+    let (first_left, second_runs) = want_pose_order(p);
+    let pose_of = |l: bool| if l { p.left } else { p.right };
+    expect_pose_arm(
+        rot,
+        p,
+        pose_of(first_left),
+        first_left,
+        left,
+        head_yaw,
+        head_pitch,
+    );
+    if second_runs {
+        let sl = !first_left;
+        expect_pose_arm(rot, p, pose_of(sl), sl, left, head_yaw, head_pitch);
+    }
+}
+
+/// One `pose{Right,Left}Arm` case's effect on the arm `target_left`.
+///
+/// Independently transcribed from `HumanoidModel.poseRightArm` / `poseLeftArm`
+/// / `poseBlockingArm` and `AnimationUtils.animateCrossbow{Hold,Charge}`.
+fn expect_pose_arm(
+    rot: &mut [f32; 3],
+    p: ArmPoses,
+    pose: ArmPose,
+    pose_left: bool,
+    target_left: bool,
+    head_yaw: f32,
+    head_pitch: f32,
+) {
     use std::f32::consts::{FRAC_PI_2, PI};
+    let own = pose_left == target_left;
+    let both = matches!(
+        pose,
+        ArmPose::BowAndArrow | ArmPose::CrossbowCharge | ArmPose::CrossbowHold
+    );
+    if !own && !both {
+        return;
+    }
+    // `holdingInRightArm`.
+    let right = !pose_left;
+    let lerp = |d: f32, a: f32, b: f32| a + d * (b - a);
     match pose {
         ArmPose::Empty => rot[1] = 0.0,
         ArmPose::Item => {
             rot[0] = rot[0] * 0.5 - PI / 10.0;
             rot[1] = 0.0;
         }
+        ArmPose::Block => {
+            rot[0] = rot[0] * 0.5 - 0.9424779 + head_pitch.clamp(-(PI * 4.0 / 9.0), 0.43633232);
+            rot[1] =
+                (if right { -30.0f32 } else { 30.0 }) * DEG + head_yaw.clamp(-PI / 6.0, PI / 6.0);
+        }
+        // right-called: rightArm.yRot = -0.1 + hy;       leftArm.yRot = 0.1 + hy + 0.4
+        // left-called:  rightArm.yRot = -0.1 + hy - 0.4; leftArm.yRot = 0.1 + hy
+        ArmPose::BowAndArrow => {
+            let base = if target_left { 0.1 } else { -0.1 };
+            let nudge = if own {
+                0.0
+            } else if target_left {
+                0.4
+            } else {
+                -0.4
+            };
+            rot[1] = base + head_yaw + nudge;
+            rot[0] = -PI / 2.0 + head_pitch;
+        }
+        ArmPose::ThrowTrident => {
+            rot[0] = rot[0] * 0.5 - PI;
+            rot[1] = 0.0;
+        }
+        ArmPose::CrossbowCharge => {
+            let max = p.max_crossbow_charge;
+            if !(max > 0.0) {
+                return;
+            }
+            if own {
+                rot[1] = if right { -0.8 } else { 0.8 };
+                rot[0] = -0.97079635;
+            } else {
+                let alpha = p.ticks_using_item.clamp(0.0, max) / max;
+                rot[1] = lerp(alpha, 0.4, 0.85) * if right { 1.0 } else { -1.0 };
+                rot[0] = lerp(alpha, -0.97079635, -PI / 2.0);
+            }
+        }
+        ArmPose::CrossbowHold => {
+            if own {
+                rot[1] = (if right { -0.3f32 } else { 0.3 }) + head_yaw;
+                rot[0] = -PI / 2.0 + head_pitch + 0.1;
+            } else {
+                rot[1] = (if right { 0.6f32 } else { -0.6 }) + head_yaw;
+                rot[0] = -1.5 + head_pitch;
+            }
+        }
+        ArmPose::Spyglass => {
+            // isCrouching is unmodelled, hence false, so the PI/12 duck is out.
+            rot[0] = (head_pitch - 1.9198622).clamp(-2.4, 3.3);
+            rot[1] = head_yaw + if right { -PI / 12.0 } else { PI / 12.0 };
+        }
+        ArmPose::TootHorn => {
+            rot[0] = head_pitch.clamp(-1.2, 1.2) - 1.4835298;
+            rot[1] = head_yaw + if right { -PI / 6.0 } else { PI / 6.0 };
+        }
+        ArmPose::Brush => {
+            rot[0] = rot[0] * 0.5 - PI / 5.0;
+            rot[1] = 0.0;
+        }
         ArmPose::Spear => {
-            let invert = if left { -1.0f32 } else { 1.0 };
+            let invert = if pose_left { -1.0f32 } else { 1.0 };
             rot[1] = -0.1 * invert + head_yaw;
             rot[0] = -FRAC_PI_2 + head_pitch + 0.8;
             // isFallFlying / swimAmount are both false for any state this
@@ -1379,14 +1547,14 @@ fn check_equipment(c: &mut Checker, ctx: &Ctx) {
 fn check_arms(c: &mut Checker, ctx: &Ctx) {
     let mut t = table(ctx);
     swing(ctx, &mut t, 1, 0);
-    let (main_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
+    let (main_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
     c.record(
         "e1.a_main_hand_swing_uses_the_main_arm",
         !main_pose.left_arm,
         format!("attackArm left={} (mainArm defaults to RIGHT)", main_pose.left_arm),
     );
     swing(ctx, &mut t, 1, 3);
-    let (off_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
+    let (off_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
     c.record(
         "e2.an_off_hand_swing_uses_the_opposite_arm",
         off_pose.left_arm,
@@ -1403,9 +1571,9 @@ fn check_arms(c: &mut Checker, ctx: &Ctx) {
     );
     let _ = &ctx.classes;
     swing(ctx, &mut t, 1, 0);
-    let (lm, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
+    let (lm, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
     swing(ctx, &mut t, 1, 3);
-    let (lo, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
+    let (lo, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
     c.record(
         "e3.the_main_arm_metadata_mirrors_both_hands",
         routed && lm.left_arm && !lo.left_arm,
@@ -1465,7 +1633,7 @@ fn posed_net(
     for _ in 0..ticks {
         t.tick_lerp();
     }
-    let (attack, poses, deltas) = pose(kind, &t, 1, alpha, pitch, net, limb.0, limb.1, &ctx.spears, Some(ctx.bow));
+    let (attack, poses, deltas) = pose(kind, &t, 1, alpha, pitch, net, limb.0, limb.1, &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
     let expect = expect_attack(
         attack.attack_time,
         attack.left_arm,
@@ -1612,13 +1780,24 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
     // strike untouched — which is why this is no longer "back to 0" on both
     // arms now that the hold stage exists.
     let mut hold_left = [0.0f32; 3];
-    expect_pose_arm(&mut hold_left, ArmPose::Spear, true, 0.0, pitch);
-    // What the SPEAR hold pose alone leaves on the left arm — independently
-    // transcribed, so the assertion below is not the renderer restating itself.
-    // `thirdPersonAttackHand` subtracts exactly the prologue yaw the attack
-    // added, so whatever the hold pose set survives the strike untouched.
-    let mut hold_left = [0.0f32; 3];
-    expect_pose_arm(&mut hold_left, ArmPose::Spear, true, 0.0, pitch);
+    expect_pose_arm(
+        &mut hold_left,
+        ArmPoses {
+            right: ArmPose::Spear,
+            left: ArmPose::Spear,
+            right_handed: true,
+            known: true,
+            using_item: false,
+            main_hand_used: true,
+            ticks_using_item: 0.0,
+            max_crossbow_charge: 0.0,
+        },
+        ArmPose::Spear,
+        true,
+        true,
+        0.0,
+        pitch,
+    );
     c.record(
         "g1.the_stab_strike_on_the_attack_arm_is_exact",
         astab.kind == SwingKind::Stab
@@ -1988,6 +2167,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.1,
         &ctx.spears,
         None,
+        Some(ctx.crossbow),
     );
     let esp = expect_attack(
         0.0,
@@ -2071,6 +2251,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.1,
         &ctx.spears,
         None,
+        Some(ctx.crossbow),
     );
     let r2 = find(&d2, "right_arm").map(|(r, _)| r);
     c.record(
@@ -2111,6 +2292,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.1,
         &ctx.spears,
         None,
+        Some(ctx.crossbow),
     );
     c.record(
         "j8.handedness_selects_which_arm_the_dispatch_protects",
@@ -2141,6 +2323,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.1,
         &ctx.spears,
         None,
+        Some(ctx.crossbow),
     );
     let ecl = expect_attack(
         0.0,
@@ -2193,6 +2376,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.1,
         &ctx.spears,
         None,
+        Some(ctx.crossbow),
     );
     let ru = find(&du, "right_arm").map(|(r, _)| r);
     c.record(
@@ -2312,6 +2496,471 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
     )
 }
 
+/// M23 — item-use state: the derived clock, and the eight arm poses it gates.
+///
+/// The clock witnesses drive `set_entity_data` through the production router,
+/// so they prove the index-8 decode, the kind gate and
+/// `onSyncedDataUpdated`'s branch shape together. The pose witnesses drive the
+/// production resolver and compare against this file's independent
+/// transcription of `poseRightArm` / `poseLeftArm`.
+fn check_item_use(c: &mut Checker, ctx: &Ctx) {
+    const TOL: f32 = 1e-6;
+    let pitch = 0.35_f32;
+    let limb = (7.5_f32, 0.8_f32);
+
+    // `DATA_LIVING_ENTITY_FLAGS` bit 1 = using, bit 2 = off-hand.
+    let using_main = 1u8;
+    let using_off = 3u8;
+
+    // --- the clock --------------------------------------------------------
+    let mut t = table(ctx);
+    equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.shield))]);
+    meta(ctx, &mut t, 1, 8, 0, &[using_main]);
+    let latched = t.use_state(1);
+    c.record(
+        "m1.the_using_bit_latches_the_duration_from_the_held_item",
+        latched.using
+            && latched.remaining == 72000
+            && latched.duration == 72000
+            && latched.hand == rewo_world::entities::InteractionHand::MainHand,
+        format!(
+            "shield + flags 0b1 -> using={} hand={:?} remaining={} duration={} \
+             (Item.getUseDuration's BLOCKS_ATTACKS branch, 72000)",
+            latched.using, latched.hand, latched.remaining, latched.duration
+        ),
+    );
+
+    t.tick_lerp();
+    t.tick_lerp();
+    t.tick_lerp();
+    let ticked = t.use_state(1);
+    c.record(
+        "m2.each_tick_decrements_the_remaining_count",
+        ticked.remaining == 72000 - 3 && ticked.ticks_using_item() == 3,
+        format!(
+            "after 3 ticks remaining={} (want 71997), getTicksUsingItem()={} (want 3)",
+            ticked.remaining,
+            ticked.ticks_using_item()
+        ),
+    );
+
+    // A repeated `true` must NOT restart: `useItem` is no longer empty, so
+    // `onSyncedDataUpdated`'s first branch does not run.
+    meta(ctx, &mut t, 1, 8, 0, &[using_main]);
+    let repeated = t.use_state(1);
+    c.record(
+        "m3.a_repeated_using_flag_does_not_restart_the_clock",
+        repeated.remaining == 72000 - 3,
+        format!(
+            "remaining={} after re-sending the same flags (want 71997, NOT 72000) — \
+             the branch is guarded on useItem.isEmpty(), not on the flag changing",
+            repeated.remaining
+        ),
+    );
+
+    meta(ctx, &mut t, 1, 8, 0, &[0]);
+    let cleared = t.use_state(1);
+    c.record(
+        "m4.clearing_the_flag_empties_the_use_item_and_zeroes_the_clock",
+        !cleared.using && cleared.remaining == 0 && cleared.item_id.is_none(),
+        format!(
+            "using={} remaining={} item={:?}",
+            cleared.using, cleared.remaining, cleared.item_id
+        ),
+    );
+
+    // A hand swap mid-use: `updatingUsingItem` compares the *current* hand item
+    // against `useItem` each tick and stops using when they differ.
+    let mut t2 = table(ctx);
+    equip(ctx, &mut t2, 1, &[(0, Stack::Plain(ctx.shield))]);
+    meta(ctx, &mut t2, 1, 8, 0, &[using_main]);
+    equip(ctx, &mut t2, 1, &[(0, Stack::Plain(ctx.sword))]);
+    t2.tick_lerp();
+    let swapped = t2.use_state(1);
+    c.record(
+        "m5.swapping_the_held_item_mid_use_stops_the_use",
+        swapped.remaining == 0 && swapped.item_id.is_none() && swapped.using,
+        format!(
+            "after swapping shield->sword and ticking: remaining={} item={:?} using={} — \
+             stopUsingItem clears useItem but NOT the flag on a client",
+            swapped.remaining, swapped.item_id, swapped.using
+        ),
+    );
+
+    // Index 8 is the first slot a direct `Entity` subclass may claim, so the
+    // serializer alone cannot disambiguate it — a boat must be inert.
+    let mut t3 = table(ctx);
+    meta(ctx, &mut t3, 5, 8, 0, &[using_main]);
+    c.record(
+        "m6.a_non_living_entity_never_takes_the_index_8_byte",
+        !t3.use_state(5).using,
+        format!(
+            "boat sent flags 0b1 -> using={} (Entity owns 0..7, so an AbstractArrow \
+             puts its own byte at 8 and it does not mean 'using an item')",
+            t3.use_state(5).using
+        ),
+    );
+
+    // Wrong index / wrong serializer must both be inert — the mutation
+    // partners for m1.
+    let mut t4 = table(ctx);
+    equip(ctx, &mut t4, 1, &[(0, Stack::Plain(ctx.shield))]);
+    meta(ctx, &mut t4, 1, 9, 0, &[using_main]);
+    let wrong_index = t4.use_state(1).using;
+    meta(ctx, &mut t4, 1, 8, 8, &[1]);
+    let wrong_ser = t4.use_state(1).using;
+    c.record(
+        "m7.the_wrong_index_or_serializer_sets_nothing",
+        !wrong_index && !wrong_ser,
+        format!(
+            "index 9 BYTE -> using={}; index 8 BOOLEAN -> using={} (both must be false)",
+            wrong_index, wrong_ser
+        ),
+    );
+
+    // --- the poses --------------------------------------------------------
+    // Each item reaches its pose only while the use gate is open. `used`
+    // returns the resolved poses plus the rendered + expected right-arm rot.
+    let used = |item: i32, flags: u8| -> (ArmPoses, Option<[f32; 3]>, Expect) {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(0, Stack::Plain(item))]);
+        if flags != 0 {
+            meta(ctx, &mut t, 1, 8, 0, &[flags]);
+        }
+        let (attack, poses, deltas) =
+            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let e = expect_attack(
+            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
+            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+        );
+        let r = find(&deltas, "right_arm").map(|(r, _)| r);
+        (poses, r, e)
+    };
+
+    let cases: [(&str, i32, ArmPose); 6] = [
+        ("shield", ctx.shield, ArmPose::Block),
+        ("bow", ctx.bow, ArmPose::BowAndArrow),
+        ("trident", ctx.trident, ArmPose::ThrowTrident),
+        ("spyglass", ctx.spyglass, ArmPose::Spyglass),
+        ("goat_horn", ctx.goat_horn, ArmPose::TootHorn),
+        ("brush", ctx.brush, ArmPose::Brush),
+    ];
+    let mut all_selected = true;
+    let mut all_exact = true;
+    let mut detail = Vec::new();
+    for (name, item, want) in cases {
+        let (poses, got, e) = used(item, using_main);
+        let selected = poses.right == want;
+        let exact = got.is_some_and(|r| near3(r, e.right_rot, TOL));
+        // The pose must also actually MOVE the arm relative to the same item
+        // held with the gate shut — otherwise "selected" proves nothing.
+        let (_, idle, _) = used(item, 0);
+        let moved = match (got, idle) {
+            (Some(a), Some(b)) => !near3(a, b, 1e-4),
+            _ => false,
+        };
+        all_selected &= selected && moved;
+        all_exact &= exact;
+        detail.push(format!(
+            "{name}->{:?}{} rot={} want={}",
+            poses.right,
+            if moved { "" } else { " (INERT!)" },
+            got.map(fmt3).unwrap_or_default(),
+            fmt3(e.right_rot)
+        ));
+    }
+    c.record(
+        "m8.each_use_animation_selects_and_moves_its_arm_pose",
+        all_selected,
+        format!("with the use gate open: {}", detail.join("; ")),
+    );
+    c.record(
+        "m9.every_use_driven_pose_body_is_exact",
+        all_exact,
+        format!("rendered vs independently transcribed: {}", detail.join("; ")),
+    );
+
+    // The gate is what makes the difference: the same shield with the flag
+    // clear must pose ITEM, not BLOCK.
+    let (shut, _, _) = used(ctx.shield, 0);
+    c.record(
+        "m10.without_the_use_flag_the_same_item_poses_item",
+        shut.right == ArmPose::Item,
+        format!(
+            "shield, flags 0 -> {:?} (want Item) — the eight poses are gated on \
+             getUsedItemHand() == hand && getUseItemRemainingTicks() > 0",
+            shut.right
+        ),
+    );
+
+    // An EAT item is used but has no `ArmPose` case, so it falls through the
+    // switch to the ITEM tail rather than being suppressed.
+    let (eaten, _, _) = used(ctx.apple, using_main);
+    c.record(
+        "m11.an_eaten_item_falls_through_the_switch_to_item",
+        eaten.right == ArmPose::Item && eaten.using_item,
+        format!(
+            "apple + using -> {:?}, isUsingItem={} (EAT/DRINK/BUNDLE/NONE have no \
+             case in getArmPose's switch)",
+            eaten.right, eaten.using_item
+        ),
+    );
+
+    // The used hand selects which arm poses: an off-hand shield on a
+    // right-handed player poses the LEFT arm and leaves the right alone.
+    let (off, _, _) = {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(1, Stack::Plain(ctx.shield))]);
+        meta(ctx, &mut t, 1, 8, 0, &[using_off]);
+        let (attack, poses, deltas) =
+            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let _ = attack;
+        (poses, deltas, ())
+    };
+    c.record(
+        "m12.the_used_hand_decides_which_arm_takes_the_pose",
+        off.left == ArmPose::Block && off.right == ArmPose::Empty && !off.main_hand_used,
+        format!(
+            "off-hand shield on a right-handed player -> right={:?} left={:?} \
+             mainHandUsed={}",
+            off.right, off.left, off.main_hand_used
+        ),
+    );
+
+    // --- both-arm poses ---------------------------------------------------
+    // BOW_AND_ARROW writes the arm it was NOT called for. Proving that needs
+    // the *other* arm to differ from what it would be with the bow gate shut.
+    let bow_open = {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.bow))]);
+        meta(ctx, &mut t, 1, 8, 0, &[using_main]);
+        let (attack, poses, deltas) =
+            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let e = expect_attack(
+            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
+            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+        );
+        (poses, find(&deltas, "left_arm").map(|(r, _)| r), e)
+    };
+    c.record(
+        "m13.a_two_handed_pose_writes_the_other_arm_too",
+        bow_open.0.right == ArmPose::BowAndArrow
+            && bow_open.0.left == ArmPose::Empty
+            && bow_open.1.is_some_and(|r| near3(r, bow_open.2.left_rot, TOL))
+            && bow_open.1.is_some_and(|r| (r[1] - (0.1 + 0.4)).abs() < 1e-4),
+        format!(
+            "bow drawn: right={:?} left={:?}; LEFT arm rot={} want={} — the left \
+             arm's yRot is 0.1 + head.yRot + 0.4 even though its own pose is EMPTY \
+             and was never called (BOW_AND_ARROW.affectsOffhandPose() suppressed it)",
+            bow_open.0.right,
+            bow_open.0.left,
+            bow_open.1.map(fmt3).unwrap_or_default(),
+            fmt3(bow_open.2.left_rot)
+        ),
+    );
+
+    // --- CROSSBOW_HOLD: charged vs not ------------------------------------
+    let hold = |stack: Stack| -> ArmPoses {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(0, stack)]);
+        let (_, poses, _) = pose(
+            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+        );
+        poses
+    };
+    let charged = hold(Stack::Charged(ctx.crossbow, ctx.apple));
+    let bare = hold(Stack::Plain(ctx.crossbow));
+    let empty_list = hold(Stack::ChargedEmpty(ctx.crossbow));
+    c.record(
+        "m14.only_a_charged_crossbow_holds",
+        charged.right == ArmPose::CrossbowHold
+            && bare.right == ArmPose::Item
+            && empty_list.right == ArmPose::Item,
+        format!(
+            "charged={:?} bare={:?} empty-list={:?} — isCharged is \
+             !getOrDefault(CHARGED_PROJECTILES, EMPTY).isEmpty(), so a present but \
+             empty list is NOT charged",
+            charged.right, bare.right, empty_list.right
+        ),
+    );
+
+    // Walking `charged_projectiles` is what makes that reachable at all: before
+    // M23 the component was un-transcribed, so the stack was Unwalkable and the
+    // whole baseline was suppressed.
+    c.record(
+        "m15.the_charged_projectiles_patch_is_walked_not_suppressed",
+        charged.known && empty_list.known,
+        format!(
+            "charged known={} empty-list known={} — an unwalkable patch would \
+             suppress the pose entirely (HandItem::Unknown)",
+            charged.known, empty_list.known
+        ),
+    );
+
+    // The two-handed override: a charged crossbow in the main hand rewrites the
+    // off-hand pose to ITEM/EMPTY regardless of what the off-hand holds.
+    let overridden = {
+        let mut t = table(ctx);
+        equip(
+            ctx, &mut t, 1,
+            &[(0, Stack::Charged(ctx.crossbow, ctx.apple)), (1, Stack::Plain(ctx.spear))],
+        );
+        let (_, poses, _) = pose(
+            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+        );
+        poses
+    };
+    c.record(
+        "m16.a_two_handed_main_hand_rewrites_the_off_hand_pose",
+        overridden.right == ArmPose::CrossbowHold && overridden.left == ArmPose::Item,
+        format!(
+            "charged crossbow + off-hand SPEAR -> right={:?} left={:?} (want Item, \
+             NOT Spear) — mainHandPose.isTwoHanded() rewrites offHandPose, which is \
+             why the pose must be computed per HAND and not per arm",
+            overridden.right, overridden.left
+        ),
+    );
+
+    // --- CROSSBOW_CHARGE lerps over the elapsed use ticks ------------------
+    let charge_at = |ticks: u32| -> (ArmPoses, Option<[f32; 3]>, Expect) {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.crossbow))]);
+        meta(ctx, &mut t, 1, 8, 0, &[using_main]);
+        for _ in 0..ticks {
+            t.tick_lerp();
+        }
+        let (attack, poses, deltas) =
+            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let e = expect_attack(
+            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
+            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+        );
+        (poses, find(&deltas, "left_arm").map(|(r, _)| r), e)
+    };
+    let (p0, l0, e0) = charge_at(0);
+    let (_, l12, e12) = charge_at(12);
+    let (_, l25, e25) = charge_at(25);
+    c.record(
+        "m17.the_crossbow_charge_pulling_arm_lerps_over_the_use_clock",
+        p0.right == ArmPose::CrossbowCharge
+            && p0.max_crossbow_charge == 25.0
+            && l0.is_some_and(|r| near3(r, e0.left_rot, TOL))
+            && l12.is_some_and(|r| near3(r, e12.left_rot, TOL))
+            && l25.is_some_and(|r| near3(r, e25.left_rot, TOL))
+            && match (l0, l12, l25) {
+                (Some(a), Some(b), Some(cc)) => a[1] < b[1] && b[1] < cc[1],
+                _ => false,
+            },
+        format!(
+            "pose={:?} max={} — LEFT (pulling) arm at 0/12/25 ticks: {} / {} / {} \
+             (want {} / {} / {}); yRot must increase monotonically 0.4 -> 0.85",
+            p0.right,
+            p0.max_crossbow_charge,
+            l0.map(fmt3).unwrap_or_default(),
+            l12.map(fmt3).unwrap_or_default(),
+            l25.map(fmt3).unwrap_or_default(),
+            fmt3(e0.left_rot),
+            fmt3(e12.left_rot),
+            fmt3(e25.left_rot),
+        ),
+    );
+
+    // --- the avatar / mob split -------------------------------------------
+    // `HumanoidMobRenderer.getArmPose` falls through to EMPTY, not ITEM. This
+    // was collapsed to the avatar function through M22.
+    let mob_armed = {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 3, &[(0, Stack::Plain(ctx.sword))]);
+        let (_, poses, _) = pose(
+            EntityModelKind::Zombie, &t, 3, 1.0, pitch, 0.0, limb.0, limb.1,
+            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+        );
+        poses
+    };
+    let player_armed = {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.sword))]);
+        let (_, poses, _) = pose(
+            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
+            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+        );
+        poses
+    };
+    c.record(
+        "m18.an_armed_mob_poses_empty_where_an_armed_player_poses_item",
+        mob_armed.right == ArmPose::Empty && player_armed.right == ArmPose::Item,
+        format!(
+            "same sword: zombie->{:?} player->{:?} — HumanoidMobRenderer.getArmPose \
+             checks only STAB-while-swinging and the spears tag, then returns EMPTY",
+            mob_armed.right, player_armed.right
+        ),
+    );
+
+    // A mob still has no use-driven pose: its getArmPose has no use branch,
+    // even though its render state carries the use fields.
+    let mob_shield = {
+        let mut t = table(ctx);
+        equip(ctx, &mut t, 3, &[(0, Stack::Plain(ctx.shield))]);
+        meta(ctx, &mut t, 3, 8, 0, &[using_main]);
+        let (_, poses, _) = pose(
+            EntityModelKind::Zombie, &t, 3, 1.0, pitch, 0.0, limb.0, limb.1,
+            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+        );
+        poses
+    };
+    c.record(
+        "m19.a_mob_using_an_item_still_takes_no_use_pose_but_does_set_the_flag",
+        mob_shield.right == ArmPose::Empty && mob_shield.using_item,
+        format!(
+            "zombie raising a shield -> {:?} with isUsingItem={} — the use fields are \
+             extracted for mobs (extractHumanoidRenderState) but only \
+             AvatarRenderer.getArmPose reads getUseAnimation",
+            mob_shield.right, mob_shield.using_item
+        ),
+    );
+
+    // --- the dispatch order -----------------------------------------------
+    // With isUsingItem set, the dispatch picks the used arm first rather than
+    // deriving the order from twoHandedOffhand.
+    let mut order_ok = true;
+    let mut order_detail = Vec::new();
+    for (rh, main_used, want_first_left) in
+        [(true, true, false), (true, false, true), (false, true, true), (false, false, false)]
+    {
+        let p = ArmPoses {
+            right: ArmPose::Item,
+            left: ArmPose::Item,
+            right_handed: rh,
+            known: true,
+            using_item: true,
+            main_hand_used: main_used,
+            ticks_using_item: 0.0,
+            max_crossbow_charge: 0.0,
+        };
+        let got = p.order();
+        order_ok &= got.first_left == want_first_left && got.second_runs;
+        order_detail.push(format!(
+            "rh={rh} mainUsed={main_used} -> first_left={} (want {want_first_left})",
+            got.first_left
+        ));
+    }
+    c.record(
+        "m20.the_is_using_item_dispatch_branch_picks_the_used_arm_first",
+        order_ok,
+        format!(
+            "{} — vanilla's `mainHandUsed == rightHanded` equality, which M22 \
+             documented as unreachable because isUsingItem was never set",
+            order_detail.join("; ")
+        ),
+    );
+}
+
 fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
     const TOL: f32 = 1e-6;
     let age = 0.0_f32;
@@ -2421,6 +3070,7 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
             limb.1,
             &ctx.spears,
             Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         (a, d)
     };
@@ -2506,6 +3156,10 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
             left: ArmPose::Spear,
             right_handed: true,
             known: true,
+            using_item: false,
+            main_hand_used: true,
+            ticks_using_item: 0.0,
+            max_crossbow_charge: 0.0,
         },
         0.0,
     );
@@ -2572,6 +3226,7 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
             limb.1,
             &ctx.spears,
             Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         (a, d)
     };
@@ -2627,6 +3282,7 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
             limb.1,
             &ctx.spears,
             Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         let mob = crate::live_cmd::resolve_mob_combat(&t, 1, kind, Some(ctx.bow));
         (a, d, mob)
