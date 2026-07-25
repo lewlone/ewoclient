@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M17 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions, entity events)
+## Rewo — from-scratch native Minecraft client (M0–M18 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions, entity events, Allay dance)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1723,11 +1723,13 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `rewo mobshot --gesture name[,age] [--shell]` or
   `REWO_FORCE_GESTURE`). **M17 fires the exact model-visible entity
   events** — Warden attack/sonic-boom + Armadillo re-peek from the
-  `entity_event` packet (see the M17 bullet below). Still open: the Allay
-  dance (`DATA_DANCING` metadata, not an event — event 18 is heart
-  particles only), the Warden tendril (event 61), generic
-  `ClientboundAnimate` arm swings, and dragon flight (bespoke procedural
-  code, posed).
+  `entity_event` packet (see the M17 bullet below). **M18 shipped the Allay
+  dance** — `DATA_DANCING` metadata (index 16, BOOLEAN serializer 8), not an
+  event (event 18 is heart particles only): exact `Allay.tick()` counters +
+  `AllayModel` root/head formulas, gated by `rewo danceshot --check` 24/24
+  (see the M18 bullet below). Still open: the Warden tendril (event 61),
+  generic `ClientboundAnimate` arm swings, and dragon flight (bespoke
+  procedural code, posed).
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 
@@ -2183,6 +2185,47 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   — M17 doesn't touch the replay entity path), physics 600 ticks CORRECTIONS 0,
   light `--no-relight` 884,736 cells / 0 mismatches, live dimension 4/4
   checkpoints + 3/3 transitions. Full detail: REWO_PLAN §15.
+- **M18 exact Allay dance (DATA_DANCING metadata animation) shipped + verified
+  2026-07-25.** Committed locally as `bb8be20` on `codex/rewo-m18-allay-dance`
+  (base `6096bbd`, the M17 handoff; not pushed). The Allay dance is *metadata*,
+  not an entity event (M17 proved event 18 is heart particles) — the first
+  metadata-driven rig. `DATA_DANCING` is **SynchedEntityData index 16, BOOLEAN
+  serializer 8** (`Allay` extends `PathfinderMob`, not `AgeableMob`, so slot 16
+  BOOLEAN is dancing, whereas `AgeableMob`/`Zombie` put `DATA_BABY_ID` there — the
+  byte parser can't disambiguate, only the **kind** can, at the routing layer).
+  Resolved wire facts: `set_entity_data` id **99**, Allay type **2**, Zombie
+  control **151**. Shipped, all decompile-exact: the `Allay.tick()` client
+  counters in `rewo-world` `EntityTable` (dance-tick increments then reads the
+  `%55<15` spin window; `spinning`/`spinning0` ramp ±1 clamped 0..15; false resets
+  on the *next* tick; repeated true does **not** restart; cleared on remove +
+  re-add), the `AllayModel` root/head formulas (`Anim::AllayRoot`/`AllayHead`:
+  `danceSpeed = ageInTicks·8° + walkAnimationSpeed`; `root.yRot = 4π·spin` only
+  while `isSpinning` else 0; `root.zRot = cos·16°·(1−spin)`; `head.yRot/zRot =
+  cos·30°/14°·(1−spin)`; dancing suppresses the head-look; wings stay
+  unconditional), the Allay model **restructured into the real
+  `root→{head, body→{arms,wings}}` hierarchy** (rest geometry neutral, mobshot
+  243/243 unchanged), and **vanilla missing-entity inertness** (`handleSetEntityData`
+  drops metadata for `getEntity==null` — no state mutated). Production chain: raw
+  report-resolved `set_entity_data` → `route_set_entity_data`/`apply_set_entity_data`
+  (kind-aware routing) → `EntityTable` counters → `live_cmd::resolve_allay_dance`
+  (shared by the collector and the gate) → GPU pose; `play_cmd` + `live_cmd` both
+  resolve the Allay type id. **Senior review corrected**: missing-id baby fallback
+  → decompile-exact inert; extracted the shared live resolver so the gate can't
+  bypass the app mapping; `play_cmd` now resolves the Allay id; explicit
+  wrong-index/wrong-serializer witnesses. **Gate: `rewo danceshot --check`** —
+  permanent serverless CPU-only fail-closed **24/24**, two identical runs;
+  independent counter sim + `AllayModel`/`AllayWing` transcriptions (nothing reads
+  the production formulas as expectation), real `packets.json`/`registries.json`.
+  Measured: **368 unit tests** (world 98, net 114, gpu 44, data 9, mesh 38, proto
+  11 = 314 lib; app 54), release build green, plain `git diff --check` clean,
+  eventshot 28/28, mobshot 243/243, lightmapshot/skyshot/tintshot/meshshot/
+  dimensioncheck green (Vulkan validation ON), demo SHA-256 byte-identical to
+  M15/M16/M17, replay GPU avg 0.220 ms (no latency change claimed), live physics
+  600 ticks CORRECTIONS 0, light 884,736 cells / 0 mismatches, dimension 4/4 + 3/3.
+  Exclusions: no live jukebox/AI encounter (raw-packet injection is the
+  deterministic proof); the Allay's unconditional body flying-tilt / root
+  idle-bob / arm idle-bob remain unimplemented (not the dance); no claim of
+  exhaustive index-16 ownership. Full detail: REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

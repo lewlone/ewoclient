@@ -58,13 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 95
-cargo test --release -p rewo-net   --lib   # 110
+cargo test --release -p rewo-world --lib   # 98
+cargo test --release -p rewo-net   --lib   # 114
 cargo test --release -p rewo-gpu   --lib   # 44
 cargo test --release -p rewo-data  --lib   # 9
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 307 lib
-cargo test --release -p rewo-app           # 53   (app-level) → 360 total
+cargo test --release -p rewo-proto --lib   # 11   → 314 lib
+cargo test --release -p rewo-app           # 54   (app-level) → 368 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -147,6 +147,39 @@ real `ageInTicks` clock). Every property carries a mutation/sensitivity partner
 (wrong packet id, missing/wrong-kind entity, event 61/unknown, repeat restart,
 remove/reuse clear, neutral base-pose parts). Run after any entity-event,
 `gen_anim_defs`, Warden/Armadillo rig, or dispatch-seam change.
+
+```bash
+./target/release/rewo.exe danceshot --check
+```
+M18's permanent **serverless** Allay-dance oracle, CPU-only (no socket, no GPU
+device), **fail-closed on a fixed 24/24 witnesses**. The Allay dance is
+*metadata*, not an entity event (event 18 is heart particles) — `DATA_DANCING`
+at SynchedEntityData **index 16, BOOLEAN serializer 8**, driving the exact
+`Allay.tick()` client counters and the `AllayModel` root/head formulas. It drives
+the whole production metadata path:
+
+```text
+raw set_entity_data body (VarInt id + metadata delta stream)
+  -> rewo_net::route_set_entity_data / apply_set_entity_data
+       (production id selection + kind-aware DANCING vs BABY + vanilla
+        missing-entity inertness — getEntity==null drops the whole packet)
+  -> EntityTable::set_dancing + tick_lerp   (the exact client counter lifecycle)
+  -> live_cmd::resolve_allay_dance          (the SAME app resolver the collector uses)
+  -> rewo_gpu oracle_part_deltas            (the exact AllayRoot/AllayHead math)
+```
+
+It loads the real `packets.json`/`registries.json` and proves `set_entity_data`
+id **99**, Allay type **2**, Zombie control **151** before any pose check.
+Expectations are an **independent** counter simulation + independent
+`AllayModel`/`AllayWing` transcriptions — nothing reads the production
+`anim_delta`/`EntityTable`/`AllayDance::tick` as its expectation. Witnesses pin
+Allay-not-baby, the Zombie legit-baby control, wrong packet id, INT-is-size, the
+missing-entity full inertness (incl. an accompanying pose), a **wrong index** and
+a **wrong serializer** at slot 16, the exact spin boundary **@14/@15/@55**,
+repeated-true no-restart, false→reset→true, `isSpinning` distinct from
+`spinningProgress`, partial alpha, remove/reuse, and the sway/spin/suppress-look/
+dance-bit/animationSpeed/wings-intact pose properties. Run after any Allay-dance,
+metadata-routing, `EntityTable` counter, or Allay-model change.
 
 ```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
@@ -259,6 +292,19 @@ listed because they are invisible in the output.
   and the `timelines` holder set are independent members of `DimensionType`;
   deriving one from the other happens to give the right answer for all four
   vanilla dimensions and is still wrong. The tag files decide the timeline.
+- **Metadata for an untracked entity is dropped whole.** 26.2
+  `ClientPacketListener.handleSetEntityData` does `Entity e = getEntity(id); if
+  (e != null) e.getEntityData().assignValues(…)` — an untracked id mutates **no**
+  state (not a baby fallback, not anything). M18's first cut applied a baby
+  fallback for a missing id; senior review caught it against the decompile.
+  `apply_set_entity_data` must return before applying when `entities.get(id)` is
+  `None`.
+- **A metadata slot can be polymorphic by entity kind.** `DATA_DANCING` (Allay)
+  and `DATA_BABY_ID` (`AgeableMob`/`Zombie`) both sit at SynchedEntityData index
+  16 with the BOOLEAN serializer (id 8) — the byte parser cannot separate them.
+  Only the entity *type* (resolved from `registries.json`) can, at the routing
+  layer. The parser must surface the raw bit and let the kind-aware caller route
+  it, not prejudge it.
 
 When a render looks wrong, the fastest diagnostic is to **force one term to a
 constant** (e.g. `lm = vec3(1.0)`) and see which term owns the pixel. That
@@ -268,12 +314,13 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M17` shipped and verified. **M0–M9 are pushed** (`origin/main` @
-`973ea5e`); the **M10–M17 arc is reviewed local work, not yet pushed** (M12 is
-`06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`; M17 is
-committed locally as `55388c8` on branch `codex/rewo-m17-entity-events`, base
-`f4b54d1`, not pushed). M17 is green on every gate; its vanilla test server was stopped by
-exact PID and port 25599 verified free. See `REWO_PLAN.md` §15 for each
+`M0–M18` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M18 arc is reviewed local work, not yet pushed** (M12 is
+`06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`, M17
+`55388c8`; M18 is committed locally as `bb8be20` on branch
+`codex/rewo-m18-allay-dance`, base `6096bbd` — the M17 handoff commit — not
+pushed). M18 is green on every gate; its vanilla test server was stopped by exact
+PID (16856) and port 25599 verified free. See `REWO_PLAN.md` §15 for each
 milestone's exact ground truth and measured gates.
 
 A playable online client: joins online-mode servers with signed chat, real
@@ -299,12 +346,19 @@ The canonical demo PNG is byte-identical to M15. **M17 consumes
 rigs and the Armadillo's re-peek now fire from the exact decompiled
 `WardenAnimation`/metadata definitions, threaded through the production
 dispatch → tick-store → ownership → pose path and proved by the serverless
-`eventshot` 28/28 oracle; the demo PNG stays byte-identical.
+`eventshot` 28/28 oracle; the demo PNG stays byte-identical. **M18 consumes the
+Allay's `DATA_DANCING` metadata** (index 16, BOOLEAN serializer 8): the exact
+`Allay.tick()` client counters + `AllayModel` root/head dance formulas fire
+through the production metadata path (kind-aware routing with vanilla
+missing-entity inertness → `EntityTable` counters → `live_cmd::resolve_allay_dance`
+→ GPU pose), with the Allay model restructured into the real
+root→{head,body→{arms,wings}} hierarchy (rest geometry neutral). Proved by the
+serverless `danceshot` 24/24 oracle; the demo PNG stays byte-identical.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
 `bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
-`dimensioncheck`, `eventshot`.
+`dimensioncheck`, `eventshot`, `danceshot`.
 
 **Open work**, roughly in descending obviousness:
 
@@ -313,10 +367,12 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   error rather than a modelled case. (Biome blend radius is fixed at vanilla's
   default 2 — not yet a setting.)
 - Entity-*event* coverage is the three model-visible ones (Warden attack +
-  sonic boom, Armadillo peek — M17). The Warden tendril (event 61), generic
-  `ClientboundAnimatePacket` arm swings, and the Allay dance (which is
-  `DATA_DANCING` metadata, *not* an entity event — event 18 is heart particles)
-  are the next steps; dragon flight is bespoke procedural code, still posed.
+  sonic boom, Armadillo peek — M17). **The Allay dance shipped in M18** as the
+  first `DATA_DANCING`-metadata rig. The Warden tendril (event 61) and generic
+  `ClientboundAnimatePacket` arm swings are the next animation steps; dragon
+  flight is bespoke procedural code, still posed. The Allay's own unconditional
+  body flying-tilt / root idle-bob / arm idle-bob remain unimplemented (they are
+  not the dance; the wing/hover behavior is implemented + witnessed).
 - Face-occlusion merging is tested per-side rather than as a true shape union
   — differs only for complementary partial faces, which no vanilla pair
   produces.
@@ -339,6 +395,16 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   `tools/gen_vanilla_hierarchy.py`, `tools/gen_anim_defs.ps1`. Re-run after a
   version bump; never hand-edit their output. They are written to fail loud
   on an unrecognised form rather than silently defaulting.
+- **Never run `cargo fmt`.** The Rewo code is hand-formatted; `cargo fmt`
+  rewrites the whole workspace (~21k lines, incl. the generated `anim_defs.rs`).
+  Keep the semantic diff narrow with targeted edits. A couple of Rewo source
+  files (`rewo-gpu/src/entities.rs`, `rewo-app/src/mobshot_cmd.rs`) are **mixed
+  CRLF/LF in HEAD**; the editor may normalise a whole file to CRLF, which trips
+  plain `git diff --check` on your added lines. The clean fix that keeps
+  `git diff --check` green *and* preserves every unchanged byte is to insert
+  LF-only lines: `git diff | tr -d '\r' > p; git checkout HEAD <file>; git apply
+  --ignore-whitespace p`. Verify with plain `git diff --check` (not
+  `-c core.whitespace=cr-at-eol`).
 - **Leave the tree clean and the server stopped** at the end of a work block.
 - **Report failures as failures.** If a gate regresses, say so with the
   numbers. An honest red result is worth more than a green one that was
