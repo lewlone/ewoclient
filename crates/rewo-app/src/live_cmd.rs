@@ -856,6 +856,7 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                             .collect(),
                         right: conv_t(&m.right),
                         left: conv_t(&m.left),
+                        ground: conv_t(&m.ground),
                         from_block: m.from_block,
                     },
                 )
@@ -900,6 +901,27 @@ pub(crate) fn resolve_held_items<'a>(
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
 /// everything else gets mauve, sized by the type table. `now` is the
 /// render clock in seconds — the gesture rigs' time base.
+/// `ItemEntity.bobOffs` — `this.random.nextFloat() * (float)Math.PI * 2`.
+///
+/// Vanilla rolls this in the entity's constructor from a non-deterministic
+/// source and never transmits it, so there is no server value to reproduce and
+/// two vanilla clients watching the same dropped stack disagree about its bob
+/// phase. Deriving it from the entity id is therefore *as vanilla as vanilla*
+/// — it is a valid roll — with the added property of being stable across
+/// frames and reproducible in a gate.
+///
+/// The hash is the 64-bit splitmix64 finalizer, used only to decorrelate
+/// consecutive entity ids; nothing depends on its exact value.
+pub(crate) fn bob_offset_for(id: i32) -> f32 {
+    let mut z = (id as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // The top 24 bits as a [0,1) float, matching `nextFloat`'s precision.
+    let unit = (z >> 40) as f32 * 5.960_464_5e-8;
+    unit * std::f32::consts::TAU
+}
+
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
@@ -957,6 +979,17 @@ fn collect_entities<'a>(
         } else {
             rewo_gpu::mobs::kind_for_entity_name(name)
         };
+        // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata
+        // index 8 with the ITEM_STACK serializer; an entity with one renders
+        // as the item and nothing else, so the model kind is never consulted.
+        // Gated on the type actually being `minecraft:item`: nothing else puts
+        // an ITEM_STACK at slot 8, but the gate makes that explicit rather
+        // than relying on it.
+        let is_item_entity = Some(e.type_id) == etypes.id_of("minecraft:item");
+        let ground_stack = is_item_entity
+            .then(|| session.world.entities.item_stack(id))
+            .flatten();
+
         // Slime / magma-cube size (metadata index 16, vanilla default 1;
         // the model + bbox scale linearly by it). Our slime model is baked
         // at the size-2 look, so scale_mul = size/2 (size 2 → 1.0).
@@ -1044,6 +1077,16 @@ fn collect_entities<'a>(
             yaw: e.yaw,
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
             death_time: session.world.entities.death_state(id).render_death_time(alpha),
+            // M24b: a dropped stack. `Some` makes the renderer draw the item
+            // instead of a model — `ItemEntityRenderer` has no body of its own.
+            ground_item: ground_stack.and_then(|(i, _)| item_names.name(i)),
+            ground_count: ground_stack.map_or(0, |(_, n)| n),
+            // `ItemEntity.bobOffs` is `random.nextFloat() * 2 * PI`, rolled in
+            // the constructor and never sent. Derived from the entity id here
+            // so it is stable per entity; there is no server value it could
+            // match, because vanilla's own clients each roll their own.
+            bob_offset: bob_offset_for(id),
+            ground_seed: ground_stack.map_or(0, |(i, _)| i),
             head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
             pitch: e.pitch,
             limb_swing,

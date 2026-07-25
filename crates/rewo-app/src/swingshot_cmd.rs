@@ -1316,6 +1316,10 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         kind,
         yaw: 0.0,
         death_time: 0.0,
+        ground_item: None,
+        ground_count: 0,
+        bob_offset: 0.0,
+        ground_seed: 0,
         head_yaw: 0.0,
         pitch: 0.0,
         limb_swing: 7.5,
@@ -2493,6 +2497,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             allay: None,
             pillager: Some(ctx.pillager_tid),
             classes: Some(&ctx.classes),
+            components: Some(ctx.wire.components),
         },
     )
 }

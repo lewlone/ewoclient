@@ -3,13 +3,21 @@
 //! type` + a value whose wire format depends on the type
 //! (`EntityDataSerializers` registration order, read from the decompile).
 //!
-//! We extract the reliably-indexed **Entity base** fields — shared flags
-//! (index 0) and custom name (index 2) — skipping the rest by type. The
-//! skip table covers the simple serializers; a complex one (item stack,
-//! particle, …) after the fields we want just stops the parse (we've
-//! already got what we need — those never precede index 2). Slime size /
-//! baby flags live at entity-specific indices (fragile) — deferred.
+//! Fields are read where their index is pinned by counting `defineId` up the
+//! hierarchy, and everything else is skipped by serializer type. Several
+//! indices are **polymorphic** — slot 8 is `LivingEntity`'s flags byte *and*
+//! `ItemEntity`'s stack, slot 15 is a main arm *and* a mob's flags, slot 16 is
+//! baby *and* dancing *and* celebrating. Where the serializer separates them it
+//! does; where it cannot (slot 16's three BOOLEAN claimants) the caller routes
+//! on the entity kind.
+//!
+//! The skip table covers every serializer whose length is self-describing.
+//! ITEM_STACK is the exception: skipping one means walking its
+//! `DataComponentPatch`, which needs the component registry ids, so
+//! [`parse`] takes them and reports the entry unwalkable without them —
+//! ending the parse rather than desynchronising the stream.
 
+use rewo_data::components::DataComponentIds;
 use rewo_proto::reader::PacketReader;
 
 #[derive(Default)]
@@ -93,10 +101,30 @@ pub struct EntityMeta {
     pub byte17: Option<u8>,
     /// Raw index-17 BOOLEAN — `Pillager.IS_CHARGING_CROSSBOW`.
     pub bool17: Option<bool>,
+    /// `ItemEntity.DATA_ITEM` — index 8, **ITEM_STACK** serializer (id 7).
+    ///
+    /// Index 8 is shared with `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, which is
+    /// a BYTE: `ItemEntity` extends `Entity` directly, so 8 is its first own
+    /// slot exactly as it is `LivingEntity`'s. The **serializer** separates
+    /// them with no kind gate needed, the same way HUMANOID_ARM separates
+    /// `DATA_PLAYER_MAIN_HAND` from `DATA_MOB_FLAGS_ID` at index 15.
+    ///
+    /// `Some(None)` is an explicitly *empty* stack — a distinction worth
+    /// keeping, because an item entity whose stack was cleared should stop
+    /// rendering rather than keep its last one. `Some(Some((item, count)))`
+    /// carries the count too: `getRenderedAmount` buckets it into how many
+    /// copies the dropped stack draws.
+    pub item_stack: Option<Option<(i32, i32)>>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
-pub fn parse(r: &mut PacketReader) -> EntityMeta {
+///
+/// `components` supplies the data-component registry ids the ITEM_STACK
+/// serializer needs to walk a stack's `DataComponentPatch`. `None` — the
+/// headless protocol harnesses — leaves ITEM_STACK unwalkable, which ends the
+/// parse at that entry exactly as it did before M24b; that is the honest
+/// answer, since a stack cannot be skipped without knowing its components.
+pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> EntityMeta {
     let mut meta = EntityMeta::default();
     loop {
         let index = match r.u8() {
@@ -129,6 +157,16 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
             // a direct `Entity` subclass would have to claim slot 9 with a
             // FLOAT to collide, which the caller's living gate rules out.
             (9, 3) => meta.health = r.f32().ok(),
+            // ITEM_STACK at 8 = `ItemEntity.DATA_ITEM`. Needs the component
+            // ids to walk the stack; without them the entry is unwalkable and
+            // the parse must stop rather than desynchronise.
+            (8, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
+                Some(crate::item_stack::WireSlot::Empty) => meta.item_stack = Some(None),
+                Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
+                    meta.item_stack = Some(Some((s.item_id, s.count)))
+                }
+                _ => break,
+            },
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),
@@ -146,7 +184,7 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
             (17, 0) => meta.byte17 = r.u8().ok(),
             (17, 8) => meta.bool17 = r.u8().ok().map(|b| b != 0),
             _ => {
-                if !skip_value(r, ty) {
+                if !skip_value_with(r, ty, components) {
                     break; // unknown/complex type — stop (already have ours)
                 }
             }
@@ -157,6 +195,22 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
 
 /// Advance past one value of serializer `ty`. Returns false for complex
 /// types we can't size (item stack, particle, variants, profile …).
+fn skip_value_with(
+    r: &mut PacketReader,
+    ty: i32,
+    components: Option<DataComponentIds>,
+) -> bool {
+    // ITEM_STACK is the one serializer whose *skip* needs external data: its
+    // component patch is self-describing only if the reader knows the codecs.
+    if ty == 7 {
+        return match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
+            Some(slot) => slot.aligned(),
+            None => false,
+        };
+    }
+    skip_value(r, ty)
+}
+
 fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
     match ty {
         // BYTE. Only index 0 (shared flags) is *read* above, but the serializer
@@ -200,12 +254,13 @@ fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
             Err(_) => false,
         },
         18 => r.varint().is_ok() && r.varint().is_ok() && r.varint().is_ok(), // VILLAGER_DATA
-        _ => false, // ITEM_STACK(7), PARTICLE(16), PARTICLES(17), … — bail
+        _ => false, // PARTICLE(16), PARTICLES(17), … — bail
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// A text component sent as a plain-string NBT: tag 8, u16 len, bytes.
@@ -224,7 +279,7 @@ mod tests {
         b.extend_from_slice(&nbt_string("Bessie"));
         b.push(0xFF); // terminator
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r);
+        let m = parse(&mut r, None);
         assert_eq!(m.flags, Some(0x40));
         assert_eq!(m.custom_name.as_deref(), Some("Bessie"));
     }
@@ -236,14 +291,14 @@ mod tests {
         b.extend_from_slice(&nbt_string("Named"));
         b.extend_from_slice(&[0x07, 0x07]); // ITEM_STACK — unskippable
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r);
+        let m = parse(&mut r, None);
         assert_eq!(m.custom_name.as_deref(), Some("Named"));
     }
 
     #[test]
     fn empty_stream_yields_nothing() {
         let mut r = PacketReader::new(&[0xFF]);
-        let m = parse(&mut r);
+        let m = parse(&mut r, None);
         assert!(m.custom_name.is_none() && m.flags.is_none());
     }
 
@@ -255,7 +310,7 @@ mod tests {
         b.extend_from_slice(&[0x10, 0x01, 0x04]); // idx16 INT size=4
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r);
+        let m = parse(&mut r, None);
         assert_eq!(m.size, Some(4));
         assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
     }
@@ -265,16 +320,16 @@ mod tests {
         // A player's `DATA_PLAYER_MAIN_HAND`: index 15, HUMANOID_ARM (42),
         // value 0 = LEFT.
         let mut b: Vec<u8> = vec![0x0F, 42, 0x00, 0xFF];
-        let m = parse(&mut PacketReader::new(&b));
+        let m = parse(&mut PacketReader::new(&b), None);
         assert_eq!(m.main_arm, Some(0));
         // RIGHT.
         b = vec![0x0F, 42, 0x01, 0xFF];
-        assert_eq!(parse(&mut PacketReader::new(&b)).main_arm, Some(1));
+        assert_eq!(parse(&mut PacketReader::new(&b), None).main_arm, Some(1));
         // The BYTE at the same index is `Mob.DATA_MOB_FLAGS_ID` (or an armor
         // stand's client flags) — not a main hand. It must skip cleanly and
         // leave a later field readable.
         b = vec![0x0F, 0x00, 0x02, 0x10, 0x08, 0x01, 0xFF];
-        let m = parse(&mut PacketReader::new(&b));
+        let m = parse(&mut PacketReader::new(&b), None);
         assert_eq!(m.main_arm, None, "BYTE at 15 is a flags byte, not the arm");
         assert_eq!(m.bool16, Some(true), "…and the stream stayed in sync");
     }
@@ -288,7 +343,7 @@ mod tests {
         b.extend_from_slice(&[0x10, 0x08, 0x01]); // idx16 BOOLEAN = true
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r);
+        let m = parse(&mut r, None);
         assert_eq!(m.bool16, Some(true));
         assert_eq!(m.size, None, "BOOLEAN at 16 is not an INT size");
     }
@@ -298,6 +353,12 @@ mod tests {
 mod m20_mob_metadata_tests {
     use crate::metadata;
     use crate::PacketReader;
+
+    /// [`super::parse`] with no component ids — every test below drives
+    /// serializers that need none.
+    fn parse_nc(r: &mut PacketReader) -> metadata::EntityMeta {
+        metadata::parse(r, None)
+    }
 
     /// One `(index, serializer, value)` entry plus the 0xFF terminator.
     fn one(index: u8, ser: i32, value: &[u8]) -> Vec<u8> {
@@ -314,30 +375,30 @@ mod m20_mob_metadata_tests {
     fn the_index_15_byte_is_the_mob_flags_and_the_arm_is_the_humanoid_arm() {
         // BYTE (0) at 15 → `Mob.DATA_MOB_FLAGS_ID`.
         let body = one(15, 0, &[0b0000_0110]);
-        let m = metadata::parse(&mut PacketReader::new(&body));
+        let m = parse_nc(&mut PacketReader::new(&body));
         assert_eq!(m.mob_flags, Some(0b0000_0110));
         assert_eq!(m.main_arm, None, "a flags byte is not a main arm");
 
         // HUMANOID_ARM (42) at 15 → `Avatar.DATA_PLAYER_MAIN_HAND`.
         let body = one(15, 42, &[1]);
-        let m = metadata::parse(&mut PacketReader::new(&body));
+        let m = parse_nc(&mut PacketReader::new(&body));
         assert_eq!(m.main_arm, Some(1));
         assert_eq!(m.mob_flags, None, "a main arm is not a flags byte");
     }
 
     #[test]
     fn index_17_separates_the_spell_byte_from_the_crossbow_boolean() {
-        let m = metadata::parse(&mut PacketReader::new(&one(17, 0, &[3])));
+        let m = parse_nc(&mut PacketReader::new(&one(17, 0, &[3])));
         assert_eq!(m.byte17, Some(3));
         assert_eq!(m.bool17, None);
 
-        let m = metadata::parse(&mut PacketReader::new(&one(17, 8, &[1])));
+        let m = parse_nc(&mut PacketReader::new(&one(17, 8, &[1])));
         assert_eq!(m.bool17, Some(true));
         assert_eq!(m.byte17, None);
 
         // The gesture-state enums share the index but not the serializer, and
         // must keep decoding as gesture state (35..=37).
-        let m = metadata::parse(&mut PacketReader::new(&one(17, 36, &[2])));
+        let m = parse_nc(&mut PacketReader::new(&one(17, 36, &[2])));
         assert_eq!(m.gesture_state, Some(2));
         assert_eq!(m.byte17, None);
     }
@@ -348,7 +409,7 @@ mod m20_mob_metadata_tests {
         // not consume the second's bytes or stop the walk.
         let mut body = vec![15u8, 0, 0b0000_0100];
         body.extend_from_slice(&[16u8, 8, 1, 0xFF]);
-        let m = metadata::parse(&mut PacketReader::new(&body));
+        let m = parse_nc(&mut PacketReader::new(&body));
         assert_eq!(m.mob_flags, Some(0b0000_0100));
         assert_eq!(m.bool16, Some(true), "the entry after the flags byte was lost");
     }

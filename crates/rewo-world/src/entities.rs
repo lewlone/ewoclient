@@ -513,6 +513,10 @@ pub struct EntityTable {
     /// means `DeathState::ALIVE`, which is exact: `entityData.define` seeds
     /// health at 1.0. Cleared on removal.
     deaths: HashMap<i32, DeathState>,
+    /// `ItemEntity.DATA_ITEM` (index 8, ITEM_STACK) → `(item protocol id,
+    /// count)`. Absent means the entity has sent no stack, which is
+    /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
+    item_stacks: HashMap<i32, (i32, i32)>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -804,6 +808,7 @@ impl EntityTable {
         self.hurts.remove(&id);
         self.uses.remove(&id);
         self.deaths.remove(&id);
+        self.item_stacks.remove(&id);
         self.clear_swing(id);
     }
 
@@ -978,6 +983,28 @@ impl EntityTable {
     /// exclusion it stated.
     pub fn has_red_overlay(&self, id: i32) -> bool {
         self.hurt_state(id).has_red_overlay() || self.death_state(id).death_time > 0
+    }
+
+    // -- item entities (M24b) ------------------------------------------------
+
+    /// Set an `ItemEntity`'s stack from `DATA_ITEM` (metadata index 8,
+    /// ITEM_STACK). `None` is an explicitly empty stack, which clears it —
+    /// vanilla's `ItemEntity` with an empty stack renders nothing.
+    pub fn set_item_stack(&mut self, id: i32, stack: Option<(i32, i32)>) {
+        match stack {
+            Some(s) => {
+                self.item_stacks.insert(id, s);
+            }
+            None => {
+                self.item_stacks.remove(&id);
+            }
+        }
+    }
+
+    /// The `(item id, count)` a dropped stack shows, or `None` when the entity
+    /// has sent no stack (or an empty one).
+    pub fn item_stack(&self, id: i32) -> Option<(i32, i32)> {
+        self.item_stacks.get(&id).copied()
     }
 
     // -- item use (M23) ------------------------------------------------------

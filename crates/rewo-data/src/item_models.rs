@@ -84,6 +84,15 @@ pub enum ItemModel {
         /// absent left-hand entry means the identity, so absence is recorded
         /// rather than substituted.
         third_person_left: DisplayTransform,
+        /// `display.ground` — the context `ItemEntityRenderer` renders a
+        /// dropped stack through (`updateForNonLiving(..., GROUND, ...)`).
+        ///
+        /// Unlike the hand transforms this one is genuinely optional: an item
+        /// whose chain never declares `ground` renders at the identity, which
+        /// for a ground item is a legible (if unscaled) result rather than the
+        /// wrong place. `item/generated` and `item/handheld` both declare it,
+        /// so every extruded sprite has one in practice.
+        ground: DisplayTransform,
     },
     /// The definition is one of the five state-dependent / bespoke types.
     /// Carries the type name so the suppression is observable.
@@ -177,10 +186,18 @@ fn read_transform(display: &Value, key: &str) -> Option<DisplayTransform> {
 /// `read` returns the raw JSON for a model path such as `item/handheld`.
 /// Returns `None` if the chain is broken or exceeds [`MAX_PARENT_DEPTH`], which
 /// is a corrupt/renamed asset rather than a modelled case.
+type ChainResult = (
+    bool,
+    Vec<String>,
+    DisplayTransform,
+    DisplayTransform,
+    DisplayTransform,
+);
+
 fn resolve_chain(
     start: &str,
     read: &mut dyn FnMut(&str) -> Option<Value>,
-) -> Option<(bool, Vec<String>, DisplayTransform, DisplayTransform)> {
+) -> Option<ChainResult> {
     /// Deep enough for every vanilla chain (item → handheld → generated →
     /// builtin) with room to spare; a cycle would otherwise hang the bake.
     const MAX_PARENT_DEPTH: usize = 16;
@@ -188,6 +205,7 @@ fn resolve_chain(
     let mut textures: HashMap<String, String> = HashMap::new();
     let mut right: Option<DisplayTransform> = None;
     let mut left: Option<DisplayTransform> = None;
+    let mut ground: Option<DisplayTransform> = None;
     let mut is_generated = false;
     let mut cur = strip_ns(start).to_string();
 
@@ -203,7 +221,13 @@ fn resolve_chain(
             // chain would render at the identity, which is never what vanilla
             // shows — treat it as unresolved rather than place it wrong.
             let right = right?;
-            return Some((true, layers(&textures), right, left.unwrap_or_default()));
+            return Some((
+                true,
+                layers(&textures),
+                right,
+                left.unwrap_or_default(),
+                ground.unwrap_or_default(),
+            ));
         }
         let json = read(&cur)?;
         // A child's own entries win, so only insert what is still missing.
@@ -220,6 +244,9 @@ fn resolve_chain(
             }
             if left.is_none() {
                 left = read_transform(d, "thirdperson_lefthand");
+            }
+            if ground.is_none() {
+                ground = read_transform(d, "ground");
             }
         }
         match json.get("parent").and_then(|p| p.as_str()) {
@@ -276,14 +303,16 @@ pub fn resolve_definition(
             // `block/block`-parented models is the standard block transform.
             third_person_right: BLOCK_THIRD_PERSON,
             third_person_left: BLOCK_THIRD_PERSON,
+            ground: BLOCK_GROUND,
         };
     }
 
     match resolve_chain(reference, read_model) {
-        Some((true, layers, right, left)) if !layers.is_empty() => ItemModel::Resolved {
+        Some((true, layers, right, left, ground)) if !layers.is_empty() => ItemModel::Resolved {
             geometry: ItemGeometry::Sprite(layers),
             third_person_right: right,
             third_person_left: left,
+            ground,
         },
         // A chain that reaches no `builtin/generated`, or one with no layer0,
         // is a bespoke model — suppressed, not guessed.
@@ -301,6 +330,18 @@ pub const BLOCK_THIRD_PERSON: DisplayTransform = DisplayTransform {
     // transform read from JSON.
     translation: [0.0, 2.5 * 0.0625, 0.0],
     scale: [0.375, 0.375, 0.375],
+};
+
+/// `assets/minecraft/models/block/block.json`'s `ground`:
+/// `rotation [0,0,0], translation [0, 3, 0], scale [0.25, 0.25, 0.25]`.
+/// Transcribed for the same reason as [`BLOCK_THIRD_PERSON`] — a block item
+/// reaches its transforms through the *block* model chain, which the block
+/// bake does not retain. Note the ground scale is 0.25, not the hand's 0.375:
+/// a dropped block is visibly smaller than a held one.
+pub const BLOCK_GROUND: DisplayTransform = DisplayTransform {
+    rotation: [0.0; 3],
+    translation: [0.0, 3.0 * 0.0625, 0.0],
+    scale: [0.25, 0.25, 0.25],
 };
 
 /// Resolve every item in `names` from the jar.
@@ -382,6 +423,7 @@ mod tests {
                 geometry: ItemGeometry::Block("dirt".into()),
                 third_person_right: BLOCK_THIRD_PERSON,
                 third_person_left: BLOCK_THIRD_PERSON,
+                ground: BLOCK_GROUND,
             }
         );
     }
@@ -417,6 +459,7 @@ mod tests {
                 geometry,
                 third_person_right,
                 third_person_left,
+                ground: _,
             } => {
                 assert_eq!(geometry, ItemGeometry::Sprite(vec!["item/diamond_sword".into()]));
                 // handheld wins over generated — the child's display is nearer.

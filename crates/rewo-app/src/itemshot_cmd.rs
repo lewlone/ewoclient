@@ -33,7 +33,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 18;
+const EXPECTED_WITNESSES: usize = 28;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -324,6 +324,10 @@ fn check_render(
             kind: EntityModelKind::Player,
             yaw: 0.0,
             death_time: 0.0,
+            ground_item: None,
+            ground_count: 0,
+            bob_offset: 0.0,
+            ground_seed: 0,
             head_yaw: 0.0,
             pitch: 0.0,
             limb_swing: 0.0,
@@ -343,6 +347,56 @@ fn check_render(
             light: [1.0, 1.0, 1.0],
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
+        off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
+        off.read_rgba(gpu)
+    };
+
+    // M24b: the same scene, but as a *dropped* stack — no model, no capsule,
+    // the item is the entity. `EntityModelKind::Capsule` is passed to prove
+    // the kind is never consulted: `ground_item` short-circuits before it.
+    let ground = |name: Option<&str>,
+                  count: i32,
+                  bob: f32,
+                  seed: i32,
+                  time: f32,
+                  gpu: &mut Gpu,
+                  wr: &mut WorldRenderer,
+                  off: &mut Offscreen|
+     -> Result<Vec<u8>, String> {
+        let names: Vec<&str> = name.into_iter().collect();
+        wr.prepare_held_items(gpu, &names)?;
+        let d = EntityDraw {
+            pos: [0.0, 0.0, 0.0],
+            width: 0.25,
+            height: 0.25,
+            color: [1.0, 1.0, 1.0],
+            name: None,
+            kind: EntityModelKind::Capsule,
+            yaw: 0.0,
+            death_time: 0.0,
+            ground_item: name,
+            ground_count: count,
+            bob_offset: bob,
+            ground_seed: seed,
+            head_yaw: 0.0,
+            pitch: 0.0,
+            limb_swing: 0.0,
+            limb_amount: 0.0,
+            gesture: None,
+            events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+            shell: false,
+            allay_dance: None,
+            attack: rewo_gpu::mobs::SwingPose::NONE,
+            mob: rewo_gpu::mobs::MobCombat::default(),
+            hurt: false,
+            held: [None, None],
+            arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+            skin_uv: None,
+            scale_mul: 1.0,
+            anim_id: 0.0,
+            light: [1.0, 1.0, 1.0],
+        };
+        wr.set_entities(&[d], right, up.to_array(), time);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
         off.read_rgba(gpu)
     };
@@ -419,6 +473,167 @@ fn check_render(
         "c6.the_off_hand_item_appears_on_the_other_side",
         !left_px.is_empty() && lx > cx,
         format!("off-hand centroid x {lx:.0} vs main-hand {cx:.0}"),
+    );
+
+    // --- M24b: dropped stacks --------------------------------------------
+    // An item name with no baked model draws nothing, which is the only
+    // honest empty baseline here: `ground_item: None` falls through to the
+    // *capsule fallback*, so it is a control rather than a blank.
+    let g_none = ground(Some("minecraft:__absent__"), 1, 0.0, 0, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_capsule = ground(None, 0, 0.0, 0, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_sword = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_dirt = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_sword_px = changed(&g_none, &g_sword);
+    let g_dirt_px = changed(&g_none, &g_dirt);
+    c.record(
+        "g1.a_dropped_stack_renders",
+        !g_sword_px.is_empty() && !g_dirt_px.is_empty(),
+        format!(
+            "sprite {} px, block {} px against an empty frame",
+            g_sword_px.len(),
+            g_dirt_px.len()
+        ),
+    );
+
+    // …and it renders INSTEAD of the body, not on top of it. The same draw
+    // with `ground_item: None` falls through to the capsule, so the capsule
+    // control is non-empty; a ground item must differ from it and must not
+    // contain it.
+    let capsule_px = changed(&g_none, &g_capsule);
+    c.record(
+        "g10.a_ground_item_replaces_the_body_rather_than_adding_to_it",
+        {
+            // The capsule's pixels must not all survive into the ground-item
+            // render. A size comparison would be a proxy (and a wrong one —
+            // the sword covers MORE pixels than the capsule here); this is the
+            // property itself.
+            let sword_set: std::collections::HashSet<(u32, u32)> =
+                g_sword_px.iter().copied().collect();
+            !capsule_px.is_empty() && capsule_px.iter().any(|p| !sword_set.contains(p))
+        },
+        format!(
+            "the same draw without a ground item renders a {} px capsule; with one \
+             it renders {} px of sword and no capsule — `ItemEntityRenderer` has no \
+             body, so the model kind is never consulted",
+            capsule_px.len(),
+            g_sword_px.len()
+        ),
+    );
+
+    // The GROUND transform is a different context from the hand's, and the
+    // difference is observable: `block/block`'s ground scale is 0.25 against
+    // the hand's 0.375, so a dropped block covers visibly fewer pixels than a
+    // held one at the same camera.
+    c.record(
+        "g2.the_ground_context_is_not_the_hand_context",
+        g_dirt_px.len() < dirt_px.len(),
+        format!(
+            "dropped dirt {} px vs held dirt {} px — `display.ground` scales \
+             0.25 where `thirdperson_righthand` scales 0.375",
+            g_dirt_px.len(),
+            dirt_px.len()
+        ),
+    );
+
+    // The bob is a sine of `ageInTicks / 10 + bobOffset`: two different offsets
+    // at the same instant must place the item at different heights.
+    // The offsets must be sine *extrema*, not 0 and PI — those are both zeros,
+    // which is what the first version of this witness got wrong.
+    let g_bob_a = ground(Some("minecraft:dirt"), 1, std::f32::consts::FRAC_PI_2, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_bob_b = ground(Some("minecraft:dirt"), 1, 3.0 * std::f32::consts::FRAC_PI_2, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let (_, ya) = centroid(&changed(&g_none, &g_bob_a));
+    let (_, yb) = centroid(&changed(&g_none, &g_bob_b));
+    c.record(
+        "g3.the_bob_offset_shifts_the_item_vertically",
+        (ya as i32 - yb as i32).abs() >= 2,
+        format!(
+            "bobOffset PI/2 -> centroid y {ya}, bobOffset 3PI/2 -> y {yb} — \
+             sin(age/10 + offset) * 0.1 + 0.1, so the two sit 0.2 blocks apart"
+        ),
+    );
+
+    // The spin is `age / 20 + bobOffset`: advancing the clock a quarter turn
+    // must change the silhouette of an asymmetric item.
+    let g_t0 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_t1 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.25 * std::f32::consts::PI / 2.0 * 20.0 / 20.0, &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "g4.the_item_spins_with_the_clock",
+        !changed(&g_t0, &g_t1).is_empty(),
+        format!(
+            "{} pixels differ after advancing the clock — getSpin is age/20 + \
+             bobOffset, so a still item at two times must not match",
+            changed(&g_t0, &g_t1).len()
+        ),
+    );
+
+    // `getRenderedAmount` is a step function, and each step adds copies that
+    // the seeded LCG jitters apart — so more copies cover more pixels.
+    let g_one = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_many = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let one_px = changed(&g_none, &g_one).len();
+    let many_px = changed(&g_none, &g_many).len();
+    c.record(
+        "g5.a_bigger_stack_draws_more_copies",
+        many_px > one_px,
+        format!(
+            "count 1 -> {one_px} px, count 64 -> {many_px} px (5 copies, jittered \
+             +/-0.15 by a seeded LegacyRandomSource)"
+        ),
+    );
+
+    // The bucketing is a step, not a ramp: 17 and 32 both render 3 copies, so
+    // they must be pixel-identical.
+    let g_17 = ground(Some("minecraft:dirt"), 17, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_32 = ground(Some("minecraft:dirt"), 32, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "g6.the_copy_count_is_bucketed_not_proportional",
+        g_17 == g_32,
+        format!(
+            "counts 17 and 32 render identically = {} — getRenderedAmount buckets \
+             1/2-16/17-32/33-48/49+ into 1/2/3/4/5",
+            g_17 == g_32
+        ),
+    );
+
+    // The jitter is seeded by the item, so the same stack is stable across
+    // renders and a different seed lays the copies out differently.
+    let g_seed_a = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_seed_b = ground(Some("minecraft:dirt"), 64, 0.0, 4242, 0.0, &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "g7.the_copy_jitter_is_seeded_and_reproducible",
+        g_many == g_seed_a && g_many != g_seed_b,
+        format!(
+            "same seed reproduces={}, a different seed differs={} — the LCG is reset \
+             to getSeedForItemStack each render, so a dropped stack does not shimmer",
+            g_many == g_seed_a,
+            g_many != g_seed_b
+        ),
+    );
+
+    // A suppressed item is nothing on the ground too, not a fallback shape.
+    let g_bow = ground(Some("minecraft:bow"), 1, 0.0, 3, 0.0, &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "g8.a_suppressed_item_drops_as_nothing",
+        changed(&g_none, &g_bow).is_empty(),
+        format!(
+            "{} pixels differ (want 0) — the bow's definition is state-dependent, \
+             so it has no baked model in either context",
+            changed(&g_none, &g_bow).len()
+        ),
+    );
+
+    // The ground item sits at the entity origin, not on an arm: its centroid
+    // must be near the frame centre horizontally, unlike the held sword which
+    // hangs screen-left on the right arm.
+    let (gx, _) = centroid(&g_sword_px);
+    c.record(
+        "g9.a_dropped_item_is_centred_on_the_entity",
+        (gx as i32 - (W / 2) as i32).abs() < (cx as i32 - (W / 2) as i32).abs(),
+        format!(
+            "dropped sword centroid x {gx} vs held sword x {cx} (frame centre {}) — \
+             a dropped stack hangs off the entity origin, a held one off an arm",
+            W / 2
+        ),
     );
 
     wr.destroy(&mut gpu);

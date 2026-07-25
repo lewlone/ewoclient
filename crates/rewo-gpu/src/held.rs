@@ -46,6 +46,8 @@ pub struct HeldItemModel {
     pub quads: Vec<HeldQuad>,
     pub right: DisplayTransform,
     pub left: DisplayTransform,
+    /// `display.ground` — `ItemEntityRenderer`'s context (M24b item entities).
+    pub ground: DisplayTransform,
     pub from_block: bool,
 }
 

@@ -1338,6 +1338,7 @@ impl PlaySession {
                 allay: self.allay_type_id,
                 pillager: self.pillager_type_id,
                 classes: self.entity_classes.as_deref(),
+                components: self.swing_data.as_ref().map(|d| d.components),
             },
         ) {
             // Entity metadata (custom name, pose, gesture state, cube size, and

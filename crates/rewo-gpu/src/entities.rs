@@ -132,6 +132,26 @@ pub struct EntityDraw<'a> {
     /// mapping is `getMainArm()`, which the app resolves. `None` = empty hand
     /// or an item whose model this client suppresses.
     pub held: [Option<&'a str>; 2],
+    /// A **dropped** stack's item name — `ItemEntity` (M24b). `Some` replaces
+    /// the model/capsule entirely: `ItemEntityRenderer` draws the item and
+    /// nothing else.
+    pub ground_item: Option<&'a str>,
+    /// The dropped stack's raw count. The renderer applies vanilla's
+    /// `getRenderedAmount` bucketing (1/2/3/4/5), so this is the count as
+    /// sent, not the copy count.
+    pub ground_count: i32,
+    /// `ItemEntity.bobOffs` — `random.nextFloat() * 2 * PI`.
+    ///
+    /// **Client-side by construction**: vanilla rolls it in the entity's
+    /// constructor and never sends it, so there is no server value to match.
+    /// The app derives it from the entity id, which is *a* valid roll and is
+    /// at least stable across frames.
+    pub bob_offset: f32,
+    /// `ItemClusterRenderState.getSeedForItemStack` —
+    /// `Item.getId(item) + stack.getDamageValue()`, the seed the per-copy
+    /// jitter LCG is reset to. Rewo decodes no damage for a dropped stack, so
+    /// the app passes the item protocol id.
+    pub ground_seed: i32,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -894,6 +914,12 @@ impl EntityPass {
         for d in draws {
             // `OverlayTexture.v(hasRedOverlay)` as a 0/1 flag (M21).
             let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+            // A dropped stack is drawn by `ItemEntityRenderer` and has no
+            // model or capsule of its own — the item IS the entity (M24b).
+            if let Some(name) = d.ground_item {
+                self.emit_ground_item(&mut verts, d, name, time, hurt);
+                continue;
+            }
             if let Some(model) = &self.models[d.kind.index()] {
                 self.emit_model(&mut verts, d, model, time, &mut cem_state);
                 continue;
@@ -2173,6 +2199,200 @@ fn apply_pose_effect(
 /// `Mth.lerp(delta, start, end)` — `start + delta * (end - start)`.
 fn lerp(delta: f32, start: f32, end: f32) -> f32 {
     start + delta * (end - start)
+}
+
+/// `ItemClusterRenderState.getRenderedAmount` — how many copies a stack draws.
+///
+/// A step function, not a scale: 64 gravel and 49 gravel both render 5.
+pub fn rendered_amount(count: i32) -> i32 {
+    match count {
+        i32::MIN..=1 => 1,
+        2..=16 => 2,
+        17..=32 => 3,
+        33..=48 => 4,
+        _ => 5,
+    }
+}
+
+/// `LegacyRandomSource` / `java.util.Random`, for the per-copy jitter.
+///
+/// Mirrors `rewo_world::lightmap::LegacyRandom48` rather than importing it,
+/// the same crate-boundary rule [`crate::held`] and [`crate::mobs`] follow —
+/// `rewo-gpu` depends on neither `rewo-world` nor `rewo-data`.
+struct LegacyRandom48 {
+    seed: i64,
+}
+
+impl LegacyRandom48 {
+    const MULTIPLIER: i64 = 0x5DEECE66D;
+    const MASK: i64 = (1 << 48) - 1;
+
+    fn with_seed(seed: i64) -> Self {
+        Self {
+            seed: (seed ^ Self::MULTIPLIER) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> i32 {
+        self.seed = self
+            .seed
+            .wrapping_mul(Self::MULTIPLIER)
+            .wrapping_add(11)
+            & Self::MASK;
+        (self.seed >> (48 - bits)) as i32
+    }
+
+    /// `BitRandomSource.nextFloat` — `next(24) * 5.9604645e-8`.
+    fn next_float(&mut self) -> f32 {
+        self.next(24) as f32 * 5.960_464_5e-8
+    }
+}
+
+impl EntityPass {
+    /// `ItemEntityRenderer.submit` — a dropped stack (M24b).
+    ///
+    /// ```text
+    /// AABB bb = item.getModelBoundingBox();
+    /// float minOffsetY = -(float)bb.minY + 0.0625F;
+    /// float bob  = Mth.sin(ageInTicks / 10.0F + bobOffset) * 0.1F + 0.1F;
+    /// float spin = ItemEntity.getSpin(ageInTicks, bobOffset);  // age/20 + off
+    /// poseStack.translate(0, bob + minOffsetY, 0);
+    /// poseStack.mulPose(Axis.YP.rotation(spin));
+    /// submitMultipleFromCount(...);
+    /// ```
+    ///
+    /// **No `scale(-1,-1,1)` and no `-1.501` translate** — those belong to
+    /// `LivingEntityRenderer`, not `EntityRenderer`, so a ground item lives in
+    /// entity-local metres with y already up. That is why this is a separate
+    /// emitter rather than a flag on the held-item path.
+    fn emit_ground_item(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        name: &str,
+        time: f32,
+        hurt: f32,
+    ) {
+        let Some(items) = self.held_items.as_ref() else {
+            return;
+        };
+        let Some(item) = items.models.get(name) else {
+            return;
+        };
+        let amount = rendered_amount(d.ground_count);
+        if amount == 0 {
+            return;
+        }
+
+        // Every corner through the GROUND display transform, once — both the
+        // bounding box and the drawn geometry read it, and vanilla's
+        // `getModelBoundingBox` is exactly the extent of the transformed model.
+        let placed: Vec<[[f32; 3]; 4]> = item
+            .quads
+            .iter()
+            .map(|q| {
+                let mut out = [[0f32; 3]; 4];
+                for (i, c) in q.verts.iter().enumerate() {
+                    let p = [c[0] / 16.0, c[1] / 16.0, c[2] / 16.0];
+                    // `left = false`: the ground context is never mirrored.
+                    out[i] = crate::held::apply_display(&item.ground, false, p);
+                }
+                out
+            })
+            .collect();
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for q in &placed {
+            for c in q {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(c[k]);
+                    hi[k] = hi[k].max(c[k]);
+                }
+            }
+        }
+        if lo[0] > hi[0] {
+            return; // no geometry
+        }
+        let min_offset_y = -lo[1] + 0.0625;
+        let model_depth = hi[2] - lo[2];
+
+        // `ageInTicks`. Rewo keeps no per-entity age, so this is the shared
+        // clock — the *phase* differs from vanilla's per-entity tickCount, but
+        // `bobOffs` is itself a client-side roll, so items still bob out of
+        // step with each other, which is the only visible property.
+        let age = time * 20.0;
+        let bob = mth_sin((age / 10.0 + d.bob_offset) as f64) * 0.1 + 0.1;
+        // `ItemEntity.getSpin(ageInTicks, bobOffset)` = `age / 20 + offset`.
+        let spin = age / 20.0 + d.bob_offset;
+        let (ss, cs) = spin.sin_cos();
+
+        // `submitMultipleFromCount`: the copies, from a seeded LCG. The seed is
+        // `Item.getId(item) + stack.getDamageValue()`; Rewo decodes no damage
+        // for a dropped stack, so it is the item id.
+        let mut rng = LegacyRandom48::with_seed(d.ground_seed as i64);
+        let flat = model_depth <= 0.0625;
+        let offset_z = model_depth * 1.5;
+        let mut copies: Vec<[f32; 3]> = Vec::with_capacity(amount as usize);
+        if !flat {
+            copies.push([0.0; 3]);
+            for _ in 1..amount {
+                let xo = (rng.next_float() * 2.0 - 1.0) * 0.15;
+                let yo = (rng.next_float() * 2.0 - 1.0) * 0.15;
+                let zo = (rng.next_float() * 2.0 - 1.0) * 0.15;
+                copies.push([xo, yo, zo]);
+            }
+        } else {
+            // A flat item fans out along z instead of jittering in 3D, and the
+            // whole fan is centred first.
+            let mut z = -(offset_z * (amount - 1) as f32 / 2.0);
+            copies.push([0.0, 0.0, z]);
+            for _ in 1..amount {
+                z += offset_z;
+                let xo = (rng.next_float() * 2.0 - 1.0) * 0.15 * 0.5;
+                let yo = (rng.next_float() * 2.0 - 1.0) * 0.15 * 0.5;
+                copies.push([xo, yo, z]);
+            }
+        }
+
+        let [light_r, light_g, light_b] = d.light;
+        for copy in &copies {
+            for (qi, q) in item.quads.iter().enumerate() {
+                if verts.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
+                    continue; // texture not resident — draw nothing, never garbage
+                };
+                let mut p4 = [[0f32; 3]; 4];
+                let mut m4 = [[0f32; 3]; 4];
+                for i in 0..4 {
+                    let p = placed[qi][i];
+                    let p = [p[0] + copy[0], p[1] + copy[1], p[2] + copy[2]];
+                    // YP(spin).
+                    let p = [p[0] * cs + p[2] * ss, p[1], -p[0] * ss + p[2] * cs];
+                    m4[i] = p;
+                    p4[i] = [
+                        d.pos[0] + p[0],
+                        d.pos[1] + p[1] + bob + min_offset_y,
+                        d.pos[2] + p[2],
+                    ];
+                }
+                // Shade from the spun normal, for the same reason the held
+                // path does: a dropped item is rotating, so its baked face
+                // directions are not the directions it faces.
+                let n = face_normal(&m4);
+                let shade = mobs::shade_for(n);
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    verts.push(Vertex {
+                        pos: p4[i],
+                        uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
+                        color: [shade, shade, shade, 1.0],
+                        light_hurt: [light_r, light_g, light_b, hurt],
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// `LivingEntityRenderer.getFlipDegrees()` — the angle a dead entity topples

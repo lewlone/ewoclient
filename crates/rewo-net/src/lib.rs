@@ -1003,6 +1003,11 @@ pub struct MetaKinds<'a> {
     pub pillager: Option<i32>,
     /// The machine-extracted ancestry sets — mob / raider / spellcaster.
     pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
+    /// Data-component registry ids, needed to walk an ITEM_STACK metadata
+    /// value (`ItemEntity.DATA_ITEM`, index 8 serializer 7). `None` leaves
+    /// that serializer unwalkable, which ends the parse at that entry rather
+    /// than desynchronising the rest.
+    pub components: Option<rewo_data::components::DataComponentIds>,
 }
 
 impl<'a> From<Option<i32>> for MetaKinds<'a> {
@@ -1031,7 +1036,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
         return;
     };
-    let meta = crate::metadata::parse(&mut r);
+    let meta = crate::metadata::parse(&mut r, kinds.components);
     if meta.custom_name.is_some() {
         entities.set_custom_name(eid, meta.custom_name);
     }
@@ -1077,6 +1082,11 @@ pub(crate) fn apply_set_entity_data<'a>(
         if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
             entities.set_living_flags(eid, flags);
         }
+    }
+    // Slot 8 ITEM_STACK → `ItemEntity.DATA_ITEM` (M24b). No kind gate: the
+    // serializer is unique to it among the classes that claim slot 8.
+    if let Some(stack) = meta.item_stack {
+        entities.set_item_stack(eid, stack);
     }
     // Slot 9 FLOAT → `LivingEntity.DATA_HEALTH_ID` (M24 death). Same living
     // gate as slot 8, for the same reason.

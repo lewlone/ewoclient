@@ -49,6 +49,9 @@ pub struct HeldItemModel {
     pub right: DisplayTransform,
     /// `display.thirdperson_lefthand`.
     pub left: DisplayTransform,
+    /// `display.ground` — the context a *dropped* stack renders through
+    /// (`ItemEntityRenderer` → `updateForNonLiving(..., GROUND, ...)`).
+    pub ground: DisplayTransform,
     /// True when the geometry came from a block model — recorded so the
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
@@ -169,6 +172,7 @@ mod tests {
             quads: Vec::new(),
             right: DisplayTransform::default(),
             left: DisplayTransform::default(),
+            ground: DisplayTransform::default(),
             from_block,
         };
         let items = HeldItems {

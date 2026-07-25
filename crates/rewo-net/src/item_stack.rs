@@ -121,6 +121,14 @@ pub struct WireStack {
     pub charged: PatchCharged,
 }
 
+impl WireStack {
+    /// Whether this stack's patch was fully walked, so the reader is aligned
+    /// on whatever follows it.
+    pub fn aligned_stack(&self) -> bool {
+        matches!(self.patch, PatchOutcome::Walked(_))
+    }
+}
+
 /// What a stack's `DataComponentPatch` said about
 /// `minecraft:charged_projectiles`.
 ///
