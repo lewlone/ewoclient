@@ -150,6 +150,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     )?;
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = entity_push_table(&data.entity_types);
+    // Resolve the kinds whose entity events drive model rigs — a
+    // `ClientboundEntityEventPacket` byte is polymorphic by entity class, so
+    // the id alone can't name the animation.
+    session.warden_type_id = data.entity_types.id_of("minecraft:warden");
+    session.armadillo_type_id = data.entity_types.id_of("minecraft:armadillo");
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(
@@ -280,41 +285,124 @@ impl SkinLoader {
 
 /// Tracks when each entity's gesture-driving state changed. The wire
 /// carries only the *current* pose/state — vanilla clients time the rigs
-/// from the transition instant, so we record it here.
+/// from the transition instant, so we record it here. Both a wall-clock
+/// second (the rig's time base) and the network tick of the transition are
+/// kept: the tick is what the entity-event ownership rules compare against
+/// (vanilla orders `AnimationState.start`/`.stop` by tick — see
+/// [`resolve_mob_anim`]).
+#[derive(Clone, Copy)]
+struct GestureEntry {
+    gesture: rewo_gpu::mobs::Gesture,
+    start_seconds: f32,
+    start_tick: i64,
+}
+
 #[derive(Default)]
 pub(crate) struct GestureTracker {
-    map: std::collections::HashMap<i32, (rewo_gpu::mobs::Gesture, f32)>,
+    map: std::collections::HashMap<i32, GestureEntry>,
 }
 
 impl GestureTracker {
-    /// Record `wanted` for this entity at `now` seconds; returns the active
-    /// gesture + its age. `head_start` pre-advances a *newly entered*
-    /// gesture's clock (vanilla's SCARED `fastForward`).
+    /// Record `wanted` for this entity at `now` seconds / `tick`; returns the
+    /// active gesture, its age in seconds, and the network tick it started on.
+    /// `head_start` pre-advances a *newly entered* gesture's clock (vanilla's
+    /// SCARED `fastForward`). A repeated *same* gesture keeps its original
+    /// transition tick — so metadata that re-arrives without an actual pose
+    /// change is not a new transition.
     fn update(
         &mut self,
         id: i32,
         wanted: Option<rewo_gpu::mobs::Gesture>,
         now: f32,
         head_start: f32,
-    ) -> Option<(rewo_gpu::mobs::Gesture, f32)> {
+        tick: i64,
+    ) -> Option<(rewo_gpu::mobs::Gesture, f32, i64)> {
         match wanted {
             None => {
                 self.map.remove(&id);
                 None
             }
             Some(g) => {
-                let start = match self.map.get(&id) {
-                    Some((cur, t0)) if *cur == g => *t0,
+                let e = match self.map.get(&id) {
+                    Some(e) if e.gesture == g => *e,
                     _ => {
-                        let t0 = now - head_start;
-                        self.map.insert(id, (g, t0));
-                        t0
+                        let e = GestureEntry {
+                            gesture: g,
+                            start_seconds: now - head_start,
+                            start_tick: tick,
+                        };
+                        self.map.insert(id, e);
+                        e
                     }
                 };
-                Some((g, now - start))
+                Some((g, now - e.start_seconds, e.start_tick))
             }
         }
     }
+}
+
+/// Elapsed seconds since a one-shot event's receipt tick, using vanilla's
+/// `ageInTicks = tickCount + partialTick` convention: `(now_tick − start +
+/// partial) · 0.05`. `None` passes through (the event never fired). Clamped
+/// non-negative for the degenerate same-tick-receipt case.
+fn event_age_seconds(start_tick: Option<i64>, tick: i64, alpha: f32) -> Option<f32> {
+    start_tick.map(|s| ((((tick - s) as f32) + alpha) * 0.05).max(0.0))
+}
+
+/// Resolve a mob's per-frame rig inputs from its wire pose/state plus the
+/// one-shot entity-event side-table, applying the exact vanilla ownership
+/// rules. Shared by the live collector and the `eventshot` oracle so those
+/// rules are exercised through production code, not a copy.
+///
+/// - **Warden id 4 (attack)** calls `roarAnimationState.stop()` and never
+///   restarts the roar until a fresh ROARING pose transition. So the metadata
+///   roar is suppressed iff the attack event's receipt tick is at/after the
+///   roar's transition tick — vanilla's start/stop tick ordering. The attack
+///   rig itself still plays (through the returned `events`).
+/// - **Armadillo id 64 (peek)** stops and re-`startIfStopped`s the SCARED
+///   peek — the SAME shared `peekAnimationState` as the metadata 2.5 s hold —
+///   so it re-clocks the existing SCARED gesture from age 0 rather than adding
+///   a second rig. Only when the event landed during this SCARED episode
+///   (receipt tick at/after the SCARED transition), else a stale event from a
+///   previous roll can't disturb the current hold.
+///
+/// Returns the gesture (post-ownership-rules) and the per-`ModelEvent` ages.
+pub(crate) fn resolve_mob_anim(
+    kind: EntityModelKind,
+    pose: u8,
+    state: u8,
+    attack_tick: Option<i64>,
+    sonic_tick: Option<i64>,
+    peek_tick: Option<i64>,
+    gestures: &mut GestureTracker,
+    id: i32,
+    now: f32,
+    tick: i64,
+    alpha: f32,
+) -> (
+    Option<(rewo_gpu::mobs::Gesture, f32)>,
+    [Option<f32>; rewo_gpu::mobs::ModelEvent::COUNT],
+) {
+    use rewo_gpu::mobs::Gesture;
+    let events = [
+        event_age_seconds(attack_tick, tick, alpha),
+        event_age_seconds(sonic_tick, tick, alpha),
+    ];
+    let wanted = wanted_gesture(kind, pose, state);
+    // Entering SCARED starts the peek at its held ball pose — vanilla
+    // `fastForward(SCARED.animationDuration())` = 2.5 s.
+    let head_start = if wanted == Some(Gesture::ArmadilloScared) { 2.5 } else { 0.0 };
+    let resolved = gestures.update(id, wanted, now, head_start, tick);
+    let gesture = resolved.and_then(|(g, age, start_tick)| match g {
+        // Attack stopped the roar durably (until a fresh ROARING transition).
+        Gesture::WardenRoar if attack_tick.is_some_and(|a| a >= start_tick) => None,
+        // Peek re-clocks the SCARED hold from age 0.
+        Gesture::ArmadilloScared if peek_tick.is_some_and(|p| p >= start_tick) => {
+            Some((g, event_age_seconds(peek_tick, tick, alpha).unwrap_or(0.0)))
+        }
+        _ => Some((g, age)),
+    });
+    (gesture, events)
 }
 
 /// Wire state → gesture for the rigged kinds. Pose ordinals are
@@ -438,22 +526,30 @@ fn collect_entities<'a>(
             h *= 0.5;
         }
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
-        // Gesture: wire pose/state → rig, timed from the observed change.
-        let gesture = force_gesture.or_else(|| {
-            let wanted = wanted_gesture(
+        // Gesture + wire-event rigs: pose/state → rig, timed from the observed
+        // change; one-shot events (warden attack/sonic boom, armadillo peek)
+        // resolved against their receipt ticks with the exact vanilla ownership
+        // rules (roar-stop, peek re-clock). A forced gesture (headless knob)
+        // bypasses the tracker and carries no events.
+        let (gesture, events) = if let Some(fg) = force_gesture {
+            (Some(fg), [None; rewo_gpu::mobs::ModelEvent::COUNT])
+        } else {
+            use rewo_world::entities::EntityEvent;
+            let ents = &session.world.entities;
+            resolve_mob_anim(
                 kind,
-                session.world.entities.pose(id),
-                session.world.entities.gesture_state(id),
-            );
-            // Entering SCARED starts the peek rig at its held ball pose —
-            // vanilla `fastForward(SCARED.animationDuration())` = 2.5 s.
-            let head_start = if wanted == Some(rewo_gpu::mobs::Gesture::ArmadilloScared) {
-                2.5
-            } else {
-                0.0
-            };
-            gestures.update(id, wanted, now, head_start)
-        });
+                ents.pose(id),
+                ents.gesture_state(id),
+                ents.event_start(id, EntityEvent::WardenAttack),
+                ents.event_start(id, EntityEvent::WardenSonicBoom),
+                ents.event_start(id, EntityEvent::ArmadilloPeek),
+                gestures,
+                id,
+                now,
+                session.ticks as i64,
+                alpha,
+            )
+        };
         // Armadillo shell swap (vanilla `shouldHideInShell` per state):
         // ROLLING balls up after 5 ticks, SCARED always, UNROLLING opens
         // at tick 26.
@@ -483,6 +579,7 @@ fn collect_entities<'a>(
             limb_swing,
             limb_amount,
             gesture,
+            events,
             shell,
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,

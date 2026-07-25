@@ -25,6 +25,9 @@ $targets = @(
     @{ File = "WardenAnimation.java";      Const = "WARDEN_DIG" },
     @{ File = "WardenAnimation.java";      Const = "WARDEN_ROAR" },
     @{ File = "WardenAnimation.java";      Const = "WARDEN_SNIFF" },
+    # Entity-event rigs (ClientboundEntityEventPacket, M17).
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_ATTACK" },
+    @{ File = "WardenAnimation.java";      Const = "WARDEN_SONIC_BOOM" },
     @{ File = "FrogAnimation.java";        Const = "FROG_CROAK" },
     @{ File = "FrogAnimation.java";        Const = "FROG_TONGUE" },
     @{ File = "BreezeAnimation.java";      Const = "SHOOT"; Rename = "BREEZE_SHOOT" },
@@ -143,5 +146,10 @@ foreach ($t in $targets) {
 }
 
 $dst = Join-Path $PSScriptRoot "../crates/rewo-gpu/src/anim_defs.rs"
-$out.ToString() | Out-File -Encoding utf8 $dst
+# StringBuilder.AppendLine emits CRLF on Windows; normalize to LF so the file
+# matches the repo's dominant line-ending convention and `git diff --check`
+# stays clean. UTF-8 with BOM (the on-disk convention this generated file has
+# always carried). WriteAllText writes the string verbatim, so LF is preserved.
+$text = $out.ToString() -replace "`r`n", "`n"
+[System.IO.File]::WriteAllText($dst, $text, (New-Object System.Text.UTF8Encoding($true)))
 Write-Output "wrote $dst"

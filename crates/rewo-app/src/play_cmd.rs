@@ -171,6 +171,10 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     )?;
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = crate::live_cmd::entity_push_table(&data.entity_types);
+    // Kinds whose polymorphic entity events drive model rigs (warden attack/
+    // sonic boom, armadillo peek).
+    session.warden_type_id = data.entity_types.id_of("minecraft:warden");
+    session.armadillo_type_id = data.entity_types.id_of("minecraft:armadillo");
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     if let (Some(b), false) = (baked.as_ref(), args.no_relight) {

@@ -1912,6 +1912,228 @@ pub static WARDEN_SNIFF: KfDef = KfDef {
     ],
 };
 
+/// WARDEN_ATTACK (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\WardenAnimation.java | 8 channels, 0 scale skipped)
+pub static WARDEN_ATTACK: KfDef = KfDef {
+    length: 0.33333,
+    looping: false,
+    channels: &[
+        KfChannel {
+            part: "body",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [-0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.2083, v: [0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "body",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.2083, v: [0.0, 1.0, -2.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.25, v: [-0.52665188, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.25, v: [0.0, 2.0, -2.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_arm",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [-2.10069906, 0.711910552, -0.365489748], catmullrom: true },
+                KfFrame { t: 0.1667, v: [-1.57079633, -0.785398163, 0.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_arm",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [4.0, 0.0, 5.0], catmullrom: true },
+                KfFrame { t: 0.1667, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_arm",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [-2.10069906, -0.711910552, 0.365489748], catmullrom: true },
+                KfFrame { t: 0.1667, v: [-1.06749922, 0.748027523, 0.201135408], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_arm",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.0417, v: [-4.0, 0.0, 5.0], catmullrom: true },
+                KfFrame { t: 0.1667, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.3333, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+    ],
+};
+
+/// WARDEN_SONIC_BOOM (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\WardenAnimation.java | 10 channels, 0 scale skipped)
+pub static WARDEN_SONIC_BOOM: KfDef = KfDef {
+    length: 3.0,
+    looping: false,
+    channels: &[
+        KfChannel {
+            part: "body",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0833, v: [0.829031395, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.625, v: [0.959931089, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.9167, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.0, v: [-0.567232007, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.4583, v: [-0.567232007, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.7083, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "body",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0833, v: [0.0, 3.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.625, v: [0.0, 4.0, -1.0], catmullrom: true },
+                KfFrame { t: 1.9167, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.7083, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_ribcage",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5417, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.7917, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.875, v: [0.0, 2.18166156, 0.0], catmullrom: true },
+                KfFrame { t: 2.5, v: [0.0, 2.18166156, 0.0], catmullrom: true },
+                KfFrame { t: 2.6667, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_ribcage",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5417, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.7917, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.875, v: [0.0, -2.18166156, 0.0], catmullrom: true },
+                KfFrame { t: 2.5, v: [0.0, -2.18166156, 0.0], catmullrom: true },
+                KfFrame { t: 2.6667, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0, v: [1.17809725, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.75, v: [1.3962634, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.9167, v: [-0.785398163, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.5, v: [-0.785398163, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.7083, v: [-0.785398163, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.9167, v: [0.0, 0.0, -3.0], catmullrom: true },
+                KfFrame { t: 2.5, v: [0.0, 0.0, -3.0], catmullrom: true },
+                KfFrame { t: 2.7083, v: [0.0, 0.0, -3.0], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_arm",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.875, v: [-0.738040225, -0.570690028, -0.0874104523], catmullrom: true },
+                KfFrame { t: 1.1667, v: [-0.520763837, -0.61778128, -0.790300619], catmullrom: true },
+                KfFrame { t: 1.3333, v: [-0.520763837, -0.61778128, -0.790300619], catmullrom: true },
+                KfFrame { t: 1.6667, v: [-1.261639, -0.570690028, -0.0874104523], catmullrom: true },
+                KfFrame { t: 1.8333, v: [0.615479714, -0.523598776, 0.615479714], catmullrom: true },
+                KfFrame { t: 1.9167, v: [1.2872648, -0.228517704, 0.335193624], catmullrom: true },
+                KfFrame { t: 2.5, v: [1.2872648, -0.228517704, 0.335193624], catmullrom: true },
+                KfFrame { t: 2.75, v: [1.01590607, -0.368376173, 0.501365026], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_arm",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.8333, v: [3.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.75, v: [3.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_arm",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.875, v: [-0.590042413, 0.563926004, 0.120078129], catmullrom: true },
+                KfFrame { t: 1.1667, v: [-0.312034676, 0.604253058, 0.855635972], catmullrom: true },
+                KfFrame { t: 1.3333, v: [-0.312034676, 0.604253058, 0.855635972], catmullrom: true },
+                KfFrame { t: 1.6667, v: [-0.895475032, 0.563926004, 0.120078129], catmullrom: true },
+                KfFrame { t: 1.8333, v: [0.615479714, 0.523598776, -0.615479714], catmullrom: true },
+                KfFrame { t: 1.9167, v: [1.2872648, 0.228517704, -0.335193624], catmullrom: true },
+                KfFrame { t: 2.5, v: [1.2872648, 0.228517704, -0.335193624], catmullrom: true },
+                KfFrame { t: 2.75, v: [1.01590607, 0.368376173, -0.501365026], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_arm",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.8333, v: [-3.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.75, v: [-3.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+    ],
+};
+
 /// FROG_CROAK (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\FrogAnimation.java | 1 channels, 1 scale skipped)
 pub static FROG_CROAK: KfDef = KfDef {
     length: 3.0,
@@ -3468,5 +3690,4 @@ pub static ARMADILLO_ROLL_OUT: KfDef = KfDef {
         },
     ],
 };
-
 

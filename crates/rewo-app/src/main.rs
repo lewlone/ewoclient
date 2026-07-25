@@ -12,6 +12,7 @@ mod demo_cmd;
 mod dimension_check;
 mod dimension_json;
 mod dimensioncheck_cmd;
+mod eventshot_cmd;
 mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
@@ -143,6 +144,11 @@ enum Command {
     /// against the bundled built-ins and the decompiled JSON, and prove every
     /// entry binds to the world shape, sky channel and mesh shade (no server).
     Dimensioncheck(dimensioncheck_cmd::DimensioncheckArgs),
+    /// M17 entity-event oracle: drive raw `ClientboundEntityEventPacket` bodies
+    /// through the real dispatch → receipt-tick → `resolve_mob_anim` → rig-oracle
+    /// path and assert the warden attack/sonic and armadillo peek animations
+    /// against independent decompiled literals with `--check` (no server, no GPU).
+    Eventshot(eventshot_cmd::EventshotArgs),
 }
 
 fn main() {
@@ -165,6 +171,7 @@ fn main() {
         Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
+        Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

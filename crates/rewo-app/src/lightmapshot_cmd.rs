@@ -797,6 +797,7 @@ fn run_entity_case(
         limb_swing: 0.0,
         limb_amount: 0.0,
         gesture: None,
+        events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
         skin_uv: None,
         scale_mul: 1.0,

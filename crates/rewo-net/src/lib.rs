@@ -751,6 +751,89 @@ pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_p
     Ok(())
 }
 
+/// Decode + dispatch a `ClientboundEntityEventPacket` body onto the entity
+/// table. Shared by [`play::PlaySession`] and the `eventshot` oracle so there
+/// is exactly one decoder — the oracle exercises the production path, not a
+/// copy of it.
+///
+/// Wire form (decompiled `ClientboundEntityEventPacket`): a signed big-endian
+/// `i32` entity id followed by a signed `byte` event id — neither is a VarInt.
+///
+/// The event byte is polymorphic: vanilla dispatches it through the concrete
+/// entity's `handleEntityEvent`, so id 4 is "attack" on a warden and unrelated
+/// elsewhere. This maps only the three model-visible `(kind, id)` pairs and
+/// safely ignores everything else — a missing entity, an entity of the wrong
+/// kind, or an unmodelled event id. `warden_type_id` / `armadillo_type_id` are
+/// the resolved protocol ids for those kinds (`None` when the caller hasn't
+/// supplied them, e.g. the headless protocol harnesses, in which case no event
+/// is interpreted). `tick` is the receipt tick stamped as the rig's start.
+///
+/// Trailing bytes past the id+event are ignored, and a short body decodes to
+/// nothing — the "read what the packet needs, ignore the rest" convention every
+/// other clientbound handler here follows (`cb_play_ping` reads one i32 and
+/// stops, etc.). The frame length already delimits the packet, so extra bytes
+/// are not an error to reject.
+///
+/// Not public: the packet stream reaches this only through
+/// [`route_entity_event`] (which owns the id → decoder selection). External
+/// callers (the `eventshot` oracle) go through that seam so packet-id selection
+/// is exercised too.
+pub(crate) fn apply_entity_event(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    warden_type_id: Option<i32>,
+    armadillo_type_id: Option<i32>,
+    tick: i64,
+) {
+    use rewo_world::entities::EntityEvent;
+    let mut r = PacketReader::new(body);
+    // A short / malformed body decodes to nothing (a truncated packet is not
+    // an animation).
+    let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
+        return;
+    };
+    // Unknown entity → ignore (it may not be tracked / already despawned).
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    let is = |want: Option<i32>| want == Some(type_id);
+    let mapped = match event {
+        4 if is(warden_type_id) => Some(EntityEvent::WardenAttack),
+        62 if is(warden_type_id) => Some(EntityEvent::WardenSonicBoom),
+        64 if is(armadillo_type_id) => Some(EntityEvent::ArmadilloPeek),
+        // Wrong kind for this id, or an unmodelled event (hurt, particles,
+        // sound, the excluded warden tendril 61, …) — no model-visible effect.
+        _ => None,
+    };
+    if let Some(ev) = mapped {
+        entities.start_event(eid, ev, tick);
+    }
+}
+
+/// The narrowest clientbound-play dispatch seam for entity events: routes a
+/// single `(packet id, body)` to [`apply_entity_event`] iff `id` is the
+/// resolved `entity_event` id, and returns whether it matched. This is the
+/// exact packet-id selection [`play::PlaySession`] uses (its `handle_packet`
+/// calls this), factored so the `eventshot` oracle drives packet-id → decoder
+/// through production code instead of a private copy. A non-matching id is a
+/// no-op returning `false` (the caller's dispatch chain continues).
+pub fn route_entity_event(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    warden_type_id: Option<i32>,
+    armadillo_type_id: Option<i32>,
+    tick: i64,
+) -> bool {
+    if id == ids.cb_play_entity_event {
+        apply_entity_event(body, entities, warden_type_id, armadillo_type_id, tick);
+        true
+    } else {
+        false
+    }
+}
+
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
 /// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
 /// (byte0 & 4) continuation flag set, read a trailing VarInt.
@@ -916,5 +999,120 @@ mod tests {
         let d = login_dimension_type(holder, &defs);
         assert_eq!(d.shape, DimensionShape::NETHER);
         assert_ne!(d.shape, DimensionShape::OVERWORLD);
+    }
+}
+
+#[cfg(test)]
+mod entity_event_tests {
+    use super::apply_entity_event;
+    use rewo_world::entities::{EntityEvent, EntityState, EntityTable};
+
+    const WARDEN: i32 = 100;
+    const ARMADILLO: i32 = 200;
+    const PIG: i32 = 300;
+
+    /// Build a `ClientboundEntityEventPacket` body independently of any writer
+    /// under test: a big-endian signed i32 entity id then a signed byte event.
+    fn body(entity: i32, event: i8) -> Vec<u8> {
+        let mut b = entity.to_be_bytes().to_vec();
+        b.push(event as u8);
+        b
+    }
+
+    fn table() -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, WARDEN, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(2, EntityState::new(0, ARMADILLO, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(3, EntityState::new(0, PIG, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    fn apply(t: &mut EntityTable, entity: i32, event: i8, tick: i64) {
+        apply_entity_event(&body(entity, event), t, Some(WARDEN), Some(ARMADILLO), tick);
+    }
+
+    #[test]
+    fn maps_the_three_model_visible_events_by_kind() {
+        let mut t = table();
+        apply(&mut t, 1, 4, 10);
+        apply(&mut t, 1, 62, 11);
+        apply(&mut t, 2, 64, 12);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(10));
+        assert_eq!(t.event_start(1, EntityEvent::WardenSonicBoom), Some(11));
+        assert_eq!(t.event_start(2, EntityEvent::ArmadilloPeek), Some(12));
+    }
+
+    #[test]
+    fn ignores_wrong_kind_for_an_id() {
+        let mut t = table();
+        // Event 4 on the armadillo and the pig is not a warden attack.
+        apply(&mut t, 2, 4, 10);
+        apply(&mut t, 3, 4, 10);
+        // Event 64 on the warden is not an armadillo peek.
+        apply(&mut t, 1, 64, 10);
+        assert_eq!(t.event_start(2, EntityEvent::WardenAttack), None);
+        assert_eq!(t.event_start(3, EntityEvent::WardenAttack), None);
+        assert_eq!(t.event_start(1, EntityEvent::ArmadilloPeek), None);
+    }
+
+    #[test]
+    fn ignores_unknown_event_ids_and_the_excluded_tendril() {
+        let mut t = table();
+        apply(&mut t, 1, 61, 10); // warden tendril shiver — explicitly excluded
+        apply(&mut t, 1, 3, 10); // LivingEntity death
+        apply(&mut t, 2, 1, 10); // arbitrary status
+        for ev in [
+            EntityEvent::WardenAttack,
+            EntityEvent::WardenSonicBoom,
+            EntityEvent::ArmadilloPeek,
+        ] {
+            assert_eq!(t.event_start(1, ev), None);
+            assert_eq!(t.event_start(2, ev), None);
+        }
+    }
+
+    #[test]
+    fn ignores_a_missing_entity() {
+        let mut t = table();
+        apply(&mut t, 999, 4, 10); // no such entity
+        // Nothing recorded anywhere.
+        assert_eq!(t.event_start(999, EntityEvent::WardenAttack), None);
+    }
+
+    #[test]
+    fn a_repeated_event_restarts_the_clock() {
+        let mut t = table();
+        apply(&mut t, 1, 4, 10);
+        apply(&mut t, 1, 4, 55);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(55));
+    }
+
+    #[test]
+    fn a_truncated_body_is_ignored() {
+        let mut t = table();
+        // Only 3 of the 4 id bytes — the decode must not panic or record.
+        apply_entity_event(&[0, 0, 0], &mut t, Some(WARDEN), Some(ARMADILLO), 10);
+        // Full id but no event byte.
+        apply_entity_event(&1i32.to_be_bytes(), &mut t, Some(WARDEN), Some(ARMADILLO), 10);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_event_are_ignored() {
+        // Frame length delimits the packet; extra bytes are not an error to
+        // reject (same convention as every other handler here).
+        let mut t = table();
+        let mut b = body(1, 4);
+        b.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        apply_entity_event(&b, &mut t, Some(WARDEN), Some(ARMADILLO), 33);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(33));
+    }
+
+    #[test]
+    fn no_type_ids_configured_means_no_interpretation() {
+        // The headless protocol harnesses leave the kind ids unset.
+        let mut t = table();
+        apply_entity_event(&body(1, 4), &mut t, None, None, 10);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
     }
 }

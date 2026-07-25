@@ -14,6 +14,44 @@ use std::collections::HashMap;
 /// Vanilla's interpolation step count for tracked entities.
 const LERP_STEPS: u32 = 3;
 
+/// A model-visible entity-event animation (`ClientboundEntityEventPacket`).
+///
+/// Vanilla routes each event byte through the concrete entity class'
+/// `handleEntityEvent`, where an id like 4 means "attack" on a warden and
+/// something entirely different (or nothing) on any other entity — so the
+/// *(kind, id)* pair, not the id alone, names the animation. Only the three
+/// model-visible ones are represented here; every other event byte is an
+/// unmodelled status (hurt flash, particles, sound) that this client ignores.
+///
+/// Each is a one-shot `AnimationState`: the wire carries no time, so the
+/// client stamps the receipt tick and the renderer measures elapsed from it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntityEvent {
+    /// Warden id 4 — `attackAnimationState.start(tickCount)` (also stops the
+    /// roar; the render layer drops the roar while this plays).
+    WardenAttack,
+    /// Warden id 62 — `sonicBoomAnimationState.start(tickCount)`.
+    WardenSonicBoom,
+    /// Armadillo id 64 — restarts the peek from tick 0 even while the
+    /// metadata-driven SCARED/balled state (which normally holds the peek at
+    /// its end pose) persists.
+    ArmadilloPeek,
+}
+
+impl EntityEvent {
+    /// Dense count for the fixed-size per-entity store.
+    pub const COUNT: usize = 3;
+
+    /// Slot index into [`EntityEventStarts`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Per-entity receipt ticks of the active model-visible events. `None` = the
+/// event has never fired for this entity (so its rig contributes nothing).
+type EntityEventStarts = [Option<i64>; EntityEvent::COUNT];
+
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
     pub uuid: u128,
@@ -138,10 +176,20 @@ pub struct EntityTable {
     sizes: HashMap<i32, i32>,
     /// Baby flag (index 16 BOOLEAN, ageable / zombie mobs). Cleared on removal.
     babies: std::collections::HashSet<i32>,
+    /// Model-visible entity-event receipt ticks (warden attack/sonic boom,
+    /// armadillo peek). Cleared on removal AND on (re-)add, so a reused entity
+    /// id can never inherit a previous occupant's animation timing — vanilla's
+    /// `AnimationState`s die with the entity.
+    events: HashMap<i32, EntityEventStarts>,
 }
 
 impl EntityTable {
     pub fn add(&mut self, id: i32, state: EntityState) {
+        // A fresh entity at this id inherits no stale event timing — the
+        // packet stream sends `remove_entities` before reusing an id, but a
+        // dropped removal must not leave one warden's attack clock running on
+        // its replacement.
+        self.events.remove(&id);
         self.map.insert(id, state);
     }
 
@@ -152,6 +200,21 @@ impl EntityTable {
         self.gesture_states.remove(&id);
         self.sizes.remove(&id);
         self.babies.remove(&id);
+        self.events.remove(&id);
+    }
+
+    /// Stamp a model-visible entity event's receipt tick — an unconditional
+    /// restart (vanilla `AnimationState.start(tick)`), so repeated events
+    /// re-clock the rig from zero. Only called for a looked-up entity of the
+    /// matching kind; the caller enforces that.
+    pub fn start_event(&mut self, id: i32, event: EntityEvent, tick: i64) {
+        self.events.entry(id).or_insert([None; EntityEvent::COUNT])[event.index()] = Some(tick);
+    }
+
+    /// The receipt tick of a model-visible event on an entity, or `None` if it
+    /// has never fired. The renderer measures `(now − start) · 0.05 s` from it.
+    pub fn event_start(&self, id: i32, event: EntityEvent) -> Option<i64> {
+        self.events.get(&id).and_then(|e| e[event.index()])
     }
 
     /// Set / clear an entity's metadata custom name.
@@ -297,6 +360,38 @@ mod tests {
         let (swing, amt) = e.limb();
         assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
         assert!(swing > 0.0, "phase advanced: {swing}");
+    }
+
+    #[test]
+    fn events_restart_and_clear_on_lifecycle() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+        // A stamp records the receipt tick.
+        t.start_event(1, EntityEvent::WardenAttack, 100);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(100));
+        // Independent slots: sonic boom does not disturb attack.
+        t.start_event(1, EntityEvent::WardenSonicBoom, 105);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(100));
+        assert_eq!(t.event_start(1, EntityEvent::WardenSonicBoom), Some(105));
+        // A repeated event is an unconditional restart (new tick).
+        t.start_event(1, EntityEvent::WardenAttack, 140);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), Some(140));
+        // Removal clears every slot.
+        t.remove(1);
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+        assert_eq!(t.event_start(1, EntityEvent::WardenSonicBoom), None);
+    }
+
+    #[test]
+    fn readding_an_id_drops_stale_event_timing() {
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.start_event(7, EntityEvent::ArmadilloPeek, 50);
+        // Re-adding the same id (a dropped despawn, then a new occupant) must
+        // not inherit the previous entity's peek clock.
+        t.add(7, EntityState::new(1, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.event_start(7, EntityEvent::ArmadilloPeek), None);
     }
 
     #[test]

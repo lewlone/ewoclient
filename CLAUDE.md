@@ -1591,7 +1591,7 @@ top-level, own translate for submodel). Open: ETF random/emissive textures
 
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M16 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions)
+## Rewo — from-scratch native Minecraft client (M0–M17 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions, entity events)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, the headless
@@ -1721,9 +1721,13 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   dig/sniff/happy/rise + the SEARCHING walk-swap, armadillo
   roll/scared/unroll with the shell-ball swap (verify with
   `rewo mobshot --gesture name[,age] [--shell]` or
-  `REWO_FORCE_GESTURE`). Entity-*event*-driven anims (warden attack,
-  allay dance…) still need the entity_event packet; dragon flight is
-  bespoke procedural vanilla code, posed.
+  `REWO_FORCE_GESTURE`). **M17 fires the exact model-visible entity
+  events** — Warden attack/sonic-boom + Armadillo re-peek from the
+  `entity_event` packet (see the M17 bullet below). Still open: the Allay
+  dance (`DATA_DANCING` metadata, not an event — event 18 is heart
+  particles only), the Warden tendril (event 61), generic
+  `ClientboundAnimate` arm swings, and dragon flight (bespoke procedural
+  code, posed).
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 
@@ -2102,6 +2106,83 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   CORRECTIONS 0, light 884,736 cells / 0 mismatches, release build green.
   Replay GPU avg 0.240 ms with a system-noisy tail — **no** latency improvement
   claimed. Full detail: REWO_PLAN §15.
+- **M16.1 — play gate build actions now fail closed 2026-07-24 (`f4b54d1`,
+  local; not pushed).** M16 left one honest red deferred: `rewo play`
+  (build-enabled) printed "PLACE verify … still air ✗" ~1 run in 4 yet exited 0,
+  and `place:true`/`give:true` meant only "packet sent". **Not a protocol bug —
+  packets were byte-exact vs the decompile; a pre-M16 (M3-era) harness + gate
+  defect.** Root cause (decompile): the harness placed dirt at `(fx+1, fy)`, the
+  cell beside the bot's feet; 26.2 `BlockItem.canPlace` gates on
+  `isUnobstructed(state, clickedPos, placementContext(player))` and the player's
+  0.6-wide AABB reaches east to `fx+1.3`, so its own body occupied the cell
+  whenever fractional x ≥ 0.7 → server rejects → air (intermittent as resting x
+  varies; dig never hits this). Fix: place two east (`fx+2`, past `fx+1.3`). The
+  observation was always right — `handleUseItemOn` sends the acting player a
+  `block_update` for BOTH `pos` and `pos.relative(direction)` on every
+  use-item-on, accepted or not. The gate (`build_acceptance` +
+  `evaluate_build_actions`) now reads the server's world at the recorded targets
+  and proves the EXACT state (placed == `minecraft:dirt` default from the block
+  table, dug == air), prints `ACCEPT …`, and returns exit 1 if unproven or
+  never-run; `--no-build`/`--dimension-check` are exempt. Gates: 350 unit (app
+  47→53), 4× live 30 s CORRECTIONS 0 + place=dirt + dig=air exit 0, fail-closed
+  proven live (16 s run exits 1).
+- **M17 exact model-visible entity events shipped + verified 2026-07-25.** Will
+  be committed locally on `codex/rewo-m17-entity-events` (base `f4b54d1`; not
+  pushed). Before it, `ClientboundEntityEventPacket` fell off the dispatch chain
+  as an unknown id — the Warden's ribcages never animated and a balled Armadillo
+  never re-peeked. The packet is a **signed fixed BE-i32 entity id + signed byte
+  event id** (not var-ints); the report resolves clientbound-play `entity_event`
+  to **id 34** (looked up by name, so a renumber fails loud). Type ids resolve
+  through production `EntityTypes::id_of`: **Warden 143, Armadillo 4**. Three
+  mappings in `apply_entity_event`/`route_entity_event`: Warden 4 → durably stop
+  the metadata roar `AnimationState` for that same ROARING episode, then
+  unconditionally restart exact `WARDEN_ATTACK`; Warden 62 → restart exact
+  `WARDEN_SONIC_BOOM`; Armadillo 64 → re-clock the shared metadata SCARED/PEEK
+  `AnimationState` from age 0 (the final balled hold remains after it runs).
+  Repeats restart the clock; missing/wrong-kind/unknown/excluded events are
+  inert; state clears on entity removal and id reuse.
+  **Load-bearing:** the two Warden rigs are exact generated defs from decompiled
+  `WardenAnimation.java` via `tools/gen_anim_defs.ps1` (never hand-edited); the
+  Warden ribcages were promoted from static folded cubes to **named body
+  children** so `WARDEN_SONIC_BOOM` can swing them (neutral geometry unchanged →
+  mobshot untouched); the generator now emits **deterministic LF** so
+  `git diff --check` is clean and a re-run reproduces the file byte-for-byte (an
+  EOL-ignoring semantic diff is exactly the two new defs, 222 lines). The
+  renderer feeds a **production event-age input distinct from the metadata
+  gesture ages**, sharing the session tick/partial epoch, through the same
+  CEM/vanilla part pipeline.
+  **Corrections/exclusions (recorded so they aren't re-derived):** Allay
+  `handleEntityEvent(18)` is **heart particles only** — the dance is
+  `DATA_DANCING` (metadata index 16, BOOLEAN serializer id 8) with client
+  dancing/spinning counters + root/head formulas; that's separate future
+  *metadata-animation* work, not an entity-event claim (the generic
+  `(16,BOOLEAN)→baby` decode Rewo has is latent/inert for Allay only because
+  `is_baby` isn't rendered for it). Warden tendril (event 61, needs tendril
+  procedural/emissive modelling), generic `ClientboundAnimatePacket` arm swings
+  (need handedness/equipment/CEM closure — a future combat-animation milestone),
+  hurt/damage overlays, particle/sound-only statuses, and AI simulation are all
+  excluded. **No live AI-triggered encounter was staged or claimed** — M17 is
+  authoritative through exact raw-packet injection into the production dispatcher
+  plus independent decompile literals; these client-receipt semantics don't
+  depend on vanilla's server-authoritative (nondeterministic) AI timing.
+  **Gate: `rewo eventshot --check`** — permanent serverless CPU-only,
+  fail-closed **28/28 witnesses**, driving the whole production path (raw
+  fixed-body packet → `route_entity_event` → `EntityTable::start_event` →
+  `resolve_mob_anim` → `oracle_part_deltas`). Loads real
+  `packets.json`/`registries.json`, proves id 34 + Warden 143/Armadillo 4; the
+  targets are **independent decompiled literals** (it does NOT read `anim_defs`
+  as its expectation; catmull-rom recomputed from four frame literals), ~1e-4
+  tolerances, each with a mutation/sensitivity partner (wrong packet id,
+  missing/wrong entity, event 61/unknown, repeat, remove/reuse, neutral parts).
+  Two consecutive release runs: identical PASS 28/28. Measured: **360 unit
+  tests** (world 95, net 110, gpu 44, data 9, mesh 38, proto 11 = 307 lib; app
+  53 — M16.1 was 350; M17 adds world +2, net +8), release build green
+  (pre-existing warnings only), mobshot 243/243, lightmapshot/skyshot/tintshot/
+  meshshot/dimensioncheck green with Vulkan validation ON / 0 VUIDs, demo SHA-256
+  byte-identical to M15, bench replay GPU avg 0.231 ms (no latency change claimed
+  — M17 doesn't touch the replay entity path), physics 600 ticks CORRECTIONS 0,
+  light `--no-relight` 884,736 cells / 0 mismatches, live dimension 4/4
+  checkpoints + 3/3 transitions. Full detail: REWO_PLAN §15.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

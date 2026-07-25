@@ -38,6 +38,14 @@ pub struct PlaySession {
     /// Per entity-type `(width, height, pushable)` for entity collision.
     /// Empty disables pushing (the harnesses that don't care about mobs).
     pub entity_push: Vec<(f32, f32, bool)>,
+    /// Protocol id of `minecraft:warden` / `minecraft:armadillo`, resolved by
+    /// the app from the entity-type registry. `ClientboundEntityEventPacket`
+    /// bytes are polymorphic by entity class, so the model-visible events are
+    /// interpreted only for entities of these kinds. `None` (the default, and
+    /// what the headless protocol harnesses leave it) means "don't interpret
+    /// entity events" — correct for tests that never render a warden.
+    pub warden_type_id: Option<i32>,
+    pub armadillo_type_id: Option<i32>,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
@@ -653,6 +661,8 @@ impl<'a> Connection<'a> {
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
             entity_push: Vec::new(),
+            warden_type_id: None,
+            armadillo_type_id: None,
             global_bits,
             dim_types,
             overworld_clock_id,
@@ -1286,6 +1296,19 @@ impl PlaySession {
                     self.world.entities.set_baby(eid, baby);
                 }
             }
+        } else if crate::route_entity_event(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.warden_type_id,
+            self.armadillo_type_id,
+            self.ticks as i64,
+        ) {
+            // Model-visible entity events (warden attack/sonic boom, armadillo
+            // peek) were stamped with the current tick — the renderer measures
+            // the rig's elapsed time from it. `self.ticks` is the in-progress
+            // tick (it increments at the end of `tick()`, after this drain).
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
         } else if id == ids.cb_play_player_info_remove {

@@ -58,13 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 93
-cargo test --release -p rewo-net   --lib   # 102
+cargo test --release -p rewo-world --lib   # 95
+cargo test --release -p rewo-net   --lib   # 110
 cargo test --release -p rewo-gpu   --lib   # 44
 cargo test --release -p rewo-data  --lib   # 9
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 297 lib
-cargo test --release -p rewo-app           # 47   (app-level) → 344 total
+cargo test --release -p rewo-proto --lib   # 11   → 307 lib
+cargo test --release -p rewo-app           # 53   (app-level) → 360 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -118,6 +118,35 @@ grades all three and is itself graded by the JSON. Then the world binding
 closed on a missing recording or a missing/malformed decompile
 (`--decompiled <dir>` overrides). Run after any dimension, registry, world-shape
 or cardinal-shade change.
+
+```bash
+./target/release/rewo.exe eventshot --check
+```
+M17's permanent **serverless** entity-event oracle, CPU-only (no socket, no GPU
+device), **fail-closed on a fixed 28/28 witnesses** — every named property is
+observed and the run errors if any failed *or* the count is short (a silently
+skipped property). It drives the whole production receipt path for the three
+model-visible `ClientboundEntityEventPacket` animations (Warden attack, Warden
+sonic boom, Armadillo peek):
+
+```text
+raw fixed-body packet (BE-i32 id + signed byte)
+  -> rewo_net::route_entity_event   (production packet-id selection)
+  -> EntityTable::start_event       (real kind lookup + receipt-tick storage)
+  -> live_cmd::resolve_mob_anim     (vanilla ownership rules, event ages)
+  -> rewo_gpu oracle_part_deltas    (the exact GPU model pose math)
+```
+
+It loads the real `packets.json` and `registries.json` and proves `entity_event`
+id **34** and type ids **Warden 143 / Armadillo 4** before any pose check. The
+targets are **independent decompiled literals** — it does **not** read
+`anim_defs` as its expectation (that is the renderer's own table), and the
+catmull-rom target is recomputed from the four frame literals. Tolerances are
+~1e-4 (they absorb only the decimal-keyframe-time reconstruction through the
+real `ageInTicks` clock). Every property carries a mutation/sensitivity partner
+(wrong packet id, missing/wrong-kind entity, event 61/unknown, repeat restart,
+remove/reuse clear, neutral base-pose parts). Run after any entity-event,
+`gen_anim_defs`, Warden/Armadillo rig, or dispatch-seam change.
 
 ```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
@@ -239,12 +268,13 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M16` shipped and verified. **M0–M9 are pushed** (`origin/main` @
-`973ea5e`); the **M10–M16 arc is reviewed local work, not yet pushed** (M12 is
-`06dd3eb`, M14 `88b5112`, M15 `5b0f437`; M16 is the current local commit on
-branch `codex/rewo-m16-dimensions`). M16 is green on every gate; its vanilla
-test server was stopped and port 25599 verified free. See
-`REWO_PLAN.md` §15 for each milestone's exact ground truth and measured gates.
+`M0–M17` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`973ea5e`); the **M10–M17 arc is reviewed local work, not yet pushed** (M12 is
+`06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`; M17
+will be committed locally on branch `codex/rewo-m17-entity-events`, base
+`f4b54d1`). M17 is green on every gate; its vanilla test server was stopped by
+exact PID and port 25599 verified free. See `REWO_PLAN.md` §15 for each
+milestone's exact ground truth and measured gates.
 
 A playable online client: joins online-mode servers with signed chat, real
 player skins, 88 vanilla mob models with formula-exact procedural and keyframe
@@ -264,12 +294,17 @@ directions, reducing the canonical replay upload from 149.13 to 109.39 MiB
 ambient light, cardinal face shade, sky/fog/ambient/sky-light colours, fixed
 time and a tag-resolved day timeline — selected by raw holder id — plus the End
 sky pass and a world/mesh transition that discards and refences by generation.
-The canonical demo PNG is byte-identical to M15.
+The canonical demo PNG is byte-identical to M15. **M17 consumes
+`ClientboundEntityEventPacket`** (id 34): the Warden's attack and sonic-boom
+rigs and the Armadillo's re-peek now fire from the exact decompiled
+`WardenAnimation`/metadata definitions, threaded through the production
+dispatch → tick-store → ownership → pose path and proved by the serverless
+`eventshot` 28/28 oracle; the demo PNG stays byte-identical.
 
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
 `bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
-`dimensioncheck`.
+`dimensioncheck`, `eventshot`.
 
 **Open work**, roughly in descending obviousness:
 
@@ -277,8 +312,11 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   `{modifier, argument}` arm of an attribute override is a deliberate hard
   error rather than a modelled case. (Biome blend radius is fixed at vanilla's
   default 2 — not yet a setting.)
-- Entity-*event* animations (warden attack, allay dance) need the
-  `entity_event` packet; dragon flight is bespoke procedural code, still posed.
+- Entity-*event* coverage is the three model-visible ones (Warden attack +
+  sonic boom, Armadillo peek — M17). The Warden tendril (event 61), generic
+  `ClientboundAnimatePacket` arm swings, and the Allay dance (which is
+  `DATA_DANCING` metadata, *not* an entity event — event 18 is heart particles)
+  are the next steps; dragon flight is bespoke procedural code, still posed.
 - Face-occlusion merging is tested per-side rather than as a true shape union
   — differs only for complementary partial faces, which no vanilla pair
   produces.

@@ -39,6 +39,18 @@ impl EntityTypes {
         self.by_id.get(&id).map(|s| s.as_str())
     }
 
+    /// Protocol id of a named entity type (`"minecraft:warden"`), or `None`
+    /// if this version doesn't register it. Used to resolve the concrete
+    /// kinds whose entity events this client interprets (warden, armadillo) —
+    /// `ClientboundEntityEventPacket` bytes are polymorphic by entity class,
+    /// so the id alone can't name the animation. Reverse of [`Self::name`].
+    pub fn id_of(&self, name: &str) -> Option<i32> {
+        self.by_id
+            .iter()
+            .find(|(_, n)| n.as_str() == name)
+            .map(|(id, _)| *id)
+    }
+
     /// Capsule footprint (width, height) in blocks for a type id. Exact for
     /// the common types; everything else gets the humanoid default — the v1
     /// capsule renderer doesn't need more (REWO_PLAN correction #11).

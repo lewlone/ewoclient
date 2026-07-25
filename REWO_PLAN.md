@@ -327,11 +327,14 @@ the code's author. Nothing below is settled truth.
   armadillo roll/scared/unroll **with the shell-ball visibility swap**
   (`mobshot --gesture name[,age] [--shell]`,
   `REWO_FORCE_GESTURE=name[,age]`).
-  Still open: entity *collision* is ignored (walk through mobs),
-  entity-*event*-driven anims (armadillo re-peek event 64, warden
-  attack/sonic-boom, creaking attack, allay dance) need the
-  entity_event/jukebox packets, dragon flight is bespoke procedural code
-  (not a rig) and stays posed, sheep wool dye-tint deferred (white),
+  M17 shipped the exact model-visible entity events: **Warden
+  attack/sonic-boom and Armadillo re-peek fire from the `entity_event`
+  packet** (§15); Allay dance is **`DATA_DANCING` metadata, not an entity
+  event** (event 18 is heart particles only). Still open: Allay's dance
+  metadata counters/formulas, the Warden tendril (event 61), generic
+  `ClientboundAnimate` arm swings, creaking attack if its exact signal is
+  still unclosed, and dragon flight (bespoke procedural code, not a rig —
+  stays posed). Sheep wool dye-tint deferred (white),
   slime/magma **size now decoded** (metadata index 16 → linear model
   scale, §15) — their face detail still needs the translucent pass;
   texture variants are fixed picks (tabby cat, brown horse, creamy
@@ -356,8 +359,8 @@ the code's author. Nothing below is settled truth.
   **RESOLVED M10 (§15)**: the two-phase block+sky flood fill relights and
   remeshes affected columns on every client edit, server-exact (gate
   `rewo play --light-check`: 884,736 cells, 0 mismatches).
-- ~~**Only the overworld dimension is tested.**~~ — **RESOLVED M16 (§15,
-  uncommitted)**: the Nether, the End and `overworld_caves` are parsed from the
+- ~~**Only the overworld dimension is tested.**~~ — **RESOLVED M16 (§15)**: the
+  Nether, the End and `overworld_caves` are parsed from the
   synced registry, selected by raw holder id, and exercised both serverlessly
   (`rewo dimensioncheck --check`) and live (`rewo play --dimension-check`,
   4/4 checkpoints, 3/3 transitions). Still open within it: dimensions the
@@ -419,15 +422,19 @@ the code's author. Nothing below is settled truth.
 
 ### Suggested next moves (the user will choose — don't assume)
 
-After M16, the most concrete remaining correctness work is: (a) **entity-event
-animations** such as warden attack/allay dance; (b) true shape-union face
-occlusion and glow-lichen's any-face emission; (c) the explicitly excluded
-redstone/stem/lily `BlockColors`; (d) physics parity outside the on-foot
-flat-world subset (water, ladders, ice, cobwebs). Visual/product work includes
-clouds/weather, HUD completeness and ETF random/emissive textures. The async
-transfer/staging-ring idea remains measure-first; M15 closed greedy cube meshing
-and vertex packing, and M16 closed Nether/End + the dimension transition.
-Confirm direction with the user before diving in.
+After M17, the most concrete remaining animation work is: (a) **the next
+animation tracks** — the Allay dance via `DATA_DANCING` metadata + its
+dancing/spinning counters, the Warden tendril (event 61), or, as a separately
+scoped milestone, generic `ClientboundAnimate` combat arm swings; (b) true
+shape-union face occlusion and glow-lichen's any-face emission; (c) the
+explicitly excluded redstone/stem/lily `BlockColors`; (d) physics parity outside
+the on-foot flat-world subset (water, ladders, ice, cobwebs). Visual/product
+work includes clouds/weather, HUD completeness and ETF random/emissive textures.
+The async transfer/staging-ring idea remains measure-first; M15 closed greedy
+cube meshing and vertex packing, M16 closed Nether/End + the dimension
+transition, and M17 closed the exact model-visible entity events (Warden
+attack/sonic-boom + Armadillo re-peek). Confirm direction with the user before
+diving in.
 
 ---
 
@@ -3768,3 +3775,171 @@ touched the exit code.
   --no-relight`: **884,736 cells, block 0, sky 0 mismatches, ✓ EXACT**, exit 0,
   no ACCEPT lines (placement correctly not required).
 - Release build green. Test server stopped, port 25599 verified free.
+
+### 2026-07-25 — M17: exact model-visible entity events — SHIPPED + VERIFIED
+
+M17 makes `ClientboundEntityEventPacket` a *consumed* contract for the three
+one-shot animations a vanilla client renders from it. Before it, every such
+packet fell off the dispatch chain as an unknown id: the Warden's attack and
+sonic-boom rigs never fired, and the Armadillo, once balled, never re-peeked —
+it stayed in its held pose forever. The work is complete, every gate below is
+green, and it will be committed locally on `codex/rewo-m17-entity-events` (base
+`f4b54d1`, the M16.1 commit; not pushed — M0–M9 are on `origin/main`, the
+M10–M17 arc is reviewed local work). The vanilla test server was stopped by
+exact PID and port 25599 verified free after the final gates; the tree is dirty
+only because this entry and the commit are pending.
+
+**The packet.** 26.2 `ClientboundEntityEventPacket` is a signed fixed
+big-endian `i32` entity id followed by a signed `byte` event id — *not* a
+var-int either field. The packet report resolves the clientbound-play
+`entity_event` id to **34**; as everywhere in Rewo it is looked up **by name**
+from `packets.json`, so a version bump that renumbers it fails loud rather than
+mis-firing. The two entity kinds whose events this client models resolve their
+protocol type ids through the exact production `EntityTypes::id_of` path
+(`registries.json`): **Warden 143, Armadillo 4**. No synthetic id is ever used
+in a positive check.
+
+**What ships — exact, model-visible events only.** `apply_entity_event`
+(`rewo-net/src/lib.rs`) decodes the fixed body, looks up the entity's type, and
+maps `(event, kind)` to a modelled effect; `route_entity_event` is the narrow
+packet-id → decoder seam `PlaySession::handle_packet` calls (and the oracle
+drives, so id selection is exercised in the gate too). Three mappings:
+- **Warden event 4 (attack).** Durably stops the metadata-driven roar
+  `AnimationState` for that same `ROARING` episode (so a mid-roar attack does
+  not double-play), then unconditionally restarts the exact `WARDEN_ATTACK`
+  keyframe rig from age 0.
+- **Warden event 62 (sonic boom).** Unconditionally restarts the exact
+  `WARDEN_SONIC_BOOM` rig from age 0.
+- **Armadillo event 64 (peek).** Re-clocks the *existing shared* metadata
+  `SCARED`/`PEEK` `AnimationState` from age 0; after it runs out, the final
+  balled/held pose remains (the event is a re-peek nudge, not a separate rig).
+
+A repeated packet restarts the clock. A missing entity, a wrong-kind pairing
+(the id is right but the entity isn't a Warden/Armadillo), an unknown id, and
+the deliberately-excluded events are all inert. Event state clears on entity
+removal and on id reuse, so a recycled entity id cannot inherit a stale rig.
+The renderer feeds a **production event-age input distinct from the metadata
+gesture ages**; event ages share the session's tick/partial epoch, and the
+CEM/vanilla part transforms continue through the same part pipeline — an entity
+event is one more clock into the existing rig evaluator, not a parallel path.
+
+**The generated rigs.** `WARDEN_ATTACK` and `WARDEN_SONIC_BOOM` are the exact
+decompiled definitions from `WardenAnimation.java`, machine-extracted by
+`tools/gen_anim_defs.ps1` into `rewo-gpu/src/anim_defs.rs` — never hand-edited.
+Two mechanical consequences worth recording:
+- The Warden ribcage was previously baked as static folded cubes; for
+  `WARDEN_SONIC_BOOM` to swing them, they are promoted to **named body
+  children** (`right_ribcage` / `left_ribcage`) — the neutral geometry is
+  unchanged, so the mob's rest pose and the facelabel gate are untouched; only
+  the parts the rig addresses now exist to be addressed.
+- The generator's output is now written with **deterministic LF** line endings,
+  so `git diff --check` is clean and a re-run reproduces the committed file
+  byte-for-byte. A semantic diff that ignores EOL is exactly the two new
+  definitions (**222 lines**) — nothing else in the generated table moved.
+
+**The serverless oracle, `rewo eventshot --check`** (`rewo-app/src/eventshot_cmd.rs`).
+CPU-only, no socket, no GPU device, **fail-closed** on a fixed `EXPECTED_WITNESSES
+= 28`: every named property is *observed* (real value read and printed) and only
+increments the counter when it passes; the run errors if any property failed
+**or** the observed count differs from 28 (which catches a property silently
+skipped by a missing part or a `None` from the oracle). The continuous path is
+all production code:
+
+```text
+raw fixed-body packet (BE-i32 id + signed byte, built here)
+  -> rewo_net::route_entity_event        (real packet-id selection seam)
+  -> EntityTable::start_event            (real kind lookup + receipt-tick storage)
+  -> live_cmd::resolve_mob_anim          (vanilla ownership rules, event ages)
+  -> rewo_gpu::entities::oracle_part_deltas   (the exact GPU model pose math)
+```
+
+It loads the real `packets.json` and `registries.json` and proves `entity_event`
+id **34** and type ids **Warden 143 / Armadillo 4** before any pose check. The
+expected values are **independent decompiled literals** — nothing reads
+`anim_defs` as its expectation (that is the table the renderer consumes; grading
+it against itself would verify nothing), and the catmull-rom target is recomputed
+by a private reimplementation of `Mth.catmullrom` over the four decompiled frame
+literals. Tolerances are ~1e-4 (they absorb only the decimal-keyframe-time
+reconstruction through the real `ageInTicks = (tick − start + partial)·0.05`
+clock). The 28 witnesses include:
+- **attack** `right_arm` at 0.1667 s → `[-π/2, -π/4, 0]`; `head` x at 0.25 s →
+  `-0.52665188`; `body` position at 0.2083 s → `[0, 1, -2]`;
+- **sonic boom** the two ribcages' y at 1.875 s → `±2.18166156`; `head` x at
+  1.75 s → `1.3962634`;
+- a **catmull-rom** sample at 1.375 s: observed/independent `1.497165` sitting
+  far from the linear interpolant `1.287180` (difference `0.209985`), so a lerp
+  regression fails the sensitivity discriminator;
+- the **roar-ownership** case: prior-episode suppression vs a fresh transition,
+  flipped by reordering ticks;
+- **armadillo** held pose at age 2.5 s (`right_front_leg` → `-π/2`), the id-64
+  re-clock to age 0 (`head` z `7.0` vs the held `5.2`), and the later return to
+  the final hold;
+- the **negative/sensitivity** partners: wrong packet id, missing/wrong entity,
+  event 61 and unknown ids, a repeat restart, remove/reuse clearing, and the
+  neutral (base-pose) ribcage parts.
+
+Two consecutive release runs produced identical **PASS 28/28**.
+
+**What M17 deliberately does *not* claim — corrections and exclusions.**
+- **Allay `handleEntityEvent(18)` is heart particles only**, not a dance. The
+  Allay dance is driven by `DATA_DANCING` — SynchedEntityData **index 16**,
+  `BOOLEAN` serializer id 8 — with client-side dancing/spinning counters and
+  the root/head formulas they feed. The generic `(16, BOOLEAN) → baby` decode
+  Rewo already has is **latent and inert** for the Allay only because `is_baby`
+  is not rendered for it; making the Allay dance is separate future
+  *metadata-animation* work, not an entity-event claim and not M17.
+- **Warden event 61 (tendril shiver) is excluded** — it needs tendril
+  procedural/emissive modelling the Warden rig does not yet carry.
+- **`ClientboundAnimatePacket` generic arm swings are excluded** as a future
+  combat-animation milestone — they require handedness, equipment-driven swing
+  duration/type/status, and the CEM closure to render correctly.
+- **Hurt/damage-tilt overlays, particle/sound-only statuses, and any AI
+  simulation are out of scope.**
+- **No live AI-triggered event encounter was staged or claimed.** M17 is
+  authoritative through exact raw-packet injection into the production
+  dispatcher plus independent decompile literals: the client-receipt semantics
+  these events define are not a function of vanilla's server-authoritative AI
+  timing (which would be nondeterministic to script), so reproducing the AI is
+  neither necessary nor a stronger proof than the packet the AI would send.
+
+**Measured results.**
+- Unit tests **360/360**: world **95**, net **110**, gpu 44, data 9, mesh 38,
+  proto 11 = **307 library** + app **53**. Baseline was M16.1's 350; M17 adds
+  **world +2, net +8** (the event lifecycle + decode/dispatch tests); every
+  other crate is unchanged.
+- Release build green — pre-existing warnings only.
+- `rewo eventshot --check`: **28/28** on two consecutive release runs.
+- `mobshot` **243/243** (the ribcage promotion did not disturb any texture).
+- `lightmapshot`, `skyshot`, `tintshot` green with Vulkan validation **ON**;
+  `meshshot` and `dimensioncheck` green; **no VUID reported**. `dimensioncheck`
+  serverless: four registry entries exact against all bindings.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15** (and M16).
+- Bench replay: GPU avg **0.231 ms**, p50 0.201, p99 0.787, p99.9 1.112,
+  max 1.369; 1%/0.1% tail means 0.956 / 1.262 ms. **No latency improvement
+  claimed** — M17 does not touch the replay's entity path.
+- Live physics/build gate: 600 ticks, **CORRECTIONS 0**, clock +598, loaded 329
+  columns; server-observed `ACCEPT place … state 10 (minecraft:dirt) ✓` and
+  `ACCEPT dig … state 0 (air) ✓`.
+- Live light `--no-relight`: 9 columns, **884,736 cells, block 0, sky 0
+  mismatches, EXACT**, CORRECTIONS 0, clock +278.
+- Live dimension `--dimension-check`: **4/4 checkpoints, 3/3 transitions**, each
+  discarding and requeueing **329 columns** (cumulative queue 987), chunk decode
+  failures 0, settled-window corrections 0, teleports 5.
+
+**For the commit message (why / how found / evidence).** *Why:* model-visible
+server events were silently dropped as unknown packets — the Warden's ribcages
+could not animate and the Armadillo stayed held forever. *How found:* reading
+the decompiled 26.2 class handlers plus the Warden/Armadillo animation
+definitions, which also corrected the stale premise that Allay event 18 is a
+dance (it is heart particles; the dance is metadata). *Evidence:* the exact
+numbers above.
+
+**Left open after M17:** the Allay dance and other metadata-animation work
+(`DATA_DANCING` and friends); the Warden tendril (event 61); generic
+`ClientboundAnimatePacket` arm swings; hurt/damage overlays and
+particle/sound-only statuses; and the carry-forwards from M16 — custom datapack
+dimension types, true shape-union face occlusion, glow-lichen any-face emission,
+redstone/stem/lily-pad `BlockColors`, physics parity outside the on-foot
+flat-world subset, and clouds/weather and HUD completeness.

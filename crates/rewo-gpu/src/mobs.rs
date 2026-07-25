@@ -245,6 +245,44 @@ impl Gesture {
     }
 }
 
+/// A one-shot animation started by an explicit wire *event*
+/// (`ClientboundEntityEventPacket`), NOT by a persistent metadata pose — the
+/// distinction matters (`don't pretend they are metadata gestures`): a gesture
+/// plays *while* a pose holds; an event fires once and its rig runs from the
+/// receipt tick, holding its (neutral) last frame afterward. gpu-local mirror
+/// of the rig-driven half of `rewo_world::entities::EntityEvent` (rewo-gpu has
+/// no rewo-world dependency). The armadillo peek is deliberately absent: it
+/// re-clocks the *existing* SCARED peek gesture (vanilla's one shared
+/// `peekAnimationState`), so it is handled on the gesture clock, not here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModelEvent {
+    /// Warden id 4 — `attackAnimationState.start(tickCount)`.
+    WardenAttack,
+    /// Warden id 62 — `sonicBoomAnimationState.start(tickCount)`.
+    WardenSonicBoom,
+}
+
+impl ModelEvent {
+    /// Dense count for the fixed-size per-entity event-age array.
+    pub const COUNT: usize = 2;
+
+    /// Slot index into the per-entity event-age array.
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// A keyframe rig started by a wire event (see [`ModelEvent`]). Structurally a
+/// [`KfAnim`] whose "gate" is the presence of an event age rather than a
+/// gesture/walk state; kept as its own type so the event rigs can never be
+/// confused with the metadata gesture rigs.
+pub struct EventRig {
+    pub def: &'static KfDef,
+    pub event: ModelEvent,
+    /// Channel → part index, resolved at build time (same as [`KfAnim::parts`]).
+    pub parts: Vec<u16>,
+}
+
 /// Part visibility rule — the armadillo swaps between its body and the
 /// rolled-up ball exactly like vanilla's `setupAnim` visibility toggles.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -331,6 +369,9 @@ pub struct Model {
     pub quads: Vec<RawQuad>,
     /// Keyframe rigs playing on this model (channels part-resolved).
     pub keyframes: Vec<KfAnim>,
+    /// Event-driven one-shot rigs (`ClientboundEntityEventPacket`), timed from
+    /// the receipt tick rather than a metadata pose. Empty for most mobs.
+    pub event_rigs: Vec<EventRig>,
     /// Extra scale on top of the 1/16 px→block conversion (player 0.9375,
     /// wither skeleton 1.2, slime 2.0, …).
     pub scale: f32,
@@ -520,6 +561,7 @@ pub struct ModelBuilder {
     parts: Vec<Part>,
     quads: Vec<RawQuad>,
     keyframes: Vec<KfAnim>,
+    event_rigs: Vec<EventRig>,
 }
 
 impl ModelBuilder {
@@ -536,6 +578,7 @@ impl ModelBuilder {
             }],
             quads: Vec::new(),
             keyframes: Vec::new(),
+            event_rigs: Vec::new(),
         }
     }
 
@@ -600,8 +643,24 @@ impl ModelBuilder {
     }
 
     fn keyframe_gated(&mut self, def: &'static KfDef, driver: KfDriver, gate: KfGate) {
-        let parts = def
-            .channels
+        let parts = self.resolve_channel_parts(def);
+        self.keyframes.push(KfAnim { def, driver, gate, parts });
+    }
+
+    /// Attach a wire-event-driven one-shot rig (vanilla `attackAnimationState`
+    /// etc.) — timed from the event's receipt tick, not a metadata pose. Every
+    /// channel's part name must exist (so e.g. `WARDEN_SONIC_BOOM`'s
+    /// `right_ribcage` channel forces the ribcage to be a real named part).
+    fn keyframe_event(&mut self, def: &'static KfDef, event: ModelEvent) {
+        let parts = self.resolve_channel_parts(def);
+        self.event_rigs.push(EventRig { def, event, parts });
+    }
+
+    /// Resolve each of a rig's channels to a model part index by vanilla name
+    /// (panics at build if a channel targets a missing part — the registry
+    /// build test catches it).
+    fn resolve_channel_parts(&self, def: &'static KfDef) -> Vec<u16> {
+        def.channels
             .iter()
             .map(|ch| {
                 self.parts
@@ -610,8 +669,7 @@ impl ModelBuilder {
                     .unwrap_or_else(|| panic!("keyframe part {:?} missing from model", ch.part))
                     as u16
             })
-            .collect();
-        self.keyframes.push(KfAnim { def, driver, gate, parts });
+            .collect()
     }
 
     /// Add one vanilla `addBox` to a part. `folds` reproduce nested static
@@ -713,6 +771,7 @@ impl ModelBuilder {
             parts: self.parts,
             quads: self.quads,
             keyframes: self.keyframes,
+            event_rigs: self.event_rigs,
             scale,
             cem: None,
             cem_translate: Vec::new(),
@@ -2630,8 +2689,15 @@ fn warden() -> Model {
     // bone(0,24,0) → body(0,−21,0), targeted by the gesture rigs.
     let body = b.part_named("body", [0.0, 3.0, 0.0], [0.0; 3], Anim::None, 1.0, Option::None);
     b.cube(body, 0, (0.0, 0.0), [-9.0, -13.0, -4.0], [18.0, 21.0, 11.0], NONE);
-    b.cube_f(body, 0, (90.0, 11.0), [-2.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, false, &[Fold::at([-7.0, -2.0, -4.0])]);
-    b.cube_f(body, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, &[Fold::at([7.0, -2.0, -4.0])]);
+    // Ribcage plates: promoted from static folded cubes on `body` to real
+    // named child parts so `WARDEN_SONIC_BOOM` can swing them open (the rig
+    // targets "right_ribcage"/"left_ribcage" by name). The part pivot equals
+    // the former `Fold::at` offset, so with no rig active the neutral geometry
+    // is byte-identical to the folded version (vanilla `PartPose.offset`).
+    let ribcage_r = b.part_named("right_ribcage", [-7.0, -2.0, -4.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube(ribcage_r, 0, (90.0, 11.0), [-2.0, -11.0, -0.1], [9.0, 21.0, 0.0], NONE);
+    let ribcage_l = b.part_named("left_ribcage", [7.0, -2.0, -4.0], [0.0; 3], Anim::None, 1.0, Some(body));
+    b.cube_f(ribcage_l, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, NONE);
     let head = b.part_named("head", [0.0, -13.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube(head, 0, (0.0, 32.0), [-8.0, -16.0, -5.0], [16.0, 16.0, 10.0], NONE);
     b.cube_f(head, 0, (52.0, 32.0), [-16.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([-8.0, -12.0, 0.0])]);
@@ -2648,6 +2714,10 @@ fn warden() -> Model {
     b.keyframe_gesture(&crate::anim_defs::WARDEN_SNIFF, Gesture::WardenSniff);
     b.keyframe_gesture(&crate::anim_defs::WARDEN_EMERGE, Gesture::WardenEmerge);
     b.keyframe_gesture(&crate::anim_defs::WARDEN_DIG, Gesture::WardenDig);
+    // Wire-event one-shots (ClientboundEntityEventPacket): id 4 → attack,
+    // id 62 → sonic boom (swings the ribcage plates open).
+    b.keyframe_event(&crate::anim_defs::WARDEN_ATTACK, ModelEvent::WardenAttack);
+    b.keyframe_event(&crate::anim_defs::WARDEN_SONIC_BOOM, ModelEvent::WardenSonicBoom);
     b.finish(1.0)
 }
 

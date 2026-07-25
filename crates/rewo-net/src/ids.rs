@@ -83,6 +83,11 @@ pub struct Ids {
     pub cb_play_player_info_remove: i32,
     pub cb_play_set_entity_data: i32,
     pub cb_play_rotate_head: i32,
+    /// `ClientboundEntityEventPacket` — a signed BE i32 entity id + a signed
+    /// byte event. Required: the model-visible events (warden attack/sonic
+    /// boom, armadillo peek) ride it, so a missing name is a version mismatch
+    /// that should fail loud rather than silently drop those animations.
+    pub cb_play_entity_event: i32,
     /// Player visual effects (M13 lightmap). Required: the lightmap's
     /// night-vision / darkness factors depend on them, so a missing name is a
     /// version-mismatch that should fail loud rather than silently disable the
@@ -175,6 +180,7 @@ impl Ids {
             cb_play_player_info_remove: req!(p, P, C, "player_info_remove"),
             cb_play_set_entity_data: req!(p, P, C, "set_entity_data"),
             cb_play_rotate_head: req!(p, P, C, "rotate_head"),
+            cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),
             cb_play_start_configuration: opt!(p, P, C, "start_configuration"),

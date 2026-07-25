@@ -96,6 +96,10 @@ pub struct EntityDraw<'a> {
     /// Active pose/state gesture + seconds since it started (drives the
     /// one-shot keyframe rigs — warden roar, sniffer dig, …).
     pub gesture: Option<(mobs::Gesture, f32)>,
+    /// Per wire-event elapsed seconds since receipt (`None` = not fired), one
+    /// slot per [`mobs::ModelEvent`] — warden attack / sonic boom. The event
+    /// rig plays from this age and holds its neutral last frame afterward.
+    pub events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap (vanilla `isHidingInShell`).
     pub shell: bool,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
@@ -266,6 +270,8 @@ pub struct MobModel {
     quads: Vec<GpuQuad>,
     parts: Vec<mobs::Part>,
     keyframes: Vec<mobs::KfAnim>,
+    /// Wire-event one-shot rigs (`ClientboundEntityEventPacket`).
+    event_rigs: Vec<mobs::EventRig>,
     /// Model px → world blocks (vanilla 1/16 × the mob's render scale).
     scale: f32,
     /// Resource-pack CEM animation program (M9c) — drives bone channels
@@ -453,6 +459,7 @@ impl EntityPass {
                 quads,
                 parts: m.parts,
                 keyframes: m.keyframes,
+                event_rigs: m.event_rigs,
                 scale: m.scale / 16.0,
                 cem: m.cem,
                 cem_translate: m.cem_translate,
@@ -662,6 +669,7 @@ impl EntityPass {
             amt: 0.0,
             age: 0.0,
             gesture: Option::None,
+            events: [None; mobs::ModelEvent::COUNT],
             shell: false,
         };
         let xf = part_transforms(model, &ctx, None, None);
@@ -810,6 +818,7 @@ impl EntityPass {
             amt: d.limb_amount,
             age: time * 20.0,
             gesture: d.gesture,
+            events: d.events,
             shell: d.shell,
         };
         // Resource-pack CEM animation (M9c): evaluate the expression program
@@ -1162,6 +1171,8 @@ struct AnimCtx {
     age: f32,
     /// Active gesture + its age in seconds (one-shot rigs).
     gesture: Option<(mobs::Gesture, f32)>,
+    /// Wire-event elapsed seconds per [`mobs::ModelEvent`] (`None` = inactive).
+    events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap.
     shell: bool,
 }
@@ -1336,22 +1347,79 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
     }
 }
 
-/// Compose every part's global transform `(M, o)` — child-in-parent
-/// hierarchy with vanilla's `translate(pivot); rotateZYX(base + delta)`
-/// per level, plus any keyframe-rig contributions (which ADD onto the
-/// procedural deltas, exactly like vanilla's `offsetRotation`/`offsetPos`).
-/// Shared by rendering and the mobshot geometric prediction so the two can
-/// never disagree.
-fn part_transforms(
-    model: &MobModel,
+/// Animation inputs for [`oracle_part_deltas`] — the pose/rig state the
+/// renderer feeds `part_transforms`, in vanilla units. Lets the `eventshot`
+/// oracle exercise the exact production rig math with no GPU device.
+#[derive(Clone, Default)]
+pub struct OracleInputs {
+    /// Look pitch (radians) and net head yaw (radians) — the `Anim::Head` inputs.
+    pub pitch: f32,
+    pub net: f32,
+    /// Raw `walkAnimationPos` / `walkAnimationSpeed`.
+    pub limb_swing: f32,
+    pub limb_amount: f32,
+    /// Wall-clock seconds → `ageInTicks = age_seconds · 20` (ambient anims).
+    pub age_seconds: f32,
+    /// Active metadata gesture + its age in seconds.
+    pub gesture: Option<(mobs::Gesture, f32)>,
+    /// Wire-event elapsed seconds per [`mobs::ModelEvent`] (`None` = inactive).
+    pub events: [Option<f32>; mobs::ModelEvent::COUNT],
+    /// Armadillo shell swap.
+    pub shell: bool,
+}
+
+/// The per-part animation deltas (added rotation radians ZYX + pivot offset
+/// model px) the renderer would apply for `kind` under `inputs`, paired with
+/// each part's vanilla name. Builds the SAME `mobs` model and runs the SAME
+/// [`anim_deltas`] as `part_transforms`/`emit_model`, so `rewo eventshot
+/// --check` verifies entity-event rigs against the real production math without
+/// standing up a Vulkan device. `None` if the kind has no built-in model.
+pub fn oracle_part_deltas(
+    kind: EntityModelKind,
+    inputs: &OracleInputs,
+) -> Option<Vec<(&'static str, [f32; 3], [f32; 3])>> {
+    let def = mobs::MOBS.iter().find(|d| d.kind == kind)?;
+    let model = (def.build)();
+    let ctx = AnimCtx {
+        pitch: inputs.pitch,
+        net: inputs.net,
+        f: inputs.limb_swing * 0.6662,
+        pos: inputs.limb_swing,
+        amt: inputs.limb_amount,
+        age: inputs.age_seconds * 20.0,
+        gesture: inputs.gesture,
+        events: inputs.events,
+        shell: inputs.shell,
+    };
+    let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
+    Some(
+        model
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.name, drots[i], doffs[i]))
+            .collect(),
+    )
+}
+
+/// Per-part animation deltas: added rotation (radians, summed ZYX) + pivot
+/// offset (model px), from the procedural `setupAnim` formulas, the CEM
+/// program, the metadata keyframe rigs, and the wire-event one-shot rigs — all
+/// ADDED, exactly like vanilla's `offsetRotation`/`offsetPos` stacking. Factored
+/// out of [`part_transforms`] so the `eventshot` oracle can read the raw rig
+/// contributions (the compose step below turns them into matrices) without a
+/// GPU device.
+fn anim_deltas(
+    parts: &[mobs::Part],
+    keyframes: &[mobs::KfAnim],
+    event_rigs: &[mobs::EventRig],
     ctx: &AnimCtx,
     cem_deltas: Option<&[[f32; 6]]>,
-    cem_scale: Option<&[[f32; 3]]>,
-) -> Vec<([[f32; 3]; 3], [f32; 3])> {
-    let n = model.parts.len();
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let n = parts.len();
     let mut drots = vec![[0.0f32; 3]; n];
     let mut doffs = vec![[0.0f32; 3]; n];
-    for (i, p) in model.parts.iter().enumerate() {
+    for (i, p) in parts.iter().enumerate() {
         let (r, o) = anim_delta(p.anim, p.amp, ctx);
         drots[i] = r;
         doffs[i] = o;
@@ -1369,7 +1437,7 @@ fn part_transforms(
             doffs[i][2] += d[5];
         }
     }
-    for kf in &model.keyframes {
+    for kf in keyframes {
         // The gate decides whether the rig plays this frame (vanilla's
         // `setupAnim` call patterns); the driver decides where in time.
         match kf.gate {
@@ -1408,6 +1476,53 @@ fn part_transforms(
             }
         }
     }
+    // Wire-event one-shot rigs — distinct from the metadata gesture rigs: the
+    // gate is "an event age is present", not a pose match. Vanilla applies
+    // these at full weight (`animation.apply(state, ageInTicks)`); a non-looping
+    // rig sampled past its length holds its last (neutral) frame, so a fired
+    // event that has run out contributes nothing — no explicit stop needed.
+    for rig in event_rigs {
+        let Some(age) = ctx.events[rig.event.index()] else {
+            continue;
+        };
+        let mut t = age;
+        if rig.def.looping {
+            t = t.rem_euclid(rig.def.length);
+        }
+        for (ch, &pi) in rig.def.channels.iter().zip(&rig.parts) {
+            let v = kf_sample(ch.frames, t);
+            let dst = match ch.target {
+                mobs::KfTarget::Rot => &mut drots[pi as usize],
+                mobs::KfTarget::Pos => &mut doffs[pi as usize],
+            };
+            for i in 0..3 {
+                dst[i] += v[i];
+            }
+        }
+    }
+    (drots, doffs)
+}
+
+/// Compose every part's global transform `(M, o)` — child-in-parent
+/// hierarchy with vanilla's `translate(pivot); rotateZYX(base + delta)`
+/// per level, plus any keyframe-rig contributions (which ADD onto the
+/// procedural deltas, exactly like vanilla's `offsetRotation`/`offsetPos`).
+/// Shared by rendering and the mobshot geometric prediction so the two can
+/// never disagree.
+fn part_transforms(
+    model: &MobModel,
+    ctx: &AnimCtx,
+    cem_deltas: Option<&[[f32; 6]]>,
+    cem_scale: Option<&[[f32; 3]]>,
+) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+    let n = model.parts.len();
+    let (drots, doffs) = anim_deltas(
+        &model.parts,
+        &model.keyframes,
+        &model.event_rigs,
+        ctx,
+        cem_deltas,
+    );
     let mut out: Vec<([[f32; 3]; 3], [f32; 3])> = Vec::with_capacity(n);
     for (i, p) in model.parts.iter().enumerate() {
         let e = [
