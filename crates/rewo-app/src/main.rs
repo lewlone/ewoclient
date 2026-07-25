@@ -15,6 +15,7 @@ mod demo_cmd;
 mod dimension_check;
 mod dimension_json;
 mod dimensioncheck_cmd;
+mod blockentityshot_cmd;
 mod eventshot_cmd;
 mod lightmapshot_cmd;
 mod meshshot_cmd;
@@ -153,6 +154,11 @@ enum Command {
     /// path and assert the warden attack/sonic and armadillo peek animations
     /// against independent decompiled literals with `--check` (no server, no GPU).
     Eventshot(eventshot_cmd::EventshotArgs),
+    /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
+    /// `block_entity_data` body through the real decoders, prove the fail-closed
+    /// type registry, and re-measure the invisible-block gap from the client
+    /// jar's own model parent chains with `--check` (no server, no GPU).
+    Blockentityshot(blockentityshot_cmd::BlockentityshotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
@@ -193,6 +199,7 @@ fn main() {
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
+        Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),

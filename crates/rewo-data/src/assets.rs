@@ -495,6 +495,109 @@ pub fn jar_text(client_jar: &Path, path: &str) -> Option<String> {
     Some(s)
 }
 
+/// Every block whose blockstate models all bake to **no geometry** (M25).
+///
+/// A block entity renders as an ordinary block model plus a
+/// `BlockEntityRenderer`; where the model has no `elements`, the renderer *is*
+/// the block, and a client without one draws nothing. This walks each
+/// blockstate's referenced models through their `parent` chain and reports the
+/// blocks that never reach an `elements` array — which is the measurement
+/// `rewo_world::block_entities`' classification rests on.
+///
+/// Air, water, lava, barriers and the markers come out of this too; they are
+/// *correctly* invisible, and the caller filters them.
+pub fn blocks_without_geometry(client_jar: &Path) -> Result<Vec<String>, String> {
+    let file = std::fs::File::open(client_jar)
+        .map_err(|e| format!("open {}: {e}", client_jar.display()))?;
+    let mut jar = zip::ZipArchive::new(std::io::BufReader::new(file))
+        .map_err(|e| format!("zip {}: {e}", client_jar.display()))?;
+
+    const STATES: &str = "assets/minecraft/blockstates/";
+    let names: Vec<String> = (0..jar.len())
+        .filter_map(|i| jar.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter(|n| n.starts_with(STATES) && n.ends_with(".json"))
+        .collect();
+
+    fn json_at(
+        jar: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
+        path: &str,
+    ) -> Option<serde_json::Value> {
+        let mut s = String::new();
+        jar.by_name(path).ok()?.read_to_string(&mut s).ok()?;
+        serde_json::from_str(&s).ok()
+    }
+
+    /// Collect every `"model"` string anywhere in a blockstate — variants and
+    /// multipart alike, so a block that only draws through one multipart case
+    /// still counts as having geometry.
+    fn collect(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                if let Some(serde_json::Value::String(s)) = m.get("model") {
+                    out.push(s.rsplit(':').next().unwrap_or(s).to_string());
+                }
+                for x in m.values() {
+                    collect(x, out);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for x in a {
+                    collect(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut empty = Vec::new();
+    for path in names {
+        let Some(v) = json_at(&mut jar, &path) else {
+            continue;
+        };
+        let mut models = Vec::new();
+        collect(&v, &mut models);
+        models.sort();
+        models.dedup();
+        if models.is_empty() {
+            continue;
+        }
+        let mut has_geometry = false;
+        'model: for m in &models {
+            let mut cur = m.clone();
+            // Bounded like the item-model chain: a cycle must terminate.
+            for _ in 0..MAX_PARENT_DEPTH {
+                let Some(d) = json_at(&mut jar, &format!("assets/minecraft/models/{cur}.json"))
+                else {
+                    break;
+                };
+                if d.get("elements")
+                    .and_then(|e| e.as_array())
+                    .is_some_and(|a| !a.is_empty())
+                {
+                    has_geometry = true;
+                    break 'model;
+                }
+                match d.get("parent").and_then(|p| p.as_str()) {
+                    Some(p) => cur = p.rsplit(':').next().unwrap_or(p).to_string(),
+                    None => break,
+                }
+            }
+        }
+        if !has_geometry {
+            empty.push(
+                path.trim_start_matches(STATES)
+                    .trim_end_matches(".json")
+                    .to_string(),
+            );
+        }
+    }
+    empty.sort();
+    Ok(empty)
+}
+
+/// How far a block model's `parent` chain is followed before giving up.
+const MAX_PARENT_DEPTH: usize = 8;
+
 pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String> {
     let file = std::fs::File::open(client_jar)
         .map_err(|e| format!("open {}: {e}", client_jar.display()))?;

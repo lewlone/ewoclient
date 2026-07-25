@@ -7,6 +7,7 @@
 
 pub mod biome;
 pub mod biome_noise;
+pub mod block_entities;
 pub mod celestial;
 pub mod chunk;
 pub mod daylight;
@@ -52,6 +53,10 @@ pub struct World {
     /// mesher reads these to pick each face's shade code.
     cardinal_light_type: CardinalLightType,
     cardinal_light: CardinalLighting,
+    /// The world's block entities, keyed by absolute position (M25). Lives on
+    /// the world rather than the column because the render pass wants them by
+    /// area; column load / unload keeps it in step.
+    pub block_entities: block_entities::BlockEntities,
 }
 
 impl World {
@@ -67,6 +72,7 @@ impl World {
             has_sky_light: true,
             cardinal_light_type: CardinalLightType::DEFAULT,
             cardinal_light: CardinalLighting::DEFAULT,
+            block_entities: block_entities::BlockEntities::default(),
         }
     }
 
@@ -81,6 +87,7 @@ impl World {
             has_sky_light: def.has_sky_light,
             cardinal_light_type: def.cardinal_light_type,
             cardinal_light: def.cardinal_light,
+            block_entities: block_entities::BlockEntities::default(),
         }
     }
 
@@ -130,7 +137,37 @@ impl World {
     }
 
     pub fn insert_column(&mut self, cx: i32, cz: i32, column: chunk::Column) {
+        // A level-chunk packet is the authoritative block-entity list for its
+        // column, so the previous contents go first. Without the clear, a
+        // re-sent chunk would leave a broken chest's block entity behind —
+        // invisible today, but it would resurrect the moment a renderer exists.
+        self.block_entities.remove_column(cx, cz);
+        for (pos, be) in &column.block_entities {
+            self.block_entities.insert(*pos, be.clone());
+        }
         self.columns.insert((cx, cz), Arc::new(column));
+    }
+
+    /// Apply a `ClientboundBlockEntityDataPacket` — one block entity at an
+    /// absolute position (M25).
+    ///
+    /// Vanilla's handler looks the block entity up in the world and calls
+    /// `onDataPacket`; a position with no block entity is ignored. Rewo has no
+    /// per-block-entity behaviour to run, so it stores the payload — but it
+    /// keeps the *existence* rule, because inventing an entry for an arbitrary
+    /// position would let a stray packet paint a chest into thin air.
+    pub fn set_block_entity_data(
+        &mut self,
+        pos: block_entities::BlockEntityPos,
+        type_id: i32,
+        data: rewo_proto::nbt::Nbt,
+    ) -> bool {
+        if self.block_entities.get(pos).is_none() {
+            return false;
+        }
+        self.block_entities
+            .insert(pos, block_entities::BlockEntity { type_id, data });
+        true
     }
 
     /// Ensure an all-air, fully-lit column exists (synthetic scenes).
@@ -142,6 +179,7 @@ impl World {
 
     pub fn forget_column(&mut self, cx: i32, cz: i32) {
         self.columns.remove(&(cx, cz));
+        self.block_entities.remove_column(cx, cz);
     }
 
     pub fn loaded_columns(&self) -> usize {
@@ -253,6 +291,10 @@ impl World {
             has_sky_light: self.has_sky_light,
             cardinal_light_type: self.cardinal_light_type,
             cardinal_light: self.cardinal_light,
+            // A mesh worker meshes *blocks*; block entities are a render-pass
+            // concern and are never read from a snapshot, so carrying them
+            // would only cost the clone.
+            block_entities: block_entities::BlockEntities::default(),
         }
     }
 

@@ -1102,6 +1102,16 @@ impl PlaySession {
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
+        } else if crate::route_block_entity_data(id, body, ids, &mut self.world) {
+            // `ClientboundBlockEntityDataPacket` (M25) — one block entity's
+            // update tag:
+            //
+            //     BlockPos.STREAM_CODEC                       // packed long
+            //     ByteBufCodecs.registry(BLOCK_ENTITY_TYPE)   // VarInt raw id
+            //     ByteBufCodecs.TRUSTED_COMPOUND_TAG          // network NBT
+            //
+            // `registry(...)` writes the id **raw**, like the dimension holder
+            // M16 had to correct — not the `id + 1` inline scheme.
         } else if id == ids.cb_play_section_blocks_update {
             // Multi-block change within one 16³ section — what the server
             // sends for a `/fill`, an explosion, a piston, or a growing tree.

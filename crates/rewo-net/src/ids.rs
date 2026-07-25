@@ -67,6 +67,8 @@ pub struct Ids {
     pub cb_play_light_update: Option<i32>,
     pub cb_play_forget_chunk: i32,
     pub cb_play_block_update: i32,
+    /// `block_entity_data` — one block entity's update tag (M25).
+    pub cb_play_block_entity_data: i32,
     pub cb_play_section_blocks_update: i32,
     /// Biomes changed for already-loaded chunks (`/fillbiome`, world-gen
     /// re-send). Optional: a server that never sends it is still correct.
@@ -179,6 +181,7 @@ impl Ids {
             cb_play_light_update: opt!(p, P, C, "light_update"),
             cb_play_forget_chunk: req!(p, P, C, "forget_level_chunk"),
             cb_play_block_update: req!(p, P, C, "block_update"),
+            cb_play_block_entity_data: req!(p, P, C, "block_entity_data"),
             cb_play_section_blocks_update: req!(p, P, C, "section_blocks_update"),
             cb_play_chunks_biomes: opt!(p, P, C, "chunks_biomes"),
             cb_play_set_time: req!(p, P, C, "set_time"),

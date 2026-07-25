@@ -19,6 +19,7 @@ use rewo_data::blocks::Blocks;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
 
+use crate::block_entities::{BlockEntity, BlockEntityPos};
 use crate::dimension::DimensionShape;
 use crate::palette::{Container, ContainerKind};
 
@@ -112,6 +113,13 @@ pub struct Column {
     /// defaults them to 0 renders the whole sky-lit volume above the terrain as
     /// pitch black. Set from the masks in `read_light_into`.
     sky_full_above: usize,
+    /// The column's block entities, as sent (M25).
+    ///
+    /// Carried on the `Column` rather than inserted straight into the world's
+    /// map because a level-chunk packet is the **authoritative** list for its
+    /// column: the caller drops the column's previous entries before taking
+    /// these, or a block entity the player broke would linger.
+    pub block_entities: Vec<(BlockEntityPos, BlockEntity)>,
 }
 
 impl Column {
@@ -330,6 +338,7 @@ impl Column {
             // Synthetic columns carry explicit full-bright sky arrays, so the
             // "missing means 15" rule never applies.
             sky_full_above: usize::MAX,
+            block_entities: Vec::new(),
         }
     }
 }
@@ -428,12 +437,21 @@ pub fn read_level_chunk_bits2(
     }
 
     // Block entities: VarInt count, [u8 packedXZ, i16 y, VarInt type, NBT].
+    //
+    // Walked for alignment since M1, and **retained** since M25 — before that
+    // every field was read and dropped, which is why a chest had never been
+    // anything but empty space (see `crate::block_entities`).
     let be_count = r.count("block entities", 1)?;
+    let mut block_entities = Vec::with_capacity(be_count.min(256) as usize);
     for _ in 0..be_count {
-        let _packed_xz = r.u8()?;
-        let _y = r.i16()?;
-        let _type = r.varint()?;
-        let _nbt = r.nbt()?;
+        let packed_xz = r.u8()?;
+        let y = r.i16()?;
+        let type_id = r.varint()?;
+        let data = r.nbt()?;
+        block_entities.push((
+            BlockEntityPos::from_packed(cx, cz, packed_xz, y),
+            BlockEntity { type_id, data },
+        ));
     }
 
     // Light data: 4 BitSets + 2 update lists. Distribute nibble arrays to
@@ -446,6 +464,7 @@ pub fn read_level_chunk_bits2(
         cz,
         sections,
         sky_full_above,
+        block_entities,
     })
 }
 

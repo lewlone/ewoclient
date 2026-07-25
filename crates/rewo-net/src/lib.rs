@@ -839,6 +839,34 @@ pub(crate) fn apply_entity_event(
 /// calls this), factored so the `eventshot` oracle drives packet-id → decoder
 /// through production code instead of a private copy. A non-matching id is a
 /// no-op returning `false` (the caller's dispatch chain continues).
+/// The narrowest clientbound-play dispatch seam for `block_entity_data`
+/// (M25): routes a single `(packet id, body)` to the world iff `id` is the
+/// resolved id, and returns whether it matched.
+///
+/// Exists for the same reason [`route_entity_event`] does — so
+/// `blockentityshot` exercises the real packet-id selection and the real
+/// decode, instead of a private copy that could drift from `PlaySession`.
+pub fn route_block_entity_data(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    world: &mut rewo_world::World,
+) -> bool {
+    if id != ids.cb_play_block_entity_data {
+        return false;
+    }
+    let mut r = PacketReader::new(body);
+    if let (Ok((x, y, z)), Ok(type_id), Ok(data)) = (r.position(), r.varint(), r.nbt()) {
+        let pos = rewo_world::block_entities::BlockEntityPos { x, y, z };
+        // Vanilla ignores a packet for a position with no block entity
+        // (`getBlockEntity` returns null and the handler returns), so a stray
+        // packet cannot paint one into thin air.
+        let applied = world.set_block_entity_data(pos, type_id, data);
+        log::debug!("net: block_entity_data ({x},{y},{z}) type={type_id} applied={applied}");
+    }
+    true
+}
+
 pub fn route_entity_event(
     id: i32,
     body: &[u8],
