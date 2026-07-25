@@ -10,6 +10,7 @@
 mod bench_cmd;
 mod danceshot_cmd;
 mod hurtshot_cmd;
+mod itemshot_cmd;
 mod demo_cmd;
 mod dimension_check;
 mod dimension_json;
@@ -160,6 +161,8 @@ enum Command {
     Danceshot(danceshot_cmd::DanceshotArgs),
     /// M21: the combat damage response — hurt clock + the red flash.
     Hurtshot(hurtshot_cmd::HurtshotArgs),
+    /// M22: held items — both geometry paths, placement and suppression.
+    Itemshot(itemshot_cmd::ItemshotArgs),
     /// M19 combat-swing oracle: drive raw `ClientboundAnimatePacket` bodies
     /// through the real dispatch → `LivingEntity` swing clock →
     /// `resolve_attack_anim` → `HumanoidModel.setupAttackAnimation` pose oracle,
@@ -192,6 +195,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
+        Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),

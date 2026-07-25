@@ -7,11 +7,14 @@ use std::path::Path;
 
 use crate::read_json_file;
 
+#[derive(Clone)]
 pub struct Items {
     by_name: HashMap<String, i32>,
     /// Every registered protocol id. A held-item id outside this set is not a
     /// vanilla item, and nothing may claim to know its components.
     ids: std::collections::HashSet<i32>,
+    /// Lazily-built reverse map (see [`Items::name`]).
+    by_id: std::sync::OnceLock<HashMap<i32, String>>,
 }
 
 impl Items {
@@ -31,7 +34,7 @@ impl Items {
             }
         }
         log::info!("rewo-data: {} items", by_name.len());
-        Ok(Self { by_name, ids })
+        Ok(Self { by_name, ids, by_id: Default::default() })
     }
 
     /// Whether `id` is a registered item. The item-stack decoder needs this:
@@ -49,6 +52,21 @@ impl Items {
     }
 
     /// Item id by name; accepts the bare name ("dirt").
+    /// Registry name of `id` (M22 — held-item models are keyed by name).
+    /// Built lazily on first use: the reverse map is only needed by the render
+    /// path, and the vast majority of runs never hold anything.
+    pub fn name(&self, id: i32) -> Option<&str> {
+        self.by_id
+            .get_or_init(|| {
+                self.by_name
+                    .iter()
+                    .map(|(n, i)| (*i, n.clone()))
+                    .collect()
+            })
+            .get(&id)
+            .map(String::as_str)
+    }
+
     pub fn id(&self, name: &str) -> Option<i32> {
         let full = if name.contains(':') {
             name.to_string()

@@ -4612,3 +4612,145 @@ vertex was stale. Fixed to use the constant; `mobshot` back to 243/243.
 - **No live AI-driven damage encounter was staged or claimed.** The gate drives
   real packet bodies through the production router; a mob's actual aggro timing
   is server-authoritative and nondeterministic.
+
+### 2026-07-25 — M22: held items, both geometry paths — SHIPPED + VERIFIED
+
+M19 gave the player an exact swing, M20 gave it to the mobs, M21 made them
+flash when hit — and all of them were swinging empty-handed. M22 puts the item
+in the hand, through **both** of 26.x's geometry sources.
+
+**The item pipeline splits in two, and the survey came first.** 26.x separates
+the *item-model definition* (`assets/minecraft/items/<item>.json`, a small tree
+that chooses a model from the stack's state) from the model itself
+(`assets/minecraft/models/item/<name>.json`, parent-chained with `textures` and
+`display`). Counting the real jar rather than assuming:
+
+| definition type | count | M22 |
+|---|---|---|
+| `minecraft:model` | **1390** | resolved |
+| `select` / `special` / `composite` / `condition` / `range_dispatch` | 147 | suppressed, witnessed |
+
+Of the simple ones, **750 point straight at `block/…`** and the rest walk
+`item/<n>` → `handheld` → `generated` → `builtin/generated`.
+
+**`append_model_quads` was the seam that unified them.** It takes a model
+*name* and emits quads carrying a texture-array **layer index**, so a
+`block/…` item reuses the block model the bake already resolves — no parallel
+resolver. The one thing the entity pass cannot do is sample that layer (it
+reads its own atlas), so the layer's pixels are copied out. Both paths then
+converge on one shape: **quads in model units 0..16 with UVs in 0..1 of their
+own texture**, plus a list of textures to pack. The renderer never learns which
+source an item came from, and `itemshot` proves the two land in the same hand.
+
+**The sprite path is `ItemModelGenerator`'s extrusion**, transcribed exactly:
+two full-size faces across the 7.5..8.5 slab, plus one thin side quad per texel
+edge where an opaque texel meets a transparent one, UVs inset by
+`UV_SHRINK 0.1`. Two details are easy to invert and are transcribed
+deliberately — `SideDirection::Left` maps to `Direction.EAST` (and `Right` to
+`WEST`, because the names describe the *sprite* edge, not the world axis), and
+`isTransparent` returns **true** out of bounds, which is the only reason a
+sprite's border extrudes at all. A diamond sword bakes to **82 quads**: 2 faces
+plus 80 alpha edges.
+
+**The transform chain**, from `ItemInHandLayer.submitArmWithItem` +
+`ItemTransform.apply`:
+
+```text
+translateToHand(arm)                    // root then arm — the arm part matrix
+mulPose(XP.rotationDegrees(-90))
+mulPose(YP.rotationDegrees(180))
+translate(±1/16, 2/16, -10/16)          // baby: ±0, 1/16, -4.5/16
+<ItemTransform.apply>                   // translate, rotate, scale, centre -0.5
+```
+
+A `PoseStack` transforms the coordinate system, so a *point* runs the chain in
+reverse call order: the display transform first, the arm matrix last. The item
+is in 0..1 block units at that point, so it is scaled back to model px before
+entering the arm matrix, which `part_transforms` expresses in px. The left-hand
+fix negates the x translation and the **y and z** rotations — not the x, which
+is worth not symmetrising by accident.
+
+**The trap that would have cost hours:** `ItemTransform.Deserializer`
+multiplies `translation` by **0.0625** (model units → block units, matching the
+`-0.5` centring `apply` does) and then clamps translation to ±5 and scale to
+±4, all before `apply` ever runs. Storing the raw JSON numbers would have put
+**every item 16× too far from the hand** — which reads exactly like a
+transform-order bug. `DisplayTransform` now stores post-deserializer values and
+says so.
+
+**Shading comes from the rotated normal, not the baked `dir`.** An item is
+turned on its side in the hand, so its quads' baked face directions are not the
+directions they end up facing; the normal is taken after the display and hand
+rotations and fed to the same `shade_for` the mob quads use.
+
+**1233 textures do not fit an atlas band**, so items got the treatment player
+skins already have: a demand-filled slot pool. The atlas grew 1024 → 1280 tall
+and the shelf packer now stops at `ITEM_POOL_Y`, which is exactly where it
+stopped before (896) — **mob packing is byte-for-byte unchanged**, only the V
+denominator moves, mapping the same texels to the same samples. `mobshot`
+confirms it at 243/243.
+
+**Gate: `rewo itemshot --check`** — permanent, fail-closed on **18/18**
+witnesses, Vulkan validation ON, **0 VUIDs**, deterministic across runs. Six
+resolution witnesses (every jar item accounted for, both sources populated,
+each state-dependent type suppressed, and spot-checks that a sword names an
+`item/` model, a block item resolves without touching a model file, and the bow
+suppresses on `condition`), six geometry witnesses (the sword as an extruded
+sprite inside the slab, dirt as a six-face full cube, the mirrored left-hand
+transform, the block-unit translation), and six render witnesses read back from
+a real render.
+
+**Placement is verified against the hand, not a screenshot.** The same entity
+is rendered empty-handed and holding an item, and the changed pixels must land
+screen-left of centre and below the head — the entity's right arm at yaw 0.
+Measured: sprite centroid (90, 151), block centroid (87, 156) — **the same
+hand, from two different geometry sources** — and the off-hand sword moves to
+x 170. A suppressed item (bow) differs from the empty hand by **0 pixels**.
+
+**Measured.**
+- **435 tests**: world 116, net 135, gpu 50, data 30, mesh 38, proto 11
+  (**380 lib**) + app 55. Release build green.
+- `itemshot` **18/18** twice, identical; `hurtshot` 18/18; `swingshot` 77/77;
+  `eventshot` 28/28; `danceshot` 24/24; `mobshot` **243/243**;
+  `lightmapshot`/`skyshot`/`tintshot`/`meshshot`/`dimensioncheck` green with
+  validation **ON**.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15–M21**.
+- Live: physics **CORRECTIONS 0** with `ACCEPT place = dirt` / `dig = air`;
+  light `--no-relight` **884,736 cells, block 0 sky 0, EXACT**; `--swing-check`
+  OK. `git diff --check` clean.
+
+**A latent bug the vertex work exposed** (M21's, found here): the entity upload
+path hard-coded `total * 36` beside `VERTEX_STRIDE`. That was already fixed in
+M21; the lesson is recorded in the brief because the failure looked geometric
+and the build was clean.
+
+**The fail-closed count did its job on its author.** `itemshot` first ran
+18 observed against a declared 14 — I had miscounted my own witnesses — and the
+gate refused to pass rather than quietly reporting green.
+
+**Exclusions / honesty.**
+- **The 147 state-dependent items are suppressed, not approximated.** `select`
+  (trim material, wolf armour), `special` (shield, chest, conduit — bespoke
+  renderers vanilla itself special-cases), `composite`, `condition` (bow, spear
+  pulling) and `range_dispatch` (draw progress) all branch on stack state this
+  client does not track. A suppressed item renders as an empty hand, proved at
+  0 pixels of difference.
+- **First-person, GUI, ground and head display contexts are not modelled** —
+  Rewo has no first-person hand, no item entities and no GUI inventory, so only
+  `thirdperson_{right,left}hand` is read.
+- **`SpearAnimations.thirdPersonAttackItem` and `animateUseItem` are not
+  applied.** The first needs the STAB attack path to reach the item as well as
+  the arm; the second needs `ticksUsingItem`, which is not synchronised for a
+  remote entity — the same input that already blocks M20's illager crossbow
+  poses.
+- **Item textures larger than 16×16 are skipped rather than scaled**, so such
+  an item is visibly absent instead of subtly wrong. The extruder itself
+  handles any sprite size; it is the atlas slot that is one texel-block.
+- **No enchantment glint, no item damage bar, no per-layer tint** (leather dye,
+  potion fill) — `layer1..4` geometry is extruded but the tint that
+  distinguishes those layers is not applied.
+- **No live in-game eyeball.** The properties the gate checks are what M22
+  verifies: resolution counts against the real jar, geometry shape, and a
+  read-back render proving both sources land on the hand.

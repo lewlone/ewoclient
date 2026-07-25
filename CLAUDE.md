@@ -2313,6 +2313,40 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   **Open:** held items are still not rendered (mobs swing and flash
   empty-handed); `deathTime` — the other half of `hasRedOverlay` — is the death
   animation and its own feature.
+- **M22 held items shipped + verified 2026-07-25 — both geometry paths.**
+  M19-M21 built the swing, the mob rigs and the damage flash; every one of them
+  was swinging empty-handed. 26.x splits an item into a *definition*
+  (`assets/minecraft/items/<item>.json`, a tree that chooses a model from stack
+  state) and the parent-chained model. Surveyed on the real jar: **1390 of 1537
+  are plain `minecraft:model`**, of which **750 point at `block/…`** and the
+  rest walk `item/<n>` → `handheld` → `generated` → `builtin/generated`. The
+  seam that unified them is **`append_model_quads`**, which takes a model *name*
+  and emits quads carrying a texture-array layer index — so a block item reuses
+  the block bake rather than needing a parallel resolver; the entity pass cannot
+  sample that layer, so its pixels are copied out. Both paths converge on
+  **quads in 0..16 model units with UVs in 0..1 of their own texture**, and the
+  renderer never learns which source an item came from. The sprite path is
+  `ItemModelGenerator`'s extrusion (two faces across the 7.5..8.5 slab + one
+  thin quad per alpha edge, UVs inset 0.1); a diamond sword bakes to **82
+  quads**. **Two invertible details** transcribed deliberately:
+  `SideDirection::Left` is `Direction.EAST` (the names describe the sprite edge,
+  not the world axis) and `isTransparent` is **true out of bounds**, which is
+  the only reason a sprite border extrudes. **The trap:**
+  `ItemTransform.Deserializer` multiplies translation by **0.0625** and clamps
+  (±5, ±4) *before* `apply` runs — storing raw JSON puts every item **16× too
+  far from the hand**. Shading uses the **rotated** normal, not the baked `dir`,
+  because an item is turned on its side in the hand. 1233 textures do not fit an
+  atlas band, so items got the demand-filled pool player skins already have; the
+  atlas grew 1024→1280 while the shelf packer still stops at 896, leaving **mob
+  packing byte-for-byte unchanged** (mobshot 243/243). Gate:
+  **`rewo itemshot --check` 18/18**, validation ON, 0 VUIDs, verifying placement
+  *against the hand* — sprite centroid (90,151) and block centroid (87,156) land
+  together, proving one transform chain serves both sources, and a suppressed
+  item differs from an empty hand by **0 pixels**. **435 tests**; demo PNG
+  byte-identical to M15-M21. **Open:** the 147 state-dependent items
+  (select/special/composite/condition/range_dispatch) suppress rather than
+  guess; first-person/GUI/ground contexts, the spear attack-item animation,
+  enchantment glint and per-layer tint are all out.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

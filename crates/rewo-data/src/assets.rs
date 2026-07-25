@@ -485,6 +485,16 @@ fn fluid_light(lava: bool) -> (u8, u8) {
     (emission, dampening)
 }
 
+/// Read one text entry out of a client jar. For oracles that need to look at
+/// a raw asset without standing up the whole bake.
+pub fn jar_text(client_jar: &Path, path: &str) -> Option<String> {
+    let f = std::fs::File::open(client_jar).ok()?;
+    let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).ok()?;
+    let mut s = String::new();
+    z.by_name(path).ok()?.read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
 pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String> {
     let file = std::fs::File::open(client_jar)
         .map_err(|e| format!("open {}: {e}", client_jar.display()))?;

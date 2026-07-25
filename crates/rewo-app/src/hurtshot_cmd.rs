@@ -476,6 +476,7 @@ fn render_capsule(
         attack: rewo_gpu::mobs::SwingPose::NONE,
         mob: rewo_gpu::mobs::MobCombat::default(),
         hurt,
+        held: [None, None],
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
         skin_uv: None,
         scale_mul: 1.0,

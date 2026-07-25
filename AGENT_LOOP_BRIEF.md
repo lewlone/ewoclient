@@ -60,11 +60,11 @@ declaring a milestone done.
 ```bash
 cargo test --release -p rewo-world --lib   # 116
 cargo test --release -p rewo-net   --lib   # 135
-cargo test --release -p rewo-gpu   --lib   # 46
-cargo test --release -p rewo-data  --lib   # 14
+cargo test --release -p rewo-gpu   --lib   # 50
+cargo test --release -p rewo-data  --lib   # 30
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 360 lib
-cargo test --release -p rewo-app           # 55   (app-level) → 415 total
+cargo test --release -p rewo-proto --lib   # 11   → 380 lib
+cargo test --release -p rewo-app           # 55   (app-level) → 435 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -238,6 +238,20 @@ after the lightmap instead of before. Run after any damage, hurt-clock, entity
 vertex-format or entity-shader change.
 
 ```bash
+./target/release/rewo.exe itemshot --check
+```
+M22's permanent held-item oracle, **fail-closed on 18/18 witnesses**, Vulkan
+validation ON (0 VUIDs), deterministic. It drives both geometry sources — a
+`block/…` item reusing the block bake, and `builtin/generated`'s sprite
+extrusion — through the atlas paging and the `ItemInHandLayer` transform chain
+into a **real render, read back**. Placement is checked against the *hand*: the
+same entity is drawn empty-handed and holding an item, and the changed pixels
+must land screen-left of centre and below the head. Sprite centroid (90,151) and
+block centroid (87,156) landing together is what proves the two sources share
+one transform chain; a suppressed item differs from an empty hand by 0 pixels.
+Run after any item-model, extrusion, atlas-layout or held-transform change.
+
+```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
 ```
 The live dimension gate: the paced Overworld→Nether→End→Overworld route.
@@ -365,6 +379,11 @@ listed because they are invisible in the output.
   east from `fx+2` for the first air-over-solid column and fails closed if there
   is none within eight blocks. The old assumption broke whenever an earlier run
   of the same gate had dug a hole the bot then walked into.
+- **`ItemTransform.Deserializer` scales translation by 0.0625 before `apply`
+  ever runs**, then clamps translation to ±5 and scale to ±4. Storing the raw
+  JSON numbers puts every held item 16× too far from the hand, which reads
+  exactly like a transform-order bug. The same shape of trap as the CEM
+  translate conventions: the file is not the value the renderer wants.
 - **A pose baked as a static fold cannot animate, and is probably also wrong.**
   Rewo froze the undead arms-forward pose at `Fold::rot(-π/2)` — vanilla rests
   at `−π/2.25` (−80°) and deepens to `−π/1.5` when aggressive. A baked pose that
@@ -403,7 +422,7 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M21` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`M0–M22` shipped and verified. **M0–M9 are pushed** (`origin/main` @
 `973ea5e`); the **M10–M18 arc is reviewed local work, not yet pushed** (M12 is
 `06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`, M17
 `55388c8`; M18 is committed locally as `bb8be20` on branch
@@ -447,7 +466,7 @@ serverless `danceshot` 24/24 oracle; the demo PNG stays byte-identical.
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
 `bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
-`dimensioncheck`, `eventshot`, `danceshot`, `swingshot`, `hurtshot`.
+`dimensioncheck`, `eventshot`, `danceshot`, `swingshot`, `hurtshot`, `itemshot`.
 
 **Open work**, roughly in descending obviousness:
 

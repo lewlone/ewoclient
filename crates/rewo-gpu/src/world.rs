@@ -1217,6 +1217,24 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// Install the baked held-item models (M22). No-op before
+    /// `init_entities`, which is the serverless-still case.
+    pub fn set_held_items(&mut self, items: crate::held::HeldItems) {
+        if let Some(e) = self.entities.as_mut() {
+            e.set_held_items(items);
+        }
+    }
+
+    /// Page in the atlas textures the named held items need, before the frame
+    /// is built (M22). Uploading needs the device, and only the handful of
+    /// items actually on screen should occupy the pool.
+    pub fn prepare_held_items(&mut self, gpu: &mut Gpu, names: &[&str]) -> Result<(), String> {
+        match self.entities.as_mut() {
+            Some(e) => e.prepare_held_items(gpu, names),
+            None => Ok(()),
+        }
+    }
+
     /// `init_entities` with resource-pack CEM model overrides (M9).
     pub fn init_entities_with_cem(
         &mut self,

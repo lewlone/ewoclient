@@ -123,6 +123,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let spears = rewo_data::item_tags::ItemTag::load_spears(&jar, &data.items)?;
     // M20: item identities the mob arm rigs test against.
     let bow_item = data.items.id("minecraft:bow");
+    // Shared with the entity collector for held-item id → name (M22).
+    let items = std::sync::Arc::new(data.items.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
     // Per-state collision shapes (slabs/stairs/fences, not just full cubes).
     let collide: Vec<Vec<[f32; 6]>> = baked.collide.clone();
@@ -200,6 +202,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 etypes,
                 spears,
                 bow_item,
+                items,
                 want_validation,
                 out,
                 settle,
@@ -209,7 +212,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.darkness_effect_scale,
             )
         }
-        _ => run_windowed(session, baked, etypes, spears, bow_item, args, want_validation, dirt_item),
+        _ => run_windowed(session, baked, etypes, spears, bow_item, items, args, want_validation, dirt_item),
     }
 }
 
@@ -704,6 +707,77 @@ fn crossbow_item_id() -> Option<i32> {
 /// than guessed.
 pub(crate) static CROSSBOW_ITEM: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
 
+/// Convert the baked held-item models across the `rewo-data` → `rewo-gpu`
+/// seam (M22). The two shapes are deliberately identical so this stays
+/// mechanical; `rewo-gpu` keeps no `rewo-data` dependency, the same rule
+/// `SwingKind` / `MobCombat` already follow.
+pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_gpu::held::HeldItems {
+    use rewo_gpu::held as g;
+    let conv_t = |t: &rewo_data::item_models::DisplayTransform| g::DisplayTransform {
+        rotation: t.rotation,
+        translation: t.translation,
+        scale: t.scale,
+    };
+    rewo_gpu::held::HeldItems {
+        models: src
+            .models
+            .iter()
+            .map(|(k, m)| {
+                (
+                    k.clone(),
+                    g::HeldItemModel {
+                        quads: m
+                            .quads
+                            .iter()
+                            .map(|q| g::HeldQuad {
+                                verts: q.verts,
+                                uv: q.uv,
+                                tex: q.tex,
+                                dir: q.dir,
+                            })
+                            .collect(),
+                        right: conv_t(&m.right),
+                        left: conv_t(&m.left),
+                        from_block: m.from_block,
+                    },
+                )
+            })
+            .collect(),
+        textures: src
+            .textures
+            .iter()
+            .map(|t| g::HeldTexture {
+                w: t.w,
+                h: t.h,
+                rgba: t.rgba.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// The item held in each arm (M22), as registry names — `[right, left]`.
+///
+/// `ArmedEntityRenderState` carries the stacks per *arm*, and the hand-to-arm
+/// mapping is `getMainArm()`, which
+/// [`rewo_world::entities::EntityTable::item_by_arm`] already implements. An
+/// `Unknown` hand yields `None` for the same reason its swing is suppressed:
+/// the client cannot know what it is holding, and drawing a guess is worse
+/// than drawing nothing.
+pub(crate) fn resolve_held_items<'a>(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    items: &'a rewo_data::items::Items,
+) -> [Option<&'a str>; 2] {
+    use rewo_world::entities::HumanoidArm;
+    let mut out: [Option<&str>; 2] = [None, None];
+    for (i, arm) in [(0usize, HumanoidArm::Right), (1usize, HumanoidArm::Left)] {
+        if let Some(held) = entities.item_by_arm(id, arm).held() {
+            out[i] = items.name(held.item_id);
+        }
+    }
+    out
+}
+
 /// Snapshot every tracked entity into this frame's draw list. `alpha` is
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
 /// everything else gets mauve, sized by the type table. `now` is the
@@ -718,6 +792,7 @@ fn collect_entities<'a>(
     lightmap: &LightmapState,
     spears: &rewo_data::item_tags::ItemTag,
     bow_item: Option<i32>,
+    item_names: &'a rewo_data::items::Items,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -855,6 +930,8 @@ fn collect_entities<'a>(
             mob,
             // M21: `hasRedOverlay` — the damage flash.
             hurt: session.world.entities.hurt_state(id).has_red_overlay(),
+            // M22: what each arm is holding.
+            held: resolve_held_items(&session.world.entities, id, item_names),
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
@@ -1085,6 +1162,7 @@ fn run_headless(
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
     bow_item: Option<i32>,
+    items: std::sync::Arc<rewo_data::items::Items>,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -1099,6 +1177,8 @@ fn run_headless(
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &pack)?;
+    // M22: the baked held-item models, converted across the crate seam.
+    world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
@@ -1259,6 +1339,7 @@ fn run_headless(
         &lightmap,
         &spears,
         bow_item,
+        &items,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -1370,6 +1451,8 @@ fn run_headless(
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
+    let held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+    world_renderer.prepare_held_items(&mut gpu, &held)?;
     world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
@@ -1463,6 +1546,8 @@ struct LiveApp {
     spears: rewo_data::item_tags::ItemTag,
     /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
     bow_item: Option<i32>,
+    /// Item registry, for id → name when resolving held models (M22).
+    items: std::sync::Arc<rewo_data::items::Items>,
     pool: MeshPool,
     keys: Keys,
     want_validation: bool,
@@ -1543,6 +1628,7 @@ impl ApplicationHandler for LiveApp {
                 &baked.layers,
             )?;
             init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
+            world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
@@ -1789,6 +1875,7 @@ impl LiveApp {
             &lightmap,
             &self.spears,
             self.bow_item,
+            &self.items,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -1802,6 +1889,12 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
+        let held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+        // A failed upload leaves the item simply absent (no resident slot →
+        // no quads), which is preferable to killing the frame loop.
+        if let Err(e) = state.world_renderer.prepare_held_items(&mut state.gpu, &held) {
+            log::warn!("live: held-item texture upload: {e}");
+        }
         state.world_renderer.set_entities(&draws, cr, cu, anim_time);
         drop(draws);
 
@@ -1878,6 +1971,7 @@ fn run_windowed(
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
     bow_item: Option<i32>,
+    items: std::sync::Arc<rewo_data::items::Items>,
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
@@ -1894,6 +1988,7 @@ fn run_windowed(
         etypes,
         spears,
         bow_item,
+        items,
         pool,
         keys: Keys::default(),
         want_validation,

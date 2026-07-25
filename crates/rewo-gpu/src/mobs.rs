@@ -747,7 +747,7 @@ pub fn rotate_zyx(v: [f32; 3], rot: [f32; 3]) -> [f32; 3] {
 /// Directional shade for a static-folded model-space normal, matching the
 /// entity pass's classic 6-way table. Classified after the render y-flip:
 /// model −Y is the world-top (brightest), model −Z the front.
-fn shade_for(n: [f32; 3]) -> f32 {
+pub(crate) fn shade_for(n: [f32; 3]) -> f32 {
     if n[1] < -0.7 {
         1.0 // world top
     } else if n[1] > 0.7 {

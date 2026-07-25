@@ -122,6 +122,11 @@ pub struct EntityDraw<'a> {
     /// `LivingEntityRenderer`'s `hasRedOverlay` — `hurtTime > 0` (M21). Drives
     /// the red damage flash in the entity shader.
     pub hurt: bool,
+    /// Held items **by arm** — `[right, left]` (M22), as registry names.
+    /// `ArmedEntityRenderState` carries the stacks per arm, and the hand→arm
+    /// mapping is `getMainArm()`, which the app resolves. `None` = empty hand
+    /// or an item whose model this client suppresses.
+    pub held: [Option<&'a str>; 2],
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -292,6 +297,13 @@ pub struct EntityPass {
     /// Atlas origin of the default "player" skin slot — the reference the
     /// per-player skin UV offset is measured from.
     player_origin: (u32, u32),
+    /// Baked held-item models (M22), moved in at init. `None` until the app
+    /// supplies them, which is what a serverless still render does.
+    held_items: Option<crate::held::HeldItems>,
+    /// Texture index -> atlas item slot, for the textures currently resident.
+    item_slots: std::collections::HashMap<u16, u32>,
+    /// Round-robin cursor into the item pool, like `skin_next`.
+    item_next: u32,
     /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
     /// never fills 32, and wrap-around just recycles the oldest slot).
     skin_next: u32,
@@ -657,6 +669,9 @@ impl EntityPass {
                 has_font,
                 player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
                 skin_next: 0,
+                held_items: None,
+                item_slots: std::collections::HashMap::new(),
+                item_next: 0,
                 cem_state: std::collections::HashMap::new(),
                 generation: 0,
                 frame_counter: 0.0,
@@ -673,6 +688,80 @@ impl EntityPass {
     /// `64*64*4` bytes. Stalls on `wait_idle` — skins arrive rarely (once
     /// per player at join), so the one-off is cheaper than tracking
     /// per-frame fences against the shared atlas.
+
+    /// Install the baked held-item models (M22). Textures are *not* uploaded
+    /// here: 26.2 ships 1233 of them and the atlas band holds 1024 slots, so
+    /// they are paged in on demand by [`Self::prepare_held_items`].
+    pub fn set_held_items(&mut self, items: crate::held::HeldItems) {
+        self.held_items = Some(items);
+    }
+
+    /// Whether an item name has a baked held model.
+    pub fn has_held_item(&self, name: &str) -> bool {
+        self.held_items
+            .as_ref()
+            .is_some_and(|h| h.models.contains_key(name))
+    }
+
+    /// Page in every texture the named items need, before the frame is built.
+    ///
+    /// Separate from `set_entities` because uploading needs the device, and
+    /// because only the handful of items actually held this frame should
+    /// occupy the pool. Unknown names are ignored — a suppressed item simply
+    /// has no model.
+    pub fn prepare_held_items(
+        &mut self,
+        gpu: &mut Gpu,
+        names: &[&str],
+    ) -> Result<(), String> {
+        let Some(items) = self.held_items.take() else {
+            return Ok(());
+        };
+        let mut result = Ok(());
+        for name in names {
+            let Some(model) = items.models.get(*name) else {
+                continue;
+            };
+            for q in &model.quads {
+                if self.item_slots.contains_key(&q.tex) {
+                    continue;
+                }
+                let Some(tex) = items.textures.get(q.tex as usize) else {
+                    continue;
+                };
+                // Slots are one texel-block; a larger sprite is skipped rather
+                // than scaled, so it is visibly absent instead of subtly wrong.
+                if tex.w != ITEM_SLOT || tex.h != ITEM_SLOT {
+                    continue;
+                }
+                let slot = self.item_next % ITEM_SLOTS;
+                self.item_next += 1;
+                let (sx, sy) = item_slot_origin(slot);
+                if let Err(e) =
+                    upload_region(gpu, self.image, &tex.rgba, sx, sy, ITEM_SLOT, ITEM_SLOT)
+                {
+                    result = Err(e);
+                    break;
+                }
+                self.item_slots.insert(q.tex, slot);
+            }
+        }
+        self.held_items = Some(items);
+        result
+    }
+
+    /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
+    fn item_uv(&self, tex: u16) -> Option<[f32; 4]> {
+        let slot = *self.item_slots.get(&tex)?;
+        let (sx, sy) = item_slot_origin(slot);
+        Some([
+            sx as f32 / ATLAS_W as f32,
+            sy as f32 / ATLAS_H as f32,
+            ITEM_SLOT as f32 / ATLAS_W as f32,
+            ITEM_SLOT as f32 / ATLAS_H as f32,
+        ])
+    }
+
     pub fn upload_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<[f32; 2], String> {
         let slot = self.skin_next % SKIN_SLOTS;
         self.skin_next += 1;
@@ -858,6 +947,106 @@ impl EntityPass {
     /// `rotY(180° − yaw) · scale(−1,−1,1) · translate(0,−1.501,0)` — scaled
     /// px→blocks and placed at the entity's feet. Texels ride the
     /// alpha-test (`discard`) path.
+
+    /// `ItemInHandLayer.submitArmWithItem` for one arm (M22).
+    ///
+    /// The transform chain, as vanilla writes it:
+    ///
+    /// ```text
+    /// translateToHand(arm)            // root then arm — the arm part matrix
+    /// mulPose(XP.rotationDegrees(-90))
+    /// mulPose(YP.rotationDegrees(180))
+    /// translate(+/-1/16, 2/16, -10/16)
+    /// <ItemTransform.apply>           // centre, scale, rotate, translate
+    /// ```
+    ///
+    /// A `PoseStack` transforms the coordinate system, so a *point* runs the
+    /// chain in reverse call order: the display transform first, the arm matrix
+    /// last. The item model is in 0..1 block units at that point, so it is
+    /// scaled back to model px before entering the arm matrix, which
+    /// `part_transforms` expresses in px.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_held_item(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        xf: &[([[f32; 3]; 3], [f32; 3])],
+        left: bool,
+        name: &str,
+        scale: f32,
+        st: f32,
+        ct: f32,
+        hurt: f32,
+    ) {
+        let Some(items) = self.held_items.as_ref() else {
+            return;
+        };
+        let Some(item) = items.models.get(name) else {
+            return;
+        };
+        // The arm this hangs off. A model with no such part is not a humanoid,
+        // so it simply holds nothing — which is what vanilla's `ArmedModel`
+        // bound expresses at the type level.
+        let arm_name = if left { "left_arm" } else { "right_arm" };
+        let Some(arm) = model.parts.iter().position(|p| p.name == arm_name) else {
+            return;
+        };
+        let (m, o) = &xf[arm];
+        let transform = if left { &item.left } else { &item.right };
+        let offset = crate::held::hand_offset(left, d.mob.is_baby);
+        let [light_r, light_g, light_b] = d.light;
+
+        for q in &item.quads {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
+                continue; // texture not resident — draw nothing, never garbage
+            };
+            let mut p4 = [[0f32; 3]; 4];
+            // Model-space corners kept alongside, so the face normal can be
+            // taken AFTER the display + hand rotations rather than from the
+            // quad's pre-rotation `dir` — an item is turned on its side in the
+            // hand, so the baked direction is not the direction it faces.
+            let mut m4 = [[0f32; 3]; 4];
+            for (i, corner) in q.verts.iter().enumerate() {
+                // model units 0..16 -> block units 0..1
+                let p = [corner[0] / 16.0, corner[1] / 16.0, corner[2] / 16.0];
+                let p = crate::held::apply_display(transform, left, p);
+                let p = [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]];
+                // YP(180) then XP(-90), in that order.
+                let p = crate::mobs::rotate_zyx(p, [0.0, std::f32::consts::PI, 0.0]);
+                let p = crate::mobs::rotate_zyx(p, [-std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
+                // block units -> model px, then through the arm matrix.
+                let p = [p[0] * 16.0, p[1] * 16.0, p[2] * 16.0];
+                let r = mat_apply(m, p);
+                let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
+                m4[i] = v;
+                // The same model -> entity-local -> world chain the mob quads
+                // take, so an item cannot drift from the arm holding it.
+                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let x = e[0] * ct + e[2] * st;
+                let z = -e[0] * st + e[2] * ct;
+                p4[i] = [
+                    d.pos[0] + x * scale,
+                    d.pos[1] + e[1] * scale,
+                    d.pos[2] + z * scale,
+                ];
+            }
+            let n = face_normal(&m4);
+            let shade = mobs::shade_for(n);
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: p4[i],
+                    uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
+                    color: [shade, shade, shade, 1.0],
+                    light_hurt: [light_r, light_g, light_b, hurt],
+                });
+            }
+        }
+    }
+
     fn emit_model(
         &self,
         verts: &mut Vec<Vertex>,
@@ -1003,6 +1192,15 @@ impl EntityPass {
                     color: [c[0], c[1], c[2], 1.0],
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
+            }
+        }
+        // M22: whatever each arm holds, drawn after the body —
+        // `ItemInHandLayer` is a render layer, so it sits on top of the
+        // model it hangs off.
+        for (i, left) in [(0usize, false), (1usize, true)] {
+            if let Some(name) = d.held[i] {
+                let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+                self.emit_held_item(verts, d, model, &xf, left, name, s, st, ct, hurt);
             }
         }
     }
@@ -2196,6 +2394,25 @@ fn mat_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
         }
     }
     out
+}
+
+/// Unit normal of a quad from three of its corners, right-hand wound.
+/// Degenerate quads (a zero-area side face) fall back to +Y, which
+/// `shade_for` reads as the world bottom — visible, not a NaN.
+fn face_normal(p: &[[f32; 3]; 4]) -> [f32; 3] {
+    let a = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+    let b = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+    let n = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len < 1e-6 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
 }
 
 fn mat_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {

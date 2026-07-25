@@ -21,6 +21,7 @@ pub mod cem;
 pub mod cem_anim;
 pub mod vanilla_hier;
 pub mod mobs;
+pub mod held;
 pub mod hud;
 pub mod offscreen;
 pub mod text;
