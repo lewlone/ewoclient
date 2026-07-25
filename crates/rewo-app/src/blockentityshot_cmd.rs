@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 21;
+const EXPECTED_WITNESSES: usize = 32;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -222,6 +222,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_gap(&mut c, &args.version, &registry)?;
     check_decode(&mut c, &blocks, chest, sign);
     check_lifecycle(&mut c, &ids, &blocks, chest);
+    check_chest_models(&mut c, &args.version)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -247,6 +248,226 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
 }
 
 // ------------------------------------------------------------------- the gate
+
+/// M25b — the chest models: geometry, the facing transform, and the states
+/// that select them.
+///
+/// CPU-only. The geometry witnesses read the production bake; the transform
+/// witnesses apply this file's independent transcription of
+/// `ChestRenderer.createModelTransformation` and compare against the same
+/// rotation the renderer performs.
+fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
+    use rewo_data::chest_states::{ChestFacing, ChestStates, ChestType};
+
+    let paths = DataPaths::for_version(version)
+        .ok_or_else(|| "no config dir for version data".to_string())?;
+    let jar = client_jar(version)
+        .ok_or("client jar not found — blockentityshot needs it for the chest textures")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    let items = &baked.held_items;
+
+    // --- the models exist and came from the jar ---------------------------
+    let names: Vec<&str> = rewo_data::block_entity_models::CHESTS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    let present: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| items.block_entities.contains_key(*n))
+        .collect();
+    c.record(
+        "m1.every_chest_variant_bakes",
+        present.len() == names.len(),
+        format!(
+            "{} of {} chest models baked: {present:?}",
+            present.len(),
+            names.len()
+        ),
+    );
+
+    let chest = items
+        .block_entities
+        .get("rewo:be/chest")
+        .ok_or("rewo:be/chest did not bake")?;
+    c.record(
+        "m2.a_chest_is_three_cuboids",
+        chest.quads.len() == 18,
+        format!("{} quads (want 18 = 3 boxes x 6 faces)", chest.quads.len()),
+    );
+
+    // The model must fill its block and not escape it — a chest that spilled
+    // into the neighbour would z-fight with whatever is there.
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for q in &chest.quads {
+        for v in &q.verts {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+    }
+    c.record(
+        "m3.the_model_stays_inside_its_block",
+        (0..3).all(|k| lo[k] >= 0.0 && hi[k] <= 16.0),
+        format!("model px extent {lo:?}..{hi:?} of 0..16"),
+    );
+    c.record(
+        "m4.the_lock_stands_proud_of_the_lid",
+        hi[2] == 16.0 && chest.quads.iter().any(|q| q.verts.iter().all(|v| v[2] >= 15.0)),
+        format!(
+            "max z {} — addBox(7,-2,14, 2,4,1) with offset(0,9,1) puts the latch at \
+             z 15..16, past the lid's 15",
+            hi[2]
+        ),
+    );
+
+    // Distinct textures, not one shared sprite: a trapped chest must not be
+    // an ordinary one.
+    let tex_of = |n: &str| items.block_entities.get(n).and_then(|m| m.quads.first()).map(|q| q.tex);
+    let normal = tex_of("rewo:be/chest");
+    let trapped = tex_of("rewo:be/trapped_chest");
+    let ender = tex_of("rewo:be/ender_chest");
+    c.record(
+        "m5.each_variant_has_its_own_texture",
+        normal.is_some() && normal != trapped && normal != ender && trapped != ender,
+        format!("normal={normal:?} trapped={trapped:?} ender={ender:?}"),
+    );
+
+    // Every UV must be inside its texture — the 64x64 unwrap is the thing a
+    // transposed `texOffs` would break while still producing a chest shape.
+    c.record(
+        "m6.every_uv_is_inside_its_texture",
+        chest.quads.iter().all(|q| {
+            q.uv.iter()
+                .all(|uv| (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]))
+        }),
+        "all 72 UVs within 0..1 of the 64x64 chest texture",
+    );
+
+    // --- the facing transform ---------------------------------------------
+    let states = ChestStates::load(&paths.blocks_json())?;
+    c.record(
+        "m7.the_chest_states_resolve",
+        states.len() > 100,
+        format!("{} chest block states carry a facing + type", states.len()),
+    );
+
+    // `Direction.toYRot()` — independently transcribed. South is the zero.
+    let want_y_rot = |f: ChestFacing| match f {
+        ChestFacing::South => 0.0f32,
+        ChestFacing::West => 90.0,
+        ChestFacing::North => 180.0,
+        ChestFacing::East => 270.0,
+    };
+    let all_four = [
+        ChestFacing::North,
+        ChestFacing::South,
+        ChestFacing::West,
+        ChestFacing::East,
+    ];
+    c.record(
+        "m8.north_is_one_eighty",
+        all_four.iter().all(|&f| f.to_y_rot() == want_y_rot(f)),
+        format!(
+            "{:?} — south is the zero because the model faces south in its own space; \
+             a north-is-zero table points every chest backwards while still looking \
+             like a chest",
+            all_four.map(|f| (f, f.to_y_rot()))
+        ),
+    );
+
+    // `rotationAround(YP(-yRot), 0.5, 0, 0.5)` must keep the model in its own
+    // block for all four facings — that is the whole point of rotating about
+    // the centre rather than the origin.
+    let rotate = |y_rot: f32, p: [f32; 3]| -> [f32; 3] {
+        let (s, cc) = (-y_rot).to_radians().sin_cos();
+        let (x, z) = (p[0] - 0.5, p[2] - 0.5);
+        [x * cc + z * s + 0.5, p[1], -x * s + z * cc + 0.5]
+    };
+    let mut inside = true;
+    let mut extents = Vec::new();
+    for f in all_four {
+        let mut l = [f32::MAX; 3];
+        let mut h = [f32::MIN; 3];
+        for q in &chest.quads {
+            for v in &q.verts {
+                let p = rotate(f.to_y_rot(), [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]);
+                for k in 0..3 {
+                    l[k] = l[k].min(p[k]);
+                    h[k] = h[k].max(p[k]);
+                }
+            }
+        }
+        inside &= (0..3).all(|k| l[k] >= -1e-5 && h[k] <= 1.0 + 1e-5);
+        extents.push(format!("{f:?} {:.3}..{:.3} x", l[0], h[0]));
+    }
+    c.record(
+        "m9.the_facing_rotation_keeps_the_chest_in_its_block",
+        inside,
+        format!(
+            "{} — rotationAround(..., 0.5, 0, 0.5) is about the block centre; about \
+             the origin it would swing three of the four facings outside",
+            extents.join("; ")
+        ),
+    );
+
+    // The four facings must be genuinely different placements, not a no-op.
+    let front_of = |f: ChestFacing| {
+        // The latch, at model z 15..16 — the unambiguous "front" of the model.
+        let mut sum = [0f32; 3];
+        let mut n = 0.0f32;
+        for q in chest.quads.iter().filter(|q| q.verts.iter().all(|v| v[2] >= 15.0)) {
+            for v in &q.verts {
+                let p = rotate(f.to_y_rot(), [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]);
+                for k in 0..3 {
+                    sum[k] += p[k];
+                }
+                n += 1.0;
+            }
+        }
+        [sum[0] / n, sum[1] / n, sum[2] / n]
+    };
+    let fronts: Vec<[f32; 3]> = all_four.iter().map(|&f| front_of(f)).collect();
+    let distinct = (0..4).all(|i| {
+        (0..4).all(|j| {
+            i == j || (fronts[i][0] - fronts[j][0]).abs() + (fronts[i][2] - fronts[j][2]).abs() > 0.5
+        })
+    });
+    c.record(
+        "m10.each_facing_points_the_latch_somewhere_different",
+        distinct,
+        format!(
+            "latch centroids: {} — four facings, four placements",
+            all_four
+                .iter()
+                .zip(&fronts)
+                .map(|(f, p)| format!("{f:?}({:.2},{:.2})", p[0], p[2]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    );
+
+    // A double chest is deliberately not drawn: its half-models need
+    // `DoubleBlockCombiner`'s neighbour pairing. The states still resolve, so
+    // the skip is a decision rather than a gap in the table.
+    let doubles = (0..u32::MAX)
+        .take(40000)
+        .filter_map(|i| states.get(i))
+        .filter(|s| s.kind != ChestType::Single)
+        .count();
+    c.record(
+        "m11.double_chest_states_are_recognised_even_though_they_are_not_drawn",
+        doubles > 0,
+        format!(
+            "{doubles} left/right chest states resolve — the renderer skips them \
+             because a half-pair needs DoubleBlockCombiner, and drawing a single \
+             chest in each half would be visibly wrong"
+        ),
+    );
+    Ok(())
+}
 
 fn check_registry(
     c: &mut Checker,

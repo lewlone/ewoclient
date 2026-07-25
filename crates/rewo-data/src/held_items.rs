@@ -62,6 +62,11 @@ pub struct HeldItemModel {
 #[derive(Clone, Debug, Default)]
 pub struct HeldItems {
     pub models: HashMap<String, HeldItemModel>,
+    /// Block-entity models (M25b), in the same shape and sharing the same
+    /// texture pool, but **kept in their own map**: they are not items, and
+    /// folding them in inflated the item counts the `itemshot` gate asserts
+    /// against the jar's registry — which is exactly how this was caught.
+    pub block_entities: HashMap<String, HeldItemModel>,
     pub textures: Vec<HeldTexture>,
     /// Definition types that were deliberately not resolved, and how many
     /// items each accounted for. Sorted so the load log is stable.
@@ -71,6 +76,13 @@ pub struct HeldItems {
 impl HeldItems {
     pub fn get(&self, name: &str) -> Option<&HeldItemModel> {
         self.models.get(name)
+    }
+
+    /// Look a model up by name across both maps — what the renderer wants,
+    /// since a draw carries a name and does not care which kind it is. The
+    /// namespaces cannot collide: block-entity models are `rewo:be/…`.
+    pub fn any(&self, name: &str) -> Option<&HeldItemModel> {
+        self.models.get(name).or_else(|| self.block_entities.get(name))
     }
 
     /// Items whose geometry came from a block model.
@@ -183,6 +195,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            block_entities: HashMap::new(),
             textures: Vec::new(),
             unsupported: [("minecraft:special".to_string(), 51)].into_iter().collect(),
         };

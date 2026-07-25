@@ -744,7 +744,7 @@ impl EntityPass {
         };
         let mut result = Ok(());
         for name in names {
-            let Some(model) = items.models.get(*name) else {
+            let Some(model) = items.any(*name) else {
                 continue;
             };
             for q in &model.quads {
@@ -887,6 +887,7 @@ impl EntityPass {
     pub fn set_draws(
         &mut self,
         draws: &[EntityDraw<'_>],
+        block_entities: &[BlockEntityDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
         time: f32,
@@ -950,6 +951,9 @@ impl EntityPass {
                 });
             }
         }
+        // M25b: block entities. Solid geometry, so they belong with the mob
+        // and item quads rather than after the transparent nametags.
+        self.emit_block_entities(&mut verts, block_entities);
         // Drop state for entities that have been gone a while (despawns).
         let gen = self.generation;
         cem_state.retain(|_, v| gen.wrapping_sub(v.seen) < CEM_STATE_TTL);
@@ -1020,7 +1024,7 @@ impl EntityPass {
         let Some(items) = self.held_items.as_ref() else {
             return;
         };
-        let Some(item) = items.models.get(name) else {
+        let Some(item) = items.any(name) else {
             return;
         };
         // The arm this hangs off. A model with no such part is not a humanoid,
@@ -2248,7 +2252,93 @@ impl LegacyRandom48 {
     }
 }
 
+/// One block entity to draw (M25b).
+///
+/// Deliberately not an [`EntityDraw`]: a block entity has no yaw of its own, no
+/// animation state and no nametag, and — the load-bearing difference —
+/// `BlockEntityRenderer` runs outside `LivingEntityRenderer`'s
+/// `scale(-1,-1,1)` / `-1.501` chain, so its model is y-up in block-local
+/// space. Folding it into `EntityDraw` would mean a flag that inverts half the
+/// transform, which is exactly the kind of shared path that renders one of the
+/// two cases subtly wrong.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockEntityDraw<'a> {
+    /// The block's minimum corner in world space — the model spans `+0..1`.
+    pub pos: [f32; 3],
+    /// A `rewo:be/…` model name.
+    pub model: &'a str,
+    /// `Direction.toYRot()` of the block's facing, in degrees.
+    pub facing_y_rot: f32,
+    /// Per-channel world light at the block, as the terrain lightmap resolves
+    /// it.
+    pub light: [f32; 3],
+}
+
 impl EntityPass {
+    /// `ChestRenderer.submit` — the block-entity models (M25b).
+    ///
+    /// ```text
+    /// poseStack.mulPose(modelTransformation(state.facing));
+    ///   // = rotationAround(YP.rotationDegrees(-facing.toYRot()), 0.5, 0, 0.5)
+    /// ```
+    ///
+    /// The rotation is **about the block centre in x/z**, not the origin, which
+    /// is what keeps a rotated chest inside its own block. `ModelPart.compile`
+    /// divides model px by 16, so the quads land in 0..1 block units and the
+    /// block position is a plain translate on top.
+    ///
+    /// The lid is closed: `state.open` comes from `LidBlockEntity`'s animated
+    /// openness, which is driven by `block_event` — a packet Rewo does not
+    /// decode. A closed chest is the state of every chest nobody is standing
+    /// in, and it is *exact* for that state rather than an approximation of
+    /// the animation.
+    pub fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
+        let Some(items) = self.held_items.as_ref() else {
+            return;
+        };
+        for d in draws {
+            let Some(model) = items.any(d.model) else {
+                continue;
+            };
+            let (s, c) = (-d.facing_y_rot).to_radians().sin_cos();
+            let [light_r, light_g, light_b] = d.light;
+            for q in &model.quads {
+                if verts.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
+                    continue;
+                };
+                let mut p4 = [[0f32; 3]; 4];
+                let mut m4 = [[0f32; 3]; 4];
+                for (i, corner) in q.verts.iter().enumerate() {
+                    // model px -> block units, y-up (no entity flip).
+                    let p = [corner[0] / 16.0, corner[1] / 16.0, corner[2] / 16.0];
+                    // `rotationAround(YP(-yRot), 0.5, 0, 0.5)`: about the
+                    // block centre, so the chest stays in its own block.
+                    let (x, z) = (p[0] - 0.5, p[2] - 0.5);
+                    let p = [x * c + z * s + 0.5, p[1], -x * s + z * c + 0.5];
+                    m4[i] = p;
+                    p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
+                }
+                // Shade from the rotated normal, for the same reason the item
+                // paths do: the baked face directions are pre-rotation.
+                let n = face_normal(&m4);
+                let shade = mobs::shade_for(n);
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    verts.push(Vertex {
+                        pos: p4[i],
+                        uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
+                        color: [shade, shade, shade, 1.0],
+                        // A block entity is never hurt — the overlay flag is
+                        // a `LivingEntity` property.
+                        light_hurt: [light_r, light_g, light_b, 0.0],
+                    });
+                }
+            }
+        }
+    }
+
     /// `ItemEntityRenderer.submit` — a dropped stack (M24b).
     ///
     /// ```text
@@ -2276,7 +2366,7 @@ impl EntityPass {
         let Some(items) = self.held_items.as_ref() else {
             return;
         };
-        let Some(item) = items.models.get(name) else {
+        let Some(item) = items.any(name) else {
             return;
         };
         let amount = rendered_amount(d.ground_count);

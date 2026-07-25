@@ -1305,8 +1305,22 @@ impl WorldRenderer {
         cam_up: [f32; 3],
         time: f32,
     ) {
+        self.set_entities_and_block_entities(draws, &[], cam_right, cam_up, time);
+    }
+
+    /// [`Self::set_entities`] plus the frame's block entities (M25b). They
+    /// share the entity pass's buffer, atlas and shader — a chest is textured
+    /// geometry at a world position, which is what that pass already draws.
+    pub fn set_entities_and_block_entities(
+        &mut self,
+        draws: &[EntityDraw<'_>],
+        block_entities: &[crate::entities::BlockEntityDraw<'_>],
+        cam_right: [f32; 3],
+        cam_up: [f32; 3],
+        time: f32,
+    ) {
         if let Some(pass) = self.entities.as_mut() {
-            pass.set_draws(draws, cam_right, cam_up, time, self.camera_eye);
+            pass.set_draws(draws, block_entities, cam_right, cam_up, time, self.camera_eye);
         }
     }
 

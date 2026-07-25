@@ -63,7 +63,18 @@ pub struct HeldTexture {
 #[derive(Clone, Debug, Default)]
 pub struct HeldItems {
     pub models: HashMap<String, HeldItemModel>,
+    /// Block-entity models (M25b) — see the `rewo_data` mirror for why they
+    /// are a separate map rather than more entries in `models`.
+    pub block_entities: HashMap<String, HeldItemModel>,
     pub textures: Vec<HeldTexture>,
+}
+
+impl HeldItems {
+    /// Look a model up across both maps. Names cannot collide: block-entity
+    /// models are `rewo:be/…`.
+    pub fn any(&self, name: &str) -> Option<&HeldItemModel> {
+        self.models.get(name).or_else(|| self.block_entities.get(name))
+    }
 }
 
 /// `ItemInHandLayer.submitArmWithItem`'s hand offset, in block units.

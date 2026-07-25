@@ -121,6 +121,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // `ItemTags.SPEARS`, from the data pack the client jar ships — the tag
     // `AvatarRenderer.getArmPose` tests to pose a *held* (not swinging) spear.
     let spears = rewo_data::item_tags::ItemTag::load_spears(&jar, &data.items)?;
+    // M25b: chest facing + material, per block state.
+    let chest_states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
     // M20: item identities the mob arm rigs test against.
     let bow_item = data.items.id("minecraft:bow");
     // Shared with the entity collector for held-item id → name (M22).
@@ -202,6 +204,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 baked,
                 etypes,
                 spears,
+                chest_states,
                 bow_item,
                 items,
                 want_validation,
@@ -213,7 +216,18 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.darkness_effect_scale,
             )
         }
-        _ => run_windowed(session, baked, etypes, spears, bow_item, items, args, want_validation, dirt_item),
+        _ => run_windowed(
+            session,
+            baked,
+            etypes,
+            spears,
+            chest_states,
+            bow_item,
+            items,
+            args,
+            want_validation,
+            dirt_item,
+        ),
     }
 }
 
@@ -836,10 +850,11 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
         translation: t.translation,
         scale: t.scale,
     };
-    rewo_gpu::held::HeldItems {
-        models: src
-            .models
-            .iter()
+    let conv_models = |m: &std::collections::HashMap<
+        String,
+        rewo_data::held_items::HeldItemModel,
+    >| {
+        m.iter()
             .map(|(k, m)| {
                 (
                     k.clone(),
@@ -861,7 +876,11 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                     },
                 )
             })
-            .collect(),
+            .collect()
+    };
+    rewo_gpu::held::HeldItems {
+        models: conv_models(&src.models),
+        block_entities: conv_models(&src.block_entities),
         textures: src
             .textures
             .iter()
@@ -1333,6 +1352,8 @@ fn run_headless(
     baked: assets::BakedAssets,
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
+    // Chest block states → facing + material, for the M25b block-entity draws.
+    chest_states: rewo_data::chest_states::ChestStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
     want_validation: bool,
@@ -1623,9 +1644,20 @@ fn run_headless(
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
-    let held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+    let bes = collect_block_entities(&session.world, &chest_states, &lightmap);
+    // Every texture the frame samples from the entity atlas — items in hands,
+    // dropped stacks, and now block-entity models, which share the pool.
+    let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+    held.extend(draws.iter().filter_map(|d| d.ground_item));
+    held.extend(bes.iter().map(|b| b.model));
     world_renderer.prepare_held_items(&mut gpu, &held)?;
-    world_renderer.set_entities(&draws, cr, cu, start.elapsed().as_secs_f32());
+    world_renderer.set_entities_and_block_entities(
+        &draws,
+        &bes,
+        cr,
+        cu,
+        start.elapsed().as_secs_f32(),
+    );
     world_renderer.set_hud(session.health, session.food, 0);
     world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
@@ -1716,6 +1748,8 @@ struct LiveApp {
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
     spears: rewo_data::item_tags::ItemTag,
+    /// Chest block states → facing + material, for the M25b block-entity draws.
+    chest_states: rewo_data::chest_states::ChestStates,
     /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
     bow_item: Option<i32>,
     /// Item registry, for id → name when resolving held models (M22).
@@ -2061,13 +2095,18 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap);
+        let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+        held.extend(draws.iter().filter_map(|d| d.ground_item));
+        held.extend(bes.iter().map(|b| b.model));
         // A failed upload leaves the item simply absent (no resident slot →
         // no quads), which is preferable to killing the frame loop.
         if let Err(e) = state.world_renderer.prepare_held_items(&mut state.gpu, &held) {
             log::warn!("live: held-item texture upload: {e}");
         }
-        state.world_renderer.set_entities(&draws, cr, cu, anim_time);
+        state
+            .world_renderer
+            .set_entities_and_block_entities(&draws, &bes, cr, cu, anim_time);
         drop(draws);
 
         let extent = state.renderer.swapchain.extent;
@@ -2142,6 +2181,7 @@ fn run_windowed(
     baked: assets::BakedAssets,
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
+    chest_states: rewo_data::chest_states::ChestStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
     args: LiveArgs,
@@ -2159,6 +2199,7 @@ fn run_windowed(
         baked: Some(baked),
         etypes,
         spears,
+        chest_states,
         bow_item,
         items,
         pool,
@@ -2439,6 +2480,51 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
 /// pitch black. Sampling at the eye and running the block/sky levels through
 /// the exact same `rewo_world::lightmap::sample` the terrain shader mirrors
 /// keeps a mob lit identically to the blocks around it.
+/// Every block entity in the world that Rewo can draw, as render draws (M25b).
+///
+/// The block state at the position supplies the facing and the material — the
+/// block-entity payload itself carries neither, because vanilla reads them off
+/// `getBlockState()`. A block entity whose block is not a chest, or whose state
+/// is not in the table, is simply not drawn: that is the fail-closed half of
+/// M25's registry showing through, and it is why an unimplemented type renders
+/// nothing rather than a chest in the wrong place.
+fn collect_block_entities<'a>(
+    world: &rewo_world::World,
+    chests: &'a rewo_data::chest_states::ChestStates,
+    lightmap: &LightmapState,
+) -> Vec<rewo_gpu::entities::BlockEntityDraw<'a>> {
+    use rewo_data::chest_states::ChestType;
+    let mut out = Vec::new();
+    for (pos, _be) in world.block_entities.iter() {
+        let state = world.block_state_at(pos.x, pos.y, pos.z);
+        let Some(chest) = chests.get(state) else {
+            continue;
+        };
+        // Double chests need `DoubleBlockCombiner`'s neighbour pairing to pick
+        // the left/right half-models, which this does not do — a LEFT or RIGHT
+        // state is skipped rather than drawn as a single chest, which would be
+        // visibly wrong (a full chest inside each half of the pair).
+        if chest.kind != ChestType::Single {
+            continue;
+        }
+        out.push(rewo_gpu::entities::BlockEntityDraw {
+            pos: [pos.x as f32, pos.y as f32, pos.z as f32],
+            model: chest.model,
+            facing_y_rot: chest.facing.to_y_rot(),
+            // Lit from the block's own cell — a chest fills its block, so
+            // there is no neighbour to sample the way a flat model would need.
+            light: entity_light(
+                world,
+                pos.x as f64 + 0.5,
+                pos.y as f64 + 0.5,
+                pos.z as f64 + 0.5,
+                lightmap,
+            ),
+        });
+    }
+    out
+}
+
 fn entity_light(
     world: &rewo_world::World,
     x: f64,
