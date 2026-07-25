@@ -160,22 +160,45 @@ struct Vertex {
 /// (16² tadpole up to 192² sniffer-class skins) shelf-pack around it. One
 /// texture, one pipeline family.
 const ATLAS_W: u32 = 1024;
-const ATLAS_H: u32 = 1024;
+/// M22 grew this by the held-item band. The **mob shelf region is unchanged**
+/// (still `y < ITEM_POOL_Y` = 896) so mob packing is byte-for-byte what it was;
+/// only the V denominator moves, which maps the same texels to the same
+/// samples.
+const ATLAS_H: u32 = 1280;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
-/// rows (y 896..1024), filled at runtime as players' skins arrive. The mob
-/// packer is capped above it so it never collides.
+/// rows, filled at runtime as players' skins arrive. The mob packer is capped
+/// above the dynamic bands so it never collides.
 const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
 const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
-const SKIN_POOL_Y: u32 = ATLAS_H - SKIN_POOL_ROWS * SKIN_SLOT; // 896
+const SKIN_POOL_Y: u32 = ATLAS_H - SKIN_POOL_ROWS * SKIN_SLOT; // 1152
+
+/// Dynamic held-item texture pool (M22): 16×16 slots in the band between the
+/// mob shelves and the skin pool. 26.2 ships 1233 distinct held-item textures —
+/// far more than an atlas band — but only the handful actually on screen need
+/// to be resident, so slots are filled on demand and recycled round-robin,
+/// exactly as the skin pool does.
+const ITEM_SLOT: u32 = 16;
+const ITEM_POOL_COLS: u32 = ATLAS_W / ITEM_SLOT; // 64
+const ITEM_POOL_ROWS: u32 = 16;
+const ITEM_SLOTS: u32 = ITEM_POOL_COLS * ITEM_POOL_ROWS; // 1024
+const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 896
 
 /// Atlas origin of dynamic skin slot `i` (0..SKIN_SLOTS).
 fn skin_slot_origin(i: u32) -> (u32, u32) {
     (
         (i % SKIN_POOL_COLS) * SKIN_SLOT,
         SKIN_POOL_Y + (i / SKIN_POOL_COLS) * SKIN_SLOT,
+    )
+}
+
+/// Atlas origin of dynamic item slot `i` (0..ITEM_SLOTS).
+fn item_slot_origin(i: u32) -> (u32, u32) {
+    (
+        (i % ITEM_POOL_COLS) * ITEM_SLOT,
+        ITEM_POOL_Y + (i / ITEM_POOL_COLS) * ITEM_SLOT,
     )
 }
 
@@ -197,7 +220,7 @@ fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
             if x < x_min {
                 x = x_min;
             }
-            if x + w <= ATLAS_W && y + h <= SKIN_POOL_Y {
+            if x + w <= ATLAS_W && y + h <= ITEM_POOL_Y {
                 break;
             }
             if x + w > ATLAS_W {
@@ -210,7 +233,7 @@ fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
             // Out of vertical space (the skin pool caps the packer).
             break;
         }
-        if x + w <= ATLAS_W && y + h <= SKIN_POOL_Y {
+        if x + w <= ATLAS_W && y + h <= ITEM_POOL_Y {
             out.push(Some((x, y)));
             x += w;
             shelf_h = shelf_h.max(h);

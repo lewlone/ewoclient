@@ -44,12 +44,20 @@ pub enum ItemGeometry {
     Sprite(Vec<String>),
 }
 
-/// A `display` entry: `rotation` (degrees, XYZ), `translation` (model units,
-/// vanilla clamps to ±80), `scale` (vanilla clamps to ≤4).
+/// A `display` entry, **already through vanilla's deserializer**.
+///
+/// `ItemTransform.Deserializer` does two things the raw JSON does not show and
+/// that are easy to miss: it multiplies `translation` by `0.0625` (model units
+/// → block units, so the item lands in the same 0..1 space the `-0.5` centring
+/// in `apply` assumes) and then clamps translation to ±5 and scale to ±4.
+/// Storing the raw JSON numbers instead would put every item 16× too far out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DisplayTransform {
+    /// Degrees, XYZ.
     pub rotation: [f32; 3],
+    /// **Block units** — the raw JSON value × 0.0625, clamped to ±5.
     pub translation: [f32; 3],
+    /// Clamped to ±4.
     pub scale: [f32; 3],
 }
 
@@ -151,10 +159,14 @@ fn read_transform(display: &Value, key: &str) -> Option<DisplayTransform> {
             })
             .unwrap_or(default)
     };
+    // `ItemTransform.Deserializer`: translation × 0.0625 then clamp ±5;
+    // scale clamp ±4; rotation passes through in degrees.
+    let t = arr3("translation", [0.0; 3]);
+    let s = arr3("scale", [1.0; 3]);
     Some(DisplayTransform {
         rotation: arr3("rotation", [0.0; 3]),
-        translation: arr3("translation", [0.0; 3]),
-        scale: arr3("scale", [1.0; 3]),
+        translation: std::array::from_fn(|i| (t[i] * 0.0625).clamp(-5.0, 5.0)),
+        scale: std::array::from_fn(|i| s[i].clamp(-4.0, 4.0)),
     })
 }
 
@@ -285,7 +297,9 @@ pub fn resolve_definition(
 /// through the *block* model chain, which the block bake does not retain.
 pub const BLOCK_THIRD_PERSON: DisplayTransform = DisplayTransform {
     rotation: [0.0, 45.0, 0.0],
-    translation: [0.0, 2.5, 0.0],
+    // 2.5 model units × 0.0625 — already through the deserializer, like every
+    // transform read from JSON.
+    translation: [0.0, 2.5 * 0.0625, 0.0],
     scale: [0.375, 0.375, 0.375],
 };
 
@@ -408,6 +422,8 @@ mod tests {
                 // handheld wins over generated — the child's display is nearer.
                 assert_eq!(third_person_right.rotation, [0.0, -90.0, 55.0]);
                 assert_eq!(third_person_right.scale, [0.85, 0.85, 0.85]);
+                // translation [0, 4.0, 0.5] × 0.0625 = [0, 0.25, 0.03125].
+                assert_eq!(third_person_right.translation, [0.0, 0.25, 0.03125]);
                 assert_eq!(third_person_left.rotation, [0.0, 90.0, -55.0]);
             }
             other => panic!("expected a sprite item, got {other:?}"),

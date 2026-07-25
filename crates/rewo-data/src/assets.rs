@@ -244,6 +244,8 @@ pub struct BakedAssets {
     /// carry no skin data, so every player wears it until online-mode
     /// profile fetching lands).
     pub mob_textures: Vec<MobTexture>,
+    /// Held-item models (M22): every resolvable item's quads + textures.
+    pub held_items: crate::held_items::HeldItems,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
@@ -717,6 +719,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         }
     }
 
+    // M22: held items, after every block layer exists (block items copy them).
+    let held_items = baker.bake_held_items();
+
     stats.textures = baker.layers.len();
     log::info!(
         "rewo-data: baked {} cubes + {} models ({} invisible), {} textures, {} shaped-collision states",
@@ -731,6 +736,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::info!("rewo-data: {} animated texture layers", baker.animations.len());
     }
     Ok(BakedAssets {
+        held_items,
         render,
         solid,
         collide,
@@ -1230,6 +1236,217 @@ impl<'a> Baker<'a> {
         }
     }
 
+
+    /// Bake every resolvable item's held model (M22).
+    ///
+    /// Two phases, because resolving a definition and baking its geometry both
+    /// need `&mut self`: resolve every definition first, then bake. The item
+    /// list comes from the jar itself (`assets/minecraft/items/*.json`) rather
+    /// than the registry, so this needs no extra input and cannot drift from
+    /// what the jar ships.
+    fn bake_held_items(&mut self) -> crate::held_items::HeldItems {
+        use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
+        use crate::item_models::{resolve_definition, ItemGeometry, ItemModel};
+
+        let mut names: Vec<String> = self
+            .jar
+            .file_names()
+            .filter_map(|p| {
+                p.strip_prefix("assets/minecraft/items/")
+                    .and_then(|r| r.strip_suffix(".json"))
+                    .filter(|r| !r.contains('/'))
+                    .map(str::to_string)
+            })
+            .collect();
+        names.sort();
+
+        // Phase 1: resolve definitions (no geometry yet).
+        let mut resolved: Vec<(String, ItemModel)> = Vec::with_capacity(names.len());
+        for name in &names {
+            let Some(def) = self.read_json(&format!("assets/minecraft/items/{name}.json")) else {
+                resolved.push((
+                    name.clone(),
+                    ItemModel::Unsupported("(missing definition)".into()),
+                ));
+                continue;
+            };
+            let mut read_model =
+                |p: &str| self.read_json(&format!("assets/minecraft/models/{p}.json"));
+            resolved.push((name.clone(), resolve_definition(&def, &mut read_model)));
+        }
+
+        // Phase 2: bake geometry.
+        let mut pool = TexturePool::default();
+        let mut models = HashMap::new();
+        let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
+        for (name, model) in resolved {
+            let full = format!("minecraft:{name}");
+            let (geometry, right, left) = match model {
+                ItemModel::Resolved {
+                    geometry,
+                    third_person_right,
+                    third_person_left,
+                } => (geometry, third_person_right, third_person_left),
+                ItemModel::Unsupported(kind) => {
+                    let bucket = if kind.starts_with("model ") {
+                        "(bespoke model)".to_string()
+                    } else {
+                        kind
+                    };
+                    *unsupported.entry(bucket).or_default() += 1;
+                    continue;
+                }
+            };
+            let baked = match &geometry {
+                ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
+                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool),
+            };
+            match baked {
+                Some(quads) if !quads.is_empty() => {
+                    models.insert(
+                        full,
+                        HeldItemModel {
+                            quads,
+                            right,
+                            left,
+                            from_block: matches!(geometry, ItemGeometry::Block(_)),
+                        },
+                    );
+                }
+                // Geometry that resolved but produced nothing (an empty model,
+                // an undecodable sprite) is suppressed like an unsupported
+                // definition. Counting it as resolved would overstate the
+                // coverage the gate reports.
+                _ => *unsupported.entry("(no geometry)".to_string()).or_default() += 1,
+            }
+        }
+
+        let items = HeldItems {
+            models,
+            textures: pool.into_textures(),
+            unsupported,
+        };
+        log::info!(
+            "rewo-data: held items — {} resolved ({} block + {} sprite), {} textures, {} unsupported",
+            items.models.len(),
+            items.block_count(),
+            items.sprite_count(),
+            items.textures.len(),
+            items.unsupported_total()
+        );
+        items
+    }
+
+    /// A `minecraft:block/…` item: reuse the block model's quads and copy each
+    /// referenced texture-array layer into the held-item texture pool.
+    fn bake_block_item(
+        &mut self,
+        block: &str,
+        pool: &mut crate::held_items::TexturePool,
+    ) -> Option<Vec<crate::held_items::HeldQuad>> {
+        use crate::held_items::{HeldQuad, HeldTexture};
+
+        let mut quads = Vec::new();
+        let r = ModelRef {
+            model: format!("block/{block}"),
+            x: 0,
+            y: 0,
+        };
+        // No biome tint: a held item draws the neutral texture, and the
+        // pre-tinted legacy layer is the one the block bake already chose.
+        let tint = TintInfo {
+            foliage: false,
+            layers: &[],
+            upper_half: false,
+        };
+        self.append_model_quads(&r, tint, &mut quads);
+        if quads.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(quads.len());
+        for q in quads {
+            // The layer pixels, copied so the entity atlas can hold them — the
+            // entity pass cannot sample the world texture array.
+            let layer = q.layer as usize;
+            let layers = &self.layers;
+            let tex = pool.intern(&format!("layer:{layer}"), || {
+                let rgba = layers.get(layer)?.clone();
+                (rgba.len() == (TEX_SIZE * TEX_SIZE * 4) as usize).then_some(HeldTexture {
+                    w: TEX_SIZE,
+                    h: TEX_SIZE,
+                    rgba,
+                })
+            })?;
+            out.push(HeldQuad {
+                // The block bake normalises to 0..1; held-item space is the
+                // 0..16 model units the display transform is written in.
+                verts: q.verts.map(|v| [v[0] * 16.0, v[1] * 16.0, v[2] * 16.0]),
+                uv: q.uv,
+                tex,
+                dir: q.dir,
+            });
+        }
+        Some(out)
+    }
+
+    /// A `builtin/generated` item: extrude each sprite layer.
+    fn bake_sprite_item(
+        &mut self,
+        layers: &[String],
+        pool: &mut crate::held_items::TexturePool,
+    ) -> Option<Vec<crate::held_items::HeldQuad>> {
+        use crate::held_items::{HeldQuad, HeldTexture};
+        use crate::item_geometry::{extrude, SpriteMask};
+
+        let mut out = Vec::new();
+        for (i, tex_name) in layers.iter().enumerate() {
+            let path = format!("assets/minecraft/textures/{tex_name}.png");
+            let mut bytes = Vec::new();
+            let read = self
+                .jar
+                .by_name(&path)
+                .ok()
+                .and_then(|mut e| e.read_to_end(&mut bytes).ok());
+            if read.is_none() {
+                continue; // a layer whose texture is absent contributes nothing
+            }
+            let Some((rgba, w, h)) = decode_png_any(&bytes) else {
+                continue;
+            };
+            // An animation strip stacks square frames; the item uses frame 0.
+            let frame_h = w.min(h);
+            let frame: Vec<u8> = rgba[..(w * frame_h * 4) as usize].to_vec();
+            let mask = SpriteMask {
+                width: w,
+                height: frame_h,
+                // `SpriteContents.isTransparent` is alpha == 0.
+                transparent: (0..(w * frame_h) as usize)
+                    .map(|p| frame[p * 4 + 3] == 0)
+                    .collect(),
+            };
+            let Some(tex) = pool.intern(&format!("sprite:{tex_name}"), || {
+                Some(HeldTexture {
+                    w,
+                    h: frame_h,
+                    rgba: frame.clone(),
+                })
+            }) else {
+                continue;
+            };
+            for q in extrude(&mask, i as u8) {
+                out.push(HeldQuad {
+                    verts: q.verts,
+                    // The extruder works in 0..16 sprite-model units; the
+                    // renderer wants 0..1 of the texture.
+                    uv: q.uv.map(|u| [u[0] / 16.0, u[1] / 16.0]),
+                    tex,
+                    dir: q.dir,
+                });
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
     fn resolve_model(&mut self, model: &str) -> Option<ResolvedModel> {
         let key = model.strip_prefix("minecraft:").unwrap_or(model).to_string();
         if let Some(c) = self.model_cache.get(&key) {
@@ -1704,6 +1921,7 @@ fn resolve_texture_var<'a>(
     }
     None
 }
+
 
 fn decode_png_rgba(bytes: &[u8]) -> Option<Vec<u8>> {
     decode_png_rgba_frames(bytes)?.into_iter().next()
