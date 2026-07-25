@@ -3783,11 +3783,11 @@ one-shot animations a vanilla client renders from it. Before it, every such
 packet fell off the dispatch chain as an unknown id: the Warden's attack and
 sonic-boom rigs never fired, and the Armadillo, once balled, never re-peeked —
 it stayed in its held pose forever. The work is complete, every gate below is
-green, and it will be committed locally on `codex/rewo-m17-entity-events` (base
-`f4b54d1`, the M16.1 commit; not pushed — M0–M9 are on `origin/main`, the
+green, and it is committed locally as `55388c8` on `codex/rewo-m17-entity-events`
+(base `f4b54d1`, the M16.1 commit; not pushed — M0–M9 are on `origin/main`, the
 M10–M17 arc is reviewed local work). The vanilla test server was stopped by
-exact PID and port 25599 verified free after the final gates; the tree is dirty
-only because this entry and the commit are pending.
+exact PID and port 25599 verified free after the final gates; the worktree was
+clean after the commit.
 
 **The packet.** 26.2 `ClientboundEntityEventPacket` is a signed fixed
 big-endian `i32` entity id followed by a signed `byte` event id — *not* a

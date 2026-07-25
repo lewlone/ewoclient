@@ -2126,9 +2126,9 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   never-run; `--no-build`/`--dimension-check` are exempt. Gates: 350 unit (app
   47→53), 4× live 30 s CORRECTIONS 0 + place=dirt + dig=air exit 0, fail-closed
   proven live (16 s run exits 1).
-- **M17 exact model-visible entity events shipped + verified 2026-07-25.** Will
-  be committed locally on `codex/rewo-m17-entity-events` (base `f4b54d1`; not
-  pushed). Before it, `ClientboundEntityEventPacket` fell off the dispatch chain
+- **M17 exact model-visible entity events shipped + verified 2026-07-25.**
+  Committed locally as `55388c8` on `codex/rewo-m17-entity-events` (base
+  `f4b54d1`; not pushed). Before it, `ClientboundEntityEventPacket` fell off the dispatch chain
   as an unknown id — the Warden's ribcages never animated and a balled Armadillo
   never re-peeked. The packet is a **signed fixed BE-i32 entity id + signed byte
   event id** (not var-ints); the report resolves clientbound-play `entity_event`

@@ -270,9 +270,9 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 `M0–M17` shipped and verified. **M0–M9 are pushed** (`origin/main` @
 `973ea5e`); the **M10–M17 arc is reviewed local work, not yet pushed** (M12 is
-`06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`; M17
-will be committed locally on branch `codex/rewo-m17-entity-events`, base
-`f4b54d1`). M17 is green on every gate; its vanilla test server was stopped by
+`06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`; M17 is
+committed locally as `55388c8` on branch `codex/rewo-m17-entity-events`, base
+`f4b54d1`, not pushed). M17 is green on every gate; its vanilla test server was stopped by
 exact PID and port 25599 verified free. See `REWO_PLAN.md` §15 for each
 milestone's exact ground truth and measured gates.
 
