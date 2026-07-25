@@ -1099,6 +1099,51 @@ work is exercised through the real launcher with a real account.
 last. This section is the forward plan; when a milestone ships, its record goes
 in §15 and the entry here becomes history.)*
 
+> **Status, 2026-07-26 — all three shipped, with two scope corrections.**
+> M23 `d080ba3`, M24 `0f5d988`, M25 `88f4117`, all local on
+> `codex/rewo-m19-combat-swings`, none pushed.
+>
+> | | planned | shipped |
+> |---|---|---|
+> | M23 | item-use state + the 8 poses | **in full**, plus two corrections the work turned up (see below) |
+> | M24 | death **+ item entities** | death in full; **item entities carried forward** |
+> | M25 | decode + registry **+ a first-class rendered set** | decode + registry + the measured gap; **rendering carried forward** |
+>
+> **Both cuts were estimate errors in this plan, not scope the work
+> discovered was unnecessary.**
+>
+> - *Item entities* were called "nearly free after M22 — the same models, a new
+>   placement". They are not: they need the `ITEM_STACK` metadata serializer
+>   (id 7, which the skip table bails on) **and** the `GROUND` item-display
+>   context, which M22 deliberately never read — it takes only
+>   `thirdperson_{right,left}hand`. That is a second pipeline.
+> - *Block-entity rendering* was scoped to "chest / shulker / bed / decorated
+>   pot". Each needs a model transcription, an entity-atlas slot, a facing
+>   transform and — for chests — a lid angle driven by `block_event`. The
+>   decode does not imply any of it. M25 shipped the half that unblocks the
+>   rest, plus a fail-closed boundary and a *measured* statement of what is
+>   missing (86 real blocks, re-derived from the jar on every gate run).
+>
+> **Corrections M23 made to earlier milestones**, both from reading the two
+> humanoid renderers side by side:
+> 1. `AvatarRenderer.getArmPose` and `HumanoidMobRenderer.getArmPose` are
+>    different functions and had been collapsed into one since M19. The mob
+>    version falls through to `EMPTY`, not `ITEM` — an armed zombie's arm had
+>    been sitting 18° too high.
+> 2. The pose must be computed per **hand**, not per arm, because
+>    `mainHandPose.isTwoHanded()` rewrites the *off-hand* pose.
+>
+> And one near-miss worth recording: grepping for assignments to
+> `state.isUsingItem` finds exactly one, inside `HumanoidMobRenderer`, which
+> reads as "players never have use state" and implies a divide-by-zero NaN in
+> `CROSSBOW_CHARGE`. That was wrong — `extractHumanoidRenderState` is a
+> **static helper** and `AvatarRenderer:168` calls it. Grep found the
+> assignment; it could not show who called the enclosing method.
+>
+> Carried forward, in the order they unblock things: **item entities**
+> (`ITEM_STACK` serializer + `GROUND` display context), then **block-entity
+> rendering** (chest family first — the most common invisible block).
+
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
 exclusion**. Read together, those exclusions name one blocker three times:
