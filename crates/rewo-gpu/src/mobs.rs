@@ -143,6 +143,231 @@ pub enum Anim {
     /// i·0.15π)·π·ry·(1+|i−2|)`, `x += sin(same)·π·tx·|i−2|`.
     /// `with_x` mirrors vanilla's wing layers that copy yRot only.
     Crawl { i: u8, ry: f32, tx: f32, with_x: bool },
+    /// `HumanoidModel` **body** under a combat swing:
+    /// `body.yRot = sin(sqrt(attackTime)·2π)·0.2`, negated when the attack arm
+    /// is the left one. Zero when `attackTime <= 0` — vanilla's
+    /// `setupAttackAnimation` short-circuits before touching anything.
+    HumanoidBody,
+    /// `HumanoidModel` arms: the ordinary walk swing (identical to
+    /// [`Anim::ArmRight`] / [`Anim::ArmLeft`]) **plus**
+    /// `setupAttackAnimation`'s pivot displacement, shared yRot term and, on
+    /// the attack arm, the WHACK or STAB strike.
+    ///
+    /// Deliberately a separate variant rather than an extra branch inside
+    /// `ArmRight`/`ArmLeft`: the attack math bakes `HumanoidModel.createMesh`'s
+    /// ±5 arm pivot, and the other humanoid-ish mobs that use `ArmRight` (the
+    /// enderman's ±5/−12 arms, the villager's arm block) neither share that
+    /// pose nor render this animation in vanilla. Only models built to
+    /// `HumanoidModel.createMesh` may use it.
+    HumanoidArmRight,
+    HumanoidArmLeft,
+}
+
+/// `HumanoidModel.createMesh`'s arm pivot x — `PartPose.offset(∓5, 2, 0)`.
+/// `setupAttackAnimation` *assigns* `arm.x`/`arm.z` absolutely, so the additive
+/// pose pipeline here needs the base it is replacing.
+pub const HUMANOID_ARM_PIVOT_X: f32 = 5.0;
+
+/// `net.minecraft.world.item.SwingAnimationType`, mirrored here so `rewo-gpu`
+/// stays free of a `rewo-data` dependency (the same pattern as
+/// [`AllayDance`] mirroring the world-side counters).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SwingKind {
+    /// Body + arm pivots move, but no arm strike.
+    None,
+    #[default]
+    Whack,
+    /// `SpearAnimations.thirdPersonAttackHand`.
+    Stab,
+}
+
+/// Per-frame combat-swing inputs — the `ArmedEntityRenderState` fields
+/// `HumanoidModel.setupAttackAnimation` reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwingPose {
+    /// `state.attackTime` = `LivingEntity.getAttackAnim(partialTicks)`.
+    /// `<= 0` short-circuits the entire attack animation.
+    pub attack_time: f32,
+    /// `state.attackArm == HumanoidArm.LEFT`.
+    pub left_arm: bool,
+    /// `state.swingAnimationType`, from the item held by the attack arm.
+    pub kind: SwingKind,
+    /// `state.ageScale` — `isBaby() ? 0.5 : 1.0`. Scales the arm pivot swing.
+    pub age_scale: f32,
+    /// Whether every input behind this pose was resolved **exactly**.
+    ///
+    /// `false` means an equipment update could not be resolved (an item id
+    /// outside the registry, or a component patch this client cannot walk), so
+    /// `attack_time` has been forced to 0 and both the built-in pose and CEM's
+    /// `swing_progress` are suppressed rather than guessed. Carried rather than
+    /// implied so the suppression is observable instead of looking like an
+    /// entity that simply is not swinging.
+    pub inputs_known: bool,
+}
+
+impl SwingPose {
+    /// Not swinging: `attackTime = 0` makes every attack term vanish, exactly
+    /// like vanilla's `if (!(attackTime <= 0))` guard.
+    pub const NONE: SwingPose = SwingPose {
+        attack_time: 0.0,
+        left_arm: false,
+        kind: SwingKind::Whack,
+        age_scale: 1.0,
+        inputs_known: true,
+    };
+}
+
+impl Default for SwingPose {
+    fn default() -> Self {
+        SwingPose::NONE
+    }
+}
+
+/// `HumanoidModel.ArmPose` — the *hold* pose an arm takes from the item in it,
+/// applied by `poseRightArm` / `poseLeftArm` **before**
+/// `setupAttackAnimation`. It is not part of the swing; it is the baseline the
+/// swing is added to, which is why an armed entity that never swings is still
+/// posed by it.
+///
+/// Vanilla declares eleven, each carrying `(twoHanded, affectsOffhandPose)`:
+///
+/// ```text
+/// EMPTY(false,false)   ITEM(false,false)         BLOCK(false,false)
+/// BOW_AND_ARROW(true,true)                       THROW_TRIDENT(false,true)
+/// CROSSBOW_CHARGE(true,true)  CROSSBOW_HOLD(true,true)
+/// SPYGLASS(false,false)  TOOT_HORN(false,false)  BRUSH(false,false)
+/// SPEAR(false,true)
+/// ```
+///
+/// **Rewo models the three that are reachable without item-use state.**
+/// `AvatarRenderer.getArmPose` only returns the other eight while
+/// `getUsedItemHand() == hand && getUseItemRemainingTicks() > 0` (or for a
+/// charged crossbow held), and neither the use-item hand nor the remaining
+/// ticks is synchronised for a remote entity — so those eight are suppressed
+/// rather than approximated, exactly as an unresolvable item is. `BOW_AND_ARROW`
+/// is additionally the one case whose pose body writes to *both* arms, which
+/// the per-arm pipeline here could not express without restructuring.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ArmPose {
+    /// Empty hand. `arm.yRot = 0`.
+    #[default]
+    Empty,
+    /// Any ordinary held item — **the default fall-through for an armed
+    /// entity**, and so the overwhelmingly common combat case.
+    /// `arm.xRot = arm.xRot * 0.5 − π/10; arm.yRot = 0`.
+    Item,
+    /// A spear: either `swing_animation` is STAB and the entity is swinging, or
+    /// the item is in `minecraft:spears`. Poses through the unconditional half
+    /// of `SpearAnimations.thirdPersonHandUse`.
+    Spear,
+}
+
+impl ArmPose {
+    /// Vanilla's `twoHanded` flag. All three modelled poses are one-handed;
+    /// this is a real match rather than a `false` so that adding a two-handed
+    /// pose later cannot silently inherit the wrong answer.
+    pub const fn is_two_handed(self) -> bool {
+        match self {
+            ArmPose::Empty | ArmPose::Item | ArmPose::Spear => false,
+        }
+    }
+
+    /// Vanilla's `affectsOffhandPose` flag. `SPEAR` sets it, so a spear in one
+    /// hand stops the *other* arm from being posed at all.
+    pub const fn affects_offhand_pose(self) -> bool {
+        match self {
+            ArmPose::Empty | ArmPose::Item => false,
+            ArmPose::Spear => true,
+        }
+    }
+}
+
+/// Both arms' [`ArmPose`] plus the handedness that decides which arm vanilla
+/// poses first — the `HumanoidRenderState` fields `setupAnim`'s pose dispatch
+/// reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ArmPoses {
+    /// `state.rightArmPose`.
+    pub right: ArmPose,
+    /// `state.leftArmPose`.
+    pub left: ArmPose,
+    /// `state.mainArm == HumanoidArm.RIGHT`.
+    pub right_handed: bool,
+    /// Whether both hands resolved exactly. `false` suppresses posing entirely
+    /// — the same honesty rule [`SwingPose::inputs_known`] applies to the
+    /// swing, for the same reason: a guessed baseline is a wrong pose rendered
+    /// confidently.
+    pub known: bool,
+}
+
+impl ArmPoses {
+    /// Both hands empty, right-handed — vanilla's state for an unarmed entity,
+    /// and the neutral every non-humanoid model carries.
+    pub const EMPTY: ArmPoses = ArmPoses {
+        right: ArmPose::Empty,
+        left: ArmPose::Empty,
+        right_handed: true,
+        known: true,
+    };
+
+    pub const fn for_arm(self, left: bool) -> ArmPose {
+        if left {
+            self.left
+        } else {
+            self.right
+        }
+    }
+
+    /// Whether `setupAnim` calls `pose{Left,Right}Arm` for this arm at all.
+    ///
+    /// Transcribes the `isUsingItem == false` branch of the dispatch:
+    ///
+    /// ```text
+    /// boolean twoHandedOffhand = rightHanded ? leftArmPose.isTwoHanded()
+    ///                                        : rightArmPose.isTwoHanded();
+    /// if (rightHanded != twoHandedOffhand) {
+    ///    poseLeftArm(state);
+    ///    if (!leftArmPose.affectsOffhandPose())  poseRightArm(state);
+    /// } else {
+    ///    poseRightArm(state);
+    ///    if (!rightArmPose.affectsOffhandPose()) poseLeftArm(state);
+    /// }
+    /// ```
+    ///
+    /// The `isUsingItem == true` branch is unreachable here — Rewo never sets
+    /// it (see [`ArmPose`]). Vanilla runs the two calls in a definite order,
+    /// which does not matter for the modelled subset because each of `EMPTY`,
+    /// `ITEM` and `SPEAR` writes only to its own arm; `BOW_AND_ARROW` is the
+    /// pose that would break that, and it is excluded.
+    pub const fn poses_arm(self, left: bool) -> bool {
+        if !self.known {
+            return false;
+        }
+        let two_handed_offhand = if self.right_handed {
+            self.left.is_two_handed()
+        } else {
+            self.right.is_two_handed()
+        };
+        if self.right_handed != two_handed_offhand {
+            // poseLeftArm unconditionally; the right arm only if the left pose
+            // does not claim the offhand.
+            if left {
+                true
+            } else {
+                !self.left.affects_offhand_pose()
+            }
+        } else if left {
+            !self.right.affects_offhand_pose()
+        } else {
+            true
+        }
+    }
+}
+
+impl Default for ArmPoses {
+    fn default() -> Self {
+        ArmPoses::EMPTY
+    }
 }
 
 impl Eq for Anim {}
@@ -1260,12 +1485,25 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 const NONE: &[Fold] = &[];
 
-/// `HumanoidModel.createMesh(g, 0)` head + hat + body; limbs differ per
-/// variant so callers add their own. Returns the head part index.
-fn humanoid_head_body(b: &mut ModelBuilder, tex: usize) -> usize {
+/// `HumanoidModel.createMesh(g, 0)` head + hat. Returns the head part index.
+/// Split out of [`humanoid_head_body`] so the player can attach its body cube
+/// to a real articulated `body` part instead of the static root.
+fn humanoid_head(b: &mut ModelBuilder, tex: usize) -> usize {
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
     b.cube(head, tex, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], NONE);
     b.cube_g(head, tex, (32.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], 0.5, NONE);
+    head
+}
+
+/// `HumanoidModel.createMesh(g, 0)` head + hat + body; limbs differ per
+/// variant so callers add their own. Returns the head part index.
+///
+/// The body cube rides the static root here: vanilla's `body` part is at
+/// `PartPose.offset(0, 0, 0)` with no base rotation, and the mobs using this
+/// helper never animate it (their vanilla models override `setupAnim` in ways
+/// Rewo does not model — see the M19 scope note in REWO_PLAN §15).
+fn humanoid_head_body(b: &mut ModelBuilder, tex: usize) -> usize {
+    let head = humanoid_head(b, tex);
     b.cube(STATIC_PART, tex, (16.0, 16.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], NONE);
     head
 }
@@ -1285,15 +1523,34 @@ fn player_slim() -> Model {
 /// between the two arm widths; only the arm + sleeve boxes differ.
 fn player_model(slim: bool) -> Model {
     let mut b = ModelBuilder::new();
-    humanoid_head_body(&mut b, 0);
+    humanoid_head(&mut b, 0);
+    // `body` is a real articulated part (pivot 0,0,0 / no base rotation, so the
+    // rest pose is byte-identical to the static root it replaced) because
+    // `HumanoidModel.setupAttackAnimation` rotates it during a combat swing.
+    let body = b.part_named("body", [0.0, 0.0, 0.0], [0.0; 3], Anim::HumanoidBody, 1.0, None);
+    b.cube(body, 0, (16.0, 16.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], NONE);
     // Jacket overlay on the body.
-    b.cube_g(STATIC_PART, 0, (16.0, 32.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], 0.25, NONE);
+    b.cube_g(body, 0, (16.0, 32.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], 0.25, NONE);
     // Arms: wide = 4-px box at min.x −3/−1; slim = 3-px box at min.x −2/−1.
     let (aw, rmin, lmin) = if slim { (3.0, -2.0, -1.0) } else { (4.0, -3.0, -1.0) };
-    let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
+    let arm_r = b.part_named(
+        "right_arm",
+        [-HUMANOID_ARM_PIVOT_X, 2.0, 0.0],
+        [0.0; 3],
+        Anim::HumanoidArmRight,
+        1.0,
+        None,
+    );
     b.cube(arm_r, 0, (40.0, 16.0), [rmin, -2.0, -2.0], [aw, 12.0, 4.0], NONE);
     b.cube_g(arm_r, 0, (40.0, 32.0), [rmin, -2.0, -2.0], [aw, 12.0, 4.0], 0.25, NONE);
-    let arm_l = b.part([5.0, 2.0, 0.0], Anim::ArmLeft, 1.0);
+    let arm_l = b.part_named(
+        "left_arm",
+        [HUMANOID_ARM_PIVOT_X, 2.0, 0.0],
+        [0.0; 3],
+        Anim::HumanoidArmLeft,
+        1.0,
+        None,
+    );
     b.cube(arm_l, 0, (32.0, 48.0), [lmin, -2.0, -2.0], [aw, 12.0, 4.0], NONE);
     b.cube_g(arm_l, 0, (48.0, 48.0), [lmin, -2.0, -2.0], [aw, 12.0, 4.0], 0.25, NONE);
     let leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
@@ -3067,6 +3324,43 @@ fn nautilus() -> Model {
 
 #[cfg(test)]
 mod tests {
+    /// `setupAnim`'s pose dispatch across the whole modelled truth table.
+    /// The subtle case is `SPEAR`: `affectsOffhandPose` makes it suppress the
+    /// *other* arm, and which arm that is flips with handedness.
+    #[test]
+    fn the_pose_dispatch_matches_vanillas_branch() {
+        use super::{ArmPose::*, ArmPoses};
+        let p = |right, left, right_handed| ArmPoses {
+            right,
+            left,
+            right_handed,
+            known: true,
+        };
+        // Nothing two-handed and nothing claiming the offhand: both posed.
+        for (r, l) in [(Empty, Empty), (Item, Item), (Empty, Item), (Item, Empty)] {
+            for rh in [true, false] {
+                let a = p(r, l, rh);
+                assert!(a.poses_arm(false) && a.poses_arm(true), "{r:?}/{l:?} rh={rh}");
+            }
+        }
+        // Right-handed: poseLeftArm runs first, so a SPEAR in the LEFT arm
+        // (the off hand) stops the right arm being posed at all.
+        let a = p(Item, Spear, true);
+        assert!(!a.poses_arm(false) && a.poses_arm(true));
+        // ...while a SPEAR in the right arm does not stop the left.
+        let a = p(Spear, Item, true);
+        assert!(a.poses_arm(false) && a.poses_arm(true));
+        // Left-handed mirrors it exactly.
+        let a = p(Spear, Item, false);
+        assert!(a.poses_arm(false) && !a.poses_arm(true));
+        let a = p(Item, Spear, false);
+        assert!(a.poses_arm(false) && a.poses_arm(true));
+        // An unresolvable hand suppresses both, whatever the poses say.
+        let mut a = p(Item, Item, true);
+        a.known = false;
+        assert!(!a.poses_arm(false) && !a.poses_arm(true));
+    }
+
     use super::*;
 
     /// The humanoid head at texOffs(0,0), box(−4,−8,−4, 8,8,8): every face's
@@ -3175,10 +3469,57 @@ mod tests {
         let arm = m
             .quads
             .iter()
-            .filter(|q| m.parts[q.part].anim == Anim::ArmRight)
+            .filter(|q| m.parts[q.part].anim == Anim::HumanoidArmRight)
             .flat_map(|q| q.pos.iter().map(|p| to_world(*p, &m.parts[q.part])[0]))
             .fold(f32::MAX, f32::min);
         assert_eq!(arm, -8.25);
+    }
+
+    /// The player is the one model M19 poses from `attackTime`, so its body and
+    /// arms must be real named parts at `HumanoidModel.createMesh`'s poses —
+    /// and, crucially, at *zero* base rotation with the body pivot at the
+    /// origin, which is what makes promoting them rest-geometry-neutral.
+    #[test]
+    fn the_player_humanoid_carries_the_attack_parts_at_the_vanilla_rest_pose() {
+        for slim in [false, true] {
+            let m = player_model(slim);
+            let part = |name: &str| {
+                m.parts
+                    .iter()
+                    .find(|p| p.name == name)
+                    .unwrap_or_else(|| panic!("{name} missing (slim={slim})"))
+            };
+            let body = part("body");
+            assert_eq!(body.pivot, [0.0; 3], "body PartPose.offset(0,0,0)");
+            assert_eq!(body.rot, [0.0; 3], "no base rotation → rest pose unchanged");
+            assert_eq!(body.parent, None);
+            assert_eq!(body.anim, Anim::HumanoidBody);
+            let right = part("right_arm");
+            assert_eq!(right.pivot, [-HUMANOID_ARM_PIVOT_X, 2.0, 0.0]);
+            assert_eq!(right.rot, [0.0; 3]);
+            assert_eq!(right.anim, Anim::HumanoidArmRight);
+            let left = part("left_arm");
+            assert_eq!(left.pivot, [HUMANOID_ARM_PIVOT_X, 2.0, 0.0]);
+            assert_eq!(left.rot, [0.0; 3]);
+            assert_eq!(left.anim, Anim::HumanoidArmLeft);
+        }
+        // No other mob may carry the humanoid attack anims: they bake the ±5
+        // arm pivot, and every other vanilla `HumanoidModel` subclass overrides
+        // the arms in ways this client does not model.
+        for def in MOBS {
+            if matches!(def.kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+                continue;
+            }
+            let m = (def.build)();
+            assert!(
+                !m.parts.iter().any(|p| matches!(
+                    p.anim,
+                    Anim::HumanoidBody | Anim::HumanoidArmRight | Anim::HumanoidArmLeft
+                )),
+                "{} must not use the humanoid attack anims",
+                def.kind.name()
+            );
+        }
     }
 
     #[test]

@@ -98,11 +98,126 @@ impl EntityTypes {
         !NOT_LIVING.contains(&short)
     }
 
+    /// Every registered protocol id (for the registry-size drift check).
+    pub fn ids(&self) -> impl Iterator<Item = i32> + '_ {
+        self.by_id.keys().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
+    }
+}
+
+/// Which entity types are `LivingEntity`s, and which of them run
+/// `LivingEntity.updateSwingTime()` on the client — resolved from the
+/// machine-extracted [`crate::entity_classes`] name tables against the live
+/// registry (M19).
+///
+/// Both questions are Java-class facts that no datagen report carries, and both
+/// are load-bearing:
+///
+/// * **Living** gates every swing input. `handleAnimate` casts to
+///   `LivingEntity`, `handleSetEquipment` and `handleUpdateMobEffect` test
+///   `instanceof LivingEntity` — a packet naming a boat or an arrow must mutate
+///   nothing at all.
+/// * **Swing-ticking** decides whose `attackAnim` advances.
+///   `updateSwingTime` is not in `LivingEntity.tick`: on the client only
+///   `Player.aiStep`, `RemotePlayer.tick`, `Monster.aiStep` and
+///   `Mannequin.tick` call it, so a hoglin can be sent `swing()` (via
+///   `Mob.doHurtTarget`) and never animate. This matters beyond the built-in
+///   humanoid pose because OptiFine CEM publishes `swing_progress` for *every*
+///   mob.
+pub struct EntityClasses {
+    living: std::collections::HashSet<i32>,
+    swing_ticking: std::collections::HashSet<i32>,
+}
+
+impl EntityClasses {
+    /// Resolve the generated names against the runtime registry.
+    ///
+    /// Hard-fails on drift: a registry of a different size than the generated
+    /// pin, or a generated name the registry does not contain. Either means the
+    /// table was built from another version, and a silently missing name would
+    /// turn into "this mob is not living" — a whole class of packets quietly
+    /// ignored.
+    pub fn resolve(types: &EntityTypes) -> Result<Self, String> {
+        use crate::entity_classes as table;
+        if types.len() != table::REGISTERED_TYPES {
+            return Err(format!(
+                "entity_classes: the entity_type registry has {} entries but the generated \
+                 table was built from {} — re-run tools/gen_entity_classes.py after the \
+                 version bump",
+                types.len(),
+                table::REGISTERED_TYPES
+            ));
+        }
+        let resolve_set = |names: &[&str], what: &str| -> Result<std::collections::HashSet<i32>, String> {
+            names
+                .iter()
+                .map(|name| {
+                    types.id_of(name).ok_or_else(|| {
+                        format!(
+                            "entity_classes: generated {what} entity {name:?} is not in the \
+                             entity_type registry — re-run tools/gen_entity_classes.py"
+                        )
+                    })
+                })
+                .collect()
+        };
+        let living = resolve_set(table::LIVING, "living")?;
+        let swing_ticking = resolve_set(table::SWING_TICKING, "swing-ticking")?;
+        // A swing-ticking type that is not living would mean the generator's
+        // own invariant broke between generation and resolution.
+        if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} ticks a swing but is not living"
+            ));
+        }
+        log::info!(
+            "rewo-data: entity classes — {} living, {} swing-ticking of {} types",
+            living.len(),
+            swing_ticking.len(),
+            types.len()
+        );
+        Ok(Self {
+            living,
+            swing_ticking,
+        })
+    }
+
+    /// Build a classification directly from ids, for **unit tests** that must
+    /// not read the datagen reports.
+    ///
+    /// Every production path and every oracle uses [`Self::resolve`] against
+    /// the real registry — this exists so a codec test in another crate can
+    /// exercise the living / ticking gates without a filesystem, and nothing
+    /// that ships reads it.
+    pub fn from_raw_ids(living: &[i32], swing_ticking: &[i32]) -> Self {
+        Self {
+            living: living.iter().copied().collect(),
+            swing_ticking: swing_ticking.iter().copied().collect(),
+        }
+    }
+
+    /// `entity instanceof LivingEntity`.
+    pub fn is_living(&self, type_id: i32) -> bool {
+        self.living.contains(&type_id)
+    }
+
+    /// Whether this type's client class advances `updateSwingTime` each tick.
+    pub fn ticks_swing(&self, type_id: i32) -> bool {
+        self.swing_ticking.contains(&type_id)
+    }
+
+    pub fn living_count(&self) -> usize {
+        self.living.len()
+    }
+
+    pub fn swing_ticking_count(&self) -> usize {
+        self.swing_ticking.len()
     }
 }

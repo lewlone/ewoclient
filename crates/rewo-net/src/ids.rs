@@ -88,6 +88,15 @@ pub struct Ids {
     /// boom, armadillo peek) ride it, so a missing name is a version mismatch
     /// that should fail loud rather than silently drop those animations.
     pub cb_play_entity_event: i32,
+    /// `ClientboundAnimatePacket` — a VarInt entity id + an **unsigned byte**
+    /// action. Required: the combat arm swings (actions 0 / 3) ride it, so a
+    /// missing name is a version mismatch that should fail loud rather than
+    /// silently drop every swing.
+    pub cb_play_animate: i32,
+    /// `ClientboundSetEquipmentPacket` — the held items that decide a swing's
+    /// duration and animation type. Required for the same reason: without it
+    /// every entity would silently swing with the bare-hand default.
+    pub cb_play_set_equipment: i32,
     /// Player visual effects (M13 lightmap). Required: the lightmap's
     /// night-vision / darkness factors depend on them, so a missing name is a
     /// version-mismatch that should fail loud rather than silently disable the
@@ -181,6 +190,8 @@ impl Ids {
             cb_play_set_entity_data: req!(p, P, C, "set_entity_data"),
             cb_play_rotate_head: req!(p, P, C, "rotate_head"),
             cb_play_entity_event: req!(p, P, C, "entity_event"),
+            cb_play_animate: req!(p, P, C, "animate"),
+            cb_play_set_equipment: req!(p, P, C, "set_equipment"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),
             cb_play_start_configuration: opt!(p, P, C, "start_configuration"),

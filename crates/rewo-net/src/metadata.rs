@@ -43,6 +43,17 @@ pub struct EntityMeta {
     /// `set_dancing`. This is not a claim that slot 16 is baby-or-dancing for
     /// every entity — only for the kinds the client renders.
     pub bool16: Option<bool>,
+    /// `Avatar.DATA_PLAYER_MAIN_HAND` — index 15, **HUMANOID_ARM** serializer
+    /// (id 42), value `0 = LEFT`, `1 = RIGHT` (M19 combat swings).
+    ///
+    /// Index 15 is the first slot past `LivingEntity` (Entity 0..7,
+    /// LivingEntity 8..14), so several classes claim it — `Mob` puts
+    /// `DATA_MOB_FLAGS_ID` there, `ArmorStand` `DATA_CLIENT_FLAGS`, both BYTE.
+    /// Unlike M18's index-16 BOOLEAN, though, the **serializer disambiguates**:
+    /// only `Avatar` uses HUMANOID_ARM, so this needs no kind gate. Stored as
+    /// the raw wire id; `HumanoidArm.STREAM_CODEC` is
+    /// `idMapper(..., OutOfBoundsStrategy.ZERO)`, so anything but 1 is LEFT.
+    pub main_arm: Option<u8>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -71,6 +82,9 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
                 }
             }
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
+            // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
+            // the same index is somebody else's flags byte and still skips.
+            (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),
             (16, 1) => meta.size = r.varint().ok(), // AbstractCubeMob.ID_SIZE (INT)
             (16, 8) => meta.bool16 = r.u8().ok().map(|b| b != 0), // baby (ageable/zombie) or dancing (allay)
             // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
@@ -90,6 +104,12 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
 /// types we can't size (item stack, particle, variants, profile …).
 fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
     match ty {
+        // BYTE. Only index 0 (shared flags) is *read* above, but the serializer
+        // is reused all over — `Mob.DATA_MOB_FLAGS_ID` and `ArmorStand`'s client
+        // flags both sit at index 15 — and until M19 it was missing here, so a
+        // single BYTE past index 0 ended the parse and hid every later field
+        // (baby / dancing / size) in the same delta packet.
+        0 => r.u8().is_ok(),
         // varint-shaped: INT, DIRECTION, BLOCK_STATE, OPTIONAL_BLOCK_STATE,
         // OPTIONAL_UNSIGNED_INT, POSE, CAT/COW/WOLF/… variant enums,
         // painting variant, mob state enums, humanoid arm.
@@ -183,6 +203,25 @@ mod tests {
         let m = parse(&mut r);
         assert_eq!(m.size, Some(4));
         assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
+    }
+
+    #[test]
+    fn reads_the_main_hand_at_index_15_only_for_the_humanoid_arm_serializer() {
+        // A player's `DATA_PLAYER_MAIN_HAND`: index 15, HUMANOID_ARM (42),
+        // value 0 = LEFT.
+        let mut b: Vec<u8> = vec![0x0F, 42, 0x00, 0xFF];
+        let m = parse(&mut PacketReader::new(&b));
+        assert_eq!(m.main_arm, Some(0));
+        // RIGHT.
+        b = vec![0x0F, 42, 0x01, 0xFF];
+        assert_eq!(parse(&mut PacketReader::new(&b)).main_arm, Some(1));
+        // The BYTE at the same index is `Mob.DATA_MOB_FLAGS_ID` (or an armor
+        // stand's client flags) — not a main hand. It must skip cleanly and
+        // leave a later field readable.
+        b = vec![0x0F, 0x00, 0x02, 0x10, 0x08, 0x01, 0xFF];
+        let m = parse(&mut PacketReader::new(&b));
+        assert_eq!(m.main_arm, None, "BYTE at 15 is a flags byte, not the arm");
+        assert_eq!(m.bool16, Some(true), "…and the stream stayed in sync");
     }
 
     #[test]

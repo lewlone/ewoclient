@@ -16,6 +16,7 @@ pub mod crypt;
 pub mod dimension_parse;
 pub mod effects;
 pub mod ids;
+pub mod item_stack;
 pub mod metadata;
 pub mod play;
 pub mod record;
@@ -203,6 +204,9 @@ pub struct Connection<'a> {
     /// registry.
     night_vision_id: Option<i32>,
     darkness_id: Option<i32>,
+    /// Raw `minecraft:mob_effect` ids of the three effects that change a swing's
+    /// duration (M19), captured the same way and for the same reason.
+    swing_effect_ids: SwingEffectIds,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
     biome_defs: Vec<rewo_world::biome::BiomeDef>,
 }
@@ -229,6 +233,7 @@ impl<'a> Connection<'a> {
             overworld_clock_id: None,
             night_vision_id: None,
             darkness_id: None,
+            swing_effect_ids: SwingEffectIds::default(),
             biome_defs: Vec::new(),
         })
     }
@@ -491,6 +496,14 @@ impl<'a> Connection<'a> {
                 match entry_name.as_str() {
                     "minecraft:night_vision" => self.night_vision_id = Some(idx as i32),
                     "minecraft:darkness" => self.darkness_id = Some(idx as i32),
+                    // M19: `getCurrentSwingDuration`'s dig-speed / fatigue terms.
+                    "minecraft:haste" => self.swing_effect_ids.haste = Some(idx as i32),
+                    "minecraft:conduit_power" => {
+                        self.swing_effect_ids.conduit_power = Some(idx as i32)
+                    }
+                    "minecraft:mining_fatigue" => {
+                        self.swing_effect_ids.mining_fatigue = Some(idx as i32)
+                    }
                     _ => {}
                 }
             }
@@ -880,6 +893,18 @@ pub(crate) fn apply_set_entity_data(
     if let Some(sz) = meta.size {
         entities.set_size(eid, sz);
     }
+    if let Some(arm) = meta.main_arm {
+        // `HumanoidArm.STREAM_CODEC` is `idMapper(BY_ID, getId)` with
+        // `OutOfBoundsStrategy.ZERO`, and LEFT is id 0 — so only 1 is RIGHT.
+        entities.set_main_arm(
+            eid,
+            if arm == 1 {
+                rewo_world::entities::HumanoidArm::Right
+            } else {
+                rewo_world::entities::HumanoidArm::Left
+            },
+        );
+    }
     if let Some(b) = meta.bool16 {
         // Slot 16 BOOLEAN → `DATA_DANCING` on an Allay, otherwise the modeled
         // baby path (`AgeableMob`/`Zombie.DATA_BABY_ID`). The kind decides.
@@ -909,6 +934,290 @@ pub fn route_set_entity_data(
     } else {
         false
     }
+}
+
+// ---------------------------------------------------------------------------
+// M19 — combat arm swings (`ClientboundAnimatePacket`) and their inputs
+// ---------------------------------------------------------------------------
+
+/// Decode + dispatch a `ClientboundAnimatePacket` body onto the entity table.
+///
+/// Wire form (decompiled `ClientboundAnimatePacket`): a **VarInt** entity id
+/// followed by an **unsigned byte** action — unlike
+/// `ClientboundEntityEventPacket`, whose id is a fixed BE `i32`.
+///
+/// `ClientPacketListener.handleAnimate` maps the action:
+///
+/// ```text
+/// entity == null            -> nothing at all
+/// 0 SWING_MAIN_HAND         -> ((LivingEntity)entity).swing(MAIN_HAND)
+/// 3 SWING_OFF_HAND          -> ((LivingEntity)entity).swing(OFF_HAND)
+/// 2 WAKE_UP                 -> ((Player)entity).stopSleepInBed(false, false)
+/// 4 CRITICAL_HIT            -> CRIT particle emitter
+/// 5 MAGIC_CRITICAL_HIT      -> ENCHANTED_HIT particle emitter
+/// ```
+///
+/// Only 0 and 3 are model-visible combat swings, and only those touch swing
+/// state here. Actions 2/4/5 are a bed exit and two particle emitters — neither
+/// modelled — so they are inert, as is any other byte. That is not a
+/// simplification: vanilla's own handler does nothing else to the swing.
+///
+/// `classes` is the machine-extracted living / swing-ticking classification
+/// (`rewo_data::entity_types::EntityClasses`). It answers two separate
+/// questions the wire cannot: whether the id names a `LivingEntity` at all —
+/// vanilla casts, so a boat or an arrow must mutate nothing — and whether that
+/// class runs `updateSwingTime`, which only `Player`, `Monster` and `Mannequin`
+/// descendants do. `None` (the headless protocol harnesses) interprets nothing.
+///
+/// Not public: the packet stream reaches this only through [`route_animate`].
+pub(crate) fn apply_animate(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    use rewo_world::entities::InteractionHand;
+    let mut r = PacketReader::new(body);
+    // A short / malformed body decodes to nothing.
+    let (Ok(eid), Ok(action)) = (r.varint(), r.u8()) else {
+        return;
+    };
+    // `getEntity(id) == null` → the whole packet is inert.
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    // `(LivingEntity)entity` — a non-living target would be a ClassCastException
+    // server-side, and must certainly not grow swing state here.
+    let Some(classes) = classes.filter(|c| c.is_living(type_id)) else {
+        return;
+    };
+    let hand = match action {
+        0 => InteractionHand::MainHand,
+        3 => InteractionHand::OffHand,
+        _ => return,
+    };
+    entities.swing(eid, hand, classes.ticks_swing(type_id));
+}
+
+/// The narrowest clientbound-play dispatch seam for combat swings: routes a
+/// single `(packet id, body)` to [`apply_animate`] iff `id` is the resolved
+/// `animate` id, returning whether it matched. Mirrors [`route_entity_event`] /
+/// [`route_set_entity_data`] so [`play::PlaySession`] and the `swingshot` oracle
+/// drive packet-id → decoder through the same production code.
+pub fn route_animate(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_animate {
+        apply_animate(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
+/// Apply one `ClientboundSetEquipmentPacket` body — the held items that decide
+/// a swing's duration and animation type.
+///
+/// Wire form (decompiled):
+///
+/// ```text
+/// VarInt entity
+/// do { byte slotId; ItemStack(OPTIONAL_STREAM_CODEC) } while (slotId & 0x80) != 0
+/// ```
+///
+/// `EquipmentSlot.VALUES.get(slotId & 127)` is an **ordinal** lookup, not the
+/// enum's `id` field: 0 MAINHAND, 1 OFFHAND, 2 FEET, 3 LEGS, 4 CHEST, 5 HEAD,
+/// 6 BODY, 7 SADDLE. Only the two hands change a swing input, but every stack
+/// still has to be *decoded* to reach the next slot.
+///
+/// `handleSetEquipment` requires `getEntity(id) instanceof LivingEntity`; an
+/// untracked or non-living id mutates nothing.
+///
+/// **Fail-closed, twice over.** A stack whose component patch cannot be walked
+/// leaves the reader mid-value, so the packet stops there — every later slot
+/// would be parsed out of garbage. And a stack whose swing animation cannot be
+/// resolved exactly (an unwalkable patch, or an item id the registry does not
+/// contain) is stored as [`HandItem::Unknown`] rather than guessed: the caller
+/// then suppresses that entity's combat pose and CEM `swing_progress` until an
+/// exact update repairs it. The slots already read stay applied, exactly as
+/// vanilla's per-pair `forEach` would have.
+pub(crate) fn apply_set_equipment(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    data: &item_stack::SwingWireData,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    use item_stack::{SwingResolution, WireSlot};
+    use rewo_world::entities::{HandItem, HeldItem, InteractionHand};
+    let mut r = PacketReader::new(body);
+    let Ok(eid) = r.varint() else {
+        return;
+    };
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    if !classes.is_some_and(|c| c.is_living(type_id)) {
+        return; // `instanceof LivingEntity` failed
+    }
+    loop {
+        let Ok(slot_id) = r.i8() else {
+            return;
+        };
+        let Ok(slot) = item_stack::read_optional(&mut r, data.components) else {
+            return; // truncated — stop, don't guess at the rest
+        };
+        let hand = match slot_id & 127 {
+            0 => Some(InteractionHand::MainHand),
+            1 => Some(InteractionHand::OffHand),
+            _ => None, // armour / body / saddle: decoded, then discarded
+        };
+        if let Some(hand) = hand {
+            let item = match slot {
+                WireSlot::Empty => HandItem::Empty,
+                WireSlot::Stack(s) => match item_stack::resolve_swing(&s, &data.prototypes) {
+                    SwingResolution::Exact(swing) => HandItem::Held(HeldItem {
+                        item_id: s.item_id,
+                        swing,
+                    }),
+                    SwingResolution::Unknown(why) => {
+                        warn_unknown_swing(s.item_id, why);
+                        HandItem::Unknown
+                    }
+                },
+            };
+            entities.set_hand_item(eid, hand, item);
+        }
+        // The reader is parked mid-component; there is no valid next slot.
+        if !slot.aligned() || slot_id & -128i8 == 0 {
+            return;
+        }
+    }
+}
+
+/// Warn once per (reason, item) about an unresolvable swing input.
+///
+/// A server that sends an unwalkable patch sends it on *every* equipment
+/// update, so an unconditional log would be unbounded spam. The set is keyed by
+/// the pair, so a genuinely new item is still reported.
+fn warn_unknown_swing(item_id: i32, why: item_stack::UnknownSwing) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<std::collections::HashSet<(i32, u8)>>> = Mutex::new(None);
+    let key = (
+        item_id,
+        match why {
+            item_stack::UnknownSwing::UnwalkableComponent => 0u8,
+            item_stack::UnknownSwing::UnregisteredItem => 1u8,
+        },
+    );
+    let first = match SEEN.lock() {
+        Ok(mut guard) => guard.get_or_insert_with(Default::default).insert(key),
+        Err(_) => false,
+    };
+    if first {
+        log::warn!(
+            "net: item {item_id} has an unresolvable swing animation ({why:?}) — its holder's \
+             combat pose is suppressed until an exact equipment update arrives"
+        );
+    }
+}
+
+/// Dispatch seam for [`apply_set_equipment`], mirroring [`route_animate`].
+/// `data` is `None` on the headless protocol harnesses, which then interpret no
+/// equipment (every swing keeps the bare-hand default).
+pub fn route_set_equipment(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    data: Option<&item_stack::SwingWireData>,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_set_equipment {
+        if let Some(data) = data {
+            apply_set_equipment(body, entities, data, classes);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Raw `minecraft:mob_effect` registry ids of the three effects
+/// `LivingEntity.getCurrentSwingDuration()` consults. Captured from
+/// `registry_data` like the M13 lightmap's night-vision / darkness ids, never
+/// assumed from bootstrap order. `None` = this server didn't sync that entry,
+/// so nothing can match it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SwingEffectIds {
+    pub haste: Option<i32>,
+    pub conduit_power: Option<i32>,
+    pub mining_fatigue: Option<i32>,
+}
+
+impl SwingEffectIds {
+    fn effect_of(&self, id: i32) -> Option<rewo_world::entities::SwingEffect> {
+        use rewo_world::entities::SwingEffect;
+        if self.haste == Some(id) {
+            Some(SwingEffect::Haste)
+        } else if self.conduit_power == Some(id) {
+            Some(SwingEffect::ConduitPower)
+        } else if self.mining_fatigue == Some(id) {
+            Some(SwingEffect::MiningFatigue)
+        } else {
+            None
+        }
+    }
+}
+
+/// Apply an `update_mob_effect` / `remove_mob_effect` body to the per-entity
+/// swing-duration effects. `add` selects which packet this is.
+///
+/// `handleUpdateMobEffect` applies to whatever `level.getEntity(id)` returns,
+/// so this handler is written for any living entity — but **the server's send
+/// scope is much narrower than that**, and the reachability claim has to match
+/// it. In 26.2 the only senders are `ServerPlayer.onEffectAdded`/`onEffectUpdated`
+/// (to that player about *itself*), `PlayerList` (a player's own effects on
+/// join/respawn) and `LivingEntity.sendEffectToPassengers` (to `ServerPlayer`s
+/// **riding** the affected entity). There is no `sendToTrackingPlayers` for
+/// these packets, so an ordinary tracked mob's haste is never transmitted: the
+/// duration adjustment is exercised by the local player and by a ridden
+/// vehicle, and by nothing else.
+///
+/// Client `hasEffect` is a plain `activeEffects.containsKey` and `tickClient`
+/// never removes — an effect only leaves the map when a remove packet arrives —
+/// so no expiry clock belongs here (see `rewo_world::entities::SwingEffect`).
+pub fn apply_swing_effect(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    ids: SwingEffectIds,
+    add: bool,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    let (eid, effect_id, amplifier) = if add {
+        match crate::effects::parse_update(body) {
+            Some(u) => (u.entity_id, u.effect_id, Some(u.amplifier)),
+            None => return,
+        }
+    } else {
+        match crate::effects::parse_remove(body) {
+            Some(rem) => (rem.entity_id, rem.effect_id, None),
+            None => return,
+        }
+    };
+    let Some(effect) = ids.effect_of(effect_id) else {
+        return;
+    };
+    // `getEntity(id) instanceof LivingEntity`.
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    if !classes.is_some_and(|c| c.is_living(type_id)) {
+        return;
+    }
+    entities.set_swing_effect(eid, effect, amplifier);
 }
 
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
@@ -1191,6 +1500,224 @@ mod entity_event_tests {
         let mut t = table();
         apply_entity_event(&body(1, 4), &mut t, None, None, 10);
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+    }
+}
+
+#[cfg(test)]
+mod animate_tests {
+    use super::{apply_animate, apply_set_equipment, apply_swing_effect, SwingEffectIds};
+    use rewo_data::components::DataComponentIds;
+    use rewo_data::entity_types::EntityClasses;
+    use rewo_world::entities::{
+        EntityState, EntityTable, HandItem, HumanoidArm, InteractionHand,
+    };
+
+    /// Stand-in type ids: a player, a `Monster` descendant, a living
+    /// non-`Monster` (`Cow`), a `Mannequin`, and a non-living entity (a boat).
+    const PLAYER: i32 = 148;
+    const ZOMBIE: i32 = 151;
+    const COW: i32 = 25;
+    const MANNEQUIN: i32 = 77;
+    const BOAT: i32 = 9;
+
+    /// The classification these tests run against — the same *shape* as the
+    /// generated one (`Player`/`Monster`/`Mannequin` tick; the cow is living but
+    /// does not; the boat is not living at all).
+    fn classes() -> EntityClasses {
+        EntityClasses::from_raw_ids(
+            &[PLAYER, ZOMBIE, COW, MANNEQUIN],
+            &[PLAYER, ZOMBIE, MANNEQUIN],
+        )
+    }
+
+    /// A `ClientboundAnimatePacket` body: VarInt entity id + unsigned byte
+    /// action. Built independently of any writer under test.
+    fn body(eid: i32, action: u8) -> Vec<u8> {
+        let mut b = Vec::new();
+        varint(eid, &mut b);
+        b.push(action);
+        b
+    }
+
+    fn varint(v: i32, out: &mut Vec<u8>) {
+        let mut n = v as u32;
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn table() -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, PLAYER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(2, EntityState::new(0, COW, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(3, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(4, EntityState::new(0, MANNEQUIN, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(5, EntityState::new(0, BOAT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    fn swing(t: &mut EntityTable, eid: i32, action: u8) {
+        apply_animate(&body(eid, action), t, Some(&classes()));
+    }
+
+    #[test]
+    fn action_0_and_3_swing_the_two_hands() {
+        let mut t = table();
+        swing(&mut t, 1, 0);
+        assert_eq!(t.swing_debug(1).unwrap().4, Some(InteractionHand::MainHand));
+        assert_eq!(t.attack_arm(1), HumanoidArm::Right);
+        // A second swing at swingTime = -1 is always accepted (swingTime < 0).
+        swing(&mut t, 1, 3);
+        assert_eq!(t.swing_debug(1).unwrap().4, Some(InteractionHand::OffHand));
+        assert_eq!(t.attack_arm(1), HumanoidArm::Left);
+    }
+
+    #[test]
+    fn the_other_actions_never_touch_the_swing() {
+        // 2 wake-up, 4 crit particles, 5 enchanted-hit particles, plus ids the
+        // handler has no branch for at all.
+        for action in [1u8, 2, 4, 5, 6, 64, 255] {
+            let mut t = table();
+            swing(&mut t, 1, action);
+            assert_eq!(t.swing_debug(1), None, "action {action} started a swing");
+        }
+    }
+
+    #[test]
+    fn a_missing_entity_or_truncated_body_is_inert() {
+        let mut t = table();
+        swing(&mut t, 99, 0); // untracked
+        assert_eq!(t.swing_debug(99), None);
+        apply_animate(&[], &mut t, Some(&classes()));
+        apply_animate(&[1], &mut t, Some(&classes())); // id but no action
+        assert_eq!(t.swing_debug(1), None);
+    }
+
+    #[test]
+    fn the_entity_id_is_a_varint_not_a_fixed_int() {
+        // 300 needs two VarInt bytes. Reading the same body as a big-endian
+        // i32 (the *entity_event* shape) would target a different entity, so
+        // this distinguishes the two wire forms.
+        let mut t = EntityTable::default();
+        t.add(300, EntityState::new(0, PLAYER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let b = body(300, 0);
+        assert_eq!(b.len(), 3, "two VarInt bytes + the action");
+        apply_animate(&b, &mut t, Some(&classes()));
+        assert!(t.swing_debug(300).is_some());
+    }
+
+    #[test]
+    fn the_generated_ticking_set_decides_whose_clock_runs() {
+        let mut t = table();
+        for eid in [1, 2, 3, 4] {
+            swing(&mut t, eid, 0);
+        }
+        for _ in 0..3 {
+            t.tick_lerp();
+        }
+        // Player, Monster descendant and Mannequin all run updateSwingTime…
+        for eid in [1, 3, 4] {
+            assert_eq!(t.swing_debug(eid).unwrap().1, 2, "entity {eid} should tick");
+        }
+        // …a living non-Monster accepts the swing and never advances it.
+        assert_eq!(t.swing_debug(2).unwrap().1, -1, "the cow must not tick");
+        assert_eq!(t.attack_anim(2, 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_non_living_entity_is_inert_everywhere() {
+        let mut t = table();
+        swing(&mut t, 5, 0);
+        assert_eq!(t.swing_debug(5), None, "a boat cannot swing");
+        // …and equipment/effects for it are dropped too.
+        let ids = SwingEffectIds {
+            haste: Some(3),
+            conduit_power: Some(29),
+            mining_fatigue: Some(4),
+        };
+        apply_swing_effect(&[5, 3, 1, 100, 0], &mut t, ids, true, Some(&classes()));
+        assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
+        let comps = DataComponentIds {
+            swing_animation: 40,
+            damage: 3,
+        };
+        let data = super::item_stack::SwingWireData {
+            prototypes: unreachable_prototypes(),
+            components: comps,
+        };
+        apply_set_equipment(&equipment_body(5, 0, 949), &mut t, &data, Some(&classes()));
+        assert_eq!(t.hand_item(5, InteractionHand::MainHand), HandItem::Empty);
+    }
+
+    /// The equipment path needs a prototype table, which only exists with a
+    /// real registry — these unit tests only need the *gate*, so the table is
+    /// never consulted (the entity is rejected first). `swingshot` covers the
+    /// resolved path against the live registry.
+    fn unreachable_prototypes() -> rewo_data::swing_anim::SwingAnimations {
+        // A registry-less table is impossible to build honestly, so borrow the
+        // real one if the reports are present and skip the assertion otherwise.
+        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+        let items = rewo_data::items::Items::load(&paths.registries_json())
+            .expect("registries.json for the equipment gate test");
+        rewo_data::swing_anim::SwingAnimations::resolve(&items).expect("prototypes")
+    }
+
+    /// A one-slot `ClientboundSetEquipmentPacket` body with a plain stack.
+    fn equipment_body(eid: i32, ordinal: u8, item: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        varint(eid, &mut b);
+        b.push(ordinal);
+        varint(1, &mut b); // count
+        varint(item, &mut b);
+        varint(0, &mut b); // added
+        varint(0, &mut b); // removed
+        b
+    }
+
+    /// An `update_mob_effect` body: VarInt entity, effect, amplifier, duration
+    /// + a flags byte. Every field is kept below 128 so its VarInt is one byte.
+    fn effect_body(eid: u8, effect: u8, amp: u8, duration: u8, flags: u8) -> Vec<u8> {
+        assert!([eid, effect, amp, duration].iter().all(|v| *v < 128));
+        vec![eid, effect, amp, duration, flags]
+    }
+
+    #[test]
+    fn swing_effects_track_living_entities_and_only_the_three_ids() {
+        let ids = SwingEffectIds {
+            haste: Some(3),
+            conduit_power: Some(29),
+            mining_fatigue: Some(4),
+        };
+        let c = classes();
+        let mut t = table();
+        // Haste II on the cow (living, even though it never ticks a swing).
+        apply_swing_effect(&effect_body(2, 3, 1, 100, 0), &mut t, ids, true, Some(&c));
+        assert_eq!(t.current_swing_duration(2), Some(6 - 2));
+        // An unrelated effect id changes nothing.
+        apply_swing_effect(&effect_body(2, 99, 4, 100, 0), &mut t, ids, true, Some(&c));
+        assert_eq!(t.current_swing_duration(2), Some(4));
+        // The remove packet drops it.
+        apply_swing_effect(&[2, 3], &mut t, ids, false, Some(&c));
+        assert_eq!(t.current_swing_duration(2), Some(6));
+        // An untracked entity is inert.
+        apply_swing_effect(&effect_body(9, 3, 1, 100, 0), &mut t, ids, true, Some(&c));
+        assert_eq!(t.current_swing_duration(9), Some(6));
+        // A server that synced no ids matches nothing.
+        let mut t2 = table();
+        apply_swing_effect(
+            &effect_body(1, 3, 1, 100, 0),
+            &mut t2,
+            SwingEffectIds::default(),
+            true,
+            Some(&c),
+        );
+        assert_eq!(t2.current_swing_duration(1), Some(6));
     }
 }
 

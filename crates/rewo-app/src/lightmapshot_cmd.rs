@@ -800,6 +800,8 @@ fn run_entity_case(
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
         allay_dance: None,
+        attack: rewo_gpu::mobs::SwingPose::NONE,
+        arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,

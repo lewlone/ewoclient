@@ -80,7 +80,87 @@ pub struct PlayArgs {
     /// turns into a timeout rather than a skipped check.
     #[arg(long, default_value_t = false)]
     dimension_check: bool,
+    /// M19's live equipment gate: summon a mob, arm it from the server, and
+    /// prove the `ClientboundSetEquipmentPacket` + `ItemStack` wire decode
+    /// against a real vanilla server.
+    ///
+    /// This is the one M19 wire format built by hand from the decompile that no
+    /// serverless oracle can validate — `swingshot` grades the decoder against
+    /// bodies this repo also wrote. Here the *server* writes them. Drives its
+    /// own paced command stream (so it refuses `--setup`, whose stream would
+    /// race this one for the chat rate limiter) and forces a still, no-build
+    /// path. Needs the op account (`--username RewoOp`).
+    ///
+    /// Deliberately does **not** cover the haste / mining-fatigue term of
+    /// `getCurrentSwingDuration`: 26.2 sends `ClientboundUpdateMobEffectPacket`
+    /// only to the affected player itself and to players *riding* the affected
+    /// entity (`ServerPlayer.onEffectAdded`, `LivingEntity.sendEffectToPassengers`)
+    /// — never to ordinary trackers — so a mob's effects are unobservable here
+    /// by design, not by omission.
+    #[arg(long, default_value_t = false)]
+    swing_check: bool,
 }
+
+/// The mob the swing gate arms, and what it arms it with. The two items are
+/// chosen so the *prototype* table is load-bearing: the spear is one of the
+/// seven non-default `minecraft:swing_animation` items (STAB / 19 ticks) and
+/// the sword is an ordinary WHACK / 6. A decoder that mixed up the slot
+/// ordinals, mis-read the component patch, or lost the item id would land on
+/// the wrong pair.
+const SWING_CHECK_MOB: &str = "minecraft:zombie";
+const SWING_CHECK_MAIN: &str = "minecraft:iron_spear";
+const SWING_CHECK_OFF: &str = "minecraft:stone_sword";
+/// The scoreboard tag *and* custom name this gate's own fixture carries.
+///
+/// Both, deliberately. The tag scopes every server command (`kill`, `item
+/// replace`) to this fixture so a repeat run cannot touch a zombie that was
+/// already there; the custom name is what the *client* grades on, resolved
+/// through the production metadata path (`EntityTable::custom_name`), so the
+/// gate is looking at the same entity the server armed rather than "whatever
+/// zombie happens to be nearest".
+const SWING_CHECK_TAG: &str = "rewo_swing_check";
+
+/// The paced command stream `--swing-check` issues after spawn. `say` lines are
+/// deliberate no-ops that keep the 250 ms pacing honest while the server
+/// applies the previous command and the tracker broadcasts its equipment
+/// update (see the AGENT_LOOP_BRIEF pacing trap).
+fn swing_check_commands() -> Vec<String> {
+    // Every selector is tag-scoped: `kill` removes only this gate's own
+    // fixture, never "all zombies", so an unrelated mob standing nearby (or a
+    // fixture from a previous run) is neither destroyed nor mistaken for ours.
+    let sel = format!("@e[type={SWING_CHECK_MOB},tag={SWING_CHECK_TAG},limit=1,sort=nearest]");
+    let kill = format!("kill @e[type={SWING_CHECK_MOB},tag={SWING_CHECK_TAG}]");
+    vec![
+        kill.clone(),
+        "say swing-check w1".into(),
+        // `CustomName` is an SNBT *component compound* in 26.x. Quoting it
+        // as a JSON string instead makes the literal `{"text":...}` the
+        // entity's name, which is what the client would have to match.
+        format!(
+            "summon {SWING_CHECK_MOB} ~ ~ ~3 {{Tags:[\"{SWING_CHECK_TAG}\"],\
+             CustomName:{{text:\"{SWING_CHECK_TAG}\"}},CustomNameVisible:1b,\
+             NoAI:1b,Silent:1b,Invulnerable:1b,PersistenceRequired:1b}}"
+        ),
+        "say swing-check w2".into(),
+        format!("item replace entity {sel} weapon.mainhand with {SWING_CHECK_MAIN}"),
+        "say swing-check w3".into(),
+        format!("item replace entity {sel} weapon.offhand with {SWING_CHECK_OFF}"),
+        "say swing-check w4".into(),
+        "say swing-check w5".into(),
+        "say swing-check w6".into(),
+    ]
+}
+
+/// The cleanup command, run after grading so a passing run leaves the world as
+/// it found it. Tag-scoped for the same reason as the setup stream.
+fn swing_check_cleanup() -> String {
+    format!("kill @e[type={SWING_CHECK_MOB},tag={SWING_CHECK_TAG}]")
+}
+
+/// The shortest session that can issue the stream above (one command per
+/// 250 ms from t=1s) and still leave a settle window for the equipment
+/// broadcast to arrive.
+const SWING_CHECK_MIN_SECONDS: f32 = 14.0;
 
 /// The shortest session the M16 live gate can complete in: four settle windows
 /// plus three transitions, at the bounds `dimension_check` uses. A run that
@@ -92,7 +172,7 @@ const DIMENSION_CHECK_MIN_SECONDS: f32 = 90.0;
 /// non-op's commands are *silently* rejected.
 const OP_USERNAME: &str = "RewoOp";
 
-pub fn run(args: PlayArgs) -> Result<(), String> {
+pub fn run(mut args: PlayArgs) -> Result<(), String> {
     if args.dimension_check {
         // Reject rather than reconcile: `--setup`'s paced stream and this
         // gate's commands would share the server's chat rate limiter, and a
@@ -113,6 +193,35 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
                 args.seconds
             ));
         }
+    }
+    if args.swing_check {
+        if args.setup.is_some() {
+            return Err(
+                "--swing-check and --setup cannot be combined: both pace server commands, \
+                 and the loser's tail is silently dropped. Run them separately."
+                    .into(),
+            );
+        }
+        if args.dimension_check {
+            return Err(
+                "--swing-check and --dimension-check cannot be combined: both drive their \
+                 own command stream, and the mob would be left behind in another dimension."
+                    .into(),
+            );
+        }
+        if args.seconds < SWING_CHECK_MIN_SECONDS {
+            return Err(format!(
+                "--swing-check needs --seconds >= {SWING_CHECK_MIN_SECONDS:.0} (given {:.0}): \
+                 the paced command stream plus the equipment broadcast do not fit in a \
+                 shorter session, and a truncated run would grade an unarmed mob.",
+                args.seconds
+            ));
+        }
+        // Deterministic path: the mob is summoned relative to the bot, so the
+        // bot must not wander off, and the build actions would only add noise
+        // (and contend for the same paced-command budget).
+        args.still = true;
+        args.no_build = true;
     }
     let data = GameData::load_for_version(&args.version)?;
 
@@ -179,6 +288,16 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     // modeled baby path at the same slot — every production PlaySession consumer
     // needs it, not just `live_cmd`.
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
+    // M19 combat swings — every production `PlaySession` consumer interprets
+    // them, not just `live_cmd`: the player type id gates the swing clock and
+    // the equipment tables supply each swing's duration + animation type.
+    session.entity_classes = Some(std::sync::Arc::new(
+        rewo_data::entity_types::EntityClasses::resolve(&data.entity_types)?,
+    ));
+    session.swing_data = Some(rewo_net::item_stack::SwingWireData {
+        prototypes: rewo_data::swing_anim::SwingAnimations::resolve(&data.items)?,
+        components: data.components,
+    });
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     if let (Some(b), false) = (baked.as_ref(), args.no_relight) {
@@ -208,6 +327,22 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
         crate::dimension_check::DimensionCheck::new(&username)
     });
 
+    // The paced command stream this run issues: the swing gate's own list, or
+    // whatever `--setup` asked for. One source, so the two can never interleave.
+    let scripted: Vec<String> = if args.swing_check {
+        swing_check_commands()
+    } else {
+        args.setup
+            .as_deref()
+            .map(|c| {
+                c.split(';')
+                    .map(|one| one.trim().to_string())
+                    .filter(|one| !one.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
     let start = Instant::now();
     let total_ticks = (args.seconds / 0.05) as u64;
     let mut acted = Actions::default();
@@ -235,7 +370,7 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
             (Some(_), _) => TickInput::default(),
             (None, Some(st)) => {
                 let secs = (tick_n - st) as f32 * 0.05;
-                drive(&mut session, &args, secs, dirt_item, &mut acted)?
+                drive(&mut session, &args, secs, dirt_item, &mut acted, &scripted)?
             }
             (None, None) => TickInput::default(),
         };
@@ -287,6 +422,156 @@ pub fn run(args: PlayArgs) -> Result<(), String> {
     if !args.no_build && !args.dimension_check {
         build_acceptance(&session, &acted, &data)?;
     }
+    if args.swing_check {
+        // Grade the client's snapshot first, then tidy up regardless of the
+        // verdict: the fixture is tag-scoped, so removing it touches nothing
+        // else, and a failed run should not leave a mob behind either.
+        let verdict = swing_acceptance(&session, &data);
+        match session.send_command(&swing_check_cleanup()) {
+            Ok(()) => println!("[swing-check] cleaned up /{}", swing_check_cleanup()),
+            Err(e) => log::warn!("play --swing-check: cleanup failed: {e}"),
+        }
+        verdict?;
+    }
+    Ok(())
+}
+
+/// M19's live equipment gate, fail-closed.
+///
+/// Everything `swingshot` proves about the equipment path it proves against
+/// bodies this repo wrote. Here a real 26.2 server writes them: it broadcasts
+/// `ClientboundSetEquipmentPacket` to trackers from `ServerEntity` (the initial
+/// tracking snapshot) and `LivingEntity.handleEquipmentChanges`
+/// (`sendToTrackingPlayers`), so the slot ordinals, the continuation bit, the
+/// `ItemStack.OPTIONAL_STREAM_CODEC` layout and the item registry ids are all
+/// the server's, not ours.
+///
+/// The two items make the datagen-derived prototype table load-bearing:
+/// `iron_spear` is one of the seven non-default `minecraft:swing_animation`
+/// entries (STAB / 19) and `stone_sword` is an ordinary WHACK / 6. Reading the
+/// same value for both would be a fail.
+fn swing_acceptance(session: &PlaySession, data: &GameData) -> Result<(), String> {
+    use rewo_world::entities::{HandItem, InteractionHand};
+
+    let mob_tid = data
+        .entity_types
+        .id_of(SWING_CHECK_MOB)
+        .ok_or_else(|| format!("registries.json: no {SWING_CHECK_MOB} entity type"))?;
+    let want_main = data
+        .items
+        .id(SWING_CHECK_MAIN)
+        .ok_or_else(|| format!("registries.json: no {SWING_CHECK_MAIN}"))?;
+    let want_off = data
+        .items
+        .id(SWING_CHECK_OFF)
+        .ok_or_else(|| format!("registries.json: no {SWING_CHECK_OFF}"))?;
+    // `of` is `None` for an id outside the registry; these two came *from* the
+    // registry, so a `None` here means the pin itself is broken.
+    let proto_main = data
+        .swing_animations
+        .of(want_main)
+        .ok_or_else(|| format!("{SWING_CHECK_MAIN} has no prototype swing animation"))?;
+    let proto_off = data
+        .swing_animations
+        .of(want_off)
+        .ok_or_else(|| format!("{SWING_CHECK_OFF} has no prototype swing animation"))?;
+    if proto_main == proto_off {
+        return Err(format!(
+            "swing-check is not discriminating: {SWING_CHECK_MAIN} and {SWING_CHECK_OFF} \
+             share the prototype {proto_main:?}"
+        ));
+    }
+
+    // Grade only *our* fixture: the custom name arrives over the production
+    // metadata path (index 2, OPTIONAL_COMPONENT), so an unrelated zombie in the
+    // world — or one left by an earlier run — is neither counted nor graded.
+    let mobs: Vec<i32> = session
+        .world
+        .entities
+        .iter()
+        .filter(|(id, e)| {
+            e.type_id == mob_tid && session.world.entities.custom_name(*id) == Some(SWING_CHECK_TAG)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    let all_of_kind = session
+        .world
+        .entities
+        .iter()
+        .filter(|(_, e)| e.type_id == mob_tid)
+        .count();
+    if mobs.len() != 1 {
+        // Print what the client actually sees, so a mismatch names itself
+        // instead of turning into a hunt.
+        let seen: Vec<(i32, Option<&str>)> = session
+            .world
+            .entities
+            .iter()
+            .filter(|(_, e)| e.type_id == mob_tid)
+            .map(|(id, _)| (id, session.world.entities.custom_name(id)))
+            .take(8)
+            .collect();
+        return Err(format!(
+            "swing-check: expected exactly one tracked {SWING_CHECK_MOB} named \
+             {SWING_CHECK_TAG:?}, found {} (ids {mobs:?}; {all_of_kind} of that type tracked \
+             in total; first few (id, custom_name) = {seen:?}) - the paced summon did not \
+             land, so nothing was graded",
+            mobs.len()
+        ));
+    }
+    let eid = mobs[0];
+    println!(
+        "[swing-check] {all_of_kind} {SWING_CHECK_MOB}(s) tracked; grading the one named \
+         {SWING_CHECK_TAG:?}"
+    );
+
+    let ents = &session.world.entities;
+    let main = ents.hand_item(eid, InteractionHand::MainHand);
+    let off = ents.hand_item(eid, InteractionHand::OffHand);
+    let duration = ents.current_swing_duration(eid);
+    let kind = ents.swing_animation_type(eid);
+    let known = ents.swing_inputs_known(eid);
+    println!("[swing-check] tracked {SWING_CHECK_MOB} entity {eid}");
+    println!("[swing-check]   mainhand {main:?}  (want item {want_main} swing {proto_main:?})");
+    println!("[swing-check]   offhand  {off:?}  (want item {want_off} swing {proto_off:?})");
+    println!(
+        "[swing-check]   getCurrentSwingDuration={duration:?} swingAnimationType={kind:?} \
+         inputs_known={known} (want {} / {:?} / true)",
+        proto_main.duration, proto_main.kind
+    );
+
+    let mut bad = Vec::new();
+    if main.held().map(|i| (i.item_id, i.swing)) != Some((want_main, proto_main)) {
+        bad.push("mainhand");
+    }
+    if off.held().map(|i| (i.item_id, i.swing)) != Some((want_off, proto_off)) {
+        bad.push("offhand");
+    }
+    // No swing has been received, so `swingingArm` is null - MAIN_HAND - and
+    // the attack arm is the default RIGHT main arm: both read the main hand.
+    if duration != Some(proto_main.duration) {
+        bad.push("duration");
+    }
+    if kind != Some(proto_main.kind) {
+        bad.push("type");
+    }
+    // Both stacks were fully resolved: a real server's equipment must never
+    // land in the suppressed state.
+    if !known || main == HandItem::Unknown || off == HandItem::Unknown {
+        bad.push("inputs-known");
+    }
+    if !bad.is_empty() {
+        return Err(format!(
+            "SWING-CHECK FAILED: {} did not match the server-armed mob",
+            bad.join(", ")
+        ));
+    }
+    println!(
+        "SWING-CHECK: OK - the server-sent equipment decoded to {SWING_CHECK_MAIN} \
+         (STAB/{}) main hand + {SWING_CHECK_OFF} (WHACK/{}) off hand, and \
+         getCurrentSwingDuration/swingAnimationType read the main hand",
+        proto_main.duration, proto_off.duration
+    );
     Ok(())
 }
 
@@ -321,6 +606,7 @@ fn drive(
     secs: f32,
     dirt_item: Option<i32>,
     acted: &mut Actions,
+    scripted: &[String],
 ) -> Result<TickInput, String> {
     let mut input = TickInput::default();
     if args.still {
@@ -399,19 +685,14 @@ fn drive(
     // Setup commands go out one per 250 ms. Firing them all in one tick trips
     // the server's chat rate limit and the tail is silently dropped — which
     // looks exactly like a light bug, because the structure never appears.
-    if let Some(cmd) = args.setup.as_deref() {
-        let cmds: Vec<&str> = cmd
-            .split(';')
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .collect();
+    {
         let due = ((secs - 1.0) / 0.25).floor();
         if secs >= 1.0
             && due >= 0.0
-            && (due as usize) < cmds.len()
+            && (due as usize) < scripted.len()
             && acted.setup_sent <= due as usize
         {
-            let one = cmds[due as usize];
+            let one = &scripted[due as usize];
             match session.send_command(one) {
                 Ok(()) => log::info!("play: setup → /{one}"),
                 Err(e) => log::warn!("play: setup failed: {e}"),
@@ -419,7 +700,9 @@ fn drive(
             acted.setup_sent = due as usize + 1;
         }
     }
-    if secs >= 22.0 && !acted.chatted {
+    // The swing gate's command budget is the whole rate-limit allowance; a
+    // scripted chat line on top of it would push the tail out.
+    if secs >= 22.0 && !acted.chatted && !args.swing_check {
         let _ = session.send_chat(&args.chat);
         acted.chatted = true;
     }

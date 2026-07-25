@@ -50,6 +50,20 @@ pub struct PlaySession {
     /// disambiguates the polymorphic index-16 BOOLEAN (`DATA_DANCING` vs
     /// `DATA_BABY_ID`) by it. `None` before setup (nothing routes to dancing).
     pub allay_type_id: Option<i32>,
+    /// Which entity types are living, and which of them run `updateSwingTime`
+    /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
+    /// the decompiled `extends` graph. It gates every swing input (a packet
+    /// naming a boat mutates nothing) and decides whose swing clock advances.
+    /// `None` (the headless protocol harnesses) interprets no swing packets.
+    pub entity_classes: Option<std::sync::Arc<rewo_data::entity_types::EntityClasses>>,
+    /// Item → prototype swing animation + the data-component ids the equipment
+    /// patch reader needs (M19). `None` (the headless protocol harnesses) →
+    /// equipment packets are recognised but interpret no item, so every swing
+    /// keeps the bare-hand `SwingAnimation.DEFAULT`.
+    pub swing_data: Option<crate::item_stack::SwingWireData>,
+    /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
+    /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
+    swing_effect_ids: crate::SwingEffectIds,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
@@ -641,6 +655,7 @@ impl<'a> Connection<'a> {
         let overworld_clock_id = self.overworld_clock_id;
         let visual_effects =
             crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
+        let swing_effect_ids = self.swing_effect_ids;
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -668,6 +683,9 @@ impl<'a> Connection<'a> {
             warden_type_id: None,
             armadillo_type_id: None,
             allay_type_id: None,
+            entity_classes: None,
+            swing_data: None,
+            swing_effect_ids,
             global_bits,
             dim_types,
             overworld_clock_id,
@@ -1178,8 +1196,24 @@ impl PlaySession {
             self.apply_respawn(body)?;
         } else if id == ids.cb_play_update_mob_effect {
             self.visual_effects.apply_update(body);
+            // The same packet also carries any entity's haste / conduit power /
+            // mining fatigue, which change how long its swing runs (M19).
+            crate::apply_swing_effect(
+                body,
+                &mut self.world.entities,
+                self.swing_effect_ids,
+                true,
+                self.entity_classes.as_deref(),
+            );
         } else if id == ids.cb_play_remove_mob_effect {
             self.visual_effects.apply_remove(body);
+            crate::apply_swing_effect(
+                body,
+                &mut self.world.entities,
+                self.swing_effect_ids,
+                false,
+                self.entity_classes.as_deref(),
+            );
         } else if id == ids.cb_play_add_entity {
             let mut r = PacketReader::new(body);
             let _ = crate::read_add_entity(&mut r, &mut self.world);
@@ -1291,6 +1325,24 @@ impl PlaySession {
             // Entity metadata (custom name, pose, gesture state, cube size, and
             // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
             // Allay dance counters then advance in `tick_lerp`.
+        } else if crate::route_animate(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+        ) {
+            // Combat arm swings (`ClientboundAnimatePacket` actions 0 / 3) — the
+            // swing clock then advances in `EntityTable::tick_lerp`.
+        } else if crate::route_set_equipment(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.swing_data.as_ref(),
+            self.entity_classes.as_deref(),
+        ) {
+            // Held items: the swing's duration + animation type come from them.
         } else if crate::route_entity_event(
             id,
             body,

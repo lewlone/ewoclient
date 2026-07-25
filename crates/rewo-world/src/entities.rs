@@ -11,8 +11,210 @@
 
 use std::collections::HashMap;
 
+use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType};
+
 /// Vanilla's interpolation step count for tracked entities.
 const LERP_STEPS: u32 = 3;
+
+/// `net.minecraft.world.InteractionHand`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InteractionHand {
+    MainHand,
+    OffHand,
+}
+
+/// `net.minecraft.world.entity.HumanoidArm`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HumanoidArm {
+    Left,
+    #[default]
+    Right,
+}
+
+impl HumanoidArm {
+    /// `HumanoidArm.getOpposite()`.
+    pub const fn opposite(self) -> Self {
+        match self {
+            HumanoidArm::Left => HumanoidArm::Right,
+            HumanoidArm::Right => HumanoidArm::Left,
+        }
+    }
+}
+
+/// One hand's item, reduced to what the swing needs: the item id (diagnostics
+/// + equality) and the resolved `minecraft:swing_animation`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HeldItem {
+    /// Item registry protocol id.
+    pub item_id: i32,
+    /// `ItemStack.getSwingAnimation()` — the prototype value from the item id,
+    /// or a `DataComponentPatch` override when the server sent one.
+    pub swing: SwingAnimation,
+}
+
+/// What a hand holds, including the case where the wire said something this
+/// client cannot resolve exactly.
+///
+/// The third arm is the point. An item id outside the registry, or a component
+/// patch holding a codec this client does not transcribe, leaves
+/// `getSwingAnimation()` genuinely unknowable. Substituting the bare default —
+/// or the item's prototype — would put a *wrong* animation on screen and call
+/// it right. `Unknown` instead suppresses the combat pose (and CEM's
+/// `swing_progress`) for that entity until an exact equipment update repairs
+/// it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HandItem {
+    /// `ItemStack.EMPTY` — also the state of a hand no packet ever mentioned,
+    /// which is exact: `getItemBySlot` on a fresh entity is EMPTY, and
+    /// `EMPTY.getSwingAnimation()` is `SwingAnimation.DEFAULT` (its components
+    /// map is empty, so `getOrDefault` returns the default).
+    #[default]
+    Empty,
+    Held(HeldItem),
+    /// The wire carried something unresolvable; see the type docs.
+    Unknown,
+}
+
+impl HandItem {
+    /// `getItemInHand(hand).getSwingAnimation()`, or `None` when unknowable.
+    pub fn swing(self) -> Option<SwingAnimation> {
+        match self {
+            HandItem::Empty => Some(SwingAnimation::DEFAULT),
+            HandItem::Held(i) => Some(i.swing),
+            HandItem::Unknown => None,
+        }
+    }
+
+    pub fn held(self) -> Option<HeldItem> {
+        match self {
+            HandItem::Held(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    pub fn is_unknown(self) -> bool {
+        matches!(self, HandItem::Unknown)
+    }
+}
+
+/// The three mob effects `LivingEntity.getCurrentSwingDuration()` consults.
+///
+/// `MobEffectUtil.hasDigSpeed` is `HASTE || CONDUIT_POWER`;
+/// `getDigSpeedAmplification` is `max(hasteAmp, conduitAmp)`; the else-branch
+/// reads `MINING_FATIGUE`'s amplifier. Client-side `hasEffect` is a plain
+/// `activeEffects.containsKey` — `tickClient` only counts the duration down and
+/// never removes, so membership changes **only** on an update/remove packet.
+/// That is why these are stored as bare amplifiers with no expiry clock.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SwingEffect {
+    Haste,
+    ConduitPower,
+    MiningFatigue,
+}
+
+/// Amplifiers of the effects that change a swing's duration; `None` = the
+/// entity does not have that effect (client `hasEffect` == false).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SwingEffects {
+    haste: Option<i32>,
+    conduit_power: Option<i32>,
+    mining_fatigue: Option<i32>,
+}
+
+impl SwingEffects {
+    fn slot(&mut self, effect: SwingEffect) -> &mut Option<i32> {
+        match effect {
+            SwingEffect::Haste => &mut self.haste,
+            SwingEffect::ConduitPower => &mut self.conduit_power,
+            SwingEffect::MiningFatigue => &mut self.mining_fatigue,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        *self == SwingEffects::default()
+    }
+
+    /// The exact tail of `LivingEntity.getCurrentSwingDuration()`:
+    ///
+    /// ```text
+    /// if (MobEffectUtil.hasDigSpeed(this))
+    ///     return d - (1 + MobEffectUtil.getDigSpeedAmplification(this));
+    /// return hasEffect(MINING_FATIGUE) ? d + (1 + amp) * 2 : d;
+    /// ```
+    ///
+    /// Dig speed wins outright — a hasted *and* fatigued entity gets only the
+    /// shortening. No clamp: vanilla will happily produce a non-positive
+    /// duration under enough haste, and `attackAnim = swingTime / duration`
+    /// then divides by it.
+    ///
+    /// Wrapping arithmetic throughout: the amplifier arrives as an unbounded
+    /// wire VarInt and Java `int` math wraps rather than trapping, so a debug
+    /// build must not abort where vanilla would simply overflow.
+    fn adjust(&self, base: i32) -> i32 {
+        match (self.haste, self.conduit_power) {
+            (None, None) => match self.mining_fatigue {
+                Some(amp) => base.wrapping_add(1i32.wrapping_add(amp).wrapping_mul(2)),
+                None => base,
+            },
+            (haste, conduit) => {
+                base.wrapping_sub(1i32.wrapping_add(haste.unwrap_or(0).max(conduit.unwrap_or(0))))
+            }
+        }
+    }
+}
+
+/// `LivingEntity`'s swing fields — the exact combat-swing state machine
+/// (`swing` / `updateSwingTime` / `getAttackAnim`), driven by
+/// `ClientboundAnimatePacket` actions 0 and 3.
+#[derive(Clone, Copy, Debug)]
+struct SwingState {
+    /// `LivingEntity.swinging`.
+    swinging: bool,
+    /// `LivingEntity.swingTime`. `-1` right after an accepted swing: the first
+    /// `updateSwingTime` increments it to 0 before dividing.
+    swing_time: i32,
+    /// `LivingEntity.swingingArm` (`null` before the first swing).
+    swinging_arm: Option<InteractionHand>,
+    /// `LivingEntity.attackAnim` — `swingTime / currentSwingDuration`.
+    attack_anim: f32,
+    /// `LivingEntity.oAttackAnim`, snapshotted at the top of `baseTick`.
+    o_attack_anim: f32,
+    /// Whether this entity's **client** class runs `updateSwingTime`.
+    ///
+    /// It is not universal: on the client only `Player.aiStep`,
+    /// `Monster.aiStep`, `RemotePlayer.tick` and `Mannequin.tick` call it, so a
+    /// cow or a hoglin can be sent `swing()` (via `Mob.doHurtTarget`) and its
+    /// `attackAnim` still never advances. The caller supplies the answer from
+    /// `rewo_data::entity_types::EntityClasses::ticks_swing`, whose name table
+    /// is machine-extracted from exactly those call sites plus the decompiled
+    /// `extends` graph — so this is vanilla's whole set, not the subset Rewo
+    /// happens to pose (OptiFine CEM publishes `swing_progress` for every mob).
+    ticks_swing: bool,
+}
+
+impl SwingState {
+    fn new(ticks_swing: bool) -> Self {
+        SwingState {
+            swinging: false,
+            swing_time: 0,
+            swinging_arm: None,
+            attack_anim: 0.0,
+            o_attack_anim: 0.0,
+            ticks_swing,
+        }
+    }
+
+    /// `LivingEntity.getAttackAnim(partialTicks)` — the wrap makes the
+    /// end-of-swing step (5/6 → 0) interpolate forward through 1.0 instead of
+    /// snapping backwards.
+    fn attack_anim(&self, partial: f32) -> f32 {
+        let mut diff = self.attack_anim - self.o_attack_anim;
+        if diff < 0.0 {
+            diff += 1.0;
+        }
+        self.o_attack_anim + diff * partial
+    }
+}
 
 /// A model-visible entity-event animation (`ClientboundEntityEventPacket`).
 ///
@@ -254,6 +456,65 @@ pub struct EntityTable {
     /// id can never inherit a previous occupant's animation timing — vanilla's
     /// `AnimationState`s die with the entity.
     events: HashMap<i32, EntityEventStarts>,
+    /// Combat-swing state (`ClientboundAnimatePacket` actions 0 / 3). Created
+    /// lazily on the first swing; cleared on removal AND on (re-)add.
+    swings: HashMap<i32, SwingState>,
+    /// Held items by hand: `[MAIN_HAND, OFF_HAND]`
+    /// (`ClientboundSetEquipmentPacket`). An absent entry is two
+    /// [`HandItem::Empty`] hands, exact for an entity that sent no equipment.
+    hands: HashMap<i32, [HandItem; 2]>,
+    /// `Avatar.DATA_PLAYER_MAIN_HAND` (metadata index 15, HUMANOID_ARM
+    /// serializer). Absent = `HumanoidArm::Right`, which is both
+    /// `Avatar.DEFAULT_MAIN_HAND` and the non-left-handed `Mob.getMainArm()`.
+    main_arms: HashMap<i32, HumanoidArm>,
+    /// Amplifiers of the swing-duration effects, per entity. Only entities that
+    /// actually have one get a map entry.
+    swing_effects: HashMap<i32, SwingEffects>,
+}
+
+/// `LivingEntity.getCurrentSwingDuration()` for one entity, over borrowed
+/// fields so the tick loop can compute it while holding `swings` mutably.
+///
+/// `hand = swingingArm != null ? swingingArm : MAIN_HAND`, then the item in
+/// **that** hand supplies the base duration, then the haste / mining-fatigue
+/// adjustment. `None` when that hand is [`HandItem::Unknown`] — there is no
+/// duration to be had, and inventing one would silently drive both the accept
+/// predicate and `attackAnim`.
+fn current_swing_duration(
+    hands: &HashMap<i32, [HandItem; 2]>,
+    swing_effects: &HashMap<i32, SwingEffects>,
+    id: i32,
+    swinging_arm: Option<InteractionHand>,
+) -> Option<i32> {
+    let hand = swinging_arm.unwrap_or(InteractionHand::MainHand);
+    let base = hand_swing(hands, id, hand)?.duration;
+    Some(
+        swing_effects
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+            .adjust(base),
+    )
+}
+
+/// `getItemInHand(hand).getSwingAnimation()`; `None` when unknowable.
+fn hand_swing(
+    hands: &HashMap<i32, [HandItem; 2]>,
+    id: i32,
+    hand: InteractionHand,
+) -> Option<SwingAnimation> {
+    hands
+        .get(&id)
+        .map(|h| h[hand_slot(hand)])
+        .unwrap_or_default()
+        .swing()
+}
+
+const fn hand_slot(hand: InteractionHand) -> usize {
+    match hand {
+        InteractionHand::MainHand => 0,
+        InteractionHand::OffHand => 1,
+    }
 }
 
 impl EntityTable {
@@ -264,6 +525,7 @@ impl EntityTable {
         // its replacement. The Allay dance clock dies with the entity too.
         self.events.remove(&id);
         self.dances.remove(&id);
+        self.clear_swing(id);
         self.map.insert(id, state);
     }
 
@@ -276,6 +538,18 @@ impl EntityTable {
         self.babies.remove(&id);
         self.events.remove(&id);
         self.dances.remove(&id);
+        self.clear_swing(id);
+    }
+
+    /// Drop every swing-related record for an id — the swing clock, the held
+    /// items, the main arm and the duration effects all die with the entity, so
+    /// a recycled server id can never inherit a previous occupant's swing,
+    /// weapon, handedness or haste.
+    fn clear_swing(&mut self, id: i32) {
+        self.swings.remove(&id);
+        self.hands.remove(&id);
+        self.main_arms.remove(&id);
+        self.swing_effects.remove(&id);
     }
 
     /// Stamp a model-visible entity event's receipt tick — an unconditional
@@ -370,6 +644,177 @@ impl EntityTable {
             .then(|| (d.is_spinning(), d.spinning_progress(alpha)))
     }
 
+    // -- combat swings (M19) ------------------------------------------------
+
+    /// Set one hand's item — `ClientboundSetEquipmentPacket`'s MAINHAND /
+    /// OFFHAND slots. Armour slots never reach here: they change no swing
+    /// input. [`HandItem::Unknown`] is a first-class value, not an absence.
+    pub fn set_hand_item(&mut self, id: i32, hand: InteractionHand, item: HandItem) {
+        let slot = self.hands.entry(id).or_default();
+        slot[hand_slot(hand)] = item;
+        if slot.iter().all(|s| *s == HandItem::Empty) {
+            self.hands.remove(&id);
+        }
+    }
+
+    /// `getItemInHand(hand)`.
+    pub fn hand_item(&self, id: i32, hand: InteractionHand) -> HandItem {
+        self.hands
+            .get(&id)
+            .map(|h| h[hand_slot(hand)])
+            .unwrap_or_default()
+    }
+
+    /// `LivingEntity.getItemHeldByArm(arm)`:
+    /// `getMainArm() == arm ? getMainHandItem() : getOffhandItem()`.
+    pub fn item_by_arm(&self, id: i32, arm: HumanoidArm) -> HandItem {
+        let hand = if self.main_arm(id) == arm {
+            InteractionHand::MainHand
+        } else {
+            InteractionHand::OffHand
+        };
+        self.hand_item(id, hand)
+    }
+
+    /// Whether every swing input for this entity is exactly known.
+    ///
+    /// `false` means some equipment update could not be resolved (an
+    /// unregistered item id, or a component patch this client cannot walk), so
+    /// the combat pose and CEM's `swing_progress` are **suppressed** rather
+    /// than guessed. A later exact equipment update repairs it.
+    pub fn swing_inputs_known(&self, id: i32) -> bool {
+        self.hands
+            .get(&id)
+            .map(|h| h.iter().all(|s| !s.is_unknown()))
+            .unwrap_or(true)
+    }
+
+    /// `Avatar.setMainArm` from metadata index 15 (HUMANOID_ARM serializer).
+    pub fn set_main_arm(&mut self, id: i32, arm: HumanoidArm) {
+        self.main_arms.insert(id, arm);
+    }
+
+    /// `LivingEntity.getMainArm()`. Right unless the entity told us otherwise.
+    pub fn main_arm(&self, id: i32) -> HumanoidArm {
+        self.main_arms.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Record (`Some(amplifier)`) or drop (`None`) one swing-duration effect —
+    /// the client half of `ClientboundUpdateMobEffectPacket` /
+    /// `ClientboundRemoveMobEffectPacket` for the three effects
+    /// `getCurrentSwingDuration` reads. Client `hasEffect` is pure map
+    /// membership, so no expiry clock belongs here (see [`SwingEffect`]).
+    pub fn set_swing_effect(&mut self, id: i32, effect: SwingEffect, amplifier: Option<i32>) {
+        let e = self.swing_effects.entry(id).or_default();
+        *e.slot(effect) = amplifier;
+        if e.is_empty() {
+            self.swing_effects.remove(&id);
+        }
+    }
+
+    /// `LivingEntity.getCurrentSwingDuration()` — the ticks the *current* swing
+    /// runs for. `None` when the swinging hand's item is unknowable.
+    pub fn current_swing_duration(&self, id: i32) -> Option<i32> {
+        current_swing_duration(
+            &self.hands,
+            &self.swing_effects,
+            id,
+            self.swings.get(&id).and_then(|s| s.swinging_arm),
+        )
+    }
+
+    /// `LivingEntity.swing(hand)` — the accept/restart rule, verbatim:
+    ///
+    /// ```text
+    /// if (!swinging || swingTime >= getCurrentSwingDuration() / 2 || swingTime < 0) {
+    ///     swingTime = -1; swinging = true; swingingArm = hand;
+    /// }
+    /// ```
+    ///
+    /// So a repeat inside the first half of a running swing is **ignored**
+    /// (integer `duration / 2`), and one at or past the halfway point restarts
+    /// it. `ticks_swing` records whether this entity's client class advances
+    /// `updateSwingTime` (see [`SwingState::ticks_swing`]). Returns whether the
+    /// swing was accepted.
+    ///
+    /// With an unknown duration the accept predicate cannot be evaluated at
+    /// all. The swing is then recorded unconditionally so `swingingArm` stays
+    /// current for the render state — harmless, because a suppressed entity
+    /// produces no pose either way — and the clock does not advance until the
+    /// inputs are repaired.
+    pub fn swing(&mut self, id: i32, hand: InteractionHand, ticks_swing: bool) -> bool {
+        let duration = self.current_swing_duration(id);
+        let s = self
+            .swings
+            .entry(id)
+            .or_insert_with(|| SwingState::new(ticks_swing));
+        s.ticks_swing = ticks_swing;
+        let accept = match duration {
+            Some(d) => !s.swinging || s.swing_time >= d / 2 || s.swing_time < 0,
+            None => true,
+        };
+        if accept {
+            s.swing_time = -1;
+            s.swinging = true;
+            s.swinging_arm = Some(hand);
+        }
+        accept
+    }
+
+    /// `ArmedEntityRenderState`: `attackArm = swingingArm != OFF_HAND ? mainArm
+    /// : mainArm.getOpposite()`. Note the test is against `OFF_HAND`, so a
+    /// `null` swinging arm also yields the main arm.
+    pub fn attack_arm(&self, id: i32) -> HumanoidArm {
+        let main = self.main_arm(id);
+        match self.swings.get(&id).and_then(|s| s.swinging_arm) {
+            Some(InteractionHand::OffHand) => main.opposite(),
+            _ => main,
+        }
+    }
+
+    /// `ArmedEntityRenderState.swingAnimationType` —
+    /// `getItemHeldByArm(attackArm).getSwingAnimation().type()`, or `None` when
+    /// that arm's item is unknowable. Note this reads the *arm*, while the
+    /// duration reads the *hand*: with an off-hand swing both name the same
+    /// physical hand, so they agree.
+    pub fn swing_animation_type(&self, id: i32) -> Option<SwingAnimationType> {
+        self.item_by_arm(id, self.attack_arm(id))
+            .swing()
+            .map(|s| s.kind)
+    }
+
+    /// `LivingEntity.swinging` — whether a swing is currently in flight.
+    ///
+    /// This is the *boolean* the renderer's arm-pose choice reads
+    /// (`attack != null && attack.type() == STAB && avatar.swinging` in
+    /// `AvatarRenderer.getArmPose`), which is not the same question as
+    /// `getAttackAnim() > 0`: the flag is set the instant a swing is accepted,
+    /// while `attackAnim` is still 0 until the first `updateSwingTime`.
+    pub fn is_swinging(&self, id: i32) -> bool {
+        self.swings.get(&id).is_some_and(|s| s.swinging)
+    }
+
+    /// `LivingEntity.getAttackAnim(partialTicks)` — 0 for an entity that has
+    /// never swung.
+    pub fn attack_anim(&self, id: i32, partial: f32) -> f32 {
+        self.swings.get(&id).map_or(0.0, |s| s.attack_anim(partial))
+    }
+
+    /// The raw swing fields — `(swinging, swingTime, attackAnim, oAttackAnim,
+    /// swingingArm)`. For the `swingshot` oracle and tests; the renderer only
+    /// needs [`Self::attack_anim`].
+    pub fn swing_debug(&self, id: i32) -> Option<(bool, i32, f32, f32, Option<InteractionHand>)> {
+        self.swings.get(&id).map(|s| {
+            (
+                s.swinging,
+                s.swing_time,
+                s.attack_anim,
+                s.o_attack_anim,
+                s.swinging_arm,
+            )
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -391,7 +836,8 @@ impl EntityTable {
     }
 
     /// Advance every entity's interpolation one 20 Hz tick, plus the Allay
-    /// dance counters (vanilla `Allay.tick()` runs on the client every tick).
+    /// dance counters (vanilla `Allay.tick()` runs on the client every tick)
+    /// and the combat-swing clock.
     /// The `dances` map holds only Allays, so advancing all of them is exact.
     pub fn tick_lerp(&mut self) {
         for e in self.map.values_mut() {
@@ -399,6 +845,51 @@ impl EntityTable {
         }
         for d in self.dances.values_mut() {
             d.tick();
+        }
+        self.tick_swings();
+    }
+
+    /// `LivingEntity.baseTick` (`oAttackAnim = attackAnim`) followed by
+    /// `updateSwingTime`, for the entities whose client class runs it:
+    ///
+    /// ```text
+    /// int d = getCurrentSwingDuration();
+    /// if (swinging) { swingTime++; if (swingTime >= d) { swingTime = 0; swinging = false; } }
+    /// else swingTime = 0;
+    /// attackAnim = (float)swingTime / d;
+    /// ```
+    ///
+    /// The division is unguarded on purpose — vanilla divides by whatever
+    /// `getCurrentSwingDuration` returned, including 0 under extreme haste. An
+    /// *unknown* duration is different: the clock freezes rather than dividing
+    /// by an invented number, and the pose is suppressed for that entity.
+    fn tick_swings(&mut self) {
+        let Self {
+            swings,
+            hands,
+            swing_effects,
+            ..
+        } = self;
+        for (id, s) in swings.iter_mut() {
+            if !s.ticks_swing {
+                continue;
+            }
+            let Some(duration) = current_swing_duration(hands, swing_effects, *id, s.swinging_arm)
+            else {
+                continue;
+            };
+            s.o_attack_anim = s.attack_anim;
+            if s.swinging {
+                // Java `int` increment wraps; a debug build must not abort.
+                s.swing_time = s.swing_time.wrapping_add(1);
+                if s.swing_time >= duration {
+                    s.swing_time = 0;
+                    s.swinging = false;
+                }
+            } else {
+                s.swing_time = 0;
+            }
+            s.attack_anim = s.swing_time as f32 / duration as f32;
         }
     }
 
@@ -571,6 +1062,280 @@ mod tests {
         t.tick_lerp();
         let (_, prog) = t.allay_dance_render(1, 1.0).unwrap();
         assert!((prog - 1.0 / 15.0).abs() < 1e-6, "fresh occupant restarts at 1/15, got {prog}");
+    }
+
+    // -- combat swings (M19) ------------------------------------------------
+
+    fn swinger() -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    fn held(item_id: i32, kind: SwingAnimationType, duration: i32) -> HandItem {
+        HandItem::Held(HeldItem {
+            item_id,
+            swing: SwingAnimation::new(kind, duration),
+        })
+    }
+
+    #[test]
+    fn swing_lifecycle_matches_vanilla_with_the_default_duration() {
+        let mut t = swinger();
+        assert_eq!(
+            t.current_swing_duration(1),
+            Some(6),
+            "bare hand = SwingAnimation.DEFAULT"
+        );
+        assert!(t.swing(1, InteractionHand::MainHand, true));
+        // Accepted: swingTime = -1, swinging, attackAnim untouched (still 0).
+        assert_eq!(
+            t.swing_debug(1),
+            Some((true, -1, 0.0, 0.0, Some(InteractionHand::MainHand)))
+        );
+        // Ticks 1..6 walk swingTime 0..5 → attackAnim 0/6 .. 5/6.
+        for step in 0..6 {
+            t.tick_lerp();
+            let (swinging, time, anim, _, _) = t.swing_debug(1).unwrap();
+            assert!(swinging, "still swinging at step {step}");
+            assert_eq!(time, step, "swingTime at step {step}");
+            assert!(
+                (anim - step as f32 / 6.0).abs() < 1e-6,
+                "attackAnim at step {step}: {anim}"
+            );
+        }
+        // Tick 7 hits swingTime == duration → reset, swing over.
+        t.tick_lerp();
+        let (swinging, time, anim, o, _) = t.swing_debug(1).unwrap();
+        assert!(!swinging);
+        assert_eq!(time, 0);
+        assert_eq!(anim, 0.0);
+        assert!(
+            (o - 5.0 / 6.0).abs() < 1e-6,
+            "oAttackAnim keeps the last frame: {o}"
+        );
+    }
+
+    #[test]
+    fn first_half_repeats_are_ignored_and_the_half_boundary_restarts() {
+        let mut t = swinger();
+        assert!(t.swing(1, InteractionHand::MainHand, true));
+        // swingTime: -1 → 0 (tick 1) → 1 (tick 2) → 2 (tick 3). duration/2 = 3.
+        for _ in 0..3 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.swing_debug(1).unwrap().1, 2);
+        assert!(
+            !t.swing(1, InteractionHand::OffHand, true),
+            "2 < 6/2 and already swinging → rejected"
+        );
+        assert_eq!(
+            t.swing_debug(1).unwrap().4,
+            Some(InteractionHand::MainHand),
+            "a rejected swing must not change the arm"
+        );
+        assert_eq!(t.swing_debug(1).unwrap().1, 2, "…nor the clock");
+        // One more tick puts swingTime at exactly duration/2 = 3 → accepted.
+        t.tick_lerp();
+        assert_eq!(t.swing_debug(1).unwrap().1, 3);
+        assert!(t.swing(1, InteractionHand::OffHand, true));
+        assert_eq!(
+            t.swing_debug(1),
+            Some((true, -1, 3.0 / 6.0, 2.0 / 6.0, Some(InteractionHand::OffHand)))
+        );
+    }
+
+    #[test]
+    fn attack_anim_wraps_forward_when_the_swing_ends() {
+        let mut t = swinger();
+        t.swing(1, InteractionHand::MainHand, true);
+        for _ in 0..7 {
+            t.tick_lerp();
+        }
+        // oAttackAnim 5/6, attackAnim 0 → diff −5/6 wraps to +1/6.
+        assert_eq!(t.attack_anim(1, 0.0), 5.0 / 6.0);
+        let half = t.attack_anim(1, 0.5);
+        assert!(
+            (half - (5.0 / 6.0 + 0.5 / 6.0)).abs() < 1e-6,
+            "wrapped half: {half}"
+        );
+        let full = t.attack_anim(1, 1.0);
+        assert!((full - 1.0).abs() < 1e-6, "wrapped full: {full}");
+    }
+
+    #[test]
+    fn attack_arm_follows_the_swinging_hand_and_the_main_arm() {
+        let mut t = swinger();
+        // Default main arm is RIGHT.
+        assert_eq!(t.attack_arm(1), HumanoidArm::Right);
+        t.swing(1, InteractionHand::MainHand, true);
+        assert_eq!(t.attack_arm(1), HumanoidArm::Right);
+        t.swing(1, InteractionHand::OffHand, true);
+        assert_eq!(t.attack_arm(1), HumanoidArm::Left, "off hand → opposite");
+        // A left-handed entity mirrors both.
+        t.set_main_arm(1, HumanoidArm::Left);
+        assert_eq!(t.attack_arm(1), HumanoidArm::Right);
+        t.swing(1, InteractionHand::MainHand, true);
+        assert_eq!(t.attack_arm(1), HumanoidArm::Left);
+    }
+
+    #[test]
+    fn duration_and_type_come_from_the_item_in_the_swinging_hand() {
+        let mut t = swinger();
+        // Iron spear (STAB, 19) main hand; bare off hand.
+        t.set_hand_item(
+            1,
+            InteractionHand::MainHand,
+            held(1329, SwingAnimationType::Stab, 19),
+        );
+        assert_eq!(t.current_swing_duration(1), Some(19));
+        assert_eq!(t.swing_animation_type(1), Some(SwingAnimationType::Stab));
+        // Swinging the (empty) off hand falls back to the default on both.
+        t.swing(1, InteractionHand::OffHand, true);
+        assert_eq!(t.current_swing_duration(1), Some(6));
+        assert_eq!(
+            t.swing_animation_type(1),
+            Some(SwingAnimationType::Whack),
+            "attackArm is now LEFT, which holds nothing → DEFAULT"
+        );
+        // Put the spear in the off hand instead: an off-hand swing is a STAB.
+        t.set_hand_item(1, InteractionHand::MainHand, HandItem::Empty);
+        t.set_hand_item(
+            1,
+            InteractionHand::OffHand,
+            held(1329, SwingAnimationType::Stab, 19),
+        );
+        assert_eq!(t.current_swing_duration(1), Some(19));
+        assert_eq!(t.swing_animation_type(1), Some(SwingAnimationType::Stab));
+    }
+
+    #[test]
+    fn an_unknown_hand_suppresses_the_swing_instead_of_guessing() {
+        let mut t = swinger();
+        t.set_hand_item(1, InteractionHand::MainHand, HandItem::Unknown);
+        assert!(!t.swing_inputs_known(1));
+        assert_eq!(
+            t.current_swing_duration(1),
+            None,
+            "no item → no duration, and no invented default"
+        );
+        assert_eq!(t.swing_animation_type(1), None);
+        // The swing is still recorded (the arm stays current) but the clock
+        // never advances, so nothing divides by a guessed duration.
+        assert!(t.swing(1, InteractionHand::MainHand, true));
+        for _ in 0..12 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.swing_debug(1).unwrap().1, -1, "frozen at the accept value");
+        assert_eq!(t.attack_anim(1, 1.0), 0.0);
+        // An exact update repairs it and the clock resumes.
+        t.set_hand_item(
+            1,
+            InteractionHand::MainHand,
+            held(1329, SwingAnimationType::Stab, 19),
+        );
+        assert!(t.swing_inputs_known(1));
+        assert_eq!(t.current_swing_duration(1), Some(19));
+        t.tick_lerp();
+        assert_eq!(t.swing_debug(1).unwrap().1, 0, "clock resumed");
+        // An unknown OFF hand also suppresses, even with a known main hand.
+        t.set_hand_item(1, InteractionHand::OffHand, HandItem::Unknown);
+        assert!(!t.swing_inputs_known(1));
+    }
+
+    #[test]
+    fn haste_and_mining_fatigue_adjust_the_swing() {
+        let mut t = swinger();
+        assert_eq!(t.current_swing_duration(1), Some(6));
+        // Haste I (amplifier 0) → 6 − (1 + 0) = 5.
+        t.set_swing_effect(1, SwingEffect::Haste, Some(0));
+        assert_eq!(t.current_swing_duration(1), Some(5));
+        // Conduit power II (amplifier 1) alongside → max(0, 1) → 6 − 2 = 4.
+        t.set_swing_effect(1, SwingEffect::ConduitPower, Some(1));
+        assert_eq!(t.current_swing_duration(1), Some(4));
+        // Mining fatigue is ignored while dig speed is present.
+        t.set_swing_effect(1, SwingEffect::MiningFatigue, Some(0));
+        assert_eq!(t.current_swing_duration(1), Some(4));
+        // Drop both dig-speed effects → fatigue I gives 6 + (1 + 0)·2 = 8.
+        t.set_swing_effect(1, SwingEffect::Haste, None);
+        t.set_swing_effect(1, SwingEffect::ConduitPower, None);
+        assert_eq!(t.current_swing_duration(1), Some(8));
+        t.set_swing_effect(1, SwingEffect::MiningFatigue, None);
+        assert_eq!(
+            t.current_swing_duration(1),
+            Some(6),
+            "no effects → the item value"
+        );
+    }
+
+    #[test]
+    fn an_absurd_amplifier_wraps_like_java_int_math_instead_of_panicking() {
+        // The amplifier is an unbounded wire VarInt and Java `int` arithmetic
+        // wraps, so a debug build must not abort where vanilla would overflow.
+        let mut t = swinger();
+        t.set_swing_effect(1, SwingEffect::MiningFatigue, Some(i32::MAX));
+        assert_eq!(
+            t.current_swing_duration(1),
+            Some(6i32.wrapping_add(1i32.wrapping_add(i32::MAX).wrapping_mul(2)))
+        );
+        t.set_swing_effect(1, SwingEffect::MiningFatigue, None);
+        t.set_swing_effect(1, SwingEffect::Haste, Some(i32::MAX));
+        assert_eq!(
+            t.current_swing_duration(1),
+            Some(6i32.wrapping_sub(1i32.wrapping_add(i32::MAX)))
+        );
+        // A *negative* amplifier is clamped by vanilla's own `max(a, b)` over
+        // two zero-initialised locals, not by us: `getDigSpeedAmplification`
+        // starts `a = b = 0` and only overwrites a present effect, so a
+        // conduit-less haste of i32::MIN still yields max(i32::MIN, 0) = 0.
+        t.set_swing_effect(1, SwingEffect::Haste, Some(i32::MIN));
+        assert_eq!(t.current_swing_duration(1), Some(5));
+    }
+
+    #[test]
+    fn an_unclocked_entity_stores_the_swing_but_never_advances_it() {
+        let mut t = swinger();
+        assert!(t.swing(1, InteractionHand::MainHand, false));
+        for _ in 0..20 {
+            t.tick_lerp();
+        }
+        assert_eq!(
+            t.swing_debug(1),
+            Some((true, -1, 0.0, 0.0, Some(InteractionHand::MainHand))),
+            "vanilla's non-Monster mobs never call updateSwingTime"
+        );
+        assert_eq!(t.attack_anim(1, 1.0), 0.0);
+    }
+
+    #[test]
+    fn swing_state_dies_with_the_entity() {
+        let mut t = swinger();
+        t.set_hand_item(
+            1,
+            InteractionHand::MainHand,
+            held(1329, SwingAnimationType::Stab, 19),
+        );
+        t.set_main_arm(1, HumanoidArm::Left);
+        t.set_swing_effect(1, SwingEffect::Haste, Some(3));
+        t.swing(1, InteractionHand::OffHand, true);
+        t.tick_lerp();
+        assert!(t.swing_debug(1).is_some());
+        t.remove(1);
+        assert_eq!(t.swing_debug(1), None);
+        assert_eq!(t.hand_item(1, InteractionHand::MainHand), HandItem::Empty);
+        assert_eq!(t.main_arm(1), HumanoidArm::Right);
+        assert_eq!(t.current_swing_duration(1), Some(6));
+        // A reused id starts clean too (a dropped despawn must not leak).
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_hand_item(
+            1,
+            InteractionHand::MainHand,
+            held(1329, SwingAnimationType::Stab, 19),
+        );
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.current_swing_duration(1), Some(6));
+        assert_eq!(t.attack_anim(1, 1.0), 0.0);
+        assert!(t.swing_inputs_known(1));
     }
 
     #[test]

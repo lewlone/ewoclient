@@ -24,6 +24,7 @@ mod play_cmd;
 mod skin_fetch;
 mod skyshot_cmd;
 mod stats;
+mod swingshot_cmd;
 mod view_cmd;
 
 use std::path::PathBuf;
@@ -156,6 +157,13 @@ enum Command {
     /// dance transforms against independent decompiled formulas with `--check`
     /// (no server, no GPU).
     Danceshot(danceshot_cmd::DanceshotArgs),
+    /// M19 combat-swing oracle: drive raw `ClientboundAnimatePacket` bodies
+    /// through the real dispatch → `LivingEntity` swing clock →
+    /// `resolve_attack_anim` → `HumanoidModel.setupAttackAnimation` pose oracle,
+    /// with the equipment + main-arm packets that decide a swing's duration and
+    /// animation type, asserting every value against independent decompiled
+    /// transcriptions with `--check` (no server, no GPU).
+    Swingshot(swingshot_cmd::SwingshotArgs),
 }
 
 fn main() {
@@ -180,6 +188,7 @@ fn main() {
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
+        Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

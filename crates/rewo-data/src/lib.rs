@@ -12,10 +12,15 @@ pub mod assets;
 pub mod block_light;
 pub mod blocks;
 pub mod cem;
+pub mod components;
+pub mod entity_classes;
 pub mod entity_types;
 pub mod items;
+pub mod item_tags;
 pub mod packets;
 pub mod server_jar;
+pub mod swing_anim;
+pub mod swing_anim_table;
 
 use std::path::{Path, PathBuf};
 
@@ -65,6 +70,12 @@ pub struct GameData {
     pub packets: packets::Packets,
     pub items: items::Items,
     pub entity_types: entity_types::EntityTypes,
+    /// Item id → prototype `minecraft:swing_animation` (M19 combat swings).
+    pub swing_animations: swing_anim::SwingAnimations,
+    /// Data-component registry ids an item-stack patch is keyed by.
+    pub components: components::DataComponentIds,
+    /// Which entity types are living, and which tick a combat swing (M19).
+    pub entity_classes: entity_types::EntityClasses,
 }
 
 impl GameData {
@@ -73,11 +84,17 @@ impl GameData {
         let packets = packets::Packets::load(&paths.packets_json())?;
         let items = items::Items::load(&paths.registries_json())?;
         let entity_types = entity_types::EntityTypes::load(&paths.registries_json())?;
+        let swing_animations = swing_anim::SwingAnimations::resolve(&items)?;
+        let components = components::DataComponentIds::load(&paths.registries_json())?;
+        let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         Ok(Self {
             blocks,
             packets,
             items,
             entity_types,
+            swing_animations,
+            components,
+            entity_classes,
         })
     }
 

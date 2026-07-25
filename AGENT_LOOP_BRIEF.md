@@ -58,13 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 98
-cargo test --release -p rewo-net   --lib   # 114
-cargo test --release -p rewo-gpu   --lib   # 44
-cargo test --release -p rewo-data  --lib   # 9
+cargo test --release -p rewo-world --lib   # 108
+cargo test --release -p rewo-net   --lib   # 132
+cargo test --release -p rewo-gpu   --lib   # 46
+cargo test --release -p rewo-data  --lib   # 14
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 314 lib
-cargo test --release -p rewo-app           # 54   (app-level) → 368 total
+cargo test --release -p rewo-proto --lib   # 11   → 349 lib
+cargo test --release -p rewo-app           # 55   (app-level) → 404 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -180,6 +180,44 @@ repeated-true no-restart, false→reset→true, `isSpinning` distinct from
 `spinningProgress`, partial alpha, remove/reuse, and the sway/spin/suppress-look/
 dance-bit/animationSpeed/wings-intact pose properties. Run after any Allay-dance,
 metadata-routing, `EntityTable` counter, or Allay-model change.
+
+```bash
+./target/release/rewo.exe swingshot --check
+```
+M19's permanent **serverless** combat-swing oracle, CPU-only, **fail-closed on a
+fixed 61/61 witnesses**. A swing is a *state machine* (`LivingEntity.swing` /
+`updateSwingTime` / `getAttackAnim`) whose length comes from the item in the
+swinging hand, posed by `HumanoidModel.setupAttackAnimation` **on top of** the
+`ArmPose` hold baseline `pose{Right,Left}Arm` writes first. It drives the whole
+production path:
+
+```text
+raw animate body (VarInt id + unsigned byte action)
+  -> rewo_net::route_animate          (production packet-id selection, id 2)
+  -> apply_animate                    (missing-entity drop + action mapping)
+  -> EntityTable::swing / tick_lerp   (the exact swing clock)
+  -> live_cmd::resolve_attack_anim    (the SAME resolver collect_entities uses)
+  -> live_cmd::resolve_arm_poses      (likewise, for the hold baseline)
+  -> rewo_gpu oracle_part_deltas      (the exact model pose math)
+```
+
+Expectations are **independent transcriptions** — its own `ease` module, its own
+`Mth` table (built with `std::sin` against the renderer's `libm`), its own
+`poseRightArm`/`poseLeftArm`, and its own `affectsOffhandPose`/`isTwoHanded`/pose
+dispatch. Reading the production accessors would recreate the `dimensioncheck`
+self-grading defect. The `Mth` witness is load-bearing: **0 bit mismatches over
+60,003 samples** while the same points differ from the platform sine **39,917
+times**. Run after any swing, equipment, item-tag, arm-pose or humanoid-rig
+change.
+
+```bash
+./target/release/rewo.exe play --username RewoOp --seconds 20 --swing-check
+```
+The live equipment gate. Summons **one tag-scoped** zombie
+(`rewo_swing_check`), arms it, and proves the server-sent equipment decoded to
+`iron_spear` STAB/19 main + `stone_sword` WHACK/6 off with
+`getCurrentSwingDuration` reading the main hand. Tag-scoped `summon`/`kill` so an
+unrelated mob is neither destroyed nor graded.
 
 ```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
@@ -299,6 +337,23 @@ listed because they are invisible in the output.
   fallback for a missing id; senior review caught it against the decompile.
   `apply_set_entity_data` must return before applying when `entities.get(id)` is
   `None`.
+- **An enum having a case is not proof the code path produces it.**
+  `HumanoidModel.ArmPose` declares `ITEM`, `BLOCK`, `BOW_AND_ARROW` and more, but
+  `HumanoidMobRenderer.getArmPose` returns only `SPEAR`/`EMPTY` — it is
+  `AvatarRenderer` that falls through to `ITEM` for any ordinary held item. A
+  review that read the enum instead of the renderer that produces it nearly
+  dismissed M19's biggest gap; a review that read only the *mob* renderer would
+  have concluded "everything is EMPTY" and been wrong for players.
+- **Editing a CRLF or mixed-EOL file normalizes line endings across the touched
+  region.** `crates/rewo-gpu/src/entities.rs` is mixed in HEAD and
+  `crates/rewo-data/src/lib.rs` is uniformly CRLF; ordinary edits inflated the
+  former's diff from 341/28 to 529/216, all invisible churn. Fix:
+  `git diff -- <file> | tr -d '' > p; git checkout HEAD -- <file>;
+  git apply --ignore-whitespace p`, then confirm `git diff --numstat` agrees with
+  `git diff --ignore-all-space --numstat`. Note `git diff --check` **cannot** be
+  green for a uniformly-CRLF file whose added lines are CRLF — git flags the
+  `` unless `core.whitespace` includes `cr-at-eol`, which is unset. The
+  LF-insertion is what makes it green, and it is the project convention.
 - **A metadata slot can be polymorphic by entity kind.** `DATA_DANCING` (Allay)
   and `DATA_BABY_ID` (`AgeableMob`/`Zombie`) both sit at SynchedEntityData index
   16 with the BOOLEAN serializer (id 8) — the byte parser cannot separate them.
@@ -314,7 +369,7 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M18` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`M0–M19` shipped and verified. **M0–M9 are pushed** (`origin/main` @
 `973ea5e`); the **M10–M18 arc is reviewed local work, not yet pushed** (M12 is
 `06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`, M17
 `55388c8`; M18 is committed locally as `bb8be20` on branch
@@ -358,7 +413,7 @@ serverless `danceshot` 24/24 oracle; the demo PNG stays byte-identical.
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
 `bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
-`dimensioncheck`, `eventshot`, `danceshot`.
+`dimensioncheck`, `eventshot`, `danceshot`, `swingshot`.
 
 **Open work**, roughly in descending obviousness:
 
@@ -368,8 +423,14 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   default 2 — not yet a setting.)
 - Entity-*event* coverage is the three model-visible ones (Warden attack +
   sonic boom, Armadillo peek — M17). **The Allay dance shipped in M18** as the
-  first `DATA_DANCING`-metadata rig. The Warden tendril (event 61) and generic
-  `ClientboundAnimatePacket` arm swings are the next animation steps; dragon
+  first `DATA_DANCING`-metadata rig; **generic `ClientboundAnimatePacket` combat
+  swings shipped in M19**, including the `ArmPose` hold baseline
+  (`EMPTY`/`ITEM`/`SPEAR`). The next animation steps are
+  `AnimationUtils.animateZombieArms` — the undead families have their own attack
+  rig, so a swinging zombie currently shows no arm motion unless a CEM pack
+  drives it, the largest remaining visible combat gap — and the eight use-driven
+  arm poses (they need `getUseItemRemainingTicks`, which is not synced for a
+  remote entity). The Warden tendril (event 61) also remains; dragon
   flight is bespoke procedural code, still posed. The Allay's own unconditional
   body flying-tilt / root idle-bob / arm idle-bob remain unimplemented (they are
   not the dance; the wing/hover behavior is implemented + witnessed).

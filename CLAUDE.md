@@ -2226,6 +2226,31 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   deterministic proof); the Allay's unconditional body flying-tilt / root
   idle-bob / arm idle-bob remain unimplemented (not the dance); no claim of
   exhaustive index-16 ownership. Full detail: REWO_PLAN §15.
+- **M19 exact combat swings + the ArmPose hold baseline shipped + verified
+  2026-07-25.** `ClientboundAnimatePacket` (id **2**, VarInt id + unsigned byte
+  action) was falling off the dispatch chain, so nothing ever swung. M19 ships
+  the exact `LivingEntity` swing state machine (accept/restart rule, `swingTime
+  = -1` park, increment-then-end, the `getAttackAnim` `+1` wrap), item-driven
+  duration (`tools/gen_swing_animations.py`: **7 non-default over 1,537 items** —
+  the spears, STAB 13–23; everything else WHACK/6) with exact DIG_SPEED /
+  MINING_FATIGUE adjustment, a machine-extracted living/swing-ticking split
+  (`tools/gen_entity_classes.py`: **93 living / 36 swing-ticking of 158**), and
+  `HumanoidModel.setupAttackAnimation` — **layered on the `ArmPose` hold
+  baseline** `pose{Right,Left}Arm` writes first (`EMPTY` / `ITEM` / `SPEAR`).
+  Two load-bearing facts: **`ITEM` is the fall-through for any ordinary held
+  item**, so omitting the hold stage posed every armed player from an unarmed
+  baseline (18° too high, walk swing unhalved) — and it is `AvatarRenderer`, not
+  `HumanoidMobRenderer`, that produces it; and `SPEAR`'s `affectsOffhandPose`
+  means a spear in the **off** hand leaves the main arm entirely unposed.
+  Unknowable items suppress the pose and CEM `swing_progress` rather than guess.
+  `ItemTags.SPEARS` is read as a *tag* from the client jar, not inferred from the
+  swing component. Gate: **`rewo swingshot --check` 61/61**, serverless,
+  fail-closed, with independent `ease`/`Mth`/pose transcriptions (the `Mth`
+  witness: 0 bit mismatches over 60,003 samples vs 39,917 platform-sine
+  differences). **404 tests**; demo PNG byte-identical to M15–M18; live
+  `--swing-check` decodes server-sent equipment with CORRECTIONS 0. **Open:**
+  `animateZombieArms` (the undead families have their own attack rig, so a
+  swinging zombie shows no arm motion yet) and the eight use-driven arm poses.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

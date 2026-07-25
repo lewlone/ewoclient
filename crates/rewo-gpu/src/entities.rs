@@ -105,6 +105,17 @@ pub struct EntityDraw<'a> {
     /// Allay dance inputs (`Some` only for a dancing Allay); `None` for every
     /// other entity and a non-dancing Allay (ordinary head-look / upright pose).
     pub allay_dance: Option<mobs::AllayDance>,
+    /// Combat-swing pose (`ClientboundAnimatePacket`) — the
+    /// `ArmedEntityRenderState` fields. [`mobs::SwingPose::NONE`] for an entity
+    /// that isn't mid-swing. Carried for every entity (it also feeds CEM's
+    /// `swing_progress`); only models built from `HumanoidModel.createMesh`
+    /// have parts that pose from it.
+    pub attack: mobs::SwingPose,
+    /// Both arms' `HumanoidModel.ArmPose` — the *hold* baseline
+    /// `pose{Right,Left}Arm` writes before `setupAttackAnimation` adds the
+    /// strike. [`mobs::ArmPoses::EMPTY`] for an unarmed entity and for every
+    /// model that is not a humanoid.
+    pub arm_poses: mobs::ArmPoses,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -675,6 +686,8 @@ impl EntityPass {
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
             allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
         };
         let xf = part_transforms(model, &ctx, None, None);
         Some(
@@ -825,6 +838,8 @@ impl EntityPass {
             events: d.events,
             shell: d.shell,
             allay_dance: d.allay_dance,
+            attack: d.attack,
+            arm_poses: d.arm_poses,
         };
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
@@ -838,34 +853,16 @@ impl EntityPass {
             let entry = cem_state.entry(cem_key(d)).or_default();
             entry.seen = self.generation;
             let carried = std::mem::take(&mut entry.slots);
-            let mut actx = crate::cem_anim::AnimContext {
-                user: carried,
-                frame_time: self.frame_dt,
-                frame_counter: self.frame_counter,
-                head_yaw: wrap_degrees(d.head_yaw - d.yaw),
-                head_pitch: d.pitch,
-                limb_swing: d.limb_swing,
-                limb_speed: d.limb_amount,
-                age: time * 20.0,
-                time: time * 20.0,
-                is_on_ground: true,
-                is_alive: true,
-                is_child: false,
-                health: 20.0,
-                max_health: 20.0,
-                id: d.anim_id,
-                // World position + body yaw, and the viewer's position: FA
-                // aims eyes/heads by comparing `player_pos_*` against `pos_*`,
-                // and derives its turn-detection vars from `rot_y`.
-                pos_x: d.pos[0],
-                pos_y: d.pos[1],
-                pos_z: d.pos[2],
-                player_pos_x: self.cam_pos[0],
-                player_pos_y: self.cam_pos[1],
-                player_pos_z: self.cam_pos[2],
-                rot_y: d.yaw.to_radians(),
-                ..Default::default()
-            };
+            let mut actx = cem_anim_context(
+                d,
+                CemFrameInputs {
+                    frame_time: self.frame_dt,
+                    frame_counter: self.frame_counter,
+                    age_seconds: time,
+                    cam_pos: self.cam_pos,
+                },
+                carried,
+            );
             let frame = crate::cem::eval_program(
                 prog,
                 &mut actx,
@@ -1183,6 +1180,12 @@ struct AnimCtx {
     /// Allay dance inputs (`Some` only for a dancing Allay) — drives
     /// [`mobs::Anim::AllayRoot`] / [`mobs::Anim::AllayHead`].
     allay_dance: Option<mobs::AllayDance>,
+    /// Combat-swing pose — drives [`mobs::Anim::HumanoidBody`] /
+    /// [`mobs::Anim::HumanoidArmRight`] / [`mobs::Anim::HumanoidArmLeft`].
+    attack: mobs::SwingPose,
+    /// `state.rightArmPose` / `state.leftArmPose` + handedness — the hold pose
+    /// applied between the walk swing and the attack.
+    arm_poses: mobs::ArmPoses,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -1190,6 +1193,106 @@ const DEG: f32 = std::f32::consts::PI / 180.0;
 /// Vanilla `Mth.triangleWave`.
 fn triangle_wave(a: f32, b: f32) -> f32 {
     ((a.rem_euclid(b) - b * 0.5).abs() - b * 0.25) / (b * 0.25)
+}
+
+/// Vanilla `Mth`'s sine-table scale: `65536 / 2π`.
+pub const MTH_SIN_SCALE: f64 = 10430.378350470453;
+
+/// `Mth.SIN` — 65,536 entries of `(float)Math.sin(i / 10430.378350470453)`.
+///
+/// `libm::sin` (fdlibm) matches Java's `Math.sin` bit-for-bit where the
+/// platform libm drifts, the same discipline M12's star geometry relies on.
+fn mth_table() -> &'static [f32; 65536] {
+    static TABLE: std::sync::OnceLock<Box<[f32; 65536]>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = Box::new([0.0f32; 65536]);
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = libm::sin(i as f64 / MTH_SIN_SCALE) as f32;
+        }
+        t
+    })
+}
+
+/// `Mth.sin(double)` — `SIN[(int)((long)(x · scale) & 65535L)]`.
+///
+/// This is a **quantized** sine, not a rounded one: the index truncates, so the
+/// result can sit up to a full table step (≈9.59e-5 rad of argument) from the
+/// true value. Reproducing the quantization rather than tolerating it is what
+/// makes the attack pose bit-comparable with vanilla instead of merely close.
+pub fn mth_sin(x: f64) -> f32 {
+    mth_table()[(((x * MTH_SIN_SCALE) as i64) & 65535) as usize]
+}
+
+/// `Mth.cos(double)` — the same table read a quarter-turn along.
+pub fn mth_cos(x: f64) -> f32 {
+    mth_table()[(((x * MTH_SIN_SCALE + 16384.0) as i64) & 65535) as usize]
+}
+
+/// `Mth.sqrt(float)` — `(float)Math.sqrt(x)`, i.e. the *double* square root
+/// narrowed, which is not always the correctly-rounded single-precision one.
+pub fn mth_sqrt(x: f32) -> f32 {
+    libm::sqrt(x as f64) as f32
+}
+
+// ---- HumanoidModel.setupAttackAnimation (M19) ----------------------------
+//
+// Vanilla *assigns* `body.yRot` and the two arms' `x` / `z` and then *adds* to
+// their rotations. This pose pipeline is additive over a rest pose whose body
+// rotation is zero and whose arm pivots are `(∓5, 2, 0)`, so an assignment
+// becomes `value` and an assignment to a pivot becomes `value − base`. That is
+// exactly why only models built from `HumanoidModel.createMesh` may carry the
+// `Humanoid*` anims (see [`mobs::Anim::HumanoidArmRight`]).
+
+/// `body.yRot = Mth.sin(Mth.sqrt(attackTime) · 2π) · 0.2`, negated when the
+/// attack arm is the left one. Shared by the body and both arms.
+///
+/// The inner product is computed in `f32` (Java multiplies two floats) and only
+/// then widened for the table lookup, exactly as `Mth.sin(float)` does.
+fn attack_body_yrot(a: &mobs::SwingPose) -> f32 {
+    let arg = mth_sqrt(a.attack_time) * std::f32::consts::TAU;
+    let y = mth_sin(arg as f64) * 0.2;
+    if a.left_arm {
+        -y
+    } else {
+        y
+    }
+}
+
+/// `SpearAnimations.progress` — `clamp(Mth.inverseLerp(t, start, end), 0, 1)`.
+fn spear_progress(t: f32, start: f32, end: f32) -> f32 {
+    ((t - start) / (end - start)).clamp(0.0, 1.0)
+}
+
+/// `Ease.outQuart(x) = 1 − square(square(1 − x))`.
+fn ease_out_quart(x: f32) -> f32 {
+    let s = (1.0 - x) * (1.0 - x);
+    1.0 - s * s
+}
+
+/// `Ease.inOutSine(x) = −(Mth.cos(π·x) − 1) / 2` — `Mth.cos`, not libm's.
+fn ease_in_out_sine(x: f32) -> f32 {
+    -(mth_cos((std::f32::consts::PI * x) as f64) - 1.0) / 2.0
+}
+
+/// `Ease.inQuad(x) = x·x`.
+fn ease_in_quad(x: f32) -> f32 {
+    x * x
+}
+
+/// `Ease.inOutExpo` — the exact two-branch form, including its `x == 0` /
+/// `x == 1` special cases and its `double`-precision `Math.pow`.
+fn ease_in_out_expo(x: f32) -> f32 {
+    if x < 0.5 {
+        if x == 0.0 {
+            0.0
+        } else {
+            (2.0f64.powf(20.0 * x as f64 - 10.0) / 2.0) as f32
+        }
+    } else if x == 1.0 {
+        1.0
+    } else {
+        ((2.0 - 2.0f64.powf(-20.0 * x as f64 + 10.0)) / 2.0) as f32
+    }
 }
 
 /// One part's `setupAnim` output: Euler deltas summed onto the base pose
@@ -1319,8 +1422,150 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 off[0] = ph.sin() * PI * tx * w;
             }
         }
+        HumanoidBody => {
+            // `setupAttackAnimation` short-circuits on `attackTime <= 0`, so an
+            // idle humanoid's body carries no rotation at all.
+            if c.attack.attack_time > 0.0 {
+                rot[1] = attack_body_yrot(&c.attack);
+            }
+        }
+        HumanoidArmRight | HumanoidArmLeft => {
+            let left = anim == HumanoidArmLeft;
+            // The ordinary walk swing, first — `setupAnim` assigns it before
+            // `setupAttackAnimation` adds on top.
+            let phase = if left { c.f } else { c.f + PI };
+            rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+            // Then the *hold* pose, from the item in this arm. `setupAnim`
+            // runs its `pose{Right,Left}Arm` dispatch here — after the walk
+            // assignment, before `setupAttackAnimation` — so the strike is
+            // added on top of this baseline, not instead of it. Omitting the
+            // stage renders every armed entity from an unarmed baseline: an
+            // `ITEM` arm sits π/10 (18°) higher with its walk swing unhalved.
+            if c.arm_poses.poses_arm(left) {
+                apply_arm_pose(&mut rot, c.arm_poses.for_arm(left), left, c);
+            }
+            let a = c.attack;
+            if a.attack_time <= 0.0 {
+                // `bobModelPart` still runs — it is outside the attack guard.
+                bob_model_part(&mut rot, left, c.age);
+                return (rot, off);
+            }
+            let by = attack_body_yrot(&a);
+            let (sin_by, cos_by) = (mth_sin(by as f64), mth_cos(by as f64));
+            // rightArm.x = −cos(by)·5·ageScale, rightArm.z =  sin(by)·5·ageScale
+            // leftArm.x  =  cos(by)·5·ageScale, leftArm.z  = −sin(by)·5·ageScale
+            // …expressed as deltas from the ±5 rest pivot.
+            let sign = if left { 1.0 } else { -1.0 };
+            off[0] = sign * (cos_by * 5.0 * a.age_scale - mobs::HUMANOID_ARM_PIVOT_X);
+            off[2] = -sign * sin_by * 5.0 * a.age_scale;
+            // Both arms take the body's yaw; only the left also takes it on x.
+            rot[1] += by;
+            if left {
+                rot[0] += by;
+            }
+            let is_attack_arm = left == a.left_arm;
+            match a.kind {
+                // `case WHACK:` falls through to `case NONE: default: break;`,
+                // so it runs its block and stops — it is not also a STAB.
+                mobs::SwingKind::Whack if is_attack_arm => {
+                    let swing = ease_out_quart(a.attack_time);
+                    let aa = mth_sin((swing * PI) as f64);
+                    let bb = mth_sin((a.attack_time * PI) as f64) * -(c.pitch - 0.7) * 0.75;
+                    rot[0] -= aa * 1.2 + bb;
+                    rot[1] += by * 2.0;
+                    rot[2] += mth_sin((a.attack_time * PI) as f64) * -0.4;
+                }
+                // `SpearAnimations.thirdPersonAttackHand` *undoes* the shared
+                // yaw on both arms (and the left arm's x) before posing the
+                // attack arm — so a STAB leaves the other arm at its walk pose
+                // while still riding the moved pivot.
+                mobs::SwingKind::Stab => {
+                    rot[1] -= by;
+                    if left {
+                        rot[0] -= by;
+                    }
+                    if is_attack_arm {
+                        let t = a.attack_time;
+                        let prepare = ease_in_out_sine(spear_progress(t, 0.0, 0.05));
+                        let attack = ease_in_quad(spear_progress(t, 0.05, 0.2));
+                        let retract = ease_in_out_expo(spear_progress(t, 0.4, 1.0));
+                        rot[0] += (90.0 * prepare - 120.0 * attack + 30.0 * retract) * DEG;
+                    }
+                }
+                // NONE, and WHACK on the non-attack arm: the prologue only.
+                _ => {}
+            }
+            bob_model_part(&mut rot, left, c.age);
+        }
     }
     (rot, off)
+}
+
+/// `180.0F / (float)Math.PI`. Vanilla writes the radians→degrees conversion as
+/// its own f32 division rather than reusing `1/DEG`, and `thirdPersonHandUse`
+/// clamps through it, so the round trip is reproduced with the same constant.
+const RAD_TO_DEG: f32 = 180.0 / std::f32::consts::PI;
+
+/// `HumanoidModel.poseRightArm` / `poseLeftArm`, for the three
+/// [`mobs::ArmPose`]s Rewo models.
+///
+/// Vanilla *assigns* these rotations, and the humanoid arm's rest rotation is
+/// zero, so an assignment to the delta is the assignment — the same identity
+/// `setupAttackAnimation`'s body yaw relies on. None of the three writes to the
+/// other arm or to the pivot, which is what lets a per-arm pipeline express
+/// them at all.
+fn apply_arm_pose(rot: &mut [f32; 3], pose: mobs::ArmPose, left: bool, c: &AnimCtx) {
+    match pose {
+        // `case EMPTY: arm.yRot = 0.0F;`
+        mobs::ArmPose::Empty => rot[1] = 0.0,
+        // `case ITEM: arm.xRot = arm.xRot * 0.5F - (float)(Math.PI / 10);
+        //            arm.yRot = 0.0F;`
+        mobs::ArmPose::Item => {
+            rot[0] = rot[0] * 0.5 - std::f32::consts::PI / 10.0;
+            rot[1] = 0.0;
+        }
+        // `case SPEAR: SpearAnimations.thirdPersonHandUse(arm, head,
+        //              holdingInRightArm, useItemStack, state);`
+        mobs::ArmPose::Spear => {
+            let invert = if left { -1.0 } else { 1.0 };
+            rot[1] = -0.1 * invert + c.net;
+            rot[0] = -std::f32::consts::FRAC_PI_2 + c.pitch + 0.8;
+            // `if (state.isFallFlying || state.swimAmount > 0.0F)
+            //      arm.xRot -= 0.9599311F;`
+            // Rewo models neither flag, so both are false and the duck is
+            // unreachable — declared alongside crouch, swim and item-use.
+            rot[1] = DEG * (rot[1] * RAD_TO_DEG).clamp(-60.0, 60.0);
+            rot[0] = DEG * (rot[0] * RAD_TO_DEG).clamp(-120.0, 30.0);
+            // The remainder of `thirdPersonHandUse` — the KINETIC_WEAPON sway
+            // and raise terms — is gated on `!(state.ticksUsingItem <= 0.0F)`.
+            // For an entity that is not using an item that value is 0, so the
+            // whole block is skipped: omitting it here is *exactly* vanilla,
+            // not an approximation of it. It is also the only part that would
+            // touch `zRot`, which is why the idle bob still lands unmodified.
+        }
+    }
+}
+
+/// `AnimationUtils.bobModelPart(part, ageInTicks, scale)`:
+///
+/// ```text
+/// part.zRot += scale * (Mth.cos(ageInTicks * 0.09F) * 0.05F + 0.05F);
+/// part.xRot += scale * (Mth.sin(ageInTicks * 0.067F) * 0.05F);
+/// ```
+///
+/// `HumanoidModel.setupAnim` calls it for the right arm with `scale = 1` and
+/// the left with `-1`, **after** `setupAttackAnimation` and the crouch block —
+/// applied last here for the same reason, though the order is immaterial since
+/// both terms are `+=`.
+///
+/// Vanilla guards it with `armPose != SPYGLASS`. Rewo models no arm poses (every
+/// pose is `EMPTY`), so the bob is unconditional — exact for the poses this
+/// client can be in, with the spyglass case a documented gap alongside crouch,
+/// swim and item-use, which Rewo also does not model.
+fn bob_model_part(rot: &mut [f32; 3], left: bool, age_in_ticks: f32) {
+    let scale = if left { -1.0 } else { 1.0 };
+    rot[2] += scale * (mth_cos((age_in_ticks * 0.09) as f64) * 0.05 + 0.05);
+    rot[0] += scale * (mth_sin((age_in_ticks * 0.067) as f64) * 0.05);
 }
 
 /// Sample a keyframe channel at `t` seconds — vanilla `Entry.apply`: prev =
@@ -1386,6 +1631,66 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
     }
 }
 
+/// The pass-wide half of the CEM interpreter's per-frame inputs — everything
+/// [`cem_anim_context`] needs that is not on the `EntityDraw`.
+#[derive(Clone, Copy, Debug)]
+pub struct CemFrameInputs {
+    /// Real seconds since the previous frame (FA integrates against it).
+    pub frame_time: f32,
+    /// Monotonic frame counter (FA's same-frame guard).
+    pub frame_counter: f32,
+    /// Wall-clock seconds; `ageInTicks = age_seconds · 20`.
+    pub age_seconds: f32,
+    /// Camera eye in world space — OptiFine's `player_pos_*`.
+    pub cam_pos: [f32; 3],
+}
+
+/// Build the OptiFine CEM interpreter's per-frame variable bindings for one
+/// entity. `carried` is that entity's `var.*` slot store from the previous
+/// frame (FA's integrators continue through it).
+///
+/// Extracted from `emit_model` so the `swingshot` oracle can prove the input
+/// mapping — notably that `swing_progress` really is
+/// `getAttackAnim(partialTicks)` and not the default 0 — without standing up a
+/// Vulkan device. The renderer calls this exact function.
+pub fn cem_anim_context(
+    d: &EntityDraw<'_>,
+    frame: CemFrameInputs,
+    carried: Vec<f32>,
+) -> crate::cem_anim::AnimContext {
+    crate::cem_anim::AnimContext {
+        user: carried,
+        frame_time: frame.frame_time,
+        frame_counter: frame.frame_counter,
+        head_yaw: wrap_degrees(d.head_yaw - d.yaw),
+        head_pitch: d.pitch,
+        limb_swing: d.limb_swing,
+        limb_speed: d.limb_amount,
+        age: frame.age_seconds * 20.0,
+        time: frame.age_seconds * 20.0,
+        is_on_ground: true,
+        is_alive: true,
+        is_child: false,
+        health: 20.0,
+        max_health: 20.0,
+        // OptiFine `swing_progress` is `getAttackAnim(partialTicks)` — the same
+        // value the built-in attack rig consumes.
+        swing_progress: d.attack.attack_time,
+        id: d.anim_id,
+        // World position + body yaw, and the viewer's position: FA aims
+        // eyes/heads by comparing `player_pos_*` against `pos_*`, and derives
+        // its turn-detection vars from `rot_y`.
+        pos_x: d.pos[0],
+        pos_y: d.pos[1],
+        pos_z: d.pos[2],
+        player_pos_x: frame.cam_pos[0],
+        player_pos_y: frame.cam_pos[1],
+        player_pos_z: frame.cam_pos[2],
+        rot_y: d.yaw.to_radians(),
+        ..Default::default()
+    }
+}
+
 /// Animation inputs for [`oracle_part_deltas`] — the pose/rig state the
 /// renderer feeds `part_transforms`, in vanilla units. Lets the `eventshot`
 /// oracle exercise the exact production rig math with no GPU device.
@@ -1408,6 +1713,12 @@ pub struct OracleInputs {
     /// Allay dance inputs (`Some` only for a dancing Allay) — the `danceshot`
     /// oracle feeds these to prove the `AllayRoot`/`AllayHead` pose math.
     pub allay_dance: Option<mobs::AllayDance>,
+    /// Combat-swing pose — the `swingshot` oracle feeds these to prove
+    /// `HumanoidModel.setupAttackAnimation`.
+    pub attack: mobs::SwingPose,
+    /// Both arms' hold pose + handedness — the `swingshot` oracle feeds these
+    /// to prove `pose{Right,Left}Arm` and the `setupAnim` pose dispatch.
+    pub arm_poses: mobs::ArmPoses,
 }
 
 /// The per-part animation deltas (added rotation radians ZYX + pivot offset
@@ -1433,6 +1744,8 @@ pub fn oracle_part_deltas(
         events: inputs.events,
         shell: inputs.shell,
         allay_dance: inputs.allay_dance,
+        attack: inputs.attack,
+        arm_poses: inputs.arm_poses,
     };
     let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
     Some(

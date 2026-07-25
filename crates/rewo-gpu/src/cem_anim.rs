@@ -187,7 +187,15 @@ fn builtin_var(name: &str) -> Option<Var> {
         "is_in_lava" => Var::IsInLava,
         "is_tamed" => Var::IsTamed,
         "is_on_shoulder" => Var::IsOnShoulder,
-        "swing_progress" | "limb_swing_amount" => Var::SwingProgress,
+        // `swing_progress` is `LivingEntity.getAttackAnim(partialTicks)` — the
+        // combat swing, wired in M19. `limb_swing_amount` is the *walk*
+        // amplitude (Mojang's own pre-26 parameter name for
+        // `walkAnimationSpeed`), so it aliases `limb_speed`. They shared a slot
+        // until M19 only because `swing_progress` was permanently 0; now that it
+        // carries a real value, a pack using `limb_swing_amount` would have read
+        // the attack progress instead of its walk amplitude.
+        "swing_progress" => Var::SwingProgress,
+        "limb_swing_amount" => Var::LimbSpeed,
         "pi" => Var::Pi,
         _ => return None,
     })

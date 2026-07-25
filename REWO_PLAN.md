@@ -4105,3 +4105,197 @@ intact & dance-independent**. Two consecutive release runs produced byte-identic
   both reverted. The clean method that keeps plain `git diff --check` green while
   preserving every unchanged byte: `git diff | tr -d '\r' > p; git checkout HEAD
   file; git apply --ignore-whitespace p` (LF-only insertions into the CRLF file).
+
+### 2026-07-25 — M19: exact combat swings (ClientboundAnimate) + the ArmPose hold baseline — SHIPPED + VERIFIED
+
+M19 makes `ClientboundAnimatePacket` a *consumed* animation. Before it the packet
+fell off the dispatch chain as an unknown id, so no entity ever swung. Unlike
+M17's one-shot events and M18's metadata counters, a swing is a small **state
+machine** on `LivingEntity` whose length depends on the item in the swinging
+hand, and whose pose is `HumanoidModel.setupAttackAnimation` layered on the
+`ArmPose` hold baseline. The work is complete and every gate below is green.
+
+**Wire facts** (resolved by name from the real reports, so a renumber fails
+loud): clientbound-play `animate` id **2**, body = **VarInt entity id + unsigned
+byte action** (not the fixed BE-i32 of `entity_event`); `set_equipment` **102**;
+`set_entity_data` **99**. Action **0** swings the main hand, **3** the off hand;
+**2** (player wake), **4**/**5** (crit / enchanted-hit particles) and every
+unknown action must leave the swing untouched — M19 claims the model-visible
+swing only, no particle or wake behaviour.
+
+**The swing clock is exact.** `LivingEntity.swing` accepts iff *not swinging* OR
+`swingTime >= duration/2` OR `swingTime < 0`; an accepted swing parks
+`swingTime = -1`, sets `swinging`, and records `swingingArm`. So a first-half
+repeat is ignored and a second-half repeat restarts. `updateSwingTime`
+increments *first*, ends at `duration`, and `attackAnim = swingTime / duration`;
+`getAttackAnim(partial)` wraps a negative difference by `+1` (a naive lerp falls
+to 0 at the wrap and is witnessed against). Duration is the held hand's
+`ItemStack.getSwingAnimation().duration()` — default `SwingAnimation(WHACK, 6)` —
+adjusted exactly by DIG_SPEED and MINING_FATIGUE.
+
+**Which entities tick a swing is machine-extracted, not a hand list.**
+`tools/gen_entity_classes.py` parses the registered types out of
+`EntityTypes.java` and walks the Java `extends` chains, producing
+`crates/rewo-data/src/entity_classes.rs`: **93 living / 36 swing-ticking of 158
+types**. Swing-ticking = `Player`/`RemotePlayer`, every concrete `Monster`
+descendant, and `Mannequin`. A living non-`Monster` (a cow) *accepts* a swing and
+never advances it; a non-living entity (a boat) is inert to swing, equipment and
+effect input alike. This matters even where Rewo's built-in mob model ignores
+`attackTime`, because OptiFine CEM's `swing_progress` reads it.
+
+**Nothing unknowable is guessed.** An item id outside the registry, or a
+component patch holding a codec this client cannot walk, marks that hand
+`HandItem::Unknown`; the pose *and* CEM's `swing_progress` are then suppressed
+rather than filled in from the item's prototype, and a later exact equipment
+update lifts the suppression. The item-stack reader also walks **past** the swing
+component to the end of the patch — returning early once the swing was found
+left the reader mid-stack and silently desynced the following off-hand slot.
+`tools/gen_swing_animations.py` derives the prototype table from the datagen item
+components: **7 non-default swing animations over 1,537 registered items** (the
+seven spears, STAB, durations 13–23); everything else inherits WHACK/6.
+
+**The ArmPose hold baseline — caught in senior review, and the common case.**
+The first cut implemented `setupAttackAnimation` exactly and omitted the stage
+*before* it. `setupAnim` runs its `pose{Right,Left}Arm` dispatch at lines 248–268
+and `setupAttackAnimation` at 273, so the strike is added **on top of** the hold
+pose. `AvatarRenderer.getArmPose` ends:
+
+```java
+SwingAnimation attack = itemInHand.get(DataComponents.SWING_ANIMATION);
+if (attack != null && attack.type() == STAB && avatar.swinging) return SPEAR;
+else return itemInHand.is(ItemTags.SPEARS) ? SPEAR : ITEM;
+```
+
+so **`ITEM` is the fall-through for any ordinary held item** — a player holding a
+sword. Its body is `arm.xRot = arm.xRot * 0.5F - (float)(Math.PI/10); arm.yRot =
+0`, i.e. the walk swing halved and the arm dropped 18°. Omitting it posed every
+armed entity from an unarmed baseline, which is the ordinary combat case, not an
+exotic one. (The trap: `HumanoidModel.ArmPose` *has* `ITEM`/`BLOCK`/`BOW_AND_ARROW`
+cases, but `HumanoidMobRenderer.getArmPose` returns only `SPEAR`/`EMPTY` — it is
+the **Avatar** renderer that produces `ITEM`, and the player humanoid is the one
+model Rewo poses. Reading the enum rather than the code path that produces it
+would have dismissed this.)
+
+Three poses are modelled, all exact: `EMPTY` (`yRot = 0`), `ITEM`, and `SPEAR`.
+`SPEAR` is the unconditional half of `SpearAnimations.thirdPersonHandUse` —
+`yRot = -0.1·invert + head.yRot`, `xRot = -π/2 + head.xRot + 0.8`, each clamped
+through vanilla's own `180/π` degree round-trip to ±60° / −120°..30°. Its second
+half is gated on `!(state.ticksUsingItem <= 0.0F)` plus a `KINETIC_WEAPON`
+component, so for a non-using entity it is **exactly a no-op** — omitting it is
+vanilla, not an approximation. It is also the only part that touches `zRot`,
+which is why the idle bob still lands unmodified.
+
+**Two load-bearing asymmetries in the dispatch.** `ArmPose` carries
+`(twoHanded, affectsOffhandPose)`; `SPEAR` is `(false, **true**)`. In the
+`isUsingItem == false` branch, a right-handed entity runs `poseLeftArm` **first**
+and only then `poseRightArm` *if the left pose does not claim the offhand* — so a
+spear in the off hand leaves the main arm **entirely unposed**, sword and all.
+Handedness mirrors it. And because `thirdPersonAttackHand` subtracts exactly the
+prologue yaw `setupAttackAnimation` added, whatever the hold pose set **survives
+the strike** — a spear-swinging entity is SPEAR/SPEAR, the right arm is never
+hold-posed, and its yaw returns to exactly 0 while the left keeps `+0.1`.
+
+**`ItemTags.SPEARS` is read as a tag, from the client jar.**
+`crates/rewo-data/src/item_tags.rs` reads `data/minecraft/tags/item/spears.json`
+out of the production jar (the same artefact the asset bake opens), resolving 7
+names to protocol ids. It deliberately does **not** reuse the swing table: "is in
+`minecraft:spears`" and "its `swing_animation` is STAB" pick the same seven items
+in 26.2 and are different questions — a sword the server patches to STAB is not
+in the tag, and a spear patched to WHACK still is. Every unrecognised form (a
+`#tag` reference, the object `{id, required}` entry, an unregistered name, an
+empty list, a missing `values`) is a hard error rather than a silently smaller
+set, and each is unit-tested.
+
+**Production chain** (the gate drives all of it, with no socket and no GPU):
+
+```text
+raw animate body (VarInt id + unsigned byte)
+  -> rewo_net::route_animate            (production packet-id selection)
+  -> apply_animate                      (missing-entity drop + action mapping)
+  -> EntityTable::swing / tick_lerp     (the exact LivingEntity swing clock)
+  -> live_cmd::resolve_attack_anim      (the SAME resolver collect_entities uses)
+  -> live_cmd::resolve_arm_poses        (likewise, for the hold baseline)
+  -> rewo_gpu::entities::oracle_part_deltas   (the exact model pose math)
+```
+
+**Gate: `rewo swingshot --check`** — permanent, serverless, CPU-only,
+fail-closed on a fixed **61/61** witnesses, byte-identical across runs (modulo
+log timestamps). Expectations are **independent transcriptions**: its own `ease`
+module, its own `Mth` sine table built with `std::sin` against the renderer's
+`libm`, its own `poseRightArm`/`poseLeftArm` bodies, and its own transcription of
+`affectsOffhandPose` / `isTwoHanded` / the pose dispatch — reading the production
+accessors would have recreated the self-grading defect `dimensioncheck` once
+shipped. The `Mth` witness is load-bearing rather than tolerance-absorbed: **0
+bit mismatches over 60,003 sin/cos samples** while the same points differ from
+the platform sine **39,917 times (max 9.577e-5)**, so a plain-trig port fails it
+by construction. Every property carries a mutation partner — wrong packet id,
+missing entity, malformed body, actions 2/4/5/unknown, the boat (living gate),
+cow-vs-zombie (swing-ticking set), the zombie pose (the rig belongs to the
+humanoid player model alone while its `swing_progress` still reaches CEM), and
+for the hold pose the *unposed arm* itself as the baseline to differ from.
+
+**Measured (all run independently, not taken from the implementer's report).**
+- **404 tests**: world 108, net 132, gpu 46, data 14, mesh 38, proto 11 (**349
+  lib**) + app 55. Release build green; the 3 warnings are pre-existing
+  (`decode_png_rgba`, `hud.rs` mut, `cem_top`).
+- `swingshot` **61/61** twice, identical; `eventshot` **28/28**; `danceshot`
+  **24/24**; `mobshot` **243/243**;
+  `lightmapshot`/`skyshot`/`tintshot`/`meshshot`/`dimensioncheck` green with
+  Vulkan validation **ON**.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15/M16/M17/M18**. Neutral geometry is untouched:
+  `ArmPoses::EMPTY` assigns `yRot = 0` where it is already 0.
+- Live `--swing-check`: **1** tagged zombie tracked (tag-scoped `summon`/`kill`,
+  so an unrelated mob is neither destroyed nor graded), main hand decoded
+  `minecraft:iron_spear` **STAB/19**, off hand `minecraft:stone_sword`
+  **WHACK/6**, `getCurrentSwingDuration=19` reading the main hand,
+  **CORRECTIONS 0**, fixture cleaned up.
+- Live physics 30 s: **CORRECTIONS 0**, `ACCEPT place (-44,-60,0) = minecraft:dirt`,
+  `ACCEPT dig (-47,-61,0) = air`.
+- Live light `--no-relight`: **884,736 cells, block 0 sky 0, EXACT**.
+- `git diff --check` **clean** (see the line-ending note below).
+
+**Exclusions / honesty.**
+- **The eight use-driven arm poses are not modelled** — `BLOCK`, `BOW_AND_ARROW`,
+  `THROW_TRIDENT`, `CROSSBOW_CHARGE`, `CROSSBOW_HOLD`, `SPYGLASS`, `TOOT_HORN`,
+  `BRUSH`. `AvatarRenderer` only returns them while
+  `getUsedItemHand() == hand && getUseItemRemainingTicks() > 0` (or for a charged
+  crossbow held), and neither the use-item hand nor the remaining ticks is
+  synchronised for a remote entity. `BOW_AND_ARROW` additionally writes to *both*
+  arms, which the per-arm pipeline could not express without restructuring. These
+  are suppressed by omission, not approximated.
+- **Undead arm animation is not implemented.** `AnimationUtils.animateZombieArms`
+  gives the zombie/skeleton/piglin families their own attack rig; Rewo poses only
+  the humanoid **player** model from `attackTime` (witnessed by `h1`). A swinging
+  zombie therefore shows no arm motion unless a CEM pack drives it. This is the
+  largest remaining visible gap in combat animation and is the obvious next step.
+- **Crouch, swim, fall-flying, passenger and the SPYGLASS bob guard** remain
+  unmodelled, as before; each is a branch of `setupAnim` Rewo's state cannot
+  enter. `state.speedValue` is 1.0 except while fall-flying, so the walk term's
+  `/ speedValue` divisor is exact for every reachable state.
+- **The walk term uses platform `cos`, not `Mth.cos`, in both production and the
+  oracle.** They agree with each other, so the witness is honest about what it
+  proves; the deviation from vanilla is bounded by one table step (≈9.6e-5 rad,
+  0.0055°) and is invisible. The attack terms *are* `Mth`-exact and witnessed as
+  such. Making the walk `Mth`-exact would be a one-line change plus a lockstep
+  oracle update; it was left out of M19 rather than smuggled in.
+- **DIG_SPEED / MINING_FATIGUE duration adjustment is reachable only for the
+  local player and a ridden vehicle** — `ClientboundUpdateMobEffectPacket` is
+  self/join/passenger-scoped, not broadcast to all trackers. The formula is
+  implemented and witnessed; the reachability is stated rather than implied.
+- **No live AI-driven combat encounter was staged or claimed.** The deterministic
+  proof is raw-packet injection through the production dispatcher plus the
+  tag-scoped live equipment check.
+- **Line-ending note.** `crates/rewo-gpu/src/entities.rs` is **mixed CRLF/LF in
+  HEAD** and `crates/rewo-data/src/lib.rs` is **uniformly CRLF**. Editing either
+  normally normalizes line endings across the touched region — here that inflated
+  `entities.rs` from a 341/28 diff to 529/216, all of it invisible churn. The
+  documented method fixes it and keeps plain `git diff --check` green while
+  preserving every unchanged byte: `git diff -- <file> | tr -d '\r' > p; git
+  checkout HEAD -- <file>; git apply --ignore-whitespace p`. Verify with
+  `git diff --numstat` against `git diff --ignore-all-space --numstat` — they
+  should agree to within the genuinely-edited lines. Note also that
+  `git diff --check` **cannot** be green for a uniformly-CRLF file whose added
+  lines are CRLF, because git flags the `\r` unless `core.whitespace` includes
+  `cr-at-eol` (it is unset); the LF-insertion is what makes it green.

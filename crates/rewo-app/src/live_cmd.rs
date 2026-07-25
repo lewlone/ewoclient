@@ -118,6 +118,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let jar = client_jar_path(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
+    // `ItemTags.SPEARS`, from the data pack the client jar ships — the tag
+    // `AvatarRenderer.getArmPose` tests to pose a *held* (not swinging) spear.
+    let spears = rewo_data::item_tags::ItemTag::load_spears(&jar, &data.items)?;
     // Per-state collision shapes (slabs/stairs/fences, not just full cubes).
     let collide: Vec<Vec<[f32; 6]>> = baked.collide.clone();
     let global_bits = data.blocks.global_palette_bits;
@@ -158,6 +161,15 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // The Allay's type id disambiguates its index-16 `DATA_DANCING` from the
     // modeled baby path at the same slot (both index 16, both BOOLEAN).
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
+    // M19 combat swings: the machine-extracted living / swing-ticking sets gate
+    // every swing input and decide whose clock runs (`updateSwingTime` is not
+    // universal), and the equipment tables decide how long each swing lasts and
+    // which arm animation it plays.
+    session.entity_classes = Some(std::sync::Arc::new(data.entity_classes));
+    session.swing_data = Some(rewo_net::item_stack::SwingWireData {
+        prototypes: data.swing_animations,
+        components: data.components,
+    });
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(
@@ -181,6 +193,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 session,
                 baked,
                 etypes,
+                spears,
                 want_validation,
                 out,
                 settle,
@@ -190,7 +203,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.darkness_effect_scale,
             )
         }
-        _ => run_windowed(session, baked, etypes, args, want_validation, dirt_item),
+        _ => run_windowed(session, baked, etypes, spears, args, want_validation, dirt_item),
     }
 }
 
@@ -473,6 +486,115 @@ pub(crate) fn resolve_allay_dance(
         })
 }
 
+/// Resolve an entity's combat-swing render inputs — the production seam shared
+/// by the live collector and the `swingshot` oracle, so the
+/// `ArmedEntityRenderState` extraction (`attackTime` / `attackArm` /
+/// `swingAnimationType` / `ageScale`) is the same code the gate proves.
+///
+/// Deliberately **not** kind-gated: `extractArmedEntityRenderState` runs for
+/// every armed entity, and the value also feeds CEM's `swing_progress`. Only a
+/// model built from `HumanoidModel.createMesh` carries parts that pose from it,
+/// so a mob simply ignores a non-zero `attackTime` (witnessed in the gate).
+pub(crate) fn resolve_attack_anim(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    alpha: f32,
+) -> rewo_gpu::mobs::SwingPose {
+    use rewo_data::swing_anim::SwingAnimationType;
+    use rewo_gpu::mobs::{SwingKind, SwingPose};
+    use rewo_world::entities::HumanoidArm;
+    // An input that could not be resolved exactly suppresses the whole pose —
+    // `attack_time` 0 short-circuits `setupAttackAnimation` and publishes 0 to
+    // CEM's `swing_progress`, which is the honest answer when the held item is
+    // unknowable. A later exact equipment update lifts it.
+    let Some(kind) = entities.swing_animation_type(id) else {
+        return SwingPose {
+            inputs_known: false,
+            ..SwingPose::NONE
+        };
+    };
+    if !entities.swing_inputs_known(id) {
+        return SwingPose {
+            inputs_known: false,
+            ..SwingPose::NONE
+        };
+    }
+    SwingPose {
+        attack_time: entities.attack_anim(id, alpha),
+        left_arm: entities.attack_arm(id) == HumanoidArm::Left,
+        kind: match kind {
+            SwingAnimationType::None => SwingKind::None,
+            SwingAnimationType::Whack => SwingKind::Whack,
+            SwingAnimationType::Stab => SwingKind::Stab,
+        },
+        // `LivingEntity.getAgeScale()` — `isBaby() ? 0.5 : 1.0`.
+        age_scale: if entities.is_baby(id) { 0.5 } else { 1.0 },
+        inputs_known: true,
+    }
+}
+
+/// `AvatarRenderer.getArmPose` for both arms, plus the handedness
+/// `setupAnim`'s pose dispatch reads — the *hold* baseline applied before
+/// `setupAttackAnimation`.
+///
+/// Shared by the live collector and the `swingshot` oracle for the same reason
+/// as [`resolve_attack_anim`]: the gate must prove the mapping the client
+/// actually renders through, not a parallel copy of it.
+///
+/// Vanilla computes a pose per *hand* and then selects by arm
+/// (`getMainArm() == arm ? mainHandPose : offHandPose`);
+/// [`rewo_world::entities::EntityTable::item_by_arm`] is that selection, so
+/// resolving per arm here is the same function. The `mainHandPose.isTwoHanded()`
+/// override that rewrites the off-hand pose cannot fire: none of the three
+/// modelled poses is two-handed, and adding one would fail
+/// [`rewo_gpu::mobs::ArmPose::is_two_handed`]'s exhaustive match first.
+///
+/// Only the poses reachable without item-use state are produced — the other
+/// eight need `getUsedItemHand()` / `getUseItemRemainingTicks()`, which no
+/// packet carries for a remote entity (see [`rewo_gpu::mobs::ArmPose`]).
+pub(crate) fn resolve_arm_poses(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    spears: &rewo_data::item_tags::ItemTag,
+) -> rewo_gpu::mobs::ArmPoses {
+    use rewo_data::swing_anim::SwingAnimationType;
+    use rewo_gpu::mobs::{ArmPose, ArmPoses};
+    use rewo_world::entities::{HandItem, HumanoidArm};
+
+    let swinging = entities.is_swinging(id);
+    let mut known = true;
+    let mut pose_of = |arm: HumanoidArm| -> ArmPose {
+        match entities.item_by_arm(id, arm) {
+            HandItem::Empty => ArmPose::Empty,
+            // Unknowable item → suppress the whole baseline rather than pose
+            // from a guess, exactly as the swing itself is suppressed.
+            HandItem::Unknown => {
+                known = false;
+                ArmPose::Empty
+            }
+            HandItem::Held(item) => {
+                if item.swing.kind == SwingAnimationType::Stab && swinging {
+                    // `attack != null && attack.type() == STAB && avatar.swinging`
+                    ArmPose::Spear
+                } else if spears.contains(item.item_id) {
+                    // `else return item.is(ItemTags.SPEARS) ? SPEAR : ITEM;`
+                    ArmPose::Spear
+                } else {
+                    ArmPose::Item
+                }
+            }
+        }
+    };
+    let right = pose_of(HumanoidArm::Right);
+    let left = pose_of(HumanoidArm::Left);
+    ArmPoses {
+        right,
+        left,
+        right_handed: entities.main_arm(id) == HumanoidArm::Right,
+        known,
+    }
+}
+
 /// Snapshot every tracked entity into this frame's draw list. `alpha` is
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
 /// everything else gets mauve, sized by the type table. `now` is the
@@ -485,6 +607,7 @@ fn collect_entities<'a>(
     now: f32,
     skins: &SkinRegistry,
     lightmap: &LightmapState,
+    spears: &rewo_data::item_tags::ItemTag,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -588,6 +711,11 @@ fn collect_entities<'a>(
         // Shared with the `danceshot` oracle so the kind gate + counter mapping
         // are exercised by the gate and can't regress here silently.
         let allay_dance = resolve_allay_dance(kind, &session.world.entities, id, alpha);
+        // Combat swing (`ClientboundAnimatePacket` → the swing clock). Shared
+        // with the `swingshot` oracle for the same reason as the dance above.
+        let attack = resolve_attack_anim(&session.world.entities, id, alpha);
+        // The hold pose the swing is layered onto. Same sharing rule as above.
+        let arm_poses = resolve_arm_poses(&session.world.entities, id, spears);
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
@@ -610,6 +738,8 @@ fn collect_entities<'a>(
             events,
             shell,
             allay_dance,
+            attack,
+            arm_poses,
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
@@ -838,6 +968,7 @@ fn run_headless(
     mut session: PlaySession,
     baked: assets::BakedAssets,
     etypes: EntityTypes,
+    spears: rewo_data::item_tags::ItemTag,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -1010,6 +1141,7 @@ fn run_headless(
         0.0,
         &skins,
         &lightmap,
+        &spears,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -1209,6 +1341,9 @@ struct LiveApp {
     session: Option<PlaySession>,
     baked: Option<assets::BakedAssets>,
     etypes: EntityTypes,
+    /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
+    /// spear that is merely *held* (the swinging-STAB case needs no tag).
+    spears: rewo_data::item_tags::ItemTag,
     pool: MeshPool,
     keys: Keys,
     want_validation: bool,
@@ -1533,6 +1668,7 @@ impl LiveApp {
             anim_time,
             &self.skins.registry,
             &lightmap,
+            &self.spears,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -1620,6 +1756,7 @@ fn run_windowed(
     session: PlaySession,
     baked: assets::BakedAssets,
     etypes: EntityTypes,
+    spears: rewo_data::item_tags::ItemTag,
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
@@ -1634,6 +1771,7 @@ fn run_windowed(
         session: Some(session),
         baked: Some(baked),
         etypes,
+        spears,
         pool,
         keys: Keys::default(),
         want_validation,
@@ -2215,6 +2353,50 @@ mod tests {
         assert!(resolve_allay_dance(EntityModelKind::Zombie, &t, 1, 1.0).is_none());
         // No dance entry at all → None regardless of kind.
         assert!(resolve_allay_dance(EntityModelKind::Allay, &t, 999, 1.0).is_none());
+    }
+
+    #[test]
+    fn resolve_attack_anim_extracts_the_armed_render_state() {
+        use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType};
+        use rewo_gpu::mobs::SwingKind;
+        use rewo_world::entities::{
+            EntityState, EntityTable, HandItem, HeldItem, InteractionHand,
+        };
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        // Nothing has happened: the neutral pose, and never `None` — vanilla's
+        // render state always carries these fields.
+        let idle = resolve_attack_anim(&t, 1, 1.0);
+        assert_eq!(idle.attack_time, 0.0);
+        assert!(!idle.left_arm);
+        assert_eq!(idle.kind, SwingKind::Whack, "bare hand = SwingAnimation.DEFAULT");
+        assert_eq!(idle.age_scale, 1.0);
+        // A spear in the off hand + an off-hand swing: the attack arm flips and
+        // the type comes from the item held by *that arm*.
+        t.set_hand_item(
+            1,
+            InteractionHand::OffHand,
+            HandItem::Held(HeldItem {
+                item_id: 1329,
+                swing: SwingAnimation::new(SwingAnimationType::Stab, 19),
+            }),
+        );
+        t.swing(1, InteractionHand::OffHand, true);
+        t.tick_lerp();
+        t.tick_lerp();
+        let a = resolve_attack_anim(&t, 1, 1.0);
+        assert!(a.left_arm, "off-hand swing → the opposite of the RIGHT main arm");
+        assert_eq!(a.kind, SwingKind::Stab);
+        assert!((a.attack_time - 1.0 / 19.0).abs() < 1e-6, "{}", a.attack_time);
+        // A baby's `getAgeScale()` halves the arm-pivot swing.
+        t.set_baby(1, true);
+        assert_eq!(resolve_attack_anim(&t, 1, 1.0).age_scale, 0.5);
+        assert!(resolve_attack_anim(&t, 1, 1.0).inputs_known);
+        // An unresolvable hand suppresses the whole pose rather than guessing.
+        t.set_hand_item(1, InteractionHand::MainHand, HandItem::Unknown);
+        let sup = resolve_attack_anim(&t, 1, 1.0);
+        assert!(!sup.inputs_known);
+        assert_eq!(sup.attack_time, 0.0, "suppressed, not guessed");
     }
 
     /// The three built-in dimension types, with exactly the fields M16's light
