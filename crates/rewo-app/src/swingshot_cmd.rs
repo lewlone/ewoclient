@@ -72,7 +72,7 @@ use rewo_world::entities::{EntityState, EntityTable, InteractionHand};
 
 /// Total named properties this gate asserts. Locked so a skipped property fails
 /// the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 61;
+const EXPECTED_WITNESSES: usize = 77;
 
 /// Degrees → radians, the factor `SpearAnimations` writes inline as `Math.PI/180`.
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -131,6 +131,11 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     let cow_tid = tid("minecraft:cow")?;
     let mannequin_tid = tid("minecraft:mannequin")?;
     let boat_tid = tid("minecraft:oak_boat")?;
+    let skeleton_tid = tid("minecraft:skeleton")?;
+    let pillager_tid = tid("minecraft:pillager")?;
+    let vindicator_tid = tid("minecraft:vindicator")?;
+    let evoker_tid = tid("minecraft:evoker")?;
+    let illusioner_tid = tid("minecraft:illusioner")?;
     // An item id that is deliberately NOT in the registry, for the
     // unresolvable-item witness. Picked past the end rather than invented.
     let unregistered_item = (0..).find(|i| !items.has_id(*i)).unwrap_or(i32::MAX);
@@ -147,6 +152,13 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     let jar = client_jar(&args.version)
         .ok_or("client jar not found — swingshot needs it for ItemTags.SPEARS")?;
     let spears = ItemTag::load_spears(&jar, &items)?;
+    let bow = items
+        .id("minecraft:bow")
+        .ok_or("registries.json: no minecraft:bow")?;
+    let crossbow = items
+        .id("minecraft:crossbow")
+        .ok_or("registries.json: no minecraft:crossbow")?;
+    let _ = crate::live_cmd::CROSSBOW_ITEM.set(Some(crossbow));
 
     println!(
         "[swingshot] ids: animate={animate_id} set_equipment={equip_id} \
@@ -182,6 +194,13 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
         wire,
         classes,
         spears,
+        bow,
+        crossbow,
+        skeleton_tid,
+        pillager_tid,
+        vindicator_tid,
+        evoker_tid,
+        illusioner_tid,
     };
     let mut c = Checker::new();
 
@@ -192,6 +211,7 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     check_arms(&mut c, &ctx);
     check_pose(&mut c, &ctx);
     check_arm_poses(&mut c, &ctx);
+    check_mob_rigs(&mut c, &ctx);
     check_integration(&mut c, &ctx);
 
     println!(
@@ -241,6 +261,15 @@ struct Ctx {
     /// jar is absent: the tag decides the SPEAR hold pose and there is nothing
     /// honest to substitute for it.
     spears: ItemTag,
+    /// `Items.BOW` / `Items.CROSSBOW` — identity tests in the skeleton and
+    /// pillager rigs (M20).
+    bow: i32,
+    crossbow: i32,
+    skeleton_tid: i32,
+    pillager_tid: i32,
+    vindicator_tid: i32,
+    evoker_tid: i32,
+    illusioner_tid: i32,
 }
 
 /// The three `minecraft:mob_effect` ids `getCurrentSwingDuration` consults.
@@ -682,6 +711,7 @@ fn pose(
     limb_swing: f32,
     limb_amount: f32,
     spears: &ItemTag,
+    bow: Option<i32>,
 ) -> (
     SwingPose,
     ArmPoses,
@@ -691,6 +721,8 @@ fn pose(
     // The SAME app resolver `collect_entities` uses — the gate must not build
     // its own `ArmPoses`, or it would stop proving the live mapping.
     let arm_poses = crate::live_cmd::resolve_arm_poses(t, eid, spears);
+    // M20: the same app resolver the collector uses for the mob rigs.
+    let mob = crate::live_cmd::resolve_mob_combat(t, eid, kind, bow);
     let deltas = oracle_part_deltas(
         kind,
         &OracleInputs {
@@ -700,6 +732,7 @@ fn pose(
             limb_amount,
             attack,
             arm_poses,
+            mob,
             ..Default::default()
         },
     )
@@ -1124,6 +1157,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         allay_dance: None,
         attack,
         arm_poses: ArmPoses::EMPTY,
+        mob: rewo_gpu::mobs::MobCombat::default(),
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,
@@ -1343,14 +1377,14 @@ fn check_equipment(c: &mut Checker, ctx: &Ctx) {
 fn check_arms(c: &mut Checker, ctx: &Ctx) {
     let mut t = table(ctx);
     swing(ctx, &mut t, 1, 0);
-    let (main_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears);
+    let (main_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
     c.record(
         "e1.a_main_hand_swing_uses_the_main_arm",
         !main_pose.left_arm,
         format!("attackArm left={} (mainArm defaults to RIGHT)", main_pose.left_arm),
     );
     swing(ctx, &mut t, 1, 3);
-    let (off_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears);
+    let (off_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
     c.record(
         "e2.an_off_hand_swing_uses_the_opposite_arm",
         off_pose.left_arm,
@@ -1367,9 +1401,9 @@ fn check_arms(c: &mut Checker, ctx: &Ctx) {
     );
     let _ = &ctx.classes;
     swing(ctx, &mut t, 1, 0);
-    let (lm, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears);
+    let (lm, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
     swing(ctx, &mut t, 1, 3);
-    let (lo, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears);
+    let (lo, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None);
     c.record(
         "e3.the_main_arm_metadata_mirrors_both_hands",
         routed && lm.left_arm && !lo.left_arm,
@@ -1429,7 +1463,7 @@ fn posed_net(
     for _ in 0..ticks {
         t.tick_lerp();
     }
-    let (attack, poses, deltas) = pose(kind, &t, 1, alpha, pitch, net, limb.0, limb.1, &ctx.spears);
+    let (attack, poses, deltas) = pose(kind, &t, 1, alpha, pitch, net, limb.0, limb.1, &ctx.spears, Some(ctx.bow));
     let expect = expect_attack(
         attack.attack_time,
         attack.left_arm,
@@ -1666,13 +1700,33 @@ fn check_integration(c: &mut Checker, ctx: &Ctx) {
             .iter()
             .zip(&neutral)
             .all(|(a, b)| near3(a.1, b.1, 0.0) && near3(a.2, b.2, 0.0));
+    // M19 asserted the opposite here: with the undead arms baked as static
+    // folds, a swinging zombie was inert. M20 gives it the real
+    // `animateZombieArms` rig, so the claim is now that it animates and does so
+    // with a *different* rig than the player's — the humanoid strike is not
+    // simply reused.
+    let player = oracle_part_deltas(
+        EntityModelKind::Player,
+        &OracleInputs {
+            attack,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_default();
+    let z_arm = find(&zombie, "right_arm").map(|(r, _)| r);
+    let p_arm = find(&player, "right_arm").map(|(r, _)| r);
     c.record(
-        "h1.only_the_humanoid_player_model_consumes_attacktime",
-        attack.attack_time > 0.0 && same,
+        "h1.the_undead_rig_animates_and_differs_from_the_player_rig",
+        attack.attack_time > 0.0
+            && !same
+            && z_arm.is_some()
+            && z_arm.zip(p_arm).is_some_and(|(z, p)| !near3(z, p, 1e-3)),
         format!(
-            "attackTime={:.6} and all {} zombie parts identical to neutral: {same}",
+            "attackTime={:.6}: zombie right_arm={} vs player right_arm={}; any zombie              part moved from neutral: {}",
             attack.attack_time,
-            zombie.len()
+            z_arm.map(fmt3).unwrap_or_default(),
+            p_arm.map(fmt3).unwrap_or_default(),
+            !same,
         ),
     );
     // The CEM path: the production `AnimContext` builder must publish the same
@@ -1931,6 +1985,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.0,
         limb.1,
         &ctx.spears,
+        None,
     );
     let esp = expect_attack(
         0.0,
@@ -2013,6 +2068,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.0,
         limb.1,
         &ctx.spears,
+        None,
     );
     let r2 = find(&d2, "right_arm").map(|(r, _)| r);
     c.record(
@@ -2052,6 +2108,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.0,
         limb.1,
         &ctx.spears,
+        None,
     );
     c.record(
         "j8.handedness_selects_which_arm_the_dispatch_protects",
@@ -2081,6 +2138,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.0,
         limb.1,
         &ctx.spears,
+        None,
     );
     let ecl = expect_attack(
         0.0,
@@ -2132,6 +2190,7 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
         limb.0,
         limb.1,
         &ctx.spears,
+        None,
     );
     let ru = find(&du, "right_arm").map(|(r, _)| r);
     c.record(
@@ -2146,6 +2205,546 @@ fn check_arm_poses(c: &mut Checker, ctx: &Ctx) {
             uposes.known,
             ru.map(fmt3).unwrap_or_default(),
             right.map(fmt3).unwrap_or_default(),
+        ),
+    );
+}
+
+// ---- M20: the mob combat rigs -------------------------------------------
+//
+// Independent transcriptions again: `AnimationUtils.animateAttackArms`,
+// `SkeletonModel.setupAnim`'s override and `AnimationUtils.swingWeaponDown`
+// are hand-ported here with the oracle's own `Mth` table. Nothing reads the
+// production `animate_zombie_arms` / `skeleton_attack_arm` / `swing_weapon_down`
+// as its expectation.
+
+/// `AnimationUtils.animateAttackArms` for one arm. Vanilla **assigns** all
+/// three rotations, so this is the whole rotation, not a delta.
+fn want_attack_arms(left: bool, t: f32, negate: bool, arm_drop: f32) -> [f32; 3] {
+    use std::f32::consts::PI;
+    let a_y = (if negate { 1.0f32 } else { -1.0 }) * mth_sin((t * PI) as f64);
+    let inv = 1.0 - t;
+    let a_x = mth_sin(((1.0 - inv * inv) * PI) as f64);
+    let x = arm_drop + a_y * 1.2 - a_x * 0.4;
+    let y = 0.1 - a_y * 0.6;
+    [x, if negate == left { y } else { -y }, 0.0]
+}
+
+/// `animateZombieArms`'s non-STAB branch, plus its `bobArms` call.
+fn want_zombie_arms(
+    left: bool,
+    t: f32,
+    age: f32,
+    aggressive: bool,
+    is_baby: bool,
+    main_hand_empty: bool,
+) -> [f32; 3] {
+    use std::f32::consts::PI;
+    let raise = !is_baby || main_hand_empty;
+    let arm_drop = if raise {
+        -PI / if aggressive { 1.5 } else { 2.25 }
+    } else {
+        0.0
+    };
+    let mut r = want_attack_arms(left, t, raise, arm_drop);
+    let scale = if left { -1.0f32 } else { 1.0 };
+    r[2] += scale * (mth_cos((age * 0.09) as f64) * 0.05 + 0.05);
+    r[0] += scale * (mth_sin((age * 0.067) as f64) * 0.05);
+    r
+}
+
+/// `SkeletonModel.setupAnim`'s override, plus its `bobArms` call.
+fn want_skeleton_arms(left: bool, t: f32, age: f32) -> [f32; 3] {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let attack2 = mth_sin((t * PI) as f64);
+    let inv = 1.0 - t;
+    let attack = mth_sin(((1.0 - inv * inv) * PI) as f64);
+    let y = 0.1 - attack2 * 0.6;
+    let mut r = [
+        -FRAC_PI_2 - (attack2 * 1.2 - attack * 0.4),
+        if left { y } else { -y },
+        0.0,
+    ];
+    let scale = if left { -1.0f32 } else { 1.0 };
+    r[2] += scale * (mth_cos((age * 0.09) as f64) * 0.05 + 0.05);
+    r[0] += scale * (mth_sin((age * 0.067) as f64) * 0.05);
+    r
+}
+
+/// `AnimationUtils.swingWeaponDown` for one arm.
+fn want_swing_weapon_down(left: bool, main_arm_left: bool, t: f32, age: f32) -> [f32; 3] {
+    use std::f32::consts::PI;
+    let attack2 = mth_sin((t * PI) as f64);
+    let attack = mth_sin(((1.0 - (1.0 - t) * (1.0 - t)) * PI) as f64);
+    let x = if left == main_arm_left {
+        -1.8849558 + mth_cos((age * 0.09) as f64) * 0.15 + (attack2 * 2.2 - attack * 0.4)
+    } else {
+        -0.0 + mth_cos((age * 0.19) as f64) * 0.5 + (attack2 * 1.2 - attack * 0.4)
+    };
+    [x, if left { -PI / 20.0 } else { PI / 20.0 }, 0.0]
+}
+
+/// A metadata delta body: entity id, then one `(index, serializer, value)`
+/// entry, then the 0xFF terminator.
+fn meta_body(eid: i32, index: u8, serializer: i32, value: &[u8]) -> Vec<u8> {
+    let mut b = Vec::new();
+    varint(eid, &mut b);
+    b.push(index);
+    varint(serializer, &mut b);
+    b.extend_from_slice(value);
+    b.push(0xFF);
+    b
+}
+
+/// Drive one metadata entry through the production router with M20's kind map.
+fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[u8]) -> bool {
+    rewo_net::route_set_entity_data(
+        ctx.sed_id,
+        &meta_body(eid, index, ser, value),
+        &ctx.ids,
+        t,
+        rewo_net::MetaKinds {
+            allay: None,
+            pillager: Some(ctx.pillager_tid),
+            classes: Some(&ctx.classes),
+        },
+    )
+}
+
+fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
+    const TOL: f32 = 1e-6;
+    let age = 0.0_f32;
+    let limb = (7.5_f32, 0.8_f32);
+    let pitch = 0.0_f32;
+
+    // --- the flags byte -------------------------------------------------
+    let mut t = table(ctx);
+    add(&mut t, 9, ctx.zombie_tid);
+    let routed = meta(ctx, &mut t, 9, 15, 0, &[0b0000_0110]);
+    let st = t.mob_state(9);
+    c.record(
+        "k1.the_index_15_byte_is_the_mob_flags_and_its_bits_are_exact",
+        routed
+            && st.is_aggressive()
+            && st.is_left_handed()
+            && t.main_arm(9) == rewo_world::entities::HumanoidArm::Left,
+        format!(
+            "flags=0b110 → aggressive={} left_handed={} mainArm={:?} (bit 4 / bit 2)",
+            st.is_aggressive(),
+            st.is_left_handed(),
+            t.main_arm(9)
+        ),
+    );
+    // Sensitivity: bit 1 is no-AI and must move neither.
+    let mut t1 = table(ctx);
+    add(&mut t1, 9, ctx.zombie_tid);
+    meta(ctx, &mut t1, 9, 15, 0, &[0b0000_0001]);
+    let s1 = t1.mob_state(9);
+    c.record(
+        "k2.the_other_flag_bits_do_not_leak",
+        !s1.is_aggressive()
+            && !s1.is_left_handed()
+            && t1.main_arm(9) == rewo_world::entities::HumanoidArm::Right,
+        format!(
+            "flags=0b001 (no-AI) → aggressive={} left_handed={} mainArm={:?}",
+            s1.is_aggressive(),
+            s1.is_left_handed(),
+            t1.main_arm(9)
+        ),
+    );
+    // A non-mob must not take the byte at all: an ArmorStand puts unrelated
+    // client flags at the same index with the same serializer.
+    let mut t2 = table(ctx);
+    add(&mut t2, 9, ctx.boat_tid);
+    meta(ctx, &mut t2, 9, 15, 0, &[0b0000_0110]);
+    c.record(
+        "k3.a_non_mob_never_takes_the_index_15_byte",
+        t2.mob_state(9) == Default::default()
+            && t2.main_arm(9) == rewo_world::entities::HumanoidArm::Right,
+        format!(
+            "boat flags=0b110 → state {:?}, mainArm {:?} (an armor stand's client \
+             flags share the slot and mean something else)",
+            t2.mob_state(9),
+            t2.main_arm(9)
+        ),
+    );
+    // Index 16 BOOLEAN on a Raider is IS_CELEBRATING, not DATA_BABY_ID.
+    let mut t3 = table(ctx);
+    add(&mut t3, 9, ctx.vindicator_tid);
+    meta(ctx, &mut t3, 9, 16, 8, &[1]);
+    let mut t4 = table(ctx);
+    add(&mut t4, 9, ctx.zombie_tid);
+    meta(ctx, &mut t4, 9, 16, 8, &[1]);
+    c.record(
+        "k4.index_16_boolean_on_a_raider_is_celebrating_not_baby",
+        t3.mob_state(9).celebrating
+            && !t3.is_baby(9)
+            && t4.is_baby(9)
+            && !t4.mob_state(9).celebrating,
+        format!(
+            "vindicator → celebrating={} baby={}; zombie → celebrating={} baby={}",
+            t3.mob_state(9).celebrating,
+            t3.is_baby(9),
+            t4.mob_state(9).celebrating,
+            t4.is_baby(9)
+        ),
+    );
+
+    // --- the undead rig -------------------------------------------------
+    let undead = |aggressive: bool, baby: bool, stack: Option<Stack>, action: u8, ticks: u32| {
+        let mut t = table(ctx);
+        add(&mut t, 1, ctx.zombie_tid);
+        if aggressive {
+            meta(ctx, &mut t, 1, 15, 0, &[0b0000_0100]);
+        }
+        if baby {
+            meta(ctx, &mut t, 1, 16, 8, &[1]);
+        }
+        if let Some(s) = stack {
+            equip(ctx, &mut t, 1, &[(0, s.clone()), (1, s)]);
+        }
+        if action != 255 {
+            swing(ctx, &mut t, 1, action);
+        }
+        for _ in 0..ticks {
+            t.tick_lerp();
+        }
+        let (a, _, d) = pose(
+            EntityModelKind::Zombie,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+        );
+        (a, d)
+    };
+
+    let (_, d_idle) = undead(false, false, None, 255, 0);
+    let r_idle = find(&d_idle, "right_arm").map(|(r, _)| r);
+    let w_idle = want_zombie_arms(false, 0.0, age, false, false, true);
+    c.record(
+        "k5.an_idle_adult_undead_rests_at_minus_pi_over_2_25",
+        r_idle.is_some_and(|r| near3(r, w_idle, TOL)),
+        format!(
+            "right={} want={} → xRot {:.3} deg (vanilla −π/2.25 = −80°, not the −90° \
+             the baked fold used to freeze it at)",
+            r_idle.map(fmt3).unwrap_or_default(),
+            fmt3(w_idle),
+            r_idle.map(|r| r[0] / DEG).unwrap_or(0.0),
+        ),
+    );
+
+    let (_, d_agg) = undead(true, false, None, 255, 0);
+    let r_agg = find(&d_agg, "right_arm").map(|(r, _)| r);
+    let w_agg = want_zombie_arms(false, 0.0, age, true, false, true);
+    c.record(
+        "k6.aggressive_deepens_the_arm_drop_to_minus_pi_over_1_5",
+        r_agg.is_some_and(|r| near3(r, w_agg, TOL))
+            && r_agg.zip(r_idle).is_some_and(|(a, i)| a[0] < i[0] - 0.5),
+        format!(
+            "aggressive right={} want={} → {:.3} deg vs idle {:.3} deg (−120° vs −80°)",
+            r_agg.map(fmt3).unwrap_or_default(),
+            fmt3(w_agg),
+            r_agg.map(|r| r[0] / DEG).unwrap_or(0.0),
+            r_idle.map(|r| r[0] / DEG).unwrap_or(0.0),
+        ),
+    );
+
+    let (a_sw, d_sw) = undead(false, false, None, 0, 3);
+    let r_sw = find(&d_sw, "right_arm").map(|(r, _)| r);
+    let l_sw = find(&d_sw, "left_arm").map(|(r, _)| r);
+    let w_sw_r = want_zombie_arms(false, a_sw.attack_time, age, false, false, true);
+    let w_sw_l = want_zombie_arms(true, a_sw.attack_time, age, false, false, true);
+    c.record(
+        "k7.the_undead_strike_is_exact_on_both_arms",
+        r_sw.is_some_and(|r| near3(r, w_sw_r, TOL)) && l_sw.is_some_and(|r| near3(r, w_sw_l, TOL)),
+        format!(
+            "attackTime={:.6} right={} want={}; left={} want={} (both arms swing — the \
+             undead rig is not attack-arm gated)",
+            a_sw.attack_time,
+            r_sw.map(fmt3).unwrap_or_default(),
+            fmt3(w_sw_r),
+            l_sw.map(fmt3).unwrap_or_default(),
+            fmt3(w_sw_l),
+        ),
+    );
+
+    // The pivot still carries `setupAttackAnimation`'s arm.x/z assignment:
+    // `animateZombieArms` overwrites only the rotations.
+    let off_sw = find(&d_sw, "right_arm").map(|(_, o)| o);
+    c.record(
+        "k8.the_undead_rig_overwrites_rotations_but_not_the_pivot",
+        off_sw.is_some_and(|o| !near3(o, [0.0; 3], 1e-4)),
+        format!(
+            "right_arm pivot delta={} — the humanoid stage's arm.x/z survives because \
+             animateZombieArms assigns rotations only",
+            off_sw.map(fmt3).unwrap_or_default()
+        ),
+    );
+
+    // A STAB item skips the strike entirely; the humanoid pose survives and is
+    // bobbed a SECOND time.
+    let (a_stab, d_stab) = undead(false, false, Some(Stack::Plain(ctx.spear)), 0, 3);
+    let r_stab = find(&d_stab, "right_arm").map(|(r, _)| r);
+    let mut e_stab = expect_attack(
+        a_stab.attack_time,
+        a_stab.left_arm,
+        SwingKind::Stab,
+        1.0,
+        pitch,
+        limb.0,
+        limb.1,
+        age,
+        ArmPoses {
+            right: ArmPose::Spear,
+            left: ArmPose::Spear,
+            right_handed: true,
+            known: true,
+        },
+        0.0,
+    );
+    // `bobArms` runs unconditionally at the end of `animateZombieArms`.
+    expect_bob(&mut e_stab, age);
+    c.record(
+        "k9.a_stab_item_skips_the_undead_strike_and_bobs_twice",
+        a_stab.kind == SwingKind::Stab && r_stab.is_some_and(|r| near3(r, e_stab.right_rot, TOL)),
+        format!(
+            "kind={:?} right={} want={} — the humanoid STAB pose survives and takes a \
+             SECOND bob (vanilla calls bobArms outside the animateAttack guard)",
+            a_stab.kind,
+            r_stab.map(fmt3).unwrap_or_default(),
+            fmt3(e_stab.right_rot),
+        ),
+    );
+
+    // Only a BABY HOLDING SOMETHING drops its arms.
+    let (_, d_baby_item) = undead(false, true, Some(Stack::Plain(ctx.sword)), 255, 0);
+    let (_, d_baby_bare) = undead(false, true, None, 255, 0);
+    let r_bi = find(&d_baby_item, "right_arm").map(|(r, _)| r);
+    let r_bb = find(&d_baby_bare, "right_arm").map(|(r, _)| r);
+    let w_bi = want_zombie_arms(false, 0.0, age, false, true, false);
+    let w_bb = want_zombie_arms(false, 0.0, age, true.eq(&false), true, true);
+    c.record(
+        "k10.only_a_baby_holding_an_item_drops_its_arms",
+        r_bi.is_some_and(|r| near3(r, w_bi, TOL))
+            && r_bb.is_some_and(|r| near3(r, w_bb, TOL))
+            && r_bi.zip(r_bb).is_some_and(|(a, b)| (a[0] - b[0]).abs() > 1.0),
+        format!(
+            "baby+item right={} want={} ({:.1} deg, armDrop 0); baby+empty right={} \
+             want={} ({:.1} deg, still raised)",
+            r_bi.map(fmt3).unwrap_or_default(),
+            fmt3(w_bi),
+            r_bi.map(|r| r[0] / DEG).unwrap_or(0.0),
+            r_bb.map(fmt3).unwrap_or_default(),
+            fmt3(w_bb),
+            r_bb.map(|r| r[0] / DEG).unwrap_or(0.0),
+        ),
+    );
+
+    // --- the skeleton rig ------------------------------------------------
+    let skel = |aggressive: bool, stack: Option<Stack>, ticks: u32| {
+        let mut t = table(ctx);
+        add(&mut t, 1, ctx.skeleton_tid);
+        if aggressive {
+            meta(ctx, &mut t, 1, 15, 0, &[0b0000_0100]);
+        }
+        if let Some(s) = stack {
+            equip(ctx, &mut t, 1, &[(0, s.clone()), (1, s)]);
+        }
+        swing(ctx, &mut t, 1, 0);
+        for _ in 0..ticks {
+            t.tick_lerp();
+        }
+        let (a, _, d) = pose(
+            EntityModelKind::Skeleton,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+        );
+        (a, d)
+    };
+    let (a_sk, d_sk) = skel(true, None, 3);
+    let r_sk = find(&d_sk, "right_arm").map(|(r, _)| r);
+    let w_sk = want_skeleton_arms(false, a_sk.attack_time, age);
+    c.record(
+        "k11.the_skeleton_attack_rig_is_exact_when_aggressive",
+        r_sk.is_some_and(|r| near3(r, w_sk, TOL)),
+        format!(
+            "attackTime={:.6} right={} want={} (xRot pinned to −π/2 with the strike \
+             SUBTRACTED, unlike the undead assembly)",
+            a_sk.attack_time,
+            r_sk.map(fmt3).unwrap_or_default(),
+            fmt3(w_sk),
+        ),
+    );
+    // Gated twice: not aggressive, or holding a bow, leaves the humanoid pose.
+    let (_, d_calm) = skel(false, None, 3);
+    let (_, d_bow) = skel(true, Some(Stack::Plain(ctx.bow)), 3);
+    let r_calm = find(&d_calm, "right_arm").map(|(r, _)| r);
+    let r_bow = find(&d_bow, "right_arm").map(|(r, _)| r);
+    c.record(
+        "k12.the_skeleton_rig_is_gated_on_aggressive_and_no_bow",
+        r_calm.is_some_and(|r| !near3(r, w_sk, 1e-3))
+            && r_bow.is_some_and(|r| !near3(r, w_sk, 1e-3)),
+        format!(
+            "not-aggressive right={} and bow-in-hand right={} both differ from the \
+             aggressive rig {} — a bow-armed skeleton keeps its aiming pose",
+            r_calm.map(fmt3).unwrap_or_default(),
+            r_bow.map(fmt3).unwrap_or_default(),
+            fmt3(w_sk),
+        ),
+    );
+
+    // --- the illager rig -------------------------------------------------
+    let illager = |tid: i32, kind: EntityModelKind, setup: &dyn Fn(&Ctx, &mut EntityTable)| {
+        let mut t = table(ctx);
+        add(&mut t, 1, tid);
+        setup(ctx, &mut t);
+        swing(ctx, &mut t, 1, 0);
+        for _ in 0..3 {
+            t.tick_lerp();
+        }
+        let (a, _, d) = pose(
+            kind,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+        );
+        let mob = crate::live_cmd::resolve_mob_combat(&t, 1, kind, Some(ctx.bow));
+        (a, d, mob)
+    };
+
+    // A vindicator with no weapon and the aggressive bit set → ATTACKING with
+    // an empty main hand → `animateZombieArms(..., true, ...)`. Note the
+    // literal `true`: the illager path never consults the mob's own flag.
+    let (a_vi, d_vi, m_vi) = illager(
+        ctx.vindicator_tid,
+        EntityModelKind::Vindicator,
+        &|ctx, t| {
+            meta(ctx, t, 1, 15, 0, &[0b0000_0100]);
+        },
+    );
+    let r_vi = find(&d_vi, "right_arm").map(|(r, _)| r);
+    let w_vi = want_zombie_arms(false, a_vi.attack_time, age, true, false, true);
+    c.record(
+        "k13.an_empty_handed_attacking_illager_uses_the_zombie_arms_with_a_literal_true",
+        m_vi.illager_pose == rewo_gpu::mobs::IllagerArmPose::Attacking
+            && r_vi.is_some_and(|r| near3(r, w_vi, TOL)),
+        format!(
+            "pose={:?} right={} want={} (aggressive=true is passed literally, not read \
+             from the mob's flag)",
+            m_vi.illager_pose,
+            r_vi.map(fmt3).unwrap_or_default(),
+            fmt3(w_vi),
+        ),
+    );
+
+    // The same vindicator holding a weapon takes `swingWeaponDown` instead.
+    let (a_vw, d_vw, m_vw) = illager(
+        ctx.vindicator_tid,
+        EntityModelKind::Vindicator,
+        &|ctx, t| {
+            meta(ctx, t, 1, 15, 0, &[0b0000_0100]);
+            equip(
+                ctx,
+                t,
+                1,
+                &[(0, Stack::Plain(ctx.sword)), (1, Stack::Empty)],
+            );
+        },
+    );
+    let r_vw = find(&d_vw, "right_arm").map(|(r, _)| r);
+    let l_vw = find(&d_vw, "left_arm").map(|(r, _)| r);
+    let w_vw_r = want_swing_weapon_down(false, false, a_vw.attack_time, age);
+    let w_vw_l = want_swing_weapon_down(true, false, a_vw.attack_time, age);
+    c.record(
+        "k14.an_armed_attacking_illager_swings_the_weapon_down",
+        m_vw.illager_pose == rewo_gpu::mobs::IllagerArmPose::Attacking
+            && r_vw.is_some_and(|r| near3(r, w_vw_r, TOL))
+            && l_vw.is_some_and(|r| near3(r, w_vw_l, TOL))
+            && r_vw.is_some_and(|r| !near3(r, w_vi, 1e-3)),
+        format!(
+            "right={} want={}; left={} want={} — the two arms take different terms, and \
+             this differs from the empty-handed rig {}",
+            r_vw.map(fmt3).unwrap_or_default(),
+            fmt3(w_vw_r),
+            l_vw.map(fmt3).unwrap_or_default(),
+            fmt3(w_vw_l),
+            fmt3(w_vi),
+        ),
+    );
+
+    // Per-class pose derivation, each from its own decompiled `getArmPose`.
+    let pose_of = |tid: i32, kind: EntityModelKind, setup: &dyn Fn(&Ctx, &mut EntityTable)| {
+        let (_, _, m) = illager(tid, kind, setup);
+        m.illager_pose
+    };
+    use rewo_gpu::mobs::IllagerArmPose as P;
+    let pil_charge = pose_of(ctx.pillager_tid, EntityModelKind::Pillager, &|ctx, t| {
+        meta(ctx, t, 1, 17, 8, &[1]);
+    });
+    let pil_hold = pose_of(ctx.pillager_tid, EntityModelKind::Pillager, &|ctx, t| {
+        equip(ctx, t, 1, &[(0, Stack::Plain(ctx.crossbow)), (1, Stack::Empty)]);
+    });
+    let pil_neutral = pose_of(ctx.pillager_tid, EntityModelKind::Pillager, &|_, _| {});
+    let evo_spell = pose_of(ctx.evoker_tid, EntityModelKind::Evoker, &|ctx, t| {
+        meta(ctx, t, 1, 17, 0, &[3]);
+    });
+    let evo_celeb = pose_of(ctx.evoker_tid, EntityModelKind::Evoker, &|ctx, t| {
+        meta(ctx, t, 1, 16, 8, &[1]);
+    });
+    let ill_bow = pose_of(ctx.illusioner_tid, EntityModelKind::Illusioner, &|ctx, t| {
+        meta(ctx, t, 1, 15, 0, &[0b0000_0100]);
+    });
+    let vin_crossed = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|_, _| {});
+    c.record(
+        "k15.each_illager_class_derives_its_own_arm_pose",
+        pil_charge == P::CrossbowCharge
+            && pil_hold == P::CrossbowHold
+            && pil_neutral == P::Neutral
+            && evo_spell == P::Spellcasting
+            && evo_celeb == P::Celebrating
+            && ill_bow == P::BowAndArrow
+            && vin_crossed == P::Crossed,
+        format!(
+            "pillager charging={pil_charge:?} holding={pil_hold:?} idle={pil_neutral:?}; \
+             evoker casting={evo_spell:?} celebrating={evo_celeb:?}; illusioner \
+             aggressive={ill_bow:?} (BOW_AND_ARROW, not ATTACKING); vindicator \
+             idle={vin_crossed:?}"
+        ),
+    );
+
+    // A spellcaster's index-17 BYTE must not be read on a non-spellcaster, and
+    // a pillager's index-17 BOOLEAN must not be read on one.
+    let vin_spell = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|ctx, t| {
+        meta(ctx, t, 1, 17, 0, &[3]);
+    });
+    let vin_charge = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|ctx, t| {
+        meta(ctx, t, 1, 17, 8, &[1]);
+    });
+    c.record(
+        "k16.the_index_17_slots_are_kind_gated",
+        vin_spell == P::Crossed && vin_charge == P::Crossed,
+        format!(
+            "a vindicator sent the spellcaster BYTE → {vin_spell:?} and the pillager \
+             BOOLEAN → {vin_charge:?}; both stay CROSSED because neither accessor is \
+             declared on its class"
         ),
     );
 }

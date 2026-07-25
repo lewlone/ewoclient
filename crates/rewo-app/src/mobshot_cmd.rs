@@ -182,6 +182,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+        mob: rewo_gpu::mobs::MobCombat::default(),
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,

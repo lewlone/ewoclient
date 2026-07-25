@@ -116,6 +116,9 @@ pub struct EntityDraw<'a> {
     /// strike. [`mobs::ArmPoses::EMPTY`] for an unarmed entity and for every
     /// model that is not a humanoid.
     pub arm_poses: mobs::ArmPoses,
+    /// Synced mob state the M20 arm rigs read (aggressive, held item, baby,
+    /// derived illager pose). Default for every entity that is not a mob.
+    pub mob: mobs::MobCombat,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -688,6 +691,7 @@ impl EntityPass {
             allay_dance: Option::None,
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
         };
         let xf = part_transforms(model, &ctx, None, None);
         Some(
@@ -700,7 +704,13 @@ impl EntityPass {
                 .filter(|q| {
                     matches!(
                         model.parts[q.part as usize].show,
-                        mobs::Show::Always | mobs::Show::NotShell
+                        mobs::Show::Always
+                            | mobs::Show::NotShell
+                            // The rest pose is `IllagerArmPose::CROSSED`
+                            // (`AbstractIllager.getArmPose`'s base case), so
+                            // the folded arms render and the loose pair does
+                            // not — matching what `set_entities` draws.
+                            | mobs::Show::IllagerCrossedOnly
                     )
                 })
                 .map(|q| {
@@ -840,6 +850,7 @@ impl EntityPass {
             allay_dance: d.allay_dance,
             attack: d.attack,
             arm_poses: d.arm_poses,
+            mob: d.mob,
         };
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
@@ -909,6 +920,18 @@ impl EntityPass {
                 mobs::Show::NotShell if d.shell => continue,
                 mobs::Show::During(g)
                     if !matches!(d.gesture, Some((active, _)) if active == g) =>
+                {
+                    continue
+                }
+                // `IllagerModel.setupAnim`'s tail: `arms.visible = crossedArms`
+                // and `left/rightArm.visible = !crossedArms`.
+                mobs::Show::IllagerCrossedOnly
+                    if d.mob.illager_pose != mobs::IllagerArmPose::Crossed =>
+                {
+                    continue
+                }
+                mobs::Show::IllagerNotCrossed
+                    if d.mob.illager_pose == mobs::IllagerArmPose::Crossed =>
                 {
                     continue
                 }
@@ -1186,6 +1209,8 @@ struct AnimCtx {
     /// `state.rightArmPose` / `state.leftArmPose` + handedness — the hold pose
     /// applied between the walk swing and the attack.
     arm_poses: mobs::ArmPoses,
+    /// Synced mob state driving the undead / skeleton / illager arm rigs.
+    mob: mobs::MobCombat,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -1430,7 +1455,38 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             }
         }
         HumanoidArmRight | HumanoidArmLeft => {
-            let left = anim == HumanoidArmLeft;
+            humanoid_arm(&mut rot, &mut off, anim == HumanoidArmLeft, c, amp);
+        }
+        // `AbstractZombieModel.setupAnim` = `super.setupAnim(state)` then
+        // `animateZombieArms(...)`, which *overwrites* the arms.
+        UndeadArmRight | UndeadArmLeft => {
+            let left = anim == UndeadArmLeft;
+            humanoid_arm(&mut rot, &mut off, left, c, amp);
+            animate_zombie_arms(&mut rot, left, c, c.mob.aggressive);
+        }
+        // `SkeletonModel.setupAnim` = `super.setupAnim(state)` then its own
+        // attack override, gated on aggressive && !holdingBow.
+        SkeletonArmRight | SkeletonArmLeft => {
+            let left = anim == SkeletonArmLeft;
+            humanoid_arm(&mut rot, &mut off, left, c, amp);
+            skeleton_attack_arm(&mut rot, left, c);
+        }
+        // `IllagerModel.setupAnim` assigns its own walk over everything
+        // `super.setupAnim` left, then runs the arm-pose switch.
+        IllagerArmRight | IllagerArmLeft => {
+            illager_arm(&mut rot, &mut off, anim == IllagerArmLeft, c);
+        }
+    }
+    (rot, off)
+}
+
+/// `HumanoidModel.setupAnim`'s arm stage: the walk assignment, the
+/// [`mobs::ArmPose`] hold dispatch, `setupAttackAnimation`, and the idle bob.
+/// Factored out because three other models run it as their `super.setupAnim`
+/// before layering their own override on top.
+fn humanoid_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx, amp: f32) {
+    use std::f32::consts::PI;
+    {
             // The ordinary walk swing, first — `setupAnim` assigns it before
             // `setupAttackAnimation` adds on top.
             let phase = if left { c.f } else { c.f + PI };
@@ -1442,13 +1498,13 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             // stage renders every armed entity from an unarmed baseline: an
             // `ITEM` arm sits π/10 (18°) higher with its walk swing unhalved.
             if c.arm_poses.poses_arm(left) {
-                apply_arm_pose(&mut rot, c.arm_poses.for_arm(left), left, c);
+                apply_arm_pose(rot, c.arm_poses.for_arm(left), left, c);
             }
             let a = c.attack;
             if a.attack_time <= 0.0 {
                 // `bobModelPart` still runs — it is outside the attack guard.
-                bob_model_part(&mut rot, left, c.age);
-                return (rot, off);
+                bob_model_part(rot, left, c.age);
+                return;
             }
             let by = attack_body_yrot(&a);
             let (sin_by, cos_by) = (mth_sin(by as f64), mth_cos(by as f64));
@@ -1495,10 +1551,147 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 // NONE, and WHACK on the non-attack arm: the prologue only.
                 _ => {}
             }
-            bob_model_part(&mut rot, left, c.age);
-        }
+            bob_model_part(rot, left, c.age);
     }
-    (rot, off)
+}
+
+/// `AnimationUtils.animateAttackArms` — the shared undead strike. Vanilla
+/// **assigns** all three rotations, wiping whatever the humanoid stage left.
+fn animate_attack_arms(rot: &mut [f32; 3], left: bool, attack_time: f32, negate: bool, arm_drop: f32) {
+    use std::f32::consts::PI;
+    let a_y = if negate { 1.0f32 } else { -1.0 } * mth_sin((attack_time * PI) as f64);
+    let inv = 1.0 - attack_time;
+    let a_x = mth_sin(((1.0 - inv * inv) * PI) as f64);
+    let x_rot = arm_drop + a_y * 1.2 - a_x * 0.4;
+    let y_rot = 0.1 - a_y * 0.6;
+    rot[0] = x_rot;
+    // right.yRot = negate ? -y : y   |   left.yRot = negate ? y : -y
+    rot[1] = if negate == left { y_rot } else { -y_rot };
+    rot[2] = 0.0;
+}
+
+/// `AnimationUtils.animateZombieArms`.
+///
+/// Two vanilla quirks are load-bearing and reproduced rather than tidied: a
+/// STAB item **skips the strike entirely** (the arms keep whatever
+/// `super.setupAnim` left), and `bobArms` runs here *in addition to* the bob
+/// `HumanoidModel.setupAnim` already applied — so an undead arm is bobbed
+/// twice, and on the STAB path both bobs survive.
+fn animate_zombie_arms(rot: &mut [f32; 3], left: bool, c: &AnimCtx, aggressive: bool) {
+    use std::f32::consts::PI;
+    if c.attack.kind != mobs::SwingKind::Stab {
+        // `!state.isBaby || mainHand.isEmpty()` — only a BABY HOLDING SOMETHING
+        // drops its arms; an adult always raises them.
+        let raise = !c.mob.is_baby || c.mob.main_hand_empty;
+        let arm_drop = if raise {
+            -PI / if aggressive { 1.5 } else { 2.25 }
+        } else {
+            0.0
+        };
+        animate_attack_arms(rot, left, c.attack.attack_time, raise, arm_drop);
+    }
+    bob_model_part(rot, left, c.age);
+}
+
+/// `SkeletonModel.setupAnim`'s override — only when aggressive and not holding
+/// a bow, so a bow-armed skeleton keeps its aiming pose.
+///
+/// Same two sine terms as the undead rig but a different assembly: xRot is
+/// pinned to −π/2 and the strike **subtracted**, and the yaw is not negated by
+/// an arm flag. Like the undead rig it re-bobs, and it too assigns.
+fn skeleton_attack_arm(rot: &mut [f32; 3], left: bool, c: &AnimCtx) {
+    use std::f32::consts::PI;
+    if !c.mob.aggressive || c.mob.holding_bow {
+        return;
+    }
+    let t = c.attack.attack_time;
+    let attack2 = mth_sin((t * PI) as f64);
+    let inv = 1.0 - t;
+    let attack = mth_sin(((1.0 - inv * inv) * PI) as f64);
+    rot[2] = 0.0;
+    let y = 0.1 - attack2 * 0.6;
+    rot[1] = if left { y } else { -y };
+    rot[0] = -std::f32::consts::FRAC_PI_2 - (attack2 * 1.2 - attack * 0.4);
+    bob_model_part(rot, left, c.age);
+}
+
+/// `AnimationUtils.swingWeaponDown` — the armed-illager strike. The two arms
+/// get different terms, and which is which depends on the main arm.
+fn swing_weapon_down(rot: &mut [f32; 3], left: bool, main_arm_left: bool, t: f32, age: f32) {
+    use std::f32::consts::PI;
+    let attack2 = mth_sin((t * PI) as f64);
+    let attack = mth_sin(((1.0 - (1.0 - t) * (1.0 - t)) * PI) as f64);
+    rot[2] = 0.0;
+    rot[1] = if left { -PI / 20.0 } else { PI / 20.0 };
+    // The main arm holds the weapon high; the off arm trails.
+    let holds_weapon = left == main_arm_left;
+    if holds_weapon {
+        rot[0] = -1.8849558 + mth_cos((age * 0.09) as f64) * 0.15;
+        rot[0] += attack2 * 2.2 - attack * 0.4;
+    } else {
+        rot[0] = -0.0 + mth_cos((age * 0.19) as f64) * 0.5;
+        rot[0] += attack2 * 1.2 - attack * 0.4;
+    }
+}
+
+/// `IllagerModel.setupAnim`'s arm stage.
+///
+/// Vanilla calls `super.setupAnim` first, then **assigns** its own walk over
+/// both arms — which wipes the humanoid hold pose, the attack and the idle bob
+/// outright — and only then runs the `IllagerArmPose` switch. So the humanoid
+/// stage is not run here at all: everything it would contribute is overwritten
+/// before it could be seen.
+fn illager_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx) {
+    use std::f32::consts::PI;
+    use mobs::IllagerArmPose as P;
+    // The illager's own walk: the humanoid coefficients without `/ speedValue`,
+    // with yRot and zRot explicitly zeroed.
+    let phase = if left { c.f } else { c.f + PI };
+    rot[0] = phase.cos() * 2.0 * c.amt * 0.5;
+    rot[1] = 0.0;
+    rot[2] = 0.0;
+    match c.mob.illager_pose {
+        P::Attacking => {
+            if c.mob.main_hand_empty {
+                // `animateZombieArms(left, right, true, state)` — literally
+                // `true`, not the mob's aggressive flag.
+                animate_zombie_arms(rot, left, c, true);
+            } else {
+                swing_weapon_down(rot, left, c.mob.main_arm_left, c.attack.attack_time, c.age);
+            }
+        }
+        P::Spellcasting => {
+            // The pivot is *assigned* to (∓5, ·, 0): z back to 0 and x to the
+            // rest column, so the delta is z −rest_z and x 0.
+            off[2] = 0.0;
+            rot[0] = mth_cos((c.age * 0.6662) as f64) * 0.25;
+            rot[2] = if left { -PI * 3.0 / 4.0 } else { PI * 3.0 / 4.0 };
+            rot[1] = 0.0;
+        }
+        P::BowAndArrow => {
+            // Both arms are written by the RIGHT-arm branch in vanilla; the
+            // head angles are the net head yaw/pitch this rig already has.
+            if left {
+                rot[0] = -0.9424779 + c.pitch;
+                rot[1] = c.net - 0.4;
+                rot[2] = std::f32::consts::FRAC_PI_2;
+            } else {
+                rot[1] = -0.1 + c.net;
+                rot[0] = -std::f32::consts::FRAC_PI_2 + c.pitch;
+            }
+        }
+        P::Celebrating => {
+            off[2] = 0.0;
+            rot[0] = mth_cos((c.age * 0.6662) as f64) * 0.05;
+            rot[2] = if left { -PI * 3.0 / 4.0 } else { 2.670354 };
+            rot[1] = 0.0;
+        }
+        // CROSSED hides both arms (the `arms` part shows instead) and NEUTRAL
+        // leaves the walk alone. CROSSBOW_HOLD / CROSSBOW_CHARGE need
+        // `ticksUsingItem`, which is not synchronised for a remote entity —
+        // excluded rather than approximated, so they render as the plain walk.
+        P::Crossed | P::Neutral | P::CrossbowHold | P::CrossbowCharge => {}
+    }
 }
 
 /// `180.0F / (float)Math.PI`. Vanilla writes the radians→degrees conversion as
@@ -1719,6 +1912,8 @@ pub struct OracleInputs {
     /// Both arms' hold pose + handedness — the `swingshot` oracle feeds these
     /// to prove `pose{Right,Left}Arm` and the `setupAnim` pose dispatch.
     pub arm_poses: mobs::ArmPoses,
+    /// Synced mob state for the undead / skeleton / illager rigs (M20).
+    pub mob: mobs::MobCombat,
 }
 
 /// The per-part animation deltas (added rotation radians ZYX + pivot offset
@@ -1746,6 +1941,7 @@ pub fn oracle_part_deltas(
         allay_dance: inputs.allay_dance,
         attack: inputs.attack,
         arm_poses: inputs.arm_poses,
+        mob: inputs.mob,
     };
     let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
     Some(

@@ -54,6 +54,25 @@ pub struct EntityMeta {
     /// the raw wire id; `HumanoidArm.STREAM_CODEC` is
     /// `idMapper(..., OutOfBoundsStrategy.ZERO)`, so anything but 1 is LEFT.
     pub main_arm: Option<u8>,
+    /// `Mob.DATA_MOB_FLAGS_ID` — index 15, **BYTE**. Bit `1` is `isNoAi`, bit
+    /// `2` is `isLeftHanded` (which *is* `Mob.getMainArm()`), bit `4` is
+    /// `isAggressive` (M20 mob combat rigs).
+    ///
+    /// Index 15 is shared with [`Self::main_arm`], but the serializer
+    /// separates them: only `Avatar` uses HUMANOID_ARM (42) there, and only a
+    /// `Mob` puts a BYTE there. `ArmorStand.DATA_CLIENT_FLAGS` is also a BYTE
+    /// at 15, so the caller gates this on the entity being a mob rather than
+    /// trusting the slot alone.
+    pub mob_flags: Option<u8>,
+    /// Raw index-17 BYTE — `SpellcasterIllager.DATA_SPELL_CASTING_ID`
+    /// (`isCastingSpell()` is `> 0`). Index 17 is the first slot past `Raider`
+    /// (Entity 0..7, LivingEntity 8..14, Mob 15, PathfinderMob/Monster/
+    /// PatrollingMonster none, Raider 16). Polymorphic with
+    /// [`Self::bool17`] only by serializer, and with the gesture-state enums by
+    /// serializer too — the caller gates on kind.
+    pub byte17: Option<u8>,
+    /// Raw index-17 BOOLEAN — `Pillager.IS_CHARGING_CROSSBOW`.
+    pub bool17: Option<bool>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -85,11 +104,19 @@ pub fn parse(r: &mut PacketReader) -> EntityMeta {
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),
+            // BYTE at 15 = `Mob.DATA_MOB_FLAGS_ID` (or `ArmorStand`'s client
+            // flags — the caller's kind gate decides). Still skips correctly
+            // for anything else because the value width is the same.
+            (15, 0) => meta.mob_flags = r.u8().ok(),
             (16, 1) => meta.size = r.varint().ok(), // AbstractCubeMob.ID_SIZE (INT)
             (16, 8) => meta.bool16 = r.u8().ok().map(|b| b != 0), // baby (ageable/zombie) or dancing (allay)
             // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
             // at their shared first-own-field index.
             (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),
+            // `SpellcasterIllager.DATA_SPELL_CASTING_ID` (BYTE) and
+            // `Pillager.IS_CHARGING_CROSSBOW` (BOOLEAN) both sit at 17.
+            (17, 0) => meta.byte17 = r.u8().ok(),
+            (17, 8) => meta.bool17 = r.u8().ok().map(|b| b != 0),
             _ => {
                 if !skip_value(r, ty) {
                     break; // unknown/complex type — stop (already have ours)
@@ -236,5 +263,65 @@ mod tests {
         let m = parse(&mut r);
         assert_eq!(m.bool16, Some(true));
         assert_eq!(m.size, None, "BOOLEAN at 16 is not an INT size");
+    }
+}
+
+#[cfg(test)]
+mod m20_mob_metadata_tests {
+    use crate::metadata;
+    use crate::PacketReader;
+
+    /// One `(index, serializer, value)` entry plus the 0xFF terminator.
+    fn one(index: u8, ser: i32, value: &[u8]) -> Vec<u8> {
+        let mut b = vec![index];
+        // serializer ids are all < 128 here, so a single VarInt byte.
+        assert!(ser < 128);
+        b.push(ser as u8);
+        b.extend_from_slice(value);
+        b.push(0xFF);
+        b
+    }
+
+    #[test]
+    fn the_index_15_byte_is_the_mob_flags_and_the_arm_is_the_humanoid_arm() {
+        // BYTE (0) at 15 → `Mob.DATA_MOB_FLAGS_ID`.
+        let body = one(15, 0, &[0b0000_0110]);
+        let m = metadata::parse(&mut PacketReader::new(&body));
+        assert_eq!(m.mob_flags, Some(0b0000_0110));
+        assert_eq!(m.main_arm, None, "a flags byte is not a main arm");
+
+        // HUMANOID_ARM (42) at 15 → `Avatar.DATA_PLAYER_MAIN_HAND`.
+        let body = one(15, 42, &[1]);
+        let m = metadata::parse(&mut PacketReader::new(&body));
+        assert_eq!(m.main_arm, Some(1));
+        assert_eq!(m.mob_flags, None, "a main arm is not a flags byte");
+    }
+
+    #[test]
+    fn index_17_separates_the_spell_byte_from_the_crossbow_boolean() {
+        let m = metadata::parse(&mut PacketReader::new(&one(17, 0, &[3])));
+        assert_eq!(m.byte17, Some(3));
+        assert_eq!(m.bool17, None);
+
+        let m = metadata::parse(&mut PacketReader::new(&one(17, 8, &[1])));
+        assert_eq!(m.bool17, Some(true));
+        assert_eq!(m.byte17, None);
+
+        // The gesture-state enums share the index but not the serializer, and
+        // must keep decoding as gesture state (35..=37).
+        let m = metadata::parse(&mut PacketReader::new(&one(17, 36, &[2])));
+        assert_eq!(m.gesture_state, Some(2));
+        assert_eq!(m.byte17, None);
+    }
+
+    #[test]
+    fn a_flags_byte_does_not_end_the_delta_stream() {
+        // The mob-flags byte followed by a baby boolean: reading the first must
+        // not consume the second's bytes or stop the walk.
+        let mut body = vec![15u8, 0, 0b0000_0100];
+        body.extend_from_slice(&[16u8, 8, 1, 0xFF]);
+        let m = metadata::parse(&mut PacketReader::new(&body));
+        assert_eq!(m.mob_flags, Some(0b0000_0100));
+        assert_eq!(m.bool16, Some(true), "the entry after the flags byte was lost");
     }
 }

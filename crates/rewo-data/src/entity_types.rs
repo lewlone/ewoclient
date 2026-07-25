@@ -134,6 +134,15 @@ impl EntityTypes {
 pub struct EntityClasses {
     living: std::collections::HashSet<i32>,
     swing_ticking: std::collections::HashSet<i32>,
+    /// `Mob` descendants — `DATA_MOB_FLAGS_ID` at index 15 BYTE (M20).
+    mob: std::collections::HashSet<i32>,
+    /// `Raider` descendants — `IS_CELEBRATING` at index 16 BOOLEAN, the same
+    /// slot as `DATA_BABY_ID` and `DATA_DANCING` (M20).
+    raider: std::collections::HashSet<i32>,
+    /// `SpellcasterIllager` descendants — `DATA_SPELL_CASTING_ID` at 17 BYTE.
+    spellcaster: std::collections::HashSet<i32>,
+    /// `AbstractIllager` descendants — the `IllagerModel` arm-pose switch.
+    illager: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -170,6 +179,10 @@ impl EntityClasses {
         };
         let living = resolve_set(table::LIVING, "living")?;
         let swing_ticking = resolve_set(table::SWING_TICKING, "swing-ticking")?;
+        let mob = resolve_set(table::MOB, "mob")?;
+        let raider = resolve_set(table::RAIDER, "raider")?;
+        let spellcaster = resolve_set(table::SPELLCASTER_ILLAGER, "spellcaster")?;
+        let illager = resolve_set(table::ILLAGER, "illager")?;
         // A swing-ticking type that is not living would mean the generator's
         // own invariant broke between generation and resolution.
         if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
@@ -183,9 +196,31 @@ impl EntityClasses {
             swing_ticking.len(),
             types.len()
         );
+        // Every illager is a raider, and every spellcaster is an illager —
+        // the `extends` chain guarantees it, so a violation means the generated
+        // table and the registry disagree about the hierarchy.
+        if let Some(bad) = illager.iter().find(|id| !raider.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is an illager but not a raider"
+            ));
+        }
+        if let Some(bad) = spellcaster.iter().find(|id| !illager.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a spellcaster but not an illager"
+            ));
+        }
+        if let Some(bad) = raider.iter().find(|id| !mob.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a raider but not a mob"
+            ));
+        }
         Ok(Self {
             living,
             swing_ticking,
+            mob,
+            raider,
+            spellcaster,
+            illager,
         })
     }
 
@@ -200,7 +235,54 @@ impl EntityClasses {
         Self {
             living: living.iter().copied().collect(),
             swing_ticking: swing_ticking.iter().copied().collect(),
+            mob: Default::default(),
+            raider: Default::default(),
+            spellcaster: Default::default(),
+            illager: Default::default(),
         }
+    }
+
+    /// As [`Self::from_raw_ids`], with the M20 ancestry sets. Tests only.
+    pub fn from_raw_ids_full(
+        living: &[i32],
+        swing_ticking: &[i32],
+        mob: &[i32],
+        raider: &[i32],
+        spellcaster: &[i32],
+        illager: &[i32],
+    ) -> Self {
+        Self {
+            living: living.iter().copied().collect(),
+            swing_ticking: swing_ticking.iter().copied().collect(),
+            mob: mob.iter().copied().collect(),
+            raider: raider.iter().copied().collect(),
+            spellcaster: spellcaster.iter().copied().collect(),
+            illager: illager.iter().copied().collect(),
+        }
+    }
+
+    /// `entity instanceof Mob` — gates reading the index-15 BYTE as
+    /// `DATA_MOB_FLAGS_ID` rather than an armor stand's client flags.
+    pub fn is_mob(&self, type_id: i32) -> bool {
+        self.mob.contains(&type_id)
+    }
+
+    /// `entity instanceof Raider` — decides that index-16 BOOLEAN is
+    /// `IS_CELEBRATING` rather than `DATA_BABY_ID`.
+    pub fn is_raider(&self, type_id: i32) -> bool {
+        self.raider.contains(&type_id)
+    }
+
+    /// `entity instanceof SpellcasterIllager` — index-17 BYTE is
+    /// `DATA_SPELL_CASTING_ID`.
+    pub fn is_spellcaster(&self, type_id: i32) -> bool {
+        self.spellcaster.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractIllager` — runs `IllagerModel`'s arm-pose
+    /// switch instead of the humanoid/undead rigs.
+    pub fn is_illager(&self, type_id: i32) -> bool {
+        self.illager.contains(&type_id)
     }
 
     /// `entity instanceof LivingEntity`.

@@ -470,6 +470,45 @@ pub struct EntityTable {
     /// Amplifiers of the swing-duration effects, per entity. Only entities that
     /// actually have one get a map entry.
     swing_effects: HashMap<i32, SwingEffects>,
+    /// Per-mob combat state the M20 rigs read: `Mob.DATA_MOB_FLAGS_ID` (index
+    /// 15 BYTE), `Raider.IS_CELEBRATING` (16 BOOLEAN),
+    /// `SpellcasterIllager.DATA_SPELL_CASTING_ID` (17 BYTE) and
+    /// `Pillager.IS_CHARGING_CROSSBOW` (17 BOOLEAN). Absent = every default.
+    mob_state: HashMap<i32, MobState>,
+}
+
+/// The synced mob state the M20 arm rigs consume. Every field defaults to
+/// vanilla's `define(...)` default, so an entity that has sent no metadata
+/// renders exactly as one whose flags are all clear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MobState {
+    /// `Mob.DATA_MOB_FLAGS_ID`. Bit 1 no-AI, bit 2 left-handed, bit 4
+    /// aggressive.
+    pub flags: u8,
+    /// `Raider.isCelebrating()`.
+    pub celebrating: bool,
+    /// `SpellcasterIllager.DATA_SPELL_CASTING_ID`; `isCastingSpell()` is `> 0`.
+    pub spell_casting: u8,
+    /// `Pillager.isChargingCrossbow()`.
+    pub charging_crossbow: bool,
+}
+
+impl MobState {
+    /// `Mob.isAggressive()` — `(flags & 4) != 0`.
+    pub fn is_aggressive(self) -> bool {
+        self.flags & 4 != 0
+    }
+
+    /// `Mob.isLeftHanded()` — `(flags & 2) != 0`. This *is* `Mob.getMainArm()`.
+    pub fn is_left_handed(self) -> bool {
+        self.flags & 2 != 0
+    }
+
+    /// `SpellcasterIllager.isCastingSpell()` — the client branch reads the
+    /// synced byte, not the server-only tick counter.
+    pub fn is_casting_spell(self) -> bool {
+        self.spell_casting > 0
+    }
 }
 
 /// `LivingEntity.getCurrentSwingDuration()` for one entity, over borrowed
@@ -538,6 +577,7 @@ impl EntityTable {
         self.babies.remove(&id);
         self.events.remove(&id);
         self.dances.remove(&id);
+        self.mob_state.remove(&id);
         self.clear_swing(id);
     }
 
@@ -695,8 +735,59 @@ impl EntityTable {
     }
 
     /// `LivingEntity.getMainArm()`. Right unless the entity told us otherwise.
+    ///
+    /// Two classes answer this differently and both are honoured:
+    /// `Avatar.getMainArm()` reads `DATA_PLAYER_MAIN_HAND` (index 15,
+    /// HUMANOID_ARM), while `Mob.getMainArm()` is
+    /// `isLeftHanded() ? LEFT : RIGHT` from `DATA_MOB_FLAGS_ID` bit 2 (index
+    /// 15, BYTE). They are different serializers on the same slot, so at most
+    /// one is ever recorded for a given entity and no precedence rule is
+    /// needed — `set_mob_flags` writes through to the same map.
     pub fn main_arm(&self, id: i32) -> HumanoidArm {
         self.main_arms.get(&id).copied().unwrap_or_default()
+    }
+
+    /// `Mob.DATA_MOB_FLAGS_ID` (index 15, BYTE). The caller must already have
+    /// established that this entity is a `Mob` — an `ArmorStand` puts its own
+    /// unrelated client flags at the same index with the same serializer.
+    ///
+    /// Writes handedness through to the main-arm map because
+    /// `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate mob arm
+    /// field in vanilla either.
+    pub fn set_mob_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().flags = flags;
+        self.main_arms.insert(
+            id,
+            if flags & 2 != 0 {
+                HumanoidArm::Left
+            } else {
+                HumanoidArm::Right
+            },
+        );
+    }
+
+    /// `Raider.setCelebrating` (index 16, BOOLEAN). Kind-gated by the caller:
+    /// the same slot is `DATA_BABY_ID` on an ageable mob and `DATA_DANCING` on
+    /// an Allay.
+    pub fn set_celebrating(&mut self, id: i32, celebrating: bool) {
+        self.mob_state.entry(id).or_default().celebrating = celebrating;
+    }
+
+    /// `SpellcasterIllager.DATA_SPELL_CASTING_ID` (index 17, BYTE).
+    pub fn set_spell_casting(&mut self, id: i32, spell: u8) {
+        self.mob_state.entry(id).or_default().spell_casting = spell;
+    }
+
+    /// `Pillager.setChargingCrossbow` (index 17, BOOLEAN).
+    pub fn set_charging_crossbow(&mut self, id: i32, charging: bool) {
+        self.mob_state.entry(id).or_default().charging_crossbow = charging;
+    }
+
+    /// The synced mob state driving the M20 arm rigs. Every default matches
+    /// vanilla's `define(...)`, so an entity that sent nothing is not a special
+    /// case.
+    pub fn mob_state(&self, id: i32) -> MobState {
+        self.mob_state.get(&id).copied().unwrap_or_default()
     }
 
     /// Record (`Some(amplifier)`) or drop (`None`) one swing-duration effect —
@@ -1348,5 +1439,64 @@ mod tests {
         assert_eq!(t.name_of(7), Some("Vwyla"), "name outlives the entity");
         t.remove_name(7);
         assert_eq!(t.name_of(7), None);
+    }
+}
+
+#[cfg(test)]
+mod m20_mob_state_tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_bits_are_vanillas() {
+        // `Mob`: bit 1 no-AI, bit 2 left-handed, bit 4 aggressive.
+        let s = MobState {
+            flags: 0b0000_0110,
+            ..Default::default()
+        };
+        assert!(s.is_aggressive());
+        assert!(s.is_left_handed());
+        let s = MobState {
+            flags: 0b0000_0001,
+            ..Default::default()
+        };
+        assert!(!s.is_aggressive(), "no-AI must not read as aggressive");
+        assert!(!s.is_left_handed());
+        // `isCastingSpell()` is `> 0`, not `!= 0` on a signed byte — the wire
+        // value is unsigned here so any non-zero casts.
+        assert!(!MobState::default().is_casting_spell());
+        assert!(MobState {
+            spell_casting: 3,
+            ..Default::default()
+        }
+        .is_casting_spell());
+    }
+
+    #[test]
+    fn the_flags_byte_writes_handedness_through_to_the_main_arm() {
+        // `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate field.
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.main_arm(1), HumanoidArm::Right);
+        t.set_mob_flags(1, 0b0000_0010);
+        assert_eq!(t.main_arm(1), HumanoidArm::Left);
+        t.set_mob_flags(1, 0b0000_0100);
+        assert_eq!(t.main_arm(1), HumanoidArm::Right, "clearing bit 2 restores it");
+        assert!(t.mob_state(1).is_aggressive());
+    }
+
+    #[test]
+    fn mob_state_dies_with_the_entity_and_is_not_inherited() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_mob_flags(1, 0b0000_0110);
+        t.set_celebrating(1, true);
+        t.set_spell_casting(1, 3);
+        t.set_charging_crossbow(1, true);
+        assert_ne!(t.mob_state(1), MobState::default());
+        t.remove(1);
+        assert_eq!(t.mob_state(1), MobState::default());
+        // A recycled server id must not inherit the previous occupant's state.
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.mob_state(1), MobState::default());
     }
 }

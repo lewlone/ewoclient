@@ -866,11 +866,45 @@ pub fn route_entity_event(
 ///
 /// Not public: reached only through [`route_set_entity_data`] so packet-id
 /// selection is exercised (the `danceshot` oracle drives that seam).
-pub(crate) fn apply_set_entity_data(
+/// The kind information metadata routing needs, because several slots are
+/// polymorphic and only the entity type can separate them.
+///
+/// Index 16 BOOLEAN is `DATA_BABY_ID` (ageable/zombie), `DATA_DANCING` (Allay)
+/// **or** `IS_CELEBRATING` (any Raider). Index 17 BYTE is
+/// `DATA_SPELL_CASTING_ID` on a spellcaster illager but a gesture-state enum on
+/// a sniffer/armadillo; index 17 BOOLEAN is `IS_CHARGING_CROSSBOW` on a
+/// Pillager. Index 15 BYTE is `DATA_MOB_FLAGS_ID` on a `Mob` and unrelated
+/// client flags on an `ArmorStand`.
+///
+/// Every field is optional: absent means "this client could not resolve that
+/// kind", and the corresponding slot is then left alone rather than guessed.
+#[derive(Clone, Copy, Default)]
+pub struct MetaKinds<'a> {
+    /// `minecraft:allay` type id (M18).
+    pub allay: Option<i32>,
+    /// `minecraft:pillager` type id (M20).
+    pub pillager: Option<i32>,
+    /// The machine-extracted ancestry sets — mob / raider / spellcaster.
+    pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
+}
+
+impl<'a> From<Option<i32>> for MetaKinds<'a> {
+    /// The M18 shape — an Allay id and nothing else. Kept so the callers that
+    /// only care about the dance read the same as before.
+    fn from(allay: Option<i32>) -> Self {
+        Self {
+            allay,
+            ..Default::default()
+        }
+    }
+}
+
+pub(crate) fn apply_set_entity_data<'a>(
     body: &[u8],
     entities: &mut rewo_world::entities::EntityTable,
-    allay_type_id: Option<i32>,
+    kinds: impl Into<MetaKinds<'a>>,
 ) {
+    let kinds: MetaKinds = kinds.into();
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
         return;
@@ -906,12 +940,37 @@ pub(crate) fn apply_set_entity_data(
         );
     }
     if let Some(b) = meta.bool16 {
-        // Slot 16 BOOLEAN → `DATA_DANCING` on an Allay, otherwise the modeled
-        // baby path (`AgeableMob`/`Zombie.DATA_BABY_ID`). The kind decides.
-        if allay_type_id == Some(type_id) {
+        // Slot 16 BOOLEAN → `DATA_DANCING` on an Allay, `IS_CELEBRATING` on a
+        // Raider, otherwise the modeled baby path
+        // (`AgeableMob`/`Zombie.DATA_BABY_ID`). Only the kind separates them.
+        if kinds.allay == Some(type_id) {
             entities.set_dancing(eid, b);
+        } else if kinds.classes.is_some_and(|c| c.is_raider(type_id)) {
+            entities.set_celebrating(eid, b);
         } else {
             entities.set_baby(eid, b);
+        }
+    }
+    // Slot 15 BYTE → `Mob.DATA_MOB_FLAGS_ID`. Gated on the type actually being
+    // a `Mob`: an `ArmorStand` puts unrelated client flags at the same index
+    // with the same serializer, and bit 2 there does not mean left-handed.
+    if let Some(flags) = meta.mob_flags {
+        if kinds.classes.is_some_and(|c| c.is_mob(type_id)) {
+            entities.set_mob_flags(eid, flags);
+        }
+    }
+    // Slot 17 BYTE → `SpellcasterIllager.DATA_SPELL_CASTING_ID`. The gesture
+    // enums share the index but not the serializer, and they are already read
+    // above; this is the BYTE arm and only a spellcaster may claim it.
+    if let Some(spell) = meta.byte17 {
+        if kinds.classes.is_some_and(|c| c.is_spellcaster(type_id)) {
+            entities.set_spell_casting(eid, spell);
+        }
+    }
+    // Slot 17 BOOLEAN → `Pillager.IS_CHARGING_CROSSBOW`.
+    if let Some(charging) = meta.bool17 {
+        if kinds.pillager == Some(type_id) {
+            entities.set_charging_crossbow(eid, charging);
         }
     }
 }
@@ -921,15 +980,15 @@ pub(crate) fn apply_set_entity_data(
 /// resolved `set_entity_data` id, returning whether it matched. Mirrors
 /// [`route_entity_event`] so [`play::PlaySession`] and the `danceshot` oracle
 /// drive packet-id → metadata routing through the same production code.
-pub fn route_set_entity_data(
+pub fn route_set_entity_data<'a>(
     id: i32,
     body: &[u8],
     ids: &crate::ids::Ids,
     entities: &mut rewo_world::entities::EntityTable,
-    allay_type_id: Option<i32>,
+    kinds: impl Into<MetaKinds<'a>>,
 ) -> bool {
     if id == ids.cb_play_set_entity_data {
-        apply_set_entity_data(body, entities, allay_type_id);
+        apply_set_entity_data(body, entities, kinds);
         true
     } else {
         false

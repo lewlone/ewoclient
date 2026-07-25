@@ -4299,3 +4299,176 @@ for the hold pose the *unposed arm* itself as the baseline to differ from.
   `git diff --check` **cannot** be green for a uniformly-CRLF file whose added
   lines are CRLF, because git flags the `\r` unless `core.whitespace` includes
   `cr-at-eol` (it is unset); the LF-insertion is what makes it green.
+
+### 2026-07-25 — M20: exact mob combat rigs (undead, skeleton, illager) — SHIPPED + VERIFIED
+
+M19 gave the *player* an exact swing. M20 gives it to the mobs that actually
+attack you. Four vanilla rigs, all of which run **after** `HumanoidModel.setupAnim`
+and overwrite what it left: `AnimationUtils.animateZombieArms` (the undead
+families), `SkeletonModel.setupAnim`'s own override, and `IllagerModel`'s
+arm-pose switch with its two attack branches.
+
+**The sizing discovery: the undead arms could not animate at all.** Rewo baked
+the iconic arms-forward pose as a *static fold* on `STATIC_PART`:
+
+```rust
+let arms = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [-5.0, 2.0, 0.0]);   // −90°, frozen
+```
+
+Vanilla rests at `armDrop = −π/2.25` = **−80°**, deepens to `−π/1.5` = **−120°**
+when aggressive, and swings from there. So the pose was ~10° wrong *and*
+structurally incapable of moving. M20 promotes those arms — zombie/husk/drowned,
+zombie villager, zombified piglin — to real animated parts and drives them from
+the formula. The neutral pose therefore **moves** (−90° → −80°); `mobshot` stays
+243/243 because the facelabel gate ray-casts the same geometry it renders, and
+the canonical demo PNG is untouched (no entities in it).
+
+**Ground truth.**
+
+```java
+animateZombieArms(leftArm, rightArm, aggressive, state) {
+   if (state.swingAnimationType != STAB) {                     // STAB skips it
+      boolean raiseArms = !state.isBaby || mainHand == EMPTY;  // only a BABY
+      float armDrop = raiseArms ? -PI/(aggressive ? 1.5F : 2.25F) : 0.0F;
+      animateAttackArms(leftArm, rightArm, state.attackTime, raiseArms, armDrop);
+   }
+   bobArms(rightArm, leftArm, state.ageInTicks);               // a SECOND bob
+}
+animateAttackArms(...) {                                       // ASSIGNS all three
+   float aY = (negate ? 1 : -1) * Mth.sin(attackTime * PI);
+   float aX = Mth.sin((1 - (1-attackTime)²) * PI);
+   xRot = armDrop + aY*1.2F - aX*0.4F;   yRot = 0.1F - aY*0.6F;
+   right.{x,y,z} = {xRot, negate ? -yRot : yRot, 0};
+   left .{x,y,z} = {xRot, negate ?  yRot : -yRot, 0};
+}
+```
+
+Three quirks are reproduced rather than tidied, and each has a witness. A **STAB
+item skips the strike entirely**, so the humanoid pose survives — and then takes
+a *second* bob, because `bobArms` sits outside the guard (witness `k9` observes
+`zRot = +0.200000`, two bobs of 0.1). `animateAttackArms` **assigns rotations
+only**, so `setupAttackAnimation`'s arm pivot movement survives underneath
+(`k8`). And **only a baby holding an item** drops its arms — an adult always
+raises them, whatever it holds (`k10`).
+
+**The one new wire input is `Mob.DATA_MOB_FLAGS_ID` — index 15, BYTE.** Bit 1 is
+no-AI, bit `2` is `isLeftHanded`, bit `4` is `isAggressive`. Index 15 is the slot
+M19 already reads as the player's main arm, but the **serializer separates them**:
+only `Avatar` uses HUMANOID_ARM (42) there, and M19 already had the test asserting
+"BYTE at 15 is a flags byte, not the arm". The byte is additionally gated on the
+type being a `Mob`, because `ArmorStand.DATA_CLIENT_FLAGS` is also a BYTE at 15
+and means something else entirely (`k3`).
+
+**It drags in a correctness fix for free.** `Mob.getMainArm()` *is*
+`isLeftHanded()` — mob handedness was defaulting to Right, so M19's attack-arm
+selection and `ArmPose` dispatch were wrong for every left-handed mob.
+`set_mob_flags` writes handedness through to the same main-arm map, which is
+also how vanilla stores it (there is no separate mob arm field).
+
+**Three more polymorphic slots, all resolved by ancestry.**
+`tools/gen_entity_classes.py` gained `ANCESTRY_SETS`, derived purely from the
+`extends` chain and **failing loud if any set comes out empty**:
+
+| set | ancestor | slot it unlocks |
+|---|---|---|
+| `MOB` (90) | `Mob` | 15 BYTE — the flags byte |
+| `RAIDER` (6) | `Raider` | 16 BOOLEAN — `IS_CELEBRATING` |
+| `SPELLCASTER_ILLAGER` (2) | `SpellcasterIllager` | 17 BYTE — `DATA_SPELL_CASTING_ID` |
+| `ILLAGER` (4) | `AbstractIllager` | the `IllagerModel` pose switch |
+
+Counting `defineId` up the hierarchy gives the indices: Entity 0–7, LivingEntity
+8–14, Mob 15, `PathfinderMob`/`Monster`/`PatrollingMonster` add **none**, Raider
+16, then `SpellcasterIllager` 17 and `Pillager` 17 in parallel branches.
+`RAIDER` is 6, not 4 — **`ravager` and `witch` are Raiders but not Illagers**, so
+their index-16 BOOLEAN is `IS_CELEBRATING`; before M20 it was silently read as
+`DATA_BABY_ID` (`k4`). Resolution asserts the containment the `extends` chain
+guarantees (illager ⊆ raider ⊆ mob, spellcaster ⊆ illager).
+
+**The illager rig is a different shape.** `IllagerModel.setupAnim` calls
+`super.setupAnim` and then **assigns its own walk over both arms**, wiping the
+hold pose, the attack *and* the bob — so the humanoid stage is not run for
+illagers at all; everything it would contribute is overwritten before it could be
+seen. Then the pose switch. `getArmPose()` is derived per subclass, all from
+synced state:
+
+- **Pillager** — charging → `CROSSBOW_CHARGE`; holding a crossbow → `CROSSBOW_HOLD`;
+  else aggressive ? `ATTACKING` : `NEUTRAL`
+- **Vindicator** — aggressive → `ATTACKING`; else celebrating ? `CELEBRATING` : `CROSSED`
+- **Evoker** (`SpellcasterIllager`) — casting → `SPELLCASTING`; else celebrating ? `CELEBRATING` : `CROSSED`
+- **Illusioner** — casting → `SPELLCASTING`; else aggressive ? **`BOW_AND_ARROW`** : `CROSSED`
+
+`ATTACKING` splits again: an **empty** main hand runs
+`animateZombieArms(..., true, ...)` — the aggressive argument is a **literal
+`true`**, never the mob's own flag (`k13`) — while an armed illager runs
+`AnimationUtils.swingWeaponDown`, whose two arms take different terms selected by
+the main arm (`k14`). `CROSSED` is a **visibility** switch, not a pose: vanilla
+carries both arm sets on one model and does `arms.visible = crossedArms;
+left/rightArm.visible = !crossedArms`. Rewo had two separate illager models; M20
+merges them into one with `Show::IllagerCrossedOnly` / `Show::IllagerNotCrossed`.
+
+**The skeleton rig** is gated on `isAggressive && !isHoldingBow` (the latter an
+item identity test, `getMainHandItem().is(Items.BOW)`), so a bow-armed skeleton
+keeps its aiming pose. Its assembly differs from the undead one despite sharing
+the two sine terms: xRot is **pinned to −π/2 and the strike subtracted**, and the
+yaw is not negated by an arm flag (`k11`, `k12`).
+
+**Gate: `rewo swingshot --check` grew 61 → 77 witnesses**, still serverless,
+CPU-only, fail-closed, byte-identical across runs. The M20 expectations are again
+**independent transcriptions** — `want_attack_arms`, `want_zombie_arms`,
+`want_skeleton_arms`, `want_swing_weapon_down`, each with the oracle's own `Mth`
+table; nothing reads the production rigs as its expectation. Every metadata
+witness drives a **real `set_entity_data` body through `route_set_entity_data`**
+with the production `MetaKinds`, so the kind gating is proved through the shipping
+router, not a parallel copy. `h1` was **inverted** and renamed: it asserted a
+swinging zombie was inert (true in M19, because the arms were static folds); it
+now asserts the undead rig animates *and differs from the player rig*.
+
+**Measured.**
+- **410 tests**: world 111, net 135, gpu 46, data 14, mesh 38, proto 11 (**355
+  lib**) + app 55. Release build green, pre-existing warnings only.
+- `swingshot` **77/77** twice, identical; `eventshot` 28/28; `danceshot` 24/24;
+  `mobshot` **243/243**; `lightmapshot`/`skyshot`/`tintshot`/`meshshot`/
+  `dimensioncheck` green with Vulkan validation **ON**.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15–M19**.
+- Live `--swing-check` OK, **CORRECTIONS 0**; live light `--no-relight`
+  **884,736 cells, block 0 sky 0, EXACT**; `git diff --check` clean.
+
+**One live red, diagnosed and NOT an M20 regression.** One `rewo play` run in
+four printed `ACCEPT ✗ place @ (-97,-60,-19): expected minecraft:dirt, observed
+minecraft:grass_block`; three consecutive re-runs passed. Mechanism: the harness
+clicks the top face of `(fx+2, fy-1)` so dirt lands at `(fx+2, fy)`, which
+assumes the bot is standing on **undisturbed flat ground**. When an earlier run
+of the same gate has dug a hole and the bot walks into it, its feet sit one block
+low, `(fx+2, fy)` is then the grass **surface** rather than air, and the server
+correctly rejects the placement. That is a pre-existing M16.1-era harness
+assumption — M16.1 fixed the "target inside the player's own AABB" case but not
+"the bot is standing in a hole the gate itself dug" — and it is world-state
+dependent, not random. M20's entire diff to `play_cmd.rs` is one line resolving
+the Pillager type id, nowhere near placement. **Follow-up:** have the gate assert
+the target cell is air *before* clicking, or reset the world between runs.
+
+**Exclusions / honesty.**
+- **`CROSSBOW_HOLD` and `CROSSBOW_CHARGE` are derived but not posed.** Their
+  bodies are `animateCrossbowHold` / `animateCrossbowCharge`, which need
+  `ticksUsingItem` and `maxCrossbowChargeDuration` — not synchronised for a
+  remote entity. The *pose derivation* is exact and witnessed (`k15`); the arms
+  render as the plain illager walk rather than an approximation.
+- **`SPELLCASTING` / `CELEBRATING` assign the arm pivot's `x` as well as `z`**
+  (`rightArm.x = -5`, `leftArm.x = 5`). Those are already the rest columns, so
+  only the `z` reset is modelled; if a future change moves the illager arm pivot
+  off ±5 this becomes wrong and needs the `x` term.
+- The eight **use-driven humanoid arm poses** remain unmodelled (M19's exclusion,
+  unchanged), as do crouch/swim/fall-flying/passenger.
+- **Held items are still not rendered.** Mobs now swing correctly but
+  empty-handed; item-in-hand rendering is untouched by M20.
+- **No live AI-driven encounter was staged or claimed.** Aggression, spellcasting
+  and crossbow charging are server-AI-driven and nondeterministic; the properties
+  are proved by driving real metadata bodies through the production router, the
+  same standard M17/M18/M19 set.
+- **Line endings**: `rewo-gpu/entities.rs` churned again (726/203 → 206/10) and
+  was stripped with the documented `tr -d '\r'` + `git apply
+  --ignore-whitespace` method, then four boundary lines had stray CRs removed
+  individually. Verify with `git diff --numstat` against
+  `git diff --ignore-all-space --numstat`.

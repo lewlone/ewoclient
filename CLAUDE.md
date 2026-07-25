@@ -2251,6 +2251,40 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `--swing-check` decodes server-sent equipment with CORRECTIONS 0. **Open:**
   `animateZombieArms` (the undead families have their own attack rig, so a
   swinging zombie shows no arm motion yet) and the eight use-driven arm poses.
+- **M20 exact mob combat rigs shipped + verified 2026-07-25.** M19 gave the
+  *player* an exact swing; M20 gives it to the mobs that attack you — four
+  vanilla rigs that all run **after** `HumanoidModel.setupAnim` and overwrite
+  it: `AnimationUtils.animateZombieArms` (zombie/husk/drowned/zombie-villager/
+  zombified-piglin), `SkeletonModel`'s own override, and `IllagerModel`'s
+  arm-pose switch with both its attack branches. **The sizing discovery:** the
+  undead arms were a baked `Fold::rot(−π/2)` on `STATIC_PART` — frozen at −90°
+  where vanilla rests at **−π/2.25 (−80°)** and deepens to **−π/1.5 (−120°)**
+  when aggressive, so the pose was ~10° wrong *and* structurally unable to move.
+  They are real animated parts now. Three vanilla quirks reproduced, each
+  witnessed: a **STAB item skips the strike** (the humanoid pose survives) and
+  then takes a **second bob** (`bobArms` sits outside the guard — observable as
+  `zRot +0.2`); `animateAttackArms` **assigns rotations only**, so
+  `setupAttackAnimation`'s pivot movement survives underneath; and **only a baby
+  holding an item** drops its arms. One new wire input:
+  `Mob.DATA_MOB_FLAGS_ID` — **index 15, BYTE**, bit 2 `isLeftHanded`, bit 4
+  `isAggressive` — the same slot M19 reads as the player's main arm, separated
+  by serializer and additionally gated on the type being a `Mob` (an
+  `ArmorStand`'s client flags share the slot). It fixes mob handedness for free
+  (`Mob.getMainArm()` *is* `isLeftHanded()`). Three more polymorphic slots are
+  resolved by machine-extracted ancestry (`gen_entity_classes.py` `ANCESTRY_SETS`,
+  fail-loud if empty): `MOB` 90, `RAIDER` 6, `SPELLCASTER_ILLAGER` 2, `ILLAGER`
+  4 — note **`ravager` and `witch` are Raiders but not Illagers**, so their
+  index-16 BOOLEAN is `IS_CELEBRATING`, previously misread as baby. Illagers
+  assign their **own walk over both arms** (wiping the hold pose, attack and
+  bob), then switch: empty-handed `ATTACKING` runs `animateZombieArms` with a
+  **literal `true`**, armed runs `swingWeaponDown`, and `CROSSED` is a
+  *visibility* switch (one model, both arm sets). Gate: **`swingshot --check`
+  61 → 77 witnesses**, independent transcriptions throughout, metadata driven
+  through the real `route_set_entity_data`. **410 tests**; demo PNG
+  byte-identical to M15–M19; `mobshot` 243/243 even though undead neutral
+  geometry moved. **Open:** held items are not rendered (mobs swing
+  empty-handed); illager `CROSSBOW_HOLD`/`CROSSBOW_CHARGE` are derived but not
+  posed (they need `ticksUsingItem`, unsynced for remote entities).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

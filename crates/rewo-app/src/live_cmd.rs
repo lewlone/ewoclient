@@ -121,6 +121,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // `ItemTags.SPEARS`, from the data pack the client jar ships — the tag
     // `AvatarRenderer.getArmPose` tests to pose a *held* (not swinging) spear.
     let spears = rewo_data::item_tags::ItemTag::load_spears(&jar, &data.items)?;
+    // M20: item identities the mob arm rigs test against.
+    let bow_item = data.items.id("minecraft:bow");
+    let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
     // Per-state collision shapes (slabs/stairs/fences, not just full cubes).
     let collide: Vec<Vec<[f32; 6]>> = baked.collide.clone();
     let global_bits = data.blocks.global_palette_bits;
@@ -161,6 +164,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // The Allay's type id disambiguates its index-16 `DATA_DANCING` from the
     // modeled baby path at the same slot (both index 16, both BOOLEAN).
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
+    // M20: the index-17 BOOLEAN is `Pillager.IS_CHARGING_CROSSBOW`.
+    session.pillager_type_id = data.entity_types.id_of("minecraft:pillager");
     // M19 combat swings: the machine-extracted living / swing-ticking sets gate
     // every swing input and decide whose clock runs (`updateSwingTime` is not
     // universal), and the equipment tables decide how long each swing lasts and
@@ -194,6 +199,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 baked,
                 etypes,
                 spears,
+                bow_item,
                 want_validation,
                 out,
                 settle,
@@ -203,7 +209,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.darkness_effect_scale,
             )
         }
-        _ => run_windowed(session, baked, etypes, spears, args, want_validation, dirt_item),
+        _ => run_windowed(session, baked, etypes, spears, bow_item, args, want_validation, dirt_item),
     }
 }
 
@@ -595,6 +601,109 @@ pub(crate) fn resolve_arm_poses(
     }
 }
 
+/// The synced mob state the M20 arm rigs read, plus the derived
+/// `IllagerArmPose` — the client-side half of `getArmPose()` for each illager
+/// class, which vanilla computes per subclass rather than syncing.
+///
+/// Shared by the live collector and the `swingshot` oracle for the same reason
+/// as [`resolve_attack_anim`] and [`resolve_arm_poses`].
+///
+/// `bow_item` is `Items.BOW`'s protocol id; `None` (a client that could not
+/// resolve it) leaves `holding_bow` false, which keeps the skeleton attack rig
+/// *enabled* — the conservative direction, since suppressing it would hide a
+/// real animation rather than show a wrong one.
+pub(crate) fn resolve_mob_combat(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    kind: rewo_gpu::mobs::EntityModelKind,
+    bow_item: Option<i32>,
+) -> rewo_gpu::mobs::MobCombat {
+    use rewo_gpu::mobs::{EntityModelKind as K, IllagerArmPose as P, MobCombat};
+    use rewo_world::entities::{HandItem, HumanoidArm, InteractionHand};
+
+    let st = entities.mob_state(id);
+    let main = entities.hand_item(id, InteractionHand::MainHand);
+    let main_hand_empty = matches!(main, HandItem::Empty);
+    // `entity.getMainHandItem().is(Items.BOW)`.
+    let holding_bow = main
+        .held()
+        .zip(bow_item)
+        .is_some_and(|(i, bow)| i.item_id == bow);
+    // `AbstractIllager.getArmPose()`, per subclass. The base class answers
+    // CROSSED, which is also what a non-illager gets (and never reads).
+    let illager_pose = match kind {
+        // `Pillager`: charging → CROSSBOW_CHARGE; holding a crossbow →
+        // CROSSBOW_HOLD; else aggressive ? ATTACKING : NEUTRAL.
+        K::Pillager => {
+            if st.charging_crossbow {
+                P::CrossbowCharge
+            } else if main
+                .held()
+                .is_some_and(|i| Some(i.item_id) == crossbow_item_id())
+            {
+                P::CrossbowHold
+            } else if st.is_aggressive() {
+                P::Attacking
+            } else {
+                P::Neutral
+            }
+        }
+        // `Vindicator`: aggressive → ATTACKING; else celebrating ?
+        // CELEBRATING : CROSSED.
+        K::Vindicator => {
+            if st.is_aggressive() {
+                P::Attacking
+            } else if st.celebrating {
+                P::Celebrating
+            } else {
+                P::Crossed
+            }
+        }
+        // `SpellcasterIllager` (Evoker): casting → SPELLCASTING; else
+        // celebrating ? CELEBRATING : CROSSED.
+        K::Evoker => {
+            if st.is_casting_spell() {
+                P::Spellcasting
+            } else if st.celebrating {
+                P::Celebrating
+            } else {
+                P::Crossed
+            }
+        }
+        // `Illusioner` overrides it: casting → SPELLCASTING; else aggressive ?
+        // BOW_AND_ARROW : CROSSED. Note it never celebrates.
+        K::Illusioner => {
+            if st.is_casting_spell() {
+                P::Spellcasting
+            } else if st.is_aggressive() {
+                P::BowAndArrow
+            } else {
+                P::Crossed
+            }
+        }
+        _ => P::Crossed,
+    };
+    MobCombat {
+        aggressive: st.is_aggressive(),
+        main_hand_empty,
+        holding_bow,
+        is_baby: entities.is_baby(id),
+        main_arm_left: entities.main_arm(id) == HumanoidArm::Left,
+        illager_pose,
+    }
+}
+
+/// `Items.CROSSBOW`'s protocol id, resolved once. The pillager pose test is
+/// `isHolding(Items.CROSSBOW)`, an item identity check like the skeleton's bow.
+fn crossbow_item_id() -> Option<i32> {
+    CROSSBOW_ITEM.get().copied().flatten()
+}
+
+/// Set once at session setup; `None` until then (and on a client that cannot
+/// resolve the item), which makes the CROSSBOW_HOLD arm unreachable rather
+/// than guessed.
+pub(crate) static CROSSBOW_ITEM: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+
 /// Snapshot every tracked entity into this frame's draw list. `alpha` is
 /// the partial-tick blend (0..1). Players get the rose capsule + nametag;
 /// everything else gets mauve, sized by the type table. `now` is the
@@ -608,6 +717,7 @@ fn collect_entities<'a>(
     skins: &SkinRegistry,
     lightmap: &LightmapState,
     spears: &rewo_data::item_tags::ItemTag,
+    bow_item: Option<i32>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -716,6 +826,8 @@ fn collect_entities<'a>(
         let attack = resolve_attack_anim(&session.world.entities, id, alpha);
         // The hold pose the swing is layered onto. Same sharing rule as above.
         let arm_poses = resolve_arm_poses(&session.world.entities, id, spears);
+        // M20: the synced mob state the undead / skeleton / illager rigs read.
+        let mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
@@ -740,6 +852,7 @@ fn collect_entities<'a>(
             allay_dance,
             attack,
             arm_poses,
+            mob,
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,
@@ -969,6 +1082,7 @@ fn run_headless(
     baked: assets::BakedAssets,
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
+    bow_item: Option<i32>,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -1142,6 +1256,7 @@ fn run_headless(
         &skins,
         &lightmap,
         &spears,
+        bow_item,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -1344,6 +1459,8 @@ struct LiveApp {
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
     spears: rewo_data::item_tags::ItemTag,
+    /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
+    bow_item: Option<i32>,
     pool: MeshPool,
     keys: Keys,
     want_validation: bool,
@@ -1669,6 +1786,7 @@ impl LiveApp {
             &self.skins.registry,
             &lightmap,
             &self.spears,
+            self.bow_item,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -1757,6 +1875,7 @@ fn run_windowed(
     baked: assets::BakedAssets,
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
+    bow_item: Option<i32>,
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
@@ -1772,6 +1891,7 @@ fn run_windowed(
         baked: Some(baked),
         etypes,
         spears,
+        bow_item,
         pool,
         keys: Keys::default(),
         want_validation,

@@ -161,6 +161,20 @@ pub enum Anim {
     /// `HumanoidModel.createMesh` may use it.
     HumanoidArmRight,
     HumanoidArmLeft,
+    /// `AbstractZombieModel` / `ZombieVillagerModel` / `ZombifiedPiglinModel`:
+    /// the humanoid pipeline, then `AnimationUtils.animateZombieArms`
+    /// **overwriting** the arms and bobbing them a second time (M20).
+    UndeadArmRight,
+    UndeadArmLeft,
+    /// `SkeletonModel.setupAnim`: the humanoid pipeline, then its own attack
+    /// override when aggressive and not holding a bow (M20).
+    SkeletonArmRight,
+    SkeletonArmLeft,
+    /// `IllagerModel.setupAnim`: its own walk assignment (which wipes
+    /// everything `super.setupAnim` put on the arms), then the
+    /// `IllagerArmPose` switch (M20).
+    IllagerArmRight,
+    IllagerArmLeft,
 }
 
 /// `HumanoidModel.createMesh`'s arm pivot x — `PartPose.offset(∓5, 2, 0)`.
@@ -370,6 +384,45 @@ impl Default for ArmPoses {
     }
 }
 
+/// `AbstractIllager.IllagerArmPose`, in declaration order (the ordinal is not
+/// on the wire — the client *derives* this per illager class, so the order is
+/// documentation rather than a codec).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum IllagerArmPose {
+    /// Arms folded: the `arms` part shows and the two arm parts hide.
+    #[default]
+    Crossed,
+    Attacking,
+    Spellcasting,
+    BowAndArrow,
+    CrossbowHold,
+    CrossbowCharge,
+    Celebrating,
+    Neutral,
+}
+
+/// The synced mob state the M20 arm rigs read, mirrored into `rewo-gpu` so the
+/// renderer keeps no `rewo-world` dependency (the same pattern [`AllayDance`]
+/// and [`SwingKind`] use).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct MobCombat {
+    /// `Mob.isAggressive()` — deepens the undead arm drop from −π/2.25 to
+    /// −π/1.5 and gates the skeleton rig entirely.
+    pub aggressive: bool,
+    /// `state.getMainHandItemStack() == ItemStack.EMPTY`. Only a **baby**
+    /// holding something drops the undead arms; an adult always raises them.
+    pub main_hand_empty: bool,
+    /// `entity.getMainHandItem().is(Items.BOW)` — a bow suppresses the
+    /// skeleton attack rig so the bow-hold pose survives.
+    pub holding_bow: bool,
+    /// `state.isBaby`.
+    pub is_baby: bool,
+    /// `state.mainArm == HumanoidArm.LEFT`, for `swingWeaponDown`.
+    pub main_arm_left: bool,
+    /// The derived `IllagerArmPose`; ignored by the non-illager rigs.
+    pub illager_pose: IllagerArmPose,
+}
+
 impl Eq for Anim {}
 
 /// Per-frame Allay dance inputs — the `AllayRenderState` fields the model
@@ -544,6 +597,11 @@ pub enum Show {
     /// Only while this gesture is active (frog `croaking_body`, shown by
     /// vanilla's `croakAnimationState.isStarted()` check).
     During(Gesture),
+    /// `IllagerModel.setupAnim`'s tail: `arms.visible = crossedArms`. Shown
+    /// only while the derived pose is `CROSSED` (M20).
+    IllagerCrossedOnly,
+    /// `leftArm.visible = rightArm.visible = !crossedArms` — the counterpart.
+    IllagerNotCrossed,
 }
 
 /// When a keyframe animation plays — vanilla's `setupAnim` call patterns.
@@ -1568,10 +1626,14 @@ fn player_model(slim: bool) -> Model {
 fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
     let mut b = ModelBuilder::new();
     let head = humanoid_head_body(&mut b, 0);
-    let arms = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [-5.0, 2.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, false, &[arms]);
-    let arms_l = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [5.0, 2.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, true, &[arms_l]);
+    // M20: the arms were baked forward by a static `Fold::rot(-π/2)`, which
+    // froze them at −90° — vanilla rests at −π/2.25 (−80°) and deepens to
+    // −π/1.5 (−120°) when aggressive, and swings from there. They are real
+    // animated parts now; the rest angle comes from `animateZombieArms`.
+    let arm_r = b.part_named("right_arm", [-5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmRight, 1.0, None);
+    b.cube(arm_r, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
+    let arm_l = b.part_named("left_arm", [5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmLeft, 1.0, None);
+    b.cube_m(arm_l, 0, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
     let leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
     b.cube(leg_r, 0, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], NONE);
     let leg_l = b.part([1.9, 12.0, 0.0], Anim::LegLeft, 1.0);
@@ -1583,8 +1645,8 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         b.cube_g(head, tex, (0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], 0.25, NONE);
         b.cube_g(head, tex, (32.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], 0.75, NONE);
         b.cube_g(STATIC_PART, tex, (16.0, 16.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], 0.25, NONE);
-        b.cube_f(STATIC_PART, tex, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, false, &[arms]);
-        b.cube_f(STATIC_PART, tex, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, true, &[arms_l]);
+        b.cube_f(arm_r, tex, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, false, NONE);
+        b.cube_f(arm_l, tex, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.25, true, NONE);
         b.cube_g(leg_r, tex, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], 0.25, NONE);
         b.cube_f(leg_l, tex, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], 0.25, true, NONE);
     }
@@ -1610,9 +1672,11 @@ fn drowned() -> Model {
 fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
     let b = &mut *b;
     let head = humanoid_head_body(b, 0);
-    let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
+    // M20: `SkeletonModel.setupAnim` overrides the arms when aggressive and
+    // not holding a bow — the rig keeps the humanoid walk otherwise.
+    let arm_r = b.part_named("right_arm", [-5.0, 2.0, 0.0], [0.0; 3], Anim::SkeletonArmRight, 1.0, None);
     b.cube(arm_r, 0, (40.0, 16.0), [-1.0, -2.0, -1.0], [2.0, 12.0, 2.0], NONE);
-    let arm_l = b.part([5.0, 2.0, 0.0], Anim::ArmLeft, 1.0);
+    let arm_l = b.part_named("left_arm", [5.0, 2.0, 0.0], [0.0; 3], Anim::SkeletonArmLeft, 1.0, None);
     b.cube_m(arm_l, 0, (40.0, 16.0), [-1.0, -2.0, -1.0], [2.0, 12.0, 2.0], NONE);
     let leg_r = b.part([-2.0, 12.0, 0.0], Anim::LegRight, 1.0);
     b.cube(leg_r, 0, (0.0, 16.0), [-1.0, 0.0, -1.0], [2.0, 12.0, 2.0], NONE);
@@ -1966,10 +2030,13 @@ fn piglin_like(arms_forward: bool) -> Model {
     b.cube_f(head, 0, (51.0, 6.0), [0.0, 0.0, -2.0], [1.0, 5.0, 4.0], 0.0, false, &[Fold::rot([0.0, 0.0, -PI / 6.0], [4.5, -6.0, 0.0])]);
     b.cube(STATIC_PART, 0, (16.0, 16.0), [-4.0, 0.0, -2.0], [8.0, 12.0, 4.0], NONE);
     if arms_forward {
-        let arms = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [-5.0, 2.0, 0.0]);
-        b.cube_f(STATIC_PART, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, false, &[arms]);
-        let arms_l = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [5.0, 2.0, 0.0]);
-        b.cube_f(STATIC_PART, 0, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, true, &[arms_l]);
+        // M20: `ZombifiedPiglinModel.setupAnim` runs `animateZombieArms` after
+        // the humanoid stage, exactly like `AbstractZombieModel` — so these are
+        // animated parts, not a baked −π/2 fold.
+        let arm_r = b.part_named("right_arm", [-5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmRight, 1.0, None);
+        b.cube(arm_r, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
+        let arm_l = b.part_named("left_arm", [5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmLeft, 1.0, None);
+        b.cube_m(arm_l, 0, (40.0, 16.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
     } else {
         let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
         b.cube(arm_r, 0, (40.0, 16.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
@@ -2002,10 +2069,11 @@ fn zombie_villager() -> Model {
     b.cube_f(head, 0, (30.0, 47.0), [-8.0, -8.0, -6.0], [16.0, 16.0, 1.0], 0.0, false, &[Fold::rot([-FRAC_PI_2, 0.0, 0.0], [0.0, 0.0, 0.0])]);
     b.cube(STATIC_PART, 0, (16.0, 20.0), [-4.0, 0.0, -3.0], [8.0, 12.0, 6.0], NONE);
     b.cube_g(STATIC_PART, 0, (0.0, 38.0), [-4.0, 0.0, -3.0], [8.0, 20.0, 6.0], 0.05, NONE);
-    let arms = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [-5.0, 2.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (44.0, 22.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, false, &[arms]);
-    let arms_l = Fold::rot([-FRAC_PI_2, 0.0, 0.0], [5.0, 2.0, 0.0]);
-    b.cube_f(STATIC_PART, 0, (44.0, 22.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], 0.0, true, &[arms_l]);
+    // M20: real parts, driven by `animateZombieArms` (was a baked −π/2 fold).
+    let arm_r = b.part_named("right_arm", [-5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmRight, 1.0, None);
+    b.cube(arm_r, 0, (44.0, 22.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
+    let arm_l = b.part_named("left_arm", [5.0, 2.0, 0.0], [0.0; 3], Anim::UndeadArmLeft, 1.0, None);
+    b.cube_m(arm_l, 0, (44.0, 22.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
     let leg_r = b.part([-2.0, 12.0, 0.0], Anim::LegRight, 1.0);
     b.cube(leg_r, 0, (0.0, 22.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], NONE);
     let leg_l = b.part([2.0, 12.0, 0.0], Anim::LegLeft, 1.0);
@@ -2049,16 +2117,29 @@ fn illager(crossed: bool) -> Model {
     b.cube_f(head, 0, (24.0, 0.0), [-1.0, -1.0, -6.0], [2.0, 4.0, 2.0], 0.0, false, &[Fold::at([0.0, -2.0, 0.0])]);
     b.cube(STATIC_PART, 0, (16.0, 20.0), [-4.0, 0.0, -3.0], [8.0, 12.0, 6.0], NONE);
     b.cube_g(STATIC_PART, 0, (0.0, 38.0), [-4.0, 0.0, -3.0], [8.0, 20.0, 6.0], 0.5, NONE);
+    // M20: vanilla carries BOTH arm sets on one model and switches them with
+    // `arms.visible = crossedArms; left/rightArm.visible = !crossedArms`, so
+    // the crossed-arms block is a visibility rule rather than a second model.
+    // `crossed` now only picks which set the *neutral* (mobshot) pose shows.
+    let folded = Fold::rot([-0.75, 0.0, 0.0], [0.0, 3.0, -1.0]);
+    let arms_part = b.part_named("arms", [0.0, 0.0, 0.0], [0.0; 3], Anim::None, 1.0, None);
+    b.cube_f(arms_part, 0, (44.0, 22.0), [-8.0, -2.0, -2.0], [4.0, 8.0, 4.0], 0.0, false, &[folded]);
+    b.cube_f(arms_part, 0, (44.0, 22.0), [4.0, -2.0, -2.0], [4.0, 8.0, 4.0], 0.0, true, &[folded]);
+    b.cube_f(arms_part, 0, (40.0, 38.0), [-4.0, 2.0, -2.0], [8.0, 4.0, 4.0], 0.0, false, &[folded]);
+    let arm_r = b.part_named("right_arm", [-5.0, 2.0, 0.0], [0.0; 3], Anim::IllagerArmRight, 1.0, None);
+    b.cube(arm_r, 0, (40.0, 46.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
+    let arm_l = b.part_named("left_arm", [5.0, 2.0, 0.0], [0.0; 3], Anim::IllagerArmLeft, 1.0, None);
+    b.cube_m(arm_l, 0, (40.0, 46.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
     if crossed {
-        let arms = Fold::rot([-0.75, 0.0, 0.0], [0.0, 3.0, -1.0]);
-        b.cube_f(STATIC_PART, 0, (44.0, 22.0), [-8.0, -2.0, -2.0], [4.0, 8.0, 4.0], 0.0, false, &[arms]);
-        b.cube_f(STATIC_PART, 0, (44.0, 22.0), [4.0, -2.0, -2.0], [4.0, 8.0, 4.0], 0.0, true, &[arms]);
-        b.cube_f(STATIC_PART, 0, (40.0, 38.0), [-4.0, 2.0, -2.0], [8.0, 4.0, 4.0], 0.0, false, &[arms]);
+        b.show(arms_part, Show::IllagerCrossedOnly);
+        b.show(arm_r, Show::IllagerNotCrossed);
+        b.show(arm_l, Show::IllagerNotCrossed);
     } else {
-        let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
-        b.cube(arm_r, 0, (40.0, 46.0), [-3.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
-        let arm_l = b.part([5.0, 2.0, 0.0], Anim::ArmLeft, 1.0);
-        b.cube_m(arm_l, 0, (40.0, 46.0), [-1.0, -2.0, -2.0], [4.0, 12.0, 4.0], NONE);
+        // A pillager never folds its arms (its pose is CROSSBOW_* / ATTACKING /
+        // NEUTRAL), so the folded set never shows.
+        b.show(arms_part, Show::IllagerCrossedOnly);
+        b.show(arm_r, Show::Always);
+        b.show(arm_l, Show::Always);
     }
     let leg_r = b.part([-2.0, 12.0, 0.0], Anim::LegRight, 0.5);
     b.cube(leg_r, 0, (0.0, 22.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], NONE);

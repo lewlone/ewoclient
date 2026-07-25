@@ -163,3 +163,133 @@ pub const SWING_TICKING: &[&str] = &[
     "minecraft:zombie_villager",
     "minecraft:zombified_piglin",
 ];
+
+/// Registry names whose class descends from `Mob`, which introduces
+/// `DATA_MOB_FLAGS_ID` at **index 15, BYTE** (bit 1 no-AI, bit 2
+/// left-handed, bit 4 aggressive). `ArmorStand.DATA_CLIENT_FLAGS` is also
+/// a BYTE at 15 and means something else entirely, so the flags byte may
+/// only be read for a type in this set.
+pub const MOB: &[&str] = &[
+    "minecraft:allay",
+    "minecraft:armadillo",
+    "minecraft:axolotl",
+    "minecraft:bat",
+    "minecraft:bee",
+    "minecraft:blaze",
+    "minecraft:bogged",
+    "minecraft:breeze",
+    "minecraft:camel",
+    "minecraft:camel_husk",
+    "minecraft:cat",
+    "minecraft:cave_spider",
+    "minecraft:chicken",
+    "minecraft:cod",
+    "minecraft:copper_golem",
+    "minecraft:cow",
+    "minecraft:creaking",
+    "minecraft:creeper",
+    "minecraft:dolphin",
+    "minecraft:donkey",
+    "minecraft:drowned",
+    "minecraft:elder_guardian",
+    "minecraft:ender_dragon",
+    "minecraft:enderman",
+    "minecraft:endermite",
+    "minecraft:evoker",
+    "minecraft:fox",
+    "minecraft:frog",
+    "minecraft:ghast",
+    "minecraft:giant",
+    "minecraft:glow_squid",
+    "minecraft:goat",
+    "minecraft:guardian",
+    "minecraft:happy_ghast",
+    "minecraft:hoglin",
+    "minecraft:horse",
+    "minecraft:husk",
+    "minecraft:illusioner",
+    "minecraft:iron_golem",
+    "minecraft:llama",
+    "minecraft:magma_cube",
+    "minecraft:mooshroom",
+    "minecraft:mule",
+    "minecraft:nautilus",
+    "minecraft:ocelot",
+    "minecraft:panda",
+    "minecraft:parched",
+    "minecraft:parrot",
+    "minecraft:phantom",
+    "minecraft:pig",
+    "minecraft:piglin",
+    "minecraft:piglin_brute",
+    "minecraft:pillager",
+    "minecraft:polar_bear",
+    "minecraft:pufferfish",
+    "minecraft:rabbit",
+    "minecraft:ravager",
+    "minecraft:salmon",
+    "minecraft:sheep",
+    "minecraft:shulker",
+    "minecraft:silverfish",
+    "minecraft:skeleton",
+    "minecraft:skeleton_horse",
+    "minecraft:slime",
+    "minecraft:sniffer",
+    "minecraft:snow_golem",
+    "minecraft:spider",
+    "minecraft:squid",
+    "minecraft:stray",
+    "minecraft:strider",
+    "minecraft:sulfur_cube",
+    "minecraft:tadpole",
+    "minecraft:trader_llama",
+    "minecraft:tropical_fish",
+    "minecraft:turtle",
+    "minecraft:vex",
+    "minecraft:villager",
+    "minecraft:vindicator",
+    "minecraft:wandering_trader",
+    "minecraft:warden",
+    "minecraft:witch",
+    "minecraft:wither",
+    "minecraft:wither_skeleton",
+    "minecraft:wolf",
+    "minecraft:zoglin",
+    "minecraft:zombie",
+    "minecraft:zombie_horse",
+    "minecraft:zombie_nautilus",
+    "minecraft:zombie_villager",
+    "minecraft:zombified_piglin",
+];
+
+/// Registry names whose class descends from `Raider`, which introduces
+/// `IS_CELEBRATING` at **index 16 with the BOOLEAN serializer** — the same
+/// slot and serializer as `AgeableMob`/`Zombie.DATA_BABY_ID` and
+/// `Allay.DATA_DANCING`. The byte parser cannot separate them; only the
+/// entity kind can, which is why this set exists.
+pub const RAIDER: &[&str] = &[
+    "minecraft:evoker",
+    "minecraft:illusioner",
+    "minecraft:pillager",
+    "minecraft:ravager",
+    "minecraft:vindicator",
+    "minecraft:witch",
+];
+
+/// Registry names whose class descends from `SpellcasterIllager`, which
+/// introduces `DATA_SPELL_CASTING_ID` at **index 17, BYTE**. Non-zero means
+/// `isCastingSpell()`, which selects the SPELLCASTING arm pose.
+pub const SPELLCASTER_ILLAGER: &[&str] = &[
+    "minecraft:evoker",
+    "minecraft:illusioner",
+];
+
+/// Registry names whose class descends from `AbstractIllager` — the models
+/// that run `IllagerModel.setupAnim`'s arm-pose switch rather than the
+/// humanoid/undead rigs.
+pub const ILLAGER: &[&str] = &[
+    "minecraft:evoker",
+    "minecraft:illusioner",
+    "minecraft:pillager",
+    "minecraft:vindicator",
+];

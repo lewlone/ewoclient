@@ -58,13 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 108
-cargo test --release -p rewo-net   --lib   # 132
+cargo test --release -p rewo-world --lib   # 111
+cargo test --release -p rewo-net   --lib   # 135
 cargo test --release -p rewo-gpu   --lib   # 46
 cargo test --release -p rewo-data  --lib   # 14
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 349 lib
-cargo test --release -p rewo-app           # 55   (app-level) → 404 total
+cargo test --release -p rewo-proto --lib   # 11   → 355 lib
+cargo test --release -p rewo-app           # 55   (app-level) → 410 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -185,7 +185,7 @@ metadata-routing, `EntityTable` counter, or Allay-model change.
 ./target/release/rewo.exe swingshot --check
 ```
 M19's permanent **serverless** combat-swing oracle, CPU-only, **fail-closed on a
-fixed 61/61 witnesses**. A swing is a *state machine* (`LivingEntity.swing` /
+fixed 77/77 witnesses**. A swing is a *state machine* (`LivingEntity.swing` /
 `updateSwingTime` / `getAttackAnim`) whose length comes from the item in the
 swinging hand, posed by `HumanoidModel.setupAttackAnimation` **on top of** the
 `ArmPose` hold baseline `pose{Right,Left}Arm` writes first. It drives the whole
@@ -207,8 +207,12 @@ Expectations are **independent transcriptions** — its own `ease` module, its o
 dispatch. Reading the production accessors would recreate the `dimensioncheck`
 self-grading defect. The `Mth` witness is load-bearing: **0 bit mismatches over
 60,003 samples** while the same points differ from the platform sine **39,917
-times**. Run after any swing, equipment, item-tag, arm-pose or humanoid-rig
-change.
+times**. Run after any swing, equipment, item-tag, arm-pose, mob-flag or rig change.
+**M20** added the mob rigs to the same gate: `animateZombieArms` (undead),
+`SkeletonModel`'s override and `IllagerModel`'s pose switch, plus the
+`Mob.DATA_MOB_FLAGS_ID` decode (index 15 BYTE — bit 2 left-handed, bit 4
+aggressive) and the ancestry-gated index-16/17 slots. Its metadata witnesses
+drive real `set_entity_data` bodies through `route_set_entity_data`.
 
 ```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 20 --swing-check
@@ -337,6 +341,17 @@ listed because they are invisible in the output.
   fallback for a missing id; senior review caught it against the decompile.
   `apply_set_entity_data` must return before applying when `entities.get(id)` is
   `None`.
+- **A pose baked as a static fold cannot animate, and is probably also wrong.**
+  Rewo froze the undead arms-forward pose at `Fold::rot(-π/2)` — vanilla rests
+  at `−π/2.25` (−80°) and deepens to `−π/1.5` when aggressive. A baked pose that
+  looks right at rest hides both a constant error and the absence of the whole
+  rig. When a model part is "posed" by geometry rather than an `Anim`, check
+  whether vanilla animates it.
+- **`rewo play`'s build gate assumes undisturbed flat ground.** It clicks the top
+  face of `(fx+2, fy-1)` so dirt lands at `(fx+2, fy)`. If an earlier run of the
+  same gate dug a hole and the bot walks into it, `(fx+2, fy)` is the grass
+  surface, not air — the server correctly rejects the placement and the gate goes
+  red for a world-state reason, not a code one. Re-run, or reset the world.
 - **An enum having a case is not proof the code path produces it.**
   `HumanoidModel.ArmPose` declares `ITEM`, `BLOCK`, `BOW_AND_ARROW` and more, but
   `HumanoidMobRenderer.getArmPose` returns only `SPEAR`/`EMPTY` — it is
@@ -369,7 +384,7 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M19` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`M0–M20` shipped and verified. **M0–M9 are pushed** (`origin/main` @
 `973ea5e`); the **M10–M18 arc is reviewed local work, not yet pushed** (M12 is
 `06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`, M17
 `55388c8`; M18 is committed locally as `bb8be20` on branch
@@ -425,12 +440,13 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   sonic boom, Armadillo peek — M17). **The Allay dance shipped in M18** as the
   first `DATA_DANCING`-metadata rig; **generic `ClientboundAnimatePacket` combat
   swings shipped in M19**, including the `ArmPose` hold baseline
-  (`EMPTY`/`ITEM`/`SPEAR`). The next animation steps are
-  `AnimationUtils.animateZombieArms` — the undead families have their own attack
-  rig, so a swinging zombie currently shows no arm motion unless a CEM pack
-  drives it, the largest remaining visible combat gap — and the eight use-driven
-  arm poses (they need `getUseItemRemainingTicks`, which is not synced for a
-  remote entity). The Warden tendril (event 61) also remains; dragon
+  (`EMPTY`/`ITEM`/`SPEAR`), and **M20 shipped the mob rigs** — undead
+  (`animateZombieArms`), skeleton and illager, with `Mob.DATA_MOB_FLAGS_ID`
+  and the ancestry-gated metadata slots. What remains: **held items are not
+  rendered**, so mobs swing empty-handed; the illager `CROSSBOW_HOLD` /
+  `CROSSBOW_CHARGE` poses are derived but not posed (they need
+  `ticksUsingItem`); the eight use-driven humanoid arm poses (same reason).
+  The Warden tendril (event 61) also remains; dragon
   flight is bespoke procedural code, still posed. The Allay's own unconditional
   body flying-tilt / root idle-bob / arm idle-bob remain unimplemented (they are
   not the dance; the wing/hover behavior is implemented + witnessed).

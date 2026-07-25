@@ -50,6 +50,9 @@ pub struct PlaySession {
     /// disambiguates the polymorphic index-16 BOOLEAN (`DATA_DANCING` vs
     /// `DATA_BABY_ID`) by it. `None` before setup (nothing routes to dancing).
     pub allay_type_id: Option<i32>,
+    /// The Pillager's protocol type id (M20) — disambiguates the index-17
+    /// BOOLEAN (`IS_CHARGING_CROSSBOW`). `None` routes it nowhere.
+    pub pillager_type_id: Option<i32>,
     /// Which entity types are living, and which of them run `updateSwingTime`
     /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
     /// the decompiled `extends` graph. It gates every swing input (a packet
@@ -683,6 +686,7 @@ impl<'a> Connection<'a> {
             warden_type_id: None,
             armadillo_type_id: None,
             allay_type_id: None,
+            pillager_type_id: None,
             entity_classes: None,
             swing_data: None,
             swing_effect_ids,
@@ -1320,7 +1324,11 @@ impl PlaySession {
             body,
             ids,
             &mut self.world.entities,
-            self.allay_type_id,
+            crate::MetaKinds {
+                allay: self.allay_type_id,
+                pillager: self.pillager_type_id,
+                classes: self.entity_classes.as_deref(),
+            },
         ) {
             // Entity metadata (custom name, pose, gesture state, cube size, and
             // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
