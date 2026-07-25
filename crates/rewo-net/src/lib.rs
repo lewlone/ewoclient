@@ -866,6 +866,85 @@ pub fn route_entity_event(
 ///
 /// Not public: reached only through [`route_set_entity_data`] so packet-id
 /// selection is exercised (the `danceshot` oracle drives that seam).
+/// `ClientboundDamageEventPacket` → `LivingEntity.handleDamageEvent` (M21).
+///
+/// Body, in wire order:
+///
+/// ```text
+/// VarInt entityId
+/// VarInt damageTypeHolder     // ByteBufCodecs.holderRegistry — RAW 0-based id
+/// VarInt sourceCauseId  + 1   // writeOptionalEntityId; -1 means "none"
+/// VarInt sourceDirectId + 1
+/// Optional<Vec3>              // bool + 3 × f64
+/// ```
+///
+/// **The damage-type holder is `holderRegistry`, so the id is raw and 0-based**
+/// — not `ByteBufCodecs.holder`'s inline / `id+1` scheme. That distinction has
+/// already cost this project once (the M14 play-login dimension holder), and it
+/// matters here only for staying aligned with the rest of the body: nothing
+/// model-visible depends on *which* damage type it was. The trailing fields are
+/// still walked in full, because a short read would leave the stream misaligned
+/// for the next packet in the same buffer.
+///
+/// Vanilla drops the event for an entity it is not tracking
+/// (`if (entity != null)`), and `handleDamageEvent` is a `LivingEntity`
+/// override — a non-living entity has `Entity.handleDamageEvent`, which does
+/// not touch a hurt clock it has no field for. Both gates are applied here.
+pub(crate) fn apply_damage_event(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    let mut r = PacketReader::new(body);
+    let Ok(eid) = r.varint() else {
+        return;
+    };
+    // Walk the rest of the body even though none of it is model-visible: a
+    // decoder that stops early is a decoder that desyncs.
+    if r.varint().is_err() {
+        return; // damage type holder (raw registry id)
+    }
+    if r.varint().is_err() || r.varint().is_err() {
+        return; // cause / direct entity ids, each written as id + 1
+    }
+    match r.bool() {
+        Ok(true) => {
+            if r.take(24).is_err() {
+                return; // source position: 3 × f64
+            }
+        }
+        Ok(false) => {}
+        Err(_) => return,
+    }
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return; // getEntity(id) == null
+    };
+    if !classes.is_some_and(|c| c.is_living(type_id)) {
+        return; // Entity.handleDamageEvent has no hurt clock to arm
+    }
+    entities.hurt(eid);
+}
+
+/// The narrowest clientbound-play dispatch seam for the damage event: routes a
+/// single `(packet id, body)` to [`apply_damage_event`] iff `id` is the
+/// resolved `damage_event` id, returning whether it matched. Mirrors
+/// [`route_animate`] so `play::PlaySession` and the `hurtshot` oracle drive
+/// packet-id → hurt routing through the same production code.
+pub fn route_damage_event(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_damage_event {
+        apply_damage_event(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
 /// The kind information metadata routing needs, because several slots are
 /// polymorphic and only the entity type can separate them.
 ///

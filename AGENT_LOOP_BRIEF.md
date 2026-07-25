@@ -58,13 +58,13 @@ Run the relevant ones before claiming anything; run all of them before
 declaring a milestone done.
 
 ```bash
-cargo test --release -p rewo-world --lib   # 111
+cargo test --release -p rewo-world --lib   # 116
 cargo test --release -p rewo-net   --lib   # 135
 cargo test --release -p rewo-gpu   --lib   # 46
 cargo test --release -p rewo-data  --lib   # 14
 cargo test --release -p rewo-mesh  --lib   # 38
-cargo test --release -p rewo-proto --lib   # 11   → 355 lib
-cargo test --release -p rewo-app           # 55   (app-level) → 410 total
+cargo test --release -p rewo-proto --lib   # 11   → 360 lib
+cargo test --release -p rewo-app           # 55   (app-level) → 415 total
 ```
 (`cargo test --workspace` also pulls in the unrelated `ewo-*` crates; run the
 `rewo-*` ones individually.)
@@ -224,6 +224,20 @@ The live equipment gate. Summons **one tag-scoped** zombie
 unrelated mob is neither destroyed nor graded.
 
 ```bash
+./target/release/rewo.exe hurtshot --check
+```
+M21's permanent combat-damage oracle, **fail-closed on 18/18 witnesses**, with
+Vulkan validation ON (0 VUIDs). It drives `ClientboundDamageEventPacket` through
+`route_damage_event` → the `hurtTime` clock → `EntityDraw.hurt` → a **real render
+and readback**, and verifies the red flash *by prediction*: the capsule is drawn
+unhurt and hurt, and the hurt pixel is predicted from the unhurt one by undoing
+the light, encoding to sRGB, mixing `OverlayTexture`'s red texel (rgb (1,0,0),
+a = 179/255), decoding and re-applying the light. Two sensitivity partners cover
+the real ways to get it wrong — mixing in linear space, and applying the overlay
+after the lightmap instead of before. Run after any damage, hurt-clock, entity
+vertex-format or entity-shader change.
+
+```bash
 ./target/release/rewo.exe play --username RewoOp --seconds 90 --dimension-check
 ```
 The live dimension gate: the paced Overworld→Nether→End→Overworld route.
@@ -341,17 +355,22 @@ listed because they are invisible in the output.
   fallback for a missing id; senior review caught it against the decompile.
   `apply_set_entity_data` must return before applying when `entities.get(id)` is
   `None`.
+- **A duplicated constant is a latent bug waiting for the constant to change.**
+  The entity upload path hard-coded `total * 36` beside a `VERTEX_STRIDE` of 36.
+  M21 grew the stride to 52 and only 36 of every 52 bytes reached the GPU, so
+  `mobshot` fell to 223/243 with garbled far-side faces. The build was clean and
+  the failure looked geometric. `grep` for the numeric value of a constant before
+  changing it.
+- **`rewo play`'s build gate no longer assumes flat ground** (M20.1): it scans
+  east from `fx+2` for the first air-over-solid column and fails closed if there
+  is none within eight blocks. The old assumption broke whenever an earlier run
+  of the same gate had dug a hole the bot then walked into.
 - **A pose baked as a static fold cannot animate, and is probably also wrong.**
   Rewo froze the undead arms-forward pose at `Fold::rot(-π/2)` — vanilla rests
   at `−π/2.25` (−80°) and deepens to `−π/1.5` when aggressive. A baked pose that
   looks right at rest hides both a constant error and the absence of the whole
   rig. When a model part is "posed" by geometry rather than an `Anim`, check
   whether vanilla animates it.
-- **`rewo play`'s build gate assumes undisturbed flat ground.** It clicks the top
-  face of `(fx+2, fy-1)` so dirt lands at `(fx+2, fy)`. If an earlier run of the
-  same gate dug a hole and the bot walks into it, `(fx+2, fy)` is the grass
-  surface, not air — the server correctly rejects the placement and the gate goes
-  red for a world-state reason, not a code one. Re-run, or reset the world.
 - **An enum having a case is not proof the code path produces it.**
   `HumanoidModel.ArmPose` declares `ITEM`, `BLOCK`, `BOW_AND_ARROW` and more, but
   `HumanoidMobRenderer.getArmPose` returns only `SPEAR`/`EMPTY` — it is
@@ -384,7 +403,7 @@ found the ground-plane lighting bug in minutes after speculation had failed.
 
 ## Current state
 
-`M0–M20` shipped and verified. **M0–M9 are pushed** (`origin/main` @
+`M0–M21` shipped and verified. **M0–M9 are pushed** (`origin/main` @
 `973ea5e`); the **M10–M18 arc is reviewed local work, not yet pushed** (M12 is
 `06dd3eb`, M14 `88b5112`, M15 `5b0f437`, M16 `f6e0201`, M16.1 `f4b54d1`, M17
 `55388c8`; M18 is committed locally as `bb8be20` on branch
@@ -428,7 +447,7 @@ serverless `danceshot` 24/24 oracle; the demo PNG stays byte-identical.
 Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
 `live` (windowed client; `--out` renders the eye view headless), `demo`,
 `bench`, `mobshot`, `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
-`dimensioncheck`, `eventshot`, `danceshot`, `swingshot`.
+`dimensioncheck`, `eventshot`, `danceshot`, `swingshot`, `hurtshot`.
 
 **Open work**, roughly in descending obviousness:
 
@@ -442,11 +461,15 @@ Subcommands: `net` (protocol), `view` (snapshot), `play` (headless bot),
   swings shipped in M19**, including the `ArmPose` hold baseline
   (`EMPTY`/`ITEM`/`SPEAR`), and **M20 shipped the mob rigs** — undead
   (`animateZombieArms`), skeleton and illager, with `Mob.DATA_MOB_FLAGS_ID`
-  and the ancestry-gated metadata slots. What remains: **held items are not
-  rendered**, so mobs swing empty-handed; the illager `CROSSBOW_HOLD` /
-  `CROSSBOW_CHARGE` poses are derived but not posed (they need
-  `ticksUsingItem`); the eight use-driven humanoid arm poses (same reason).
-  The Warden tendril (event 61) also remains; dragon
+  and the ancestry-gated metadata slots; **M21 shipped the damage response** —
+  the `hurtTime` clock, the walk kick and the exact red overlay. What remains:
+  **held items are not rendered**, so mobs swing and flash empty-handed — the
+  largest visible gap, needing item models + an item atlas + the display
+  transform chain; the death animation (`deathTime`, the other half of
+  `hasRedOverlay`); the illager `CROSSBOW_HOLD` / `CROSSBOW_CHARGE` poses,
+  derived but not posed (they need `ticksUsingItem`); the eight use-driven
+  humanoid arm poses (same reason). The Warden tendril (event 61) also remains;
+  dragon
   flight is bespoke procedural code, still posed. The Allay's own unconditional
   body flying-tilt / root idle-bob / arm idle-bob remain unimplemented (they are
   not the dance; the wing/hover behavior is implemented + witnessed).

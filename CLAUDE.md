@@ -2285,6 +2285,34 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   geometry moved. **Open:** held items are not rendered (mobs swing
   empty-handed); illager `CROSSBOW_HOLD`/`CROSSBOW_CHARGE` are derived but not
   posed (they need `ticksUsingItem`, unsynced for remote entities).
+- **M20.1 + M21 shipped + verified 2026-07-25.** **M20.1** fixes the live build
+  gate M20 recorded as flaky: it clicked the top face of `(fx+2, fy-1)`, which
+  assumed the bot stood on *undisturbed* ground — an earlier run's own hole put
+  the target on the grass surface and the server correctly rejected it. It now
+  scans east for the first air-over-solid column and **fails closed** if there
+  is none (5/5 green in the world that used to fail 1-in-4). **M21 consumes
+  `ClientboundDamageEventPacket`**: the exact `hurtTime`/`hurtDuration` clock
+  (10, one decrement per tick, re-armed not extended by a repeat), the
+  `walkAnimation.setSpeed(1.5F)` limb kick with vanilla's render-side clamp to
+  1.0, and the red damage flash. The packet's damage-type holder is
+  `holderRegistry` — a **raw 0-based id**, not `holder`'s `id+1` — and the whole
+  body is walked so a short read cannot desync the buffer; receipt is gated on
+  the entity being tracked *and* living (`handleDamageEvent` is a `LivingEntity`
+  override). **The flash forced a vertex-ABI split**: vanilla's `entity.fsh`
+  mixes the overlay into `texture × vertexColor` and multiplies the lightmap
+  *after*, so the CPU can no longer fold light into the vertex colour — a new
+  `light_hurt` attribute carries light in `rgb` and the hurt flag in `a`. The
+  overlay is `OverlayTexture`'s red row, **0xB3FF0000** (rgb (1,0,0), a =
+  179/255), and the mix is done **in sRGB space**, not linear. Gate:
+  **`rewo hurtshot --check` 18/18**, validation ON, 0 VUIDs, verifying the flash
+  *by predicting the hurt pixel from the unhurt one* with sensitivity partners
+  for linear-space mixing and post-lightmap application. **415 tests**; demo PNG
+  byte-identical to M15–M20. The ABI change also exposed a latent bug — the
+  upload path hard-coded `total * 36` beside `VERTEX_STRIDE`, so at stride 52
+  only 36 of every 52 bytes reached the GPU (`mobshot` 223/243 until fixed).
+  **Open:** held items are still not rendered (mobs swing and flash
+  empty-handed); `deathTime` — the other half of `hasRedOverlay` — is the death
+  animation and its own feature.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

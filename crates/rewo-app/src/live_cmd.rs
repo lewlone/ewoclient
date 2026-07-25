@@ -853,6 +853,8 @@ fn collect_entities<'a>(
             attack,
             arm_poses,
             mob,
+            // M21: `hasRedOverlay` — the damage flash.
+            hurt: session.world.entities.hurt_state(id).has_red_overlay(),
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             anim_id: (id & 0xffff) as f32,

@@ -419,9 +419,24 @@ impl EntityState {
         ]
     }
 
+    /// `WalkAnimationState.setSpeed` — a direct assignment that bypasses the
+    /// smoothing. `handleDamageEvent` calls it with 1.5, which is *above* the
+    /// 1.0 the movement target can reach, so a hurt entity's limbs kick past
+    /// anything walking produces and then decay back through `update`.
+    pub fn set_limb_speed(&mut self, speed: f32) {
+        self.limb_amount = speed;
+    }
+
     /// Walk-cycle phase + amplitude for the model's limb swing.
+    ///
+    /// The amplitude is clamped to 1.0 because vanilla's
+    /// `WalkAnimationState.speed(partialTicks)` is
+    /// `Math.min(Mth.lerp(...), 1.0F)`. Movement alone can never exceed it
+    /// (the target is already `min(1, dist*4)` and the lerp cannot overshoot),
+    /// so this is a no-op for walking and only bites after
+    /// [`Self::set_limb_speed`] pushes it to 1.5.
     pub fn limb(&self) -> (f32, f32) {
-        (self.limb_swing, self.limb_amount)
+        (self.limb_swing, self.limb_amount.min(1.0))
     }
 }
 
@@ -470,11 +485,38 @@ pub struct EntityTable {
     /// Amplifiers of the swing-duration effects, per entity. Only entities that
     /// actually have one get a map entry.
     swing_effects: HashMap<i32, SwingEffects>,
+    /// `LivingEntity.hurtTime` / `hurtDuration` — the damage response (M21).
+    /// Absent = never hurt, which renders identically to `hurtTime == 0`.
+    hurts: HashMap<i32, HurtState>,
     /// Per-mob combat state the M20 rigs read: `Mob.DATA_MOB_FLAGS_ID` (index
     /// 15 BYTE), `Raider.IS_CELEBRATING` (16 BOOLEAN),
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID` (17 BYTE) and
     /// `Pillager.IS_CHARGING_CROSSBOW` (17 BOOLEAN). Absent = every default.
     mob_state: HashMap<i32, MobState>,
+}
+
+/// `LivingEntity`'s damage-response fields, set by
+/// `ClientboundDamageEventPacket` and ticked down every tick.
+///
+/// Vanilla stores `hurtDuration` alongside `hurtTime` even though
+/// `handleDamageEvent` always sets both to 10, because other paths (the death
+/// tilt) divide by it. Kept as a field rather than folded to a constant so the
+/// division is the same expression vanilla writes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HurtState {
+    /// `LivingEntity.hurtTime` — counts down to 0, one per tick.
+    pub hurt_time: i32,
+    /// `LivingEntity.hurtDuration` — 10 for every `handleDamageEvent`.
+    pub hurt_duration: i32,
+}
+
+impl HurtState {
+    /// `LivingEntityRenderer`: `state.hasRedOverlay = entity.hurtTime > 0 ||
+    /// entity.deathTime > 0`. Rewo does not model `deathTime` (the death
+    /// animation is its own feature), so only the first term applies.
+    pub fn has_red_overlay(self) -> bool {
+        self.hurt_time > 0
+    }
 }
 
 /// The synced mob state the M20 arm rigs consume. Every field defaults to
@@ -578,6 +620,7 @@ impl EntityTable {
         self.events.remove(&id);
         self.dances.remove(&id);
         self.mob_state.remove(&id);
+        self.hurts.remove(&id);
         self.clear_swing(id);
     }
 
@@ -938,6 +981,43 @@ impl EntityTable {
             d.tick();
         }
         self.tick_swings();
+        // `LivingEntity.baseTick`: `if (this.hurtTime > 0) this.hurtTime--;`
+        // The entry is dropped once it reaches 0 so an entity that has healed
+        // costs nothing — an absent entry and `hurt_time == 0` render alike.
+        self.hurts.retain(|_, h| {
+            if h.hurt_time > 0 {
+                h.hurt_time -= 1;
+            }
+            h.hurt_time > 0
+        });
+    }
+
+    /// `LivingEntity.handleDamageEvent` — the client half of
+    /// `ClientboundDamageEventPacket`.
+    ///
+    /// Vanilla also sets `invulnerableTime = 20`, plays the hurt sound and
+    /// records the damage source; none of those is model-visible, so the two
+    /// that are — the hurt clock and the walk-speed kick — are what this
+    /// applies. A repeat re-arms the clock from 10 rather than extending it.
+    pub fn hurt(&mut self, id: i32) {
+        self.hurts.insert(
+            id,
+            HurtState {
+                hurt_duration: 10,
+                hurt_time: 10,
+            },
+        );
+        // `this.walkAnimation.setSpeed(1.5F)` is the first line of
+        // `handleDamageEvent`, before the clock — the limbs kick on the hit.
+        if let Some(e) = self.map.get_mut(&id) {
+            e.set_limb_speed(1.5);
+        }
+    }
+
+    /// The damage-response state driving the red overlay. Defaults for an
+    /// entity that has never been hurt.
+    pub fn hurt_state(&self, id: i32) -> HurtState {
+        self.hurts.get(&id).copied().unwrap_or_default()
     }
 
     /// `LivingEntity.baseTick` (`oAttackAnim = attackAnim`) followed by
@@ -1498,5 +1578,76 @@ mod m20_mob_state_tests {
         // A recycled server id must not inherit the previous occupant's state.
         t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(t.mob_state(1), MobState::default());
+    }
+}
+
+#[cfg(test)]
+mod m21_hurt_tests {
+    use super::*;
+
+    fn t() -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    #[test]
+    fn handle_damage_event_arms_both_fields_and_kicks_the_walk() {
+        let mut t = t();
+        assert_eq!(t.hurt_state(1), HurtState::default());
+        t.hurt(1);
+        // `hurtDuration = 10; hurtTime = this.hurtDuration;`
+        assert_eq!(t.hurt_state(1).hurt_time, 10);
+        assert_eq!(t.hurt_state(1).hurt_duration, 10);
+        assert!(t.hurt_state(1).has_red_overlay());
+        // `walkAnimation.setSpeed(1.5F)` — stored at 1.5, rendered clamped.
+        assert_eq!(t.get(1).unwrap().limb().1, 1.0);
+    }
+
+    #[test]
+    fn the_clock_counts_down_one_per_tick_and_stops_at_zero() {
+        let mut t = t();
+        t.hurt(1);
+        for want in (0..10).rev() {
+            t.tick_lerp();
+            assert_eq!(t.hurt_state(1).hurt_time, want);
+        }
+        // Already 0 — `if (this.hurtTime > 0)` guards the decrement.
+        t.tick_lerp();
+        assert_eq!(t.hurt_state(1).hurt_time, 0);
+        assert!(!t.hurt_state(1).has_red_overlay());
+    }
+
+    #[test]
+    fn a_repeat_re_arms_rather_than_extending() {
+        let mut t = t();
+        t.hurt(1);
+        t.tick_lerp();
+        t.tick_lerp();
+        assert_eq!(t.hurt_state(1).hurt_time, 8);
+        t.hurt(1);
+        assert_eq!(t.hurt_state(1).hurt_time, 10);
+    }
+
+    #[test]
+    fn the_hurt_clock_dies_with_the_entity() {
+        let mut t = t();
+        t.hurt(1);
+        t.remove(1);
+        assert_eq!(t.hurt_state(1), HurtState::default());
+        t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.hurt_state(1), HurtState::default(), "a reused id must not inherit it");
+    }
+
+    #[test]
+    fn walking_alone_never_reaches_the_clamp() {
+        // The clamp added for the hurt kick must be a no-op for movement: the
+        // target is already `min(1, dist*4)` and the lerp cannot overshoot.
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..200 {
+            e.set_target(i as f64 * 0.5, 0.0, 0.0);
+            e.tick();
+            assert!(e.limb().1 <= 1.0);
+        }
     }
 }

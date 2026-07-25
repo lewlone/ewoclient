@@ -4472,3 +4472,143 @@ the target cell is air *before* clicking, or reset the world between runs.
   --ignore-whitespace` method, then four boundary lines had stray CRs removed
   individually. Verify with `git diff --numstat` against
   `git diff --ignore-all-space --numstat`.
+
+### 2026-07-25 — M20.1 fix + M21: the combat damage response — SHIPPED + VERIFIED
+
+Two things: the live-gate flake M20 recorded is fixed, and `ClientboundDamageEventPacket`
+is now consumed — you hit a mob and it flashes red and its limbs kick, which
+completes the M19 → M20 → M21 combat arc.
+
+#### M20.1 — the build gate's premise is checked, not assumed
+
+M20 recorded a red that reproduced ~1 run in 4: `ACCEPT ✗ place … observed
+minecraft:grass_block`. The gate clicked the top face of `(fx+2, fy-1)` so dirt
+would land at `(fx+2, fy)` — which assumes the bot stands on **undisturbed flat
+ground**. An earlier run of the same gate digs a hole; if the bot walks into it
+its feet sit a block low, `(fx+2, fy)` is then the grass *surface* rather than
+air, and the server correctly rejects the placement. M16.1 fixed the "target
+inside the player's own AABB" case; this is the sibling it did not cover.
+
+The gate now **scans east from `fx+2` for the first column that is air over
+solid**, using the client's own world, and reports the scan in the log line. If
+no such column exists within eight blocks it leaves `placed_at` unset, which
+`build_acceptance` reports as never-run — **exit 1**, not a silent skip.
+Verified 5/5 green in the very world that produced the original failure.
+
+#### M21 — the damage response
+
+`ClientboundDamageEventPacket` was falling off the dispatch chain, so nothing an
+entity took ever showed.
+
+**The packet**, in wire order: `VarInt entityId`, the damage-type holder, `VarInt
+sourceCauseId + 1`, `VarInt sourceDirectId + 1`, `Optional<Vec3>`. The holder is
+`ByteBufCodecs.holderRegistry(Registries.DAMAGE_TYPE)` — a **raw 0-based
+registry id**, not `ByteBufCodecs.holder`'s inline / `id+1` scheme. Nothing
+model-visible depends on *which* damage type it was, but the whole body is still
+walked: a short read would leave the stream misaligned for the next packet in the
+same buffer, and a witness pins that (a truncated body is inert while the intact
+one arms the clock).
+
+**Two gates on receipt**, both vanilla's: `handleDamageEvent` drops the event for
+an entity the client is not tracking (`if (entity != null)`), and
+`handleDamageEvent` is a **`LivingEntity` override** — a non-living entity gets
+`Entity.handleDamageEvent`, which has no hurt clock to arm.
+
+**The clock**: `hurtDuration = 10; hurtTime = hurtDuration;` then
+`if (this.hurtTime > 0) this.hurtTime--;` once per tick. `hasRedOverlay` is
+`hurtTime > 0`, so the flash lasts exactly ten ticks; a second hit **re-arms from
+10** rather than extending. `hurtDuration` is stored rather than folded to a
+constant because vanilla divides by it elsewhere.
+
+**The limb kick**: `walkAnimation.setSpeed(1.5F)` is the *first* line of
+`handleDamageEvent`. Rewo's limb model was already exactly
+`WalkAnimationState.update(target, 0.4, 1.0)`, so the kick is a direct
+assignment — and 1.5 is **above** anything movement can produce, because the
+walk target is `min(1, dist·4)`. Vanilla clamps on the render side
+(`speed(partialTicks) = Math.min(Mth.lerp(...), 1.0F)`), so `limb()` now clamps
+too; that is provably a no-op for walking (a unit test drives 200 movement ticks
+and asserts the amplitude never reaches the clamp) and only bites after a hit.
+
+**The flash is a shader change, and it forced a vertex-ABI split.** Vanilla's
+`entity.fsh` is:
+
+```glsl
+color *= faceVertexColor * ColorModulator;
+color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a);
+color *= lightMapColor;
+```
+
+The overlay lands on `texture × vertexColor` and the lightmap multiplies
+**after** it. Rewo folded the world light into the vertex colour on the CPU, so
+the two had to be separated: `color` now carries base × face shade, and a new
+`light_hurt` attribute carries the per-channel light in `rgb` and the hurt flag
+in `a`. `overlayColor` is a texel of `OverlayTexture` — the red row (v=3) is
+**0xB3FF0000**, i.e. rgb (1,0,0) with **a = 179/255**, and the no-overlay texel
+(u=0, v=10) is white with a = 1.0, which makes the mix the identity exactly as
+vanilla intends.
+
+**The mix is done in sRGB space, not linear.** Rewo works in linear light;
+vanilla mixes gamma-encoded texture samples. `mix` is not invariant under the
+transfer function, so the shader converts, mixes, and converts back. The gate
+measures the difference: a linear-space mix would give `[209,142,108]` where the
+GPU gives `[208,116,87]` — 26 bytes off in green.
+
+**Gate: `rewo hurtshot --check`** — permanent, fail-closed on **18/18**
+witnesses, Vulkan validation ON, **0 VUIDs**. Seven receipt witnesses (id
+resolution, the arm, wrong-packet-id inert, untracked inert, non-living inert,
+truncated-vs-intact body, real cause/direct ids keeping the walk aligned), six
+clock witnesses (the exact 10→0 sequence, the ten-tick overlay window, re-arm,
+the kick and its clamp, the decay, removal clearing), and five flash witnesses
+read back from a real render.
+
+**The flash is verified by prediction, not a hard-coded colour.** The capsule is
+rendered twice, unhurt and hurt, and the hurt pixel is predicted *from the unhurt
+one*: undo the light, encode to sRGB, mix the red overlay texel, decode,
+re-apply the light. That needs no knowledge of the face shade, and it carries two
+sensitivity partners that are the actual ways to get this wrong — mixing in
+linear space, and applying the overlay after the lightmap instead of before it.
+Measured: unhurt `[198,167,127]` → hurt `[208,116,87]`, predicted `[208,116,88]`.
+
+**A latent bug the ABI change exposed.** `mobshot` dropped to 223/243 after the
+stride went 36 → 52, because the upload path hard-coded `total * 36` instead of
+using `VERTEX_STRIDE` — a duplicated constant that had been correct only by
+coincidence. Only 36 of every 52 bytes reached the GPU, so the tail of each
+vertex was stale. Fixed to use the constant; `mobshot` back to 243/243.
+
+**Measured.**
+- **415 tests**: world 116, net 135, gpu 46, data 14, mesh 38, proto 11 (**360
+  lib**) + app 55. Release build green.
+- `hurtshot` **18/18** twice, identical; `swingshot` 77/77; `eventshot` 28/28;
+  `danceshot` 24/24; `mobshot` **243/243**;
+  `lightmapshot`/`skyshot`/`tintshot`/`meshshot`/`dimensioncheck` green with
+  validation **ON**, 0 VUIDs.
+- Canonical demo SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  **byte-identical to M15–M20** (no entities in it).
+- Live: physics **CORRECTIONS 0** with `ACCEPT place = dirt` / `dig = air`
+  (5/5 with the M20.1 fix, in the world that used to fail); light `--no-relight`
+  **884,736 cells, block 0 sky 0, EXACT**; `--swing-check` OK.
+- `git diff --check` clean.
+
+**Exclusions / honesty.**
+- **`deathTime` is not modelled.** `hasRedOverlay` is
+  `hurtTime > 0 || deathTime > 0`; only the first term applies. The death
+  animation (the spin-and-fade, and the tint that rides it) is its own feature —
+  it needs synced health plus `tickDeath`, and is deliberately not smuggled in
+  here.
+- **`invulnerableTime`, the hurt sound and the damage source are decoded past
+  but not modelled** — none is model-visible. The damage *type* is read only to
+  keep the body aligned; nothing branches on it.
+- **`getHurtDir()` and the camera hurt-tilt are not implemented.** `bobHurt` is a
+  first-person camera effect on the local player, distinct from the entity flash.
+- **The white overlay (`whiteOverlayProgress`) is not modelled** — that is the
+  creeper's charge flash, driven by a per-renderer override that Rewo has no
+  equivalent for. The `u` axis of the overlay texture is therefore always 0,
+  which is `NO_WHITE_U`, exactly what every non-creeper renderer passes.
+- **Held items are still not rendered** — mobs swing and flash correctly but
+  empty-handed. That remains the largest visible gap and is a deliberate future
+  milestone: it needs item-model resolution, an item atlas and the
+  `ItemDisplayContext` transform chain.
+- **No live AI-driven damage encounter was staged or claimed.** The gate drives
+  real packet bodies through the production router; a mob's actual aggro timing
+  is server-authoritative and nondeterministic.

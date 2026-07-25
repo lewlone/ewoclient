@@ -120,6 +120,10 @@ const SWING_CHECK_OFF: &str = "minecraft:stone_sword";
 /// zombie happens to be nearest".
 const SWING_CHECK_TAG: &str = "rewo_swing_check";
 
+/// `minecraft:air`'s block-state id. Air is state 0 in every vanilla build —
+/// `Blocks.AIR` is the first registration, and the mesher already relies on it.
+const AIR_STATE: u32 = 0;
+
 /// The paced command stream `--swing-check` issues after spawn. `say` lines are
 /// deliberate no-ops that keep the 250 ms pacing honest while the server
 /// applies the previous command and the tracker broadcasts its equipment
@@ -660,15 +664,44 @@ fn drive(
                 // can never touch it: the placement is always geometrically
                 // valid, and a resulting air state now means a real bug rather
                 // than the bot standing on its own target.
-                let target = (fx + 2, fy, fz);
-                match session.use_item_on(fx + 2, fy - 1, fz, 1) {
-                    Ok(()) => log::info!(
-                        "play: place → {target:?} (on top of {:?})",
-                        (fx + 2, fy - 1, fz)
-                    ),
-                    Err(e) => log::warn!("play: place failed: {e}"),
+                //
+                // M20.1: `fx + 2` is necessary but not sufficient. It assumed
+                // the bot stands on *undisturbed* ground — but an earlier run
+                // of this same gate digs a hole, and if the bot walks into it
+                // its feet sit a block low, making `(fx+2, fy)` the grass
+                // SURFACE rather than air. The server then correctly rejects
+                // the placement and the gate went red for a world-state
+                // reason, roughly one run in four. The premise is now checked
+                // instead of assumed: scan east for the first column whose
+                // target cell is air and whose support is solid.
+                let support_ok = |x: i32| {
+                    session.world.block_state_at(x, fy, fz) == AIR_STATE
+                        && session.world.block_state_at(x, fy - 1, fz) != AIR_STATE
+                };
+                match (fx + 2..fx + 8).find(|x| support_ok(*x)) {
+                    Some(x) => {
+                        let target = (x, fy, fz);
+                        match session.use_item_on(x, fy - 1, fz, 1) {
+                            Ok(()) => log::info!(
+                                "play: place → {target:?} (on top of {:?}; scanned east                                  from {} for air-over-solid)",
+                                (x, fy - 1, fz),
+                                fx + 2
+                            ),
+                            Err(e) => log::warn!("play: place failed: {e}"),
+                        }
+                        acted.placed_at = Some(target);
+                    }
+                    None => {
+                        // Leaving `placed_at` unset makes `build_acceptance`
+                        // report the action as never-run, which is exit 1 —
+                        // an unplaceable world is a red gate, not a silent skip.
+                        log::warn!(
+                            "play: no air-over-solid column in {}..{} at y={fy} z={fz} —                              the bot is somewhere this gate cannot place",
+                            fx + 2,
+                            fx + 8
+                        );
+                    }
                 }
-                acted.placed_at = Some(target);
                 acted.placed = true;
             }
             if secs >= 18.0 && !acted.dug {

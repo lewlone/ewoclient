@@ -1333,6 +1333,15 @@ impl PlaySession {
             // Entity metadata (custom name, pose, gesture state, cube size, and
             // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
             // Allay dance counters then advance in `tick_lerp`.
+        } else if crate::route_damage_event(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+        ) {
+            // M21: the damage response — arms the hurt clock (red overlay) and
+            // kicks the walk animation, for a tracked living entity only.
         } else if crate::route_animate(
             id,
             body,

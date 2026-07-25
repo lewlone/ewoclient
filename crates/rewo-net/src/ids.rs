@@ -93,6 +93,10 @@ pub struct Ids {
     /// missing name is a version mismatch that should fail loud rather than
     /// silently drop every swing.
     pub cb_play_animate: i32,
+    /// `ClientboundDamageEventPacket` — the hurt flash + hurt clock (M21).
+    /// Required: without it nothing an entity takes ever shows, and a missing
+    /// name is a version mismatch rather than an absent feature.
+    pub cb_play_damage_event: i32,
     /// `ClientboundSetEquipmentPacket` — the held items that decide a swing's
     /// duration and animation type. Required for the same reason: without it
     /// every entity would silently swing with the bare-hand default.
@@ -191,6 +195,7 @@ impl Ids {
             cb_play_rotate_head: req!(p, P, C, "rotate_head"),
             cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_animate: req!(p, P, C, "animate"),
+            cb_play_damage_event: req!(p, P, C, "damage_event"),
             cb_play_set_equipment: req!(p, P, C, "set_equipment"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),

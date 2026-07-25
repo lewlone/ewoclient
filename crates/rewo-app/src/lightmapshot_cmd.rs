@@ -803,6 +803,7 @@ fn run_entity_case(
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
         mob: rewo_gpu::mobs::MobCombat::default(),
+        hurt: false,
         skin_uv: None,
         scale_mul: 1.0,
         anim_id: 0.0,

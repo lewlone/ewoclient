@@ -43,7 +43,7 @@ use crate::Gpu;
 
 pub use crate::mobs::EntityModelKind;
 
-const VERTEX_STRIDE: u64 = 36; // 3 pos + 2 uv + 4 rgba f32s
+const VERTEX_STRIDE: u64 = 52; // 3 pos + 2 uv + 4 rgba + 3 light + 1 hurt f32s
 /// ~500 capsules' worth (a flat-world slime herd alone reaches 129
 /// entities ≈ 65k verts). 9.4 MB × 2 ring slots — cheap; the CPU soup
 /// build is the real ceiling long before this is.
@@ -119,6 +119,9 @@ pub struct EntityDraw<'a> {
     /// Synced mob state the M20 arm rigs read (aggressive, held item, baby,
     /// derived illager pose). Default for every entity that is not a mob.
     pub mob: mobs::MobCombat,
+    /// `LivingEntityRenderer`'s `hasRedOverlay` — `hurtTime > 0` (M21). Drives
+    /// the red damage flash in the entity shader.
+    pub hurt: bool,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
     /// the default skin. Ignored for non-player models.
@@ -141,7 +144,16 @@ pub struct EntityDraw<'a> {
 struct Vertex {
     pos: [f32; 3],
     uv: [f32; 2],
+    /// Base tint × directional face shade. **The world light is deliberately
+    /// NOT folded in here** (M21): vanilla's `entity.fsh` applies the hurt
+    /// overlay to `texture * vertexColor` and only *then* multiplies by the
+    /// lightmap, so the two have to reach the shader separately — otherwise a
+    /// hurt mob in a dark cave would flash at full brightness.
     color: [f32; 4],
+    /// `rgb` = the entity's per-channel world light, `a` = the hurt flag
+    /// (`hasRedOverlay` as 0.0 / 1.0). One extra attribute rather than two;
+    /// entity vertex counts are tiny.
+    light_hurt: [f32; 4],
 }
 
 /// Combined entity atlas: the font occupies (0,0)..(128,128); mob textures
@@ -763,6 +775,8 @@ impl EntityPass {
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
+            // `OverlayTexture.v(hasRedOverlay)` as a 0/1 flag (M21).
+            let hurt = if d.hurt { 1.0f32 } else { 0.0 };
             if let Some(model) = &self.models[d.kind.index()] {
                 self.emit_model(&mut verts, d, model, time, &mut cem_state);
                 continue;
@@ -781,12 +795,8 @@ impl EntityPass {
                         d.pos[2] + p[2] * d.width,
                     ],
                     uv: self.white_uv,
-                    color: [
-                        base[0] * shade * light_r,
-                        base[1] * shade * light_g,
-                        base[2] * shade * light_b,
-                        1.0,
-                    ],
+                    color: [base[0] * shade, base[1] * shade, base[2] * shade, 1.0],
+                    light_hurt: [light_r, light_g, light_b, hurt],
                 });
             }
         }
@@ -814,7 +824,7 @@ impl EntityPass {
             .and_then(|a| a.mapped_slice_mut())
         {
             let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(verts.as_ptr() as *const u8, total * 36)
+                std::slice::from_raw_parts(verts.as_ptr() as *const u8, total * VERTEX_STRIDE as usize)
             };
             slice[..bytes.len()].copy_from_slice(bytes);
         }
@@ -956,7 +966,10 @@ impl EntityPass {
             }
             // Directional face shade × the entity's per-channel world light.
             let [light_r, light_g, light_b] = d.light;
-            let c = [q.shade * light_r, q.shade * light_g, q.shade * light_b];
+            let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+            // Shade only — the light rides its own attribute so the hurt
+            // overlay can be mixed in before it (vanilla's `entity.fsh` order).
+            let c = [q.shade, q.shade, q.shade];
             // Player skin: shift the (default-Steve) UVs onto this player's
             // uploaded slot. Same 64² layout, so a constant offset suffices.
             let du = d.skin_uv.unwrap_or([0.0, 0.0]);
@@ -965,6 +978,7 @@ impl EntityPass {
                     pos: p4[i],
                     uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
                     color: [c[0], c[1], c[2], 1.0],
+                    light_hurt: [light_r, light_g, light_b, hurt],
                 });
             }
         }
@@ -1015,6 +1029,8 @@ impl EntityPass {
                     pos: p,
                     uv: [u, v],
                     color,
+                    // Nametags are fullbright and never take the hurt overlay.
+                    light_hurt: [1.0, 1.0, 1.0, 0.0],
                 });
             }
         };
@@ -2595,6 +2611,11 @@ fn build_pipeline(
                 .location(2)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(20),
+            // rgb = world light, a = the hurt flag (M21).
+            vk::VertexInputAttributeDescription::default()
+                .location(3)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(36),
         ];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&bindings)
