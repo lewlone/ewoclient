@@ -41,7 +41,7 @@ use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_world::dimension::{
     CardinalLightType, DimensionShape, DimensionTypeDef, Skybox, DEFAULT_AMBIENT_LIGHT_COLOR,
-    DEFAULT_SKY_LIGHT_COLOR, DEFAULT_SKY_LIGHT_FACTOR,
+    DEFAULT_CLOUD_COLOR, DEFAULT_CLOUD_HEIGHT, DEFAULT_SKY_LIGHT_COLOR, DEFAULT_SKY_LIGHT_FACTOR,
 };
 
 /// The registry the Configuration `registry_data` packet must name for this
@@ -60,6 +60,8 @@ const ATTR_FOG_COLOR: &str = "minecraft:visual/fog_color";
 const ATTR_AMBIENT_LIGHT_COLOR: &str = "minecraft:visual/ambient_light_color";
 const ATTR_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
 const ATTR_SKY_LIGHT_FACTOR: &str = "minecraft:visual/sky_light_factor";
+const ATTR_CLOUD_COLOR: &str = "minecraft:visual/cloud_color";
+const ATTR_CLOUD_HEIGHT: &str = "minecraft:visual/cloud_height";
 
 /// Why one `minecraft:dimension_type` entry could not be understood.
 ///
@@ -244,6 +246,22 @@ fn attr_color(attrs: Option<&Nbt>, key: &'static str) -> Result<Option<i32>, Dim
         .ok_or(DimensionTypeError::BadAttribute(key))
 }
 
+/// One `attributes` **ARGB** color override (`AttributeTypes.ARGB_COLOR`).
+///
+/// The twin of [`attr_color`], separated because `STRING_ARGB_COLOR` keeps the
+/// alpha `STRING_RGB_COLOR` forces opaque.
+fn attr_argb(attrs: Option<&Nbt>, key: &'static str) -> Result<Option<i32>, DimensionTypeError> {
+    let Some(v) = attrs.and_then(|a| a.get(key)) else {
+        return Ok(None);
+    };
+    if matches!(v, Nbt::Compound(_)) {
+        return Err(DimensionTypeError::AttributeModifierUnsupported(key));
+    }
+    crate::biome_parse::parse_argb_color(v)
+        .map(Some)
+        .ok_or(DimensionTypeError::BadAttribute(key))
+}
+
 /// One `attributes` float override (`AttributeTypes.FLOAT`), validated against
 /// the attribute's `AttributeRange` — `EnvironmentAttribute::valueCodec` is
 /// `type.valueCodec().validate(valueRange::validate)`, so an out-of-range value
@@ -321,6 +339,13 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         attr_color(attributes, ATTR_SKY_LIGHT_COLOR)?.unwrap_or(DEFAULT_SKY_LIGHT_COLOR);
     let sky_light_factor =
         attr_f32(attributes, ATTR_SKY_LIGHT_FACTOR, 0.0..=1.0)?.unwrap_or(DEFAULT_SKY_LIGHT_FACTOR);
+    // `CLOUD_COLOR` is `ARGB_COLOR`, not `RGB_COLOR` — its alpha survives, and
+    // decides whether the cloud pass runs at all. Its default of 0 means the
+    // absent case needs no `Option`.
+    let cloud_color = attr_argb(attributes, ATTR_CLOUD_COLOR)?.unwrap_or(DEFAULT_CLOUD_COLOR);
+    // `NON_NEGATIVE_FLOAT`, per `EnvironmentAttributes.CLOUD_HEIGHT`.
+    let cloud_height =
+        attr_f32(attributes, ATTR_CLOUD_HEIGHT, 0.0..=f32::MAX)?.unwrap_or(DEFAULT_CLOUD_HEIGHT);
 
     Ok(DimensionTypeDef {
         name: name.to_string(),
@@ -337,6 +362,8 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         ambient_light_color,
         sky_light_color,
         sky_light_factor,
+        cloud_color,
+        cloud_height,
     })
 }
 

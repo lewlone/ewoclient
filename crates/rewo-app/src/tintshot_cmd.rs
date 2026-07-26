@@ -243,6 +243,8 @@ fn registry() -> BiomeRegistry {
         grass_modifier: GrassModifier::None,
         sky_color: Some(A_SKY),
         fog_color: None,
+            has_precipitation: true,
+        temperature_modifier: Default::default(),
     };
     let b = BiomeDef {
         name: "test:b".into(),
@@ -603,6 +605,8 @@ fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &State
         grass_modifier: GrassModifier::DarkForest,
         sky_color: None,
         fog_color: None,
+            has_precipitation: true,
+        temperature_modifier: Default::default(),
     };
     let mut world = World::new(shape());
     install_single_biome(&mut world, 0, 0);
@@ -630,6 +634,8 @@ fn check_swamp(failures: &mut Vec<String>, baked: &BakedAssets, st: &States) {
         grass_modifier: GrassModifier::Swamp,
         sky_color: None,
         fog_color: None,
+            has_precipitation: true,
+        temperature_modifier: Default::default(),
     };
     check_swamp_at(failures, baked, st, &def, 8, 5, SWAMP_LIGHT, "swamp_light");
     check_swamp_at(

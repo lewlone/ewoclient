@@ -19,6 +19,7 @@ pub mod lightmap;
 pub mod palette;
 pub mod physics;
 pub mod raycast;
+pub mod weather;
 
 use std::collections::HashMap;
 use std::sync::Arc;

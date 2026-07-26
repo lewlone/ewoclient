@@ -1030,6 +1030,45 @@ pub fn route_damage_event(
     }
 }
 
+/// Apply one `ClientboundGameEventPacket` body to the weather state.
+///
+/// Body: an **unsigned byte** event id and an `f32` param — not a var-int pair.
+/// The packet carries a dozen unrelated things (game-mode changes, the win
+/// screen, demo hints); M33 consumes only the four weather ids and reports
+/// whether this one was among them.
+///
+/// A short body is inert: vanilla's reader would throw, and dropping the packet
+/// is the closest safe equivalent to a client that never applied it.
+pub fn apply_game_event(body: &[u8], weather: &mut rewo_world::weather::WeatherState) -> bool {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let (Ok(event), Ok(param)) = (r.u8(), r.f32()) else {
+        return false;
+    };
+    weather.apply_game_event(event, param)
+}
+
+/// The narrowest clientbound-play dispatch seam for the game event: routes a
+/// single `(packet id, body)` to [`apply_game_event`] iff `id` is the resolved
+/// `game_event` id, returning whether the id matched — **not** whether the
+/// event was a weather one. A caller wanting the latter should use
+/// [`apply_game_event`] directly, the way the `weathershot` oracle does.
+///
+/// Mirrors [`route_damage_event`] so `play::PlaySession` and the gate drive
+/// packet-id → weather routing through the same production code.
+pub fn route_game_event(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    weather: &mut rewo_world::weather::WeatherState,
+) -> bool {
+    if id == ids.cb_play_game_event {
+        apply_game_event(body, weather);
+        true
+    } else {
+        false
+    }
+}
+
 /// The kind information metadata routing needs, because several slots are
 /// polymorphic and only the entity type can separate them.
 ///

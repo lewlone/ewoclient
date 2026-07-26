@@ -228,6 +228,17 @@ pub const DEFAULT_SKY_LIGHT_COLOR: i32 = -1;
 /// (`valueRange(UNIT_FLOAT)`).
 pub const DEFAULT_SKY_LIGHT_FACTOR: f32 = 1.0;
 
+/// `EnvironmentAttributes.CLOUD_COLOR` default **`0`** — fully transparent.
+///
+/// This is not a placeholder: `LevelRenderer` skips the entire cloud pass when
+/// `ARGB.alpha(cloudColor) == 0`, so a dimension that sets no cloud colour has
+/// no clouds. That is how the Nether and the End get none — by omission, not by
+/// a dimension check. The Overworld sets `#ccffffff`.
+pub const DEFAULT_CLOUD_COLOR: i32 = 0;
+
+/// `EnvironmentAttributes.CLOUD_HEIGHT` default `192.33`.
+pub const DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
+
 /// One `minecraft:dimension_type` registry entry.
 ///
 /// This replaces the M14-era parallel `dim_shapes` / `dim_attrs` vectors: one
@@ -290,6 +301,13 @@ pub struct DimensionTypeDef {
     pub sky_light_color: i32,
     /// `minecraft:visual/sky_light_factor`, `[0, 1]`.
     pub sky_light_factor: f32,
+    /// `minecraft:visual/cloud_color` — an **ARGB** attribute whose alpha is
+    /// meaningful (see [`DEFAULT_CLOUD_COLOR`]). Unlike `sky_color` this needs
+    /// no `Option`: the attribute's own default of 0 *is* "no clouds", so
+    /// absence and transparency mean the same thing here.
+    pub cloud_color: i32,
+    /// `minecraft:visual/cloud_height`, in blocks.
+    pub cloud_height: f32,
 }
 
 impl DimensionTypeDef {
@@ -327,6 +345,8 @@ impl DimensionTypeDef {
             ambient_light_color: DEFAULT_AMBIENT_LIGHT_COLOR,
             sky_light_color: DEFAULT_SKY_LIGHT_COLOR,
             sky_light_factor: DEFAULT_SKY_LIGHT_FACTOR,
+            cloud_color: DEFAULT_CLOUD_COLOR,
+            cloud_height: DEFAULT_CLOUD_HEIGHT,
         }
     }
 }

@@ -101,6 +101,12 @@ pub struct Ids {
     /// Required: without it nothing an entity takes ever shows, and a missing
     /// name is a version mismatch rather than an absent feature.
     pub cb_play_damage_event: i32,
+    /// `ClientboundGameEventPacket` — an unsigned-byte event id and a float
+    /// param. It carries a dozen unrelated things; M33 consumes the four
+    /// weather ones (`START_RAINING` 1, `STOP_RAINING` 2, `RAIN_LEVEL_CHANGE`
+    /// 7, `THUNDER_LEVEL_CHANGE` 8). Required: without it the sky never rains,
+    /// and a missing name is a version mismatch rather than clear weather.
+    pub cb_play_game_event: i32,
     /// `ClientboundSetEquipmentPacket` — the held items that decide a swing's
     /// duration and animation type. Required for the same reason: without it
     /// every entity would silently swing with the bare-hand default.
@@ -202,6 +208,7 @@ impl Ids {
             cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_animate: req!(p, P, C, "animate"),
             cb_play_damage_event: req!(p, P, C, "damage_event"),
+            cb_play_game_event: req!(p, P, C, "game_event"),
             cb_play_set_equipment: req!(p, P, C, "set_equipment"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),

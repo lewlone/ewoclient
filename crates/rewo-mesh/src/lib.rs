@@ -1729,6 +1729,8 @@ fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
         grass_modifier: GrassModifier::None,
         sky_color: None,
         fog_color: None,
+            has_precipitation: true,
+        temperature_modifier: Default::default(),
     };
     BiomeContext::new(
         std::sync::Arc::new(BiomeRegistry::new(vec![def])),
@@ -2740,7 +2742,9 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: None,
             fog_color: None,
-        };
+                has_precipitation: true,
+        temperature_modifier: Default::default(),
+    };
         let ctx = BiomeContext::new(
             Arc::new(BiomeRegistry::new(vec![biome])),
             Colormaps::neutral(),
@@ -2965,7 +2969,9 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: None,
             fog_color: None,
-        };
+                has_precipitation: true,
+        temperature_modifier: Default::default(),
+    };
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);
         w.set_biome_context(Arc::new(BiomeContext::new(

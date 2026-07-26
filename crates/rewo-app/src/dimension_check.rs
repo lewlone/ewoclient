@@ -784,7 +784,8 @@ mod tests {
     use super::*;
     use rewo_world::dimension::{
         CardinalLightType, DimensionShape, Skybox, DEFAULT_AMBIENT_LIGHT_COLOR,
-        DEFAULT_SKY_LIGHT_COLOR, DEFAULT_SKY_LIGHT_FACTOR,
+        DEFAULT_CLOUD_COLOR, DEFAULT_CLOUD_HEIGHT, DEFAULT_SKY_LIGHT_COLOR,
+        DEFAULT_SKY_LIGHT_FACTOR,
     };
 
     fn nether_def() -> DimensionTypeDef {
@@ -803,6 +804,10 @@ mod tests {
             ambient_light_color: DEFAULT_AMBIENT_LIGHT_COLOR,
             sky_light_color: DEFAULT_SKY_LIGHT_COLOR,
             sky_light_factor: DEFAULT_SKY_LIGHT_FACTOR,
+            // The Nether sets no cloud attributes at all; the defaults ARE the
+            // behaviour, and the transparent colour is why it has no clouds.
+            cloud_color: DEFAULT_CLOUD_COLOR,
+            cloud_height: DEFAULT_CLOUD_HEIGHT,
         }
     }
 

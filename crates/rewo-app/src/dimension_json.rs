@@ -41,6 +41,8 @@ const K_FOG_COLOR: &str = "minecraft:visual/fog_color";
 const K_AMBIENT_LIGHT_COLOR: &str = "minecraft:visual/ambient_light_color";
 const K_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
 const K_SKY_LIGHT_FACTOR: &str = "minecraft:visual/sky_light_factor";
+const K_CLOUD_COLOR: &str = "minecraft:visual/cloud_color";
+const K_CLOUD_HEIGHT: &str = "minecraft:visual/cloud_height";
 
 /// The timeline whose presence in the resolved holder set turns the day cycle
 /// on. Grounded in `data/minecraft/timeline/day.json`.
@@ -54,6 +56,9 @@ const DAY_TIMELINE: &str = "minecraft:day";
 const JSON_DEFAULT_AMBIENT_LIGHT_COLOR: i32 = 0xFF00_0000u32 as i32;
 const JSON_DEFAULT_SKY_LIGHT_COLOR: i32 = 0xFFFF_FFFFu32 as i32;
 const JSON_DEFAULT_SKY_LIGHT_FACTOR: f32 = 1.0;
+/// `CLOUD_COLOR`'s attribute default — fully transparent, i.e. no clouds.
+const JSON_DEFAULT_CLOUD_COLOR: i32 = 0;
+const JSON_DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
 
 /// One `data/minecraft/dimension_type/*.json` file, read raw and graded.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +77,10 @@ pub struct JsonDimension {
     pub ambient_light_color: i32,
     pub sky_light_color: i32,
     pub sky_light_factor: f32,
+    /// `visual/cloud_color` — **ARGB**, alpha preserved. Read here rather than
+    /// defaulted so the gate can actually catch a wrong cloud colour.
+    pub cloud_color: i32,
+    pub cloud_height: f32,
     /// The raw `timelines` entries, exactly as the file spells them.
     pub timelines_raw: Vec<String>,
     /// Every timeline id the holder set resolves to, tags expanded, sorted.
@@ -106,6 +115,8 @@ impl JsonDimension {
             ambient_light_color: self.ambient_light_color,
             sky_light_color: self.sky_light_color,
             sky_light_factor: self.sky_light_factor,
+            cloud_color: self.cloud_color,
+            cloud_height: self.cloud_height,
         }
     }
 
@@ -158,6 +169,8 @@ impl JsonDimension {
             d.ambient_light_color,
             want.ambient_light_color
         );
+        eq!("cloud_color", d.cloud_color, want.cloud_color);
+        eq!("cloud_height", d.cloud_height, want.cloud_height);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
             "sky_light_factor",
@@ -353,6 +366,30 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
                 JSON_DEFAULT_SKY_LIGHT_COLOR
             }
         };
+    // ARGB, so the 8-digit reader — the Overworld's `#ccffffff` is 80% opaque
+    // and a 6-digit reader would reject it outright.
+    let cloud_color = match opt_argb(attr(K_CLOUD_COLOR), K_CLOUD_COLOR).map_err(|e| at(&e))? {
+        Some(v) => v,
+        None => {
+            defaulted.push("attributes.visual/cloud_color (absent = NO CLOUDS)");
+            JSON_DEFAULT_CLOUD_COLOR
+        }
+    };
+    let cloud_height = match attr(K_CLOUD_HEIGHT) {
+        None => {
+            defaulted.push("attributes.visual/cloud_height");
+            JSON_DEFAULT_CLOUD_HEIGHT
+        }
+        Some(Value::Object(_)) => {
+            return Err(at(&format!(
+                "attribute `{K_CLOUD_HEIGHT}` uses the {{modifier, argument}} form,                  which the client does not model"
+            )))
+        }
+        Some(v) => v
+            .as_f64()
+            .ok_or_else(|| at(&format!("attribute `{K_CLOUD_HEIGHT}` is not a number")))?
+            as f32,
+    };
     let sky_light_factor = match attr(K_SKY_LIGHT_FACTOR) {
         None => {
             defaulted.push("attributes.visual/sky_light_factor");
@@ -418,6 +455,8 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         ambient_light_color,
         sky_light_color,
         sky_light_factor,
+        cloud_color,
+        cloud_height,
         timelines_raw,
         timeline_ids,
         has_day_timeline,
@@ -531,6 +570,33 @@ fn req_f32(obj: &serde_json::Map<String, Value>, key: &str) -> Result<f32, Strin
 /// `ExtraCodecs.STRING_RGB_COLOR`: `hexColor(6)` made opaque by `ARGB::opaque`,
 /// with a bare-int alternative. Written out here rather than reusing the
 /// network path's colour reader, so the two can disagree.
+/// The ARGB twin of [`opt_color`]: `hexColor(8)`, alpha **kept**.
+fn opt_argb(v: Option<&Value>, key: &str) -> Result<Option<i32>, String> {
+    let Some(v) = v else { return Ok(None) };
+    match v {
+        Value::Object(_) => Err(format!(
+            "attribute `{key}` uses the {{modifier, argument}} form, which the client              does not model"
+        )),
+        Value::String(s) => {
+            let hex = s.strip_prefix('#').unwrap_or(s);
+            if hex.len() != 8 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "attribute `{key}` = `{s}` is not an 8-digit #aarrggbb colour"
+                ));
+            }
+            Ok(Some(u32::from_str_radix(hex, 16)
+                .map_err(|e| format!("attribute `{key}` = `{s}`: {e}"))?
+                as i32))
+        }
+        Value::Number(n) => Ok(Some(
+            n.as_i64()
+                .ok_or_else(|| format!("attribute `{key}` is not an integer colour"))?
+                as i32,
+        )),
+        _ => Err(format!("attribute `{key}` is not a colour")),
+    }
+}
+
 fn opt_color(v: Option<&Value>, key: &str) -> Result<Option<i32>, String> {
     let Some(v) = v else { return Ok(None) };
     match v {

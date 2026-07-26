@@ -106,6 +106,9 @@ pub struct PlaySession {
     /// (`ClientLevel.tickTime`). Derived from `overworld_clock` once a real
     /// clock state exists; otherwise a `gameTime` best-effort.
     pub day_ticks: Option<i64>,
+    /// Rain and thunder (M33), off `ClientboundGameEventPacket`. Cleared on a
+    /// dimension change, the way a fresh `ClientLevel`'s are.
+    pub weather: rewo_world::weather::WeatherState,
     /// The overworld world clock, ported from 26.2 `ClientClockManager`. It is
     /// advanced from the same two places vanilla advances it: `set_time`
     /// (`handleUpdates` — advance by the game-time delta, then any explicit
@@ -340,6 +343,10 @@ struct WorldTransition<'a> {
     day_ticks: &'a mut Option<i64>,
     overworld_clock: &'a mut Option<WorldClock>,
     game_time: &'a mut Option<i64>,
+    /// Rain and thunder are `ClientLevel` state too — a fresh level starts
+    /// clear, and stays clear until the new dimension's server sends its own
+    /// `game_event`. Carrying rain into the Nether would be visible.
+    weather: &'a mut rewo_world::weather::WeatherState,
     biome_zoom_seed: &'a mut Option<i64>,
     /// The parsed biome registry, *retained* across the change — it is a synced
     /// global registry, not a per-level table — plus the colormaps, so the new
@@ -427,6 +434,7 @@ impl WorldTransition<'_> {
         *self.day_ticks = None;
         *self.overworld_clock = None;
         *self.game_time = None;
+        self.weather.clear();
 
         // `spawnInfo.seed()` is the new level's `biomeZoomSeed`.
         *self.biome_zoom_seed = Some(spawn.seed);
@@ -723,6 +731,7 @@ impl<'a> Connection<'a> {
             teleports: 0,
             block_updates: 0,
             day_ticks: None,
+            weather: rewo_world::weather::WeatherState::default(),
             overworld_clock: None,
             game_time: None,
             dirty: std::collections::HashSet::new(),
@@ -1420,6 +1429,9 @@ impl PlaySession {
         ) {
             // M21: the damage response — arms the hurt clock (red overlay) and
             // kicks the walk animation, for a tracked living entity only.
+        } else if crate::route_game_event(id, body, ids, &mut self.weather) {
+            // M33: rain and thunder levels. The packet also carries a dozen
+            // non-weather events; those match the id and change nothing.
         } else if crate::route_animate(
             id,
             body,
@@ -1746,6 +1758,7 @@ impl PlaySession {
             day_ticks: &mut self.day_ticks,
             overworld_clock: &mut self.overworld_clock,
             game_time: &mut self.game_time,
+            weather: &mut self.weather,
             biome_zoom_seed: &mut self.biome_zoom_seed,
             biome_registry: self.pending_biome_registry.as_ref(),
             colormaps: &self.colormaps,
@@ -2516,6 +2529,7 @@ mod respawn_tests {
         day_ticks: Option<i64>,
         overworld_clock: Option<WorldClock>,
         game_time: Option<i64>,
+        weather: rewo_world::weather::WeatherState,
         biome_zoom_seed: Option<i64>,
         colormaps: rewo_world::biome::Colormaps,
         key: Option<String>,
@@ -2548,6 +2562,14 @@ mod respawn_tests {
             day_ticks: Some(189_121),
             overworld_clock: Some(WorldClock::from_state(138_341, 189_121, 0.25, 1.0)),
             game_time: Some(138_341),
+            // Deliberately a storm: a transition that failed to clear it would
+            // otherwise be invisible against a default-clear harness.
+            weather: {
+                let mut w = rewo_world::weather::WeatherState::default();
+                w.set_rain(0.8);
+                w.set_thunder(0.5);
+                w
+            },
             biome_zoom_seed: Some(0x0bad_f00d),
             colormaps: rewo_world::biome::Colormaps::neutral(),
             key: Some("minecraft:overworld".into()),
@@ -2568,6 +2590,7 @@ mod respawn_tests {
                 day_ticks: &mut self.day_ticks,
                 overworld_clock: &mut self.overworld_clock,
                 game_time: &mut self.game_time,
+                weather: &mut self.weather,
                 biome_zoom_seed: &mut self.biome_zoom_seed,
                 biome_registry: None,
                 colormaps: &self.colormaps,
@@ -2726,6 +2749,24 @@ mod respawn_tests {
         assert_eq!(s.biome_zoom_seed, Some(0x0bad_f00d), "seed retained");
         assert_eq!(s.generation, 4, "not a transition");
         assert!(s.transitions.is_empty(), "history unmoved");
+        assert_eq!(
+            s.weather.rain_level(),
+            0.8,
+            "no new level, so the storm keeps falling"
+        );
+    }
+
+    /// Weather is `ClientLevel` state: a real dimension change discards it, so
+    /// walking into the Nether cannot carry the Overworld's storm along. The
+    /// harness starts at rain 0.8 / thunder 0.5 so this can fail.
+    #[test]
+    fn a_dimension_change_clears_the_weather() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 4);
+        assert_eq!(s.weather.rain_level(), 0.8, "precondition");
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
+        assert_eq!(s.weather.rain_level(), 0.0);
+        assert_eq!(s.weather.thunder_level(), 0.0);
     }
 
     /// The generation is a counter, not an index: at `u64::MAX` it wraps to 0

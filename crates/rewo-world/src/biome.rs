@@ -187,6 +187,14 @@ pub struct BiomeDef {
     /// dimension base.
     pub sky_color: Option<i32>,
     pub fog_color: Option<i32>,
+    /// `has_precipitation` — whether weather falls here at all. M33 reads it;
+    /// with `temperature` + `temperature_modifier` it decides rain vs snow vs
+    /// nothing (see [`crate::weather`]).
+    pub has_precipitation: bool,
+    /// `temperature_modifier`. M14 dropped this as colour-irrelevant, which it
+    /// is; it is precipitation-relevant, because `FROZEN` pins whole patches
+    /// of a biome to 0.2 and turns their rain to snow.
+    pub temperature_modifier: crate::weather::TemperatureModifier,
 }
 
 impl BiomeDef {
@@ -610,6 +618,8 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: Some(argb_opaque(0x78A7FF)),
             fog_color: None,
+            has_precipitation: true,
+            temperature_modifier: crate::weather::TemperatureModifier::None,
         }
     }
 

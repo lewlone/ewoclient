@@ -31,10 +31,22 @@
 
 use rewo_proto::nbt::Nbt;
 use rewo_world::biome::{BiomeDef, GrassModifier};
+use rewo_world::weather::TemperatureModifier;
 
 /// Default water color (`#3f76e4`, opaque) when a biome somehow omits it —
 /// vanilla always sends it (`water_color` is a required field).
 const DEFAULT_WATER: i32 = 0xFF3F_76E4u32 as i32;
+
+/// A boolean NBT field. The codec writes `Byte`, so that is the only form a
+/// vanilla server sends; `Int` is accepted for the same reason `as_f32` is
+/// liberal.
+fn as_bool(n: &Nbt) -> Option<bool> {
+    match n {
+        Nbt::Byte(v) => Some(*v != 0),
+        Nbt::Int(v) => Some(*v != 0),
+        _ => None,
+    }
+}
 
 fn as_f32(n: &Nbt) -> Option<f32> {
     match n {
@@ -55,6 +67,27 @@ fn parse_hex_color(s: &str) -> Option<i32> {
     }
     let v = u32::from_str_radix(hex, 16).ok()?;
     Some((v | 0xFF00_0000) as i32)
+}
+
+/// A bare `STRING_ARGB_COLOR` value: `hexColor(8)` — `#aarrggbb`, alpha
+/// **preserved** — or the `ARGB_COLOR_CODEC` int fallback.
+///
+/// Distinct from [`parse_color`] on purpose. `STRING_RGB_COLOR` runs its six
+/// digits through `ARGB::opaque`; this one does not, and the difference is
+/// load-bearing for `visual/cloud_color`, whose alpha decides whether clouds
+/// render at all.
+pub fn parse_argb_color(n: &Nbt) -> Option<i32> {
+    match n {
+        Nbt::String(s) => {
+            let hex = s.strip_prefix('#').unwrap_or(s);
+            if hex.len() != 8 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            Some(u32::from_str_radix(hex, 16).ok()? as i32)
+        }
+        Nbt::Int(v) => Some(*v),
+        _ => None,
+    }
 }
 
 /// A bare `STRING_RGB_COLOR` value: the `#rrggbb` string form (what vanilla
@@ -90,6 +123,19 @@ fn parse_attr_color(n: &Nbt) -> Option<i32> {
 pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
     let temperature = nbt.get("temperature").and_then(as_f32).unwrap_or(0.5);
     let downfall = nbt.get("downfall").and_then(as_f32).unwrap_or(0.5);
+    // `ClimateSettings.hasPrecipitation` — a Byte on the wire. Its codec has
+    // no default, so a real server always sends it; absent, the safer read is
+    // "it rains", matching every vanilla biome but the deserts and the Nether.
+    let has_precipitation = nbt
+        .get("has_precipitation")
+        .and_then(as_bool)
+        .unwrap_or(true);
+    // Optional, and absent for all but the frozen-ocean family.
+    let temperature_modifier = nbt
+        .get("temperature_modifier")
+        .and_then(Nbt::as_str)
+        .map(TemperatureModifier::from_name)
+        .unwrap_or_default();
 
     let effects = nbt.get("effects");
     let eff = |k: &str| effects.and_then(|e| e.get(k));
@@ -117,6 +163,8 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
         grass_modifier,
         sky_color,
         fog_color,
+        has_precipitation,
+        temperature_modifier,
     }
 }
 
