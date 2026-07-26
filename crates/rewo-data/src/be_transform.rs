@@ -442,6 +442,204 @@ pub fn shulker_lid(progress: f32) -> Affine {
     mul(&translation(0.0, y, 0.0), &rot_y(MAX_LID_ROTATION_DEG * progress))
 }
 
+// ------------------------------------------------ the block-entity clock
+//
+// Almost every block entity Rewo draws has an animation, and until M29 all of
+// them rendered at rest because there was no per-block-entity tick. The clock
+// is not one thing: what a block entity animates *from* varies, and grouping
+// them by that is the useful distinction.
+//
+// * **Position and game time only** — a banner's sway. No state at all; the
+//   phase is a hash of the block position plus the world clock.
+// * **An event and a start tick** — a pot's wobble, timed from the game time
+//   the `block_event` arrived at.
+// * **An accumulating counter** — a skull's animation, which only advances
+//   while its block state is `POWERED`.
+//
+// Each is exact. What is *not* here needs something other than a clock: a
+// conduit's active cage needs `updateShape`'s prismarine-frame world scan, a
+// spawner's caged mob needs an entity model composed into a block draw, and an
+// end portal's starfield needs the render type's shader.
+
+/// `BannerRenderer.extractRenderState`'s phase — the banner's whole clock.
+///
+/// ```text
+/// state.phase = (Math.floorMod(x * 7 + y * 9 + z * 13 + gameTime, 100) + partialTicks) / 100
+/// ```
+///
+/// A position hash, so two banners side by side sway out of step rather than
+/// in unison. `floorMod`, not `%`: a negative coordinate must wrap into
+/// `0..100` rather than going negative, and Rust's `%` would not.
+pub fn banner_phase(x: i32, y: i32, z: i32, game_time: i64, partial: f32) -> f32 {
+    let seed = (x as i64) * 7 + (y as i64) * 9 + (z as i64) * 13 + game_time;
+    (seed.rem_euclid(100) as f32 + partial) / 100.0
+}
+
+/// `BannerFlagModel.setupAnim(phase)`:
+///
+/// ```text
+/// flag.xRot = (-0.0125F + 0.01F * Mth.cos((float)(Math.PI * 2) * phase)) * (float)Math.PI;
+/// ```
+///
+/// The cloth never hangs straight: the constant term is **negative**, so even
+/// at the top of the cycle it leans slightly back. Amplitude 0.01 against an
+/// offset of 0.0125 means it sways either side of a small permanent tilt.
+pub fn banner_flag_angle(phase: f32) -> f32 {
+    use std::f32::consts::PI;
+    (-0.0125 + 0.01 * (2.0 * PI * phase).cos()) * PI
+}
+
+/// The banner flag group's transform — an `xRot` about its pose offset.
+pub fn banner_flag_part(phase: f32, pivot: [f32; 3]) -> Affine {
+    mul(&part_at_rest(pivot), &rot_x(banner_flag_angle(phase)))
+}
+
+/// A rotation about +X by `rad` radians.
+pub fn rot_x(rad: f32) -> Affine {
+    let (s, c) = rad.sin_cos();
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, c, -s, 0.0],
+        [0.0, s, c, 0.0],
+    ]
+}
+
+/// A rotation about +Z by `rad` radians.
+pub fn rot_z(rad: f32) -> Affine {
+    let (s, c) = rad.sin_cos();
+    [
+        [c, -s, 0.0, 0.0],
+        [s, c, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ]
+}
+
+/// `Matrix4f.rotateAround(q, ox, oy, oz)` for an arbitrary rotation.
+pub fn rot_around(r: &Affine, o: [f32; 3]) -> Affine {
+    mul(
+        &translation(o[0], o[1], o[2]),
+        &mul(r, &translation(-o[0], -o[1], -o[2])),
+    )
+}
+
+/// `DecoratedPotBlockEntity.WobbleStyle` — which wobble a `block_event`
+/// asked for, and how long it lasts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WobbleStyle {
+    /// Ordinal 0. A seven-tick nod: the pot rocks about X and Z.
+    Positive,
+    /// Ordinal 1. A ten-tick shake about Y, decaying linearly.
+    Negative,
+}
+
+impl WobbleStyle {
+    /// `WobbleStyle.values()[data]`, from the event's `b1`.
+    pub fn from_ordinal(o: u8) -> Option<Self> {
+        match o {
+            0 => Some(WobbleStyle::Positive),
+            1 => Some(WobbleStyle::Negative),
+            _ => None,
+        }
+    }
+
+    /// The `duration` field, in ticks. **They differ** — 7 and 10 — so the two
+    /// wobbles do not merely look different, they last different lengths.
+    pub fn duration(self) -> f32 {
+        match self {
+            WobbleStyle::Positive => 7.0,
+            WobbleStyle::Negative => 10.0,
+        }
+    }
+}
+
+/// `DecoratedPotRenderer.submit`'s wobble, as a transform to compose **after**
+/// the pot's own facing rotation.
+///
+/// ```text
+/// POSITIVE:  deltaTime = progress * 2PI
+///            tiltX = -1.5 * (cos(deltaTime) + 0.5) * sin(deltaTime / 2)
+///            rotateAround(XP(tiltX * 0.015625), 0.5, 0, 0.5)
+///            rotateAround(ZP(sin(deltaTime) * 0.015625), 0.5, 0, 0.5)
+/// NEGATIVE:  turn = sin(-progress * 3 * PI) * 0.125
+///            rotateAround(YP(turn * (1 - progress)), 0.5, 0, 0.5)
+/// ```
+///
+/// Both turn about `(0.5, 0, 0.5)` — the block's **floor** centre, not its
+/// middle, so the pot rocks on its base like a real pot rather than pivoting
+/// in mid-air. That is a different origin from the facing rotation just above
+/// it, which uses `(0.5, 0.5, 0.5)`.
+///
+/// `0.015625` is 1/64: the positive wobble is a nod of well under a degree.
+/// Outside `0..=1` the renderer skips the block entirely, which is what stops
+/// a finished wobble from freezing at its end pose.
+pub fn pot_wobble(style: WobbleStyle, progress: f32) -> Affine {
+    if !(0.0..=1.0).contains(&progress) {
+        return IDENTITY;
+    }
+    let o = [0.5, 0.0, 0.5];
+    match style {
+        WobbleStyle::Positive => {
+            use std::f32::consts::PI;
+            let dt = progress * 2.0 * PI;
+            let tilt_x = -1.5 * (dt.cos() + 0.5) * (dt / 2.0).sin();
+            let tilt_z = dt.sin();
+            mul(
+                &rot_around(&rot_x(tilt_x * 0.015_625), o),
+                &rot_around(&rot_z(tilt_z * 0.015_625), o),
+            )
+        }
+        WobbleStyle::Negative => {
+            use std::f32::consts::PI;
+            let turn = (-progress * 3.0 * PI).sin() * 0.125;
+            rot_around(&rot_y_rad(turn * (1.0 - progress)), o)
+        }
+    }
+}
+
+/// A Y rotation given radians rather than degrees.
+pub fn rot_y_rad(rad: f32) -> Affine {
+    let (s, c) = rad.sin_cos();
+    [
+        [c, 0.0, s, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [-s, 0.0, c, 0.0],
+    ]
+}
+
+/// `PiglinHeadModel.setupAnim` — the ears.
+///
+/// ```text
+/// float asymmetry = 1.2F;
+/// leftEar.zRot  = (float)(-(Math.cos(animationPos * PI * 0.2F * 1.2F) + 2.5)) * 0.2F;
+/// rightEar.zRot = (float)( (Math.cos(animationPos * PI * 0.2F      ) + 2.5)) * 0.2F;
+/// ```
+///
+/// **`setupAnim` always runs**, so these are the ears' angles even at
+/// `animationPos = 0` — where they are ∓0.7 rad, *not* the ∓30° the mesh's
+/// `PartPose` carries. Rewo drew the mesh rest until M29, which put both ears
+/// about 10° off on every piglin head in the world.
+///
+/// The `1.2` asymmetry is on the **left ear only**, so the two drift in and
+/// out of phase rather than flapping together.
+pub fn piglin_ear_angles(animation_pos: f32) -> (f32, f32) {
+    use std::f32::consts::PI;
+    let left = -((animation_pos * PI * 0.2 * 1.2).cos() + 2.5) * 0.2;
+    let right = ((animation_pos * PI * 0.2).cos() + 2.5) * 0.2;
+    (left, right)
+}
+
+/// `DragonHeadModel.setupAnim` — the jaw.
+///
+/// ```text
+/// jaw.xRot = (float)(Math.sin(animationPos * PI * 0.2F) + 1.0) * 0.2F;
+/// ```
+///
+/// Also always applied: a dragon head's jaw rests at 0.2 rad open, never shut.
+pub fn dragon_jaw_angle(animation_pos: f32) -> f32 {
+    use std::f32::consts::PI;
+    ((animation_pos * PI * 0.2).sin() + 1.0) * 0.2
+}
+
 /// A group that does not animate — the identity, put back at its pivot.
 ///
 /// Every static box uses this, and so does an animated group at rest.

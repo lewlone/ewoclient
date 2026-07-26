@@ -182,6 +182,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         &rewo_data::block_entity_types::load(&paths.registries_json())?,
     )?;
     session.block_event_types = be_registry.block_event_types();
+    // Which skull states are POWERED, so their animation counters run (M29).
+    session.powered_skull_states = chest_states.powered_skull_states().clone();
     // M19 combat swings: the machine-extracted living / swing-ticking sets gate
     // every swing input and decide whose clock runs (`updateSwingTime` is not
     // universal), and the equipment tables decide how long each swing lasts and
@@ -1660,7 +1662,7 @@ fn run_headless(
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
-    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0);
+    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time());
     // Every texture the frame samples from the entity atlas — items in hands,
     // dropped stacks, and now block-entity models, which share the pool.
     let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
@@ -2130,7 +2132,7 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha);
+        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time());
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
         held.extend(draws.iter().filter_map(|d| d.ground_item));
         held.extend(bes.iter().map(|b| b.model.as_str()));
@@ -2547,11 +2549,83 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
 /// or whose state is not in the table, is simply not drawn: that is M25's
 /// fail-closed registry showing through, and it is why an unimplemented type
 /// renders nothing rather than a chest in the wrong place.
+/// One group's transform slotted into an otherwise-inert part array.
+///
+/// Group 0 is never read by the emitter, so the array's identity default means
+/// "nothing animates" and a model that wants one moving part fills exactly one
+/// slot.
+fn one_part(
+    group: u8,
+    xf: rewo_data::be_transform::Affine,
+    pivot: [f32; 3],
+) -> (
+    [rewo_data::be_transform::Affine; rewo_gpu::entities::MAX_PARTS],
+    [[f32; 3]; rewo_gpu::entities::MAX_PARTS],
+) {
+    let mut xs = [rewo_data::be_transform::IDENTITY; rewo_gpu::entities::MAX_PARTS];
+    let mut ps = [[0.0f32; 3]; rewo_gpu::entities::MAX_PARTS];
+    let g = group as usize;
+    if g > 0 && g < rewo_gpu::entities::MAX_PARTS {
+        xs[g] = xf;
+        ps[g] = pivot;
+    }
+    (xs, ps)
+}
+
+/// The animated groups a skull model carries, if any (M29).
+///
+/// `SkullModelBase.setupAnim` **always runs**, so a piglin head's ears and a
+/// dragon head's jaw are at their formula values even at `animationPos = 0` —
+/// they are not "at rest until powered". Rewo drew the mesh's own `PartPose`
+/// until M29, which left both piglin ears about 10 degrees off on every head
+/// in the world and every dragon jaw shut when vanilla holds it 0.2 rad open.
+///
+/// The plain `SkullModel` types (skeleton, wither skeleton, zombie, creeper,
+/// player) animate **nothing**: their `setupAnim` writes `head.yRot`/`xRot`
+/// from state fields that a block skull never sets.
+fn skull_parts(
+    model: &str,
+    animation: f32,
+) -> (
+    [rewo_data::be_transform::Affine; rewo_gpu::entities::MAX_PARTS],
+    [[f32; 3]; rewo_gpu::entities::MAX_PARTS],
+) {
+    use rewo_data::be_transform as bt;
+    use rewo_data::block_entity_models as bem;
+    let mut xs = [bt::IDENTITY; rewo_gpu::entities::MAX_PARTS];
+    let mut ps = [[0.0f32; 3]; rewo_gpu::entities::MAX_PARTS];
+    match model {
+        "rewo:be/piglin_head" => {
+            let (l, r) = bt::piglin_ear_angles(animation);
+            let li = bem::PIGLIN_LEFT_EAR_PART as usize;
+            let ri = bem::PIGLIN_RIGHT_EAR_PART as usize;
+            xs[li] = bt::mul(&bt::part_at_rest(bem::PIGLIN_LEFT_EAR_PIVOT), &bt::rot_z(l));
+            ps[li] = bem::PIGLIN_LEFT_EAR_PIVOT;
+            xs[ri] = bt::mul(&bt::part_at_rest(bem::PIGLIN_RIGHT_EAR_PIVOT), &bt::rot_z(r));
+            ps[ri] = bem::PIGLIN_RIGHT_EAR_PIVOT;
+        }
+        "rewo:be/dragon_head" => {
+            let i = bem::DRAGON_JAW_PART as usize;
+            // The jaw's pose offset rides inside the head's 0.75 scale, so its
+            // pivot is the scaled one the bake used.
+            let pivot = bem::DRAGON_JAW_PIVOT;
+            xs[i] = bt::mul(
+                &bt::part_at_rest(pivot),
+                &bt::rot_x(bt::dragon_jaw_angle(animation)),
+            );
+            ps[i] = pivot;
+        }
+        _ => {}
+    }
+    (xs, ps)
+}
+
 fn collect_block_entities(
     world: &rewo_world::World,
     chests: &rewo_data::chest_states::ChestStates,
     lightmap: &LightmapState,
     alpha: f32,
+    game_time: i64,
 ) -> Vec<OwnedBlockEntityDraw> {
     use rewo_data::chest_states::BlockEntityAnim;
     let mut out = Vec::new();
@@ -2560,6 +2634,35 @@ fn collect_block_entities(
         let Some(draw) = chests.draw_for(state) else {
             continue;
         };
+        // A pot's wobble is a BLOCK-level rotation composed after its facing,
+        // not a part animation — the whole pot rocks (M29). It turns about
+        // `(0.5, 0, 0.5)`, the block's FLOOR centre, where the facing turns
+        // about `(0.5, 0.5, 0.5)`: a pot rocks on its base like a real one.
+        let be_transform = match world
+            .block_entities
+            .pot_wobble(*pos, game_time, alpha)
+        {
+            Some((style, progress)) if draw.anim == BlockEntityAnim::DecoratedPot => {
+                let st = match style {
+                    rewo_world::block_entities::PotWobble::Positive => {
+                        rewo_data::be_transform::WobbleStyle::Positive
+                    }
+                    rewo_world::block_entities::PotWobble::Negative => {
+                        rewo_data::be_transform::WobbleStyle::Negative
+                    }
+                };
+                rewo_data::be_transform::mul(
+                    &rewo_data::be_transform::pot_wobble(st, progress),
+                    &draw.transform,
+                )
+            }
+            _ => draw.transform,
+        };
+
+        // A skull's animation counter, which only runs while its block state
+        // is POWERED, drives a piglin head's ears and a dragon head's jaw.
+        let skull_anim = world.block_entities.skull_animation(*pos, alpha);
+
         // A decorated pot is five draws, not one: the base, plus a side plane
         // per face with its own sherd texture. They share the pot's own
         // transform and differ by the side pose, so each rides the emitter's
@@ -2586,13 +2689,29 @@ fn collect_block_entities(
                 bem::BANNER_WALL_FLAG_MODEL
             };
             let suffix = if standing { "" } else { "_wall" };
+            // The sway (M29). Every cloth draw — the bare flag and each
+            // pattern layer — shares ONE phase, or the layers would drift
+            // apart and the pattern would slide off the flag it is painted on.
+            let phase = rewo_data::be_transform::banner_phase(
+                pos.x, pos.y, pos.z, game_time, alpha,
+            );
+            let flag_pivot = if standing {
+                bem::BANNER_STANDING_FLAG_PIVOT
+            } else {
+                bem::BANNER_WALL_FLAG_PIVOT
+            };
+            let (xs, ps) = one_part(
+                bem::BANNER_FLAG_PART,
+                rewo_data::be_transform::banner_flag_part(phase, flag_pivot),
+                flag_pivot,
+            );
             let mut layer = |model: String, tint: [f32; 3]| OwnedBlockEntityDraw {
                 pos: [pos.x as f32, pos.y as f32, pos.z as f32],
                 model,
-                transform: draw.transform,
+                transform: be_transform,
                 light,
-                part_transform: rewo_data::be_transform::IDENTITY,
-                part_pivot: [0.0; 3],
+                part_transforms: xs,
+                part_pivots: ps,
                 tint,
             };
             // The bare cloth, untinted — its own texture carries its colour.
@@ -2620,7 +2739,9 @@ fn collect_block_entities(
                 out.push(OwnedBlockEntityDraw {
                     pos: [pos.x as f32, pos.y as f32, pos.z as f32],
                     model: rewo_data::block_entity_models::pot_side_model(item.as_deref()),
-                    transform: draw.transform,
+                    // The wobble rocks the WHOLE pot, sides included — a base
+                    // that rocked while its sherds stayed put would come apart.
+                    transform: be_transform,
                     light: entity_light(
                         world,
                         pos.x as f64 + 0.5,
@@ -2628,16 +2749,43 @@ fn collect_block_entities(
                         pos.z as f64 + 0.5,
                         lightmap,
                     ),
-                    part_transform: rewo_data::be_transform::pot_side(i),
-                    part_pivot: [0.0; 3],
+                    part_transforms: one_part(
+                        rewo_data::block_entity_models::POT_SIDE_PART,
+                        rewo_data::be_transform::pot_side(i),
+                        [0.0; 3],
+                    )
+                    .0,
+                    part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
                     tint: [1.0; 3],
                 });
             }
         }
+        let parts = match draw.anim {
+            // The pot's BASE has no animated group; its four sides are the
+            // separate draws pushed above, each with its own side pose.
+            BlockEntityAnim::None
+            | BlockEntityAnim::DecoratedPot
+            | BlockEntityAnim::Banner { .. } => skull_parts(&draw.model, skull_anim),
+            BlockEntityAnim::ChestLid(c) => one_part(
+                rewo_data::block_entity_models::CHEST_LID_PART,
+                rewo_data::be_transform::chest_lid_part(
+                    chest_openness(world, chests, *pos, c, alpha),
+                    rewo_data::block_entity_models::CHEST_LID_PIVOT,
+                ),
+                rewo_data::block_entity_models::CHEST_LID_PIVOT,
+            ),
+            BlockEntityAnim::ShulkerLid => one_part(
+                rewo_data::block_entity_models::SHULKER_LID_PART,
+                rewo_data::be_transform::shulker_lid_part(
+                    world.block_entities.shulker(*pos).progress(alpha),
+                ),
+                rewo_data::block_entity_models::SHULKER_LID_PIVOT,
+            ),
+        };
         out.push(OwnedBlockEntityDraw {
             pos: [pos.x as f32, pos.y as f32, pos.z as f32],
             model: draw.model,
-            transform: draw.transform,
+            transform: be_transform,
             // Lit from the block's own cell — a chest fills its block, so
             // there is no neighbour to sample the way a flat model would need.
             light: entity_light(
@@ -2651,26 +2799,12 @@ fn collect_block_entities(
             // driven by `block_event` and both are animated client-side, but
             // they are not the same clock and not the same motion — see
             // `rewo_world::block_entities::ShulkerAnim`.
-            part_transform: match draw.anim {
-                // The pot's BASE has no animated group; its four sides are the
-                // separate draws pushed above, each with its own side pose.
-                BlockEntityAnim::None
-                | BlockEntityAnim::DecoratedPot
-                | BlockEntityAnim::Banner { .. } => rewo_data::be_transform::IDENTITY,
-                BlockEntityAnim::ChestLid(c) => rewo_data::be_transform::chest_lid_part(
-                    chest_openness(world, chests, *pos, c, alpha),
-                    rewo_data::block_entity_models::CHEST_LID_PIVOT,
-                ),
-                BlockEntityAnim::ShulkerLid => rewo_data::be_transform::shulker_lid_part(
-                    world.block_entities.shulker(*pos).progress(alpha),
-                ),
-            },
-            part_pivot: match draw.anim {
-                BlockEntityAnim::ShulkerLid => {
-                    rewo_data::block_entity_models::SHULKER_LID_PIVOT
-                }
-                _ => rewo_data::block_entity_models::CHEST_LID_PIVOT,
-            },
+            // Each animated group builds its own transform. The clocks are
+            // genuinely different — a chest lid converges, a shulker lid runs
+            // a four-state machine, a banner hashes the world clock — which is
+            // why this is a match rather than one shared animator.
+            part_transforms: parts.0,
+            part_pivots: parts.1,
             // Only a banner's pattern layers are tinted; every other model's
             // texture already carries its colour.
             tint: [1.0; 3],
@@ -2996,8 +3130,8 @@ pub(crate) struct OwnedBlockEntityDraw {
     pub model: String,
     pub transform: rewo_data::be_transform::Affine,
     pub light: [f32; 3],
-    pub part_transform: rewo_data::be_transform::Affine,
-    pub part_pivot: [f32; 3],
+    pub part_transforms: [rewo_data::be_transform::Affine; rewo_gpu::entities::MAX_PARTS],
+    pub part_pivots: [[f32; 3]; rewo_gpu::entities::MAX_PARTS],
     /// A linear tint multiplied into the vertex colour — `[1, 1, 1]` for
     /// everything but a banner's dyed pattern layers (M28c).
     pub tint: [f32; 3],
@@ -3010,8 +3144,8 @@ impl OwnedBlockEntityDraw {
             model: &self.model,
             transform: self.transform,
             light: self.light,
-            part_transform: self.part_transform,
-            part_pivot: self.part_pivot,
+            part_transforms: self.part_transforms,
+            part_pivots: self.part_pivots,
             tint: self.tint,
         }
     }

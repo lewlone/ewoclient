@@ -2281,6 +2281,13 @@ pub struct WorldTextDraw<'a> {
     pub light: [f32; 3],
 }
 
+/// How many animated part groups one block-entity model may carry.
+///
+/// Group 0 is "as baked" and never indexes the arrays, so this is the number
+/// of *animated* groups plus that one. Four covers the deepest model here — a
+/// piglin head, whose two ears animate to different formulas at once.
+pub const MAX_PARTS: usize = 4;
+
 /// One block entity to draw (M25b).
 ///
 /// Deliberately not an [`EntityDraw`]: a block entity has no yaw of its own, no
@@ -2309,20 +2316,26 @@ pub struct BlockEntityDraw<'a> {
     /// Per-channel world light at the block, as the terrain lightmap resolves
     /// it.
     pub light: [f32; 3],
-    /// The animated part group's transform, in **model px** and applied to
-    /// coordinates relative to [`Self::part_pivot`] — vanilla's
-    /// `ModelPart.render`, which translates by the pose offset and then
-    /// rotates before drawing box-local coordinates.
+    /// The animated part groups' transforms, in **model px** and applied to
+    /// coordinates relative to the matching [`Self::part_pivots`] entry —
+    /// vanilla's `ModelPart.render`, which translates by the pose offset and
+    /// then rotates before drawing box-local coordinates.
     ///
-    /// A matrix for the same reason [`Self::transform`] is one, a level up: a
-    /// chest lid rotates about a fixed hinge and a shulker lid slides half a
-    /// block while spinning three-quarters of a turn, and the scalar
-    /// "openness" this replaced could only express the first (M26). The caller
-    /// builds it — `rewo_data::be_transform::{chest_lid_part, shulker_lid_part}`
-    /// — so this crate has no per-type branch.
-    pub part_transform: [[f32; 4]; 3],
-    /// The pivot the animated group is expressed relative to, in model px.
-    pub part_pivot: [f32; 3],
+    /// Indexed by a quad's `part`, where **0 always means "draw where it was
+    /// baked"** and is never read from here. Matrices rather than an angle for
+    /// the same reason [`Self::transform`] is one a level up: a chest lid
+    /// rotates about a fixed hinge, a shulker lid slides half a block while
+    /// spinning three-quarters of a turn, and the scalar "openness" they
+    /// replaced could only express the first (M26).
+    ///
+    /// An *array* because one group is not enough either: a piglin head's two
+    /// ears animate to **different** formulas at the same time (M29), so the
+    /// slot count is what lets one model carry both. The caller builds them —
+    /// `rewo_data::be_transform::*_part` — so this crate has no per-type branch.
+    pub part_transforms: [[[f32; 4]; 3]; MAX_PARTS],
+    /// Each group's pivot, in model px, index-matched to
+    /// [`Self::part_transforms`].
+    pub part_pivots: [[f32; 3]; MAX_PARTS],
     /// A linear-space colour multiplied into the vertex colour (M28c).
     ///
     /// `[1, 1, 1]` for every block entity whose texture already carries its
@@ -2440,7 +2453,6 @@ impl EntityPass {
                 continue;
             };
             let m = &d.transform;
-            let a = &d.part_transform;
             let [light_r, light_g, light_b] = d.light;
             for q in &model.quads {
                 if verts.len() + 6 > MAX_VERTS {
@@ -2458,14 +2470,17 @@ impl EntityPass {
                     // relative to it. The bake stores them *with* the offset
                     // applied, so it comes back off here and the group's
                     // transform puts it wherever the animation says.
-                    let corner = if q.part == 0 {
+                    // Group 0 is drawn where it was baked. Any other group goes
+                    // through its OWN matrix in its own space, which is what
+                    // lets a piglin's two ears move differently inside one
+                    // model (M29).
+                    let g = q.part as usize;
+                    let corner = if g == 0 || g >= MAX_PARTS {
                         *corner
                     } else {
-                        let v = [
-                            corner[0] - d.part_pivot[0],
-                            corner[1] - d.part_pivot[1],
-                            corner[2] - d.part_pivot[2],
-                        ];
+                        let a = &d.part_transforms[g];
+                        let piv = &d.part_pivots[g];
+                        let v = [corner[0] - piv[0], corner[1] - piv[1], corner[2] - piv[2]];
                         [
                             a[0][0] * v[0] + a[0][1] * v[1] + a[0][2] * v[2] + a[0][3],
                             a[1][0] * v[0] + a[1][1] * v[1] + a[1][2] * v[2] + a[1][3],

@@ -301,6 +301,7 @@ impl BlockEntityRegistry {
             ender_chest: id_of("minecraft:ender_chest"),
             shulker_box: id_of("minecraft:shulker_box"),
             mob_spawner: id_of("minecraft:mob_spawner"),
+            decorated_pot: id_of("minecraft:decorated_pot"),
         }
     }
 }
@@ -328,6 +329,7 @@ pub struct BlockEventTypes {
     pub ender_chest: Option<i32>,
     pub shulker_box: Option<i32>,
     pub mob_spawner: Option<i32>,
+    pub decorated_pot: Option<i32>,
 }
 
 impl BlockEventTypes {
@@ -341,6 +343,8 @@ impl BlockEventTypes {
             Some(BlockEventBehavior::ShulkerLid)
         } else if is(self.mob_spawner) {
             Some(BlockEventBehavior::SpawnerReset)
+        } else if is(self.decorated_pot) {
+            Some(BlockEventBehavior::PotWobble)
         } else {
             None
         }
@@ -355,6 +359,10 @@ pub enum BlockEventBehavior {
     /// `BaseSpawner.onEventTriggered` — reset the spawn countdown, which is
     /// visible only through the caged mob's spin rate.
     SpawnerReset,
+    /// `DecoratedPotBlockEntity.triggerEvent` — start a wobble. Here `b1` is
+    /// neither a count nor a direction but a **`WobbleStyle` ordinal**, and
+    /// the event's arrival time is the animation's start.
+    PotWobble,
 }
 
 /// One face of a sign's text, from its block-entity NBT (M25e).
@@ -649,6 +657,37 @@ pub struct BlockEntities {
     shulkers: HashMap<BlockEntityPos, ShulkerAnim>,
     /// Spawner countdown clocks, on the same absent-is-default rule.
     spawners: HashMap<BlockEntityPos, SpawnerSpin>,
+    /// Pot wobbles: `(style, the game tick the event arrived)`. Absent means
+    /// no wobble, which is a pot's whole resting state.
+    wobbles: HashMap<BlockEntityPos, (PotWobble, i64)>,
+    /// Skull animation counters, for the heads whose block state is POWERED.
+    skull_anim: HashMap<BlockEntityPos, u32>,
+}
+
+/// `DecoratedPotBlockEntity.WobbleStyle`, mirrored world-side so the event
+/// route can name what it stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PotWobble {
+    Positive,
+    Negative,
+}
+
+impl PotWobble {
+    pub fn from_ordinal(o: u8) -> Option<Self> {
+        match o {
+            0 => Some(PotWobble::Positive),
+            1 => Some(PotWobble::Negative),
+            _ => None,
+        }
+    }
+
+    /// `WobbleStyle.duration`, in ticks — 7 and 10, which differ.
+    pub fn duration(self) -> f32 {
+        match self {
+            PotWobble::Positive => 7.0,
+            PotWobble::Negative => 10.0,
+        }
+    }
 }
 
 impl BlockEntities {
@@ -675,6 +714,9 @@ impl BlockEntities {
         self.shulkers
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.spawners
+            .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.wobbles.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.skull_anim
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
@@ -703,6 +745,8 @@ impl BlockEntities {
         self.lids.clear();
         self.shulkers.clear();
         self.spawners.clear();
+        self.wobbles.clear();
+        self.skull_anim.clear();
     }
 
     /// `Level.blockEvent` → the block entity's own `triggerEvent(b0, b1)`.
@@ -734,6 +778,7 @@ impl BlockEntities {
         pos: BlockEntityPos,
         b0: u8,
         b1: u8,
+        now: i64,
     ) -> bool {
         if b0 != 1 {
             return false;
@@ -748,6 +793,16 @@ impl BlockEntities {
         match types.behavior(be.type_id) {
             Some(BlockEventBehavior::ChestLid) => {
                 self.lids.entry(pos).or_default().should_be_open = b1 > 0;
+                true
+            }
+            Some(BlockEventBehavior::PotWobble) => {
+                // `triggerEvent` guards `data >= 0 && data < values().length`,
+                // so an ordinal outside the two styles is NOT consumed — it
+                // falls through to `super.triggerEvent`, which returns false.
+                let Some(style) = PotWobble::from_ordinal(b1) else {
+                    return false;
+                };
+                self.wobbles.insert(pos, (style, now));
                 true
             }
             Some(BlockEventBehavior::SpawnerReset) => {
@@ -825,6 +880,61 @@ impl BlockEntities {
     pub fn spawner_count(&self) -> usize {
         self.spawners.len()
     }
+
+    /// The wobble in progress at a position, as `(style, progress)`.
+    ///
+    /// `progress = ((gameTime - wobbleStartedAtTick) + partialTicks) /
+    /// style.duration`. Vanilla keeps the fields forever and the RENDERER
+    /// skips the block when the progress leaves `0..=1`, so a finished wobble
+    /// simply stops being drawn rather than being cleared.
+    pub fn pot_wobble(
+        &self,
+        pos: BlockEntityPos,
+        game_time: i64,
+        alpha: f32,
+    ) -> Option<(PotWobble, f32)> {
+        let (style, started) = self.wobbles.get(&pos).copied()?;
+        let progress = ((game_time - started) as f32 + alpha) / style.duration();
+        Some((style, progress))
+    }
+
+    pub fn wobble_count(&self) -> usize {
+        self.wobbles.len()
+    }
+
+    /// `SkullBlockEntity.animation` — the counter advances only while the
+    /// block state is POWERED, and RESETS to a non-animating read otherwise.
+    ///
+    /// `powered` comes from the caller because it is a **block state**
+    /// property, not anything in the block entity's NBT.
+    pub fn tick_skull(&mut self, pos: BlockEntityPos, powered: bool) {
+        if powered {
+            *self.skull_anim.entry(pos).or_insert(0) += 1;
+        } else {
+            self.skull_anim.remove(&pos);
+        }
+    }
+
+    /// Every block-entity position, for a caller that must join them against
+    /// block states it holds and this map does not.
+    pub fn positions(&self) -> Vec<BlockEntityPos> {
+        self.map.keys().copied().collect()
+    }
+
+    /// `getAnimation(partialTicks)` — `isAnimating ? count + a : count`.
+    ///
+    /// An unpowered skull returns 0 rather than holding its last count,
+    /// because dropping the entry is what `isAnimating = false` amounts to
+    /// here: vanilla keeps the count but stops adding the partial, and a
+    /// stationary head at any count looks the same as one at zero only
+    /// because the ear formula is periodic — so this is a stated
+    /// simplification, not an equivalence.
+    pub fn skull_animation(&self, pos: BlockEntityPos, alpha: f32) -> f32 {
+        match self.skull_anim.get(&pos) {
+            Some(n) => *n as f32 + alpha,
+            None => 0.0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -891,6 +1001,7 @@ mod tests {
             ender_chest: Some(3),
             shulker_box: Some(4),
             mob_spawner: Some(5),
+            decorated_pot: Some(6),
         }
     }
 
@@ -914,7 +1025,7 @@ mod tests {
         // shulker box here, so no clock may be touched — for any direction.
         for b1 in 0..6u8 {
             let (mut be, pos) = world_with(9);
-            assert!(!be.trigger_block_event(types(), pos, 1, b1));
+            assert!(!be.trigger_block_event(types(), pos, 1, b1, 0));
             assert_eq!(be.open_lid_count(), 0, "b1={b1} made a lid entry");
             assert_eq!(be.open_shulker_count(), 0, "b1={b1} made a shulker entry");
         }
@@ -924,7 +1035,7 @@ mod tests {
     fn every_chest_material_routes_to_the_lid() {
         for id in [1, 2, 3] {
             let (mut be, pos) = world_with(id);
-            assert!(be.trigger_block_event(types(), pos, 1, 1));
+            assert!(be.trigger_block_event(types(), pos, 1, 1, 0));
             assert!(be.lid(pos).should_be_open, "type {id}");
         }
     }
@@ -934,21 +1045,21 @@ mod tests {
         // The asymmetry that makes reusing the chest's `b1 > 0` wrong: only
         // 0 and 1 do anything, and a second viewer leaves the box alone.
         let (mut be, pos) = world_with(4);
-        assert!(be.trigger_block_event(types(), pos, 1, 2));
+        assert!(be.trigger_block_event(types(), pos, 1, 2, 0));
         assert_eq!(be.shulker(pos).status, ShulkerStatus::Closed);
-        be.trigger_block_event(types(), pos, 1, 1);
+        be.trigger_block_event(types(), pos, 1, 1, 0);
         assert_eq!(be.shulker(pos).status, ShulkerStatus::Opening);
         // ...and a second viewer arriving mid-open does not restart or stop it.
-        be.trigger_block_event(types(), pos, 1, 2);
+        be.trigger_block_event(types(), pos, 1, 2, 0);
         assert_eq!(be.shulker(pos).status, ShulkerStatus::Opening);
-        be.trigger_block_event(types(), pos, 1, 0);
+        be.trigger_block_event(types(), pos, 1, 0, 0);
         assert_eq!(be.shulker(pos).status, ShulkerStatus::Closing);
     }
 
     #[test]
     fn the_two_clocks_do_not_share_an_entry() {
         let (mut be, pos) = world_with(4);
-        be.trigger_block_event(types(), pos, 1, 1);
+        be.trigger_block_event(types(), pos, 1, 1, 0);
         assert_eq!(be.open_shulker_count(), 1);
         assert_eq!(be.open_lid_count(), 0, "a shulker box made a chest lid");
     }
@@ -964,6 +1075,7 @@ mod tests {
             ender_chest: None,
             shulker_box: None,
             mob_spawner: None,
+            decorated_pot: None,
         };
         assert_eq!(sparse.behavior(1), Some(BlockEventBehavior::ChestLid));
         assert_eq!(sparse.behavior(7), None);
@@ -972,13 +1084,13 @@ mod tests {
     #[test]
     fn a_shulker_box_settles_and_is_dropped() {
         let (mut be, pos) = world_with(4);
-        be.trigger_block_event(types(), pos, 1, 1);
+        be.trigger_block_event(types(), pos, 1, 1, 0);
         for _ in 0..12 {
             be.tick_lids();
         }
         assert_eq!(be.shulker(pos).status, ShulkerStatus::Opened);
         assert_eq!(be.open_shulker_count(), 1, "an open box keeps its entry");
-        be.trigger_block_event(types(), pos, 1, 0);
+        be.trigger_block_event(types(), pos, 1, 0, 0);
         for _ in 0..12 {
             be.tick_lids();
         }

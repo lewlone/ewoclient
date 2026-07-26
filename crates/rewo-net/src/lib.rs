@@ -895,6 +895,7 @@ pub fn route_block_event(
     body: &[u8],
     ids: &crate::ids::Ids,
     types: rewo_world::block_entities::BlockEventTypes,
+    game_time: i64,
     world: &mut rewo_world::World,
 ) -> bool {
     if id != ids.cb_play_block_event {
@@ -903,7 +904,11 @@ pub fn route_block_event(
     let mut r = PacketReader::new(body);
     if let (Ok((x, y, z)), Ok(b0), Ok(b1)) = (r.position(), r.u8(), r.u8()) {
         let pos = rewo_world::block_entities::BlockEntityPos { x, y, z };
-        let consumed = world.block_entities.trigger_block_event(types, pos, b0, b1);
+        // The arrival TIME is part of the payload for one of these bodies: a
+        // pot's wobble is timed from the game tick its event landed on.
+        let consumed = world
+            .block_entities
+            .trigger_block_event(types, pos, b0, b1, game_time);
         log::debug!("net: block_event ({x},{y},{z}) b0={b0} b1={b1} consumed={consumed}");
     }
     true

@@ -379,15 +379,20 @@ const SKULL_PIGLIN: &[Box] = &[
     plain((31.0, 1.0), [-2.0, -4.0, -5.0], [4.0, 4.0, 1.0], [0.0; 3], 0),
     plain((2.0, 4.0), [2.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
     plain((2.0, 0.0), [-3.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
-    Box {
-        rot: [0.0, 0.0, -std::f32::consts::FRAC_PI_6],
-        ..plain((51.0, 6.0), [0.0, 0.0, -2.0], [1.0, 5.0, 4.0], [4.5, -6.0, 0.0], 0)
-    },
-    Box {
-        rot: [0.0, 0.0, std::f32::consts::FRAC_PI_6],
-        ..plain((39.0, 6.0), [-1.0, 0.0, -2.0], [1.0, 5.0, 4.0], [-4.5, -6.0, 0.0], 0)
-    },
+    // The ears are animated groups, and their mesh `PartPose` rotations are
+    // deliberately DROPPED: `PiglinHeadModel.setupAnim` assigns `zRot`
+    // outright and always runs, so the mesh's +/-30 degrees never survives to
+    // the screen. Baking it and then rotating again would double it (M29).
+    plain((51.0, 6.0), [0.0, 0.0, -2.0], [1.0, 5.0, 4.0], PIGLIN_LEFT_EAR_PIVOT, PIGLIN_LEFT_EAR_PART),
+    plain((39.0, 6.0), [-1.0, 0.0, -2.0], [1.0, 5.0, 4.0], PIGLIN_RIGHT_EAR_PIVOT, PIGLIN_RIGHT_EAR_PART),
 ];
+
+/// The piglin ears' pose offsets, which are also their pivots.
+pub const PIGLIN_LEFT_EAR_PIVOT: [f32; 3] = [4.5, -6.0, 0.0];
+pub const PIGLIN_RIGHT_EAR_PIVOT: [f32; 3] = [-4.5, -6.0, 0.0];
+/// Two groups, because the two ears animate to different formulas.
+pub const PIGLIN_LEFT_EAR_PART: u8 = 1;
+pub const PIGLIN_RIGHT_EAR_PART: u8 = 2;
 
 /// `DragonHeadModel.createHeadLayer` — 256×256, and the only skull with a
 /// mirrored pair.
@@ -401,6 +406,18 @@ const SKULL_PIGLIN: &[Box] = &[
 /// here — the model has no animated group, so nothing needs the pose to stay
 /// separable — and the jaw's own offset is pre-multiplied by the same 0.75 for
 /// the same reason.
+/// The animated group a dragon head's jaw belongs to.
+pub const DRAGON_JAW_PART: u8 = 1;
+
+/// The jaw's pivot AFTER the head pose's 0.75 scale — `offset(0, 4, -8)`
+/// scaled, then shifted by the head's own y. Must match what `dragon_skull`
+/// bakes, or the jaw swings about a point it does not hang from.
+pub const DRAGON_JAW_PIVOT: [f32; 3] = [
+    0.0,
+    4.0 * DRAGON_SCALE + DRAGON_HEAD_Y,
+    -8.0 * DRAGON_SCALE,
+];
+
 const DRAGON_SCALE: f32 = 0.75;
 const DRAGON_HEAD_Y: f32 = -7.986_666;
 
@@ -420,8 +437,9 @@ const DRAGON_RAW: &[Box] = &[
     },
     plain((0.0, 0.0), [3.0, -12.0, -4.0], [2.0, 4.0, 6.0], [0.0; 3], 0),
     plain((112.0, 0.0), [3.0, -3.0, -22.0], [2.0, 2.0, 4.0], [0.0; 3], 0),
-    // The jaw, whose own pose offset rides inside the head's scale.
-    plain((176.0, 65.0), [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0], [0.0, 4.0, -8.0], 0),
+    // The jaw, whose own pose offset rides inside the head's scale. Its own
+    // group, because `DragonHeadModel.setupAnim` swings it (M29).
+    plain((176.0, 65.0), [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0], [0.0, 4.0, -8.0], DRAGON_JAW_PART),
 ];
 
 /// The dragon skull's boxes with the head pose applied.
@@ -750,16 +768,22 @@ const BANNER_STANDING_FLAG: &[Box] = &[plain(
     (0.0, 0.0),
     [-10.0, 0.0, -2.0],
     [20.0, 40.0, 1.0],
-    [0.0, -44.0, 0.0],
-    0,
+    BANNER_STANDING_FLAG_PIVOT,
+    BANNER_FLAG_PART,
 )];
+
+/// The flag's pose offset, which is also the pivot its sway turns about.
+pub const BANNER_STANDING_FLAG_PIVOT: [f32; 3] = [0.0, -44.0, 0.0];
+pub const BANNER_WALL_FLAG_PIVOT: [f32; 3] = [0.0, -20.5, 10.5];
+/// The animated group a banner's cloth belongs to (M29).
+pub const BANNER_FLAG_PART: u8 = 1;
 
 const BANNER_WALL_FLAG: &[Box] = &[plain(
     (0.0, 0.0),
     [-10.0, 0.0, -2.0],
     [20.0, 40.0, 1.0],
-    [0.0, -20.5, 10.5],
-    0,
+    BANNER_WALL_FLAG_PIVOT,
+    BANNER_FLAG_PART,
 )];
 
 /// Model names for the four banner pieces.

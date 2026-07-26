@@ -244,6 +244,25 @@ impl World {
 
     /// Mutable column access — the `light_update` path re-lights an already
     /// loaded column in place.
+    /// `SkullBlockEntity.animation` for every skull in the world (M29).
+    ///
+    /// Lives here rather than on `BlockEntities` because the driver is a
+    /// **block state** property (`SkullBlock.POWERED`), not anything in the
+    /// block entity's NBT — a skull animates because the note block under it
+    /// is powered, and only the world knows that.
+    ///
+    /// `powered` is the set of block-state ids that carry `powered=true`,
+    /// resolved once from `blocks.json` rather than probed per tick.
+    pub fn tick_skull_animations(&mut self, powered: &std::collections::HashSet<u32>) {
+        if powered.is_empty() {
+            return;
+        }
+        for pos in self.block_entities.positions() {
+            let on = powered.contains(&self.block_state_at(pos.x, pos.y, pos.z));
+            self.block_entities.tick_skull(pos, on);
+        }
+    }
+
     pub fn column_mut(&mut self, cx: i32, cz: i32) -> Option<&mut chunk::Column> {
         self.columns
             .get_mut(&(cx, cz))

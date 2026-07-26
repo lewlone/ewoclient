@@ -162,6 +162,8 @@ pub struct ChestStates {
     /// own map because a banner's answer carries a colour and an attachment
     /// that nothing else here needs.
     banners: HashMap<u32, (u8, bool, crate::be_transform::Affine)>,
+    /// Skull states carrying `powered=true` (M29).
+    powered_skulls: std::collections::HashSet<u32>,
 }
 
 /// The seven skull types, as `(block prefix, model name)`.
@@ -310,6 +312,7 @@ impl ChestStates {
         // uses, and read the same way, by which property is present rather
         // than by a name list.
         let mut statics = HashMap::new();
+        let mut powered_skulls = std::collections::HashSet::new();
         for (prefix, model) in SKULLS {
             for wall in [false, true] {
                 let block = if wall {
@@ -352,6 +355,14 @@ impl ChestStates {
                             })?;
                         crate::be_transform::skull_ground(seg)
                     };
+                    if st
+                        .get("properties")
+                        .and_then(|p| p.get("powered"))
+                        .and_then(|p| p.as_str())
+                        == Some("true")
+                    {
+                        powered_skulls.insert(id);
+                    }
                     statics.insert(id, ((*model).to_string(), xf));
                 }
             }
@@ -538,6 +549,7 @@ impl ChestStates {
             shulkers,
             statics,
             banners,
+            powered_skulls,
         })
     }
 
@@ -599,6 +611,15 @@ impl ChestStates {
     /// joins them. Exposed for the gate's coverage witness.
     pub fn static_len(&self) -> usize {
         self.statics.len()
+    }
+
+    /// The block-state ids of skulls whose `powered` property is true.
+    ///
+    /// A skull's animation counter runs off this, and the property lives on
+    /// the BLOCK STATE rather than in the block entity — a skull animates
+    /// because the note block beneath it is powered.
+    pub fn powered_skull_states(&self) -> &std::collections::HashSet<u32> {
+        &self.powered_skulls
     }
 
     /// Every block state this table draws something for.

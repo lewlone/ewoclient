@@ -63,6 +63,10 @@ pub struct PlaySession {
     /// type is what selects the body. See
     /// [`rewo_world::block_entities::BlockEventTypes`].
     pub block_event_types: rewo_world::block_entities::BlockEventTypes,
+    /// Block-state ids of skulls whose `SkullBlock.POWERED` is true (M29).
+    /// Empty means "do not tick skull animations", which is correct for a
+    /// harness that renders none.
+    pub powered_skull_states: std::collections::HashSet<u32>,
     /// Which entity types are living, and which of them run `updateSwingTime`
     /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
     /// the decompiled `extends` graph. It gates every swing input (a packet
@@ -698,6 +702,7 @@ impl<'a> Connection<'a> {
             allay_type_id: None,
             pillager_type_id: None,
             block_event_types: Default::default(),
+            powered_skull_states: Default::default(),
             entity_classes: None,
             swing_data: None,
             swing_effect_ids,
@@ -837,6 +842,17 @@ impl PlaySession {
         self.dirty.len()
     }
 
+    /// The world clock's `gameTime`, or 0 before the server has sent one.
+    ///
+    /// This is the input every block-entity animation keys off (M29): a
+    /// banner's sway hashes it with the block position, a pot's wobble is
+    /// timed from the tick its event arrived on. Zero before the first
+    /// `set_time` is a resting world rather than a wrong one — every formula
+    /// here is well defined at t=0.
+    pub fn game_time(&self) -> i64 {
+        self.game_time.unwrap_or(0)
+    }
+
     /// The synced `minecraft:dimension_type` registry in raw wire order — index
     /// *is* the holder id. Read-only: nothing outside the session may select a
     /// dimension, but a gate has to be able to check that the holder a packet
@@ -885,6 +901,11 @@ impl PlaySession {
         // `ChestLidController.tickLid` — the client animates the ten ticks the
         // server never sends (M25c).
         self.world.block_entities.tick_lids();
+        // `SkullBlockEntity.animation` — the counter a piglin head's ears and
+        // a dragon head's jaw run on, which advances only while the block
+        // state is POWERED (M29).
+        self.world
+            .tick_skull_animations(&self.powered_skull_states);
         if self.spawned {
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.
@@ -1116,7 +1137,14 @@ impl PlaySession {
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
-        } else if crate::route_block_event(id, body, ids, self.block_event_types, &mut self.world) {
+        } else if crate::route_block_event(
+            id,
+            body,
+            ids,
+            self.block_event_types,
+            self.game_time.unwrap_or(0),
+            &mut self.world,
+        ) {
             // `ClientboundBlockEventPacket` — a container's viewer count, which
             // is what drives a chest's lid and a shulker box's lid. Which of
             // the two (or neither — a bell's ring is also `b0 == 1`) is

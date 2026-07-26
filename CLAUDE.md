@@ -1604,6 +1604,19 @@ frame-time consistency (1%/0.1% lows) and input latency first. It plugs into
 this launcher as a `Native` instance kind reusing auth + spawn + reaper; it
 is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
 
+**[REWO_FEATURE_SURVEY.md](REWO_FEATURE_SURVEY.md) is the feature roadmap** —
+what to build *after* the M-series milestones, derived from a survey of all
+9,291 open-source client-side Fabric mods on Modrinth (2026-07-26,
+regenerate with `python tools/survey_modrinth.py`). Read it when picking the
+next feature rather than the next milestone. Two things from it are
+load-bearing anywhere in the repo: (1) **Sodium, EntityCulling and Xaero's
+Minimap are source-available but NOT open source** (Polyform Shield / bespoke
+protective / All-Rights-Reserved) — their source must not be read as a
+reference for Rewo, though bundling the jars in EwoLoader is a separate
+question; (2) 33.7% of all client-mod download mass exists only because the
+game is a JVM client with a mod loader, which is the strongest external
+validation Rewo has.
+
 - **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
   playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
   connect, walk/dig/place/chat with 0 physics-corrections, full block-model

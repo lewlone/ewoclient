@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 133;
+const EXPECTED_WITNESSES: usize = 147;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -214,6 +214,8 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     let type_id = |want: &str| entries.iter().find(|(n, _)| n == want).map(|(_, i)| *i);
     let shulker = type_id("minecraft:shulker_box")
         .ok_or("registries.json: no minecraft:shulker_box block entity type")?;
+    let pot = type_id("minecraft:decorated_pot")
+        .ok_or("registries.json: no minecraft:decorated_pot block entity type")?;
     let bell =
         type_id("minecraft:bell").ok_or("registries.json: no minecraft:bell block entity type")?;
 
@@ -242,6 +244,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_shulker_anim(&mut c, &args.version)?;
     check_sign_style(&mut c, &blocks, &paths, sign)?;
     check_skulls(&mut c, &blocks, &paths, &args.version)?;
+    check_be_clock(&mut c, &blocks, &paths, &ids, types, pot)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -784,6 +787,7 @@ fn check_lids(
             &ev(x, y, z, b0, b1),
             ids,
             types,
+            0,
             w,
         )
     };
@@ -1054,7 +1058,7 @@ fn check_block_event_dispatch(
         b
     };
     let mut send = |w: &mut rewo_world::World, p, b0, b1| {
-        rewo_net::route_block_event(ids.cb_play_block_event, &ev(p, b0, b1), ids, types, w)
+        rewo_net::route_block_event(ids.cb_play_block_event, &ev(p, b0, b1), ids, types, 0, w)
     };
 
     // THE REGRESSION. `BellBlockEntity.triggerEvent` is `b0 == 1` with
@@ -1201,7 +1205,7 @@ fn check_block_event_dispatch(
                     data: Nbt::Compound(vec![("MinSpawnDelay".to_string(), Nbt::Int(40))]),
                 },
             );
-            w4.block_entities.trigger_block_event(types, sp, 1, 0);
+            w4.block_entities.trigger_block_event(types, sp, 1, 0, 0);
             w4.block_entities.spawner(sp).delay == 40
         },
         "a spawner configured with `MinSpawnDelay` 40 resets to 40, not to the \
@@ -1216,10 +1220,10 @@ fn check_block_event_dispatch(
     // how the first draft of this witness failed.
     let consumed_two = w2
         .block_entities
-        .trigger_block_event(types, shulker_pos, 1, 2);
+        .trigger_block_event(types, shulker_pos, 1, 2, 0);
     let consumed_b0_two = w2
         .block_entities
-        .trigger_block_event(types, shulker_pos, 2, 1);
+        .trigger_block_event(types, shulker_pos, 2, 1, 0);
     c.record(
         "d8.a_no_op_branch_is_still_consumed_but_another_b0_is_not",
         consumed_two && !consumed_b0_two,
@@ -1237,7 +1241,7 @@ fn check_block_event_dispatch(
     let closing = w2.block_entities.shulker(shulker_pos).status;
     let empty = BlockEntityPos { x: 9, y: 64, z: 9 };
     let before = w2.block_entities.open_shulker_count();
-    let consumed_empty = w2.block_entities.trigger_block_event(types, empty, 1, 1);
+    let consumed_empty = w2.block_entities.trigger_block_event(types, empty, 1, 1, 0);
     c.record(
         "d9.zero_closes_it_and_empty_space_is_inert",
         closing == ShulkerStatus::Closing
@@ -1247,6 +1251,239 @@ fn check_block_event_dispatch(
             "b1=0 -> {closing:?}; an event at a position with no block entity was \
              not consumed and left the {before} existing entries alone — vanilla's \
              `getBlockEntity` returns null there and the handler returns"
+        ),
+    );
+    Ok(())
+}
+
+/// M29 — the block-entity animation clock.
+///
+/// Every witness here drives the production formula or the production
+/// collector; none re-implements what it checks. The point of the group is
+/// that "at rest" was previously indistinguishable from "animating", so each
+/// one asserts a value that MOVES.
+fn check_be_clock(
+    c: &mut Checker,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    ids: &Ids,
+    types: rewo_world::block_entities::BlockEventTypes,
+    pot_type: i32,
+) -> Result<(), String> {
+    use rewo_data::be_transform as bt;
+
+    // --- the banner sway: position and game time, no state at all ---------
+    let p0 = bt::banner_phase(0, 0, 0, 0, 0.0);
+    let p_later = bt::banner_phase(0, 0, 0, 50, 0.0);
+    let p_neighbour = bt::banner_phase(1, 0, 0, 0, 0.0);
+    c.record(
+        "n1.a_banners_phase_hashes_its_position_with_the_world_clock",
+        (p0 - 0.0).abs() < 1e-6
+            && (p_later - 0.5).abs() < 1e-6
+            && (p_neighbour - 0.07).abs() < 1e-6,
+        format!(
+            "phase at (0,0,0) t=0 is {p0:.3}, at t=50 is {p_later:.3}, and a \
+             block east at t=0 is {p_neighbour:.3} — `x*7 + y*9 + z*13 + \
+             gameTime` mod 100, so two banners side by side sway OUT OF STEP \
+             rather than in unison"
+        ),
+    );
+
+    let neg = bt::banner_phase(-1, 0, 0, 0, 0.0);
+    c.record(
+        "n2.a_negative_coordinate_wraps_rather_than_going_negative",
+        (0.0..1.0).contains(&neg),
+        format!(
+            "phase at x=-1 is {neg:.3}, inside 0..1 — vanilla uses `floorMod`, \
+             and Rust's `%` would have produced a negative phase here"
+        ),
+    );
+
+    let a0 = bt::banner_flag_angle(0.0);
+    let a_half = bt::banner_flag_angle(0.5);
+    c.record(
+        "n3.the_cloth_never_hangs_straight",
+        a0 < 0.0 && a_half < 0.0 && (a0 - a_half).abs() > 1e-3,
+        format!(
+            "flag xRot is {a0:.4} at phase 0 and {a_half:.4} at phase 0.5 — \
+             both NEGATIVE, because the constant term (-0.0125) is larger than \
+             the amplitude (0.01). The cloth sways either side of a small \
+             permanent backward tilt rather than passing through vertical"
+        ),
+    );
+
+    // --- the pot wobble: an event and a start tick ------------------------
+    c.record(
+        "n4.a_pot_is_a_fourth_meaning_of_b0_equals_one",
+        types.behavior(pot_type)
+            == Some(rewo_world::block_entities::BlockEventBehavior::PotWobble),
+        format!(
+            "decorated_pot={pot_type} routes to PotWobble — after a chest's \
+             viewer count, a shulker's open/close pair and a spawner's reset, \
+             `b1` here is a WobbleStyle ORDINAL"
+        ),
+    );
+
+    let shape = DimensionShape::OVERWORLD;
+    let mut w = rewo_world::World::new(shape);
+    let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, pot_type)]);
+    let mut r = rewo_proto::reader::PacketReader::new(&body);
+    let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks)
+        .map_err(|e| format!("chunk decode: {e}"))?;
+    w.insert_column(0, 0, col);
+    let pos = BlockEntityPos { x: 0, y: 64, z: 0 };
+    let ev = |b0: u8, b1: u8| -> Vec<u8> {
+        let mut b = packed_pos(0, 64, 0).to_be_bytes().to_vec();
+        b.push(b0);
+        b.push(b1);
+        varint(0, &mut b);
+        b
+    };
+
+    c.record(
+        "n5.a_pot_has_no_wobble_until_one_is_triggered",
+        w.block_entities.pot_wobble(pos, 0, 0.0).is_none(),
+        "an untouched pot carries no wobble entry at all, which is its whole \
+         resting state",
+    );
+
+    // Trigger at game time 100, then read the progress as time advances.
+    rewo_net::route_block_event(ids.cb_play_block_event, &ev(1, 0), ids, types, 100, &mut w);
+    let at = |t: i64, a: f32| w.block_entities.pot_wobble(pos, t, a);
+    let (style, pr0) = at(100, 0.0).ok_or("no wobble after the event")?;
+    let (_, pr_mid) = at(103, 0.5).ok_or("no wobble mid-way")?;
+    let past = at(120, 0.0).map(|(_, p)| p).unwrap_or(f32::NAN);
+    c.record(
+        "n6.the_wobble_runs_from_the_tick_its_event_arrived_on",
+        style == rewo_world::block_entities::PotWobble::Positive
+            && pr0.abs() < 1e-6
+            && (pr_mid - 0.5).abs() < 1e-6
+            && past > 1.0,
+        format!(
+            "style {style:?}, progress {pr0:.3} at the event's own tick, \
+             {pr_mid:.3} three and a half ticks later (7-tick duration), and \
+             {past:.3} long after — vanilla never clears the fields; the \
+             RENDERER skips the block once the progress leaves 0..=1, which is \
+             what stops a finished wobble freezing at its end pose"
+        ),
+    );
+
+    c.record(
+        "n7.the_two_styles_last_different_lengths",
+        (rewo_world::block_entities::PotWobble::Positive.duration() - 7.0).abs() < 1e-6
+            && (rewo_world::block_entities::PotWobble::Negative.duration() - 10.0).abs() < 1e-6,
+        "POSITIVE runs 7 ticks and NEGATIVE 10 — the two wobbles do not merely \
+         look different, they take different times",
+    );
+
+    // An ordinal outside the two styles is NOT consumed.
+    let consumed_bad = w
+        .block_entities
+        .trigger_block_event(types, pos, 1, 9, 200);
+    c.record(
+        "n8.an_ordinal_outside_the_two_styles_is_not_consumed",
+        !consumed_bad,
+        "`triggerEvent` guards `data >= 0 && data < values().length`, so an \
+         out-of-range ordinal falls through to `super.triggerEvent` and \
+         returns false rather than starting a wobble Rewo would have to invent",
+    );
+
+    // The wobble transform must MOVE, and about the block's floor.
+    let apply = |m: &bt::Affine, p: [f32; 3]| -> [f32; 3] {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    };
+    let rest = bt::pot_wobble(bt::WobbleStyle::Positive, 1.5);
+    let mid = bt::pot_wobble(bt::WobbleStyle::Positive, 0.3);
+    let top = apply(&mid, [0.5, 1.0, 0.5]);
+    let foot = apply(&mid, [0.5, 0.0, 0.5]);
+    c.record(
+        "n9.the_pot_rocks_on_its_base_and_settles_outside_the_window",
+        rest == bt::IDENTITY
+            && (top[0] - 0.5).abs() + (top[2] - 0.5).abs() > 1e-4
+            && (foot[0] - 0.5).abs() < 1e-6
+            && (foot[2] - 0.5).abs() < 1e-6,
+        format!(
+            "at progress 1.5 the transform is the identity; at 0.3 the pot's \
+             TOP moves to {top:?} while its floor centre stays {foot:?}. Both \
+             wobbles turn about (0.5, 0, 0.5) — the block's FLOOR — where the \
+             facing rotation turns about (0.5, 0.5, 0.5), so a pot rocks on its \
+             base rather than pivoting in mid-air"
+        ),
+    );
+
+    // --- the skull counter: powered block state --------------------------
+    let states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    let powered = states.powered_skull_states();
+    c.record(
+        "n10.the_skull_counter_is_driven_by_a_block_state_not_by_nbt",
+        !powered.is_empty(),
+        format!(
+            "{} skull block states carry `powered=true` — a skull animates \
+             because the note block beneath it is powered, which is why the \
+             tick lives on `World` (it needs block states) rather than on the \
+             block-entity map",
+            powered.len()
+        ),
+    );
+
+    let mut w2 = rewo_world::World::new(shape);
+    w2.block_entities.tick_skull(pos, true);
+    w2.block_entities.tick_skull(pos, true);
+    let two = w2.block_entities.skull_animation(pos, 0.0);
+    let lerped = w2.block_entities.skull_animation(pos, 0.5);
+    w2.block_entities.tick_skull(pos, false);
+    let off = w2.block_entities.skull_animation(pos, 0.0);
+    c.record(
+        "n11.it_counts_while_powered_and_stops_when_it_is_not",
+        (two - 2.0).abs() < 1e-6 && (lerped - 2.5).abs() < 1e-6 && off.abs() < 1e-6,
+        format!(
+            "two powered ticks read {two}, with the partial applied {lerped} \
+             (`isAnimating ? count + a : count`), and an unpowered tick reads \
+             {off}"
+        ),
+    );
+
+    // THE BUG THIS CLOCK FIXED: setupAnim always runs, so the ears and jaw are
+    // never at the mesh's own rest pose.
+    let (l0, r0) = bt::piglin_ear_angles(0.0);
+    let (l1, r1) = bt::piglin_ear_angles(3.0);
+    c.record(
+        "n12.a_piglin_ear_is_never_at_the_meshs_rest_angle",
+        (l0 + 0.7).abs() < 1e-5
+            && (r0 - 0.7).abs() < 1e-5
+            && (l0.abs() - std::f32::consts::FRAC_PI_6).abs() > 0.1,
+        format!(
+            "at animation 0 the ears sit at {l0:.4} / {r0:.4} rad, NOT the \
+             +/-{:.4} the mesh's PartPose carries. `setupAnim` assigns zRot \
+             outright and always runs, so Rewo's pre-M29 static ears were about \
+             10 degrees off on every piglin head in the world",
+            std::f32::consts::FRAC_PI_6
+        ),
+    );
+
+    c.record(
+        "n13.the_two_ears_drift_out_of_phase",
+        (l1.abs() - r1.abs()).abs() > 1e-4,
+        format!(
+            "at animation 3 the ears are {l1:.4} and {r1:.4} — not mirror \
+             images. The `1.2` asymmetry factor is on the LEFT ear only, so \
+             the pair drifts in and out of phase instead of flapping together"
+        ),
+    );
+
+    let j0 = bt::dragon_jaw_angle(0.0);
+    let j_mid = bt::dragon_jaw_angle(2.5);
+    c.record(
+        "n14.a_dragon_jaw_rests_open_and_moves",
+        (j0 - 0.2).abs() < 1e-5 && (j_mid - j0).abs() > 1e-3,
+        format!(
+            "the jaw is {j0:.4} rad at animation 0 and {j_mid:.4} at 2.5 — \
+             `(sin(...) + 1) * 0.2` never reaches zero, so a dragon head's jaw \
+             is always slightly open. Rewo drew it shut before M29"
         ),
     );
     Ok(())
