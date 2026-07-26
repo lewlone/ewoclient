@@ -297,6 +297,7 @@ impl BlockEntityRegistry {
             trapped_chest: id_of("minecraft:trapped_chest"),
             ender_chest: id_of("minecraft:ender_chest"),
             shulker_box: id_of("minecraft:shulker_box"),
+            mob_spawner: id_of("minecraft:mob_spawner"),
         }
     }
 }
@@ -323,6 +324,7 @@ pub struct BlockEventTypes {
     pub trapped_chest: Option<i32>,
     pub ender_chest: Option<i32>,
     pub shulker_box: Option<i32>,
+    pub mob_spawner: Option<i32>,
 }
 
 impl BlockEventTypes {
@@ -334,6 +336,8 @@ impl BlockEventTypes {
             Some(BlockEventBehavior::ChestLid)
         } else if is(self.shulker_box) {
             Some(BlockEventBehavior::ShulkerLid)
+        } else if is(self.mob_spawner) {
+            Some(BlockEventBehavior::SpawnerReset)
         } else {
             None
         }
@@ -345,6 +349,9 @@ impl BlockEventTypes {
 pub enum BlockEventBehavior {
     ChestLid,
     ShulkerLid,
+    /// `BaseSpawner.onEventTriggered` — reset the spawn countdown, which is
+    /// visible only through the caged mob's spin rate.
+    SpawnerReset,
 }
 
 /// One face of a sign's text, from its block-entity NBT (M25e).
@@ -541,6 +548,84 @@ impl ShulkerAnim {
     }
 }
 
+/// `BaseSpawner`'s client-side spin clock (M28d).
+///
+/// A spawner's `block_event` is the third distinct meaning of `b0 == 1` this
+/// client now routes, and the smallest:
+///
+/// ```text
+/// BaseSpawner.onEventTriggered(level, id):
+///    if (id == 1) { if (level.isClientSide()) this.spawnDelay = this.minSpawnDelay; return true; }
+/// ```
+///
+/// Resetting the delay is the **whole** client effect, and it is only
+/// observable through the spin, which the client also animates itself:
+///
+/// ```text
+/// clientTick():  oSpin = spin;
+///                if (spawnDelay > 0) spawnDelay--;
+///                spin = (spin + 1000 / (spawnDelay + 200)) % 360;
+/// ```
+///
+/// So the caged mob turns **faster as the next spawn approaches** — 1000/400 =
+/// 2.5°/tick at a full delay against 1000/200 = 5°/tick at zero — and the
+/// event slams it back to slow. That acceleration is the visible tell that a
+/// spawner is counting down, and it is entirely client-derived: the server
+/// sends one event, never the angle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpawnerSpin {
+    /// `spawnDelay`, in ticks.
+    pub delay: i32,
+    /// `minSpawnDelay`, from the block entity's NBT (`MinSpawnDelay`,
+    /// defaulting to 200) — what the event resets to.
+    pub min_delay: i32,
+    /// `spin`, in degrees.
+    pub spin: f32,
+    /// `oSpin`, for the render lerp.
+    pub old_spin: f32,
+}
+
+impl Default for SpawnerSpin {
+    fn default() -> Self {
+        // `BaseSpawner`'s own field initialisers, not zeroes: a spawner that
+        // has never ticked is 20 ticks from firing, not already due.
+        Self {
+            delay: 20,
+            min_delay: 200,
+            spin: 0.0,
+            old_spin: 0.0,
+        }
+    }
+}
+
+impl SpawnerSpin {
+    /// The client half of `BaseSpawner.clientTick`.
+    ///
+    /// The particle spawns and the `isNearPlayer` gate are omitted: the first
+    /// is a particle system this client does not have, and the second would
+    /// need the player position here. Vanilla holds `oSpin = spin` while no
+    /// player is near, so a distant spawner simply does not turn — the
+    /// difference is that Rewo's keeps turning, which is stated rather than
+    /// hidden.
+    pub fn tick(&mut self) {
+        self.old_spin = self.spin;
+        if self.delay > 0 {
+            self.delay -= 1;
+        }
+        self.spin = (self.spin + 1000.0 / (self.delay as f32 + 200.0)) % 360.0;
+    }
+
+    /// `onEventTriggered(level, 1)` — reset the countdown.
+    pub fn trigger(&mut self) {
+        self.delay = self.min_delay;
+    }
+
+    /// The rendered angle at a partial tick.
+    pub fn spin(self, alpha: f32) -> f32 {
+        self.old_spin + alpha * (self.spin - self.old_spin)
+    }
+}
+
 /// The block entities of one world, keyed by absolute position.
 ///
 /// A flat map rather than per-column storage: block entities are sparse (a
@@ -559,6 +644,8 @@ pub struct BlockEntities {
     /// clocks share neither their state shape nor their trigger rule, and the
     /// place they *did* get conflated is the bug M26 fixed.
     shulkers: HashMap<BlockEntityPos, ShulkerAnim>,
+    /// Spawner countdown clocks, on the same absent-is-default rule.
+    spawners: HashMap<BlockEntityPos, SpawnerSpin>,
 }
 
 impl BlockEntities {
@@ -583,6 +670,8 @@ impl BlockEntities {
         self.map.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.lids.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.shulkers
+            .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.spawners
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
@@ -610,6 +699,7 @@ impl BlockEntities {
         self.map.clear();
         self.lids.clear();
         self.shulkers.clear();
+        self.spawners.clear();
     }
 
     /// `Level.blockEvent` → the block entity's own `triggerEvent(b0, b1)`.
@@ -657,6 +747,21 @@ impl BlockEntities {
                 self.lids.entry(pos).or_default().should_be_open = b1 > 0;
                 true
             }
+            Some(BlockEventBehavior::SpawnerReset) => {
+                // `minSpawnDelay` comes from the block entity's own NBT, so
+                // the entry is seeded from it rather than from the default —
+                // a spawner configured with a short delay resets short.
+                let min = be
+                    .data
+                    .get("MinSpawnDelay")
+                    .and_then(Nbt::as_i64)
+                    .map(|v| v as i32)
+                    .unwrap_or(200);
+                let s = self.spawners.entry(pos).or_default();
+                s.min_delay = min;
+                s.trigger();
+                true
+            }
             Some(BlockEventBehavior::ShulkerLid) => {
                 let anim = self.shulkers.entry(pos).or_default();
                 // `openCount = b1` is kept by the block entity but read only by
@@ -684,6 +789,11 @@ impl BlockEntities {
             s.tick();
             !s.is_idle_closed()
         });
+        // A spawner's clock never settles — it counts down and turns forever —
+        // so unlike the two lids there is nothing to drop it on.
+        for s in self.spawners.values_mut() {
+            s.tick();
+        }
     }
 
     /// The lid state at a position — closed if it has never been opened.
@@ -702,6 +812,15 @@ impl BlockEntities {
 
     pub fn open_shulker_count(&self) -> usize {
         self.shulkers.len()
+    }
+
+    /// The spin clock at a position — the rest state if never triggered.
+    pub fn spawner(&self, pos: BlockEntityPos) -> SpawnerSpin {
+        self.spawners.get(&pos).copied().unwrap_or_default()
+    }
+
+    pub fn spawner_count(&self) -> usize {
+        self.spawners.len()
     }
 }
 
@@ -768,6 +887,7 @@ mod tests {
             trapped_chest: Some(2),
             ender_chest: Some(3),
             shulker_box: Some(4),
+            mob_spawner: Some(5),
         }
     }
 
@@ -840,6 +960,7 @@ mod tests {
             trapped_chest: None,
             ender_chest: None,
             shulker_box: None,
+            mob_spawner: None,
         };
         assert_eq!(sparse.behavior(1), Some(BlockEventBehavior::ChestLid));
         assert_eq!(sparse.behavior(7), None);

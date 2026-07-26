@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 122;
+const EXPECTED_WITNESSES: usize = 125;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -1128,6 +1128,85 @@ fn check_block_event_dispatch(
              open and a shut one stays shut. The chest's `b1 > 0` would have \
              opened it, which is the plausible wrong answer"
         ),
+    );
+
+    // --- the spawner: a third meaning for `b0 == 1` (M28d) ----------------
+    let spawner_type = entries
+        .iter()
+        .find(|(n, _)| n == "minecraft:mob_spawner")
+        .map(|(_, i)| *i)
+        .ok_or("registries.json: no minecraft:mob_spawner")?;
+    let mut w3 = rewo_world::World::new(shape);
+    let body3 = chunk_body(0, 0, shape.section_count(), &[(0x33, 64, spawner_type)]);
+    let mut r3 = rewo_proto::reader::PacketReader::new(&body3);
+    let col3 = rewo_world::chunk::read_level_chunk(&mut r3, &shape, blocks)
+        .map_err(|e| format!("chunk decode: {e}"))?;
+    w3.insert_column(0, 0, col3);
+    let sp = BlockEntityPos { x: 3, y: 64, z: 3 };
+
+    c.record(
+        "d10.a_spawner_has_its_own_body_not_a_lid",
+        types.behavior(spawner_type)
+            == Some(rewo_world::block_entities::BlockEventBehavior::SpawnerReset),
+        format!(
+            "mob_spawner={spawner_type} routes to SpawnerReset — the THIRD \
+             meaning of `b0 == 1` here, after a chest's viewer count and a \
+             shulker's open/close pair"
+        ),
+    );
+
+    // Start the clock, run it to zero, then reset it — the rate must fall.
+    //
+    // The first event is what CREATES the entry: a spawner Rewo has never seen
+    // an event for keeps no clock, where vanilla ticks every spawner block
+    // entity. That deviation is invisible while the caged mob is not drawn,
+    // and is stated rather than papered over — but it does mean this witness
+    // has to trigger before it can tick.
+    send(&mut w3, sp, 1, 0);
+    for _ in 0..200 {
+        w3.block_entities.tick_lids();
+    }
+    let before = w3.block_entities.spawner(sp);
+    let fast = before.spin - before.old_spin;
+    send(&mut w3, sp, 1, 0);
+    w3.block_entities.tick_lids();
+    let after = w3.block_entities.spawner(sp);
+    let slow = after.spin - after.old_spin;
+    c.record(
+        "d11.the_event_resets_the_countdown_and_slows_the_spin",
+        before.delay == 0
+            && after.delay == 199
+            && (fast - 5.0).abs() < 0.02
+            && (slow - 2.506).abs() < 0.02,
+        format!(
+            "run to a delay of {} the mob turns {fast:.3} deg/tick; the event \
+             resets it to {} and it drops to {slow:.3}. `spin += 1000 / \
+             (spawnDelay + 200)` means a spawner ACCELERATES as its next spawn \
+             approaches — 1000/400 = 2.5 at a full delay against 1000/200 = 5 \
+             at zero — and the event slams it back to slow. That acceleration \
+             is the whole visible effect, and the server sends one event \
+             rather than the angle",
+            before.delay, after.delay
+        ),
+    );
+
+    c.record(
+        "d12.the_reset_target_comes_from_the_block_entitys_own_nbt",
+        {
+            let mut w4 = rewo_world::World::new(shape);
+            w4.block_entities.insert(
+                sp,
+                rewo_world::block_entities::BlockEntity {
+                    type_id: spawner_type,
+                    data: Nbt::Compound(vec![("MinSpawnDelay".to_string(), Nbt::Int(40))]),
+                },
+            );
+            w4.block_entities.trigger_block_event(types, sp, 1, 0);
+            w4.block_entities.spawner(sp).delay == 40
+        },
+        "a spawner configured with `MinSpawnDelay` 40 resets to 40, not to the \
+         200 default — the target is read from the block entity rather than \
+         assumed",
     );
 
     // ...but it *is* consumed, because vanilla's `triggerEvent` returns true
