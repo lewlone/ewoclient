@@ -2406,11 +2406,23 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
     (`entity/banner/banner_base.png`, not `entity/banner_base`) that baked no
     pole while every pattern still loaded, and an existing witness that had
     quietly started measuring skulls as shulker boxes.
-  - **Still invisible (2 types)**: copper golem statues (four separate pose
-    layers with nested rotated hierarchies) and the two end portals (a bespoke
-    shader, not a model). Shared exclusion: **the per-block-entity animation
-    clock** — conduit spin, pot wobble, banner sway, skull bob, spawner mob all
-    render at rest.
+  - **M28e/M28f** the copper golem statue and the two end portals — the last
+    two. The statue's four poses are **separate** nested layers where a child's
+    offset rides through its parent's *rotation*; they are machine-extracted by
+    `tools/gen_copper_golem_poses.py` because 38 rotated boxes fail **silently**
+    when hand-copied, and `k25` proves the hierarchy by comparing each box
+    against a naive offset-sum (must agree in STANDING, must differ in
+    RUNNING). The end portals were half-misdescribed as "a shader, not a
+    model": the geometry is an ordinary cube (portal = horizontal faces only, a
+    slab from y 0.375 to 0.75), and only the render *type* is a shader,
+    approximated by one static layer of `end_portal.png`.
+  - **M25's Invisible list is now EMPTY — eleven types measured, eleven
+    rendering.** `blockentityshot` 21 → **133** witnesses across the arc.
+  - **What remains here is one shared gap, not a list of types: the
+    per-block-entity animation clock.** Conduit spin + active cage, pot wobble,
+    banner sway, skull bob, piglin ears, dragon jaw, spawner's caged mob and
+    the portal's scrolling starfield all key off a tick this client does not
+    keep, and all render at rest.
   - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

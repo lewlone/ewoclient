@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M28d shipped; M0–M9 pushed, M10–M28d reviewed local
+### Where it is: M0–M28f shipped; M0–M9 pushed, M10–M28f reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
@@ -51,12 +51,20 @@ authored y-down, so both transforms end in `scale(-1,-1,1)`) and the conduit
 shell. M28b the decorated pot, the first block entity that is not one model.
 M28c banners, the first whose texture carries no colour — a pattern sprite is a
 greyscale mask and the dye is a per-layer tint. M28d the spawner's
-`block_event`, the third meaning of `b0 == 1`. Three gate witnesses caught real
-bugs before they shipped (a pot side baking six quads instead of one, a banner
-base texture path that baked no pole at all, and an existing witness that had
-quietly started measuring the wrong set). Still invisible: **copper golem
-statues** (four separate pose layers with nested rotated hierarchies) and the
-**two end portals** (a bespoke shader, not a model). See §15.
+`block_event`, the third meaning of `b0 == 1`. M28e/M28f then closed the last
+two: the **copper golem statue** (four separate pose layers with nested rotated
+hierarchies, machine-extracted by `tools/gen_copper_golem_poses.py` because
+thirty-eight rotated boxes fail silently when hand-copied) and the **two end
+portals** (whose geometry is an ordinary cube — only the render *type* is a
+shader, approximated by one static layer). **M25's Invisible list is now
+empty: eleven types measured, eleven rendering.** Five gate witnesses caught
+real bugs before they shipped (a pot side baking six quads instead of one, a
+banner base texture path that baked no pole at all, a statue weathering suffix
+on the wrong end of the name, and an existing witness that had quietly started
+measuring the wrong set). What remains in this area is one shared gap rather
+than a list of types: **the per-block-entity animation clock**, which leaves
+the conduit's spin, the pot's wobble, the banner's sway and the spawner's caged
+mob all at rest. See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -1266,21 +1274,22 @@ in §15 and the entry here becomes history.)*
 >   "nothing is Rendered yet", so it passed happily through all four. That
 >   witness now derives the rendered set from the model resolver instead.
 >
-> **M27/M28 then closed all but two of these** — `e0b9937`, `73a6c61`,
-> `73cd504`, `c428d90`, `8d3754b`; see §15. Dyed and glowing sign text and the
-> line break shipped; skulls (7 types, 14 blocks), the conduit shell, the
-> decorated pot, banners (32 blocks) and the spawner's `block_event` shipped.
+> **M27/M28 closed every one of these** — `e0b9937`, `73a6c61`, `73cd504`,
+> `c428d90`, `8d3754b`, `c838d7f`; see §15. Dyed and glowing sign text and the
+> line break; skulls (7 types, 14 blocks), the conduit, the decorated pot,
+> banners (32 blocks), the spawner's `block_event`, the copper golem statue and
+> the two end portals.
 >
-> **Still open**, and each named rather than implied: **copper golem statues**
-> (four *separate* pose layers, each a nested hierarchy where a child's offset
-> rides through its parent's rotation — the flat box list cannot express it,
-> and the ~35 boxes of transcription that follow would fail silently if wrong)
-> and the **two end portals**, whose renderer is a bespoke shader over a flat
-> quad rather than a model at all. Plus the shared exclusion underneath almost
-> everything above: **the per-block-entity animation clock** — the conduit's
-> spin and active cage, the pot's wobble, the banner's sway, a skull's bob, a
-> piglin head's ears, a dragon head's jaw and the spawner's caged mob all key
-> off it, and all currently render at rest.
+> **M25's Invisible list is empty: eleven types measured, eleven rendering.**
+> `blockentityshot` grew 21 → **133** witnesses across the arc.
+>
+> **What remains is one shared gap, not a list of types: the per-block-entity
+> animation clock.** The conduit's spin and active cage, the pot's wobble, the
+> banner's sway, a skull's bob, a piglin head's ears, a dragon head's jaw, the
+> spawner's caged mob and the end portal's scrolling starfield all key off a
+> tick this client does not keep for block entities, and all currently render
+> at rest. That is now the single next piece of work in this area rather than
+> a scatter of per-type exclusions.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
@@ -5395,3 +5404,73 @@ em-dash, and the file had to be restored from HEAD with the changes re-applied.
 Any script touching these sources must pass **both** `encoding='utf-8'` and
 `newline=''` — the same class of hazard as the mixed CRLF/LF endings in gotcha
 9, which also bit again here.
+
+### 2026-07-26 — M28e/M28f: the statue and the end portals — the Invisible list is empty
+
+`c838d7f`, on `codex/rewo-m19-combat-swings`, not pushed. **Eleven types
+measured by M25, eleven rendering.** `blockentityshot` 125 → **133**.
+
+**The statue's four poses are machine-extracted, and that is the substance of
+the milestone rather than a detail.** `CopperGolemStatueBlockRenderer` bakes
+four *separate* layers — STANDING, RUNNING, SITTING, STAR — each its own nested
+`PartDefinition` tree where a child's offset rides through its parent's
+**rotation**. Thirty-eight boxes, most with rotations to four decimal places.
+
+The previous pass declined to hand-transcribe this and said so, because the
+errors would be silent: a statue with one arm a few degrees off still looks
+like a statue. `tools/gen_copper_golem_poses.py` removes the risk the way
+`gen_anim_defs`, `gen_block_light` and `gen_vanilla_hierarchy` already do — it
+parses the decompiled source, matches each `addOrReplaceChild` to its parent by
+the receiver of the call, and emits the flattened table with each box's
+ancestor chain intact. It accounts for every `addBox` in all four methods
+(9/9/11/9) and emits deterministic LF.
+
+**`k25` is the witness that earns it.** It compares each box's real position
+against a naive offset-sum that ignores every ancestor rotation: the two must
+**agree** across STANDING (no ancestor rotations) and must **differ** somewhere
+in RUNNING (which has them). That difference *is* the nested hierarchy — the
+one property a flat box list could not express, asserted directly rather than
+by eye.
+
+Two statue details worth keeping. The flip is not in vanilla's matrix: it is
+`setupAnim` setting `root.zRot = PI`, folded in here because this client does
+not run that step. And the weathering suffix **follows** the stem
+(`copper_golem_exposed.png`) while the *block* names run the other way
+(`exposed_copper_golem_statue`) — the same irregular copper naming M10's
+generator recorded, and prefixing by analogy silently loaded nothing until
+`k23` said so.
+
+**The end portals were half-misdescribed by every earlier record here,
+including mine.** "A bespoke shader rather than a model at all" is true of the
+render *type* and false of the geometry: `submitCube` builds ordinary unit-cube
+faces, and only `rendertype_end_portal.fsh` — fifteen scrolling samples of
+`end_sky.png` faking depth — is a shader. The geometry therefore ships exactly
+and the shader is approximated by one static layer of `end_portal.png`: a
+stated approximation, and far better than the alternative, since an end portal
+that renders nothing is an invisible hole you fall through.
+
+Two geometry facts pinned: a portal builds **only its horizontal faces**
+(`shouldRenderFace` is `getAxis() == Y`, which is why an edge-on portal shows
+nothing in vanilla), and it is a **slab from y 0.375 to 0.75** — a pool set
+into the middle of its block, not a full block and not floor-flush. A gateway
+pushes no transform and builds all six.
+
+`a3` was rewritten. It asserted a specific still-invisible membership; the set
+is empty now, so it asserts *that*, and it is henceforth the witness that fires
+if a future version adds an invisible type and nobody writes a renderer.
+
+**Measured:** 490 tests (435 lib + 55 app); `blockentityshot` **133/133**,
+`itemshot` 28/28, `hurtshot` 38/38, `swingshot` 97/97, `eventshot` 28/28,
+`danceshot` 24/24, `mobshot` 243/243; `lightmapshot`, `skyshot`, `tintshot`,
+`meshshot` and `dimensioncheck` green; canonical demo SHA-256 `2cc56b4a…`
+byte-identical to M15 onward; `git diff --check` clean.
+
+**What remains here is one shared gap, not a list of types: the
+per-block-entity animation clock.** The conduit's spin and active cage, the
+pot's wobble, the banner's sway, a skull's bob, a piglin head's ears, a dragon
+head's jaw, the spawner's caged mob and the portal's scrolling starfield all
+key off a tick this client does not keep, and all render at rest. Also out: a
+gateway draws all six faces because Rewo has no neighbour context at bake time
+(over-draw, invisible for the free-standing gateways they always are), the
+gateway's beacon beam is not drawn, and a player head uses the jar's default
+skin because the profile in its NBT would need a network fetch.
