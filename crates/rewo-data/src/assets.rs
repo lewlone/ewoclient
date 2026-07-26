@@ -1516,6 +1516,8 @@ impl<'a> Baker<'a> {
                 verts: q.verts.map(|v| [v[0] * 16.0, v[1] * 16.0, v[2] * 16.0]),
                 uv: q.uv,
                 tex,
+                // Items never articulate.
+                part: 0,
                 dir: q.dir,
             });
         }
@@ -1568,6 +1570,8 @@ impl<'a> Baker<'a> {
             };
             for q in extrude(&mask, i as u8) {
                 out.push(HeldQuad {
+                    // Items never articulate.
+                    part: 0,
                     verts: q.verts,
                     // The extruder works in 0..16 sprite-model units; the
                     // renderer wants 0..1 of the texture.

@@ -247,6 +247,51 @@ impl BlockEntityRegistry {
     }
 }
 
+/// `ChestLidController` — the client-side lid clock, verbatim.
+///
+/// ```text
+/// tickLid():  oOpenness = openness;
+///             if (!shouldBeOpen && openness > 0) openness = max(openness - 0.1, 0);
+///             else if (shouldBeOpen && openness < 1) openness = min(openness + 0.1, 1);
+/// getOpenness(a) = Mth.lerp(a, oOpenness, openness)
+/// ```
+///
+/// Like every other clock this client keeps, the *openness* is not
+/// transmitted: the server sends one `block_event` saying how many players
+/// have the chest open, and the client animates the ten ticks itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChestLid {
+    /// `shouldBeOpen`, set by `triggerEvent(1, viewerCount)`.
+    pub should_be_open: bool,
+    /// `openness` — the current value, 0..1.
+    pub openness: f32,
+    /// `oOpenness` — the previous tick's, for the render lerp.
+    pub old_openness: f32,
+}
+
+impl ChestLid {
+    /// `ChestLidController.tickLid`.
+    pub fn tick(&mut self) {
+        self.old_openness = self.openness;
+        if !self.should_be_open && self.openness > 0.0 {
+            self.openness = (self.openness - 0.1).max(0.0);
+        } else if self.should_be_open && self.openness < 1.0 {
+            self.openness = (self.openness + 0.1).min(1.0);
+        }
+    }
+
+    /// `ChestLidController.getOpenness(partialTicks)`.
+    pub fn openness(self, alpha: f32) -> f32 {
+        self.old_openness + alpha * (self.openness - self.old_openness)
+    }
+
+    /// Whether this lid is doing anything — a fully closed, not-opening lid
+    /// needs no entry at all.
+    pub fn is_idle_closed(self) -> bool {
+        !self.should_be_open && self.openness == 0.0 && self.old_openness == 0.0
+    }
+}
+
 /// The block entities of one world, keyed by absolute position.
 ///
 /// A flat map rather than per-column storage: block entities are sparse (a
@@ -256,6 +301,10 @@ impl BlockEntityRegistry {
 #[derive(Default)]
 pub struct BlockEntities {
     map: HashMap<BlockEntityPos, BlockEntity>,
+    /// Lid clocks, for the positions that have one. Absent is
+    /// [`ChestLid::default`] — closed and staying closed — so a chest nobody
+    /// has opened costs nothing.
+    lids: HashMap<BlockEntityPos, ChestLid>,
 }
 
 impl BlockEntities {
@@ -277,8 +326,8 @@ impl BlockEntities {
     /// level-chunk packet is the authoritative list for that column, so the old
     /// contents must go first or a block entity the player broke would linger.
     pub fn remove_column(&mut self, cx: i32, cz: i32) {
-        self.map
-            .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.map.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.lids.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
     pub fn len(&self) -> usize {
@@ -303,6 +352,50 @@ impl BlockEntities {
 
     pub fn clear(&mut self) {
         self.map.clear();
+        self.lids.clear();
+    }
+
+    /// `ChestBlockEntity.triggerEvent(b0, b1)`:
+    ///
+    /// ```text
+    /// if (b0 == 1) { this.chestLidController.shouldBeOpen(b1 > 0); return true; }
+    /// ```
+    ///
+    /// `b1` is the *viewer count*, not a boolean — the server sends how many
+    /// players have the container open, and any non-zero count means open.
+    ///
+    /// Returns whether the event was consumed. A `b0` other than 1 is some
+    /// other block's event (a note block's pitch, a piston's direction) and is
+    /// left alone rather than guessed at.
+    pub fn trigger_lid_event(&mut self, pos: BlockEntityPos, b0: u8, b1: u8) -> bool {
+        if b0 != 1 {
+            return false;
+        }
+        // Vanilla routes the event through the *block entity* at the position,
+        // so a position with none ignores it — the same existence rule
+        // `set_block_entity_data` keeps.
+        if self.map.get(&pos).is_none() {
+            return false;
+        }
+        self.lids.entry(pos).or_default().should_be_open = b1 > 0;
+        true
+    }
+
+    /// Advance every lid one tick, dropping the ones that have settled shut.
+    pub fn tick_lids(&mut self) {
+        self.lids.retain(|_, l| {
+            l.tick();
+            !l.is_idle_closed()
+        });
+    }
+
+    /// The lid state at a position — closed if it has never been opened.
+    pub fn lid(&self, pos: BlockEntityPos) -> ChestLid {
+        self.lids.get(&pos).copied().unwrap_or_default()
+    }
+
+    pub fn open_lid_count(&self) -> usize {
+        self.lids.len()
     }
 }
 

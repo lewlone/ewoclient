@@ -871,6 +871,9 @@ impl PlaySession {
         self.visual_effects.tick();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
+        // `ChestLidController.tickLid` — the client animates the ten ticks the
+        // server never sends (M25c).
+        self.world.block_entities.tick_lids();
         if self.spawned {
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.
@@ -1102,6 +1105,9 @@ impl PlaySession {
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
+        } else if crate::route_block_event(id, body, ids, &mut self.world) {
+            // `ClientboundBlockEventPacket` — a chest's viewer count, which is
+            // what drives its lid open and shut.
         } else if crate::route_block_entity_data(id, body, ids, &mut self.world) {
             // `ClientboundBlockEntityDataPacket` (M25) — one block entity's
             // update tag:

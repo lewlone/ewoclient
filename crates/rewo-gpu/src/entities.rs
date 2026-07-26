@@ -2200,6 +2200,22 @@ fn apply_pose_effect(
     }
 }
 
+/// `ChestRenderer.submit` into `ChestModel.setupAnim` — the lid's `xRot`.
+///
+/// ```text
+/// open = 1.0F - open;
+/// open = 1.0F - open * open * open;
+/// lid.xRot = -(open * (float)(Math.PI / 2));
+/// ```
+///
+/// A cubic ease-out, not a ramp: the chest is already 87.5% open half way
+/// through its ten ticks, then settles.
+pub fn lid_angle(openness: f32) -> f32 {
+    let inv = 1.0 - openness;
+    let eased = 1.0 - inv * inv * inv;
+    -(eased * std::f32::consts::FRAC_PI_2)
+}
+
 /// `Mth.lerp(delta, start, end)` — `start + delta * (end - start)`.
 fn lerp(delta: f32, start: f32, end: f32) -> f32 {
     start + delta * (end - start)
@@ -2272,6 +2288,12 @@ pub struct BlockEntityDraw<'a> {
     /// Per-channel world light at the block, as the terrain lightmap resolves
     /// it.
     pub light: [f32; 3],
+    /// `ChestLidController.getOpenness(partialTicks)` — 0 shut, 1 fully open
+    /// (M25c). Applied to the model's animated part group, which for a chest
+    /// is the lid together with its lock.
+    pub openness: f32,
+    /// The pivot the animated group rotates about, in model px.
+    pub part_pivot: [f32; 3],
 }
 
 impl EntityPass {
@@ -2287,11 +2309,18 @@ impl EntityPass {
     /// divides model px by 16, so the quads land in 0..1 block units and the
     /// block position is a plain translate on top.
     ///
-    /// The lid is closed: `state.open` comes from `LidBlockEntity`'s animated
-    /// openness, which is driven by `block_event` — a packet Rewo does not
-    /// decode. A closed chest is the state of every chest nobody is standing
-    /// in, and it is *exact* for that state rather than an approximation of
-    /// the animation.
+    /// The lid angle is `ChestRenderer.submit` into `ChestModel.setupAnim`:
+    ///
+    /// ```text
+    /// open = state.open;            // ChestLidController.getOpenness(partial)
+    /// open = 1.0F - open;
+    /// open = 1.0F - open * open * open;
+    /// lid.xRot = -(open * (float)(Math.PI / 2));  lock.xRot = lid.xRot;
+    /// ```
+    ///
+    /// The cubic is an ease-out, not a linear ramp — a chest flings open and
+    /// settles — and it is applied to the *interpolated* openness, so it runs
+    /// per frame rather than per tick.
     pub fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
         let Some(items) = self.held_items.as_ref() else {
             return;
@@ -2301,6 +2330,7 @@ impl EntityPass {
                 continue;
             };
             let (s, c) = (-d.facing_y_rot).to_radians().sin_cos();
+            let (ls, lc) = lid_angle(d.openness).sin_cos();
             let [light_r, light_g, light_b] = d.light;
             for q in &model.quads {
                 if verts.len() + 6 > MAX_VERTS {
@@ -2312,6 +2342,25 @@ impl EntityPass {
                 let mut p4 = [[0f32; 3]; 4];
                 let mut m4 = [[0f32; 3]; 4];
                 for (i, corner) in q.verts.iter().enumerate() {
+                    // The animated group rotates about its pose pivot first,
+                    // in model px — `ModelPart.render` translates by the pose
+                    // offset and then rotates, so a box's own coordinates are
+                    // already relative to it.
+                    let corner = if q.part == 0 {
+                        *corner
+                    } else {
+                        let v = [
+                            corner[0] - d.part_pivot[0],
+                            corner[1] - d.part_pivot[1],
+                            corner[2] - d.part_pivot[2],
+                        ];
+                        // xRot: y and z turn, x is the axis.
+                        [
+                            v[0] + d.part_pivot[0],
+                            v[1] * lc - v[2] * ls + d.part_pivot[1],
+                            v[1] * ls + v[2] * lc + d.part_pivot[2],
+                        ]
+                    };
                     // model px -> block units, y-up (no entity flip).
                     let p = [corner[0] / 16.0, corner[1] / 16.0, corner[2] / 16.0];
                     // `rotationAround(YP(-yRot), 0.5, 0, 0.5)`: about the

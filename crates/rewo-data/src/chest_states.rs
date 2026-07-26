@@ -66,7 +66,9 @@ pub enum ChestType {
 pub struct ChestState {
     pub facing: ChestFacing,
     pub kind: ChestType,
-    /// The `rewo:be/…` model name for this chest's material.
+    /// The `rewo:be/…` model name for this chest's **material** — the SINGLE
+    /// variant. A half appends [`crate::block_entity_models::LEFT_SUFFIX`] or
+    /// `RIGHT_SUFFIX`, which [`Self::model_name`] does.
     pub model: &'static str,
 }
 
@@ -95,6 +97,25 @@ const CHEST_BLOCKS: &[(&str, &str)] = &[
 #[derive(Default)]
 pub struct ChestStates {
     by_state: HashMap<u32, ChestState>,
+}
+
+impl ChestState {
+    /// The model to draw, `Sheets.chooseSprite(material, type)`'s selection
+    /// expressed as a name.
+    ///
+    /// An ender chest is always SINGLE, so it never reaches the suffixes —
+    /// which is just as well, since the jar ships no `ender_left.png`.
+    pub fn model_name(self) -> String {
+        match self.kind {
+            ChestType::Single => self.model.to_string(),
+            ChestType::Left => {
+                format!("{}{}", self.model, crate::block_entity_models::LEFT_SUFFIX)
+            }
+            ChestType::Right => {
+                format!("{}{}", self.model, crate::block_entity_models::RIGHT_SUFFIX)
+            }
+        }
+    }
 }
 
 impl ChestStates {

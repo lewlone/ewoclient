@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 32;
+const EXPECTED_WITNESSES: usize = 50;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -223,6 +223,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_decode(&mut c, &blocks, chest, sign);
     check_lifecycle(&mut c, &ids, &blocks, chest);
     check_chest_models(&mut c, &args.version)?;
+    check_lids(&mut c, &ids, &blocks, chest);
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -269,7 +270,7 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     // --- the models exist and came from the jar ---------------------------
     let names: Vec<&str> = rewo_data::block_entity_models::CHESTS
         .iter()
-        .map(|(n, _)| *n)
+        .map(|(n, _, _)| *n)
         .collect();
     let present: Vec<&str> = names
         .iter()
@@ -458,15 +459,316 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
         .filter(|s| s.kind != ChestType::Single)
         .count();
     c.record(
-        "m11.double_chest_states_are_recognised_even_though_they_are_not_drawn",
+        "m11.double_chest_states_resolve",
         doubles > 0,
+        format!("{doubles} left/right chest states carry a half to draw"),
+    );
+
+    // --- the halves --------------------------------------------------------
+    // M25 recorded `DoubleBlockCombiner` as the blocker for drawing halves.
+    // That was wrong: `ChestRenderer` picks the model with `models.select(
+    // state.type)` — the block's OWN type property — and uses the combiner
+    // only for the shared openness and light. So each half draws itself.
+    let left = items.block_entities.get("rewo:be/chest_left");
+    let right = items.block_entities.get("rewo:be/chest_right");
+    c.record(
+        "m12.both_halves_bake",
+        left.is_some() && right.is_some(),
         format!(
-            "{doubles} left/right chest states resolve — the renderer skips them \
-             because a half-pair needs DoubleBlockCombiner, and drawing a single \
-             chest in each half would be visibly wrong"
+            "left={} right={} — selected by the block's own ChestType, not by a \
+             neighbour lookup",
+            left.is_some(),
+            right.is_some()
+        ),
+    );
+
+    // A half drops the face that meets the other half: 5 faces per box, not 6.
+    let (Some(l), Some(r)) = (left, right) else {
+        return Ok(());
+    };
+    c.record(
+        "m13.a_half_drops_its_seam_face",
+        l.quads.len() == 15 && r.quads.len() == 15,
+        format!(
+            "left {} quads, right {} (want 15 = 3 boxes x 5 faces) against the \
+             single's 18 — `addBox(..., allOfEnumExcept(WEST/EAST))`, so the seam \
+             has no coincident quads to z-fight",
+            l.quads.len(),
+            r.quads.len()
+        ),
+    );
+
+    // The halves are 15 px wide and meet: left spans x 0..15, right 1..16.
+    let span = |m: &rewo_data::held_items::HeldItemModel| {
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for q in &m.quads {
+            for v in &q.verts {
+                lo = lo.min(v[0]);
+                hi = hi.max(v[0]);
+            }
+        }
+        (lo, hi)
+    };
+    let (ll, lh) = span(l);
+    let (rl, rh) = span(r);
+    c.record(
+        "m14.the_two_halves_meet_at_the_block_boundary",
+        ll == 0.0 && lh == 15.0 && rl == 1.0 && rh == 16.0,
+        format!(
+            "left x {ll}..{lh}, right x {rl}..{rh} — each reaches the shared edge, \
+             so a pair reads as one 30-px-wide chest rather than two with a gap"
+        ),
+    );
+
+    // Each half has its own texture — a `_left` model on a single sprite would
+    // show the wrong half of the artwork.
+    let tex1 = l.quads.first().map(|q| q.tex);
+    let tex2 = r.quads.first().map(|q| q.tex);
+    let single = items.block_entities.get("rewo:be/chest").and_then(|m| m.quads.first()).map(|q| q.tex);
+    c.record(
+        "m15.each_half_has_its_own_texture",
+        tex1.is_some() && tex1 != tex2 && tex1 != single && tex2 != single,
+        format!("single={single:?} left={tex1:?} right={tex2:?}"),
+    );
+
+    // An ender chest is always single, and the jar ships no ender_left.png —
+    // so its halves must be absent rather than baked from the wrong sprite.
+    c.record(
+        "m16.the_ender_chest_has_no_halves",
+        items.block_entities.get("rewo:be/ender_chest").is_some()
+            && items.block_entities.get("rewo:be/ender_chest_left").is_none(),
+        "ender_chest bakes single-only — it can never be double, and the jar has \
+         no ender_left.png to bake from",
+    );
+
+    // The name a state resolves to must match what actually baked.
+    let mut named_ok = true;
+    let mut sample = Vec::new();
+    for id in 0..40000u32 {
+        let Some(st) = states.get(id) else { continue };
+        let name = st.model_name();
+        named_ok &= items.block_entities.contains_key(&name);
+        if sample.len() < 3 && st.kind != ChestType::Single {
+            sample.push(name);
+        }
+    }
+    c.record(
+        "m17.every_chest_state_names_a_model_that_baked",
+        named_ok,
+        format!(
+            "every one of the {} chest states resolves to a baked model (e.g. \
+             {sample:?})",
+            states.len()
         ),
     );
     Ok(())
+}
+
+/// M25c — the chest lid: the `block_event` route, the client-side clock, and
+/// the ease the renderer applies to it.
+fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, chest: i32) {
+    use rewo_world::block_entities::ChestLid;
+
+    let shape = DimensionShape::OVERWORLD;
+    let mut world = rewo_world::World::new(shape);
+    let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, chest)]);
+    let mut reader = rewo_proto::reader::PacketReader::new(&body);
+    let col = rewo_world::chunk::read_level_chunk(&mut reader, &shape, blocks).unwrap();
+    world.insert_column(0, 0, col);
+    let pos = BlockEntityPos { x: 0, y: 64, z: 0 };
+
+    // `ClientboundBlockEventPacket`: BlockPos, u8 b0, u8 b1, VarInt block.
+    let ev = |x: i32, y: i32, z: i32, b0: u8, b1: u8| -> Vec<u8> {
+        let mut b = packed_pos(x, y, z).to_be_bytes().to_vec();
+        b.push(b0);
+        b.push(b1);
+        varint(0, &mut b); // the BLOCK registry id — read but not needed here
+        b
+    };
+    let send = |w: &mut rewo_world::World, x, y, z, b0, b1| {
+        rewo_net::route_block_event(ids.cb_play_block_event, &ev(x, y, z, b0, b1), ids, w)
+    };
+
+    c.record(
+        "l1.the_block_event_id_is_distinct",
+        ids.cb_play_block_event != ids.cb_play_block_entity_data
+            && ids.cb_play_block_event != ids.cb_play_block_update,
+        format!(
+            "block_event={} vs block_entity_data={} block_update={}",
+            ids.cb_play_block_event, ids.cb_play_block_entity_data, ids.cb_play_block_update
+        ),
+    );
+
+    let routed = send(&mut world, 0, 64, 0, 1, 1);
+    c.record(
+        "l2.a_viewer_count_opens_the_lid",
+        routed && world.block_entities.lid(pos).should_be_open,
+        format!(
+            "routed={routed} shouldBeOpen={} — triggerEvent(1, b1) with b1 the \
+             *viewer count*, so any non-zero means open",
+            world.block_entities.lid(pos).should_be_open
+        ),
+    );
+
+    // b1 == 0 is the last viewer leaving.
+    send(&mut world, 0, 64, 0, 1, 0);
+    c.record(
+        "l3.a_zero_viewer_count_closes_it",
+        !world.block_entities.lid(pos).should_be_open,
+        "b1 = 0 → shouldBeOpen false",
+    );
+
+    // Some other block's event must not touch the lid.
+    send(&mut world, 0, 64, 0, 1, 1);
+    send(&mut world, 0, 64, 0, 2, 0);
+    c.record(
+        "l4.only_b0_equals_one_is_a_lid_event",
+        world.block_entities.lid(pos).should_be_open,
+        "b0 = 2 (a note block's pitch, a piston's direction) left the lid alone",
+    );
+
+    // A position with no block entity is ignored, like `block_entity_data`.
+    let before = world.block_entities.open_lid_count();
+    send(&mut world, 9, 9, 9, 1, 1);
+    c.record(
+        "l5.an_event_for_no_block_entity_is_ignored",
+        world.block_entities.open_lid_count() == before,
+        format!("{} lid entries, unchanged", world.block_entities.open_lid_count()),
+    );
+
+    // --- the clock, independently transcribed -----------------------------
+    // `tickLid`: 0.1 per tick, clamped, with the previous value kept for the
+    // render lerp.
+    let mut want = (0.0f32, 0.0f32); // (openness, oOpenness)
+    let want_tick = |w: &mut (f32, f32), open: bool| {
+        w.1 = w.0;
+        if !open && w.0 > 0.0 {
+            w.0 = (w.0 - 0.1).max(0.0);
+        } else if open && w.0 < 1.0 {
+            w.0 = (w.0 + 0.1).min(1.0);
+        }
+    };
+
+    let mut lid = ChestLid::default();
+    lid.should_be_open = true;
+    let mut seq = Vec::new();
+    let mut ok = true;
+    for _ in 0..14 {
+        lid.tick();
+        want_tick(&mut want, true);
+        ok &= (lid.openness - want.0).abs() < 1e-6;
+        seq.push(format!("{:.1}", lid.openness));
+    }
+    c.record(
+        "l6.the_lid_opens_over_ten_ticks_and_stops_at_one",
+        ok && lid.openness == 1.0,
+        format!("openness by tick: {} — 0.1 per tick, clamped at 1", seq.join(" ")),
+    );
+
+    lid.should_be_open = false;
+    let mut closed_in = 0;
+    for i in 1..=14 {
+        lid.tick();
+        if lid.openness == 0.0 && closed_in == 0 {
+            closed_in = i;
+        }
+    }
+    c.record(
+        "l7.it_shuts_at_the_same_rate",
+        closed_in == 10,
+        format!("shut after {closed_in} ticks (want 10)"),
+    );
+
+    // `getOpenness(a) = lerp(a, oOpenness, openness)` — the render value is
+    // interpolated, so a still frame mid-tick is between the two.
+    let mut lid = ChestLid::default();
+    lid.should_be_open = true;
+    lid.tick();
+    lid.tick();
+    c.record(
+        "l8.the_render_openness_interpolates_between_ticks",
+        (lid.openness(0.0) - 0.1).abs() < 1e-6
+            && (lid.openness(0.5) - 0.15).abs() < 1e-6
+            && (lid.openness(1.0) - 0.2).abs() < 1e-6,
+        format!(
+            "a=0 -> {:.3}, a=0.5 -> {:.3}, a=1 -> {:.3} (oOpenness 0.1, openness 0.2)",
+            lid.openness(0.0),
+            lid.openness(0.5),
+            lid.openness(1.0)
+        ),
+    );
+
+    // A settled-shut lid is dropped, so an untouched chest costs nothing.
+    let mut world2 = rewo_world::World::new(shape);
+    let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, chest)]);
+    let mut reader = rewo_proto::reader::PacketReader::new(&body);
+    let col = rewo_world::chunk::read_level_chunk(&mut reader, &shape, blocks).unwrap();
+    world2.insert_column(0, 0, col);
+    send(&mut world2, 0, 64, 0, 1, 1);
+    for _ in 0..12 {
+        world2.block_entities.tick_lids();
+    }
+    let open_entries = world2.block_entities.open_lid_count();
+    send(&mut world2, 0, 64, 0, 1, 0);
+    for _ in 0..12 {
+        world2.block_entities.tick_lids();
+    }
+    c.record(
+        "l9.a_settled_shut_lid_is_dropped",
+        open_entries == 1 && world2.block_entities.open_lid_count() == 0,
+        format!(
+            "{open_entries} entry while open, {} once shut — an untouched chest \
+             carries no clock at all",
+            world2.block_entities.open_lid_count()
+        ),
+    );
+
+    // --- the renderer's ease ----------------------------------------------
+    // `open = 1 - open; open = 1 - open*open*open;` then `xRot = -(open*PI/2)`.
+    let want_ease = |o: f32| {
+        let inv = 1.0 - o;
+        1.0 - inv * inv * inv
+    };
+    let mut ease_ok = true;
+    let mut rows = Vec::new();
+    for o in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+        let got = rewo_gpu::entities::lid_angle(o);
+        let want = -(want_ease(o) * std::f32::consts::FRAC_PI_2);
+        ease_ok &= (got - want).abs() < 1e-6;
+        rows.push(format!("{o:.2}->{:.4}", got));
+    }
+    c.record(
+        "l10.the_lid_angle_is_the_cubic_ease",
+        ease_ok,
+        format!(
+            "{} rad — 1-(1-open)^3 then -(open * PI/2); a linear ramp would differ \
+             visibly at the midpoint",
+            rows.join(" ")
+        ),
+    );
+    c.record(
+        "l11.a_shut_lid_is_exactly_zero_and_a_full_one_is_a_right_angle",
+        rewo_gpu::entities::lid_angle(0.0) == 0.0
+            && (rewo_gpu::entities::lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+        format!(
+            "0 -> {:.6}, 1 -> {:.6} (want 0 and -PI/2)",
+            rewo_gpu::entities::lid_angle(0.0),
+            rewo_gpu::entities::lid_angle(1.0)
+        ),
+    );
+
+    // The ease is not linear — the whole point of the cubic.
+    let mid = rewo_gpu::entities::lid_angle(0.5);
+    c.record(
+        "l12.the_ease_is_not_linear",
+        (mid + std::f32::consts::FRAC_PI_2 * 0.5).abs() > 0.2,
+        format!(
+            "openness 0.5 -> {mid:.4} rad, where a linear ramp would give {:.4} — \
+             the chest is already 87.5% open half way through",
+            -std::f32::consts::FRAC_PI_2 * 0.5
+        ),
+    );
 }
 
 fn check_registry(

@@ -36,6 +36,14 @@ pub struct HeldQuad {
     pub uv: [[f32; 2]; 4],
     /// Index into [`HeldItems::textures`].
     pub tex: u16,
+    /// Which animated group this quad belongs to.
+    ///
+    /// `0` is static, and every item quad is static — an item is placed by one
+    /// display transform and never articulates. Block-entity models use it to
+    /// name the parts their renderer animates: a chest's `1` is the lid *and*
+    /// its lock, because `ChestModel.setupAnim` gives both the same `xRot`
+    /// about the same pivot.
+    pub part: u8,
     /// Vanilla `Direction` ordinal (down 0, up 1, north 2, south 3, west 4,
     /// east 5) for directional shading.
     pub dir: u8,

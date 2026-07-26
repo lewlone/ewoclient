@@ -33,8 +33,23 @@ struct Box {
     /// `(width, height, depth)`.
     dims: [f32; 3],
     /// `PartPose.offset(...)` applied to the whole box.
+    ///
+    /// For an animated part this is also its **pivot**: `ModelPart.render`
+    /// translates by the pose offset and then rotates, so the box's own
+    /// coordinates are relative to it.
     offset: [f32; 3],
+    /// The animated group (see [`crate::held_items::HeldQuad::part`]).
+    part: u8,
+    /// A face vanilla's `addBox(..., visibleFaces)` leaves out.
+    hide: Option<Facing>,
 }
+
+/// The pivot a chest's lid and lock rotate about — `PartPose.offset(0, 9, 1)`,
+/// in model px. Both parts share it, which is why they share a group.
+pub const CHEST_LID_PIVOT: [f32; 3] = [0.0, 9.0, 1.0];
+
+/// The animated group a chest's lid and lock belong to.
+pub const CHEST_LID_PART: u8 = 1;
 
 /// `ChestModel.createSingleBodyLayer` — a closed single chest.
 const CHEST_SINGLE: &[Box] = &[
@@ -43,19 +58,111 @@ const CHEST_SINGLE: &[Box] = &[
         min: [1.0, 0.0, 1.0],
         dims: [14.0, 10.0, 14.0],
         offset: [0.0; 3],
+        part: 0,
+        hide: None,
     },
     Box {
         tex: (0.0, 0.0),
         min: [1.0, 0.0, 0.0],
         dims: [14.0, 5.0, 14.0],
-        offset: [0.0, 9.0, 1.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: None,
     },
     Box {
         tex: (0.0, 0.0),
         min: [7.0, -2.0, 14.0],
         dims: [2.0, 4.0, 1.0],
-        offset: [0.0, 9.0, 1.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: None,
     },
+];
+
+/// `ChestModel.createDoubleBodyLeftLayer` — the LEFT half of a double chest.
+///
+/// ```text
+/// visibleFaces = allOfEnumExcept(WEST)
+/// bottom  texOffs(0,19) addBox(0, 0, 1, 15, 10, 14)   PartPose.ZERO
+/// lid     texOffs(0, 0) addBox(0, 0, 0, 15,  5, 14)   offset(0, 9, 1)
+/// lock    texOffs(0, 0) addBox(0,-2,14,  1,  4,  1)   offset(0, 9, 1)
+/// ```
+///
+/// The dropped face is the one that meets the other half: rendering it would
+/// put two coincident quads inside the seam, which z-fights.
+const CHEST_LEFT: &[Box] = &[
+    Box {
+        tex: (0.0, 19.0),
+        min: [0.0, 0.0, 1.0],
+        dims: [15.0, 10.0, 14.0],
+        offset: [0.0; 3],
+        part: 0,
+        hide: Some(Facing::West),
+    },
+    Box {
+        tex: (0.0, 0.0),
+        min: [0.0, 0.0, 0.0],
+        dims: [15.0, 5.0, 14.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: Some(Facing::West),
+    },
+    Box {
+        tex: (0.0, 0.0),
+        min: [0.0, -2.0, 14.0],
+        dims: [1.0, 4.0, 1.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: Some(Facing::West),
+    },
+];
+
+/// `ChestModel.createDoubleBodyRightLayer` — the RIGHT half, dropping EAST.
+const CHEST_RIGHT: &[Box] = &[
+    Box {
+        tex: (0.0, 19.0),
+        min: [1.0, 0.0, 1.0],
+        dims: [15.0, 10.0, 14.0],
+        offset: [0.0; 3],
+        part: 0,
+        hide: Some(Facing::East),
+    },
+    Box {
+        tex: (0.0, 0.0),
+        min: [1.0, 0.0, 0.0],
+        dims: [15.0, 5.0, 14.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: Some(Facing::East),
+    },
+    Box {
+        tex: (0.0, 0.0),
+        min: [15.0, -2.0, 14.0],
+        dims: [1.0, 4.0, 1.0],
+        offset: CHEST_LID_PIVOT,
+        part: CHEST_LID_PART,
+        hide: Some(Facing::East),
+    },
+];
+
+/// The face labels `cube_faces` returns, in order — so a `hide` can name one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Facing {
+    Down,
+    Up,
+    West,
+    North,
+    East,
+    South,
+}
+
+const FACE_ORDER: [Facing; 6] = [
+    Facing::Down,
+    Facing::Up,
+    Facing::West,
+    Facing::North,
+    Facing::East,
+    Facing::South,
 ];
 
 /// The chest variants Rewo renders, as `(model name, jar texture path)`.
@@ -65,15 +172,26 @@ const CHEST_SINGLE: &[Box] = &[
 /// deliberately absent — `SpecialDates.isExtendedChristmas()` is a wall-clock
 /// check, and a renderer whose output depends on the date is not reproducible
 /// in a gate.
-pub const CHESTS: &[(&str, &str)] = &[
-    ("rewo:be/chest", "entity/chest/normal"),
-    ("rewo:be/trapped_chest", "entity/chest/trapped"),
-    ("rewo:be/ender_chest", "entity/chest/ender"),
-    ("rewo:be/copper_chest", "entity/chest/copper"),
-    ("rewo:be/exposed_copper_chest", "entity/chest/copper_exposed"),
-    ("rewo:be/weathered_copper_chest", "entity/chest/copper_weathered"),
-    ("rewo:be/oxidized_copper_chest", "entity/chest/copper_oxidized"),
+/// Every variant is baked three times — single, left half, right half — with
+/// the matching `_left` / `_right` texture, because `Sheets.chooseSprite`
+/// selects the sprite by `ChestType` as well as by material.
+///
+/// The ender chest is the exception and ships no halves: it is always single,
+/// and the jar has no `ender_left.png` to bake one from.
+pub const CHESTS: &[(&str, &str, bool)] = &[
+    ("rewo:be/chest", "entity/chest/normal", true),
+    ("rewo:be/trapped_chest", "entity/chest/trapped", true),
+    ("rewo:be/ender_chest", "entity/chest/ender", false),
+    ("rewo:be/copper_chest", "entity/chest/copper", true),
+    ("rewo:be/exposed_copper_chest", "entity/chest/copper_exposed", true),
+    ("rewo:be/weathered_copper_chest", "entity/chest/copper_weathered", true),
+    ("rewo:be/oxidized_copper_chest", "entity/chest/copper_oxidized", true),
 ];
+
+/// The name suffix for a chest half. Appended to the single model's name and
+/// to its texture path alike, which is what keeps the two in step.
+pub const LEFT_SUFFIX: &str = "_left";
+pub const RIGHT_SUFFIX: &str = "_right";
 
 /// Vanilla `Direction` ordinals for the six faces, in the order
 /// [`rewo_gpu::mobs::cube_faces`] returns them.
@@ -92,14 +210,29 @@ pub fn bake_chests(
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
 ) -> Vec<(String, HeldItemModel)> {
     let mut out = Vec::new();
-    for (name, tex_path) in CHESTS {
-        let Some(tex) = pool.intern(tex_path, || load(tex_path)) else {
+    for (name, tex_path, has_halves) in CHESTS {
+        let mut variants: Vec<(String, String, &[Box])> =
+            vec![((*name).to_string(), (*tex_path).to_string(), CHEST_SINGLE)];
+        if *has_halves {
+            variants.push((
+                format!("{name}{LEFT_SUFFIX}"),
+                format!("{tex_path}{LEFT_SUFFIX}"),
+                CHEST_LEFT,
+            ));
+            variants.push((
+                format!("{name}{RIGHT_SUFFIX}"),
+                format!("{tex_path}{RIGHT_SUFFIX}"),
+                CHEST_RIGHT,
+            ));
+        }
+        for (model_name, tex_name, boxes) in variants {
+        let Some(tex) = pool.intern(&tex_name, || load(&tex_name)) else {
             continue;
         };
         out.push((
-            (*name).to_string(),
+            model_name,
             HeldItemModel {
-                quads: chest_quads(tex),
+                quads: chest_quads(boxes, tex),
                 // A block entity is placed by its own transform, never by a
                 // display context — these exist only because the shape is
                 // shared with held items, and are the identity so that a
@@ -111,16 +244,22 @@ pub fn bake_chests(
                 from_block: false,
             },
         ));
+        }
     }
     out
 }
 
 /// The three cuboids, unwrapped against the 64×64 chest texture.
-fn chest_quads(tex: u16) -> Vec<HeldQuad> {
+fn chest_quads(boxes: &[Box], tex: u16) -> Vec<HeldQuad> {
     const ATLAS: f32 = 64.0;
-    let mut quads = Vec::with_capacity(CHEST_SINGLE.len() * 6);
-    for b in CHEST_SINGLE {
+    let mut quads = Vec::with_capacity(boxes.len() * 6);
+    for b in boxes {
         for (i, (verts, uv)) in cube_faces(b.tex, b.min, b.dims).into_iter().enumerate() {
+            // `addBox(..., visibleFaces)` — the seam face of a double half is
+            // simply not built.
+            if b.hide == Some(FACE_ORDER[i]) {
+                continue;
+            }
             let mut v = [[0f32; 3]; 4];
             for (k, c) in verts.iter().enumerate() {
                 // `PartPose.offset` translates the whole box; the model is
@@ -141,6 +280,7 @@ fn chest_quads(tex: u16) -> Vec<HeldQuad> {
                 verts: v,
                 uv: t,
                 tex,
+                part: b.part,
                 dir: FACE_DIRS[i],
             });
         }
@@ -199,7 +339,7 @@ mod tests {
 
     #[test]
     fn a_chest_bakes_three_cuboids_of_six_faces() {
-        let quads = chest_quads(0);
+        let quads = chest_quads(CHEST_SINGLE, 0);
         assert_eq!(quads.len(), 18, "3 boxes x 6 faces");
     }
 
@@ -208,7 +348,7 @@ mod tests {
         // The bottom spans 1..15 in x/z and 0..10 in y; the lid sits on top of
         // it (offset y 9, height 5) so the whole model reaches y 14 and never
         // leaves the 0..16 block.
-        let quads = chest_quads(0);
+        let quads = chest_quads(CHEST_SINGLE, 0);
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
         for q in &quads {
@@ -231,7 +371,7 @@ mod tests {
 
     #[test]
     fn every_uv_is_inside_the_sixty_four_square_texture() {
-        for q in chest_quads(0) {
+        for q in chest_quads(CHEST_SINGLE, 0) {
             for uv in q.uv {
                 assert!(
                     (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]),
@@ -245,7 +385,7 @@ mod tests {
     fn the_lock_sits_proud_of_the_front_face() {
         // addBox(7,-2,14, 2,4,1) with offset(0,9,1) puts the lock at z 15..16
         // — proud of the lid, which ends at 15. That is the visible latch.
-        let quads = chest_quads(0);
+        let quads = chest_quads(CHEST_SINGLE, 0);
         let max_z = quads
             .iter()
             .flat_map(|q| q.verts.iter())

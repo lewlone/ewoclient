@@ -866,6 +866,7 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                                 verts: q.verts,
                                 uv: q.uv,
                                 tex: q.tex,
+                                part: q.part,
                                 dir: q.dir,
                             })
                             .collect(),
@@ -1644,16 +1645,17 @@ fn run_headless(
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
-    let bes = collect_block_entities(&session.world, &chest_states, &lightmap);
+    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0);
     // Every texture the frame samples from the entity atlas — items in hands,
     // dropped stacks, and now block-entity models, which share the pool.
     let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
     held.extend(draws.iter().filter_map(|d| d.ground_item));
-    held.extend(bes.iter().map(|b| b.model));
+    held.extend(bes.iter().map(|b| b.model.as_str()));
     world_renderer.prepare_held_items(&mut gpu, &held)?;
+    let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
     world_renderer.set_entities_and_block_entities(
         &draws,
-        &bes,
+        &be_draws,
         cr,
         cu,
         start.elapsed().as_secs_f32(),
@@ -2095,18 +2097,19 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap);
+        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha);
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
         held.extend(draws.iter().filter_map(|d| d.ground_item));
-        held.extend(bes.iter().map(|b| b.model));
+        held.extend(bes.iter().map(|b| b.model.as_str()));
         // A failed upload leaves the item simply absent (no resident slot →
         // no quads), which is preferable to killing the frame loop.
         if let Err(e) = state.world_renderer.prepare_held_items(&mut state.gpu, &held) {
             log::warn!("live: held-item texture upload: {e}");
         }
+        let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
         state
             .world_renderer
-            .set_entities_and_block_entities(&draws, &bes, cr, cu, anim_time);
+            .set_entities_and_block_entities(&draws, &be_draws, cr, cu, anim_time);
         drop(draws);
 
         let extent = state.renderer.swapchain.extent;
@@ -2480,36 +2483,29 @@ pub fn entity_push_table(types: &rewo_data::entity_types::EntityTypes) -> Vec<(f
 /// pitch black. Sampling at the eye and running the block/sky levels through
 /// the exact same `rewo_world::lightmap::sample` the terrain shader mirrors
 /// keeps a mob lit identically to the blocks around it.
-/// Every block entity in the world that Rewo can draw, as render draws (M25b).
+/// Every block entity in the world that Rewo can draw, as render draws.
 ///
-/// The block state at the position supplies the facing and the material — the
-/// block-entity payload itself carries neither, because vanilla reads them off
-/// `getBlockState()`. A block entity whose block is not a chest, or whose state
-/// is not in the table, is simply not drawn: that is the fail-closed half of
-/// M25's registry showing through, and it is why an unimplemented type renders
-/// nothing rather than a chest in the wrong place.
-fn collect_block_entities<'a>(
+/// The block state at the position supplies the facing, the material and the
+/// chest half — the block-entity payload carries none of them, because vanilla
+/// reads them off `getBlockState()`. A block entity whose block is not a chest,
+/// or whose state is not in the table, is simply not drawn: that is M25's
+/// fail-closed registry showing through, and it is why an unimplemented type
+/// renders nothing rather than a chest in the wrong place.
+fn collect_block_entities(
     world: &rewo_world::World,
-    chests: &'a rewo_data::chest_states::ChestStates,
+    chests: &rewo_data::chest_states::ChestStates,
     lightmap: &LightmapState,
-) -> Vec<rewo_gpu::entities::BlockEntityDraw<'a>> {
-    use rewo_data::chest_states::ChestType;
+    alpha: f32,
+) -> Vec<OwnedBlockEntityDraw> {
     let mut out = Vec::new();
     for (pos, _be) in world.block_entities.iter() {
         let state = world.block_state_at(pos.x, pos.y, pos.z);
         let Some(chest) = chests.get(state) else {
             continue;
         };
-        // Double chests need `DoubleBlockCombiner`'s neighbour pairing to pick
-        // the left/right half-models, which this does not do — a LEFT or RIGHT
-        // state is skipped rather than drawn as a single chest, which would be
-        // visibly wrong (a full chest inside each half of the pair).
-        if chest.kind != ChestType::Single {
-            continue;
-        }
-        out.push(rewo_gpu::entities::BlockEntityDraw {
+        out.push(OwnedBlockEntityDraw {
             pos: [pos.x as f32, pos.y as f32, pos.z as f32],
-            model: chest.model,
+            model: chest.model_name(),
             facing_y_rot: chest.facing.to_y_rot(),
             // Lit from the block's own cell — a chest fills its block, so
             // there is no neighbour to sample the way a flat model would need.
@@ -2520,9 +2516,118 @@ fn collect_block_entities<'a>(
                 pos.z as f64 + 0.5,
                 lightmap,
             ),
+            openness: chest_openness(world, chests, *pos, chest, alpha),
         });
     }
     out
+}
+
+/// `ChestBlock.opennessCombiner` — the openness a chest renders with.
+///
+/// ```text
+/// acceptDouble(a, b) -> max(a.getOpenNess(t), b.getOpenNess(t))
+/// acceptSingle(a)    -> a.getOpenNess(t)
+/// ```
+///
+/// The **max over the pair** is the whole reason `DoubleBlockCombiner` appears
+/// in `ChestRenderer` at all — it is not how the half-models are chosen (the
+/// block's own `type` does that), it is how both halves of a double chest open
+/// together when only one of them received the event. M25 recorded the
+/// combiner as the blocker for drawing halves; that was wrong, and this is
+/// what it actually does.
+///
+/// `ChestBlock.getConnectedDirection`:
+/// `type == LEFT ? facing.getClockWise() : facing.getCounterClockWise()`.
+fn chest_openness(
+    world: &rewo_world::World,
+    chests: &rewo_data::chest_states::ChestStates,
+    pos: rewo_world::block_entities::BlockEntityPos,
+    chest: rewo_data::chest_states::ChestState,
+    alpha: f32,
+) -> f32 {
+    use rewo_data::chest_states::{ChestFacing, ChestType};
+    let mine = world.block_entities.lid(pos).openness(alpha);
+    let dir = match chest.kind {
+        ChestType::Single => return mine,
+        ChestType::Left => clockwise(chest.facing),
+        ChestType::Right => counter_clockwise(chest.facing),
+    };
+    let (dx, dz) = step(dir);
+    let other = rewo_world::block_entities::BlockEntityPos {
+        x: pos.x + dx,
+        y: pos.y,
+        z: pos.z + dz,
+    };
+    // Only pair with a block that really is the other half. A LEFT whose
+    // neighbour is not a chest is a half-broken pair mid-update, and taking
+    // its (absent) lid as 0 is the same answer `acceptNone` gives.
+    let paired = chests
+        .get(world.block_state_at(other.x, other.y, other.z))
+        .is_some_and(|o| o.kind != ChestType::Single);
+    if !paired {
+        return mine;
+    }
+    mine.max(world.block_entities.lid(other).openness(alpha))
+}
+
+/// `Direction.getClockWise()` for the four horizontals.
+fn clockwise(f: rewo_data::chest_states::ChestFacing) -> rewo_data::chest_states::ChestFacing {
+    use rewo_data::chest_states::ChestFacing as F;
+    match f {
+        F::North => F::East,
+        F::East => F::South,
+        F::South => F::West,
+        F::West => F::North,
+    }
+}
+
+/// `Direction.getCounterClockWise()`.
+fn counter_clockwise(
+    f: rewo_data::chest_states::ChestFacing,
+) -> rewo_data::chest_states::ChestFacing {
+    use rewo_data::chest_states::ChestFacing as F;
+    match f {
+        F::North => F::West,
+        F::West => F::South,
+        F::South => F::East,
+        F::East => F::North,
+    }
+}
+
+/// `Direction`'s `(stepX, stepZ)` for the four horizontals.
+fn step(f: rewo_data::chest_states::ChestFacing) -> (i32, i32) {
+    use rewo_data::chest_states::ChestFacing as F;
+    match f {
+        F::North => (0, -1),
+        F::South => (0, 1),
+        F::West => (-1, 0),
+        F::East => (1, 0),
+    }
+}
+
+/// A [`rewo_gpu::entities::BlockEntityDraw`] that owns its model name.
+///
+/// The half-models' names are built per frame (`…_left` / `…_right`), so they
+/// cannot borrow from the state table the way the single models did.
+pub(crate) struct OwnedBlockEntityDraw {
+    pub pos: [f32; 3],
+    pub model: String,
+    pub facing_y_rot: f32,
+    pub light: [f32; 3],
+    pub openness: f32,
+}
+
+impl OwnedBlockEntityDraw {
+    pub fn as_draw(&self) -> rewo_gpu::entities::BlockEntityDraw<'_> {
+        rewo_gpu::entities::BlockEntityDraw {
+            pos: self.pos,
+            model: &self.model,
+            facing_y_rot: self.facing_y_rot,
+            light: self.light,
+            openness: self.openness,
+            part_pivot: rewo_data::block_entity_models::CHEST_LID_PIVOT,
+        }
+    }
 }
 
 fn entity_light(
