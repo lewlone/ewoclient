@@ -71,8 +71,17 @@ from the blocks around it, and the shell is **42 positions, which is also the
 hunting threshold**, so its eye opens exactly when the frame is complete. **M31 then mounted the spawner's caged mob** — which
 belonged in the *entity* path all along, positioned by a mount affine rather
 than by the world. **M32 then wrote that shader** — it samples in
-**screen space**, which is why it needed a pipeline of its own. **Every
-block-entity item from M25's list is now closed.** See §15.
+**screen space**, which is why it needed a pipeline of its own. **M32b then
+graded its pixels**, closing the read-back gap M32 recorded: `rewo portalshot
+--check`, **12/12**, validation ON, 0 VUIDs. Uniform textures collapse the
+fifteen layer matrices so the frame becomes a number the CPU can compute
+outright; one layer then isolates a single sample and makes the column-major
+matrix directly observable — mutating the shipped shader to the transposed
+multiply drops that witness 21/21 → 9/21 while every other witness still
+passes. Its first `v7` asserted that moving the camera changes the pixels; it
+does not, and the corrected witness is that a screen-covering portal is
+**byte-identical** under camera and world motion. **Every block-entity item
+from M25's list is now closed.** See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -276,12 +285,24 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   `AllayModel`/`AllayWing` formula transcriptions (real `packets.json`/
   `registries.json`; nothing reads the production formulas as its expectation).
 - `rewo blockentityshot --check` — **the serverless block-entity gate** (M25,
-  extended through M26, fail-closed **88/88**): a synthesised level-chunk
+  extended through M32, fail-closed **172/172**): a synthesised level-chunk
   payload through `read_level_chunk`, a `block_entity_data` body through the
   real dispatch, and `block_event` bodies through `route_block_event` into the
-  chest and shulker clocks. It also re-derives the jar's model gap every run,
-  and grades the block-entity classification against what the model resolver
-  actually draws — in both directions, so neither half can drift.
+  chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
+  every run, and grades the block-entity classification against what the model
+  resolver actually draws — in both directions, so neither half can drift.
+- `rewo portalshot --check` — **the end-portal pixel gate** (M32b, fail-closed
+  **12/12**, validation required, 0 VUIDs): renders the production
+  end-portal/gateway pass offscreen and grades the read-back pixels. It never
+  reproduces a layer matrix to predict the sum — **uniform synthetic textures
+  collapse all fifteen**, so the frame is exactly
+  `sky*COLORS[0] + portal*sum(COLORS[0..layers])` from an independent
+  transcription of the constants. Then **one layer isolates one sample**, at
+  which point the sampled `u` is an affine function of the screen UV alone and
+  the column-major matrix is directly observable against its transpose. Also
+  pins the screen-welded sampling (a screen-covering portal is byte-identical
+  under camera and world motion) and the clock scroll. `--out-dir <dir>` dumps
+  the frames.
 - `rewo play --dimension-check` — **the live dimension gate** (M16): the paced
   Overworld→Nether→End→Overworld route, checking the level key, the respawn
   boundary, column discard/requeue, generation fencing and settled corrections.
@@ -346,6 +367,22 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    double-encodes every em-dash that was already correct, so the file has to be
    restored from HEAD. Pass `encoding='utf-8'` AND `newline=''` (see 9), or use
    the editor.
+11. **GLSL `mat4(...)` is COLUMN-major, and vanilla's shader source is GLSL.**
+   In `end_portal_layer` the translate's `17/layer` sits at `m[0][3]`, not
+   `m[3][0]`, and it reaches the coordinate because the sampling is
+   `texProj0 * matrix` — a **row-vector** multiply, `v * M == transpose(M) * v`.
+   Copy such literals verbatim; "tidying" them into the slots they look like
+   they belong in transposes every layer and still produces a plausible swirl.
+   M32 nearly shipped exactly that, and `portalshot`'s `v10` is what would
+   catch it (21/21 → 9/21 under the mutation).
+12. **A projective screen-space sampler does not move with its geometry.**
+   `texProj0 = projection_from_position(gl_Position)`, so the end portal's
+   sampled texel is a function of the pixel's screen position alone. A
+   screen-covering portal renders **byte-identically** whether you slide it
+   through the world or roll the camera — the starfield is welded to the
+   screen and swims against the world. The first `v7` asserted the opposite
+   and failed; the intuition to distrust is "moving something must change
+   what it looks like."
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
@@ -5752,15 +5789,71 @@ catch.
 `skyshot`, `tintshot`, `meshshot` and `dimensioncheck` green; canonical demo
 SHA-256 `2cc56b4a…` byte-identical to M15 onward; `git diff --check` clean.
 
-**Excluded, and the last one matters most.** Vanilla's fog term is omitted
-because Rewo applies fog in its own world pass and a second application would
-double it. Depth uses `GREATER` rather than vanilla's `LESS`, because Rewo's
-world pass is reversed-Z — the comparison matches its own depth buffer, not
-vanilla's. And **there is no read-back oracle for the rendered pixels**: the
-witnesses check the pass's *inputs* and geometry, not its output, so this is
-verified one level short of the Vulkan oracles that pin `skyshot` and
-`lightmapshot`. A `portalshot` that renders the pass and asserts pixel
-properties is the obvious next step if this area is revisited.
+**Excluded.** Vanilla's fog term is omitted because Rewo applies fog in its own
+world pass and a second application would double it. Depth uses `GREATER`
+rather than vanilla's `LESS`, because Rewo's world pass is reversed-Z — the
+comparison matches its own depth buffer, not vanilla's.
+
+The third exclusion — "there is no read-back oracle for the rendered pixels" —
+was closed the same day by **M32b**, below.
+
+### M32b — `portalshot`, the end-portal pixel oracle (2026-07-26)
+
+M32 shipped the pass and recorded an honest gap: its witnesses graded the
+pass's *inputs* and geometry, never its output, leaving it one level short of
+the Vulkan oracles that pin `skyshot` and `lightmapshot`.
+`rewo portalshot --check` closes it — serverless, validation-required,
+**12/12 witnesses**, two consecutive identical runs, 0 VUIDs.
+
+**What makes an exact prediction possible.** The shader is fifteen projective
+texture fetches summed in linear space; predicting that pixel-for-pixel would
+mean reproducing fifteen matrices, which would only prove the oracle agrees
+with itself. Two properties of the shader avoid it entirely:
+
+- **Uniform textures collapse the matrices.** If both samplers hold one
+  constant colour, every `textureProj` returns that constant *whatever the
+  matrices do*, and the frame is exactly
+  `sky*COLORS[0] + portal*sum(COLORS[0..layers])` — a number the CPU computes
+  from an independent transcription of the table, with no matrix anywhere. That
+  is `v1`–`v6`: the sixteen constants, the 15-vs-16 layer count, the double
+  application of `COLORS[0]` (base *and* `i = 0`), the additive accumulation,
+  and the opaque non-blended write. Both textures are synthetic — an oracle
+  whose expectation depends on an asset's contents is grading the asset.
+- **One layer isolates one sample, and only then is the matrix observable.**
+  `textureProj` divides by `p.w`, every layer matrix's column 3 is `(0,0,0,1)`
+  so that divide cancels, and the composed column 0 has a zero depth term. The
+  sampled `u` is therefore an *affine function of the screen UV alone*. `v9`/
+  `v10` render a left-red/right-blue texture through a single layer and grade a
+  7×7 grid of pixel centres against that prediction, skipping any pixel whose
+  predicted `u` lands within 0.12 of a seam where bilinear filtering makes
+  "which half" genuinely ambiguous.
+
+**`v7` was written backwards, and the failure is the finding.** The first
+version asserted that moving the camera must *change* the pixels. It does not:
+`texProj0` is `projection_from_position(gl_Position)`, so the sampled texel
+depends on the pixel's screen position and nothing else. For a portal covering
+the viewport, sliding the quad 1.5 blocks through the world or rolling the
+camera leaves the image **identical** — measured at 175 and 51 differing bytes
+of 65,536, every one of them a single quantisation step, against the 40-step
+deltas `v8` sees from a clock change. The starfield is welded to the screen and
+swims against the world. A model-space sampler — the mistake the mesh's unused
+UVs invited — would have dragged its pattern along with the geometry.
+
+**Sensitivity, measured not asserted.** Mutating the shipped shader's
+`texProj0 * matrix` into `matrix * texProj0` (the transposed reading M32 nearly
+shipped) drops `v10` from 21/21 to **9/21** and the gate to exit 1 — while
+`v1`–`v8` all still pass, because the uniform-texture witnesses are
+matrix-blind by construction. That is the point: `v10` is doing work no other
+witness in the file could do. `v9` guards it in turn by requiring the two
+readings to actually disagree somewhere (24 of 49 pixels), and `v11`/`v12`
+guard against grading a black clear or a multi-sample blur.
+
+Gates after M32b: **503 tests** (442 lib + 61 app), `portalshot` 12/12,
+`blockentityshot` 172/172, `itemshot` 28/28, `hurtshot` 38/38, `swingshot`
+97/97, `eventshot` 28/28, `danceshot` 24/24, `mobshot` 243/243;
+`lightmapshot`, `skyshot`, `tintshot`, `meshshot`, `dimensioncheck` green with
+validation ON and 0 VUIDs; canonical demo SHA-256 `2cc56b4a…` byte-identical to
+M15 onward; `git diff --check` clean.
 
 ### The block-entity arc, in one place
 

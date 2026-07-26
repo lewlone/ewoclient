@@ -2484,10 +2484,21 @@ validation Rewo has.
     the **five** times a witness corrected something already written as fact
     (see REWO_PLAN §15 "The block-entity arc, in one place"). **The claims that
     survive unchallenged are the ones nothing in the render moves against.**
-  - Not verified: there is no pixel read-back oracle for the portal pass — the
-    witnesses check its inputs and geometry, not its output. A `portalshot`
-    would close that.
-  - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
+  - **M32b closed the portal pass's read-back gap**: `rewo portalshot --check`,
+    serverless, validation-required, **12/12**, 0 VUIDs. Two properties make an
+    exact prediction possible without reproducing a single matrix — **uniform
+    textures collapse them** (the frame is then
+    `sky*COLORS[0] + portal*sum(COLORS[0..layers])`, computed on the CPU), and
+    **one layer isolates one sample**, at which point the sampled `u` is an
+    affine function of the screen UV alone and the column-major reading is
+    directly observable. Mutating the shipped shader to the transposed multiply
+    drops that witness 21/21 → 9/21 while every uniform-texture witness still
+    passes.
+  - **The portal's sample is welded to the SCREEN, not the model.** Sliding the
+    quad through the world or rolling the camera leaves a screen-covering
+    portal's pixels identical (measured: ≤175 of 65,536 bytes, all at delta 1).
+    The first version of that witness asserted the opposite and failed.
+  - 503 tests (442 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
