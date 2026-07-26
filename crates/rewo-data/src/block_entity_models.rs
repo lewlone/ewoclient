@@ -214,6 +214,31 @@ const SHULKER_BOX: &[Box] = &[
     plain((0.0, 28.0), [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0], [0.0, 24.0, 0.0], 0),
 ];
 
+/// `DyeColor.getTextureDiffuseColor()`, in the same order as [`DYE_COLORS`].
+///
+/// **Not** the `textColor` a sign uses. Both are fields on the same enum and
+/// several differ sharply — red is `0xB02E26` here against `0xFF0000` there —
+/// so a banner tinted from the sign table would be plausibly, visibly wrong.
+/// Machine-extracted from the decompiled enum for that reason.
+pub const DYE_DIFFUSE_COLORS: &[u32] = &[
+    0xF9FFFE, // white
+    0xF9801D, // orange
+    0xC74EBD, // magenta
+    0x3AB3DA, // light_blue
+    0xFED83D, // yellow
+    0x80C71F, // lime
+    0xF38BAA, // pink
+    0x474F52, // gray
+    0x9D9D97, // light_gray
+    0x169C9C, // cyan
+    0x8932B8, // purple
+    0x3C44AA, // blue
+    0x835432, // brown
+    0x5E7C16, // green
+    0xB02E26, // red
+    0x1D1D21, // black
+];
+
 /// `ColorCollection.NAMES`, the dye order shulker box textures are named in.
 pub const DYE_COLORS: &[&str] = &[
     "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
@@ -480,6 +505,201 @@ pub fn bake_skulls(
                 from_block: false,
             },
         ));
+    }
+    out
+}
+
+// ------------------------------------------------------------------ banner
+//
+// `BannerRenderer` (M28c). Thirty-two blocks — sixteen standing and sixteen
+// wall — and the first block entity whose texture does not carry its own
+// colour: a pattern sprite is a greyscale **mask**, dyed per layer.
+//
+// A banner is therefore base + flag + one draw per pattern layer, all on the
+// same flag geometry, differing only in texture and tint. Sixteen dyes times
+// forty-four patterns would be seven hundred baked variants; one tint is not.
+
+/// `BannerModel.createBodyLayer(standing)` — the pole and the crossbar.
+///
+/// The pole exists **only on a standing banner**; a wall banner hangs from its
+/// bar with nothing beneath. The bar's own position also differs, which is why
+/// the two are separate layers rather than one model with a hidden part.
+const BANNER_STANDING_BODY: &[Box] = &[
+    plain((44.0, 0.0), [-1.0, -42.0, -1.0], [2.0, 42.0, 2.0], [0.0; 3], 0),
+    plain((0.0, 42.0), [-10.0, -44.0, -1.0], [20.0, 2.0, 2.0], [0.0; 3], 0),
+];
+
+/// The wall variant: no pole, and the bar sits lower and further out.
+const BANNER_WALL_BODY: &[Box] =
+    &[plain((0.0, 42.0), [-10.0, -20.5, 9.5], [20.0, 2.0, 2.0], [0.0; 3], 0)];
+
+/// `BannerFlagModel.createFlagLayer(standing)` — the cloth.
+///
+/// One 20×40 slab, offset to hang from the bar. Its `xRot` sway is
+/// `(-0.0125 + 0.01 * cos(2π · phase)) · π`, where phase is seeded from the
+/// block position and the game time — an animation clock this client does not
+/// keep for block entities, so the flag hangs at its rest angle.
+const BANNER_STANDING_FLAG: &[Box] = &[plain(
+    (0.0, 0.0),
+    [-10.0, 0.0, -2.0],
+    [20.0, 40.0, 1.0],
+    [0.0, -44.0, 0.0],
+    0,
+)];
+
+const BANNER_WALL_FLAG: &[Box] = &[plain(
+    (0.0, 0.0),
+    [-10.0, 0.0, -2.0],
+    [20.0, 40.0, 1.0],
+    [0.0, -20.5, 10.5],
+    0,
+)];
+
+/// Model names for the four banner pieces.
+pub const BANNER_STANDING_BODY_MODEL: &str = "rewo:be/banner_body";
+pub const BANNER_WALL_BODY_MODEL: &str = "rewo:be/banner_wall_body";
+pub const BANNER_STANDING_FLAG_MODEL: &str = "rewo:be/banner_flag";
+pub const BANNER_WALL_FLAG_MODEL: &str = "rewo:be/banner_wall_flag";
+
+/// `Sheets.BANNER_BASE` — the woodwork texture the pole, bar and bare cloth
+/// share.
+///
+/// Inside the `banner/` folder, **not** beside it: the file is
+/// `entity/banner/banner_base.png`, which is easy to write as
+/// `entity/banner_base` from the sprite name alone. That mistake bakes no
+/// bodies at all while every pattern still loads, so the banner renders as a
+/// floating sheet of cloth with no pole — `k19` is what caught it.
+pub const BANNER_BASE_TEXTURE: &str = "entity/banner/banner_base";
+
+/// `Sheets.BANNER_PATTERN_BASE` — the mask for the banner's own base colour,
+/// which is drawn before any pattern layer.
+pub const BANNER_PATTERN_BASE: &str = "entity/banner/base";
+
+/// Every `minecraft:banner_pattern` asset, as the stem shared by the pattern
+/// id and its texture (`entity/banner/<stem>.png`).
+///
+/// Validated against the jar by the gate, the same way the pot's sherds are.
+pub const BANNER_PATTERNS: &[&str] = &[
+    "base",
+    "border",
+    "bricks",
+    "circle",
+    "creeper",
+    "cross",
+    "curly_border",
+    "diagonal_left",
+    "diagonal_right",
+    "diagonal_up_left",
+    "diagonal_up_right",
+    "flow",
+    "flower",
+    "globe",
+    "gradient",
+    "gradient_up",
+    "guster",
+    "half_horizontal",
+    "half_horizontal_bottom",
+    "half_vertical",
+    "half_vertical_right",
+    "mojang",
+    "piglin",
+    "rhombus",
+    "skull",
+    "small_stripes",
+    "square_bottom_left",
+    "square_bottom_right",
+    "square_top_left",
+    "square_top_right",
+    "straight_cross",
+    "stripe_bottom",
+    "stripe_center",
+    "stripe_downleft",
+    "stripe_downright",
+    "stripe_left",
+    "stripe_middle",
+    "stripe_right",
+    "stripe_top",
+    "triangle_bottom",
+    "triangle_top",
+    "triangles_bottom",
+    "triangles_top",
+];
+
+/// The `rewo:be/banner_pattern/…` model name for a pattern id.
+///
+/// The id arrives from NBT as `minecraft:<stem>`; an unknown one returns
+/// `None` and that layer is skipped rather than drawn as some other pattern.
+pub fn banner_pattern_model(id: &str) -> Option<String> {
+    let stem = id.trim_start_matches("minecraft:");
+    BANNER_PATTERNS
+        .contains(&stem)
+        .then(|| format!("rewo:be/banner_pattern/{stem}"))
+}
+
+/// Bake the banner bodies, flags and one flag-shaped model per pattern.
+///
+/// The pattern models share the standing flag's geometry: a wall banner's flag
+/// differs only by its pose offset, which the *body* transform already carries,
+/// so one set of pattern meshes serves both attachments.
+pub fn bake_banners(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    let mut one = |name: String, tex_name: &str, boxes: &'static [Box]| -> bool {
+        match pool.intern(tex_name, || load(tex_name)) {
+            Some(tex) => {
+                out.push((
+                    name,
+                    HeldItemModel {
+                        quads: model_quads(boxes, tex, TEX_64),
+                        right: DisplayTransform::default(),
+                        left: DisplayTransform::default(),
+                        ground: DisplayTransform::default(),
+                        from_block: false,
+                    },
+                ));
+                true
+            }
+            None => false,
+        }
+    };
+    one(
+        BANNER_STANDING_BODY_MODEL.to_string(),
+        BANNER_BASE_TEXTURE,
+        BANNER_STANDING_BODY,
+    );
+    one(
+        BANNER_WALL_BODY_MODEL.to_string(),
+        BANNER_BASE_TEXTURE,
+        BANNER_WALL_BODY,
+    );
+    one(
+        BANNER_STANDING_FLAG_MODEL.to_string(),
+        BANNER_BASE_TEXTURE,
+        BANNER_STANDING_FLAG,
+    );
+    one(
+        BANNER_WALL_FLAG_MODEL.to_string(),
+        BANNER_BASE_TEXTURE,
+        BANNER_WALL_FLAG,
+    );
+    for stem in BANNER_PATTERNS {
+        let tex = format!("entity/banner/{stem}");
+        let mut ok = true;
+        for (suffix, boxes) in [("", BANNER_STANDING_FLAG), ("_wall", BANNER_WALL_FLAG)] {
+            ok &= one(
+                format!("rewo:be/banner_pattern/{stem}{suffix}"),
+                &tex,
+                boxes,
+            );
+        }
+        if !ok {
+            log::error!(
+                "banner: no texture {tex:?} for pattern {stem:?} — the pattern \
+                 list drifted from the jar"
+            );
+        }
     }
     out
 }

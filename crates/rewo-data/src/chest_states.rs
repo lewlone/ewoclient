@@ -109,6 +109,10 @@ pub enum BlockEntityAnim {
     ChestLid(ChestState),
     /// A shulker box's lid — a self-contained clock with no pairing.
     ShulkerLid,
+    /// A banner: the flag plus one draw per pattern layer, each tinted by its
+    /// own dye (M28c). Carries the base colour from the block, and whether the
+    /// banner stands or hangs — the two use different flag geometry.
+    Banner { base_color: u8, standing: bool },
     /// A decorated pot: no animation, but **four extra draws**, one per side,
     /// whose textures come from the block entity's `sherds` list (M28b).
     ///
@@ -154,6 +158,10 @@ pub struct ChestStates {
     /// entities as they land. One map because they share the *shape* of the
     /// answer; the two above are separate precisely because they do not.
     statics: HashMap<u32, (String, crate::be_transform::Affine)>,
+    /// Banners: state id -> `(base colour index, standing, transform)`. Their
+    /// own map because a banner's answer carries a colour and an attachment
+    /// that nothing else here needs.
+    banners: HashMap<u32, (u8, bool, crate::be_transform::Affine)>,
 }
 
 /// The seven skull types, as `(block prefix, model name)`.
@@ -349,6 +357,50 @@ impl ChestStates {
             }
         }
 
+        // Banners — sixteen colours, each with a standing block (16-step
+        // `rotation`) and a wall block (horizontal `facing`). The wall variant
+        // uses the facing's OWN yaw, not its opposite, which is the reverse of
+        // a skull's and easy to carry across by mistake.
+        let mut banners = HashMap::new();
+        for (ci, colour) in crate::block_entity_models::DYE_COLORS.iter().enumerate() {
+            for standing in [true, false] {
+                let block = if standing {
+                    format!("minecraft:{colour}_banner")
+                } else {
+                    format!("minecraft:{colour}_wall_banner")
+                };
+                let Some(def) = obj.get(&block) else { continue };
+                let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
+                    continue;
+                };
+                for st in states {
+                    let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                        continue;
+                    };
+                    let props = st.get("properties").and_then(|p| p.as_object());
+                    let angle = if standing {
+                        let seg = props
+                            .and_then(|p| p.get("rotation"))
+                            .and_then(|r| r.as_str())
+                            .and_then(|r| r.parse::<i32>().ok())
+                            .ok_or_else(|| format!("blocks.json: {block} {id} has no rotation"))?;
+                        seg as f32 * 360.0 / 16.0
+                    } else {
+                        props
+                            .and_then(|p| p.get("facing"))
+                            .and_then(|f| f.as_str())
+                            .and_then(ChestFacing::from_name)
+                            .ok_or_else(|| format!("blocks.json: {block} {id} has no facing"))?
+                            .to_y_rot()
+                    };
+                    banners.insert(
+                        id as u32,
+                        (ci as u8, standing, crate::be_transform::banner(angle)),
+                    );
+                }
+            }
+        }
+
         // The decorated pot — a horizontal `facing`, like a chest.
         if let Some(def) = obj.get("minecraft:decorated_pot") {
             if let Some(states) = def.get("states").and_then(|s| s.as_array()) {
@@ -396,15 +448,17 @@ impl ChestStates {
         }
 
         log::info!(
-            "rewo-data: {} chest + {} shulker-box + {} static block state(s)",
+            "rewo-data: {} chest + {} shulker-box + {} static + {} banner block state(s)",
             by_state.len(),
             shulkers.len(),
-            statics.len()
+            statics.len(),
+            banners.len()
         );
         Ok(Self {
             by_state,
             shulkers,
             statics,
+            banners,
         })
     }
 
@@ -423,6 +477,20 @@ impl ChestStates {
                 model: model.clone(),
                 transform: crate::be_transform::shulker_box(*facing),
                 anim: BlockEntityAnim::ShulkerLid,
+            });
+        }
+        if let Some((base_color, standing, xf)) = self.banners.get(&state_id) {
+            return Some(BlockEntityState {
+                model: if *standing {
+                    crate::block_entity_models::BANNER_STANDING_BODY_MODEL.to_string()
+                } else {
+                    crate::block_entity_models::BANNER_WALL_BODY_MODEL.to_string()
+                },
+                transform: *xf,
+                anim: BlockEntityAnim::Banner {
+                    base_color: *base_color,
+                    standing: *standing,
+                },
             });
         }
         let (model, transform) = self.statics.get(&state_id)?;
@@ -463,6 +531,7 @@ impl ChestStates {
             .keys()
             .chain(self.shulkers.keys())
             .chain(self.statics.keys())
+            .chain(self.banners.keys())
             .copied()
     }
 

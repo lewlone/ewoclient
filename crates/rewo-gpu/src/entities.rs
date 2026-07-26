@@ -2323,6 +2323,15 @@ pub struct BlockEntityDraw<'a> {
     pub part_transform: [[f32; 4]; 3],
     /// The pivot the animated group is expressed relative to, in model px.
     pub part_pivot: [f32; 3],
+    /// A linear-space colour multiplied into the vertex colour (M28c).
+    ///
+    /// `[1, 1, 1]` for every block entity whose texture already carries its
+    /// colour, which is all of them bar the banner: a banner pattern sprite is
+    /// a greyscale **mask**, and the dye that colours it is a per-layer
+    /// argument to `submitPatternLayer` rather than anything in the texture.
+    /// Sixteen dyes times forty-four patterns is why it is a tint and not
+    /// seven hundred baked variants.
+    pub tint: [f32; 3],
 }
 
 impl EntityPass {
@@ -2483,7 +2492,12 @@ impl EntityPass {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [shade, shade, shade, 1.0],
+                        color: [
+                            shade * d.tint[0],
+                            shade * d.tint[1],
+                            shade * d.tint[2],
+                            1.0,
+                        ],
                         // A block entity is never hurt — the overlay flag is
                         // a `LivingEntity` property.
                         light_hurt: [light_r, light_g, light_b, 0.0],

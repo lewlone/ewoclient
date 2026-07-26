@@ -208,6 +208,32 @@ pub fn shulker_box(facing: Facing6) -> Affine {
     mul(&m, &translation(0.0, -1.0, 0.0))
 }
 
+/// `BannerRenderer.modelTransformation(angle)`:
+///
+/// ```text
+/// MODEL_SCALE       = (0.6666667, -0.6666667, -0.6666667)
+/// MODEL_TRANSLATION = (0.5, 0.0, 0.5)
+/// new Transformation(MODEL_TRANSLATION, YP.rotationDegrees(-angle), MODEL_SCALE, null)
+/// ```
+///
+/// A `Transformation(t, left, s, right)` is `T · Rleft · S · Rright`, so the
+/// scale runs **inside** the rotation.
+///
+/// Two thirds, not one: a banner's model is 2/3 scale, which is why its 44-px
+/// pole fits a two-block-tall banner rather than overshooting it. And the y
+/// and z scales are negative — a banner is another entity-authored model, like
+/// a skull and unlike a chest.
+///
+/// A standing banner passes `RotationSegment.convertToDegrees(rotation)` (16
+/// steps) and a wall banner passes `direction.toYRot()` — note the wall case
+/// is the facing's OWN yaw, not its opposite, which is the reverse of a
+/// skull's.
+pub fn banner(angle_deg: f32) -> Affine {
+    let m = translation(0.5, 0.0, 0.5);
+    let m = mul(&m, &rot_y(-angle_deg));
+    mul(&m, &scale(0.666_666_7, -0.666_666_7, -0.666_666_7))
+}
+
 /// `DecoratedPotRenderer.createModelTransformation`:
 ///
 /// ```text

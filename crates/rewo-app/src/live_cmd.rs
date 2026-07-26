@@ -2564,6 +2564,56 @@ fn collect_block_entities(
         // per face with its own sherd texture. They share the pot's own
         // transform and differ by the side pose, so each rides the emitter's
         // animated-group slot rather than needing a new draw path.
+        // A banner is the woodwork, then the bare cloth, then the base colour
+        // as a mask, then one draw per pattern layer — each the SAME flag
+        // geometry with a different greyscale sprite and a different dye.
+        if let BlockEntityAnim::Banner {
+            base_color,
+            standing,
+        } = draw.anim
+        {
+            use rewo_data::block_entity_models as bem;
+            let light = entity_light(
+                world,
+                pos.x as f64 + 0.5,
+                pos.y as f64 + 0.5,
+                pos.z as f64 + 0.5,
+                lightmap,
+            );
+            let flag = if standing {
+                bem::BANNER_STANDING_FLAG_MODEL
+            } else {
+                bem::BANNER_WALL_FLAG_MODEL
+            };
+            let suffix = if standing { "" } else { "_wall" };
+            let mut layer = |model: String, tint: [f32; 3]| OwnedBlockEntityDraw {
+                pos: [pos.x as f32, pos.y as f32, pos.z as f32],
+                model,
+                transform: draw.transform,
+                light,
+                part_transform: rewo_data::be_transform::IDENTITY,
+                part_pivot: [0.0; 3],
+                tint,
+            };
+            // The bare cloth, untinted — its own texture carries its colour.
+            out.push(layer(flag.to_string(), [1.0; 3]));
+            // `Sheets.BANNER_PATTERN_BASE` masked with the banner's own dye,
+            // drawn before any pattern.
+            out.push(layer(
+                format!("rewo:be/banner_pattern/base{suffix}"),
+                dye_linear(base_color as usize),
+            ));
+            // Up to sixteen — `submitPatterns` stops there regardless of how
+            // many the tag carries.
+            for (pattern, colour) in banner_layers(be).into_iter().take(16) {
+                let Some(name) = bem::banner_pattern_model(&pattern) else {
+                    // An unknown pattern is skipped rather than drawn as some
+                    // other one; a wrong banner is worse than a plain one.
+                    continue;
+                };
+                out.push(layer(format!("{name}{suffix}"), dye_linear(colour)));
+            }
+        }
         if draw.anim == BlockEntityAnim::DecoratedPot {
             let sherds = pot_sherds(be);
             for (i, item) in sherds.iter().enumerate() {
@@ -2580,6 +2630,7 @@ fn collect_block_entities(
                     ),
                     part_transform: rewo_data::be_transform::pot_side(i),
                     part_pivot: [0.0; 3],
+                    tint: [1.0; 3],
                 });
             }
         }
@@ -2603,9 +2654,9 @@ fn collect_block_entities(
             part_transform: match draw.anim {
                 // The pot's BASE has no animated group; its four sides are the
                 // separate draws pushed above, each with its own side pose.
-                BlockEntityAnim::None | BlockEntityAnim::DecoratedPot => {
-                    rewo_data::be_transform::IDENTITY
-                }
+                BlockEntityAnim::None
+                | BlockEntityAnim::DecoratedPot
+                | BlockEntityAnim::Banner { .. } => rewo_data::be_transform::IDENTITY,
                 BlockEntityAnim::ChestLid(c) => rewo_data::be_transform::chest_lid_part(
                     chest_openness(world, chests, *pos, c, alpha),
                     rewo_data::block_entity_models::CHEST_LID_PIVOT,
@@ -2620,6 +2671,9 @@ fn collect_block_entities(
                 }
                 _ => rewo_data::block_entity_models::CHEST_LID_PIVOT,
             },
+            // Only a banner's pattern layers are tinted; every other model's
+            // texture already carries its colour.
+            tint: [1.0; 3],
         });
     }
     out
@@ -2721,6 +2775,49 @@ pub(crate) struct OwnedSignLine {
     pub z: f32,
     pub color: [f32; 3],
     pub light: [f32; 3],
+}
+
+/// A dye index as a linear-space tint.
+///
+/// `DyeColor.getTextureDiffuseColor()` is what dyes a banner layer — **not**
+/// the `textColor` a sign uses. Two of the sixteen differ enough to be obvious
+/// (red is 0xB02E26 here against 0xFF0000 there), so the two tables are kept
+/// apart rather than shared.
+pub(crate) fn dye_linear(i: usize) -> [f32; 3] {
+    let c = rewo_data::block_entity_models::DYE_DIFFUSE_COLORS
+        .get(i)
+        .copied()
+        .unwrap_or(0xFFFFFF);
+    linear_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+/// A banner's pattern layers, as `(pattern id, dye index)`.
+///
+/// The tag is `patterns`, a list of `{pattern, color}` compounds written by
+/// `BannerPatternLayers.CODEC`. `color` is a dye **name**, so it is resolved
+/// through the same 16-entry order the block colours use.
+pub(crate) fn banner_layers(
+    be: &rewo_world::block_entities::BlockEntity,
+) -> Vec<(String, usize)> {
+    let Some(rewo_proto::nbt::Nbt::List(items)) = be.data.get("patterns") else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|it| {
+            let pattern = it.get("pattern").and_then(rewo_proto::nbt::Nbt::as_str)?;
+            let colour = it
+                .get("color")
+                .and_then(rewo_proto::nbt::Nbt::as_str)
+                .and_then(|n| {
+                    rewo_data::block_entity_models::DYE_COLORS
+                        .iter()
+                        .position(|d| *d == n)
+                })
+                .unwrap_or(0);
+            Some((pattern.to_string(), colour))
+        })
+        .collect()
 }
 
 /// A decorated pot's four sherds, in `PotDecorations`' stored order —
@@ -2901,6 +2998,9 @@ pub(crate) struct OwnedBlockEntityDraw {
     pub light: [f32; 3],
     pub part_transform: rewo_data::be_transform::Affine,
     pub part_pivot: [f32; 3],
+    /// A linear tint multiplied into the vertex colour — `[1, 1, 1]` for
+    /// everything but a banner's dyed pattern layers (M28c).
+    pub tint: [f32; 3],
 }
 
 impl OwnedBlockEntityDraw {
@@ -2912,6 +3012,7 @@ impl OwnedBlockEntityDraw {
             light: self.light,
             part_transform: self.part_transform,
             part_pivot: self.part_pivot,
+            tint: self.tint,
         }
     }
 }

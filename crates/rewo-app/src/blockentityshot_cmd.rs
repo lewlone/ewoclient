@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 117;
+const EXPECTED_WITNESSES: usize = 122;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -1514,6 +1514,107 @@ fn check_skulls(
         ),
     );
 
+    // --- banners ----------------------------------------------------------
+    let missing_pat: Vec<&&str> = bem::BANNER_PATTERNS
+        .iter()
+        .filter(|s| {
+            !items
+                .block_entities
+                .contains_key(&format!("rewo:be/banner_pattern/{s}"))
+        })
+        .collect();
+    c.record(
+        "k18.every_banner_pattern_bakes",
+        missing_pat.is_empty() && bem::BANNER_PATTERNS.len() == 43,
+        format!(
+            "{} banner patterns baked, missing {missing_pat:?} — one flag-shaped \
+             model per pattern, each a greyscale mask",
+            bem::BANNER_PATTERNS.len()
+        ),
+    );
+
+    c.record(
+        "k19.a_standing_banner_has_a_pole_and_a_wall_one_does_not",
+        items
+            .block_entities
+            .get(bem::BANNER_STANDING_BODY_MODEL)
+            .map(|m| m.quads.len())
+            == Some(12)
+            && items
+                .block_entities
+                .get(bem::BANNER_WALL_BODY_MODEL)
+                .map(|m| m.quads.len())
+                == Some(6),
+        format!(
+            "standing body {:?} quads (pole + bar = 2 boxes), wall body {:?} \
+             (bar only) — a wall banner hangs from its bar with nothing \
+             beneath, which is why they are separate layers rather than one \
+             model with a hidden part",
+            items
+                .block_entities
+                .get(bem::BANNER_STANDING_BODY_MODEL)
+                .map(|m| m.quads.len()),
+            items
+                .block_entities
+                .get(bem::BANNER_WALL_BODY_MODEL)
+                .map(|m| m.quads.len())
+        ),
+    );
+
+    c.record(
+        "k20.the_dye_tint_is_the_diffuse_colour_not_the_text_one",
+        bem::DYE_DIFFUSE_COLORS.len() == 16
+            && bem::DYE_DIFFUSE_COLORS[14] == 0xB02E26
+            && rewo_data::sign_text::dye_text_color(Some("red")) == 0xFF0000,
+        format!(
+            "red dyes a banner {:#08x} and writes on a sign {:#08x} — both are \
+             fields on the same enum, and tinting a banner from the sign table \
+             would be plausibly and visibly wrong",
+            bem::DYE_DIFFUSE_COLORS[14],
+            rewo_data::sign_text::dye_text_color(Some("red"))
+        ),
+    );
+
+    // A banner's model is 2/3 scale with a negative y and z — another
+    // entity-authored model, like a skull and unlike a chest.
+    let bm = bt::banner(0.0);
+    c.record(
+        "k21.a_banner_is_two_thirds_scale_and_entity_flipped",
+        (bm[0][0] - 0.666_666_7).abs() < 1e-5 && bm[1][1] < 0.0 && bm[2][2] < 0.0,
+        format!(
+            "scale ({:.4}, {:.4}, {:.4}) — 2/3, which is what fits a 44 px pole \
+             into a two-block banner, with y and z negated the way every \
+             entity-authored model here is",
+            bm[0][0], bm[1][1], bm[2][2]
+        ),
+    );
+
+    // Every banner state resolves, across all 32 blocks.
+    let mut banner_blocks: HashSet<String> = HashSet::new();
+    let mut banner_states = 0;
+    for id in 0..40000u32 {
+        let Some(d) = states.draw_for(id) else { continue };
+        if !matches!(
+            d.anim,
+            rewo_data::chest_states::BlockEntityAnim::Banner { .. }
+        ) {
+            continue;
+        }
+        banner_states += 1;
+        if let Some(b) = blocks.block_name(id) {
+            banner_blocks.insert(b.to_string());
+        }
+    }
+    c.record(
+        "k22.all_thirty_two_banner_blocks_resolve",
+        banner_blocks.len() == 32 && banner_states > 0,
+        format!(
+            "{banner_states} banner states across {} blocks — sixteen colours \
+             standing (16 rotations each) and sixteen on walls (4 facings)",
+            banner_blocks.len()
+        ),
+    );
+
     // The wall-name derivation is not a second hard-coded list.
     c.record(
         "k10.the_wall_block_name_is_derived_not_listed",
@@ -2250,8 +2351,8 @@ fn check_registry(
     let invisible = kinds(BlockEntityKind::Invisible);
     c.record(
         "a3.the_still_invisible_set_is_the_measured_one",
-        invisible.len() == 4
-            && invisible.contains(&"minecraft:banner")
+        invisible.len() == 3
+            && invisible.contains(&"minecraft:end_gateway")
             && invisible.contains(&"minecraft:end_portal")
             && !invisible.contains(&"minecraft:chest")
             && !invisible.contains(&"minecraft:skull")
@@ -2288,6 +2389,8 @@ fn check_registry(
             drawn_types.insert("minecraft:trapped_chest");
         } else if name.ends_with("chest") {
             drawn_types.insert("minecraft:chest");
+        } else if name.ends_with("banner") {
+            drawn_types.insert("minecraft:banner");
         } else if name == "decorated_pot" {
             drawn_types.insert("minecraft:decorated_pot");
         } else if name == "conduit" {
@@ -2306,7 +2409,7 @@ fn check_registry(
     only_drawn.sort_unstable();
     c.record(
         "a4.the_rendered_set_is_exactly_what_resolves_a_model",
-        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 7,
+        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 8,
         format!(
             "{} types declared Rendered and the same {} resolve a model through \
              `ChestStates::draw_for`; declared-but-undrawn {only_declared:?}, \
@@ -2375,7 +2478,7 @@ fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> 
     );
     c.record(
         "e4.the_classification_accounts_for_the_measured_shortfall",
-        registry.invisible_count() == 4 && registry.rendered_count() == 7,
+        registry.invisible_count() == 3 && registry.rendered_count() == 8,
         format!(
             "{} block-entity TYPES still Invisible and {} now Rendered, together \
              covering those blocks (one type spans all 16 banner colours, all 17 \
