@@ -1159,13 +1159,34 @@ in §15 and the entry here becomes history.)*
 >   ten Invisible types remain, each named in the registry rather than silently
 >   absent.
 >
-> Still open across the whole arc, in rough order of leverage:
-> **`block_event` decoding** (one packet; unblocks chest lids, bells and
-> spawner spin at once), **the remaining ten Invisible block-entity types**
-> (shulker boxes, banners, heads, decorated pots — each already named by the
-> registry), **double-chest pairing** (`DoubleBlockCombiner`), and
-> **world-space text**, which is the single thing standing between the client
-> and legible signs.
+> **All four of those then shipped too** — `a13d181` (chest lids +
+> double chests), `c7215e0` (shulker boxes), `0a87a4a` (world-space text /
+> signs). `blockentityshot` grew 21 → **70** witnesses across them.
+>
+> - *`block_event`* was falling off the dispatch chain entirely. `b1` is the
+>   **viewer count**, not a boolean, and `ChestLidController` is another clock
+>   the server never sends — one event, ten ticks animated locally, with a
+>   cubic ease that puts the lid 87.5% open half way through.
+> - *Double chests* — **M25 recorded the wrong blocker.** `ChestRenderer` picks
+>   the half-model from the block's own `type`; `DoubleBlockCombiner` is only
+>   for the shared openness (the **max** over the pair, so both halves open when
+>   one gets the event) and the shared light. Each half draws itself.
+> - *Shulker boxes* (17) forced the block-entity transform to become a general
+>   affine — a chest rotates about the block centre, a shulker box runs a
+>   translate-scale-rotate-flip chain that ends up y-down. Its model is authored
+>   upside down *because* of that trailing `scale(1, -1, -1)`.
+> - *World-space text* turned out to be a small addition, not a new pass: a
+>   nametag is already world-space glyph quads, and sign text is the same thing
+>   with the basis taken from the surface instead of the camera. The board was
+>   never missing — only the text.
+>
+> **Still open**, and each named rather than implied: eight Invisible
+> block-entity types (banners need pattern NBT + an atlas, heads need a profile
+> fetch, decorated pots need per-side sherd sprites, conduits and copper golem
+> statues need their models, and the two end portals are a bespoke shader
+> rather than a model at all); `block_event` for bells and spawners; a shulker
+> box's own opening (a different mechanism from the chest lid); dyed and
+> glowing sign text; and sign line wrapping.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
