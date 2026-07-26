@@ -64,7 +64,10 @@ struct Box {
     /// hide-list would need five entries, and expressing it as a *single* hide
     /// silently builds the other five — which is what the pot's side did until
     /// `k14` caught it drawing six quads instead of one.
-    only: Option<Facing>,
+    ///
+    /// A slice rather than one face because `EnumSet` is what vanilla passes,
+    /// and the end portal wants exactly two (`getAxis() == Y`).
+    only: &'static [Facing],
 }
 
 /// A `Box` with every optional field at its vanilla default, so a model that
@@ -86,7 +89,7 @@ const fn plain(
         mirror: false,
         part,
         hide: None,
-        only: None,
+        only: &[],
     }
 }
 
@@ -509,6 +512,210 @@ pub fn bake_skulls(
     out
 }
 
+// ------------------------------------------------- end portal and gateway
+//
+// `AbstractEndPortalRenderer` (M28f). The last two of M25's Invisible types,
+// and the ones the earlier records called "a bespoke shader rather than a
+// model at all". Half of that is right: the **geometry** is an ordinary cube
+// of unit faces, and it is only the render *type* that is a shader —
+// `rendertype_end_portal.fsh` samples `end_sky.png` fifteen times through
+// scrolling matrices to fake depth.
+//
+// So the geometry ships exactly, and the shader is approximated by drawing
+// `end_portal.png` as one static layer. That is a stated approximation, and it
+// is emphatically better than the alternative: an end portal that renders
+// nothing is an invisible hole you fall through.
+
+/// `TheEndPortalBlockEntity.shouldRenderFace` — `getAxis() == Y`.
+///
+/// Only the top and bottom. A portal is a flat pool seen from above or below;
+/// its sides are never drawn, which is why looking at one edge-on in vanilla
+/// shows nothing.
+const END_PORTAL_FACES: &[Facing] = &[Facing::Up, Facing::Down];
+
+/// The unit cube both portals are built from, in model px.
+///
+/// `FROM = (0,0,0)`, `TO = (1,1,1)` — a whole block, which is 16 px here. The
+/// portal's slab shape comes from its renderer transform, not from the mesh.
+const END_PORTAL_CUBE: &[Box] = &[Box {
+    only: END_PORTAL_FACES,
+    ..plain((0.0, 0.0), [0.0, 0.0, 0.0], [16.0, 16.0, 16.0], [0.0; 3], 0)
+}];
+
+/// The gateway draws every face its neighbour does not occlude. Rewo has no
+/// neighbour context at bake time, so all six are built — an over-draw that is
+/// invisible for a free-standing gateway, which is how they are always found.
+const END_GATEWAY_CUBE: &[Box] =
+    &[plain((0.0, 0.0), [0.0, 0.0, 0.0], [16.0, 16.0, 16.0], [0.0; 3], 0)];
+
+pub const END_PORTAL_MODEL: (&str, &str) =
+    ("rewo:be/end_portal", "entity/end_portal/end_portal");
+pub const END_GATEWAY_MODEL: &str = "rewo:be/end_gateway";
+
+/// Bake the two portal cubes.
+pub fn bake_end_portals(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let Some(tex) = pool.intern(END_PORTAL_MODEL.1, || load(END_PORTAL_MODEL.1)) else {
+        log::error!("end portal: no texture {:?}", END_PORTAL_MODEL.1);
+        return Vec::new();
+    };
+    let one = |name: &str, boxes: &[Box]| {
+        (
+            name.to_string(),
+            HeldItemModel {
+                // `end_portal.png` is 256x256; the box UV unwrap is Rewo's,
+                // not vanilla's, because the real render type computes its
+                // coordinates in the shader and uses none from the mesh.
+                quads: model_quads(boxes, tex, (256.0, 256.0)),
+                right: DisplayTransform::default(),
+                left: DisplayTransform::default(),
+                ground: DisplayTransform::default(),
+                from_block: false,
+            },
+        )
+    };
+    vec![
+        one(END_PORTAL_MODEL.0, END_PORTAL_CUBE),
+        one(END_GATEWAY_MODEL, END_GATEWAY_CUBE),
+    ]
+}
+
+// ----------------------------------------------------- copper golem statue
+//
+// `CopperGolemStatueBlockRenderer` (M28e). Nine blocks — five weathering
+// states times waxed and unwaxed, minus the overlaps — across FOUR poses.
+//
+// The four poses are separate `LayerDefinition`s, not one model posed, and
+// each is a **nested** tree: a child's offset rides through its parent's
+// rotation, so the flat `Box` above cannot express them. `StatueBox` carries
+// the ancestor chain instead, and the whole table is machine-extracted by
+// `tools/gen_copper_golem_poses.py` — thirty-eight boxes, most with rotations
+// to four decimal places, is transcription whose errors would be silent.
+
+/// One cuboid of a statue pose, with the ancestor poses it hangs from.
+pub struct StatueBox {
+    pub tex: (f32, f32),
+    pub min: [f32; 3],
+    pub dims: [f32; 3],
+    pub grow: f32,
+    /// This part's own `PartPose`.
+    pub own: crate::copper_golem_poses::Pose,
+    /// Its ancestors, **outermost first**. Applied after `own`, innermost
+    /// ancestor first, which is what makes a rotated parent carry its
+    /// children round with it rather than merely shifting them.
+    pub chain: &'static [crate::copper_golem_poses::Pose],
+}
+
+/// `CopperGolemOxidationLevels` — the four weathering textures.
+///
+/// Waxing changes only whether the block oxidises further, so a waxed statue
+/// shares its unwaxed level's texture, exactly as a waxed copper chest does.
+/// The weathering suffix follows the stem — `copper_golem_exposed.png`, **not**
+/// `exposed_copper_golem.png`. The *block* names run the other way round
+/// (`exposed_copper_golem_statue`), which is exactly the trap M10's block-light
+/// generator recorded for copper: the naming is irregular and prefixing by
+/// analogy with the block silently loads nothing.
+pub const STATUE_TEXTURES: &[(&str, &str)] = &[
+    ("unaffected", "entity/copper_golem/copper_golem"),
+    ("exposed", "entity/copper_golem/copper_golem_exposed"),
+    ("weathered", "entity/copper_golem/copper_golem_weathered"),
+    ("oxidized", "entity/copper_golem/copper_golem_oxidized"),
+];
+
+/// The `rewo:be/statue/<weather>/<pose>` model name.
+pub fn statue_model(weather: &str, pose: &str) -> String {
+    format!("rewo:be/statue/{weather}/{pose}")
+}
+
+/// Bake every (weathering state × pose) statue model.
+pub fn bake_copper_golem_statues(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    for (weather, tex_name) in STATUE_TEXTURES {
+        let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+            log::error!("copper golem statue: no texture {tex_name:?}");
+            continue;
+        };
+        for (pose, boxes) in crate::copper_golem_poses::POSES {
+            out.push((
+                statue_model(weather, pose),
+                HeldItemModel {
+                    quads: statue_quads(boxes, tex),
+                    right: DisplayTransform::default(),
+                    left: DisplayTransform::default(),
+                    ground: DisplayTransform::default(),
+                    from_block: false,
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// Unwrap a statue pose, walking each box's ancestor chain.
+fn statue_quads(boxes: &[StatueBox], tex: u16) -> Vec<HeldQuad> {
+    let (atlas_w, atlas_h) = TEX_64;
+    let mut quads = Vec::with_capacity(boxes.len() * 6);
+    for b in boxes {
+        for (i, (verts, uv)) in cube_faces(b.tex, b.min, b.dims, b.grow, false)
+            .into_iter()
+            .enumerate()
+        {
+            let mut v = [[0f32; 3]; 4];
+            for (k, c) in verts.iter().enumerate() {
+                // Own pose first, then each ancestor from the innermost out.
+                let mut p = apply_pose(&b.own, *c);
+                for anc in b.chain.iter().rev() {
+                    p = apply_pose(anc, p);
+                }
+                v[k] = p;
+            }
+            let mut t = [[0f32; 2]; 4];
+            for (k, c) in uv.iter().enumerate() {
+                t[k] = [c[0] / atlas_w, c[1] / atlas_h];
+            }
+            quads.push(HeldQuad {
+                verts: v,
+                uv: t,
+                tex,
+                part: 0,
+                dir: FACE_DIRS[i],
+            });
+        }
+    }
+    quads
+}
+
+/// Where a statue box's min corner ends up once its whole chain is applied.
+///
+/// Exposed for the gate, which compares it against a naive offset-sum to prove
+/// the ancestor **rotations** are doing something — the one property a flat
+/// box list could not express.
+pub fn statue_corner(b: &StatueBox) -> [f32; 3] {
+    let mut p = apply_pose(&b.own, b.min);
+    for anc in b.chain.iter().rev() {
+        p = apply_pose(anc, p);
+    }
+    p
+}
+
+/// `ModelPart.translateAndRotate` — rotate about the pose origin, then
+/// translate by it.
+fn apply_pose(pose: &crate::copper_golem_poses::Pose, p: [f32; 3]) -> [f32; 3] {
+    let ([ox, oy, oz], [rx, ry, rz]) = *pose;
+    let (sx, cx) = rx.sin_cos();
+    let (sy, cy) = ry.sin_cos();
+    let (sz, cz) = rz.sin_cos();
+    let p = [p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx];
+    let p = [p[0] * cy + p[2] * sy, p[1], -p[0] * sy + p[2] * cy];
+    let p = [p[0] * cz - p[1] * sz, p[0] * sz + p[1] * cz, p[2]];
+    [p[0] + ox, p[1] + oy, p[2] + oz]
+}
+
 // ------------------------------------------------------------------ banner
 //
 // `BannerRenderer` (M28c). Thirty-two blocks — sixteen standing and sixteen
@@ -748,7 +955,7 @@ const POT_BASE: &[Box] = &[
 /// arrives. Group 0 would be drawn where it was baked, i.e. all four sides
 /// stacked in the same place.
 const POT_SIDE: &[Box] = &[Box {
-    only: Some(Facing::North),
+    only: &[Facing::North],
     ..plain(
         (1.0, 0.0),
         [0.0, 0.0, 0.0],
@@ -952,7 +1159,7 @@ fn model_quads(boxes: &[Box], tex: u16, tex_size: (f32, f32)) -> Vec<HeldQuad> {
             if b.hide == Some(FACE_ORDER[i]) {
                 continue;
             }
-            if b.only.is_some() && b.only != Some(FACE_ORDER[i]) {
+            if !b.only.is_empty() && !b.only.contains(&FACE_ORDER[i]) {
                 continue;
             }
             let mut v = [[0f32; 3]; 4];

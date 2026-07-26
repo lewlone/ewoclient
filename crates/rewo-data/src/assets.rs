@@ -1463,6 +1463,10 @@ impl<'a> Baker<'a> {
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_skulls));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_conduit));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));
+        be_models.append(&mut bake_be!(
+            crate::block_entity_models::bake_copper_golem_statues
+        ));
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_end_portals));
         {
             // The pot bake validates every derived sherd texture against the
             // jar, so it returns a Result the others do not.

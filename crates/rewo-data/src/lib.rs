@@ -16,6 +16,7 @@ pub mod block_light;
 pub mod blocks;
 pub mod cem;
 pub mod chest_states;
+pub mod copper_golem_poses;
 pub mod components;
 pub mod entity_classes;
 pub mod entity_types;

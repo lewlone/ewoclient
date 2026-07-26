@@ -208,6 +208,46 @@ pub fn shulker_box(facing: Facing6) -> Affine {
     mul(&m, &translation(0.0, -1.0, 0.0))
 }
 
+/// `TheEndPortalRenderer.TRANSFORMATION`:
+///
+/// ```text
+/// new Transformation(new Vector3f(0, 0.375F, 0), null, new Vector3f(1, 0.375F, 1), null)
+/// ```
+///
+/// `T · S`, so the unit cube's y is squashed to 0..0.375 and then lifted, and
+/// the portal ends up a **slab from y 0.375 to 0.75** — not a full block, and
+/// not flush with the floor. Standing on an end portal frame you look down at
+/// a pool set into the middle of the block.
+pub fn end_portal() -> Affine {
+    mul(&translation(0.0, 0.375, 0.0), &scale(1.0, 0.375, 1.0))
+}
+
+/// The gateway pushes no transform at all — its cube fills the block.
+pub fn end_gateway() -> Affine {
+    IDENTITY
+}
+
+/// `CopperGolemStatueBlockRenderer.createModelTransformation`:
+///
+/// ```text
+/// new Matrix4f().translation(0.5F, 0.0F, 0.5F)
+///               .rotate(YP.rotationDegrees(-dir.getOpposite().toYRot()))
+/// ```
+///
+/// The **opposite** facing's yaw, like a wall skull and unlike a wall banner.
+///
+/// There is no scale here, and no flip in the matrix — the flip lives in
+/// `CopperGolemStatueModel.setupAnim`, which sets `root.zRot = PI`. A half
+/// turn about Z negates x and y, which is the same righting a
+/// `scale(-1, -1, 1)` does, so it is folded in here rather than left to an
+/// animation step this client does not run.
+pub fn copper_golem_statue(facing: Facing6) -> Affine {
+    let m = translation(0.5, 0.0, 0.5);
+    let m = mul(&m, &rot_y(-facing.opposite().to_y_rot()));
+    // `setupAnim`: root.y = 0, root.zRot = PI.
+    mul(&m, &rot_xyz(0.0, 0.0, std::f32::consts::PI))
+}
+
 /// `BannerRenderer.modelTransformation(angle)`:
 ///
 /// ```text

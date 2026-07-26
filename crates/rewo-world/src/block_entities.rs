@@ -142,9 +142,12 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:decorated_pot", BlockEntityKind::Rendered),
     // The dormant shell (M28); the active cage/wind/eye need a clock.
     ("minecraft:conduit", BlockEntityKind::Rendered),
-    ("minecraft:end_portal", BlockEntityKind::Invisible),
-    ("minecraft:end_gateway", BlockEntityKind::Invisible),
-    ("minecraft:copper_golem_statue", BlockEntityKind::Invisible),
+    // Exact geometry; the scrolling starfield shader is approximated by
+    // one static layer of `end_portal.png` (M28f).
+    ("minecraft:end_portal", BlockEntityKind::Rendered),
+    ("minecraft:end_gateway", BlockEntityKind::Rendered),
+    // Four machine-extracted pose layers x four weathering states (M28e).
+    ("minecraft:copper_golem_statue", BlockEntityKind::Rendered),
     // -- the block model already draws these; only extra detail is missing --
     ("minecraft:sign", BlockEntityKind::ModelIsEnough),
     ("minecraft:hanging_sign", BlockEntityKind::ModelIsEnough),

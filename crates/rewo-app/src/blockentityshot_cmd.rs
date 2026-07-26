@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 125;
+const EXPECTED_WITNESSES: usize = 133;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -1694,6 +1694,161 @@ fn check_skulls(
         ),
     );
 
+    // --- the copper golem statue ------------------------------------------
+    let poses = rewo_data::copper_golem_poses::POSES;
+    let mut statue_missing = Vec::new();
+    for (weather, _) in bem::STATUE_TEXTURES {
+        for (pose, _) in poses {
+            let n = bem::statue_model(weather, pose);
+            if !items.block_entities.contains_key(&n) {
+                statue_missing.push(n);
+            }
+        }
+    }
+    c.record(
+        "k23.every_statue_pose_and_weathering_state_bakes",
+        statue_missing.is_empty() && poses.len() == 4 && bem::STATUE_TEXTURES.len() == 4,
+        format!(
+            "{} poses x {} weathering states baked, missing {statue_missing:?} \
+             — the four poses are SEPARATE layers, not one model posed",
+            poses.len(),
+            bem::STATUE_TEXTURES.len()
+        ),
+    );
+
+    let box_count: usize = poses.iter().map(|(_, b)| b.len()).sum();
+    c.record(
+        "k24.the_generated_table_carries_every_box",
+        box_count == 38
+            && poses.iter().all(|(_, b)| !b.is_empty())
+            && poses.iter().any(|(_, b)| b.iter().any(|x| x.chain.len() > 1)),
+        format!(
+            "{box_count} boxes across the four poses, and at least one hangs \
+             two levels deep. Machine-extracted by \
+             tools/gen_copper_golem_poses.py: thirty-eight boxes with rotations \
+             to four decimal places is transcription whose errors are silent"
+        ),
+    );
+
+    // THE property the flat box list could not express: a rotated parent must
+    // carry its children ROUND with it, not merely shift them. Compare each
+    // box's real position against a naive offset-sum that ignores every
+    // ancestor rotation — they must agree where no ancestor turns, and differ
+    // where one does.
+    let naive = |b: &rewo_data::block_entity_models::StatueBox| -> [f32; 3] {
+        let mut p = b.min;
+        for k in 0..3 {
+            p[k] += b.own.0[k];
+            for a in b.chain {
+                p[k] += a.0[k];
+            }
+        }
+        p
+    };
+    let real = |b: &rewo_data::block_entity_models::StatueBox| -> [f32; 3] {
+        rewo_data::block_entity_models::statue_corner(b)
+    };
+    let standing = poses.iter().find(|(p, _)| *p == "standing").unwrap().1;
+    let running = poses.iter().find(|(p, _)| *p == "running").unwrap().1;
+    let flat_agrees = standing
+        .iter()
+        .all(|b| (0..3).all(|k| (real(b)[k] - naive(b)[k]).abs() < 1e-4));
+    let rotated_differs = running
+        .iter()
+        .any(|b| (0..3).any(|k| (real(b)[k] - naive(b)[k]).abs() > 0.05));
+    c.record(
+        "k25.a_rotated_parent_carries_its_children_round",
+        flat_agrees && rotated_differs,
+        format!(
+            "the STANDING pose has no ancestor rotations, so every box lands \
+             exactly where a naive offset-sum puts it ({flat_agrees}); the \
+             RUNNING pose does, and at least one box lands somewhere a naive \
+             sum does not ({rotated_differs}). That difference IS the nested \
+             hierarchy — a flat box list would have placed the running statue \
+             plausibly and wrongly"
+        ),
+    );
+
+    let sm = bt::copper_golem_statue(bt::Facing6::North);
+    c.record(
+        "k26.the_statue_flip_comes_from_setup_anim_not_the_matrix",
+        sm[0][0] < 0.0 && sm[1][1] < 0.0 && (sm[2][2] - 1.0).abs() < 1e-5,
+        format!(
+            "diagonal ({:.3}, {:.3}, {:.3}) — vanilla's matrix carries NO flip; \
+             it is `CopperGolemStatueModel.setupAnim` setting `root.zRot = PI`, \
+             a half turn about Z that negates x and y. Folded in here because \
+             this client does not run that animation step",
+            sm[0][0], sm[1][1], sm[2][2]
+        ),
+    );
+
+    let mut statue_blocks: HashSet<String> = HashSet::new();
+    for id in 0..40000u32 {
+        let Some(d) = states.draw_for(id) else { continue };
+        if !d.model.starts_with("rewo:be/statue/") {
+            continue;
+        }
+        if let Some(b) = blocks.block_name(id) {
+            statue_blocks.insert(b.to_string());
+        }
+    }
+    c.record(
+        "k27.all_eight_statue_blocks_resolve",
+        statue_blocks.len() == 8,
+        format!(
+            "{} statue blocks resolve — four weathering states, waxed and \
+             unwaxed, a waxed one sharing its level's texture exactly as a \
+             waxed copper chest does",
+            statue_blocks.len()
+        ),
+    );
+
+    // --- the two end portals ----------------------------------------------
+    let portal = items
+        .block_entities
+        .get(bem::END_PORTAL_MODEL.0)
+        .ok_or("the end portal did not bake")?;
+    let gateway = items
+        .block_entities
+        .get(bem::END_GATEWAY_MODEL)
+        .ok_or("the end gateway did not bake")?;
+    c.record(
+        "k28.a_portal_builds_only_its_horizontal_faces_and_a_gateway_all_six",
+        portal.quads.len() == 2 && gateway.quads.len() == 6,
+        format!(
+            "portal {} quads, gateway {} — `TheEndPortalBlockEntity.\
+             shouldRenderFace` is `getAxis() == Y`, so a portal is a pool seen \
+             from above or below and has no sides at all, which is why looking \
+             at one edge-on in vanilla shows nothing",
+            portal.quads.len(),
+            gateway.quads.len()
+        ),
+    );
+
+    // The portal is a SLAB, not a full block, and not flush with the floor.
+    let pm = bt::end_portal();
+    let lo = apply(&pm, [0.0, 0.0, 0.0]);
+    let hi = apply(&pm, [0.0, 1.0, 0.0]);
+    c.record(
+        "k29.the_portal_is_a_slab_between_three_eighths_and_three_quarters",
+        (lo[1] - 0.375).abs() < 1e-5 && (hi[1] - 0.75).abs() < 1e-5,
+        format!(
+            "the unit cube's y maps to {:.3}..{:.3} — `Transformation(translate\
+             (0, 0.375, 0), null, scale(1, 0.375, 1), null)` squashes then \
+             lifts it, so an end portal is a pool set into the MIDDLE of its \
+             block rather than a full block or a floor-flush sheet",
+            lo[1], hi[1]
+        ),
+    );
+
+    let gm = bt::end_gateway();
+    c.record(
+        "k30.a_gateway_fills_its_block_and_pushes_no_transform",
+        gm == rewo_data::be_transform::IDENTITY,
+        "`TheEndGatewayRenderer.submit` pushes no transform at all — its cube \
+         fills the block, where the portal's is squashed to a slab",
+    );
+
     // The wall-name derivation is not a second hard-coded list.
     c.record(
         "k10.the_wall_block_name_is_derived_not_listed",
@@ -2428,22 +2583,21 @@ fn check_registry(
             .collect()
     };
     let invisible = kinds(BlockEntityKind::Invisible);
+    let rendered = kinds(BlockEntityKind::Rendered);
     c.record(
-        "a3.the_still_invisible_set_is_the_measured_one",
-        invisible.len() == 3
-            && invisible.contains(&"minecraft:end_gateway")
-            && invisible.contains(&"minecraft:end_portal")
-            && !invisible.contains(&"minecraft:chest")
-            && !invisible.contains(&"minecraft:skull")
-            && !invisible.contains(&"minecraft:sign"),
+        "a3.nothing_is_invisible_any_more",
+        invisible.is_empty() && rendered.len() == 11 && !rendered.contains(&"minecraft:sign"),
         format!(
-            "{} still invisible: {:?} — a sign is NOT among them, because its block \
-             model carries the plank and only the text is renderer-side (and a bed \
-             is not a block entity in 26.2 at all, which the fail-closed resolve \
-             proved by rejecting it as an orphan). The chest family and the shulker \
-             box have left this list, which is what M25b-M25d did",
+            "{} types still invisible, {} now Rendered: {rendered:?}. M25 \
+             measured ELEVEN types whose block models bake to nothing, and all \
+             eleven now have a renderer. A sign is NOT among the Rendered — its \
+             block model carries the plank and only the text is renderer-side, \
+             so it stays ModelIsEnough (and a bed is not a block entity in 26.2 \
+             at all, which the fail-closed resolve proved by rejecting it as an \
+             orphan). This witness is now the one that fires if a future \
+             version adds an invisible type and nobody writes a renderer for it",
             invisible.len(),
-            invisible
+            rendered.len()
         ),
     );
 
@@ -2468,6 +2622,10 @@ fn check_registry(
             drawn_types.insert("minecraft:trapped_chest");
         } else if name.ends_with("chest") {
             drawn_types.insert("minecraft:chest");
+        } else if name == "end_portal" || name == "end_gateway" {
+            drawn_types.insert(format!("minecraft:{name}").leak());
+        } else if name.ends_with("copper_golem_statue") {
+            drawn_types.insert("minecraft:copper_golem_statue");
         } else if name.ends_with("banner") {
             drawn_types.insert("minecraft:banner");
         } else if name == "decorated_pot" {
@@ -2488,7 +2646,7 @@ fn check_registry(
     only_drawn.sort_unstable();
     c.record(
         "a4.the_rendered_set_is_exactly_what_resolves_a_model",
-        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 8,
+        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 11,
         format!(
             "{} types declared Rendered and the same {} resolve a model through \
              `ChestStates::draw_for`; declared-but-undrawn {only_declared:?}, \
@@ -2557,7 +2715,7 @@ fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> 
     );
     c.record(
         "e4.the_classification_accounts_for_the_measured_shortfall",
-        registry.invisible_count() == 3 && registry.rendered_count() == 8,
+        registry.invisible_count() == 0 && registry.rendered_count() == 11,
         format!(
             "{} block-entity TYPES still Invisible and {} now Rendered, together \
              covering those blocks (one type spans all 16 banner colours, all 17 \

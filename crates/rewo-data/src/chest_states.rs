@@ -357,6 +357,61 @@ impl ChestStates {
             }
         }
 
+        // Copper golem statues — eight blocks (four weathering states, waxed
+        // and unwaxed) each carrying a `copper_golem_pose` and a horizontal
+        // `facing`. Waxing changes only whether the block oxidises further, so
+        // a waxed statue shares its unwaxed level's texture.
+        for (weather, _) in crate::block_entity_models::STATUE_TEXTURES {
+            let stem = if *weather == "unaffected" {
+                "copper_golem_statue".to_string()
+            } else {
+                format!("{weather}_copper_golem_statue")
+            };
+            for waxed in [false, true] {
+                let block = if waxed {
+                    format!("minecraft:waxed_{stem}")
+                } else {
+                    format!("minecraft:{stem}")
+                };
+                let Some(def) = obj.get(&block) else { continue };
+                let Some(sts) = def.get("states").and_then(|s| s.as_array()) else {
+                    continue;
+                };
+                for st in sts {
+                    let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                        continue;
+                    };
+                    let props = st.get("properties").and_then(|p| p.as_object());
+                    let pose = props
+                        .and_then(|p| p.get("copper_golem_pose"))
+                        .and_then(|p| p.as_str())
+                        .ok_or_else(|| format!("blocks.json: {block} {id} has no pose"))?;
+                    let facing = props
+                        .and_then(|p| p.get("facing"))
+                        .and_then(|f| f.as_str())
+                        .and_then(crate::be_transform::Facing6::from_name)
+                        .ok_or_else(|| format!("blocks.json: {block} {id} has no facing"))?;
+                    if !crate::copper_golem_poses::POSES
+                        .iter()
+                        .any(|(p, _)| *p == pose)
+                    {
+                        return Err(format!(
+                            "blocks.json: {block} has pose {pose:?}, which the \
+                             generated pose table does not carry — re-run \
+                             tools/gen_copper_golem_poses.py"
+                        ));
+                    }
+                    statics.insert(
+                        id as u32,
+                        (
+                            crate::block_entity_models::statue_model(weather, pose),
+                            crate::be_transform::copper_golem_statue(facing),
+                        ),
+                    );
+                }
+            }
+        }
+
         // Banners — sixteen colours, each with a standing block (16-step
         // `rotation`) and a wall block (horizontal `facing`). The wall variant
         // uses the facing's OWN yaw, not its opposite, which is the reverse of
@@ -423,6 +478,30 @@ impl ChestStates {
                             crate::be_transform::decorated_pot(facing.to_y_rot()),
                         ),
                     );
+                }
+            }
+        }
+
+        // The two end portals — one state each, no properties.
+        for (block, model, xf) in [
+            (
+                "minecraft:end_portal",
+                crate::block_entity_models::END_PORTAL_MODEL.0,
+                crate::be_transform::end_portal(),
+            ),
+            (
+                "minecraft:end_gateway",
+                crate::block_entity_models::END_GATEWAY_MODEL,
+                crate::be_transform::end_gateway(),
+            ),
+        ] {
+            let Some(def) = obj.get(block) else { continue };
+            let Some(sts) = def.get("states").and_then(|s| s.as_array()) else {
+                continue;
+            };
+            for st in sts {
+                if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
+                    statics.insert(id as u32, (model.to_string(), xf));
                 }
             }
         }
