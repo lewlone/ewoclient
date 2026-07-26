@@ -10,6 +10,7 @@ pub mod biome_noise;
 pub mod block_entities;
 pub mod celestial;
 pub mod chunk;
+pub mod conduit;
 pub mod daylight;
 pub mod dimension;
 pub mod entities;
@@ -253,6 +254,41 @@ impl World {
     ///
     /// `powered` is the set of block-state ids that carry `powered=true`,
     /// resolved once from `blocks.json` rather than probed per tick.
+    /// `ConduitBlockEntity.clientTick` for every conduit in the world (M30).
+    ///
+    /// Like the skull tick this lives here because it needs BLOCK STATES: a
+    /// conduit's activation is a scan of the water and prismarine around it,
+    /// which nothing in its NBT records and no packet reports. `game_time`
+    /// selects the re-scan ticks — vanilla runs `updateShape` only on
+    /// `gameTime % 40 == 0`, so a conduit snaps on at the next multiple rather
+    /// than flickering while a frame is built.
+    pub fn tick_conduits(
+        &mut self,
+        conduit_states: &std::collections::HashSet<u32>,
+        water: &[bool],
+        frame: &[bool],
+        game_time: i64,
+    ) {
+        if conduit_states.is_empty() {
+            return;
+        }
+        let rescan = game_time % 40 == 0;
+        for pos in self.block_entities.positions() {
+            if !conduit_states.contains(&self.block_state_at(pos.x, pos.y, pos.z)) {
+                continue;
+            }
+            let shape = rescan.then(|| {
+                conduit::scan(
+                    (pos.x, pos.y, pos.z),
+                    |x, y, z| self.block_state_at(x, y, z),
+                    water,
+                    frame,
+                )
+            });
+            self.block_entities.tick_conduit(pos, shape);
+        }
+    }
+
     pub fn tick_skull_animations(&mut self, powered: &std::collections::HashSet<u32>) {
         if powered.is_empty() {
             return;

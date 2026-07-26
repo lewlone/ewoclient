@@ -164,6 +164,8 @@ pub struct ChestStates {
     banners: HashMap<u32, (u8, bool, crate::be_transform::Affine)>,
     /// Skull states carrying `powered=true` (M29).
     powered_skulls: std::collections::HashSet<u32>,
+    /// Conduit block states (M30).
+    conduits: std::collections::HashSet<u32>,
 }
 
 /// The seven skull types, as `(block prefix, model name)`.
@@ -313,6 +315,7 @@ impl ChestStates {
         // than by a name list.
         let mut statics = HashMap::new();
         let mut powered_skulls = std::collections::HashSet::new();
+        let mut conduits = std::collections::HashSet::new();
         for (prefix, model) in SKULLS {
             for wall in [false, true] {
                 let block = if wall {
@@ -522,6 +525,7 @@ impl ChestStates {
             if let Some(states) = def.get("states").and_then(|s| s.as_array()) {
                 for st in states {
                     if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
+                        conduits.insert(id as u32);
                         statics.insert(
                             id as u32,
                             (
@@ -550,6 +554,7 @@ impl ChestStates {
             statics,
             banners,
             powered_skulls,
+            conduits,
         })
     }
 
@@ -611,6 +616,11 @@ impl ChestStates {
     /// joins them. Exposed for the gate's coverage witness.
     pub fn static_len(&self) -> usize {
         self.statics.len()
+    }
+
+    /// The block-state ids of conduits (M30).
+    pub fn conduit_states(&self) -> &std::collections::HashSet<u32> {
+        &self.conduits
     }
 
     /// The block-state ids of skulls whose `powered` property is true.

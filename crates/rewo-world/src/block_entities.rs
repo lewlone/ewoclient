@@ -140,7 +140,8 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:banner", BlockEntityKind::Rendered),
     // Base plus four sherd-textured sides (M28b).
     ("minecraft:decorated_pot", BlockEntityKind::Rendered),
-    // The dormant shell (M28); the active cage/wind/eye need a clock.
+    // The dormant shell (M28), and the active cage, wind and eye (M30) —
+    // the latter behind the client-side prismarine-frame scan.
     ("minecraft:conduit", BlockEntityKind::Rendered),
     // Exact geometry; the scrolling starfield shader is approximated by
     // one static layer of `end_portal.png` (M28f).
@@ -662,6 +663,11 @@ pub struct BlockEntities {
     wobbles: HashMap<BlockEntityPos, (PotWobble, i64)>,
     /// Skull animation counters, for the heads whose block state is POWERED.
     skull_anim: HashMap<BlockEntityPos, u32>,
+    /// Conduit clocks (M30). Unlike every other entry here, a conduit's is
+    /// created on the first TICK rather than on an event, because nothing the
+    /// server sends tells a client its conduit exists — the client scans for
+    /// itself.
+    conduits: HashMap<BlockEntityPos, crate::conduit::ConduitAnim>,
 }
 
 /// `DecoratedPotBlockEntity.WobbleStyle`, mirrored world-side so the event
@@ -718,6 +724,7 @@ impl BlockEntities {
         self.wobbles.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.skull_anim
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.conduits.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
     pub fn len(&self) -> usize {
@@ -747,6 +754,7 @@ impl BlockEntities {
         self.spawners.clear();
         self.wobbles.clear();
         self.skull_anim.clear();
+        self.conduits.clear();
     }
 
     /// `Level.blockEvent` → the block entity's own `triggerEvent(b0, b1)`.
@@ -929,6 +937,25 @@ impl BlockEntities {
     /// stationary head at any count looks the same as one at zero only
     /// because the ear formula is periodic — so this is a stated
     /// simplification, not an equivalence.
+    /// Advance one conduit, re-scanning on the ticks vanilla would.
+    pub fn tick_conduit(
+        &mut self,
+        pos: BlockEntityPos,
+        rescan: Option<crate::conduit::ConduitShape>,
+    ) {
+        self.conduits.entry(pos).or_default().tick(rescan);
+    }
+
+    /// The conduit clock at a position — the rest state if it has never
+    /// ticked, which reads as dormant.
+    pub fn conduit(&self, pos: BlockEntityPos) -> crate::conduit::ConduitAnim {
+        self.conduits.get(&pos).copied().unwrap_or_default()
+    }
+
+    pub fn conduit_count(&self) -> usize {
+        self.conduits.len()
+    }
+
     pub fn skull_animation(&self, pos: BlockEntityPos, alpha: f32) -> f32 {
         match self.skull_anim.get(&pos) {
             Some(n) => *n as f32 + alpha,

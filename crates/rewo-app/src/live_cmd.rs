@@ -184,6 +184,21 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.block_event_types = be_registry.block_event_types();
     // Which skull states are POWERED, so their animation counters run (M29).
     session.powered_skull_states = chest_states.powered_skull_states().clone();
+    // A conduit scans for its own frame (M30), so it needs the block states
+    // that count as water and as prismarine, resolved once from the bake.
+    session.conduit_states = chest_states.conduit_states().clone();
+    session.water_states = baked.water.clone();
+    session.conduit_frame_states = {
+        let mut v = vec![false; baked.water.len()];
+        for id in 0..v.len() as u32 {
+            if let Some(name) = data.blocks.block_name(id) {
+                if rewo_world::conduit::FRAME_BLOCKS.contains(&name) {
+                    v[id as usize] = true;
+                }
+            }
+        }
+        v
+    };
     // M19 combat swings: the machine-extracted living / swing-ticking sets gate
     // every swing input and decide whose clock runs (`updateSwingTime` is not
     // universal), and the equipment tables decide how long each swing lasts and
@@ -1662,7 +1677,7 @@ fn run_headless(
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
-    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time());
+    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // Every texture the frame samples from the entity atlas — items in hands,
     // dropped stacks, and now block-entity models, which share the pool.
     let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
@@ -2132,7 +2147,7 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time());
+        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time(), (cr, cu));
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
         held.extend(draws.iter().filter_map(|d| d.ground_item));
         held.extend(bes.iter().map(|b| b.model.as_str()));
@@ -2626,6 +2641,10 @@ fn collect_block_entities(
     lightmap: &LightmapState,
     alpha: f32,
     game_time: i64,
+    // The camera's right and up axes. An active conduit's EYE is a billboard
+    // — the one input in this whole path that is a property of the VIEW rather
+    // than of the block (M30).
+    cam: ([f32; 3], [f32; 3]),
 ) -> Vec<OwnedBlockEntityDraw> {
     use rewo_data::chest_states::BlockEntityAnim;
     let mut out = Vec::new();
@@ -2731,6 +2750,58 @@ fn collect_block_entities(
                     continue;
                 };
                 out.push(layer(format!("{name}{suffix}"), dye_linear(colour)));
+            }
+        }
+        // An ACTIVE conduit replaces its dormant shell with four draws: a
+        // tumbling cage, the wind shroud twice, and a camera-facing eye whose
+        // pupil opens once the frame is complete (M30).
+        if draw.model == rewo_data::block_entity_models::CONDUIT.0 {
+            let c = world.block_entities.conduit(*pos);
+            if c.shape.active() {
+                let light = entity_light(
+                    world,
+                    pos.x as f64 + 0.5,
+                    pos.y as f64 + 0.5,
+                    pos.z as f64 + 0.5,
+                    lightmap,
+                );
+                let t = c.anim_time(alpha);
+                let mut piece = |model: &str, xf: rewo_data::be_transform::Affine| {
+                    out.push(OwnedBlockEntityDraw {
+                        pos: [pos.x as f32, pos.y as f32, pos.z as f32],
+                        model: model.to_string(),
+                        transform: xf,
+                        light,
+                        part_transforms: [rewo_data::be_transform::IDENTITY;
+                            rewo_gpu::entities::MAX_PARTS],
+                        part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+                        tint: [1.0; 3],
+                    });
+                };
+                piece(
+                    "rewo:be/conduit_cage",
+                    rewo_data::be_transform::conduit_cage(c.rotation(alpha), t),
+                );
+                // Phase 1 uses the vertical texture; the other two the
+                // horizontal one. Both copies of the shroud share it.
+                let wind = if c.phase() == 1 {
+                    "rewo:be/conduit_wind_vertical"
+                } else {
+                    "rewo:be/conduit_wind"
+                };
+                piece(wind, rewo_data::be_transform::conduit_wind(c.phase(), false));
+                piece(wind, rewo_data::be_transform::conduit_wind(c.phase(), true));
+                piece(
+                    if c.shape.hunting() {
+                        "rewo:be/conduit_eye_open"
+                    } else {
+                        "rewo:be/conduit_eye_closed"
+                    },
+                    rewo_data::be_transform::conduit_eye(t, cam.0, cam.1),
+                );
+                // The dormant shell is NOT drawn alongside — vanilla's two
+                // branches are exclusive.
+                continue;
             }
         }
         if draw.anim == BlockEntityAnim::DecoratedPot {

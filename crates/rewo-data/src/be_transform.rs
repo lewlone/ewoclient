@@ -328,6 +328,112 @@ pub fn conduit(rotation_deg: f32) -> Affine {
     mul(&translation(0.5, 0.5, 0.5), &rot_y(rotation_deg))
 }
 
+/// A rotation of `rad` about an arbitrary **unit** axis — Rodrigues' formula,
+/// which is what `Quaternionf.rotationAxis` amounts to.
+pub fn rot_axis(rad: f32, axis: [f32; 3]) -> Affine {
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    let (x, y, z) = (axis[0] / len, axis[1] / len, axis[2] / len);
+    let (s, c) = rad.sin_cos();
+    let t = 1.0 - c;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+    ]
+}
+
+/// `ConduitRenderer`'s ACTIVE cage (M30):
+///
+/// ```text
+/// float rotation = state.activeRotation * (180F / PI);
+/// float hh = Mth.sin(animTime * 0.1F) / 2 + 0.5F;  hh = hh * hh + hh;
+/// translate(0.5, 0.3 + hh * 0.2, 0.5);
+/// mulPose(rotationAxis(rotation * (PI / 180F), new Vector3f(0.5, 1, 0.5).normalize()));
+/// ```
+///
+/// Two things worth reading slowly. The degrees round trip
+/// (`* 180/PI` then `* PI/180`) is an **exact no-op** — the angle fed to
+/// `rotationAxis` is `activeRotation` unchanged — so "fixing" one half of it
+/// would break the cage. And the axis is `(0.5, 1, 0.5)` normalised, a
+/// *tilted* axis rather than plain Y, which is what makes the cage tumble
+/// rather than spin flat.
+///
+/// `hh` is squared-plus-itself, so the bob is not a sine: it dwells low and
+/// snaps up.
+pub fn conduit_cage(rotation_rad: f32, anim_time: f32) -> Affine {
+    let hh = (anim_time * 0.1).sin() / 2.0 + 0.5;
+    let hh = hh * hh + hh;
+    mul(
+        &translation(0.5, 0.3 + hh * 0.2, 0.5),
+        &rot_axis(rotation_rad, [0.5, 1.0, 0.5]),
+    )
+}
+
+/// The active conduit's wind shroud, drawn **twice**.
+///
+/// ```text
+/// translate(0.5, 0.5, 0.5)
+/// phase 1: rotationX(PI/2)   phase 2: rotationZ(PI/2)
+/// [second copy] scale(0.875) then rotationXYZ(PI, 0, PI)
+/// ```
+///
+/// The phase both turns the cube and swaps its texture — phase 1 uses
+/// `wind_vertical`, the other two `wind` — so the shroud appears to blow along
+/// a different axis every sixty-six ticks.
+pub fn conduit_wind(phase: i32, second: bool) -> Affine {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let mut m = translation(0.5, 0.5, 0.5);
+    m = match phase {
+        1 => mul(&m, &rot_x(FRAC_PI_2)),
+        2 => mul(&m, &rot_z(FRAC_PI_2)),
+        _ => m,
+    };
+    if second {
+        m = mul(&m, &scale(0.875, 0.875, 0.875));
+        m = mul(&m, &rot_xyz(PI, 0.0, PI));
+    }
+    m
+}
+
+/// The active conduit's eye — a **billboard**.
+///
+/// ```text
+/// translate(0.5, 0.3 + hh * 0.2, 0.5);
+/// scale(0.5);
+/// mulPose(camera.orientation);
+/// mulPose(rotationZ(PI).rotateY(PI));
+/// scale(1.3333334);
+/// ```
+///
+/// The camera orientation is the one input in this whole block-entity path
+/// that is not a property of the block, which is why the collector has to be
+/// handed the view basis. `right` and `up` are the camera's, and the facing
+/// axis is their cross product.
+///
+/// The two scales do not cancel: 0.5 then 1.3333334 is a net 0.667.
+pub fn conduit_eye(anim_time: f32, right: [f32; 3], up: [f32; 3]) -> Affine {
+    use std::f32::consts::PI;
+    let hh = (anim_time * 0.1).sin() / 2.0 + 0.5;
+    let hh = hh * hh + hh;
+    // `camera.orientation` as a basis: its columns are the camera's right, up
+    // and backward axes.
+    let back = [
+        right[1] * up[2] - right[2] * up[1],
+        right[2] * up[0] - right[0] * up[2],
+        right[0] * up[1] - right[1] * up[0],
+    ];
+    let orient: Affine = [
+        [right[0], up[0], back[0], 0.0],
+        [right[1], up[1], back[1], 0.0],
+        [right[2], up[2], back[2], 0.0],
+    ];
+    let m = translation(0.5, 0.3 + hh * 0.2, 0.5);
+    let m = mul(&m, &scale(0.5, 0.5, 0.5));
+    let m = mul(&m, &orient);
+    let m = mul(&m, &mul(&rot_z(PI), &rot_y_rad(PI)));
+    mul(&m, &scale(1.333_333_4, 1.333_333_4, 1.333_333_4))
+}
+
 /// `SkullBlockRenderer.createGroundTransformation(segment)`:
 ///
 /// ```text

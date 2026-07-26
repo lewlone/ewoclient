@@ -67,6 +67,12 @@ pub struct PlaySession {
     /// Empty means "do not tick skull animations", which is correct for a
     /// harness that renders none.
     pub powered_skull_states: std::collections::HashSet<u32>,
+    /// Conduit block states, plus the per-state water and frame predicates its
+    /// activation scan needs (M30). A conduit decides for itself whether it is
+    /// active by looking at the blocks around it — the server sends nothing.
+    pub conduit_states: std::collections::HashSet<u32>,
+    pub water_states: Vec<bool>,
+    pub conduit_frame_states: Vec<bool>,
     /// Which entity types are living, and which of them run `updateSwingTime`
     /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
     /// the decompiled `extends` graph. It gates every swing input (a packet
@@ -703,6 +709,9 @@ impl<'a> Connection<'a> {
             pillager_type_id: None,
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
+            conduit_states: Default::default(),
+            water_states: Vec::new(),
+            conduit_frame_states: Vec::new(),
             entity_classes: None,
             swing_data: None,
             swing_effect_ids,
@@ -906,6 +915,16 @@ impl PlaySession {
         // state is POWERED (M29).
         self.world
             .tick_skull_animations(&self.powered_skull_states);
+        // `ConduitBlockEntity.clientTick` — the activation scan is the client's
+        // own work, so this is the one animation whose *state* Rewo derives
+        // rather than receives (M30).
+        let gt = self.game_time.unwrap_or(0);
+        self.world.tick_conduits(
+            &self.conduit_states,
+            &self.water_states,
+            &self.conduit_frame_states,
+            gt,
+        );
         if self.spawned {
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.

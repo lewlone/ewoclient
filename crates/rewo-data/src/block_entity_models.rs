@@ -1126,27 +1126,87 @@ pub fn bake_decorated_pot(
 const CONDUIT_SHELL: &[Box] =
     &[plain((0.0, 0.0), [-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0; 3], 0)];
 
+/// `createCageLayer` — the open cage an ACTIVE conduit wears instead of its
+/// shell. Same 32×16 sheet, but 8 px where the shell is 6.
+const CONDUIT_CAGE: &[Box] =
+    &[plain((0.0, 0.0), [-4.0, -4.0, -4.0], [8.0, 8.0, 8.0], [0.0; 3], 0)];
+
+/// `createWindLayer` — the shroud, a full 16-px cube on a **64×32** sheet.
+///
+/// Drawn twice: once upright and once at 0.875 scale turned a half-turn about
+/// X and Z, so the two shells counter-rotate and the wind reads as a churn
+/// rather than a spinning box.
+const CONDUIT_WIND: &[Box] =
+    &[plain((0.0, 0.0), [-8.0, -8.0, -8.0], [16.0, 16.0, 16.0], [0.0; 3], 0)];
+
+/// `createEyeLayer` — a flat 8×8 plane on a 16×16 sheet, deformed 0.01.
+///
+/// Zero depth and camera-facing: the eye is a **billboard**, which is the one
+/// thing in the block-entity path that needs the camera rather than only the
+/// block.
+const CONDUIT_EYE: &[Box] = &[Box {
+    grow: 0.01,
+    ..plain((0.0, 0.0), [-4.0, -4.0, 0.0], [8.0, 8.0, 0.0], [0.0; 3], 0)
+}];
+
 /// The conduit shell's model name and jar texture.
 pub const CONDUIT: (&str, &str) = ("rewo:be/conduit", "entity/conduit/base");
 
-/// Bake the conduit shell.
+/// The active conduit's four extra models, as `(name, texture, size)`.
+pub const CONDUIT_ACTIVE: &[(&str, &str, (f32, f32))] = &[
+    ("rewo:be/conduit_cage", "entity/conduit/cage", (32.0, 16.0)),
+    ("rewo:be/conduit_wind", "entity/conduit/wind", (64.0, 32.0)),
+    (
+        "rewo:be/conduit_wind_vertical",
+        "entity/conduit/wind_vertical",
+        (64.0, 32.0),
+    ),
+    (
+        "rewo:be/conduit_eye_open",
+        "entity/conduit/open_eye",
+        (16.0, 16.0),
+    ),
+    (
+        "rewo:be/conduit_eye_closed",
+        "entity/conduit/closed_eye",
+        (16.0, 16.0),
+    ),
+];
+
+/// Bake the conduit's dormant shell and its four active pieces.
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
 ) -> Vec<(String, HeldItemModel)> {
-    let Some(tex) = pool.intern(CONDUIT.1, || load(CONDUIT.1)) else {
-        return Vec::new();
+    let mut out = Vec::new();
+    let mut one = |name: &str, tex_name: &str, boxes: &[Box], size: (f32, f32)| {
+        if let Some(tex) = pool.intern(tex_name, || load(tex_name)) {
+            out.push((
+                name.to_string(),
+                HeldItemModel {
+                    quads: model_quads(boxes, tex, size),
+                    right: DisplayTransform::default(),
+                    left: DisplayTransform::default(),
+                    ground: DisplayTransform::default(),
+                    from_block: false,
+                },
+            ));
+        } else {
+            log::error!("conduit: no texture {tex_name:?}");
+        }
     };
-    vec![(
-        CONDUIT.0.to_string(),
-        HeldItemModel {
-            quads: model_quads(CONDUIT_SHELL, tex, (32.0, 16.0)),
-            right: DisplayTransform::default(),
-            left: DisplayTransform::default(),
-            ground: DisplayTransform::default(),
-            from_block: false,
-        },
-    )]
+    one(CONDUIT.0, CONDUIT.1, CONDUIT_SHELL, (32.0, 16.0));
+    for (name, tex, size) in CONDUIT_ACTIVE {
+        let boxes: &[Box] = if name.contains("cage") {
+            CONDUIT_CAGE
+        } else if name.contains("wind") {
+            CONDUIT_WIND
+        } else {
+            CONDUIT_EYE
+        };
+        one(name, tex, boxes, *size);
+    }
+    out
 }
 
 /// The default texture size for the chest and shulker models — 64×64.

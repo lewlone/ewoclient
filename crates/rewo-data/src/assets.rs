@@ -191,6 +191,15 @@ pub struct BakedAssets {
     /// overlay element, but collides as a solid cube). Drives the client's
     /// M3 full-cube collision, independent of the render fast-path.
     pub solid: Vec<bool>,
+    /// Per block state: whether its **fluid state is water** — `isWaterAt`
+    /// (M30).
+    ///
+    /// True for water itself and for any waterlogged block, which is the
+    /// distinction that matters: a conduit's activation scan requires water in
+    /// all 27 cells around it, and a waterlogged slab or stair counts. Reading
+    /// only `RenderKind::Fluid` would refuse to activate a conduit inside a
+    /// perfectly legal frame.
+    pub water: Vec<bool>,
     /// Per-state collision boxes in block-local `0..1`
     /// (`[minx,miny,minz,maxx,maxy,maxz]`); empty = the block has no
     /// collision. A `solid` state is the unit cube. Non-full-cube shapes come
@@ -660,6 +669,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
     let mut solid = vec![false; max_id + 1];
+    let mut water = vec![false; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
@@ -725,6 +735,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     level,
                     lava,
                 };
+                water[id as usize] = !lava;
                 // Fluids skip the shared per-state light block below (they
                 // `continue`), so assign their light here from the same tables.
                 let (e, d) = fluid_light(lava);
@@ -785,6 +796,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // sky passes it at full strength, fences return "not waterlogged".
             let waterlogged =
                 props.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) == Some("true");
+            // A waterlogged block's fluid state IS water, which is what
+            // `isWaterAt` asks (M30).
+            if waterlogged {
+                water[id as usize] = true;
+            }
             let propagates = match sky_propagate.get(block_name.as_str()) {
                 Some(0) => false,
                 Some(1) => true,
@@ -852,6 +868,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         held_items,
         render,
         solid,
+        water,
         collide,
         emission,
         dampening,

@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 147;
+const EXPECTED_WITNESSES: usize = 157;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -245,6 +245,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_sign_style(&mut c, &blocks, &paths, sign)?;
     check_skulls(&mut c, &blocks, &paths, &args.version)?;
     check_be_clock(&mut c, &blocks, &paths, &ids, types, pot)?;
+    check_conduit_active(&mut c, &paths, &args.version)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -1251,6 +1252,207 @@ fn check_block_event_dispatch(
             "b1=0 -> {closing:?}; an event at a position with no block entity was \
              not consumed and left the {before} existing entries alone — vanilla's \
              `getBlockEntity` returns null there and the handler returns"
+        ),
+    );
+    Ok(())
+}
+
+/// M30 — the active conduit: the frame scan, and the four draws it unlocks.
+fn check_conduit_active(
+    c: &mut Checker,
+    paths: &DataPaths,
+    version: &str,
+) -> Result<(), String> {
+    use rewo_data::be_transform as bt;
+    use rewo_world::conduit;
+
+    // --- the scan ---------------------------------------------------------
+    let offs = conduit::frame_offsets();
+    c.record(
+        "q1.the_frame_shell_is_forty_two_positions_and_that_is_the_hunt_threshold",
+        offs.len() == 42 && conduit::HUNT_AT == 42 && conduit::ACTIVATE_AT == 16,
+        format!(
+            "{} frame positions. Three axis rings each border a 5x5 plane — 16 \
+             apiece — but they SHARE their axis ends, so the union is 42 and \
+             not 48. `HUNT_AT` is also 42, so a conduit opens its eye exactly \
+             when its frame is COMPLETE, not when it is nearly so. (My first \
+             guess here was 48, and this witness is what corrected it.)",
+            offs.len()
+        ),
+    );
+
+    let water = vec![false, true, true];
+    let frame = vec![false, false, true];
+    let dry = conduit::scan((0, 0, 0), |_, _, _| 0, &water, &frame);
+    c.record(
+        "q2.a_dry_conduit_returns_before_counting_anything",
+        dry.frame == 0 && !dry.submerged && !dry.active(),
+        format!(
+            "a conduit not fully submerged reports frame {} — vanilla returns \
+             from `updateShape` BEFORE the counting loop, so this is zero \
+             rather than a partial count nobody looked at",
+            dry.frame
+        ),
+    );
+
+    let pick = |n: usize| {
+        let want: HashSet<(i32, i32, i32)> = offs.iter().take(n).copied().collect();
+        conduit::scan(
+            (0, 0, 0),
+            move |x, y, z| if want.contains(&(x, y, z)) { 2 } else { 1 },
+            &water,
+            &frame,
+        )
+    };
+    let (s15, s16, s41, s42) = (pick(15), pick(16), pick(41), pick(42));
+    c.record(
+        "q3.sixteen_activates_and_a_complete_frame_hunts",
+        !s15.active() && s16.active() && !s41.hunting() && s42.hunting() && s42.active(),
+        format!(
+            "15 frame blocks -> inactive, 16 -> active, 41 -> active but not \
+             hunting, 42 -> hunting. Both thresholds read the SAME count, which \
+             is why the eye costs nothing once the scan exists"
+        ),
+    );
+
+    // --- the clock --------------------------------------------------------
+    let mut a = conduit::ConduitAnim::default();
+    let live = conduit::ConduitShape { frame: 20, submerged: true };
+    let dead = conduit::ConduitShape { frame: 0, submerged: false };
+    for _ in 0..10 {
+        a.tick(Some(dead));
+    }
+    let dormant = (a.active_rotation, a.rotation(0.5));
+    for _ in 0..10 {
+        a.tick(Some(live));
+    }
+    c.record(
+        "q4.the_rotation_advances_only_while_active",
+        dormant == (0.0, 0.0)
+            && a.active_rotation == 10.0
+            && (a.rotation(0.5) + 0.39375).abs() < 1e-6,
+        format!(
+            "ten dormant ticks left the rotation at {} and its rendered angle \
+             at {} — the partial is added only while active, so a conduit that \
+             has just switched off stops DEAD rather than creeping on. Ten \
+             active ticks then give {} and {:.5} rad, `(10 + 0.5) * -0.0375`; \
+             the sign is vanilla's and the cage turns the other way from a bare \
+             tick count. This is also why Rewo's dormant shell was already \
+             correct at zero",
+            dormant.0,
+            dormant.1,
+            a.active_rotation,
+            a.rotation(0.5)
+        ),
+    );
+
+    let mut b = conduit::ConduitAnim::default();
+    let mut phases = Vec::new();
+    for _ in 0..200 {
+        b.tick(Some(live));
+        phases.push(b.phase());
+    }
+    c.record(
+        "q5.the_wind_phase_holds_for_sixty_six_ticks",
+        phases[0] == 0 && phases[65] == 1 && phases[131] == 2 && phases[197] == 0,
+        "`tickCount / 66 % 3` — integer division, so each phase holds 66 ticks \
+         and then both the shroud's axis and its texture change",
+    );
+
+    // --- the four draws ---------------------------------------------------
+    let jar = client_jar(version).ok_or("client jar not found")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    let items = &baked.held_items;
+    let missing: Vec<&str> = rewo_data::block_entity_models::CONDUIT_ACTIVE
+        .iter()
+        .map(|(n, _, _)| *n)
+        .filter(|n| !items.block_entities.contains_key(*n))
+        .collect();
+    c.record(
+        "q6.the_active_pieces_bake",
+        missing.is_empty(),
+        format!(
+            "cage, both wind textures and both eyes baked, missing {missing:?} \
+             — the eye is a flat plane, so its two variants differ only by \
+             which pupil texture they carry"
+        ),
+    );
+
+    let apply = |m: &bt::Affine, p: [f32; 3]| -> [f32; 3] {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    };
+    // The cage turns about a TILTED axis, so a point on +x leaves the xz plane.
+    let turned = apply(&bt::conduit_cage(1.0, 0.0), [1.0, 0.0, 0.0]);
+    let still = apply(&bt::conduit_cage(0.0, 0.0), [1.0, 0.0, 0.0]);
+    c.record(
+        "q7.the_cage_tumbles_about_a_tilted_axis_rather_than_spinning_flat",
+        (turned[1] - still[1]).abs() > 1e-3,
+        format!(
+            "a point on +x moves from y {:.4} to {:.4} under a one-radian turn \
+             — the axis is `(0.5, 1, 0.5)` normalised, NOT plain Y, so the cage \
+             tumbles. A Y-only rotation would leave that y untouched",
+            still[1], turned[1]
+        ),
+    );
+
+    // `hh = sin(t*0.1)/2 + 0.5` then `hh = hh*hh + hh`, so the drive `b` runs
+    // 0..1 and the height runs 0.3 + (b*b + b) * 0.2 over 0.3..0.7.
+    let y_at = |t: f32| apply(&bt::conduit_cage(0.0, t), [0.0, 0.0, 0.0])[1];
+    let mid = y_at(0.0); //   sin = 0  -> b = 0.5
+    let top = y_at(std::f32::consts::FRAC_PI_2 / 0.1); // sin =  1 -> b = 1
+    let bot = y_at(3.0 * std::f32::consts::FRAC_PI_2 / 0.1); // sin = -1 -> b = 0
+    // A LINEAR map of the same drive would put the midpoint halfway up.
+    let linear_mid = bot + (top - bot) / 2.0;
+    c.record(
+        "q8.the_bob_is_not_a_plain_sine",
+        (bot - 0.3).abs() < 1e-4
+            && (top - 0.7).abs() < 1e-4
+            && (mid - 0.45).abs() < 1e-4
+            && mid < linear_mid - 0.04,
+        format!(
+            "the cage centre runs {bot:.4}..{top:.4}, and at the drive's \
+             MIDPOINT it sits at {mid:.4} where a linear map would put it at \
+             {linear_mid:.4}. `hh*hh + hh` is convex, so the cage dwells low \
+             and snaps up rather than moving sinusoidally. (The 0.45 here is \
+             vanilla's value at animTime 0, not a number I picked — the first \
+             draft of this witness guessed 0.4 and failed.)"
+        ),
+    );
+
+    let w0 = bt::conduit_wind(0, false);
+    let w1 = bt::conduit_wind(1, false);
+    let w_second = bt::conduit_wind(0, true);
+    c.record(
+        "q9.the_shroud_turns_per_phase_and_its_second_copy_shrinks",
+        w0 != w1
+            && (w_second[0][0].abs() - 0.875).abs() < 1e-5
+            && (w0[0][0] - 1.0).abs() < 1e-5,
+        format!(
+            "phase 0 and 1 differ, and the second copy scales {:.4} against the \
+             first's {:.4} — the two shells counter-rotate at different sizes, \
+             which is what reads as a churn instead of a spinning box",
+            w_second[0][0].abs(),
+            w0[0][0]
+        ),
+    );
+
+    // The eye is a BILLBOARD: turn the camera and the quad turns with it.
+    let eye_a = bt::conduit_eye(0.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let eye_b = bt::conduit_eye(0.0, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+    let corner_a = apply(&eye_a, [4.0, 0.0, 0.0]);
+    let corner_b = apply(&eye_b, [4.0, 0.0, 0.0]);
+    c.record(
+        "q10.the_eye_faces_the_camera",
+        (corner_a[0] - corner_b[0]).abs() > 1e-3 || (corner_a[2] - corner_b[2]).abs() > 1e-3,
+        format!(
+            "the same corner lands at {corner_a:?} under one camera basis and \
+             {corner_b:?} under another — the eye is the ONE thing in this \
+             block-entity path that depends on the view rather than on the \
+             block, which is why the collector has to be handed the camera axes"
         ),
     );
     Ok(())
