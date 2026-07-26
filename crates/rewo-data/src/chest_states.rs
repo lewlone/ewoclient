@@ -109,6 +109,14 @@ pub enum BlockEntityAnim {
     ChestLid(ChestState),
     /// A shulker box's lid — a self-contained clock with no pairing.
     ShulkerLid,
+    /// A decorated pot: no animation, but **four extra draws**, one per side,
+    /// whose textures come from the block entity's `sherds` list (M28b).
+    ///
+    /// It rides this enum rather than a separate flag because the question the
+    /// collector asks is the same one — "what else does this state need drawn"
+    /// — and the answer being sides rather than a clock is exactly the
+    /// distinction the enum exists to make.
+    DecoratedPot,
 }
 
 /// A block-entity block state Rewo can draw: which model, and the transform
@@ -341,6 +349,32 @@ impl ChestStates {
             }
         }
 
+        // The decorated pot — a horizontal `facing`, like a chest.
+        if let Some(def) = obj.get("minecraft:decorated_pot") {
+            if let Some(states) = def.get("states").and_then(|s| s.as_array()) {
+                for st in states {
+                    let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                        continue;
+                    };
+                    let facing = st
+                        .get("properties")
+                        .and_then(|p| p.get("facing"))
+                        .and_then(|f| f.as_str())
+                        .and_then(ChestFacing::from_name)
+                        .ok_or_else(|| {
+                            format!("blocks.json: decorated_pot state {id} has no facing")
+                        })?;
+                    statics.insert(
+                        id as u32,
+                        (
+                            crate::block_entity_models::POT_BASE_MODEL.0.to_string(),
+                            crate::be_transform::decorated_pot(facing.to_y_rot()),
+                        ),
+                    );
+                }
+            }
+        }
+
         // The conduit — one block, one state, no properties at all.
         if let Some(def) = obj.get("minecraft:conduit") {
             if let Some(states) = def.get("states").and_then(|s| s.as_array()) {
@@ -395,7 +429,11 @@ impl ChestStates {
         Some(BlockEntityState {
             model: model.clone(),
             transform: *transform,
-            anim: BlockEntityAnim::None,
+            anim: if model == crate::block_entity_models::POT_BASE_MODEL.0 {
+                BlockEntityAnim::DecoratedPot
+            } else {
+                BlockEntityAnim::None
+            },
         })
     }
 

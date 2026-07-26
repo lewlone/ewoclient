@@ -208,6 +208,50 @@ pub fn shulker_box(facing: Facing6) -> Affine {
     mul(&m, &translation(0.0, -1.0, 0.0))
 }
 
+/// `DecoratedPotRenderer.createModelTransformation`:
+///
+/// ```text
+/// new Matrix4f().rotateAround(YP.rotationDegrees(180 - dir.toYRot()), 0.5, 0.5, 0.5)
+/// ```
+///
+/// About the block **centre** in all three axes, not the floor — unlike a
+/// chest, which turns about `(0.5, 0, 0.5)`.
+pub fn decorated_pot(facing_y_rot: f32) -> Affine {
+    rot_y_around(180.0 - facing_y_rot, 0.5, 0.5, 0.5)
+}
+
+/// The four side poses of `createSidesLayer`, in the order the `sherds` list
+/// stores them: **back, left, right, front**.
+///
+/// ```text
+/// back  offsetAndRotation(15, 16,  1, 0,     0,     PI)
+/// left  offsetAndRotation( 1, 16,  1, 0, -PI/2,     PI)
+/// right offsetAndRotation(15, 16, 15, 0,  PI/2,     PI)
+/// front offsetAndRotation( 1, 16, 15, PI,    0,      0)
+/// ```
+///
+/// Each is a pose in **model px**; the emitter's `part_transform` applies it,
+/// which is why a pot needs no new draw machinery beyond emitting five draws
+/// instead of one. Note the front's rotation is about X while the other three
+/// are about Z — the plane is built with only its north face, so each side is
+/// turned to point outward by a different route.
+pub const POT_SIDE_ORDER: [&str; 4] = ["back", "left", "right", "front"];
+
+/// The pose of pot side `i`, indexed by [`POT_SIDE_ORDER`].
+pub fn pot_side(i: usize) -> Affine {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let (off, rot) = match i {
+        0 => ([15.0, 16.0, 1.0], [0.0, 0.0, PI]),
+        1 => ([1.0, 16.0, 1.0], [0.0, -FRAC_PI_2, PI]),
+        2 => ([15.0, 16.0, 15.0], [0.0, FRAC_PI_2, PI]),
+        _ => ([1.0, 16.0, 15.0], [PI, 0.0, 0.0]),
+    };
+    mul(
+        &translation(off[0], off[1], off[2]),
+        &rot_xyz(rot[0], rot[1], rot[2]),
+    )
+}
+
 /// `ConduitRenderer.submit`'s inactive branch — `translate(0.5, 0.5, 0.5)`
 /// then a Y rotation.
 ///

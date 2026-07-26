@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 112;
+const EXPECTED_WITNESSES: usize = 117;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -1402,6 +1402,118 @@ fn check_skulls(
         ),
     );
 
+    // --- the decorated pot ------------------------------------------------
+    use rewo_data::block_entity_models as bem;
+    let missing_sherds: Vec<&&str> = bem::POT_SHERDS
+        .iter()
+        .filter(|s| {
+            !items
+                .block_entities
+                .contains_key(&format!("rewo:be/pot_side/{s}"))
+        })
+        .collect();
+    c.record(
+        "k13.every_sherd_pattern_bakes",
+        missing_sherds.is_empty()
+            && bem::POT_SHERDS.len() == 23
+            && items.block_entities.contains_key(bem::POT_SIDE_PLAIN.0)
+            && items.block_entities.contains_key(bem::POT_BASE_MODEL.0),
+        format!(
+            "{} sherd patterns plus the plain side and the base all baked, \
+             missing {missing_sherds:?}. The texture name is DERIVED — \
+             `<stem>_pottery_sherd` becomes `<stem>_pottery_pattern` — so this \
+             is what stops that derivation drifting from the jar",
+            bem::POT_SHERDS.len()
+        ),
+    );
+
+    c.record(
+        "k14.a_pot_side_is_one_quad_and_the_base_is_four_boxes",
+        items
+            .block_entities
+            .get(bem::POT_SIDE_PLAIN.0)
+            .map(|m| m.quads.len())
+            == Some(1)
+            && items
+                .block_entities
+                .get(bem::POT_BASE_MODEL.0)
+                .map(|m| m.quads.len())
+                == Some(24),
+        format!(
+            "side {:?} quads, base {:?} — `addBox(..., EnumSet.of(NORTH))` \
+             builds only the north face, so a side really is a single plane",
+            items
+                .block_entities
+                .get(bem::POT_SIDE_PLAIN.0)
+                .map(|m| m.quads.len()),
+            items
+                .block_entities
+                .get(bem::POT_BASE_MODEL.0)
+                .map(|m| m.quads.len())
+        ),
+    );
+
+    c.record(
+        "k15.a_sherd_item_name_selects_its_pattern_and_anything_else_is_plain",
+        bem::pot_side_model(Some("minecraft:angler_pottery_sherd"))
+            == "rewo:be/pot_side/angler"
+            && bem::pot_side_model(Some("skull_pottery_sherd")) == "rewo:be/pot_side/skull"
+            && bem::pot_side_model(Some("minecraft:brick")) == bem::POT_SIDE_PLAIN.0
+            && bem::pot_side_model(None) == bem::POT_SIDE_PLAIN.0
+            && bem::pot_side_model(Some("minecraft:diamond")) == bem::POT_SIDE_PLAIN.0,
+        "angler and skull sherds resolve their own patterns (namespaced or \
+         not); brick, an empty slot and a non-sherd item all fall through to \
+         the plain side, which is exactly what `getSideSprite` does",
+    );
+
+    // The four side poses must put one plane on each face of the block.
+    let corners: Vec<[f32; 3]> = (0..4)
+        .map(|i| {
+            let m = bt::pot_side(i);
+            let p = apply(&m, [7.0, 8.0, 0.0]); // the plane's own centre
+            [p[0] / 16.0, p[1] / 16.0, p[2] / 16.0]
+        })
+        .collect();
+    let spread_x = corners
+        .iter()
+        .map(|p| p[0])
+        .fold(f32::MIN, f32::max)
+        - corners.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
+    let spread_z = corners
+        .iter()
+        .map(|p| p[2])
+        .fold(f32::MIN, f32::max)
+        - corners.iter().map(|p| p[2]).fold(f32::MAX, f32::min);
+    c.record(
+        "k16.the_four_side_poses_face_four_different_ways",
+        spread_x > 0.7 && spread_z > 0.7 && corners.iter().all(|p| (0.0..=1.0).contains(&p[1])),
+        format!(
+            "side centres {corners:?} — they spread {spread_x:.2} in x and \
+             {spread_z:.2} in z, i.e. one per face. All four planes baked in \
+             group {} rather than 0, which is what routes them through the \
+             side pose instead of leaving them stacked in one place",
+            bem::POT_SIDE_PART
+        ),
+    );
+
+    // The pot turns about the block centre in ALL THREE axes, unlike a chest.
+    let pot_m = bt::decorated_pot(0.0);
+    let mid = apply(&pot_m, [0.5, 0.5, 0.5]);
+    let chest_m = bt::chest(0.0);
+    let chest_mid = apply(&chest_m, [0.5, 0.0, 0.5]);
+    c.record(
+        "k17.a_pot_turns_about_the_block_centre_not_its_floor",
+        mid.iter()
+            .zip([0.5, 0.5, 0.5])
+            .all(|(a, b)| (a - b).abs() < 1e-5)
+            && (chest_mid[1] - 0.0).abs() < 1e-5,
+        format!(
+            "the pot's rotation fixes {mid:?} while a chest's fixes \
+             {chest_mid:?} — `rotateAround(..., 0.5, 0.5, 0.5)` against \
+             `rotationAround(..., 0.5, 0, 0.5)`"
+        ),
+    );
+
     // The wall-name derivation is not a second hard-coded list.
     c.record(
         "k10.the_wall_block_name_is_derived_not_listed",
@@ -2138,9 +2250,9 @@ fn check_registry(
     let invisible = kinds(BlockEntityKind::Invisible);
     c.record(
         "a3.the_still_invisible_set_is_the_measured_one",
-        invisible.len() == 5
+        invisible.len() == 4
             && invisible.contains(&"minecraft:banner")
-            && invisible.contains(&"minecraft:decorated_pot")
+            && invisible.contains(&"minecraft:end_portal")
             && !invisible.contains(&"minecraft:chest")
             && !invisible.contains(&"minecraft:skull")
             && !invisible.contains(&"minecraft:sign"),
@@ -2176,6 +2288,8 @@ fn check_registry(
             drawn_types.insert("minecraft:trapped_chest");
         } else if name.ends_with("chest") {
             drawn_types.insert("minecraft:chest");
+        } else if name == "decorated_pot" {
+            drawn_types.insert("minecraft:decorated_pot");
         } else if name == "conduit" {
             drawn_types.insert("minecraft:conduit");
         } else if name.ends_with("skull") || name.ends_with("head") {
@@ -2192,7 +2306,7 @@ fn check_registry(
     only_drawn.sort_unstable();
     c.record(
         "a4.the_rendered_set_is_exactly_what_resolves_a_model",
-        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 6,
+        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 7,
         format!(
             "{} types declared Rendered and the same {} resolve a model through \
              `ChestStates::draw_for`; declared-but-undrawn {only_declared:?}, \
@@ -2261,7 +2375,7 @@ fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> 
     );
     c.record(
         "e4.the_classification_accounts_for_the_measured_shortfall",
-        registry.invisible_count() == 5 && registry.rendered_count() == 6,
+        registry.invisible_count() == 4 && registry.rendered_count() == 7,
         format!(
             "{} block-entity TYPES still Invisible and {} now Rendered, together \
              covering those blocks (one type spans all 16 banner colours, all 17 \

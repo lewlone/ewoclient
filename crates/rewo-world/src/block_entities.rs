@@ -137,7 +137,8 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     // -- the invisible ones: no `elements` in any of their blockstate models,
     //    and no renderer here yet --
     ("minecraft:banner", BlockEntityKind::Invisible),
-    ("minecraft:decorated_pot", BlockEntityKind::Invisible),
+    // Base plus four sherd-textured sides (M28b).
+    ("minecraft:decorated_pot", BlockEntityKind::Rendered),
     // The dormant shell (M28); the active cage/wind/eye need a clock.
     ("minecraft:conduit", BlockEntityKind::Rendered),
     ("minecraft:end_portal", BlockEntityKind::Invisible),

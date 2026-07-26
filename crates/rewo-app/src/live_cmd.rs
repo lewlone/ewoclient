@@ -2555,11 +2555,34 @@ fn collect_block_entities(
 ) -> Vec<OwnedBlockEntityDraw> {
     use rewo_data::chest_states::BlockEntityAnim;
     let mut out = Vec::new();
-    for (pos, _be) in world.block_entities.iter() {
+    for (pos, be) in world.block_entities.iter() {
         let state = world.block_state_at(pos.x, pos.y, pos.z);
         let Some(draw) = chests.draw_for(state) else {
             continue;
         };
+        // A decorated pot is five draws, not one: the base, plus a side plane
+        // per face with its own sherd texture. They share the pot's own
+        // transform and differ by the side pose, so each rides the emitter's
+        // animated-group slot rather than needing a new draw path.
+        if draw.anim == BlockEntityAnim::DecoratedPot {
+            let sherds = pot_sherds(be);
+            for (i, item) in sherds.iter().enumerate() {
+                out.push(OwnedBlockEntityDraw {
+                    pos: [pos.x as f32, pos.y as f32, pos.z as f32],
+                    model: rewo_data::block_entity_models::pot_side_model(item.as_deref()),
+                    transform: draw.transform,
+                    light: entity_light(
+                        world,
+                        pos.x as f64 + 0.5,
+                        pos.y as f64 + 0.5,
+                        pos.z as f64 + 0.5,
+                        lightmap,
+                    ),
+                    part_transform: rewo_data::be_transform::pot_side(i),
+                    part_pivot: [0.0; 3],
+                });
+            }
+        }
         out.push(OwnedBlockEntityDraw {
             pos: [pos.x as f32, pos.y as f32, pos.z as f32],
             model: draw.model,
@@ -2578,7 +2601,11 @@ fn collect_block_entities(
             // they are not the same clock and not the same motion — see
             // `rewo_world::block_entities::ShulkerAnim`.
             part_transform: match draw.anim {
-                BlockEntityAnim::None => rewo_data::be_transform::IDENTITY,
+                // The pot's BASE has no animated group; its four sides are the
+                // separate draws pushed above, each with its own side pose.
+                BlockEntityAnim::None | BlockEntityAnim::DecoratedPot => {
+                    rewo_data::be_transform::IDENTITY
+                }
                 BlockEntityAnim::ChestLid(c) => rewo_data::be_transform::chest_lid_part(
                     chest_openness(world, chests, *pos, c, alpha),
                     rewo_data::block_entity_models::CHEST_LID_PIVOT,
@@ -2694,6 +2721,28 @@ pub(crate) struct OwnedSignLine {
     pub z: f32,
     pub color: [f32; 3],
     pub light: [f32; 3],
+}
+
+/// A decorated pot's four sherds, in `PotDecorations`' stored order —
+/// **back, left, right, front**.
+///
+/// The tag is `sherds`, a list of item ids written by
+/// `PotDecorations.CODEC`; an absent list, a short one, or a slot holding
+/// `minecraft:brick` all mean the plain side, which is what
+/// `getSideSprite` falls through to. Returning `None` for those rather than the
+/// literal item keeps that fall-through in one place.
+pub(crate) fn pot_sherds(be: &rewo_world::block_entities::BlockEntity) -> [Option<String>; 4] {
+    let mut out: [Option<String>; 4] = Default::default();
+    let Some(rewo_proto::nbt::Nbt::List(items)) = be.data.get("sherds") else {
+        return out;
+    };
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = items
+            .get(i)
+            .and_then(rewo_proto::nbt::Nbt::as_str)
+            .map(str::to_string);
+    }
+    out
 }
 
 /// `Font.prepare8xTextOutline` — the eight offsets a glowing sign's outline is

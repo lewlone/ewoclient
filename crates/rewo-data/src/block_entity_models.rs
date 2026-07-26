@@ -56,6 +56,15 @@ struct Box {
     part: u8,
     /// A face vanilla's `addBox(..., visibleFaces)` leaves out.
     hide: Option<Facing>,
+    /// The **only** face to build, where `visibleFaces` names one rather than
+    /// omitting one.
+    ///
+    /// Both forms appear: a double chest's half passes `allOfEnumExcept(WEST)`
+    /// and a pot's side passes `EnumSet.of(NORTH)`. Expressing the second as a
+    /// hide-list would need five entries, and expressing it as a *single* hide
+    /// silently builds the other five — which is what the pot's side did until
+    /// `k14` caught it drawing six quads instead of one.
+    only: Option<Facing>,
 }
 
 /// A `Box` with every optional field at its vanilla default, so a model that
@@ -77,6 +86,7 @@ const fn plain(
         mirror: false,
         part,
         hide: None,
+        only: None,
     }
 }
 
@@ -414,6 +424,7 @@ fn dragon_skull() -> Vec<Box> {
             mirror: b.mirror,
             part: b.part,
             hide: b.hide,
+            only: b.only,
         })
         .collect()
 }
@@ -469,6 +480,184 @@ pub fn bake_skulls(
                 from_block: false,
             },
         ));
+    }
+    out
+}
+
+// ---------------------------------------------------------- decorated pot
+//
+// `DecoratedPotRenderer` (M28b). The first block entity here that is **not one
+// model**: its four sides each carry their own sprite, chosen per side from the
+// block entity's `sherds` list, so a pot is a base draw plus four side draws
+// rather than a single baked mesh.
+
+/// `createBaseLayer` — the neck, the rim, and the top and bottom plates, on a
+/// **32×32** sheet.
+///
+/// The neck is two boxes in one `CubeListBuilder` at opposite deformations (a
+/// −0.1 shrink for the throat, a +0.2 grow for the rim), sharing a pose that is
+/// rotated a half turn about X — which is what stands the neck up out of the
+/// body.
+const POT_BASE: &[Box] = &[
+    Box {
+        rot: [std::f32::consts::PI, 0.0, 0.0],
+        grow: -0.1,
+        ..plain((0.0, 0.0), [4.0, 17.0, 4.0], [8.0, 3.0, 8.0], [0.0, 37.0, 16.0], 0)
+    },
+    Box {
+        rot: [std::f32::consts::PI, 0.0, 0.0],
+        grow: 0.2,
+        ..plain((0.0, 5.0), [5.0, 20.0, 5.0], [6.0, 1.0, 6.0], [0.0, 37.0, 16.0], 0)
+    },
+    // The plates are zero-height boxes, so four of their six faces are
+    // degenerate and only the up/down pair has area. Their `texOffs(-14, 13)`
+    // is genuinely negative: the u column that lands outside the sheet belongs
+    // to one of those zero-area faces, so nothing samples it.
+    plain((-14.0, 13.0), [0.0, 0.0, 0.0], [14.0, 0.0, 14.0], [1.0, 16.0, 1.0], 0),
+    plain((-14.0, 13.0), [0.0, 0.0, 0.0], [14.0, 0.0, 14.0], [1.0, 0.0, 1.0], 0),
+];
+
+/// `createSidesLayer`'s `sidePlane` — one 14×16 face, on a 16×16 sheet.
+///
+/// `addBox(0, 0, 0, 14, 16, 0, EnumSet.of(NORTH))` builds **only** the north
+/// face, so a side is a single quad. The four sides differ solely in their
+/// pose, which is why one plane is baked per *texture* and placed four times
+/// rather than four planes being baked per pot.
+/// The plane is baked into group [`POT_SIDE_PART`], **not** group 0, so the
+/// emitter routes it through `part_transform` — which is where its side pose
+/// arrives. Group 0 would be drawn where it was baked, i.e. all four sides
+/// stacked in the same place.
+const POT_SIDE: &[Box] = &[Box {
+    only: Some(Facing::North),
+    ..plain(
+        (1.0, 0.0),
+        [0.0, 0.0, 0.0],
+        [14.0, 16.0, 0.0],
+        [0.0; 3],
+        POT_SIDE_PART,
+    )
+}];
+
+/// The group a pot's side plane belongs to.
+pub const POT_SIDE_PART: u8 = 1;
+
+/// The pot's base model name and texture.
+pub const POT_BASE_MODEL: (&str, &str) = (
+    "rewo:be/decorated_pot",
+    "entity/decorated_pot/decorated_pot_base",
+);
+
+/// The side model used where a face carries no sherd — `Sheets.DECORATED_POT_SIDE`.
+pub const POT_SIDE_PLAIN: (&str, &str) = (
+    "rewo:be/pot_side/plain",
+    "entity/decorated_pot/decorated_pot_side",
+);
+
+/// `DecoratedPotPatterns.itemToPatternMappings` — every sherd item, as the
+/// pattern stem shared by its item name and its texture.
+///
+/// The mapping is `<stem>_pottery_sherd` → `<stem>_pottery_pattern`, and
+/// `minecraft:brick` maps to `BLANK`, which is the plain side. Listing the
+/// stems rather than both full names keeps the two from drifting, and
+/// [`bake_decorated_pot`] validates every derived texture against the jar — so
+/// a stem that stops existing fails the bake instead of rendering a hole.
+pub const POT_SHERDS: &[&str] = &[
+    "angler",
+    "archer",
+    "arms_up",
+    "blade",
+    "brewer",
+    "burn",
+    "danger",
+    "explorer",
+    "flow",
+    "friend",
+    "guster",
+    "heart",
+    "heartbreak",
+    "howl",
+    "miner",
+    "mourner",
+    "plenty",
+    "prize",
+    "scrape",
+    "sheaf",
+    "shelter",
+    "skull",
+    "snort",
+];
+
+/// The `rewo:be/pot_side/…` model for a sherd item name, or the plain side.
+///
+/// Accepts the item with or without its `minecraft:` namespace, and returns the
+/// plain side for `brick`, for an empty slot, and for any item that is not a
+/// sherd — `getSideSprite` falls through to `DECORATED_POT_SIDE` in exactly
+/// those cases rather than failing.
+pub fn pot_side_model(item: Option<&str>) -> String {
+    let Some(item) = item else {
+        return POT_SIDE_PLAIN.0.to_string();
+    };
+    let short = item.trim_start_matches("minecraft:");
+    match short.strip_suffix("_pottery_sherd") {
+        Some(stem) if POT_SHERDS.contains(&stem) => format!("rewo:be/pot_side/{stem}"),
+        _ => POT_SIDE_PLAIN.0.to_string(),
+    }
+}
+
+/// Bake the pot base and one side plane per sherd pattern.
+///
+/// A stem in [`POT_SHERDS`] with no texture in the jar logs an error and is
+/// skipped — the bake is not fallible at this seam. The **fail-closed** check
+/// lives in `blockentityshot`, which asserts all 23 patterns baked; that is
+/// where this project puts coverage boundaries, and it is why a missing sherd
+/// cannot quietly render as a hole in a pot.
+pub fn bake_decorated_pot(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    let mut one = |name: String, tex_name: &str, boxes: &[Box], size: (f32, f32)| -> bool {
+        match pool.intern(tex_name, || load(tex_name)) {
+            Some(tex) => {
+                out.push((
+                    name,
+                    HeldItemModel {
+                        quads: model_quads(boxes, tex, size),
+                        right: DisplayTransform::default(),
+                        left: DisplayTransform::default(),
+                        ground: DisplayTransform::default(),
+                        from_block: false,
+                    },
+                ));
+                true
+            }
+            None => false,
+        }
+    };
+    if !one(
+        POT_BASE_MODEL.0.to_string(),
+        POT_BASE_MODEL.1,
+        POT_BASE,
+        (32.0, 32.0),
+    ) {
+        // No pot textures at all is a jar without the entity sheet, which the
+        // other bakes also tolerate by skipping.
+        return Vec::new();
+    }
+    one(
+        POT_SIDE_PLAIN.0.to_string(),
+        POT_SIDE_PLAIN.1,
+        POT_SIDE,
+        (16.0, 16.0),
+    );
+    for stem in POT_SHERDS {
+        let tex = format!("entity/decorated_pot/{stem}_pottery_pattern");
+        if !one(format!("rewo:be/pot_side/{stem}"), &tex, POT_SIDE, (16.0, 16.0)) {
+            log::error!(
+                "decorated pot: no texture {tex:?} for sherd {stem:?} — the \
+                 item-name-to-pattern derivation drifted from the jar"
+            );
+        }
     }
     out
 }
@@ -541,6 +730,9 @@ fn model_quads(boxes: &[Box], tex: u16, tex_size: (f32, f32)) -> Vec<HeldQuad> {
             // `addBox(..., visibleFaces)` — the seam face of a double half is
             // simply not built.
             if b.hide == Some(FACE_ORDER[i]) {
+                continue;
+            }
+            if b.only.is_some() && b.only != Some(FACE_ORDER[i]) {
                 continue;
             }
             let mut v = [[0f32; 3]; 4];

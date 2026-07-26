@@ -1462,6 +1462,24 @@ impl<'a> Baker<'a> {
         ));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_skulls));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_conduit));
+        {
+            // The pot bake validates every derived sherd texture against the
+            // jar, so it returns a Result the others do not.
+            let jar = &mut self.jar;
+            let mut pots = crate::block_entity_models::bake_decorated_pot(
+                &mut pool,
+                &mut |tex_name: &str| {
+                    let path = format!("assets/minecraft/textures/{tex_name}.png");
+                    let mut bytes = Vec::new();
+                    jar.by_name(&path)
+                        .ok()
+                        .and_then(|mut e| e.read_to_end(&mut bytes).ok())?;
+                    let (rgba, w, h) = decode_png_any(&bytes)?;
+                    Some(crate::held_items::HeldTexture { w, h, rgba })
+                },
+            );
+            be_models.append(&mut pots);
+        }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();
         log::info!("rewo-data: {be_count} block-entity model(s) baked");
