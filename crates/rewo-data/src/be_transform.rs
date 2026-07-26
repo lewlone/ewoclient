@@ -124,6 +124,41 @@ impl Facing6 {
             Facing6::East => rot_xyz(FRAC_PI_2, 0.0, -FRAC_PI_2),
         }
     }
+
+    /// `Direction.getStepX()` / `getStepZ()` — the horizontal unit step.
+    pub fn step_xz(self) -> (f32, f32) {
+        match self {
+            Facing6::North => (0.0, -1.0),
+            Facing6::South => (0.0, 1.0),
+            Facing6::West => (-1.0, 0.0),
+            Facing6::East => (1.0, 0.0),
+            Facing6::Up | Facing6::Down => (0.0, 0.0),
+        }
+    }
+
+    /// `Direction.getOpposite()`.
+    pub fn opposite(self) -> Self {
+        match self {
+            Facing6::Down => Facing6::Up,
+            Facing6::Up => Facing6::Down,
+            Facing6::North => Facing6::South,
+            Facing6::South => Facing6::North,
+            Facing6::West => Facing6::East,
+            Facing6::East => Facing6::West,
+        }
+    }
+
+    /// `Direction.toYRot()`, for the four horizontals. Up and down have no
+    /// yaw; vanilla throws there, and a skull is never wall-mounted to one.
+    pub fn to_y_rot(self) -> f32 {
+        match self {
+            Facing6::South => 0.0,
+            Facing6::West => 90.0,
+            Facing6::North => 180.0,
+            Facing6::East => 270.0,
+            Facing6::Up | Facing6::Down => 0.0,
+        }
+    }
 }
 
 /// JOML `Quaternionf.rotationXYZ(x, y, z)` as a matrix — X first, then Y, then
@@ -171,6 +206,58 @@ pub fn shulker_box(facing: Facing6) -> Affine {
     let m = mul(&m, &facing.rotation());
     let m = mul(&m, &scale(1.0, -1.0, -1.0));
     mul(&m, &translation(0.0, -1.0, 0.0))
+}
+
+/// `ConduitRenderer.submit`'s inactive branch — `translate(0.5, 0.5, 0.5)`
+/// then a Y rotation.
+///
+/// The conduit hangs in the middle of its block rather than standing on the
+/// floor, which is why this is a plain centre translate with no flip: the
+/// shell model is already symmetric about its own origin.
+pub fn conduit(rotation_deg: f32) -> Affine {
+    mul(&translation(0.5, 0.5, 0.5), &rot_y(rotation_deg))
+}
+
+/// `SkullBlockRenderer.createGroundTransformation(segment)`:
+///
+/// ```text
+/// new Matrix4f().translation(0.5F, 0.0F, 0.5F)
+///               .rotate(YP.rotationDegrees(-RotationSegment.convertToDegrees(segment)))
+///               .scale(-1.0F, -1.0F, 1.0F)
+/// ```
+///
+/// `convertToDegrees` is `segment * 360 / 16` — the same 16-step rotation a
+/// standing sign uses.
+///
+/// The trailing `scale(-1, -1, 1)` is why the skull models are authored the
+/// *entity* way up: `SkullModelBase` is a mob model, y-down, and this is what
+/// rights it. A chest has no such flip, which is the one thing not to carry
+/// across between the two families.
+pub fn skull_ground(segment: i32) -> Affine {
+    let m = translation(0.5, 0.0, 0.5);
+    let m = mul(&m, &rot_y(-(segment as f32) * 360.0 / 16.0));
+    mul(&m, &scale(-1.0, -1.0, 1.0))
+}
+
+/// `SkullBlockRenderer.createWallTransformation(direction)`:
+///
+/// ```text
+/// new Transformation(
+///    new Vector3f(0.5F - dir.getStepX() * 0.25F, 0.25F, 0.5F - dir.getStepZ() * 0.25F),
+///    Axis.YP.rotationDegrees(-dir.getOpposite().toYRot()),
+///    new Vector3f(-1.0F, -1.0F, 1.0F),
+///    null)
+/// ```
+///
+/// A `Transformation(t, left, s, right)` composes as `T · Rleft · S · Rright`.
+/// The quarter-block step pushes the skull off the wall it hangs on, and the
+/// **opposite** direction's yaw is what turns its face outward — using the
+/// facing itself puts the back of the head to the room.
+pub fn skull_wall(facing: Facing6) -> Affine {
+    let (sx, sz) = facing.step_xz();
+    let m = translation(0.5 - sx * 0.25, 0.25, 0.5 - sz * 0.25);
+    let m = mul(&m, &rot_y(-facing.opposite().to_y_rot()));
+    mul(&m, &scale(-1.0, -1.0, 1.0))
 }
 
 // ------------------------------------------------- animated part transforms

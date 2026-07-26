@@ -131,12 +131,15 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:trapped_chest", BlockEntityKind::Rendered),
     ("minecraft:ender_chest", BlockEntityKind::Rendered),
     ("minecraft:shulker_box", BlockEntityKind::Rendered),
+    // All seven skull types across their fourteen blocks (M28). A player head
+    // draws the default skin: the profile in its NBT would need a fetch.
+    ("minecraft:skull", BlockEntityKind::Rendered),
     // -- the invisible ones: no `elements` in any of their blockstate models,
     //    and no renderer here yet --
     ("minecraft:banner", BlockEntityKind::Invisible),
-    ("minecraft:skull", BlockEntityKind::Invisible),
     ("minecraft:decorated_pot", BlockEntityKind::Invisible),
-    ("minecraft:conduit", BlockEntityKind::Invisible),
+    // The dormant shell (M28); the active cage/wind/eye need a clock.
+    ("minecraft:conduit", BlockEntityKind::Rendered),
     ("minecraft:end_portal", BlockEntityKind::Invisible),
     ("minecraft:end_gateway", BlockEntityKind::Invisible),
     ("minecraft:copper_golem_statue", BlockEntityKind::Invisible),

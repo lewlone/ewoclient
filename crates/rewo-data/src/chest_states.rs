@@ -141,7 +141,35 @@ pub struct ChestStates {
     /// chests rather than merged, because a chest carries a lid clock and a
     /// half and a shulker box carries neither.
     shulkers: HashMap<u32, (String, crate::be_transform::Facing6)>,
+    /// Everything whose state resolves to a model and a fixed transform with
+    /// no clock at all — skulls (M28) and the rest of the still-static block
+    /// entities as they land. One map because they share the *shape* of the
+    /// answer; the two above are separate precisely because they do not.
+    statics: HashMap<u32, (String, crate::be_transform::Affine)>,
 }
+
+/// The seven skull types, as `(block prefix, model name)`.
+///
+/// Each has a ground block and a `_wall_` one, which differ only in the
+/// transform — `SkullBlockRenderer` picks the model by
+/// `AbstractSkullBlock.getType()`, which is the same for both.
+/// `skeleton_skull` → `skeleton_wall_skull`.
+fn wall_skull_name(prefix: &str) -> String {
+    match prefix.rsplit_once('_') {
+        Some((head, tail)) => format!("{head}_wall_{tail}"),
+        None => format!("wall_{prefix}"),
+    }
+}
+
+const SKULLS: &[(&str, &str)] = &[
+    ("skeleton_skull", "rewo:be/skeleton_skull"),
+    ("wither_skeleton_skull", "rewo:be/wither_skeleton_skull"),
+    ("zombie_head", "rewo:be/zombie_head"),
+    ("creeper_head", "rewo:be/creeper_head"),
+    ("player_head", "rewo:be/player_head"),
+    ("piglin_head", "rewo:be/piglin_head"),
+    ("dragon_head", "rewo:be/dragon_head"),
+];
 
 impl ChestState {
     /// The model to draw, `Sheets.chooseSprite(material, type)`'s selection
@@ -261,12 +289,89 @@ impl ChestStates {
             }
         }
 
+        // Skulls (M28). The ground block carries a 16-step `rotation`, the
+        // wall one a horizontal `facing` — the same pair of shapes a sign
+        // uses, and read the same way, by which property is present rather
+        // than by a name list.
+        let mut statics = HashMap::new();
+        for (prefix, model) in SKULLS {
+            for wall in [false, true] {
+                let block = if wall {
+                    format!("minecraft:{}", wall_skull_name(prefix))
+                } else {
+                    format!("minecraft:{prefix}")
+                };
+                let Some(def) = obj.get(&block) else {
+                    // A version without a given skull is a real answer; the
+                    // vanilla set is graded by the gate rather than here.
+                    continue;
+                };
+                let states = def
+                    .get("states")
+                    .and_then(|s| s.as_array())
+                    .ok_or_else(|| format!("blocks.json: {block} has no states"))?;
+                for st in states {
+                    let id = st
+                        .get("id")
+                        .and_then(|i| i.as_u64())
+                        .ok_or_else(|| format!("blocks.json: {block} state has no id"))?
+                        as u32;
+                    let props = st.get("properties").and_then(|p| p.as_object());
+                    let xf = if wall {
+                        let f = props
+                            .and_then(|p| p.get("facing"))
+                            .and_then(|f| f.as_str())
+                            .and_then(crate::be_transform::Facing6::from_name)
+                            .ok_or_else(|| {
+                                format!("blocks.json: {block} state {id} has no facing")
+                            })?;
+                        crate::be_transform::skull_wall(f)
+                    } else {
+                        let seg = props
+                            .and_then(|p| p.get("rotation"))
+                            .and_then(|r| r.as_str())
+                            .and_then(|r| r.parse::<i32>().ok())
+                            .ok_or_else(|| {
+                                format!("blocks.json: {block} state {id} has no rotation")
+                            })?;
+                        crate::be_transform::skull_ground(seg)
+                    };
+                    statics.insert(id, ((*model).to_string(), xf));
+                }
+            }
+        }
+
+        // The conduit — one block, one state, no properties at all.
+        if let Some(def) = obj.get("minecraft:conduit") {
+            if let Some(states) = def.get("states").and_then(|s| s.as_array()) {
+                for st in states {
+                    if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
+                        statics.insert(
+                            id as u32,
+                            (
+                                crate::block_entity_models::CONDUIT.0.to_string(),
+                                // The dormant shell, unrotated. Its spin and
+                                // the active cage/wind/eye are a clock this
+                                // client does not keep — see the M28 record.
+                                crate::be_transform::conduit(0.0),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
         log::info!(
-            "rewo-data: {} chest + {} shulker-box block state(s)",
+            "rewo-data: {} chest + {} shulker-box + {} static block state(s)",
             by_state.len(),
-            shulkers.len()
+            shulkers.len(),
+            statics.len()
         );
-        Ok(Self { by_state, shulkers })
+        Ok(Self {
+            by_state,
+            shulkers,
+            statics,
+        })
     }
 
     /// What to draw at a block state, or `None` when Rewo renders nothing for
@@ -279,12 +384,36 @@ impl ChestStates {
                 anim: BlockEntityAnim::ChestLid(*c),
             });
         }
-        let (model, facing) = self.shulkers.get(&state_id)?;
+        if let Some((model, facing)) = self.shulkers.get(&state_id) {
+            return Some(BlockEntityState {
+                model: model.clone(),
+                transform: crate::be_transform::shulker_box(*facing),
+                anim: BlockEntityAnim::ShulkerLid,
+            });
+        }
+        let (model, transform) = self.statics.get(&state_id)?;
         Some(BlockEntityState {
             model: model.clone(),
-            transform: crate::be_transform::shulker_box(*facing),
-            anim: BlockEntityAnim::ShulkerLid,
+            transform: *transform,
+            anim: BlockEntityAnim::None,
         })
+    }
+
+    /// `skeleton_skull` → `skeleton_wall_skull`, `zombie_head` →
+    /// `zombie_wall_head`.
+    ///
+    /// The word `wall` goes **before the last segment**, not on the end, and
+    /// the last segment differs per type (`_skull` vs `_head`) — so this is
+    /// derived from the ground name rather than being a second hard-coded
+    /// list that could drift from the first.
+    pub fn wall_name(prefix: &str) -> String {
+        wall_skull_name(prefix)
+    }
+
+    /// Every block state resolved by the static table — skulls and whatever
+    /// joins them. Exposed for the gate's coverage witness.
+    pub fn static_len(&self) -> usize {
+        self.statics.len()
     }
 
     /// Every block state this table draws something for.
@@ -292,7 +421,11 @@ impl ChestStates {
     /// The gate reads this to derive which block-entity **types** actually
     /// render, instead of restating the classification table it is checking.
     pub fn drawn_states(&self) -> impl Iterator<Item = u32> + '_ {
-        self.by_state.keys().chain(self.shulkers.keys()).copied()
+        self.by_state
+            .keys()
+            .chain(self.shulkers.keys())
+            .chain(self.statics.keys())
+            .copied()
     }
 
     pub fn shulker_len(&self) -> usize {

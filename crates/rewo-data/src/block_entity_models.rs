@@ -38,10 +38,46 @@ struct Box {
     /// translates by the pose offset and then rotates, so the box's own
     /// coordinates are relative to it.
     offset: [f32; 3],
+    /// `PartPose.offsetAndRotation(...)`'s rest rotation, in radians `(x, y,
+    /// z)`, applied about [`Self::offset`] before the offset translates.
+    ///
+    /// `ModelPart.rotate` runs Z, then Y, then X (`rotateZ` ∘ `rotateY` ∘
+    /// `rotateX` in JOML post-multiply order), so a point sees X first.
+    rot: [f32; 3],
+    /// `CubeDeformation` — a uniform grow on every side. Vanilla's overlay
+    /// layers are the same box at a positive deformation, and a *negative* one
+    /// is a shrink (the decorated pot's neck uses both).
+    grow: f32,
+    /// `CubeListBuilder.mirror(true)` — swaps the box's x extremes and
+    /// reverses each face's vertex array, so the texture reads the other way
+    /// round. A model with a mirrored pair draws both from **one** rect.
+    mirror: bool,
     /// The animated group (see [`crate::held_items::HeldQuad::part`]).
     part: u8,
     /// A face vanilla's `addBox(..., visibleFaces)` leaves out.
     hide: Option<Facing>,
+}
+
+/// A `Box` with every optional field at its vanilla default, so a model that
+/// needs none of them reads as the `addBox` call it transcribes.
+const fn plain(
+    tex: (f32, f32),
+    min: [f32; 3],
+    dims: [f32; 3],
+    offset: [f32; 3],
+    part: u8,
+) -> Box {
+    Box {
+        tex,
+        min,
+        dims,
+        offset,
+        rot: [0.0; 3],
+        grow: 0.0,
+        mirror: false,
+        part,
+        hide: None,
+    }
 }
 
 /// The pivot a chest's lid and lock rotate about — `PartPose.offset(0, 9, 1)`,
@@ -63,30 +99,9 @@ pub const SHULKER_LID_PART: u8 = 1;
 
 /// `ChestModel.createSingleBodyLayer` — a closed single chest.
 const CHEST_SINGLE: &[Box] = &[
-    Box {
-        tex: (0.0, 19.0),
-        min: [1.0, 0.0, 1.0],
-        dims: [14.0, 10.0, 14.0],
-        offset: [0.0; 3],
-        part: 0,
-        hide: None,
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [1.0, 0.0, 0.0],
-        dims: [14.0, 5.0, 14.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: None,
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [7.0, -2.0, 14.0],
-        dims: [2.0, 4.0, 1.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: None,
-    },
+    plain((0.0, 19.0), [1.0, 0.0, 1.0], [14.0, 10.0, 14.0], [0.0; 3], 0),
+    plain((0.0, 0.0), [1.0, 0.0, 0.0], [14.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART),
+    plain((0.0, 0.0), [7.0, -2.0, 14.0], [2.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART),
 ];
 
 /// `ChestModel.createDoubleBodyLeftLayer` — the LEFT half of a double chest.
@@ -101,58 +116,16 @@ const CHEST_SINGLE: &[Box] = &[
 /// The dropped face is the one that meets the other half: rendering it would
 /// put two coincident quads inside the seam, which z-fights.
 const CHEST_LEFT: &[Box] = &[
-    Box {
-        tex: (0.0, 19.0),
-        min: [0.0, 0.0, 1.0],
-        dims: [15.0, 10.0, 14.0],
-        offset: [0.0; 3],
-        part: 0,
-        hide: Some(Facing::West),
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [0.0, 0.0, 0.0],
-        dims: [15.0, 5.0, 14.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: Some(Facing::West),
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [0.0, -2.0, 14.0],
-        dims: [1.0, 4.0, 1.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: Some(Facing::West),
-    },
+    Box { hide: Some(Facing::West), ..plain((0.0, 19.0), [0.0, 0.0, 1.0], [15.0, 10.0, 14.0], [0.0; 3], 0) },
+    Box { hide: Some(Facing::West), ..plain((0.0, 0.0), [0.0, 0.0, 0.0], [15.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
+    Box { hide: Some(Facing::West), ..plain((0.0, 0.0), [0.0, -2.0, 14.0], [1.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
 ];
 
 /// `ChestModel.createDoubleBodyRightLayer` — the RIGHT half, dropping EAST.
 const CHEST_RIGHT: &[Box] = &[
-    Box {
-        tex: (0.0, 19.0),
-        min: [1.0, 0.0, 1.0],
-        dims: [15.0, 10.0, 14.0],
-        offset: [0.0; 3],
-        part: 0,
-        hide: Some(Facing::East),
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [1.0, 0.0, 0.0],
-        dims: [15.0, 5.0, 14.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: Some(Facing::East),
-    },
-    Box {
-        tex: (0.0, 0.0),
-        min: [15.0, -2.0, 14.0],
-        dims: [1.0, 4.0, 1.0],
-        offset: CHEST_LID_PIVOT,
-        part: CHEST_LID_PART,
-        hide: Some(Facing::East),
-    },
+    Box { hide: Some(Facing::East), ..plain((0.0, 19.0), [1.0, 0.0, 1.0], [15.0, 10.0, 14.0], [0.0; 3], 0) },
+    Box { hide: Some(Facing::East), ..plain((0.0, 0.0), [1.0, 0.0, 0.0], [15.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
+    Box { hide: Some(Facing::East), ..plain((0.0, 0.0), [15.0, -2.0, 14.0], [1.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
 ];
 
 /// The face labels `cube_faces` returns, in order — so a `hide` can name one.
@@ -227,22 +200,8 @@ const FACE_DIRS: [u8; 6] = [0, 1, 2, 5, 4, 3];
 /// and spins it, which is why the group's transform is a matrix rather than an
 /// angle. See [`crate::be_transform::shulker_lid`].
 const SHULKER_BOX: &[Box] = &[
-    Box {
-        tex: (0.0, 0.0),
-        min: [-8.0, -16.0, -8.0],
-        dims: [16.0, 12.0, 16.0],
-        offset: SHULKER_LID_PIVOT,
-        part: SHULKER_LID_PART,
-        hide: None,
-    },
-    Box {
-        tex: (0.0, 28.0),
-        min: [-8.0, -8.0, -8.0],
-        dims: [16.0, 8.0, 16.0],
-        offset: [0.0, 24.0, 0.0],
-        part: 0,
-        hide: None,
-    },
+    plain((0.0, 0.0), [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0], SHULKER_LID_PIVOT, SHULKER_LID_PART),
+    plain((0.0, 28.0), [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0], [0.0, 24.0, 0.0], 0),
 ];
 
 /// `ColorCollection.NAMES`, the dye order shulker box textures are named in.
@@ -340,12 +299,245 @@ pub fn bake_chests(
     out
 }
 
-/// The three cuboids, unwrapped against the 64×64 chest texture.
-fn chest_quads(boxes: &[Box], tex: u16) -> Vec<HeldQuad> {
-    const ATLAS: f32 = 64.0;
+// ------------------------------------------------------------------ skulls
+//
+// `SkullBlockRenderer` (M28). Seven types across fourteen blocks — a ground
+// and a wall variant each.
+//
+// **These are entity models, not block-entity ones**, and the difference is
+// load-bearing: `SkullModelBase` is authored y-down like a mob, and both skull
+// transforms end in `scale(-1, -1, 1)` to put it the right way up. A chest has
+// no such flip. Getting this backwards renders a skull upside down and
+// mirrored, which reads as a texture bug.
+
+/// `SkullModel.createHeadModel` — the one box every skull shares.
+///
+/// `texOffs(0, 0) addBox(-4, -8, -4, 8, 8, 8)` at `PartPose.ZERO`, so the head
+/// hangs *below* its origin: in the flipped space that puts it sitting on the
+/// block.
+const SKULL_HEAD: Box = plain((0.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], [0.0; 3], 0);
+
+/// `createMobHeadLayer` — the head alone, on a 64×32 sheet.
+const SKULL_MOB: &[Box] = &[SKULL_HEAD];
+
+/// `createHumanoidHeadLayer` — the head plus the `hat` overlay, 64×64.
+///
+/// The hat is the same box at `CubeDeformation(0.25)`, which is what makes a
+/// player head's second skin layer stand a quarter-pixel proud of the first.
+const SKULL_HUMANOID: &[Box] = &[
+    SKULL_HEAD,
+    Box {
+        grow: 0.25,
+        ..plain((32.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], [0.0; 3], 0)
+    },
+];
+
+/// `AbstractPiglinModel.addHead` — head, snout, two tusks and two ears, 64×64.
+///
+/// The ears carry a rest rotation of ∓30° about Z, which is the first model
+/// here to need one.
+const SKULL_PIGLIN: &[Box] = &[
+    plain((0.0, 0.0), [-5.0, -8.0, -4.0], [10.0, 8.0, 8.0], [0.0; 3], 0),
+    plain((31.0, 1.0), [-2.0, -4.0, -5.0], [4.0, 4.0, 1.0], [0.0; 3], 0),
+    plain((2.0, 4.0), [2.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
+    plain((2.0, 0.0), [-3.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
+    Box {
+        rot: [0.0, 0.0, -std::f32::consts::FRAC_PI_6],
+        ..plain((51.0, 6.0), [0.0, 0.0, -2.0], [1.0, 5.0, 4.0], [4.5, -6.0, 0.0], 0)
+    },
+    Box {
+        rot: [0.0, 0.0, std::f32::consts::FRAC_PI_6],
+        ..plain((39.0, 6.0), [-1.0, 0.0, -2.0], [1.0, 5.0, 4.0], [-4.5, -6.0, 0.0], 0)
+    },
+];
+
+/// `DragonHeadModel.createHeadLayer` — 256×256, and the only skull with a
+/// mirrored pair.
+///
+/// `mirror(true)` covers the left scale and nostril, then `mirror(false)` the
+/// right: both sides come from **one** texture rect read in opposite
+/// directions, which is why the mirror flag exists rather than a second rect.
+///
+/// The head's pose is `offset(0, -7.986666, 0).scaled(0.75)` and the jaw hangs
+/// off it at `offset(0, 4, -8)`. The scale is folded into the box coordinates
+/// here — the model has no animated group, so nothing needs the pose to stay
+/// separable — and the jaw's own offset is pre-multiplied by the same 0.75 for
+/// the same reason.
+const DRAGON_SCALE: f32 = 0.75;
+const DRAGON_HEAD_Y: f32 = -7.986_666;
+
+/// `DragonHeadModel`'s boxes, before the head pose's scale and offset. Applied
+/// by [`dragon_skull`], which is a function rather than a const because the
+/// pose has to multiply through.
+const DRAGON_RAW: &[Box] = &[
+    plain((176.0, 44.0), [-6.0, -1.0, -24.0], [12.0, 5.0, 16.0], [0.0; 3], 0),
+    plain((112.0, 30.0), [-8.0, -8.0, -10.0], [16.0, 16.0, 16.0], [0.0; 3], 0),
+    Box {
+        mirror: true,
+        ..plain((0.0, 0.0), [-5.0, -12.0, -4.0], [2.0, 4.0, 6.0], [0.0; 3], 0)
+    },
+    Box {
+        mirror: true,
+        ..plain((112.0, 0.0), [-5.0, -3.0, -22.0], [2.0, 2.0, 4.0], [0.0; 3], 0)
+    },
+    plain((0.0, 0.0), [3.0, -12.0, -4.0], [2.0, 4.0, 6.0], [0.0; 3], 0),
+    plain((112.0, 0.0), [3.0, -3.0, -22.0], [2.0, 2.0, 4.0], [0.0; 3], 0),
+    // The jaw, whose own pose offset rides inside the head's scale.
+    plain((176.0, 65.0), [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0], [0.0, 4.0, -8.0], 0),
+];
+
+/// The dragon skull's boxes with the head pose applied.
+fn dragon_skull() -> Vec<Box> {
+    DRAGON_RAW
+        .iter()
+        .map(|b| Box {
+            tex: b.tex,
+            min: [
+                b.min[0] * DRAGON_SCALE,
+                b.min[1] * DRAGON_SCALE,
+                b.min[2] * DRAGON_SCALE,
+            ],
+            dims: [
+                b.dims[0] * DRAGON_SCALE,
+                b.dims[1] * DRAGON_SCALE,
+                b.dims[2] * DRAGON_SCALE,
+            ],
+            offset: [
+                b.offset[0] * DRAGON_SCALE,
+                b.offset[1] * DRAGON_SCALE + DRAGON_HEAD_Y,
+                b.offset[2] * DRAGON_SCALE,
+            ],
+            rot: b.rot,
+            // The deformation is in *unscaled* px in vanilla, but every dragon
+            // box has none, so scaling it is moot and left alone.
+            grow: b.grow,
+            mirror: b.mirror,
+            part: b.part,
+            hide: b.hide,
+        })
+        .collect()
+}
+
+/// The skull types, as `(model name, jar texture, texture size, boxes)`.
+///
+/// The player head uses the jar's default wide skin. A real player head
+/// carries a profile in its NBT and vanilla fetches that skin — deliberately
+/// not done here, for the same reason M7c's fetch is a runtime pool: it is a
+/// network round trip, and a head whose appearance depends on one is not
+/// reproducible in a gate.
+pub const SKULL_TEXTURES: &[(&str, &str)] = &[
+    ("rewo:be/skeleton_skull", "entity/skeleton/skeleton"),
+    (
+        "rewo:be/wither_skeleton_skull",
+        "entity/skeleton/wither_skeleton",
+    ),
+    ("rewo:be/zombie_head", "entity/zombie/zombie"),
+    ("rewo:be/creeper_head", "entity/creeper/creeper"),
+    ("rewo:be/player_head", "entity/player/wide/steve"),
+    ("rewo:be/piglin_head", "entity/piglin/piglin"),
+    ("rewo:be/dragon_head", "entity/enderdragon/dragon"),
+];
+
+/// Bake the seven skull models.
+pub fn bake_skulls(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let dragon = dragon_skull();
+    let mut out = Vec::new();
+    for (name, tex_path) in SKULL_TEXTURES {
+        let (boxes, size): (&[Box], (f32, f32)) = match *name {
+            // `createMobHeadLayer` — head only, on a half-height sheet.
+            "rewo:be/skeleton_skull"
+            | "rewo:be/wither_skeleton_skull"
+            | "rewo:be/creeper_head" => (SKULL_MOB, (64.0, 32.0)),
+            "rewo:be/piglin_head" => (SKULL_PIGLIN, TEX_64),
+            "rewo:be/dragon_head" => (&dragon, (256.0, 256.0)),
+            // `createHumanoidHeadLayer` — head + hat, full sheet.
+            _ => (SKULL_HUMANOID, TEX_64),
+        };
+        let Some(tex) = pool.intern(tex_path, || load(tex_path)) else {
+            continue;
+        };
+        out.push((
+            (*name).to_string(),
+            HeldItemModel {
+                quads: model_quads(boxes, tex, size),
+                right: DisplayTransform::default(),
+                left: DisplayTransform::default(),
+                ground: DisplayTransform::default(),
+                from_block: false,
+            },
+        ));
+    }
+    out
+}
+
+// ----------------------------------------------------------------- conduit
+//
+// `ConduitRenderer` (M28). Four models in vanilla — an inactive shell, an
+// active cage, a wind shroud and an eye — of which this ships the shell.
+
+/// `ConduitRenderer.createShellLayer` — the dormant conduit.
+///
+/// `texOffs(0, 0) addBox(-3, -3, -3, 6, 6, 6)` on a **32×16** sheet, centred
+/// on its own origin (the renderer translates to the block centre), so unlike
+/// a skull this one is symmetric about zero and needs no flip.
+const CONDUIT_SHELL: &[Box] =
+    &[plain((0.0, 0.0), [-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0; 3], 0)];
+
+/// The conduit shell's model name and jar texture.
+pub const CONDUIT: (&str, &str) = ("rewo:be/conduit", "entity/conduit/base");
+
+/// Bake the conduit shell.
+pub fn bake_conduit(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let Some(tex) = pool.intern(CONDUIT.1, || load(CONDUIT.1)) else {
+        return Vec::new();
+    };
+    vec![(
+        CONDUIT.0.to_string(),
+        HeldItemModel {
+            quads: model_quads(CONDUIT_SHELL, tex, (32.0, 16.0)),
+            right: DisplayTransform::default(),
+            left: DisplayTransform::default(),
+            ground: DisplayTransform::default(),
+            from_block: false,
+        },
+    )]
+}
+
+/// The default texture size for the chest and shulker models — 64×64.
+const TEX_64: (f32, f32) = (64.0, 64.0);
+
+/// Unwrap a model's cuboids against its own texture.
+///
+/// `tex_size` is the `LayerDefinition.create(mesh, w, h)` pair, which is **not
+/// always square and not always 64**: a mob head sheet is 64×32 and a dragon
+/// skull is 256×256. Hard-coding 64 was fine while only chests and shulker
+/// boxes existed and is exactly the kind of assumption that renders a new model
+/// with plausible-looking garbage UVs.
+fn model_quads(boxes: &[Box], tex: u16, tex_size: (f32, f32)) -> Vec<HeldQuad> {
+    let (atlas_w, atlas_h) = tex_size;
     let mut quads = Vec::with_capacity(boxes.len() * 6);
     for b in boxes {
-        for (i, (verts, uv)) in cube_faces(b.tex, b.min, b.dims).into_iter().enumerate() {
+        // `ModelPart.rotate` — Z, then Y, then X in JOML's post-multiply
+        // order, so a point is turned by X first.
+        let [rx, ry, rz] = b.rot;
+        let (sx, cx) = rx.sin_cos();
+        let (sy, cy) = ry.sin_cos();
+        let (sz, cz) = rz.sin_cos();
+        let rotate = |p: [f32; 3]| -> [f32; 3] {
+            let p = [p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx];
+            let p = [p[0] * cy + p[2] * sy, p[1], -p[0] * sy + p[2] * cy];
+            [p[0] * cz - p[1] * sz, p[0] * sz + p[1] * cz, p[2]]
+        };
+        for (i, (verts, uv)) in cube_faces(b.tex, b.min, b.dims, b.grow, b.mirror)
+            .into_iter()
+            .enumerate()
+        {
             // `addBox(..., visibleFaces)` — the seam face of a double half is
             // simply not built.
             if b.hide == Some(FACE_ORDER[i]) {
@@ -353,19 +545,21 @@ fn chest_quads(boxes: &[Box], tex: u16) -> Vec<HeldQuad> {
             }
             let mut v = [[0f32; 3]; 4];
             for (k, c) in verts.iter().enumerate() {
-                // `PartPose.offset` translates the whole box; the model is
-                // y-up here (unlike an entity model, which is rendered through
-                // a `scale(-1,-1,1)`), because `BlockEntityRenderer` has no
-                // such flip.
+                // Rotate about the pose origin, then translate by it. The
+                // model is y-up here (unlike an entity model, which is
+                // rendered through a `scale(-1,-1,1)`) — except where the
+                // renderer's own transform supplies that flip, which is why
+                // the skull models below are authored the entity way up.
+                let r = rotate(*c);
                 v[k] = [
-                    c[0] + b.offset[0],
-                    c[1] + b.offset[1],
-                    c[2] + b.offset[2],
+                    r[0] + b.offset[0],
+                    r[1] + b.offset[1],
+                    r[2] + b.offset[2],
                 ];
             }
             let mut t = [[0f32; 2]; 4];
             for (k, c) in uv.iter().enumerate() {
-                t[k] = [c[0] / ATLAS, c[1] / ATLAS];
+                t[k] = [c[0] / atlas_w, c[1] / atlas_h];
             }
             quads.push(HeldQuad {
                 verts: v,
@@ -379,6 +573,11 @@ fn chest_quads(boxes: &[Box], tex: u16) -> Vec<HeldQuad> {
     quads
 }
 
+/// The chest and shulker models, which are all 64×64.
+fn chest_quads(boxes: &[Box], tex: u16) -> Vec<HeldQuad> {
+    model_quads(boxes, tex, TEX_64)
+}
+
 /// `ModelPart.Cube` + `Polygon`, for the block-entity bake.
 ///
 /// A second transcription of the same vanilla source `rewo_gpu::mobs` ports,
@@ -389,11 +588,24 @@ fn cube_faces(
     tex: (f32, f32),
     min: [f32; 3],
     dims: [f32; 3],
+    grow: f32,
+    mirror: bool,
 ) -> [([[f32; 3]; 4], [[f32; 2]; 4]); 6] {
     let (tex_u, tex_v) = tex;
     let [w, h, d] = dims;
-    let [x0, y0, z0] = min;
-    let (x1, y1, z1) = (x0 + w, y0 + h, z0 + d);
+    let [mut x0, mut y0, mut z0] = min;
+    let (mut x1, mut y1, mut z1) = (x0 + w, y0 + h, z0 + d);
+    // `CubeDeformation` grows every side, so the box keeps its centre. A
+    // negative value shrinks it, which is what an inset detail uses.
+    x0 -= grow;
+    y0 -= grow;
+    z0 -= grow;
+    x1 += grow;
+    y1 += grow;
+    z1 += grow;
+    if mirror {
+        std::mem::swap(&mut x0, &mut x1);
+    }
     let t0 = [x0, y0, z0];
     let t1 = [x1, y0, z0];
     let t2 = [x1, y1, z0];
@@ -412,7 +624,15 @@ fn cube_faces(
     // [0]=(u1,v0) [1]=(u0,v0) [2]=(u0,v1) [3]=(u1,v1).
     let face = |verts: [[f32; 3]; 4], r: (f32, f32, f32, f32)| {
         let (a, b, c, e) = r;
-        (verts, [[c, b], [a, b], [a, e], [c, e]])
+        let mut vs = verts;
+        let mut uvs = [[c, b], [a, b], [a, e], [c, e]];
+        if mirror {
+            // Vanilla reverses the vertex array; each vertex keeps its UV, so
+            // the rect reads the other way round across the face.
+            vs.reverse();
+            uvs.reverse();
+        }
+        (vs, uvs)
     };
     [
         face([l1, l0, t0, t1], (u1, v0, u2, v1)),  // DOWN

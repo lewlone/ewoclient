@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 100;
+const EXPECTED_WITNESSES: usize = 112;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -241,6 +241,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_block_event_dispatch(&mut c, &ids, &blocks, &paths, &entries, types, chest, shulker, bell)?;
     check_shulker_anim(&mut c, &args.version)?;
     check_sign_style(&mut c, &blocks, &paths, sign)?;
+    check_skulls(&mut c, &blocks, &paths, &args.version)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -691,13 +692,17 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     );
 
     // Every shulker state resolves to a model that baked, with a transform.
+    // Selected by the model name rather than by "not a chest": since M28 the
+    // static table resolves skulls too, and the old exclusion counted those as
+    // shulker boxes — 102 became 382 without the witness noticing what it was
+    // actually measuring.
     let mut sh_ok = true;
     let mut sh_seen = 0;
     for id in 0..40000u32 {
-        if states.get(id).is_some() {
-            continue; // a chest, already covered
-        }
         let Some(d) = states.draw_for(id) else { continue };
+        if !d.model.ends_with("shulker_box") {
+            continue;
+        }
         sh_seen += 1;
         sh_ok &= items.block_entities.contains_key(&d.model) && d.chest().is_none();
     }
@@ -1164,6 +1169,250 @@ fn check_block_event_dispatch(
              not consumed and left the {before} existing entries alone — vanilla's \
              `getBlockEntity` returns null there and the handler returns"
         ),
+    );
+    Ok(())
+}
+
+/// M28 — the seven skull types, across their fourteen blocks.
+fn check_skulls(
+    c: &mut Checker,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    version: &str,
+) -> Result<(), String> {
+    use rewo_data::be_transform as bt;
+
+    let jar = client_jar(version).ok_or("client jar not found")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    let items = &baked.held_items;
+
+    let names: Vec<&str> = rewo_data::block_entity_models::SKULL_TEXTURES
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    let missing: Vec<&&str> = names
+        .iter()
+        .filter(|n| !items.block_entities.contains_key(**n))
+        .collect();
+    c.record(
+        "k1.every_skull_type_bakes",
+        missing.is_empty() && names.len() == 7,
+        format!("{} skull models baked, missing {missing:?}", names.len()),
+    );
+
+    let quads = |n: &str| items.block_entities.get(n).map(|m| m.quads.len());
+    c.record(
+        "k2.a_humanoid_head_has_a_hat_and_a_mob_head_does_not",
+        quads("rewo:be/zombie_head") == Some(12) && quads("rewo:be/skeleton_skull") == Some(6),
+        format!(
+            "zombie head {:?} quads (head + hat = 2 boxes) vs skeleton skull \
+             {:?} (head only) — `createHumanoidHeadLayer` adds the `hat` \
+             overlay, `createMobHeadLayer` does not",
+            quads("rewo:be/zombie_head"),
+            quads("rewo:be/skeleton_skull")
+        ),
+    );
+
+    // The hat is the same box grown by 0.25, so it must enclose the head.
+    let zombie = items.block_entities.get("rewo:be/zombie_head").unwrap();
+    let extent = |qs: &[rewo_data::held_items::HeldQuad]| -> (f32, f32) {
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for q in qs {
+            for v in &q.verts {
+                lo = lo.min(v[0]);
+                hi = hi.max(v[0]);
+            }
+        }
+        (lo, hi)
+    };
+    let (head_lo, head_hi) = extent(&zombie.quads[..6]);
+    let (hat_lo, hat_hi) = extent(&zombie.quads[6..]);
+    c.record(
+        "k3.the_hat_encloses_the_head_by_a_quarter_pixel",
+        (hat_lo - (head_lo - 0.25)).abs() < 1e-5 && (hat_hi - (head_hi + 0.25)).abs() < 1e-5,
+        format!(
+            "head x {head_lo}..{head_hi}, hat x {hat_lo}..{hat_hi} — \
+             `CubeDeformation(0.25)` grows every side, which is what stands a \
+             player head's second skin layer proud of the first"
+        ),
+    );
+
+    // A mob head sheet is 64x32, not 64x64 — every UV must still be in range,
+    // which is the check that a hard-coded 64 would fail on the v axis.
+    let mut uv_ok = true;
+    for n in &names {
+        for q in &items.block_entities.get(*n).unwrap().quads {
+            for uv in q.uv {
+                uv_ok &= (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]);
+            }
+        }
+    }
+    c.record(
+        "k4.every_skull_uv_is_inside_its_own_sheet",
+        uv_ok,
+        "all seven models unwrap inside 0..1 — the mob heads are 64x32 and the \
+         dragon is 256x256, so the per-model texture size is real and a \
+         hard-coded 64 would push the mob heads off the bottom",
+    );
+
+    // The dragon is the only mirrored model: its left and right scales come
+    // from ONE texture rect, read in opposite directions.
+    let dragon = items.block_entities.get("rewo:be/dragon_head").unwrap();
+    let scale_uvs: Vec<[[f32; 2]; 4]> = dragon
+        .quads
+        .iter()
+        .filter(|q| q.uv.iter().all(|uv| uv[0] < 0.1 && uv[1] < 0.1))
+        .map(|q| q.uv)
+        .collect();
+    c.record(
+        "k5.the_dragon_scales_share_one_texture_rect",
+        scale_uvs.len() >= 12 && dragon.quads.len() == 42,
+        format!(
+            "{} dragon quads (7 boxes), of which {} sample the (0,0) rect that \
+             `mirror(true)`/`mirror(false)` share between the left and right \
+             scale — one rect, read both ways",
+            dragon.quads.len(),
+            scale_uvs.len()
+        ),
+    );
+
+    // --- the transforms ---------------------------------------------------
+    let apply = |m: &bt::Affine, p: [f32; 3]| -> [f32; 3] {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    };
+    let ground = bt::skull_ground(0);
+    c.record(
+        "k6.the_ground_transform_flips_the_entity_model_upright",
+        ground[1][1] < 0.0 && ground[0][0] < 0.0 && ground[2][2] > 0.0,
+        format!(
+            "scale ({}, {}, {}) — `scale(-1, -1, 1)`. `SkullModelBase` is an \
+             ENTITY model, authored y-down like a mob, and this is what rights \
+             it. A chest has no such flip, and carrying one family's assumption \
+             to the other renders the skull upside down and mirrored",
+            ground[0][0], ground[1][1], ground[2][2]
+        ),
+    );
+
+    // The head box spans y -8..0 in model space; after the flip and the /16
+    // it must sit inside the block it occupies.
+    let head_top = apply(&ground, [0.0, -8.0 / 16.0, 0.0]);
+    let head_bottom = apply(&ground, [0.0, 0.0, 0.0]);
+    c.record(
+        "k7.a_ground_skull_sits_on_the_block_floor",
+        (head_bottom[1] - 0.0).abs() < 1e-5 && (head_top[1] - 0.5).abs() < 1e-5,
+        format!(
+            "the head's own origin lands at y {:.3} and its top at y {:.3} — an \
+             8 px cube standing on the floor of the block, which is where a \
+             skull sits",
+            head_bottom[1], head_top[1]
+        ),
+    );
+
+    // A wall skull steps a quarter-block away from the wall it hangs on, in
+    // the direction it faces.
+    let north = bt::skull_wall(bt::Facing6::North);
+    let south = bt::skull_wall(bt::Facing6::South);
+    let (nx, ny, nz) = {
+        let p = apply(&north, [0.0, 0.0, 0.0]);
+        (p[0], p[1], p[2])
+    };
+    let sz = apply(&south, [0.0, 0.0, 0.0])[2];
+    c.record(
+        "k8.a_wall_skull_steps_off_its_wall_and_rides_higher",
+        (nx - 0.5).abs() < 1e-5 && (ny - 0.25).abs() < 1e-5 && nz > 0.5 && sz < 0.5,
+        format!(
+            "north-facing origin ({nx:.3}, {ny:.3}, {nz:.3}) and south-facing z \
+             {sz:.3} — `0.5 - getStepZ() * 0.25` pushes it against the wall \
+             BEHIND the way it faces, and y 0.25 lifts it off the floor a \
+             ground skull rests on"
+        ),
+    );
+
+    // Every one of the fourteen blocks resolves, and to a model that baked.
+    let states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    let mut seen = 0;
+    let mut ok = true;
+    let mut blocks_covered: HashSet<String> = HashSet::new();
+    for id in 0..40000u32 {
+        let Some(d) = states.draw_for(id) else { continue };
+        if !rewo_data::block_entity_models::SKULL_TEXTURES
+            .iter()
+            .any(|(n, _)| *n == d.model)
+        {
+            continue;
+        }
+        seen += 1;
+        ok &= items.block_entities.contains_key(&d.model);
+        if let Some(b) = blocks.block_name(id) {
+            blocks_covered.insert(b.to_string());
+        }
+    }
+    c.record(
+        "k9.all_fourteen_skull_blocks_resolve",
+        ok && blocks_covered.len() == 14 && seen > 0,
+        format!(
+            "{seen} skull block states across {} blocks, every one naming a \
+             baked model — seven types times a ground and a wall variant",
+            blocks_covered.len()
+        ),
+    );
+
+    // --- the conduit ------------------------------------------------------
+    let conduit = items
+        .block_entities
+        .get(rewo_data::block_entity_models::CONDUIT.0)
+        .ok_or("the conduit shell did not bake")?;
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for q in &conduit.quads {
+        for v in &q.verts {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+    }
+    c.record(
+        "k11.the_conduit_shell_is_a_six_px_cube_about_its_own_origin",
+        conduit.quads.len() == 6 && lo == [-3.0; 3] && hi == [3.0; 3],
+        format!(
+            "{} quads spanning {lo:?}..{hi:?} — symmetric about zero, which is \
+             why its transform is a plain centre translate with no flip, \
+             unlike a skull's",
+            conduit.quads.len()
+        ),
+    );
+
+    let cm = bt::conduit(0.0);
+    let centre = apply(&cm, [0.0, 0.0, 0.0]);
+    let corner = apply(&cm, [3.0 / 16.0, 3.0 / 16.0, 3.0 / 16.0]);
+    c.record(
+        "k12.a_conduit_floats_in_the_middle_of_its_block",
+        centre == [0.5, 0.5, 0.5]
+            && corner.iter().all(|v| (*v - 0.6875).abs() < 1e-5),
+        format!(
+            "the model origin lands at {centre:?} and its corner at {corner:?} \
+             — a conduit hangs in the middle of its block rather than standing \
+             on the floor the way a skull does"
+        ),
+    );
+
+    // The wall-name derivation is not a second hard-coded list.
+    c.record(
+        "k10.the_wall_block_name_is_derived_not_listed",
+        rewo_data::chest_states::ChestStates::wall_name("skeleton_skull")
+            == "skeleton_wall_skull"
+            && rewo_data::chest_states::ChestStates::wall_name("zombie_head")
+                == "zombie_wall_head",
+        "skeleton_skull -> skeleton_wall_skull and zombie_head -> \
+         zombie_wall_head: `wall` goes before the LAST segment, and that \
+         segment differs per type, so the name is derived rather than listed \
+         twice",
     );
     Ok(())
 }
@@ -1889,10 +2138,11 @@ fn check_registry(
     let invisible = kinds(BlockEntityKind::Invisible);
     c.record(
         "a3.the_still_invisible_set_is_the_measured_one",
-        invisible.len() == 7
+        invisible.len() == 5
             && invisible.contains(&"minecraft:banner")
             && invisible.contains(&"minecraft:decorated_pot")
             && !invisible.contains(&"minecraft:chest")
+            && !invisible.contains(&"minecraft:skull")
             && !invisible.contains(&"minecraft:sign"),
         format!(
             "{} still invisible: {:?} — a sign is NOT among them, because its block \
@@ -1926,6 +2176,13 @@ fn check_registry(
             drawn_types.insert("minecraft:trapped_chest");
         } else if name.ends_with("chest") {
             drawn_types.insert("minecraft:chest");
+        } else if name == "conduit" {
+            drawn_types.insert("minecraft:conduit");
+        } else if name.ends_with("skull") || name.ends_with("head") {
+            // Every skull and head block is the one `minecraft:skull` type —
+            // `SkullBlockRenderer` picks the model by `getType()`, not by the
+            // block-entity type, which is why fourteen blocks map to one entry.
+            drawn_types.insert("minecraft:skull");
         }
     }
     let declared: HashSet<&str> = kinds(BlockEntityKind::Rendered).into_iter().collect();
@@ -1935,7 +2192,7 @@ fn check_registry(
     only_drawn.sort_unstable();
     c.record(
         "a4.the_rendered_set_is_exactly_what_resolves_a_model",
-        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 4,
+        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 6,
         format!(
             "{} types declared Rendered and the same {} resolve a model through \
              `ChestStates::draw_for`; declared-but-undrawn {only_declared:?}, \
@@ -2004,7 +2261,7 @@ fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> 
     );
     c.record(
         "e4.the_classification_accounts_for_the_measured_shortfall",
-        registry.invisible_count() == 7 && registry.rendered_count() == 4,
+        registry.invisible_count() == 5 && registry.rendered_count() == 6,
         format!(
             "{} block-entity TYPES still Invisible and {} now Rendered, together \
              covering those blocks (one type spans all 16 banner colours, all 17 \
