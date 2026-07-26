@@ -570,35 +570,41 @@ pub const END_PORTAL_MODEL: (&str, &str) =
     ("rewo:be/end_portal", "entity/end_portal/end_portal");
 pub const END_GATEWAY_MODEL: &str = "rewo:be/end_gateway";
 
-/// Bake the two portal cubes.
-pub fn bake_end_portals(
-    pool: &mut TexturePool,
-    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
-) -> Vec<(String, HeldItemModel)> {
-    let Some(tex) = pool.intern(END_PORTAL_MODEL.1, || load(END_PORTAL_MODEL.1)) else {
-        log::error!("end portal: no texture {:?}", END_PORTAL_MODEL.1);
-        return Vec::new();
-    };
-    let one = |name: &str, boxes: &[Box]| {
-        (
-            name.to_string(),
-            HeldItemModel {
-                // `end_portal.png` is 256x256; the box UV unwrap is Rewo's,
-                // not vanilla's, because the real render type computes its
-                // coordinates in the shader and uses none from the mesh.
-                quads: model_quads(boxes, tex, (256.0, 256.0)),
-                right: DisplayTransform::default(),
-                left: DisplayTransform::default(),
-                ground: DisplayTransform::default(),
-                from_block: false,
-            },
-        )
-    };
-    vec![
-        one(END_PORTAL_MODEL.0, END_PORTAL_CUBE),
-        one(END_GATEWAY_MODEL, END_GATEWAY_CUBE),
-    ]
+/// The portal's or gateway's faces as **plain positions in block units**, for
+/// the dedicated pass (M32).
+///
+/// `AbstractEndPortalRenderer` uses `DefaultVertexFormat.POSITION` — no UV and
+/// no colour — because its shader samples in screen space. So this returns
+/// triangles, not a textured model: the M28f bake fed the block-entity
+/// emitter, which needs UVs it would only throw away.
+///
+/// `portal` selects the Y-only face set and the slab transform; a gateway gets
+/// all six faces of the full block.
+pub fn end_portal_positions(portal: bool) -> Vec<[f32; 3]> {
+    let boxes: &[Box] = if portal { END_PORTAL_CUBE } else { END_GATEWAY_CUBE };
+    let mut out = Vec::new();
+    for b in boxes {
+        for (i, (verts, _uv)) in cube_faces(b.tex, b.min, b.dims, b.grow, b.mirror)
+            .into_iter()
+            .enumerate()
+        {
+            if !b.only.is_empty() && !b.only.contains(&FACE_ORDER[i]) {
+                continue;
+            }
+            // Two triangles per quad, in the same winding the emitter uses.
+            for &k in &[0usize, 1, 2, 0, 2, 3] {
+                let v = verts[k];
+                out.push([v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]);
+            }
+        }
+    }
+    out
 }
+
+
+// The M28f textured bake is gone: M32 draws these through their own pass,
+// which needs positions rather than a UV-mapped model.
+// above is what replaced it.
 
 // ----------------------------------------------------- copper golem statue
 //

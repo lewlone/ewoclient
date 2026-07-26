@@ -265,6 +265,9 @@ pub struct BakedAssets {
     /// over the End skybox cube (M16). `None` if the jar lacks it — the End
     /// then draws no sky at all rather than an invented flat colour.
     pub end_sky: Option<DecodedImage>,
+    /// `entity/end_portal/end_portal.png` — Sampler1 of the end-portal shader
+    /// (M32). `None` if the jar lacks it, in which case no portal draws.
+    pub end_portal: Option<DecodedImage>,
     pub stats: BakeStats,
 }
 
@@ -648,6 +651,15 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
     let end_sky = bake_env_texture(&mut jar, "end_sky.png");
+    let end_portal = {
+        let path = "assets/minecraft/textures/entity/end_portal/end_portal.png";
+        let mut bytes = Vec::new();
+        jar.by_name(path)
+            .ok()
+            .and_then(|mut e| e.read_to_end(&mut bytes).ok())
+            .and_then(|_| decode_png_any(&bytes))
+            .map(|(rgba, w, h)| DecodedImage { rgba, w, h })
+    };
     if end_sky.is_none() {
         log::warn!("rewo-data: environment/end_sky.png missing — no End skybox");
     }
@@ -887,6 +899,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         hud,
         celestial,
         end_sky,
+        end_portal,
         stats,
     })
 }
@@ -1483,7 +1496,6 @@ impl<'a> Baker<'a> {
         be_models.append(&mut bake_be!(
             crate::block_entity_models::bake_copper_golem_statues
         ));
-        be_models.append(&mut bake_be!(crate::block_entity_models::bake_end_portals));
         {
             // The pot bake validates every derived sherd texture against the
             // jar, so it returns a Result the others do not.

@@ -462,6 +462,12 @@ pub struct WorldRenderer {
     /// `textures/environment/end_sky.png` — a missing asset degrades to no sky
     /// contribution at all, never to an invented flat colour.
     end_sky: Option<crate::end_sky::EndSkyPass>,
+    /// The end portal / gateway pass (M32). `None` until `init_end_portal`
+    /// supplies both textures — a missing asset degrades to no portal drawn,
+    /// never to an invented colour.
+    end_portal: Option<crate::end_portal::EndPortalPass>,
+    /// This frame's portal geometry, and the game time its shader scrolls on.
+    end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
     /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
     sky_mode: SkyMode,
@@ -964,6 +970,8 @@ impl WorldRenderer {
                 celestial: None,
                 celestial_state: crate::celestial::CelestialState::default(),
                 end_sky: None,
+                end_portal: None,
+                end_portal_time: 0.0,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1172,6 +1180,42 @@ impl WorldRenderer {
     /// Attach the End skybox pass (M16), from the user's own client jar's
     /// `assets/minecraft/textures/environment/end_sky.png`. Without it,
     /// [`SkyMode::End`] draws nothing — `end_sky_ready` reports which.
+    /// Build the end-portal pass from `environment/end_sky.png` and
+    /// `entity/end_portal/end_portal.png` (M32). Without both, no portal draws.
+    pub fn init_end_portal(
+        &mut self,
+        gpu: &mut Gpu,
+        sky: &crate::end_portal::PortalImage,
+        portal: &crate::end_portal::PortalImage,
+    ) -> Result<(), String> {
+        self.end_portal = Some(crate::end_portal::EndPortalPass::new(
+            gpu,
+            self.color_format,
+            sky,
+            portal,
+        )?);
+        Ok(())
+    }
+
+    pub fn end_portal_ready(&self) -> bool {
+        self.end_portal.is_some()
+    }
+
+    /// This frame's portals. `game_time` is the raw world clock; the pass
+    /// converts it to the daily fraction the shader expects.
+    pub fn set_end_portals(
+        &mut self,
+        gpu: &mut Gpu,
+        draws: &[crate::end_portal::PortalDraw],
+        game_time: i64,
+    ) -> Result<(), String> {
+        self.end_portal_time = crate::end_portal::game_time_fraction(game_time);
+        match self.end_portal.as_mut() {
+            Some(p) => p.set_draws(gpu, draws),
+            None => Ok(()),
+        }
+    }
+
     pub fn init_end_sky(
         &mut self,
         gpu: &mut Gpu,
@@ -1769,6 +1813,13 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
         }
+        // End portals (M32). After solid geometry and before the translucent
+        // pass: the shader writes opaque pixels and depth, so it belongs with
+        // the solids, and drawing it after them lets terrain in front occlude
+        // it exactly as vanilla's depth-tested pipeline does.
+        if let Some(pass) = &self.end_portal {
+            pass.draw(gpu, cb, view_proj, self.end_portal_time, extent);
+        }
         self.draw_translucent(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
@@ -2090,6 +2141,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.end_sky.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.end_portal.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.entities.take() {

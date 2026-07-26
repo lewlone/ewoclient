@@ -175,9 +175,9 @@ fn quad_indices(quads: usize) -> Vec<u32> {
     idx
 }
 
-struct Buf {
-    buffer: vk::Buffer,
-    alloc: Option<Allocation>,
+pub(crate) struct Buf {
+    pub(crate) buffer: vk::Buffer,
+    pub(crate) alloc: Option<Allocation>,
 }
 
 pub struct EndSkyPass {
@@ -378,7 +378,7 @@ impl EndSkyPass {
     }
 }
 
-fn upload_buffer(
+pub(crate) fn upload_buffer(
     gpu: &mut Gpu,
     bytes: &[u8],
     usage: vk::BufferUsageFlags,

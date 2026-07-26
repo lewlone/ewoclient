@@ -168,6 +168,9 @@ pub struct ChestStates {
     conduits: std::collections::HashSet<u32>,
     /// Spawner block states (M31).
     spawners: std::collections::HashSet<u32>,
+    /// The two end-portal block-state sets (M32).
+    end_portals: std::collections::HashSet<u32>,
+    end_gateways: std::collections::HashSet<u32>,
 }
 
 /// The seven skull types, as `(block prefix, model name)`.
@@ -322,6 +325,8 @@ impl ChestStates {
         // `ModelIsEnough`); this set is only so the collector can find the
         // block entities whose display mob it must mount.
         let mut spawners = std::collections::HashSet::new();
+        let mut end_portals = std::collections::HashSet::new();
+        let mut end_gateways = std::collections::HashSet::new();
         if let Some(def) = obj.get("minecraft:spawner") {
             if let Some(sts) = def.get("states").and_then(|s| s.as_array()) {
                 for st in sts {
@@ -530,7 +535,15 @@ impl ChestStates {
             };
             for st in sts {
                 if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
-                    statics.insert(id as u32, (model.to_string(), xf));
+                    // NOT added to `statics`: M32 draws these through their own
+                    // pass, so the block-entity resolver must not also claim
+                    // them or they would be drawn twice.
+                    let _ = (model, xf);
+                    if block == "minecraft:end_portal" {
+                        end_portals.insert(id as u32);
+                    } else {
+                        end_gateways.insert(id as u32);
+                    }
                 }
             }
         }
@@ -571,6 +584,8 @@ impl ChestStates {
             powered_skulls,
             conduits,
             spawners,
+            end_portals,
+            end_gateways,
         })
     }
 
@@ -632,6 +647,17 @@ impl ChestStates {
     /// joins them. Exposed for the gate's coverage witness.
     pub fn static_len(&self) -> usize {
         self.statics.len()
+    }
+
+    /// The block-state ids of the two end portals (M32). They leave the
+    /// block-entity draw path entirely — their shader samples in screen space
+    /// from two textures, so the ordinary emitter has nothing to do with them.
+    pub fn end_portal_states(&self) -> &std::collections::HashSet<u32> {
+        &self.end_portals
+    }
+
+    pub fn end_gateway_states(&self) -> &std::collections::HashSet<u32> {
+        &self.end_gateways
     }
 
     /// The block-state ids of mob spawners (M31) — the cage whose display

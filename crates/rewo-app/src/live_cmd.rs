@@ -1688,6 +1688,12 @@ fn run_headless(
         &lightmap,
         1.0,
     );
+    let portals = collect_end_portals(
+        &session.world,
+        chest_states.end_portal_states(),
+        chest_states.end_gateway_states(),
+    );
+    world_renderer.set_end_portals(&mut gpu, &portals, session.game_time())?;
     let mut draws = draws;
     draws.extend(caged.iter().map(spawner_mob_draw));
     // Every texture the frame samples from the entity atlas — items in hands,
@@ -2169,6 +2175,18 @@ impl LiveApp {
             &lightmap,
             alpha,
         );
+        let portals = collect_end_portals(
+            &session.world,
+            self.chest_states.end_portal_states(),
+            self.chest_states.end_gateway_states(),
+        );
+        if let Err(e) = state.world_renderer.set_end_portals(
+            &mut state.gpu,
+            &portals,
+            session.game_time(),
+        ) {
+            log::warn!("live: end portal upload failed: {e}");
+        }
         let mut draws = draws;
         draws.extend(caged.iter().map(spawner_mob_draw));
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
@@ -3005,6 +3023,61 @@ pub(crate) struct OwnedSignLine {
     pub light: [f32; 3],
 }
 
+
+/// Every end portal and gateway in the world, as geometry for the M32 pass.
+///
+/// They leave `collect_block_entities` entirely: their shader samples in
+/// screen space from two textures, so there is nothing for the block-entity
+/// emitter — which wants one texture and a UV — to do with them.
+pub(crate) fn collect_end_portals(
+    world: &rewo_world::World,
+    portal_states: &std::collections::HashSet<u32>,
+    gateway_states: &std::collections::HashSet<u32>,
+) -> Vec<rewo_gpu::end_portal::PortalDraw> {
+    let mut out = Vec::new();
+    for (pos, _be) in world.block_entities.iter() {
+        let state = world.block_state_at(pos.x, pos.y, pos.z);
+        let is_portal = portal_states.contains(&state);
+        if !is_portal && !gateway_states.contains(&state) {
+            continue;
+        }
+        // The portal's slab transform is applied here rather than in the
+        // shader, because the shader's vertex stage is position-only and
+        // vanilla's `TRANSFORMATION` is a poseStack push.
+        let xf = if is_portal {
+            rewo_data::be_transform::end_portal()
+        } else {
+            rewo_data::be_transform::end_gateway()
+        };
+        let verts = rewo_data::block_entity_models::end_portal_positions(is_portal)
+            .into_iter()
+            .map(|p| {
+                let v = [
+                    xf[0][0] * p[0] + xf[0][1] * p[1] + xf[0][2] * p[2] + xf[0][3],
+                    xf[1][0] * p[0] + xf[1][1] * p[1] + xf[1][2] * p[2] + xf[1][3],
+                    xf[2][0] * p[0] + xf[2][1] * p[1] + xf[2][2] * p[2] + xf[2][3],
+                ];
+                rewo_gpu::end_portal::PortalVertex {
+                    pos: [
+                        pos.x as f32 + v[0],
+                        pos.y as f32 + v[1],
+                        pos.z as f32 + v[2],
+                    ],
+                }
+            })
+            .collect();
+        out.push(rewo_gpu::end_portal::PortalDraw {
+            verts,
+            layers: if is_portal {
+                rewo_gpu::end_portal::PORTAL_LAYERS
+            } else {
+                rewo_gpu::end_portal::GATEWAY_LAYERS
+            },
+        });
+    }
+    out
+}
+
 /// A spawner's display-entity id, from `SpawnData` (M31).
 ///
 /// ```text
@@ -3613,6 +3686,26 @@ fn init_celestial_if_present(
         )?;
     } else {
         log::warn!("live: no end_sky.png in the jar bake — the End will render no sky");
+    }
+    // The end-portal shader samples BOTH end_sky.png and end_portal.png (M32).
+    // Missing either means no portal draws, which is honest — the alternative
+    // was M28f's single static layer, which looked like a portal and was not.
+    if let (Some(sky), Some(por)) = (&baked.end_sky, &baked.end_portal) {
+        wr.init_end_portal(
+            gpu,
+            &rewo_gpu::end_portal::PortalImage {
+                rgba: &sky.rgba,
+                w: sky.w,
+                h: sky.h,
+            },
+            &rewo_gpu::end_portal::PortalImage {
+                rgba: &por.rgba,
+                w: por.w,
+                h: por.h,
+            },
+        )?;
+    } else {
+        log::warn!("live: no end_sky/end_portal texture — end portals will not render");
     }
     Ok(())
 }

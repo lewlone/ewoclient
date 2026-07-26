@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 166;
+const EXPECTED_WITNESSES: usize = 172;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -214,6 +214,8 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     let type_id = |want: &str| entries.iter().find(|(n, _)| n == want).map(|(_, i)| *i);
     let shulker = type_id("minecraft:shulker_box")
         .ok_or("registries.json: no minecraft:shulker_box block entity type")?;
+    let end_portal_type = type_id("minecraft:end_portal")
+        .ok_or("registries.json: no minecraft:end_portal block entity type")?;
     let spawner = type_id("minecraft:mob_spawner")
         .ok_or("registries.json: no minecraft:mob_spawner block entity type")?;
     let pot = type_id("minecraft:decorated_pot")
@@ -249,6 +251,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_be_clock(&mut c, &blocks, &paths, &ids, types, pot)?;
     check_conduit_active(&mut c, &paths, &args.version)?;
     check_spawner_mob(&mut c, &blocks, &paths, spawner)?;
+    check_end_portal_shader(&mut c, &blocks, &paths, &args.version, end_portal_type)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -1256,6 +1259,137 @@ fn check_block_event_dispatch(
              not consumed and left the {before} existing entries alone — vanilla's \
              `getBlockEntity` returns null there and the handler returns"
         ),
+    );
+    Ok(())
+}
+
+/// M32 — the end-portal shader.
+fn check_end_portal_shader(
+    c: &mut Checker,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    version: &str,
+    portal_type: i32,
+) -> Result<(), String> {
+    use rewo_gpu::end_portal as ep;
+
+    c.record(
+        "p1.a_gateway_gets_one_more_layer_than_a_portal",
+        ep::PORTAL_LAYERS == 15 && ep::GATEWAY_LAYERS == 16,
+        format!(
+            "PORTAL_LAYERS is {} for a portal and {} for a gateway — a shader \
+             DEFINE in vanilla, which is why they are two pipelines there, and \
+             the only difference between them. Here it is a push constant, so \
+             one pipeline serves both",
+            ep::PORTAL_LAYERS,
+            ep::GATEWAY_LAYERS
+        ),
+    );
+
+    c.record(
+        "p2.game_time_is_a_daily_fraction_not_a_tick_count",
+        ep::game_time_fraction(0) == 0.0
+            && (ep::game_time_fraction(12_000) - 0.5).abs() < 1e-6
+            && ep::game_time_fraction(24_000) == 0.0
+            && ep::game_time_fraction(-1) > 0.999,
+        format!(
+            "t=0 -> {:.4}, t=12000 -> {:.4}, t=24000 -> {:.4} (wraps), t=-1 -> \
+             {:.4} (wraps FORWARD). The layer translate multiplies this by up \
+             to ~17, so feeding a raw tick count would scroll the starfield \
+             thousands of times too fast and read as static noise",
+            ep::game_time_fraction(0),
+            ep::game_time_fraction(12_000),
+            ep::game_time_fraction(24_000),
+            ep::game_time_fraction(-1)
+        ),
+    );
+
+    // The two textures the shader samples must both bake.
+    let jar = client_jar(version).ok_or("client jar not found")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    c.record(
+        "p3.both_samplers_have_a_texture",
+        baked.end_sky.is_some() && baked.end_portal.is_some(),
+        format!(
+            "end_sky.png {} and end_portal.png {} — Sampler0 is the SKY and \
+             Sampler1 the portal, which is the opposite of what the render \
+             type's name suggests. Missing either means no portal draws at all",
+            if baked.end_sky.is_some() { "baked" } else { "MISSING" },
+            if baked.end_portal.is_some() { "baked" } else { "MISSING" }
+        ),
+    );
+
+    // End to end: the collector must produce position-only geometry, at the
+    // right layer count, placed in the world.
+    let states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    let shape = DimensionShape::OVERWORLD;
+    let build = |block: &str| -> Vec<rewo_gpu::end_portal::PortalDraw> {
+        let mut world = rewo_world::World::new(shape);
+        let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, portal_type)]);
+        let mut r = rewo_proto::reader::PacketReader::new(&body);
+        let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks).unwrap();
+        world.insert_column(0, 0, col);
+        world.set_block(0, 64, 0, blocks.default_state(block).unwrap());
+        world.block_entities.insert(
+            BlockEntityPos { x: 0, y: 64, z: 0 },
+            rewo_world::block_entities::BlockEntity {
+                type_id: portal_type,
+                data: Nbt::End,
+            },
+        );
+        crate::live_cmd::collect_end_portals(
+            &world,
+            states.end_portal_states(),
+            states.end_gateway_states(),
+        )
+    };
+    let p = build("minecraft:end_portal");
+    let g = build("minecraft:end_gateway");
+    c.record(
+        "p4.each_kind_reaches_the_pass_with_its_own_layer_count",
+        p.len() == 1
+            && g.len() == 1
+            && p[0].layers == ep::PORTAL_LAYERS
+            && g[0].layers == ep::GATEWAY_LAYERS
+            && p[0].verts.len() == 12
+            && g[0].verts.len() == 36,
+        format!(
+            "a portal produced {} draw of {} vertices at {} layers, a gateway \
+             {} of {} at {}",
+            p.len(),
+            p[0].verts.len(),
+            p[0].layers,
+            g.len(),
+            g[0].verts.len(),
+            g[0].layers
+        ),
+    );
+
+    let ys: Vec<f32> = p[0].verts.iter().map(|v| v.pos[1]).collect();
+    let lo = ys.iter().cloned().fold(f32::MAX, f32::min);
+    let hi = ys.iter().cloned().fold(f32::MIN, f32::max);
+    c.record(
+        "p5.the_slab_transform_is_baked_into_the_vertices",
+        (lo - 64.375).abs() < 1e-4 && (hi - 64.75).abs() < 1e-4,
+        format!(
+            "the portal's vertices span y {lo}..{hi} at a block on y 64 — the \
+             slab transform is applied on the CPU because the pass's vertex \
+             stage is position-only, so there is nowhere in the shader for a \
+             per-block `poseStack` push to live"
+        ),
+    );
+
+    c.record(
+        "p6.the_portals_left_the_block_entity_resolver",
+        states
+            .draw_for(blocks.default_state("minecraft:end_portal").unwrap())
+            .is_none()
+            && states
+                .draw_for(blocks.default_state("minecraft:end_gateway").unwrap())
+                .is_none(),
+        "`draw_for` returns nothing for either — they are drawn by their own \
+         pass, and leaving them in the resolver too would draw them TWICE, \
+         once textured and once shaded",
     );
     Ok(())
 }
@@ -2435,24 +2569,24 @@ fn check_skulls(
     );
 
     // --- the two end portals ----------------------------------------------
-    let portal = items
-        .block_entities
-        .get(bem::END_PORTAL_MODEL.0)
-        .ok_or("the end portal did not bake")?;
-    let gateway = items
-        .block_entities
-        .get(bem::END_GATEWAY_MODEL)
-        .ok_or("the end gateway did not bake")?;
+    //
+    // These no longer bake a textured model (M32): their shader samples in
+    // screen space from two textures, so the pass wants POSITIONS and the
+    // block-entity emitter has nothing to do with them.
+    let portal_tris = bem::end_portal_positions(true);
+    let gateway_tris = bem::end_portal_positions(false);
     c.record(
         "k28.a_portal_builds_only_its_horizontal_faces_and_a_gateway_all_six",
-        portal.quads.len() == 2 && gateway.quads.len() == 6,
+        portal_tris.len() == 2 * 6 && gateway_tris.len() == 6 * 6,
         format!(
-            "portal {} quads, gateway {} — `TheEndPortalBlockEntity.\
-             shouldRenderFace` is `getAxis() == Y`, so a portal is a pool seen \
-             from above or below and has no sides at all, which is why looking \
-             at one edge-on in vanilla shows nothing",
-            portal.quads.len(),
-            gateway.quads.len()
+            "portal {} vertices ({} quads), gateway {} ({} quads) — \
+             `TheEndPortalBlockEntity.shouldRenderFace` is `getAxis() == Y`, so \
+             a portal is a pool seen from above or below and has no sides at \
+             all, which is why looking at one edge-on in vanilla shows nothing",
+            portal_tris.len(),
+            portal_tris.len() / 6,
+            gateway_tris.len(),
+            gateway_tris.len() / 6
         ),
     );
 
@@ -3270,6 +3404,16 @@ fn check_registry(
             drawn_types.insert("minecraft:skull");
         }
     }
+    // Two types are drawn by a DEDICATED PASS rather than by the model
+    // resolver (M32): the end portal and gateway sample in screen space from
+    // two textures, so they have no model for `draw_for` to return. They are
+    // named here rather than exempted by a wildcard — the point of this
+    // witness is that every Rendered type has *some* identified route, and a
+    // catch-all would give back exactly the drift it exists to catch.
+    let by_own_pass: HashSet<&str> = ["minecraft:end_portal", "minecraft:end_gateway"]
+        .into_iter()
+        .collect();
+    drawn_types.extend(by_own_pass.iter().copied());
     let declared: HashSet<&str> = kinds(BlockEntityKind::Rendered).into_iter().collect();
     let mut only_declared: Vec<&str> = declared.difference(&drawn_types).copied().collect();
     let mut only_drawn: Vec<&str> = drawn_types.difference(&declared).copied().collect();

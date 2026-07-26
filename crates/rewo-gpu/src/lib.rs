@@ -14,6 +14,7 @@
 //!   (device → surface → debug → instance, after a wait_idle).
 
 pub mod celestial;
+pub mod end_portal;
 pub mod end_sky;
 pub mod entities;
 pub mod anim_defs;
