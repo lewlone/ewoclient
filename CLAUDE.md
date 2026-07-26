@@ -2467,8 +2467,26 @@ validation Rewo has.
     axis**, so it commutes and the translates could be swapped with no effect.
     The `-30°` X tilt is the load-bearing part. **The claims that survive
     unchallenged are the ones nothing in the render moves against.**
-  - **One block-entity item remains**: an end portal's starfield needs the
-    render type's **shader** (its geometry already ships exact).
+  - **M32 the end-portal shader** — the last item. It samples in **SCREEN
+    space** (`texProj0 = projection_from_position(gl_Position)`, vertex format
+    POSITION-only), which is why the mesh UVs were never used and why it needed
+    its own pipeline; the two portals leave the block-entity resolver entirely,
+    or they'd draw twice. `PORTAL_LAYERS` 15 (portal) / 16 (gateway) — a shader
+    *define* in vanilla, a push constant here. Sampler0 is end_sky, Sampler1 is
+    end_portal (the opposite of the name). `GameTime` is a **daily fraction**,
+    not a tick count. **Trap:** vanilla's `mat4(...)` literals are
+    **column-major** GLSL — the translate lives at `m[0][3]`, and it works
+    because the sampling is `texProj0 * matrix`, a ROW-vector multiply. Copy
+    them verbatim; "tidying" them into the slots they look like they belong in
+    silently breaks every layer.
+  - **The block-entity arc is complete**: 11 invisible types measured, 11
+    rendering, `blockentityshot` 21 → **172** witnesses. Its real lesson is
+    the **five** times a witness corrected something already written as fact
+    (see REWO_PLAN §15 "The block-entity arc, in one place"). **The claims that
+    survive unchallenged are the ones nothing in the render moves against.**
+  - Not verified: there is no pixel read-back oracle for the portal pass — the
+    witnesses check its inputs and geometry, not its output. A `portalshot`
+    would close that.
   - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

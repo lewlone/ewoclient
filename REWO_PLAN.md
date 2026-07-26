@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M31 shipped; M0–M9 pushed, M10–M31 reviewed local
+### Where it is: M0–M32 shipped; M0–M9 pushed, M10–M32 reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
@@ -70,8 +70,9 @@ active cage, wind and eye came with it — a conduit decides its own activation
 from the blocks around it, and the shell is **42 positions, which is also the
 hunting threshold**, so its eye opens exactly when the frame is complete. **M31 then mounted the spawner's caged mob** — which
 belonged in the *entity* path all along, positioned by a mount affine rather
-than by the world. **One item remains**: an end portal's starfield needs the
-render type's **shader**. See §15.
+than by the world. **M32 then wrote that shader** — it samples in
+**screen space**, which is why it needed a pipeline of its own. **Every
+block-entity item from M25's list is now closed.** See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -5698,3 +5699,92 @@ ominous/normal display logic, and is not covered.
 **One block-entity item remains:** an end portal's starfield needs the render
 type's shader (`rendertype_end_portal.fsh`, fifteen scrolling samples of
 `end_sky.png` faking depth). Its geometry already ships exact.
+
+### 2026-07-27 — M32: the end-portal shader — SHIPPED + VERIFIED
+
+`1519cce`, on `codex/rewo-m19-combat-swings`, not pushed. `blockentityshot`
+166 → **172**. **This closes every block-entity item from M25's list.**
+
+M28f shipped the geometry and approximated the shader with one static layer of
+`end_portal.png`, saying so. This is the shader.
+
+**It samples in SCREEN space, not model space.** The vertex format is
+position-only and `texProj0` is `projection_from_position(gl_Position)`, so the
+starfield slides as the camera moves rather than being painted onto the quad.
+That is why the portal's mesh UVs were never used, and why this needed a
+pipeline of its own rather than a texture swap. The two portals therefore leave
+the block-entity resolver entirely — `p6` asserts `draw_for` returns nothing for
+them, because leaving them in would draw each **twice**, once textured and once
+shaded.
+
+`PORTAL_LAYERS` is **15 for a portal and 16 for a gateway** — a shader *define*
+in vanilla, which is why they are two pipelines there and the only difference
+between them. Here it is a push constant, so one pipeline serves both.
+
+Sampler0 is `end_sky.png` and Sampler1 is `end_portal.png` — the opposite of
+what the render type's name suggests. Both REPEAT, and here that is load-bearing
+in a way it usually is not: `end_portal_layer` scales the coordinate by up to
+9×, so every layer past the first samples far outside `0..1`.
+
+**I nearly shipped a real bug, and my own comment caused it.** I wrote that
+vanilla's `mat4(...)` literals read row-wise in the source and therefore needed
+transposing, and rewrote them by assigning elements to the slots they *look*
+like they belong in. They do not: GLSL's `mat4` constructor is **column-major**,
+vanilla's source *is* GLSL, so column 0 is `(1, 0, 0, 17/layer)` and the
+translate genuinely lives at `m[0][3]`. It reaches the coordinate because the
+sampling is `texProj0 * matrix` — a **row-vector** multiply, where `v * M` is
+`transpose(M) * v`. The rewrite would have put every translate in the wrong slot
+while still producing a plausible swirl. Both matrices are literal copies now,
+and the comment says why that is the only safe transcription.
+
+`GameTime` is vanilla's **daily fraction**, not a tick count: the layer
+translate multiplies it by up to ~17, so a raw tick count would scroll the
+starfield thousands of times too fast and read as static noise.
+
+`a4` earned itself again — it failed the moment the portals stopped resolving a
+model. Rather than exempt them with a wildcard, the dedicated-pass set is named
+explicitly: a catch-all would give back exactly the drift the witness exists to
+catch.
+
+**Measured:** 497 tests (442 lib + 55 app; M31 was 495 — `rewo-gpu` +2);
+`blockentityshot` **172/172**, `itemshot` 28/28, `hurtshot` 38/38, `swingshot`
+97/97, `eventshot` 28/28, `danceshot` 24/24, `mobshot` 243/243; `lightmapshot`,
+`skyshot`, `tintshot`, `meshshot` and `dimensioncheck` green; canonical demo
+SHA-256 `2cc56b4a…` byte-identical to M15 onward; `git diff --check` clean.
+
+**Excluded, and the last one matters most.** Vanilla's fog term is omitted
+because Rewo applies fog in its own world pass and a second application would
+double it. Depth uses `GREATER` rather than vanilla's `LESS`, because Rewo's
+world pass is reversed-Z — the comparison matches its own depth buffer, not
+vanilla's. And **there is no read-back oracle for the rendered pixels**: the
+witnesses check the pass's *inputs* and geometry, not its output, so this is
+verified one level short of the Vulkan oracles that pin `skyshot` and
+`lightmapshot`. A `portalshot` that renders the pass and asserts pixel
+properties is the obvious next step if this area is revisited.
+
+### The block-entity arc, in one place
+
+M25 measured eleven block-entity types whose block models bake to nothing.
+Eleven render. `blockentityshot` grew from 21 witnesses to **172**.
+
+What the arc is actually worth recording for is not the feature list but the
+**five times a gate witness corrected something already written down as fact**:
+
+| what was wrong | how it was caught |
+|---|---|
+| `a4` asserted "nothing is Rendered yet" and passed through four renderers | rewritten to derive the set from the resolver, in both directions |
+| a pot's side plane baked six quads, not one | `k14` — `EnumSet.of(NORTH)` builds *only* that face |
+| a banner base texture path baked no pole while every pattern loaded | `k19`, which now prints its counts rather than only asserting them |
+| the conduit's frame shell was 42 positions, not the 48 I derived | a unit test; 42 is also the hunting threshold, so the eye opens on a *complete* frame |
+| the spawner's inner translate does **not** make the mob orbit | `r6` — it lies along the spin axis and commutes |
+
+Plus two rest poses wrong since M28 (a piglin's ears ~10° off, a dragon's jaw
+drawn shut) that only building the animation could expose, and a GLSL
+column-major transcription that a "helpful" rewrite nearly broke.
+
+They share a shape. **The claims that survive unchallenged are the ones nothing
+in the render moves against** — a wrong rest pose, a miscounted static set, an
+ordering that happens not to matter, a witness whose subject moved. None of
+them produce anything that *looks* broken. Only asserting the property directly
+makes them falsifiable, which is the argument for witnesses that pin values
+rather than shapes.
