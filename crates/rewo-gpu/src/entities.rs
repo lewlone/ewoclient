@@ -159,6 +159,18 @@ pub struct EntityDraw<'a> {
     /// Uniform model-scale multiplier on top of the baked scale — vanilla's
     /// per-entity render scale (slime/magma-cube `size`). 1.0 = as baked.
     pub scale_mul: f32,
+    /// An affine applied to the entity's **feet-relative** position, in block
+    /// units, before [`Self::pos`] places it (M31).
+    ///
+    /// `None` for every ordinary entity, which *stands* in the world. A
+    /// spawner's caged mob does not: `submitEntityInSpawner` pushes a
+    /// translate-rotate-tilt-scale chain and renders the entity at the
+    /// resulting origin, so the mob is **mounted inside a block** rather than
+    /// positioned in the world. Expressing that as one matrix here keeps the
+    /// model, its rig and its animations on exactly the path every other mob
+    /// already uses; the alternative was a second emitter that would have had
+    /// to duplicate all of it.
+    pub mount: Option<[[f32; 4]; 3]>,
     /// Per-entity stable id for CEM `random(id)` (so a herd doesn't animate
     /// in lockstep). Any stable-per-entity float; 0 is fine for stills.
     pub anim_id: f32,
@@ -1231,11 +1243,18 @@ impl EntityPass {
                 // rotY(180° − yaw).
                 let x = e[0] * ct + e[2] * st;
                 let z = -e[0] * st + e[2] * ct;
-                p4[i] = [
-                    d.pos[0] + x * s,
-                    d.pos[1] + e[1] * s,
-                    d.pos[2] + z * s,
-                ];
+                // Feet-relative, in block units. A *mounted* entity — a
+                // spawner's caged mob — runs that through one more affine
+                // before the block position places it (M31).
+                let mut l = [x * s, e[1] * s, z * s];
+                if let Some(m) = &d.mount {
+                    l = [
+                        m[0][0] * l[0] + m[0][1] * l[1] + m[0][2] * l[2] + m[0][3],
+                        m[1][0] * l[0] + m[1][1] * l[1] + m[1][2] * l[2] + m[1][3],
+                        m[2][0] * l[0] + m[2][1] * l[1] + m[2][2] * l[2] + m[2][3],
+                    ];
+                }
+                p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
             }
             // Directional face shade × the entity's per-channel world light.
             let [light_r, light_g, light_b] = d.light;

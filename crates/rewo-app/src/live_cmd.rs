@@ -1157,6 +1157,7 @@ fn collect_entities<'a>(
             held: resolve_held_items(&session.world.entities, id, item_names),
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
+            mount: None,
             anim_id: (id & 0xffff) as f32,
             light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap),
         });
@@ -1678,6 +1679,17 @@ fn run_headless(
     apply_biome_sky_fog(&mut world_renderer, &session);
     world_renderer.set_celestial(celestial_state_of(session.day_ticks));
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
+    // A spawner's caged mob rides the ENTITY pass, mounted inside its block
+    // (M31), so it joins the entity draws rather than the block-entity ones.
+    let caged = collect_spawner_mobs(
+        &session.world,
+        &etypes,
+        chest_states.spawner_states(),
+        &lightmap,
+        1.0,
+    );
+    let mut draws = draws;
+    draws.extend(caged.iter().map(spawner_mob_draw));
     // Every texture the frame samples from the entity atlas — items in hands,
     // dropped stacks, and now block-entity models, which share the pool.
     let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
@@ -2148,6 +2160,17 @@ impl LiveApp {
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
         let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time(), (cr, cu));
+        // A spawner's caged mob rides the ENTITY pass, mounted inside its
+        // block (M31), so it joins the entity draws rather than these.
+        let caged = collect_spawner_mobs(
+            &session.world,
+            &self.etypes,
+            self.chest_states.spawner_states(),
+            &lightmap,
+            alpha,
+        );
+        let mut draws = draws;
+        draws.extend(caged.iter().map(spawner_mob_draw));
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
         held.extend(draws.iter().filter_map(|d| d.ground_item));
         held.extend(bes.iter().map(|b| b.model.as_str()));
@@ -2979,6 +3002,137 @@ pub(crate) struct OwnedSignLine {
     /// outline copies so they sit behind the glyphs (M27).
     pub z: f32,
     pub color: [f32; 3],
+    pub light: [f32; 3],
+}
+
+/// A spawner's display-entity id, from `SpawnData` (M31).
+///
+/// ```text
+/// SpawnData.CODEC:  { "entity": CompoundTag, ... }
+/// getOrCreateDisplayEntity: if (entityToSpawn.getString("id").isEmpty()) return null;
+/// ```
+///
+/// So the id lives two levels down, and an **empty or absent** one means the
+/// spawner has no display entity at all rather than a default — vanilla
+/// returns null and draws nothing.
+pub(crate) fn spawner_entity_id(be: &rewo_world::block_entities::BlockEntity) -> Option<String> {
+    let id = be
+        .data
+        .get("SpawnData")?
+        .get("entity")?
+        .get("id")
+        .and_then(rewo_proto::nbt::Nbt::as_str)?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Every spawner's caged mob, as mounted entity draws (M31).
+///
+/// Separate from `collect_block_entities` because the result is an
+/// `EntityDraw`, not a block-entity one: the mob rides the **entity** pass, so
+/// it gets the same models, rigs and animations every other mob does. The only
+/// difference is that its position comes from a mount matrix rather than from
+/// the world.
+pub(crate) fn collect_spawner_mobs<'a>(
+    world: &rewo_world::World,
+    etypes: &rewo_data::entity_types::EntityTypes,
+    spawner_states: &std::collections::HashSet<u32>,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<OwnedSpawnerMob> {
+    let mut out = Vec::new();
+    for (pos, be) in world.block_entities.iter() {
+        if !spawner_states.contains(&world.block_state_at(pos.x, pos.y, pos.z)) {
+            continue;
+        }
+        let Some(name) = spawner_entity_id(be) else {
+            continue;
+        };
+        let Some(type_id) = etypes.id_of(&name) else {
+            // An entity type this version does not register: draw nothing
+            // rather than substitute a mob that is not in the cage.
+            continue;
+        };
+        let (w, h) = etypes.dimensions(type_id);
+        let spin = world.block_entities.spawner(*pos);
+        out.push(OwnedSpawnerMob {
+            pos: [pos.x as f32, pos.y as f32, pos.z as f32],
+            kind: rewo_gpu::mobs::kind_for_entity_name(&name),
+            width: w,
+            height: h,
+            mount: rewo_data::be_transform::spawner_mob(
+                rewo_data::be_transform::spawner_spin_degrees(
+                    spin.old_spin,
+                    spin.spin,
+                    alpha,
+                ),
+                rewo_data::be_transform::spawner_mob_scale(w, h),
+            ),
+            light: entity_light(
+                world,
+                pos.x as f64 + 0.5,
+                pos.y as f64 + 0.5,
+                pos.z as f64 + 0.5,
+                lightmap,
+            ),
+        });
+    }
+    out.sort_by(|a, b| {
+        a.pos[0]
+            .total_cmp(&b.pos[0])
+            .then(a.pos[1].total_cmp(&b.pos[1]))
+            .then(a.pos[2].total_cmp(&b.pos[2]))
+    });
+    out
+}
+
+
+/// Turn a collected caged mob into an `EntityDraw`.
+///
+/// Everything except `pos`, `kind` and `mount` is the neutral pose: a spawner's
+/// display entity is a *model*, not a simulated mob — vanilla loads it once and
+/// never ticks it, so it does not walk, look around, swing or take damage.
+pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::EntityDraw<'_> {
+    rewo_gpu::entities::EntityDraw {
+        pos: m.pos,
+        width: m.width,
+        height: m.height,
+        color: [1.0; 3],
+        name: None,
+        kind: m.kind,
+        yaw: 0.0,
+        death_time: 0.0,
+        head_yaw: 0.0,
+        pitch: 0.0,
+        limb_swing: 0.0,
+        limb_amount: 0.0,
+        gesture: None,
+        shell: false,
+        events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+        allay_dance: None,
+        attack: rewo_gpu::mobs::SwingPose::NONE,
+        arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+        mob: Default::default(),
+        hurt: false,
+        held: [None, None],
+        ground_item: None,
+        ground_count: 0,
+        ground_seed: 0,
+        bob_offset: 0.0,
+        skin_uv: None,
+        scale_mul: 1.0,
+        mount: Some(m.mount),
+        anim_id: 0.0,
+        light: m.light,
+    }
+}
+
+/// One spawner's caged mob.
+pub(crate) struct OwnedSpawnerMob {
+    pub pos: [f32; 3],
+    pub kind: rewo_gpu::entities::EntityModelKind,
+    pub width: f32,
+    pub height: f32,
+    pub mount: rewo_data::be_transform::Affine,
     pub light: [f32; 3],
 }
 

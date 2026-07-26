@@ -166,6 +166,8 @@ pub struct ChestStates {
     powered_skulls: std::collections::HashSet<u32>,
     /// Conduit block states (M30).
     conduits: std::collections::HashSet<u32>,
+    /// Spawner block states (M31).
+    spawners: std::collections::HashSet<u32>,
 }
 
 /// The seven skull types, as `(block prefix, model name)`.
@@ -316,6 +318,19 @@ impl ChestStates {
         let mut statics = HashMap::new();
         let mut powered_skulls = std::collections::HashSet::new();
         let mut conduits = std::collections::HashSet::new();
+        // The spawner's own block draws from its ordinary model (the cage is
+        // `ModelIsEnough`); this set is only so the collector can find the
+        // block entities whose display mob it must mount.
+        let mut spawners = std::collections::HashSet::new();
+        if let Some(def) = obj.get("minecraft:spawner") {
+            if let Some(sts) = def.get("states").and_then(|s| s.as_array()) {
+                for st in sts {
+                    if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
+                        spawners.insert(id as u32);
+                    }
+                }
+            }
+        }
         for (prefix, model) in SKULLS {
             for wall in [false, true] {
                 let block = if wall {
@@ -555,6 +570,7 @@ impl ChestStates {
             banners,
             powered_skulls,
             conduits,
+            spawners,
         })
     }
 
@@ -616,6 +632,12 @@ impl ChestStates {
     /// joins them. Exposed for the gate's coverage witness.
     pub fn static_len(&self) -> usize {
         self.statics.len()
+    }
+
+    /// The block-state ids of mob spawners (M31) — the cage whose display
+    /// entity is drawn inside it.
+    pub fn spawner_states(&self) -> &std::collections::HashSet<u32> {
+        &self.spawners
     }
 
     /// The block-state ids of conduits (M30).

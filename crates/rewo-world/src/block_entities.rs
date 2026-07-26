@@ -155,6 +155,8 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:bell", BlockEntityKind::ModelIsEnough),
     ("minecraft:lectern", BlockEntityKind::ModelIsEnough),
     ("minecraft:enchanting_table", BlockEntityKind::ModelIsEnough),
+    // The cage is an ordinary block model; M28d added its block_event and
+    // M31 the caged mob mounted inside it.
     ("minecraft:mob_spawner", BlockEntityKind::ModelIsEnough),
     ("minecraft:trial_spawner", BlockEntityKind::ModelIsEnough),
     ("minecraft:vault", BlockEntityKind::ModelIsEnough),

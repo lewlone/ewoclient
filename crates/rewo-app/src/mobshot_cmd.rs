@@ -192,6 +192,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         held: [None, None],
         skin_uv: None,
         scale_mul: 1.0,
+        mount: None,
         anim_id: 0.0,
         // Stills are fullbright because there is no world lightmap to sample.
         light: [1.0, 1.0, 1.0],

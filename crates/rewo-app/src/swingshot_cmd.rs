@@ -1335,6 +1335,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         held: [None, None],
         skin_uv: None,
         scale_mul: 1.0,
+        mount: None,
         anim_id: 0.0,
         light: [1.0; 3],
     }

@@ -328,6 +328,68 @@ pub fn conduit(rotation_deg: f32) -> Affine {
     mul(&translation(0.5, 0.5, 0.5), &rot_y(rotation_deg))
 }
 
+/// `SpawnerRenderer.submitEntityInSpawner` (M31):
+///
+/// ```text
+/// translate(0.5, 0.4, 0.5);
+/// mulPose(YP.rotationDegrees(spin));
+/// translate(0.0, -0.2, 0.0);
+/// mulPose(XP.rotationDegrees(-30.0F));
+/// scale(scale, scale, scale);
+/// ```
+///
+/// The second translate sits *inside* the spin, which looks like it should
+/// make the mob orbit — it does not. `(0, -0.2, 0)` lies **along the spin
+/// axis**, so it commutes with the Y rotation and the two translates could be
+/// swapped with no effect whatsoever: the mob turns on the spot, its feet
+/// fixed at `(0.5, 0.2, 0.5)`. The ordering would only matter for a translate
+/// with an x or z component. (This comment first claimed the opposite, and
+/// `blockentityshot`'s `r6` is what disproved it.)
+///
+/// The `-30°` tilt about X **is** load-bearing: it leans a caged mob towards
+/// the viewer instead of standing it bolt upright in its box.
+pub fn spawner_mob(spin_deg: f32, scale: f32) -> Affine {
+    let m = translation(0.5, 0.4, 0.5);
+    let m = mul(&m, &rot_y(spin_deg));
+    let m = mul(&m, &translation(0.0, -0.2, 0.0));
+    let m = mul(&m, &rot_x((-30.0f32).to_radians()));
+    mul(&m, &scale_uniform(scale))
+}
+
+fn scale_uniform(s: f32) -> Affine {
+    scale(s, s, s)
+}
+
+/// `TrialSpawnerRenderer.extractSpawnerData`'s scale:
+///
+/// ```text
+/// state.scale = 0.53125F;
+/// float maxLength = Math.max(bbWidth, bbHeight);
+/// if (maxLength > 1.0) state.scale /= maxLength;
+/// ```
+///
+/// So a mob **larger than one block in either dimension** is shrunk to fit the
+/// cage, and one smaller is not enlarged — a silverfish stays small inside the
+/// bars while a zombie is squeezed down. The threshold is on the larger of the
+/// two dimensions, not on volume.
+pub fn spawner_mob_scale(bb_width: f32, bb_height: f32) -> f32 {
+    let max_length = bb_width.max(bb_height);
+    if max_length > 1.0 {
+        0.53125 / max_length
+    } else {
+        0.53125
+    }
+}
+
+/// `extractSpawnerData`'s spin — `Mth.lerp(partialTicks, oSpin, spin) * 10`.
+///
+/// The **×10** is easy to miss and very visible: the block entity's own
+/// counter advances a couple of degrees a tick, and the renderer multiplies it
+/// by ten, so the caged mob whirls rather than drifting.
+pub fn spawner_spin_degrees(old_spin: f32, spin: f32, alpha: f32) -> f32 {
+    (old_spin + alpha * (spin - old_spin)) * 10.0
+}
+
 /// A rotation of `rad` about an arbitrary **unit** axis — Rodrigues' formula,
 /// which is what `Quaternionf.rotationAxis` amounts to.
 pub fn rot_axis(rad: f32, axis: [f32; 3]) -> Affine {

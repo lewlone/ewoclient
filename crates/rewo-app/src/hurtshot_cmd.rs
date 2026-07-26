@@ -488,6 +488,7 @@ fn render_capsule(
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
         skin_uv: None,
         scale_mul: 1.0,
+        mount: None,
         anim_id: 0.0,
         light,
     };
@@ -836,6 +837,7 @@ fn silhouette(
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
         skin_uv: None,
         scale_mul: 1.0,
+        mount: None,
         anim_id: 0.0,
         light: [1.0, 1.0, 1.0],
     };

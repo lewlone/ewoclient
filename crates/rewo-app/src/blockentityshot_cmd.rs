@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 157;
+const EXPECTED_WITNESSES: usize = 166;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -214,6 +214,8 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     let type_id = |want: &str| entries.iter().find(|(n, _)| n == want).map(|(_, i)| *i);
     let shulker = type_id("minecraft:shulker_box")
         .ok_or("registries.json: no minecraft:shulker_box block entity type")?;
+    let spawner = type_id("minecraft:mob_spawner")
+        .ok_or("registries.json: no minecraft:mob_spawner block entity type")?;
     let pot = type_id("minecraft:decorated_pot")
         .ok_or("registries.json: no minecraft:decorated_pot block entity type")?;
     let bell =
@@ -246,6 +248,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_skulls(&mut c, &blocks, &paths, &args.version)?;
     check_be_clock(&mut c, &blocks, &paths, &ids, types, pot)?;
     check_conduit_active(&mut c, &paths, &args.version)?;
+    check_spawner_mob(&mut c, &blocks, &paths, spawner)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -1253,6 +1256,195 @@ fn check_block_event_dispatch(
              not consumed and left the {before} existing entries alone — vanilla's \
              `getBlockEntity` returns null there and the handler returns"
         ),
+    );
+    Ok(())
+}
+
+/// M31 — the spawner's caged mob: an entity model mounted inside a block.
+fn check_spawner_mob(
+    c: &mut Checker,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    spawner_type: i32,
+) -> Result<(), String> {
+    use rewo_data::be_transform as bt;
+
+    // --- the display entity comes from SpawnData two levels down -----------
+    let mk = |inner: Nbt| rewo_world::block_entities::BlockEntity {
+        type_id: spawner_type,
+        data: Nbt::Compound(vec![("SpawnData".to_string(), inner)]),
+    };
+    let with_id = |id: &str| {
+        mk(Nbt::Compound(vec![(
+            "entity".to_string(),
+            Nbt::Compound(vec![("id".to_string(), Nbt::String(id.to_string()))]),
+        )]))
+    };
+    c.record(
+        "r1.the_display_entity_is_read_from_spawn_data",
+        crate::live_cmd::spawner_entity_id(&with_id("minecraft:zombie"))
+            .as_deref()
+            == Some("minecraft:zombie"),
+        "`SpawnData` -> `entity` -> `id`; the id lives two levels down, not on \
+         the block entity itself",
+    );
+
+    let empty = with_id("");
+    let no_entity = mk(Nbt::Compound(vec![]));
+    let bare = rewo_world::block_entities::BlockEntity {
+        type_id: spawner_type,
+        data: Nbt::End,
+    };
+    c.record(
+        "r2.an_empty_or_absent_id_means_no_mob_rather_than_a_default",
+        crate::live_cmd::spawner_entity_id(&empty).is_none()
+            && crate::live_cmd::spawner_entity_id(&no_entity).is_none()
+            && crate::live_cmd::spawner_entity_id(&bare).is_none(),
+        "`getOrCreateDisplayEntity` returns null on an empty id, so an \
+         unconfigured spawner draws NOTHING — a default mob would be an \
+         invention, and a visible one at that",
+    );
+
+    // --- the scale fits the cage ------------------------------------------
+    let small = bt::spawner_mob_scale(0.4, 0.3); // a silverfish
+    let zombie = bt::spawner_mob_scale(0.6, 1.95);
+    let exact = bt::spawner_mob_scale(1.0, 1.0);
+    c.record(
+        "r3.only_a_mob_larger_than_a_block_is_shrunk",
+        (small - 0.53125).abs() < 1e-6
+            && (exact - 0.53125).abs() < 1e-6
+            && (zombie - 0.53125 / 1.95).abs() < 1e-6,
+        format!(
+            "a silverfish scales {small:.5}, a mob exactly one block {exact:.5}, \
+             and a zombie {zombie:.5} = 0.53125/1.95. The threshold is on the \
+             LARGER of width and height and is strict (`> 1.0`), so something \
+             smaller is never enlarged to fill the cage"
+        ),
+    );
+
+    // --- the mount --------------------------------------------------------
+    let apply = |m: &bt::Affine, p: [f32; 3]| -> [f32; 3] {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    };
+    let feet = apply(&bt::spawner_mob(0.0, 0.5), [0.0, 0.0, 0.0]);
+    c.record(
+        "r4.the_mob_hangs_in_the_middle_of_the_cage",
+        (feet[0] - 0.5).abs() < 1e-5
+            && (feet[2] - 0.5).abs() < 1e-5
+            && (feet[1] - 0.2).abs() < 1e-5,
+        format!(
+            "its feet land at {feet:?} — `translate(0.5, 0.4, 0.5)` then, INSIDE \
+             the spin, `translate(0, -0.2, 0)`, so the mob sits at y 0.2 in the \
+             middle of the block"
+        ),
+    );
+
+    // The second translate is inside the spin, so the mob ORBITS.
+    let a = apply(&bt::spawner_mob(0.0, 0.5), [0.0, 0.0, 0.0]);
+    let b = apply(&bt::spawner_mob(90.0, 0.5), [0.0, 0.0, 0.0]);
+    let tilt_a = apply(&bt::spawner_mob(0.0, 0.5), [0.0, 1.0, 0.0]);
+    c.record(
+        "r5.the_tilt_leans_the_mob_towards_the_viewer",
+        (tilt_a[2] - feet[2]).abs() > 1e-3,
+        format!(
+            "a point one unit above the feet lands at {tilt_a:?} against feet \
+             {feet:?} — the z has moved, which is the `-30 degree` tilt about \
+             X. Without it a caged mob would stand bolt upright in its box"
+        ),
+    );
+    c.record(
+        "r6.the_mob_turns_on_the_spot_rather_than_orbiting",
+        (a[0] - b[0]).abs() < 1e-5 && (a[2] - b[2]).abs() < 1e-5,
+        format!(
+            "the feet stay at {a:?} / {b:?} through a quarter turn. The inner \
+             translate LOOKS like it should make the mob orbit, but (0,-0.2,0) \
+             lies along the spin AXIS, so it commutes with the Y rotation — the \
+             two translates could be swapped with no effect at all, and only \
+             the model's own extent sweeps round. This witness is what \
+             disproved the opposite claim in `be_transform`'s own comment"
+        ),
+    );
+
+    c.record(
+        "r7.the_render_spin_is_ten_times_the_stored_one",
+        (bt::spawner_spin_degrees(0.0, 4.0, 1.0) - 40.0).abs() < 1e-5
+            && (bt::spawner_spin_degrees(0.0, 4.0, 0.5) - 20.0).abs() < 1e-5,
+        "`Mth.lerp(partialTicks, oSpin, spin) * 10` — the block entity's own \
+         counter advances a couple of degrees a tick and the renderer \
+         multiplies by TEN, so the caged mob whirls rather than drifting",
+    );
+
+    // --- end to end through the collector ---------------------------------
+    let states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    let etypes = rewo_data::entity_types::EntityTypes::load(&paths.registries_json())?;
+    let shape = DimensionShape::OVERWORLD;
+    let lightmap = rewo_world::lightmap::LightmapState::default();
+    let spawner_state = blocks
+        .default_state("minecraft:spawner")
+        .ok_or("blocks.json: no minecraft:spawner")?;
+
+    let build = |id: Option<&str>| -> Vec<crate::live_cmd::OwnedSpawnerMob> {
+        let mut world = rewo_world::World::new(shape);
+        let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, spawner_type)]);
+        let mut r = rewo_proto::reader::PacketReader::new(&body);
+        let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks).unwrap();
+        world.insert_column(0, 0, col);
+        world.set_block(0, 64, 0, spawner_state);
+        let be = match id {
+            Some(i) => with_id(i),
+            None => bare.clone(),
+        };
+        world
+            .block_entities
+            .insert(BlockEntityPos { x: 0, y: 64, z: 0 }, be);
+        crate::live_cmd::collect_spawner_mobs(
+            &world,
+            &etypes,
+            states.spawner_states(),
+            &lightmap,
+            0.0,
+        )
+    };
+
+    let zombies = build(Some("minecraft:zombie"));
+    let nothing = build(None);
+    let unknown = build(Some("minecraft:not_a_real_mob"));
+    c.record(
+        "r8.a_configured_spawner_yields_one_mounted_draw",
+        zombies.len() == 1
+            && nothing.is_empty()
+            && unknown.is_empty()
+            && zombies[0].kind == rewo_gpu::mobs::kind_for_entity_name("minecraft:zombie"),
+        format!(
+            "a zombie spawner produced {} draw, an unconfigured one {}, and one \
+             naming a type this version does not register {} — an unknown type \
+             draws nothing rather than substituting a mob that is not in the \
+             cage",
+            zombies.len(),
+            nothing.len(),
+            unknown.len()
+        ),
+    );
+
+    c.record(
+        "r9.the_caged_mob_rides_the_entity_pass_with_a_mount",
+        {
+            let d = crate::live_cmd::spawner_mob_draw(&zombies[0]);
+            d.mount.is_some()
+                && d.pos == [0.0, 64.0, 0.0]
+                && d.limb_amount == 0.0
+                && !d.hurt
+                && d.scale_mul == 1.0
+        },
+        "the draw carries a mount and the BLOCK's position, with every \
+         simulated input neutral — vanilla loads a display entity once and \
+         never ticks it, so it does not walk, look around, swing or take \
+         damage. `scale_mul` stays 1 because the fit-to-cage scale is inside \
+         the mount, and applying it twice would shrink the mob squared",
     );
     Ok(())
 }

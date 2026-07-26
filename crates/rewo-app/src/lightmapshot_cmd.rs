@@ -812,6 +812,7 @@ fn run_entity_case(
         held: [None, None],
         skin_uv: None,
         scale_mul: 1.0,
+        mount: None,
         anim_id: 0.0,
         light,
     };
