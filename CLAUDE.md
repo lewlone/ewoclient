@@ -2452,8 +2452,23 @@ validation Rewo has.
     counter-rotated), and a camera-facing eye — the one input in this path
     that's a property of the VIEW not the block. The deg→rad round trip in the
     renderer is an exact no-op; don't "fix" half of it.
-  - **Two block-entity items remain**: a spawner's caged mob needs an
-    **entity-model-in-block draw**, an end portal's starfield the **shader**.
+  - **M31 the spawner's caged mob.** M29 called this "an entity model composed
+    into a block-entity draw" — one word off: the mob belongs in the **ENTITY**
+    path, just positioned differently. Every other entity STANDS (`pos` = its
+    feet); this one is *mounted*, so `EntityDraw` gained an optional `mount`
+    affine applied to the feet-relative position. Same models, rigs and
+    animations as every other mob. Display entity is `SpawnData→entity→id` (two
+    levels down); empty/absent/unregistered → NO mob, never a default. Scale is
+    `0.53125 / max(bbW,bbH)` **only if > 1.0**; render spin is the stored one
+    **×10**; `scale_mul` stays 1 (the fit scale is in the mount — applying both
+    shrinks it squared).
+  - **A witness disproved my own comment** (3rd time this arc): I claimed the
+    inner `translate(0,-0.2,0)` makes the mob orbit — it lies **along the spin
+    axis**, so it commutes and the translates could be swapped with no effect.
+    The `-30°` X tilt is the load-bearing part. **The claims that survive
+    unchallenged are the ones nothing in the render moves against.**
+  - **One block-entity item remains**: an end portal's starfield needs the
+    render type's **shader** (its geometry already ships exact).
   - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

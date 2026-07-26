@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M30 shipped; M0–M9 pushed, M10–M30 reviewed local
+### Where it is: M0–M31 shipped; M0–M9 pushed, M10–M31 reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
@@ -68,9 +68,10 @@ wrong**, because `setupAnim` always runs and those parts were never at the
 mesh's own pose. **M30 then built that world scan** and the conduit's
 active cage, wind and eye came with it — a conduit decides its own activation
 from the blocks around it, and the shell is **42 positions, which is also the
-hunting threshold**, so its eye opens exactly when the frame is complete. Two
-items remain: a spawner's caged mob needs an **entity-in-block draw**, and an
-end portal's starfield a **shader**. See §15.
+hunting threshold**, so its eye opens exactly when the frame is complete. **M31 then mounted the spawner's caged mob** — which
+belonged in the *entity* path all along, positioned by a mount affine rather
+than by the world. **One item remains**: an end portal's starfield needs the
+render type's **shader**. See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -5631,3 +5632,69 @@ SHA-256 `2cc56b4a…` byte-identical to M15 onward; `git diff --check` clean.
 draw, and an **end portal's** starfield needs the render type's shader. Also
 out here: the conduit's damage beam, its ambient sounds and `applyEffects` (the
 status it grants nearby players) are all server-side and carry no geometry.
+
+### 2026-07-27 — M31: the spawner's caged mob — SHIPPED + VERIFIED
+
+`6a48208`, on `codex/rewo-m19-combat-swings`, not pushed. `blockentityshot`
+157 → **166**.
+
+M29 named this as needing "an entity model composed into a block-entity draw",
+and that framing was one word off. **The mob does not belong in the
+block-entity path at all** — it belongs in the *entity* path, positioned
+differently.
+
+Every other entity **stands** in the world: `EntityDraw.pos` is where its feet
+are. A spawner's display mob does not — `submitEntityInSpawner` pushes a
+translate-rotate-tilt-scale chain and renders the entity at the resulting
+origin. So `EntityDraw` grew an optional **`mount`**, an affine applied to the
+feet-relative position before `pos` places it, and the caged mob rides the
+exact path every other mob uses: same models, same rigs, same animations. A
+second emitter would have had to duplicate all of that.
+
+The display entity is `SpawnData` → `entity` → `id`, two levels down. An empty
+or absent id means **no mob rather than a default** (`getOrCreateDisplayEntity`
+returns null), and so does an id naming a type this version does not register —
+a substitute would be a very visible invention.
+
+Three numbers are easy to get wrong, and each is pinned:
+
+- the scale is `0.53125 / max(bbWidth, bbHeight)` **only when that exceeds
+  1.0**, so a zombie is squeezed into the cage while a silverfish is left small
+  rather than enlarged to fill it;
+- the render spin is `lerp(partial, oSpin, spin) * **10**` — the block entity's
+  counter advances a couple of degrees a tick and the renderer multiplies by
+  ten, so the mob whirls rather than drifting;
+- `scale_mul` stays 1, because the fit-to-cage scale is inside the mount and
+  applying it in both places would shrink the mob *squared*.
+
+**A witness disproved my own comment.** I wrote that the inner
+`translate(0, -0.2, 0)` sits inside the spin and therefore makes the mob orbit
+rather than turn on the spot — "swapping the two translates would give a mob
+that pirouettes in place". That is wrong: `(0, -0.2, 0)` lies **along the spin
+axis**, so it commutes with the Y rotation and the two translates could be
+swapped with no effect whatsoever. `r6` asserts the feet stay fixed through a
+quarter turn, which is what caught it. Both the comment and the witness now say
+so, and name the **−30° X tilt** as the part that *is* load-bearing: it leans a
+caged mob towards the viewer instead of standing it bolt upright.
+
+That is the third time in this arc a witness has corrected a claim I had
+written down as fact — after the 42-position frame shell and the two skull rest
+poses. The pattern is worth naming: **the claims that survive unchallenged are
+the ones nothing in the render moves against.**
+
+**Measured:** 495 tests (440 lib + 55 app); `blockentityshot` **166/166**,
+`itemshot` 28/28, `hurtshot` 38/38, `swingshot` 97/97, `eventshot` 28/28,
+`danceshot` 24/24, `mobshot` 243/243; `lightmapshot`, `skyshot`, `tintshot`,
+`meshshot` and `dimensioncheck` green; canonical demo SHA-256 `2cc56b4a…`
+byte-identical to M15 onward; `git diff --check` clean.
+
+**Excluded:** the display entity is a *model*, not a simulated mob — vanilla
+loads it once and never ticks it, so it does not walk, look around, swing or
+take damage, and every such input is left neutral. A spawner's smoke and flame
+particles need a particle system this client does not have. The **trial
+spawner** shares `extractSpawnerData` but has its own block, states and
+ominous/normal display logic, and is not covered.
+
+**One block-entity item remains:** an end portal's starfield needs the render
+type's shader (`rendertype_end_portal.fsh`, fifteen scrolling samples of
+`end_sky.png` faking depth). Its geometry already ships exact.
