@@ -1223,7 +1223,7 @@ in §15 and the entry here becomes history.)*
 >   never missing — only the text.
 >
 > **Then M26 closed the shulker opening and corrected two of these claims** —
-> `3f1b9a2`, and see §15 for the blow-by-blow.
+> `420baf4`, and see §15 for the blow-by-blow.
 >
 > - *A shulker box's own opening* **is** `block_event`; the line below calling
 >   it "a different mechanism from the chest lid" was half right. Same packet,
