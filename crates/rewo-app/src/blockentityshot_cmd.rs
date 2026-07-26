@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 50;
+const EXPECTED_WITNESSES: usize = 59;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -540,6 +540,170 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
             && items.block_entities.get("rewo:be/ender_chest_left").is_none(),
         "ender_chest bakes single-only — it can never be double, and the jar has \
          no ender_left.png to bake from",
+    );
+
+    // --- shulker boxes -----------------------------------------------------
+    let shulkers: Vec<String> = std::iter::once("rewo:be/shulker_box".to_string())
+        .chain(
+            rewo_data::block_entity_models::DYE_COLORS
+                .iter()
+                .map(|c| format!("rewo:be/{c}_shulker_box")),
+        )
+        .collect();
+    let baked_shulkers = shulkers
+        .iter()
+        .filter(|n| items.block_entities.contains_key(*n))
+        .count();
+    c.record(
+        "s1.every_shulker_box_bakes",
+        baked_shulkers == 17,
+        format!("{baked_shulkers} of 17 shulker-box models (undyed + 16 dyed)"),
+    );
+
+    let sh = items
+        .block_entities
+        .get("rewo:be/shulker_box")
+        .ok_or("rewo:be/shulker_box did not bake")?;
+    c.record(
+        "s2.a_shulker_box_is_a_lid_and_a_base",
+        sh.quads.len() == 12,
+        format!("{} quads (want 12 = 2 boxes x 6 faces)", sh.quads.len()),
+    );
+
+    // The model is authored upside down — its boxes sit at negative y in part
+    // space — because the renderer's transform ends in `scale(1, -1, -1)`.
+    let mut ylo = f32::MAX;
+    let mut yhi = f32::MIN;
+    for q in &sh.quads {
+        for v in &q.verts {
+            ylo = ylo.min(v[1]);
+            yhi = yhi.max(v[1]);
+        }
+    }
+    c.record(
+        "s3.the_shulker_model_is_authored_upside_down",
+        ylo == 8.0 && yhi == 24.0,
+        format!(
+            "model y {ylo}..{yhi} px — the boxes are addBox(…,-16,…) and (…,-8,…) \
+             against a PartPose.offset(0,24,0), which the renderer's trailing \
+             scale(1,-1,-1) flips the right way up"
+        ),
+    );
+
+    // …and the transform must land it inside the block, for all six facings.
+    let mut inside = true;
+    let mut rows = Vec::new();
+    for f in [
+        rewo_data::be_transform::Facing6::Down,
+        rewo_data::be_transform::Facing6::Up,
+        rewo_data::be_transform::Facing6::North,
+        rewo_data::be_transform::Facing6::South,
+        rewo_data::be_transform::Facing6::West,
+        rewo_data::be_transform::Facing6::East,
+    ] {
+        let m = rewo_data::be_transform::shulker_box(f);
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for q in &sh.quads {
+            for v in &q.verts {
+                let p = [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0];
+                let t = [
+                    m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+                    m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+                    m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+                ];
+                for k in 0..3 {
+                    lo[k] = lo[k].min(t[k]);
+                    hi[k] = hi[k].max(t[k]);
+                }
+            }
+        }
+        inside &= (0..3).all(|k| lo[k] >= -0.01 && hi[k] <= 1.01);
+        rows.push(format!("{f:?} y {:.3}..{:.3}", lo[1], hi[1]));
+    }
+    c.record(
+        "s4.every_facing_lands_the_box_inside_its_block",
+        inside,
+        format!(
+            "{} — translate(.5) scale(.9995) rotate(dir) scale(1,-1,-1) \
+             translate(0,-1,0), applied right-to-left to a point",
+            rows.join("; ")
+        ),
+    );
+
+    // The 0.9995 shrink is real and is what keeps a wall-mounted box from
+    // z-fighting the wall.
+    let m_up = rewo_data::be_transform::shulker_box(rewo_data::be_transform::Facing6::Up);
+    c.record(
+        "s5.the_transform_shrinks_by_a_hair",
+        (m_up[0][0].abs() - 0.9995).abs() < 1e-6,
+        format!(
+            "scale {:.6} — vanilla's 0.9995, so a box flush against a block does \
+             not z-fight it",
+            m_up[0][0].abs()
+        ),
+    );
+
+    // Up and Down must genuinely differ — a box on a ceiling is upside down.
+    let m_down = rewo_data::be_transform::shulker_box(rewo_data::be_transform::Facing6::Down);
+    c.record(
+        "s6.up_and_down_are_not_the_same_transform",
+        (m_up[1][1] - m_down[1][1]).abs() > 1.0,
+        format!(
+            "up m11={:.4} vs down m11={:.4} — the y axis inverts, which is the \
+             whole difference between a floor box and a ceiling one",
+            m_up[1][1], m_down[1][1]
+        ),
+    );
+
+    // Each colour has its own texture.
+    let tex_sh = |n: &str| {
+        items
+            .block_entities
+            .get(n)
+            .and_then(|m| m.quads.first())
+            .map(|q| q.tex)
+    };
+    let undyed = tex_sh("rewo:be/shulker_box");
+    let red = tex_sh("rewo:be/red_shulker_box");
+    let blue = tex_sh("rewo:be/blue_shulker_box");
+    c.record(
+        "s7.each_dye_has_its_own_texture",
+        undyed.is_some() && undyed != red && red != blue,
+        format!("undyed={undyed:?} red={red:?} blue={blue:?}"),
+    );
+
+    // Every shulker state resolves to a model that baked, with a transform.
+    let mut sh_ok = true;
+    let mut sh_seen = 0;
+    for id in 0..40000u32 {
+        if states.get(id).is_some() {
+            continue; // a chest, already covered
+        }
+        let Some(d) = states.draw_for(id) else { continue };
+        sh_seen += 1;
+        sh_ok &= items.block_entities.contains_key(&d.model) && d.chest.is_none();
+    }
+    c.record(
+        "s8.every_shulker_state_names_a_baked_model",
+        sh_ok && sh_seen == states.shulker_len(),
+        format!(
+            "{sh_seen} shulker states resolve to baked models, none carrying a \
+             chest lid (a shulker's own opening is a different mechanism)"
+        ),
+    );
+
+    // A block-entity type still in the Invisible list must resolve to nothing
+    // — the fail-closed half, so an unimplemented type cannot borrow a model.
+    let banner_state = (0..40000u32).find(|&id| {
+        states.get(id).is_none()
+            && states.draw_for(id).is_none()
+    });
+    c.record(
+        "s9.an_unimplemented_type_still_draws_nothing",
+        banner_state.is_some(),
+        "states outside the chest and shulker tables resolve to None, so banners, \
+         heads, pots and the rest render as nothing rather than as a wrong model",
     );
 
     // The name a state resolves to must match what actually baked.

@@ -1449,7 +1449,22 @@ impl<'a> Baker<'a> {
             let (rgba, w, h) = decode_png_any(&bytes)?;
             Some(crate::held_items::HeldTexture { w, h, rgba })
         });
-        let chest_count = chests.len();
+        let jar2 = &mut self.jar;
+        let mut shulkers = crate::block_entity_models::bake_shulker_boxes(
+            &mut pool,
+            &mut |tex_name| {
+                let path = format!("assets/minecraft/textures/{tex_name}.png");
+                let mut bytes = Vec::new();
+                jar2.by_name(&path)
+                    .ok()
+                    .and_then(|mut e| e.read_to_end(&mut bytes).ok())?;
+                let (rgba, w, h) = decode_png_any(&bytes)?;
+                Some(crate::held_items::HeldTexture { w, h, rgba })
+            },
+        );
+        let chest_count = chests.len() + shulkers.len();
+        let mut chests = chests;
+        chests.append(&mut shulkers);
         let block_entities: HashMap<String, HeldItemModel> = chests.into_iter().collect();
         log::info!("rewo-data: {chest_count} block-entity model(s) baked");
 

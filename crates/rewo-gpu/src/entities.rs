@@ -2283,8 +2283,16 @@ pub struct BlockEntityDraw<'a> {
     pub pos: [f32; 3],
     /// A `rewo:be/…` model name.
     pub model: &'a str,
-    /// `Direction.toYRot()` of the block's facing, in degrees.
-    pub facing_y_rot: f32,
+    /// The block-entity renderer's own `Transformation`, as a row-major 3x4
+    /// affine matrix applied to the model in **block units** — vanilla's
+    /// `poseStack.mulPose(modelTransformation(...))`.
+    ///
+    /// A matrix rather than a facing angle because the renderers do not agree
+    /// on a shape: a chest's is `rotationAround(YP(-yRot), 0.5, 0, 0.5)`, and a
+    /// shulker box's is a translate-scale-rotate-flip chain that ends up
+    /// y-down. Expressing both as what vanilla already calls a
+    /// `Transformation` keeps the emitter from growing a per-type branch.
+    pub transform: [[f32; 4]; 3],
     /// Per-channel world light at the block, as the terrain lightmap resolves
     /// it.
     pub light: [f32; 3],
@@ -2329,7 +2337,7 @@ impl EntityPass {
             let Some(model) = items.any(d.model) else {
                 continue;
             };
-            let (s, c) = (-d.facing_y_rot).to_radians().sin_cos();
+            let m = &d.transform;
             let (ls, lc) = lid_angle(d.openness).sin_cos();
             let [light_r, light_g, light_b] = d.light;
             for q in &model.quads {
@@ -2361,12 +2369,15 @@ impl EntityPass {
                             v[1] * ls + v[2] * lc + d.part_pivot[2],
                         ]
                     };
-                    // model px -> block units, y-up (no entity flip).
+                    // model px -> block units. The renderer's transform is
+                    // written in block units, and `ModelPart.compile` is what
+                    // divides by 16, so the scale comes first.
                     let p = [corner[0] / 16.0, corner[1] / 16.0, corner[2] / 16.0];
-                    // `rotationAround(YP(-yRot), 0.5, 0, 0.5)`: about the
-                    // block centre, so the chest stays in its own block.
-                    let (x, z) = (p[0] - 0.5, p[2] - 0.5);
-                    let p = [x * c + z * s + 0.5, p[1], -x * s + z * c + 0.5];
+                    let p = [
+                        m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+                        m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+                        m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+                    ];
                     m4[i] = p;
                     p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
                 }

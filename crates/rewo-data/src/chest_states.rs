@@ -93,10 +93,27 @@ const CHEST_BLOCKS: &[(&str, &str)] = &[
     ("minecraft:waxed_oxidized_copper_chest", "rewo:be/oxidized_copper_chest"),
 ];
 
-/// State id → chest state, for every chest block state.
+/// A block-entity block state Rewo can draw: which model, and the transform
+/// its renderer pushes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockEntityState {
+    /// The `rewo:be/…` model to draw.
+    pub model: String,
+    /// The renderer's own `Transformation`, in block units.
+    pub transform: crate::be_transform::Affine,
+    /// Whether this state's model has an animated lid group, and which chest
+    /// half it is — only chests have either.
+    pub chest: Option<ChestState>,
+}
+
+/// State id → what to draw, for every block-entity block state Rewo renders.
 #[derive(Default)]
 pub struct ChestStates {
     by_state: HashMap<u32, ChestState>,
+    /// Shulker boxes: state id → `(model name, facing)`. Kept beside the
+    /// chests rather than merged, because a chest carries a lid clock and a
+    /// half and a shulker box carries neither.
+    shulkers: HashMap<u32, (String, crate::be_transform::Facing6)>,
 }
 
 impl ChestState {
@@ -177,8 +194,74 @@ impl ChestStates {
         if by_state.is_empty() {
             return Err("blocks.json: no chest states found".into());
         }
-        log::info!("rewo-data: {} chest block state(s)", by_state.len());
-        Ok(Self { by_state })
+
+        // Shulker boxes: an undyed one plus the sixteen dyed, each with a
+        // six-way `facing` (they can be stuck to a ceiling).
+        let mut shulkers = HashMap::new();
+        let mut names: Vec<String> = vec!["minecraft:shulker_box".to_string()];
+        names.extend(
+            crate::block_entity_models::DYE_COLORS
+                .iter()
+                .map(|c| format!("minecraft:{c}_shulker_box")),
+        );
+        for block in names {
+            let Some(def) = obj.get(&block) else {
+                return Err(format!("blocks.json: no {block}"));
+            };
+            let model = if block == "minecraft:shulker_box" {
+                crate::block_entity_models::SHULKER_DEFAULT.0.to_string()
+            } else {
+                format!("rewo:be/{}", block.trim_start_matches("minecraft:"))
+            };
+            let states = def
+                .get("states")
+                .and_then(|s| s.as_array())
+                .ok_or_else(|| format!("blocks.json: {block} has no states"))?;
+            for st in states {
+                let id = st
+                    .get("id")
+                    .and_then(|i| i.as_u64())
+                    .ok_or_else(|| format!("blocks.json: {block} state has no id"))?
+                    as u32;
+                let facing_name = st
+                    .get("properties")
+                    .and_then(|p| p.get("facing"))
+                    .and_then(|f| f.as_str())
+                    .ok_or_else(|| format!("blocks.json: {block} state {id} has no facing"))?;
+                let facing = crate::be_transform::Facing6::from_name(facing_name)
+                    .ok_or_else(|| format!("blocks.json: {block} facing {facing_name:?}"))?;
+                shulkers.insert(id, (model.clone(), facing));
+            }
+        }
+
+        log::info!(
+            "rewo-data: {} chest + {} shulker-box block state(s)",
+            by_state.len(),
+            shulkers.len()
+        );
+        Ok(Self { by_state, shulkers })
+    }
+
+    /// What to draw at a block state, or `None` when Rewo renders nothing for
+    /// it — which is every block-entity type still in M25's Invisible list.
+    pub fn draw_for(&self, state_id: u32) -> Option<BlockEntityState> {
+        if let Some(c) = self.by_state.get(&state_id) {
+            return Some(BlockEntityState {
+                model: c.model_name(),
+                transform: crate::be_transform::chest(c.facing.to_y_rot()),
+                chest: Some(*c),
+            });
+        }
+        let (model, facing) = self.shulkers.get(&state_id)?;
+        Some(BlockEntityState {
+            model: model.clone(),
+            transform: crate::be_transform::shulker_box(*facing),
+            chest: None,
+        })
+    }
+
+    pub fn shulker_len(&self) -> usize {
+        self.shulkers.len()
     }
 
     /// The chest state for a block state id, or `None` when it is not a chest.

@@ -9,6 +9,7 @@
 //! Native-instance setup is an M1-followon.
 
 pub mod assets;
+pub mod be_transform;
 pub mod block_entity_models;
 pub mod block_light;
 pub mod blocks;

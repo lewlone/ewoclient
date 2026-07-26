@@ -200,6 +200,83 @@ pub const RIGHT_SUFFIX: &str = "_right";
 /// depend on `rewo-gpu`, and this is a six-entry constant.
 const FACE_DIRS: [u8; 6] = [0, 1, 2, 5, 4, 3];
 
+/// `ShulkerModel.createShellMesh` — a closed shulker box, texture 64x64.
+///
+/// ```text
+/// lid   texOffs(0, 0)  addBox(-8,-16,-8, 16,12,16)  PartPose.offset(0,24,0)
+/// base  texOffs(0,28)  addBox(-8, -8,-8, 16, 8,16)  PartPose.offset(0,24,0)
+/// ```
+///
+/// The negative y is not a mistake: `ShulkerBoxRenderer`'s transform ends in
+/// `scale(1, -1, -1)`, so the model is authored upside down and the renderer
+/// flips it. Closed is the rest pose — `setupAnim(0)` computes
+/// `lid.setPos(0, 16 + sin(PI/2)*8, 0)`, which is the (0, 24, 0) it already
+/// has — so a shut box needs no animation at all.
+const SHULKER_BOX: &[Box] = &[
+    Box {
+        tex: (0.0, 0.0),
+        min: [-8.0, -16.0, -8.0],
+        dims: [16.0, 12.0, 16.0],
+        offset: [0.0, 24.0, 0.0],
+        part: 0,
+        hide: None,
+    },
+    Box {
+        tex: (0.0, 28.0),
+        min: [-8.0, -8.0, -8.0],
+        dims: [16.0, 8.0, 16.0],
+        offset: [0.0, 24.0, 0.0],
+        part: 0,
+        hide: None,
+    },
+];
+
+/// `ColorCollection.NAMES`, the dye order shulker box textures are named in.
+pub const DYE_COLORS: &[&str] = &[
+    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+    "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+];
+
+/// The undyed shulker box's model name and texture.
+///
+/// `ShulkerBoxRenderer.submit` uses `Sheets.DEFAULT_SHULKER_TEXTURE_LOCATION`
+/// when `getColor()` is null, and `getShulkerBoxSprite(color)` otherwise.
+pub const SHULKER_DEFAULT: (&str, &str) = ("rewo:be/shulker_box", "entity/shulker/shulker");
+
+/// Bake the shulker-box models — the undyed one and the sixteen dyed.
+pub fn bake_shulker_boxes(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut variants: Vec<(String, String)> = vec![(
+        SHULKER_DEFAULT.0.to_string(),
+        SHULKER_DEFAULT.1.to_string(),
+    )];
+    for c in DYE_COLORS {
+        variants.push((
+            format!("rewo:be/{c}_shulker_box"),
+            format!("entity/shulker/shulker_{c}"),
+        ));
+    }
+    let mut out = Vec::new();
+    for (name, tex_name) in variants {
+        let Some(tex) = pool.intern(&tex_name, || load(&tex_name)) else {
+            continue;
+        };
+        out.push((
+            name,
+            HeldItemModel {
+                quads: chest_quads(SHULKER_BOX, tex),
+                right: DisplayTransform::default(),
+                left: DisplayTransform::default(),
+                ground: DisplayTransform::default(),
+                from_block: false,
+            },
+        ));
+    }
+    out
+}
+
 /// Bake the chest models, interning their textures into `pool`.
 ///
 /// A variant whose texture is missing from the jar is **skipped**, not drawn

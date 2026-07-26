@@ -2500,13 +2500,13 @@ fn collect_block_entities(
     let mut out = Vec::new();
     for (pos, _be) in world.block_entities.iter() {
         let state = world.block_state_at(pos.x, pos.y, pos.z);
-        let Some(chest) = chests.get(state) else {
+        let Some(draw) = chests.draw_for(state) else {
             continue;
         };
         out.push(OwnedBlockEntityDraw {
             pos: [pos.x as f32, pos.y as f32, pos.z as f32],
-            model: chest.model_name(),
-            facing_y_rot: chest.facing.to_y_rot(),
+            model: draw.model,
+            transform: draw.transform,
             // Lit from the block's own cell — a chest fills its block, so
             // there is no neighbour to sample the way a flat model would need.
             light: entity_light(
@@ -2516,7 +2516,12 @@ fn collect_block_entities(
                 pos.z as f64 + 0.5,
                 lightmap,
             ),
-            openness: chest_openness(world, chests, *pos, chest, alpha),
+            // Only a chest has a lid; a shulker box's own openness comes
+            // from `ShulkerBoxBlockEntity`'s animation state, which is a
+            // different mechanism and is not modelled.
+            openness: draw
+                .chest
+                .map_or(0.0, |c| chest_openness(world, chests, *pos, c, alpha)),
         });
     }
     out
@@ -2545,7 +2550,7 @@ fn chest_openness(
     chest: rewo_data::chest_states::ChestState,
     alpha: f32,
 ) -> f32 {
-    use rewo_data::chest_states::{ChestFacing, ChestType};
+    use rewo_data::chest_states::ChestType;
     let mine = world.block_entities.lid(pos).openness(alpha);
     let dir = match chest.kind {
         ChestType::Single => return mine,
@@ -2612,7 +2617,7 @@ fn step(f: rewo_data::chest_states::ChestFacing) -> (i32, i32) {
 pub(crate) struct OwnedBlockEntityDraw {
     pub pos: [f32; 3],
     pub model: String,
-    pub facing_y_rot: f32,
+    pub transform: rewo_data::be_transform::Affine,
     pub light: [f32; 3],
     pub openness: f32,
 }
@@ -2622,7 +2627,7 @@ impl OwnedBlockEntityDraw {
         rewo_gpu::entities::BlockEntityDraw {
             pos: self.pos,
             model: &self.model,
-            facing_y_rot: self.facing_y_rot,
+            transform: self.transform,
             light: self.light,
             openness: self.openness,
             part_pivot: rewo_data::block_entity_models::CHEST_LID_PIVOT,
