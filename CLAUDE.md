@@ -2431,11 +2431,20 @@ validation Rewo has.
     approximated by one static layer of `end_portal.png`.
   - **M25's Invisible list is now EMPTY — eleven types measured, eleven
     rendering.** `blockentityshot` 21 → **133** witnesses across the arc.
-  - **What remains here is one shared gap, not a list of types: the
-    per-block-entity animation clock.** Conduit spin + active cage, pot wobble,
-    banner sway, skull bob, piglin ears, dragon jaw, spawner's caged mob and
-    the portal's scrolling starfield all key off a tick this client does not
-    keep, and all render at rest.
+  - **M29 the block-entity animation clock** — banners sway, pots wobble,
+    piglin ears move, dragon jaws open. Not ONE clock: what each animates
+    *from* differs (position+gametime / an event+start tick / an accumulating
+    counter), and grouping by that is what made it tractable. A pot's wobble is
+    a **fourth** meaning of `b0 == 1` (`b1` = a WobbleStyle ordinal, and the
+    arrival tick is the start). **It exposed two rest poses that were already
+    wrong**: `SkullModelBase.setupAnim` ALWAYS runs, so a piglin's ears belong
+    at ∓0.7 rad (not the mesh's ∓30°, ~10° off on every head) and a dragon's
+    jaw rests 0.2 rad OPEN (Rewo drew it shut) — a wrong *rest* pose is
+    invisible precisely because nothing moves to contradict it.
+  - **What's left is no longer a clock**, and each names a different missing
+    capability: a conduit's active cage needs `updateShape`'s prismarine-frame
+    **world scan**, a spawner's caged mob an **entity-model-in-block draw**,
+    an end portal's starfield the **shader**.
   - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

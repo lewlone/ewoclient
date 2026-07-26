@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M28f shipped; M0–M9 pushed, M10–M28f reviewed local
+### Where it is: M0–M29 shipped; M0–M9 pushed, M10–M29 reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
@@ -61,10 +61,13 @@ empty: eleven types measured, eleven rendering.** Five gate witnesses caught
 real bugs before they shipped (a pot side baking six quads instead of one, a
 banner base texture path that baked no pole at all, a statue weathering suffix
 on the wrong end of the name, and an existing witness that had quietly started
-measuring the wrong set). What remains in this area is one shared gap rather
-than a list of types: **the per-block-entity animation clock**, which leaves
-the conduit's spin, the pot's wobble, the banner's sway and the spawner's caged
-mob all at rest. See §15.
+measuring the wrong set). **M29 then shipped the per-block-entity animation
+clock**, so a banner sways, a pot wobbles, a piglin head's ears move and a
+dragon head's jaw opens — and it exposed **two rest poses that were already
+wrong**, because `setupAnim` always runs and those parts were never at the
+mesh's own pose. What is left is no longer a clock: a conduit's active cage
+needs a **world scan**, a spawner's caged mob an **entity-in-block draw**, and
+an end portal's starfield a **shader**. See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -1281,15 +1284,19 @@ in §15 and the entry here becomes history.)*
 > the two end portals.
 >
 > **M25's Invisible list is empty: eleven types measured, eleven rendering.**
-> `blockentityshot` grew 21 → **133** witnesses across the arc.
+> `blockentityshot` grew 21 → **147** witnesses across the arc.
 >
-> **What remains is one shared gap, not a list of types: the per-block-entity
-> animation clock.** The conduit's spin and active cage, the pot's wobble, the
-> banner's sway, a skull's bob, a piglin head's ears, a dragon head's jaw, the
-> spawner's caged mob and the end portal's scrolling starfield all key off a
-> tick this client does not keep for block entities, and all currently render
-> at rest. That is now the single next piece of work in this area rather than
-> a scatter of per-type exclusions.
+> **M29 then shipped the block-entity animation clock** (`de9c4e1`), which was
+> the one shared gap underneath all of them. A banner sways, a pot wobbles, a
+> piglin head's ears move and a dragon head's jaw opens. It also exposed two
+> **rest poses that were already wrong** — `setupAnim` always runs, so those
+> ears and that jaw were never at the mesh's own pose.
+>
+> **What is left is no longer a clock**, and each remaining piece names a
+> different missing capability: a conduit's active cage needs `updateShape`'s
+> prismarine-frame **world scan**, a spawner's caged mob needs an **entity
+> model composed into a block-entity draw**, and an end portal's starfield
+> needs the render type's **shader**.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
@@ -5474,3 +5481,81 @@ gateway draws all six faces because Rewo has no neighbour context at bake time
 (over-draw, invisible for the free-standing gateways they always are), the
 gateway's beacon beam is not drawn, and a player head uses the jar's default
 skin because the profile in its NBT would need a network fetch.
+
+### 2026-07-26 — M29: the block-entity animation clock — SHIPPED + VERIFIED
+
+`de9c4e1`, on `codex/rewo-m19-combat-swings`, not pushed. `blockentityshot`
+133 → **147**. The gap M28f named as "one shared clock" turns out not to be one
+clock at all: **what a block entity animates *from* varies**, and grouping them
+by that is what made it tractable.
+
+| driven by | example |
+|---|---|
+| position and game time only | a banner's sway — no state whatsoever |
+| an event and a start tick | a pot's wobble |
+| an accumulating counter | a skull's animation |
+
+**A pot's wobble is a FOURTH meaning of `b0 == 1`.** After a chest's viewer
+count, a shulker's open/close pair and a spawner's reset,
+`DecoratedPotBlockEntity.triggerEvent` reads `b1` as a **`WobbleStyle`
+ordinal** — and the tick the event arrived on *is* the animation's start, so
+`route_block_event` now carries the game time as part of the payload. The
+guard is real (`data >= 0 && data < values().length`), so an out-of-range
+ordinal is not consumed. The two styles also last **different lengths**, 7 and
+10 ticks.
+
+Both wobbles turn about `(0.5, 0, 0.5)` — the block's **floor** centre — where
+the pot's facing rotation immediately above them turns about `(0.5, 0.5, 0.5)`.
+A pot rocks on its base rather than pivoting in mid-air.
+
+**The clock exposed two rest poses that were already wrong**, which is the part
+worth carrying forward. `SkullModelBase.setupAnim` **always runs** — it is not
+gated on the animation being active — so a piglin head's ears and a dragon
+head's jaw sit at their formula values even at `animationPos = 0`. Rewo drew
+the mesh's own `PartPose`:
+
+- the piglin's ears belong at ∓0.7 rad, not the ∓30° in the mesh — **about 10°
+  off on every piglin head in the world** since M28;
+- the dragon's jaw rests **0.2 rad open**, and Rewo drew it shut.
+
+Neither read as a bug, because both look like plausible heads. That is the
+recurring lesson: a wrong *rest* pose is invisible precisely because nothing
+moves to contradict it, and it took building the motion to see it.
+
+The ears also forced the emitter to grow. One animated group per model covered
+a chest lid, a shulker lid and a banner flag; a piglin's two ears animate to
+**different formulas at once** — the `1.2` asymmetry is on the left ear only,
+so the pair drifts in and out of phase rather than flapping together. So
+`part_transform` became `part_transforms: [_; MAX_PARTS]`, indexed by a quad's
+group, 0 still meaning "as baked".
+
+The skull counter lives on `World`, not on the block-entity map, because its
+driver is a **block-state** property (`SkullBlock.POWERED`) rather than
+anything in the NBT — a skull animates because the note block beneath it is
+powered, and only the world knows that.
+
+Two banner details worth not smoothing over: the phase is
+`floorMod(x*7 + y*9 + z*13 + gameTime, 100)` — **`floorMod`, not `%`**, because
+a negative coordinate must wrap rather than go negative — and the cloth never
+hangs straight, since the constant term (−0.0125) exceeds the amplitude (0.01).
+
+**Measured:** 490 tests (435 lib + 55 app); `blockentityshot` **147/147**,
+`itemshot` 28/28, `hurtshot` 38/38, `swingshot` 97/97, `eventshot` 28/28,
+`danceshot` 24/24, `mobshot` 243/243; `lightmapshot`, `skyshot`, `tintshot`,
+`meshshot` and `dimensioncheck` green; canonical demo SHA-256 `2cc56b4a…`
+byte-identical to M15 onward; `git diff --check` clean.
+
+**What remains is no longer a clock.** Each leftover names a different missing
+capability, which is more useful than one shared excuse:
+
+- a **conduit's** active cage, wind and eye need `updateShape`'s
+  prismarine-frame **world scan** to decide `isActive`. Its dormant shell is
+  already exact — `activeRotation` advances only while active, so a conduit
+  that has never activated genuinely sits at zero.
+- a **spawner's** caged mob needs an **entity model composed into a
+  block-entity draw**, a seam this client does not have.
+- an **end portal's** starfield needs the render type's **shader**.
+- a skull whose counter has stopped reads 0 rather than holding its last count.
+  Vanilla keeps the count and stops adding the partial; the ear formula is
+  periodic, so a stationary head looks the same either way — a stated
+  simplification, not an equivalence.
