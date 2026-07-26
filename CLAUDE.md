@@ -2375,6 +2375,43 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   mixed CRLF/LF endings that an editor will silently normalise into a
   3,400-line diff. Gate `rewo blockentityshot --check` **88/88**; **479 tests**
   (424 lib + 55 app); demo PNG byte-identical to M15 onward.
+- **M27/M28 shipped + verified 2026-07-26 — sign text, and the invisible block
+  entities.** Five commits took `blockentityshot` from 70 to **125** witnesses
+  and the still-invisible block-entity set from **eleven types to two**.
+  - **M27** dyed and glowing sign text plus the line break. *Glowing text is
+    not "the same colour, brighter"*: unglowing is the dye at 40%, glowing is
+    the dye at FULL strength lit fullbright, with the 40% version demoted to
+    its eight-copy outline. A sign does not wrap — `getRenderMessages` keeps
+    fragment 0, so a long line is truncated at a word boundary.
+  - **M28** skulls (7 types, 14 blocks) + the conduit shell. Skulls are
+    **entity** models, authored y-down, so both transforms end in
+    `scale(-1,-1,1)` — a chest has no such flip. Forced four generalisations of
+    the box machinery: rest rotation, `CubeDeformation` grow, mirror, and a
+    **per-model texture size** (a mob head's sheet is 64×32, not 64×64).
+  - **M28b** the decorated pot — the first block entity that is not one model
+    (base + four sherd-textured sides). Needed a second form of `visibleFaces`:
+    `EnumSet.of(NORTH)` builds only one face where `allOfEnumExcept` omits one.
+  - **M28c** banners (32 blocks) — the first whose texture carries no colour. A
+    pattern sprite is a greyscale **mask**, so `BlockEntityDraw` grew a `tint`
+    rather than baking 16 dyes × 43 patterns. The banner dye table is
+    `getTextureDiffuseColor`, **not** the sign's `getTextColor` (red 0xB02E26
+    vs 0xFF0000), and a wall banner's yaw is the facing's *own* toYRot where a
+    wall skull's is its opposite.
+  - **M28d** the spawner's `block_event` — the third meaning of `b0 == 1`.
+    Resetting `spawnDelay` is the whole client effect and shows only through
+    the spin: `1000 / (spawnDelay + 200)` makes a spawner **accelerate** toward
+    its next spawn.
+  - **Three gate witnesses caught real bugs pre-ship**: a pot side baking six
+    quads instead of one (coincident, z-fighting), a banner base texture path
+    (`entity/banner/banner_base.png`, not `entity/banner_base`) that baked no
+    pole while every pattern still loaded, and an existing witness that had
+    quietly started measuring skulls as shulker boxes.
+  - **Still invisible (2 types)**: copper golem statues (four separate pose
+    layers with nested rotated hierarchies) and the two end portals (a bespoke
+    shader, not a model). Shared exclusion: **the per-block-entity animation
+    clock** — conduit spin, pot wobble, banner sway, skull bob, spawner mob all
+    render at rest.
+  - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

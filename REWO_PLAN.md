@@ -36,12 +36,29 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M26 shipped; M0–M9 pushed, M10–M26 reviewed local
+### Where it is: M0–M28d shipped; M0–M9 pushed, M10–M28d reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
 
-**Latest (2026-07-26): M26 — `block_event` reaches the right block entity, and
+**Latest (2026-07-26): M27/M28 — sign text, and the invisible block entities.**
+Five commits took `blockentityshot` from 70 to **125** witnesses and the
+still-invisible block-entity set from eleven types to **two**. M27 dyed and
+glowing sign text plus the line break that keeps it on the board (glowing text
+is the dye at FULL strength with the dim one demoted to its outline — not "the
+same colour, brighter"). M28 skulls (7 types, 14 blocks — **entity** models,
+authored y-down, so both transforms end in `scale(-1,-1,1)`) and the conduit
+shell. M28b the decorated pot, the first block entity that is not one model.
+M28c banners, the first whose texture carries no colour — a pattern sprite is a
+greyscale mask and the dye is a per-layer tint. M28d the spawner's
+`block_event`, the third meaning of `b0 == 1`. Three gate witnesses caught real
+bugs before they shipped (a pot side baking six quads instead of one, a banner
+base texture path that baked no pole at all, and an existing witness that had
+quietly started measuring the wrong set). Still invisible: **copper golem
+statues** (four separate pose layers with nested rotated hierarchies) and the
+**two end portals** (a bespoke shader, not a model). See §15.
+
+**Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
 count, a shulker box's open/close pair, and a bell's *click direction*,
 selected by the block entity's type exactly as vanilla's virtual `triggerEvent`
@@ -307,6 +324,12 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    that normalises them turns a 30-line change into a 3,400-line diff and
    trips `git diff --check`, since git reads the added CR as trailing
    whitespace. Check `git diff --stat` against what you meant to change.
+10. **Never write these sources from a script without `encoding='utf-8'`.**
+   Python's default on Windows is cp1252, which silently re-encodes a whole
+   file and leaves it invalid UTF-8 — and the obvious repair then
+   double-encodes every em-dash that was already correct, so the file has to be
+   restored from HEAD. Pass `encoding='utf-8'` AND `newline=''` (see 9), or use
+   the editor.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
@@ -1243,14 +1266,21 @@ in §15 and the entry here becomes history.)*
 >   "nothing is Rendered yet", so it passed happily through all four. That
 >   witness now derives the rendered set from the model resolver instead.
 >
-> **Still open**, and each named rather than implied: seven Invisible
-> block-entity types (banners need pattern NBT + an atlas, heads need a profile
-> fetch, decorated pots need per-side sherd sprites, conduits and copper golem
-> statues need their models — the statue needs four *separate* pose layers, not
-> one model posed — and the two end portals are a bespoke shader rather than a
-> model at all); `block_event` for spawners (a bell's is decoded and correctly
-> declined, but `BellModel`'s swing is unmodelled); dyed and glowing sign text;
-> and sign line wrapping.
+> **M27/M28 then closed all but two of these** — `e0b9937`, `73a6c61`,
+> `73cd504`, `c428d90`, `8d3754b`; see §15. Dyed and glowing sign text and the
+> line break shipped; skulls (7 types, 14 blocks), the conduit shell, the
+> decorated pot, banners (32 blocks) and the spawner's `block_event` shipped.
+>
+> **Still open**, and each named rather than implied: **copper golem statues**
+> (four *separate* pose layers, each a nested hierarchy where a child's offset
+> rides through its parent's rotation — the flat box list cannot express it,
+> and the ~35 boxes of transcription that follow would fail silently if wrong)
+> and the **two end portals**, whose renderer is a bespoke shader over a flat
+> quad rather than a model at all. Plus the shared exclusion underneath almost
+> everything above: **the per-block-entity animation clock** — the conduit's
+> spin and active cage, the pot's wobble, the banner's sway, a skull's bob, a
+> piglin head's ears, a dragon head's jaw and the spawner's caged mob all key
+> off it, and all currently render at rest.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
@@ -5244,3 +5274,124 @@ the server's own container bookkeeping reads it. And there was no live session:
 every witness drives synthesised packets through the production route, which is
 the deterministic proof — a live shulker box would need a second player to open
 it for the `b1 == 2` case at all.
+
+### 2026-07-26 — M27/M28: the sign text and the invisible block entities — SHIPPED + VERIFIED
+
+Five commits on `codex/rewo-m19-combat-swings`, not pushed: `e0b9937` (M27
+sign text), `73a6c61` (M28 skulls + conduit), `73cd504` (M28b decorated pot),
+`c428d90` (M28c banners), `8d3754b` (M28d spawner `block_event`). Together they
+take `blockentityshot` from **70 to 125** witnesses and the still-invisible
+block-entity set from eleven types to **two**.
+
+**M27 — dyed and glowing sign text, and the break that keeps it on the board.**
+M25e drew sign text, but always black and always full-length. All three gaps
+are one method's business:
+
+- **Glowing text is not "the same colour, brighter."** Unglowing text is the
+  dye at 40%; glowing text is the dye at *full* strength, lit fullbright, with
+  the 40% version demoted to its **outline**. The dark colour is a value both
+  branches need, which is why vanilla computes it before the branch.
+- The dye table is `DyeColor`'s **last** constructor argument. Each entry
+  carries four colours, and red's texture diffuse (`0xB02E26`) against its text
+  colour (`0xFF0000`) is the trap. Two values written out by eye were wrong,
+  so the table is machine-extracted.
+- **A sign does not wrap.** `getRenderMessages` splits and keeps fragment 0, so
+  an over-long line is truncated at a word boundary and the tail is dropped.
+  Two invertible details in `StringSplitter.LineBreakFinder`: the space that
+  triggers a break is *excluded*, and `hadNonZeroWidthChar` guarantees at least
+  one glyph so a too-wide character cannot silently lose a line.
+- The eight-copy outline needed a `z` on `WorldTextDraw`. Vanilla keeps the
+  copies coplanar and orders them under `POLYGON_OFFSET`; Rewo's world text is
+  depth-tested with no such offset, so the outline sits a hair behind instead —
+  same result by depth rather than by order, stated as a deviation.
+
+**M28 — skulls (7 types, 14 blocks) and the conduit.** Skulls are **entity**
+models, not block-entity ones: `SkullModelBase` is authored y-down and both
+transforms end in `scale(-1, -1, 1)`. A chest has no such flip, and carrying
+one family's assumption across renders the skull upside down and mirrored.
+
+They forced four generalisations of the box machinery, all of which the later
+types needed: per-box rest rotation, `CubeDeformation` as a uniform grow,
+`mirror`, and a **per-model texture size** — the last being the silent one,
+since `chest_quads` hard-coded 64×64 and a mob head's sheet is 64×32.
+
+**M28b — the decorated pot**, the first block entity that is not one model: a
+base draw plus four side draws, each with its own sherd sprite. The multi-draw
+needed no new machinery (each side rides the animated-part matrix M26 had
+already generalised) but did need a **second form of `visibleFaces`** —
+`allOfEnumExcept(WEST)` omits one face, `EnumSet.of(NORTH)` builds only one,
+and modelling the second as a single hide silently built the other five.
+
+**M28c — banners (32 blocks)**, the first block entity whose texture carries no
+colour. A pattern sprite is a greyscale **mask** and the dye is a per-layer
+argument, so `BlockEntityDraw` grew a `tint` rather than baking sixteen dyes ×
+forty-three patterns. Two asymmetries against models already here: a wall
+banner's yaw is the facing's **own** `toYRot()` where a wall skull's is its
+opposite, and the dye table is `getTextureDiffuseColor` where a sign's is
+`getTextColor` — the same enum, sharply different values.
+
+**M28d — the spawner's `block_event`**, the third meaning of `b0 == 1`.
+Resetting `spawnDelay` is the whole client effect and it is visible only
+through the spin: `spin += 1000 / (spawnDelay + 200)` makes a spawner
+**accelerate** as its next spawn approaches, and the event slams it back to
+slow.
+
+**Three gate witnesses caught real bugs before they shipped**, which is the
+part worth recording:
+
+1. `k14` — the pot's side plane baked **six** quads instead of one, its north
+   and south faces coincident and z-fighting.
+2. `k19` — `Sheets.BANNER_BASE` reads as `entity/banner_base`, but the file is
+   `entity/banner/banner_base.png`. The wrong path bakes **no** bodies while
+   every pattern still loads, so a banner would have rendered as a floating
+   sheet of cloth with no pole. The witness reported `None` for both bodies,
+   which is also why it now prints its counts rather than only asserting them.
+3. `s8` — an existing witness was measuring the wrong thing. It counted "every
+   state that resolves and is not a chest" as a shulker box; once the static
+   table resolved skulls too that silently became 382 states instead of 102.
+
+And M26's `a4` earned itself four more times: every renderer that shipped
+without moving its type out of `Invisible` failed the gate immediately.
+
+**Two of my own witnesses failed on a wrong premise rather than a wrong
+value**, and both are recorded rather than quietly fixed. `g11` asserted
+glowing text was "brighter than" unglowing, which the fixture could not
+distinguish because the synthesised chunk reads full sky light; it asserts the
+exact rule now, against a finite `sample(7, 7)` rather than the NaN-producing
+`sample(0, 0)`. `d11` ticked a spawner forty times before triggering it, and a
+spawner with no event has no clock entry at all.
+
+**Measured:** 490 tests (435 lib + 55 app; M26 was 479 — `rewo-data` +11 for
+the sign-text module); `blockentityshot` **125/125**, `itemshot` 28/28,
+`hurtshot` 38/38, `swingshot` 97/97, `eventshot` 28/28, `danceshot` 24/24,
+`mobshot` 243/243; `lightmapshot`, `tintshot` and `meshshot` green with
+validation ON; canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
+`git diff --check` clean.
+
+**Still invisible — two types, each for a stated reason:**
+
+- **Copper golem statues** (9 blocks). Four *separate* pose layers
+  (`COPPER_GOLEM`, `_RUNNING`, `_SITTING`, `_STAR`), not one model posed, and
+  each is a nested hierarchy where a child's offset rides through its parent's
+  rotation. The flat box list here cannot express that; it needs an ancestor
+  chain, and then ~35 boxes of careful transcription whose errors would be
+  silent. Deliberately not shipped half-verified.
+- **End portal and end gateway** (2 blocks). `AbstractEndPortalRenderer` is a
+  bespoke shader over a flat quad, not a model at all — a different kind of
+  work from everything above.
+
+**Also excluded, and shared by almost every type here: the block-entity
+animation clock.** The conduit's spin and active cage, the pot's wobble, the
+banner's sway, a skull on a note block, a piglin head's ears, a dragon head's
+jaw and the spawner's caged mob all key off a per-block-entity tick this
+client does not keep. Each renders at rest. A player head draws the jar's
+default skin, because the profile in its NBT would need a network fetch and a
+gate cannot depend on one.
+
+**One process note that recurred and is now in §0.0 as gotcha 10.** A Python
+edit written with Windows' default cp1252 encoding re-encoded a source file and
+left it invalid UTF-8; the repair then double-encoded every pre-existing
+em-dash, and the file had to be restored from HEAD with the changes re-applied.
+Any script touching these sources must pass **both** `encoding='utf-8'` and
+`newline=''` — the same class of hazard as the mixed CRLF/LF endings in gotcha
+9, which also bit again here.
