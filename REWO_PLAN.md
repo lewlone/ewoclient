@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M29 shipped; M0–M9 pushed, M10–M29 reviewed local
+### Where it is: M0–M30 shipped; M0–M9 pushed, M10–M30 reviewed local
 
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
@@ -65,9 +65,12 @@ measuring the wrong set). **M29 then shipped the per-block-entity animation
 clock**, so a banner sways, a pot wobbles, a piglin head's ears move and a
 dragon head's jaw opens — and it exposed **two rest poses that were already
 wrong**, because `setupAnim` always runs and those parts were never at the
-mesh's own pose. What is left is no longer a clock: a conduit's active cage
-needs a **world scan**, a spawner's caged mob an **entity-in-block draw**, and
-an end portal's starfield a **shader**. See §15.
+mesh's own pose. **M30 then built that world scan** and the conduit's
+active cage, wind and eye came with it — a conduit decides its own activation
+from the blocks around it, and the shell is **42 positions, which is also the
+hunting threshold**, so its eye opens exactly when the frame is complete. Two
+items remain: a spawner's caged mob needs an **entity-in-block draw**, and an
+end portal's starfield a **shader**. See §15.
 
 **Earlier (2026-07-26): M26 — `block_event` reaches the right block entity, and
 a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
@@ -1292,11 +1295,11 @@ in §15 and the entry here becomes history.)*
 > **rest poses that were already wrong** — `setupAnim` always runs, so those
 > ears and that jaw were never at the mesh's own pose.
 >
-> **What is left is no longer a clock**, and each remaining piece names a
-> different missing capability: a conduit's active cage needs `updateShape`'s
-> prismarine-frame **world scan**, a spawner's caged mob needs an **entity
-> model composed into a block-entity draw**, and an end portal's starfield
-> needs the render type's **shader**.
+> **M29 then shipped the animation clock and M30 the conduit's world scan**,
+> so the active cage, wind and eye render too. **Two items remain**, each
+> naming a capability this client does not have: a spawner's caged mob needs an
+> **entity model composed into a block-entity draw**, and an end portal's
+> starfield needs the render type's **shader**.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
@@ -5559,3 +5562,72 @@ capability, which is more useful than one shared excuse:
   Vanilla keeps the count and stops adding the partial; the ear formula is
   periodic, so a stationary head looks the same either way — a stated
   simplification, not an equivalence.
+
+### 2026-07-26 — M30: the active conduit — SHIPPED + VERIFIED
+
+`42e02b0`, on `codex/rewo-m19-combat-swings`, not pushed. `blockentityshot`
+147 → **157**.
+
+M29 recorded that the conduit's active cage was "blocked on a world scan, not a
+clock", and that was exactly right. **A conduit decides whether it is active
+itself.** The server sends no flag, no angle and no activation packet, so
+`updateShape` — a scan of the water and prismarine around the block — is the
+entire prerequisite. That is why this looked like an animation problem and was
+not one.
+
+**The shell is 42 positions, not 48, and that is the hunting threshold.** Each
+of the three axis rings borders a 5×5 plane (sixteen apiece), but the rings
+**share their axis ends**, so the union is 42 — and `updateHunting` is
+`effectBlocks.size() >= 42`. A conduit therefore opens its eye exactly when its
+frame is **complete**, not when it is nearly so. I wrote 48 down first from the
+shape of the condition; a unit test corrected it, and `q1` now pins the
+coincidence. Both thresholds read one count, which is why the eye costs nothing
+once the scan exists.
+
+`isWaterAt` is `getFluidState(pos).is(FluidTags.WATER)`, so a **waterlogged**
+block counts — a frame built with waterlogged stairs is legal, and reading only
+`RenderKind::Fluid` would refuse to activate a perfectly good conduit. The bake
+grows a per-state `water` table for it.
+
+Like M29's skull tick, the conduit tick lives on `World` because it needs
+**block states**. Unlike every other entry in `BlockEntities`, a conduit's
+clock is created on its first *tick* rather than by an event: nothing the
+server sends says a conduit exists.
+
+Three details worth not normalising:
+
+- The renderer converts the rotation to degrees and immediately back to radians
+  — an **exact round trip**, therefore a no-op. "Correcting" one half of it
+  would break the cage.
+- `activeRotation` advances, and takes its partial tick, **only while active**,
+  so a conduit that switches off stops dead. That is also why Rewo's dormant
+  shell was already correct at zero.
+- The shape is rescanned only on `gameTime % 40 == 0`, so a conduit snaps on at
+  the next multiple rather than flickering while a player lays its frame.
+
+The four active draws: a cage tumbling about the **tilted** axis `(0.5, 1, 0.5)`
+normalised — not plain Y, so it tumbles rather than spinning flat — the wind
+shroud **twice** (once upright, once at 0.875 scale half-turned about X and Z,
+so the shells counter-rotate and read as a churn), and a **camera-facing eye**.
+The shroud's phase (`tickCount / 66 % 3`) changes both its axis and its
+texture. The eye is the **one input in this whole block-entity path that is a
+property of the view rather than of the block**, so the collector now takes the
+camera axes.
+
+`q8` needed rewriting: it asserted the cage sat at 0.4 at `animTime = 0`, which
+was my number and not vanilla's — the drive is at its *midpoint* there and the
+height is 0.45. It now asserts the range endpoints and that the midpoint falls
+below where a linear map would put it, which is the actual claim (`hh*hh + hh`
+is convex, so the cage dwells low and snaps up).
+
+**Measured:** 495 tests (440 lib + 55 app; M29 was 490 — `rewo-world` +5);
+`blockentityshot` **157/157**, `itemshot` 28/28, `hurtshot` 38/38, `swingshot`
+97/97, `eventshot` 28/28, `danceshot` 24/24, `mobshot` 243/243; `lightmapshot`,
+`skyshot`, `tintshot`, `meshshot` and `dimensioncheck` green; canonical demo
+SHA-256 `2cc56b4a…` byte-identical to M15 onward; `git diff --check` clean.
+
+**Two block-entity items remain**, and neither is a conduit problem: a
+**spawner's** caged mob needs an entity model composed into a block-entity
+draw, and an **end portal's** starfield needs the render type's shader. Also
+out here: the conduit's damage beam, its ambient sounds and `applyEffects` (the
+status it grants nearby players) are all server-side and carry no geometry.

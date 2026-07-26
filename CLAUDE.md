@@ -2441,10 +2441,19 @@ validation Rewo has.
     at ∓0.7 rad (not the mesh's ∓30°, ~10° off on every head) and a dragon's
     jaw rests 0.2 rad OPEN (Rewo drew it shut) — a wrong *rest* pose is
     invisible precisely because nothing moves to contradict it.
-  - **What's left is no longer a clock**, and each names a different missing
-    capability: a conduit's active cage needs `updateShape`'s prismarine-frame
-    **world scan**, a spawner's caged mob an **entity-model-in-block draw**,
-    an end portal's starfield the **shader**.
+  - **M30 the active conduit** — that world scan. A conduit decides its own
+    activation from the blocks around it (the server sends nothing), so
+    `updateShape` was the whole prerequisite. **The shell is 42 positions, not
+    48** — the three axis rings share their axis ends — **and 42 is also the
+    hunting threshold**, so a conduit opens its eye exactly when its frame is
+    COMPLETE. `isWaterAt` counts waterlogged blocks, so the bake grew a
+    per-state `water` table. Ships the cage (tumbling about the tilted axis
+    `(0.5,1,0.5)`, not plain Y), the wind shroud twice (the second at 0.875,
+    counter-rotated), and a camera-facing eye — the one input in this path
+    that's a property of the VIEW not the block. The deg→rad round trip in the
+    renderer is an exact no-op; don't "fix" half of it.
+  - **Two block-entity items remain**: a spawner's caged mob needs an
+    **entity-model-in-block draw**, an end portal's starfield the **shader**.
   - 490 tests (435 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
