@@ -93,6 +93,24 @@ const CHEST_BLOCKS: &[(&str, &str)] = &[
     ("minecraft:waxed_oxidized_copper_chest", "rewo:be/oxidized_copper_chest"),
 ];
 
+/// Which animated group a block-entity model has, if any.
+///
+/// An enum rather than a pair of optional fields because the cases are
+/// mutually exclusive *and* their clocks are genuinely different — the place
+/// those two clocks got conflated is the bug M26 fixed one layer down, in
+/// `block_event` dispatch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BlockEntityAnim {
+    /// No animated group; the model draws exactly as baked.
+    None,
+    /// A chest's lid and lock. Carries the state because a double chest's
+    /// openness is the **max** over the pair, so the renderer needs to know
+    /// which half this is to find the other.
+    ChestLid(ChestState),
+    /// A shulker box's lid — a self-contained clock with no pairing.
+    ShulkerLid,
+}
+
 /// A block-entity block state Rewo can draw: which model, and the transform
 /// its renderer pushes.
 #[derive(Clone, Debug, PartialEq)]
@@ -101,9 +119,18 @@ pub struct BlockEntityState {
     pub model: String,
     /// The renderer's own `Transformation`, in block units.
     pub transform: crate::be_transform::Affine,
-    /// Whether this state's model has an animated lid group, and which chest
-    /// half it is — only chests have either.
-    pub chest: Option<ChestState>,
+    /// The animated group this model carries.
+    pub anim: BlockEntityAnim,
+}
+
+impl BlockEntityState {
+    /// The chest half this state is, or `None` when it is not a chest.
+    pub fn chest(&self) -> Option<ChestState> {
+        match self.anim {
+            BlockEntityAnim::ChestLid(c) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 /// State id → what to draw, for every block-entity block state Rewo renders.
@@ -249,15 +276,23 @@ impl ChestStates {
             return Some(BlockEntityState {
                 model: c.model_name(),
                 transform: crate::be_transform::chest(c.facing.to_y_rot()),
-                chest: Some(*c),
+                anim: BlockEntityAnim::ChestLid(*c),
             });
         }
         let (model, facing) = self.shulkers.get(&state_id)?;
         Some(BlockEntityState {
             model: model.clone(),
             transform: crate::be_transform::shulker_box(*facing),
-            chest: None,
+            anim: BlockEntityAnim::ShulkerLid,
         })
+    }
+
+    /// Every block state this table draws something for.
+    ///
+    /// The gate reads this to derive which block-entity **types** actually
+    /// render, instead of restating the classification table it is checking.
+    pub fn drawn_states(&self) -> impl Iterator<Item = u32> + '_ {
+        self.by_state.keys().chain(self.shulkers.keys()).copied()
     }
 
     pub fn shulker_len(&self) -> usize {

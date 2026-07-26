@@ -51,6 +51,16 @@ pub const CHEST_LID_PIVOT: [f32; 3] = [0.0, 9.0, 1.0];
 /// The animated group a chest's lid and lock belong to.
 pub const CHEST_LID_PART: u8 = 1;
 
+/// The shulker lid's pose offset — `PartPose.offset(0, 24, 0)`, which is also
+/// the pivot its `yRot` turns about and the position its `setPos` replaces.
+pub const SHULKER_LID_PIVOT: [f32; 3] = [0.0, 24.0, 0.0];
+
+/// The animated group a shulker box's lid belongs to. Its base is group 0.
+///
+/// Numbered the same as the chest's because a model only ever has one animated
+/// group here — the number selects *within* a model, not across them.
+pub const SHULKER_LID_PART: u8 = 1;
+
 /// `ChestModel.createSingleBodyLayer` — a closed single chest.
 const CHEST_SINGLE: &[Box] = &[
     Box {
@@ -210,15 +220,19 @@ const FACE_DIRS: [u8; 6] = [0, 1, 2, 5, 4, 3];
 /// The negative y is not a mistake: `ShulkerBoxRenderer`'s transform ends in
 /// `scale(1, -1, -1)`, so the model is authored upside down and the renderer
 /// flips it. Closed is the rest pose — `setupAnim(0)` computes
-/// `lid.setPos(0, 16 + sin(PI/2)*8, 0)`, which is the (0, 24, 0) it already
-/// has — so a shut box needs no animation at all.
+/// `lid.setPos(0, 24 - 0*8, 0)`, which is the (0, 24, 0) it already has — so a
+/// shut box is the baked geometry untouched.
+///
+/// The lid is its own animated group (M26): `setupAnim(progress)` both moves
+/// and spins it, which is why the group's transform is a matrix rather than an
+/// angle. See [`crate::be_transform::shulker_lid`].
 const SHULKER_BOX: &[Box] = &[
     Box {
         tex: (0.0, 0.0),
         min: [-8.0, -16.0, -8.0],
         dims: [16.0, 12.0, 16.0],
-        offset: [0.0, 24.0, 0.0],
-        part: 0,
+        offset: SHULKER_LID_PIVOT,
+        part: SHULKER_LID_PART,
         hide: None,
     },
     Box {

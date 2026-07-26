@@ -15,6 +15,12 @@
 //! conduit                         1    end portal / gateway        2
 //! ```
 //!
+//! The chest and shulker rows — 28 of those blocks, 4 of the 11 types — now
+//! draw. [`BlockEntityKind::Rendered`] is where that is written down, and
+//! `blockentityshot`'s `a4` is what keeps it honest: it derives the rendered
+//! set from the model resolver rather than restating this table, so the two
+//! cannot drift apart in either direction.
+//!
 //! Beds and signs are deliberately absent from that list: their block models
 //! *do* carry geometry, so a bed is a bed and a sign is a plank — only the
 //! sign's text and the bed's extras live in the renderer.
@@ -96,7 +102,17 @@ pub enum BlockEntityKind {
     /// The block model is empty, so this type renders as nothing until a
     /// renderer exists. These are the real gap.
     Invisible,
-    /// Renderer implemented.
+    /// The block model is empty **and** Rewo has a renderer for it, so the
+    /// block draws. Distinct from [`Self::ModelIsEnough`]: this type would be
+    /// invisible without the renderer, which is why moving one here is the
+    /// event worth recording.
+    ///
+    /// This arm is not decoration. `blockentityshot`'s `a4` cross-checks it
+    /// against what [`crate`]'s consumers actually resolve a model for, in
+    /// **both** directions — so a renderer that ships without moving its type
+    /// here fails the gate, and a type moved here without a renderer fails it
+    /// too. The previous witness asserted "nothing is Rendered yet" instead,
+    /// which passed happily through four types shipping renderers.
     Rendered,
 }
 
@@ -109,11 +125,14 @@ pub enum BlockEntityKind {
 /// The classification is *measured*, not guessed — see the module docs for how
 /// the `Invisible` set was derived from the real jar's models.
 pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
-    // -- the invisible ones: no `elements` in any of their blockstate models --
-    ("minecraft:chest", BlockEntityKind::Invisible),
-    ("minecraft:trapped_chest", BlockEntityKind::Invisible),
-    ("minecraft:ender_chest", BlockEntityKind::Invisible),
-    ("minecraft:shulker_box", BlockEntityKind::Invisible),
+    // -- no `elements` in any of their blockstate models, and Rewo now draws
+    //    them: the chest family (M25b/M25c) and every shulker box (M25d) --
+    ("minecraft:chest", BlockEntityKind::Rendered),
+    ("minecraft:trapped_chest", BlockEntityKind::Rendered),
+    ("minecraft:ender_chest", BlockEntityKind::Rendered),
+    ("minecraft:shulker_box", BlockEntityKind::Rendered),
+    // -- the invisible ones: no `elements` in any of their blockstate models,
+    //    and no renderer here yet --
     ("minecraft:banner", BlockEntityKind::Invisible),
     ("minecraft:skull", BlockEntityKind::Invisible),
     ("minecraft:decorated_pot", BlockEntityKind::Invisible),
@@ -245,6 +264,82 @@ impl BlockEntityRegistry {
             .filter(|k| **k == BlockEntityKind::Invisible)
             .count()
     }
+
+    /// How many would-be-invisible types Rewo now draws.
+    pub fn rendered_count(&self) -> usize {
+        self.by_id
+            .values()
+            .filter(|k| **k == BlockEntityKind::Rendered)
+            .count()
+    }
+
+    /// The type ids whose `triggerEvent` Rewo implements, resolved by name.
+    ///
+    /// Resolved by **name** for the same reason every other id in this client
+    /// is: these renumber between versions, and a hard-coded one misfires
+    /// silently. A name absent from the registry stays `None`, which the
+    /// dispatcher reads as "not a type I handle" rather than as an error —
+    /// a version without copper chests is a real answer.
+    pub fn block_event_types(&self) -> BlockEventTypes {
+        let id_of = |want: &str| {
+            self.names
+                .iter()
+                .find(|(_, n)| n.as_str() == want)
+                .map(|(id, _)| *id)
+        };
+        BlockEventTypes {
+            chest: id_of("minecraft:chest"),
+            trapped_chest: id_of("minecraft:trapped_chest"),
+            ender_chest: id_of("minecraft:ender_chest"),
+            shulker_box: id_of("minecraft:shulker_box"),
+        }
+    }
+}
+
+/// The block-entity type ids `block_event` dispatches on.
+///
+/// **Why dispatch needs types at all.** `Level.blockEvent` ends in
+/// `getBlockState(pos).triggerEvent(...)`, which forwards to *that block
+/// entity's* `triggerEvent` — and those do not agree on what `b0 == 1` means:
+///
+/// ```text
+/// ChestBlockEntity       b0==1 -> chestLidController.shouldBeOpen(b1 > 0)
+/// ShulkerBoxBlockEntity  b0==1 -> b1==0 CLOSING, b1==1 OPENING, else inert
+/// BellBlockEntity        b0==1 -> clickDirection = Direction.from3DDataValue(b1)
+/// ```
+///
+/// Reading `b0 == 1` as "a chest lid" — which is what this client did before
+/// M26 — means a bell rung from any side but below (`b1 != 0`) opened a lid at
+/// the bell's position. Nothing drew it, because no chest model resolves for a
+/// bell's block state, but the entry was made, ticked and counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockEventTypes {
+    pub chest: Option<i32>,
+    pub trapped_chest: Option<i32>,
+    pub ender_chest: Option<i32>,
+    pub shulker_box: Option<i32>,
+}
+
+impl BlockEventTypes {
+    /// Which `triggerEvent` body a type id has, or `None` for one Rewo does
+    /// not implement — a bell, a spawner, a piston, a note block.
+    pub fn behavior(self, type_id: i32) -> Option<BlockEventBehavior> {
+        let is = |slot: Option<i32>| slot == Some(type_id);
+        if is(self.chest) || is(self.trapped_chest) || is(self.ender_chest) {
+            Some(BlockEventBehavior::ChestLid)
+        } else if is(self.shulker_box) {
+            Some(BlockEventBehavior::ShulkerLid)
+        } else {
+            None
+        }
+    }
+}
+
+/// The `triggerEvent` bodies Rewo implements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockEventBehavior {
+    ChestLid,
+    ShulkerLid,
 }
 
 /// One face of a sign's text, from its block-entity NBT (M25e).
@@ -356,6 +451,91 @@ impl ChestLid {
     }
 }
 
+/// `ShulkerBoxBlockEntity.AnimationStatus`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShulkerStatus {
+    #[default]
+    Closed,
+    Opening,
+    Opened,
+    Closing,
+}
+
+/// `ShulkerBoxBlockEntity`'s lid clock — the shulker's answer to
+/// [`ChestLid`], and deliberately not the same shape.
+///
+/// ```text
+/// updateAnimation():
+///   progressOld = progress;
+///   switch (animationStatus) {
+///     case CLOSED:  progress = 0; break;
+///     case OPENING: progress += 0.1;
+///                   if (progress >= 1) { status = OPENED; progress = 1; } break;
+///     case OPENED:  progress = 1; break;
+///     case CLOSING: progress -= 0.1;
+///                   if (progress <= 0) { status = CLOSED; progress = 0; }
+///   }
+/// getProgress(a) = Mth.lerp(a, progressOld, progress)
+/// ```
+///
+/// **Three ways this differs from the chest**, each of which would be a
+/// plausible-looking wrong answer if the chest's rule were reused:
+///
+/// 1. It is a four-state machine, not a bool. `OPENED` and `CLOSED` *assign*
+///    the endpoint every tick rather than converging on it.
+/// 2. `+= 0.1` is **unclamped**, with a separate `>= 1.0` test — where the
+///    chest clamps in the same expression. The distinction is observable: f32
+///    `0.1` accumulated ten times is not exactly `1.0`, so the state flips on
+///    the tick the sum crosses the threshold rather than on a tick counted out
+///    in advance.
+/// 3. The trigger rule is `b1 == 0` / `b1 == 1`, **not** `b1 > 0` — see
+///    [`BlockEntities::trigger_block_event`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShulkerAnim {
+    pub status: ShulkerStatus,
+    /// `progress` — 0 shut, 1 fully open.
+    pub progress: f32,
+    /// `progressOld`, for the render lerp.
+    pub progress_old: f32,
+}
+
+impl ShulkerAnim {
+    /// `ShulkerBoxBlockEntity.updateAnimation`, minus the parts that move
+    /// entities and update neighbours — those are server-authoritative and a
+    /// client that ran them would fight the server's own collision.
+    pub fn tick(&mut self) {
+        self.progress_old = self.progress;
+        match self.status {
+            ShulkerStatus::Closed => self.progress = 0.0,
+            ShulkerStatus::Opening => {
+                self.progress += 0.1;
+                if self.progress >= 1.0 {
+                    self.status = ShulkerStatus::Opened;
+                    self.progress = 1.0;
+                }
+            }
+            ShulkerStatus::Opened => self.progress = 1.0,
+            ShulkerStatus::Closing => {
+                self.progress -= 0.1;
+                if self.progress <= 0.0 {
+                    self.status = ShulkerStatus::Closed;
+                    self.progress = 0.0;
+                }
+            }
+        }
+    }
+
+    /// `getProgress(partialTicks)`.
+    pub fn progress(self, alpha: f32) -> f32 {
+        self.progress_old + alpha * (self.progress - self.progress_old)
+    }
+
+    /// Whether this box is doing nothing at all, so its entry can be dropped.
+    pub fn is_idle_closed(self) -> bool {
+        self.status == ShulkerStatus::Closed && self.progress == 0.0 && self.progress_old == 0.0
+    }
+}
+
 /// The block entities of one world, keyed by absolute position.
 ///
 /// A flat map rather than per-column storage: block entities are sparse (a
@@ -369,6 +549,11 @@ pub struct BlockEntities {
     /// [`ChestLid::default`] — closed and staying closed — so a chest nobody
     /// has opened costs nothing.
     lids: HashMap<BlockEntityPos, ChestLid>,
+    /// Shulker-box animations, on the same absent-is-default rule. Kept
+    /// separate from `lids` rather than unified behind one enum: the two
+    /// clocks share neither their state shape nor their trigger rule, and the
+    /// place they *did* get conflated is the bug M26 fixed.
+    shulkers: HashMap<BlockEntityPos, ShulkerAnim>,
 }
 
 impl BlockEntities {
@@ -392,6 +577,8 @@ impl BlockEntities {
     pub fn remove_column(&mut self, cx: i32, cz: i32) {
         self.map.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.lids.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.shulkers
+            .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
     pub fn len(&self) -> usize {
@@ -417,39 +604,80 @@ impl BlockEntities {
     pub fn clear(&mut self) {
         self.map.clear();
         self.lids.clear();
+        self.shulkers.clear();
     }
 
-    /// `ChestBlockEntity.triggerEvent(b0, b1)`:
+    /// `Level.blockEvent` → the block entity's own `triggerEvent(b0, b1)`.
+    ///
+    /// **Dispatch is by block-entity type**, because the `triggerEvent` bodies
+    /// disagree about what `b0 == 1` means — see [`BlockEventTypes`] for the
+    /// three that collide. The two Rewo implements:
     ///
     /// ```text
-    /// if (b0 == 1) { this.chestLidController.shouldBeOpen(b1 > 0); return true; }
+    /// ChestBlockEntity       if (b0 == 1) chestLidController.shouldBeOpen(b1 > 0);
+    /// ShulkerBoxBlockEntity  if (b0 == 1) { openCount = b1;
+    ///                                       if (b1 == 0) status = CLOSING;
+    ///                                       if (b1 == 1) status = OPENING; }
     /// ```
     ///
-    /// `b1` is the *viewer count*, not a boolean — the server sends how many
-    /// players have the container open, and any non-zero count means open.
+    /// In both, `b1` is the **viewer count** the server keeps — but they read
+    /// it differently, and the shulker's reading is the surprising one: it
+    /// tests `== 1`, not `> 0`, so a second player opening the same box
+    /// (`b1 == 2`) sets `openCount` and **leaves the animation exactly where it
+    /// is**. That is not an oversight to normalise away; a box already open
+    /// stays open, and one still closing keeps closing.
     ///
-    /// Returns whether the event was consumed. A `b0` other than 1 is some
-    /// other block's event (a note block's pitch, a piston's direction) and is
-    /// left alone rather than guessed at.
-    pub fn trigger_lid_event(&mut self, pos: BlockEntityPos, b0: u8, b1: u8) -> bool {
+    /// Returns whether the event was consumed. A `b0` other than 1, or a type
+    /// whose `triggerEvent` Rewo does not implement, is left alone rather than
+    /// guessed at.
+    pub fn trigger_block_event(
+        &mut self,
+        types: BlockEventTypes,
+        pos: BlockEntityPos,
+        b0: u8,
+        b1: u8,
+    ) -> bool {
         if b0 != 1 {
             return false;
         }
         // Vanilla routes the event through the *block entity* at the position,
         // so a position with none ignores it — the same existence rule
-        // `set_block_entity_data` keeps.
-        if self.map.get(&pos).is_none() {
+        // `set_block_entity_data` keeps. Its type is then what selects the
+        // body, exactly as the virtual call does.
+        let Some(be) = self.map.get(&pos) else {
             return false;
+        };
+        match types.behavior(be.type_id) {
+            Some(BlockEventBehavior::ChestLid) => {
+                self.lids.entry(pos).or_default().should_be_open = b1 > 0;
+                true
+            }
+            Some(BlockEventBehavior::ShulkerLid) => {
+                let anim = self.shulkers.entry(pos).or_default();
+                // `openCount = b1` is kept by the block entity but read only by
+                // the server's own container bookkeeping, so it is not stored
+                // here. The two status assignments are the whole client effect.
+                if b1 == 0 {
+                    anim.status = ShulkerStatus::Closing;
+                } else if b1 == 1 {
+                    anim.status = ShulkerStatus::Opening;
+                }
+                true
+            }
+            None => false,
         }
-        self.lids.entry(pos).or_default().should_be_open = b1 > 0;
-        true
     }
 
-    /// Advance every lid one tick, dropping the ones that have settled shut.
+    /// Advance every animated block entity one tick, dropping the ones that
+    /// have settled shut.
     pub fn tick_lids(&mut self) {
         self.lids.retain(|_, l| {
             l.tick();
             !l.is_idle_closed()
+        });
+        self.shulkers.retain(|_, s| {
+            s.tick();
+            !s.is_idle_closed()
         });
     }
 
@@ -458,8 +686,17 @@ impl BlockEntities {
         self.lids.get(&pos).copied().unwrap_or_default()
     }
 
+    /// The shulker-box animation at a position — closed if never opened.
+    pub fn shulker(&self, pos: BlockEntityPos) -> ShulkerAnim {
+        self.shulkers.get(&pos).copied().unwrap_or_default()
+    }
+
     pub fn open_lid_count(&self) -> usize {
         self.lids.len()
+    }
+
+    pub fn open_shulker_count(&self) -> usize {
+        self.shulkers.len()
     }
 }
 
@@ -517,6 +754,109 @@ mod tests {
         ];
         let err = BlockEntityRegistry::resolve(&entries).unwrap_err();
         assert!(err.contains("brand_new_thing"), "{err}");
+    }
+
+    /// A registry holding a chest, a shulker box and a bell at known ids.
+    fn types() -> BlockEventTypes {
+        BlockEventTypes {
+            chest: Some(1),
+            trapped_chest: Some(2),
+            ender_chest: Some(3),
+            shulker_box: Some(4),
+        }
+    }
+
+    fn world_with(type_id: i32) -> (BlockEntities, BlockEntityPos) {
+        let mut be = BlockEntities::default();
+        let pos = BlockEntityPos { x: 0, y: 64, z: 0 };
+        be.insert(
+            pos,
+            BlockEntity {
+                type_id,
+                data: Nbt::End,
+            },
+        );
+        (be, pos)
+    }
+
+    #[test]
+    fn a_bell_ring_is_not_a_chest_lid() {
+        // `BellBlockEntity.triggerEvent` is also `b0 == 1`, but its `b1` is
+        // `clickDirection.get3DDataValue()`. Type id 9 is neither a chest nor a
+        // shulker box here, so no clock may be touched — for any direction.
+        for b1 in 0..6u8 {
+            let (mut be, pos) = world_with(9);
+            assert!(!be.trigger_block_event(types(), pos, 1, b1));
+            assert_eq!(be.open_lid_count(), 0, "b1={b1} made a lid entry");
+            assert_eq!(be.open_shulker_count(), 0, "b1={b1} made a shulker entry");
+        }
+    }
+
+    #[test]
+    fn every_chest_material_routes_to_the_lid() {
+        for id in [1, 2, 3] {
+            let (mut be, pos) = world_with(id);
+            assert!(be.trigger_block_event(types(), pos, 1, 1));
+            assert!(be.lid(pos).should_be_open, "type {id}");
+        }
+    }
+
+    #[test]
+    fn a_shulker_box_tests_b1_for_equality_not_for_truth() {
+        // The asymmetry that makes reusing the chest's `b1 > 0` wrong: only
+        // 0 and 1 do anything, and a second viewer leaves the box alone.
+        let (mut be, pos) = world_with(4);
+        assert!(be.trigger_block_event(types(), pos, 1, 2));
+        assert_eq!(be.shulker(pos).status, ShulkerStatus::Closed);
+        be.trigger_block_event(types(), pos, 1, 1);
+        assert_eq!(be.shulker(pos).status, ShulkerStatus::Opening);
+        // ...and a second viewer arriving mid-open does not restart or stop it.
+        be.trigger_block_event(types(), pos, 1, 2);
+        assert_eq!(be.shulker(pos).status, ShulkerStatus::Opening);
+        be.trigger_block_event(types(), pos, 1, 0);
+        assert_eq!(be.shulker(pos).status, ShulkerStatus::Closing);
+    }
+
+    #[test]
+    fn the_two_clocks_do_not_share_an_entry() {
+        let (mut be, pos) = world_with(4);
+        be.trigger_block_event(types(), pos, 1, 1);
+        assert_eq!(be.open_shulker_count(), 1);
+        assert_eq!(be.open_lid_count(), 0, "a shulker box made a chest lid");
+    }
+
+    #[test]
+    fn an_unregistered_type_slot_matches_nothing() {
+        // A version without copper chests leaves those slots `None`. `None`
+        // must not match a block entity whose id happens to be absent too —
+        // `Option == Option` would say `None == None` is a hit.
+        let sparse = BlockEventTypes {
+            chest: Some(1),
+            trapped_chest: None,
+            ender_chest: None,
+            shulker_box: None,
+        };
+        assert_eq!(sparse.behavior(1), Some(BlockEventBehavior::ChestLid));
+        assert_eq!(sparse.behavior(7), None);
+    }
+
+    #[test]
+    fn a_shulker_box_settles_and_is_dropped() {
+        let (mut be, pos) = world_with(4);
+        be.trigger_block_event(types(), pos, 1, 1);
+        for _ in 0..12 {
+            be.tick_lids();
+        }
+        assert_eq!(be.shulker(pos).status, ShulkerStatus::Opened);
+        assert_eq!(be.open_shulker_count(), 1, "an open box keeps its entry");
+        be.trigger_block_event(types(), pos, 1, 0);
+        for _ in 0..12 {
+            be.tick_lids();
+        }
+        // Settled shut, so the entry goes — a box nobody has opened costs
+        // nothing, exactly like a chest that has never been opened.
+        assert_eq!(be.open_shulker_count(), 0);
+        assert_eq!(be.shulker(pos), ShulkerAnim::default());
     }
 
     #[test]

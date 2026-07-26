@@ -2347,6 +2347,34 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   (select/special/composite/condition/range_dispatch) suppress rather than
   guess; first-person/GUI/ground contexts, the spear attack-item animation,
   enchantment glint and per-layer tint are all out.
+- **M23–M25 + the block-entity arc shipped 2026-07-25/26.** M23 item-use state
+  (retiring the blocker three earlier milestones blamed — `useItemRemainingTicks`
+  is *derived* by the client, not synchronised) and the eight use-driven
+  `ArmPose`s; M24 the death animation and item entities; M25 block-entity decode
+  plus a fail-closed type registry and a *measured* statement of the gap (96
+  blocks bake to no geometry, 86 of them real block entities). Then the
+  rendering half: chests, chest lids driven by `block_event`, double chests,
+  17 shulker boxes, and **world-space text** so signs are legible — which
+  turned out to be a small addition rather than a new pass, because a nametag
+  is already world-space glyph quads and sign text is the same emitter with the
+  basis taken from the surface instead of the camera.
+- **M26 shipped + verified 2026-07-26 — `block_event` reaches the right block
+  entity, and a shulker box opens.** `b0 == 1` is **not one opcode**: it is a
+  chest's viewer count, a shulker box's open/close pair, and a bell's
+  `Direction.from3DDataValue`, selected by the block entity's type exactly as
+  vanilla's virtual `triggerEvent` call is. Reading it as "a chest lid" — which
+  this client did — meant a bell rung from any side but below opened a phantom
+  lid at the bell. Also: the shulker's rule is `b1 == 0` / `b1 == 1` with **no
+  else** (a second viewer changes nothing), not the chest's `b1 > 0`; the
+  animated part group became a matrix so one emitter expresses both a hinge and
+  a slide-plus-spin; the classification caught up with the four types that had
+  quietly started rendering (**seven** still invisible, not eight); and
+  `BlockEntityRegistry` runs in the client rather than only in the gate. Two
+  process lessons recorded in REWO_PLAN §0.0: a witness that asserts a *moment*
+  ("nothing is Rendered yet") is not a guard, and several source files carry
+  mixed CRLF/LF endings that an editor will silently normalise into a
+  3,400-line diff. Gate `rewo blockentityshot --check` **88/88**; **479 tests**
+  (424 lib + 55 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

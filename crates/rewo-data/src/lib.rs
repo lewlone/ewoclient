@@ -11,6 +11,7 @@
 pub mod assets;
 pub mod be_transform;
 pub mod block_entity_models;
+pub mod block_entity_types;
 pub mod block_light;
 pub mod blocks;
 pub mod cem;

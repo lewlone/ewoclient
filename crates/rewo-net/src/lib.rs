@@ -867,7 +867,7 @@ pub fn route_block_entity_data(
     true
 }
 
-/// The clientbound-play dispatch seam for `block_event` (chest lids).
+/// The clientbound-play dispatch seam for `block_event` (container lids).
 ///
 /// Wire form (26.2 `ClientboundBlockEventPacket`):
 ///
@@ -883,11 +883,18 @@ pub fn route_block_entity_data(
 /// before dispatching, and a mismatch drops the event. Rewo checks the
 /// position has a block entity instead, which is the same guard one level
 /// down: `Level.blockEvent` ends in `getBlockState(pos).triggerEvent(...)`,
-/// and for a chest that forwards straight to the block entity.
+/// and that forwards straight to the block entity.
+///
+/// **`b0 == 1` is not one meaning.** It selects a different body per block
+/// entity — a chest's viewer count, a shulker box's open/close pair, a bell's
+/// click *direction* — so `types` is what decides which. Before M26 this
+/// routed every `b0 == 1` to the chest lid, and a bell rung from any side but
+/// below (`b1 != 0`, a `Direction.from3DDataValue`) opened a lid at the bell.
 pub fn route_block_event(
     id: i32,
     body: &[u8],
     ids: &crate::ids::Ids,
+    types: rewo_world::block_entities::BlockEventTypes,
     world: &mut rewo_world::World,
 ) -> bool {
     if id != ids.cb_play_block_event {
@@ -896,8 +903,8 @@ pub fn route_block_event(
     let mut r = PacketReader::new(body);
     if let (Ok((x, y, z)), Ok(b0), Ok(b1)) = (r.position(), r.u8(), r.u8()) {
         let pos = rewo_world::block_entities::BlockEntityPos { x, y, z };
-        let consumed = world.block_entities.trigger_lid_event(pos, b0, b1);
-        log::debug!("net: block_event ({x},{y},{z}) b0={b0} b1={b1} lid={consumed}");
+        let consumed = world.block_entities.trigger_block_event(types, pos, b0, b1);
+        log::debug!("net: block_event ({x},{y},{z}) b0={b0} b1={b1} consumed={consumed}");
     }
     true
 }

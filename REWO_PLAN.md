@@ -36,15 +36,33 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M18 shipped; M0–M9 pushed, M10–M18 reviewed local
+### Where it is: M0–M26 shipped; M0–M9 pushed, M10–M26 reviewed local
 
-**M18 is verified and committed locally** as `bb8be20` on branch
-`codex/rewo-m18-allay-dance` (base `6096bbd`, the M17 handoff commit); it is not
-pushed. The vanilla test server was stopped by exact PID and port 25599 verified
-free after the final live gates. The M10–M18 arc is reviewed local work
-(`origin/main` is still at the M0–M9 point).
+Everything from M10 on is reviewed local work on branch
+`codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
 
-**Latest (2026-07-25): M18 — exact Allay dance, the first metadata-driven rig.**
+**Latest (2026-07-26): M26 — `block_event` reaches the right block entity, and
+a shulker box opens.** `b0 == 1` is not one opcode: it means a chest's viewer
+count, a shulker box's open/close pair, and a bell's *click direction*,
+selected by the block entity's type exactly as vanilla's virtual `triggerEvent`
+call is. Reading it as "a chest lid" — which this client did — meant a rung
+bell opened a phantom lid at its own position. Shipped with it: the shulker
+box's four-state lid animation (whose rule is `b1 == 0` / `b1 == 1` with no
+else, **not** the chest's `b1 > 0`), the animated part group becoming a matrix
+so one emitter can express both a hinge and a slide-plus-spin, and the
+block-entity classification catching up with the four types that had quietly
+started rendering — including replacing the witness that guarded it, which
+asserted a *moment* ("nothing is Rendered yet") and so passed happily while the
+world moved underneath it. `BlockEntityRegistry` also runs in the client now
+rather than only in the gate. Gate: `blockentityshot` 70 → **88**. See §15.
+
+**M23–M25 and the four block-entity commits (2026-07-25/26)** — item-use state
+and the eight `ArmPose`s; the death animation; block-entity decode plus a
+fail-closed registry; then item entities, chests, chest lids + double chests,
+shulker boxes, and world-space text so signs are legible. Their records live in
+the §16 blockquote as well as §15.
+
+**Earlier (2026-07-25): M18 — exact Allay dance, the first metadata-driven rig.**
 The Allay's `DATA_DANCING` (SynchedEntityData **index 16, BOOLEAN serializer 8**)
 is now a consumed metadata animation, distinct from M17's one-shot entity events.
 It was being silently mis-decoded as `DATA_BABY_ID` (both live at slot 16 with the
@@ -224,6 +242,13 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   grading every value against an independent counter simulation and independent
   `AllayModel`/`AllayWing` formula transcriptions (real `packets.json`/
   `registries.json`; nothing reads the production formulas as its expectation).
+- `rewo blockentityshot --check` — **the serverless block-entity gate** (M25,
+  extended through M26, fail-closed **88/88**): a synthesised level-chunk
+  payload through `read_level_chunk`, a `block_entity_data` body through the
+  real dispatch, and `block_event` bodies through `route_block_event` into the
+  chest and shulker clocks. It also re-derives the jar's model gap every run,
+  and grades the block-entity classification against what the model resolver
+  actually draws — in both directions, so neither half can drift.
 - `rewo play --dimension-check` — **the live dimension gate** (M16): the paced
   Overworld→Nether→End→Overworld route, checking the level key, the respawn
   boundary, column discard/requeue, generation fencing and settled corrections.
@@ -265,6 +290,23 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    not move uploads to another queue without adding real cross-queue
    sync (timeline semaphores + ownership/sharing) — the FIFO guarantee is
    load-bearing.
+7. **`block_event`'s `b0` is not a global opcode.** It selects a body on the
+   block entity at that position — `b0 == 1` is a chest's viewer count, a
+   shulker box's open/close pair (`== 0` / `== 1`, with **no else**, so a
+   second viewer changes nothing) and a bell's `Direction.from3DDataValue`.
+   Dispatch on the block-entity **type**, never on `b0` alone. Reading it as
+   "a chest lid" made every bell ring open a phantom lid (M26).
+8. **A witness that asserts a *moment* is not a guard.** `blockentityshot`'s
+   old `a4` read "nothing is marked Rendered yet" and went on passing while
+   four types shipped renderers, because the drift was in the table it
+   restated rather than in the registry it guarded. Grade a claim against the
+   code that would falsify it — `a4` now derives the rendered set from the
+   model resolver — and grade it in both directions.
+9. **Some source files are stored with mixed CRLF/LF terminators**
+   (`rewo-data/src/lib.rs`, `rewo-gpu/src/entities.rs` at least). An editor
+   that normalises them turns a 30-line change into a 3,400-line diff and
+   trips `git diff --check`, since git reads the added CR as trailing
+   whitespace. Check `git diff --stat` against what you meant to change.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
@@ -1180,13 +1222,35 @@ in §15 and the entry here becomes history.)*
 >   with the basis taken from the surface instead of the camera. The board was
 >   never missing — only the text.
 >
-> **Still open**, and each named rather than implied: eight Invisible
+> **Then M26 closed the shulker opening and corrected two of these claims** —
+> `3f1b9a2`, and see §15 for the blow-by-blow.
+>
+> - *A shulker box's own opening* **is** `block_event`; the line below calling
+>   it "a different mechanism from the chest lid" was half right. Same packet,
+>   same `b0 == 1` — but `ShulkerBoxBlockEntity.triggerEvent` tests `b1 == 0`
+>   and `b1 == 1` with **no else**, where the chest tests `b1 > 0`. Reusing the
+>   chest's rule would have opened a box on a second viewer that vanilla leaves
+>   alone.
+> - *`block_event` for bells* turned out to be a **bug, not a gap**. The route
+>   read `b0 == 1` as "a chest lid" for every block entity, and a bell's ring
+>   is also `b0 == 1` — with `b1` a `Direction.from3DDataValue`, so ringing one
+>   from any side but below opened a phantom lid at the bell. Dispatch is by
+>   block-entity **type** now, which is what vanilla's virtual `triggerEvent`
+>   call always was.
+> - And the count below was wrong: it is **seven** types, not eight. The
+>   classification had gone stale — chests and shulker boxes were still marked
+>   `Invisible` after shipping renderers, and the witness guarding it asserted
+>   "nothing is Rendered yet", so it passed happily through all four. That
+>   witness now derives the rendered set from the model resolver instead.
+>
+> **Still open**, and each named rather than implied: seven Invisible
 > block-entity types (banners need pattern NBT + an atlas, heads need a profile
 > fetch, decorated pots need per-side sherd sprites, conduits and copper golem
-> statues need their models, and the two end portals are a bespoke shader
-> rather than a model at all); `block_event` for bells and spawners; a shulker
-> box's own opening (a different mechanism from the chest lid); dyed and
-> glowing sign text; and sign line wrapping.
+> statues need their models — the statue needs four *separate* pose layers, not
+> one model posed — and the two end portals are a bespoke shader rather than a
+> model at all); `block_event` for spawners (a bell's is decoded and correctly
+> declined, but `BellModel`'s swing is unmodelled); dyed and glowing sign text;
+> and sign line wrapping.
 
 M19 to M22 built the entity-visual arc — the exact swing, the mob combat rigs,
 the damage flash, the item in the hand — and **each one shipped with a stated
@@ -5054,3 +5118,129 @@ gate refused to pass rather than quietly reporting green.
 - **No live in-game eyeball.** The properties the gate checks are what M22
   verifies: resolution counts against the real jar, geometry shape, and a
   read-back render proving both sources land on the hand.
+
+### 2026-07-26 — M26: `block_event` reaches the right block entity, and a shulker box opens — SHIPPED + VERIFIED
+
+Committed locally on `codex/rewo-m19-combat-swings`; not pushed. Three things,
+and two of them are corrections to what the four block-entity commits before
+this one recorded.
+
+**`block_event` was dispatching on the wrong thing.** `route_block_event` read
+`b0 == 1` as "a chest lid" for any position holding a block entity. But `b0` is
+not a global opcode — `Level.blockEvent` ends in
+`getBlockState(pos).triggerEvent(...)`, which forwards to *that block entity's*
+override, and the overrides disagree about what `1` means:
+
+```text
+ChestBlockEntity       b0==1 -> chestLidController.shouldBeOpen(b1 > 0)
+ShulkerBoxBlockEntity  b0==1 -> b1==0 CLOSING, b1==1 OPENING, else nothing
+BellBlockEntity        b0==1 -> clickDirection = Direction.from3DDataValue(b1)
+```
+
+So ringing a bell sent `b0 = 1` with `b1` a *direction ordinal*, and the client
+made a lid entry at the bell and ticked it open. It drew nothing — no chest
+model resolves for a bell's block state — but the entry was made, animated and
+counted, and it would have surfaced the moment a bell renderer landed. Nothing
+caught it because a bell rung from below is `b1 = 0`, the one case the wrong
+rule got right. Dispatch is by block-entity **type** now, resolved by name,
+which is what the virtual call always was.
+
+**A shulker box's opening is `block_event` after all.** M25d recorded it as
+"`ShulkerBoxBlockEntity`'s animation state, not `block_event`". The animation
+state is what the event *sets*; it is the same packet and the same `b0`. What
+genuinely differs is the rule, and not in the direction reuse would suggest:
+the shulker tests `b1 == 0` and `b1 == 1` and has **no else**, so a second
+player opening the same box (`b1 == 2`) sets `openCount` and leaves the
+animation exactly where it stands. The chest's `b1 > 0` is the plausible wrong
+answer, and `d7` is the witness that rejects it.
+
+Its clock differs too. The chest converges on a clamped value; the shulker runs
+a four-state machine where `OPENED` and `CLOSED` *assign* their endpoints every
+tick, and `OPENING` does an **unclamped** `+= 0.1` with a separate `>= 1.0`
+test — so which tick flips the state is decided by where the f32 sum lands
+rather than counted out in advance (`o2`).
+
+**The animated part had to become a matrix**, the same lesson M25d learned one
+level up. A chest lid rotates about a fixed hinge, so a scalar openness plus a
+pivot expressed it. A shulker lid does two things at once —
+
+```text
+lid.setPos(0.0F, 24.0F - progress * 0.5F * 16.0F, 0.0F);
+lid.yRot = 270.0F * progress * (float)(Math.PI / 180.0);
+```
+
+— sliding half a block while turning three-quarters of a way round, which that
+shape cannot hold. `BlockEntityDraw` now carries a model-space affine per
+animated group, built by the caller, and the emitter has no per-type branch at
+either level. The chest's cubic ease moved to `be_transform` alongside it, so
+there is one definition rather than a copy in each crate. Two details worth not
+smoothing over: at `progress = 0` the transform is the pose offset **exactly**,
+so a shut box is the baked geometry untouched rather than approximately so
+(`o6`); and `setPos` *replaces* the pose offset rather than adding to it, which
+is why the shulker's part transform is not composed with its pivot the way the
+chest's is.
+
+**The classification had gone stale, and its guard asserted the drift away.**
+`chest`, `trapped_chest`, `ender_chest` and `shulker_box` had been rendering
+since M25b/M25d while `TYPE_TABLE` still called them `Invisible`,
+`BlockEntityKind::Rendered` was never constructed, and witness `a4` read
+*"nothing is marked Rendered yet — this witness fails the moment that changes"*.
+It never fired, because the drift was in the table it restated rather than in
+the registry it guarded. That is the interesting failure here: a witness that
+asserts a **moment** goes on passing while the world moves underneath it.
+`a4` now derives the rendered set from `ChestStates::draw_for` — the resolver
+the client actually uses — and grades it against the table in *both*
+directions, so a renderer that ships without moving its type fails, and so does
+a type moved without a renderer. The knock-on correction: seven types are still
+invisible, not the eight §16 claimed.
+
+`BlockEntityRegistry` also **never ran in production** — `grep` found it only
+in the gate — so the fail-closed boundary its docs describe ("a registry entry
+the table does not classify means a new block-entity type shipped and nobody
+decided what it looks like") protected gate runs and not sessions. The client
+resolves it now, through a new `rewo_data::block_entity_types` reading the same
+`registries.json` `EntityTypes` does; `d1` cross-checks the two reads.
+
+**Gate: `blockentityshot` 70 → 88 witnesses.** Nine cover dispatch — the two
+registry reads agreeing, the three types resolving to their own bodies, a bell
+ring leaving both clocks empty (and all six click directions doing so, since
+`b1 = 0` is the one the old rule got right by accident), the chest still
+opening through the typed route, the shulker opening on its own clock and
+making no lid entry, the `b1 == 2` no-op, consumption semantics, and an event
+at empty space. Nine cover the animation — the open and shut clocks against a
+transcription written separately from the decompile, the tick the f32 sum
+crosses, `OPENED` holding exactly under twenty further ticks, the render lerp,
+the rest pose being exact, the eight-px slide and 270° turn, the lid rising
+half a block *in the world* after the renderer's `scale(1, -1, -1)` (the
+witness a sign error would break, where the model-space one would not), and the
+lid being its own group while the base is not.
+
+Two witnesses failed on their first run and were rewritten, because they
+asserted the wrong contract rather than the wrong value: `route_block_event`
+returns "is this my packet id", a dispatch-chain answer, not "did the block
+entity consume it". They ask `trigger_block_event` for the consumption
+semantics now and read observable state through the route.
+
+**Measured:** 479 tests (424 lib + 55 app; M25e was 469 — world +6, data +4);
+`blockentityshot` 88/88, `itemshot` 28/28, `hurtshot` 38/38, `swingshot` 97/97,
+`eventshot` 28/28, `danceshot` 24/24, `mobshot` 243/243; `lightmapshot`,
+`skyshot`, `tintshot`, `meshshot` and `dimensioncheck` green with Vulkan
+validation ON; canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
+`git diff --check` clean.
+
+One hygiene note worth recording because it will recur: two of the files
+touched here (`rewo-data/src/lib.rs`, `rewo-gpu/src/entities.rs`) are stored
+with **mixed** CRLF and LF terminators, and an editor that normalises them
+turns a 30-line change into a 3,400-line diff that trips `git diff --check`
+(git reads the added CR as trailing whitespace). Both were rebuilt so every
+line whose content is unchanged keeps HEAD's original bytes.
+
+**Excluded:** a bell's ring is decoded and correctly declined, but `BellModel`'s
+swing is not modelled — the block model draws the post and the renderer draws
+the bell, so a bell is still a bell-shaped hole. Spawners likewise (their
+`triggerEvent` drives a spinning mob inside the cage). The double-chest
+brightness combiner is still unapplied. `openCount` is not stored, because only
+the server's own container bookkeeping reads it. And there was no live session:
+every witness drives synthesised packets through the production route, which is
+the deterministic proof — a live shulker box would need a second player to open
+it for the `b1 == 2` case at all.

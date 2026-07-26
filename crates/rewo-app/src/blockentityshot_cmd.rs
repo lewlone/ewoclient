@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 70;
+const EXPECTED_WITNESSES: usize = 88;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -206,9 +206,22 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
         .map(|(_, i)| *i)
         .ok_or("registries.json: no minecraft:sign block entity type")?;
 
+    // The type ids `block_event` dispatches on, taken from production's own
+    // resolver rather than looked up here — `check_lids` drives the real route
+    // with them, so a wrong table would show up as a wrong animation, not as a
+    // disagreement between two copies of the same lookup.
+    let types = registry.block_event_types();
+    let type_id = |want: &str| entries.iter().find(|(n, _)| n == want).map(|(_, i)| *i);
+    let shulker = type_id("minecraft:shulker_box")
+        .ok_or("registries.json: no minecraft:shulker_box block entity type")?;
+    let bell =
+        type_id("minecraft:bell").ok_or("registries.json: no minecraft:bell block entity type")?;
+
     println!(
-        "[blockentityshot] registry: {} types, {} still invisible; block_entity_data id={}",
+        "[blockentityshot] registry: {} types, {} rendered, {} still invisible; \
+         block_entity_data id={}",
         registry.len(),
+        registry.rendered_count(),
         registry.invisible_count(),
         ids.cb_play_block_entity_data
     );
@@ -218,12 +231,15 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
         failures: Vec::new(),
     };
 
-    check_registry(&mut c, &registry, &entries, &ids);
+    check_registry(&mut c, &registry, &entries, &ids, &paths)?;
     check_gap(&mut c, &args.version, &registry)?;
     check_decode(&mut c, &blocks, chest, sign);
     check_lifecycle(&mut c, &ids, &blocks, chest);
     check_chest_models(&mut c, &args.version)?;
-    check_lids(&mut c, &ids, &blocks, chest); check_sign_text(&mut c, &args.version)?;
+    check_lids(&mut c, &ids, &blocks, chest, types);
+    check_sign_text(&mut c, &args.version)?;
+    check_block_event_dispatch(&mut c, &ids, &blocks, &paths, &entries, types, chest, shulker, bell)?;
+    check_shulker_anim(&mut c, &args.version)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -682,7 +698,7 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
         }
         let Some(d) = states.draw_for(id) else { continue };
         sh_seen += 1;
-        sh_ok &= items.block_entities.contains_key(&d.model) && d.chest.is_none();
+        sh_ok &= items.block_entities.contains_key(&d.model) && d.chest().is_none();
     }
     c.record(
         "s8.every_shulker_state_names_a_baked_model",
@@ -731,7 +747,13 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
 
 /// M25c — the chest lid: the `block_event` route, the client-side clock, and
 /// the ease the renderer applies to it.
-fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, chest: i32) {
+fn check_lids(
+    c: &mut Checker,
+    ids: &Ids,
+    blocks: &rewo_data::blocks::Blocks,
+    chest: i32,
+    types: rewo_world::block_entities::BlockEventTypes,
+) {
     use rewo_world::block_entities::ChestLid;
 
     let shape = DimensionShape::OVERWORLD;
@@ -751,7 +773,13 @@ fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, ch
         b
     };
     let send = |w: &mut rewo_world::World, x, y, z, b0, b1| {
-        rewo_net::route_block_event(ids.cb_play_block_event, &ev(x, y, z, b0, b1), ids, w)
+        rewo_net::route_block_event(
+            ids.cb_play_block_event,
+            &ev(x, y, z, b0, b1),
+            ids,
+            types,
+            w,
+        )
     };
 
     c.record(
@@ -897,7 +925,7 @@ fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, ch
     let mut ease_ok = true;
     let mut rows = Vec::new();
     for o in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
-        let got = rewo_gpu::entities::lid_angle(o);
+        let got = rewo_data::be_transform::chest_lid_angle(o);
         let want = -(want_ease(o) * std::f32::consts::FRAC_PI_2);
         ease_ok &= (got - want).abs() < 1e-6;
         rows.push(format!("{o:.2}->{:.4}", got));
@@ -913,17 +941,17 @@ fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, ch
     );
     c.record(
         "l11.a_shut_lid_is_exactly_zero_and_a_full_one_is_a_right_angle",
-        rewo_gpu::entities::lid_angle(0.0) == 0.0
-            && (rewo_gpu::entities::lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+        rewo_data::be_transform::chest_lid_angle(0.0) == 0.0
+            && (rewo_data::be_transform::chest_lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs() < 1e-6,
         format!(
             "0 -> {:.6}, 1 -> {:.6} (want 0 and -PI/2)",
-            rewo_gpu::entities::lid_angle(0.0),
-            rewo_gpu::entities::lid_angle(1.0)
+            rewo_data::be_transform::chest_lid_angle(0.0),
+            rewo_data::be_transform::chest_lid_angle(1.0)
         ),
     );
 
     // The ease is not linear — the whole point of the cubic.
-    let mid = rewo_gpu::entities::lid_angle(0.5);
+    let mid = rewo_data::be_transform::chest_lid_angle(0.5);
     c.record(
         "l12.the_ease_is_not_linear",
         (mid + std::f32::consts::FRAC_PI_2 * 0.5).abs() > 0.2,
@@ -941,6 +969,403 @@ fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, ch
 /// text, and specifically the world-space text path it needs. Everything here
 /// is compared against this file's own transcription of
 /// `StandingSignRenderer.textTransformation` and `AbstractSignRenderer`.
+/// M26 — `block_event` dispatches on the block entity's **type**.
+///
+/// The regression this pins: before M26 the route read `b0 == 1` as "a chest
+/// lid" for every block entity, so a bell's ring — which is also `b0 == 1`,
+/// with `b1` a `Direction.from3DDataValue` rather than a count — opened a lid
+/// at the bell. Every witness here drives the production route with a real
+/// packet body; none of them re-implements the dispatch they check.
+#[allow(clippy::too_many_arguments)]
+fn check_block_event_dispatch(
+    c: &mut Checker,
+    ids: &Ids,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    entries: &[(String, i32)],
+    types: rewo_world::block_entities::BlockEventTypes,
+    chest: i32,
+    shulker: i32,
+    bell: i32,
+) -> Result<(), String> {
+    use rewo_world::block_entities::{BlockEventBehavior, ShulkerStatus};
+
+    // The production loader must see the same registry this gate read for
+    // itself. It is a real cross-check now rather than a tautology: before
+    // M26 the client never read this registry at all, so nothing in a live
+    // run would have noticed the ids drifting.
+    let prod = rewo_data::block_entity_types::load(&paths.registries_json())?;
+    let mut prod_sorted = prod.clone();
+    prod_sorted.sort_by_key(|(_, id)| *id);
+    let mut mine = entries.to_vec();
+    mine.sort_by_key(|(_, id)| *id);
+    c.record(
+        "d1.the_client_reads_the_same_registry_the_gate_does",
+        prod_sorted == mine,
+        format!(
+            "{} types via rewo_data::block_entity_types::load, identical to this \
+             gate's own read — the client resolves them now, so an unclassified \
+             new type stops a live session and not only a gate run",
+            prod.len()
+        ),
+    );
+
+    c.record(
+        "d2.the_three_types_resolve_to_their_own_bodies",
+        types.behavior(chest) == Some(BlockEventBehavior::ChestLid)
+            && types.behavior(shulker) == Some(BlockEventBehavior::ShulkerLid)
+            && types.behavior(bell).is_none(),
+        format!(
+            "chest={chest} -> ChestLid, shulker_box={shulker} -> ShulkerLid, \
+             bell={bell} -> none. All three send b0==1; only the type separates \
+             a viewer count from an open/close pair from a click direction"
+        ),
+    );
+
+    // One world holding a chest, a shulker box and a bell, so the same packet
+    // shape can be aimed at each.
+    let shape = DimensionShape::OVERWORLD;
+    let mut world = rewo_world::World::new(shape);
+    let body = chunk_body(
+        0,
+        0,
+        shape.section_count(),
+        &[(0x00, 64, chest), (0x11, 64, shulker), (0x22, 64, bell)],
+    );
+    let mut reader = rewo_proto::reader::PacketReader::new(&body);
+    let col = rewo_world::chunk::read_level_chunk(&mut reader, &shape, blocks)
+        .map_err(|e| format!("chunk decode: {e}"))?;
+    world.insert_column(0, 0, col);
+    let chest_pos = BlockEntityPos { x: 0, y: 64, z: 0 };
+    let shulker_pos = BlockEntityPos { x: 1, y: 64, z: 1 };
+    let bell_pos = BlockEntityPos { x: 2, y: 64, z: 2 };
+
+    let ev = |p: BlockEntityPos, b0: u8, b1: u8| -> Vec<u8> {
+        let mut b = packed_pos(p.x, p.y, p.z).to_be_bytes().to_vec();
+        b.push(b0);
+        b.push(b1);
+        varint(0, &mut b);
+        b
+    };
+    let mut send = |w: &mut rewo_world::World, p, b0, b1| {
+        rewo_net::route_block_event(ids.cb_play_block_event, &ev(p, b0, b1), ids, types, w)
+    };
+
+    // THE REGRESSION. `BellBlockEntity.triggerEvent` is `b0 == 1` with
+    // `b1 = clickDirection.get3DDataValue()`, so ringing a bell from the north
+    // is `b1 = 2` — which the old `b1 > 0` chest rule read as "two viewers".
+    send(&mut world, bell_pos, 1, 2);
+    c.record(
+        "d3.a_bell_ring_does_not_open_a_lid",
+        world.block_entities.open_lid_count() == 0
+            && world.block_entities.open_shulker_count() == 0
+            && world.block_entities.lid(bell_pos).openness == 0.0,
+        format!(
+            "bell rung with b0=1 b1=2 (Direction.NORTH.get3DDataValue()): {} lid \
+             and {} shulker entries, both want 0. This is the M26 regression — \
+             the old type-blind route made a lid entry here and ticked it open",
+            world.block_entities.open_lid_count(),
+            world.block_entities.open_shulker_count()
+        ),
+    );
+    // Every direction, not just the one: DOWN is 0 and would have passed the
+    // old rule by accident, which is how the bug stayed invisible.
+    let mut any = false;
+    for b1 in 0..6u8 {
+        send(&mut world, bell_pos, 1, b1);
+        any |= world.block_entities.open_lid_count() != 0;
+    }
+    c.record(
+        "d4.no_click_direction_rings_through_to_a_lid",
+        !any,
+        "all six Direction.from3DDataValue values left both clocks empty — \
+         b1=0 (DOWN) is the one the old rule got right by accident",
+    );
+
+    // The chest still works, through the same route.
+    send(&mut world, chest_pos, 1, 1);
+    c.record(
+        "d5.a_chest_still_opens_through_the_typed_route",
+        world.block_entities.lid(chest_pos).should_be_open
+            && world.block_entities.open_lid_count() == 1,
+        "chest b0=1 b1=1 -> shouldBeOpen, and it is the only lid entry",
+    );
+
+    // ...and the shulker box now does, on its own clock.
+    send(&mut world, shulker_pos, 1, 1);
+    c.record(
+        "d6.a_shulker_box_opens_on_its_own_clock",
+        world.block_entities.shulker(shulker_pos).status == ShulkerStatus::Opening
+            && world.block_entities.lid(shulker_pos).openness == 0.0,
+        format!(
+            "shulker b0=1 b1=1 -> {:?}, and it made no *lid* entry — the two \
+             clocks are separate, which is the thing that was conflated",
+            world.block_entities.shulker(shulker_pos).status
+        ),
+    );
+
+    // The asymmetry worth pinning: the shulker tests `== 1`, not `> 0`.
+    let mut w2 = rewo_world::World::new(shape);
+    let body2 = chunk_body(0, 0, shape.section_count(), &[(0x11, 64, shulker)]);
+    let mut r2 = rewo_proto::reader::PacketReader::new(&body2);
+    let col2 = rewo_world::chunk::read_level_chunk(&mut r2, &shape, blocks)
+        .map_err(|e| format!("chunk decode: {e}"))?;
+    w2.insert_column(0, 0, col2);
+    send(&mut w2, shulker_pos, 1, 2);
+    let after_two = w2.block_entities.shulker(shulker_pos).status;
+    c.record(
+        "d7.a_second_viewer_does_not_start_the_animation",
+        after_two == ShulkerStatus::Closed,
+        format!(
+            "b1=2 left the status {after_two:?}. `ShulkerBoxBlockEntity` tests \
+             `b1 == 0` and `b1 == 1` and has no else — a box already open stays \
+             open and a shut one stays shut. The chest's `b1 > 0` would have \
+             opened it, which is the plausible wrong answer"
+        ),
+    );
+
+    // ...but it *is* consumed, because vanilla's `triggerEvent` returns true
+    // for any `b0 == 1` regardless of which branch fired. Asked of
+    // `trigger_block_event`, not of the route: the route's bool answers "is
+    // this my packet id", a dispatch-chain question, and conflating the two is
+    // how the first draft of this witness failed.
+    let consumed_two = w2
+        .block_entities
+        .trigger_block_event(types, shulker_pos, 1, 2);
+    let consumed_b0_two = w2
+        .block_entities
+        .trigger_block_event(types, shulker_pos, 2, 1);
+    c.record(
+        "d8.a_no_op_branch_is_still_consumed_but_another_b0_is_not",
+        consumed_two && !consumed_b0_two,
+        format!(
+            "b0=1 b1=2 consumed={consumed_two} (vanilla returns true for any \
+             b0==1, even when neither branch fires) while b0=2 consumed=\
+             {consumed_b0_two} — a note block's pitch or a piston's direction, \
+             left alone rather than guessed at"
+        ),
+    );
+
+    // A shulker box closes on b1 == 0, and an event for empty space is inert.
+    send(&mut w2, shulker_pos, 1, 1);
+    send(&mut w2, shulker_pos, 1, 0);
+    let closing = w2.block_entities.shulker(shulker_pos).status;
+    let empty = BlockEntityPos { x: 9, y: 64, z: 9 };
+    let before = w2.block_entities.open_shulker_count();
+    let consumed_empty = w2.block_entities.trigger_block_event(types, empty, 1, 1);
+    c.record(
+        "d9.zero_closes_it_and_empty_space_is_inert",
+        closing == ShulkerStatus::Closing
+            && !consumed_empty
+            && w2.block_entities.open_shulker_count() == before,
+        format!(
+            "b1=0 -> {closing:?}; an event at a position with no block entity was \
+             not consumed and left the {before} existing entries alone — vanilla's \
+             `getBlockEntity` returns null there and the handler returns"
+        ),
+    );
+    Ok(())
+}
+
+/// M26 — a shulker box's lid opens: the state machine and the two-channel
+/// transform that moves it.
+fn check_shulker_anim(c: &mut Checker, version: &str) -> Result<(), String> {
+    use rewo_data::be_transform as bt;
+    use rewo_world::block_entities::{ShulkerAnim, ShulkerStatus};
+
+    // --- the clock, against a transcription written from the decompile -----
+    //
+    // `updateAnimation` is four assignments and two thresholds. Reproducing it
+    // here as a plain tuple machine — no shared code with `ShulkerAnim` — is
+    // what makes the comparison mean something.
+    fn oracle(status: &mut u8, p: &mut f32, p_old: &mut f32) {
+        *p_old = *p;
+        match *status {
+            0 => *p = 0.0,          // CLOSED
+            1 => {
+                *p += 0.1;          // OPENING — note: unclamped, then tested
+                if *p >= 1.0 {
+                    *status = 2;
+                    *p = 1.0;
+                }
+            }
+            2 => *p = 1.0,          // OPENED
+            _ => {
+                *p -= 0.1;          // CLOSING
+                if *p <= 0.0 {
+                    *status = 0;
+                    *p = 0.0;
+                }
+            }
+        }
+    }
+
+    let mut a = ShulkerAnim {
+        status: ShulkerStatus::Opening,
+        ..Default::default()
+    };
+    let (mut os, mut op, mut oo) = (1u8, 0.0f32, 0.0f32);
+    let mut agree = true;
+    let mut seq = Vec::new();
+    let mut opened_at = None;
+    for t in 1..=14 {
+        a.tick();
+        oracle(&mut os, &mut op, &mut oo);
+        agree &= (a.progress - op).abs() < 1e-7 && (a.progress_old - oo).abs() < 1e-7;
+        seq.push(format!("{:.2}", a.progress));
+        if a.status == ShulkerStatus::Opened && opened_at.is_none() {
+            opened_at = Some(t);
+        }
+    }
+    c.record(
+        "o1.the_open_clock_matches_an_independent_transcription",
+        agree && a.status == ShulkerStatus::Opened && a.progress == 1.0,
+        format!("progress by tick: {} — ends OPENED at 1.0", seq.join(" ")),
+    );
+
+    c.record(
+        "o2.it_reaches_opened_when_the_f32_sum_crosses_one",
+        opened_at == Some(10),
+        format!(
+            "OPENED on tick {opened_at:?}. `+= 0.1` is unclamped with a separate \
+             `>= 1.0` test, so the tick is decided by where the f32 sum lands — \
+             it is not a counted-out ten the way the chest's clamped `min` is"
+        ),
+    );
+
+    // OPENED and CLOSED *assign* their endpoint every tick, so extra ticks
+    // cannot drift them — a converging implementation would.
+    for _ in 0..20 {
+        a.tick();
+    }
+    c.record(
+        "o3.opened_holds_exactly",
+        a.progress == 1.0 && a.progress_old == 1.0 && a.status == ShulkerStatus::Opened,
+        "20 further ticks left progress exactly 1.0 — OPENED assigns rather \
+         than approaches",
+    );
+
+    a.status = ShulkerStatus::Closing;
+    let mut shut_in = 0;
+    for t in 1..=20 {
+        a.tick();
+        if a.status == ShulkerStatus::Closed && shut_in == 0 {
+            shut_in = t;
+        }
+    }
+    c.record(
+        "o4.it_shuts_and_settles_at_zero",
+        shut_in == 10 && a.progress == 0.0 && a.status == ShulkerStatus::Closed,
+        format!("CLOSED after {shut_in} ticks at exactly {}", a.progress),
+    );
+
+    let mid = ShulkerAnim {
+        status: ShulkerStatus::Opening,
+        progress: 0.4,
+        progress_old: 0.3,
+    };
+    c.record(
+        "o5.the_render_progress_interpolates_between_ticks",
+        (mid.progress(0.0) - 0.3).abs() < 1e-6
+            && (mid.progress(0.5) - 0.35).abs() < 1e-6
+            && (mid.progress(1.0) - 0.4).abs() < 1e-6,
+        format!(
+            "a=0 -> {:.3}, a=0.5 -> {:.3}, a=1 -> {:.3} (progressOld 0.3, progress 0.4)",
+            mid.progress(0.0),
+            mid.progress(0.5),
+            mid.progress(1.0)
+        ),
+    );
+
+    // --- the transform ----------------------------------------------------
+    let at = |p: f32, v: [f32; 3]| -> [f32; 3] {
+        let m = bt::shulker_lid(p);
+        [
+            m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2] + m[0][3],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2] + m[1][3],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2] + m[2][3],
+        ]
+    };
+
+    // At rest the transform must be the *pose offset itself*, so a shut box is
+    // the baked geometry untouched — exactly, not to a tolerance.
+    let rest = at(0.0, [0.0, 0.0, 0.0]);
+    let rest_x = at(0.0, [1.0, 0.0, 0.0]);
+    c.record(
+        "o6.a_shut_box_is_the_rest_pose_exactly",
+        rest == [0.0, 24.0, 0.0] && rest_x == [1.0, 24.0, 0.0],
+        format!(
+            "progress 0 puts the group origin at {rest:?} — `setPos(0, 24 - 0*8, 0)` \
+             is the (0,24,0) the bake already applied, so the closed box needs no \
+             animation at all"
+        ),
+    );
+
+    let open = at(1.0, [0.0, 0.0, 0.0]);
+    let open_x = at(1.0, [1.0, 0.0, 0.0]);
+    c.record(
+        "o7.the_lid_travels_eight_px_and_turns_three_quarters",
+        (open[1] - 16.0).abs() < 1e-5
+            && (open_x[0] - open[0]).abs() < 1e-5
+            && (open_x[2] - open[2] - 1.0).abs() < 1e-5,
+        format!(
+            "origin {open:?} (24 - 0.5*16 = 16, so 8 model px = half a block), and \
+             the +x axis lands on {:?} — a 270 degree turn about Y, not a tilt",
+            [open_x[0] - open[0], open_x[1] - open[1], open_x[2] - open[2]]
+        ),
+    );
+
+    // The observable that a sign error would break: after the renderer's
+    // `scale(1, -1, -1)`, the lid must move *up* in the world, not down.
+    let world_y = |p: f32| -> f32 {
+        let block = bt::shulker_box(bt::Facing6::Up);
+        let l = at(p, [0.0, 0.0, 0.0]);
+        // model px -> block units, then the renderer's transform.
+        let v = [l[0] / 16.0, l[1] / 16.0, l[2] / 16.0];
+        block[1][0] * v[0] + block[1][1] * v[1] + block[1][2] * v[2] + block[1][3]
+    };
+    let (shut_y, open_y) = (world_y(0.0), world_y(1.0));
+    c.record(
+        "o8.the_open_lid_rises_half_a_block_in_the_world",
+        open_y - shut_y > 0.49 && open_y - shut_y < 0.51,
+        format!(
+            "lid origin world y {shut_y:.4} shut -> {open_y:.4} open, a rise of \
+             {:.4}. In the box's own space that travel is -y; the renderer's \
+             trailing scale(1,-1,-1) is what turns it into the lid lifting off \
+             the base, and a sign error here reads as a box sinking into the floor",
+            open_y - shut_y
+        ),
+    );
+
+    // --- the bake puts the lid in its own group ---------------------------
+    let paths = DataPaths::for_version(version)
+        .ok_or_else(|| "no config dir for version data".to_string())?;
+    let jar = client_jar(version).ok_or("client jar not found")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    let model = baked
+        .held_items
+        .block_entities
+        .get("rewo:be/shulker_box")
+        .ok_or("shulker box model did not bake")?;
+    let lid = model
+        .quads
+        .iter()
+        .filter(|q| q.part == rewo_data::block_entity_models::SHULKER_LID_PART)
+        .count();
+    let base = model.quads.iter().filter(|q| q.part == 0).count();
+    c.record(
+        "o9.the_lid_is_an_animated_group_and_the_base_is_not",
+        lid == 6 && base == 6,
+        format!(
+            "{lid} lid quads in group {} and {base} static base quads — a box whose \
+             base rode the lid would fly apart, and one whose lid did not would \
+             never open",
+            rewo_data::block_entity_models::SHULKER_LID_PART
+        ),
+    );
+    Ok(())
+}
+
 fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
     use rewo_data::sign_states::{SignAttachment, SignStates};
     use rewo_proto::nbt::Nbt;
@@ -1175,7 +1600,8 @@ fn check_registry(
     registry: &BlockEntityRegistry,
     entries: &[(String, i32)],
     ids: &Ids,
-) {
+    paths: &DataPaths,
+) -> Result<(), String> {
     c.record(
         "a1.every_registered_type_is_classified",
         registry.len() == entries.len(),
@@ -1201,36 +1627,72 @@ fn check_registry(
         format!("orphaned table entries: {orphans:?} (want none)"),
     );
 
-    let invisible: Vec<&str> = TYPE_TABLE
-        .iter()
-        .filter(|(_, k)| *k == BlockEntityKind::Invisible)
-        .map(|(n, _)| *n)
-        .collect();
+    let kinds = |want: BlockEntityKind| -> Vec<&str> {
+        TYPE_TABLE
+            .iter()
+            .filter(|(_, k)| *k == want)
+            .map(|(n, _)| *n)
+            .collect()
+    };
+    let invisible = kinds(BlockEntityKind::Invisible);
     c.record(
-        "a3.the_invisible_set_is_the_measured_one",
-        invisible.len() == 11
-            && invisible.contains(&"minecraft:chest")
-            && invisible.contains(&"minecraft:shulker_box")
+        "a3.the_still_invisible_set_is_the_measured_one",
+        invisible.len() == 7
             && invisible.contains(&"minecraft:banner")
+            && invisible.contains(&"minecraft:decorated_pot")
+            && !invisible.contains(&"minecraft:chest")
             && !invisible.contains(&"minecraft:sign"),
         format!(
-            "{} invisible types: {:?} — a sign is NOT among them, because its block \
+            "{} still invisible: {:?} — a sign is NOT among them, because its block \
              model carries the plank and only the text is renderer-side (and a bed \
              is not a block entity in 26.2 at all, which the fail-closed resolve \
-             proved by rejecting it as an orphan)",
+             proved by rejecting it as an orphan). The chest family and the shulker \
+             box have left this list, which is what M25b-M25d did",
             invisible.len(),
             invisible
         ),
     );
 
+    // a4 replaces "nothing is marked Rendered yet", which was the wrong shape
+    // of witness: it asserted a *moment*, so it went on passing while four
+    // types shipped renderers underneath it. What it should have been checking
+    // is that the classification and the renderer agree — in both directions,
+    // and derived from the model resolver rather than restated from the table.
+    let states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json())?;
+    let mut drawn_types: HashSet<&str> = HashSet::new();
+    for id in states.drawn_states() {
+        let Some(block) = blocks.block_name(id) else { continue };
+        // Block name -> its block-entity type. The families are named after
+        // their type, bar the dye and weathering prefixes.
+        let name = block.trim_start_matches("minecraft:");
+        if name.ends_with("shulker_box") {
+            drawn_types.insert("minecraft:shulker_box");
+        } else if name == "ender_chest" {
+            drawn_types.insert("minecraft:ender_chest");
+        } else if name == "trapped_chest" {
+            drawn_types.insert("minecraft:trapped_chest");
+        } else if name.ends_with("chest") {
+            drawn_types.insert("minecraft:chest");
+        }
+    }
+    let declared: HashSet<&str> = kinds(BlockEntityKind::Rendered).into_iter().collect();
+    let mut only_declared: Vec<&str> = declared.difference(&drawn_types).copied().collect();
+    let mut only_drawn: Vec<&str> = drawn_types.difference(&declared).copied().collect();
+    only_declared.sort_unstable();
+    only_drawn.sort_unstable();
     c.record(
-        "a4.nothing_is_marked_rendered_yet",
-        !TYPE_TABLE
-            .iter()
-            .any(|(_, k)| *k == BlockEntityKind::Rendered),
-        "no type claims a renderer — M25 decodes and classifies; the renderer is \
-         the carried-forward half, and this witness fails the moment that changes \
-         without the gate being extended",
+        "a4.the_rendered_set_is_exactly_what_resolves_a_model",
+        only_declared.is_empty() && only_drawn.is_empty() && declared.len() == 4,
+        format!(
+            "{} types declared Rendered and the same {} resolve a model through \
+             `ChestStates::draw_for`; declared-but-undrawn {only_declared:?}, \
+             drawn-but-undeclared {only_drawn:?} (both want empty). Derived from \
+             the resolver, not restated from the table, so a renderer that ships \
+             without moving its type fails here and so does the reverse",
+            declared.len(),
+            drawn_types.len()
+        ),
     );
 
     c.record(
@@ -1245,6 +1707,7 @@ fn check_registry(
             ids.cb_play_section_blocks_update
         ),
     );
+    Ok(())
 }
 
 fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> Result<(), String> {
@@ -1288,12 +1751,17 @@ fn check_gap(c: &mut Checker, version: &str, registry: &BlockEntityRegistry) -> 
          ModelIsEnough, not Invisible, and M25 loses detail rather than the block",
     );
     c.record(
-        "e4.the_classification_covers_the_measured_shortfall",
-        registry.invisible_count() == 11,
+        "e4.the_classification_accounts_for_the_measured_shortfall",
+        registry.invisible_count() == 7 && registry.rendered_count() == 4,
         format!(
-            "{} block-entity TYPES classified Invisible, covering those blocks \
-             (one type spans all 16 banner colours, all 17 shulker boxes, and so on)",
-            registry.invisible_count()
+            "{} block-entity TYPES still Invisible and {} now Rendered, together \
+             covering those blocks (one type spans all 16 banner colours, all 17 \
+             shulker boxes, and so on). The jar's own gap above does not shrink \
+             when Rewo draws one of them — that number measures the *models*, and \
+             a chest's model is still empty; what changed is that there is a \
+             renderer behind it",
+            registry.invisible_count(),
+            registry.rendered_count()
         ),
     );
     Ok(())

@@ -53,6 +53,16 @@ pub struct PlaySession {
     /// The Pillager's protocol type id (M20) — disambiguates the index-17
     /// BOOLEAN (`IS_CHARGING_CROSSBOW`). `None` routes it nowhere.
     pub pillager_type_id: Option<i32>,
+    /// The block-entity type ids whose `triggerEvent` this client implements
+    /// (M26). Default-empty, which routes every `block_event` nowhere — the
+    /// correct behaviour for a harness that never renders a chest, and the
+    /// same "`None` means don't interpret" rule the entity-type ids above use.
+    ///
+    /// Load-bearing that this is a *type* set rather than a flag: `b0 == 1`
+    /// means different things to a chest, a shulker box and a bell, so the
+    /// type is what selects the body. See
+    /// [`rewo_world::block_entities::BlockEventTypes`].
+    pub block_event_types: rewo_world::block_entities::BlockEventTypes,
     /// Which entity types are living, and which of them run `updateSwingTime`
     /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
     /// the decompiled `extends` graph. It gates every swing input (a packet
@@ -687,6 +697,7 @@ impl<'a> Connection<'a> {
             armadillo_type_id: None,
             allay_type_id: None,
             pillager_type_id: None,
+            block_event_types: Default::default(),
             entity_classes: None,
             swing_data: None,
             swing_effect_ids,
@@ -1105,9 +1116,12 @@ impl PlaySession {
                 self.mark_dirty_around(x >> 4, z >> 4);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
             }
-        } else if crate::route_block_event(id, body, ids, &mut self.world) {
-            // `ClientboundBlockEventPacket` — a chest's viewer count, which is
-            // what drives its lid open and shut.
+        } else if crate::route_block_event(id, body, ids, self.block_event_types, &mut self.world) {
+            // `ClientboundBlockEventPacket` — a container's viewer count, which
+            // is what drives a chest's lid and a shulker box's lid. Which of
+            // the two (or neither — a bell's ring is also `b0 == 1`) is
+            // selected by the block entity's own type, exactly as vanilla's
+            // virtual `triggerEvent` call is.
         } else if crate::route_block_entity_data(id, body, ids, &mut self.world) {
             // `ClientboundBlockEntityDataPacket` (M25) — one block entity's
             // update tag:

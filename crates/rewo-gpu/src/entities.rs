@@ -2193,22 +2193,6 @@ fn apply_pose_effect(
     }
 }
 
-/// `ChestRenderer.submit` into `ChestModel.setupAnim` — the lid's `xRot`.
-///
-/// ```text
-/// open = 1.0F - open;
-/// open = 1.0F - open * open * open;
-/// lid.xRot = -(open * (float)(Math.PI / 2));
-/// ```
-///
-/// A cubic ease-out, not a ramp: the chest is already 87.5% open half way
-/// through its ten ticks, then settles.
-pub fn lid_angle(openness: f32) -> f32 {
-    let inv = 1.0 - openness;
-    let eased = 1.0 - inv * inv * inv;
-    -(eased * std::f32::consts::FRAC_PI_2)
-}
-
 /// `Mth.lerp(delta, start, end)` — `start + delta * (end - start)`.
 fn lerp(delta: f32, start: f32, end: f32) -> f32 {
     start + delta * (end - start)
@@ -2316,11 +2300,19 @@ pub struct BlockEntityDraw<'a> {
     /// Per-channel world light at the block, as the terrain lightmap resolves
     /// it.
     pub light: [f32; 3],
-    /// `ChestLidController.getOpenness(partialTicks)` — 0 shut, 1 fully open
-    /// (M25c). Applied to the model's animated part group, which for a chest
-    /// is the lid together with its lock.
-    pub openness: f32,
-    /// The pivot the animated group rotates about, in model px.
+    /// The animated part group's transform, in **model px** and applied to
+    /// coordinates relative to [`Self::part_pivot`] — vanilla's
+    /// `ModelPart.render`, which translates by the pose offset and then
+    /// rotates before drawing box-local coordinates.
+    ///
+    /// A matrix for the same reason [`Self::transform`] is one, a level up: a
+    /// chest lid rotates about a fixed hinge and a shulker lid slides half a
+    /// block while spinning three-quarters of a turn, and the scalar
+    /// "openness" this replaced could only express the first (M26). The caller
+    /// builds it — `rewo_data::be_transform::{chest_lid_part, shulker_lid_part}`
+    /// — so this crate has no per-type branch.
+    pub part_transform: [[f32; 4]; 3],
+    /// The pivot the animated group is expressed relative to, in model px.
     pub part_pivot: [f32; 3],
 }
 
@@ -2410,18 +2402,11 @@ impl EntityPass {
     /// divides model px by 16, so the quads land in 0..1 block units and the
     /// block position is a plain translate on top.
     ///
-    /// The lid angle is `ChestRenderer.submit` into `ChestModel.setupAnim`:
-    ///
-    /// ```text
-    /// open = state.open;            // ChestLidController.getOpenness(partial)
-    /// open = 1.0F - open;
-    /// open = 1.0F - open * open * open;
-    /// lid.xRot = -(open * (float)(Math.PI / 2));  lock.xRot = lid.xRot;
-    /// ```
-    ///
-    /// The cubic is an ease-out, not a linear ramp — a chest flings open and
-    /// settles — and it is applied to the *interpolated* openness, so it runs
-    /// per frame rather than per tick.
+    /// A quad in group 0 is drawn where it was baked. A quad in any other
+    /// group goes through [`BlockEntityDraw::part_transform`] in the group's
+    /// own space — a chest's lid rotating about its hinge, a shulker box's lid
+    /// sliding and spinning off its base. Both animations run on the
+    /// *interpolated* clock, so they advance per frame rather than per tick.
     pub fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
         let Some(items) = self.held_items.as_ref() else {
             return;
@@ -2431,7 +2416,7 @@ impl EntityPass {
                 continue;
             };
             let m = &d.transform;
-            let (ls, lc) = lid_angle(d.openness).sin_cos();
+            let a = &d.part_transform;
             let [light_r, light_g, light_b] = d.light;
             for q in &model.quads {
                 if verts.len() + 6 > MAX_VERTS {
@@ -2443,10 +2428,12 @@ impl EntityPass {
                 let mut p4 = [[0f32; 3]; 4];
                 let mut m4 = [[0f32; 3]; 4];
                 for (i, corner) in q.verts.iter().enumerate() {
-                    // The animated group rotates about its pose pivot first,
-                    // in model px — `ModelPart.render` translates by the pose
-                    // offset and then rotates, so a box's own coordinates are
-                    // already relative to it.
+                    // The animated group moves in its own space first, in model
+                    // px — `ModelPart.render` translates by the pose offset and
+                    // then rotates, so a box's own coordinates are already
+                    // relative to it. The bake stores them *with* the offset
+                    // applied, so it comes back off here and the group's
+                    // transform puts it wherever the animation says.
                     let corner = if q.part == 0 {
                         *corner
                     } else {
@@ -2455,11 +2442,10 @@ impl EntityPass {
                             corner[1] - d.part_pivot[1],
                             corner[2] - d.part_pivot[2],
                         ];
-                        // xRot: y and z turn, x is the axis.
                         [
-                            v[0] + d.part_pivot[0],
-                            v[1] * lc - v[2] * ls + d.part_pivot[1],
-                            v[1] * ls + v[2] * lc + d.part_pivot[2],
+                            a[0][0] * v[0] + a[0][1] * v[1] + a[0][2] * v[2] + a[0][3],
+                            a[1][0] * v[0] + a[1][1] * v[1] + a[1][2] * v[2] + a[1][3],
+                            a[2][0] * v[0] + a[2][1] * v[1] + a[2][2] * v[2] + a[2][3],
                         ]
                     };
                     // model px -> block units. The renderer's transform is

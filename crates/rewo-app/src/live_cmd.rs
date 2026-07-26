@@ -172,6 +172,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
     // M20: the index-17 BOOLEAN is `Pillager.IS_CHARGING_CROSSBOW`.
     session.pillager_type_id = data.entity_types.id_of("minecraft:pillager");
+    // M26: `block_event`'s `b0 == 1` means a different thing to each block
+    // entity, so the type is what selects the body. Resolving through the
+    // classification table rather than looking three names up directly is what
+    // makes this a boundary: `resolve` errors on a registered type nobody has
+    // classified, so a version that adds one stops the client here instead of
+    // dropping it silently. That check used to run only in the gate.
+    let be_registry = rewo_world::block_entities::BlockEntityRegistry::resolve(
+        &rewo_data::block_entity_types::load(&paths.registries_json())?,
+    )?;
+    session.block_event_types = be_registry.block_event_types();
     // M19 combat swings: the machine-extracted living / swing-ticking sets gate
     // every swing input and decide whose clock runs (`updateSwingTime` is not
     // universal), and the equipment tables decide how long each swing lasts and
@@ -2536,6 +2546,7 @@ fn collect_block_entities(
     lightmap: &LightmapState,
     alpha: f32,
 ) -> Vec<OwnedBlockEntityDraw> {
+    use rewo_data::chest_states::BlockEntityAnim;
     let mut out = Vec::new();
     for (pos, _be) in world.block_entities.iter() {
         let state = world.block_state_at(pos.x, pos.y, pos.z);
@@ -2555,12 +2566,26 @@ fn collect_block_entities(
                 pos.z as f64 + 0.5,
                 lightmap,
             ),
-            // Only a chest has a lid; a shulker box's own openness comes
-            // from `ShulkerBoxBlockEntity`'s animation state, which is a
-            // different mechanism and is not modelled.
-            openness: draw
-                .chest
-                .map_or(0.0, |c| chest_openness(world, chests, *pos, c, alpha)),
+            // Each animated group builds its own transform. Both clocks are
+            // driven by `block_event` and both are animated client-side, but
+            // they are not the same clock and not the same motion — see
+            // `rewo_world::block_entities::ShulkerAnim`.
+            part_transform: match draw.anim {
+                BlockEntityAnim::None => rewo_data::be_transform::IDENTITY,
+                BlockEntityAnim::ChestLid(c) => rewo_data::be_transform::chest_lid_part(
+                    chest_openness(world, chests, *pos, c, alpha),
+                    rewo_data::block_entity_models::CHEST_LID_PIVOT,
+                ),
+                BlockEntityAnim::ShulkerLid => rewo_data::be_transform::shulker_lid_part(
+                    world.block_entities.shulker(*pos).progress(alpha),
+                ),
+            },
+            part_pivot: match draw.anim {
+                BlockEntityAnim::ShulkerLid => {
+                    rewo_data::block_entity_models::SHULKER_LID_PIVOT
+                }
+                _ => rewo_data::block_entity_models::CHEST_LID_PIVOT,
+            },
         });
     }
     out
@@ -2743,7 +2768,8 @@ pub(crate) struct OwnedBlockEntityDraw {
     pub model: String,
     pub transform: rewo_data::be_transform::Affine,
     pub light: [f32; 3],
-    pub openness: f32,
+    pub part_transform: rewo_data::be_transform::Affine,
+    pub part_pivot: [f32; 3],
 }
 
 impl OwnedBlockEntityDraw {
@@ -2753,8 +2779,8 @@ impl OwnedBlockEntityDraw {
             model: &self.model,
             transform: self.transform,
             light: self.light,
-            openness: self.openness,
-            part_pivot: rewo_data::block_entity_models::CHEST_LID_PIVOT,
+            part_transform: self.part_transform,
+            part_pivot: self.part_pivot,
         }
     }
 }

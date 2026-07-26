@@ -25,7 +25,7 @@ use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use rewo_data::assets;
 use rewo_data::item_models::{resolve_definition, ItemGeometry, ItemModel};
-use rewo_gpu::entities::{EntityDraw, EntityModelKind, MobTextures};
+use rewo_gpu::entities::{EntityDraw, EntityModelKind};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::{perspective_reverse_z, WorldRenderer};

@@ -173,9 +173,145 @@ pub fn shulker_box(facing: Facing6) -> Affine {
     mul(&m, &translation(0.0, -1.0, 0.0))
 }
 
+// ------------------------------------------------- animated part transforms
+//
+// A block-entity model's *animated group* gets its own transform, in model px
+// and **relative to the group's pose pivot** — the emitter applies it to
+// `vertex - pivot`. That is what `ModelPart.render` does: translate by the
+// pose offset, rotate, then draw coordinates that are already relative to it.
+//
+// M25d made the block-level transform a matrix because a chest and a shulker
+// box do not agree on a shape. The part level turns out to have the same
+// problem one layer down, for the same reason: a chest's lid **rotates about a
+// fixed hinge** and a shulker box's lid **slides while it spins**, and a scalar
+// "openness" can only express the first. So this is a matrix too, and the
+// emitter has no per-type branch at either level.
+
+/// `ChestModel.setupAnim`'s lid angle, in radians.
+///
+/// ```text
+/// open = 1.0F - open;
+/// open = 1.0F - open * open * open;
+/// lid.xRot = -(open * (float)(Math.PI / 2));
+/// ```
+///
+/// A cubic ease-out, not a ramp: the chest is already 87.5% open half way
+/// through its ten ticks, then settles.
+pub fn chest_lid_angle(openness: f32) -> f32 {
+    let inv = 1.0 - openness;
+    let eased = 1.0 - inv * inv * inv;
+    -(eased * std::f32::consts::FRAC_PI_2)
+}
+
+/// The chest lid group's transform — a pure `xRot` about the hinge.
+///
+/// The lid and its lock share this: `PartPose.offset(0, 9, 1)` is both their
+/// pose offset and their pivot, which is why they are one group.
+pub fn chest_lid(openness: f32) -> Affine {
+    let (s, c) = chest_lid_angle(openness).sin_cos();
+    // xRot: y and z turn, x is the axis. No translation — a hinge does not
+    // move, which is exactly what distinguishes it from the shulker lid.
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, c, -s, 0.0],
+        [0.0, s, c, 0.0],
+    ]
+}
+
+/// `ShulkerBoxRenderer.ShulkerBoxModel.setupAnim(progress)`:
+///
+/// ```text
+/// lid.setPos(0.0F, 24.0F - progress * 0.5F * 16.0F, 0.0F);
+/// lid.yRot = 270.0F * progress * (float)(Math.PI / 180.0);
+/// ```
+///
+/// Two channels at once, which is the whole reason this level needed a matrix.
+/// The rest pose is `(0, 24, 0)` — so at `progress = 0` this is the identity,
+/// and a shut box is the baked geometry untouched, exactly rather than
+/// approximately.
+///
+/// The lid travels **8 model px** (`0.5 * 16`), half a block, and spins
+/// three-quarters of a turn on the way. In the box's own space that is `-y`;
+/// the renderer's trailing `scale(1, -1, -1)` is what turns it into the lid
+/// lifting off the base in the world.
+pub fn shulker_lid(progress: f32) -> Affine {
+    const REST_Y: f32 = 24.0;
+    const MAX_LID_HEIGHT: f32 = 0.5;
+    const MAX_LID_ROTATION_DEG: f32 = 270.0;
+    let y = REST_Y - progress * MAX_LID_HEIGHT * 16.0;
+    // `T(setPos) · Ry(yRot)`, applied to pivot-relative coordinates. The pivot
+    // the emitter subtracts is the rest pose, so the translation this puts back
+    // is the *moved* position — the difference between the two is the slide.
+    mul(&translation(0.0, y, 0.0), &rot_y(MAX_LID_ROTATION_DEG * progress))
+}
+
+/// A group that does not animate — the identity, put back at its pivot.
+///
+/// Every static box uses this, and so does an animated group at rest.
+pub fn part_at_rest(pivot: [f32; 3]) -> Affine {
+    translation(pivot[0], pivot[1], pivot[2])
+}
+
+/// The chest lid group's full transform, ready for the emitter: the hinge
+/// rotation, then back to the pivot.
+pub fn chest_lid_part(openness: f32, pivot: [f32; 3]) -> Affine {
+    mul(&part_at_rest(pivot), &chest_lid(openness))
+}
+
+/// The shulker lid group's full transform. Unlike the chest's, the translation
+/// is already inside [`shulker_lid`] — `setPos` *replaces* the pose offset
+/// rather than adding to it, so composing with the pivot again would move the
+/// lid twice.
+pub fn shulker_lid_part(progress: f32) -> Affine {
+    shulker_lid(progress)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shut_shulker_lid_is_the_pose_offset_itself() {
+        // Not "close to" — exactly. `setPos(0, 24 - 0*8, 0)` is the (0,24,0)
+        // the bake already applied, so a closed box must be the baked geometry
+        // untouched, or every shut box in the world moves a hair on load.
+        assert_eq!(apply(&shulker_lid(0.0), [0.0, 0.0, 0.0]), [0.0, 24.0, 0.0]);
+        assert_eq!(apply(&shulker_lid(0.0), [3.0, -5.0, 7.0]), [3.0, 19.0, 7.0]);
+    }
+
+    #[test]
+    fn the_shulker_lid_slides_eight_px_and_spins_three_quarters() {
+        let o = apply(&shulker_lid(1.0), [0.0, 0.0, 0.0]);
+        assert!((o[1] - 16.0).abs() < 1e-5, "{o:?}");
+        // 270 degrees about +Y takes +x to +z.
+        let x = apply(&shulker_lid(1.0), [1.0, 0.0, 0.0]);
+        assert!((x[0] - o[0]).abs() < 1e-5 && (x[2] - o[2] - 1.0).abs() < 1e-5, "{x:?}");
+    }
+
+    #[test]
+    fn a_chest_hinge_does_not_translate() {
+        // The whole difference from the shulker lid: a hinge turns in place.
+        // Its pivot is the only fixed point, and it stays fixed at any angle.
+        for openness in [0.0, 0.25, 0.5, 1.0] {
+            let m = chest_lid_part(openness, [0.0, 9.0, 1.0]);
+            let at_pivot = apply(&m, [0.0, 0.0, 0.0]);
+            assert!(
+                (at_pivot[0]).abs() < 1e-6
+                    && (at_pivot[1] - 9.0).abs() < 1e-6
+                    && (at_pivot[2] - 1.0).abs() < 1e-6,
+                "openness {openness}: pivot moved to {at_pivot:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_chest_lid_angle_is_a_cubic_ease_not_a_ramp() {
+        assert_eq!(chest_lid_angle(0.0), 0.0);
+        assert!((chest_lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // 87.5% of the way open at the halfway point: 1-(1-0.5)^3 = 0.875.
+        let half = chest_lid_angle(0.5) / -std::f32::consts::FRAC_PI_2;
+        assert!((half - 0.875).abs() < 1e-6, "{half}");
+    }
 
     fn apply(m: &Affine, p: [f32; 3]) -> [f32; 3] {
         [
