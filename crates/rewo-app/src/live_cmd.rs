@@ -123,6 +123,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let spears = rewo_data::item_tags::ItemTag::load_spears(&jar, &data.items)?;
     // M25b: chest facing + material, per block state.
     let chest_states = rewo_data::chest_states::ChestStates::load(&paths.blocks_json())?;
+    // M25e: the text transform per sign state.
+    let sign_states = rewo_data::sign_states::SignStates::load(&paths.blocks_json())?;
     // M20: item identities the mob arm rigs test against.
     let bow_item = data.items.id("minecraft:bow");
     // Shared with the entity collector for held-item id → name (M22).
@@ -205,6 +207,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 etypes,
                 spears,
                 chest_states,
+                sign_states,
                 bow_item,
                 items,
                 want_validation,
@@ -222,6 +225,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             etypes,
             spears,
             chest_states,
+            sign_states,
             bow_item,
             items,
             args,
@@ -1355,6 +1359,7 @@ fn run_headless(
     spears: rewo_data::item_tags::ItemTag,
     // Chest block states → facing + material, for the M25b block-entity draws.
     chest_states: rewo_data::chest_states::ChestStates,
+    sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
     want_validation: bool,
@@ -1653,9 +1658,23 @@ fn run_headless(
     held.extend(bes.iter().map(|b| b.model.as_str()));
     world_renderer.prepare_held_items(&mut gpu, &held)?;
     let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
+    let text_w = |t: &str| world_renderer.text_width(t);
+    let sign_lines = collect_sign_text(&session.world, &sign_states, &lightmap);
+    let sign_draws: Vec<_> = sign_lines
+        .iter()
+        .map(|l| rewo_gpu::entities::WorldTextDraw {
+            transform: l.transform,
+            text: &l.text,
+            x: -text_w(&l.text) / 2.0,
+            y: l.y,
+            color: l.color,
+            light: l.light,
+        })
+        .collect();
     world_renderer.set_entities_and_block_entities(
         &draws,
         &be_draws,
+        &sign_draws,
         cr,
         cu,
         start.elapsed().as_secs_f32(),
@@ -1752,6 +1771,7 @@ struct LiveApp {
     spears: rewo_data::item_tags::ItemTag,
     /// Chest block states → facing + material, for the M25b block-entity draws.
     chest_states: rewo_data::chest_states::ChestStates,
+    sign_states: rewo_data::sign_states::SignStates,
     /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
     bow_item: Option<i32>,
     /// Item registry, for id → name when resolving held models (M22).
@@ -2107,9 +2127,26 @@ impl LiveApp {
             log::warn!("live: held-item texture upload: {e}");
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
-        state
-            .world_renderer
-            .set_entities_and_block_entities(&draws, &be_draws, cr, cu, anim_time);
+        let sign_lines = collect_sign_text(&session.world, &self.sign_states, &lightmap);
+        let sign_draws: Vec<_> = sign_lines
+            .iter()
+            .map(|l| rewo_gpu::entities::WorldTextDraw {
+                transform: l.transform,
+                text: &l.text,
+                x: -state.world_renderer.text_width(&l.text) / 2.0,
+                y: l.y,
+                color: l.color,
+                light: l.light,
+            })
+            .collect();
+        state.world_renderer.set_entities_and_block_entities(
+            &draws,
+            &be_draws,
+            &sign_draws,
+            cr,
+            cu,
+            anim_time,
+        );
         drop(draws);
 
         let extent = state.renderer.swapchain.extent;
@@ -2185,6 +2222,7 @@ fn run_windowed(
     etypes: EntityTypes,
     spears: rewo_data::item_tags::ItemTag,
     chest_states: rewo_data::chest_states::ChestStates,
+    sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
     args: LiveArgs,
@@ -2203,6 +2241,7 @@ fn run_windowed(
         etypes,
         spears,
         chest_states,
+        sign_states,
         bow_item,
         items,
         pool,
@@ -2609,6 +2648,91 @@ fn step(f: rewo_data::chest_states::ChestFacing) -> (i32, i32) {
         F::East => (1, 0),
     }
 }
+
+/// One rendered sign line, owning its text (M25e).
+pub(crate) struct OwnedSignLine {
+    pub transform: rewo_data::be_transform::Affine,
+    pub text: String,
+    pub y: f32,
+    pub color: [f32; 3],
+    pub light: [f32; 3],
+}
+
+/// Every sign face in the world, as text draws.
+///
+/// The board itself is an ordinary block model and has been drawn since M2;
+/// this is only the text. A sign whose state is not in the table, or whose
+/// block entity carries no `front_text`, contributes nothing.
+///
+/// The line's x is `-font.width(line) / 2` — `AbstractSignRenderer` centres
+/// each line independently, which is why a short line sits centred rather than
+/// left-aligned under a long one.
+pub(crate) fn collect_sign_text(
+    world: &rewo_world::World,
+    signs: &rewo_data::sign_states::SignStates,
+    lightmap: &LightmapState,
+) -> Vec<OwnedSignLine> {
+    let mut out = Vec::new();
+    for (pos, be) in world.block_entities.iter() {
+        let Some(sign) = signs.get(world.block_state_at(pos.x, pos.y, pos.z)) else {
+            continue;
+        };
+        let (front, back) = be.sign_text();
+        let light = entity_light(
+            world,
+            pos.x as f64 + 0.5,
+            pos.y as f64 + 0.5,
+            pos.z as f64 + 0.5,
+            lightmap,
+        );
+        for (face, is_front) in [(front, true), (back, false)] {
+            let Some(face) = face else { continue };
+            if face.is_blank() {
+                continue;
+            }
+            // `AbstractSignRenderer.getDarkColor` scales the dye by 0.4; the
+            // default black stays black. Rewo renders the default only — a
+            // dyed sign is drawn in the default colour rather than guessed at
+            // from a dye table this client does not have.
+            let color = SIGN_TEXT_COLOR;
+            let base = sign.text_transform(is_front);
+            // The block origin is folded in here rather than in the renderer,
+            // so a sign's transform is the same shape as a block entity's.
+            let m = rewo_data::be_transform::mul(
+                &rewo_data::be_transform::translation(
+                    pos.x as f32,
+                    pos.y as f32,
+                    pos.z as f32,
+                ),
+                &base,
+            );
+            for (i, line) in face.lines.iter().enumerate() {
+                if line.is_empty() {
+                    continue;
+                }
+                out.push(OwnedSignLine {
+                    transform: m,
+                    y: sign.line_y(i as i32),
+                    text: line.clone(),
+                    color,
+                    light,
+                });
+            }
+        }
+    }
+    // Deterministic order, so a headless render is reproducible.
+    out.sort_by(|a, b| {
+        a.transform[0][3]
+            .total_cmp(&b.transform[0][3])
+            .then(a.transform[2][3].total_cmp(&b.transform[2][3]))
+            .then(a.y.total_cmp(&b.y))
+    });
+    out
+}
+
+/// `DyeColor.BLACK.getTextColor()` through `getDarkColor`'s 0.4 scale, in
+/// linear space — vanilla's default sign text.
+const SIGN_TEXT_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A [`rewo_gpu::entities::BlockEntityDraw`] that owns its model name.
 ///

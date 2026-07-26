@@ -1228,6 +1228,12 @@ impl WorldRenderer {
     /// Page in the atlas textures the named held items need, before the frame
     /// is built (M22). Uploading needs the device, and only the handful of
     /// items actually on screen should occupy the pool.
+    /// The width of a string in font pixels — `Font.width`. Sign text centres
+    /// on it, so the caller needs it before building a draw.
+    pub fn text_width(&self, text: &str) -> f32 {
+        self.entities.as_ref().map_or(0.0, |p| p.text_width(text))
+    }
+
     pub fn prepare_held_items(&mut self, gpu: &mut Gpu, names: &[&str]) -> Result<(), String> {
         match self.entities.as_mut() {
             Some(e) => e.prepare_held_items(gpu, names),
@@ -1305,7 +1311,7 @@ impl WorldRenderer {
         cam_up: [f32; 3],
         time: f32,
     ) {
-        self.set_entities_and_block_entities(draws, &[], cam_right, cam_up, time);
+        self.set_entities_and_block_entities(draws, &[], &[], cam_right, cam_up, time);
     }
 
     /// [`Self::set_entities`] plus the frame's block entities (M25b). They
@@ -1315,12 +1321,21 @@ impl WorldRenderer {
         &mut self,
         draws: &[EntityDraw<'_>],
         block_entities: &[crate::entities::BlockEntityDraw<'_>],
+        world_text: &[crate::entities::WorldTextDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
         time: f32,
     ) {
         if let Some(pass) = self.entities.as_mut() {
-            pass.set_draws(draws, block_entities, cam_right, cam_up, time, self.camera_eye);
+            pass.set_draws(
+                draws,
+                block_entities,
+                world_text,
+                cam_right,
+                cam_up,
+                time,
+                self.camera_eye,
+            );
         }
     }
 

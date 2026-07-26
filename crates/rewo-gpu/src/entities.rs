@@ -888,6 +888,7 @@ impl EntityPass {
         &mut self,
         draws: &[EntityDraw<'_>],
         block_entities: &[BlockEntityDraw<'_>],
+        world_text: &[WorldTextDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
         time: f32,
@@ -954,6 +955,9 @@ impl EntityPass {
         // M25b: block entities. Solid geometry, so they belong with the mob
         // and item quads rather than after the transparent nametags.
         self.emit_block_entities(&mut verts, block_entities);
+        // M25e: world-space text (sign faces). Solid glyph quads, so they go
+        // with the rest of the opaque geometry rather than after the tags.
+        self.emit_world_text(&mut verts, world_text);
         // Drop state for entities that have been gone a while (despawns).
         let gen = self.generation;
         cem_state.retain(|_, v| gen.wrapping_sub(v.seen) < CEM_STATE_TTL);
@@ -1325,24 +1329,13 @@ impl EntityPass {
             [0.0, 0.0, 0.0, 0.25],
         );
 
-        // Glyphs, left to right. v axis: image y is down, glyph py is up.
-        let (aw, ah) = (ATLAS_W as f32, ATLAS_H as f32);
+        // Glyphs, left to right.
         let mut pen = -total_px / 2.0;
         for b in name.bytes() {
             let adv = self.advance[b as usize] as f32;
             if b != b' ' {
-                let (cx, cy) = (
-                    (b as u32 % 16 * self.cell) as f32,
-                    (b as u32 / 16 * self.cell) as f32,
-                );
-                quad(
-                    pen,
-                    0.0,
-                    pen + cell,
-                    cell,
-                    [cx / aw, (cy + cell) / ah, (cx + cell) / aw, cy / ah],
-                    [1.0, 1.0, 1.0, 1.0],
-                );
+                let [u0, v0, u1, v1] = self.glyph_uv(b);
+                quad(pen, 0.0, pen + cell, cell, [u0, v0, u1, v1], [1.0; 4]);
             }
             pen += adv;
         }
@@ -2268,6 +2261,33 @@ impl LegacyRandom48 {
     }
 }
 
+/// One line of **world-space** text — text that lives on a surface rather
+/// than facing the camera (M25e).
+///
+/// A nametag billboards; sign text does not. Both are glyph quads from the same
+/// font atlas, so this shares the entity pass's buffer and shader, and differs
+/// only in where the basis comes from: a nametag takes the camera's right/up,
+/// this takes the surface's.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldTextDraw<'a> {
+    /// The affine that maps **font pixels** to world space, row-major 3x4.
+    ///
+    /// Vanilla builds exactly this: a sign's is a translate-rotate chain
+    /// ending in `scale(s, -s, s)`, the negative y being the flip from the
+    /// font's y-down layout to the world's y-up.
+    pub transform: [[f32; 4]; 3],
+    /// The text, already split to one rendered line.
+    pub text: &'a str,
+    /// Baseline origin in font pixels, before the transform. Vanilla centres a
+    /// sign line with `x = -font.width(line) / 2`, which the caller does.
+    pub x: f32,
+    pub y: f32,
+    /// Linear-space colour.
+    pub color: [f32; 3],
+    /// Per-channel world light.
+    pub light: [f32; 3],
+}
+
 /// One block entity to draw (M25b).
 ///
 /// Deliberately not an [`EntityDraw`]: a block entity has no yaw of its own, no
@@ -2305,6 +2325,79 @@ pub struct BlockEntityDraw<'a> {
 }
 
 impl EntityPass {
+    /// The atlas rect of one font byte, as `[u0, v0, u1, v1]`.
+    ///
+    /// The font sheet is a 16x16 grid of `cell`-px cells. `v0` is the cell's
+    /// **bottom** and `v1` its top, because the image's y runs down while the
+    /// glyph's does not — flipping those two is how text renders upside down.
+    fn glyph_uv(&self, b: u8) -> [f32; 4] {
+        let (aw, ah) = (ATLAS_W as f32, ATLAS_H as f32);
+        let cell = self.cell as f32;
+        let cx = (b as u32 % 16 * self.cell) as f32;
+        let cy = (b as u32 / 16 * self.cell) as f32;
+        [cx / aw, (cy + cell) / ah, (cx + cell) / aw, cy / ah]
+    }
+
+    /// World-space text (M25e) — the same glyph quads a nametag uses, but
+    /// placed by an explicit affine instead of the camera basis.
+    ///
+    /// No drop shadow: vanilla's sign text has none (the screen-space overlay
+    /// is what draws shadows), and adding one would be a visible invention.
+    pub fn emit_world_text(&self, verts: &mut Vec<Vertex>, draws: &[WorldTextDraw<'_>]) {
+        if !self.has_font {
+            return;
+        }
+        let cell = self.cell as f32;
+        for d in draws {
+            let m = &d.transform;
+            let place = |px: f32, py: f32| -> [f32; 3] {
+                [
+                    m[0][0] * px + m[0][1] * py + m[0][3],
+                    m[1][0] * px + m[1][1] * py + m[1][3],
+                    m[2][0] * px + m[2][1] * py + m[2][3],
+                ]
+            };
+            let mut pen = d.x;
+            for b in d.text.bytes() {
+                let adv = self.advance[b as usize] as f32;
+                if b != b' ' {
+                    if verts.len() + 6 > MAX_VERTS {
+                        return;
+                    }
+                    let [u0, v0, u1, v1] = self.glyph_uv(b);
+                    // The glyph cell is `cell` px square in the atlas but 8 px
+                    // in font space, so it scales by 8/cell.
+                    let s = 8.0 / cell;
+                    let (x0, y0) = (pen, d.y);
+                    let (x1, y1) = (pen + cell * s, d.y + cell * s);
+                    let corners = [
+                        (place(x0, y0), u0, v0),
+                        (place(x1, y0), u1, v0),
+                        (place(x1, y1), u1, v1),
+                        (place(x0, y0), u0, v0),
+                        (place(x1, y1), u1, v1),
+                        (place(x0, y1), u0, v1),
+                    ];
+                    for (p, u, v) in corners {
+                        verts.push(Vertex {
+                            pos: p,
+                            uv: [u, v],
+                            color: [d.color[0], d.color[1], d.color[2], 1.0],
+                            light_hurt: [d.light[0], d.light[1], d.light[2], 0.0],
+                        });
+                    }
+                }
+                pen += adv;
+            }
+        }
+    }
+
+    /// The width of a string in font pixels — `Font.width`, which is the sum
+    /// of the per-glyph advances. Sign text centres on it.
+    pub fn text_width(&self, text: &str) -> f32 {
+        text.bytes().map(|b| self.advance[b as usize] as f32).sum()
+    }
+
     /// `ChestRenderer.submit` — the block-entity models (M25b).
     ///
     /// ```text

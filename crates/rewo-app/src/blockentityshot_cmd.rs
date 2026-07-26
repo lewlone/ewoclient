@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 59;
+const EXPECTED_WITNESSES: usize = 70;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -223,7 +223,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_decode(&mut c, &blocks, chest, sign);
     check_lifecycle(&mut c, &ids, &blocks, chest);
     check_chest_models(&mut c, &args.version)?;
-    check_lids(&mut c, &ids, &blocks, chest);
+    check_lids(&mut c, &ids, &blocks, chest); check_sign_text(&mut c, &args.version)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -933,6 +933,241 @@ fn check_lids(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Blocks, ch
             -std::f32::consts::FRAC_PI_2 * 0.5
         ),
     );
+}
+
+/// M25e — sign text: the transform, the line layout, and the NBT decode.
+///
+/// The board has been drawn since M2; what M25 recorded as missing was the
+/// text, and specifically the world-space text path it needs. Everything here
+/// is compared against this file's own transcription of
+/// `StandingSignRenderer.textTransformation` and `AbstractSignRenderer`.
+fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
+    use rewo_data::sign_states::{SignAttachment, SignStates};
+    use rewo_proto::nbt::Nbt;
+    use rewo_world::block_entities::{BlockEntity, SignFace};
+
+    let paths = DataPaths::for_version(version)
+        .ok_or_else(|| "no config dir for version data".to_string())?;
+    let signs = SignStates::load(&paths.blocks_json())?;
+
+    c.record(
+        "t1.every_sign_state_resolves",
+        signs.len() > 500,
+        format!(
+            "{} sign block states — standing, wall, hanging and wall-hanging  across every wood type",
+            signs.len()
+        ),
+    );
+
+    let apply = |m: &rewo_data::be_transform::Affine, p: [f32; 3]| {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    };
+
+    // Find one standing and one wall state to work with.
+    let mut ground = None;
+    let mut wall = None;
+    for id in 0..40000u32 {
+        let Some(st) = signs.get(id) else { continue };
+        if st.angle != 0.0 {
+            continue;
+        }
+        match st.attachment {
+            SignAttachment::Ground if ground.is_none() => ground = Some(st),
+            SignAttachment::Wall if wall.is_none() => wall = Some(st),
+            _ => {}
+        }
+        if ground.is_some() && wall.is_some() {
+            break;
+        }
+    }
+    let (Some(g), Some(w)) = (ground, wall) else {
+        return Err("blockentityshot: no south-facing sign states found".into());
+    };
+
+    // Independently transcribed:
+    //   M = T(.5,.5,.5) · YP(-angle) [· T(0,-.3125,-.4375)] [· YP(180)]
+    //       · T(0, .33333334, .046666667) · S(s, -s, s),  s = 0.010416667
+    let want = |wall: bool, front: bool, angle: f32| {
+        use rewo_data::be_transform::{mul, rot_y, scale, translation};
+        let mut m = mul(&translation(0.5, 0.5, 0.5), &rot_y(-angle));
+        if wall {
+            m = mul(&m, &translation(0.0, -0.3125, -0.4375));
+        }
+        if !front {
+            m = mul(&m, &rot_y(180.0));
+        }
+        m = mul(&m, &translation(0.0, 0.33333334, 0.046666667));
+        mul(&m, &scale(0.010416667, -0.010416667, 0.010416667))
+    };
+    let same = |a: &rewo_data::be_transform::Affine, b: &rewo_data::be_transform::Affine| {
+        (0..3).all(|r| (0..4).all(|k| (a[r][k] - b[r][k]).abs() < 1e-6))
+    };
+    c.record(
+        "t2.the_text_transform_is_exact",
+        same(&g.text_transform(true), &want(false, true, 0.0))
+            && same(&g.text_transform(false), &want(false, false, 0.0))
+            && same(&w.text_transform(true), &want(true, true, 0.0)),
+        "ground front/back and wall front all match the independent chain",
+    );
+
+    // The y scale must be negative — font space is y-down.
+    let m = g.text_transform(true);
+    c.record(
+        "t3.the_y_scale_flips",
+        m[1][1] < 0.0,
+        format!(
+            "y scale {:.6} — a positive one puts the text in exactly the right  place, upside down, which is a hard bug to see",
+            m[1][1]
+        ),
+    );
+
+    // Four lines, descending, straddling the board centre.
+    let ys: Vec<f32> = (0..4).map(|i| g.line_y(i)).collect();
+    let world: Vec<f32> = ys.iter().map(|&y| apply(&m, [0.0, y, 0.0])[1]).collect();
+    c.record(
+        "t4.the_four_lines_descend_from_the_top",
+        ys == vec![-20.0, -10.0, 0.0, 10.0] && world.windows(2).all(|p| p[0] > p[1]),
+        format!(
+            "font y {ys:?} -> world y {world:?} — `i * lineHeight - 4*lineHeight/2`,  and the negative scale is what makes line 0 highest"
+        ),
+    );
+
+    // A hanging sign's 9-px line height goes through *integer* division.
+    let hanging = (0..40000u32)
+        .filter_map(|id| signs.get(id))
+        .find(|s| s.line_height == rewo_data::sign_states::HANGING_LINE_HEIGHT);
+    c.record(
+        "t5.a_hanging_sign_uses_integer_line_maths",
+        hanging.is_some_and(|h| {
+            (0..4).map(|i| h.line_y(i)).collect::<Vec<_>>() == vec![-18.0, -9.0, 0.0, 9.0]
+        }),
+        format!(
+            "hanging line ys {:?} — `4 * 9 / 2` is 18 by integer division, not 18.0  from a float",
+            hanging.map(|h| (0..4).map(|i| h.line_y(i)).collect::<Vec<_>>())
+        ),
+    );
+
+    // The text sits a hair proud of the board so it does not z-fight.
+    let origin = apply(&m, [0.0, 0.0, 0.0]);
+    c.record(
+        "t6.the_text_stands_off_the_board",
+        (origin[2] - (0.5 + 0.046666667)).abs() < 1e-5,
+        format!("front text plane z {:.6} (board centre 0.5)", origin[2]),
+    );
+
+    // Front and back face opposite ways.
+    let back = apply(&g.text_transform(false), [0.0, 0.0, 0.0]);
+    c.record(
+        "t7.the_back_face_is_on_the_other_side",
+        origin[2] > 0.5 && back[2] < 0.5,
+        format!("front z {:.4}, back z {:.4}", origin[2], back[2]),
+    );
+
+    // A wall sign drops and pulls back onto its plaque.
+    let wm = apply(&w.text_transform(true), [0.0, 0.0, 0.0]);
+    c.record(
+        "t8.a_wall_sign_sits_lower_and_further_back",
+        wm[1] < origin[1] && wm[2] < origin[2],
+        format!("wall ({:.3}, {:.3}) vs ground ({:.3}, {:.3})", wm[1], wm[2], origin[1], origin[2]),
+    );
+
+    // Every rotation must keep the text inside the block **horizontally** —
+    // the property a wrong rotation or a wrong pivot would break. The vertical
+    // extent is deliberately reported rather than bounded: it does not depend
+    // on the rotation at all (a Y rotation preserves y), and vanilla's own top
+    // line reaches slightly above the block, which is a fact about the sign
+    // rather than a tolerance to pick.
+    let mut horizontal_ok = true;
+    let mut angles = std::collections::BTreeSet::new();
+    let (mut ylo, mut yhi) = (f32::MAX, f32::MIN);
+    // Per *corner*, the radius across every ground rotation. Different corners
+    // sit at different radii; the same corner must not.
+    let corners = [(-45.0f32, -20.0f32), (45.0, -20.0), (-45.0, 20.0), (45.0, 20.0)];
+    let mut spread: f32 = 0.0;
+    for (ci, &(cx, cy)) in corners.iter().enumerate() {
+        let (mut rlo, mut rhi) = (f32::MAX, f32::MIN);
+        for id in 0..40000u32 {
+            let Some(st) = signs.get(id) else { continue };
+            // Wall signs carry an extra offset, so they are a different family
+            // and are covered by t8 rather than compared against ground ones.
+            if st.attachment != SignAttachment::Ground {
+                continue;
+            }
+            if ci == 0 {
+                angles.insert(st.angle as i32);
+            }
+            let p = apply(&st.text_transform(true), [cx, cy, 0.0]);
+            horizontal_ok &= (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[2]);
+            ylo = ylo.min(p[1]);
+            yhi = yhi.max(p[1]);
+            let r = ((p[0] - 0.5).powi(2) + (p[2] - 0.5).powi(2)).sqrt();
+            rlo = rlo.min(r);
+            rhi = rhi.max(r);
+        }
+        spread = spread.max(rhi - rlo);
+    }
+    c.record(
+        "t9.every_rotation_places_the_text_the_same_distance_out",
+        horizontal_ok && angles.len() == 16 && spread < 1e-4,
+        format!(
+            "{} distinct ground rotations; each corner of a full-width line keeps its \
+             distance from the block axis to within {spread:.6} across all of them — \
+             which is what a Y rotation must preserve — and every corner stays inside \
+             0..1 horizontally. Vertical extent {ylo:.4}..{yhi:.4}: the top line \
+             reaches slightly above the block, which is vanilla's placement rather \
+             than a tolerance chosen here.",
+            angles.len()
+        ),
+    );
+
+    // --- the NBT decode ----------------------------------------------------
+    let msg = |s: &str| Nbt::String(s.to_string());
+    let face = Nbt::Compound(vec![
+        (
+            "messages".to_string(),
+            Nbt::List(vec![msg("hello"), msg(""), msg("world"), msg("")]),
+        ),
+        ("color".to_string(), Nbt::String("red".to_string())),
+        ("has_glowing_text".to_string(), Nbt::Byte(1)),
+    ]);
+    let be = BlockEntity {
+        type_id: 0,
+        data: Nbt::Compound(vec![("front_text".to_string(), face)]),
+    };
+    let (front, back) = be.sign_text();
+    c.record(
+        "t10.sign_text_decodes_from_the_block_entity_nbt",
+        front.as_ref().is_some_and(|f| {
+            f.lines == ["hello".to_string(), String::new(), "world".to_string(), String::new()]
+                && f.color.as_deref() == Some("red")
+                && f.glowing
+        }) && back.is_none(),
+        format!(
+            "front={:?} back={:?} — four lines always, padded, with the colour and  glow flag read even though neither is rendered",
+            front.as_ref().map(|f| &f.lines),
+            back.is_some()
+        ),
+    );
+
+    // A short or absent list still yields four lines, because the renderer
+    // always draws four.
+    let short = Nbt::Compound(vec![(
+        "messages".to_string(),
+        Nbt::List(vec![msg("one")]),
+    )]);
+    let decoded = SignFace::from_nbt(&short);
+    c.record(
+        "t11.a_short_message_list_pads_to_four",
+        decoded.as_ref().is_some_and(|f| {
+            f.lines[0] == "one" && f.lines[1..].iter().all(|l| l.is_empty()) && !f.is_blank()
+        }),
+        format!("{:?}", decoded.map(|f| f.lines)),
+    );
+    Ok(())
 }
 
 fn check_registry(

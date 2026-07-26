@@ -25,6 +25,7 @@ pub mod item_models;
 pub mod item_tags;
 pub mod packets;
 pub mod server_jar;
+pub mod sign_states;
 pub mod swing_anim;
 pub mod swing_anim_table;
 pub mod use_item;

@@ -247,6 +247,70 @@ impl BlockEntityRegistry {
     }
 }
 
+/// One face of a sign's text, from its block-entity NBT (M25e).
+///
+/// `SignText.DIRECT_CODEC` stores `messages` as four text components plus a
+/// `color` and `has_glowing_text`. The components are flattened to plain text
+/// here: Rewo's font pass has one colour per draw, so a per-run style would
+/// have nowhere to go, and flattening is what `Component.getString()` does.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SignFace {
+    /// The four lines, in order. A missing or short list pads with empties,
+    /// because `AbstractSignRenderer` always draws exactly four.
+    pub lines: [String; 4],
+    /// `color` — a dye name, or `None` for the default black.
+    pub color: Option<String>,
+    /// `has_glowing_text`. Not rendered (glow is an outline pass Rewo does not
+    /// have), but decoded so the exclusion is visible rather than silent.
+    pub glowing: bool,
+}
+
+impl SignFace {
+    /// Read one `front_text` / `back_text` compound.
+    pub fn from_nbt(tag: &Nbt) -> Option<SignFace> {
+        let msgs = tag.get("messages")?;
+        let Nbt::List(items) = msgs else {
+            return None;
+        };
+        let mut lines: [String; 4] = Default::default();
+        for (i, slot) in lines.iter_mut().enumerate() {
+            if let Some(m) = items.get(i) {
+                // Each message is a text component — sometimes a bare JSON
+                // string, sometimes a compound. `to_plain_text` handles both,
+                // and a plain string that *looks* like JSON is left alone
+                // because the server already resolved it to a component.
+                *slot = m.to_plain_text();
+            }
+        }
+        Some(SignFace {
+            lines,
+            color: tag.get("color").and_then(Nbt::as_str).map(str::to_string),
+            glowing: tag
+                .get("has_glowing_text")
+                .and_then(Nbt::as_i64)
+                .is_some_and(|v| v != 0),
+        })
+    }
+
+    /// Whether this face has anything to draw.
+    pub fn is_blank(&self) -> bool {
+        self.lines.iter().all(|l| l.is_empty())
+    }
+}
+
+impl BlockEntity {
+    /// The sign text on this block entity, if it carries any.
+    ///
+    /// Returns `(front, back)`; either may be blank. A block entity that is
+    /// not a sign simply has neither key.
+    pub fn sign_text(&self) -> (Option<SignFace>, Option<SignFace>) {
+        (
+            self.data.get("front_text").and_then(SignFace::from_nbt),
+            self.data.get("back_text").and_then(SignFace::from_nbt),
+        )
+    }
+}
+
 /// `ChestLidController` — the client-side lid clock, verbatim.
 ///
 /// ```text
