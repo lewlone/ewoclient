@@ -268,6 +268,13 @@ pub struct BakedAssets {
     /// `entity/end_portal/end_portal.png` — Sampler1 of the end-portal shader
     /// (M32). `None` if the jar lacks it, in which case no portal draws.
     pub end_portal: Option<DecodedImage>,
+    /// `environment/rain.png` and `snow.png` (M33). `None` means that kind of
+    /// precipitation draws nothing rather than an invented streak.
+    pub rain: Option<DecodedImage>,
+    pub snow: Option<DecodedImage>,
+    /// `environment/clouds.png` (M33) — a *map*, one texel per 12x12x4 cell,
+    /// never sampled as a surface. `None` means no clouds at all.
+    pub clouds: Option<DecodedImage>,
     pub stats: BakeStats,
 }
 
@@ -651,6 +658,18 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
     let end_sky = bake_env_texture(&mut jar, "end_sky.png");
+    let rain = bake_env_texture(&mut jar, "rain.png");
+    let snow = bake_env_texture(&mut jar, "snow.png");
+    let clouds = bake_env_texture(&mut jar, "clouds.png");
+    for (name, present) in [
+        ("rain.png", rain.is_some()),
+        ("snow.png", snow.is_some()),
+        ("clouds.png", clouds.is_some()),
+    ] {
+        if !present {
+            log::warn!("rewo-data: environment/{name} missing — that weather draws nothing");
+        }
+    }
     let end_portal = {
         let path = "assets/minecraft/textures/entity/end_portal/end_portal.png";
         let mut bytes = Vec::new();
@@ -900,6 +919,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         celestial,
         end_sky,
         end_portal,
+        rain,
+        snow,
+        clouds,
         stats,
     })
 }

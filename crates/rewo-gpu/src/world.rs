@@ -466,6 +466,11 @@ pub struct WorldRenderer {
     /// supplies both textures — a missing asset degrades to no portal drawn,
     /// never to an invented colour.
     end_portal: Option<crate::end_portal::EndPortalPass>,
+    /// The cloud deck (M33). `None` until `init_clouds`; a dimension whose
+    /// `cloud_color` alpha is zero simply never gets a draw.
+    clouds: Option<crate::clouds::CloudPass>,
+    /// Rain and snow (M33). `None` until `init_weather` supplies both textures.
+    weather: Option<crate::weather::WeatherPass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -972,6 +977,8 @@ impl WorldRenderer {
                 end_sky: None,
                 end_portal: None,
                 end_portal_time: 0.0,
+                clouds: None,
+                weather: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1199,6 +1206,61 @@ impl WorldRenderer {
 
     pub fn end_portal_ready(&self) -> bool {
         self.end_portal.is_some()
+    }
+
+    /// Build the cloud pass (M33). No texture: `clouds.png` is decoded on the
+    /// CPU into cell data, and the shader carries its six face colours inline.
+    pub fn init_clouds(&mut self, gpu: &mut Gpu) -> Result<(), String> {
+        self.clouds = Some(crate::clouds::CloudPass::new(gpu, self.color_format)?);
+        Ok(())
+    }
+
+    pub fn clouds_ready(&self) -> bool {
+        self.clouds.is_some()
+    }
+
+    /// This frame's cloud deck. An empty face list draws nothing.
+    pub fn set_clouds(
+        &mut self,
+        gpu: &mut Gpu,
+        draw: &crate::clouds::CloudDraw,
+    ) -> Result<(), String> {
+        match self.clouds.as_mut() {
+            Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the weather pass (M33) from `rain.png` and `snow.png`.
+    pub fn init_weather(
+        &mut self,
+        gpu: &mut Gpu,
+        rain: &crate::weather::WeatherImage,
+        snow: &crate::weather::WeatherImage,
+    ) -> Result<(), String> {
+        self.weather = Some(crate::weather::WeatherPass::new(
+            gpu,
+            self.color_format,
+            rain,
+            snow,
+        )?);
+        Ok(())
+    }
+
+    pub fn weather_ready(&self) -> bool {
+        self.weather.is_some()
+    }
+
+    /// This frame's rain and snow geometry.
+    pub fn set_weather(
+        &mut self,
+        gpu: &mut Gpu,
+        draw: &crate::weather::WeatherDraw,
+    ) -> Result<(), String> {
+        match self.weather.as_mut() {
+            Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
     }
 
     /// This frame's portals. `game_time` is the raw world clock; the pass
@@ -1820,7 +1882,20 @@ impl WorldRenderer {
         if let Some(pass) = &self.end_portal {
             pass.draw(gpu, cb, view_proj, self.end_portal_time, extent);
         }
+        // Clouds (M33) sit between the solids and the translucent pass: they
+        // are translucent themselves and must blend over terrain, but they are
+        // also depth-writing, so water in front of them still sorts correctly.
+        if let Some(pass) = &self.clouds {
+            pass.draw(gpu, cb, view_proj, extent);
+        }
         self.draw_translucent(gpu, cb, view_proj, extent);
+        // Rain and snow come after everything solid and translucent, blended
+        // and depth-tested but not depth-writing — vanilla's
+        // `WEATHER_NO_DEPTH_WRITE` branch.
+        if let Some(pass) = &self.weather {
+            let (light, sky_col) = self.lightmap.push_words();
+            pass.draw(gpu, cb, view_proj, (light, sky_col, self.lightmap.extra_words()), extent);
+        }
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
@@ -2141,6 +2216,12 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.end_sky.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.weather.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.end_portal.take() {

@@ -2498,7 +2498,24 @@ validation Rewo has.
     quad through the world or rolling the camera leaves a screen-covering
     portal's pixels identical (measured: ≤175 of 65,536 bytes, all at delta 1).
     The first version of that witness asserted the opposite and failed.
-  - 503 tests (442 lib + 61 app); demo PNG byte-identical to M15 onward.
+  - **M33 weather and clouds** — rain, snow and a cloud deck, gated by
+    `rewo weathershot --check` **27/27** (validation ON, 0 VUIDs). Three facts
+    that read backwards: **`START_RAINING` sets the rain level to 0 and
+    `STOP_RAINING` to 1** (the names describe the server's transition; the
+    client sets the value its `RAIN_LEVEL_CHANGE` ramp starts *from*); the
+    client **never interpolates** the level (`setRainLevel` writes both slots,
+    so the smoothing is entirely server-side); and clouds are absent **by
+    attribute, not by dimension check** — `CLOUD_COLOR` defaults to a
+    transparent 0 and the pass is skipped on zero alpha, which is exactly how
+    the Nether and End have none. A cloud carries no texture: `clouds.png` is a
+    map, one texel per 12×12×4 cell, and the mesh is three bytes per quad the
+    vertex shader expands from a fixed table. Weather forced `MOTION_BLOCKING`
+    to stop being decoded-and-discarded. **A witness caught a wrong front-face
+    convention that looked right from below alone** — hence grading the deck
+    from both sides. **Open: not yet wired into `rewo live`**; the passes and
+    the sky darkening are built and graded but the live client does not call
+    them yet.
+  - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

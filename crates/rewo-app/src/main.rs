@@ -30,6 +30,7 @@ mod skyshot_cmd;
 mod stats;
 mod swingshot_cmd;
 mod view_cmd;
+mod weathershot_cmd;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -166,6 +167,10 @@ enum Command {
     /// uniform-texture sum, screen-space sampling, and the column-major layer
     /// matrix.
     Portalshot(portalshot_cmd::PortalshotArgs),
+    /// M33 weather + cloud oracle: grade the `game_event` wire, the
+    /// precipitation rule and the cloud mesh on the CPU, then render both
+    /// production passes offscreen and assert their pixels with `--check`.
+    Weathershot(weathershot_cmd::WeathershotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
@@ -208,6 +213,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
+        Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),

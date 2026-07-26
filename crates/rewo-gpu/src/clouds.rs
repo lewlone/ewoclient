@@ -654,13 +654,19 @@ fn build_pipeline(
         // `RenderPipelines.CLOUDS` culls; `FLAT_CLOUDS` sets `withCull(false)`.
         // Culling is what the interior faces exist for — without it every cell
         // draws both sides of every quad and the translucent blend doubles up.
-        // Rewo's world pass uses a y-flipped viewport, so CLOCKWISE is the
-        // front face that leaves vanilla's outward windings facing out; this is
-        // measured by `weathershot`, not assumed.
+        // The front-face convention is COUNTER_CLOCKWISE, and that is measured
+        // rather than reasoned: `weathershot`'s g2 renders a solid deck from
+        // both above and below, and CLOCKWISE covers 6394/880 pixels where
+        // COUNTER_CLOCKWISE covers 15550/10503. CLOCKWISE looked right from
+        // below alone, which is why the witness grades both sides.
+        //
+        // Note that BACK+CCW measures identically to no culling at all here:
+        // the mesh only builds faces on the camera's side of each cell, so
+        // culling's real job is the inward-wound interior faces, not the deck.
         let raster = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);

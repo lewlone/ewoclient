@@ -604,3 +604,359 @@ mod column_tests {
         assert_eq!(b.next_gaussian(), second);
     }
 }
+
+// -- extraction from the world ------------------------------------------------
+
+/// One extracted weather column, before it reaches the renderer.
+///
+/// The render-side twin is `rewo_gpu::weather::WeatherColumn`; the app converts.
+/// The split follows vanilla's own: `WeatherRenderState` lives in the renderer
+/// package, and only the extraction needs the level.
+#[derive(Clone, Debug, Default)]
+pub struct ExtractedWeather {
+    pub intensity: f32,
+    pub radius: i32,
+    pub rain: Vec<ColumnInstance>,
+    pub snow: Vec<ColumnInstance>,
+}
+
+impl ExtractedWeather {
+    pub fn is_empty(&self) -> bool {
+        self.rain.is_empty() && self.snow.is_empty()
+    }
+}
+
+impl crate::World {
+    /// `WeatherEffectRenderer.extractRenderState`.
+    ///
+    /// Returns an empty state the moment the intensity is zero — vanilla's
+    /// `if (!(renderState.intensity <= 0.0F))` guard, which also means a NaN
+    /// intensity produces nothing rather than a screen full of streaks.
+    ///
+    /// `radius` is vanilla's `weatherRadius` video option (default 10). It must
+    /// stay ≤ 16 or the 32×32 direction table cannot address every column.
+    pub fn extract_weather(
+        &self,
+        weather: &WeatherState,
+        noise: &ClimateNoise,
+        camera: [f64; 3],
+        radius: i32,
+        game_time: i64,
+        partial_ticks: f32,
+        sea_level: i32,
+    ) -> ExtractedWeather {
+        let intensity = weather.rain_level();
+        let mut out = ExtractedWeather {
+            intensity,
+            radius,
+            ..Default::default()
+        };
+        if !(intensity > 0.0) {
+            return out;
+        }
+        let cam_x = camera[0].floor() as i32;
+        let cam_y = camera[1].floor() as i32;
+        let cam_z = camera[2].floor() as i32;
+        for z in cam_z - radius..=cam_z + radius {
+            for x in cam_x - radius..=cam_x + radius {
+                let Some(terrain_height) = self.motion_blocking_height(x, z) else {
+                    // No column loaded: vanilla would read a height of minY
+                    // from an empty chunk and build a band anyway. Skipping is
+                    // the honest choice — we have no terrain to hang rain on.
+                    continue;
+                };
+                let y0 = (cam_y - radius).max(terrain_height);
+                let y1 = (cam_y + radius).max(terrain_height);
+                if y1 - y0 == 0 {
+                    continue;
+                }
+                let Some(climate) = self.climate_at(x, cam_y, z) else {
+                    continue;
+                };
+                let precipitation = noise.precipitation_at(&climate, x, cam_y, z, sea_level);
+                if precipitation == Precipitation::None {
+                    continue;
+                }
+                // One RNG reseeded per column, as vanilla does — and the seed
+                // is a xor of two sums, not a chain (see `column_seed`).
+                let mut rng = crate::biome_noise::LegacyRandom::new(column_seed(x, z));
+                // The light is sampled at the higher of the camera and the
+                // terrain, so rain in a valley is not lit by the cave you are
+                // standing in.
+                let light_sample_y = cam_y.max(terrain_height);
+                let (block, sky) = self.light_at(x, light_sample_y, z);
+                let coords = pack_light(block as i32, sky as i32);
+                match precipitation {
+                    Precipitation::Rain => out.rain.push(rain_column(
+                        &mut rng,
+                        game_time,
+                        x,
+                        y0,
+                        y1,
+                        z,
+                        coords,
+                        partial_ticks,
+                    )),
+                    Precipitation::Snow => out.snow.push(snow_column(
+                        &mut rng,
+                        game_time,
+                        x,
+                        y0,
+                        y1,
+                        z,
+                        coords,
+                        partial_ticks,
+                    )),
+                    Precipitation::None => unreachable!("filtered above"),
+                }
+            }
+        }
+        out
+    }
+
+    /// `level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)`, or `None` when
+    /// the column is not loaded or sent no such heightmap.
+    pub fn motion_blocking_height(&self, x: i32, z: i32) -> Option<i32> {
+        let col = self.column(x >> 4, z >> 4)?;
+        let hm = col.motion_blocking.as_ref()?;
+        Some(hm[(((z & 15) * 16) + (x & 15)) as usize])
+    }
+
+    /// The climate of the biome at a block position, or `None` without a biome
+    /// context. Uses the same fiddled `BiomeManager.getBiome` lookup the tint
+    /// stack does, so weather and grass colour agree about where they are.
+    pub fn climate_at(&self, x: i32, y: i32, z: i32) -> Option<BiomeClimate> {
+        let ctx = self.biome_context()?;
+        let idx = ctx.get_biome(x, y, z, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz));
+        let def = ctx.registry.get(idx as usize)?;
+        Some(BiomeClimate {
+            has_precipitation: def.has_precipitation,
+            temperature: def.temperature,
+            temperature_modifier: def.temperature_modifier,
+        })
+    }
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::*;
+    use crate::dimension::DimensionShape;
+
+    /// Attach a one-biome registry so `climate_at` resolves. Temperature 0.8
+    /// with precipitation is plains: rain, not snow, below the height cutoff.
+    fn with_plains(w: &mut crate::World, climate: BiomeClimate) {
+        use std::sync::Arc;
+        let def = crate::biome::BiomeDef {
+            name: "test:plains".into(),
+            temperature: climate.temperature,
+            downfall: 0.4,
+            water_color: 0,
+            grass_override: None,
+            foliage_override: None,
+            dry_foliage_override: None,
+            grass_modifier: crate::biome::GrassModifier::None,
+            sky_color: None,
+            fog_color: None,
+            has_precipitation: climate.has_precipitation,
+            temperature_modifier: climate.temperature_modifier,
+        };
+        let registry = Arc::new(crate::biome::BiomeRegistry::new(vec![def]));
+        w.set_biome_context(Arc::new(crate::biome::BiomeContext::new(
+            registry,
+            crate::biome::Colormaps::neutral(),
+            0,
+        )));
+    }
+
+    /// A world with one loaded column whose whole heightmap is `height`.
+    fn world_at(height: i32) -> crate::World {
+        let mut w = crate::World::new(DimensionShape::OVERWORLD);
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                let mut col = crate::chunk::Column::empty_lit(&w.shape, cx, cz);
+                col.motion_blocking = Some(Box::new([height; 256]));
+                w.insert_column(cx, cz, col);
+            }
+        }
+        w
+    }
+
+    /// Zero rain means no columns at all — the guard runs before any work.
+    #[test]
+    fn no_rain_extracts_nothing() {
+        let w = world_at(64);
+        let noise = ClimateNoise::new();
+        let out = w.extract_weather(
+            &WeatherState::default(),
+            &noise,
+            [0.0, 70.0, 0.0],
+            4,
+            0,
+            0.0,
+            63,
+        );
+        assert!(out.is_empty());
+        assert_eq!(out.intensity, 0.0);
+    }
+
+    /// A column's band runs from the terrain height upward, never below it —
+    /// this is the whole reason the heightmap had to be decoded.
+    #[test]
+    fn columns_start_at_the_terrain_not_below_it() {
+        let mut w = world_at(80);
+        with_plains(
+            &mut w,
+            BiomeClimate {
+                temperature: 0.8,
+                ..Default::default()
+            },
+        );
+        let noise = ClimateNoise::new();
+        let mut weather = WeatherState::default();
+        weather.set_rain(1.0);
+        // Camera just above the terrain with a radius that reaches below it:
+        // `max(camY - radius, terrain)` must clamp the band's bottom up.
+        let out = w.extract_weather(&weather, &noise, [0.5, 82.5, 0.5], 10, 0, 0.0, 63);
+        assert!(!out.is_empty(), "a loaded, precipitating world must rain");
+        for c in out.rain.iter().chain(out.snow.iter()) {
+            assert!(c.bottom_y >= 80, "column {c:?} starts below the terrain");
+            assert!(c.top_y > c.bottom_y);
+        }
+    }
+
+    /// Deep underground there is no rain at all, and not because of a special
+    /// case: `max(camY + r, terrain)` and `max(camY - r, terrain)` both
+    /// collapse onto the terrain height, so the band has zero height and every
+    /// column is skipped. Worth pinning, because it looks like a bug until you
+    /// follow the two `max` calls.
+    #[test]
+    fn a_camera_far_below_the_terrain_sees_no_weather() {
+        let mut w = world_at(80);
+        with_plains(&mut w, BiomeClimate::default());
+        let noise = ClimateNoise::new();
+        let mut weather = WeatherState::default();
+        weather.set_rain(1.0);
+        let out = w.extract_weather(&weather, &noise, [0.5, 20.0, 0.5], 4, 0, 0.0, 63);
+        assert!(out.is_empty());
+    }
+
+    /// An unloaded column contributes nothing rather than raining from minY.
+    #[test]
+    fn unloaded_columns_are_skipped() {
+        let mut w = crate::World::new(DimensionShape::OVERWORLD);
+        let mut col = crate::chunk::Column::empty_lit(&w.shape, 0, 0);
+        col.motion_blocking = Some(Box::new([64; 256]));
+        w.insert_column(0, 0, col);
+        with_plains(&mut w, BiomeClimate::default());
+        let noise = ClimateNoise::new();
+        let mut weather = WeatherState::default();
+        weather.set_rain(1.0);
+        // Radius 10 from the origin reaches well past the single loaded chunk.
+        let out = w.extract_weather(&weather, &noise, [8.5, 70.0, 8.5], 10, 0, 0.0, 63);
+        for c in out.rain.iter().chain(out.snow.iter()) {
+            assert!(
+                (0..16).contains(&c.x) && (0..16).contains(&c.z),
+                "column {c:?} is outside the one loaded chunk"
+            );
+        }
+    }
+
+    /// Without a biome context there is no climate, so nothing precipitates —
+    /// a world that has not received its registry yet must not guess.
+    #[test]
+    fn no_biome_context_means_no_weather() {
+        let w = world_at(64);
+        assert!(w.biome_context().is_none(), "precondition");
+        let noise = ClimateNoise::new();
+        let mut weather = WeatherState::default();
+        weather.set_rain(1.0);
+        let out = w.extract_weather(&weather, &noise, [0.5, 70.0, 0.5], 4, 0, 0.0, 63);
+        assert!(out.is_empty());
+    }
+}
+
+// -- what rain does to the rest of the sky ------------------------------------
+
+/// `AtmosphericFogEnvironment.applyWeatherDarken`.
+///
+/// Rain scales red and green by `1 - rain*0.5` but blue only by `1 - rain*0.4`,
+/// so a rainy sky does not merely dim — it goes **bluer** as it dims. Thunder
+/// then scales all three equally. Alpha is untouched.
+pub fn apply_weather_darken(color: i32, rain_level: f32, thunder_level: f32) -> i32 {
+    let mut c = color;
+    if rain_level > 0.0 {
+        let m = 1.0 - rain_level * 0.5;
+        let blue = 1.0 - rain_level * 0.4;
+        c = scale_rgb(c, m, m, blue);
+    }
+    if thunder_level > 0.0 {
+        let m = 1.0 - thunder_level * 0.5;
+        c = scale_rgb(c, m, m, m);
+    }
+    c
+}
+
+/// `ARGB.scaleRGB(color, r, g, b)` — per channel, **truncating**, alpha kept.
+fn scale_rgb(color: i32, r: f32, g: f32, b: f32) -> i32 {
+    let u = color as u32;
+    let ch = |shift: u32, s: f32| -> u32 {
+        let v = ((u >> shift) & 0xFF) as f32;
+        ((v * s) as i32).clamp(0, 255) as u32
+    };
+    ((u & 0xFF00_0000) | (ch(16, r) << 16) | (ch(8, g) << 8) | ch(0, b)) as i32
+}
+
+/// `SkyRenderState.rainBrightness = 1 - level.getRainLevel(partialTicks)`.
+///
+/// It becomes the sun's and the moon's **alpha**, so M12's celestials fade out
+/// as rain comes in rather than shining through it.
+pub fn rain_brightness(rain_level: f32) -> f32 {
+    1.0 - rain_level
+}
+
+#[cfg(test)]
+mod darken_tests {
+    use super::*;
+
+    /// Rain dims blue *less* than red and green, so the sky turns bluer as it
+    /// darkens. A uniform scale would be the easy mistake.
+    #[test]
+    fn rain_dims_blue_less_than_red_and_green() {
+        let white = 0xFFFF_FFFFu32 as i32;
+        let out = apply_weather_darken(white, 1.0, 0.0) as u32;
+        assert_eq!((out >> 16) & 0xFF, 127, "red halves");
+        assert_eq!((out >> 8) & 0xFF, 127, "green halves");
+        assert_eq!(out & 0xFF, 153, "blue keeps 60%");
+        assert_eq!(out >> 24, 0xFF, "alpha untouched");
+    }
+
+    /// Thunder scales all three equally, on top of rain.
+    #[test]
+    fn thunder_dims_uniformly_and_compounds_with_rain() {
+        let white = 0xFFFF_FFFFu32 as i32;
+        let rain_only = apply_weather_darken(white, 1.0, 0.0) as u32;
+        let both = apply_weather_darken(white, 1.0, 1.0) as u32;
+        for shift in [16u32, 8, 0] {
+            let a = (rain_only >> shift) & 0xFF;
+            let b = (both >> shift) & 0xFF;
+            assert_eq!(b, a / 2, "channel {shift} halves again");
+        }
+    }
+
+    /// Clear weather changes nothing at all — the guards are `> 0.0`, so a
+    /// zero level must not even truncate.
+    #[test]
+    fn clear_weather_is_the_identity() {
+        for c in [0xFF78_A7FFu32 as i32, 0xFF00_0000u32 as i32, -1] {
+            assert_eq!(apply_weather_darken(c, 0.0, 0.0), c);
+        }
+    }
+
+    /// The celestials' alpha is the complement of the rain level.
+    #[test]
+    fn the_sun_fades_out_as_rain_comes_in() {
+        assert_eq!(rain_brightness(0.0), 1.0);
+        assert_eq!(rain_brightness(1.0), 0.0);
+        assert_eq!(rain_brightness(0.25), 0.75);
+    }
+}

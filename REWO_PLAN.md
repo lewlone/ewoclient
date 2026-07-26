@@ -41,7 +41,23 @@ into EwoClient reusing its MS auth. Everything else is open to revision.
 Everything from M10 on is reviewed local work on branch
 `codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
 
-**Latest (2026-07-26): M27/M28 — sign text, and the invisible block entities.**
+**Latest (2026-07-27): M33 — weather and clouds.** Rain, snow and a cloud deck.
+Three facts read backwards until checked: **`START_RAINING` sets the rain level
+to 0 and `STOP_RAINING` to 1** (the names describe the server's transition; the
+client sets the value its ramp starts *from*); the client **does not
+interpolate** the level at all (`setRainLevel` writes both slots, so
+`getRainLevel` lerps between identical numbers — the smoothing is server-side);
+and clouds are absent **by attribute, not by dimension check** (`CLOUD_COLOR`
+defaults to a transparent 0 and the pass is skipped on zero alpha, which is how
+the Nether and End have none). A cloud is not a texture — `clouds.png` is a map,
+one texel per 12×12×4 cell, and the mesh is three bytes per quad the vertex
+shader expands. Weather needed `MOTION_BLOCKING`, which Rewo had been decoding
+and discarding. A `weathershot` witness caught a wrong front-face convention
+that **looked right from below alone**, which is why it grades a cloud deck from
+both sides. **Not yet wired into `rewo live`** — see §15. Gate:
+`rewo weathershot --check`, 27/27.
+
+**Earlier (2026-07-26): M27/M28 — sign text, and the invisible block entities.**
 Five commits took `blockentityshot` from 70 to **125** witnesses and the
 still-invisible block-entity set from eleven types to **two**. M27 dyed and
 glowing sign text plus the line break that keeps it on the board (glowing text
@@ -291,6 +307,15 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
   every run, and grades the block-entity classification against what the model
   resolver actually draws — in both directions, so neither half can drift.
+- `rewo weathershot --check` — **the weather + cloud gate** (M33, fail-closed
+  **27/27**, validation required, 0 VUIDs). Three layers: the `game_event` wire
+  driven through `route_game_event` (including that **`START_RAINING` sets the
+  level to 0 and `STOP_RAINING` to 1**), the precipitation rule against an
+  independent transcription (threshold, height cutoff, the FROZEN patch noise),
+  the cloud cell packing and ring-walk mesh, and then read-back pixels for both
+  production passes. Its `g2` grades a solid cloud deck from **both** sides,
+  which is what caught a wrong front-face convention that looked right from
+  below alone. `--out-dir` dumps the frames.
 - `rewo portalshot --check` — **the end-portal pixel gate** (M32b, fail-closed
   **12/12**, validation required, 0 VUIDs): renders the production
   end-portal/gateway pass offscreen and grades the read-back pixels. It never
@@ -5805,6 +5830,90 @@ comparison matches its own depth buffer, not vanilla's.
 
 The third exclusion — "there is no read-back oracle for the rendered pixels" —
 was closed the same day by **M32b**, below.
+
+### M33 — weather and clouds (2026-07-27)
+
+Rain, snow and a cloud deck. Both were listed under §16 "deliberately not
+proposed" as self-contained enough to be filler; they are shipped now because
+they are also the last thing missing from a *clear-weather-only* sky.
+
+**Three facts that read backwards until you check them.**
+
+`START_RAINING` sets the rain level to **0** and `STOP_RAINING` sets it to
+**1**. That is `ClientPacketListener.handleGameEvent` verbatim: the names
+describe the server's weather transition, and the client is setting the value
+the server's `RAIN_LEVEL_CHANGE` ramp will start *from*. Making it intuitive
+would snap rain to full the instant it began.
+
+The client does not interpolate the level at all. `Level.setRainLevel` writes
+the clamped value to *both* `oRainLevel` and `rainLevel`, so
+`getRainLevel(partialTick)` is a `Mth.lerp` between two identical numbers. The
+smoothing is server-side, broadcast every tick the value moves.
+`getThunderLevel` does interpolate — and then multiplies by the rain level, so
+thunder only darkens weather that is already falling.
+
+Clouds are absent **by attribute, not by dimension check**. `CLOUD_COLOR` is an
+ARGB attribute defaulting to 0, and `LevelRenderer` skips the pass when its
+alpha is zero; the Overworld sets `#ccffffff` and the Nether and End set
+nothing. Same discipline M16 recorded for `sky_color`. It needed an ARGB colour
+parser distinct from the existing RGB one, which forces opacity — and that
+difference is exactly what decides whether clouds exist.
+
+**What each piece actually is.** A cloud is not a texture: `clouds.png` is a
+*map*, one texel per 12×12×4 cell, packed into a `u64` with its four
+neighbours' emptiness, and the mesh is three bytes per quad that the vertex
+shader expands from a fixed 24-entry table with six fixed face colours.
+Transcribed as written, including that `prepare`'s east/west neighbour lookups
+wrap `x` against the image **height** — invisible on a square cloud map, and
+not ours to quietly fix. A weather column is one camera-facing quad per block
+column, whose facing comes from a precomputed 32×32 table of unit
+perpendiculars rather than a per-frame billboard.
+
+**Two vanilla details worth not re-deriving.** The per-column seed is
+`x*x*3121 + x*45238971 ^ z*z*418711 + z*13761`, and `^` binds looser than `+`
+in Java — a xor of two sums, not a left-to-right chain, and reading it wrong
+reseeds every column in the world. And a column's alpha ramps to **half** at the
+radius rather than to nothing, which is why heavy rain reads as a wall at the
+horizon instead of fading out.
+
+**The heightmap had to stop being discarded.** Weather columns run from the
+terrain height upward, so `MOTION_BLOCKING` is now decoded — a
+`SimpleBitStorage` of 256 entries at `ceillog2(height + 1)` bits storing
+`y - minY`, with the wire id taken from the enum's explicit `id` field rather
+than its ordinal. Same shape of gap M10 found with `empty_sky`.
+
+**A witness corrected the implementation, again.** The cloud pipeline's
+front-face convention was written as `CLOCKWISE` from reasoning about Rewo's
+y-flipped viewport. Grading a solid deck from below alone passed at 15,224
+covered pixels — it looked entirely right. Grading it from **above as well**
+gave 880, and `COUNTER_CLOCKWISE` gives 15,550 / 10,503. The measurement that
+settles it also shows `BACK`+CCW is numerically identical to no culling here,
+because the mesh only builds faces on the camera's side of each cell — culling's
+real job is the inward-wound interior faces, not the deck.
+
+**Deviations, stated rather than implied.** Vanilla renders weather into its own
+framebuffer and picks a depth-writing pipeline when shader transparency is on;
+Rewo has no such target and uses the no-depth-write branch in the main pass, so
+terrain still occludes rain but overlapping columns are not ordered. Vanilla's
+fog term is omitted in both new passes, as in every other Rewo pass. And
+`LevelChunk.setBlockState` keeps heightmaps current as blocks change while Rewo
+does not, so rain over a freshly-dug hole falls from the old surface until the
+chunk is resent — confined to weather, since nothing else reads it.
+
+**Still open:** the passes are built, unit-tested and pixel-graded, but **not
+yet wired into `rewo live`** — the live client does not draw them. `WorldRenderer`
+carries `init_clouds` / `set_clouds` / `init_weather` / `set_weather` and the
+draw order is in place; what remains is calling them from `live_cmd` with the
+session's weather state, the dimension's cloud attributes and the extracted
+columns. The rain-darkened sky colour and the `rainBrightness` celestial fade
+are likewise implemented and graded but not yet threaded into the sky pass.
+
+Gates: **547 tests**, `weathershot` 27/27, and every prior gate green —
+`portalshot` 12/12, `blockentityshot` 172/172, `mobshot` 243/243, `eventshot`,
+`danceshot`, `swingshot`, `hurtshot`, `itemshot`, `meshshot`, `dimensioncheck`,
+`skyshot`, `lightmapshot`, `tintshot`, all with validation ON and 0 VUIDs;
+canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
+`git diff --check` clean.
 
 ### M32b — `portalshot`, the end-portal pixel oracle (2026-07-26)
 
