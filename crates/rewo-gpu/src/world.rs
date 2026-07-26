@@ -1234,6 +1234,18 @@ impl WorldRenderer {
         self.entities.as_ref().map_or(0.0, |p| p.text_width(text))
     }
 
+    /// The font's per-glyph advances, for callers that must lay text out
+    /// before a draw exists — sign line breaking runs against the board width
+    /// in these units (M27).
+    ///
+    /// Handed out rather than wrapped in a `split` method because the break
+    /// rule is `StringSplitter`'s, which is vanilla *data* logic and lives in
+    /// `rewo-data` beside the dye table; this crate owns the glyphs, not the
+    /// rule.
+    pub fn font_advance(&self) -> Option<&[u8; 256]> {
+        self.entities.as_ref().map(|p| p.font_advance())
+    }
+
     pub fn prepare_held_items(&mut self, gpu: &mut Gpu, names: &[&str]) -> Result<(), String> {
         match self.entities.as_mut() {
             Some(e) => e.prepare_held_items(gpu, names),

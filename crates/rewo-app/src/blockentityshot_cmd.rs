@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 88;
+const EXPECTED_WITNESSES: usize = 100;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -240,6 +240,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_sign_text(&mut c, &args.version)?;
     check_block_event_dispatch(&mut c, &ids, &blocks, &paths, &entries, types, chest, shulker, bell)?;
     check_shulker_anim(&mut c, &args.version)?;
+    check_sign_style(&mut c, &blocks, &paths, sign)?;
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -1166,6 +1167,257 @@ fn check_block_event_dispatch(
     );
     Ok(())
 }
+
+/// M27 — dyed and glowing sign text, and the line break that keeps it on the
+/// board.
+///
+/// The end-to-end witnesses drive `live_cmd::collect_sign_text`, the same
+/// collector the client renders from, so the dye lookup, the style branch, the
+/// split and the outline expansion are exercised where they actually run.
+fn check_sign_style(
+    c: &mut Checker,
+    blocks: &rewo_data::blocks::Blocks,
+    paths: &DataPaths,
+    sign_type: i32,
+) -> Result<(), String> {
+    use rewo_data::sign_text;
+
+    c.record(
+        "g1.the_dye_table_is_the_text_colour_not_the_texture_one",
+        sign_text::dye_text_color(Some("red")) == 0xFF0000
+            && sign_text::dye_text_color(Some("purple")) == 0xA020F0
+            && sign_text::dye_text_color(Some("pink")) == 0xFF69B4
+            && sign_text::DYE_TEXT_COLORS.len() == 16,
+        "red=0xFF0000, purple=0xA020F0, pink=0xFF69B4 — DyeColor's LAST \
+         constructor argument. Its `textureDiffuseColor` (red = 0xB02E26) is \
+         the first, and picking it gives a plausible sign in the wrong shade",
+    );
+
+    let red = sign_text::dye_text_color(Some("red"));
+    let plain = sign_text::text_style(red, false, true);
+    let glow = sign_text::text_style(red, true, true);
+    c.record(
+        "g2.glow_is_not_the_same_colour_brighter",
+        plain.color == 0x660000
+            && !plain.fullbright
+            && plain.outline.is_none()
+            && glow.color == 0xFF0000
+            && glow.fullbright
+            && glow.outline == Some(0x660000),
+        format!(
+            "unglowing red = {:#08x} (the dye at 40%), glowing red = {:#08x} \
+             (the dye at FULL strength, fullbright) with {:#08x?} as its \
+             outline — the dim colour is demoted to the outline rather than \
+             being the dim case of the bright one",
+            plain.color, glow.color, glow.outline
+        ),
+    );
+
+    c.record(
+        "g3.glowing_black_outlines_at_any_range_and_in_a_different_colour",
+        sign_text::text_style(0x000000, true, false).outline
+            == Some(sign_text::BLACK_TEXT_OUTLINE_COLOR)
+            && sign_text::text_style(0x000000, true, true).outline
+                == Some(sign_text::BLACK_TEXT_OUTLINE_COLOR)
+            && sign_text::text_style(red, true, false).outline.is_none(),
+        format!(
+            "glowing black outlines {:#08x} (near-white) whether or not the \
+             camera is close, because scaling black by 0.4 is still black and \
+             there would be nothing to see — while a glowing *red* sign drops \
+             its outline at range",
+            sign_text::BLACK_TEXT_OUTLINE_COLOR
+        ),
+    );
+
+    c.record(
+        "g4.the_forty_percent_scale_truncates",
+        sign_text::scale_rgb(0xFEFEFE, 0.4) == 0x656565
+            && sign_text::scale_rgb(0xFFFFFF, 0.4) == 0x666666,
+        "0xFE * 0.4 = 101.6 -> 101 (`(int)` truncates); rounding would \
+         brighten every dyed sign by a step per channel",
+    );
+
+    let jar = client_jar("26.2").ok_or("client jar not found")?;
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+    let font = baked.font.as_ref().ok_or("no font baked from the jar")?;
+    let adv = &font.advance;
+
+    let long = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let cut = sign_text::split_first(long, rewo_data::sign_states::SIGN_MAX_WIDTH, adv);
+    c.record(
+        "g5.an_overlong_line_is_truncated_to_the_board",
+        cut.len() < long.len()
+            && sign_text::width(&cut, adv) <= rewo_data::sign_states::SIGN_MAX_WIDTH,
+        format!(
+            "{long:?} ({:.0} px) -> {cut:?} ({:.0} px) against a 90 px board. \
+             Vanilla splits and keeps fragment 0, so the tail is DROPPED — a \
+             sign does not wrap onto the next row",
+            sign_text::width(long, adv),
+            sign_text::width(&cut, adv)
+        ),
+    );
+
+    let words = "the quick brown fox jumps over";
+    let wcut = sign_text::split_first(words, rewo_data::sign_states::SIGN_MAX_WIDTH, adv);
+    c.record(
+        "g6.it_breaks_at_a_word_boundary_and_drops_the_space",
+        !wcut.ends_with(' ') && words.starts_with(wcut.as_str()) && wcut.contains(' '),
+        format!(
+            "{words:?} -> {wcut:?} — the break retreats to `lastSpace`, and \
+             `splitLines` passes the unadjusted index so the space itself is \
+             excluded"
+        ),
+    );
+
+    let hcut = sign_text::split_first(words, rewo_data::sign_states::HANGING_MAX_WIDTH, adv);
+    c.record(
+        "g7.a_hanging_sign_breaks_earlier",
+        hcut.len() < wcut.len(),
+        format!(
+            "the same line on a 60 px hanging board gives {hcut:?} against the \
+             90 px standing board's {wcut:?} — the two differ in width as well \
+             as in line height"
+        ),
+    );
+
+    let signs = rewo_data::sign_states::SignStates::load(&paths.blocks_json())?;
+    let sign_state = blocks
+        .default_state("minecraft:oak_sign")
+        .ok_or("blocks.json: no minecraft:oak_sign")?;
+    let lightmap = rewo_world::lightmap::LightmapState::default();
+
+    let build =
+        |color: Option<&str>, glowing: bool, text: &str| -> Vec<crate::live_cmd::OwnedSignLine> {
+            let shape = DimensionShape::OVERWORLD;
+            let mut world = rewo_world::World::new(shape);
+            let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, sign_type)]);
+            let mut r = rewo_proto::reader::PacketReader::new(&body);
+            let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks).unwrap();
+            world.insert_column(0, 0, col);
+            world.set_block(0, 64, 0, sign_state);
+            let mut face = vec![(
+                "messages".to_string(),
+                Nbt::List(vec![
+                    Nbt::String(text.to_string()),
+                    Nbt::String(String::new()),
+                    Nbt::String(String::new()),
+                    Nbt::String(String::new()),
+                ]),
+            )];
+            if let Some(c) = color {
+                face.push(("color".to_string(), Nbt::String(c.to_string())));
+            }
+            if glowing {
+                face.push(("has_glowing_text".to_string(), Nbt::Byte(1)));
+            }
+            world.block_entities.insert(
+                BlockEntityPos { x: 0, y: 64, z: 0 },
+                rewo_world::block_entities::BlockEntity {
+                    type_id: sign_type,
+                    data: Nbt::Compound(vec![("front_text".to_string(), Nbt::Compound(face))]),
+                },
+            );
+            crate::live_cmd::collect_sign_text(&world, &signs, &lightmap, adv)
+        };
+
+    let plain_lines = build(None, false, "hi");
+    let dyed_lines = build(Some("red"), false, "hi");
+    c.record(
+        "g8.a_dyed_sign_reaches_the_renderer_in_its_own_colour",
+        plain_lines.len() == 1
+            && dyed_lines.len() == 1
+            && plain_lines[0].color != dyed_lines[0].color
+            && dyed_lines[0].color[0] > dyed_lines[0].color[2],
+        format!(
+            "default {:?} vs red {:?} through `collect_sign_text` — before M27 \
+             both were black, because the collector had no dye table",
+            plain_lines[0].color, dyed_lines[0].color
+        ),
+    );
+
+    let glow_lines = build(Some("red"), true, "hi");
+    c.record(
+        "g9.glowing_text_draws_eight_outline_copies_behind_one_glyph_run",
+        glow_lines.len() == 9
+            && glow_lines.iter().filter(|l| l.z < 0.0).count() == 8
+            && glow_lines.iter().filter(|l| l.z == 0.0).count() == 1,
+        format!(
+            "{} draws for one glowing line: 8 outline copies at z<0 and the \
+             glyphs at z=0. `prepare8xTextOutline` walks xo,yo in -1..1 minus \
+             (0,0) — eight, not four; the diagonals close the corners",
+            glow_lines.len()
+        ),
+    );
+
+    let main = glow_lines.iter().find(|l| l.z == 0.0).unwrap();
+    let offsets: HashSet<(i32, i32)> = glow_lines
+        .iter()
+        .filter(|l| l.z < 0.0)
+        .map(|l| ((l.x - main.x).round() as i32, (l.y - main.y).round() as i32))
+        .collect();
+    let want: HashSet<(i32, i32)> = OUTLINE_RING.iter().copied().collect();
+    c.record(
+        "g10.the_outline_copies_ring_the_glyphs",
+        offsets == want,
+        format!("outline offsets {:?} — the full 8-neighbourhood", {
+            let mut v: Vec<_> = offsets.iter().copied().collect();
+            v.sort_unstable();
+            v
+        }),
+    );
+
+    // Which light *source* each branch takes, asserted exactly rather than as
+    // "one is brighter". The synthesised chunk is open air and reads full sky
+    // light, so a brighter-than comparison would be satisfied by both branches
+    // returning the same maximum — it could not tell them apart, and the first
+    // draft of this witness could not. `sample(7, 7)` rather than `sample(0,
+    // 0)` because the latter is the shader's genuine 0/0 black-texel path and
+    // yields NaN, which compares unequal to everything.
+    let dim = rewo_world::lightmap::sample(7, 7, &lightmap);
+    let full = rewo_world::lightmap::sample(15, 15, &lightmap);
+    c.record(
+        "g11.glowing_text_takes_fullbright_and_unglowing_text_takes_the_block",
+        main.light == full && dim != full && dim.iter().all(|v| v.is_finite()),
+        format!(
+            "glowing light {:?} == sample(15,15) {:?} — vanilla passes the \
+             literal 15728880, both nibbles at 15, so glow ink reads in an \
+             unlit room. sample(7,7) is {dim:?}, a finite and genuinely \
+             different colour, so this is not a comparison against itself",
+            main.light, full
+        ),
+    );
+
+    let whole = "the quick brown fox jumps over the lazy dog";
+    let wrapped = build(None, false, whole);
+    c.record(
+        "g12.the_collector_truncates_a_long_line_rather_than_overhanging",
+        wrapped.len() == 1
+            && wrapped[0].text.len() < whole.len()
+            && sign_text::width(&wrapped[0].text, adv)
+                <= rewo_data::sign_states::SIGN_MAX_WIDTH,
+        format!(
+            "{:?} ({:.0} px) reached the renderer, not the whole \
+             {}-character line — which before M27 ran off both ends of the board",
+            wrapped[0].text,
+            sign_text::width(&wrapped[0].text, adv),
+            whole.len()
+        ),
+    );
+    Ok(())
+}
+
+/// The eight offsets `prepare8xTextOutline` draws at, as the gate expects to
+/// observe them. Written here independently of the renderer's own list.
+const OUTLINE_RING: [(i32, i32); 8] = [
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+];
 
 /// M26 — a shulker box's lid opens: the state machine and the two-channel
 /// transform that moves it.

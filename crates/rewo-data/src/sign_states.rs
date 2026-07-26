@@ -30,8 +30,12 @@ use crate::read_json_file;
 pub const SIGN_LINE_HEIGHT: i32 = 10;
 /// `HangingSignBlockEntity.getTextLineHeight()` — 9.
 pub const HANGING_LINE_HEIGHT: i32 = 9;
-/// `SignBlockEntity.getMaxTextLineWidth()`.
-pub const SIGN_MAX_WIDTH: i32 = 90;
+/// `SignBlockEntity.getMaxTextLineWidth()` — the board width a line is broken
+/// against.
+pub const SIGN_MAX_WIDTH: f32 = 90.0;
+/// `HangingSignBlockEntity.getMaxTextLineWidth()` — a hanging sign is both
+/// narrower and tighter-lined than a standing one.
+pub const HANGING_MAX_WIDTH: f32 = 60.0;
 
 /// `StandingSignRenderer.TEXT_OFFSET`.
 const TEXT_OFFSET: [f32; 3] = [0.0, 0.333_333_34, 0.046_666_667];
@@ -59,6 +63,11 @@ pub struct SignState {
     pub angle: f32,
     /// `getTextLineHeight()`, in font pixels.
     pub line_height: i32,
+    /// `getMaxTextLineWidth()`, in font pixels — the board width a line is
+    /// broken against (M27). It travels with the line height because both come
+    /// from the same pair of block-entity classes, and a hanging sign is both
+    /// narrower *and* tighter-lined.
+    pub max_line_width: f32,
 }
 
 impl SignState {
@@ -113,10 +122,10 @@ impl SignStates {
                 continue;
             }
             let hanging = short.contains("hanging_sign");
-            let line_height = if hanging {
-                HANGING_LINE_HEIGHT
+            let (line_height, max_line_width) = if hanging {
+                (HANGING_LINE_HEIGHT, HANGING_MAX_WIDTH)
             } else {
-                SIGN_LINE_HEIGHT
+                (SIGN_LINE_HEIGHT, SIGN_MAX_WIDTH)
             };
             let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
                 continue;
@@ -151,6 +160,7 @@ impl SignStates {
                         attachment,
                         angle,
                         line_height,
+                        max_line_width,
                     },
                 );
             }
@@ -191,6 +201,7 @@ mod tests {
         attachment: SignAttachment::Ground,
         angle: 0.0,
         line_height: SIGN_LINE_HEIGHT,
+        max_line_width: SIGN_MAX_WIDTH,
     };
 
     #[test]

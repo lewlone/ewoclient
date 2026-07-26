@@ -2266,6 +2266,15 @@ pub struct WorldTextDraw<'a> {
     /// sign line with `x = -font.width(line) / 2`, which the caller does.
     pub x: f32,
     pub y: f32,
+    /// Depth along the transform's own third axis, in font pixels (M27).
+    ///
+    /// Zero for ordinary text. Glowing sign text draws an eight-copy outline
+    /// behind the glyphs, and vanilla keeps those copies coplanar and orders
+    /// them by draw call under `POLYGON_OFFSET`. Rewo's world text rides the
+    /// entity pass's depth-tested buffer with no such offset, so the outline is
+    /// pushed a hair *behind* instead — same result, by depth rather than by
+    /// order, and a documented deviation rather than a coincidence.
+    pub z: f32,
     /// Linear-space colour.
     pub color: [f32; 3],
     /// Per-channel world light.
@@ -2342,11 +2351,12 @@ impl EntityPass {
         let cell = self.cell as f32;
         for d in draws {
             let m = &d.transform;
+            let pz = d.z;
             let place = |px: f32, py: f32| -> [f32; 3] {
                 [
-                    m[0][0] * px + m[0][1] * py + m[0][3],
-                    m[1][0] * px + m[1][1] * py + m[1][3],
-                    m[2][0] * px + m[2][1] * py + m[2][3],
+                    m[0][0] * px + m[0][1] * py + m[0][2] * pz + m[0][3],
+                    m[1][0] * px + m[1][1] * py + m[1][2] * pz + m[1][3],
+                    m[2][0] * px + m[2][1] * py + m[2][2] * pz + m[2][3],
                 ]
             };
             let mut pen = d.x;
@@ -2388,6 +2398,11 @@ impl EntityPass {
     /// of the per-glyph advances. Sign text centres on it.
     pub fn text_width(&self, text: &str) -> f32 {
         text.bytes().map(|b| self.advance[b as usize] as f32).sum()
+    }
+
+    /// The per-glyph advance table, for layout that happens before a draw.
+    pub fn font_advance(&self) -> &[u8; 256] {
+        &self.advance
     }
 
     /// `ChestRenderer.submit` — the block-entity models (M25b).

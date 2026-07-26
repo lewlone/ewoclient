@@ -1668,15 +1668,18 @@ fn run_headless(
     held.extend(bes.iter().map(|b| b.model.as_str()));
     world_renderer.prepare_held_items(&mut gpu, &held)?;
     let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
-    let text_w = |t: &str| world_renderer.text_width(t);
-    let sign_lines = collect_sign_text(&session.world, &sign_states, &lightmap);
+    let sign_lines = match world_renderer.font_advance() {
+        Some(a) => collect_sign_text(&session.world, &sign_states, &lightmap, a),
+        None => Vec::new(),
+    };
     let sign_draws: Vec<_> = sign_lines
         .iter()
         .map(|l| rewo_gpu::entities::WorldTextDraw {
             transform: l.transform,
             text: &l.text,
-            x: -text_w(&l.text) / 2.0,
+            x: l.x,
             y: l.y,
+            z: l.z,
             color: l.color,
             light: l.light,
         })
@@ -2137,14 +2140,18 @@ impl LiveApp {
             log::warn!("live: held-item texture upload: {e}");
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
-        let sign_lines = collect_sign_text(&session.world, &self.sign_states, &lightmap);
+        let sign_lines = match state.world_renderer.font_advance() {
+            Some(a) => collect_sign_text(&session.world, &self.sign_states, &lightmap, a),
+            None => Vec::new(),
+        };
         let sign_draws: Vec<_> = sign_lines
             .iter()
             .map(|l| rewo_gpu::entities::WorldTextDraw {
                 transform: l.transform,
                 text: &l.text,
-                x: -state.world_renderer.text_width(&l.text) / 2.0,
+                x: l.x,
                 y: l.y,
+                z: l.z,
                 color: l.color,
                 light: l.light,
             })
@@ -2678,10 +2685,44 @@ fn step(f: rewo_data::chest_states::ChestFacing) -> (i32, i32) {
 pub(crate) struct OwnedSignLine {
     pub transform: rewo_data::be_transform::Affine,
     pub text: String,
+    /// Baseline origin in font px. `x` is `-width/2` plus, for an outline
+    /// copy, its offset; the caller no longer re-centres.
+    pub x: f32,
     pub y: f32,
+    /// Depth along the transform's third axis, in font px — negative for the
+    /// outline copies so they sit behind the glyphs (M27).
+    pub z: f32,
     pub color: [f32; 3],
     pub light: [f32; 3],
 }
+
+/// `Font.prepare8xTextOutline` — the eight offsets a glowing sign's outline is
+/// drawn at, in font px.
+///
+/// `for (xo = -1; xo <= 1; xo++) for (yo = -1; yo <= 1; yo++) if (xo|yo != 0)`,
+/// each scaled by the glyph's `getShadowOffset()`, which is 1 for the default
+/// font. Eight copies, not four: the diagonals are what close the outline's
+/// corners.
+const OUTLINE_OFFSETS: [(f32, f32); 8] = [
+    (-1.0, -1.0),
+    (-1.0, 0.0),
+    (-1.0, 1.0),
+    (0.0, -1.0),
+    (0.0, 1.0),
+    (1.0, -1.0),
+    (1.0, 0.0),
+    (1.0, 1.0),
+];
+
+/// How far behind the glyphs an outline copy sits, in font px.
+///
+/// Vanilla keeps them coplanar and separates them by draw order under
+/// `Font.DisplayMode.POLYGON_OFFSET`. Rewo's world text rides the entity
+/// pass's ordinary depth-tested buffer, so the separation is a real one. A
+/// font px is 1/96 of a block, so this is ~1/10 mm in world terms — far below
+/// the depth buffer's resolution at any distance a sign is legible from, and
+/// far above the coplanar z-fighting it prevents.
+const OUTLINE_DEPTH: f32 = -0.01;
 
 /// Every sign face in the world, as text draws.
 ///
@@ -2696,7 +2737,9 @@ pub(crate) fn collect_sign_text(
     world: &rewo_world::World,
     signs: &rewo_data::sign_states::SignStates,
     lightmap: &LightmapState,
+    advance: &[u8; 256],
 ) -> Vec<OwnedSignLine> {
+    use rewo_data::sign_text;
     let mut out = Vec::new();
     for (pos, be) in world.block_entities.iter() {
         let Some(sign) = signs.get(world.block_state_at(pos.x, pos.y, pos.z)) else {
@@ -2715,11 +2758,26 @@ pub(crate) fn collect_sign_text(
             if face.is_blank() {
                 continue;
             }
-            // `AbstractSignRenderer.getDarkColor` scales the dye by 0.4; the
-            // default black stays black. Rewo renders the default only — a
-            // dyed sign is drawn in the default colour rather than guessed at
-            // from a dye table this client does not have.
-            let color = SIGN_TEXT_COLOR;
+            // `submitSignText`'s colour branch (M27). Unglowing text is the
+            // dye at 40%; glowing text is the dye at *full* strength, lit
+            // fullbright, with the 40% version demoted to its outline — glow
+            // is not "the same colour, brighter".
+            let dye = sign_text::dye_text_color(face.color.as_deref());
+            // `state.drawOutline` is `isOutlineVisible`: within 16 blocks of
+            // the camera. Rewo has no camera here (the collector runs before
+            // the view is known), so it takes the near branch — which only
+            // ever *adds* an outline, and glowing black outlines regardless.
+            let style = sign_text::text_style(dye, face.glowing, true);
+            let rgb = |c: u32| linear_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+            let color = rgb(style.color);
+            let outline = style.outline.map(rgb);
+            let light = if style.fullbright {
+                // `15728880` — both light nibbles at 15. Glowing ink is
+                // legible in an unlit room, which is the point of it.
+                sample(15, 15, lightmap)
+            } else {
+                light
+            };
             let base = sign.text_transform(is_front);
             // The block origin is folded in here rather than in the renderer,
             // so a sign's transform is the same shape as a block entity's.
@@ -2732,32 +2790,56 @@ pub(crate) fn collect_sign_text(
                 &base,
             );
             for (i, line) in face.lines.iter().enumerate() {
+                // `getRenderMessages` splits every line against the board and
+                // keeps fragment 0 — a sign does not wrap onto the next row,
+                // it truncates at a word boundary (M27).
+                let line = sign_text::split_first(line, sign.max_line_width, advance);
                 if line.is_empty() {
                     continue;
                 }
+                let y = sign.line_y(i as i32);
+                // Each line is centred on its *own* width, which is why a
+                // short line sits centred under a long one.
+                let x = -sign_text::width(&line, advance) / 2.0;
+                if let Some(outline) = outline {
+                    for (dx, dy) in OUTLINE_OFFSETS {
+                        out.push(OwnedSignLine {
+                            transform: m,
+                            x: x + dx,
+                            y: y + dy,
+                            z: OUTLINE_DEPTH,
+                            text: line.clone(),
+                            color: outline,
+                            light,
+                        });
+                    }
+                }
                 out.push(OwnedSignLine {
                     transform: m,
-                    y: sign.line_y(i as i32),
-                    text: line.clone(),
+                    x,
+                    y,
+                    z: 0.0,
+                    text: line,
                     color,
                     light,
                 });
             }
         }
     }
-    // Deterministic order, so a headless render is reproducible.
+    // Deterministic order, so a headless render is reproducible. The outline
+    // copies share a line's `y`, so `x` and `z` join the key — without them
+    // eight identical-looking entries would sort arbitrarily against each
+    // other and the vertex buffer would differ run to run.
     out.sort_by(|a, b| {
         a.transform[0][3]
             .total_cmp(&b.transform[0][3])
             .then(a.transform[2][3].total_cmp(&b.transform[2][3]))
             .then(a.y.total_cmp(&b.y))
+            .then(a.x.total_cmp(&b.x))
+            .then(a.z.total_cmp(&b.z))
     });
     out
 }
-
-/// `DyeColor.BLACK.getTextColor()` through `getDarkColor`'s 0.4 scale, in
-/// linear space — vanilla's default sign text.
-const SIGN_TEXT_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A [`rewo_gpu::entities::BlockEntityDraw`] that owns its model name.
 ///
