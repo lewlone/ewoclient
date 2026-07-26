@@ -357,10 +357,19 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    code that would falsify it — `a4` now derives the rendered set from the
    model resolver — and grade it in both directions.
 9. **Some source files are stored with mixed CRLF/LF terminators**
-   (`rewo-data/src/lib.rs`, `rewo-gpu/src/entities.rs` at least). An editor
-   that normalises them turns a 30-line change into a 3,400-line diff and
-   trips `git diff --check`, since git reads the added CR as trailing
-   whitespace. Check `git diff --stat` against what you meant to change.
+   (`rewo-data/src/lib.rs`, `rewo-gpu/src/entities.rs`, `rewo-world/src/chunk.rs`
+   at least). An editor that normalises them turns a 30-line change into a
+   3,400-line diff and trips `git diff --check`, since git reads the added CR
+   as trailing whitespace. Check `git diff --stat` against what you meant to
+   change.
+   **New lines in such a file must go in as LF**, whatever the file's dominant
+   ending — an *added* CRLF line trips `diff --check` every time, which is why
+   these files are mixed at all: the CRLF is original, and every LF line is a
+   previous session's addition. To repair a normalised file, realign it against
+   `git show HEAD:<path>` and re-emit HEAD's exact bytes for equal lines,
+   `content + b"\n"` for new ones. Python multi-line `str.replace` anchors
+   silently no-op against CRLF text — a replacement that reports success and
+   changes nothing is this, not a missing string.
 10. **Never write these sources from a script without `encoding='utf-8'`.**
    Python's default on Windows is cp1252, which silently re-encodes a whole
    file and leaves it invalid UTF-8 — and the obvious repair then

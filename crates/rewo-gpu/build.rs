@@ -29,6 +29,8 @@ fn main() {
         ("shaders/sunrise.vert", "sunrise.vert.spv"),
         ("shaders/sunrise.frag", "sunrise.frag.spv"),
         ("shaders/clouds.vert", "clouds.vert.spv"),
+        ("shaders/weather.vert", "weather.vert.spv"),
+        ("shaders/weather.frag", "weather.frag.spv"),
         ("shaders/clouds.frag", "clouds.frag.spv"),
         ("shaders/end_portal.vert", "end_portal.vert.spv"),
         ("shaders/end_portal.frag", "end_portal.frag.spv"),

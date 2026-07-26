@@ -409,3 +409,198 @@ mod tests {
         assert_eq!(differs, 64);
     }
 }
+
+// -- the render-state extraction ---------------------------------------------
+
+/// One weather column, as `WeatherEffectRenderer.ColumnInstance`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnInstance {
+    pub x: i32,
+    pub z: i32,
+    pub bottom_y: i32,
+    pub top_y: i32,
+    pub u_offset: f32,
+    pub v_offset: f32,
+    /// Packed the way `LightCoordsUtil.pack` does: `block << 4 | sky << 20`.
+    pub light_coords: i32,
+}
+
+/// `LightCoordsUtil.pack`.
+pub fn pack_light(block: i32, sky: i32) -> i32 {
+    block << 4 | sky << 20
+}
+
+/// `LightCoordsUtil.block` / `.sky`.
+pub fn light_block(packed: i32) -> i32 {
+    (packed >> 4) & 15
+}
+pub fn light_sky(packed: i32) -> i32 {
+    (packed >> 20) & 15
+}
+
+/// `WeatherEffectRenderer.createRainColumnInstance`.
+///
+/// The per-column seed is set by the caller (both column kinds share one
+/// `RandomSource` reseeded per column, exactly as vanilla does).
+pub fn rain_column(
+    rng: &mut crate::biome_noise::LegacyRandom,
+    game_time: i64,
+    x: i32,
+    bottom_y: i32,
+    top_y: i32,
+    z: i32,
+    light_coords: i32,
+    partial_ticks: f32,
+) -> ColumnInstance {
+    let wrapped_ticks = (game_time & 131_071) as i32;
+    let tick_offset = (x.wrapping_mul(x).wrapping_mul(3121)
+        + x.wrapping_mul(45_238_971)
+        + z.wrapping_mul(z).wrapping_mul(418_711)
+        + z.wrapping_mul(13_761))
+        & 0xFF;
+    let speed = 3.0 + rng.next_float();
+    let texture_offset =
+        -((wrapped_ticks + tick_offset) as f32 + partial_ticks) / 32.0 * speed;
+    ColumnInstance {
+        x,
+        z,
+        bottom_y,
+        top_y,
+        u_offset: 0.0,
+        v_offset: texture_offset % 32.0,
+        light_coords,
+    }
+}
+
+/// `WeatherEffectRenderer.createSnowColumnInstance`.
+///
+/// Snow drifts rather than falling straight: its u and v both wander off a
+/// gaussian, and its light is **brightened** — `(level * 3 + 15) / 4` on each
+/// channel — so flakes stay visible against a dark sky.
+pub fn snow_column(
+    rng: &mut crate::biome_noise::LegacyRandom,
+    game_time: i64,
+    x: i32,
+    bottom_y: i32,
+    top_y: i32,
+    z: i32,
+    light_coords: i32,
+    partial_ticks: f32,
+) -> ColumnInstance {
+    let wrapped_ticks = (game_time & 131_071) as i32;
+    let time = wrapped_ticks as f32 + partial_ticks;
+    let u = (rng.next_double() + (time * 0.01) as f64 * rng.next_gaussian()) as f32;
+    let v = (rng.next_double() + time as f64 * rng.next_gaussian() * 0.001) as f32;
+    let v_offset = -(((game_time & 511) as f32) + partial_ticks) / 512.0;
+    let brightened = pack_light(
+        (light_block(light_coords) * 3 + 15) / 4,
+        (light_sky(light_coords) * 3 + 15) / 4,
+    );
+    ColumnInstance {
+        x,
+        z,
+        bottom_y,
+        top_y,
+        u_offset: u,
+        v_offset: v_offset + v,
+        light_coords: brightened,
+    }
+}
+
+/// The per-column seed: `x*x*3121 + x*45238971 ^ z*z*418711 + z*13761`.
+///
+/// Note the precedence — `^` binds looser than `+` in Java, so this is
+/// `(x*x*3121 + x*45238971) ^ (z*z*418711 + z*13761)`, not a sum of four
+/// terms. Reading it as left-to-right arithmetic gives a different world.
+pub fn column_seed(x: i32, z: i32) -> i64 {
+    let a = x
+        .wrapping_mul(x)
+        .wrapping_mul(3121)
+        .wrapping_add(x.wrapping_mul(45_238_971));
+    let b = z
+        .wrapping_mul(z)
+        .wrapping_mul(418_711)
+        .wrapping_add(z.wrapping_mul(13_761));
+    (a ^ b) as i64
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+    use crate::biome_noise::LegacyRandom;
+
+    /// `x*x*3121 + x*45238971 ^ z*z*418711 + z*13761` — `^` binds LOOSER than
+    /// `+` in Java, so this is `(a) ^ (b)`, not a left-to-right chain. Reading
+    /// it wrong reseeds every column and changes the whole rainfall.
+    #[test]
+    fn the_column_seed_xors_two_sums_rather_than_chaining() {
+        let (x, z) = (37i32, -19i32);
+        let a = x * x * 3121 + x * 45_238_971;
+        let b = z * z * 418_711 + z * 13_761;
+        assert_eq!(column_seed(x, z), (a ^ b) as i64);
+        // The left-to-right misreading, for contrast.
+        let chained = ((x * x * 3121 + x * 45_238_971) ^ (z * z * 418_711)) + z * 13_761;
+        assert_ne!(column_seed(x, z), chained as i64);
+    }
+
+    /// Rain scrolls its texture down; snow drifts sideways as well. The
+    /// distinguishing feature is that rain leaves `u` alone and snow does not.
+    #[test]
+    fn rain_falls_straight_and_snow_drifts() {
+        let mut rng = LegacyRandom::new(column_seed(5, 9));
+        let rain = rain_column(&mut rng, 1000, 5, 60, 90, 9, pack_light(0, 15), 0.0);
+        assert_eq!(rain.u_offset, 0.0, "rain does not drift sideways");
+        assert!(rain.v_offset <= 0.0 && rain.v_offset > -32.0);
+
+        let mut rng = LegacyRandom::new(column_seed(5, 9));
+        let snow = snow_column(&mut rng, 1000, 5, 60, 90, 9, pack_light(0, 15), 0.0);
+        assert_ne!(snow.u_offset, 0.0, "snow drifts");
+    }
+
+    /// Snow brightens its light so flakes stay visible: `(level*3 + 15) / 4`,
+    /// which lifts 0 to 3 and leaves 15 at 15.
+    #[test]
+    fn snow_brightens_its_light_and_rain_does_not() {
+        let dark = pack_light(0, 0);
+        let mut rng = LegacyRandom::new(1);
+        let rain = rain_column(&mut rng, 0, 0, 0, 1, 0, dark, 0.0);
+        assert_eq!(rain.light_coords, dark, "rain takes the light as sampled");
+
+        let mut rng = LegacyRandom::new(1);
+        let snow = snow_column(&mut rng, 0, 0, 0, 1, 0, dark, 0.0);
+        assert_eq!(light_block(snow.light_coords), 3);
+        assert_eq!(light_sky(snow.light_coords), 3);
+
+        let mut rng = LegacyRandom::new(1);
+        let bright = snow_column(&mut rng, 0, 0, 0, 1, 0, pack_light(15, 15), 0.0);
+        assert_eq!(light_block(bright.light_coords), 15, "full stays full");
+        assert_eq!(light_sky(bright.light_coords), 15);
+    }
+
+    /// The pack/unpack pair must round-trip, since snow reads its own input
+    /// back out to brighten it.
+    #[test]
+    fn light_coords_round_trip() {
+        for block in 0..16 {
+            for sky in 0..16 {
+                let p = pack_light(block, sky);
+                assert_eq!((light_block(p), light_sky(p)), (block, sky));
+            }
+        }
+    }
+
+    /// The gaussian pair-cache means two draws cost one rejection loop. If the
+    /// cache were dropped, snow's u and v would both come from a first draw and
+    /// the drift would be wrong.
+    #[test]
+    fn the_gaussian_caches_its_pair() {
+        let mut a = LegacyRandom::new(42);
+        let first = a.next_gaussian();
+        let second = a.next_gaussian();
+        assert_ne!(first, second);
+        // A fresh RNG must reproduce both, in order.
+        let mut b = LegacyRandom::new(42);
+        assert_eq!(b.next_gaussian(), first);
+        assert_eq!(b.next_gaussian(), second);
+    }
+}

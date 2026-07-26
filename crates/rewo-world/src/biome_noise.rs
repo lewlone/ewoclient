@@ -23,6 +23,11 @@
 /// simplex constructor needs are provided.
 pub struct LegacyRandom {
     seed: i64,
+    /// `MarsagliaPolarGaussian`'s cached second value. Vanilla keeps this on a
+    /// lazily-created helper that `setSeed` resets; a fresh `LegacyRandom` per
+    /// reseed is the same thing.
+    next_gaussian_value: f64,
+    have_next_gaussian: bool,
 }
 
 impl LegacyRandom {
@@ -37,10 +42,14 @@ impl LegacyRandom {
     /// match MC exactly (verified vs a temurin-25 port: `Rng(0).nextDouble()`
     /// == 0.7309677600860596, not the JDK-double 0.730967787376657).
     const DOUBLE_MULTIPLIER: f32 = 1.110223E-16_f32;
+    /// `BitRandomSource.FLOAT_MULTIPLIER`.
+    const FLOAT_MULTIPLIER: f32 = 5.9604645E-8_f32;
 
     pub fn new(seed: i64) -> Self {
         Self {
             seed: (seed ^ Self::MULTIPLIER) & Self::MASK,
+            next_gaussian_value: 0.0,
+            have_next_gaussian: false,
         }
     }
 
@@ -81,6 +90,40 @@ impl LegacyRandom {
         let lower = self.next(27) as i64;
         let combined = (upper << 27) + lower;
         (combined as f32 * Self::DOUBLE_MULTIPLIER) as f64
+    }
+
+    /// `BitRandomSource.nextFloat()` — `next(24) * FLOAT_MULTIPLIER`, all in
+    /// float. Used by M33's rain columns for their fall speed.
+    pub fn next_float(&mut self) -> f32 {
+        self.next(24) as f32 * Self::FLOAT_MULTIPLIER
+    }
+
+    /// `MarsagliaPolarGaussian.nextGaussian()`, the polar method vanilla's
+    /// `RandomSource.nextGaussian` delegates to.
+    ///
+    /// It generates values in **pairs** and caches the second, so a caller that
+    /// takes two gaussians consumes only one rejection loop — M33's snow
+    /// columns take exactly two, so the cache is load-bearing rather than an
+    /// optimisation. `setSeed` resets the cache in vanilla, which is why this
+    /// lives on the RNG rather than beside it.
+    pub fn next_gaussian(&mut self) -> f64 {
+        if self.have_next_gaussian {
+            self.have_next_gaussian = false;
+            return self.next_gaussian_value;
+        }
+        loop {
+            let x = 2.0 * self.next_double() - 1.0;
+            let y = 2.0 * self.next_double() - 1.0;
+            let radius_squared = x * x + y * y;
+            // Rejection is on `>= 1.0` OR exactly zero — both endpoints.
+            if radius_squared >= 1.0 || radius_squared == 0.0 {
+                continue;
+            }
+            let multiplier = (-2.0 * radius_squared.ln() / radius_squared).sqrt();
+            self.next_gaussian_value = y * multiplier;
+            self.have_next_gaussian = true;
+            return x * multiplier;
+        }
     }
 }
 

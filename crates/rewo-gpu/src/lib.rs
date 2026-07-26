@@ -15,6 +15,7 @@
 
 pub mod celestial;
 pub mod clouds;
+pub mod weather;
 pub mod end_portal;
 pub mod end_sky;
 pub mod entities;

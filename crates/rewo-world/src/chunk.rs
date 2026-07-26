@@ -113,6 +113,21 @@ pub struct Column {
     /// defaults them to 0 renders the whole sky-lit volume above the terrain as
     /// pitch black. Set from the masks in `read_light_into`.
     sky_full_above: usize,
+    /// The `MOTION_BLOCKING` heightmap, as sent — one absolute Y per (x, z),
+    /// where the value is the first **free** cell above the terrain
+    /// (`Heightmap.getFirstAvailable`, not the topmost solid block).
+    ///
+    /// M33 needs it: weather columns run from the terrain height upward, so
+    /// without it rain falls through the ground. Decoded here because that is
+    /// where vanilla's client gets it — `Heightmap.setRawData` off the chunk
+    /// packet.
+    ///
+    /// **Deviation, recorded rather than hidden**: vanilla's
+    /// `LevelChunk.setBlockState` keeps the heightmaps current as blocks
+    /// change, and Rewo does not. A column stays at its as-sent height until
+    /// the chunk is resent, so rain over a freshly-dug hole falls from the old
+    /// surface. Nothing else reads this, so the error is confined to weather.
+    pub motion_blocking: Option<Box<[i32; 256]>>,
     /// The column's block entities, as sent (M25).
     ///
     /// Carried on the `Column` rather than inserted straight into the world's
@@ -338,9 +353,40 @@ impl Column {
             // Synthetic columns carry explicit full-bright sky arrays, so the
             // "missing means 15" rule never applies.
             sky_full_above: usize::MAX,
+            motion_blocking: None,
             block_entities: Vec::new(),
         }
     }
+}
+
+/// `Heightmap.Types.MOTION_BLOCKING`'s wire id — the enum's explicit `id`
+/// field, which `ByteBufCodecs.idMapper(BY_ID, t -> t.id)` writes, not its
+/// ordinal.
+pub const HEIGHTMAP_MOTION_BLOCKING: i32 = 4;
+
+/// Unpack one `SimpleBitStorage` heightmap: 256 entries of
+/// `ceillog2(height + 1)` bits, packed without straddling a long boundary, each
+/// storing `y - minY`.
+///
+/// Returns `None` when the array is not the length that bit width implies. A
+/// wrong-sized heightmap is better ignored than read as garbage heights: the
+/// only consumer is weather, which falls back to the camera's own band.
+fn unpack_heightmap(data: &[i64], shape: &DimensionShape) -> Option<Box<[i32; 256]>> {
+    let bits = (crate::biome::ceil_log2((shape.height + 1) as usize) as usize).max(1);
+    let per_long = 64 / bits;
+    let expected = 256usize.div_ceil(per_long);
+    if data.len() != expected {
+        return None;
+    }
+    let mask = (1u64 << bits) - 1;
+    let mut out = Box::new([0i32; 256]);
+    for (i, slot) in out.iter_mut().enumerate() {
+        let word = data[i / per_long] as u64;
+        let shift = (i % per_long) * bits;
+        // `getFirstAvailable` adds `minY` back on read.
+        *slot = ((word >> shift) & mask) as i32 + shape.min_y;
+    }
+    Some(out)
 }
 
 /// Decode a full Level Chunk With Light packet body (reader positioned right
@@ -398,9 +444,13 @@ pub fn read_level_chunk_bits2(
 
     // Heightmaps: VarInt count, then [VarInt type_id, long_array].
     let hm_count = r.count("heightmaps", 1)?;
+    let mut motion_blocking = None;
     for _ in 0..hm_count {
-        let _type_id = r.varint()?;
-        let _data = r.long_array()?;
+        let type_id = r.varint()?;
+        let data = r.long_array()?;
+        if type_id == HEIGHTMAP_MOTION_BLOCKING {
+            motion_blocking = unpack_heightmap(&data, shape);
+        }
     }
 
     // Sections blob (length-delimited): parse sections out of a sub-reader.
@@ -464,6 +514,7 @@ pub fn read_level_chunk_bits2(
         cz,
         sections,
         sky_full_above,
+        motion_blocking,
         block_entities,
     })
 }
@@ -712,5 +763,63 @@ fn distribute(mask: &[u64], arrays: &[Vec<u8>], sections: &mut [Section], sky: b
                 section.block_light = Some(arr.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod heightmap_tests {
+    use super::*;
+
+    /// Pack 256 heights the way `SimpleBitStorage` does, so the reader is
+    /// graded against an independent writer rather than against itself.
+    fn pack(heights: &[i32; 256], shape: &DimensionShape) -> Vec<i64> {
+        let bits = (crate::biome::ceil_log2((shape.height + 1) as usize) as usize).max(1);
+        let per_long = 64 / bits;
+        let mut out = vec![0i64; 256usize.div_ceil(per_long)];
+        for (i, h) in heights.iter().enumerate() {
+            let v = (h - shape.min_y) as u64;
+            out[i / per_long] |= ((v << ((i % per_long) * bits)) as i64) as i64;
+        }
+        out
+    }
+
+    #[test]
+    fn the_overworld_heightmap_round_trips_through_nine_bit_storage() {
+        let shape = DimensionShape::OVERWORLD;
+        // 384 + 1 needs 9 bits, 7 per long, 37 longs -- not a whole number of
+        // entries per long, which is what makes the packing worth testing.
+        assert_eq!(crate::biome::ceil_log2((shape.height + 1) as usize), 9);
+        let mut heights = [0i32; 256];
+        for (i, h) in heights.iter_mut().enumerate() {
+            *h = shape.min_y + (i as i32 * 7) % (shape.height - 1);
+        }
+        let packed = pack(&heights, &shape);
+        assert_eq!(packed.len(), 37);
+        let got = unpack_heightmap(&packed, &shape).expect("well-formed");
+        assert_eq!(&got[..], &heights[..]);
+    }
+
+    /// A heightmap whose length does not match the bit width is ignored rather
+    /// than read as garbage -- weather would otherwise fall from nonsense
+    /// heights across the whole column set.
+    #[test]
+    fn a_wrong_sized_heightmap_is_rejected() {
+        let shape = DimensionShape::OVERWORLD;
+        assert!(unpack_heightmap(&[0i64; 36], &shape).is_none());
+        assert!(unpack_heightmap(&[0i64; 38], &shape).is_none());
+        assert!(unpack_heightmap(&[], &shape).is_none());
+    }
+
+    /// The Nether is 0..256, so its bit width differs -- a reader that assumed
+    /// the Overworld's 9 bits would mis-read every Nether column.
+    #[test]
+    fn the_bit_width_follows_the_dimension_shape() {
+        let nether = DimensionShape::NETHER;
+        let bits = crate::biome::ceil_log2((nether.height + 1) as usize);
+        assert_eq!(bits, 9, "257 still needs 9 bits");
+        let heights = [nether.min_y + 5; 256];
+        let packed = pack(&heights, &nether);
+        let got = unpack_heightmap(&packed, &nether).expect("well-formed");
+        assert!(got.iter().all(|h| *h == nether.min_y + 5));
     }
 }
