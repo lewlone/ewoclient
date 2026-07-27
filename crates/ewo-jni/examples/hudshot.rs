@@ -119,6 +119,17 @@ fn main() {
         None => {}
     }
 
+    // `--audio level[,pulse[,shape]]` — pin a synthetic spectrum. The real one
+    // depends on what is playing on the machine, which no screenshot can rely on.
+    if let Some(spec) = flag(&args, "--audio") {
+        let f: Vec<f32> = spec.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        editor.set_spectrum(
+            f.first().copied().unwrap_or(0.7),
+            f.get(1).copied().unwrap_or(0.0),
+            f.get(2).copied().unwrap_or(0.0),
+        );
+    }
+
     // `--quick-edit` — render the modifier-held state over a vanilla screen.
     if args.iter().any(|a| a == "--quick-edit") {
         editor.set_quick_edit(true);

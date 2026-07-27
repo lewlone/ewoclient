@@ -67,6 +67,7 @@
 // the `rlib` target (see Cargo.toml). The JVM loads the cdylib and reaches the
 // crate exclusively through the `Java_…` exports below — nothing here is a
 // stable API for anyone else.
+pub mod audio;
 pub mod crosshair;
 pub mod fixture;
 pub mod hud;

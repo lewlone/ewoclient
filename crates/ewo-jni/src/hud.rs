@@ -1029,6 +1029,10 @@ pub struct Editor {
     /// Media state was pinned by [`Self::set_media`] — skip the SMTC poll so
     /// the pin survives. Only the offscreen harness sets this.
     media_pinned: bool,
+    /// Spectrum was pinned by [`Self::set_spectrum`] — skip the audio poll.
+    /// Only the offscreen harness sets this; a visualiser that depends on
+    /// what is playing on the machine cannot be screenshotted deterministically.
+    spectrum_pinned: bool,
     /// Quick-edit: the modifier is held over a cursor-free vanilla screen
     /// (inventory, pause, chat…), so widgets can be dragged and resized
     /// without opening the EwoClient overlay. Driven from Java each frame.
@@ -1087,6 +1091,11 @@ pub struct Editor {
     /// widget's state stays fresh without the polling thread touching Skia
     /// state directly. Send transport actions back to it via `.act(...)`.
     pub(crate) media_service: crate::media::MediaService,
+    /// System-audio capture feeding the media visualiser.
+    pub(crate) audio_service: crate::audio::AudioService,
+    /// This frame's spectrum. Polled once at the top of [`draw`] and read from
+    /// several places below, so the whole frame agrees on one value.
+    pub(crate) spectrum: crate::audio::Spectrum,
     /// Vertical scroll offset (in logical px) for the MODULES tab — the only
     /// dashboard view tall enough to need scrolling. Reset whenever the view
     /// changes so a switch in/out always starts at the top.
@@ -1205,6 +1214,7 @@ impl Editor {
             dragging: None,
             resizing: None,
             media_pinned: false,
+            spectrum_pinned: false,
             quick_edit: false,
             overlay_open: false,
             slider_drag: None,
@@ -1227,6 +1237,8 @@ impl Editor {
             keybinds: load_keybinds(),
             media: crate::media::MediaState::empty(),
             media_service: crate::media::MediaService::start(),
+            audio_service: crate::audio::AudioService::start(),
+            spectrum: crate::audio::Spectrum::SILENT,
             modules_scroll: 0.0,
             home_toggle_bounds: [empty_rect(); 17],
             module_popover: None,
@@ -1344,6 +1356,30 @@ impl Editor {
         // Otherwise the very next `draw` drains a real SMTC update over the
         // top of this and the pin lasts zero frames.
         self.media_pinned = true;
+    }
+
+    /// Pin a synthetic spectrum for the offscreen harness.
+    ///
+    /// `shape` seeds a plausible mix — bass-heavy, rolling off toward the
+    /// treble, with a little per-band variation — rather than a flat row of
+    /// identical bars, which would hide exactly the layout bugs a screenshot
+    /// is meant to catch.
+    pub fn set_spectrum(&mut self, level: f32, pulse: f32, shape: f32) {
+        let mut bands = [0.0f32; crate::audio::BANDS];
+        for (i, b) in bands.iter_mut().enumerate() {
+            let t = i as f32 / (crate::audio::BANDS - 1) as f32;
+            // Falling tilt plus two standing bumps — reads like a real mix.
+            let tilt = 1.0 - 0.55 * t;
+            let bump = 0.22 * ((t * 9.0 + shape).sin() * 0.5 + 0.5);
+            *b = ((tilt + bump) * level).clamp(0.0, 1.0);
+        }
+        self.spectrum = crate::audio::Spectrum {
+            bands,
+            level,
+            pulse,
+            source: crate::audio::Source::ExcludingGame,
+        };
+        self.spectrum_pinned = true;
     }
 
     /// Rects (framebuffer pixels) where the composite step should leave
@@ -2171,6 +2207,11 @@ pub fn draw(
         let service_ref = &mut editor.media_service;
         service_ref.poll(media_ref);
     }
+    // One poll per frame, cached — the visualiser is read from the compact
+    // widget, the HOME card and the scrub bar, and they must not disagree.
+    if !editor.spectrum_pinned {
+        editor.spectrum = editor.audio_service.poll();
+    }
 
     // While the overlay is up and the user is on a non-editor tab (HOME /
     // MODULES / MODS / SETTINGS / PVP), hide the in-world widgets so they
@@ -2216,6 +2257,7 @@ pub fn draw(
                     &editor.media,
                     local_cursor,
                     editor.media_button_press,
+                    &editor.spectrum,
                     fonts,
                     wl.anchor,
                     ax,
@@ -2506,6 +2548,7 @@ fn draw_media_compact(
     media: &crate::media::MediaState,
     cursor: (f32, f32),
     press_info: Option<(usize, std::time::Instant)>,
+    audio: &crate::audio::Spectrum,
     fonts: &FontStore,
     anchor: Anchor,
     ax: f32,
@@ -2550,8 +2593,30 @@ fn draw_media_compact(
     draw_iw_shell(canvas, chip, 14.0);
 
     // Thumbnail (44×44, 8px rounded).
+    // Spectrum, behind everything else in the text column. Drawn first so the
+    // title and scrub bar sit on top of it rather than fighting it.
+    // No spectrum bars here, deliberately. The compact widget is 64px tall and
+    // every row of it is spoken for — a strip behind the text lands squarely on
+    // the timestamps and makes "1:10 / 3:08" unreadable at exactly the moments
+    // the music is loud enough to be worth watching. This widget gets its
+    // audio reactivity from the scrub bar's liquid surface and the artwork's
+    // beat glow, both of which use space that was already there. The bars live
+    // on the HOME card, which has the room for them.
+
     let thumb_rect = Rect::from_xywh(x + pad_l, y + pad_y, thumb, thumb);
     let thumb_rr = RRect::new_rect_xy(thumb_rect, 8.0, 8.0);
+
+    // The beat lands on the artwork: a rose halo that flares on an onset and
+    // decays. Cheaper and calmer than scaling the thumbnail, which would
+    // resample the image every frame for no extra legibility.
+    if audio.pulse > 0.02 && audio.is_live() {
+        let mut glow = Paint::default();
+        glow.set_anti_alias(true);
+        glow.set_color4f(rgba(ROSE, 0.55 * audio.pulse), None);
+        glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 6.0 + 8.0 * audio.pulse, false));
+        canvas.draw_rrect(thumb_rr, &glow);
+    }
+
     if let Some(img) = media.thumbnail.as_ref() {
         canvas.save();
         canvas.clip_rrect(thumb_rr, Some(ClipOp::Intersect), Some(true));
@@ -2667,7 +2732,7 @@ fn draw_media_compact(
         canvas.draw_rrect(bar_rr, &bg);
 
         let frac = (live_pos / media.duration_seconds).clamp(0.0, 1.0);
-        draw_liquid_progress(canvas, bar_rect, frac, media.playing);
+        draw_liquid_progress(canvas, bar_rect, frac, media.playing, audio);
     }
 
     // Transport buttons — tiny (22×22) circles, the middle one rose-filled.
@@ -2809,6 +2874,43 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(rrect, &border);
 }
 
+/// Spectrum bars, drawn as a quiet band behind the media widget's text.
+///
+/// Deliberately *behind* the title rather than beside it: the widget is small,
+/// and a visualiser that steals horizontal space from the track name makes the
+/// widget worse at the job it exists for. Low alpha and a bottom-anchored
+/// gradient keep it as texture rather than content.
+///
+/// Silent when there is no audio — a row of dead bars is worse than no row.
+fn draw_spectrum_strip(canvas: &Canvas, area: Rect, audio: &crate::audio::Spectrum) {
+    if !audio.is_live() || area.width() <= 8.0 || area.height() <= 4.0 {
+        return;
+    }
+    let n = crate::audio::BANDS;
+    let gap = 2.0;
+    let bw = ((area.width() - gap * (n - 1) as f32) / n as f32).max(1.0);
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    for (i, mag) in audio.bands.iter().enumerate() {
+        // A floor so quiet bands still show as a dim seat rather than a hole.
+        let h = (area.height() * mag.clamp(0.0, 1.0)).max(1.5);
+        let x = area.left + i as f32 * (bw + gap);
+        let rect = Rect::from_xywh(x, area.bottom - h, bw, h);
+        // Rose at the bottom, lavender at the top of the band's travel — the
+        // colour then reads as "how loud", not just the height.
+        let t = mag.clamp(0.0, 1.0);
+        let c = Color4f::new(
+            (ROSE.0 as f32 / 255.0) * (1.0 - t) + (LAV.0 as f32 / 255.0) * t,
+            (ROSE.1 as f32 / 255.0) * (1.0 - t) + (LAV.1 as f32 / 255.0) * t,
+            (ROSE.2 as f32 / 255.0) * (1.0 - t) + (LAV.2 as f32 / 255.0) * t,
+            0.14 + 0.20 * t,
+        );
+        paint.set_color4f(c, None);
+        canvas.draw_rrect(RRect::new_rect_xy(rect, bw * 0.4, bw * 0.4), &paint);
+    }
+}
+
 /// Cached target-skin PNG, keyed by the name the mod published it for.
 ///
 /// `Image` is a refcounted handle, so re-cloning it per frame is free; the
@@ -2917,7 +3019,13 @@ fn draw_player_head(canvas: &Canvas, rr: RRect, avatar: Rect, name: &str) -> boo
 ///
 /// Amplitude ramps toward the leading edge so the head of the liquid ripples
 /// and the settled tail behind it is calm.
-fn draw_liquid_progress(canvas: &Canvas, bar: Rect, frac: f32, playing: bool) {
+fn draw_liquid_progress(
+    canvas: &Canvas,
+    bar: Rect,
+    frac: f32,
+    playing: bool,
+    audio: &crate::audio::Spectrum,
+) {
     let fill_w = bar.width() * frac.clamp(0.0, 1.0);
     if fill_w <= 1.0 {
         return;
@@ -2933,8 +3041,20 @@ fn draw_liquid_progress(canvas: &Canvas, bar: Rect, frac: f32, playing: bool) {
 
     const WAVELENGTH: f32 = 24.0;
     const SPEED: f32 = 2.4; // radians/sec
-    let amp = if playing { 1.3 } else { 0.0 };
-    let phase = now() * SPEED;
+
+    // Water in a speaker cabinet: the surface is driven by what is actually
+    // coming out. With live audio, amplitude tracks loudness and a beat kicks
+    // it further; with none — muted, or no capture backend — it falls back to
+    // the fixed idle ripple so the bar still looks alive rather than dead.
+    let (amp, speed) = if !playing {
+        (0.0, SPEED)
+    } else if audio.is_live() {
+        let drive = audio.level.clamp(0.0, 1.0);
+        (0.5 + drive * 2.2 + audio.pulse * 0.9, SPEED * (0.7 + drive * 1.1))
+    } else {
+        (1.3, SPEED)
+    };
+    let phase = now() * speed;
     // Rest a touch below centre so the tube still reads as part-full even at
     // zero amplitude.
     let mid = bar.top + bar.height() * 0.42;
@@ -6127,6 +6247,7 @@ fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fonts: &FontS
         &editor.media,
         editor.cursor,
         editor.media_button_press,
+        &editor.spectrum,
         fonts,
     );
 
@@ -6461,6 +6582,7 @@ fn draw_media_large(
     media: &crate::media::MediaState,
     cursor: (f32, f32),
     press_info: Option<(usize, std::time::Instant)>,
+    audio: &crate::audio::Spectrum,
     fonts: &FontStore,
 ) {
     let rrect = RRect::new_rect_xy(rect, 18.0, 18.0);
@@ -6637,6 +6759,14 @@ fn draw_media_large(
         canvas.draw_str(&artist_str, (mid_left, title_baseline + 18.0), &artist_font, &artist);
     }
     canvas.restore();
+
+    // Spectrum, filling the middle column's dead space between the artist line
+    // and the scrub row. This card has the vertical room the compact widget
+    // does not, so the bars live here.
+    if !idle {
+        let strip = Rect::new(mid_left, rect.bottom - 78.0, mid_right, rect.bottom - 34.0);
+        draw_spectrum_strip(canvas, strip, audio);
+    }
 
     // Scrub bar (skip if idle).
     if !idle {
