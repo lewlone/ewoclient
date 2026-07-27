@@ -25,6 +25,7 @@ mod live_cmd;
 mod net_cmd;
 mod play_cmd;
 mod inventoryshot_cmd;
+mod particleshot_cmd;
 mod portalshot_cmd;
 mod skin_fetch;
 mod skyshot_cmd;
@@ -194,6 +195,12 @@ enum Command {
     /// animation type, asserting every value against independent decompiled
     /// transcriptions with `--check` (no server, no GPU).
     Swingshot(swingshot_cmd::SwingshotArgs),
+    /// M35 particle oracle: drive raw `level_particles` / `level_event` bodies
+    /// through the production decoders, grade the spawn fan-out, and assert
+    /// seeded particle trajectories bit-for-bit against vectors emitted by a
+    /// Java harness copied verbatim from the decompile (`--check`, no server,
+    /// no GPU).
+    Particleshot(particleshot_cmd::ParticleshotArgs),
 }
 
 fn main() {
@@ -225,6 +232,7 @@ fn main() {
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
+        Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),
