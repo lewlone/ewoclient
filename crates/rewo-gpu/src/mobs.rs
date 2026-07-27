@@ -3764,3 +3764,18 @@ mod tests {
         }
     }
 }
+
+/// The player model, for the first-person hand (M38).
+///
+/// Built once per variant and shared: the hand needs one named part out of it
+/// every frame, and rebuilding a whole humanoid mesh to read two cubes would
+/// be the same per-frame allocation the 2026-05-31 leak pass went looking for.
+pub fn player_model_for_hand(slim: bool) -> &'static Model {
+    static WIDE: std::sync::OnceLock<Model> = std::sync::OnceLock::new();
+    static SLIM: std::sync::OnceLock<Model> = std::sync::OnceLock::new();
+    if slim {
+        SLIM.get_or_init(|| player_model(true))
+    } else {
+        WIDE.get_or_init(|| player_model(false))
+    }
+}

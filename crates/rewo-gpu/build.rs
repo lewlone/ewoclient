@@ -30,6 +30,8 @@ fn main() {
         ("shaders/sunrise.frag", "sunrise.frag.spv"),
         ("shaders/container.vert", "container.vert.spv"),
         ("shaders/container.frag", "container.frag.spv"),
+        ("shaders/hand.vert", "hand.vert.spv"),
+        ("shaders/hand.frag", "hand.frag.spv"),
         ("shaders/gui_item.vert", "gui_item.vert.spv"),
         ("shaders/gui_item.frag", "gui_item.frag.spv"),
         ("shaders/clouds.vert", "clouds.vert.spv"),

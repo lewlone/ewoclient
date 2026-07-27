@@ -60,6 +60,12 @@ pub struct HeldItemModel {
     /// Identity for every extruded sprite; blocks inherit
     /// `rotation [30, 225, 0], scale 0.625`.
     pub gui: DisplayTransform,
+    /// `display.firstperson_righthand` / `_lefthand` — the first-person hand
+    /// (M38). The left one already carries vanilla's absent-left fallback to
+    /// the right entry; the mirror is applied at draw time by
+    /// [`crate::hand::display_transform`], not baked.
+    pub first_right: DisplayTransform,
+    pub first_left: DisplayTransform,
     pub from_block: bool,
 }
 

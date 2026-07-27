@@ -905,6 +905,8 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                         left: conv_t(&m.left),
                         ground: conv_t(&m.ground),
                         gui: conv_t(&m.gui),
+                        first_right: conv_t(&m.first_right),
+                        first_left: conv_t(&m.first_left),
                         from_block: m.from_block,
                     },
                 )
@@ -1862,6 +1864,27 @@ fn run_headless(
             view,
         );
     }
+    // M38: the first-person hand. `REWO_HAND_SWING=<0..1>` freezes the swing
+    // partway for a shot — it is a tick clock, so a headless frame would
+    // otherwise always catch it at rest.
+    {
+        let mut hand = HandState::new(&baked);
+        // Settle the equip clock, or the item is caught mid-dip on tick one.
+        hand.settle(&session, &items);
+        hand.forced_attack = std::env::var("REWO_HAND_SWING")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map(|v| v.clamp(0.0, 1.0));
+        apply_hand(
+            &mut world_renderer,
+            &mut gpu,
+            &session,
+            &items,
+            &mut hand,
+            1.0,
+            sw / sh,
+        );
+    }
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -2020,6 +2043,8 @@ struct LiveApp {
     gui_items: Option<GuiItemState>,
     /// The inventory screen (M35).
     screen: ScreenState,
+    /// The first-person hand (M38).
+    hand: Option<HandState>,
     /// The local player's skin as it sits in the **preview** pass's atlas
     /// (M36): the raw pixels, whether the model is slim, and the UV once
     /// uploaded. Held separately from `skins` because the two passes have
@@ -2587,6 +2612,28 @@ impl LiveApp {
             state.world_renderer.set_container(false, None);
         }
         let _ = hovered;
+        // M38: the first-person hand. Suppressed while the inventory screen is
+        // open — the screen owns the view, and vanilla does the same.
+        if let Some(baked) = self.baked.as_ref() {
+            let items = self.items.clone();
+            let h = self.hand.get_or_insert_with(|| HandState::new(baked));
+            h.tick(session, &items);
+            if self.screen.open {
+                let _ = state
+                    .world_renderer
+                    .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
+            } else {
+                apply_hand(
+                    &mut state.world_renderer,
+                    &mut state.gpu,
+                    session,
+                    &items,
+                    h,
+                    alpha,
+                    sw / sh,
+                );
+            }
+        }
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
@@ -2704,6 +2751,7 @@ fn run_windowed(
         weather: None,
         gui_items: None,
         screen: ScreenState::default(),
+        hand: None,
         screen_labels: Vec::new(),
         preview_skin: None,
         keys: Keys::default(),
@@ -5425,6 +5473,259 @@ fn preview_draw<'a>(
     };
     let _ = session;
     (draw, vp, rect)
+}
+
+// -- the first-person hand (M38) ----------------------------------------------
+
+/// The hand's atlas: the same 64-px grid the GUI icons use, with the player's
+/// 64×64 skin parked in the bottom-left quadrant.
+///
+/// One texture rather than two draws, because the arm and the item are one
+/// pass — and one pass because they share a matrix chain up to the point where
+/// they diverge.
+const HAND_ATLAS: u32 = 512;
+const HAND_SKIN_X: u32 = 0;
+const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
+
+/// Everything the hand needs across frames.
+pub struct HandState {
+    /// The item textures resident in the atlas, and where each landed.
+    resident: Vec<u16>,
+    uv: std::collections::HashMap<u16, [f32; 4]>,
+    /// The two equip clocks — `mainHandHeight` and `offHandHeight`.
+    main_equip: rewo_gpu::hand::EquipHeight,
+    off_equip: rewo_gpu::hand::EquipHeight,
+    /// `LocalPlayer.xBob` / `yBob`.
+    bob: rewo_gpu::hand::ViewBob,
+    /// The skin as it sits in the atlas, and whether the model is slim.
+    skin: Option<(Vec<u8>, bool)>,
+    held: rewo_gpu::held::HeldItems,
+    /// The tick the clocks were last advanced on, so they step once per client
+    /// tick rather than once per frame.
+    last_tick: u64,
+    /// A swing frozen for a headless shot (`REWO_HAND_SWING`). `None` in a
+    /// real session, where the clock is the entity table's.
+    forced_attack: Option<f32>,
+}
+
+impl HandState {
+    pub fn new(baked: &assets::BakedAssets) -> Self {
+        Self {
+            resident: Vec::new(),
+            uv: std::collections::HashMap::new(),
+            main_equip: Default::default(),
+            off_equip: Default::default(),
+            bob: Default::default(),
+            skin: None,
+            held: to_gpu_held_items(&baked.held_items),
+            last_tick: 0,
+            forced_attack: None,
+        }
+    }
+
+    /// Advance the two equip clocks and the view bob, once per client tick.
+    ///
+    /// Separate from the per-frame build because they are *tick* clocks:
+    /// running them per frame would make the equip dip three frames long
+    /// rather than three ticks, so it would vanish at any sane frame rate.
+    pub fn tick(&mut self, session: &PlaySession, items: &rewo_data::items::Items) {
+        let now = session.ticks;
+        if now == self.last_tick {
+            return;
+        }
+        self.last_tick = now;
+        self.step(session, items);
+    }
+
+    /// Advance the clocks once, unconditionally.
+    ///
+    /// Separate from [`Self::tick`] because that one dedupes on the session's
+    /// tick counter — which is right per frame and wrong for a headless shot,
+    /// where the counter does not move and the equip clock would stay at the
+    /// bottom with the item off screen.
+    fn step(&mut self, session: &PlaySession, items: &rewo_data::items::Items) {
+        let id = |s: Option<rewo_world::inventory::ItemSlot>| {
+            s.and_then(|s| items.name(s.item_id).map(|_| s.item_id))
+        };
+        self.main_equip.tick(id(session.inventory.held()));
+        self.off_equip.tick(id(session.inventory.offhand()));
+        self.bob.tick(session.player.pitch, session.player.yaw);
+    }
+
+    /// Run the clocks to rest — the equip dip fully raised — for a shot.
+    pub fn settle(&mut self, session: &PlaySession, items: &rewo_data::items::Items) {
+        for _ in 0..8 {
+            self.step(session, items);
+        }
+    }
+}
+
+/// The hand's own projection.
+///
+/// Vanilla renders it through the same perspective as the world but with the
+/// FOV *unmodified* by the speed/effect multipliers — `getFov(camera, partial,
+/// false)`. Rewo has no FOV modifiers yet, so this is the world's projection;
+/// the near plane matters more, and it is shared, which is what keeps the
+/// item's near corner from clipping.
+fn hand_view_proj(aspect: f32) -> glam::Mat4 {
+    glam::Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
+        70f32.to_radians(),
+        aspect,
+        0.05,
+    ))
+}
+
+/// Pack the hand atlas: the item textures the two hands need, plus the skin.
+fn pack_hand_atlas(
+    held: &rewo_gpu::held::HeldItems,
+    wanted: &[u16],
+    skin: Option<&[u8]>,
+) -> (Vec<u8>, std::collections::HashMap<u16, [f32; 4]>) {
+    let mut rgba = vec![0u8; (HAND_ATLAS * HAND_ATLAS * 4) as usize];
+    let mut uv = std::collections::HashMap::new();
+    let cols = HAND_ATLAS / GUI_ATLAS_SLOT;
+    for (slot, &tex) in wanted.iter().enumerate() {
+        let (ox, oy) = (
+            (slot as u32 % cols) * GUI_ATLAS_SLOT,
+            (slot as u32 / cols) * GUI_ATLAS_SLOT,
+        );
+        // The bottom row is the skin's; an item that would land there is
+        // dropped rather than overlapping it.
+        if oy >= HAND_SKIN_Y {
+            continue;
+        }
+        let Some(src) = held.textures.get(tex as usize) else {
+            continue;
+        };
+        if src.w > GUI_ATLAS_SLOT || src.h > GUI_ATLAS_SLOT {
+            continue;
+        }
+        for y in 0..src.h {
+            let s = (y * src.w * 4) as usize;
+            let d = (((oy + y) * HAND_ATLAS + ox) * 4) as usize;
+            let n = (src.w * 4) as usize;
+            rgba[d..d + n].copy_from_slice(&src.rgba[s..s + n]);
+        }
+        uv.insert(
+            tex,
+            [
+                ox as f32 / HAND_ATLAS as f32,
+                oy as f32 / HAND_ATLAS as f32,
+                src.w as f32 / HAND_ATLAS as f32,
+                src.h as f32 / HAND_ATLAS as f32,
+            ],
+        );
+    }
+    if let Some(skin) = skin {
+        for y in 0..64u32 {
+            let s = (y * 64 * 4) as usize;
+            let d = (((HAND_SKIN_Y + y) * HAND_ATLAS + HAND_SKIN_X) * 4) as usize;
+            if s + 256 <= skin.len() {
+                rgba[d..d + 256].copy_from_slice(&skin[s..s + 256]);
+            }
+        }
+    }
+    (rgba, uv)
+}
+
+/// Build and upload this frame's hand.
+#[allow(clippy::too_many_arguments)]
+fn apply_hand(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    state: &mut HandState,
+    partial: f32,
+    aspect: f32,
+) {
+    use rewo_gpu::hand::{Arm, HandDraw};
+
+    // The item on screen is the one the equip clock says, which lags the held
+    // one across a swap — that is the whole point of the dip.
+    let model_of = |id: Option<i32>| {
+        id.and_then(|i| items.name(i))
+            .and_then(|n| state.held.any(n))
+    };
+    let main_item = model_of(state.main_equip.visible_item());
+    let off_item = model_of(state.off_equip.visible_item());
+
+    // Every texture the two hands need this frame.
+    let mut wanted: Vec<u16> = Vec::new();
+    for m in [main_item, off_item].into_iter().flatten() {
+        for q in &m.quads {
+            if !wanted.contains(&q.tex) {
+                wanted.push(q.tex);
+            }
+        }
+    }
+    if wanted != state.resident || !wr.hand_ready() {
+        let (rgba, uv) = pack_hand_atlas(
+            &state.held,
+            &wanted,
+            state.skin.as_ref().map(|(px, _)| px.as_slice()),
+        );
+        if let Err(e) = wr.init_hand(gpu, &rgba, HAND_ATLAS, HAND_ATLAS) {
+            log::warn!("live: hand atlas upload failed: {e}");
+            return;
+        }
+        state.uv = uv;
+        state.resident = wanted;
+    }
+
+    let attack = state
+        .forced_attack
+        .unwrap_or_else(|| session.local_attack_anim(partial));
+    // `SwingAnimation.NONE` skips the swing; anything else whacks. The STAB
+    // spear rig is not ported, so a spear swings like a sword here.
+    let swings = true;
+    let sway = state
+        .bob
+        .sway(session.player.pitch, session.player.yaw, partial);
+    let view = rewo_gpu::hand::view_sway(sway);
+
+    let hands = [
+        HandDraw {
+            arm: Arm::Right,
+            item: main_item,
+            attack,
+            inverse_height: state.main_equip.inverse(partial),
+            swings,
+            main_hand: true,
+        },
+        HandDraw {
+            arm: Arm::Left,
+            item: off_item,
+            // Only the swinging hand animates, and the local player's swing is
+            // always the main hand's — `LocalPlayer.swing` passes MAIN_HAND.
+            attack: 0.0,
+            inverse_height: state.off_equip.inverse(partial),
+            swings,
+            main_hand: false,
+        },
+    ];
+    let arm_geo = state
+        .skin
+        .as_ref()
+        .map(|(_, slim)| rewo_gpu::hand::ArmGeometry {
+            skin_uv: [
+                HAND_SKIN_X as f32 / HAND_ATLAS as f32,
+                HAND_SKIN_Y as f32 / HAND_ATLAS as f32,
+                64.0 / HAND_ATLAS as f32,
+                64.0 / HAND_ATLAS as f32,
+            ],
+            slim: *slim,
+        });
+    let verts = rewo_gpu::hand::build_vertices(
+        view,
+        &hands,
+        &|t| state.uv.get(&t).copied(),
+        arm_geo.as_ref(),
+    );
+    let vp = hand_view_proj(aspect).to_cols_array_2d();
+    if let Err(e) = wr.set_hand(gpu, &verts, vp) {
+        log::warn!("live: hand upload failed: {e}");
+    }
 }
 
 /// Everything the inventory screen needs across frames (M35).

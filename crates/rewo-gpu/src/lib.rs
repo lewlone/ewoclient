@@ -18,6 +18,7 @@ pub mod clouds;
 pub mod container;
 pub mod gui_item;
 pub mod hand;
+pub mod hand_pass;
 pub mod particles;
 pub mod weather;
 pub mod end_portal;

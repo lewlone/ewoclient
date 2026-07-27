@@ -517,6 +517,10 @@ pub struct WorldRenderer {
     preview: Option<crate::entities::EntityPass>,
     /// This frame's preview matrix and window, or `None` when it is closed.
     preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
+    /// The first-person hand (M38). `None` until `init_hand`.
+    hand: Option<crate::hand_pass::HandPass>,
+    /// This frame's hand view-projection, or `None` when nothing is drawn.
+    hand_vp: Option<[[f32; 4]; 4]>,
     /// Particles (M37). `None` until `init_particles` supplies the atlas.
     particles: Option<crate::particles::ParticlePass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
@@ -1032,6 +1036,8 @@ impl WorldRenderer {
                 container_open: None,
                 preview: None,
                 preview_state: None,
+                hand: None,
+                hand_vp: None,
                 particles: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
@@ -1342,6 +1348,50 @@ impl WorldRenderer {
             tex,
         )?);
         Ok(())
+    }
+
+    /// Build the first-person hand pass over an atlas holding the item
+    /// textures and the player's skin (M38).
+    pub fn init_hand(
+        &mut self,
+        gpu: &mut Gpu,
+        atlas_rgba: &[u8],
+        atlas_w: u32,
+        atlas_h: u32,
+    ) -> Result<(), String> {
+        // Rebuildable, like the GUI-item atlas: the resident texture set
+        // changes when the held item does. The old pass owns raw Vulkan
+        // handles, so it has to be destroyed rather than dropped.
+        if let Some(mut old) = self.hand.take() {
+            old.destroy(gpu);
+        }
+        self.hand = Some(crate::hand_pass::HandPass::new(
+            gpu,
+            self.color_format,
+            atlas_rgba,
+            atlas_w,
+            atlas_h,
+        )?);
+        Ok(())
+    }
+
+    pub fn hand_ready(&self) -> bool {
+        self.hand.is_some()
+    }
+
+    /// This frame's hand geometry and the matrix that projects it. An empty
+    /// vertex list draws nothing, which is the scoping / hidden-hand case.
+    pub fn set_hand(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[crate::gui_item::GuiItemVertex],
+        view_proj: [[f32; 4]; 4],
+    ) -> Result<(), String> {
+        self.hand_vp = (!verts.is_empty()).then_some(view_proj);
+        match self.hand.as_mut() {
+            Some(p) => p.set_vertices(gpu, verts),
+            None => Ok(()),
+        }
     }
 
     pub fn preview_ready(&self) -> bool {
@@ -2121,6 +2171,20 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
+        // The first-person hand, after the world and before the HUD.
+        //
+        // Vanilla clears the depth buffer first, which is what stops a wall a
+        // block in front of you from cutting your arm in half — the hand is
+        // drawn in view space at a fraction of a block, well inside anything
+        // the world put there.
+        if let (Some(pass), Some(vp)) = (&self.hand, self.hand_vp) {
+            clear_depth_rect(
+                gpu,
+                cb,
+                vk::Rect2D::default().extent(extent),
+            );
+            pass.draw(gpu, cb, vp, extent);
+        }
         // HUD, then the inventory screen over it, then text — all screen
         // space. The item icons are one pass drawn once, so when the screen is
         // open they belong to it rather than to the hotbar: the caller feeds
@@ -2467,6 +2531,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.hand.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.preview.take() {

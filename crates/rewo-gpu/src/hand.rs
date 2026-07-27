@@ -28,7 +28,8 @@
 
 use glam::{Mat4, Vec3};
 
-use crate::held::DisplayTransform;
+use crate::gui_item::GuiItemVertex;
+use crate::held::{DisplayTransform, HeldItemModel};
 
 /// `ItemInHandRenderer`'s named constants, kept in vanilla's own order so a
 /// version bump can be diffed against the decompile line by line.
@@ -303,6 +304,168 @@ pub fn player_arm(arm: Arm, inverse_height: f32, attack: f32) -> Mat4 {
         * rot_x(k::ARM_ROT_X)
         * rot_y(invert * k::ARM_ROT_Y)
         * translate(invert * k::ARM_POSTROTATION_X_OFFSET, 0.0, 0.0)
+}
+
+// ---------------------------------------------------------------------------
+// The geometry, and the pass that draws it (M38).
+// ---------------------------------------------------------------------------
+
+/// `ModelPart.Cube`'s own 1/16 — vertices are authored in model units and
+/// divided here, which is what puts the arm chain's `3.6`/`5.6` translates on
+/// the same scale as the world's blocks. Measured: with this divide the arm
+/// lands about 1.1 blocks below the eye and 0.7 in front; without it, ten
+/// blocks away.
+pub const MODEL_UNIT: f32 = 1.0 / 16.0;
+
+/// `AvatarRenderer.renderHand`'s fixed tilt: `rightArm.zRot = 0.1`,
+/// `leftArm.zRot = -0.1`, in **radians**.
+///
+/// Set unconditionally, on top of `arm.resetPose()` — so the first-person arm
+/// is not the model's animated arm, it is the rest pose plus this one nudge.
+const HAND_ARM_Z_ROT: f32 = 0.1;
+
+/// One hand's worth of geometry request.
+pub struct HandDraw<'a> {
+    pub arm: Arm,
+    /// The item to draw, or `None` for a bare hand.
+    pub item: Option<&'a HeldItemModel>,
+    /// `getAttackAnim(partial)` for this hand — 0 when it is not swinging.
+    pub attack: f32,
+    /// `1 - lerp(oHeight, height)`; see [`EquipHeight::inverse`].
+    pub inverse_height: f32,
+    /// False for `SwingAnimation.NONE`, which skips the swing entirely.
+    pub swings: bool,
+    /// Whether this is the main hand. Vanilla draws the bare arm **only** for
+    /// the main hand: an empty off-hand shows nothing.
+    pub main_hand: bool,
+}
+
+/// The skin's placement in the hand atlas, and the arm quads to draw.
+pub struct ArmGeometry {
+    /// `(u0, v0, du, dv)` of the 64×64 skin within the atlas.
+    pub skin_uv: [f32; 4],
+    /// Whether the player model is the slim variant — the arm box is 3 px
+    /// wide rather than 4, and its UVs differ.
+    pub slim: bool,
+}
+
+fn quad_verts(
+    out: &mut Vec<GuiItemVertex>,
+    m: &Mat4,
+    pos: &[[f32; 3]; 4],
+    uv: &[[f32; 2]; 4],
+    shade: f32,
+) {
+    let p: Vec<[f32; 3]> = pos
+        .iter()
+        .map(|v| m.transform_point3(Vec3::from_array(*v)).to_array())
+        .collect();
+    let v = |i: usize| GuiItemVertex {
+        pos: p[i],
+        uv: uv[i],
+        shade,
+    };
+    out.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);
+}
+
+/// Build one frame's hand vertices.
+///
+/// `view` is the rotation both hands sit under — `submitHandsWithItems`'
+/// opening bob pair. `atlas` resolves an item texture index to its rect in the
+/// hand atlas; `arm_geometry` is `None` when no skin is resident, which draws
+/// the item but no bare arm rather than an untextured one.
+pub fn build_vertices(
+    view: Mat4,
+    hands: &[HandDraw<'_>],
+    atlas: &dyn Fn(u16) -> Option<[f32; 4]>,
+    arm_geometry: Option<&ArmGeometry>,
+) -> Vec<GuiItemVertex> {
+    let mut out = Vec::new();
+    for h in hands {
+        match h.item {
+            Some(model) => {
+                let left = h.arm == Arm::Left;
+                let display = if left { &model.first_left } else { &model.first_right };
+                let m = view
+                    * item_hand(h.arm, h.inverse_height, h.attack, h.swings)
+                    * display_transform(display, left);
+                for q in &model.quads {
+                    let Some(rect) = atlas(q.tex) else { continue };
+                    // The item's quads are in 0..16 model units; the display
+                    // transform's trailing centring expects 0..1.
+                    let pos: [[f32; 3]; 4] = std::array::from_fn(|i| {
+                        [
+                            q.verts[i][0] * MODEL_UNIT,
+                            q.verts[i][1] * MODEL_UNIT,
+                            q.verts[i][2] * MODEL_UNIT,
+                        ]
+                    });
+                    let uv: [[f32; 2]; 4] = std::array::from_fn(|i| {
+                        [
+                            rect[0] + q.uv[i][0] * rect[2],
+                            rect[1] + q.uv[i][1] * rect[3],
+                        ]
+                    });
+                    let shade = crate::gui_item::direction_normal(q.dir).y.mul_add(0.15, 0.85);
+                    quad_verts(&mut out, &m, &pos, &uv, shade);
+                }
+            }
+            None => {
+                // `submitArmWithItem`: the bare arm is drawn for the main hand
+                // only, and only when the player is not invisible.
+                let Some(geo) = arm_geometry.filter(|_| h.main_hand) else {
+                    continue;
+                };
+                let m = view * player_arm(h.arm, h.inverse_height, h.attack);
+                append_arm(&mut out, &m, h.arm, geo);
+            }
+        }
+    }
+    out
+}
+
+/// The arm cuboid and its sleeve, from the player model's own mesh.
+///
+/// Only the one named part, which is exactly what `renderRightHand` submits —
+/// not the whole model with the rest hidden.
+fn append_arm(out: &mut Vec<GuiItemVertex>, m: &Mat4, arm: Arm, geo: &ArmGeometry) {
+    let model = crate::mobs::player_model_for_hand(geo.slim);
+    let want = match arm {
+        Arm::Right => "right_arm",
+        Arm::Left => "left_arm",
+    };
+    let Some(part_index) = model.parts.iter().position(|p| p.name == want) else {
+        return;
+    };
+    let part = &model.parts[part_index];
+    // `arm.resetPose()` then the fixed tilt — the rest pivot, no animation.
+    let local = Mat4::from_translation(Vec3::new(
+        part.pivot[0] * MODEL_UNIT,
+        part.pivot[1] * MODEL_UNIT,
+        part.pivot[2] * MODEL_UNIT,
+    )) * Mat4::from_rotation_z(match arm {
+        Arm::Right => HAND_ARM_Z_ROT,
+        Arm::Left => -HAND_ARM_Z_ROT,
+    });
+    let m = *m * local;
+    for q in model.quads.iter().filter(|q| q.part == part_index) {
+        let pos: [[f32; 3]; 4] = std::array::from_fn(|i| {
+            [
+                q.pos[i][0] * MODEL_UNIT,
+                q.pos[i][1] * MODEL_UNIT,
+                q.pos[i][2] * MODEL_UNIT,
+            ]
+        });
+        // The model's UVs are in 64×64 skin space, normalised; the skin sits
+        // somewhere in the hand atlas, so they are remapped into its rect.
+        let uv: [[f32; 2]; 4] = std::array::from_fn(|i| {
+            [
+                geo.skin_uv[0] + q.uv[i][0] * geo.skin_uv[2],
+                geo.skin_uv[1] + q.uv[i][1] * geo.skin_uv[3],
+            ]
+        });
+        quad_verts(out, &m, &pos, &uv, q.shade);
+    }
 }
 
 #[cfg(test)]
