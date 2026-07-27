@@ -16,6 +16,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import dev.lewlone.ewohud.EwoHudNative;
 import dev.lewlone.ewohud.EwoOverlayScreen;
+import dev.lewlone.ewohud.EwoQuickEdit;
 
 /**
  * Forwards left-clicks landing on the in-world Media widget's transport
@@ -44,18 +45,31 @@ public class MouseHandlerInputMixin {
     @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
     private void ewo$onButton(long windowHandle, MouseButtonInfo info, int action,
                               CallbackInfo ci) {
-        // Press only — releases of the same button shouldn't double-dispatch.
-        if (action != GLFW.GLFW_PRESS) {
-            return;
-        }
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) {
             return;
         }
         Screen screen = EwoCompat.screen(mc);
         // Gameplay (cursor grabbed) → vanilla path. Overlay open → already
-        // forwarded via EwoOverlayScreen. Otherwise: vanilla menu, hit-test.
+        // forwarded via EwoOverlayScreen. Otherwise: vanilla menu.
         if (screen == null || screen instanceof EwoOverlayScreen) {
+            return;
+        }
+
+        boolean pressed = action == GLFW.GLFW_PRESS;
+
+        // Quick edit (Alt held) — the press belongs to the HUD, not the screen.
+        // Both edges are forwarded and cancelled: swallowing the press but
+        // letting the release through would leave the inventory believing a
+        // drag ended that it never saw start.
+        if (EwoQuickEdit.isActive() && (pressed || action == GLFW.GLFW_RELEASE)) {
+            EwoHudNative.nativeMouseButton(info.button(), pressed, this.xpos, this.ypos);
+            ci.cancel();
+            return;
+        }
+
+        // Media transport buttons — press only; a release has nothing to hit.
+        if (!pressed) {
             return;
         }
         if (EwoHudNative.nativeMediaTryClick(info.button(), this.xpos, this.ypos) != 0) {

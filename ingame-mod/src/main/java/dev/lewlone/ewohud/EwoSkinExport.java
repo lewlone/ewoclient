@@ -78,6 +78,36 @@ public final class EwoSkinExport {
         }
     }
 
+    /**
+     * The base64 {@code textures} property of a GameProfile — shared with
+     * {@link EwoTargetSkin}, which needs the same reflective read for the
+     * player under the crosshair.
+     */
+    static String texturesBlobOf(Object profile) throws Exception {
+        return texturesBlob(profile);
+    }
+
+    /**
+     * The SKIN url inside a base64 textures blob, or {@code null}. Shared with
+     * {@link EwoTargetSkin} — the target head only needs the skin, never the
+     * cape or the slim flag.
+     */
+    static String skinUrlOf(String texturesB64) {
+        try {
+            String json = new String(Base64.getDecoder().decode(texturesB64), StandardCharsets.UTF_8);
+            JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+            JsonObject textures = root.getAsJsonObject("textures");
+            return textures == null ? null : urlOf(textures, "SKIN");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Download {@code url} to {@code dest}. Shared with {@link EwoTargetSkin}. */
+    static void downloadTo(String url, Path dest) throws IOException, InterruptedException {
+        download(url, dest);
+    }
+
     /** The base64 `textures` property of a GameProfile, read reflectively so
      *  it works whether authlib exposes the record or the class API. */
     private static String texturesBlob(Object profile) throws Exception {

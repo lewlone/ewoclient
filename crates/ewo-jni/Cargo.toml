@@ -9,8 +9,12 @@ rust-version.workspace = true
 # Phase E spike. A C dynamic library loaded into the Minecraft JVM by the
 # `ewo-hud` Fabric mod — it borrows Minecraft's GL context and paints the
 # `ewo-render` Skia UI over the framebuffer. See CLAUDE.md "Phase E".
+#
+# `rlib` rides alongside `cdylib` purely so `examples/hudshot.rs` can link the
+# crate and render the overlay to a PNG offscreen — the in-game equivalent of
+# `ewo-render`'s `dropdown_shot`. The JVM only ever loads the cdylib.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ewo-core.workspace = true
@@ -34,12 +38,25 @@ pvp = ["ewo-core/pvp"]
 # thread (see `media.rs`).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
+    "implement",
     "Foundation",
     "Foundation_Collections",
     "Media",
     "Media_Control",
     "Storage_Streams",
+    # Audio capture for the media visualiser (see `audio.rs`) — WASAPI
+    # process loopback, so the game's own sound doesn't drive the bars.
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    # CreateEventW takes a SECURITY_ATTRIBUTES pointer, so it is gated behind
+    # the Security feature even though we always pass null.
+    "Win32_Security",
     # nativeForceExit — TerminateProcess for the mod's exit watchdog (the
     # JVM's native teardown can deadlock at DLL detach; see EwoHudMod).
     "Win32_System_Threading",
 ] }
+# `#[implement]` expands to absolute `::windows_core::` paths, so the core
+# crate has to be a direct dependency rather than reached through `windows`.
+# Same 0.58 release, so cargo unifies it with the one `windows` already pulls.
+windows-core = "0.58"

@@ -13,10 +13,14 @@
 //! [`HudLayout`] (`hud.toml`), and while the overlay is open ([`Editor`]) each
 //! widget can be dragged to reposition it.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use ewo_core::modules as catalog;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
+use ewo_render::widgets::{
+    draw_liquid_glass, GlassBackdrop, LiquidGlassParams,
+};
 use ewo_render::FontStore;
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, Data, Font, Image, MaskFilter, Paint,
@@ -36,6 +40,90 @@ fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
     Color4f::new(c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, a)
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Per-frame context — the clock and the live-game snapshots.
+// ────────────────────────────────────────────────────────────────────────
+
+/// The two blurred snapshots of the live game that [`liquid_glass`] samples.
+///
+/// `Image` is a refcounted handle, so cloning one of these is a couple of
+/// atomic bumps, not a pixel copy.
+///
+/// [`liquid_glass`]: ewo_render::widgets::liquid_glass
+#[derive(Clone)]
+pub struct GlassSource {
+    /// Lightly blurred — what the refracting bevel bends. Needs structure.
+    pub rim: Image,
+    /// `rim`'s size relative to the framebuffer (0.5 = half resolution).
+    pub rim_scale: f32,
+    /// Heavily blurred — what shows through the flat interior. In-game this is
+    /// the cached frost surface the overlay already maintains.
+    pub frost: Image,
+    pub frost_scale: f32,
+}
+
+/// Everything a frame needs that isn't widget data: the clock, the glass
+/// sources, and the user's glass-strength preference.
+#[derive(Clone)]
+pub struct Frame {
+    /// Wall-clock seconds since launch. Drives every animation.
+    pub time: f32,
+    /// `None` before the first game snapshot has been captured, or when the
+    /// platform path can't provide one — widgets then fall back to the flat
+    /// plate rather than drawing nothing.
+    pub glass: Option<GlassSource>,
+    /// Glass intensity, 0..2, from the overlay SETTINGS tab. 0 disables
+    /// refraction entirely and uses the flat plate.
+    pub glass_strength: f32,
+}
+
+thread_local! {
+    /// Installed for the duration of one [`draw`] and cleared on the way out.
+    ///
+    /// A thread-local rather than a parameter because the plate is drawn from
+    /// ~25 call sites nested several layers deep inside this module; threading
+    /// a `&Frame` through every intermediate `draw_*` signature would be a far
+    /// larger diff than the change it carries, and would bury it. The HUD is
+    /// painted on exactly one thread (Minecraft's render thread, or the
+    /// harness's main thread), and [`FrameGuard`] makes the "set for the
+    /// duration of draw" invariant impossible to violate.
+    static FRAME: RefCell<Option<Frame>> = const { RefCell::new(None) };
+}
+
+/// Clears the installed [`Frame`] on drop, including on unwind.
+struct FrameGuard;
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        FRAME.with(|f| *f.borrow_mut() = None);
+    }
+}
+
+fn install_frame(frame: Frame) -> FrameGuard {
+    FRAME.with(|f| *f.borrow_mut() = Some(frame));
+    FrameGuard
+}
+
+/// Seconds since launch. `0.0` outside a `draw` — callers get a still frame
+/// rather than a panic.
+fn now() -> f32 {
+    FRAME.with(|f| f.borrow().as_ref().map(|fr| fr.time).unwrap_or(0.0))
+}
+
+/// Run `f` with the glass sources, if this frame has them and the user hasn't
+/// turned glass off.
+fn with_glass<R>(f: impl FnOnce(&GlassSource, f32) -> R) -> Option<R> {
+    FRAME.with(|cell| {
+        let borrow = cell.borrow();
+        let frame = borrow.as_ref()?;
+        if frame.glass_strength <= 0.0 {
+            return None;
+        }
+        let src = frame.glass.as_ref()?;
+        Some(f(src, frame.glass_strength))
+    })
+}
+
 /// A zero-size rect — used as the recorded bounds of a widget that wasn't drawn.
 fn empty_rect() -> Rect {
     Rect::from_xywh(0.0, 0.0, 0.0, 0.0)
@@ -50,7 +138,11 @@ fn empty_rect() -> Rect {
 pub const SCHEMA_VERSION: i32 = 10;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
-mod off {
+///
+/// `pub(crate)` so [`crate::fixture`] can synthesise a buffer for the offscreen
+/// render harness using the same offsets the real reader uses — a fixture that
+/// hard-coded its own copy would drift silently on the next schema bump.
+pub(crate) mod off {
     pub const FLAGS: usize = 4;
     pub const FPS: usize = 8;
     pub const PING: usize = 12;
@@ -98,13 +190,17 @@ mod off {
 pub const MAX_INDICATORS: usize = 16;
 /// Bytes per indicator record — mirror of `EwoIndicators.RECORD`.
 pub const INDICATOR_RECORD: usize = 40;
-const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
-const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
-const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
-const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
-const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
-const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
-const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
+/// Total bytes the reader may touch — one past the last field. Mirrors
+/// `EwoHudData.CAPACITY`; [`crate::fixture`] allocates this much.
+pub const BLOCK_BYTES: usize = 1312;
+// `pub(crate)` for the same reason as `off` — the fixture sets these flags.
+pub(crate) const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
+pub(crate) const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
+pub(crate) const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
+pub(crate) const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
+pub(crate) const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
+pub(crate) const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
+pub(crate) const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
 
 /// Jump-reset tier — wire-mirror of `EwoJumpReset.Tier` ordinal mapping in
 /// `EwoHudData.tierToInt`. The renderer dispatches on this.
@@ -602,13 +698,41 @@ impl WidgetId {
     }
 }
 
-/// One widget's placement: an anchor and a fractional (0..1) anchor point.
+/// One widget's placement: an anchor, a fractional (0..1) anchor point, and a
+/// size multiplier.
 #[derive(Clone, Copy)]
 struct WidgetLayout {
     enabled: bool,
     anchor: Anchor,
     x: f32,
     y: f32,
+    /// Size multiplier, [`SCALE_MIN`]..=[`SCALE_MAX`].
+    ///
+    /// Applied as a canvas transform about the anchor point rather than by
+    /// threading a scale into all 17 widget renderers. That is safe for text:
+    /// Skia re-shapes and re-rasterizes glyphs at the effective size, so a
+    /// scaled widget is as crisp as a natively-sized one (measured — only
+    /// pre-rasterizing to a layer and *then* scaling goes soft). CLAUDE.md's
+    /// "don't transform anything that contains text" is about *animating*
+    /// scale, which re-rasterizes every frame; this is a static size the user
+    /// chose, rasterized once.
+    scale: f32,
+}
+
+/// Widget size-multiplier bounds. The floor keeps a widget big enough to still
+/// grab its resize handle; the ceiling keeps one from swallowing the screen.
+pub const SCALE_MIN: f32 = 0.5;
+pub const SCALE_MAX: f32 = 3.0;
+
+/// Scale `r` about `(cx, cy)` — maps a rect drawn under a canvas scale
+/// transform back into screen coordinates for hit-testing.
+fn scale_rect_about(r: Rect, cx: f32, cy: f32, s: f32) -> Rect {
+    Rect::new(
+        cx + (r.left - cx) * s,
+        cy + (r.top - cy) * s,
+        cx + (r.right - cx) * s,
+        cy + (r.bottom - cy) * s,
+    )
 }
 
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
@@ -617,7 +741,17 @@ struct HudLayout {
     widgets: [WidgetLayout; 17],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
+    /// Liquid-glass intensity, [`GLASS_MIN`]..=[`GLASS_MAX`]. Scales the
+    /// bevel width, refraction and dispersion together; `0` falls back to the
+    /// flat plate entirely.
+    glass_strength: f32,
 }
+
+/// Glass-strength bounds. `0` is a real setting — the flat plate — so the
+/// minimum is 0 rather than something small-but-refracting.
+pub const GLASS_MIN: f32 = 0.0;
+pub const GLASS_MAX: f32 = 2.0;
+const GLASS_DEFAULT: f32 = 1.0;
 
 impl HudLayout {
     fn get(&self, id: WidgetId) -> WidgetLayout {
@@ -631,27 +765,28 @@ impl HudLayout {
     fn defaults() -> Self {
         HudLayout {
             widgets: [
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0204 }, // fps
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0620 }, // coords
-                WidgetLayout { enabled: true, anchor: Anchor::Br, x: 0.9865, y: 0.9759 }, // ping
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9759 }, // keystrokes
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330 }, // armor
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000 }, // potions
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593 }, // target
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700 }, // jump_reset_text
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300 }, // jump_reset_bar
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500 }, // hit_range
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204 }, // cps
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000 }, // items
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800 }, // shield_cooldown
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100 }, // reach
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800 }, // attack_charge
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800 }, // combo
+                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0204, scale: 1.0 }, // fps
+                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0620, scale: 1.0 }, // coords
+                WidgetLayout { enabled: true, anchor: Anchor::Br, x: 0.9865, y: 0.9759, scale: 1.0 }, // ping
+                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9759, scale: 1.0 }, // keystrokes
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330, scale: 1.0 }, // armor
+                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000, scale: 1.0 }, // potions
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593, scale: 1.0 }, // target
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700, scale: 1.0 }, // jump_reset_text
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300, scale: 1.0 }, // jump_reset_bar
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500, scale: 1.0 }, // hit_range
+                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204, scale: 1.0 }, // cps
+                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000, scale: 1.0 }, // items
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800, scale: 1.0 }, // shield_cooldown
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100, scale: 1.0 }, // reach
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800, scale: 1.0 }, // attack_charge
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800, scale: 1.0 }, // combo
                 // Media — default off (the user opts in) at top-right under the
                 // CPS chip. Once they enable + place it the layout is persisted.
-                WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100 }, // media
+                WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100, scale: 1.0 }, // media
             ],
             paint_rate: crate::HudPaintRate::Match,
+            glass_strength: GLASS_DEFAULT,
         }
     }
 
@@ -685,10 +820,18 @@ impl HudLayout {
             let key = key.trim();
             let value = value.trim().trim_matches('"');
             if in_prefs {
-                if key == "paint_rate" {
-                    if let Some(r) = crate::HudPaintRate::from_str(value) {
-                        layout.paint_rate = r;
+                match key {
+                    "paint_rate" => {
+                        if let Some(r) = crate::HudPaintRate::from_str(value) {
+                            layout.paint_rate = r;
+                        }
                     }
+                    "glass_strength" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            layout.glass_strength = v.clamp(GLASS_MIN, GLASS_MAX);
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -713,6 +856,11 @@ impl HudLayout {
                         wl.y = v;
                     }
                 }
+                "scale" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        wl.scale = v.clamp(SCALE_MIN, SCALE_MAX);
+                    }
+                }
                 _ => {}
             }
         }
@@ -731,17 +879,19 @@ impl HudLayout {
         for id in WidgetId::ALL {
             let wl = self.get(id);
             s.push_str(&format!(
-                "\n[{}]\nenabled = {}\nanchor = \"{}\"\nx = {:.5}\ny = {:.5}\n",
+                "\n[{}]\nenabled = {}\nanchor = \"{}\"\nx = {:.5}\ny = {:.5}\nscale = {:.3}\n",
                 id.key(),
                 wl.enabled,
                 wl.anchor.as_str(),
                 wl.x,
                 wl.y,
+                wl.scale,
             ));
         }
         s.push_str(&format!(
-            "\n[prefs]\npaint_rate = \"{}\"\n",
-            self.paint_rate.as_str()
+            "\n[prefs]\npaint_rate = \"{}\"\nglass_strength = {:.3}\n",
+            self.paint_rate.as_str(),
+            self.glass_strength,
         ));
         let _ = std::fs::write(&path, s);
     }
@@ -820,6 +970,46 @@ struct Drag {
     grab_dy: f32,
 }
 
+/// An in-progress corner-drag resize.
+///
+/// Scale tracks the cursor's distance from the *anchor* point rather than a
+/// raw pixel delta, so dragging feels the same whichever corner the handle
+/// sits on and whatever the widget's current size.
+#[derive(Clone, Copy)]
+struct ResizeDrag {
+    id: WidgetId,
+    /// Scale when the handle was grabbed.
+    start_scale: f32,
+    /// Cursor distance from the anchor point when it was grabbed.
+    grab_dist: f32,
+}
+
+/// Side of the square resize handle drawn on the selected widget, in px.
+const RESIZE_HANDLE: f32 = 14.0;
+
+/// The handle's rect for a widget occupying `bounds`.
+///
+/// Placed at the corner furthest from the anchor, so dragging it always moves
+/// *away* from the pinned point and never folds the widget through itself.
+fn resize_handle_rect(bounds: Rect, anchor: Anchor) -> Rect {
+    // Horizontal: anchored right → handle on the left edge, else the right.
+    let hx = match anchor {
+        Anchor::Tr | Anchor::Mr | Anchor::Br => bounds.left,
+        _ => bounds.right,
+    };
+    // Vertical: anchored bottom → handle on the top edge, else the bottom.
+    let hy = match anchor {
+        Anchor::Bl | Anchor::Bc | Anchor::Br => bounds.top,
+        _ => bounds.bottom,
+    };
+    Rect::from_xywh(
+        hx - RESIZE_HANDLE * 0.5,
+        hy - RESIZE_HANDLE * 0.5,
+        RESIZE_HANDLE,
+        RESIZE_HANDLE,
+    )
+}
+
 /// In-game HUD-editor state. Owns the [`HudLayout`], tracks the cursor and any
 /// active drag, and records each widget's drawn bounds for hit-testing. Fed by
 /// the `nativeMouse*` JNI exports while the overlay is open.
@@ -834,6 +1024,23 @@ pub struct Editor {
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
     bounds: [Rect; 17],
     dragging: Option<Drag>,
+    /// An in-progress corner-drag resize of the selected widget.
+    resizing: Option<ResizeDrag>,
+    /// Media state was pinned by [`Self::set_media`] — skip the SMTC poll so
+    /// the pin survives. Only the offscreen harness sets this.
+    media_pinned: bool,
+    /// Spectrum was pinned by [`Self::set_spectrum`] — skip the audio poll.
+    /// Only the offscreen harness sets this; a visualiser that depends on
+    /// what is playing on the machine cannot be screenshotted deterministically.
+    spectrum_pinned: bool,
+    /// Quick-edit: the modifier is held over a cursor-free vanilla screen
+    /// (inventory, pause, chat…), so widgets can be dragged and resized
+    /// without opening the EwoClient overlay. Driven from Java each frame.
+    quick_edit: bool,
+    /// Whether the *overlay* is open this frame. Mirrors the data-block flag,
+    /// recorded in `draw` so the input handlers — which run outside `draw` and
+    /// have no `HudData` — can tell the two edit modes apart.
+    overlay_open: bool,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
     /// Active snap guide lines (window pixels) while a drag is alignment-snapped.
@@ -870,6 +1077,8 @@ pub struct Editor {
     pvp: crate::pvp::PvpConfig,
     /// An in-progress PVP-tab slider drag — identifies which control is held.
     pvp_drag: Option<PvpDrag>,
+    /// The SETTINGS-tab glass-strength slider is held.
+    glass_drag: bool,
     /// Module-keybind map for the MODULES-tab chip — `(action_id, glfw_code)`.
     /// Loaded once from the instance dir's `ewo-keybinds.txt` (which the
     /// launcher writes before launch from the active profile). Linear-scanned
@@ -882,6 +1091,11 @@ pub struct Editor {
     /// widget's state stays fresh without the polling thread touching Skia
     /// state directly. Send transport actions back to it via `.act(...)`.
     pub(crate) media_service: crate::media::MediaService,
+    /// System-audio capture feeding the media visualiser.
+    pub(crate) audio_service: crate::audio::AudioService,
+    /// This frame's spectrum. Polled once at the top of [`draw`] and read from
+    /// several places below, so the whole frame agrees on one value.
+    pub(crate) spectrum: crate::audio::Spectrum,
     /// Vertical scroll offset (in logical px) for the MODULES tab — the only
     /// dashboard view tall enough to need scrolling. Reset whenever the view
     /// changes so a switch in/out always starts at the top.
@@ -998,6 +1212,11 @@ impl Editor {
             cursor: (0.0, 0.0),
             bounds: [empty_rect(); 17],
             dragging: None,
+            resizing: None,
+            media_pinned: false,
+            spectrum_pinned: false,
+            quick_edit: false,
+            overlay_open: false,
             slider_drag: None,
             snap_x: None,
             snap_y: None,
@@ -1014,9 +1233,12 @@ impl Editor {
             skin_mtime: skin_png_mtime(),
             pvp: crate::pvp::PvpConfig::load(),
             pvp_drag: None,
+            glass_drag: false,
             keybinds: load_keybinds(),
             media: crate::media::MediaState::empty(),
             media_service: crate::media::MediaService::start(),
+            audio_service: crate::audio::AudioService::start(),
+            spectrum: crate::audio::Spectrum::SILENT,
             modules_scroll: 0.0,
             home_toggle_bounds: [empty_rect(); 17],
             module_popover: None,
@@ -1035,6 +1257,129 @@ impl Editor {
     /// `nativeIsCustomCrosshairEnabled` for the Java mixin.
     pub fn crosshair_config(&self) -> &crate::crosshair::CrosshairConfig {
         &self.crosshair
+    }
+
+    /// Select a dashboard view by its tab label (case-insensitive), e.g.
+    /// `"home"`, `"modules"`, `"pvp"`. Returns `false` for an unknown name.
+    ///
+    /// In-game the view is only ever changed by clicking the tab strip, which
+    /// needs a cursor and a live window — so the offscreen render harness
+    /// ([`examples/hudshot.rs`]) drives it through here instead.
+    pub fn set_view_by_name(&mut self, name: &str) -> bool {
+        let Some(view) = OverlayView::ALL
+            .into_iter()
+            .find(|v| v.title().eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.view = view;
+        // Match the tab-strip click path: a fresh view always starts scrolled
+        // to the top, with no popover carried over from the previous tab.
+        self.modules_scroll = 0.0;
+        self.module_popover = None;
+        true
+    }
+
+    /// Every selectable view name, in tab-strip order — so the harness can
+    /// enumerate tabs without duplicating the list.
+    pub fn view_names() -> Vec<&'static str> {
+        OverlayView::ALL.into_iter().map(|v| v.title()).collect()
+    }
+
+    /// Park the cursor at `(x, y)` without running the hover/drag logic in
+    /// [`Self::on_mouse_move`] — the harness uses this to render hover states
+    /// deterministically.
+    pub fn set_cursor(&mut self, x: f32, y: f32) {
+        self.cursor = (x, y);
+    }
+
+    /// Look up a widget by its display title (case-insensitive), e.g. `"FPS"`,
+    /// `"TARGET"`. `None` for an unknown name.
+    fn widget_by_title(title: &str) -> Option<WidgetId> {
+        WidgetId::ALL
+            .into_iter()
+            .find(|id| id.title().eq_ignore_ascii_case(title))
+    }
+
+    /// Set a widget's size multiplier. Returns `false` for an unknown name.
+    ///
+    /// In-game this is reached by dragging the resize grip; the offscreen
+    /// harness has no cursor, so it drives the same state through here.
+    pub fn set_widget_scale(&mut self, title: &str, scale: f32) -> bool {
+        let Some(id) = Self::widget_by_title(title) else {
+            return false;
+        };
+        self.layout.get_mut(id).scale = scale.clamp(SCALE_MIN, SCALE_MAX);
+        true
+    }
+
+    /// Select a widget, as clicking it in the HUD editor would — which is what
+    /// makes its resize grip appear.
+    pub fn select_widget(&mut self, title: &str) -> bool {
+        let Some(id) = Self::widget_by_title(title) else {
+            return false;
+        };
+        self.selected = Some(id);
+        true
+    }
+
+    /// Every widget's display title, for harness enumeration + error messages.
+    pub fn widget_titles() -> Vec<&'static str> {
+        WidgetId::ALL.into_iter().map(|id| id.title()).collect()
+    }
+
+    /// Inject a fixed "now playing" state.
+    ///
+    /// Media normally arrives from the SMTC backend, which makes any media
+    /// shot depend on whatever happens to be playing on the machine at the
+    /// time — no good for a harness that is supposed to be deterministic, and
+    /// no good at all on a machine with nothing playing. This pins it.
+    pub fn set_media(
+        &mut self,
+        title: &str,
+        artist: &str,
+        playing: bool,
+        position_seconds: f32,
+        duration_seconds: f32,
+    ) {
+        self.media.title = title.to_string();
+        self.media.artist = artist.to_string();
+        self.media.playing = playing;
+        self.media.position_seconds = position_seconds;
+        self.media.duration_seconds = duration_seconds;
+        self.media.source = "HARNESS".to_string();
+        // Anchor both clocks to now so `displayed_position` does not drift the
+        // scrub head forward between the injection and the draw.
+        let t = std::time::Instant::now();
+        self.media.position_updated_at = t;
+        self.media.title_changed_at = t;
+        // Otherwise the very next `draw` drains a real SMTC update over the
+        // top of this and the pin lasts zero frames.
+        self.media_pinned = true;
+    }
+
+    /// Pin a synthetic spectrum for the offscreen harness.
+    ///
+    /// `shape` seeds a plausible mix — bass-heavy, rolling off toward the
+    /// treble, with a little per-band variation — rather than a flat row of
+    /// identical bars, which would hide exactly the layout bugs a screenshot
+    /// is meant to catch.
+    pub fn set_spectrum(&mut self, level: f32, pulse: f32, shape: f32) {
+        let mut bands = [0.0f32; crate::audio::BANDS];
+        for (i, b) in bands.iter_mut().enumerate() {
+            let t = i as f32 / (crate::audio::BANDS - 1) as f32;
+            // Falling tilt plus two standing bumps — reads like a real mix.
+            let tilt = 1.0 - 0.55 * t;
+            let bump = 0.22 * ((t * 9.0 + shape).sin() * 0.5 + 0.5);
+            *b = ((tilt + bump) * level).clamp(0.0, 1.0);
+        }
+        self.spectrum = crate::audio::Spectrum {
+            bands,
+            level,
+            pulse,
+            source: crate::audio::Source::ExcludingGame,
+        };
+        self.spectrum_pinned = true;
     }
 
     /// Rects (framebuffer pixels) where the composite step should leave
@@ -1070,6 +1415,39 @@ impl Editor {
     /// The HUD paint-rate cap, chosen in the settings view.
     pub fn paint_rate(&self) -> crate::HudPaintRate {
         self.layout.paint_rate
+    }
+
+    /// Liquid-glass intensity from the overlay SETTINGS tab.
+    pub fn glass_strength(&self) -> f32 {
+        self.layout.glass_strength
+    }
+
+    /// Enter or leave quick-edit — the modifier-held state over a vanilla
+    /// screen. Called from Java each frame.
+    ///
+    /// Leaving mid-drag commits whatever is in progress rather than abandoning
+    /// it: the user let go of the modifier, they did not undo. Dropping the
+    /// drag here would also strand `dragging`/`resizing` set, so the next
+    /// unrelated cursor move would keep dragging a widget.
+    pub fn set_quick_edit(&mut self, on: bool) {
+        if self.quick_edit == on {
+            return;
+        }
+        self.quick_edit = on;
+        if !on {
+            let had_drag = self.dragging.take().is_some() | self.resizing.take().is_some();
+            self.snap_x = None;
+            self.snap_y = None;
+            if had_drag {
+                self.layout.save();
+            }
+        }
+    }
+
+    /// Whether quick-edit is active *and* usable — the overlay being open
+    /// means the real editor is available and takes precedence.
+    fn quick_edit_active(&self) -> bool {
+        self.quick_edit && !self.overlay_open
     }
 
     /// Whether the current view wants the live game frosted behind it. The
@@ -1124,6 +1502,26 @@ impl Editor {
         // ignore `y` (or `x`, for the vertical hue/alpha strips).
         if let Some(slot) = self.crosshair_ui.drag {
             self.drag_crosshair_slider(slot, x, y);
+            return;
+        }
+        // HUD-editor corner resize. Scale follows the cursor's distance from
+        // the anchor relative to where it was grabbed, so the widget's corner
+        // stays under the pointer.
+        if let Some(rs) = self.resizing {
+            let (w, h) = self.window;
+            let wl = self.layout.get(rs.id);
+            let (ax, ay) = (wl.x * w, wl.y * h);
+            let dist = ((x - ax).powi(2) + (y - ay).powi(2)).sqrt();
+            let scale = rs.start_scale * (dist / rs.grab_dist.max(1.0));
+            self.layout.get_mut(rs.id).scale = scale.clamp(SCALE_MIN, SCALE_MAX);
+            return;
+        }
+        // SETTINGS-view glass-strength drag. Tracks `x` even once the cursor
+        // leaves the track vertically — the usual slider grab behaviour.
+        if self.glass_drag {
+            let (_, _, _, glass) =
+                settings_layout(self.window.0, self.window.1, self.profiles.len());
+            self.layout.glass_strength = glass_value_at(glass, x);
             return;
         }
         let Some(drag) = &self.dragging else {
@@ -1232,6 +1630,14 @@ impl Editor {
                 self.crosshair.clamp();
                 crate::crosshair::save(&self.crosshair);
             }
+            if std::mem::take(&mut self.glass_drag) {
+                // A glass-strength drag finished — persist to `hud.toml`.
+                self.layout.save();
+            }
+            if self.resizing.take().is_some() {
+                // A resize finished — persist the new scale.
+                self.layout.save();
+            }
             if self.dragging.take().is_some() {
                 // A drag finished — drop the snap guides and persist.
                 self.snap_x = None;
@@ -1281,6 +1687,14 @@ impl Editor {
                 self.module_popover = None;
                 return;
             }
+        }
+
+        // Quick-edit intercepts the press before any view dispatch: the
+        // overlay is closed, so `self.view` is whatever tab the user last had
+        // open and is meaningless here.
+        if self.quick_edit_active() {
+            self.editor_press(x, y);
+            return;
         }
 
         match self.view {
@@ -1383,7 +1797,7 @@ impl Editor {
                 }
             }
             OverlayView::Settings => {
-                let (_, chips, buttons) =
+                let (_, chips, buttons, glass) =
                     settings_layout(self.window.0, self.window.1, self.profiles.len());
                 for (i, &chip) in chips.iter().enumerate() {
                     if point_in(chip, x, y) {
@@ -1400,6 +1814,13 @@ impl Editor {
                         return;
                     }
                 }
+                if point_in(glass, x, y) {
+                    // Jump to the pressed value, then track the cursor until
+                    // release — same grab model as the PVP-tab sliders.
+                    self.layout.glass_strength = glass_value_at(glass, x);
+                    self.glass_drag = true;
+                    return;
+                }
             }
             OverlayView::Pvp => self.pvp_press(x, y),
             OverlayView::Crosshair => self.crosshair_press(x, y),
@@ -1411,6 +1832,13 @@ impl Editor {
 
     /// Handle a press in the HUD-editor view — the side panel or widget drag.
     fn editor_press(&mut self, x: f32, y: f32) {
+        // Quick-edit has no side panel — the player is standing in their
+        // inventory, not the HUD editor — so skip straight to the widgets.
+        if self.quick_edit && !self.overlay_open {
+            self.widget_press(x, y);
+            return;
+        }
+
         let panel = panel_layout(self.window.1);
 
         // A widget's enable toggle.
@@ -1448,8 +1876,39 @@ impl Editor {
             return;
         }
 
-        // Outside the panel — select + start dragging the widget under the cursor.
+        self.widget_press(x, y);
+    }
+
+    /// Grab the widget (or resize grip) under `(x, y)`. Shared by the HUD
+    /// editor tab and quick-edit, which differ only in whether a side panel
+    /// gets first refusal on the press.
+    fn widget_press(&mut self, x: f32, y: f32) {
         let (w, h) = self.window;
+
+        // The selected widget's resize handle. Checked before the move test
+        // because the handle straddles the widget's corner: a press inside it
+        // is inside the widget's bounds too, and whichever is tested first
+        // wins. Only the *selected* widget shows a handle, so at most one can
+        // ever match.
+        if let Some(id) = self.selected {
+            let b = self.bounds[id.index()];
+            let wl = self.layout.get(id);
+            if b.width() > 0.0 && point_in(resize_handle_rect(b, wl.anchor), x, y) {
+                let (ax, ay) = (wl.x * w, wl.y * h);
+                let dist = ((x - ax).powi(2) + (y - ay).powi(2)).sqrt();
+                // A grab right on the anchor point would divide by ~0 and send
+                // the scale to infinity on the first pixel of movement.
+                if dist > 4.0 {
+                    self.resizing = Some(ResizeDrag {
+                        id,
+                        start_scale: wl.scale,
+                        grab_dist: dist,
+                    });
+                    return;
+                }
+            }
+        }
+
         for id in WidgetId::ALL {
             let b = self.bounds[id.index()];
             if b.width() > 0.0 && point_in(b, x, y) {
@@ -1724,16 +2183,34 @@ fn nearest_snap(moving: [f32; 3], fixed: &[f32]) -> Option<(f32, f32)> {
 /// Draw the whole HUD for one frame: place every widget from the persisted
 /// layout, record its bounds, and — while the overlay is open — draw the
 /// editor chrome on top.
-pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontStore, w: f32, h: f32) {
+pub fn draw(
+    canvas: &Canvas,
+    data: &HudData,
+    editor: &mut Editor,
+    fonts: &FontStore,
+    w: f32,
+    h: f32,
+    frame: Frame,
+) {
+    // Installed for this call only; cleared by the guard on the way out, even
+    // if a draw panics. Every animated widget reads the clock through `now()`
+    // and every plate reads the glass sources through `with_glass`.
+    let _frame = install_frame(frame);
+
     editor.window = (w, h);
 
     // Drain any pending SMTC snapshots into the live media state. The poll is
     // non-blocking — if no update is queued this returns immediately. Split
     // the borrow over disjoint fields so both can be `&mut`.
-    {
+    if !editor.media_pinned {
         let media_ref = &mut editor.media;
         let service_ref = &mut editor.media_service;
         service_ref.poll(media_ref);
+    }
+    // One poll per frame, cached — the visualiser is read from the compact
+    // widget, the HOME card and the scrub bar, and they must not disagree.
+    if !editor.spectrum_pinned {
+        editor.spectrum = editor.audio_service.poll();
     }
 
     // While the overlay is up and the user is on a non-editor tab (HOME /
@@ -1742,24 +2219,60 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     // editor tab still needs them visible — that's where the user is
     // positioning them.
     let show_widgets = !data.overlay_open() || editor.view == OverlayView::HudEditor;
+    // Recorded so the input handlers — which run outside `draw`, with no
+    // `HudData` — can tell quick-edit apart from the real editor.
+    editor.overlay_open = data.overlay_open();
 
     for id in WidgetId::ALL {
         let wl = editor.layout.get(id);
         let bounds = if show_widgets && wl.enabled && widget_available(id, data) {
+            let (ax, ay) = (wl.x * w, wl.y * h);
+            let s = wl.scale;
+
+            // Scale about the anchor point, so the anchored corner stays pinned
+            // and the widget grows away from it. Widgets draw at their natural
+            // size inside the transform and never need to know about it.
+            let saved = canvas.save();
+            if s != 1.0 {
+                canvas.translate((ax, ay));
+                canvas.scale((s, s));
+                canvas.translate((-ax, -ay));
+            }
             // Media is dispatched separately — `draw_widget` only has
             // `&HudData` to work with, while the media state lives on Editor.
-            match id {
+            //
+            // Cursor is un-scaled into the widget's own space so hover tests
+            // inside it (the media transport buttons) still line up.
+            let local_cursor = if s != 1.0 {
+                (
+                    ax + (editor.cursor.0 - ax) / s,
+                    ay + (editor.cursor.1 - ay) / s,
+                )
+            } else {
+                editor.cursor
+            };
+            let local = match id {
                 WidgetId::Media => draw_media_compact(
                     canvas,
                     &editor.media,
-                    editor.cursor,
+                    local_cursor,
                     editor.media_button_press,
+                    &editor.spectrum,
                     fonts,
                     wl.anchor,
-                    wl.x * w,
-                    wl.y * h,
+                    ax,
+                    ay,
                 ),
-                _ => draw_widget(canvas, id, data, fonts, wl.anchor, wl.x * w, wl.y * h),
+                _ => draw_widget(canvas, id, data, fonts, wl.anchor, ax, ay),
+            };
+            canvas.restore_to_count(saved);
+
+            // The widget reported bounds in the scaled space; hit-testing works
+            // in screen space.
+            if s != 1.0 {
+                scale_rect_about(local, ax, ay, s)
+            } else {
+                local
             }
         } else {
             empty_rect()
@@ -1841,6 +2354,14 @@ pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontSt
     }
 
     if !data.overlay_open() {
+        // Quick-edit: the player is in a vanilla screen with the modifier
+        // held. Draw the editor's affordances — outlines, grips, snap guides —
+        // over whatever screen they are in, but none of its chrome: no side
+        // panel, no tab strip, no scrim. They came here to nudge a widget, not
+        // to leave their inventory.
+        if editor.quick_edit {
+            draw_quick_edit(canvas, editor, fonts, w, h);
+        }
         return;
     }
 
@@ -2027,6 +2548,7 @@ fn draw_media_compact(
     media: &crate::media::MediaState,
     cursor: (f32, f32),
     press_info: Option<(usize, std::time::Instant)>,
+    audio: &crate::audio::Spectrum,
     fonts: &FontStore,
     anchor: Anchor,
     ax: f32,
@@ -2068,11 +2590,39 @@ fn draw_media_compact(
     let chip_h = pad_y * 2.0 + thumb;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
     let chip = Rect::from_xywh(x, y, chip_w, chip_h);
-    draw_iw_shell(canvas, chip, 14.0);
+    // The one plate in the HUD that answers to the music.
+    draw_iw_shell_driven(
+        canvas,
+        chip,
+        14.0,
+        (!idle).then(|| PlateDrive::from_audio(audio)).flatten(),
+    );
 
     // Thumbnail (44×44, 8px rounded).
+    // Spectrum, behind everything else in the text column. Drawn first so the
+    // title and scrub bar sit on top of it rather than fighting it.
+    // No spectrum bars here, deliberately. The compact widget is 64px tall and
+    // every row of it is spoken for — a strip behind the text lands squarely on
+    // the timestamps and makes "1:10 / 3:08" unreadable at exactly the moments
+    // the music is loud enough to be worth watching. This widget gets its
+    // audio reactivity from the scrub bar's liquid surface and the artwork's
+    // beat glow, both of which use space that was already there. The bars live
+    // on the HOME card, which has the room for them.
+
     let thumb_rect = Rect::from_xywh(x + pad_l, y + pad_y, thumb, thumb);
     let thumb_rr = RRect::new_rect_xy(thumb_rect, 8.0, 8.0);
+
+    // The beat lands on the artwork: a rose halo that flares on an onset and
+    // decays. Cheaper and calmer than scaling the thumbnail, which would
+    // resample the image every frame for no extra legibility.
+    if audio.pulse > 0.02 && audio.is_live() {
+        let mut glow = Paint::default();
+        glow.set_anti_alias(true);
+        glow.set_color4f(rgba(ROSE, 0.55 * audio.pulse), None);
+        glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 6.0 + 8.0 * audio.pulse, false));
+        canvas.draw_rrect(thumb_rr, &glow);
+    }
+
     if let Some(img) = media.thumbnail.as_ref() {
         canvas.save();
         canvas.clip_rrect(thumb_rr, Some(ClipOp::Intersect), Some(true));
@@ -2167,56 +2717,28 @@ fn draw_media_compact(
         let dur_x = text_left + text_w - dur_w;
         canvas.draw_str(&dur, (dur_x, scrub_y + 4.0), &time_font, &tp);
 
-        // The bar itself — pearl track + rose→champ fill + tiny pearl knob.
+        // The bar itself — pearl track + a liquid rose→champ fill whose top
+        // surface is a travelling wave, plus a pearl knob at the head.
         let bar_left = text_left + pos_w + 6.0;
         let bar_right = dur_x - 6.0;
-        let bar_h = 2.0;
+        // 6px rather than 2px: a wave needs vertical room to read as one. Below
+        // ~5px the crest and trough land in the same pixel row and the whole
+        // effect collapses into a slightly fuzzy line.
+        let bar_h = 6.0;
         let bar_rect = Rect::from_xywh(
             bar_left,
             scrub_y - bar_h * 0.5,
             (bar_right - bar_left).max(0.0),
             bar_h,
         );
-        let bar_rr = RRect::new_rect_xy(bar_rect, bar_h, bar_h);
+        let bar_rr = RRect::new_rect_xy(bar_rect, bar_h * 0.5, bar_h * 0.5);
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
         bg.set_color4f(rgba(PEARL, 0.12), None);
         canvas.draw_rrect(bar_rr, &bg);
 
         let frac = (live_pos / media.duration_seconds).clamp(0.0, 1.0);
-        let fill_w = bar_rect.width() * frac;
-        if fill_w > 1.0 {
-            let fill_rect = Rect::from_xywh(bar_rect.left, bar_rect.top, fill_w, bar_h);
-            let mut fp = Paint::default();
-            fp.set_anti_alias(true);
-            if let Some(shader) = gradient_shader::linear(
-                (
-                    Point::new(bar_rect.left, bar_rect.top),
-                    Point::new(bar_rect.right, bar_rect.top),
-                ),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
-                    None,
-                ),
-                None,
-                TileMode::Clamp,
-                None,
-                None,
-            ) {
-                fp.set_shader(shader);
-            } else {
-                fp.set_color4f(rgba(ROSE, 1.0), None);
-            }
-            canvas.draw_rrect(RRect::new_rect_xy(fill_rect, bar_h, bar_h), &fp);
-
-            // Small pearl knob at the current position.
-            let knob_x = bar_rect.left + fill_w;
-            let knob_y = bar_rect.top + bar_h * 0.5;
-            let mut knob = Paint::default();
-            knob.set_anti_alias(true);
-            knob.set_color4f(rgba(PEARL, 1.0), None);
-            canvas.draw_circle((knob_x, knob_y), 3.0, &knob);
-        }
+        draw_liquid_progress(canvas, bar_rect, frac, media.playing, audio);
     }
 
     // Transport buttons — tiny (22×22) circles, the middle one rose-filled.
@@ -2287,7 +2809,89 @@ fn button_state(
 /// CSS `backdrop-filter: blur(8px)` can't sample the live game — the HUD
 /// paints to an offscreen surface (the E1 tradeoff) — so this is a flat wine
 /// fill, not a true backdrop blur.
+/// Which preset a plate should use. The dashboard's panels are large and calm;
+/// in-world widgets are small and want a tighter bevel or the refraction eats
+/// the whole surface.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlassRole {
+    Widget,
+    Panel,
+}
+
+/// Draw `rect` as a refracting glass plate, if this frame can. Returns whether
+/// it did — callers fall back to their flat chrome when it returns `false`.
+fn try_glass_plate(
+    canvas: &Canvas,
+    rect: Rect,
+    radius: f32,
+    role: GlassRole,
+    drive: Option<PlateDrive>,
+) -> bool {
+    // Below a certain size the bevel would consume the entire plate and the
+    // interior would have no flat region left to carry text.
+    if rect.width() < 44.0 || rect.height() < 22.0 {
+        return false;
+    }
+    let time = now();
+    with_glass(|src, strength| {
+        let base = match role {
+            GlassRole::Widget => LiquidGlassParams::WIDGET,
+            GlassRole::Panel => LiquidGlassParams::PANEL,
+        };
+        // Music drive. Each term is chosen for what it does to the *read* of
+        // the object, not for magnitude: the ripple makes the surface look
+        // agitated, the refraction bulge makes the glass feel like it flexes
+        // on a hit, and the rim terms make the edge catch the light. Bounded
+        // so a loud passage excites the plate without dissolving it.
+        //
+        // Weighted toward `pulse` over `level` on the light terms. Sustained
+        // loudness driving the rim hard leaves the plate permanently blown out
+        // through a loud passage, which stops reading as a reaction at all —
+        // it just looks like a brighter widget. Beats punch, loudness glows.
+        // `ripple` is the exception: agitation of the *surface* should track
+        // how loud it is, and it cannot wash anything out.
+        let d = drive.unwrap_or_default();
+        let base = LiquidGlassParams {
+            ripple: base.ripple * (1.0 + d.level * 2.4),
+            specular: base.specular * (1.0 + d.level * 0.55 + d.pulse * 1.1),
+            hairline: base.hairline * (1.0 + d.level * 0.30 + d.pulse * 1.3),
+            ..base
+        };
+        let beat_bulge = 1.0 + d.pulse * 0.30;
+        // The strength preference scales the physical knobs, not the tint —
+        // turning the glass down should flatten the bevel, not repaint the
+        // surface a different colour.
+        let short_side = rect.width().min(rect.height());
+        let params = LiquidGlassParams {
+            radius,
+            // Never let the bevel exceed a third of the short side, or the
+            // "flat centre" guarantee that keeps text readable is lost.
+            edge: (base.edge * strength).min(short_side / 3.0),
+            strength: base.strength * strength * beat_bulge,
+            disperse: base.disperse * strength * beat_bulge,
+            ..base
+        };
+        draw_liquid_glass(
+            canvas,
+            rect,
+            GlassBackdrop {
+                rim: &src.rim,
+                rim_scale: src.rim_scale,
+                frost: &src.frost,
+                frost_scale: src.frost_scale,
+            },
+            params,
+            time,
+        )
+    })
+    .unwrap_or(false)
+}
+
 fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
+    if try_glass_plate(canvas, rect, radius, GlassRole::Panel, None) {
+        return;
+    }
+
     let rrect = RRect::new_rect_xy(rect, radius, radius);
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
@@ -2300,6 +2904,246 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
     border.set_stroke_width(1.0);
     border.set_color4f(rgba(ROSE, 0.12), None);
     canvas.draw_rrect(rrect, &border);
+}
+
+/// How hard the music is driving a plate this frame.
+///
+/// The music does not get its own chart — the *widget* responds. A spectrum
+/// strip was built first and removed: over a 64px widget it lands on the text,
+/// and even on the roomier HOME card it sat behind the artist line and the
+/// timestamps. More to the point it was the wrong idea, a graph pasted onto an
+/// object instead of the object behaving.
+///
+/// Everything driven here lives in the *plate* — rim light, edge hairline,
+/// refraction, bloom. Nothing touches the content layer, which is what keeps
+/// this on the right side of the "never animate anything containing text"
+/// rule: the glass flexes, the words hold perfectly still.
+#[derive(Clone, Copy, Default)]
+struct PlateDrive {
+    /// Sustained loudness, 0..1 — how excited the glass is overall.
+    level: f32,
+    /// Onset spike, 0..1 — the hit.
+    pulse: f32,
+}
+
+impl PlateDrive {
+    /// Drive from a spectrum, or nothing when there is no audio to react to.
+    fn from_audio(audio: &crate::audio::Spectrum) -> Option<PlateDrive> {
+        audio
+            .is_live()
+            .then(|| PlateDrive { level: audio.level.clamp(0.0, 1.0), pulse: audio.pulse.clamp(0.0, 1.0) })
+    }
+}
+
+/// Cached target-skin PNG, keyed by the name the mod published it for.
+///
+/// `Image` is a refcounted handle, so re-cloning it per frame is free; the
+/// point of the cache is to avoid re-decoding the PNG, and to avoid stat-ing
+/// the marker file more than a few times a second.
+struct TargetSkinCache {
+    /// Name from `ewo-target.txt` at the last read.
+    name: String,
+    image: Option<Image>,
+    /// `ewo-target.png`'s mtime when it was decoded.
+    mtime: Option<std::time::SystemTime>,
+    /// Frame time of the last disk check.
+    checked_at: f32,
+}
+
+thread_local! {
+    static TARGET_SKIN: RefCell<TargetSkinCache> = RefCell::new(TargetSkinCache {
+        name: String::new(),
+        image: None,
+        mtime: None,
+        checked_at: f32::NEG_INFINITY,
+    });
+}
+
+/// How often to re-read the target marker + PNG. The crosshair can cross a
+/// dozen players a second; the disk should not.
+const TARGET_SKIN_POLL: f32 = 0.25;
+
+/// Draw the targeted player's face into `avatar`, if the mod has exported a
+/// skin for exactly this `name`. Returns whether it did.
+///
+/// The name check is the whole safety property: `EwoTargetSkin` writes the PNG
+/// first and the name marker second, so a marker that matches means the PNG
+/// beside it is settled and belongs to this player. Any mismatch — a mob, a
+/// player whose skin has not arrived, a swap caught mid-write — falls back to
+/// the monogram rather than showing someone else's face.
+fn draw_player_head(canvas: &Canvas, rr: RRect, avatar: Rect, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let image = TARGET_SKIN.with(|cell| {
+        let mut c = cell.borrow_mut();
+        let t = now();
+        if t - c.checked_at >= TARGET_SKIN_POLL {
+            c.checked_at = t;
+            let published = instance_file("ewo-target.txt")
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let mtime = instance_file("ewo-target.png")
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok());
+            if published != c.name || mtime != c.mtime {
+                c.name = published;
+                c.mtime = mtime;
+                c.image = load_skin_image("ewo-target.png");
+            }
+        }
+        if c.name == name {
+            c.image.clone()
+        } else {
+            None
+        }
+    });
+    let Some(skin) = image else {
+        return false;
+    };
+
+    // A Minecraft skin is 64×64; the face is the 8×8 at (8,8) and the hat
+    // overlay the 8×8 at (40,8). Both are drawn with a nearest-neighbour
+    // sampling so the pixel art stays pixel art at 44px — a smooth upscale
+    // would turn a face into a smudge.
+    let saved = canvas.save();
+    canvas.clip_rrect(rr, Some(ClipOp::Intersect), Some(true));
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(false);
+    let sampling = skia_safe::SamplingOptions::from(skia_safe::FilterMode::Nearest);
+
+    let face = Rect::from_xywh(8.0, 8.0, 8.0, 8.0);
+    canvas.draw_image_rect_with_sampling_options(&skin, Some((&face, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+
+    // Hat layer, if the skin has one. Drawn at the same size — vanilla insets
+    // the hat slightly in 3D, but flat-on the two layers are coincident.
+    let hat = Rect::from_xywh(40.0, 8.0, 8.0, 8.0);
+    canvas.draw_image_rect_with_sampling_options(&skin, Some((&hat, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+
+    canvas.restore_to_count(saved);
+
+    // Keep the rose hairline so the tile still reads as part of the widget.
+    let mut edge = Paint::default();
+    edge.set_anti_alias(true);
+    edge.set_style(PaintStyle::Stroke);
+    edge.set_stroke_width(1.0);
+    edge.set_color4f(rgba(ROSE, 0.55), None);
+    canvas.draw_rrect(rr, &edge);
+    true
+}
+
+/// The media scrub bar's fill: liquid in a tube, with a travelling wave for a
+/// surface.
+///
+/// The wave runs only while the track is *playing* — a paused bar goes still.
+/// That is the whole reason to animate it: motion that never stops is
+/// decoration, motion tied to state is information you can read at a glance.
+///
+/// Amplitude ramps toward the leading edge so the head of the liquid ripples
+/// and the settled tail behind it is calm.
+fn draw_liquid_progress(
+    canvas: &Canvas,
+    bar: Rect,
+    frac: f32,
+    playing: bool,
+    audio: &crate::audio::Spectrum,
+) {
+    let fill_w = bar.width() * frac.clamp(0.0, 1.0);
+    if fill_w <= 1.0 {
+        return;
+    }
+
+    // Clip to the track so the wave can never spill out of the rounded tube.
+    let saved = canvas.save();
+    canvas.clip_rrect(
+        RRect::new_rect_xy(bar, bar.height() * 0.5, bar.height() * 0.5),
+        Some(ClipOp::Intersect),
+        Some(true),
+    );
+
+    const WAVELENGTH: f32 = 24.0;
+    const SPEED: f32 = 2.4; // radians/sec
+
+    // Water in a speaker cabinet: the surface is driven by what is actually
+    // coming out. With live audio, amplitude tracks loudness and a beat kicks
+    // it further; with none — muted, or no capture backend — it falls back to
+    // the fixed idle ripple so the bar still looks alive rather than dead.
+    let (amp, speed) = if !playing {
+        (0.0, SPEED)
+    } else if audio.is_live() {
+        let drive = audio.level.clamp(0.0, 1.0);
+        (0.5 + drive * 2.2 + audio.pulse * 0.9, SPEED * (0.7 + drive * 1.1))
+    } else {
+        (1.3, SPEED)
+    };
+    let phase = now() * speed;
+    // Rest a touch below centre so the tube still reads as part-full even at
+    // zero amplitude.
+    let mid = bar.top + bar.height() * 0.42;
+
+    let mut path = skia_safe::Path::new();
+    path.move_to((bar.left, bar.bottom));
+    // ~2px per segment: fine enough that the crest is smooth, coarse enough
+    // that a full-width bar is still only a couple of hundred points.
+    let steps = (fill_w / 2.0).ceil().max(2.0) as i32;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let px = bar.left + fill_w * t;
+        // Taper: calm at the tail, liveliest at the head.
+        let local_amp = amp * (0.35 + 0.65 * t);
+        let py = mid
+            + local_amp * (px / WAVELENGTH * std::f32::consts::TAU - phase).sin()
+            // A second, slower harmonic keeps it from looking like a test
+            // signal — real liquid never repeats on one period.
+            + local_amp * 0.4 * (px / (WAVELENGTH * 2.3) * std::f32::consts::TAU + phase * 0.6).sin();
+        path.line_to((px, py));
+    }
+    path.line_to((bar.left + fill_w, bar.bottom));
+    path.close();
+
+    let mut fp = Paint::default();
+    fp.set_anti_alias(true);
+    if let Some(shader) = gradient_shader::linear(
+        (
+            Point::new(bar.left, bar.top),
+            Point::new(bar.right, bar.top),
+        ),
+        gradient_shader::GradientShaderColors::ColorsInSpace(
+            &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
+            None,
+        ),
+        None,
+        TileMode::Clamp,
+        None,
+        None,
+    ) {
+        fp.set_shader(shader);
+    } else {
+        fp.set_color4f(rgba(ROSE, 1.0), None);
+    }
+    canvas.draw_path(&path, &fp);
+
+    canvas.restore_to_count(saved);
+
+    // Pearl knob at the head, breathing gently while playing.
+    let knob_x = bar.left + fill_w;
+    let knob_y = bar.center_y();
+    let pulse = if playing {
+        1.0 + 0.12 * (now() * 3.1).sin()
+    } else {
+        1.0
+    };
+    let mut halo = Paint::default();
+    halo.set_anti_alias(true);
+    halo.set_color4f(rgba(PEARL, 0.35), None);
+    halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_circle((knob_x, knob_y), 5.0 * pulse, &halo);
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_circle((knob_x, knob_y), 3.0 * pulse, &knob);
 }
 
 /// In-world widget shell — the canonical glass plate every floating widget sits
@@ -2318,6 +3162,52 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
 /// `backdrop-filter: blur(8px)` — we paint to an offscreen surface, so the
 /// game pixels aren't available to blur until composite time.
 fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
+    draw_iw_shell_driven(canvas, rect, radius, None);
+}
+
+/// The widget plate, optionally driven by the music.
+///
+/// `drive` is `Some` only for the media widget — nothing else should twitch
+/// when a bass note lands.
+fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, drive: Option<PlateDrive>) {
+    // An outer bloom that swells with the music. Drawn under everything, so it
+    // reads as the plate *glowing* rather than as a ring stuck to it. This is
+    // the part that carries the reaction when the plate is small — a 64px
+    // widget has very little rim to light up, but it has as much halo as it
+    // wants.
+    if let Some(d) = drive {
+        let energy = d.level * 0.30 + d.pulse * 0.70;
+        if energy > 0.01 {
+            let mut bloom = Paint::default();
+            bloom.set_anti_alias(true);
+            bloom.set_color4f(rgba(ROSE, 0.42 * energy), None);
+            bloom.set_mask_filter(MaskFilter::blur(
+                BlurStyle::Normal,
+                10.0 + 16.0 * energy,
+                false,
+            ));
+            // Grow the halo outward with the beat. Inflating a *shadow* rect is
+            // free of the text-rasterisation problem that scaling the plate
+            // itself would cause — nothing inside is being transformed.
+            let grow = 2.0 + 6.0 * d.pulse;
+            let halo = Rect::new(
+                rect.left - grow,
+                rect.top - grow,
+                rect.right + grow,
+                rect.bottom + grow,
+            );
+            canvas.draw_rrect(RRect::new_rect_xy(halo, radius + grow, radius + grow), &bloom);
+        }
+    }
+
+    // Refracting glass when this frame carries a game snapshot; the flat plate
+    // below otherwise. The fallback is load-bearing, not defensive politeness —
+    // the snapshot is absent for the first frame after launch or a resize, and
+    // a HUD that vanished on those frames would be worse than a flat one.
+    if try_glass_plate(canvas, rect, radius, GlassRole::Widget, drive) {
+        return;
+    }
+
     // (1) Drop shadow.
     let shadow_rect = rect.with_offset((0.0, 6.0));
     let shadow_rr = RRect::new_rect_xy(shadow_rect, radius, radius);
@@ -2369,12 +3259,16 @@ fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(RRect::new_rect_xy(inset_top, top_r, top_r), &top_paint);
     canvas.restore();
 
-    // (6) Pearl border — outermost edge.
+    // (6) Pearl border — outermost edge. Brightens with the music when driven:
+    // the flat plate has no bevel to catch light, so the border is where its
+    // reaction has to live. Without this, turning glass off would also turn
+    // the music off, which is not what that setting means.
+    let d = drive.unwrap_or_default();
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
-    border.set_stroke_width(1.0);
-    border.set_color4f(rgba(PEARL, 0.18), None);
+    border.set_stroke_width(1.0 + d.pulse * 0.8);
+    border.set_color4f(rgba(PEARL, 0.18 + d.level * 0.32 + d.pulse * 0.28), None);
     canvas.draw_rrect(rrect, &border);
 }
 
@@ -3054,27 +3948,33 @@ fn draw_target(
     }
     canvas.draw_rrect(avatar_rr, &avatar_paint);
 
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_ascii_uppercase())
-        .unwrap_or('?')
-        .to_string();
-    let mut initial_paint = Paint::default();
-    initial_paint.set_anti_alias(true);
-    initial_paint.set_color4f(rgba(PEARL, 1.0), None);
-    let (iw, _) = avatar_font.measure_str(&initial, Some(&initial_paint));
-    let (_, im) = avatar_font.metrics();
-    let icap = if im.cap_height > 0.0 { im.cap_height } else { 22.0 };
-    canvas.draw_str(
-        &initial,
-        (
-            avatar.left + AV / 2.0 - iw / 2.0,
-            avatar.top + AV / 2.0 + icap / 2.0,
-        ),
-        &avatar_font,
-        &initial_paint,
-    );
+    // The target's actual face when the mod has exported a skin for *this*
+    // name; the monogram otherwise. Mobs never have one, and a player's skin
+    // arrives a moment after they are first looked at, so the monogram is the
+    // steady-state fallback rather than an error case.
+    if !draw_player_head(canvas, avatar_rr, avatar, &name) {
+        let initial = name
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .unwrap_or('?')
+            .to_string();
+        let mut initial_paint = Paint::default();
+        initial_paint.set_anti_alias(true);
+        initial_paint.set_color4f(rgba(PEARL, 1.0), None);
+        let (iw, _) = avatar_font.measure_str(&initial, Some(&initial_paint));
+        let (_, im) = avatar_font.metrics();
+        let icap = if im.cap_height > 0.0 { im.cap_height } else { 22.0 };
+        canvas.draw_str(
+            &initial,
+            (
+                avatar.left + AV / 2.0 - iw / 2.0,
+                avatar.top + AV / 2.0 + icap / 2.0,
+            ),
+            &avatar_font,
+            &initial_paint,
+        );
+    }
 
     // ── Meta — name + distance row, then a health bar ──────────────────────
     let meta_x = ox + PAD_X + AV + GAP;
@@ -4135,8 +5035,23 @@ fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f
         if b.width() <= 0.0 {
             continue;
         }
+        // Every widget keeps its dim outline (that is the "these are
+        // draggable" affordance); the hovered or selected one is lit. The
+        // resize grip is drawn only on the *selected* one, which is also the
+        // only widget `editor_press` will resize — a grip on a merely-hovered
+        // widget would be a target you could see but not hit.
+        let wl = editor.layout.get(id);
         let lit = Some(id) == active || Some(id) == editor.selected;
-        draw_widget_outline(canvas, b, lit, fonts, id.title());
+        draw_widget_outline(
+            canvas,
+            b,
+            lit,
+            fonts,
+            id.title(),
+            wl.anchor,
+            wl.scale,
+            Some(id) == editor.selected,
+        );
     }
 
     draw_side_panel(canvas, editor, fonts, h);
@@ -4144,7 +5059,18 @@ fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f
 
 /// A drag outline around one widget — a rose rounded-rect; the active widget
 /// gets a brighter ring and a name label above it.
-fn draw_widget_outline(canvas: &Canvas, bounds: Rect, active: bool, fonts: &FontStore, title: &str) {
+fn draw_widget_outline(
+    canvas: &Canvas,
+    bounds: Rect,
+    active: bool,
+    fonts: &FontStore,
+    title: &str,
+    anchor: Anchor,
+    scale: f32,
+    // Draw the resize grip. Only the selected widget can be resized, so only
+    // it gets one.
+    grip: bool,
+) {
     let pad = 4.0;
     let outline = Rect::from_xywh(
         bounds.left - pad,
@@ -4171,14 +5097,53 @@ fn draw_widget_outline(canvas: &Canvas, bounds: Rect, active: bool, fonts: &Font
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
         label_paint.set_color4f(rgba(ROSE, 1.0), None);
+        // Title, plus the size multiplier once it is no longer 1× — so the
+        // user can see what they dragged it to and get back to default.
+        let title = if (scale - 1.0).abs() > 0.005 {
+            format!("{title}  ·  {scale:.2}×")
+        } else {
+            title.to_string()
+        };
         draw_tracked_em(
             canvas,
-            title,
+            &title,
             (outline.left + 2.0, outline.top - 7.0),
             &label_font,
             &label_paint,
             0.12,
         );
+
+    }
+
+    if grip {
+        // Resize grip, at the corner furthest from the anchor. Three stacked
+        // diagonal ticks — the conventional "drag me" affordance, and legible
+        // at 14px where an icon would not be.
+        let grip = resize_handle_rect(bounds, anchor);
+        let mut plate = Paint::default();
+        plate.set_anti_alias(true);
+        plate.set_color4f(rgba(WINE, 0.85), None);
+        canvas.draw_rrect(RRect::new_rect_xy(grip, 4.0, 4.0), &plate);
+        let mut edge = Paint::default();
+        edge.set_anti_alias(true);
+        edge.set_style(PaintStyle::Stroke);
+        edge.set_stroke_width(1.0);
+        edge.set_color4f(rgba(ROSE, 0.95), None);
+        canvas.draw_rrect(RRect::new_rect_xy(grip, 4.0, 4.0), &edge);
+
+        let mut tick = Paint::default();
+        tick.set_anti_alias(true);
+        tick.set_style(PaintStyle::Stroke);
+        tick.set_stroke_width(1.2);
+        tick.set_color4f(rgba(ROSE, 0.95), None);
+        for i in 0..3 {
+            let o = 3.0 + i as f32 * 3.5;
+            canvas.draw_line(
+                (grip.left + o, grip.bottom - 3.0),
+                (grip.right - 3.0, grip.top + o),
+                &tick,
+            );
+        }
     }
 }
 
@@ -4585,14 +5550,15 @@ fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontStore, w: f32)
 
 /// The Settings-view panel rect, its client-profile chips, and the 4
 /// paint-rate selector buttons. Fixed-size so renderer + hit-tester agree.
-fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4]) {
+fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4], Rect) {
     const CHIP_W: f32 = 112.0;
     const CHIP_H: f32 = 32.0;
     const GAP: f32 = 8.0;
     let chip_rows = (profile_count.max(1) as f32 / 4.0).ceil();
 
     let pw = 484.0;
-    let ph = 262.0 + chip_rows * (CHIP_H + GAP);
+    // +96 for the glass-strength row (label, hint, track).
+    let ph = 262.0 + 96.0 + chip_rows * (CHIP_H + GAP);
     let px = (w - pw) * 0.5;
     let py = (h - ph) * 0.5;
     let panel = Rect::from_xywh(px, py, pw, ph);
@@ -4621,7 +5587,90 @@ fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [R
     for (i, slot) in buttons.iter_mut().enumerate() {
         *slot = Rect::from_xywh(left + i as f32 * (BTN_W + BTN_GAP), buttons_top, BTN_W, BTN_H);
     }
-    (panel, chips, buttons)
+
+    // Glass-strength track. Generous height so it is easy to grab; the visible
+    // track is drawn thin, centred inside this.
+    let glass = Rect::from_xywh(left, buttons_top + BTN_H + 62.0, pw - 64.0, 20.0);
+
+    (panel, chips, buttons, glass)
+}
+
+/// Map a cursor x to a glass-strength value on `track`.
+fn glass_value_at(track: Rect, x: f32) -> f32 {
+    let frac = ((x - track.left) / track.width().max(1.0)).clamp(0.0, 1.0);
+    let raw = GLASS_MIN + (GLASS_MAX - GLASS_MIN) * frac;
+    // Snap to 0.05 so the persisted value is tidy and the readout doesn't
+    // jitter in the last decimal while dragging.
+    (raw / 0.05).round() * 0.05
+}
+
+/// Quick-edit overlay — the HUD editor's affordances without its furniture.
+///
+/// Drawn over a vanilla screen while the modifier is held, so the widgets the
+/// player can grab are visible without the EwoClient overlay taking over. No
+/// scrim, no panel, no tab strip: the inventory behind stays fully readable.
+fn draw_quick_edit(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    // Snap guides, same as the editor tab.
+    let mut guide = Paint::default();
+    guide.set_anti_alias(false);
+    guide.set_style(PaintStyle::Stroke);
+    guide.set_stroke_width(1.0);
+    guide.set_color4f(rgba(ROSE, 0.55), None);
+    if let Some(sx) = editor.snap_x {
+        canvas.draw_line((sx, 0.0), (sx, h), &guide);
+    }
+    if let Some(sy) = editor.snap_y {
+        canvas.draw_line((0.0, sy), (w, sy), &guide);
+    }
+
+    let active = editor.active_widget();
+    for id in WidgetId::ALL {
+        let b = editor.bounds[id.index()];
+        if b.width() <= 0.0 {
+            continue;
+        }
+        let wl = editor.layout.get(id);
+        let lit = Some(id) == active || Some(id) == editor.selected;
+        draw_widget_outline(
+            canvas,
+            b,
+            lit,
+            fonts,
+            id.title(),
+            wl.anchor,
+            wl.scale,
+            Some(id) == editor.selected,
+        );
+    }
+
+    // A single quiet line, bottom-centre — enough to explain the mode to
+    // someone who discovered it by accident, small enough to ignore.
+    let hint_font = fonts.jetbrains_mono(11.0);
+    let hint = "QUICK EDIT  ·  DRAG TO MOVE  ·  CORNER TO RESIZE";
+    let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.75), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    draw_tracked_em(
+        canvas,
+        hint,
+        ((w - hint_w) * 0.5, h - 28.0),
+        &hint_font,
+        &shadow,
+        0.14,
+    );
+    let mut hint_paint = Paint::default();
+    hint_paint.set_anti_alias(true);
+    hint_paint.set_color4f(rgba(ROSE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        hint,
+        ((w - hint_w) * 0.5, h - 28.0),
+        &hint_font,
+        &hint_paint,
+        0.14,
+    );
 }
 
 /// One option button in the paint-rate selector.
@@ -4669,7 +5718,7 @@ fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, active: bool, 
 
 /// The Settings view — a client-profile picker + the HUD paint-rate cap.
 fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
-    let (panel, chips, buttons) = settings_layout(w, h, editor.profiles.len());
+    let (panel, chips, buttons, glass) = settings_layout(w, h, editor.profiles.len());
     draw_chip(canvas, panel, 16.0);
     let left = panel.left + 32.0;
 
@@ -4743,6 +5792,81 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
         let rate = crate::HudPaintRate::ALL[i];
         draw_settings_button(canvas, btn, rate.label(), rate == current, fonts);
     }
+
+    // ── Liquid-glass strength ────────────────────────────────────────────
+    let strength = editor.glass_strength();
+    let mut gl_label = Paint::default();
+    gl_label.set_anti_alias(true);
+    gl_label.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        "GLASS  ·  REFRACTION",
+        (left, glass.top - 40.0),
+        &label_font,
+        &gl_label,
+        0.18,
+    );
+    canvas.draw_str(
+        if strength <= 0.0 {
+            "Off — flat plates. Cheapest, and the pre-glass look."
+        } else {
+            "How much the widget edges bend the world behind them."
+        },
+        (left, glass.top - 18.0),
+        &body_font,
+        &body,
+    );
+
+    // Value readout, right-aligned against the track's end.
+    let val_font = fonts.jetbrains_mono(11.0);
+    let val = if strength <= 0.0 {
+        "OFF".to_string()
+    } else {
+        format!("{strength:.2}×")
+    };
+    let val_w = measure_tracked_em(&val_font, &val, 0.14);
+    let mut val_paint = Paint::default();
+    val_paint.set_anti_alias(true);
+    val_paint.set_color4f(rgba(ROSE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        &val,
+        (glass.right - val_w, glass.top - 18.0),
+        &val_font,
+        &val_paint,
+        0.14,
+    );
+
+    // Track + fill + handle. Deliberately the same visual language as the
+    // launcher's vslider (2px pill, rose fill, pearl-cored handle) rather than
+    // yet another bespoke slider — the in-game surface already has five.
+    let cy = glass.center_y();
+    let track = Rect::from_xywh(glass.left, cy - 1.0, glass.width(), 2.0);
+    let mut track_paint = Paint::default();
+    track_paint.set_anti_alias(true);
+    track_paint.set_color4f(rgba(ROSE, 0.16), None);
+    canvas.draw_rrect(RRect::new_rect_xy(track, 1.0, 1.0), &track_paint);
+
+    let frac = ((strength - GLASS_MIN) / (GLASS_MAX - GLASS_MIN)).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let mut fill = track;
+        fill.right = fill.left + track.width() * frac;
+        let mut fill_paint = Paint::default();
+        fill_paint.set_anti_alias(true);
+        fill_paint.set_color4f(rgba(ROSE, 0.95), None);
+        canvas.draw_rrect(RRect::new_rect_xy(fill, 1.0, 1.0), &fill_paint);
+    }
+
+    let hx = glass.left + track.width() * frac;
+    let mut halo = Paint::default();
+    halo.set_anti_alias(true);
+    halo.set_color4f(rgba(ROSE, 0.45), None);
+    halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 4.0, false));
+    canvas.draw_circle((hx, cy), 8.0, &halo);
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_circle((hx, cy), 5.0, &knob);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -5189,6 +6313,7 @@ fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fonts: &FontS
         &editor.media,
         editor.cursor,
         editor.media_button_press,
+        &editor.spectrum,
         fonts,
     );
 
@@ -5523,10 +6648,34 @@ fn draw_media_large(
     media: &crate::media::MediaState,
     cursor: (f32, f32),
     press_info: Option<(usize, std::time::Instant)>,
+    audio: &crate::audio::Spectrum,
     fonts: &FontStore,
 ) {
     let rrect = RRect::new_rect_xy(rect, 18.0, 18.0);
     let idle = media.is_idle();
+
+    // The card answers to the music the same way the in-world plate does — an
+    // outer bloom that swells, under the chrome so it reads as the card
+    // glowing rather than a ring around it.
+    let drive = (!idle)
+        .then(|| PlateDrive::from_audio(audio))
+        .flatten()
+        .unwrap_or_default();
+    let energy = drive.level * 0.30 + drive.pulse * 0.70;
+    if energy > 0.01 {
+        let grow = 2.0 + 7.0 * drive.pulse;
+        let halo = Rect::new(
+            rect.left - grow,
+            rect.top - grow,
+            rect.right + grow,
+            rect.bottom + grow,
+        );
+        let mut bloom = Paint::default();
+        bloom.set_anti_alias(true);
+        bloom.set_color4f(rgba(ROSE, 0.38 * energy), None);
+        bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 14.0 + 20.0 * energy, false));
+        canvas.draw_rrect(RRect::new_rect_xy(halo, 18.0 + grow, 18.0 + grow), &bloom);
+    }
 
     // ── Card chrome — 135° berry → lavender → wine fill + rose border + glow.
     let mut fill = Paint::default();
@@ -5563,12 +6712,12 @@ fn draw_media_large(
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
-    border.set_stroke_width(1.0);
+    border.set_stroke_width(1.0 + drive.pulse * 0.9);
     border.set_color4f(
         if idle {
             rgba(PEARL, 0.08)
         } else {
-            rgba(ROSE, 0.22)
+            rgba(ROSE, 0.22 + drive.level * 0.34 + drive.pulse * 0.30)
         },
         None,
     );
@@ -6933,17 +8082,35 @@ fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: 
         // height covers ROW_H + any setting sliders below it.
         let card = row.row;
         let card_rr = RRect::new_rect_xy(card, 12.0, 12.0);
+
+        // Opaque wine base on *every* card, enabled or not.
+        //
+        // The enabled card used to be berry at alpha 0.18 with no base, while
+        // the disabled one was wine at 0.72. That made an enabled card's
+        // appearance a function of whatever happened to be behind it: over
+        // bright sky it washed out to near-white, over dirt it read rich. Two
+        // cards in the same state looked like different states depending on
+        // where the player was standing, which is the "washed out" complaint
+        // in its purest form. The accent now rides *on top* of an opaque base,
+        // so "enabled" looks the same everywhere.
         let mut card_fill = Paint::default();
         card_fill.set_anti_alias(true);
-        card_fill.set_color4f(
-            if st.enabled {
-                Color4f::new(BERRY.0 as f32 / 255.0, BERRY.1 as f32 / 255.0, BERRY.2 as f32 / 255.0, 0.18)
-            } else {
-                rgba(WINE, 0.72)
-            },
-            None,
-        );
+        card_fill.set_color4f(rgba(WINE, 0.72), None);
         canvas.draw_rrect(card_rr, &card_fill);
+        if st.enabled {
+            let mut accent = Paint::default();
+            accent.set_anti_alias(true);
+            accent.set_color4f(
+                Color4f::new(
+                    BERRY.0 as f32 / 255.0,
+                    BERRY.1 as f32 / 255.0,
+                    BERRY.2 as f32 / 255.0,
+                    0.22,
+                ),
+                None,
+            );
+            canvas.draw_rrect(card_rr, &accent);
+        }
         let mut card_border = Paint::default();
         card_border.set_anti_alias(true);
         card_border.set_style(PaintStyle::Stroke);

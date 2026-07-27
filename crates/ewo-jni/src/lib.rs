@@ -63,12 +63,18 @@
 
 #![allow(non_snake_case)] // JNI exports must be named `Java_<pkg>_<class>_<method>`.
 
-mod crosshair;
-mod hud;
-mod media;
-mod modules;
+// These are `pub` only so `examples/hudshot.rs` can drive the overlay through
+// the `rlib` target (see Cargo.toml). The JVM loads the cdylib and reaches the
+// crate exclusively through the `Java_…` exports below — nothing here is a
+// stable API for anyone else.
+pub mod audio;
+pub mod crosshair;
+pub mod fixture;
+pub mod hud;
+pub mod media;
+pub mod modules;
 mod perf;
-mod pvp;
+pub mod pvp;
 mod skin;
 mod social;
 
@@ -178,7 +184,9 @@ fn log(msg: &str) {
 /// step always runs every frame regardless — this only gates `paint`. Chosen
 /// in the in-game settings overlay and persisted in `hud.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HudPaintRate {
+// `pub` to match `Editor::paint_rate`, which returns it — see the module
+// visibility note above the `mod` declarations.
+pub enum HudPaintRate {
     /// Repaint every frame (default — matches the launcher's identity).
     Match,
     Fps120,
@@ -306,6 +314,37 @@ struct Hud {
     /// Opt-in render-thread profiler (gated by a `%TEMP%/ewo-perf.on` sentinel;
     /// zero per-frame cost when off). See [`perf`].
     perf: Perf,
+
+    // ── Liquid-glass backdrop capture ────────────────────────────────────
+    /// Shared GL texture holding a copy of the live game framebuffer, taken
+    /// during composite *before* the HUD is drawn — so the glass refracts the
+    /// world and not its own previous frame. Capturing at paint time instead
+    /// would feed the HUD back into itself.
+    game_tex: u32,
+    /// Skia view over [`Self::game_tex`]. Wrapped `BottomLeft` because
+    /// `glCopyTexSubImage2D` from the default framebuffer lands bottom-up —
+    /// the same reason the composite shader flips V.
+    game_surface: Option<Surface>,
+    /// The captured world, when the *slow* composite path took it.
+    ///
+    /// The two paths capture differently and both are correct for their
+    /// context: the fast path composites in Minecraft's GL context, where Skia
+    /// state must not be touched, so it does a raw `glCopyTexSubImage2D` into
+    /// the shared texture and lets `glass_sources` snapshot it later. The slow
+    /// path is already inside Skia with fbo 0 wrapped, so a raw GL copy there
+    /// would desync Skia's cached GL state — it snapshots through Skia instead
+    /// and parks the result here.
+    last_game: Option<Image>,
+    /// The two blur levels liquid glass samples: half-res lightly blurred (what
+    /// the refracting rim bends) and quarter-res heavily blurred (what shows
+    /// through the frosted interior).
+    glass_rim: Option<Surface>,
+    glass_frost: Option<Surface>,
+    /// Window size the glass surfaces were built for.
+    glass_size: (i32, i32),
+    /// Wall-clock of the last framebuffer capture. Capture runs at the paint
+    /// cadence, not every frame — the glass is only re-read when it is redrawn.
+    last_captured: f32,
 
     // ── MC-context composite (the per-frame context-switch elimination) ──
     /// `wglShareLists` succeeded — our GL objects are visible to Minecraft's
@@ -550,6 +589,13 @@ impl Hud {
             perf,
             shared,
             hud_tex: 0,
+            game_tex: 0,
+            game_surface: None,
+            last_game: None,
+            glass_rim: None,
+            glass_frost: None,
+            glass_size: (0, 0),
+            last_captured: f32::NEG_INFINITY,
             comp_program,
             comp_tex_loc,
             comp_solid_loc,
@@ -628,6 +674,7 @@ impl Hud {
             }
             unsafe { gl::Viewport(0, 0, w, h) };
             self.ensure_offscreen(w, h);
+            self.ensure_glass_surfaces(w, h);
             let pt = prof.then(Instant::now);
             let painted = self.paint(elapsed_secs(), w, h);
             if let (Some(pt), true) = (pt, painted) {
@@ -789,6 +836,12 @@ impl Hud {
             // ── set our state + draw ──
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
             gl::Viewport(0, 0, w, h);
+
+            // Grab the world for the glass *before* the HUD quad goes down.
+            // fbo 0 is bound and holds Minecraft's finished frame; one more
+            // draw and it would hold ours too, which the glass would then
+            // refract back into itself as a feedback smear at every rim.
+            self.capture_game(w, h, elapsed_secs());
             gl::Disable(gl::DEPTH_TEST);
             gl::Disable(gl::CULL_FACE);
             gl::Disable(gl::SCISSOR_TEST);
@@ -946,6 +999,162 @@ impl Hud {
         }
     }
 
+    /// Create (or recreate, on resize) the glass capture texture, its Skia
+    /// wrapper, and the two blur surfaces. Runs in *our* GL context.
+    fn ensure_glass_surfaces(&mut self, w: i32, h: i32) {
+        if self.glass_size == (w, h) && self.game_surface.is_some() {
+            return;
+        }
+        // Release the old wrapper before its texture.
+        self.game_surface = None;
+        self.glass_rim = None;
+        self.glass_frost = None;
+        // A capture from the old size would be sampled at the new one.
+        self.last_game = None;
+        self.last_captured = f32::NEG_INFINITY;
+        if self.game_tex != 0 {
+            unsafe { gl::DeleteTextures(1, &self.game_tex) };
+            self.game_tex = 0;
+        }
+
+        let mut tex = 0u32;
+        unsafe {
+            gl::GenTextures(1, &mut tex);
+            gl::BindTexture(gl::TEXTURE_2D, tex);
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA8 as i32,
+                w,
+                h,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                ptr::null(),
+            );
+            // LINEAR — this texture is minified into the blur surfaces, so a
+            // filtered fetch is what we want (NEAREST would alias the downscale).
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_BASE_LEVEL, 0);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAX_LEVEL, 0);
+            gl::BindTexture(gl::TEXTURE_2D, 0);
+        }
+
+        let info = TextureInfo {
+            target: gl::TEXTURE_2D,
+            id: tex,
+            format: gl::RGBA8,
+            protected: Protected::No,
+        };
+        // SAFETY: `tex` is a valid, just-allocated RGBA8 texture of size (w, h).
+        let backend = unsafe { backend_textures::make_gl((w, h), Mipmapped::No, info, "ewo-game") };
+        // `BottomLeft` — see the field doc. A `TopLeft` wrap here would flip
+        // every refraction vertically, which is exactly the kind of bug that
+        // looks like "the shader is wrong".
+        self.game_surface = surfaces::wrap_backend_texture(
+            &mut self.gr,
+            &backend,
+            SurfaceOrigin::BottomLeft,
+            0,
+            ColorType::RGBA8888,
+            None,
+            None,
+        );
+
+        if self.game_surface.is_none() {
+            unsafe { gl::DeleteTextures(1, &tex) };
+            self.game_tex = 0;
+            self.glass_size = (0, 0);
+            log("glass: game texture wrap failed — falling back to flat plates");
+            return;
+        }
+        self.game_tex = tex;
+        self.glass_rim = gpu_surface(&mut self.gr, (w / 2).max(1), (h / 2).max(1));
+        self.glass_frost = gpu_surface(&mut self.gr, (w / 4).max(1), (h / 4).max(1));
+        self.glass_size = (w, h);
+    }
+
+    /// Copy the live framebuffer into [`Self::game_tex`].
+    ///
+    /// **Must be called with fbo 0 bound for reading and before the HUD is
+    /// composited** — capturing after the blit would make the glass refract
+    /// its own previous frame, a visible feedback smear at the rims.
+    ///
+    /// Safe to call from either GL context: the texture is shared via
+    /// `wglShareLists`, and this touches only the 2D texture binding, which it
+    /// restores.
+    fn capture_game(&mut self, w: i32, h: i32, now: f32) {
+        if self.game_tex == 0 || self.glass_size != (w, h) {
+            return;
+        }
+        // Capture at the paint cadence — no point refreshing a backdrop that
+        // will not be redrawn.
+        if now - self.last_captured < self.editor.paint_rate().min_interval() {
+            return;
+        }
+        unsafe {
+            let mut prev_tex = 0i32;
+            gl::GetIntegerv(gl::TEXTURE_BINDING_2D, &mut prev_tex);
+            gl::BindTexture(gl::TEXTURE_2D, self.game_tex);
+            gl::CopyTexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+            gl::BindTexture(gl::TEXTURE_2D, prev_tex as u32);
+        }
+        self.last_captured = now;
+    }
+
+    /// Rebuild the two blur levels from the last capture. Runs in our context,
+    /// at paint time. `None` disables glass for this frame — the plates then
+    /// draw their flat chrome, which is why every failure here is a `return`
+    /// and not a panic.
+    fn glass_sources(&mut self, w: i32, h: i32) -> Option<hud::GlassSource> {
+        if self.editor.glass_strength() <= 0.0 || self.glass_size != (w, h) {
+            return None;
+        }
+        // Nothing captured yet — first frame after launch or a resize.
+        if self.last_captured.is_infinite() {
+            return None;
+        }
+        // Slow path parked a Skia snapshot; fast path left the shared texture
+        // updated for us to snapshot here, in our own context.
+        let game = match self.last_game.clone() {
+            Some(image) => image,
+            None => self.game_surface.as_mut()?.image_snapshot(),
+        };
+
+        // Rim: half resolution, light blur. Must retain structure — refraction
+        // of featureless pixels is invisible.
+        {
+            let rim = self.glass_rim.as_mut()?;
+            let (rw, rh) = ((w / 2).max(1) as f32, (h / 2).max(1) as f32);
+            let mut p = Paint::default();
+            p.set_image_filter(image_filters::blur((2.0, 2.0), TileMode::Clamp, None, None));
+            let c = rim.canvas();
+            c.clear(Color::TRANSPARENT);
+            c.draw_image_rect(&game, None, Rect::from_wh(rw, rh), &p);
+        }
+        // Frost: quarter resolution, heavy blur. Text sits on this, so whatever
+        // shows through has to be mush.
+        {
+            let frost = self.glass_frost.as_mut()?;
+            let (fw, fh) = ((w / 4).max(1) as f32, (h / 4).max(1) as f32);
+            let mut p = Paint::default();
+            p.set_image_filter(image_filters::blur((4.0, 4.0), TileMode::Clamp, None, None));
+            let c = frost.canvas();
+            c.clear(Color::TRANSPARENT);
+            c.draw_image_rect(&game, None, Rect::from_wh(fw, fh), &p);
+        }
+
+        Some(hud::GlassSource {
+            rim: self.glass_rim.as_mut()?.image_snapshot(),
+            rim_scale: 0.5,
+            frost: self.glass_frost.as_mut()?.image_snapshot(),
+            frost_scale: 0.25,
+        })
+    }
+
     /// Paint clock. Render the HUD onto the offscreen surface — but only if at
     /// least `1 / paint_rate` seconds have passed since the last paint. When
     /// gated out, the offscreen surface keeps its prior contents and
@@ -954,6 +1163,19 @@ impl Hud {
         if now - self.last_painted < self.editor.paint_rate().min_interval() {
             return false; // capped — composite reuses the offscreen surface as-is
         }
+
+        // Build the frame context *before* borrowing the offscreen canvas —
+        // `glass_sources` needs `&mut self` (it renders into the blur surfaces)
+        // and the canvas borrow would still be live.
+        let frame = hud::Frame {
+            time: now,
+            // From the game snapshot the previous composite captured. `None` on
+            // the first paint, after a resize, or if the capture path failed;
+            // plates then fall back to their flat chrome.
+            glass: self.glass_sources(w, h),
+            glass_strength: self.editor.glass_strength(),
+        };
+
         let Some(surface) = self.offscreen.as_mut() else {
             return false;
         };
@@ -966,7 +1188,15 @@ impl Hud {
             // held for the process lifetime (`EwoHudData.CAPACITY` bytes).
             let data = unsafe { hud::HudData::new(self.buffer as *const u8) };
             if data.schema_version() == hud::SCHEMA_VERSION {
-                hud::draw(canvas, &data, &mut self.editor, &self.font_store, w as f32, h as f32);
+                hud::draw(
+                    canvas,
+                    &data,
+                    &mut self.editor,
+                    &self.font_store,
+                    w as f32,
+                    h as f32,
+                    frame,
+                );
             } else {
                 SCHEMA_WARN.call_once(|| {
                     log(&format!(
@@ -1086,6 +1316,22 @@ impl Hud {
         };
         if let Some(wt) = wt {
             self.perf.rec(Sec::Wrap, wt.elapsed().as_nanos() as u64);
+        }
+
+        // Capture the world for the glass, before the frost and before the HUD
+        // blit. Before the *frost* specifically: the glass wants structure at
+        // its rim to bend, and the frost has already destroyed it. Before the
+        // *blit* for the same reason as the fast path — otherwise the glass
+        // refracts its own previous frame.
+        {
+            let now = elapsed_secs();
+            if now - self.last_captured >= self.editor.paint_rate().min_interval()
+                && self.glass_size == (w, h)
+                && self.editor.glass_strength() > 0.0
+            {
+                self.last_game = Some(fbo.image_snapshot());
+                self.last_captured = now;
+            }
         }
 
         if frost {
@@ -1419,6 +1665,23 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeIsCustomCrossh
         });
     }));
     enabled
+}
+
+/// Quick-edit gate. Called every frame from `EwoQuickEdit`: `1` while the
+/// modifier is held over a cursor-free vanilla screen, `0` otherwise.
+///
+/// Rust owns the mode because it owns the layout — Java only reports whether
+/// the conditions are met, and the transition out of the mode is where an
+/// in-progress drag gets committed.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeQuickEdit(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    on: u8,
+) {
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_hud(|hud| hud.editor.set_quick_edit(on != 0));
+    }));
 }
 
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init

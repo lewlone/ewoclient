@@ -43,6 +43,18 @@ public final class EwoHudNative {
     /** Key `key` (GLFW code) pressed/released with `modifiers`. */
     public static native void nativeKey(int key, boolean pressed, int modifiers);
 
+    /**
+     * Quick-edit gate — `true` while the modifier is held over a cursor-free
+     * vanilla screen (inventory, pause, chat), so HUD widgets can be dragged
+     * and resized without opening the EwoClient overlay.
+     *
+     * <p>Called every frame from {@link EwoQuickEdit}. Rust owns the mode
+     * because it owns the layout; Java only reports whether the conditions
+     * hold. The transition out of the mode is where an in-progress drag is
+     * committed, which is why this is a state report rather than an event.
+     */
+    public static native void nativeQuickEdit(boolean on);
+
     // ── Modules (Phase G) ─────────────────────────────────────────────────
 
     /**
