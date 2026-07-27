@@ -9,15 +9,15 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M18 shipped + headlessly verified (2026-07-25). M0–M9 are
-pushed (`origin/main` @ `973ea5e`); M10–M18 are reviewed local work,
-intentionally not yet pushed. M18 is feature commit `bb8be20` on
-`codex/rewo-m18-allay-dance`; the current documentation commit is local too.**
-See §0.0 for the fresh-session handoff and §15 for the per-milestone log.
+**Status: M0–M33b shipped + headlessly verified (2026-07-27).** All of it is
+**pushed**, on branch `codex/rewo-m19-combat-swings` (HEAD `ce9028c`) — but
+`origin/main` is still at `973ea5e`, the M0–M9 point, and the branch is **72
+commits ahead of it**. Nothing has been merged. See §0.0 for the fresh-session
+handoff and §15 for the per-milestone log.
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, 2026-07-25)
+## 0.0 HANDOFF — read this first (fresh session, 2026-07-27)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -36,10 +36,14 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M32 shipped; M0–M9 pushed, M10–M32 reviewed local
+### Where it is: M0–M33b shipped, all pushed to a branch, none merged
 
-Everything from M10 on is reviewed local work on branch
-`codex/rewo-m19-combat-swings` — `origin/main` is still at the M0–M9 point.
+Everything is on `codex/rewo-m19-combat-swings` (HEAD `ce9028c`), which exists
+on the remote and is **72 commits ahead of `origin/main`**. `origin/main` is
+still at `973ea5e`, the M0–M9 point. The branch name stopped describing its
+contents around M20; renaming or merging it is a standing loose end, and the
+largest non-code risk in the project is that all of M10 onward lives on one
+unmerged branch.
 
 **Latest (2026-07-27): M33 — weather and clouds.** Rain, snow and a cloud deck.
 Three facts read backwards until checked: **`START_RAINING` sets the rain level
@@ -54,10 +58,21 @@ one texel per 12×12×4 cell, and the mesh is three bytes per quad the vertex
 shader expands. Weather needed `MOTION_BLOCKING`, which Rewo had been decoding
 and discarding. A `weathershot` witness caught a wrong front-face convention
 that **looked right from below alone**, which is why it grades a cloud deck from
-both sides. Wired into `rewo live`, where the first frame exposed that vanilla's weather
-geometry is **camera-relative** while Rewo's `view_proj` already carries the
-camera — the gate had missed it by rendering at the origin, and now renders
-2,500 blocks away. Gate: `rewo weathershot --check`, 27/27.
+both sides. Wired into `rewo live`, where the first frame exposed that vanilla's
+weather geometry is **camera-relative** while Rewo's `view_proj` already carries
+the camera — the gate had missed it by rendering at the origin, and now renders
+2,500 blocks away.
+
+**M33b then found the sky was greying through the wrong mechanism entirely.**
+`applyWeatherDarken` is real but secondary; 26.2 puts weather's visuals in the
+**environment attribute system** (`WeatherAttributes`), whose RAIN/THUNDER
+layers rewrite SKY_COLOR (`BLEND_TO_GRAY`), FOG_COLOR, CLOUD_COLOR, the three
+SKY_LIGHT_* attributes and STAR_BRIGHTNESS before any renderer reads them. That
+also corrected two earlier claims: the lightmap **does** darken in rain, and
+stars are **removed** rather than dimmed. The rain fog ramp shipped with it,
+which needed a second, *environmental* fog band in the world pass. Gate:
+`rewo weathershot --check`, **35/35**, plus four fog witnesses in
+`lightmapshot`.
 
 **Earlier (2026-07-26): M27/M28 — sign text, and the invisible block entities.**
 Five commits took `blockentityshot` from 70 to **125** witnesses and the
@@ -242,6 +257,52 @@ Original M0–M6 (still the foundation):
   1%/0.1% low reporting, frames-in-flight knob. GPU render 0.198 ms avg /
   0.367 ms 0.1%-low on the 5080.
 
+### The current numbers (2026-07-27)
+
+Everything below is the *current* total, re-measured this session. Per-milestone
+figures inside §15 are the measurement taken at that milestone and will not
+match.
+
+- **561 tests** — 500 lib + 61 app. By crate: `rewo-world` 181, `rewo-net` 136,
+  `rewo-gpu` 69, `rewo-data` 65, `rewo-mesh` 38, `rewo-proto` 11, app 61.
+- **Fourteen serverless gates**, all green with Vulkan validation ON and
+  **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
+  `hurtshot` 38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28,
+  `danceshot` 24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`,
+  `tintshot`, `meshshot` and `dimensioncheck` (which report pass/fail rather
+  than a witness count).
+- **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
+  mismatches both channels; `play --dimension-check` 4/4 checkpoints + 3/3
+  transitions; physics **CORRECTIONS 0** over 600 ticks; build actions prove
+  place == dirt and dig == air.
+- **Canonical demo PNG** SHA-256
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+  byte-identical from M15 through M33b. Any change to it is a regression until
+  argued otherwise.
+
+### What to do next
+
+Nothing is mid-flight — every milestone through M33b is shipped, gated and
+pushed. Three candidates, in the order I would take them:
+
+1. **Merge the branch.** `codex/rewo-m19-combat-swings` is 72 commits ahead of
+   `origin/main` and carries everything from M10 on. This is not a milestone,
+   it is the largest non-code risk in the project, and its name stopped
+   describing its contents around M20.
+2. **The inventory model** — the single largest remaining *player* gap, and the
+   named blocker for two deferred features. `container_set_content`,
+   `container_set_slot` and `set_held_slot` are all clientbound in 26.2 and have
+   **zero references** in `rewo-net`, which is why `set_hud(health, food, slot)`
+   draws a hotbar frame with nothing in the nine slots, and why the local player
+   holds nothing even though M22 renders held items on mobs. §16's "first-person
+   hand / GUI — needs an inventory model Rewo does not have" is exactly this.
+3. **Something from the survey** — [`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md)
+   is the roadmap for picking the next *feature* rather than the next milestone.
+
+Deliberately not next: **particles** (every gate here is geometry-based; it
+needs a verification approach invented first — don't pick it casually) and
+**sound** (outside a renderer's scope).
+
 ### The verification toolkit (how to check things yourself — USE THESE)
 
 The user hates manual testing (§0.1). Everything is headlessly verifiable:
@@ -330,6 +391,35 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   pins the screen-welded sampling (a screen-covering portal is byte-identical
   under camera and world motion) and the clock scroll. `--out-dir <dir>` dumps
   the frames.
+- `rewo swingshot --check` — **the combat-animation gate** (M19/M20,
+  fail-closed **97/97**, serverless, CPU-only): the exact `LivingEntity` swing
+  state machine, item-driven swing duration, the `ArmPose` hold baseline, and
+  the undead / skeleton / illager attack rigs, each against an independent
+  transcription.
+- `rewo hurtshot --check` — **the damage-response gate** (M21, **38/38**,
+  validation required): the hurt clock, the limb kick, and the red flash —
+  verified by *predicting the hurt pixel from the unhurt one*, with sensitivity
+  partners for linear-space mixing and post-lightmap application.
+- `rewo itemshot --check` — **the held-item gate** (M22, **28/28**, validation
+  required): both geometry paths (the sprite extrusion and the block bake)
+  verified *against the hand* — a sprite centroid and a block centroid that land
+  together prove one transform chain serves both sources.
+- `rewo lightmapshot --check` — **the lightmap gate** (M13, validation
+  required): a production Vulkan readback matrix over tint, block factor, gamma
+  ramp, night vision, darkness, water parity and entity RGB. Extended by M33b
+  with four **fog** witnesses that pin the `max` of the render-distance and
+  environmental bands (mutation-verified against `min` and a sum).
+- `rewo tintshot --check` — **the per-biome colour gate** (M14, validation
+  required): grass/foliage/water tint and camera sky/fog against
+  Temurin-verified vectors, over the production jar bake and synthetic biome
+  containers.
+- `rewo meshshot --check` — **the geometry gate** (M15): expands greedy
+  rectangles back to reference unit faces and pins every direction / block /
+  layer / light / AO / tint seam, plus exact model, water and lava controls.
+- `rewo play --light-check [--no-relight]` — **the live light gate** (M10):
+  recomputes the loaded columns and diffs against the server's own light engine.
+  **884,736 cells, 0 mismatches**, both channels. Pass `--no-relight` or the
+  engine grades its own incremental writes.
 - `rewo play --dimension-check` — **the live dimension gate** (M16): the paced
   Overworld→Nether→End→Overworld route, checking the level key, the respawn
   boundary, column discard/requeue, generation fencing and settled corrections.
@@ -517,10 +607,12 @@ the code's author. Nothing below is settled truth.
   packet** (§15). **M18 shipped the Allay dance** — `DATA_DANCING` metadata
   (index 16, BOOLEAN serializer 8), *not* an entity event (event 18 is heart
   particles): the exact `Allay.tick()` counters + `AllayModel` root/head
-  formulas, gated by `rewo danceshot --check` (§15). Still open: the Warden
-  tendril (event 61), generic `ClientboundAnimate` arm swings, creaking attack
-  if its exact signal is still unclosed, and dragon flight (bespoke procedural
-  code, not a rig — stays posed). Sheep wool dye-tint deferred (white),
+  formulas, gated by `rewo danceshot --check` (§15). **M19/M20 then shipped the
+  combat rigs** — `ClientboundAnimate` arm swings with the `ArmPose` hold
+  baseline, and the undead / skeleton / illager attack rigs (`swingshot`), so
+  that item is closed. Still open: the Warden tendril (event 61), creaking
+  attack if its exact signal is still unclosed, and dragon flight (bespoke
+  procedural code, not a rig — stays posed). Sheep wool dye-tint deferred (white),
   slime/magma **size now decoded** (metadata index 16 → linear model
   scale, §15) — their face detail still needs the translucent pass;
   texture variants are fixed picks (tabby cat, brown horse, creamy
@@ -585,13 +677,18 @@ the code's author. Nothing below is settled truth.
   (candidate: MSAA / back-face cull once model-quad winding is guaranteed
   CCW). Cosmetic; the demo + normal angles are clean. (Much less visible
   now — the horizon fog covers the far field.)
-- ~~**Sky is gradient + distance fog only**~~ — **RESOLVED M10–M12 (§15)**:
-  time-of-day sky/fog darkening (M11) + the clear-weather celestials — sun,
-  moon (all eight phases), stars, and the sunrise fan (M12). Still deferred:
-  clouds and per-biome sky color (§7).
-- **HUD is crosshair + hotbar + hearts + hunger only** — no item icons in
-  the hotbar slots (needs item models), no XP bar, no armor/air, no
-  effect icons, no gamemode-awareness (creative shows hearts/hunger).
+- ~~**Sky is gradient + distance fog only**~~ — **RESOLVED M10–M14, M33 (§15)**:
+  time-of-day sky/fog darkening (M11), the clear-weather celestials — sun,
+  moon (all eight phases), stars, the sunrise fan (M12) — per-biome sky/fog
+  (M14), and **clouds plus rain/snow and the full weather attribute stack**
+  (M33/M33b). Nothing on this line is deferred any more.
+- **HUD is crosshair + hotbar + hearts + hunger only** — no item icons in the
+  hotbar slots, no XP bar, no armor/air, no effect icons, no
+  gamemode-awareness (creative shows hearts/hunger). M22 built the item
+  *models*, so the icons are now blocked on an **inventory model** rather than
+  on geometry: `container_set_content` / `container_set_slot` / `set_held_slot`
+  are all clientbound in 26.2 and have **zero references** in `rewo-net`, so
+  nothing knows what is in the nine slots.
 - **Mega-buffer has no resize** — over-cap columns are dropped with a log
   (4M verts / 6M indices; high RD could hit this).
 - `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU
@@ -1247,15 +1344,19 @@ work is exercised through the real launcher with a real account.
 
 ---
 
-## 16. Forward plan — M23 to M25
+## 16. Forward plan — M23 to M25 (SHIPPED; this section is now history)
 
 *(Placed before §15 deliberately: the status log is append-only and must stay
-last. This section is the forward plan; when a milestone ships, its record goes
-in §15 and the entry here becomes history.)*
+last. This section was the forward plan; when a milestone ships, its record goes
+in §15 and the entry here becomes history. **Everything in §16 has shipped** —
+M23 through M25 and every block-entity item that followed. There is no live
+forward plan in this file; §0.0's "what to do next" and
+[`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md) are where the next thing
+comes from.)*
 
-> **Status, 2026-07-26 — all three shipped, with two scope corrections.**
-> M23 `d080ba3`, M24 `0f5d988`, M25 `88f4117`, all local on
-> `codex/rewo-m19-combat-swings`, none pushed.
+> **Status, 2026-07-27 — all three shipped, with two scope corrections.**
+> M23 `d080ba3`, M24 `0f5d988`, M25 `88f4117`, on
+> `codex/rewo-m19-combat-swings`, pushed with the rest of the branch.
 >
 > | | planned | shipped |
 > |---|---|---|
@@ -1570,18 +1671,29 @@ not a corner of this one.
 
 ---
 
-### Deliberately not proposed
+### Deliberately not proposed (as of §16's writing)
 
 - **Particles** — a whole subsystem, and every existing gate is geometry-based;
   it would need a new verification approach before it could be shipped honestly.
-- **Sound** — outside a renderer's scope.
+  **Still true.**
+- **Sound** — outside a renderer's scope. **Still true.**
 - **First-person hand / GUI** — needs an inventory model Rewo does not have.
-- **Weather and clouds** — self-contained, so it can slot in anywhere; that
-  makes it filler rather than part of an arc.
+  **Still true, and now the single largest gap** — see §0.0.
+- ~~**Weather and clouds**~~ — called filler here, **shipped as M33/M33b**
+  (§15). It stopped being filler once M12's celestials made "clear weather
+  only" the last thing missing from the sky.
 
 ---
 
 ## 15. Status log
+
+*Append-only. Two things inside these entries are **as of the moment they were
+written** and are not maintained: the "not pushed / reviewed local" notes (all
+of M0–M33b is pushed now — see §0.0), and the per-milestone test and gate
+counts, which are the measurement taken at that milestone rather than the
+current total. Both are left as written on purpose: rewriting them would
+falsify the record of what was actually measured when. §0.0 carries the current
+numbers.*
 
 **2026-07-21 — plan v1 + M0 shipped.**
 
@@ -4305,7 +4417,8 @@ sonic-boom rigs never fired, and the Armadillo, once balled, never re-peeked —
 it stayed in its held pose forever. The work is complete, every gate below is
 green, and it is committed locally as `55388c8` on `codex/rewo-m17-entity-events`
 (base `f4b54d1`, the M16.1 commit; not pushed — M0–M9 are on `origin/main`, the
-M10–M17 arc is reviewed local work). The vanilla test server was stopped by
+M10–M17 arc was reviewed local work at the time; it is pushed now). The vanilla
+test server was stopped by
 exact PID and port 25599 verified free after the final gates; the worktree was
 clean after the commit.
 

@@ -1589,14 +1589,37 @@ pig head flings ~12u off the body — baseline is `invertAxis(pivot)` for
 top-level, own translate for submodel). Open: ETF random/emissive textures
 (M9b). Detail in REWO_PLAN §15 (M9d entry).*
 
+
+*Update (2026-07-27 session, all Rewo): **M32b, M33 and M33b — the portal pixel
+oracle, then weather and clouds.** `portalshot` closed M32's recorded read-back
+gap (uniform textures collapse the fifteen layer matrices, so the frame is a
+number the CPU can compute; one layer then isolates one sample and makes the
+column-major reading observable). Then rain, snow and a cloud deck, wired into
+`rewo live`. Three separate corrections came out of it, each caught by something
+different: a **gate witness** caught a cloud front-face convention that looked
+right from below alone; the **first live frame** caught that vanilla's weather
+and cloud geometry is camera-relative while Rewo's `view_proj` already carries
+the camera (the gate had rendered at the origin, where the two coincide — it now
+renders 2,500 blocks out); and **eyeballing the sky** caught that the rainy sky
+greys through `WeatherAttributes`, an environment-attribute layer system, not
+through the `applyWeatherDarken` formula M33 had transcribed — which also
+corrected two earlier claims of mine, that rain does not darken the lightmap and
+that stars merely dim. The rain fog ramp needed a second, *environmental* fog
+band in the world pass, pinned by four mutation-verified pixel witnesses in
+`lightmapshot`. **561 tests**, fourteen gates green, demo PNG byte-identical to
+M15 onward. All of M10–M33b is now **pushed** to
+`codex/rewo-m19-combat-swings` — 72 commits ahead of `origin/main`, unmerged.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M18 shipped: online play, native CEM, exact light/color, packed + greedy geometry, dimensions, entity events, Allay dance)
+## Rewo — from-scratch native Minecraft client (M0–M33b shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather and clouds)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
-read its §0.0 HANDOFF first** (it consolidates current state, the headless
-verification toolkit, the load-bearing gotchas, and a categorized list of
-every known issue/gap/deviation, explicitly framed for critique). Rewo (from
+read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
+the headless verification toolkit, the load-bearing gotchas, and a categorized
+list of every known issue/gap/deviation, explicitly framed for critique).
+**Everything through M33b is shipped, gated and pushed** to
+`codex/rewo-m19-combat-swings` — which is **72 commits ahead of `origin/main`
+and unmerged**, the largest non-code risk in the project. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —
@@ -1630,15 +1653,16 @@ validation Rewo has.
   `baked.solid`, NOT `matches!(Cube)` — grass_block renders as a Model, so
   keying off the render fast-path makes the player fall through the ground.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
-- **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
-  chat-signing not done (offline only — M7, needs the user's real
-  account); entity collision ignored; some mobs (chicken/…) are still
-  capsules — the six real models (player/slime/cow/pig/sheep/humanoid)
-  cover the common cases; each further mob needs its vanilla dims + UVs
-  (the entity atlas grew to 256×256, so there's room — no texture-array
-  refactor needed). All three §4 deviations are now closed (rayon mesh
-  pool, Native `live` arm, async upload ring). Fixed 2026-07-21 (several
-  passes): meshing moved OFF the
+- **Biggest open gaps to critique** (REWO_PLAN §0.0, which is authoritative —
+  the rest of this bullet is the *historical* record of how the M0–M6-era gaps
+  closed, kept because the corrections are instructive). **Current gaps:** no
+  **inventory model** (the container packets have zero references in
+  `rewo-net`, so the hotbar draws empty slots and the local player holds
+  nothing — the named blocker for first-person hand and GUI); no particles; no
+  sound; entity collision ignored; the HUD is crosshair/hotbar/hearts/hunger
+  only. Everything below this sentence is closed. All three §4 deviations are
+  now closed (rayon mesh pool, Native `live` arm, async upload ring). Fixed
+  2026-07-21 (several passes): meshing moved OFF the
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
   unchanged, demo PNG byte-identical, bench gate green); the launcher
   Native arm now spawns `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join
@@ -2542,7 +2566,13 @@ validation Rewo has.
     bands is pinned by four pixel witnesses in **`lightmapshot`** (its camera is
     a known 16 blocks from the quad, so the fog fraction is exact) —
     mutation-verified against `min` and a sum.
-  - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
+  - **561 tests** (500 lib + 61 app); demo PNG byte-identical to M15 onward.
+    Fourteen serverless gates, all green with Vulkan validation ON and 0 VUIDs:
+    `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97, `hurtshot`
+    38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28, `danceshot`
+    24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+    `meshshot`, `dimensioncheck`. Live: `play --light-check` 884,736 cells / 0
+    mismatches, `play --dimension-check` 4/4 + 3/3, physics CORRECTIONS 0.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

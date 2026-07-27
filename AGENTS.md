@@ -1,3 +1,14 @@
+<!-- GENERATED FILE — do not edit directly.
+
+     AGENTS.md is a verbatim copy of CLAUDE.md with the self-references
+     renamed. The two had drifted 634 lines apart by 2026-07-27 (AGENTS.md was
+     four days and roughly twenty milestones stale), which is exactly the
+     failure mode a duplicated source of truth invites.
+
+     Edit CLAUDE.md, then regenerate:
+         python -c "import io; c=io.open('CLAUDE.md',encoding='utf-8',newline='').read();                     io.open('AGENTS.md','w',encoding='utf-8',newline='').write(c.replace('CLAUDE.md','AGENTS.md'))"
+     and re-add this header. -->
+
 # EwoClient — Velvet & Pearl Launcher
 
 A pixel-perfect native port of the CSS/HTML "EwoClient" Minecraft launcher prototype to Rust + Skia, plus an in-game GUI for Minecraft Java Edition 26.x.
@@ -146,7 +157,7 @@ This was the path to v1. Each step was a working program. **As of 2026-05-03, ev
 | 15 | Dev overlay behind `--dev`. | Tweaks panel (5 token sliders) + FPS HUD + worst-frame counter + Vsync toggle + Reset + Sim-error cycle. State/layout pickers were intentionally skipped (prototype-debug-specific, low parity-tuning value; the tab bar + Launch flow already reach those states). | **DONE for v1** |
 | 16 | Polish + perf pass. | All originally-deferred items shipped: pbar error variants, vbtn ripple+specks, mods + dropdown row stagger, meta-pill, hover-glow stagger, frame-stat HUD, vsync toggle, pearl-dust gradient halos. | **DONE** |
 
-**Two validation items remain** before declaring v1 fully validated. Both are checks the user does, not code Codex writes:
+**Two validation items remain** before declaring v1 fully validated. Both are checks the user does, not code Claude writes:
 
 1. **Hyprland verification.** Step 1's `wayland.rs` is a no-op stub (winit's `with_decorations(false)` should be enough on wlroots). Nobody has run the launcher on actual Hyprland. Custom-frame edge cases (drag, resize, shadow rendering) need a smoke test there.
 2. **Side-by-side pixel-parity pass.** No formal screen-by-screen comparison vs `style/*.png` has been logged. Visual verification has happened iteratively during development but not as a structured pass. If parity gaps surface, they're step-16 polish items by definition.
@@ -1589,20 +1600,56 @@ pig head flings ~12u off the body — baseline is `invertAxis(pivot)` for
 top-level, own translate for submodel). Open: ETF random/emissive textures
 (M9b). Detail in REWO_PLAN §15 (M9d entry).*
 
+
+*Update (2026-07-27 session, all Rewo): **M32b, M33 and M33b — the portal pixel
+oracle, then weather and clouds.** `portalshot` closed M32's recorded read-back
+gap (uniform textures collapse the fifteen layer matrices, so the frame is a
+number the CPU can compute; one layer then isolates one sample and makes the
+column-major reading observable). Then rain, snow and a cloud deck, wired into
+`rewo live`. Three separate corrections came out of it, each caught by something
+different: a **gate witness** caught a cloud front-face convention that looked
+right from below alone; the **first live frame** caught that vanilla's weather
+and cloud geometry is camera-relative while Rewo's `view_proj` already carries
+the camera (the gate had rendered at the origin, where the two coincide — it now
+renders 2,500 blocks out); and **eyeballing the sky** caught that the rainy sky
+greys through `WeatherAttributes`, an environment-attribute layer system, not
+through the `applyWeatherDarken` formula M33 had transcribed — which also
+corrected two earlier claims of mine, that rain does not darken the lightmap and
+that stars merely dim. The rain fog ramp needed a second, *environmental* fog
+band in the world pass, pinned by four mutation-verified pixel witnesses in
+`lightmapshot`. **561 tests**, fourteen gates green, demo PNG byte-identical to
+M15 onward. All of M10–M33b is now **pushed** to
+`codex/rewo-m19-combat-swings` — 72 commits ahead of `origin/main`, unmerged.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M7 + M9 CEM shipped)
+## Rewo — from-scratch native Minecraft client (M0–M33b shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather and clouds)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
-read its §0.0 HANDOFF first** (it consolidates current state, the headless
-verification toolkit, the load-bearing gotchas, and a categorized list of
-every known issue/gap/deviation, explicitly framed for critique). Rewo (from
+read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
+the headless verification toolkit, the load-bearing gotchas, and a categorized
+list of every known issue/gap/deviation, explicitly framed for critique).
+**Everything through M33b is shipped, gated and pushed** to
+`codex/rewo-m19-combat-swings` — which is **72 commits ahead of `origin/main`
+and unmerged**, the largest non-code risk in the project. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —
 frame-time consistency (1%/0.1% lows) and input latency first. It plugs into
 this launcher as a `Native` instance kind reusing auth + spawn + reaper; it
 is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
+
+**[REWO_FEATURE_SURVEY.md](REWO_FEATURE_SURVEY.md) is the feature roadmap** —
+what to build *after* the M-series milestones, derived from a survey of all
+9,291 open-source client-side Fabric mods on Modrinth (2026-07-26,
+regenerate with `python tools/survey_modrinth.py`). Read it when picking the
+next feature rather than the next milestone. Two things from it are
+load-bearing anywhere in the repo: (1) **Sodium, EntityCulling and Xaero's
+Minimap are source-available but NOT open source** (Polyform Shield / bespoke
+protective / All-Rights-Reserved) — their source must not be read as a
+reference for Rewo, though bundling the jars in EwoLoader is a separate
+question; (2) 33.7% of all client-mod download mass exists only because the
+game is a JVM client with a mod loader, which is the strongest external
+validation Rewo has.
 
 - **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
   playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
@@ -1617,15 +1664,16 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   `baked.solid`, NOT `matches!(Cube)` — grass_block renders as a Model, so
   keying off the render fast-path makes the player fall through the ground.
   (3) 26.x model textures can be `{sprite}` objects, not just strings.
-- **Biggest open gaps to critique** (REWO_PLAN §0.0): online-mode/
-  chat-signing not done (offline only — M7, needs the user's real
-  account); entity collision ignored; some mobs (chicken/…) are still
-  capsules — the six real models (player/slime/cow/pig/sheep/humanoid)
-  cover the common cases; each further mob needs its vanilla dims + UVs
-  (the entity atlas grew to 256×256, so there's room — no texture-array
-  refactor needed). All three §4 deviations are now closed (rayon mesh
-  pool, Native `live` arm, async upload ring). Fixed 2026-07-21 (several
-  passes): meshing moved OFF the
+- **Biggest open gaps to critique** (REWO_PLAN §0.0, which is authoritative —
+  the rest of this bullet is the *historical* record of how the M0–M6-era gaps
+  closed, kept because the corrections are instructive). **Current gaps:** no
+  **inventory model** (the container packets have zero references in
+  `rewo-net`, so the hotbar draws empty slots and the local player holds
+  nothing — the named blocker for first-person hand and GUI); no particles; no
+  sound; entity collision ignored; the HUD is crosshair/hotbar/hearts/hunger
+  only. Everything below this sentence is closed. All three §4 deviations are
+  now closed (rayon mesh pool, Native `live` arm, async upload ring). Fixed
+  2026-07-21 (several passes): meshing moved OFF the
   main thread (rayon `MeshPool` + `Arc<Column>` CoW snapshots — mesher
   unchanged, demo PNG byte-identical, bench gate green); the launcher
   Native arm now spawns `rewo live` (+ `EWO_DEV_SERVER=host:port` dev-join
@@ -1721,9 +1769,15 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   dig/sniff/happy/rise + the SEARCHING walk-swap, armadillo
   roll/scared/unroll with the shell-ball swap (verify with
   `rewo mobshot --gesture name[,age] [--shell]` or
-  `REWO_FORCE_GESTURE`). Entity-*event*-driven anims (warden attack,
-  allay dance…) still need the entity_event packet; dragon flight is
-  bespoke procedural vanilla code, posed.
+  `REWO_FORCE_GESTURE`). **M17 fires the exact model-visible entity
+  events** — Warden attack/sonic-boom + Armadillo re-peek from the
+  `entity_event` packet (see the M17 bullet below). **M18 shipped the Allay
+  dance** — `DATA_DANCING` metadata (index 16, BOOLEAN serializer 8), not an
+  event (event 18 is heart particles only): exact `Allay.tick()` counters +
+  `AllayModel` root/head formulas, gated by `rewo danceshot --check` 24/24
+  (see the M18 bullet below). Still open: the Warden tendril (event 61),
+  generic `ClientboundAnimate` arm swings, and dragon flight (bespoke
+  procedural code, posed).
   [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md) is now a completion
   record; details in REWO_PLAN §15 "2026-07-22 — the mob redo shipped".
 
@@ -1738,7 +1792,7 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   26.2 jar (Vineflower) + Mojang datagen reports under
   `%APPDATA%/EwoClient/rewo/26.2/` (git-ignored, derived from the user's own
   download). **Verified against a live vanilla 26.2 offline flat-world server
-  Codex set up + ran headlessly**: 329 chunks decoded with zero failures,
+  Claude set up + ran headlessly**: 329 chunks decoded with zero failures,
   block queries hit the exact flat-world layers (bedrock/dirt/grass/air), and
   replay reproduced the live world digest bit-for-bit. `rewo net soak` /
   `rewo net replay` are the M1 verification tools. Key wire gotchas captured:
@@ -1939,6 +1993,597 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
   block's **own** cell (inside a solid block = always dark), so since
   grass_block renders as a Model the entire ground plane of every overworld
   was lighting at zero — hidden by the old floor. Detail in REWO_PLAN §15.
+- **M12 sun/moon/stars/sunrise shipped 2026-07-23** — the sky was a bare
+  gradient; M12 draws the clear-weather Overworld celestials in a Vulkan pass
+  between the gradient sky and terrain. `rewo-world/src/celestial.rs` ports the
+  exact 26.2 `Timelines.OVERWORLD_DAY`: the sun/moon/star **angle** tracks carry
+  `symmetricCubicBezier(0.362, 0.241)` over a two-keyframes-at-tick-6000
+  wrap-around pair (a naive lerp would freeze the sun), so `EasingType.CubicBezier`
+  is ported verbatim (Newton-Raphson `solve_t` + bisection fallback); star
+  brightness + the sunrise `ARGB_COLOR` track use linear ease, the latter
+  interpolated by `srgbLerp` (componentwise `Mth.lerpInt`, **alpha included** —
+  that settles RGB-vs-ARGB). `rewo-gpu/src/celestial.rs` + four shaders draw
+  sunrise→sun→moon→stars in `addSkyPass` order, rotation-only sky space
+  (`view_proj·T(eye)`), no depth, with the decompiled transform chains (base
+  `Y(−90°)`, per-body `X(angle)`, sun `T(0,100,0)·scale(30,1,30)`, moon
+  `scale(20,1,20)`, fan `X(90°)·Z(angle+90°)·scale(z=alpha)`), OVERLAY/TRANSLUCENT
+  blends, reversed moon UV winding, and an 8-cell atlas. Textures come from the
+  user's own client jar — sun + **eight separate moon-phase files**
+  (`environment/celestial/moon/<phase>.png`, `MoonPhase.index()` order); no jar,
+  no celestials. **Stars are generated bit-for-bit** vs a JOML 1.10.8 Java oracle
+  (seed-10842 `BitRandomSource` LCG, reject sq-length `≤0.010000001`/`≥1.0` →
+  **780 accepted / 4680 indices**, fingerprint `fef182656c6fe202`): the catch is
+  JOML's `Math.fma` is **non-fused** by default, so `lengthSquared` is the
+  right-associative `x*x+(y*y+z*z)` (2 ULP off a true FMA), and `libm::sin` (new
+  dep, fdlibm) matches Java's `(float)Math.sin` where Windows' libm drifts. The
+  sunrise fan samples the **`Mth` 65,536-entry sine table**, not platform trig —
+  load-bearing at the half-turn, where `Mth.sin(π)` is a tiny *positive* table
+  entry so the fan stays on side 0° while platform `sin(π_f32)` is negative and
+  would flip (fan fingerprint `75280003503b2a33`). M12 also fixed the M11
+  `SKY_COLOR` bug (only the horizon was tinted → blue midnight zenith; the zenith
+  now scales by the sky tint too) and a **frozen-clock** bug: the server
+  broadcasts `SetTime(gameTime, empty map)` every 20 ticks (only join/`/time`
+  carry a clock state), so `day_ticks` froze while game time advanced. The fix
+  ports 26.2's `ClientClockManager` — a `WorldClock` advanced from both
+  `apply_set_time` (advance-then-overwrite, so an empty sync still moves the
+  cycle) and a per-tick `ClientLevel.tickTime` local `+1`; running both isn't
+  double-counting because each `advance` re-bases on `last_game_time`. Java
+  primitive semantics are exact (`Mth.floor` returns an **`int`** → narrow to
+  `i32` before widening `long fullTicks`; `partial` truncates back to `f32`;
+  wrapping `long` arithmetic). Verified by a new permanent serverless gate
+  **`rewo skyshot --check`** (validation layers on) that reconstructs each
+  transform independently in f64 and asserts read-back pixel properties (zenith
+  tint ratios, phase/alpha/discard/UV-winding, projected sun/moon envelopes,
+  analytic sunrise-fan footprint, the 780/4680 star count) — not a "looks right"
+  proxy. Gates: **142** unit tests green (world 44, net 41, gpu 33, data 5, mesh
+  8, proto 11), skyshot green, mobshot 243/243, demo PNG byte-identical, bench
+  GPU 0.228 ms avg, light gate EXACT, world clock advanced +278/280 ticks.
+  In-game visual parity is **not** claimed (no eyeball pass); the properties the
+  gate checks are what M12 verifies. Detail in REWO_PLAN §15.
+- **M13 complete 26.2 lightmap shipped 2026-07-23** — ports the remaining
+  `LightmapRenderStateExtractor`/`lightmap.fsh` terms: the exact four-draw
+  LegacyRandom block flicker, gamma (default 0.5), night vision, darkness and
+  its 22-tick blend state. The extractor partial is fixed **1.0**, not render
+  interpolation. The full shader order is preserved, and the actual block tint
+  is **0xFFFFD88C (255/216/140)**; M11's 0xFFD86C blue was wrong. Configuration
+  captures the two effect registry raw IDs; update/remove packets affect only
+  the local player, with exact duration/replacement semantics. One resolved RGB
+  lightmap state now drives terrain, water and entities. Permanent gate:
+  **`rewo lightmapshot --check`**, a validation-required production Vulkan
+  readback matrix that independently proves tint, block factor, gamma ramp,
+  night vision, black NaN store, darkness, water parity and entity RGB. It
+  caught an adjacent asset-bake bug in the uncompromised M10 oracle: the fluid
+  branch skipped light assignment, so water dampening was 0 (must be 1) and
+  lava emission 0 (must be 15). Fixed from generated tables, not by editing
+  generated code. Final gates: **180/180** six-crate tests + 10 app tests,
+  lightmapshot/skyshot validation ON, mobshot 243/243, byte-identical demo,
+  physics corrections 0, light **884,736 cells / 0 mismatches**. Replay median
+  remained ~0.23 ms but later tail samples were system-noisy; exact numbers and
+  the honest red-to-green water history are in REWO_PLAN §15.
+- **M14 per-biome color shipped 2026-07-24** — grass/foliage/water tint +
+  biome-driven camera sky/fog. The Configuration registry decodes in raw wire
+  order (**66 biomes, 4 dimension types**); section biomes are retained 4×4×4
+  (index `((y<<2)|z)<<2|x`, strategy bits 0 single / 1–3 indirect / >3 direct at
+  registry `ceilLog2` = 7 for 66), from both the level-chunk payload and the
+  `chunks_biomes` replacement (changes/load dirty 3×3). Dynamic tint is the exact
+  **radius-2 5×5 integer mean** over the fiddled `BiomeManager.getBiome` for
+  grass/foliage/dry-foliage/water, with `dark_forest`+`swamp` grass modifiers,
+  fixed spruce/birch constants, tall-grass UPPER sampling below; tinted faces use
+  the **raw atlas layer** + `MeshVertex.color` (no ABI growth), and a no-biome
+  world keeps the legacy pre-tinted layers so the demo stays byte-identical. A
+  per-`mesh_column` **`TintCache`** (canonical key = sampled pos+resolver,
+  GrassBelow→Grass@y-1, constants bypass) mirrors vanilla's `BlockTintCache`
+  without a global lock/invalidation. Camera sky/fog is a **separate** path — the
+  raw-quart 6³ Gaussian (kernel `[0,1,4,6,4,1,0]`, integer `ARGB.srgbLerp`,
+  dimension base then biome override) feeding **per-frame GPU base uniforms** (no
+  remesh); Rewo's existing gradient/timeline sky still renders it, so this is
+  *not* a formula-exact whole-sky claim. **Load-bearing protocol fix**: the play
+  login dimension holder is `holderRegistry`/idMapper **raw 0-based**, NOT
+  `ByteBufCodecs.holder`'s inline/`id+1` — correcting that adjacent bug was
+  required to select the dimension sky/fog base. Permanent gate:
+  **`rewo tintshot --check`** (serverless, validation-required Vulkan readback of
+  the production jar-bake + synthetic single/indirect/direct biome containers +
+  `mesh_column`), pinning Temurin-25-verified vectors — boundary
+  **[91,163,163]**, dark_forest **[147,26,5]**, swamp light/dark
+  **[106,112,57]**/**[76,118,60]**, spruce/birch **[97,153,97]**/**[128,167,85]**,
+  camera fog boundary **0xffac2d6d** (A inherits / B overrides), fully-fogged
+  terrain green→blue under a red sky, **0 VUIDs**; it rejects constant-plains,
+  axis transpose, wrong fiddle/radius/mean, spruce/birch-as-foliage, wrong
+  modifiers, raw/legacy mixup, block-fiddle camera sampling, and dropped GPU
+  plumbing. Final gates: **215/215** six-crate tests (world 81, net 67, gpu 37,
+  data 9, mesh 10, proto 11) + **10/10** app; tintshot/lightmapshot/skyshot
+  validation ON exit 0 0 VUIDs, mobshot 243/243, byte-identical demo, physics
+  **CORRECTIONS 0** over 600 ticks (PLACE+DIG both verified), light **884,736
+  cells / block 0 sky 0 EXACT**. Replay (no biome context — guards neutral
+  rendering, does not measure the tint cache) GPU avg ~0.238–0.241 ms.
+  **Scoped exclusions**: biome blend radius fixed at vanilla default 2;
+  modifier-form custom-datapack sky/fog attrs not applied (26.2 uses bare
+  overrides); probe per-tick history omitted (sampled per frame); respawn /
+  dimension-transition / Nether-End base selection untested; redstone/stem/lily
+  `BlockColors` explicitly out of M14. Honest history + exact numbers in
+  REWO_PLAN §15 (incl. the first oracle rejected as insufficient and strengthened).
+- **M15 exact packed ABI + conservative greedy cubes shipped 2026-07-24.**
+  `MeshVertex` is **28 bytes**: position f32×3, exact UV f32×2, packed
+  `layer16|block4|sky4|shade3|AO2`, and packed tint RGB. A 24-byte f16-UV
+  candidate was rejected after changing 6 canonical-demo pixels (max Δ25).
+  The final shader reconstructs the legacy shade×AO×tint formula exactly; the
+  shader build parses optimized SPIR-V and requires float 255, `OpFDiv`, and
+  `NoContraction`. Full cube faces greedily merge only across identical block
+  state, packed light and tint with uniform AO. Models/fluids remain
+  byte-identical. **Never merge +Y/top faces** without a new proof: enabling
+  them changed 11 demo pixels (10 UV interpolation/nearest-sampling, one
+  coverage); the other five directions are byte-identical. Permanent gate
+  `rewo meshshot --check` expands rectangles to reference unit faces and pins
+  direction/block/layer/light/AO/tint seams plus exact model/water/lava controls.
+  Oracle fixture: 854→265 quads (−69.0%). Replay: 149.13→109.39 MiB
+  (**−26.65%**), 3,723,192→3,373,772 vertices (−9.38%), arena 93.080→84.344%;
+  final GPU avg 0.232 ms, but noisy tails mean no latency improvement is
+  claimed. Gates: **237/237** six-crate + **19/19** app, all property gates
+  green, demo exact, physics corrections 0, light 884,736/0. Full failure
+  history and measurements: REWO_PLAN §15.
+- **M16 dimensions shipped + verified 2026-07-24.** It is committed locally on
+  branch `codex/rewo-m16-dimensions` and not pushed. The vanilla test server was
+  stopped and port 25599 verified free after the final gates. The
+  `minecraft:dimension_type` registry is now parsed once
+  (`rewo-net/src/dimension_parse.rs`), kept in **raw wire order** — the vector
+  index *is* the holder id, nothing selects by name — and actually consumed:
+  per-dimension vertical shape (the Nether is 0..256, not −64..384; the stale
+  Overworld shape mis-decoded every Nether chunk), `has_skylight`, `skybox`,
+  ambient light, Nether cardinal face shade, sky/fog/ambient/sky-light colours
+  and factor, `has_fixed_time`, and `has_day_timeline`. Plus the End sky pass
+  (`rewo-gpu/src/end_sky.rs`), spawn info, and a transition that discards the
+  old world and refences the mesh pool by generation.
+  **Three load-bearing facts.** (1) `has_day_timeline` is **independent of
+  `has_fixed_time`** — separate `DimensionType` members; deriving one from the
+  other happens to be right for all four vanilla dimensions and is still wrong.
+  It comes from the `timelines` holder set, expanded through
+  `data/minecraft/tags/timeline/*.json`. (2) The Nether sets **no**
+  `sky_color`/`fog_color`; absence must stay `None`, because the attribute's
+  literal `0` default would read as opaque black to the biome colour stack.
+  (3) A malformed entry is a connection error — never a substituted Overworld.
+  Gates: **`rewo dimensioncheck --check`** (serverless) grades four independent
+  inputs — a captured Configuration `registry_data` packet, the bundled
+  transcription, the **real decompiled datagen JSON** read by
+  `rewo-app/src/dimension_json.rs` (a `serde_json` reader sharing no code with
+  the NBT parser), and a hand-written `EXPECT` table that grades all three and
+  is itself graded by the JSON — then the world/mesh binding and the generation
+  fence; it fails closed on a missing recording or decompile. **`rewo play
+  --dimension-check`** is the live gate: 4/4 checkpoints, 3/3 transitions, 329
+  columns discarded/requeued each, 0 decode failures, 0 settled corrections.
+  Measured: **344 unit tests** (proto 11, world 93, data 9, net 102, mesh 38,
+  gpu 44, app 47), `mobshot` 243/243, all Vulkan oracles green with validation
+  ON / 0 VUIDs, demo SHA-256 byte-identical to M15, physics 600 ticks
+  CORRECTIONS 0, light 884,736 cells / 0 mismatches, release build green.
+  Replay GPU avg 0.240 ms with a system-noisy tail — **no** latency improvement
+  claimed. Full detail: REWO_PLAN §15.
+- **M16.1 — play gate build actions now fail closed 2026-07-24 (`f4b54d1`,
+  local; not pushed).** M16 left one honest red deferred: `rewo play`
+  (build-enabled) printed "PLACE verify … still air ✗" ~1 run in 4 yet exited 0,
+  and `place:true`/`give:true` meant only "packet sent". **Not a protocol bug —
+  packets were byte-exact vs the decompile; a pre-M16 (M3-era) harness + gate
+  defect.** Root cause (decompile): the harness placed dirt at `(fx+1, fy)`, the
+  cell beside the bot's feet; 26.2 `BlockItem.canPlace` gates on
+  `isUnobstructed(state, clickedPos, placementContext(player))` and the player's
+  0.6-wide AABB reaches east to `fx+1.3`, so its own body occupied the cell
+  whenever fractional x ≥ 0.7 → server rejects → air (intermittent as resting x
+  varies; dig never hits this). Fix: place two east (`fx+2`, past `fx+1.3`). The
+  observation was always right — `handleUseItemOn` sends the acting player a
+  `block_update` for BOTH `pos` and `pos.relative(direction)` on every
+  use-item-on, accepted or not. The gate (`build_acceptance` +
+  `evaluate_build_actions`) now reads the server's world at the recorded targets
+  and proves the EXACT state (placed == `minecraft:dirt` default from the block
+  table, dug == air), prints `ACCEPT …`, and returns exit 1 if unproven or
+  never-run; `--no-build`/`--dimension-check` are exempt. Gates: 350 unit (app
+  47→53), 4× live 30 s CORRECTIONS 0 + place=dirt + dig=air exit 0, fail-closed
+  proven live (16 s run exits 1).
+- **M17 exact model-visible entity events shipped + verified 2026-07-25.**
+  Committed locally as `55388c8` on `codex/rewo-m17-entity-events` (base
+  `f4b54d1`; not pushed). Before it, `ClientboundEntityEventPacket` fell off the dispatch chain
+  as an unknown id — the Warden's ribcages never animated and a balled Armadillo
+  never re-peeked. The packet is a **signed fixed BE-i32 entity id + signed byte
+  event id** (not var-ints); the report resolves clientbound-play `entity_event`
+  to **id 34** (looked up by name, so a renumber fails loud). Type ids resolve
+  through production `EntityTypes::id_of`: **Warden 143, Armadillo 4**. Three
+  mappings in `apply_entity_event`/`route_entity_event`: Warden 4 → durably stop
+  the metadata roar `AnimationState` for that same ROARING episode, then
+  unconditionally restart exact `WARDEN_ATTACK`; Warden 62 → restart exact
+  `WARDEN_SONIC_BOOM`; Armadillo 64 → re-clock the shared metadata SCARED/PEEK
+  `AnimationState` from age 0 (the final balled hold remains after it runs).
+  Repeats restart the clock; missing/wrong-kind/unknown/excluded events are
+  inert; state clears on entity removal and id reuse.
+  **Load-bearing:** the two Warden rigs are exact generated defs from decompiled
+  `WardenAnimation.java` via `tools/gen_anim_defs.ps1` (never hand-edited); the
+  Warden ribcages were promoted from static folded cubes to **named body
+  children** so `WARDEN_SONIC_BOOM` can swing them (neutral geometry unchanged →
+  mobshot untouched); the generator now emits **deterministic LF** so
+  `git diff --check` is clean and a re-run reproduces the file byte-for-byte (an
+  EOL-ignoring semantic diff is exactly the two new defs, 222 lines). The
+  renderer feeds a **production event-age input distinct from the metadata
+  gesture ages**, sharing the session tick/partial epoch, through the same
+  CEM/vanilla part pipeline.
+  **Corrections/exclusions (recorded so they aren't re-derived):** Allay
+  `handleEntityEvent(18)` is **heart particles only** — the dance is
+  `DATA_DANCING` (metadata index 16, BOOLEAN serializer id 8) with client
+  dancing/spinning counters + root/head formulas; that's separate future
+  *metadata-animation* work, not an entity-event claim (the generic
+  `(16,BOOLEAN)→baby` decode Rewo has is latent/inert for Allay only because
+  `is_baby` isn't rendered for it). Warden tendril (event 61, needs tendril
+  procedural/emissive modelling), generic `ClientboundAnimatePacket` arm swings
+  (need handedness/equipment/CEM closure — a future combat-animation milestone),
+  hurt/damage overlays, particle/sound-only statuses, and AI simulation are all
+  excluded. **No live AI-triggered encounter was staged or claimed** — M17 is
+  authoritative through exact raw-packet injection into the production dispatcher
+  plus independent decompile literals; these client-receipt semantics don't
+  depend on vanilla's server-authoritative (nondeterministic) AI timing.
+  **Gate: `rewo eventshot --check`** — permanent serverless CPU-only,
+  fail-closed **28/28 witnesses**, driving the whole production path (raw
+  fixed-body packet → `route_entity_event` → `EntityTable::start_event` →
+  `resolve_mob_anim` → `oracle_part_deltas`). Loads real
+  `packets.json`/`registries.json`, proves id 34 + Warden 143/Armadillo 4; the
+  targets are **independent decompiled literals** (it does NOT read `anim_defs`
+  as its expectation; catmull-rom recomputed from four frame literals), ~1e-4
+  tolerances, each with a mutation/sensitivity partner (wrong packet id,
+  missing/wrong entity, event 61/unknown, repeat, remove/reuse, neutral parts).
+  Two consecutive release runs: identical PASS 28/28. Measured: **360 unit
+  tests** (world 95, net 110, gpu 44, data 9, mesh 38, proto 11 = 307 lib; app
+  53 — M16.1 was 350; M17 adds world +2, net +8), release build green
+  (pre-existing warnings only), mobshot 243/243, lightmapshot/skyshot/tintshot/
+  meshshot/dimensioncheck green with Vulkan validation ON / 0 VUIDs, demo SHA-256
+  byte-identical to M15, bench replay GPU avg 0.231 ms (no latency change claimed
+  — M17 doesn't touch the replay entity path), physics 600 ticks CORRECTIONS 0,
+  light `--no-relight` 884,736 cells / 0 mismatches, live dimension 4/4
+  checkpoints + 3/3 transitions. Full detail: REWO_PLAN §15.
+- **M18 exact Allay dance (DATA_DANCING metadata animation) shipped + verified
+  2026-07-25.** Committed locally as `bb8be20` on `codex/rewo-m18-allay-dance`
+  (base `6096bbd`, the M17 handoff; not pushed). The Allay dance is *metadata*,
+  not an entity event (M17 proved event 18 is heart particles) — the first
+  metadata-driven rig. `DATA_DANCING` is **SynchedEntityData index 16, BOOLEAN
+  serializer 8** (`Allay` extends `PathfinderMob`, not `AgeableMob`, so slot 16
+  BOOLEAN is dancing, whereas `AgeableMob`/`Zombie` put `DATA_BABY_ID` there — the
+  byte parser can't disambiguate, only the **kind** can, at the routing layer).
+  Resolved wire facts: `set_entity_data` id **99**, Allay type **2**, Zombie
+  control **151**. Shipped, all decompile-exact: the `Allay.tick()` client
+  counters in `rewo-world` `EntityTable` (dance-tick increments then reads the
+  `%55<15` spin window; `spinning`/`spinning0` ramp ±1 clamped 0..15; false resets
+  on the *next* tick; repeated true does **not** restart; cleared on remove +
+  re-add), the `AllayModel` root/head formulas (`Anim::AllayRoot`/`AllayHead`:
+  `danceSpeed = ageInTicks·8° + walkAnimationSpeed`; `root.yRot = 4π·spin` only
+  while `isSpinning` else 0; `root.zRot = cos·16°·(1−spin)`; `head.yRot/zRot =
+  cos·30°/14°·(1−spin)`; dancing suppresses the head-look; wings stay
+  unconditional), the Allay model **restructured into the real
+  `root→{head, body→{arms,wings}}` hierarchy** (rest geometry neutral, mobshot
+  243/243 unchanged), and **vanilla missing-entity inertness** (`handleSetEntityData`
+  drops metadata for `getEntity==null` — no state mutated). Production chain: raw
+  report-resolved `set_entity_data` → `route_set_entity_data`/`apply_set_entity_data`
+  (kind-aware routing) → `EntityTable` counters → `live_cmd::resolve_allay_dance`
+  (shared by the collector and the gate) → GPU pose; `play_cmd` + `live_cmd` both
+  resolve the Allay type id. **Senior review corrected**: missing-id baby fallback
+  → decompile-exact inert; extracted the shared live resolver so the gate can't
+  bypass the app mapping; `play_cmd` now resolves the Allay id; explicit
+  wrong-index/wrong-serializer witnesses. **Gate: `rewo danceshot --check`** —
+  permanent serverless CPU-only fail-closed **24/24**, two identical runs;
+  independent counter sim + `AllayModel`/`AllayWing` transcriptions (nothing reads
+  the production formulas as expectation), real `packets.json`/`registries.json`.
+  Measured: **368 unit tests** (world 98, net 114, gpu 44, data 9, mesh 38, proto
+  11 = 314 lib; app 54), release build green, plain `git diff --check` clean,
+  eventshot 28/28, mobshot 243/243, lightmapshot/skyshot/tintshot/meshshot/
+  dimensioncheck green (Vulkan validation ON), demo SHA-256 byte-identical to
+  M15/M16/M17, replay GPU avg 0.220 ms (no latency change claimed), live physics
+  600 ticks CORRECTIONS 0, light 884,736 cells / 0 mismatches, dimension 4/4 + 3/3.
+  Exclusions: no live jukebox/AI encounter (raw-packet injection is the
+  deterministic proof); the Allay's unconditional body flying-tilt / root
+  idle-bob / arm idle-bob remain unimplemented (not the dance); no claim of
+  exhaustive index-16 ownership. Full detail: REWO_PLAN §15.
+- **M19 exact combat swings + the ArmPose hold baseline shipped + verified
+  2026-07-25.** `ClientboundAnimatePacket` (id **2**, VarInt id + unsigned byte
+  action) was falling off the dispatch chain, so nothing ever swung. M19 ships
+  the exact `LivingEntity` swing state machine (accept/restart rule, `swingTime
+  = -1` park, increment-then-end, the `getAttackAnim` `+1` wrap), item-driven
+  duration (`tools/gen_swing_animations.py`: **7 non-default over 1,537 items** —
+  the spears, STAB 13–23; everything else WHACK/6) with exact DIG_SPEED /
+  MINING_FATIGUE adjustment, a machine-extracted living/swing-ticking split
+  (`tools/gen_entity_classes.py`: **93 living / 36 swing-ticking of 158**), and
+  `HumanoidModel.setupAttackAnimation` — **layered on the `ArmPose` hold
+  baseline** `pose{Right,Left}Arm` writes first (`EMPTY` / `ITEM` / `SPEAR`).
+  Two load-bearing facts: **`ITEM` is the fall-through for any ordinary held
+  item**, so omitting the hold stage posed every armed player from an unarmed
+  baseline (18° too high, walk swing unhalved) — and it is `AvatarRenderer`, not
+  `HumanoidMobRenderer`, that produces it; and `SPEAR`'s `affectsOffhandPose`
+  means a spear in the **off** hand leaves the main arm entirely unposed.
+  Unknowable items suppress the pose and CEM `swing_progress` rather than guess.
+  `ItemTags.SPEARS` is read as a *tag* from the client jar, not inferred from the
+  swing component. Gate: **`rewo swingshot --check` 61/61**, serverless,
+  fail-closed, with independent `ease`/`Mth`/pose transcriptions (the `Mth`
+  witness: 0 bit mismatches over 60,003 samples vs 39,917 platform-sine
+  differences). **404 tests**; demo PNG byte-identical to M15–M18; live
+  `--swing-check` decodes server-sent equipment with CORRECTIONS 0. **Open:**
+  `animateZombieArms` (the undead families have their own attack rig, so a
+  swinging zombie shows no arm motion yet) and the eight use-driven arm poses.
+- **M20 exact mob combat rigs shipped + verified 2026-07-25.** M19 gave the
+  *player* an exact swing; M20 gives it to the mobs that attack you — four
+  vanilla rigs that all run **after** `HumanoidModel.setupAnim` and overwrite
+  it: `AnimationUtils.animateZombieArms` (zombie/husk/drowned/zombie-villager/
+  zombified-piglin), `SkeletonModel`'s own override, and `IllagerModel`'s
+  arm-pose switch with both its attack branches. **The sizing discovery:** the
+  undead arms were a baked `Fold::rot(−π/2)` on `STATIC_PART` — frozen at −90°
+  where vanilla rests at **−π/2.25 (−80°)** and deepens to **−π/1.5 (−120°)**
+  when aggressive, so the pose was ~10° wrong *and* structurally unable to move.
+  They are real animated parts now. Three vanilla quirks reproduced, each
+  witnessed: a **STAB item skips the strike** (the humanoid pose survives) and
+  then takes a **second bob** (`bobArms` sits outside the guard — observable as
+  `zRot +0.2`); `animateAttackArms` **assigns rotations only**, so
+  `setupAttackAnimation`'s pivot movement survives underneath; and **only a baby
+  holding an item** drops its arms. One new wire input:
+  `Mob.DATA_MOB_FLAGS_ID` — **index 15, BYTE**, bit 2 `isLeftHanded`, bit 4
+  `isAggressive` — the same slot M19 reads as the player's main arm, separated
+  by serializer and additionally gated on the type being a `Mob` (an
+  `ArmorStand`'s client flags share the slot). It fixes mob handedness for free
+  (`Mob.getMainArm()` *is* `isLeftHanded()`). Three more polymorphic slots are
+  resolved by machine-extracted ancestry (`gen_entity_classes.py` `ANCESTRY_SETS`,
+  fail-loud if empty): `MOB` 90, `RAIDER` 6, `SPELLCASTER_ILLAGER` 2, `ILLAGER`
+  4 — note **`ravager` and `witch` are Raiders but not Illagers**, so their
+  index-16 BOOLEAN is `IS_CELEBRATING`, previously misread as baby. Illagers
+  assign their **own walk over both arms** (wiping the hold pose, attack and
+  bob), then switch: empty-handed `ATTACKING` runs `animateZombieArms` with a
+  **literal `true`**, armed runs `swingWeaponDown`, and `CROSSED` is a
+  *visibility* switch (one model, both arm sets). Gate: **`swingshot --check`
+  61 → 77 witnesses**, independent transcriptions throughout, metadata driven
+  through the real `route_set_entity_data`. **410 tests**; demo PNG
+  byte-identical to M15–M19; `mobshot` 243/243 even though undead neutral
+  geometry moved. **Open:** held items are not rendered (mobs swing
+  empty-handed); illager `CROSSBOW_HOLD`/`CROSSBOW_CHARGE` are derived but not
+  posed (they need `ticksUsingItem`, unsynced for remote entities).
+- **M20.1 + M21 shipped + verified 2026-07-25.** **M20.1** fixes the live build
+  gate M20 recorded as flaky: it clicked the top face of `(fx+2, fy-1)`, which
+  assumed the bot stood on *undisturbed* ground — an earlier run's own hole put
+  the target on the grass surface and the server correctly rejected it. It now
+  scans east for the first air-over-solid column and **fails closed** if there
+  is none (5/5 green in the world that used to fail 1-in-4). **M21 consumes
+  `ClientboundDamageEventPacket`**: the exact `hurtTime`/`hurtDuration` clock
+  (10, one decrement per tick, re-armed not extended by a repeat), the
+  `walkAnimation.setSpeed(1.5F)` limb kick with vanilla's render-side clamp to
+  1.0, and the red damage flash. The packet's damage-type holder is
+  `holderRegistry` — a **raw 0-based id**, not `holder`'s `id+1` — and the whole
+  body is walked so a short read cannot desync the buffer; receipt is gated on
+  the entity being tracked *and* living (`handleDamageEvent` is a `LivingEntity`
+  override). **The flash forced a vertex-ABI split**: vanilla's `entity.fsh`
+  mixes the overlay into `texture × vertexColor` and multiplies the lightmap
+  *after*, so the CPU can no longer fold light into the vertex colour — a new
+  `light_hurt` attribute carries light in `rgb` and the hurt flag in `a`. The
+  overlay is `OverlayTexture`'s red row, **0xB3FF0000** (rgb (1,0,0), a =
+  179/255), and the mix is done **in sRGB space**, not linear. Gate:
+  **`rewo hurtshot --check` 18/18**, validation ON, 0 VUIDs, verifying the flash
+  *by predicting the hurt pixel from the unhurt one* with sensitivity partners
+  for linear-space mixing and post-lightmap application. **415 tests**; demo PNG
+  byte-identical to M15–M20. The ABI change also exposed a latent bug — the
+  upload path hard-coded `total * 36` beside `VERTEX_STRIDE`, so at stride 52
+  only 36 of every 52 bytes reached the GPU (`mobshot` 223/243 until fixed).
+  **Open:** held items are still not rendered (mobs swing and flash
+  empty-handed); `deathTime` — the other half of `hasRedOverlay` — is the death
+  animation and its own feature.
+- **M22 held items shipped + verified 2026-07-25 — both geometry paths.**
+  M19-M21 built the swing, the mob rigs and the damage flash; every one of them
+  was swinging empty-handed. 26.x splits an item into a *definition*
+  (`assets/minecraft/items/<item>.json`, a tree that chooses a model from stack
+  state) and the parent-chained model. Surveyed on the real jar: **1390 of 1537
+  are plain `minecraft:model`**, of which **750 point at `block/…`** and the
+  rest walk `item/<n>` → `handheld` → `generated` → `builtin/generated`. The
+  seam that unified them is **`append_model_quads`**, which takes a model *name*
+  and emits quads carrying a texture-array layer index — so a block item reuses
+  the block bake rather than needing a parallel resolver; the entity pass cannot
+  sample that layer, so its pixels are copied out. Both paths converge on
+  **quads in 0..16 model units with UVs in 0..1 of their own texture**, and the
+  renderer never learns which source an item came from. The sprite path is
+  `ItemModelGenerator`'s extrusion (two faces across the 7.5..8.5 slab + one
+  thin quad per alpha edge, UVs inset 0.1); a diamond sword bakes to **82
+  quads**. **Two invertible details** transcribed deliberately:
+  `SideDirection::Left` is `Direction.EAST` (the names describe the sprite edge,
+  not the world axis) and `isTransparent` is **true out of bounds**, which is
+  the only reason a sprite border extrudes. **The trap:**
+  `ItemTransform.Deserializer` multiplies translation by **0.0625** and clamps
+  (±5, ±4) *before* `apply` runs — storing raw JSON puts every item **16× too
+  far from the hand**. Shading uses the **rotated** normal, not the baked `dir`,
+  because an item is turned on its side in the hand. 1233 textures do not fit an
+  atlas band, so items got the demand-filled pool player skins already have; the
+  atlas grew 1024→1280 while the shelf packer still stops at 896, leaving **mob
+  packing byte-for-byte unchanged** (mobshot 243/243). Gate:
+  **`rewo itemshot --check` 18/18**, validation ON, 0 VUIDs, verifying placement
+  *against the hand* — sprite centroid (90,151) and block centroid (87,156) land
+  together, proving one transform chain serves both sources, and a suppressed
+  item differs from an empty hand by **0 pixels**. **435 tests**; demo PNG
+  byte-identical to M15-M21. **Open:** the 147 state-dependent items
+  (select/special/composite/condition/range_dispatch) suppress rather than
+  guess; first-person/GUI/ground contexts, the spear attack-item animation,
+  enchantment glint and per-layer tint are all out.
+- **M23–M25 + the block-entity arc shipped 2026-07-25/26.** M23 item-use state
+  (retiring the blocker three earlier milestones blamed — `useItemRemainingTicks`
+  is *derived* by the client, not synchronised) and the eight use-driven
+  `ArmPose`s; M24 the death animation and item entities; M25 block-entity decode
+  plus a fail-closed type registry and a *measured* statement of the gap (96
+  blocks bake to no geometry, 86 of them real block entities). Then the
+  rendering half: chests, chest lids driven by `block_event`, double chests,
+  17 shulker boxes, and **world-space text** so signs are legible — which
+  turned out to be a small addition rather than a new pass, because a nametag
+  is already world-space glyph quads and sign text is the same emitter with the
+  basis taken from the surface instead of the camera.
+- **M26 shipped + verified 2026-07-26 — `block_event` reaches the right block
+  entity, and a shulker box opens.** `b0 == 1` is **not one opcode**: it is a
+  chest's viewer count, a shulker box's open/close pair, and a bell's
+  `Direction.from3DDataValue`, selected by the block entity's type exactly as
+  vanilla's virtual `triggerEvent` call is. Reading it as "a chest lid" — which
+  this client did — meant a bell rung from any side but below opened a phantom
+  lid at the bell. Also: the shulker's rule is `b1 == 0` / `b1 == 1` with **no
+  else** (a second viewer changes nothing), not the chest's `b1 > 0`; the
+  animated part group became a matrix so one emitter expresses both a hinge and
+  a slide-plus-spin; the classification caught up with the four types that had
+  quietly started rendering (**seven** still invisible, not eight); and
+  `BlockEntityRegistry` runs in the client rather than only in the gate. Two
+  process lessons recorded in REWO_PLAN §0.0: a witness that asserts a *moment*
+  ("nothing is Rendered yet") is not a guard, and several source files carry
+  mixed CRLF/LF endings that an editor will silently normalise into a
+  3,400-line diff. Gate `rewo blockentityshot --check` **88/88**; **479 tests**
+  (424 lib + 55 app); demo PNG byte-identical to M15 onward.
+- **M27/M28 shipped + verified 2026-07-26 — sign text, and the invisible block
+  entities.** Five commits took `blockentityshot` from 70 to **125** witnesses
+  and the still-invisible block-entity set from **eleven types to two**.
+  - **M27** dyed and glowing sign text plus the line break. *Glowing text is
+    not "the same colour, brighter"*: unglowing is the dye at 40%, glowing is
+    the dye at FULL strength lit fullbright, with the 40% version demoted to
+    its eight-copy outline. A sign does not wrap — `getRenderMessages` keeps
+    fragment 0, so a long line is truncated at a word boundary.
+  - **M28** skulls (7 types, 14 blocks) + the conduit shell. Skulls are
+    **entity** models, authored y-down, so both transforms end in
+    `scale(-1,-1,1)` — a chest has no such flip. Forced four generalisations of
+    the box machinery: rest rotation, `CubeDeformation` grow, mirror, and a
+    **per-model texture size** (a mob head's sheet is 64×32, not 64×64).
+  - **M28b** the decorated pot — the first block entity that is not one model
+    (base + four sherd-textured sides). Needed a second form of `visibleFaces`:
+    `EnumSet.of(NORTH)` builds only one face where `allOfEnumExcept` omits one.
+  - **M28c** banners (32 blocks) — the first whose texture carries no colour. A
+    pattern sprite is a greyscale **mask**, so `BlockEntityDraw` grew a `tint`
+    rather than baking 16 dyes × 43 patterns. The banner dye table is
+    `getTextureDiffuseColor`, **not** the sign's `getTextColor` (red 0xB02E26
+    vs 0xFF0000), and a wall banner's yaw is the facing's *own* toYRot where a
+    wall skull's is its opposite.
+  - **M28d** the spawner's `block_event` — the third meaning of `b0 == 1`.
+    Resetting `spawnDelay` is the whole client effect and shows only through
+    the spin: `1000 / (spawnDelay + 200)` makes a spawner **accelerate** toward
+    its next spawn.
+  - **Three gate witnesses caught real bugs pre-ship**: a pot side baking six
+    quads instead of one (coincident, z-fighting), a banner base texture path
+    (`entity/banner/banner_base.png`, not `entity/banner_base`) that baked no
+    pole while every pattern still loaded, and an existing witness that had
+    quietly started measuring skulls as shulker boxes.
+  - **M28e/M28f** the copper golem statue and the two end portals — the last
+    two. The statue's four poses are **separate** nested layers where a child's
+    offset rides through its parent's *rotation*; they are machine-extracted by
+    `tools/gen_copper_golem_poses.py` because 38 rotated boxes fail **silently**
+    when hand-copied, and `k25` proves the hierarchy by comparing each box
+    against a naive offset-sum (must agree in STANDING, must differ in
+    RUNNING). The end portals were half-misdescribed as "a shader, not a
+    model": the geometry is an ordinary cube (portal = horizontal faces only, a
+    slab from y 0.375 to 0.75), and only the render *type* is a shader,
+    approximated by one static layer of `end_portal.png`.
+  - **M25's Invisible list is now EMPTY — eleven types measured, eleven
+    rendering.** `blockentityshot` 21 → **133** witnesses across the arc.
+  - **M29 the block-entity animation clock** — banners sway, pots wobble,
+    piglin ears move, dragon jaws open. Not ONE clock: what each animates
+    *from* differs (position+gametime / an event+start tick / an accumulating
+    counter), and grouping by that is what made it tractable. A pot's wobble is
+    a **fourth** meaning of `b0 == 1` (`b1` = a WobbleStyle ordinal, and the
+    arrival tick is the start). **It exposed two rest poses that were already
+    wrong**: `SkullModelBase.setupAnim` ALWAYS runs, so a piglin's ears belong
+    at ∓0.7 rad (not the mesh's ∓30°, ~10° off on every head) and a dragon's
+    jaw rests 0.2 rad OPEN (Rewo drew it shut) — a wrong *rest* pose is
+    invisible precisely because nothing moves to contradict it.
+  - **M30 the active conduit** — that world scan. A conduit decides its own
+    activation from the blocks around it (the server sends nothing), so
+    `updateShape` was the whole prerequisite. **The shell is 42 positions, not
+    48** — the three axis rings share their axis ends — **and 42 is also the
+    hunting threshold**, so a conduit opens its eye exactly when its frame is
+    COMPLETE. `isWaterAt` counts waterlogged blocks, so the bake grew a
+    per-state `water` table. Ships the cage (tumbling about the tilted axis
+    `(0.5,1,0.5)`, not plain Y), the wind shroud twice (the second at 0.875,
+    counter-rotated), and a camera-facing eye — the one input in this path
+    that's a property of the VIEW not the block. The deg→rad round trip in the
+    renderer is an exact no-op; don't "fix" half of it.
+  - **M31 the spawner's caged mob.** M29 called this "an entity model composed
+    into a block-entity draw" — one word off: the mob belongs in the **ENTITY**
+    path, just positioned differently. Every other entity STANDS (`pos` = its
+    feet); this one is *mounted*, so `EntityDraw` gained an optional `mount`
+    affine applied to the feet-relative position. Same models, rigs and
+    animations as every other mob. Display entity is `SpawnData→entity→id` (two
+    levels down); empty/absent/unregistered → NO mob, never a default. Scale is
+    `0.53125 / max(bbW,bbH)` **only if > 1.0**; render spin is the stored one
+    **×10**; `scale_mul` stays 1 (the fit scale is in the mount — applying both
+    shrinks it squared).
+  - **A witness disproved my own comment** (3rd time this arc): I claimed the
+    inner `translate(0,-0.2,0)` makes the mob orbit — it lies **along the spin
+    axis**, so it commutes and the translates could be swapped with no effect.
+    The `-30°` X tilt is the load-bearing part. **The claims that survive
+    unchallenged are the ones nothing in the render moves against.**
+  - **M32 the end-portal shader** — the last item. It samples in **SCREEN
+    space** (`texProj0 = projection_from_position(gl_Position)`, vertex format
+    POSITION-only), which is why the mesh UVs were never used and why it needed
+    its own pipeline; the two portals leave the block-entity resolver entirely,
+    or they'd draw twice. `PORTAL_LAYERS` 15 (portal) / 16 (gateway) — a shader
+    *define* in vanilla, a push constant here. Sampler0 is end_sky, Sampler1 is
+    end_portal (the opposite of the name). `GameTime` is a **daily fraction**,
+    not a tick count. **Trap:** vanilla's `mat4(...)` literals are
+    **column-major** GLSL — the translate lives at `m[0][3]`, and it works
+    because the sampling is `texProj0 * matrix`, a ROW-vector multiply. Copy
+    them verbatim; "tidying" them into the slots they look like they belong in
+    silently breaks every layer.
+  - **The block-entity arc is complete**: 11 invisible types measured, 11
+    rendering, `blockentityshot` 21 → **172** witnesses. Its real lesson is
+    the **five** times a witness corrected something already written as fact
+    (see REWO_PLAN §15 "The block-entity arc, in one place"). **The claims that
+    survive unchallenged are the ones nothing in the render moves against.**
+  - **M32b closed the portal pass's read-back gap**: `rewo portalshot --check`,
+    serverless, validation-required, **12/12**, 0 VUIDs. Two properties make an
+    exact prediction possible without reproducing a single matrix — **uniform
+    textures collapse them** (the frame is then
+    `sky*COLORS[0] + portal*sum(COLORS[0..layers])`, computed on the CPU), and
+    **one layer isolates one sample**, at which point the sampled `u` is an
+    affine function of the screen UV alone and the column-major reading is
+    directly observable. Mutating the shipped shader to the transposed multiply
+    drops that witness 21/21 → 9/21 while every uniform-texture witness still
+    passes.
+  - **The portal's sample is welded to the SCREEN, not the model.** Sliding the
+    quad through the world or rolling the camera leaves a screen-covering
+    portal's pixels identical (measured: ≤175 of 65,536 bytes, all at delta 1).
+    The first version of that witness asserted the opposite and failed.
+  - **M33 weather and clouds** — rain, snow and a cloud deck, gated by
+    `rewo weathershot --check` **27/27** (validation ON, 0 VUIDs). Three facts
+    that read backwards: **`START_RAINING` sets the rain level to 0 and
+    `STOP_RAINING` to 1** (the names describe the server's transition; the
+    client sets the value its `RAIN_LEVEL_CHANGE` ramp starts *from*); the
+    client **never interpolates** the level (`setRainLevel` writes both slots,
+    so the smoothing is entirely server-side); and clouds are absent **by
+    attribute, not by dimension check** — `CLOUD_COLOR` defaults to a
+    transparent 0 and the pass is skipped on zero alpha, which is exactly how
+    the Nether and End have none. A cloud carries no texture: `clouds.png` is a
+    map, one texel per 12×12×4 cell, and the mesh is three bytes per quad the
+    vertex shader expands from a fixed table. Weather forced `MOTION_BLOCKING`
+    to stop being decoded-and-discarded. **Two witnesses caught real
+    bugs**: a front-face convention that looked right from below alone (hence
+    grading the deck from both sides), and — from the first live frame, not the
+    gate — that vanilla's weather and cloud geometry is **camera-relative**
+    while Rewo's `view_proj` already carries the camera, so the relative form
+    draws every storm around the world origin. The gate had rendered at
+    `[0,0,0]` where the two coincide; it now renders 2,500 blocks out. Wired
+    into `rewo live` (both paths) with `REWO_FORCE_WEATHER=<rain>[,<thunder>]`
+    as the headless knob.
+  - **M33b — the rainy sky greys through `WeatherAttributes`, not
+    `applyWeatherDarken`.** M33 shipped the latter and the sky stayed blue.
+    26.2 puts weather's visuals in the **environment attribute system**
+    (`world/attribute/WeatherAttributes.java`): RAIN/THUNDER layers rewrite
+    SKY_COLOR (`BLEND_TO_GRAY`), FOG_COLOR (`MULTIPLY_RGB`), CLOUD_COLOR,
+    SKY_LIGHT_LEVEL/COLOR/FACTOR, STAR_BRIGHTNESS (`set 0` — stars are removed,
+    not dimmed) and SUNRISE_SUNSET_COLOR before any renderer reads them.
+    `applyWeatherDarken` is a secondary touch-up on the SKY colour only; M33 had
+    also applied it to the fog, double-darkening it. **The lightmap does darken
+    in rain** — a `client/`-only grep for `getRainLevel` misses it because it
+    arrives through the attribute system. The levels **partition**
+    (`rain - thunder`), and THUNDER applies to RAIN's output. The **rain fog
+    ramp** shipped with it — stateful (eases at `deltaTicks * 0.2`), gated by
+    sky light (a cave is clear in a storm), half-strength in a dry biome. It
+    needed a second, **environmental** fog band in the world pass: Rewo's
+    existing band is a render-distance fade, vanilla's `total_fog_value` is the
+    `max` of that and an environmental term, and only the latter is what rain
+    thickens — applying the offsets to Rewo's tight band half-fogged the air ten
+    blocks out. The new band lives in the `LightmapExtra` UBO (the push block is
+    exactly at its 128-byte budget) and defaults to disabled. The `max` of the two
+    bands is pinned by four pixel witnesses in **`lightmapshot`** (its camera is
+    a known 16 blocks from the quad, so the fog fraction is exact) —
+    mutation-verified against `min` and a sum.
+  - **561 tests** (500 lib + 61 app); demo PNG byte-identical to M15 onward.
+    Fourteen serverless gates, all green with Vulkan validation ON and 0 VUIDs:
+    `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97, `hurtshot`
+    38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28, `danceshot`
+    24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+    `meshshot`, `dimensioncheck`. Live: `play --light-check` 884,736 cells / 0
+    mismatches, `play --dimension-check` 4/4 + 3/3, physics CORRECTIONS 0.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

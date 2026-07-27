@@ -1,8 +1,8 @@
 # EwoClient
 
-A custom Minecraft Java Edition launcher with a "Velvet & Pearl" boudoir aesthetic. Native Rust + Skia, custom-frame window, target rendering 500fps on a 500Hz OLED.
+A custom Minecraft Java Edition launcher with a "Velvet & Pearl" boudoir aesthetic. Native Rust + Skia, custom-frame window, target rendering 500fps on a 500Hz OLED — plus an in-game GUI, a friendly fork of the Fabric loader, and a from-scratch native Minecraft client.
 
-> ⚠️ Personal project, work in progress. Visual replica is feature-complete on Windows; real launcher functionality (Microsoft auth + JVM spawn) is in active development. **The launch button does not yet actually launch Minecraft.**
+> ⚠️ Personal project. Windows is the developed-and-tested target; Linux/Wayland is written but has never been run on real hardware. macOS and X11 are out of scope.
 
 ## Screenshots
 
@@ -13,31 +13,32 @@ A custom Minecraft Java Edition launcher with a "Velvet & Pearl" boudoir aesthet
 
 ## What's done
 
-- Custom-frame window (Win11 rounded corners, drag, resize)
-- Skia GL backend with the prototype's full chrome stack (3-layer shadow, inset rim, inner berry glow)
-- Animated backdrop: wine radial → velvet folds (turbulence + displacement) → caustics → bokeh → pearl dust (gradient halos) → petals → vignette
-- Glass panel primitive (refract blur + 4 animated rim lights + breath)
-- All widgets: vbtn (with click ripple + cursor specks), vslider, vdrop (portaled, with row stagger + scroll), vstatus, pbar (4 states + 3 error variants), vtoggle, vghost_btn, vpathfield, meta-pill
-- All screens: main menu (with hover-glow stagger), instances (with sort, rename, mods toggle, delete), settings (5 tabs), launching (with synthetic log)
-- Modal system (new-instance + about)
-- Persistence (instances + settings + auth state via TOML at `%APPDATA%/EwoClient/`)
-- Dev overlay (`--dev`) with token tweaks, FPS HUD, sim-error pill
-- Microsoft OAuth + Xbox Live + XSTS chain (pending Mojang Launcher Program approval to call `login_with_xbox`)
+**The launcher.** A pixel-faithful native port of the CSS prototype — custom-frame transparent window, the full animated backdrop (velvet folds with turbulence + displacement, caustics, bokeh, pearl dust, petals), the glass-panel primitive, every widget and screen, modals, TOML persistence, and a `--dev` overlay with live token tweaks and an FPS HUD.
+
+**It actually launches Minecraft.** Microsoft OAuth → Xbox Live → XSTS → Minecraft Services (the app is on Mojang's allowlist and sign-in is verified live), the real version manifest with sha1-verified library/asset downloads into Mojang's own disk layout, JRE detection with automatic Adoptium fetch, and JVM spawn with stdout/stderr streaming into the launching screen.
+
+**EwoLoader** — a friendly fork of `fabric-loader` (sibling repo) that ships 16 user-toggleable mods plus infrastructure, with per-instance toggles wired end to end.
+
+**An in-game GUI.** A Rust/Skia HUD rendered over the running game from a `cdylib` on its own GL context: FPS/coords/ping/keystrokes/armor/potions/target, a draggable editor, a custom crosshair, an SMTC media controller, a 3D skin viewer, and a multi-tab dashboard — plus client *modules* (12 legit ones by default; a separate `--features pvp` build carries the packet-touching assist set).
+
+**Accounts, profiles and social.** Multi-account, hot-swappable client profiles, a remappable keybind registry, and friends/presence integrated with the user's own Minecraft network.
+
+**[Rewo](REWO_PLAN.md)** — a from-scratch native Minecraft client, in the same workspace under `crates/rewo-*`. It speaks the vanilla protocol (26.2 / protocol 776) and renders with raw Vulkan via `ash`, no JVM and no mod loader. It plays online: signed chat, real skins, OptiFine CEM packs rendered natively, a server-exact client light engine, vanilla's lightmap and day/night sky, per-biome colour, real Nether/End dimensions, 88 mob models with their exact animations, the combat and block-entity arcs, and weather. Verified headlessly by fourteen serverless gates.
 
 ## What's next
 
-- Mojang Launcher Program approval (in progress — until then, `login_with_xbox` rejects the app)
-- Phase B: real version manifest + library/asset downloads
-- Phase C: JVM spawn + game launch
-- Phase D: Fabric / Forge / Quilt loader support
+- Merging Rewo's work branch (see [`REWO_PLAN.md`](REWO_PLAN.md) §0.0)
+- An inventory model for Rewo — the blocker for its first-person hand and GUI
+- Hyprland verification for the launcher; a formal pixel-parity pass vs `style/*.png`
 
-See `CLAUDE.md` for the full design + roadmap.
+See [`CLAUDE.md`](CLAUDE.md) for the full design + roadmap, and [`REWO_PLAN.md`](REWO_PLAN.md) for the native client.
 
 ## Build
 
 ```
 cargo run --release -p ewo-launcher           # normal launch
 cargo run --release -p ewo-launcher -- --dev  # with dev overlay
+cargo run --release -p rewo-app -- live --host … --port …   # the native client
 ```
 
 Requires Rust stable 1.80+. First build is slow because Skia compiles its own C++ stack (prebuilts are used; ~30s on a recent machine).
@@ -51,6 +52,7 @@ Requires Rust stable 1.80+. First build is slow because Skia compiles its own C+
 - **taffy** 0.7 — layout primitives
 - **ureq** + **tiny_http** + **opener** — Microsoft auth chain (loopback OAuth flow)
 - Variable fonts: Fraunces (display), Newsreader (body), JetBrains Mono (mono)
+- **ash** 1.3 — raw Vulkan, for the Rewo native client (`crates/rewo-*`)
 
 ## License
 
