@@ -49,7 +49,7 @@ use rewo_world::particles::{
     LEVEL_EVENT_DESTROY_BLOCK,
 };
 
-const EXPECTED_WITNESSES: usize = 32;
+const EXPECTED_WITNESSES: usize = 34;
 
 #[derive(ClapArgs, Debug)]
 pub struct ParticleshotArgs {
@@ -529,6 +529,54 @@ fn fanout_layer(c: &mut Checker, types: &ParticleTypes) {
         "f10.the_pool_is_capped",
         capped.len() == 20,
         format!("limit 20 held against a 64-shard burst → {}", capped.len()),
+    );
+
+    // The sprite sets, against the jar's own particle JSONs. `splash` lists
+    // FOUR textures even though nothing about it looks animated, and the pick
+    // is a `get(random)` on the ENGINE generator — so it consumes a draw as a
+    // constructor argument, before any of the particle's own.
+    let expected: [(ParticleKind, u32, bool); 6] = [
+        (ParticleKind::Flame, 1, true),   // flame
+        (ParticleKind::Crit, 1, true),    // critical_hit
+        (ParticleKind::Splash, 4, true),  // splash_0..3
+        (ParticleKind::Smoke, 8, false),  // generic_7..0, by age
+        (ParticleKind::Poof, 8, false),   // generic_7..0, by age
+        (ParticleKind::Terrain, 1, false),// from the block model
+    ];
+    let sprites_ok = expected
+        .iter()
+        .all(|(k, n, pick)| k.sprite_frames() == *n && k.picks_sprite_at_spawn() == *pick);
+    c.record(
+        "f12.sprite_sets_match_the_jar_particle_definitions",
+        sprites_ok,
+        "frame counts and get(random)-vs-get(age,lifetime) per          assets/minecraft/particles/*.json",
+    );
+
+    // A spawn-time sprite pick must actually move the engine stream: skipping
+    // `nextInt(1)` for a single-texture set would shift every later particle.
+    let mut with_pick = ParticleSystem::new(99);
+    let flame_cmd = level_particles_body(
+        false, false, 0.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2, flame_id, None,
+    );
+    if let Some(ParticleEvent::Command(cmd)) = rewo_net::route_level_particles(&flame_cmd, types) {
+        with_pick.spawn_from_packet(&cmd, &void_shapes);
+    }
+    // The same two spawns from a system whose stream was advanced by one draw
+    // must NOT land in the same place — which is what proves the pick is real.
+    let mut advanced = ParticleSystem::new(99);
+    advanced.burn_one_draw_for_test();
+    if let Some(ParticleEvent::Command(cmd)) = rewo_net::route_level_particles(&flame_cmd, types) {
+        advanced.spawn_from_packet(&cmd, &void_shapes);
+    }
+    let differs = with_pick
+        .particles
+        .iter()
+        .zip(advanced.particles.iter())
+        .any(|(a, b)| a.x.to_bits() != b.x.to_bits());
+    c.record(
+        "f13.a_spawn_time_sprite_pick_consumes_an_engine_draw",
+        differs && with_pick.len() == 2,
+        "advancing the engine stream by one draw changes where the particles          land, so nextInt(1) is not a no-op that could be skipped",
     );
 
     // Dead particles are retired.

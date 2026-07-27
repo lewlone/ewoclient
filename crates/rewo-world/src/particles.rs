@@ -228,16 +228,37 @@ impl ParticleKind {
         })
     }
 
-    /// How many atlas frames this kind animates over. `SpriteSet.get(int,
-    /// int)` indexes `age * (n-1) / lifetime`; kinds with one frame pick it
-    /// randomly at spawn instead (`SpriteSet.get(RandomSource)`).
+    /// How many textures this kind's sprite set holds.
+    ///
+    /// Taken from the jar's own `assets/minecraft/particles/<name>.json`, not
+    /// guessed from the texture directory: `splash` really does list four
+    /// (`splash_0..3`) even though nothing about the particle looks animated.
     pub fn sprite_frames(self) -> u32 {
         match self {
-            // generic_0..7 — the shared 8-frame smoke/explode strip.
+            // generic_7..generic_0 — the shared 8-frame smoke/explode strip.
             Self::Smoke | Self::Poof => 8,
-            // flame, splash, critical_hit are single sprites; terrain takes a
-            // 1/4-of-a-block window out of the block texture instead.
-            Self::Flame | Self::Splash | Self::Crit | Self::Terrain => 1,
+            // splash_0..3, picked at random on spawn.
+            Self::Splash => 4,
+            // Single sprites. Terrain takes a quarter-of-a-sprite window out
+            // of the *block* texture instead of using the particle atlas.
+            Self::Flame | Self::Crit | Self::Terrain => 1,
+        }
+    }
+
+    /// Whether the provider picks a sprite from the ENGINE generator at spawn
+    /// (`SpriteSet.get(RandomSource)`) rather than from the particle's age
+    /// (`SpriteSet.get(int, int)`).
+    ///
+    /// This matters beyond which texture shows: the pick happens as a
+    /// constructor *argument*, so it consumes an engine-RNG draw before any of
+    /// the particle's own draws. Getting it wrong shifts every later particle
+    /// in a burst. Vanilla's providers split cleanly — Flame, Crit and Splash
+    /// call `get(random)`; Smoke and Poof pass `sprites.first()` and animate by
+    /// age; Terrain takes its sprite from the block model and draws nothing.
+    pub fn picks_sprite_at_spawn(self) -> bool {
+        match self {
+            Self::Flame | Self::Crit | Self::Splash => true,
+            Self::Smoke | Self::Poof | Self::Terrain => false,
         }
     }
 }
@@ -925,6 +946,15 @@ impl ParticleSystem {
         }
     }
 
+    /// Advance the engine generator by exactly one draw.
+    ///
+    /// Only for the gate's `f13`, which proves a spawn-time sprite pick really
+    /// moves the stream by showing that an equivalently-advanced system spawns
+    /// somewhere else.
+    pub fn burn_one_draw_for_test(&mut self) {
+        self.rng.next_int(1);
+    }
+
     /// Derive one particle's generator seed. Deterministic per system seed
     /// and spawn order.
     fn derive_seed(&mut self) -> i64 {
@@ -987,9 +1017,11 @@ impl ParticleSystem {
         shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
     ) {
         // Vanilla picks the sprite off the ENGINE generator, as a constructor
-        // argument — i.e. before any of the particle's own draws.
+        // ARGUMENT — before any of the particle's own draws. `nextInt(1)` still
+        // consumes a draw, so a single-texture set is not a special case that
+        // can be skipped without shifting the stream.
         let frames = kind.sprite_frames();
-        let sprite = if frames > 1 && matches!(kind, ParticleKind::Flame | ParticleKind::Splash | ParticleKind::Crit) {
+        let sprite = if kind.picks_sprite_at_spawn() {
             self.rng.next_int(frames as i32) as u32
         } else {
             0
@@ -1004,7 +1036,7 @@ impl ParticleSystem {
             ParticleKind::Poof => Particle::poof(x, y, z, xa, ya, za, rng),
             ParticleKind::Terrain => Particle::terrain(x, y, z, xa, ya, za, block_state, rng),
         };
-        if frames > 1 && sprite != 0 {
+        if kind.picks_sprite_at_spawn() {
             p.sprite_frame = sprite;
         }
         self.push(p);

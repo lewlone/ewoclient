@@ -217,12 +217,12 @@ trap, recorded in the module header so the next pass does not rediscover it.
 ## The gate: `rewo particleshot --check`
 
 Serverless, CPU-only, fail-closed on both a failing witness and a witness that
-silently stopped running. **32 witnesses, 0 failures.**
+silently stopped running. **34 witnesses, 0 failures.**
 
 | group | what it grades |
 |---|---|
 | `w1`–`w10` | the wire — hand-assembled packet bodies through the production decoders |
-| `f1`–`f11` | the fan-out — spawn loop, shard grid, scatter mean and variance |
+| `f1`–`f13` | the fan-out — spawn loop, shard grid, scatter, sprite sets |
 | `s1`–`s11` | the simulation — seeded trajectories vs the verbatim-source oracle |
 
 Bodies are **hand-assembled from the decompiled write methods**, not produced by
@@ -257,6 +257,42 @@ caught, all with legible signatures:
 | read `count` as a VarInt | 9 fail, starting at `w5` |
 | transpose `x_dist`/`y_dist` in the decoder | `w4` and `f4` fail |
 | coarsen destroy-block density 0.25 → 0.5 | `f7`/`f8`/`f10` fail (8 shards, not 64) |
+| declare `Splash` single-frame again | `f12` fails |
+
+## A second defect, found by reading the authoritative data
+
+After the gate was green, checking the jar's own
+`assets/minecraft/particles/*.json` — rather than inferring sprite sets from
+the texture directory — turned up a real bug in what had already shipped.
+
+`splash.json` lists **four** textures (`splash_0..3`), and
+`SplashParticle.Provider` calls `this.sprite.get(random)`. I had declared
+Splash single-frame, so `spawn_one` never made that draw.
+
+The trajectory witnesses still passed, because they grade the *particle's own*
+generator and the test hands it in directly. What was wrong was the **engine**
+stream position. Vanilla's providers split cleanly:
+
+| kind | sprite source | engine draw |
+|---|---|---|
+| Flame, Crit | `sprite.get(random)`, 1 texture | **yes** — `nextInt(1)` still consumes one |
+| Splash | `sprite.get(random)`, 4 textures | **yes** |
+| Smoke, Poof | `sprites.first()`, animated by age | no |
+| Terrain | the block model | no |
+
+The pick happens as a constructor *argument*, so it lands before any of the
+particle's own draws — get it wrong and every later particle in a burst shifts.
+The trap is that `nextInt(1)` looks like a no-op worth skipping; it is not,
+because it still advances the LCG.
+
+Fixed, and pinned by two new witnesses: `f12` grades the frame counts and the
+`get(random)`-vs-`get(age, lifetime)` split against the JSONs, and `f13` proves
+the draw is real by showing that an engine stream advanced by one lands the
+same two particles somewhere else. Mutating `Splash` back to one frame fails
+`f12`.
+
+The lesson generalises: the texture directory is a *proxy* for the sprite set,
+and the particle JSON is the property.
 
 ## Honest scope limits
 
@@ -292,9 +328,13 @@ Stated so they read as decisions rather than oversights.
 
 ## Verification run
 
-- `cargo test` on all six rewo crates: **520 lib tests**, 0 failures (was 500;
+- `cargo test` on all six rewo crates: **524 lib tests**, 0 failures (was 500;
   +20 in `rewo-world`, +4 in `rewo-gpu`).
-- `rewo particleshot --check`: **32/32**, exit 0.
+- `rewo particleshot --check`: **34/34**, exit 0.
+- Full gate sweep — mobshot 243/243, blockentityshot 172, swingshot 97,
+  hurtshot 38, weathershot 35, particleshot 34, eventshot 28, itemshot 28,
+  danceshot 24, portalshot 12, plus skyshot, lightmapshot, tintshot, meshshot,
+  dimensioncheck: **all 15 exit 0 with 0 VUIDs**.
 - Canonical demo PNG SHA-256 unchanged:
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635`.
 - `git diff --check` clean.
