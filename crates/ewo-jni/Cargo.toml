@@ -9,8 +9,12 @@ rust-version.workspace = true
 # Phase E spike. A C dynamic library loaded into the Minecraft JVM by the
 # `ewo-hud` Fabric mod — it borrows Minecraft's GL context and paints the
 # `ewo-render` Skia UI over the framebuffer. See CLAUDE.md "Phase E".
+#
+# `rlib` rides alongside `cdylib` purely so `examples/hudshot.rs` can link the
+# crate and render the overlay to a PNG offscreen — the in-game equivalent of
+# `ewo-render`'s `dropdown_shot`. The JVM only ever loads the cdylib.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ewo-core.workspace = true

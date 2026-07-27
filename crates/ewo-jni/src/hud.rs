@@ -13,10 +13,14 @@
 //! [`HudLayout`] (`hud.toml`), and while the overlay is open ([`Editor`]) each
 //! widget can be dragged to reposition it.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use ewo_core::modules as catalog;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
+use ewo_render::widgets::{
+    draw_liquid_glass, GlassBackdrop, LiquidGlassParams,
+};
 use ewo_render::FontStore;
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, Data, Font, Image, MaskFilter, Paint,
@@ -36,6 +40,90 @@ fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
     Color4f::new(c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, a)
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Per-frame context — the clock and the live-game snapshots.
+// ────────────────────────────────────────────────────────────────────────
+
+/// The two blurred snapshots of the live game that [`liquid_glass`] samples.
+///
+/// `Image` is a refcounted handle, so cloning one of these is a couple of
+/// atomic bumps, not a pixel copy.
+///
+/// [`liquid_glass`]: ewo_render::widgets::liquid_glass
+#[derive(Clone)]
+pub struct GlassSource {
+    /// Lightly blurred — what the refracting bevel bends. Needs structure.
+    pub rim: Image,
+    /// `rim`'s size relative to the framebuffer (0.5 = half resolution).
+    pub rim_scale: f32,
+    /// Heavily blurred — what shows through the flat interior. In-game this is
+    /// the cached frost surface the overlay already maintains.
+    pub frost: Image,
+    pub frost_scale: f32,
+}
+
+/// Everything a frame needs that isn't widget data: the clock, the glass
+/// sources, and the user's glass-strength preference.
+#[derive(Clone)]
+pub struct Frame {
+    /// Wall-clock seconds since launch. Drives every animation.
+    pub time: f32,
+    /// `None` before the first game snapshot has been captured, or when the
+    /// platform path can't provide one — widgets then fall back to the flat
+    /// plate rather than drawing nothing.
+    pub glass: Option<GlassSource>,
+    /// Glass intensity, 0..2, from the overlay SETTINGS tab. 0 disables
+    /// refraction entirely and uses the flat plate.
+    pub glass_strength: f32,
+}
+
+thread_local! {
+    /// Installed for the duration of one [`draw`] and cleared on the way out.
+    ///
+    /// A thread-local rather than a parameter because the plate is drawn from
+    /// ~25 call sites nested several layers deep inside this module; threading
+    /// a `&Frame` through every intermediate `draw_*` signature would be a far
+    /// larger diff than the change it carries, and would bury it. The HUD is
+    /// painted on exactly one thread (Minecraft's render thread, or the
+    /// harness's main thread), and [`FrameGuard`] makes the "set for the
+    /// duration of draw" invariant impossible to violate.
+    static FRAME: RefCell<Option<Frame>> = const { RefCell::new(None) };
+}
+
+/// Clears the installed [`Frame`] on drop, including on unwind.
+struct FrameGuard;
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        FRAME.with(|f| *f.borrow_mut() = None);
+    }
+}
+
+fn install_frame(frame: Frame) -> FrameGuard {
+    FRAME.with(|f| *f.borrow_mut() = Some(frame));
+    FrameGuard
+}
+
+/// Seconds since launch. `0.0` outside a `draw` — callers get a still frame
+/// rather than a panic.
+fn now() -> f32 {
+    FRAME.with(|f| f.borrow().as_ref().map(|fr| fr.time).unwrap_or(0.0))
+}
+
+/// Run `f` with the glass sources, if this frame has them and the user hasn't
+/// turned glass off.
+fn with_glass<R>(f: impl FnOnce(&GlassSource, f32) -> R) -> Option<R> {
+    FRAME.with(|cell| {
+        let borrow = cell.borrow();
+        let frame = borrow.as_ref()?;
+        if frame.glass_strength <= 0.0 {
+            return None;
+        }
+        let src = frame.glass.as_ref()?;
+        Some(f(src, frame.glass_strength))
+    })
+}
+
 /// A zero-size rect — used as the recorded bounds of a widget that wasn't drawn.
 fn empty_rect() -> Rect {
     Rect::from_xywh(0.0, 0.0, 0.0, 0.0)
@@ -50,7 +138,11 @@ fn empty_rect() -> Rect {
 pub const SCHEMA_VERSION: i32 = 10;
 
 /// Byte offsets into the shared block — mirror of `EwoHudData.java`.
-mod off {
+///
+/// `pub(crate)` so [`crate::fixture`] can synthesise a buffer for the offscreen
+/// render harness using the same offsets the real reader uses — a fixture that
+/// hard-coded its own copy would drift silently on the next schema bump.
+pub(crate) mod off {
     pub const FLAGS: usize = 4;
     pub const FPS: usize = 8;
     pub const PING: usize = 12;
@@ -98,13 +190,17 @@ mod off {
 pub const MAX_INDICATORS: usize = 16;
 /// Bytes per indicator record — mirror of `EwoIndicators.RECORD`.
 pub const INDICATOR_RECORD: usize = 40;
-const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
-const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
-const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
-const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
-const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
-const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
-const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
+/// Total bytes the reader may touch — one past the last field. Mirrors
+/// `EwoHudData.CAPACITY`; [`crate::fixture`] allocates this much.
+pub const BLOCK_BYTES: usize = 1312;
+// `pub(crate)` for the same reason as `off` — the fixture sets these flags.
+pub(crate) const FLAG_WORLD: i32 = 1; // a player + level exist → coords/keystrokes valid
+pub(crate) const FLAG_PING: i32 = 1 << 1; // a server connection exists → ping valid
+pub(crate) const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
+pub(crate) const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
+pub(crate) const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
+pub(crate) const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
+pub(crate) const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
 
 /// Jump-reset tier — wire-mirror of `EwoJumpReset.Tier` ordinal mapping in
 /// `EwoHudData.tierToInt`. The renderer dispatches on this.
@@ -617,7 +713,17 @@ struct HudLayout {
     widgets: [WidgetLayout; 17],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
+    /// Liquid-glass intensity, [`GLASS_MIN`]..=[`GLASS_MAX`]. Scales the
+    /// bevel width, refraction and dispersion together; `0` falls back to the
+    /// flat plate entirely.
+    glass_strength: f32,
 }
+
+/// Glass-strength bounds. `0` is a real setting — the flat plate — so the
+/// minimum is 0 rather than something small-but-refracting.
+pub const GLASS_MIN: f32 = 0.0;
+pub const GLASS_MAX: f32 = 2.0;
+const GLASS_DEFAULT: f32 = 1.0;
 
 impl HudLayout {
     fn get(&self, id: WidgetId) -> WidgetLayout {
@@ -652,6 +758,7 @@ impl HudLayout {
                 WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100 }, // media
             ],
             paint_rate: crate::HudPaintRate::Match,
+            glass_strength: GLASS_DEFAULT,
         }
     }
 
@@ -685,10 +792,18 @@ impl HudLayout {
             let key = key.trim();
             let value = value.trim().trim_matches('"');
             if in_prefs {
-                if key == "paint_rate" {
-                    if let Some(r) = crate::HudPaintRate::from_str(value) {
-                        layout.paint_rate = r;
+                match key {
+                    "paint_rate" => {
+                        if let Some(r) = crate::HudPaintRate::from_str(value) {
+                            layout.paint_rate = r;
+                        }
                     }
+                    "glass_strength" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            layout.glass_strength = v.clamp(GLASS_MIN, GLASS_MAX);
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -740,8 +855,9 @@ impl HudLayout {
             ));
         }
         s.push_str(&format!(
-            "\n[prefs]\npaint_rate = \"{}\"\n",
-            self.paint_rate.as_str()
+            "\n[prefs]\npaint_rate = \"{}\"\nglass_strength = {:.3}\n",
+            self.paint_rate.as_str(),
+            self.glass_strength,
         ));
         let _ = std::fs::write(&path, s);
     }
@@ -870,6 +986,8 @@ pub struct Editor {
     pvp: crate::pvp::PvpConfig,
     /// An in-progress PVP-tab slider drag — identifies which control is held.
     pvp_drag: Option<PvpDrag>,
+    /// The SETTINGS-tab glass-strength slider is held.
+    glass_drag: bool,
     /// Module-keybind map for the MODULES-tab chip — `(action_id, glfw_code)`.
     /// Loaded once from the instance dir's `ewo-keybinds.txt` (which the
     /// launcher writes before launch from the active profile). Linear-scanned
@@ -1014,6 +1132,7 @@ impl Editor {
             skin_mtime: skin_png_mtime(),
             pvp: crate::pvp::PvpConfig::load(),
             pvp_drag: None,
+            glass_drag: false,
             keybinds: load_keybinds(),
             media: crate::media::MediaState::empty(),
             media_service: crate::media::MediaService::start(),
@@ -1035,6 +1154,40 @@ impl Editor {
     /// `nativeIsCustomCrosshairEnabled` for the Java mixin.
     pub fn crosshair_config(&self) -> &crate::crosshair::CrosshairConfig {
         &self.crosshair
+    }
+
+    /// Select a dashboard view by its tab label (case-insensitive), e.g.
+    /// `"home"`, `"modules"`, `"pvp"`. Returns `false` for an unknown name.
+    ///
+    /// In-game the view is only ever changed by clicking the tab strip, which
+    /// needs a cursor and a live window — so the offscreen render harness
+    /// ([`examples/hudshot.rs`]) drives it through here instead.
+    pub fn set_view_by_name(&mut self, name: &str) -> bool {
+        let Some(view) = OverlayView::ALL
+            .into_iter()
+            .find(|v| v.title().eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.view = view;
+        // Match the tab-strip click path: a fresh view always starts scrolled
+        // to the top, with no popover carried over from the previous tab.
+        self.modules_scroll = 0.0;
+        self.module_popover = None;
+        true
+    }
+
+    /// Every selectable view name, in tab-strip order — so the harness can
+    /// enumerate tabs without duplicating the list.
+    pub fn view_names() -> Vec<&'static str> {
+        OverlayView::ALL.into_iter().map(|v| v.title()).collect()
+    }
+
+    /// Park the cursor at `(x, y)` without running the hover/drag logic in
+    /// [`Self::on_mouse_move`] — the harness uses this to render hover states
+    /// deterministically.
+    pub fn set_cursor(&mut self, x: f32, y: f32) {
+        self.cursor = (x, y);
     }
 
     /// Rects (framebuffer pixels) where the composite step should leave
@@ -1070,6 +1223,11 @@ impl Editor {
     /// The HUD paint-rate cap, chosen in the settings view.
     pub fn paint_rate(&self) -> crate::HudPaintRate {
         self.layout.paint_rate
+    }
+
+    /// Liquid-glass intensity from the overlay SETTINGS tab.
+    pub fn glass_strength(&self) -> f32 {
+        self.layout.glass_strength
     }
 
     /// Whether the current view wants the live game frosted behind it. The
@@ -1124,6 +1282,14 @@ impl Editor {
         // ignore `y` (or `x`, for the vertical hue/alpha strips).
         if let Some(slot) = self.crosshair_ui.drag {
             self.drag_crosshair_slider(slot, x, y);
+            return;
+        }
+        // SETTINGS-view glass-strength drag. Tracks `x` even once the cursor
+        // leaves the track vertically — the usual slider grab behaviour.
+        if self.glass_drag {
+            let (_, _, _, glass) =
+                settings_layout(self.window.0, self.window.1, self.profiles.len());
+            self.layout.glass_strength = glass_value_at(glass, x);
             return;
         }
         let Some(drag) = &self.dragging else {
@@ -1231,6 +1397,10 @@ impl Editor {
                 // A crosshair-tab slider drag finished — clamp + persist.
                 self.crosshair.clamp();
                 crate::crosshair::save(&self.crosshair);
+            }
+            if std::mem::take(&mut self.glass_drag) {
+                // A glass-strength drag finished — persist to `hud.toml`.
+                self.layout.save();
             }
             if self.dragging.take().is_some() {
                 // A drag finished — drop the snap guides and persist.
@@ -1383,7 +1553,7 @@ impl Editor {
                 }
             }
             OverlayView::Settings => {
-                let (_, chips, buttons) =
+                let (_, chips, buttons, glass) =
                     settings_layout(self.window.0, self.window.1, self.profiles.len());
                 for (i, &chip) in chips.iter().enumerate() {
                     if point_in(chip, x, y) {
@@ -1399,6 +1569,13 @@ impl Editor {
                         self.layout.save();
                         return;
                     }
+                }
+                if point_in(glass, x, y) {
+                    // Jump to the pressed value, then track the cursor until
+                    // release — same grab model as the PVP-tab sliders.
+                    self.layout.glass_strength = glass_value_at(glass, x);
+                    self.glass_drag = true;
+                    return;
                 }
             }
             OverlayView::Pvp => self.pvp_press(x, y),
@@ -1724,7 +1901,20 @@ fn nearest_snap(moving: [f32; 3], fixed: &[f32]) -> Option<(f32, f32)> {
 /// Draw the whole HUD for one frame: place every widget from the persisted
 /// layout, record its bounds, and — while the overlay is open — draw the
 /// editor chrome on top.
-pub fn draw(canvas: &Canvas, data: &HudData, editor: &mut Editor, fonts: &FontStore, w: f32, h: f32) {
+pub fn draw(
+    canvas: &Canvas,
+    data: &HudData,
+    editor: &mut Editor,
+    fonts: &FontStore,
+    w: f32,
+    h: f32,
+    frame: Frame,
+) {
+    // Installed for this call only; cleared by the guard on the way out, even
+    // if a draw panics. Every animated widget reads the clock through `now()`
+    // and every plate reads the glass sources through `with_glass`.
+    let _frame = install_frame(frame);
+
     editor.window = (w, h);
 
     // Drain any pending SMTC snapshots into the live media state. The poll is
@@ -2287,7 +2477,63 @@ fn button_state(
 /// CSS `backdrop-filter: blur(8px)` can't sample the live game — the HUD
 /// paints to an offscreen surface (the E1 tradeoff) — so this is a flat wine
 /// fill, not a true backdrop blur.
+/// Which preset a plate should use. The dashboard's panels are large and calm;
+/// in-world widgets are small and want a tighter bevel or the refraction eats
+/// the whole surface.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlassRole {
+    Widget,
+    Panel,
+}
+
+/// Draw `rect` as a refracting glass plate, if this frame can. Returns whether
+/// it did — callers fall back to their flat chrome when it returns `false`.
+fn try_glass_plate(canvas: &Canvas, rect: Rect, radius: f32, role: GlassRole) -> bool {
+    // Below a certain size the bevel would consume the entire plate and the
+    // interior would have no flat region left to carry text.
+    if rect.width() < 44.0 || rect.height() < 22.0 {
+        return false;
+    }
+    let time = now();
+    with_glass(|src, strength| {
+        let base = match role {
+            GlassRole::Widget => LiquidGlassParams::WIDGET,
+            GlassRole::Panel => LiquidGlassParams::PANEL,
+        };
+        // The strength preference scales the physical knobs, not the tint —
+        // turning the glass down should flatten the bevel, not repaint the
+        // surface a different colour.
+        let short_side = rect.width().min(rect.height());
+        let params = LiquidGlassParams {
+            radius,
+            // Never let the bevel exceed a third of the short side, or the
+            // "flat centre" guarantee that keeps text readable is lost.
+            edge: (base.edge * strength).min(short_side / 3.0),
+            strength: base.strength * strength,
+            disperse: base.disperse * strength,
+            ..base
+        };
+        draw_liquid_glass(
+            canvas,
+            rect,
+            GlassBackdrop {
+                rim: &src.rim,
+                rim_scale: src.rim_scale,
+                frost: &src.frost,
+                frost_scale: src.frost_scale,
+            },
+            params,
+            time,
+        )
+    })
+    .unwrap_or(false)
+}
+
 fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
+    if try_glass_plate(canvas, rect, radius, GlassRole::Panel) {
+        return;
+    }
+
     let rrect = RRect::new_rect_xy(rect, radius, radius);
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
@@ -2318,6 +2564,14 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
 /// `backdrop-filter: blur(8px)` — we paint to an offscreen surface, so the
 /// game pixels aren't available to blur until composite time.
 fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
+    // Refracting glass when this frame carries a game snapshot; the flat plate
+    // below otherwise. The fallback is load-bearing, not defensive politeness —
+    // the snapshot is absent for the first frame after launch or a resize, and
+    // a HUD that vanished on those frames would be worse than a flat one.
+    if try_glass_plate(canvas, rect, radius, GlassRole::Widget) {
+        return;
+    }
+
     // (1) Drop shadow.
     let shadow_rect = rect.with_offset((0.0, 6.0));
     let shadow_rr = RRect::new_rect_xy(shadow_rect, radius, radius);
@@ -4585,14 +4839,15 @@ fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontStore, w: f32)
 
 /// The Settings-view panel rect, its client-profile chips, and the 4
 /// paint-rate selector buttons. Fixed-size so renderer + hit-tester agree.
-fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4]) {
+fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4], Rect) {
     const CHIP_W: f32 = 112.0;
     const CHIP_H: f32 = 32.0;
     const GAP: f32 = 8.0;
     let chip_rows = (profile_count.max(1) as f32 / 4.0).ceil();
 
     let pw = 484.0;
-    let ph = 262.0 + chip_rows * (CHIP_H + GAP);
+    // +96 for the glass-strength row (label, hint, track).
+    let ph = 262.0 + 96.0 + chip_rows * (CHIP_H + GAP);
     let px = (w - pw) * 0.5;
     let py = (h - ph) * 0.5;
     let panel = Rect::from_xywh(px, py, pw, ph);
@@ -4621,7 +4876,21 @@ fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [R
     for (i, slot) in buttons.iter_mut().enumerate() {
         *slot = Rect::from_xywh(left + i as f32 * (BTN_W + BTN_GAP), buttons_top, BTN_W, BTN_H);
     }
-    (panel, chips, buttons)
+
+    // Glass-strength track. Generous height so it is easy to grab; the visible
+    // track is drawn thin, centred inside this.
+    let glass = Rect::from_xywh(left, buttons_top + BTN_H + 62.0, pw - 64.0, 20.0);
+
+    (panel, chips, buttons, glass)
+}
+
+/// Map a cursor x to a glass-strength value on `track`.
+fn glass_value_at(track: Rect, x: f32) -> f32 {
+    let frac = ((x - track.left) / track.width().max(1.0)).clamp(0.0, 1.0);
+    let raw = GLASS_MIN + (GLASS_MAX - GLASS_MIN) * frac;
+    // Snap to 0.05 so the persisted value is tidy and the readout doesn't
+    // jitter in the last decimal while dragging.
+    (raw / 0.05).round() * 0.05
 }
 
 /// One option button in the paint-rate selector.
@@ -4669,7 +4938,7 @@ fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, active: bool, 
 
 /// The Settings view — a client-profile picker + the HUD paint-rate cap.
 fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
-    let (panel, chips, buttons) = settings_layout(w, h, editor.profiles.len());
+    let (panel, chips, buttons, glass) = settings_layout(w, h, editor.profiles.len());
     draw_chip(canvas, panel, 16.0);
     let left = panel.left + 32.0;
 
@@ -4743,6 +5012,81 @@ fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h:
         let rate = crate::HudPaintRate::ALL[i];
         draw_settings_button(canvas, btn, rate.label(), rate == current, fonts);
     }
+
+    // ── Liquid-glass strength ────────────────────────────────────────────
+    let strength = editor.glass_strength();
+    let mut gl_label = Paint::default();
+    gl_label.set_anti_alias(true);
+    gl_label.set_color4f(rgba(MAUVE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        "GLASS  ·  REFRACTION",
+        (left, glass.top - 40.0),
+        &label_font,
+        &gl_label,
+        0.18,
+    );
+    canvas.draw_str(
+        if strength <= 0.0 {
+            "Off — flat plates. Cheapest, and the pre-glass look."
+        } else {
+            "How much the widget edges bend the world behind them."
+        },
+        (left, glass.top - 18.0),
+        &body_font,
+        &body,
+    );
+
+    // Value readout, right-aligned against the track's end.
+    let val_font = fonts.jetbrains_mono(11.0);
+    let val = if strength <= 0.0 {
+        "OFF".to_string()
+    } else {
+        format!("{strength:.2}×")
+    };
+    let val_w = measure_tracked_em(&val_font, &val, 0.14);
+    let mut val_paint = Paint::default();
+    val_paint.set_anti_alias(true);
+    val_paint.set_color4f(rgba(ROSE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        &val,
+        (glass.right - val_w, glass.top - 18.0),
+        &val_font,
+        &val_paint,
+        0.14,
+    );
+
+    // Track + fill + handle. Deliberately the same visual language as the
+    // launcher's vslider (2px pill, rose fill, pearl-cored handle) rather than
+    // yet another bespoke slider — the in-game surface already has five.
+    let cy = glass.center_y();
+    let track = Rect::from_xywh(glass.left, cy - 1.0, glass.width(), 2.0);
+    let mut track_paint = Paint::default();
+    track_paint.set_anti_alias(true);
+    track_paint.set_color4f(rgba(ROSE, 0.16), None);
+    canvas.draw_rrect(RRect::new_rect_xy(track, 1.0, 1.0), &track_paint);
+
+    let frac = ((strength - GLASS_MIN) / (GLASS_MAX - GLASS_MIN)).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let mut fill = track;
+        fill.right = fill.left + track.width() * frac;
+        let mut fill_paint = Paint::default();
+        fill_paint.set_anti_alias(true);
+        fill_paint.set_color4f(rgba(ROSE, 0.95), None);
+        canvas.draw_rrect(RRect::new_rect_xy(fill, 1.0, 1.0), &fill_paint);
+    }
+
+    let hx = glass.left + track.width() * frac;
+    let mut halo = Paint::default();
+    halo.set_anti_alias(true);
+    halo.set_color4f(rgba(ROSE, 0.45), None);
+    halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 4.0, false));
+    canvas.draw_circle((hx, cy), 8.0, &halo);
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_circle((hx, cy), 5.0, &knob);
 }
 
 // ────────────────────────────────────────────────────────────────────────
