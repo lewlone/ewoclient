@@ -2590,7 +2590,13 @@ fn draw_media_compact(
     let chip_h = pad_y * 2.0 + thumb;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
     let chip = Rect::from_xywh(x, y, chip_w, chip_h);
-    draw_iw_shell(canvas, chip, 14.0);
+    // The one plate in the HUD that answers to the music.
+    draw_iw_shell_driven(
+        canvas,
+        chip,
+        14.0,
+        (!idle).then(|| PlateDrive::from_audio(audio)).flatten(),
+    );
 
     // Thumbnail (44×44, 8px rounded).
     // Spectrum, behind everything else in the text column. Drawn first so the
@@ -2814,7 +2820,13 @@ enum GlassRole {
 
 /// Draw `rect` as a refracting glass plate, if this frame can. Returns whether
 /// it did — callers fall back to their flat chrome when it returns `false`.
-fn try_glass_plate(canvas: &Canvas, rect: Rect, radius: f32, role: GlassRole) -> bool {
+fn try_glass_plate(
+    canvas: &Canvas,
+    rect: Rect,
+    radius: f32,
+    role: GlassRole,
+    drive: Option<PlateDrive>,
+) -> bool {
     // Below a certain size the bevel would consume the entire plate and the
     // interior would have no flat region left to carry text.
     if rect.width() < 44.0 || rect.height() < 22.0 {
@@ -2826,6 +2838,26 @@ fn try_glass_plate(canvas: &Canvas, rect: Rect, radius: f32, role: GlassRole) ->
             GlassRole::Widget => LiquidGlassParams::WIDGET,
             GlassRole::Panel => LiquidGlassParams::PANEL,
         };
+        // Music drive. Each term is chosen for what it does to the *read* of
+        // the object, not for magnitude: the ripple makes the surface look
+        // agitated, the refraction bulge makes the glass feel like it flexes
+        // on a hit, and the rim terms make the edge catch the light. Bounded
+        // so a loud passage excites the plate without dissolving it.
+        //
+        // Weighted toward `pulse` over `level` on the light terms. Sustained
+        // loudness driving the rim hard leaves the plate permanently blown out
+        // through a loud passage, which stops reading as a reaction at all —
+        // it just looks like a brighter widget. Beats punch, loudness glows.
+        // `ripple` is the exception: agitation of the *surface* should track
+        // how loud it is, and it cannot wash anything out.
+        let d = drive.unwrap_or_default();
+        let base = LiquidGlassParams {
+            ripple: base.ripple * (1.0 + d.level * 2.4),
+            specular: base.specular * (1.0 + d.level * 0.55 + d.pulse * 1.1),
+            hairline: base.hairline * (1.0 + d.level * 0.30 + d.pulse * 1.3),
+            ..base
+        };
+        let beat_bulge = 1.0 + d.pulse * 0.30;
         // The strength preference scales the physical knobs, not the tint —
         // turning the glass down should flatten the bevel, not repaint the
         // surface a different colour.
@@ -2835,8 +2867,8 @@ fn try_glass_plate(canvas: &Canvas, rect: Rect, radius: f32, role: GlassRole) ->
             // Never let the bevel exceed a third of the short side, or the
             // "flat centre" guarantee that keeps text readable is lost.
             edge: (base.edge * strength).min(short_side / 3.0),
-            strength: base.strength * strength,
-            disperse: base.disperse * strength,
+            strength: base.strength * strength * beat_bulge,
+            disperse: base.disperse * strength * beat_bulge,
             ..base
         };
         draw_liquid_glass(
@@ -2856,7 +2888,7 @@ fn try_glass_plate(canvas: &Canvas, rect: Rect, radius: f32, role: GlassRole) ->
 }
 
 fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
-    if try_glass_plate(canvas, rect, radius, GlassRole::Panel) {
+    if try_glass_plate(canvas, rect, radius, GlassRole::Panel, None) {
         return;
     }
 
@@ -2874,40 +2906,32 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(rrect, &border);
 }
 
-/// Spectrum bars, drawn as a quiet band behind the media widget's text.
+/// How hard the music is driving a plate this frame.
 ///
-/// Deliberately *behind* the title rather than beside it: the widget is small,
-/// and a visualiser that steals horizontal space from the track name makes the
-/// widget worse at the job it exists for. Low alpha and a bottom-anchored
-/// gradient keep it as texture rather than content.
+/// The music does not get its own chart — the *widget* responds. A spectrum
+/// strip was built first and removed: over a 64px widget it lands on the text,
+/// and even on the roomier HOME card it sat behind the artist line and the
+/// timestamps. More to the point it was the wrong idea, a graph pasted onto an
+/// object instead of the object behaving.
 ///
-/// Silent when there is no audio — a row of dead bars is worse than no row.
-fn draw_spectrum_strip(canvas: &Canvas, area: Rect, audio: &crate::audio::Spectrum) {
-    if !audio.is_live() || area.width() <= 8.0 || area.height() <= 4.0 {
-        return;
-    }
-    let n = crate::audio::BANDS;
-    let gap = 2.0;
-    let bw = ((area.width() - gap * (n - 1) as f32) / n as f32).max(1.0);
+/// Everything driven here lives in the *plate* — rim light, edge hairline,
+/// refraction, bloom. Nothing touches the content layer, which is what keeps
+/// this on the right side of the "never animate anything containing text"
+/// rule: the glass flexes, the words hold perfectly still.
+#[derive(Clone, Copy, Default)]
+struct PlateDrive {
+    /// Sustained loudness, 0..1 — how excited the glass is overall.
+    level: f32,
+    /// Onset spike, 0..1 — the hit.
+    pulse: f32,
+}
 
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    for (i, mag) in audio.bands.iter().enumerate() {
-        // A floor so quiet bands still show as a dim seat rather than a hole.
-        let h = (area.height() * mag.clamp(0.0, 1.0)).max(1.5);
-        let x = area.left + i as f32 * (bw + gap);
-        let rect = Rect::from_xywh(x, area.bottom - h, bw, h);
-        // Rose at the bottom, lavender at the top of the band's travel — the
-        // colour then reads as "how loud", not just the height.
-        let t = mag.clamp(0.0, 1.0);
-        let c = Color4f::new(
-            (ROSE.0 as f32 / 255.0) * (1.0 - t) + (LAV.0 as f32 / 255.0) * t,
-            (ROSE.1 as f32 / 255.0) * (1.0 - t) + (LAV.1 as f32 / 255.0) * t,
-            (ROSE.2 as f32 / 255.0) * (1.0 - t) + (LAV.2 as f32 / 255.0) * t,
-            0.14 + 0.20 * t,
-        );
-        paint.set_color4f(c, None);
-        canvas.draw_rrect(RRect::new_rect_xy(rect, bw * 0.4, bw * 0.4), &paint);
+impl PlateDrive {
+    /// Drive from a spectrum, or nothing when there is no audio to react to.
+    fn from_audio(audio: &crate::audio::Spectrum) -> Option<PlateDrive> {
+        audio
+            .is_live()
+            .then(|| PlateDrive { level: audio.level.clamp(0.0, 1.0), pulse: audio.pulse.clamp(0.0, 1.0) })
     }
 }
 
@@ -3138,11 +3162,49 @@ fn draw_liquid_progress(
 /// `backdrop-filter: blur(8px)` — we paint to an offscreen surface, so the
 /// game pixels aren't available to blur until composite time.
 fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
+    draw_iw_shell_driven(canvas, rect, radius, None);
+}
+
+/// The widget plate, optionally driven by the music.
+///
+/// `drive` is `Some` only for the media widget — nothing else should twitch
+/// when a bass note lands.
+fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, drive: Option<PlateDrive>) {
+    // An outer bloom that swells with the music. Drawn under everything, so it
+    // reads as the plate *glowing* rather than as a ring stuck to it. This is
+    // the part that carries the reaction when the plate is small — a 64px
+    // widget has very little rim to light up, but it has as much halo as it
+    // wants.
+    if let Some(d) = drive {
+        let energy = d.level * 0.30 + d.pulse * 0.70;
+        if energy > 0.01 {
+            let mut bloom = Paint::default();
+            bloom.set_anti_alias(true);
+            bloom.set_color4f(rgba(ROSE, 0.42 * energy), None);
+            bloom.set_mask_filter(MaskFilter::blur(
+                BlurStyle::Normal,
+                10.0 + 16.0 * energy,
+                false,
+            ));
+            // Grow the halo outward with the beat. Inflating a *shadow* rect is
+            // free of the text-rasterisation problem that scaling the plate
+            // itself would cause — nothing inside is being transformed.
+            let grow = 2.0 + 6.0 * d.pulse;
+            let halo = Rect::new(
+                rect.left - grow,
+                rect.top - grow,
+                rect.right + grow,
+                rect.bottom + grow,
+            );
+            canvas.draw_rrect(RRect::new_rect_xy(halo, radius + grow, radius + grow), &bloom);
+        }
+    }
+
     // Refracting glass when this frame carries a game snapshot; the flat plate
     // below otherwise. The fallback is load-bearing, not defensive politeness —
     // the snapshot is absent for the first frame after launch or a resize, and
     // a HUD that vanished on those frames would be worse than a flat one.
-    if try_glass_plate(canvas, rect, radius, GlassRole::Widget) {
+    if try_glass_plate(canvas, rect, radius, GlassRole::Widget, drive) {
         return;
     }
 
@@ -3197,12 +3259,16 @@ fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(RRect::new_rect_xy(inset_top, top_r, top_r), &top_paint);
     canvas.restore();
 
-    // (6) Pearl border — outermost edge.
+    // (6) Pearl border — outermost edge. Brightens with the music when driven:
+    // the flat plate has no bevel to catch light, so the border is where its
+    // reaction has to live. Without this, turning glass off would also turn
+    // the music off, which is not what that setting means.
+    let d = drive.unwrap_or_default();
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
-    border.set_stroke_width(1.0);
-    border.set_color4f(rgba(PEARL, 0.18), None);
+    border.set_stroke_width(1.0 + d.pulse * 0.8);
+    border.set_color4f(rgba(PEARL, 0.18 + d.level * 0.32 + d.pulse * 0.28), None);
     canvas.draw_rrect(rrect, &border);
 }
 
@@ -6588,6 +6654,29 @@ fn draw_media_large(
     let rrect = RRect::new_rect_xy(rect, 18.0, 18.0);
     let idle = media.is_idle();
 
+    // The card answers to the music the same way the in-world plate does — an
+    // outer bloom that swells, under the chrome so it reads as the card
+    // glowing rather than a ring around it.
+    let drive = (!idle)
+        .then(|| PlateDrive::from_audio(audio))
+        .flatten()
+        .unwrap_or_default();
+    let energy = drive.level * 0.30 + drive.pulse * 0.70;
+    if energy > 0.01 {
+        let grow = 2.0 + 7.0 * drive.pulse;
+        let halo = Rect::new(
+            rect.left - grow,
+            rect.top - grow,
+            rect.right + grow,
+            rect.bottom + grow,
+        );
+        let mut bloom = Paint::default();
+        bloom.set_anti_alias(true);
+        bloom.set_color4f(rgba(ROSE, 0.38 * energy), None);
+        bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 14.0 + 20.0 * energy, false));
+        canvas.draw_rrect(RRect::new_rect_xy(halo, 18.0 + grow, 18.0 + grow), &bloom);
+    }
+
     // ── Card chrome — 135° berry → lavender → wine fill + rose border + glow.
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
@@ -6623,12 +6712,12 @@ fn draw_media_large(
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
-    border.set_stroke_width(1.0);
+    border.set_stroke_width(1.0 + drive.pulse * 0.9);
     border.set_color4f(
         if idle {
             rgba(PEARL, 0.08)
         } else {
-            rgba(ROSE, 0.22)
+            rgba(ROSE, 0.22 + drive.level * 0.34 + drive.pulse * 0.30)
         },
         None,
     );
@@ -6759,14 +6848,6 @@ fn draw_media_large(
         canvas.draw_str(&artist_str, (mid_left, title_baseline + 18.0), &artist_font, &artist);
     }
     canvas.restore();
-
-    // Spectrum, filling the middle column's dead space between the artist line
-    // and the scrub row. This card has the vertical room the compact widget
-    // does not, so the bars live here.
-    if !idle {
-        let strip = Rect::new(mid_left, rect.bottom - 78.0, mid_right, rect.bottom - 34.0);
-        draw_spectrum_strip(canvas, strip, audio);
-    }
 
     // Scrub bar (skip if idle).
     if !idle {
