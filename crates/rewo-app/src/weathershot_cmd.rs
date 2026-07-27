@@ -25,12 +25,12 @@ use rewo_gpu::world::{perspective_reverse_z, SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_world::weather::{
     apply_weather_darken, greyscale, multiply, rain_brightness, BiomeClimate, ClimateNoise,
-    Precipitation, TemperatureModifier, WeatherAttributes, WeatherState,
+    Precipitation, RainFog, TemperatureModifier, WeatherAttributes, WeatherState,
 };
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 32;
+const EXPECTED_WITNESSES: usize = 35;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 128;
 const H: u32 = 128;
@@ -106,6 +106,7 @@ fn run_check(
     check_cloud_mesh(&mut c);
     check_darken(&mut c);
     check_attributes(&mut c);
+    check_rain_fog(&mut c);
 
     let mut off = Offscreen::new(gpu, W, H)?;
     let ring = OverlayRing::default();
@@ -548,6 +549,48 @@ fn check_attributes(c: &mut Checker) {
             && greyscale(0xFF0000FFu32 as i32) & 0xFF == 28
             && multiply(-1, 0x1234_5678) == 0x1234_5678,
         "both guards are `> 0.0`; `greyscale` is luma-weighted (0.11 * 255          truncates to 28 for pure blue, not 85); and `ARGB.multiply` shortcuts          on opaque white",
+    );
+}
+
+/// The rain fog ramp — the fourth and last client consumer of the rain level,
+/// and the only one that moves a distance rather than a colour.
+fn check_rain_fog(c: &mut Checker) {
+    c.record(
+        "f1.sky_light_gates_the_rain_fog_off_underground",
+        RainFog::target(1.0, 8, true) == 0.0
+            && RainFog::target(1.0, 9, true) > 0.0
+            && RainFog::target(1.0, 15, true) == 1.0,
+        "`clamp((skyLight - 8) / 7, 0, 1)` — at 8 sky light there is NO rain          fog, which is why stepping into a cave during a storm clears the air          instantly rather than gradually",
+    );
+    c.record(
+        "f2.a_biome_without_precipitation_still_gets_half",
+        RainFog::target(1.0, 15, false) == 0.5,
+        "`rainsInBiome ? 1.0 : 0.5` — a desert thickens too, even though no          rain falls on it",
+    );
+
+    let mut f = RainFog::default();
+    f.update(1.0, 15, true, 1.0);
+    let after_one = f.multiplier();
+    for _ in 0..40 {
+        f.update(1.0, 15, true, 1.0);
+    }
+    let converged = f.multiplier();
+    let mut band = RainFog::default();
+    band.converge(1.0, 15, true);
+    // Vanilla`s own FOG_START/END_DISTANCE defaults, which is what the offsets
+    // are applied to — NOT Rewo`s tighter render-distance band.
+    let (start, end) = band.apply(0.0, 1024.0);
+    let (tight_s, tight_e) = band.apply(10.0, 50.0);
+    c.record(
+        "f3.the_multiplier_eases_and_the_band_closes_onto_a_floor",
+        (after_one - 0.2).abs() < 1e-6
+            && converged > 0.99
+            && (start, end) == (-160.0, 768.0)
+            && tight_e == 50.0
+            && tight_s == -150.0,
+        format!(
+            "one tick moves 20% ({after_one:.3}) and it converges ({converged:.3})              — it is STATE, not a function of the rain level. At full strength              (0, 1024) becomes ({start}, {end}); a band already tighter than the              96 floor keeps its own end ({tight_e}), so the fog never collapses              to nothing"
+        ),
     );
 }
 

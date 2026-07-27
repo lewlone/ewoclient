@@ -5891,12 +5891,33 @@ The rain sky is the attribute layer's `(102, 114, 136)` with
 `applyWeatherDarken`'s `×0.5 / ×0.5 / ×0.6` on top — the two mechanisms
 composing exactly as vanilla composes them.
 
-**Still not implemented:** `rainFogMultiplier`, the fourth `getRainLevel`
-consumer, which pulls `environmentalStart` by −160 and `environmentalEnd` by
-−256 (floored at 96) as rain builds. It thickens distance fog rather than
-changing any colour.
+**The rain fog ramp** — the fourth and last `getRainLevel` consumer — shipped
+with it. It is the only one that moves a *distance* rather than a colour, and
+it is **stateful**: the multiplier eases toward its target at
+`deltaTicks * 0.2`, so fog closes in over roughly five ticks. Two inputs beyond
+the rain level are easy to miss — sky light gates it entirely
+(`clamp((skyLight - 8) / 7, 0, 1)`, so a cave is clear in a storm), and a biome
+that never rains still thickens at half strength.
 
-Gates: **554 tests**, `weathershot` 27 → **32/32**, every other gate green with
+Getting it right needed a correction of its own. Applying the −160 / −256
+offsets to **Rewo's** fog band made rain half-fog the air ten blocks from the
+camera. Rewo's band is a *render-distance* fade — its job is dissolving the
+chunk edge into the sky — whereas vanilla's `total_fog_value` is the `max` of
+that and a separate **environmental** term, and only the environmental one is
+what rain thickens. So the world pass gained a second band, carried in the
+`LightmapExtra` UBO because the push block is exactly at its 128-byte budget,
+and defaulted to *disabled* so clear weather renders exactly as before. At full
+rain the environmental band is vanilla's `(0, 1024)` → `(-160, 768)`, which
+adds roughly 18–28% fog in the near and mid field where Rewo previously had
+none, while the render-distance band still dominates at the edge.
+
+**Verification note.** The shader's `max` of the two bands is verified by live
+measurement, not by a read-back oracle: `weathershot` has no terrain, so its
+three fog witnesses grade the multiplier, the gate and the band arithmetic on
+the CPU. Ground pixels at `[9.5, -60, 1.5]` read `(101,115,80)` clear,
+`(97,108,97)` rain, `(83,92,75)` thunder.
+
+Gates: **561 tests**, `weathershot` 27 → **35/35**, every other gate green with
 validation ON and 0 VUIDs, demo SHA-256 `2cc56b4a…` byte-identical.
 
 ### M33 — weather and clouds (2026-07-27)

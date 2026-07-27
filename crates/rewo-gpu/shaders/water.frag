@@ -11,7 +11,12 @@ layout(set = 0, binding = 0) uniform sampler2DArray u_tex;
 // Same `LightmapExtra` UBO as world.frag — translucent and opaque geometry MUST
 // resolve the identical lightmap, ambient included.
 layout(set = 0, binding = 1) uniform LightmapExtra {
-    vec4 ambient; // xyz = AmbientColor (RGB24/255), w unused (std140 pad)
+    vec4 ambient;  // xyz = AmbientColor (RGB24/255), w unused (std140 pad)
+    // The ENVIRONMENTAL fog band: x start, y end (M33b). Vanilla's
+    // `total_fog_value` is the max of an environmental and a render-distance
+    // term, and rain thickens only the former. Disabled by default (start past
+    // any real distance), so clear weather is unaffected.
+    vec4 env_fog;
 } lmx;
 
 layout(push_constant) uniform PC {
@@ -35,7 +40,12 @@ void main() {
     vec3 lm = lm_light(v_layer, pc.light, pc.sky_col, lmx.ambient.rgb);
     vec3 rgb = c.rgb * v_color * lm;
     float dist = distance(pc.cam_fog.xyz, v_worldpos);
+    // `total_fog_value` — the MAX of the render-distance band (the push
+    // block's, which dissolves the chunk edge into the sky) and the
+    // environmental one (which rain thickens). Vanilla takes the same max.
     float fog = clamp((dist - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);
+    float env = clamp((dist - lmx.env_fog.x) / max(lmx.env_fog.y - lmx.env_fog.x, 1.0), 0.0, 1.0);
+    fog = max(fog, env);
     rgb = mix(rgb, pc.fog_col.rgb, fog);
     out_color = vec4(rgb, c.a);
 }

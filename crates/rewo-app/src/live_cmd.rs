@@ -1681,6 +1681,7 @@ fn run_headless(
             let w = effective_weather(&session);
             (w.rain_level(), w.thunder_level())
         },
+        rain_fog_band(&session, &mut weather_assets, None),
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     // M33: the sun and moon fade out as rain comes in
@@ -1688,7 +1689,14 @@ fn run_headless(
     let mut cel = celestial_state_of(session.day_ticks);
     apply_weather_to_celestial(&mut cel, &session);
     world_renderer.set_celestial(cel);
-    apply_weather(&mut world_renderer, &mut gpu, &session, &mut weather_assets, 1.0);
+    apply_weather(
+        &mut world_renderer,
+        &mut gpu,
+        &session,
+        &mut weather_assets,
+        1.0,
+        None,
+    );
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -2183,6 +2191,13 @@ impl LiveApp {
                 let w = effective_weather(session);
                 (w.rain_level(), w.thunder_level())
             },
+            match self.baked.as_ref() {
+                Some(baked) => {
+                    let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
+                    rain_fog_band(session, w, Some(dt * 20.0))
+                }
+                None => [1.0e9, 1.0e9 + 1.0],
+            },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
         let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time(), (cr, cu));
@@ -2272,6 +2287,8 @@ impl LiveApp {
                 session,
                 w,
                 alpha,
+                // 20 ticks per second — .
+                Some(dt * 20.0),
             );
         }
         state
@@ -3660,6 +3677,8 @@ fn to_world_lightmap(s: &LightmapState) -> WorldLightmapState {
         brightness_factor: s.brightness_factor,
         darkness_scale: s.darkness_scale,
         night_vision_factor: s.night_vision_factor,
+        // Disabled here; `apply_lightmap` sets the real band.
+        env_fog: [1.0e9, 1.0e9 + 1.0],
     }
 }
 
@@ -3677,6 +3696,8 @@ fn apply_lightmap(
     // storm, and without this the terrain stays at clear-weather brightness
     // under a black sky.
     weather: (f32, f32),
+    // The environmental fog band this frame, already through the rain ramp.
+    rain_fog: [f32; 2],
 ) {
     let mut lm = to_world_lightmap(state);
     let (rain, thunder) = weather;
@@ -3697,6 +3718,9 @@ fn apply_lightmap(
         lm.sky_factor = a.sky_light_factor;
         lm.sky_color = argb_to_linear_rgb(a.sky_light_color);
     }
+    // The environmental fog band. `rain_fog` is the eased multiplier; a zero
+    // one leaves the band disabled and the render-distance fade alone.
+    lm.env_fog = rain_fog;
     wr.set_lightmap_state(lm);
     // The sky/fog gradient multiply is a day-timeline track too, so it is gated
     // on the same dimension test — otherwise a midnight Overworld clock would
@@ -4371,6 +4395,9 @@ pub struct WeatherAssets {
     directions: rewo_gpu::weather::ColumnDirections,
     /// The cached mesh and the state it was built for.
     cached: Option<(Vec<[i32; 3]>, i32, i32, rewo_gpu::clouds::RelativeCameraPos)>,
+    /// The eased rain-fog multiplier — state, because it ramps over ~5 ticks
+    /// rather than following the rain level directly.
+    rain_fog: rewo_world::weather::RainFog,
 }
 
 impl WeatherAssets {
@@ -4386,6 +4413,7 @@ impl WeatherAssets {
             noise: rewo_world::weather::ClimateNoise::new(),
             directions: rewo_gpu::weather::ColumnDirections::new(),
             cached: None,
+            rain_fog: rewo_world::weather::RainFog::default(),
         }
     }
 }
@@ -4396,6 +4424,20 @@ const WEATHER_RADIUS: i32 = 10;
 /// `cloudRange` — vanilla derives it from the render distance; Rewo pins it
 /// rather than plumbing a video-options struct for one number.
 const CLOUD_RANGE_CHUNKS: i32 = 12;
+/// `EnvironmentAttributes.FOG_START_DISTANCE` / `FOG_END_DISTANCE` defaults.
+///
+/// The rain offsets are applied to *these*, not to Rewo's own fog band. The two
+/// are different things: Rewo's `set_fog` band is a render-distance fade that
+/// dissolves the chunk edge into the sky, and vanilla's `total_fog_value` is
+/// the `max` of that and a separate **environmental** term. Only the
+/// environmental one is what rain thickens, which is why applying the offsets
+/// to Rewo's tight band made rain half-fog the air ten blocks from the camera.
+///
+/// Neither built-in dimension overrides them, so the attribute defaults are the
+/// real values; reading them per-dimension is a small follow-up.
+const ENV_FOG_START: f32 = 0.0;
+const ENV_FOG_END: f32 = 1024.0;
+
 /// `FogCloudsEnd`, the distance at which the deck has faded out completely.
 ///
 /// **An approximation, not a transcription.** Vanilla's comes from
@@ -4461,12 +4503,17 @@ fn effective_weather(session: &PlaySession) -> rewo_world::weather::WeatherState
     w
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_weather(
     wr: &mut WorldRenderer,
     gpu: &mut Gpu,
     session: &PlaySession,
     w: &mut WeatherAssets,
     partial_ticks: f32,
+    // Frame time in ticks, for the rain-fog ease. `None` means "converge
+    // immediately" — the headless path draws a single frame after settling,
+    // where an eased multiplier would still be near zero.
+    delta_ticks: Option<f32>,
 ) {
     let eye = eye_f64(session);
     let game_time = session.game_time();
@@ -4622,4 +4669,47 @@ fn apply_weather_to_celestial(
     a.star_brightness = cel.star_brightness;
     a.apply(rain, thunder);
     cel.star_brightness = a.star_brightness;
+}
+
+/// Advance the rain-fog ease and return this frame's environmental fog band.
+///
+/// `delta_ticks` of `None` converges immediately — the headless path draws a
+/// single frame after settling, where an eased multiplier would still be near
+/// zero and would grade a storm that has not arrived.
+fn rain_fog_band(
+    session: &PlaySession,
+    w: &mut WeatherAssets,
+    delta_ticks: Option<f32>,
+) -> [f32; 2] {
+    let weather = effective_weather(session);
+    let eye = eye_f64(session);
+    let (bx, by, bz) = (
+        eye[0].floor() as i32,
+        eye[1].floor() as i32,
+        eye[2].floor() as i32,
+    );
+    // Sky light gates it entirely — below 9 there is no rain fog, which is why
+    // stepping into a cave during a storm clears the air. A biome that never
+    // rains still thickens, at half strength.
+    let (_, sky_light) = session.world.light_at(bx, by, bz);
+    let rains_here = session
+        .world
+        .climate_at(bx, by, bz)
+        .map(|c| c.has_precipitation)
+        .unwrap_or(true);
+    match delta_ticks {
+        Some(dt) => w
+            .rain_fog
+            .update(weather.rain_level(), sky_light, rains_here, dt),
+        None => w
+            .rain_fog
+            .converge(weather.rain_level(), sky_light, rains_here),
+    }
+    if w.rain_fog.multiplier() <= 0.0 {
+        // Disabled: everything is nearer than the start, so the environmental
+        // term contributes nothing and the render-distance band decides alone.
+        return [1.0e9, 1.0e9 + 1.0];
+    }
+    let (start, end) = w.rain_fog.apply(ENV_FOG_START, ENV_FOG_END);
+    [start, end]
 }

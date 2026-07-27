@@ -2530,7 +2530,15 @@ validation Rewo has.
     also applied it to the fog, double-darkening it. **The lightmap does darken
     in rain** — a `client/`-only grep for `getRainLevel` misses it because it
     arrives through the attribute system. The levels **partition**
-    (`rain - thunder`), and THUNDER applies to RAIN's output.
+    (`rain - thunder`), and THUNDER applies to RAIN's output. The **rain fog
+    ramp** shipped with it — stateful (eases at `deltaTicks * 0.2`), gated by
+    sky light (a cave is clear in a storm), half-strength in a dry biome. It
+    needed a second, **environmental** fog band in the world pass: Rewo's
+    existing band is a render-distance fade, vanilla's `total_fog_value` is the
+    `max` of that and an environmental term, and only the latter is what rain
+    thickens — applying the offsets to Rewo's tight band half-fogged the air ten
+    blocks out. The new band lives in the `LightmapExtra` UBO (the push block is
+    exactly at its 128-byte budget) and defaults to disabled.
   - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

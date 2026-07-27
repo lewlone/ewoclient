@@ -1267,3 +1267,165 @@ mod attribute_tests {
         assert_eq!(green, 150, "0.59 * 255 truncated");
     }
 }
+
+// -- the rain fog ramp --------------------------------------------------------
+
+/// `AtmosphericFogEnvironment`'s `rainFogMultiplier` — the fourth and last
+/// client consumer of the rain level, and the only one that moves a *distance*
+/// rather than a colour.
+///
+/// It is **stateful**: the multiplier eases toward its target at
+/// `deltaTicks * 0.2` per frame, so fog closes in over roughly five ticks
+/// rather than snapping when the rain level changes. That easing is the whole
+/// reason it lives on the fog environment in vanilla instead of being computed
+/// fresh each frame.
+///
+/// Two inputs beyond the rain level, both easy to miss:
+///
+/// - **Sky light gates it.** `clamp((skyLight - 8) / 7, 0, 1)` means a camera
+///   under 9 sky light gets *no* rain fog at all — which is why stepping into
+///   a cave during a storm clears the air instantly.
+/// - **A dry biome still gets half.** `rainsInBiome ? 1.0 : 0.5`: a desert
+///   thickens too, even though no rain falls on it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RainFog {
+    multiplier: f32,
+}
+
+impl RainFog {
+    /// `MIN_RAIN_FOG_SKY_LIGHT`.
+    pub const MIN_SKY_LIGHT: f32 = 8.0;
+    /// `RAIN_FOG_START_OFFSET`.
+    pub const START_OFFSET: f32 = -160.0;
+    /// `RAIN_FOG_END_OFFSET`.
+    pub const END_OFFSET: f32 = -256.0;
+    /// The floor the end distance may not fall below (`min(96, end)`).
+    pub const MIN_END: f32 = 96.0;
+
+    /// The value the multiplier is easing toward.
+    pub fn target(rain_level: f32, sky_light: u8, rains_in_biome: bool) -> f32 {
+        let sky = ((sky_light as f32 - Self::MIN_SKY_LIGHT) / 7.0).clamp(0.0, 1.0);
+        rain_level * sky * if rains_in_biome { 1.0 } else { 0.5 }
+    }
+
+    /// `updateRainFogState` — one frame of easing.
+    ///
+    /// The lerp factor is clamped to 1, which vanilla does not do because its
+    /// `deltaTicks` is always a fraction of a tick. A headless renderer that
+    /// draws one frame after a long settle would otherwise overshoot past the
+    /// target and oscillate.
+    pub fn update(&mut self, rain_level: f32, sky_light: u8, rains_in_biome: bool, delta_ticks: f32) {
+        let target = Self::target(rain_level, sky_light, rains_in_biome);
+        let factor = (delta_ticks * 0.2).clamp(0.0, 1.0);
+        self.multiplier += (target - self.multiplier) * factor;
+    }
+
+    /// Snap straight to the target, skipping the ease.
+    ///
+    /// For headless rendering only: a single frame drawn after the session has
+    /// settled would otherwise show a multiplier still near zero, and grade a
+    /// storm that has not arrived.
+    pub fn converge(&mut self, rain_level: f32, sky_light: u8, rains_in_biome: bool) {
+        self.multiplier = Self::target(rain_level, sky_light, rains_in_biome);
+    }
+
+    pub fn multiplier(&self) -> f32 {
+        self.multiplier
+    }
+
+    /// Apply the offsets to a fog band.
+    ///
+    /// The offsets and the floor are vanilla's exactly. **The band they are
+    /// applied to is not**: vanilla starts from `FOG_START_DISTANCE` /
+    /// `FOG_END_DISTANCE` (0 and 1024 by default), and Rewo's world pass uses
+    /// its own much tighter band so terrain dissolves into the sky at the
+    /// render-distance edge rather than ending on a visible chunk boundary.
+    /// So the *shape* of the change is faithful and its *scale* is relative to
+    /// a different baseline; reading the real attributes is what would close
+    /// that, and it would change clear-weather fog too.
+    pub fn apply(&self, start: f32, end: f32) -> (f32, f32) {
+        let new_start = start + Self::START_OFFSET * self.multiplier;
+        let min_end = Self::MIN_END.min(end);
+        let new_end = min_end.max(end + Self::END_OFFSET * self.multiplier);
+        (new_start, new_end)
+    }
+}
+
+#[cfg(test)]
+mod rain_fog_tests {
+    use super::*;
+
+    /// Below 9 sky light there is no rain fog at all — the reason a cave is
+    /// clear in a storm.
+    #[test]
+    fn sky_light_gates_it_off_underground() {
+        assert_eq!(RainFog::target(1.0, 0, true), 0.0);
+        assert_eq!(RainFog::target(1.0, 8, true), 0.0, "8 is the floor, exclusive");
+        assert!(RainFog::target(1.0, 9, true) > 0.0);
+        assert_eq!(RainFog::target(1.0, 15, true), 1.0, "full sky light, full fog");
+    }
+
+    /// A dry biome still thickens, at half strength.
+    #[test]
+    fn a_biome_without_precipitation_gets_half() {
+        assert_eq!(RainFog::target(1.0, 15, false), 0.5);
+        assert_eq!(RainFog::target(1.0, 15, true), 1.0);
+    }
+
+    /// The multiplier EASES rather than snapping — that is why it is state.
+    #[test]
+    fn the_multiplier_eases_toward_its_target() {
+        let mut f = RainFog::default();
+        f.update(1.0, 15, true, 1.0);
+        assert!(
+            (f.multiplier() - 0.2).abs() < 1e-6,
+            "one tick moves 20% of the way: {}",
+            f.multiplier()
+        );
+        for _ in 0..40 {
+            f.update(1.0, 15, true, 1.0);
+        }
+        assert!(f.multiplier() > 0.99, "and converges: {}", f.multiplier());
+    }
+
+    /// It eases back out too, so stepping into shelter clears gradually.
+    #[test]
+    fn it_eases_back_out_when_the_rain_stops() {
+        let mut f = RainFog::default();
+        f.converge(1.0, 15, true);
+        assert_eq!(f.multiplier(), 1.0);
+        f.update(0.0, 15, true, 1.0);
+        assert!((f.multiplier() - 0.8).abs() < 1e-6, "{}", f.multiplier());
+    }
+
+    /// A large delta must not overshoot past the target.
+    #[test]
+    fn a_long_frame_does_not_overshoot() {
+        let mut f = RainFog::default();
+        f.update(1.0, 15, true, 100.0);
+        assert_eq!(f.multiplier(), 1.0);
+    }
+
+    /// The band closes in, and the end is floored at `min(96, end)` rather
+    /// than being allowed to collapse to nothing.
+    #[test]
+    fn the_band_closes_in_and_the_end_is_floored() {
+        let mut f = RainFog::default();
+        f.converge(1.0, 15, true);
+        // Vanilla's own defaults: 0 and 1024.
+        let (s, e) = f.apply(0.0, 1024.0);
+        assert_eq!((s, e), (-160.0, 768.0));
+        // A band already tighter than the floor keeps its own end.
+        let (s2, e2) = f.apply(80.0, 180.0);
+        assert_eq!((s2, e2), (-80.0, 96.0));
+        // And one already inside the floor is left there, not pushed below it.
+        let (_, e3) = f.apply(10.0, 50.0);
+        assert_eq!(e3, 50.0, "min(96, 50) is the floor here");
+    }
+
+    #[test]
+    fn clear_weather_leaves_the_band_alone() {
+        let f = RainFog::default();
+        assert_eq!(f.apply(80.0, 180.0), (80.0, 180.0));
+    }
+}

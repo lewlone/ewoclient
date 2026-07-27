@@ -113,8 +113,17 @@ const _: () = assert!(std::mem::size_of::<WorldPush>() == 128);
 struct WorldLightmapExtra {
     /// xyz = `AmbientColor` (RGB24/255), w unused (std140 vec4 padding).
     ambient: [f32; 4],
+    /// The **environmental** fog band (M33b): `x` start, `y` end, `zw` pad.
+    ///
+    /// Separate from the push block's band, which is Rewo's render-distance
+    /// fade. Vanilla's `total_fog_value` is the `max` of an environmental and a
+    /// render-distance term, and only the environmental one is what rain
+    /// thickens. A disabled band (start beyond end, as
+    /// [`WorldLightmapState::default`] leaves it) contributes nothing, so clear
+    /// weather renders exactly as it did before this existed.
+    env_fog: [f32; 4],
 }
-const _: () = assert!(std::mem::size_of::<WorldLightmapExtra>() == 16);
+const _: () = assert!(std::mem::size_of::<WorldLightmapExtra>() == 32);
 
 /// One `WorldLightmapExtra` slot per frame that can be in flight. The block is
 /// written by the CPU at record time, so a frame must not scribble on a slot a
@@ -239,6 +248,13 @@ pub struct WorldLightmapState {
     pub darkness_scale: f32,
     /// `NightVisionFactor` — the ambient night-vision seed. Default `0.0`.
     pub night_vision_factor: f32,
+    /// The **environmental** fog band, `[start, end]` — vanilla's
+    /// `FogData.environmentalStart/End`, which rain thickens (M33b).
+    ///
+    /// The default `[1e9, 1e9 + 1]` is *disabled*: everything is nearer than
+    /// the start, so it contributes no fog and the render-distance band in the
+    /// push block decides alone, exactly as before this field existed.
+    pub env_fog: [f32; 2],
 }
 
 impl Default for WorldLightmapState {
@@ -251,6 +267,7 @@ impl Default for WorldLightmapState {
             brightness_factor: 0.0,
             darkness_scale: 0.0,
             night_vision_factor: 0.0,
+            env_fog: [1.0e9, 1.0e9 + 1.0],
         }
     }
 }
@@ -287,6 +304,12 @@ impl WorldLightmapState {
             self.ambient_color[2],
             0.0,
         ]
+    }
+
+    /// The environmental fog band as the UBO wants it. The default is disabled
+    /// — a start past the end, which the shader's clamp turns into zero fog.
+    fn env_fog_words(&self) -> [f32; 4] {
+        [self.env_fog[0], self.env_fog[1], 0.0, 0.0]
     }
 }
 
@@ -2323,6 +2346,7 @@ impl WorldRenderer {
 fn write_lightmap_extra(alloc: &mut Option<Allocation>, state: &WorldLightmapState) {
     let block = WorldLightmapExtra {
         ambient: state.extra_words(),
+        env_fog: state.env_fog_words(),
     };
     let slice = alloc
         .as_mut()
@@ -3146,12 +3170,16 @@ mod tests {
             darkness_scale: 0.45,
             night_vision_factor: 1.0,
             ambient_color: [0.6, 0.7, 0.8],
+            env_fog: [12.0, 34.0],
         };
         let (light, sky_col) = s.push_words();
         assert_eq!(light, [0.24, 1.5, 0.5, 0.45]);
         assert_eq!(sky_col, [0.1, 0.2, 0.3, 1.0]);
         // The ambient must NOT have displaced a push lane — the block is full.
         assert!(!light.contains(&0.6) && !sky_col.contains(&0.8));
+        // Nor may the environmental fog band, which shares the ambient UBO.
+        assert!(!light.contains(&12.0) && !sky_col.contains(&34.0));
+        assert_eq!(s.env_fog_words(), [12.0, 34.0, 0.0, 0.0]);
     }
 
     /// The `LightmapExtra` UBO layout: ambient in xyz, zero in the std140 pad,
@@ -3168,9 +3196,19 @@ mod tests {
             [48.0 / 255.0, 40.0 / 255.0, 33.0 / 255.0, 0.0]
         );
         assert_eq!(WorldLightmapState::default().extra_words(), [0.0; 4]);
-        assert_eq!(std::mem::size_of::<WorldLightmapExtra>(), 16);
-        // The push block stays exactly at the guaranteed budget.
+        // Two vec4s since M33b: the ambient colour and the environmental fog
+        // band. The band went here rather than into the push block because
+        // that block is exactly at the guaranteed budget and cannot grow.
+        assert_eq!(std::mem::size_of::<WorldLightmapExtra>(), 32);
         assert_eq!(std::mem::size_of::<WorldPush>(), 128);
+        // The default band must be DISABLED — everything nearer than its
+        // start — so a caller that never sets it renders exactly as before.
+        let d = WorldLightmapState::default();
+        assert!(
+            d.env_fog[0] > 1.0e6,
+            "default env fog must contribute nothing: {:?}",
+            d.env_fog
+        );
     }
 
     /// The ring must have one slot per frame in flight — fewer would let a
