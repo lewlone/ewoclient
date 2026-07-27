@@ -1618,11 +1618,9 @@ clean fast-forward, closing the long-standing unmerged-branch risk.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything through M36 is shipped, gated and merged** to `origin/main` as of
+**Everything through M37 is shipped, gated and merged** to `origin/main` as of
 2026-07-27, closing what had been the project's largest non-code risk — 78
-commits on one unmerged branch. Branch new work from `main`. **M37 (particles)
-is shipped and gated on `codex/rewo-m37-particles`, rebased onto that main and
-not yet merged.** Rewo (from
+commits on one unmerged branch. Branch new work from `main`. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —

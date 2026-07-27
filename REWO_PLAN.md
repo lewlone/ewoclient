@@ -9,12 +9,10 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M37 shipped and headlessly verified (2026-07-27).** M0–M36 are
-MERGED — `origin/main` carries all of it, and the long-standing branch risk
-(everything from M10 on living on one unmerged branch) is closed. **M37
-(particles) is on `codex/rewo-m37-particles`, rebased onto that main and not yet
-merged.** See §0.0 for the fresh-session handoff and §15 for the per-milestone
-log.
+**Status: M0–M37 shipped, headlessly verified, and MERGED (2026-07-27).**
+`origin/main` carries all of it, and the long-standing branch risk (everything
+from M10 on living on one unmerged branch) is closed. See §0.0 for the
+fresh-session handoff and §15 for the per-milestone log.
 
 ---
 
@@ -61,8 +59,7 @@ decompile source** for the physics, which caught `+ 0.1` where vanilla writes
 `+ 0.1F` on its first run. `nextGaussian` is the one primitive graded to a ULP
 bound instead of to the bit, because `Math.log` is a JIT intrinsic and vanilla's
 own scatter is not bit-reproducible between two JVMs. Gate: **`rewo particleshot
---check`, 34/34**, mutation-tested. Shipped on `codex/rewo-m37-particles`,
-rebased onto the merged main and **not yet merged**.
+--check`, 34/34**, mutation-tested. Merged to `main` as a fast-forward.
 
 **Before it (2026-07-27): M36 — the player preview.** The black rectangle M35 left
 in the middle of the inventory is `inventory.png`'s own window, and this fills
@@ -357,9 +354,8 @@ match.
 
 ### What to do next
 
-Nothing is mid-flight. M0–M36 are shipped, gated and merged; **M37 (particles)
-is shipped and gated on `codex/rewo-m37-particles`, rebased onto that main and
-awaiting merge.** Three candidates, in the order I would take them:
+Nothing is mid-flight — every milestone through M37 is shipped, gated and
+merged. Three candidates, in the order I would take them:
 
 1. **The first-person hand.** M34's inventory model was the named blocker and
    it is gone: the client knows what it is holding, and M22 already bakes every
