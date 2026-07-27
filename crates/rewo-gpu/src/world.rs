@@ -502,6 +502,21 @@ pub struct WorldRenderer {
     /// Whether the screen is open, and which slot's GUI-space top-left the
     /// cursor is over.
     container_open: Option<Option<(i32, i32)>>,
+    /// A **second** entity pass, for the inventory screen's player preview
+    /// (M36).
+    ///
+    /// Its own instance rather than a mode on the world's, because the two
+    /// disagree about everything the pass holds: the world's buffer carries
+    /// every visible entity and is drawn once through one matrix, and the
+    /// preview carries exactly one model drawn through a different one. Two
+    /// `set_draws` calls into a single ring would leave the first draw reading
+    /// the second's vertices.
+    ///
+    /// Built on first use, so a session that never opens the inventory never
+    /// pays for the second atlas.
+    preview: Option<crate::entities::EntityPass>,
+    /// This frame's preview matrix and window, or `None` when it is closed.
+    preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -1013,6 +1028,8 @@ impl WorldRenderer {
                 gui_items: None,
                 container: None,
                 container_open: None,
+                preview: None,
+                preview_state: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1304,6 +1321,55 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// Build the preview's entity pass. Idempotent, and cheap to call every
+    /// time the screen opens.
+    pub fn init_preview(
+        &mut self,
+        gpu: &mut Gpu,
+        font: Option<crate::entities::FontData<'_>>,
+        tex: crate::entities::MobTextures<'_>,
+    ) -> Result<(), String> {
+        if self.preview.is_some() {
+            return Ok(());
+        }
+        self.preview = Some(crate::entities::EntityPass::new(
+            gpu,
+            self.color_format,
+            font,
+            tex,
+        )?);
+        Ok(())
+    }
+
+    pub fn preview_ready(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// This frame's preview: the model to pose, the matrix that places it, and
+    /// the window it is clipped to. `None` closes it.
+    pub fn set_preview(
+        &mut self,
+        draw: Option<(&EntityDraw<'_>, [[f32; 4]; 4], vk::Rect2D)>,
+    ) {
+        match (draw, self.preview.as_mut()) {
+            (Some((d, vp, rect)), Some(pass)) => {
+                // The camera basis only orients billboards — nametags — and the
+                // preview draws none, so any orthonormal pair will do.
+                pass.set_draws(
+                    std::slice::from_ref(d),
+                    &[],
+                    &[],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    0.0,
+                    [0.0, 0.0, 0.0],
+                );
+                self.preview_state = Some((vp, rect));
+            }
+            _ => self.preview_state = None,
+        }
+    }
+
     pub fn container_ready(&self) -> bool {
         self.container.is_some()
     }
@@ -1486,6 +1552,22 @@ impl WorldRenderer {
     /// Upload a player's 64×64 skin into the entity atlas and return the UV
     /// offset for its `EntityDraw::skin_uv`. `None` if the entity pass isn't
     /// initialized (view/demo/bench paths).
+    /// The same, into the **preview** pass (M36).
+    ///
+    /// A separate call because the two passes hold separate atlases, so a UV
+    /// from one means nothing in the other — uploading once and reusing the
+    /// offset would put a slice of some mob's texture on the player.
+    pub fn upload_preview_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
+        let pass = self.preview.as_mut()?;
+        match pass.upload_skin(gpu, rgba) {
+            Ok(uv) => Some(uv),
+            Err(e) => {
+                log::warn!("preview: skin upload failed: {e}");
+                None
+            }
+        }
+    }
+
     pub fn upload_player_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
         let pass = self.entities.as_mut()?;
         match pass.upload_skin(gpu, rgba) {
@@ -2017,6 +2099,13 @@ impl WorldRenderer {
         if let (Some(pass), Some(hovered)) = (self.container.as_mut(), screen) {
             pass.set_state(extent, hovered);
             pass.draw_back(gpu, cb, extent);
+            // The player preview sits between the panel and the icons: it is
+            // inside the window the panel paints, and an item on the cursor
+            // passes over it.
+            if let (Some(preview), Some((vp, rect))) = (&self.preview, self.preview_state) {
+                clear_depth_rect(gpu, cb, rect);
+                preview.draw_solid(gpu, cb, vp, extent);
+            }
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);
             }
@@ -2338,6 +2427,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.preview.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.container.take() {
@@ -3381,4 +3473,27 @@ mod tests {
         assert_eq!(s.night_vision_factor, 1.0);
         assert_eq!(s.block_factor, 1.5);
     }
+}
+
+/// Clear the depth attachment over one rectangle, mid-render-pass.
+///
+/// The preview shares the frame's depth buffer with the world, so without this
+/// the model would be depth-tested against whatever terrain happens to be
+/// behind the panel and would appear cut in half by a hillside. Reversed-Z, so
+/// the cleared value is **0.0** — the far plane — which is what the world pass
+/// clears to as well.
+fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
+    let attachment = vk::ClearAttachment::default()
+        .aspect_mask(vk::ImageAspectFlags::DEPTH)
+        .clear_value(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 0.0,
+                stencil: 0,
+            },
+        });
+    let area = vk::ClearRect::default()
+        .rect(rect)
+        .base_array_layer(0)
+        .layer_count(1);
+    unsafe { gpu.device.cmd_clear_attachments(cb, &[attachment], &[area]) };
 }

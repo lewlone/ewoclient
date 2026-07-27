@@ -2623,6 +2623,29 @@ validation Rewo has.
   shift-click, drag, number-key swap, Q-drop, tooltips, recipe book or
   durability bars; armour icons stay blank (their `select` trim definitions are
   among M22's 147 suppressed).
+- **M36 the player preview (2026-07-27)** — the black rectangle M35 left in the
+  inventory is `inventory.png`'s **own** window (vanilla paints it so the model
+  has something to stand against), and this fills it. Transform =
+  `PictureInPictureRenderer.prepare` then `GuiEntityRenderer.renderToTexture`:
+  `T(w/2,h/2) . S(s,s,-s) . T(0,bbH/2+0.0625) . Rz(pi) . Rx(yAngle)`, with
+  `s = guiScale * 30`. **The step that is easy to miss is on the CAMERA** —
+  `orientation.rotateY(PI)` — and it is load-bearing: `bodyRot = 180 + xAngle`
+  already points the model away from an unturned camera, so the first build
+  rendered Steve's **back**. Rewo's entity pass takes no camera state, so the
+  half turn goes on the model instead. The preview owns a **second
+  `EntityPass`** (two `set_draws` into one vertex ring would cross the draws),
+  built on first open, with its own atlas — hence its own skin upload, since a
+  UV from the world's atlas would land on some mob's texture. It **clears depth**
+  over its window (`vkCmdClearAttachments`, to **0.0** — reversed-Z; vanilla's
+  `Projection.getMatrix` swaps `near`/`far` for the same reason) or the model
+  comes out sliced by the terrain behind the panel. **Measuring beat squinting
+  again**: the render looked too large and mispositioned; the measured feet
+  (191.6 px down a 210 px window) and head (29.6) matched the decompile exactly
+  — the size was right and the eye was wrong, and what *was* wrong was the
+  facing. Gate `inventoryshot --check` 39 -> **44/44**; headless knobs
+  `REWO_PREVIEW_SKIN=<username|url>` and `REWO_MOUSE=x,y`. **Open:** the model
+  stands still (no local-player animation state); lighting is Rewo's entity
+  shading, not vanilla's `ENTITY_IN_UI` rig; armour is not shown on it.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

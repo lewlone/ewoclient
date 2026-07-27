@@ -1789,20 +1789,43 @@ fn run_headless(
         .map(|v| v != "0")
         .unwrap_or(false);
     if screen_open {
-        let mouse = (sw as f64 / 2.0, sh as f64 / 2.0);
-        let (mut icons, mut labels) = screen_icons(&session.inventory, &items, sw, sh);
-        if let Some((icon, label)) = carried_icon(&session.inventory, &items, mouse, sw, sh) {
-            icons.push(icon);
-            labels.extend(label);
-        }
-        apply_gui_icons(&mut world_renderer, &mut gpu, &mut gui_items, &icons);
-        let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, sw, sh);
-        world_renderer.set_container(
-            true,
-            rewo_world::inventory::slot_at(gx, gy)
-                .and_then(rewo_world::inventory::slot_position),
+        // `REWO_MOUSE=x,y` moves the cursor for the shot, which is the only way
+        // to photograph the preview turning to follow it.
+        let mouse = std::env::var("REWO_MOUSE")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once(',')?;
+                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+            })
+            .unwrap_or((sw as f64 / 2.0, sh as f64 / 2.0));
+        // `REWO_PREVIEW_SKIN=<username|url>` fetches one skin for the shot.
+        // Offline test servers carry no textures property, so this is the only
+        // way to photograph the preview wearing a real skin.
+        let mut skin = std::env::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
+            match crate::skin_fetch::resolve(&spec)
+                .and_then(|info| crate::skin_fetch::fetch_rgba64(&info.url).map(|r| (r, info.slim)))
+            {
+                Ok((rgba, slim)) => {
+                    log::info!("preview: skin {spec} ({} model)", if slim { "slim" } else { "wide" });
+                    Some((rgba, slim, None))
+                }
+                Err(e) => {
+                    log::warn!("preview: skin {spec}: {e}");
+                    None
+                }
+            }
+        });
+        headless_screen_labels = apply_screen(
+            &mut world_renderer,
+            &mut gpu,
+            &session,
+            &items,
+            &mut gui_items,
+            &baked,
+            skin.as_mut(),
+            mouse,
+            (sw, sh),
         );
-        headless_screen_labels = labels;
     } else {
         apply_hotbar_icons(
             &mut world_renderer,
@@ -1971,6 +1994,11 @@ struct LiveApp {
     gui_items: Option<GuiItemState>,
     /// The inventory screen (M35).
     screen: ScreenState,
+    /// The local player's skin as it sits in the **preview** pass's atlas
+    /// (M36): the raw pixels, whether the model is slim, and the UV once
+    /// uploaded. Held separately from `skins` because the two passes have
+    /// separate atlases and a UV from one is meaningless in the other.
+    preview_skin: Option<(Vec<u8>, bool, Option<[f32; 2]>)>,
     /// This frame's stack-count labels. Built with the icons, consumed by the
     /// text pass a few lines later — the two are separated only because the
     /// icons need `&mut gpu` and the text does not.
@@ -2501,17 +2529,20 @@ impl LiveApp {
             let items = self.items.clone();
             let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.open {
-                let (mut icons, mut labels) = screen_icons(&session.inventory, &items, sw, sh);
-                if let Some((icon, label)) =
-                    carried_icon(&session.inventory, &items, self.screen.mouse, sw, sh)
-                {
-                    icons.push(icon);
-                    labels.extend(label);
-                }
-                self.screen_labels = labels;
-                apply_gui_icons(&mut state.world_renderer, &mut state.gpu, gi, &icons);
+                self.screen_labels = apply_screen(
+                    &mut state.world_renderer,
+                    &mut state.gpu,
+                    session,
+                    &items,
+                    gi,
+                    baked,
+                    self.preview_skin.as_mut(),
+                    self.screen.mouse,
+                    (sw, sh),
+                );
             } else {
                 self.screen_labels.clear();
+                state.world_renderer.set_preview(None);
                 apply_hotbar_icons(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -2522,11 +2553,10 @@ impl LiveApp {
                 );
             }
         }
-        // The screen's own chrome, and which slot the highlight sits on.
-        state.world_renderer.set_container(
-            self.screen.open,
-            hovered.and_then(rewo_world::inventory::slot_position),
-        );
+        if !self.screen.open {
+            state.world_renderer.set_container(false, None);
+        }
+        let _ = hovered;
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
@@ -2625,6 +2655,7 @@ fn run_windowed(
         gui_items: None,
         screen: ScreenState::default(),
         screen_labels: Vec::new(),
+        preview_skin: None,
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
@@ -5066,6 +5097,86 @@ pub fn hotbar_models<'a>(
     std::array::from_fn(|i| inv.hotbar(i).and_then(|s| items.name(s.item_id)))
 }
 
+/// The player model shown in the inventory screen's window (M36).
+///
+/// `extractEntityInInventoryFollowsMouse` poses it from the cursor: the body
+/// turns `180 + xAngle`, the head turns `xAngle` on top of that, and the pitch
+/// is `-yAngle`. The 180 is why the model faces you at rest — the same
+/// convention every other entity in Rewo uses, where yaw 0 faces +Z.
+///
+/// It stands still: no limb swing, no gesture, no hurt flash. Vanilla poses it
+/// from the live player's render state, so a walking player's legs move in the
+/// preview too; that would need the local player's animation state, which
+/// nothing else in Rewo consumes yet.
+fn preview_draw<'a>(
+    session: &PlaySession,
+    skin: Option<[f32; 2]>,
+    slim: bool,
+    held: [Option<&'a str>; 2],
+    w: f32,
+    h: f32,
+    mouse: (f64, f64),
+) -> (EntityDraw<'a>, [[f32; 4]; 4], ash::vk::Rect2D) {
+    let (x_angle, y_angle) = rewo_gpu::container::preview_angles(mouse, w, h);
+    // `LivingEntityRenderState.boundingBoxHeight / scale`, and the player's
+    // scale is 1 — so this is the standing hitbox, which is what centres the
+    // model in its window.
+    const PLAYER_HEIGHT: f32 = 1.8;
+    let draw = EntityDraw {
+        pos: [0.0, 0.0, 0.0],
+        width: 0.6,
+        height: PLAYER_HEIGHT,
+        color: [1.0, 1.0, 1.0],
+        name: None,
+        kind: if slim {
+            EntityModelKind::PlayerSlim
+        } else {
+            EntityModelKind::Player
+        },
+        yaw: 180.0 + x_angle,
+        death_time: 0.0,
+        ground_item: None,
+        ground_count: 0,
+        bob_offset: 0.0,
+        ground_seed: 0,
+        head_yaw: 180.0 + x_angle,
+        pitch: -y_angle,
+        limb_swing: 0.0,
+        limb_amount: 0.0,
+        gesture: None,
+        events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+        shell: false,
+        allay_dance: None,
+        attack: rewo_gpu::mobs::SwingPose::NONE,
+        mob: rewo_gpu::mobs::MobCombat::default(),
+        hurt: false,
+        held,
+        arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+        skin_uv: skin,
+        scale_mul: 1.0,
+        mount: None,
+        anim_id: 0.0,
+        // `GuiEntityRenderer` sets `renderState.lightCoords = 15728880`, which
+        // is both light channels at full — the preview is lit by the GUI's own
+        // two-light rig, not by wherever the player happens to be standing.
+        light: [1.0, 1.0, 1.0],
+    };
+    let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
+    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
+    let rect = ash::vk::Rect2D {
+        offset: ash::vk::Offset2D {
+            x: rx as i32,
+            y: ry as i32,
+        },
+        extent: ash::vk::Extent2D {
+            width: rw as u32,
+            height: rh as u32,
+        },
+    };
+    let _ = session;
+    (draw, vp, rect)
+}
+
 /// Everything the inventory screen needs across frames (M35).
 ///
 /// Deliberately small: the contents live in `PlaySession::inventory`, and the
@@ -5087,6 +5198,74 @@ impl ScreenState {
         let (gx, gy) = rewo_gpu::container::screen_to_gui(self.mouse, w, h);
         rewo_world::inventory::slot_at(gx, gy)
     }
+}
+
+/// Build and hand over one frame of the open screen: icons, count labels,
+/// the highlight and the player preview.
+///
+/// One function so the windowed and headless paths cannot drift — the headless
+/// one exists to photograph exactly what the windowed one shows.
+#[allow(clippy::too_many_arguments)]
+fn apply_screen(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    gui: &mut GuiItemState,
+    baked: &assets::BakedAssets,
+    skin: Option<&mut (Vec<u8>, bool, Option<[f32; 2]>)>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    let (mut icons, mut labels) = screen_icons(&session.inventory, items, w, h);
+    if let Some((icon, label)) = carried_icon(&session.inventory, items, mouse, w, h) {
+        icons.push(icon);
+        labels.extend(label);
+    }
+    apply_gui_icons(wr, gpu, gui, &icons);
+
+    let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
+    wr.set_container(
+        true,
+        rewo_world::inventory::slot_at(gx, gy).and_then(rewo_world::inventory::slot_position),
+    );
+
+    // The preview's pass is built the first time the screen opens, so a
+    // session that never opens it never pays for the second entity atlas.
+    if !wr.preview_ready() {
+        if let Err(e) = wr.init_preview(gpu, font_data(baked), entity_textures(baked)) {
+            log::warn!("live: inventory preview unavailable: {e}");
+        }
+    }
+    if wr.preview_ready() {
+        let held = [
+            session
+                .inventory
+                .held()
+                .and_then(|s| items.name(s.item_id)),
+            session
+                .inventory
+                .offhand()
+                .and_then(|s| items.name(s.item_id)),
+        ];
+        // The skin goes into the preview's own atlas the first time the
+        // screen opens, and stays there.
+        let (skin_uv, slim) = match skin {
+            Some(entry) => {
+                if entry.2.is_none() {
+                    entry.2 = wr.upload_preview_skin(gpu, &entry.0);
+                }
+                (entry.2, entry.1)
+            }
+            None => (None, false),
+        };
+        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse);
+        if let Err(e) = wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>()) {
+            log::warn!("live: preview held items: {e}");
+        }
+        wr.set_preview(Some((&draw, vp, rect)));
+    }
+    labels
 }
 
 /// The 46 slot rects the screen draws icons into, in screen pixels.

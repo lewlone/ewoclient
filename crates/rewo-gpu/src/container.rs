@@ -101,6 +101,129 @@ pub fn screen_to_gui(mouse: (f64, f64), w: f32, h: f32) -> (f64, f64) {
     )
 }
 
+
+// -- the player preview (M36) -------------------------------------------------
+//
+// `InventoryScreen.extractBackground` ends with
+//
+// ```java
+// extractEntityInInventoryFollowsMouse(graphics, xo + 26, yo + 8, xo + 75, yo + 78,
+//                                      30, 0.0625F, xMouse, yMouse, minecraft.player);
+// ```
+//
+// so the viewport is GUI-space `(26, 8)..(75, 78)` inside the panel — exactly
+// the black window `inventory.png` paints, which is there so the model has
+// something to stand against.
+
+/// The preview window, in GUI pixels relative to the panel's top-left.
+pub const PREVIEW: (i32, i32, i32, i32) = (26, 8, 75, 78);
+/// The `size` argument — the model's scale in GUI pixels per block.
+pub const PREVIEW_SIZE: f32 = 30.0;
+/// The `offsetY` argument, in blocks. Lifts the model so its feet sit on the
+/// bottom of the window rather than its centre.
+pub const PREVIEW_OFFSET_Y: f32 = 0.0625;
+
+/// Where the preview window lands on screen, as `(x, y, w, h)` in pixels.
+pub fn preview_rect(w: f32, h: f32) -> (f32, f32, f32, f32) {
+    let (left, top, scale) = gui_origin(w, h);
+    let (x0, y0, x1, y1) = PREVIEW;
+    (
+        left + x0 as f32 * scale,
+        top + y0 as f32 * scale,
+        (x1 - x0) as f32 * scale,
+        (y1 - y0) as f32 * scale,
+    )
+}
+
+/// The two angles the model turns by as the cursor moves, in **degrees**.
+///
+/// `xAngle = atan((centreX - mouseX) / 40)` and likewise for y, both then
+/// multiplied by 20 wherever they are used. The `40` is in GUI pixels, so the
+/// cursor is converted back into that space first — at GUI scale 3 a mouse a
+/// third of the way across the window turns the model as far as vanilla does.
+pub fn preview_angles(mouse: (f64, f64), w: f32, h: f32) -> (f32, f32) {
+    let (left, top, scale) = gui_origin(w, h);
+    let (x0, y0, x1, y1) = PREVIEW;
+    let centre_x = (x0 + x1) as f32 / 2.0;
+    let centre_y = (y0 + y1) as f32 / 2.0;
+    let mx = (mouse.0 as f32 - left) / scale;
+    let my = (mouse.1 as f32 - top) / scale;
+    (
+        ((centre_x - mx) / 40.0).atan() * 20.0,
+        ((centre_y - my) / 40.0).atan() * 20.0,
+    )
+}
+
+/// The preview's view-projection, mapping the model's own space straight into
+/// the screen's clip space.
+///
+/// Vanilla renders this into an offscreen texture and blits it; Rewo draws it
+/// where it belongs and skips the round trip, so the projection has to place
+/// the window itself rather than assuming it fills the target. The model-view
+/// is `PictureInPictureRenderer.prepare` and `GuiEntityRenderer.renderToTexture`
+/// composed, in that order:
+///
+/// ```text
+/// T(w/2, h/2, 0) · S(s, s, -s) · T(0, bbHeight/2 + offsetY, 0) · Rz(π) · Rx(yAngle)
+/// ```
+///
+/// with `s = guiScale * size`. Two details in there are load-bearing. The
+/// **negative z scale** is what turns the model to face the viewer — without
+/// it you see its back. And `Rz(π)` is a half-turn about the view axis, which
+/// is what puts a y-up model the right way up in a y-down GUI; it is not a
+/// spare 180° that can be folded into the body rotation.
+///
+/// `bb_height` is the entity's bounding-box height **divided by its scale**,
+/// because vanilla divides it out and then sets the render scale to 1.
+pub fn preview_view_proj(
+    screen_w: f32,
+    screen_h: f32,
+    bb_height: f32,
+    y_angle_deg: f32,
+) -> [[f32; 4]; 4] {
+    let (rx, ry, rw, rh) = preview_rect(screen_w, screen_h);
+    let (_, _, gui_scale) = gui_origin(screen_w, screen_h);
+    let s = gui_scale * PREVIEW_SIZE;
+
+    // Model → preview-local pixels, y down, origin at the window's top-left.
+    let model_view = glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
+        * glam::Mat4::from_scale(glam::Vec3::new(s, s, -s))
+        * glam::Mat4::from_translation(glam::Vec3::new(
+            0.0,
+            bb_height / 2.0 + PREVIEW_OFFSET_Y,
+            0.0,
+        ))
+        * glam::Mat4::from_rotation_z(std::f32::consts::PI)
+        * glam::Mat4::from_rotation_x(y_angle_deg.to_radians())
+        // `GuiEntityRenderer` finishes by turning the *camera* half a turn:
+        // `cameraRenderState.orientation = overrideCameraAngle.conjugate().rotateY(PI)`.
+        // Rewo's entity pass takes no camera state, so the same half turn is
+        // applied to the model instead — and it is not optional, because
+        // `bodyRot = 180 + xAngle` already points the model away from a camera
+        // that has not turned. Without it you are looking at Steve's back.
+        * glam::Mat4::from_rotation_y(std::f32::consts::PI);
+
+    // Preview-local pixels → the screen's clip space. The entity pass draws
+    // through a **flipped** viewport (`y = height, height = -height`), so clip
+    // y is up; the `-2/h` below cancels that back to the y-down pixels above.
+    //
+    // Depth is reversed-Z to match the rest of Rewo — `Projection.getMatrix`
+    // swaps `near` and `far` for the same reason — over vanilla's ±1000 range,
+    // which is far wider than a 2-block model needs and keeps the mapping
+    // obviously linear.
+    let sx = 2.0 / screen_w;
+    let sy = -2.0 / screen_h;
+    let ox = 2.0 * rx / screen_w - 1.0;
+    let oy = -(2.0 * ry / screen_h - 1.0);
+    let to_clip = glam::Mat4::from_cols(
+        glam::Vec4::new(sx, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, sy, 0.0, 0.0),
+        glam::Vec4::new(0.0, 0.0, -1.0 / 2000.0, 0.0),
+        glam::Vec4::new(ox, oy, 0.5, 1.0),
+    );
+    (to_clip * model_view).to_cols_array_2d()
+}
+
 pub struct ContainerPass {
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,

@@ -36,7 +36,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 39;
+const EXPECTED_WITNESSES: usize = 44;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -84,6 +84,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_placement(&mut c);
     check_screen(&mut c);
     check_click_packet(&mut c, &paths)?;
+    check_preview(&mut c);
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -668,6 +669,135 @@ fn check_click_packet(c: &mut Checker, paths: &DataPaths) -> Result<(), String> 
          one byte and nothing follows — not a present stack with count zero",
     );
     Ok(())
+}
+
+
+// -- 5. the player preview (M36) ----------------------------------------------
+
+fn check_preview(c: &mut Checker) {
+    use rewo_gpu::container::{gui_origin, preview_angles, preview_rect, preview_view_proj, PREVIEW};
+
+    // An independent transcription of the call `InventoryScreen` makes:
+    // `extractEntityInInventoryFollowsMouse(g, xo + 26, yo + 8, xo + 75, yo + 78, 30, 0.0625F, ...)`.
+    c.record(
+        "v1.the_preview_window_is_the_one_InventoryScreen_asks_for",
+        PREVIEW == (26, 8, 75, 78),
+        format!(
+            "GUI {PREVIEW:?} — 49x70, which is exactly the region `inventory.png` \
+             paints black. The texture has that window so the model has something \
+             to stand against; drawing the model anywhere else leaves a black hole \
+             and a player floating over the slots"
+        ),
+    );
+
+    let (sw, sh) = (1280.0f32, 720.0f32);
+    let (rx, ry, rw, rh) = preview_rect(sw, sh);
+    let (left, top, scale) = gui_origin(sw, sh);
+    c.record(
+        "v2.the_window_scales_with_the_panel",
+        rx == left + 26.0 * scale
+            && ry == top + 8.0 * scale
+            && rw == 49.0 * scale
+            && rh == 70.0 * scale,
+        format!(
+            "at GUI scale {scale} the window is {rw}x{rh} px at ({rx}, {ry}) — the \
+             same origin the panel is drawn from, so the model cannot drift out of \
+             its hole when the window is resized"
+        ),
+    );
+
+    // `xAngle = atan((centreX - mouseX) / 40)`, `* 20` at every use.
+    let centre = (
+        left as f64 + (PREVIEW.0 + PREVIEW.2) as f64 / 2.0 * scale as f64,
+        top as f64 + (PREVIEW.1 + PREVIEW.3) as f64 / 2.0 * scale as f64,
+    );
+    let at_centre = preview_angles(centre, sw, sh);
+    let left_of = preview_angles((centre.0 - 60.0, centre.1), sw, sh);
+    let right_of = preview_angles((centre.0 + 60.0, centre.1), sw, sh);
+    let far = preview_angles((0.0, 0.0), sw, sh);
+    c.record(
+        "v3.the_model_turns_toward_the_cursor_and_the_turn_is_bounded",
+        at_centre.0.abs() < 1e-5
+            && at_centre.1.abs() < 1e-5
+            && (left_of.0 + right_of.0).abs() < 1e-5
+            && left_of.0 > 0.0
+            && far.0.abs() < 20.0 * std::f32::consts::FRAC_PI_2,
+        format!(
+            "centre {at_centre:?}, 60 px either side {:.3} / {:.3}, a corner \
+             {:.3}. `atan` is what bounds it: the model can turn at most \
+             20 * pi/2 = 31.4 degrees however far the cursor goes, so it never \
+             spins to face away",
+            left_of.0, right_of.0, far.0
+        ),
+    );
+
+    // The model's feet and head, projected through the production matrix and
+    // compared against the placement computed here from the decompile:
+    //   T(w/2, h/2, 0) . S(s, s, -s) . T(0, bbH/2 + 0.0625, 0) . Rz(pi) . ...
+    // Rz(pi) negates y, so a point at model height `m` lands at
+    //   h/2 + (bbH/2 + 0.0625 - m) * s
+    // in window-local pixels, y down.
+    const BB: f32 = 1.8;
+    let vp = glam::Mat4::from_cols_array_2d(&preview_view_proj(sw, sh, BB, 0.0));
+    let project = |m: f32| -> f32 {
+        let clip = vp * glam::Vec4::new(0.0, m, 0.0, 1.0);
+        // Clip -> NDC -> window-local pixels, y down (the entity pass's
+        // viewport is flipped, so NDC +1 is the top).
+        let ndc_y = clip.y / clip.w;
+        (1.0 - ndc_y) / 2.0 * sh - ry
+    };
+    let s = scale * 30.0;
+    let want = |m: f32| rh / 2.0 + (BB / 2.0 + 0.0625 - m) * s;
+    let (feet, head) = (project(0.0), project(BB));
+    c.record(
+        "v4.the_model_stands_where_the_transform_says",
+        (feet - want(0.0)).abs() < 0.01 && (head - want(BB)).abs() < 0.01,
+        format!(
+            "feet at {feet:.1} px down the window (want {:.1}), head at {head:.1} \
+             (want {:.1}), in a window {rh} tall. `offsetY` = 0.0625 lifts it a \
+             sixteenth of a block so the feet clear the bottom edge",
+            want(0.0),
+            want(BB)
+        ),
+    );
+
+    // The camera half-turn. `GuiEntityRenderer` ends with
+    // `orientation.rotateY(PI)`, and `bodyRot = 180 + xAngle` already points
+    // the model away from an unturned camera — so dropping it shows the back.
+    // Here that is observable as a mirrored x: the same model point lands on
+    // the opposite side of the window.
+    let no_turn = {
+        let (_, _, gs) = gui_origin(sw, sh);
+        let s = gs * 30.0;
+        let mv = glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
+            * glam::Mat4::from_scale(glam::Vec3::new(s, s, -s))
+            * glam::Mat4::from_translation(glam::Vec3::new(0.0, BB / 2.0 + 0.0625, 0.0))
+            * glam::Mat4::from_rotation_z(std::f32::consts::PI);
+        mv
+    };
+    let arm = glam::Vec4::new(0.35, 1.4, 0.0, 1.0);
+    let turned = vp * arm;
+    let plain = {
+        let p = no_turn * arm;
+        // Through the same clip mapping the production matrix ends with.
+        (p.x + rx) / sw * 2.0 - 1.0
+    };
+    let turned_x = turned.x / turned.w;
+    // Mirrored about the **window's** centre, not about clip zero — the window
+    // sits left of the screen's middle, so both land negative and a sign test
+    // would pass on a matrix with no half turn at all.
+    let centre_clip = 2.0 * (rx + rw / 2.0) / sw - 1.0;
+    c.record(
+        "v5.the_camera_half_turn_is_applied",
+        ((turned_x - centre_clip) + (plain - centre_clip)).abs() < 1e-4
+            && (turned_x - plain).abs() > 1e-3,
+        format!(
+            "the point 0.35 blocks to the model's right lands at clip x {turned_x:.4} \
+             with the half turn and {plain:.4} without, either side of the window's \
+             centre at {centre_clip:.4} — mirrored. Without the turn the model is \
+             drawn back-to-front, which is what the first build did"
+        ),
+    );
 }
 
 // -- 3. the pixels -------------------------------------------------------------

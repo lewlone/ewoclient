@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M35 shipped + headlessly verified (2026-07-27).** All of it is
+**Status: M0–M36 shipped + headlessly verified (2026-07-27).** All of it is
 **pushed**, on branch `codex/rewo-m19-combat-swings` (HEAD `ce9028c`) — but
 `origin/main` is still at `973ea5e`, the M0–M9 point, and the branch is **72
 commits ahead of it**. Nothing has been merged. See §0.0 for the fresh-session
@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M35 shipped, M34–M35 local, the rest pushed, none merged
+### Where it is: M0–M36 shipped, M34–M36 local, the rest pushed, none merged
 
 Everything is on `codex/rewo-m19-combat-swings` (HEAD `ce9028c`), which exists
 on the remote and is **72 commits ahead of `origin/main`**. `origin/main` is
@@ -45,7 +45,22 @@ contents around M20; renaming or merging it is a standing loose end, and the
 largest non-code risk in the project is that all of M10 onward lives on one
 unmerged branch.
 
-**Latest (2026-07-27): M35 — the inventory screen.** The panel, all 46 slots,
+**Latest (2026-07-27): M36 — the player preview.** The black rectangle M35 left
+in the middle of the inventory is `inventory.png`'s own window, and this fills
+it. The transform composes `PictureInPictureRenderer.prepare` and
+`GuiEntityRenderer.renderToTexture`; the step that is easy to miss is on the
+*camera* — `orientation.rotateY(PI)` — and it is not decorative, because
+`bodyRot = 180 + xAngle` already points the model away from an unturned camera.
+The first build rendered Steve's back. The preview owns a **second**
+`EntityPass` (two `set_draws` into one ring would cross the draws) built on
+first open, and clears depth over its window (reversed-Z, so to 0.0) or the
+model comes out sliced by the terrain behind the panel. Measuring beat
+squinting again: the render looked too large and mispositioned, and the
+measured feet/head matched the decompile exactly — the size was right and the
+eye was wrong; what *was* wrong was the facing. `inventoryshot` 39 -> **44**.
+Detail in §15.
+
+**Before it (2026-07-27): M35 — the inventory screen.** The panel, all 46 slots,
 the hover highlight, the stack on the cursor, and clicking. The click is a
 *prediction*: the packet carries the client's own belief about every changed
 slot, and the only thing that triggers a resynchronisation is
@@ -309,7 +324,7 @@ match.
 - **Fifteen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `hurtshot` 38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28,
-  `danceshot` 24/24, `inventoryshot` 39/39, `portalshot` 12/12, plus `skyshot`,
+  `danceshot` 24/24, `inventoryshot` 44/44, `portalshot` 12/12, plus `skyshot`,
   `lightmapshot`, `tintshot`, `meshshot` and `dimensioncheck` (which report
   pass/fail rather than a witness count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
@@ -318,18 +333,14 @@ match.
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
-  byte-identical from M15 through M35. Any change to it is a regression until
+  byte-identical from M15 through M36. Any change to it is a regression until
   argued otherwise.
 
 ### What to do next
 
-Nothing is mid-flight — every milestone through M35 is shipped and gated (M34
-and M35 are committed locally, not yet pushed). The most visible open item is
-the **inventory screen's player preview**: `inventory.png` paints that window
-black and vanilla draws the 3D player over it, so there is a black rectangle
-where the model belongs. It is self-contained — the entity pass, an ortho
-projection, a scissored viewport. Beyond it, three candidates in the order I
-would take them:
+Nothing is mid-flight — every milestone through M36 is shipped and gated (M34,
+M35 and M36 are committed locally, not yet pushed). Three candidates, in the
+order I would take them:
 
 1. **Merge the branch.** `codex/rewo-m19-combat-swings` is 72 commits ahead of
    `origin/main` and carries everything from M10 on. This is not a milestone,
@@ -416,8 +427,8 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
   every run, and grades the block-entity classification against what the model
   resolver actually draws — in both directions, so neither half can drift.
-- `rewo inventoryshot --check` — **the inventory + screen gate** (M34/M35,
-  fail-closed, **39/39**, validation required). Six witnesses drive synthetic
+- `rewo inventoryshot --check` — **the inventory + screen + preview gate**
+  (M34/M35/M36, fail-closed, **44/44**, validation required). Six witnesses drive synthetic
   `container_set_content` / `container_set_slot` / `set_held_slot` bodies
   through the production `route_inventory` (the menu-slot ↔ inventory-index
   conversion, the ignore-don't-clamp guard, the i16 index, the foreign
@@ -6209,6 +6220,81 @@ Gates: **547 tests**, `weathershot` 27/27, and every prior gate green —
 `skyshot`, `lightmapshot`, `tintshot`, all with validation ON and 0 VUIDs;
 canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
 `git diff --check` clean.
+
+### M36 — the player preview (2026-07-27)
+
+M35 left a black rectangle in the middle of the inventory. That rectangle is
+`inventory.png`'s own — vanilla paints it so the model has something to stand
+against — and this fills it.
+
+**The transform, composed from two classes.**
+`PictureInPictureRenderer.prepare` and `GuiEntityRenderer.renderToTexture`
+together are
+
+```text
+T(w/2, h/2, 0) . S(s, s, -s) . T(0, bbHeight/2 + offsetY, 0) . Rz(pi) . Rx(yAngle)
+```
+
+with `s = guiScale * size` and `size = 30`. The negative z scale turns the model
+to face the viewer; `Rz(pi)` is what puts a y-up model the right way up in a
+y-down GUI. Vanilla renders that into an offscreen texture and blits it; Rewo
+draws it where it belongs and folds the window's placement into the projection
+instead, which is one target and one blit less.
+
+**The step that is easy to miss, because it is on the camera.**
+`renderToTexture` ends with
+`cameraRenderState.orientation = overrideCameraAngle.conjugate().rotateY(PI)`.
+Rewo's entity pass takes no camera state, so that half turn has to be applied to
+the model instead — and it is not decorative: `bodyRot = 180 + xAngle` already
+points the model away from an unturned camera, so the first build rendered
+Steve's back. The two are mirror images, which is exactly what the gate asserts.
+
+**A second entity pass, not a mode on the first.** The world's pass carries every
+visible entity and is drawn once through one matrix; the preview carries one
+model drawn through another. Two `set_draws` calls into a single vertex ring
+would leave the first draw reading the second's vertices, so the preview owns an
+`EntityPass` of its own, built the first time the screen opens. Its atlas is
+separate, which is also why the skin needs its own upload — a UV from the world's
+atlas would land on some mob's texture.
+
+**Depth.** The preview shares the frame's depth buffer with the world, so
+without a `vkCmdClearAttachments` over its window the model would be depth-tested
+against whatever terrain sits behind the panel and come out sliced by a hillside.
+Cleared to **0.0**, the far plane, because Rewo is reversed-Z throughout — and so
+is vanilla here: `Projection.getMatrix` reads `near = this.zFar; far = this.zNear`,
+swapping the two on purpose.
+
+**Verified by measuring, again.** The first render looked both too large and
+mispositioned. Measuring the model's bounding box against the placement computed
+from the decompile put the feet at 191.6 px down a 210 px window and the head at
+29.6, matching to within the saturation filter's slack — the size was right and
+the eye was wrong. What *was* wrong was the facing, which no amount of squinting
+at proportions would have found.
+
+Gate: **`rewo inventoryshot --check` 39 -> 44 witnesses** — the window against an
+independent transcription of `InventoryScreen`'s call, its scaling with the
+panel, the `atan`-bounded mouse follow (at most 31.4 degrees, so it can never
+turn away), the feet and head projected through the production matrix against an
+independently computed placement, and the camera half turn as a mirror pair. One
+formulation was written and rejected: it asserted the mirrored point flips sign
+about clip zero, which is not the property — the window sits left of screen
+centre, so both land negative and a matrix with no half turn would have passed.
+
+Measured: **586 tests**; all fifteen serverless gates green with validation ON;
+demo SHA-256 `2cc56b4a...` byte-identical to M15 onward; live
+`play --light-check --no-relight --no-build` 884,736 cells / 0 mismatches and
+`CORRECTIONS 0`. Verified in-frame with a real fetched skin
+(`REWO_PREVIEW_SKIN=<username|url>`), slim model and all, and with
+`REWO_MOUSE=x,y` to photograph the follow.
+
+**Open.** The model stands still: vanilla poses it from the live player's render
+state, so a walking player's legs move in the preview too, and Rewo has no
+local-player animation state to read. Lighting is Rewo's entity shading rather
+than vanilla's `Lighting.Entry.ENTITY_IN_UI` rig. Armour is not shown on the
+model — armour items have no baked geometry at all yet (their `select` trim
+definitions are among M22's 147 suppressed). And in a live session the skin is
+uploaded only when one is available; an offline-mode server carries no textures
+property, so the preview wears the default there, as vanilla does.
 
 ### M35 — the inventory screen (2026-07-27)
 
