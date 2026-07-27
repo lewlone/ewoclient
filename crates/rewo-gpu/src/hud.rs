@@ -490,3 +490,84 @@ fn build_pipeline(
         Ok(pipeline)
     }
 }
+
+/// The auto GUI scale — vanilla's largest integer that fits a ~320×240 base.
+/// Shared so the icons cannot drift from the frame by recomputing it slightly
+/// differently.
+pub fn gui_scale(w: f32, h: f32) -> f32 {
+    ((h / 240.0).min(w / 320.0)).floor().clamp(1.0, 4.0)
+}
+
+/// Where the nine hotbar item icons go, in **screen pixels** (M34).
+///
+/// Vanilla's hotbar sprite is 182×22 with 20-pixel slots starting 3 px in and
+/// a 16×16 icon in each: `3 + i*20` from the bar's left, `3` from its top, all
+/// in scaled space.
+pub fn hotbar_slot_rects(bar_w: f32, bar_h: f32, w: f32, h: f32) -> [(f32, f32, f32); 9] {
+    let scale = gui_scale(w, h);
+    let (sw, sh) = (w / scale, h / scale);
+    let bar_x = (sw - bar_w) / 2.0;
+    let bar_y = sh - bar_h;
+    std::array::from_fn(|i| {
+        (
+            (bar_x + 3.0 + i as f32 * 20.0) * scale,
+            (bar_y + 3.0) * scale,
+            16.0 * scale,
+        )
+    })
+}
+
+impl HudPass {
+    /// [`hotbar_slot_rects`] against this HUD's own hotbar sprite. The HUD owns
+    /// the scale, so this has to come from here rather than being recomputed by
+    /// the caller.
+    pub fn hotbar_slots(&self, w: f32, h: f32) -> [(f32, f32, f32); 9] {
+        hotbar_slot_rects(self.hotbar.w, self.hotbar.h, w, h)
+    }
+}
+
+#[cfg(test)]
+mod hotbar_slot_tests {
+    use super::*;
+
+    /// Vanilla's hotbar sprite.
+    const BAR: (f32, f32) = (182.0, 22.0);
+
+    /// Nine evenly-spaced slots that stay inside the bar, at every scale the
+    /// HUD can pick. The icon row lining up with the frame is the whole point
+    /// of sharing the scale.
+    #[test]
+    fn the_slots_are_evenly_spaced_and_fit_the_bar() {
+        for (w, h) in [(854.0, 480.0), (1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = gui_scale(w, h);
+            let r = hotbar_slot_rects(BAR.0, BAR.1, w, h);
+            let step = r[1].0 - r[0].0;
+            assert!((step - 20.0 * scale).abs() < 1e-3, "{w}x{h}: step {step}");
+            for i in 1..9 {
+                assert!(
+                    (r[i].0 - r[i - 1].0 - step).abs() < 1e-3,
+                    "{w}x{h}: uneven at {i}"
+                );
+                assert_eq!(r[i].1, r[0].1, "one row");
+                assert_eq!(r[i].2, 16.0 * scale, "16 scaled px per icon");
+            }
+            // The row sits inside the bar and on screen.
+            let bar_left = (w / scale - BAR.0) / 2.0 * scale;
+            assert!(r[0].0 >= bar_left, "{w}x{h}: first icon left of the bar");
+            assert!(r[8].0 + r[8].2 <= bar_left + BAR.0 * scale, "past the bar");
+            assert!(r[0].1 + r[0].2 <= h, "below the screen");
+        }
+    }
+
+    /// The icons must sit on the bar, not above or below it: the bar's top is
+    /// `h - 22*scale`, and a 16 px icon 3 px down leaves 3 px of frame under it.
+    #[test]
+    fn the_icon_row_sits_on_the_bar() {
+        let (w, h) = (1280.0f32, 720.0f32);
+        let scale = gui_scale(w, h);
+        let r = hotbar_slot_rects(BAR.0, BAR.1, w, h);
+        let bar_top = h - BAR.1 * scale;
+        assert!((r[0].1 - (bar_top + 3.0 * scale)).abs() < 1e-3);
+        assert!(r[0].1 + r[0].2 < h, "the icon ends above the screen edge");
+    }
+}

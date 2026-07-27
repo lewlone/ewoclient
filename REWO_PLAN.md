@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M33b shipped + headlessly verified (2026-07-27).** All of it is
+**Status: M0–M34 shipped + headlessly verified (2026-07-27).** All of it is
 **pushed**, on branch `codex/rewo-m19-combat-swings` (HEAD `ce9028c`) — but
 `origin/main` is still at `973ea5e`, the M0–M9 point, and the branch is **72
 commits ahead of it**. Nothing has been merged. See §0.0 for the fresh-session
@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M33b shipped, all pushed to a branch, none merged
+### Where it is: M0–M34 shipped, M34 local, the rest pushed, none merged
 
 Everything is on `codex/rewo-m19-combat-swings` (HEAD `ce9028c`), which exists
 on the remote and is **72 commits ahead of `origin/main`**. `origin/main` is
@@ -45,7 +45,29 @@ contents around M20; renaming or merging it is a standing loose end, and the
 largest non-code risk in the project is that all of M10 onward lives on one
 unmerged branch.
 
-**Latest (2026-07-27): M33 — weather and clouds.** Rain, snow and a cloud deck.
+**Latest (2026-07-27): M34 — the inventory, and icons in the hotbar.** The
+client now knows what it is carrying and draws it. Two coordinate systems meet
+here and never line up: the wire's 46 **menu slots** (hotbar from 36, offhand
+45) against the game's **inventory indices** (hotbar 0..8) — and the three
+packets are split across them, `container_set_*` speaking the first and
+`set_held_slot` the second. Three decode rules are not obvious: an
+out-of-range held slot is **ignored, not clamped**; `container_set_slot` carries
+its index as a **signed short** among var-ints; and any container id but 0 is
+an open screen this client does not have, so it is dropped whole. The icons
+needed `display.gui` — absent for a sprite, which is *correct* (identity maps
+0..16 model units onto exactly the 16 px slot), and `scale 0.625` +
+`rotation [30, 225, 0]` for a block, which reaches 8.37 px against the slot's
+8. Lighting is a third model, neither the world's `Direction` shade nor the
+hand's. Building the gate found two bugs first — `init_gui_items` leaked an
+image, sampler and pipeline per hotbar change, and the atlas was repacked every
+frame — then the gate's own first measurement counted "non-black" pixels
+against a painted sky and measured exactly zero while the PNG showed both icons
+rendering perfectly. One witness also had its reasoning backwards ("a sprite
+covers more of its slot than a block" — a sword is mostly transparent); it was
+replaced by a mutation that renders the same block with an identity transform.
+`rewo inventoryshot --check`, **16/16**. Detail in §15.
+
+**Before it (2026-07-27): M33 — weather and clouds.** Rain, snow and a cloud deck.
 Three facts read backwards until checked: **`START_RAINING` sets the rain level
 to 0 and `STOP_RAINING` to 1** (the names describe the server's transition; the
 client sets the value its ramp starts *from*); the client **does not
@@ -263,27 +285,28 @@ Everything below is the *current* total, re-measured this session. Per-milestone
 figures inside §15 are the measurement taken at that milestone and will not
 match.
 
-- **561 tests** — 500 lib + 61 app. By crate: `rewo-world` 181, `rewo-net` 136,
-  `rewo-gpu` 69, `rewo-data` 65, `rewo-mesh` 38, `rewo-proto` 11, app 61.
-- **Fourteen serverless gates**, all green with Vulkan validation ON and
+- **578 tests** — 517 lib + 61 app. By crate: `rewo-world` 188, `rewo-net` 136,
+  `rewo-gpu` 77, `rewo-data` 67, `rewo-mesh` 38, `rewo-proto` 11, app 61.
+- **Fifteen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `hurtshot` 38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28,
-  `danceshot` 24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`,
-  `tintshot`, `meshshot` and `dimensioncheck` (which report pass/fail rather
-  than a witness count).
+  `danceshot` 24/24, `inventoryshot` 16/16, `portalshot` 12/12, plus `skyshot`,
+  `lightmapshot`, `tintshot`, `meshshot` and `dimensioncheck` (which report
+  pass/fail rather than a witness count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
   mismatches both channels; `play --dimension-check` 4/4 checkpoints + 3/3
   transitions; physics **CORRECTIONS 0** over 600 ticks; build actions prove
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
-  byte-identical from M15 through M33b. Any change to it is a regression until
+  byte-identical from M15 through M34. Any change to it is a regression until
   argued otherwise.
 
 ### What to do next
 
-Nothing is mid-flight — every milestone through M33b is shipped, gated and
-pushed. Three candidates, in the order I would take them:
+Nothing is mid-flight — every milestone through M34 is shipped and gated (M34
+itself is committed locally, not yet pushed). Three candidates, in the order I
+would take them:
 
 1. **Merge the branch.** `codex/rewo-m19-combat-swings` is 72 commits ahead of
    `origin/main` and carries everything from M10 on. This is not a milestone,
@@ -370,6 +393,16 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
   every run, and grades the block-entity classification against what the model
   resolver actually draws — in both directions, so neither half can drift.
+- `rewo inventoryshot --check` — **the inventory + hotbar-icon gate** (M34,
+  fail-closed, **16/16**, validation required). Six witnesses drive synthetic
+  `container_set_content` / `container_set_slot` / `set_held_slot` bodies
+  through the production `route_inventory` (the menu-slot ↔ inventory-index
+  conversion, the ignore-don't-clamp guard, the i16 index, the foreign
+  container, the truncated list); four grade `display.gui` placement and the
+  GUI diffuse on the CPU; six render real baked items into real hotbar slots
+  offscreen and measure them as a **difference against the same scene with an
+  empty draw list** — counting "non-black" pixels measures nothing, because the
+  world pass paints a sky behind everything.
 - `rewo weathershot --check` — **the weather + cloud gate** (M33, fail-closed
   **27/27**, validation required, 0 VUIDs). Three layers: the `game_event` wire
   driven through `route_game_event` (including that **`START_RAINING` sets the
@@ -6153,6 +6186,97 @@ Gates: **547 tests**, `weathershot` 27/27, and every prior gate green —
 `skyshot`, `lightmapshot`, `tintshot`, all with validation ON and 0 VUIDs;
 canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
 `git diff --check` clean.
+
+### M34 — the inventory, and icons in the hotbar (2026-07-27)
+
+The hotbar has been drawing its nine empty frames since the HUD landed. M34
+fills them: the client now knows what it is carrying, and draws it.
+
+**Two coordinate systems, and the conversion between them.** The wire speaks
+*menu slots* — 46 of them, in the order `ContainerMenu` lists: crafting, armour
+from index 5, the main grid, then the hotbar from **36**, then the offhand at
+**45**. The game logic speaks *inventory indices*, where the hotbar is simply
+0..8. Every packet in this milestone crosses that boundary, and the two never
+line up: `container_set_content` and `container_set_slot` carry menu slots,
+while `set_held_slot` carries an inventory index. Reading either in the other's
+terms puts a pickaxe in a boot.
+
+**Three decode rules that are not obvious.** `set_held_slot` is guarded by
+`Inventory.isHotbarSlot`, which **ignores** an out-of-range value — it does not
+clamp it and does not reset to 0, so a bad packet leaves your selection where
+it was. `container_set_slot` carries its index as a **signed short** where its
+neighbours in the same packet use var-ints. And any container id but **0**
+belongs to an open screen — a chest, a crafting table — which this client does
+not have, so those updates are ignored entirely rather than written into the
+player's own inventory.
+
+**The icons needed one new thing from the bake and one new pass.** M22 already
+produced every item as quads in 0..16 model units with UVs into its own
+texture, through two very different sources — an extruded sprite and a reused
+block bake — that converge on the same shape. What it did not keep was
+`display.gui`, the transform that decides where those quads land in a slot.
+That is now accumulated through the same parent chain as the rest, and it is
+the whole difference between the two cases:
+
+- a **sprite** has no `display.gui` at all, and the identity transform maps
+  0..16 model units onto exactly −8..8 px — the 16 px slot, edge to edge. The
+  absence is *correct*, not missing.
+- a **block** inherits `scale 0.625` with `rotation [30, 225, 0]` from
+  `block/block`, which tilts it and reaches **8.37 px** against the slot's 8 px
+  half-width. It overflows a little, as vanilla's does.
+
+Lighting is a third model, distinct from both the ones Rewo already had.
+The world shades by `Direction` ordinal and so does the held-item pass; the GUI
+uses `minecraft_mix_light_separate` — `min(1, (max(0,n·L0) + max(0,n·L1)) *
+0.6 + 0.4)` — with `DIFFUSE_LIGHT_0/1` posed differently for flat and 3D items
+(`Lighting.Entry.ITEMS_FLAT` against `ITEMS_3D`). This is why a block looks lit
+from a different angle in the hotbar than in your hand.
+
+**Two bugs the gate found before it graded anything.** `init_gui_items` is
+called again whenever the hotbar needs a texture the resident atlas does not
+hold, and it was assigning over the old pass — whose Vulkan handles are plain
+integers rather than RAII types, so an image, a sampler and a pipeline leaked
+per hotbar change. And the atlas was repacked *every frame* rather than only on
+that change, rebuilding a megabyte for a hotbar that changes once a second —
+the same "never construct per frame what is logically static" rule the
+2026-05-31 leak pass established for Skia shaders.
+
+**The first measurement was meaningless.** The pixel witnesses counted
+"non-black" pixels, but the world pass paints a sky behind everything, so every
+pixel was lit in every frame and both slots measured a difference of exactly
+zero — while the PNG showed both icons rendering perfectly. They now count
+pixels that **differ from the same scene with an empty draw list**, which is
+the only thing that isolates the item pass.
+
+**One witness had its reasoning backwards.** It claimed a sprite covers more of
+its slot than a tilted block, on the grounds that the sprite fills the slot
+edge to edge. A sword sprite is mostly transparent; the block measured nearly
+twice its area. Coverage was never the property — *placement* is. It was
+replaced by a mutation: the same block rendered with an identity `display.gui`
+lands at exactly `(144, 96)–(192, 144)`, its slot to the pixel, while the baked
+transform puts it at `(112, 96)–(193, 144)`. The one-pixel overflow at 193
+agrees with the analytic 8.37-against-8, which is two independent routes to the
+same number.
+
+Gate: **`rewo inventoryshot --check`** — serverless, validation-required,
+fail-closed, **16/16 witnesses**: six driving synthetic packets through the
+production `route_inventory`, four grading placement and lighting on the CPU,
+six rendering real baked items into real hotbar slots and reading them back.
+Measured: **578 tests** (proto 11, data 67, world 188, net 136, mesh 38, gpu 77
+= 517 lib; app 61), every prior gate green with validation ON and 0 VUIDs —
+`weathershot` 35/35, `blockentityshot` 172/172, `swingshot` 97/97, `hurtshot`
+38/38, `mobshot` 243/243, `eventshot` 28/28, `itemshot` 28/28, `danceshot`
+24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+`meshshot`, `dimensioncheck`; canonical demo SHA-256 `2cc56b4a…` byte-identical
+to M15 onward; bench replay GPU avg **0.213 ms** (the replay has no HUD, so it
+does not exercise this pass — the number says nothing regressed elsewhere);
+`git diff --check` clean.
+
+**Open.** The inventory is decoded whole but only the hotbar is drawn — there
+is no inventory *screen*, so the other 37 slots are held and never shown. Stack
+counts and durability bars are not rendered. Enchantment glint, per-layer tint
+and the 147 state-dependent item definitions M22 suppresses all stay
+suppressed here too, on the same "nothing rather than something wrong" rule.
 
 ### M32b — `portalshot`, the end-portal pixel oracle (2026-07-26)
 

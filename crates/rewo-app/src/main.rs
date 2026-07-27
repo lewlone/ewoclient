@@ -24,6 +24,7 @@ mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
+mod inventoryshot_cmd;
 mod portalshot_cmd;
 mod skin_fetch;
 mod skyshot_cmd;
@@ -171,6 +172,11 @@ enum Command {
     /// precipitation rule and the cloud mesh on the CPU, then render both
     /// production passes offscreen and assert their pixels with `--check`.
     Weathershot(weathershot_cmd::WeathershotArgs),
+    /// M34 inventory + hotbar-icon oracle: drive the three inventory packets
+    /// through the real router, grade the `display.gui` placement and the GUI
+    /// diffuse on the CPU, then render real baked items into real hotbar slots
+    /// offscreen and assert their pixels with `--check` (no server).
+    Inventoryshot(inventoryshot_cmd::InventoryshotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
@@ -213,6 +219,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
+        Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),

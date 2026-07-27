@@ -1232,7 +1232,7 @@ fn hud_sprite(sp: &assets::HudSprite) -> rewo_gpu::hud::HudSpriteData<'_> {
     }
 }
 
-fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
+pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
     let h = baked.hud.as_ref()?;
     Some(rewo_gpu::hud::HudSpritesData {
         hotbar: hud_sprite(&h.hotbar),
@@ -1410,6 +1410,7 @@ fn run_headless(
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
     let mut weather_assets = WeatherAssets::new(&baked);
+    let mut gui_items = GuiItemState::new(&baked);
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -1698,6 +1699,14 @@ fn run_headless(
         1.0,
         None,
     );
+    apply_hotbar_icons(
+        &mut world_renderer,
+        &mut gpu,
+        &session,
+        &items,
+        &mut gui_items,
+        (off.extent.width as f32, off.extent.height as f32),
+    );
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -1849,6 +1858,9 @@ struct LiveApp {
     /// on the first frame that has a bake, since `baked` arrives with the
     /// session rather than at construction.
     weather: Option<WeatherAssets>,
+    /// M34: the hotbar icons' atlas residency + the baked items. Built on the
+    /// first frame that has a bake, like `weather`.
+    gui_items: Option<GuiItemState>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -2278,6 +2290,21 @@ impl LiveApp {
                 apply_weather_to_celestial(&mut cel, session);
                 cel
             });
+        // M34: the hotbar icons, before the weather so the borrow of `baked`
+        // is over by the time `apply_weather` takes its own.
+        if let Some(baked) = self.baked.as_ref() {
+            let items = self.items.clone();
+            let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
+            let ext = state.window.inner_size();
+            apply_hotbar_icons(
+                &mut state.world_renderer,
+                &mut state.gpu,
+                session,
+                &items,
+                gi,
+                (ext.width as f32, ext.height as f32),
+            );
+        }
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
@@ -2375,6 +2402,7 @@ fn run_windowed(
         items,
         pool,
         weather: None,
+        gui_items: None,
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
@@ -4713,4 +4741,186 @@ fn rain_fog_band(
     }
     let (start, end) = w.rain_fog.apply(ENV_FOG_START, ENV_FOG_END);
     [start, end]
+}
+
+// -- M34: hotbar item icons ---------------------------------------------------
+
+/// The GUI-item atlas: one row of slots, each large enough for any item
+/// texture the bake produces.
+///
+/// Deliberately its own atlas rather than the entity pass's. That one is a
+/// demand-filled pool sized for mob skins and shared with the held-item path;
+/// borrowing it would couple the HUD to the entity pass's residency policy for
+/// the sake of at most nine small textures.
+const GUI_ATLAS_SLOT: u32 = 64;
+const GUI_ATLAS_COLS: u32 = 8;
+const GUI_ATLAS_ROWS: u32 = 8;
+const GUI_ATLAS_W: u32 = GUI_ATLAS_SLOT * GUI_ATLAS_COLS;
+const GUI_ATLAS_H: u32 = GUI_ATLAS_SLOT * GUI_ATLAS_ROWS;
+
+/// A packed GUI atlas plus where each source texture landed.
+pub struct GuiAtlas {
+    pub rgba: Vec<u8>,
+    /// Texture index -> `(u0, v0, du, dv)`.
+    pub uv: std::collections::HashMap<u16, [f32; 4]>,
+}
+
+/// Pack every item texture the bake produced, up to the atlas's capacity.
+///
+/// Built once at startup rather than per frame: the item set is fixed by the
+/// bake, and a hotbar swap must not cost an atlas upload. Textures past the
+/// capacity are dropped with a log — their items then draw nothing, which is
+/// the same "nothing rather than garbage" rule the rest of the item path uses.
+pub fn pack_gui_atlas(items: &rewo_gpu::held::HeldItems, wanted: &[u16]) -> GuiAtlas {
+    let mut rgba = vec![0u8; (GUI_ATLAS_W * GUI_ATLAS_H * 4) as usize];
+    let mut uv = std::collections::HashMap::new();
+    let cap = (GUI_ATLAS_COLS * GUI_ATLAS_ROWS) as usize;
+    let mut dropped = 0usize;
+    for (slot, &tex) in wanted.iter().enumerate() {
+        if slot >= cap {
+            dropped += 1;
+            continue;
+        }
+        let Some(src) = items.textures.get(tex as usize) else {
+            continue;
+        };
+        if src.w > GUI_ATLAS_SLOT || src.h > GUI_ATLAS_SLOT {
+            dropped += 1;
+            continue;
+        }
+        let (ox, oy) = (
+            (slot as u32 % GUI_ATLAS_COLS) * GUI_ATLAS_SLOT,
+            (slot as u32 / GUI_ATLAS_COLS) * GUI_ATLAS_SLOT,
+        );
+        for y in 0..src.h {
+            let s = (y * src.w * 4) as usize;
+            let d = (((oy + y) * GUI_ATLAS_W + ox) * 4) as usize;
+            let n = (src.w * 4) as usize;
+            rgba[d..d + n].copy_from_slice(&src.rgba[s..s + n]);
+        }
+        uv.insert(
+            tex,
+            [
+                ox as f32 / GUI_ATLAS_W as f32,
+                oy as f32 / GUI_ATLAS_H as f32,
+                src.w as f32 / GUI_ATLAS_W as f32,
+                src.h as f32 / GUI_ATLAS_H as f32,
+            ],
+        );
+    }
+    if dropped > 0 {
+        log::warn!("live: {dropped} item textures did not fit the GUI atlas — those icons will not draw");
+    }
+    GuiAtlas { rgba, uv }
+}
+
+/// Every texture index the hotbar could need, in a stable order.
+///
+/// The whole baked item set is far larger than the atlas, so this takes the
+/// textures of the items the *player actually has*, which is at most nine
+/// models' worth.
+pub fn gui_atlas_wanted(
+    items: &rewo_gpu::held::HeldItems,
+    models: &[String],
+) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for name in models {
+        if let Some(m) = items.any(name) {
+            for q in &m.quads {
+                if !out.contains(&q.tex) {
+                    out.push(q.tex);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// This frame's hotbar, as model names per slot (`None` for an empty slot).
+pub fn hotbar_models<'a>(
+    inv: &rewo_world::inventory::Inventory,
+    items: &'a rewo_data::items::Items,
+) -> [Option<&'a str>; 9] {
+    std::array::from_fn(|i| inv.hotbar(i).and_then(|s| items.name(s.item_id)))
+}
+
+/// State the hotbar icons need across frames: the atlas currently uploaded and
+/// what it was built for.
+pub struct GuiItemState {
+    /// The texture set the resident atlas holds, so a hotbar change that needs
+    /// no new textures costs nothing.
+    resident: Vec<u16>,
+    /// Where each resident texture landed, kept alongside so a frame that needs
+    /// no new textures does not repack a megabyte of atlas to look them up.
+    uv: std::collections::HashMap<u16, [f32; 4]>,
+    lights: rewo_gpu::gui_item::ItemLights,
+    /// The app's own copy of the baked items. `WorldRenderer` owns one too, but
+    /// building the icons needs `&items` while uploading them needs `&mut wr`,
+    /// and one copy cannot be both.
+    held: rewo_gpu::held::HeldItems,
+}
+
+impl GuiItemState {
+    pub fn new(baked: &assets::BakedAssets) -> Self {
+        Self {
+            resident: Vec::new(),
+            uv: std::collections::HashMap::new(),
+            lights: rewo_gpu::gui_item::ItemLights::default(),
+            held: to_gpu_held_items(&baked.held_items),
+        }
+    }
+}
+
+/// Place, shade and upload this frame's hotbar icons.
+///
+/// Rebuilds the atlas only when the hotbar needs a texture it does not hold —
+/// switching between two swords you already carry costs one vertex upload.
+fn apply_hotbar_icons(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    state: &mut GuiItemState,
+    extent: (f32, f32),
+) {
+    let held = &state.held;
+    let names = hotbar_models(&session.inventory, items);
+    let models: Vec<String> = names.iter().flatten().map(|n| n.to_string()).collect();
+    let wanted = gui_atlas_wanted(held, &models);
+
+    // Repack only when the hotbar needs a texture the resident atlas does not
+    // hold. Switching between two swords you already carry costs one vertex
+    // upload; packing every frame would rebuild a megabyte for nothing.
+    if wanted != state.resident || !wr.gui_items_ready() {
+        let atlas = pack_gui_atlas(held, &wanted);
+        if let Err(e) = wr.init_gui_items(gpu, &atlas.rgba, GUI_ATLAS_W, GUI_ATLAS_H) {
+            log::warn!("live: gui-item atlas upload failed: {e}");
+            return;
+        }
+        // The UVs come from the same packing the atlas was built from, so the
+        // two cannot disagree.
+        state.uv = atlas.uv;
+        state.resident = wanted;
+    }
+    let atlas_uv = &state.uv;
+
+    let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, extent.0, extent.1);
+    let gui: Vec<rewo_gpu::gui_item::GuiItem> = names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            n.map(|name| rewo_gpu::gui_item::GuiItem {
+                model: name.to_string(),
+                x: slots[i].0,
+                y: slots[i].1,
+                size: slots[i].2,
+            })
+        })
+        .collect();
+    let verts = rewo_gpu::gui_item::build_vertices(held, &gui, &state.lights, &|t| {
+        atlas_uv.get(&t).copied()
+    });
+    if let Err(e) = wr.set_gui_items(gpu, &verts) {
+        log::warn!("live: gui-item upload failed: {e}");
+    }
 }

@@ -2573,6 +2573,29 @@ validation Rewo has.
     24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
     `meshshot`, `dimensioncheck`. Live: `play --light-check` 884,736 cells / 0
     mismatches, `play --dimension-check` 4/4 + 3/3, physics CORRECTIONS 0.
+- **M34 the inventory, and icons in the hotbar (2026-07-27)** — the client now
+  knows what it is carrying and draws it. **Two coordinate systems** meet here
+  and never line up: the wire's 46 **menu slots** (hotbar from 36, offhand 45)
+  against the game's **inventory indices** (hotbar 0..8), and the three packets
+  are split across them — `container_set_*` speaks the first, `set_held_slot`
+  the second. Three non-obvious decode rules: an out-of-range held slot is
+  **ignored, not clamped**; `container_set_slot` carries its index as a
+  **signed short** among var-ints; any container id but 0 is an open screen
+  this client hasn't got, so it's dropped whole. Icons needed `display.gui` —
+  **absent for a sprite, which is correct** (identity maps 0..16 model units
+  onto exactly the 16 px slot), `scale 0.625` + `rotation [30, 225, 0]` for a
+  block (reaches 8.37 px against the slot's 8). GUI lighting is a **third**
+  model, neither the world's `Direction` shade nor the hand's. Building the
+  gate found two bugs first — `init_gui_items` leaked an image/sampler/pipeline
+  per hotbar change, and the atlas was repacked every frame. Then the gate's
+  own first measurement counted "non-black" pixels **against a painted sky**
+  and measured exactly zero while the PNG showed both icons rendering
+  perfectly; and one witness had its reasoning backwards ("a sprite covers more
+  of its slot than a block" — a sword is mostly transparent), replaced by a
+  mutation rendering the same block with an identity transform. Gate
+  `rewo inventoryshot --check` **16/16**; **578 tests** (517 lib + 61 app);
+  demo PNG byte-identical to M15 onward. **Open:** no inventory *screen* (the
+  other 37 slots are held, never shown), no stack counts or durability bars.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -15,6 +15,7 @@
 
 pub mod celestial;
 pub mod clouds;
+pub mod gui_item;
 pub mod weather;
 pub mod end_portal;
 pub mod end_sky;

@@ -494,6 +494,8 @@ pub struct WorldRenderer {
     clouds: Option<crate::clouds::CloudPass>,
     /// Rain and snow (M33). `None` until `init_weather` supplies both textures.
     weather: Option<crate::weather::WeatherPass>,
+    /// Item icons in hotbar slots (M34). `None` until `init_gui_items`.
+    gui_items: Option<crate::gui_item::GuiItemPass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -1002,6 +1004,7 @@ impl WorldRenderer {
                 end_portal_time: 0.0,
                 clouds: None,
                 weather: None,
+                gui_items: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1250,6 +1253,48 @@ impl WorldRenderer {
     ) -> Result<(), String> {
         match self.clouds.as_mut() {
             Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the GUI-item pass (M34) over an RGBA atlas the caller packs.
+    pub fn init_gui_items(
+        &mut self,
+        gpu: &mut Gpu,
+        atlas_rgba: &[u8],
+        atlas_w: u32,
+        atlas_h: u32,
+    ) -> Result<(), String> {
+        // Rebuildable: the atlas is repacked whenever the hotbar needs a
+        // texture it does not hold. The old pass owns raw Vulkan handles, which
+        // are plain integers rather than RAII types, so dropping it would leak
+        // an image, a sampler and a pipeline per hotbar change.
+        if let Some(mut old) = self.gui_items.take() {
+            old.destroy(gpu);
+        }
+        self.gui_items = Some(crate::gui_item::GuiItemPass::new(
+            gpu,
+            self.color_format,
+            atlas_rgba,
+            atlas_w,
+            atlas_h,
+        )?);
+        Ok(())
+    }
+
+    pub fn gui_items_ready(&self) -> bool {
+        self.gui_items.is_some()
+    }
+
+    /// This frame's item icons, already placed and shaded by
+    /// `gui_item::build_vertices`.
+    pub fn set_gui_items(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[crate::gui_item::GuiItemVertex],
+    ) -> Result<(), String> {
+        match self.gui_items.as_mut() {
+            Some(p) => p.set_vertices(gpu, verts),
             None => Ok(()),
         }
     }
@@ -1925,6 +1970,10 @@ impl WorldRenderer {
         // HUD, then text (chat/coords), last — all screen space.
         if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(gpu, cb, extent, health, food, slot);
+            // M34: the icons go on top of the hotbar frame the HUD just drew.
+            if let Some(items) = &self.gui_items {
+                items.draw(gpu, cb, extent);
+            }
         }
         if let Some(text) = self.text.as_mut() {
             if !self.text_lines.is_empty() {
@@ -2242,6 +2291,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.gui_items.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.weather.take() {
