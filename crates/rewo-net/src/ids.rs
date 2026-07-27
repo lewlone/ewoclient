@@ -150,6 +150,10 @@ pub struct Ids {
     pub cb_play_system_chat: Option<i32>,
     pub cb_play_player_chat: Option<i32>,
     pub cb_play_block_ack: Option<i32>,
+    // M35 particles. Both optional: a server that never emits an effect is
+    // still a correct server, and the client must not fail to connect to one.
+    pub cb_play_level_particles: Option<i32>,
+    pub cb_play_level_event: Option<i32>,
 }
 
 impl Ids {
@@ -249,6 +253,8 @@ impl Ids {
             cb_play_system_chat: opt!(p, P, C, "system_chat"),
             cb_play_player_chat: opt!(p, P, C, "player_chat"),
             cb_play_block_ack: opt!(p, P, C, "block_changed_ack"),
+            cb_play_level_particles: opt!(p, P, C, "level_particles"),
+            cb_play_level_event: opt!(p, P, C, "level_event"),
         })
     }
 }

@@ -1660,6 +1660,85 @@ pub fn apply_swing_effect(
     entities.set_swing_effect(eid, effect, amplifier);
 }
 
+/// Decode a `level_particles` body (M35).
+///
+/// Wire order, from `ClientboundLevelParticlesPacket`'s reading constructor:
+/// `bool overrideLimiter`, `bool alwaysShow`, `f64 x/y/z`, `f32
+/// xDist/yDist/zDist`, `f32 maxSpeed`, **`i32 count` — a plain big-endian
+/// int, not a VarInt** — then `ParticleTypes.STREAM_CODEC`, which is a VarInt
+/// registry id followed by that type's own options.
+///
+/// Returns `None` for a particle type this milestone does not simulate.
+/// That is safe rather than a desync risk: packets are length-framed, so
+/// abandoning a body part-way never disturbs the stream — which matters,
+/// because most of the 125 registered types carry option payloads of shapes
+/// we cannot skip without transcribing their codecs too.
+pub fn route_level_particles(
+    body: &[u8],
+    types: &rewo_data::particle_types::ParticleTypes,
+) -> Option<rewo_world::particles::ParticleEvent> {
+    use rewo_world::particles::{ParticleCommand, ParticleEvent, ParticleKind};
+    let mut r = PacketReader::new(body);
+    let override_limiter = r.bool().ok()?;
+    let always_show = r.bool().ok()?;
+    let x = r.f64().ok()?;
+    let y = r.f64().ok()?;
+    let z = r.f64().ok()?;
+    let x_dist = r.f32().ok()?;
+    let y_dist = r.f32().ok()?;
+    let z_dist = r.f32().ok()?;
+    let max_speed = r.f32().ok()?;
+    let count = r.i32().ok()?;
+    let type_id = r.varint().ok()?;
+    let kind = ParticleKind::from_registry_name(types.name(type_id)?)?;
+    // `BlockParticleOption` appends the block state as a VarInt; every other
+    // kind here is a `SimpleParticleType` with an empty options body.
+    let block_state = if Some(type_id) == types.block_id {
+        r.varint().ok()?.max(0) as u32
+    } else {
+        0
+    };
+    Some(ParticleEvent::Command(ParticleCommand {
+        kind,
+        x,
+        y,
+        z,
+        x_dist,
+        y_dist,
+        z_dist,
+        max_speed,
+        count,
+        override_limiter,
+        always_show,
+        block_state,
+    }))
+}
+
+/// Decode a `level_event` body (M35).
+///
+/// Wire order: `i32 type`, `BlockPos pos`, `i32 data`, `bool globalEvent`.
+/// Only 2001 (`PARTICLES_DESTROY_BLOCK`) is a particle effect this milestone
+/// handles; its `data` is the broken block's state id. The rest of the
+/// `LevelEvent` table is sound and non-particle effects, which are out of a
+/// renderer's scope.
+pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleEvent> {
+    use rewo_world::particles::{ParticleEvent, LEVEL_EVENT_DESTROY_BLOCK};
+    let mut r = PacketReader::new(body);
+    let kind = r.i32().ok()?;
+    let (x, y, z) = r.position().ok()?;
+    let data = r.i32().ok()?;
+    let _global = r.bool().ok()?;
+    if kind != LEVEL_EVENT_DESTROY_BLOCK {
+        return None;
+    }
+    Some(ParticleEvent::DestroyBlock {
+        x,
+        y,
+        z,
+        block_state: data.max(0) as u32,
+    })
+}
+
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
 /// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
 /// (byte0 & 4) continuation flag set, read a trailing VarInt.

@@ -144,6 +144,14 @@ pub struct PlaySession {
     light_faces: Vec<u8>,
     /// Columns the server dropped — the renderer frees their GPU buffers.
     removed: Vec<(i32, i32)>,
+    /// Particle spawn requests decoded from `level_particles` / `level_event`
+    /// (M35), drained by the renderer each frame. Empty for the headless bot,
+    /// which has no particle system.
+    pub particle_events: Vec<rewo_world::particles::ParticleEvent>,
+    /// Registry-id → name for `minecraft:particle_type`, so a version bump
+    /// that renumbers the registry fails loud rather than spawning the wrong
+    /// effect.
+    particle_types: rewo_data::particle_types::ParticleTypes,
     pub chat_log: Vec<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
@@ -753,6 +761,8 @@ impl<'a> Connection<'a> {
             light_dampening: Vec::new(),
             light_faces: Vec::new(),
             removed: Vec::new(),
+            particle_events: Vec::new(),
+            particle_types: self.data.particle_types.clone(),
             chat_log: Vec::new(),
             health: 20.0,
             food: 20,
@@ -1286,6 +1296,21 @@ impl PlaySession {
                     "net: set_time game={game_time} clocks={count} day_ticks={:?}",
                     self.day_ticks
                 );
+            }
+        } else if Some(id) == ids.cb_play_level_particles
+            || Some(id) == ids.cb_play_level_event
+        {
+            // M35. Both packets feed the same queue; the renderer drains it
+            // and owns the actual spawning, because the particle system needs
+            // the block shapes and the RNG that live on that side.
+            let ev = if Some(id) == ids.cb_play_level_particles {
+                crate::route_level_particles(body, &self.particle_types)
+            } else {
+                crate::route_level_event(body)
+            };
+            if let Some(ev) = ev {
+                log::debug!("net: particle event {ev:?}");
+                self.particle_events.push(ev);
             }
         } else if Some(id) == ids.cb_play_block_ack {
             // Sequence ack — server confirms our predicted change. We don't

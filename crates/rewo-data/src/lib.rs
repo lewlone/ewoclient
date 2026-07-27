@@ -27,6 +27,7 @@ pub mod item_models;
 pub mod item_props_table;
 pub mod item_tags;
 pub mod packets;
+pub mod particle_types;
 pub mod server_jar;
 pub mod sign_states;
 pub mod sign_text;
@@ -91,6 +92,8 @@ pub struct GameData {
     pub components: components::DataComponentIds,
     /// Which entity types are living, and which tick a combat swing (M19).
     pub entity_classes: entity_types::EntityClasses,
+    /// Particle-type registry ids → names (M35 particles).
+    pub particle_types: particle_types::ParticleTypes,
 }
 
 impl GameData {
@@ -103,6 +106,7 @@ impl GameData {
         let use_profiles = use_item::UseProfiles::resolve(&items)?;
         let components = components::DataComponentIds::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
+        let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
         Ok(Self {
             blocks,
             packets,
@@ -112,6 +116,7 @@ impl GameData {
             use_profiles,
             components,
             entity_classes,
+            particle_types,
         })
     }
 

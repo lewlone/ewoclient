@@ -1083,6 +1083,27 @@ pub struct ParticleCommand {
     pub block_state: u32,
 }
 
+/// Something the wire asked the client to spawn.
+///
+/// Two packets reach the particle system and they are not the same shape:
+/// `level_particles` names a particle type directly, while `level_event`
+/// names an *effect* whose particle burst is the client's own business —
+/// 2001 (`PARTICLES_DESTROY_BLOCK`) carries only a block-state id and the
+/// client derives the 4×4×4 shard grid from that block's collision shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ParticleEvent {
+    Command(ParticleCommand),
+    DestroyBlock {
+        x: i32,
+        y: i32,
+        z: i32,
+        block_state: u32,
+    },
+}
+
+/// `LevelEvent.PARTICLES_DESTROY_BLOCK`.
+pub const LEVEL_EVENT_DESTROY_BLOCK: i32 = 2001;
+
 /// A full solid cube, the common block shape.
 pub const FULL_CUBE: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
 
