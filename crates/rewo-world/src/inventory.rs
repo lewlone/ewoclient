@@ -40,6 +40,15 @@ pub struct ItemSlot {
     /// Item registry protocol id, exactly as sent.
     pub item_id: i32,
     pub count: i32,
+    /// Whether the stack's `DataComponentPatch` carried any entry (M35).
+    ///
+    /// Not *which* — comparing components needs the per-type codecs, and only
+    /// a handful are transcribed. But `ItemStack.isSameItemSameComponents`
+    /// gates the merge arms of the click arithmetic, and answering it wrongly
+    /// in the merging direction would fuse two stacks vanilla keeps apart. So
+    /// a patched stack is never "the same" as anything: it swaps instead.
+    /// See [`Inventory::same_item_same_components`].
+    pub has_components: bool,
 }
 
 /// `InventoryMenu` (container 0) — the 46-slot menu the server synchronises.
@@ -65,10 +74,17 @@ pub struct Inventory {
     carried: Option<ItemSlot>,
     /// `Inventory.selectedSlot`, an **inventory index** in `0..9`.
     selected: u8,
-    /// The server's `stateId` for the last content/slot update applied. Kept
-    /// for diagnostics and for the eventual serverbound click, which must echo
-    /// it; nothing reads it yet.
+    /// The server's `stateId` for the last content/slot update applied, echoed
+    /// back by every serverbound click.
     state_id: i32,
+    /// How many whole-container updates have arrived (M35).
+    ///
+    /// The server sends one when it *disagrees* with a click's prediction, so
+    /// counting them is how a gate tells an accepted click from a corrected
+    /// one — the container equivalent of the physics harness's `CORRECTIONS`.
+    /// It also sends one on join and on any inventory change it originates,
+    /// so the count is only meaningful as a delta across a click.
+    content_updates: u32,
 }
 
 impl Default for Inventory {
@@ -78,6 +94,7 @@ impl Default for Inventory {
             carried: None,
             selected: 0,
             state_id: 0,
+            content_updates: 0,
         }
     }
 }
@@ -109,6 +126,7 @@ impl Inventory {
         self.slots.copy_from_slice(slots);
         self.carried = carried;
         self.state_id = state_id;
+        self.content_updates += 1;
         true
     }
 
@@ -144,6 +162,12 @@ impl Inventory {
 
     pub fn state_id(&self) -> i32 {
         self.state_id
+    }
+
+    /// See [`Self::content_updates`] — a delta across a click of more than
+    /// zero means the server rejected the prediction.
+    pub fn content_updates(&self) -> u32 {
+        self.content_updates
     }
 
     pub fn carried(&self) -> Option<ItemSlot> {
@@ -196,6 +220,349 @@ impl Inventory {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The screen (M35): where each slot sits, what it accepts, and what a click
+// does to it.
+// ---------------------------------------------------------------------------
+
+/// `AbstractContainerScreen.imageWidth` for the player inventory.
+pub const GUI_WIDTH: i32 = 176;
+/// `AbstractContainerScreen.imageHeight`.
+pub const GUI_HEIGHT: i32 = 166;
+
+/// What kind of slot a menu index is, which is what decides its rules.
+///
+/// Vanilla expresses this with subclasses (`ResultSlot`, `ArmorSlot`, a plain
+/// `Slot`) rather than a tag, but the menu's constructor pins the ranges, so
+/// one enum says the same thing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotKind {
+    /// Slot 0. Never accepts a placement; its contents come from the recipe.
+    Result,
+    /// Slots 1..5, the 2x2 grid.
+    Craft,
+    /// Slots 5..9, helmet through boots. Caps at one item and accepts only
+    /// what is equippable in that particular slot.
+    Armor(ArmorPiece),
+    /// Slots 9..36.
+    Main,
+    /// Slots 36..45.
+    Hotbar,
+    /// Slot 45. A plain `Slot` in vanilla — it accepts **anything**, not just
+    /// shields, which is why it is not an `Armor` variant.
+    Offhand,
+}
+
+/// The four `ArmorSlot`s, in menu order (`SLOT_IDS` is head-first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmorPiece {
+    Head,
+    Chest,
+    Legs,
+    Feet,
+}
+
+/// The kind of a menu slot, or `None` past the end of the menu.
+pub fn slot_kind(slot: usize) -> Option<SlotKind> {
+    Some(match slot {
+        0 => SlotKind::Result,
+        1..=4 => SlotKind::Craft,
+        5 => SlotKind::Armor(ArmorPiece::Head),
+        6 => SlotKind::Armor(ArmorPiece::Chest),
+        7 => SlotKind::Armor(ArmorPiece::Legs),
+        8 => SlotKind::Armor(ArmorPiece::Feet),
+        9..=35 => SlotKind::Main,
+        36..=44 => SlotKind::Hotbar,
+        45 => SlotKind::Offhand,
+        _ => return None,
+    })
+}
+
+/// Where a menu slot's 16x16 icon sits, relative to the GUI's top-left.
+///
+/// Transcribed from `InventoryMenu`'s constructor, which is the only place
+/// these numbers exist — there is no data file:
+///
+/// ```text
+/// addResultSlot(owner, 154, 28)                   -> slot 0
+/// addCraftingGridSlots(98, 18)                    -> slots 1..5, x + y*2
+/// ArmorSlot(..., 8, 8 + i * 18)                   -> slots 5..9
+/// addStandardInventorySlots(inventory, 8, 84)     -> slots 9..45
+/// Slot(inventory, 40, 77, 62)                     -> slot 45
+/// ```
+///
+/// `addStandardInventorySlots` splits into three rows of nine from the given
+/// top, then the hotbar at `top + 58` — the 58 is a named local in vanilla
+/// (`topToHotbar`), not a coincidence of 3*18 + 4.
+pub fn slot_position(slot: usize) -> Option<(i32, i32)> {
+    Some(match slot {
+        0 => (154, 28),
+        1..=4 => {
+            let i = (slot - 1) as i32;
+            (98 + (i % 2) * 18, 18 + (i / 2) * 18)
+        }
+        5..=8 => (8, 8 + (slot - 5) as i32 * 18),
+        9..=35 => {
+            let i = (slot - 9) as i32;
+            (8 + (i % 9) * 18, 84 + (i / 9) * 18)
+        }
+        36..=44 => (8 + (slot - 36) as i32 * 18, 84 + 58),
+        45 => (77, 62),
+        _ => return None,
+    })
+}
+
+/// `AbstractContainerScreen.isHovering` — **an 18x18 box, not 16x16**.
+///
+/// The slot's icon is 16 px, but the test is `x >= left - 1 && x < left + w + 1`
+/// with `w = 16`, so it reaches one pixel out on every side and the slots tile
+/// without gaps. Using the icon's own rect instead leaves a one-pixel dead
+/// cross between every pair of neighbours.
+pub fn slot_contains(slot: usize, gui_x: f64, gui_y: f64) -> bool {
+    let Some((left, top)) = slot_position(slot) else {
+        return false;
+    };
+    let (left, top) = (left as f64, top as f64);
+    gui_x >= left - 1.0 && gui_x < left + 17.0 && gui_y >= top - 1.0 && gui_y < top + 17.0
+}
+
+/// The menu slot under a GUI-relative point, or `None`.
+///
+/// The boxes overlap by their one-pixel bleed, and vanilla's `getHoveredSlot`
+/// returns the **first** match in menu order, so this iterates rather than
+/// computing an index.
+pub fn slot_at(gui_x: f64, gui_y: f64) -> Option<usize> {
+    (0..MENU_SLOTS).find(|&s| slot_contains(s, gui_x, gui_y))
+}
+
+/// `Container.getMaxStackSize()` as seen through a slot — `ArmorSlot`
+/// overrides it to 1, everything else inherits the container's 64.
+pub fn slot_max_stack(kind: SlotKind) -> i32 {
+    match kind {
+        SlotKind::Armor(_) => 1,
+        _ => rewo_data::item_props_table::DEFAULT_MAX_STACK,
+    }
+}
+
+/// What an item is, as far as the click arithmetic is concerned.
+///
+/// A separate input rather than a lookup inside [`Inventory`] because both
+/// facts come from generated tables keyed by *name*, and only the caller holds
+/// the registry that turns a protocol id into one. An id this build cannot
+/// resolve yields `None`, and the click declines to predict rather than
+/// guessing a stack cap — the same "nothing rather than something wrong" rule
+/// the item render path uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemProps {
+    /// `stack.getMaxStackSize()`.
+    pub max_stack: i32,
+    /// The armour slot this item can be equipped into, if any.
+    pub equips: Option<ArmorPiece>,
+}
+
+/// One slot's new contents, as predicted locally.
+pub type SlotChange = (u16, Option<ItemSlot>);
+
+/// What a click did, ready to be applied locally and sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClickPrediction {
+    /// The menu slot clicked.
+    pub slot: i16,
+    /// `buttonNum` — 0 primary, 1 secondary.
+    pub button: i8,
+    /// Every slot whose contents changed, in menu order.
+    pub changed: Vec<SlotChange>,
+    /// The cursor stack afterwards.
+    pub carried: Option<ItemSlot>,
+}
+
+impl Inventory {
+    /// `ItemStack.isSameItemSameComponents`, as far as Rewo can answer it.
+    ///
+    /// The item ids must match **and neither stack may carry components**.
+    /// Rewo decodes whether a patch was present but not what was in it, so a
+    /// patched stack is treated as unique. The error is one-directional by
+    /// construction: two stacks vanilla would merge may be swapped instead,
+    /// but two stacks vanilla keeps apart are never fused. The server corrects
+    /// the first case with a `container_set_content`; the second would have
+    /// destroyed an item's components.
+    ///
+    /// In practice the case barely arises: the components that travel on a
+    /// stack — damage, enchantments — belong to items that stack to one, where
+    /// no merge arm is ever reached.
+    pub fn same_item_same_components(a: ItemSlot, b: ItemSlot) -> bool {
+        a.item_id == b.item_id && !a.has_components && !b.has_components
+    }
+
+    /// `Slot.mayPlace`.
+    fn may_place(kind: SlotKind, props: ItemProps) -> bool {
+        match kind {
+            // `ResultSlot.mayPlace` is `return false`.
+            SlotKind::Result => false,
+            // `ArmorSlot.mayPlace` is `owner.isEquippableInSlot(stack, slot)`,
+            // and an item with no equippable component is main-hand-only — so
+            // absence refuses, it does not default to allowed.
+            SlotKind::Armor(piece) => props.equips == Some(piece),
+            _ => true,
+        }
+    }
+
+    /// `Slot.allowModification` — `mayPickup && mayPlace(getItem())`.
+    ///
+    /// Only the result slot ever answers false, and only because it refuses
+    /// every placement including its own contents. It is what stops a partial
+    /// take out of the crafting output.
+    fn allow_modification(kind: SlotKind, occupant: ItemProps) -> bool {
+        Self::may_place(kind, occupant)
+    }
+
+    /// `AbstractContainerMenu.doClick`'s PICKUP branch, for buttons 0 and 1.
+    ///
+    /// Returns the prediction **without applying it** — the caller applies and
+    /// sends, in that order, so a send that fails cannot leave the local
+    /// inventory ahead of the server's.
+    ///
+    /// `props` resolves an item id; `None` means this build does not know the
+    /// item, and the whole click is declined rather than predicted against a
+    /// guessed cap.
+    ///
+    /// Only `ContainerInput.PICKUP` is implemented. Quick-move (shift-click),
+    /// swap (number keys), throw (Q), clone and quick-craft (drag) each have
+    /// their own arm in vanilla and none is reproduced here; the caller must
+    /// not send them, because an unpredicted `changedSlots` map would be
+    /// rejected wholesale.
+    pub fn click_pickup(
+        &self,
+        slot: i32,
+        button: i8,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        if button != 0 && button != 1 {
+            return None;
+        }
+        let primary = button == 0;
+        let mut changed: Vec<SlotChange> = Vec::new();
+        let mut carried = self.carried;
+
+        // `slotIndex == -999` is a click outside the window, which drops the
+        // carried stack. Rewo does not model its own click spawning a dropped
+        // item entity, so it declines rather than predicting a stack that
+        // vanishes into nothing.
+        let index = usize::try_from(slot).ok()?;
+        let kind = slot_kind(index)?;
+        let clicked = self.slots[index];
+
+        // Resolve every stack this click touches up front: a click that cannot
+        // be predicted must change nothing at all, not stop half way.
+        let clicked_props = match clicked {
+            Some(s) => Some(props(s.item_id)?),
+            None => None,
+        };
+        let carried_props = match carried {
+            Some(s) => Some(props(s.item_id)?),
+            None => None,
+        };
+        let cap = |p: ItemProps| slot_max_stack(kind).min(p.max_stack);
+
+        match (clicked, carried) {
+            // Empty slot, something on the cursor: insert as much as fits.
+            (None, Some(mut held)) => {
+                let hp = carried_props?;
+                if Self::may_place(kind, hp) {
+                    let amount = if primary { held.count } else { 1 };
+                    // `safeInsert`: min(inputAmount, stack count, headroom).
+                    let n = amount.min(held.count).min(cap(hp));
+                    if n > 0 {
+                        changed.push((index as u16, Some(ItemSlot { count: n, ..held })));
+                        held.count -= n;
+                        carried = (held.count > 0).then_some(held);
+                    }
+                }
+            }
+            // Occupied slot, empty cursor: take all, or half rounded up.
+            (Some(stack), None) => {
+                // `tryRemove(amount, Integer.MAX_VALUE, player)` — that huge
+                // maxAmount is why `allowModification` never bites here, and
+                // why a crafting result can be taken whole but not in part.
+                let amount = if primary { stack.count } else { (stack.count + 1) / 2 };
+                if amount > 0 {
+                    let left = stack.count - amount;
+                    changed.push((
+                        index as u16,
+                        (left > 0).then(|| ItemSlot { count: left, ..stack }),
+                    ));
+                    carried = Some(ItemSlot { count: amount, ..stack });
+                }
+            }
+            (Some(stack), Some(mut held)) => {
+                let hp = carried_props?;
+                let cp = clicked_props?;
+                if Self::may_place(kind, hp) {
+                    if Self::same_item_same_components(stack, held) {
+                        // Merge into the slot, up to its cap.
+                        let amount = if primary { held.count } else { 1 };
+                        let n = amount.min(held.count).min(cap(hp) - stack.count);
+                        if n > 0 {
+                            changed.push((
+                                index as u16,
+                                Some(ItemSlot { count: stack.count + n, ..stack }),
+                            ));
+                            held.count -= n;
+                            carried = (held.count > 0).then_some(held);
+                        }
+                    } else if held.count <= cap(hp) {
+                        // Swap. That guard is why a 64-stack cannot be dropped
+                        // into an armour slot by swapping the helmet out.
+                        changed.push((index as u16, Some(held)));
+                        carried = Some(stack);
+                    }
+                } else if Self::same_item_same_components(stack, held) {
+                    // The slot refuses the placement but holds the same item —
+                    // take from it onto the cursor instead, which is how a
+                    // crafting result is collected onto a partial stack.
+                    //
+                    // `tryRemove(count, carriedMax - carriedCount, player)`:
+                    // the second argument is a *maxAmount*, and when it is
+                    // below the slot's count `allowModification` decides
+                    // whether a partial take is allowed at all.
+                    let headroom = hp.max_stack - held.count;
+                    let amount = stack.count.min(headroom);
+                    let partial = headroom < stack.count;
+                    if amount > 0 && (!partial || Self::allow_modification(kind, cp)) {
+                        let left = stack.count - amount;
+                        changed.push((
+                            index as u16,
+                            (left > 0).then(|| ItemSlot { count: left, ..stack }),
+                        ));
+                        held.count += amount;
+                        carried = Some(held);
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+
+        Some(ClickPrediction {
+            slot: slot as i16,
+            button,
+            changed,
+            carried,
+        })
+    }
+
+    /// Apply a prediction locally, so the screen responds without waiting for
+    /// the round trip. The server either agrees, or corrects with a
+    /// `container_set_content` that overwrites all of it.
+    pub fn apply_prediction(&mut self, p: &ClickPrediction) {
+        for &(slot, value) in &p.changed {
+            if let Some(s) = self.slots.get_mut(slot as usize) {
+                *s = value;
+            }
+        }
+        self.carried = p.carried;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +571,7 @@ mod tests {
         Some(ItemSlot {
             item_id: id,
             count: n,
+            has_components: false,
         })
     }
 
@@ -254,7 +622,7 @@ mod tests {
         assert_eq!(inv.held().unwrap().item_id, 276);
         // And a single-slot update moves it.
         inv.set_slot(1, (HOTBAR_MENU_START + 2) as i32, stack(64, 3));
-        assert_eq!(inv.held().unwrap(), ItemSlot { item_id: 64, count: 3 });
+        assert_eq!(inv.held().unwrap(), stack(64, 3).unwrap());
     }
 
     /// A wrong-length content list is rejected whole rather than padded.

@@ -496,6 +496,12 @@ pub struct WorldRenderer {
     weather: Option<crate::weather::WeatherPass>,
     /// Item icons in hotbar slots (M34). `None` until `init_gui_items`.
     gui_items: Option<crate::gui_item::GuiItemPass>,
+    /// The inventory screen (M35). `None` until `init_container`; `Some` but
+    /// closed draws nothing.
+    container: Option<crate::container::ContainerPass>,
+    /// Whether the screen is open, and which slot's GUI-space top-left the
+    /// cursor is over.
+    container_open: Option<Option<(i32, i32)>>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -1005,6 +1011,8 @@ impl WorldRenderer {
                 clouds: None,
                 weather: None,
                 gui_items: None,
+                container: None,
+                container_open: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1280,6 +1288,30 @@ impl WorldRenderer {
             atlas_h,
         )?);
         Ok(())
+    }
+
+    /// Build the inventory-screen pass (M35).
+    pub fn init_container(
+        &mut self,
+        gpu: &mut Gpu,
+        sprites: &crate::container::ContainerSpriteData<'_>,
+    ) -> Result<(), String> {
+        self.container = Some(crate::container::ContainerPass::new(
+            gpu,
+            self.color_format,
+            sprites,
+        )?);
+        Ok(())
+    }
+
+    pub fn container_ready(&self) -> bool {
+        self.container.is_some()
+    }
+
+    /// Open or close the screen for this frame. `hovered` is the GUI-space
+    /// top-left of the slot under the cursor, or `None`.
+    pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
+        self.container_open = open.then_some(hovered);
     }
 
     pub fn gui_items_ready(&self) -> bool {
@@ -1967,13 +1999,28 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
-        // HUD, then text (chat/coords), last — all screen space.
+        // HUD, then the inventory screen over it, then text — all screen
+        // space. The item icons are one pass drawn once, so when the screen is
+        // open they belong to it rather than to the hotbar: the caller feeds
+        // `set_gui_items` the screen's 46 slot rects instead of the hotbar's
+        // nine, and this order puts them between the two highlight halves,
+        // where vanilla puts them.
+        let screen = self.container_open.filter(|_| self.container.is_some());
         if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(gpu, cb, extent, health, food, slot);
-            // M34: the icons go on top of the hotbar frame the HUD just drew.
+            if screen.is_none() {
+                if let Some(items) = &self.gui_items {
+                    items.draw(gpu, cb, extent);
+                }
+            }
+        }
+        if let (Some(pass), Some(hovered)) = (self.container.as_mut(), screen) {
+            pass.set_state(extent, hovered);
+            pass.draw_back(gpu, cb, extent);
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);
             }
+            pass.draw_front(gpu, cb, extent);
         }
         if let Some(text) = self.text.as_mut() {
             if !self.text_lines.is_empty() {
@@ -2291,6 +2338,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.container.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.gui_items.take() {

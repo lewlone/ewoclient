@@ -1232,6 +1232,26 @@ fn hud_sprite(sp: &assets::HudSprite) -> rewo_gpu::hud::HudSpriteData<'_> {
     }
 }
 
+/// Borrow the container screen's textures out of the bake (M35). `None` when
+/// the jar had none, which degrades to no screen rather than a crash.
+pub(crate) fn container_sprites(
+    baked: &assets::BakedAssets,
+) -> Option<rewo_gpu::container::ContainerSpriteData<'_>> {
+    let c = baked.container.as_ref()?;
+    fn s(x: &rewo_data::assets::HudSprite) -> rewo_gpu::hud::HudSpriteData<'_> {
+        rewo_gpu::hud::HudSpriteData {
+            rgba: &x.rgba,
+            w: x.w,
+            h: x.h,
+        }
+    }
+    Some(rewo_gpu::container::ContainerSpriteData {
+        background: s(&c.background),
+        highlight_back: s(&c.highlight_back),
+        highlight_front: s(&c.highlight_front),
+    })
+}
+
 pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
     let h = baked.hud.as_ref()?;
     Some(rewo_gpu::hud::HudSpritesData {
@@ -1415,6 +1435,9 @@ fn run_headless(
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
     }
+    if let Some(c) = container_sprites(&baked) {
+        world_renderer.init_container(&mut gpu, &c)?;
+    }
     if let Some(font) = font_data(&baked) {
         world_renderer.init_text(&mut gpu, &font)?;
     }
@@ -1424,6 +1447,9 @@ fn run_headless(
     let start = Instant::now();
     let idle = TickInput::default();
     let mut tick = 0u64;
+    // M35 headless click state (`REWO_CLICK`).
+    let mut clicked = false;
+    let mut click_resyncs_at: Option<u32> = None;
     let mut summoned = false;
     // The block-light flicker (M13): a 48-bit LCG advanced exactly once per
     // successful 20 Hz client tick, mirroring `LightmapRenderStateExtractor`.
@@ -1442,9 +1468,13 @@ fn run_headless(
             // prior test mobs with `kill @e[type=husk]`), so a re-run starts
             // from a clean scene.
             if let Ok(cmd) = std::env::var("REWO_PRECMD") {
+                // Semicolon-separated, so a scene that needs several commands
+                // (a `clear` then a handful of `give`s) is still one knob.
+                for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
+                    let _ = session.send_command(one);
+                    log::info!("REWO_PRECMD: {one}");
+                }
                 if !cmd.is_empty() {
-                    let _ = session.send_command(&cmd);
-                    log::info!("REWO_PRECMD: {cmd}");
                     std::env::remove_var("REWO_PRECMD");
                 }
             }
@@ -1484,11 +1514,62 @@ fn run_headless(
                 }
             }
         }
+        // M35: `REWO_CLICK=<menu slot>[,<button>]` clicks one inventory slot
+        // once the contents have arrived, then keeps ticking so the server's
+        // answer lands before the frame is drawn. A rejected prediction comes
+        // back as a whole-container update, which `inventory.content_updates`
+        // counts — so this is a real end-to-end gate, not a "the packet was
+        // written" claim.
+        // Not the moment the first stack arrives: `/give` sends one container
+        // update per item and each advances the server's state id, so a click
+        // fired mid-give would echo a stale one and be resynced. Forty ticks
+        // is two seconds of quiet.
+        if !clicked && session.spawned && !session.inventory.is_empty() && tick >= 40 {
+            if let Ok(spec) = std::env::var("REWO_CLICK") {
+                let mut parts = spec.split(',');
+                let slot: i32 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1);
+                let button: i8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                let props = |id: i32| item_props(&items, id);
+                match session.inventory.click_pickup(slot, button, &props) {
+                    Some(prediction) => {
+                        let before = session.inventory.content_updates();
+                        match session.container_click(&prediction) {
+                            Ok(()) => {
+                                session.inventory.apply_prediction(&prediction);
+                                println!(
+                                    "[rewo-m35] CLICK slot {slot} button {button}: predicted \
+                                     {} changed slot(s), carried {:?}",
+                                    prediction.changed.len(),
+                                    session.inventory.carried()
+                                );
+                                click_resyncs_at = Some(before);
+                            }
+                            Err(e) => println!("[rewo-m35] CLICK send failed: {e}"),
+                        }
+                    }
+                    None => println!("[rewo-m35] CLICK slot {slot}: not predictable"),
+                }
+                clicked = true;
+                std::env::remove_var("REWO_CLICK");
+            }
+        }
         tick += 1;
         let now = Instant::now();
         if now < deadline {
             std::thread::sleep(deadline - now);
         }
+    }
+    if let Some(before) = click_resyncs_at {
+        let after = session.inventory.content_updates();
+        println!(
+            "[rewo-m35] CLICK result: {} container resync(s) after the click — {}",
+            after - before,
+            if after == before {
+                "the server accepted the prediction"
+            } else {
+                "REJECTED, the server re-sent the whole container"
+            }
+        );
     }
     if !session.spawned {
         return Err("never spawned".into());
@@ -1699,14 +1780,39 @@ fn run_headless(
         1.0,
         None,
     );
-    apply_hotbar_icons(
-        &mut world_renderer,
-        &mut gpu,
-        &session,
-        &items,
-        &mut gui_items,
-        (off.extent.width as f32, off.extent.height as f32),
-    );
+    // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
+    // a PNG can show it without a windowed session and a keypress. The cursor
+    // is parked at the window centre, which is where `set_screen_open` puts it.
+    let mut headless_screen_labels: Vec<rewo_gpu::world::OwnedTextLine> = Vec::new();
+    let (sw, sh) = (off.extent.width as f32, off.extent.height as f32);
+    let screen_open = std::env::var("REWO_OPEN_INVENTORY")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    if screen_open {
+        let mouse = (sw as f64 / 2.0, sh as f64 / 2.0);
+        let (mut icons, mut labels) = screen_icons(&session.inventory, &items, sw, sh);
+        if let Some((icon, label)) = carried_icon(&session.inventory, &items, mouse, sw, sh) {
+            icons.push(icon);
+            labels.extend(label);
+        }
+        apply_gui_icons(&mut world_renderer, &mut gpu, &mut gui_items, &icons);
+        let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, sw, sh);
+        world_renderer.set_container(
+            true,
+            rewo_world::inventory::slot_at(gx, gy)
+                .and_then(rewo_world::inventory::slot_position),
+        );
+        headless_screen_labels = labels;
+    } else {
+        apply_hotbar_icons(
+            &mut world_renderer,
+            &mut gpu,
+            &session,
+            &items,
+            &mut gui_items,
+            (sw, sh),
+        );
+    }
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -1757,7 +1863,9 @@ fn run_headless(
         start.elapsed().as_secs_f32(),
     );
     world_renderer.set_hud(session.health, session.food, 0);
-    world_renderer.set_text(build_text(&session, gui_px(1280, 720), 720.0, None, true));
+    let mut headless_text = build_text(&session, gui_px(1280, 720), 720.0, None, true);
+    headless_text.extend(headless_screen_labels);
+    world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
     let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
     let ring = OverlayRing::default();
@@ -1861,6 +1969,12 @@ struct LiveApp {
     /// M34: the hotbar icons' atlas residency + the baked items. Built on the
     /// first frame that has a bake, like `weather`.
     gui_items: Option<GuiItemState>,
+    /// The inventory screen (M35).
+    screen: ScreenState,
+    /// This frame's stack-count labels. Built with the icons, consumed by the
+    /// text pass a few lines later — the two are separated only because the
+    /// icons need `&mut gpu` and the text does not.
+    screen_labels: Vec<rewo_gpu::world::OwnedTextLine>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -1981,6 +2095,18 @@ impl ApplicationHandler for LiveApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let p = event.state == ElementState::Pressed;
+                // While the screen is open the player stands still: only the
+                // two keys that close it are read, and every movement key is
+                // released so a key held at the moment of opening does not
+                // stick down behind it.
+                if self.screen.open
+                    && !matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyE)
+                    )
+                {
+                    return;
+                }
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyW) => self.keys.w = p,
                     PhysicalKey::Code(KeyCode::KeyA) => self.keys.a = p,
@@ -1989,7 +2115,21 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
                     PhysicalKey::Code(KeyCode::ShiftLeft) => self.keys.sneak = p,
                     PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
-                    PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    // Esc closes the screen if it is open, and only quits
+                    // otherwise — the same precedence vanilla gives it.
+                    PhysicalKey::Code(KeyCode::Escape) if p => {
+                        if self.screen.open {
+                            self.set_screen_open(false);
+                        } else {
+                            event_loop.exit();
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::Escape) => {}
+                    // E opens and closes the inventory (M35).
+                    PhysicalKey::Code(KeyCode::KeyE) if p => {
+                        let open = !self.screen.open;
+                        self.set_screen_open(open);
+                    }
                     // F3 toggles the debug overlay (edge-triggered on press).
                     PhysicalKey::Code(KeyCode::F3) if p => self.debug = !self.debug,
                     // Number keys 1..9 select the hotbar slot (HUD frame +
@@ -2003,6 +2143,28 @@ impl ApplicationHandler for LiveApp {
                         }
                     }
                     _ => {}
+                }
+            }
+            WindowEvent::MouseInput {
+                state: btn, button, ..
+            } if btn == ElementState::Pressed && self.screen.open => {
+                // A click on the screen moves items; it never digs or places.
+                let ext = self.state.as_ref().map(|s| s.window.inner_size());
+                let items = self.items.clone();
+                if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
+                    let b = match button {
+                        MouseButton::Left => 0,
+                        MouseButton::Right => 1,
+                        _ => return,
+                    };
+                    click_screen(
+                        session,
+                        &items,
+                        &self.screen,
+                        b,
+                        ext.width as f32,
+                        ext.height as f32,
+                    );
                 }
             }
             WindowEvent::MouseInput {
@@ -2033,12 +2195,21 @@ impl ApplicationHandler for LiveApp {
                     }
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.screen.mouse = (position.x, position.y);
+            }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
         }
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if self.screen.open {
+            // The cursor is free and driving the screen; the camera holds
+            // still. `CursorMoved` supplies the position, so this raw delta is
+            // simply dropped rather than accumulated.
+            return;
+        }
         if let (DeviceEvent::MouseMotion { delta }, Some(session)) = (&event, self.session.as_mut())
         {
             // Mouse drives the player's look (what we render AND send).
@@ -2056,6 +2227,31 @@ impl ApplicationHandler for LiveApp {
 }
 
 impl LiveApp {
+    /// Open or close the inventory screen (M35).
+    ///
+    /// Opening frees the cursor and parks it in the middle of the window;
+    /// closing grabs it again and hides it. The park matters — winit reports
+    /// no position until the mouse moves, so without it the first frame would
+    /// hover whatever slot happens to sit at the stale coordinate.
+    fn set_screen_open(&mut self, open: bool) {
+        self.screen.open = open;
+        // Every movement key is released, so one held while opening does not
+        // stay pressed behind the screen.
+        self.keys = Keys::default();
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if open {
+            let size = state.window.inner_size();
+            self.screen.mouse = (size.width as f64 / 2.0, size.height as f64 / 2.0);
+            let _ = state.window.set_cursor_grab(CursorGrabMode::None);
+            state.window.set_cursor_visible(true);
+        } else {
+            let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
+            state.window.set_cursor_visible(false);
+        }
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let dt = self
@@ -2290,21 +2486,47 @@ impl LiveApp {
                 apply_weather_to_celestial(&mut cel, session);
                 cel
             });
-        // M34: the hotbar icons, before the weather so the borrow of `baked`
-        // is over by the time `apply_weather` takes its own.
+        // M34/M35: the item icons, before the weather so the borrow of
+        // `baked` is over by the time `apply_weather` takes its own. One pass
+        // serves both the hotbar and the open screen — only the rectangles
+        // differ.
+        let ext = state.window.inner_size();
+        let (sw, sh) = (ext.width as f32, ext.height as f32);
+        let hovered = self
+            .screen
+            .open
+            .then(|| self.screen.hovered(sw, sh))
+            .flatten();
         if let Some(baked) = self.baked.as_ref() {
             let items = self.items.clone();
             let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
-            let ext = state.window.inner_size();
-            apply_hotbar_icons(
-                &mut state.world_renderer,
-                &mut state.gpu,
-                session,
-                &items,
-                gi,
-                (ext.width as f32, ext.height as f32),
-            );
+            if self.screen.open {
+                let (mut icons, mut labels) = screen_icons(&session.inventory, &items, sw, sh);
+                if let Some((icon, label)) =
+                    carried_icon(&session.inventory, &items, self.screen.mouse, sw, sh)
+                {
+                    icons.push(icon);
+                    labels.extend(label);
+                }
+                self.screen_labels = labels;
+                apply_gui_icons(&mut state.world_renderer, &mut state.gpu, gi, &icons);
+            } else {
+                self.screen_labels.clear();
+                apply_hotbar_icons(
+                    &mut state.world_renderer,
+                    &mut state.gpu,
+                    session,
+                    &items,
+                    gi,
+                    (sw, sh),
+                );
+            }
         }
+        // The screen's own chrome, and which slot the highlight sits on.
+        state.world_renderer.set_container(
+            self.screen.open,
+            hovered.and_then(rewo_world::inventory::slot_position),
+        );
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
@@ -2324,13 +2546,11 @@ impl LiveApp {
             .set_hud(session.health, session.food, self.hotbar_slot);
         let px = gui_px(extent.width, extent.height);
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        state.world_renderer.set_text(build_text(
-            session,
-            px,
-            extent.height as f32,
-            fps,
-            self.debug,
-        ));
+        let mut text = build_text(session, px, extent.height as f32, fps, self.debug);
+        // The stack counts are text like any other line, drawn after the icons
+        // because the text pass runs last.
+        text.extend(self.screen_labels.drain(..));
+        state.world_renderer.set_text(text);
         if let Err(e) = state
             .world_renderer
             .anim_tick(&mut state.gpu, session.ticks)
@@ -2403,6 +2623,8 @@ fn run_windowed(
         pool,
         weather: None,
         gui_items: None,
+        screen: ScreenState::default(),
+        screen_labels: Vec::new(),
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
@@ -4844,6 +5066,198 @@ pub fn hotbar_models<'a>(
     std::array::from_fn(|i| inv.hotbar(i).and_then(|s| items.name(s.item_id)))
 }
 
+/// Everything the inventory screen needs across frames (M35).
+///
+/// Deliberately small: the contents live in `PlaySession::inventory`, and the
+/// slot layout is a pure function. What is left is whether the screen is open
+/// and where the cursor is — the two things winit tells us and nothing else
+/// remembers.
+#[derive(Default)]
+pub struct ScreenState {
+    pub open: bool,
+    /// Cursor position in screen pixels. Only tracked while the screen is
+    /// open; the rest of the time the cursor is grabbed and its position is
+    /// meaningless.
+    pub mouse: (f64, f64),
+}
+
+impl ScreenState {
+    /// The menu slot under the cursor, if any.
+    fn hovered(&self, w: f32, h: f32) -> Option<usize> {
+        let (gx, gy) = rewo_gpu::container::screen_to_gui(self.mouse, w, h);
+        rewo_world::inventory::slot_at(gx, gy)
+    }
+}
+
+/// The 46 slot rects the screen draws icons into, in screen pixels.
+///
+/// The same shape `hotbar_slot_rects` returns, because they feed the same
+/// pass: an icon in an inventory slot is the same draw as an icon in a hotbar
+/// slot, and only the rectangle differs.
+fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory::MENU_SLOTS] {
+    let (left, top, scale) = rewo_gpu::container::gui_origin(w, h);
+    std::array::from_fn(|i| {
+        let (x, y) = rewo_world::inventory::slot_position(i).unwrap_or((0, 0));
+        (
+            left + x as f32 * scale,
+            top + y as f32 * scale,
+            16.0 * scale,
+        )
+    })
+}
+
+/// This frame's icons and stack counts for the open screen.
+///
+/// Returns the draw list plus the count labels, which go through the text pass
+/// — vanilla's `itemCount` draws them at `x + 19 - 2 - width` and `y + 6 + 3`,
+/// right-aligned inside the slot, and **only when the count is not one**.
+fn screen_icons(
+    inv: &rewo_world::inventory::Inventory,
+    items: &rewo_data::items::Items,
+    w: f32,
+    h: f32,
+) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
+    let rects = screen_slot_rects(w, h);
+    let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
+    let mut icons = Vec::new();
+    let mut labels = Vec::new();
+    for (slot, rect) in rects.iter().enumerate() {
+        if let Some(stack) = inv.menu_slot(slot) {
+            if let Some(icon) = icon_for(items, stack, rect.0, rect.1, rect.2) {
+                icons.push(icon);
+            }
+            labels.extend(count_label(stack, rect.0, rect.1, scale));
+        }
+    }
+    (icons, labels)
+}
+
+fn icon_for(
+    items: &rewo_data::items::Items,
+    stack: rewo_world::inventory::ItemSlot,
+    x: f32,
+    y: f32,
+    size: f32,
+) -> Option<rewo_gpu::gui_item::GuiItem> {
+    Some(rewo_gpu::gui_item::GuiItem {
+        model: items.name(stack.item_id)?.to_string(),
+        x,
+        y,
+        size,
+    })
+}
+
+/// `GuiGraphicsExtractor.itemCount` — bottom-right of the slot, and **only
+/// when the count is not one**, which is why a single sword shows no label.
+fn count_label(
+    stack: rewo_world::inventory::ItemSlot,
+    x: f32,
+    y: f32,
+    scale: f32,
+) -> Option<rewo_gpu::world::OwnedTextLine> {
+    if stack.count == 1 {
+        return None;
+    }
+    let text = stack.count.to_string();
+    // Vanilla measures the string; the digits are a uniform 6 px including
+    // their one-pixel gap, and the trailing gap is not part of the width.
+    let width = text.chars().count() as f32 * 6.0 - 1.0;
+    Some(rewo_gpu::world::OwnedTextLine {
+        // `x + 19 - 2 - width`, `y + 6 + 3`.
+        x: x + (17.0 - width) * scale,
+        y: y + 9.0 * scale,
+        px: scale,
+        color: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        text,
+    })
+}
+
+/// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by
+/// half a slot so it sits under the pointer rather than beside it.
+fn carried_icon(
+    inv: &rewo_world::inventory::Inventory,
+    items: &rewo_data::items::Items,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+) -> Option<(
+    rewo_gpu::gui_item::GuiItem,
+    Option<rewo_gpu::world::OwnedTextLine>,
+)> {
+    let stack = inv.carried()?;
+    let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
+    let (x, y) = (
+        mouse.0 as f32 - 8.0 * scale,
+        mouse.1 as f32 - 8.0 * scale,
+    );
+    let icon = icon_for(items, stack, x, y, 16.0 * scale)?;
+    Some((icon, count_label(stack, x, y, scale)))
+}
+
+/// Resolve an item id into the two facts the click arithmetic needs.
+///
+/// `None` for an id the registry does not contain, which makes the whole click
+/// decline rather than predicting against a guessed stack cap.
+fn item_props(
+    items: &rewo_data::items::Items,
+    id: i32,
+) -> Option<rewo_world::inventory::ItemProps> {
+    use rewo_data::item_props_table::{equip_slot, max_stack_size, EquipSlot};
+    use rewo_world::inventory::ArmorPiece;
+    let name = items.name(id)?;
+    Some(rewo_world::inventory::ItemProps {
+        max_stack: max_stack_size(name),
+        equips: match equip_slot(name) {
+            Some(EquipSlot::Head) => Some(ArmorPiece::Head),
+            Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),
+            Some(EquipSlot::Legs) => Some(ArmorPiece::Legs),
+            Some(EquipSlot::Feet) => Some(ArmorPiece::Feet),
+            // `body` and `saddle` are animal equipment and `mainhand`/`offhand`
+            // are not armour slots, so none of them satisfies an `ArmorSlot`.
+            _ => None,
+        },
+    })
+}
+
+/// Handle a click on the open screen: predict, send, then apply locally.
+///
+/// Sending before applying, so a send that fails cannot leave the screen
+/// showing a move the server never heard about. The packet carries the
+/// prediction and the *pre-click* state id, so the order is invisible on the
+/// wire — it only decides what happens when the socket is broken.
+///
+/// A click that cannot be predicted is dropped entirely rather than sent with
+/// an empty changed-slot map, which the server would reject and answer with a
+/// full resynchronisation.
+fn click_screen(
+    session: &mut PlaySession,
+    items: &rewo_data::items::Items,
+    screen: &ScreenState,
+    button: i8,
+    w: f32,
+    h: f32,
+) {
+    let Some(slot) = screen.hovered(w, h) else {
+        return;
+    };
+    let props = |id: i32| item_props(items, id);
+    let Some(prediction) = session.inventory.click_pickup(slot as i32, button, &props) else {
+        log::debug!("live: click on slot {slot} not predictable — not sent");
+        return;
+    };
+    if prediction.changed.is_empty() && prediction.carried == session.inventory.carried() {
+        // Nothing moved (an empty slot with an empty cursor, or a placement the
+        // slot refuses). Vanilla still sends it; there is no reason to.
+        return;
+    }
+    if let Err(e) = session.container_click(&prediction) {
+        log::warn!("live: container_click: {e}");
+        return;
+    }
+    session.inventory.apply_prediction(&prediction);
+}
+
 /// State the hotbar icons need across frames: the atlas currently uploaded and
 /// what it was built for.
 pub struct GuiItemState {
@@ -4902,8 +5316,6 @@ fn apply_hotbar_icons(
         state.uv = atlas.uv;
         state.resident = wanted;
     }
-    let atlas_uv = &state.uv;
-
     let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, extent.0, extent.1);
     let gui: Vec<rewo_gpu::gui_item::GuiItem> = names
         .iter()
@@ -4917,8 +5329,41 @@ fn apply_hotbar_icons(
             })
         })
         .collect();
-    let verts = rewo_gpu::gui_item::build_vertices(held, &gui, &state.lights, &|t| {
-        atlas_uv.get(&t).copied()
+    upload_gui_icons(wr, gpu, state, &gui);
+}
+
+/// Place, shade and upload an arbitrary list of icons (M35).
+///
+/// The screen's 46 slots and the hotbar's nine go through exactly this, which
+/// is why the pass never learns which it is drawing.
+fn apply_gui_icons(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    state: &mut GuiItemState,
+    icons: &[rewo_gpu::gui_item::GuiItem],
+) {
+    let names: Vec<String> = icons.iter().map(|i| i.model.clone()).collect();
+    let wanted = gui_atlas_wanted(&state.held, &names);
+    if wanted != state.resident || !wr.gui_items_ready() {
+        let atlas = pack_gui_atlas(&state.held, &wanted);
+        if let Err(e) = wr.init_gui_items(gpu, &atlas.rgba, GUI_ATLAS_W, GUI_ATLAS_H) {
+            log::warn!("live: gui-item atlas upload failed: {e}");
+            return;
+        }
+        state.uv = atlas.uv;
+        state.resident = wanted;
+    }
+    upload_gui_icons(wr, gpu, state, icons);
+}
+
+fn upload_gui_icons(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    state: &GuiItemState,
+    icons: &[rewo_gpu::gui_item::GuiItem],
+) {
+    let verts = rewo_gpu::gui_item::build_vertices(&state.held, icons, &state.lights, &|t| {
+        state.uv.get(&t).copied()
     });
     if let Err(e) = wr.set_gui_items(gpu, &verts) {
         log::warn!("live: gui-item upload failed: {e}");

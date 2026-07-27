@@ -24,6 +24,7 @@ pub mod items;
 pub mod held_items;
 pub mod item_geometry;
 pub mod item_models;
+pub mod item_props_table;
 pub mod item_tags;
 pub mod packets;
 pub mod server_jar;

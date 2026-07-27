@@ -258,6 +258,9 @@ pub struct BakedAssets {
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
+    /// The container screen's textures (M35). `None` degrades to no screen,
+    /// exactly as a missing HUD sprite degrades to no HUD.
+    pub container: Option<ContainerSprites>,
     /// Sun + 8 moon-phase textures from `environment/celestial/`. `None` if the
     /// jar lacks them — the sky then renders without sun/moon (M12).
     pub celestial: Option<CelestialTextures>,
@@ -654,6 +657,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         }
     }
     let hud = bake_hud(&mut jar);
+    let container = bake_container(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
@@ -916,6 +920,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         mob_textures,
         hud,
+        container,
         celestial,
         end_sky,
         end_portal,
@@ -974,6 +979,37 @@ fn bake_entity_tex(jar: Jar, rel: &str, w: u32, h: u32) -> Option<Vec<u8>> {
         log::warn!("rewo-data: {rel} is {gw}×{gh}, expected {w}×{h}");
         None
     }
+}
+
+/// The three textures the container screen draws (M35).
+pub struct ContainerSprites {
+    /// `AbstractContainerScreen.INVENTORY_LOCATION` — a 256×256 sheet whose
+    /// top-left 176×166 is the panel. Kept whole: vanilla blits a sub-rect out
+    /// of it, so cropping here would move the numbers into two places.
+    pub background: HudSprite,
+    /// `container/slot_highlight_back`, drawn under the hovered slot's item.
+    pub highlight_back: HudSprite,
+    /// `container/slot_highlight_front`, drawn over it. Both are 24×24 and are
+    /// blitted at their own size, so the `.mcmeta` nine-slice never engages.
+    pub highlight_front: HudSprite,
+}
+
+/// Extract the container-screen textures. Any missing one → no screen.
+fn bake_container(jar: Jar) -> Option<ContainerSprites> {
+    let get = |jar: Jar, rel: &str| -> Option<HudSprite> {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!("assets/minecraft/textures/{rel}"))
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        Some(HudSprite { rgba, w, h })
+    };
+    Some(ContainerSprites {
+        background: get(jar, "gui/container/inventory.png")?,
+        highlight_back: get(jar, "gui/sprites/container/slot_highlight_back.png")?,
+        highlight_front: get(jar, "gui/sprites/container/slot_highlight_front.png")?,
+    })
 }
 
 /// Extract the in-game HUD sprite set. Any missing sprite → no HUD.

@@ -1947,6 +1947,65 @@ impl PlaySession {
         self.send(p)
     }
 
+
+    /// `ServerboundContainerClickPacket` for a `ContainerInput.PICKUP` (M35).
+    ///
+    /// ```text
+    /// ContainerId  containerId    // VarInt
+    /// VarInt       stateId
+    /// Short        slotNum        // signed, among var-ints
+    /// Byte         buttonNum
+    /// ContainerInput               // idMapper: PICKUP = 0
+    /// Map<Short, HashedStack>      // the client's PREDICTION, max 128
+    /// HashedStack  carriedItem
+    /// ```
+    ///
+    /// The changed-slot map is the load-bearing part and the reason this takes
+    /// a prediction rather than a slot number. The server replays the click
+    /// against its own container and compares every entry with
+    /// `HashedStack.matches`; one disagreement and it resynchronises the whole
+    /// container. So a client that cannot predict must not click.
+    ///
+    /// `HashedStack` is `Optional<(item, count, HashedPatchMap)>`, and
+    /// `HashedPatchMap` is a map of component type to a hash plus a set of
+    /// removed types. Rewo only ever writes both empty, because it decodes
+    /// *whether* a stack carried components but not what they were — see
+    /// [`ItemSlot::has_components`]. A click that moves a component-bearing
+    /// stack is therefore predicted honestly but hashed wrongly, and the
+    /// server corrects it; the alternative, refusing to move a damaged
+    /// pickaxe at all, is worse.
+    pub fn container_click(
+        &mut self,
+        prediction: &rewo_world::inventory::ClickPrediction,
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_container_click else {
+            return Err("container_click unavailable".into());
+        };
+        // `MAX_SLOT_COUNT` in the packet's own stream codec. A PICKUP touches
+        // at most one slot, so exceeding it means the prediction is wrong
+        // about something more basic.
+        const MAX_SLOT_COUNT: usize = 128;
+        if prediction.changed.len() > MAX_SLOT_COUNT {
+            return Err(format!(
+                "container_click: {} changed slots exceeds the wire's {MAX_SLOT_COUNT}",
+                prediction.changed.len()
+            ));
+        }
+        let mut p = PacketWriter::packet(id);
+        p.varint(rewo_world::inventory::PLAYER_CONTAINER_ID);
+        p.varint(self.inventory.state_id());
+        p.u16(prediction.slot as u16);
+        p.i8(prediction.button);
+        p.varint(CONTAINER_INPUT_PICKUP);
+        p.varint(prediction.changed.len() as i32);
+        for &(slot, value) in &prediction.changed {
+            p.u16(slot);
+            write_hashed_stack(&mut p, value);
+        }
+        write_hashed_stack(&mut p, prediction.carried);
+        self.send(p)
+    }
+
     pub fn select_hotbar(&mut self, slot: u8) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_set_carried_item else {
             return Err("set_carried_item unavailable".into());
@@ -3346,6 +3405,37 @@ mod clock_tests {
             let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
             game_time = Some(gt);
             assert_eq!(day, 200 + i, "fallback day-tick advances one per tick");
+        }
+    }
+}
+
+/// `ContainerInput.PICKUP`'s wire id. The enum's codec is
+/// `ByteBufCodecs.idMapper`, so the declared int is what goes on the wire.
+const CONTAINER_INPUT_PICKUP: i32 = 0;
+
+/// Write one `HashedStack` (M35).
+///
+/// `HashedStack.STREAM_CODEC` is `ByteBufCodecs.optional(ActualItem)`, and
+/// `ActualItem` is `holderRegistry(ITEM) + VarInt count + HashedPatchMap`.
+/// Two details are easy to get wrong and neither fails loudly:
+///
+/// - `holderRegistry` writes the registry id **raw and 0-based**. It is not
+///   `ByteBufCodecs.holder`, whose inline-or-reference scheme writes `id + 1`.
+///   The same distinction bit the M14 dimension holder and the M21 damage type.
+/// - `HashedPatchMap` is *two* collections — a map of set components to their
+///   hashes, then a set of removed ones — so an empty patch is two zeros, not
+///   one.
+pub(crate) fn write_hashed_stack(p: &mut PacketWriter, slot: Option<rewo_world::inventory::ItemSlot>) {
+    match slot {
+        None => {
+            p.bool(false);
+        }
+        Some(s) => {
+            p.bool(true);
+            p.varint(s.item_id);
+            p.varint(s.count);
+            p.varint(0); // addedComponents
+            p.varint(0); // removedComponents
         }
     }
 }

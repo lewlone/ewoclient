@@ -2596,6 +2596,33 @@ validation Rewo has.
   `rewo inventoryshot --check` **16/16**; **578 tests** (517 lib + 61 app);
   demo PNG byte-identical to M15 onward. **Open:** no inventory *screen* (the
   other 37 slots are held, never shown), no stack counts or durability bars.
+- **M35 the inventory screen (2026-07-27)** — the panel, all 46 slots, the
+  hover highlight, the stack on the cursor, and clicking. **The click is a
+  prediction the server grades**: the packet carries the client's belief about
+  every changed slot as a `HashedStack`, and the *only* resync trigger is
+  `packet.stateId() != menu.getStateId()`. The first live click was rejected for
+  exactly that — a harness bug, not a code one: it clicked while `/give` was
+  still advancing the id. `tools/gen_item_props.py` extracts the two per-item
+  facts the arithmetic needs, neither on the wire — `max_stack_size` (295 of
+  1537 differ from 64) and `equippable`'s slot (83 items). Layout facts that are
+  not guessable: `isHovering` is an **18x18** box (`left - 1 .. left + w + 1`),
+  so slots tile without a dead column; the hotbar row is a named `top + 58`, not
+  3x18; highlights are drawn at `slot - 4` at 24x24, **bracketing** the icon;
+  the panel is centred by integer division. The backdrop is a **gradient**
+  (0xC0101010 → 0xD0101010), not a fill. The one honest approximation:
+  `isSameItemSameComponents` — Rewo knows *whether* a stack carried components,
+  never what, so a patched stack swaps rather than merging (one-directional by
+  construction; a wrong merge would fuse two tools, a missed one is corrected).
+  **Measured, not squinted at**: the panel looked washed out with a black hole —
+  six of seven probes are byte-identical to `inventory.png` (the seventh is the
+  F3 overlay) and the black is the texture's own window, which vanilla covers
+  with the 3D player. Gate `rewo inventoryshot --check` 16 → **39/39**, plus a
+  live `REWO_CLICK` knob that counts container resyncs (the container
+  `CORRECTIONS`); **586 tests**; demo PNG byte-identical to M15 onward.
+  **Open:** the player preview is not drawn (the most visible gap); no
+  shift-click, drag, number-key swap, Q-drop, tooltips, recipe book or
+  durability bars; armour icons stay blank (their `select` trim definitions are
+  among M22's 147 suppressed).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

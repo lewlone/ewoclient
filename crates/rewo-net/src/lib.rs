@@ -1087,6 +1087,7 @@ fn read_slot(
         crate::item_stack::WireSlot::Stack(s) => Some(rewo_world::inventory::ItemSlot {
             item_id: s.item_id,
             count: s.count,
+            has_components: s.patched,
         }),
     })
 }
@@ -2243,4 +2244,16 @@ mod set_entity_data_tests {
         assert!(!t.is_baby(9), "untracked id must not be marked baby");
         assert_eq!(t.allay_dance_render(9, 1.0), None, "untracked id must not dance");
     }
+}
+
+/// One `HashedStack`'s bytes, for the M35 gate.
+///
+/// The production writer, called through a `PacketWriter` whose header is
+/// discarded — so the gate grades the encoder rather than a copy of it.
+pub fn hashed_stack_bytes(slot: Option<rewo_world::inventory::ItemSlot>) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::packet(0);
+    // `packet(0)` wrote a one-byte id; the stack's bytes are what follows.
+    let before = w.buf.len();
+    crate::play::write_hashed_stack(&mut w, slot);
+    w.buf[before..].to_vec()
 }

@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M34 shipped + headlessly verified (2026-07-27).** All of it is
+**Status: M0–M35 shipped + headlessly verified (2026-07-27).** All of it is
 **pushed**, on branch `codex/rewo-m19-combat-swings` (HEAD `ce9028c`) — but
 `origin/main` is still at `973ea5e`, the M0–M9 point, and the branch is **72
 commits ahead of it**. Nothing has been merged. See §0.0 for the fresh-session
@@ -36,7 +36,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M34 shipped, M34 local, the rest pushed, none merged
+### Where it is: M0–M35 shipped, M34–M35 local, the rest pushed, none merged
 
 Everything is on `codex/rewo-m19-combat-swings` (HEAD `ce9028c`), which exists
 on the remote and is **72 commits ahead of `origin/main`**. `origin/main` is
@@ -45,7 +45,26 @@ contents around M20; renaming or merging it is a standing loose end, and the
 largest non-code risk in the project is that all of M10 onward lives on one
 unmerged branch.
 
-**Latest (2026-07-27): M34 — the inventory, and icons in the hotbar.** The
+**Latest (2026-07-27): M35 — the inventory screen.** The panel, all 46 slots,
+the hover highlight, the stack on the cursor, and clicking. The click is a
+*prediction*: the packet carries the client's own belief about every changed
+slot, and the only thing that triggers a resynchronisation is
+`packet.stateId() != menu.getStateId()` — the first live click failed on exactly
+that, because the harness clicked while `/give` was still advancing the id.
+`tools/gen_item_props.py` extracts the two per-item facts the arithmetic needs
+(295 non-default stack sizes, 83 equippable slots), neither of which is on the
+wire. `isHovering` is an **18x18** box, not 16x16, so slots tile without a dead
+column; the hotbar row is a named `top + 58`, not three rows of 18. The one
+honest approximation is `isSameItemSameComponents`: Rewo knows *whether* a stack
+carried components, never what they were, so a patched stack swaps rather than
+merging — one-directional by construction. The panel looked washed out with a
+black hole in it; sampling showed six of seven probes byte-identical to
+`inventory.png` (the seventh was the F3 overlay) and the black is the texture's
+own, the window vanilla covers with the 3D player — which Rewo does not draw
+yet, and which is the most visible remaining gap. `rewo inventoryshot --check`
+16 → **39**. Detail in §15.
+
+**Before it (2026-07-27): M34 — the inventory, and icons in the hotbar.** The
 client now knows what it is carrying and draws it. Two coordinate systems meet
 here and never line up: the wire's 46 **menu slots** (hotbar from 36, offhand
 45) against the game's **inventory indices** (hotbar 0..8) — and the three
@@ -285,12 +304,12 @@ Everything below is the *current* total, re-measured this session. Per-milestone
 figures inside §15 are the measurement taken at that milestone and will not
 match.
 
-- **578 tests** — 517 lib + 61 app. By crate: `rewo-world` 188, `rewo-net` 136,
-  `rewo-gpu` 77, `rewo-data` 67, `rewo-mesh` 38, `rewo-proto` 11, app 61.
+- **586 tests** — 525 lib + 61 app. By crate: `rewo-world` 188, `rewo-net` 136,
+  `rewo-gpu` 80, `rewo-data` 72, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Fifteen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `hurtshot` 38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28,
-  `danceshot` 24/24, `inventoryshot` 16/16, `portalshot` 12/12, plus `skyshot`,
+  `danceshot` 24/24, `inventoryshot` 39/39, `portalshot` 12/12, plus `skyshot`,
   `lightmapshot`, `tintshot`, `meshshot` and `dimensioncheck` (which report
   pass/fail rather than a witness count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
@@ -299,13 +318,17 @@ match.
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
-  byte-identical from M15 through M34. Any change to it is a regression until
+  byte-identical from M15 through M35. Any change to it is a regression until
   argued otherwise.
 
 ### What to do next
 
-Nothing is mid-flight — every milestone through M34 is shipped and gated (M34
-itself is committed locally, not yet pushed). Three candidates, in the order I
+Nothing is mid-flight — every milestone through M35 is shipped and gated (M34
+and M35 are committed locally, not yet pushed). The most visible open item is
+the **inventory screen's player preview**: `inventory.png` paints that window
+black and vanilla draws the 3D player over it, so there is a black rectangle
+where the model belongs. It is self-contained — the entity pass, an ortho
+projection, a scissored viewport. Beyond it, three candidates in the order I
 would take them:
 
 1. **Merge the branch.** `codex/rewo-m19-combat-swings` is 72 commits ahead of
@@ -393,8 +416,8 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
   every run, and grades the block-entity classification against what the model
   resolver actually draws — in both directions, so neither half can drift.
-- `rewo inventoryshot --check` — **the inventory + hotbar-icon gate** (M34,
-  fail-closed, **16/16**, validation required). Six witnesses drive synthetic
+- `rewo inventoryshot --check` — **the inventory + screen gate** (M34/M35,
+  fail-closed, **39/39**, validation required). Six witnesses drive synthetic
   `container_set_content` / `container_set_slot` / `set_held_slot` bodies
   through the production `route_inventory` (the menu-slot ↔ inventory-index
   conversion, the ignore-don't-clamp guard, the i16 index, the foreign
@@ -6186,6 +6209,104 @@ Gates: **547 tests**, `weathershot` 27/27, and every prior gate green —
 `skyshot`, `lightmapshot`, `tintshot`, all with validation ON and 0 VUIDs;
 canonical demo SHA-256 `2cc56b4a…` byte-identical to M15 onward;
 `git diff --check` clean.
+
+### M35 — the inventory screen (2026-07-27)
+
+M34 decoded all 46 slots and drew nine of them. M35 opens the screen: the
+panel, every slot, the hover highlight, the stack on the cursor — and clicking,
+which is the half that has to be *exact* rather than merely plausible.
+
+**The click is a prediction, and the server grades it.**
+`ServerboundContainerClickPacket` carries the client's own belief about every
+slot the click changed, as a `HashedStack` each. `handleContainerClick` replays
+the click server-side, records what the client claimed, and then — this is the
+only thing that triggers a resynchronisation —
+
+```java
+boolean fullResyncNeeded = packet.stateId() != this.player.containerMenu.getStateId();
+```
+
+So the state id is the whole contract, and the hashes are how the server knows
+what the client already believes for its *next* `broadcastChanges`. A stale id
+re-sends the entire container. The first live click was rejected for exactly
+that reason, and the cause was the harness rather than the code: it clicked the
+instant the first stack arrived, while `/give` was still sending one container
+update per item, each advancing the id behind the packet already in flight.
+
+**Two per-item facts had to be extracted, because neither is on the wire.**
+`tools/gen_item_props.py` reads the datagen per-item component report:
+`minecraft:max_stack_size` (**295 of 1537** items differ from the default 64 —
+246 at 1, 49 at 16) and `minecraft:equippable`'s slot (**83** items). Both feed
+`doClick`'s PICKUP branch: the first caps every transfer, and the second is
+`ArmorSlot.mayPlace`. A wrong value predicts a wrong slot and the container
+resynchronises, which looks like clicks bouncing back.
+
+**The arithmetic, transcribed from `doClick` + `Slot`:**
+
+- a primary click takes the whole stack, a secondary takes `(count + 1) / 2` —
+  rounded **up** onto the cursor;
+- placing is `safeInsert`, `min(amount, count, cap - occupied)`, where a
+  secondary click's amount is a literal **1**, not half;
+- an unlike item swaps, but only if `carried.getCount() <= slot.getMaxStackSize()`
+  — which is what stops a 64-stack being swapped into an armour slot;
+- and when the slot refuses the placement but holds the same item, the else-arm
+  *takes* from it, which is how a crafting result is collected onto a partial
+  stack. `tryRemove`'s `maxAmount` is what makes that take all-or-nothing there.
+
+**The one honest approximation.** `ItemStack.isSameItemSameComponents` gates
+every merge arm, and Rewo decodes *whether* a stack carried components but never
+what they were — comparing them needs the per-type codecs, and only three of 111
+are transcribed. So a patched stack is treated as unique and swaps rather than
+merging. The error is one-directional by construction: a missed merge is
+corrected by the server, a wrong merge would have fused two different tools. In
+practice it barely arises, because the components that travel on a stack —
+damage, enchantments — belong to items that stack to one, where no merge arm is
+reached at all.
+
+**Layout details that are not guessable.** `isHovering` is
+`x >= left - 1 && x < left + w + 1` with `w = 16` — an **18x18** box, so slots
+tile without a dead column between them; testing the 16 px icon rect leaves a
+one-pixel cross the cursor falls through. The hotbar row is `top + 58` below the
+main grid, a named `topToHotbar` local, not three rows of 18. The highlight
+sprites are drawn at `slot - 4` at 24x24, bracketing the item — back sprite,
+icon, front sprite. And the panel is centred by **integer** division in GUI
+space, which is what keeps its sprite art on whole texels.
+
+**The backdrop is a gradient, not a fill** — `0xC0101010` to `0xD0101010`. A
+flat wash at either value looks almost right, which is why the value is pinned.
+
+**Measured, not squinted at.** The panel looked washed out and had a black
+rectangle in it. Sampling the frame against `inventory.png` showed six of seven
+probes byte-identical — the seventh was the F3 overlay drawing over it — and the
+black rectangle is the texture's *own*, the window vanilla covers with the 3D
+player. Both first impressions were wrong.
+
+Gate: **`rewo inventoryshot --check`** grew from 16 to **39 witnesses** — the
+menu layout against an independent transcription of the constructor, the 18 px
+hover box and its tiling, nine arithmetic cases, the slot rules (a helmet only
+in the helmet slot, dirt in none of them, anything in the off-hand, the result
+slot's asymmetry), the two declines, the packet bytes, and five pixel witnesses
+including the byte-exact panel and the highlight's placement. Plus a live gate:
+`REWO_CLICK=<slot>[,<button>]` clicks headlessly and counts container resyncs
+across it, which is the container equivalent of `CORRECTIONS`.
+
+Measured: **586 tests** (proto 11, data 72, world 188, net 136, mesh 38, gpu 80
+= 525 lib; app 61); all fifteen serverless gates green with validation ON and 0
+VUIDs; demo SHA-256 `2cc56b4a…` byte-identical to M15 onward; live
+`play --light-check --no-relight --no-build` 884,736 cells / 0 mismatches,
+physics **CORRECTIONS 0**, place and dig server-observed; four headless clicks
+(take-all, take-half, a 16-cap stack, a single) all **0 resyncs**.
+
+**Open.** The **player preview** is not drawn — `inventory.png` paints that
+window black and vanilla renders the 3D player over it, so the screen has a
+black rectangle where the model belongs. It is the most visible remaining gap
+and a self-contained next step: the entity pass, an ortho projection, a
+scissored viewport. Beyond it: no shift-click quick-move, drag/quick-craft,
+number-key swap, Q-to-drop, double-click pickup-all, no tooltips, no recipe
+book, no durability bars, and no crafting (the 2x2 grid renders and accepts
+items, but the result is whatever the server puts there). Armour items still
+draw nothing, because their `minecraft:select` trim definitions are among the
+147 M22 suppresses.
 
 ### M34 — the inventory, and icons in the hotbar (2026-07-27)
 

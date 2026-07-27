@@ -119,6 +119,15 @@ pub struct WireStack {
     /// is about an item's *prototype*, this is about a per-stack override that
     /// only ever arrives as a patch.
     pub charged: PatchCharged,
+    /// Whether the patch carried **any** entry, added or removed (M35).
+    ///
+    /// Not what any of them were — that needs the per-type codecs, and only a
+    /// handful are transcribed. This is the one bit the container click
+    /// arithmetic can honestly use: `ItemStack.isSameItemSameComponents` must
+    /// be false whenever either side carries components Rewo cannot compare,
+    /// so two patched stacks swap rather than merge. See
+    /// [`rewo_world::inventory::ItemSlot::has_components`].
+    pub patched: bool,
 }
 
 impl WireStack {
@@ -188,12 +197,13 @@ pub fn read_optional(r: &mut PacketReader, ids: DataComponentIds) -> Result<Wire
         return Ok(WireSlot::Empty);
     }
     let item_id = r.varint().map_err(|_| ())?;
-    let (patch, charged) = read_patch(r, ids)?;
+    let (patch, charged, patched) = read_patch(r, ids)?;
     Ok(WireSlot::Stack(WireStack {
         count,
         item_id,
         patch,
         charged,
+        patched,
     }))
 }
 
@@ -216,7 +226,7 @@ const MAX_PATCH_DEPTH: u32 = 4;
 fn read_patch(
     r: &mut PacketReader,
     ids: DataComponentIds,
-) -> Result<(PatchOutcome, PatchCharged), ()> {
+) -> Result<(PatchOutcome, PatchCharged, bool), ()> {
     read_patch_at(r, ids, 0)
 }
 
@@ -224,7 +234,7 @@ fn read_patch_at(
     r: &mut PacketReader,
     ids: DataComponentIds,
     depth: u32,
-) -> Result<(PatchOutcome, PatchCharged), ()> {
+) -> Result<(PatchOutcome, PatchCharged, bool), ()> {
     let added = r.varint().map_err(|_| ())?;
     let removed = r.varint().map_err(|_| ())?;
     if added == 0 && removed == 0 {
@@ -232,6 +242,7 @@ fn read_patch_at(
         return Ok((
             PatchOutcome::Walked(PatchSwing::Absent),
             PatchCharged::Absent,
+            false,
         ));
     }
     // The decoder sizes its map with `min(added + removed, 65536)`; a nonsense
@@ -260,12 +271,12 @@ fn read_patch_at(
                 // A nested patch this decoder cannot walk. The reader is parked
                 // mid-value, so the whole enclosing stack is unwalkable — the
                 // charge answer is lost with it.
-                None => return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent)),
+                None => return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true)),
             }
             continue;
         }
         // An un-transcribed codec: the reader stops here, mid-value.
-        return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent));
+        return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true));
     }
     for _ in 0..removed {
         let ty = r.varint().map_err(|_| ())?;
@@ -278,7 +289,7 @@ fn read_patch_at(
             charged = PatchCharged::Removed;
         }
     }
-    Ok((PatchOutcome::Walked(swing), charged))
+    Ok((PatchOutcome::Walked(swing), charged, true))
 }
 
 /// `ByteBufCodecs.list(1024)` of `ItemStackTemplate.STREAM_CODEC`, which is
@@ -307,7 +318,7 @@ fn read_projectile_list(
     for _ in 0..len {
         r.varint().map_err(|_| ())?; // Item.STREAM_CODEC — raw registry id
         r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT — count
-        let (outcome, _) = read_patch_at(r, ids, depth + 1)?;
+        let (outcome, _, _) = read_patch_at(r, ids, depth + 1)?;
         if outcome == PatchOutcome::Unwalkable {
             return Ok(None);
         }
