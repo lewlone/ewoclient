@@ -27,10 +27,13 @@
 //!   Depth is still tested, so terrain occludes particles correctly. Vanilla
 //!   sorts its translucent particle layers; Rewo does not, which is visible
 //!   only where two particles of different colours overlap.
-//! * **One atlas, one draw.** Vanilla splits particles across
-//!   `SingleQuadParticle.Layer` (six variants over three atlases, opaque and
-//!   translucent). Rewo's six kinds all resolve to the particle atlas, so there
-//!   is one texture and one draw call.
+//! * **One texture array, one draw.** Vanilla splits particles across
+//!   `SingleQuadParticle.Layer` — six variants over three atlases (particles,
+//!   blocks, items), opaque and translucent. Rewo instead puts the block
+//!   textures and the particle sprites in a single `sampler2DArray` and selects
+//!   per-vertex, so a block-break shard (which samples the *block* texture, as
+//!   `getParticleMaterial` requires) and a flame share one pipeline and one
+//!   draw. The sprites are point-upscaled to the block `TEX_SIZE` to fit.
 
 use ash::vk;
 
@@ -52,8 +55,12 @@ pub struct ParticleQuad {
     /// Half-extent in blocks — `getQuadSize(partialTick)`.
     pub size: f32,
     pub color: [f32; 4],
-    /// Atlas sub-rectangle: `[u0, v0, u1, v1]`.
+    /// Sub-rectangle within the layer: `[u0, v0, u1, v1]`. A whole sprite is
+    /// `[0,0,1,1]`; a terrain shard takes a quarter-window (`TerrainParticle`'s
+    /// `uo`/`vo`), which is why this is a rectangle rather than implied.
     pub uv: [f32; 4],
+    /// Index into the pass's texture array.
+    pub layer: u32,
     pub block_light: u8,
     pub sky_light: u8,
 }
@@ -65,6 +72,7 @@ pub struct ParticleVertex {
     pub uv: [f32; 2],
     pub color: [f32; 4],
     pub light: u32,
+    pub layer: u32,
 }
 
 #[repr(C)]
@@ -76,11 +84,11 @@ struct Push {
     ambient: [f32; 4],
 }
 
-/// One decoded particle atlas.
-pub struct ParticleImage<'a> {
-    pub rgba: &'a [u8],
-    pub w: u32,
-    pub h: u32,
+/// The pass's texture array: the block textures followed by the particle
+/// sprites, every layer `size` square.
+pub struct ParticleAtlas<'a> {
+    pub layers: &'a [Vec<u8>],
+    pub size: u32,
 }
 
 /// The vertex light word `lm_light` reads — block at bit 16, sky at bit 20.
@@ -134,6 +142,7 @@ pub fn build_quads(
             uv,
             color: p.color,
             light,
+            layer: p.layer,
         };
         let (u0, v0, u1, v1) = (p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
         // Vanilla emits QUADS as (-1,-1), (-1,+1), (+1,+1), (+1,-1) with UVs
@@ -181,13 +190,14 @@ impl ParticlePass {
     pub fn new(
         gpu: &mut Gpu,
         color_format: vk::Format,
-        atlas: &ParticleImage,
+        atlas: &ParticleAtlas,
     ) -> Result<Self, String> {
-        let (img, alloc, view) = crate::entities::create_texture(gpu, atlas.rgba, atlas.w, atlas.h)?;
+        let (img, alloc, view) = create_layer_array(gpu, atlas)?;
         let device = gpu.device.clone();
-        // NEAREST, CLAMP_TO_EDGE: the atlas is pixel art and each particle owns
-        // a sub-rectangle of it, so filtering across the edge would bleed a
-        // neighbouring sprite into the quad's border.
+        // NEAREST + CLAMP_TO_EDGE: every layer is pixel art, and a terrain
+        // shard samples a quarter-window inside its layer — filtering across
+        // that window's edge would bleed the rest of the block texture into
+        // the shard's border.
         let sampler = unsafe {
             device
                 .create_sampler(
@@ -364,6 +374,93 @@ impl ParticlePass {
     }
 }
 
+/// A `TYPE_2D_ARRAY` texture holding every layer, single mip.
+///
+/// Single mip is deliberate: particles are small, camera-facing and sampled
+/// NEAREST, so a mip chain would only ever soften them. The block texture
+/// array the world pass uses does have mips, because terrain is viewed at
+/// grazing angles and at distance; a shard is neither.
+fn create_layer_array(
+    gpu: &mut Gpu,
+    atlas: &ParticleAtlas,
+) -> Result<(vk::Image, gpu_allocator::vulkan::Allocation, vk::ImageView), String> {
+    use gpu_allocator::vulkan::AllocationCreateDesc;
+    use gpu_allocator::MemoryLocation;
+    let size = atlas.size;
+    let count = atlas.layers.len().max(1) as u32;
+    let bytes_per = (size * size * 4) as usize;
+    unsafe {
+        let image = gpu
+            .device
+            .create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .extent(vk::Extent3D { width: size, height: size, depth: 1 })
+                    .mip_levels(1)
+                    .array_layers(count)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+                    .initial_layout(vk::ImageLayout::UNDEFINED),
+                None,
+            )
+            .map_err(|e| format!("particle array image: {e}"))?;
+        let req = gpu.device.get_image_memory_requirements(image);
+        let alloc = gpu
+            .allocator
+            .allocate(&AllocationCreateDesc {
+                name: "particle-texture-array",
+                requirements: req,
+                location: MemoryLocation::GpuOnly,
+                linear: false,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("particle array alloc: {e}"))?;
+        gpu.device
+            .bind_image_memory(image, alloc.memory(), alloc.offset())
+            .map_err(|e| format!("particle array bind: {e}"))?;
+
+        // A layer shorter than a full texture is padded transparent rather
+        // than rejected, so one malformed texture cannot take the pass down.
+        let padded: Vec<Vec<u8>> = if atlas.layers.is_empty() {
+            vec![vec![0u8; bytes_per]]
+        } else {
+            atlas
+                .layers
+                .iter()
+                .map(|l| {
+                    let mut v = vec![0u8; bytes_per];
+                    let n = l.len().min(bytes_per);
+                    v[..n].copy_from_slice(&l[..n]);
+                    v
+                })
+                .collect()
+        };
+        crate::world::upload_texture_array(gpu, image, size, 1, &padded)?;
+
+        let view = gpu
+            .device
+            .create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(1)
+                            .base_array_layer(0)
+                            .layer_count(count),
+                    ),
+                None,
+            )
+            .map_err(|e| format!("particle array view: {e}"))?;
+        Ok((image, alloc, view))
+    }
+}
+
 fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
     if let Some(mut b) = buf {
         unsafe { gpu.device.destroy_buffer(b.buffer, None) };
@@ -423,6 +520,11 @@ fn build_pipeline(
                 .binding(0)
                 .format(vk::Format::R32_UINT)
                 .offset(36),
+            vk::VertexInputAttributeDescription::default()
+                .location(4)
+                .binding(0)
+                .format(vk::Format::R32_UINT)
+                .offset(40),
         ];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&binding)
@@ -539,6 +641,7 @@ mod tests {
             size: 0.25,
             color: [1.0, 1.0, 1.0, 1.0],
             uv: [0.0, 0.0, 1.0, 1.0],
+            layer: 0,
             block_light: 0,
             sky_light: 15,
         };

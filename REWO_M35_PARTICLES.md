@@ -298,14 +298,6 @@ and the particle JSON is the property.
 
 Stated so they read as decisions rather than oversights.
 
-- **Not wired into `rewo live` yet.** The simulation, the wire decode, the
-  Vulkan pass and its `WorldRenderer` hooks (`init_particles` / `set_particles`
-  / the draw call between the translucent and weather passes) all exist and
-  compile. What is missing is the **particle atlas bake** — vanilla's particle
-  sprites live as individual PNGs under `textures/particle/`, and terrain shards
-  sample the *block* atlas rather than the particle one, which is a second
-  sampling path. That is the next step, not a hidden gap: nothing currently
-  calls `init_particles`, so the pass is inert and no frame changes.
 - **Six kinds, not 125.** Block, smoke, flame, splash, crit, poof. Unsupported
   types are dropped rather than guessed at (`w7`), which is safe because packets
   are length-framed — abandoning a body part-way never disturbs the stream.
@@ -326,6 +318,64 @@ Stated so they read as decisions rather than oversights.
   tests (basis extraction, quad centring/sizing, light-word packing) but no
   pixel oracle.
 
+## Wiring it into `rewo live`
+
+The pass had to solve one structural problem first: a block-break shard samples
+the **block** texture (vanilla's `getParticleMaterial(state).sprite()`), while a
+flame samples the particle sprite strip. Two sources, and vanilla handles it by
+splitting particles across six `SingleQuadParticle.Layer` variants over three
+atlases.
+
+Rewo instead puts both in **one `sampler2DArray`** — the block textures followed
+by the particle sprites — and selects per-vertex. One pipeline, one draw. The
+sprites are 8×8 and the block layers 16×16, so the sprites are point-upscaled
+2×, which is exact for pixel art (`upscale_to_tex_size` refuses any non-integer
+ratio rather than silently blurring).
+
+The block half needed a new per-state field. `BakedAssets::particle_layer`
+resolves each state's model `#particle` slot through the merged parent chain —
+*not* a face texture, because that gets the interesting case exactly wrong: a
+broken grass_block throws **dirt**-coloured shards even though its top face is
+green, and `#particle` is why.
+
+Two bugs surfaced during the wiring, both found by the numbers rather than by
+looking:
+
+1. **The particle clock was anchored at zero.** `last_tick` started at 0 while
+   `session.ticks` was already in the hundreds by the time anything spawned, so
+   the first frame's catch-up loop ran every tick since connect and aged a
+   400-flame burst past its lifetime before it was ever drawn — the log said
+   `alive=0` with the event decoded. Fixed by anchoring on first use, and
+   capped at 4 ticks of catch-up: vanilla's `ParticleEngine.tick` runs once per
+   client tick and a stalled client simply misses ticks, it never
+   fast-forwards.
+2. **The windowed path never built its `ParticleAssets`.** Only the headless
+   one did, so particles would have been invisible in an actual window while
+   every headless check passed.
+
+### Live verification
+
+Against a real vanilla 26.2 server (own instance, port 25601), headless
+`--out`, each render diffed against a particle-free control frame of the same
+scene:
+
+| trigger | alive | quads | verts | mean RGB of changed pixels |
+|---|---|---|---|---|
+| `/particle minecraft:flame … 400` | 400 | 400 | 2400 | (244, 160, 34) — orange |
+| `/particle minecraft:block{redstone_block} … 400` | 400 | 400 | 2400 | (120, 20, 9) — red |
+| …`{lapis_block}` | 400 | 400 | 2400 | (30, 57, 112) — **blue** |
+| …`{gold_block}` | 400 | 400 | 2400 | (195, 171, 56) — yellow |
+| `/setblock … air destroy` (a real break) | **64** | 64 | 384 | — |
+
+The flame render changed 18.2% of the frame, 86% of it warm-coloured. The three
+block particles are the load-bearing row: the shard colour **tracks the block
+state**, which is what proves the per-state `particle_layer` lookup and the
+block-texture-array sampling are real rather than a constant fallback.
+
+And the last row closes the loop end-to-end — a genuine server-side block break
+sends `level_event` 2001, and the client spawns **exactly 64** shards, the same
+4×4×4 grid the serverless gate's `f7` asserts from the other direction.
+
 ## Verification run
 
 - `cargo test` on all six rewo crates: **524 lib tests**, 0 failures (was 500;
@@ -336,7 +386,11 @@ Stated so they read as decisions rather than oversights.
   danceshot 24, portalshot 12, plus skyshot, lightmapshot, tintshot, meshshot,
   dimensioncheck: **all 15 exit 0 with 0 VUIDs**.
 - Canonical demo PNG SHA-256 unchanged:
-  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635`.
+  `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635`. Worth
+  checking deliberately rather than assuming: resolving each state's
+  `#particle` texture can allocate *new* texture-array layers for sprites no
+  face happened to use, which would reorder the array. It did not.
+- Live, against a real 26.2 server — see the table above.
 - `git diff --check` clean.
 
 ## A note on the branch

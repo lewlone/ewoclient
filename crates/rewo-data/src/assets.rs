@@ -21,6 +21,10 @@ use crate::read_json_file;
 
 pub const TEX_SIZE: u32 = 16;
 
+/// `BakedAssets::particle_layer` sentinel — this state has no particle sprite,
+/// so a block-break burst draws nothing rather than an arbitrary texture.
+pub const NO_PARTICLE_LAYER: u16 = u16::MAX;
+
 /// Face order used across the bake + mesher:
 /// 0 up(+Y) 1 down(-Y) 2 north(-Z) 3 south(+Z) 4 west(-X) 5 east(+X).
 pub const FACE_NAMES: [&str; 6] = ["up", "down", "north", "south", "west", "east"];
@@ -229,6 +233,13 @@ pub struct BakedAssets {
     /// RGBA8 16×16 texels per layer (sRGB).
     pub layers: Vec<Vec<u8>>,
     pub layer_names: Vec<String>,
+    /// Per block state: the texture-array layer vanilla's
+    /// `getParticleMaterial(state).sprite()` samples for a block-break shard
+    /// (M35) — the model's `#particle` texture slot, resolved through the same
+    /// parent chain the faces use. `NO_PARTICLE_LAYER` when the block has no
+    /// model, no `particle` slot, or its texture is missing from the jar, in
+    /// which case no shard is drawn rather than an invented one.
+    pub particle_layer: Vec<u16>,
     /// Baked plains-biome tint colors (colormap centers). Kept for the legacy
     /// pre-tinted path (synthetic / no-biome worlds → demo byte-identical).
     pub grass_tint: [u8; 3],
@@ -275,6 +286,9 @@ pub struct BakedAssets {
     /// precipitation draws nothing rather than an invented streak.
     pub rain: Option<DecodedImage>,
     pub snow: Option<DecodedImage>,
+    /// The particle sprites (M35). `None` means particles draw nothing rather
+    /// than an invented sprite.
+    pub particles: Option<ParticleSprites>,
     /// `environment/clouds.png` (M33) — a *map*, one texel per 12x12x4 cell,
     /// never sampled as a surface. `None` means no clouds at all.
     pub clouds: Option<DecodedImage>,
@@ -664,6 +678,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let end_sky = bake_env_texture(&mut jar, "end_sky.png");
     let rain = bake_env_texture(&mut jar, "rain.png");
     let snow = bake_env_texture(&mut jar, "snow.png");
+    let particles = bake_particle_sprites(&mut jar);
     let clouds = bake_env_texture(&mut jar, "clouds.png");
     for (name, present) in [
         ("rain.png", rain.is_some()),
@@ -709,6 +724,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
     let mut face_occludes = vec![0u8; max_id + 1];
+    let mut particle_layer = vec![NO_PARTICLE_LAYER; max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
     let mut stats = BakeStats::default();
 
@@ -794,11 +810,13 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 Some((k @ RenderKind::Cube { .. }, is_solid)) => {
                     render[id as usize] = k;
                     solid[id as usize] = is_solid;
+                    particle_layer[id as usize] = baker.particle_layer_for(bs.as_ref(), props);
                     stats.cube_states += 1;
                 }
                 Some((k @ RenderKind::Model(_), is_solid)) => {
                     render[id as usize] = k;
                     solid[id as usize] = is_solid;
+                    particle_layer[id as usize] = baker.particle_layer_for(bs.as_ref(), props);
                     stats.model_states += 1;
                 }
                 _ => stats.invisible_states += 1,
@@ -911,6 +929,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         models,
         layers: baker.layers,
         layer_names: baker.layer_names,
+        particle_layer,
         animations: baker.animations,
         grass_tint,
         foliage_tint,
@@ -926,12 +945,106 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         end_portal,
         rain,
         snow,
+        particles,
         clouds,
         stats,
     })
 }
 
 /// Decode one `assets/minecraft/textures/environment/<rel>` image, or `None`.
+/// The particle sprite sets M35 simulates, taken from the jar's own
+/// `assets/minecraft/particles/<name>.json` rather than guessed from the
+/// texture directory.
+///
+/// Order within each set is the order the JSON lists — which for smoke and
+/// poof is `generic_7` down to `generic_0`, i.e. the strip runs *backwards*
+/// from the filenames. `SpriteSet.get(age, lifetime)` indexes this list, so
+/// reversing it would run every puff of smoke inside out.
+pub const PARTICLE_SPRITE_SETS: &[(&str, &[&str])] = &[
+    ("flame", &["flame"]),
+    ("crit", &["critical_hit"]),
+    ("splash", &["splash_0", "splash_1", "splash_2", "splash_3"]),
+    (
+        "smoke",
+        &[
+            "generic_7", "generic_6", "generic_5", "generic_4", "generic_3", "generic_2",
+            "generic_1", "generic_0",
+        ],
+    ),
+    (
+        "poof",
+        &[
+            "generic_7", "generic_6", "generic_5", "generic_4", "generic_3", "generic_2",
+            "generic_1", "generic_0",
+        ],
+    ),
+];
+
+/// The particle sprites, decoded into `TEX_SIZE`-square layers so they can
+/// live in the same texture array as the block textures a terrain shard needs
+/// (M35). Vanilla's are 8x8; they are point-upscaled 2x, which is exact for
+/// pixel art.
+pub struct ParticleSprites {
+    /// `TEX_SIZE * TEX_SIZE * 4` bytes each, in `PARTICLE_SPRITE_SETS` order,
+    /// flattened — set 0's frames, then set 1's, and so on.
+    pub layers: Vec<Vec<u8>>,
+    /// Index into `layers` of each set's first frame, parallel to
+    /// `PARTICLE_SPRITE_SETS`.
+    pub set_offsets: Vec<u32>,
+}
+
+impl ParticleSprites {
+    /// First layer of a named set, and how many frames it holds.
+    pub fn set(&self, name: &str) -> Option<(u32, u32)> {
+        let i = PARTICLE_SPRITE_SETS.iter().position(|(n, _)| *n == name)?;
+        Some((self.set_offsets[i], PARTICLE_SPRITE_SETS[i].1.len() as u32))
+    }
+}
+
+/// Decode every particle sprite M35 needs. A missing file drops the whole
+/// bake rather than shipping a set with a hole in it — an out-of-range frame
+/// index would otherwise sample a neighbouring sprite.
+fn bake_particle_sprites(jar: Jar) -> Option<ParticleSprites> {
+    let mut layers = Vec::new();
+    let mut set_offsets = Vec::new();
+    for (_, frames) in PARTICLE_SPRITE_SETS {
+        set_offsets.push(layers.len() as u32);
+        for f in *frames {
+            let mut bytes = Vec::new();
+            jar.by_name(&format!("assets/minecraft/textures/particle/{f}.png"))
+                .ok()?
+                .read_to_end(&mut bytes)
+                .ok()?;
+            let (rgba, w, h) = decode_png_any(&bytes)?;
+            layers.push(upscale_to_tex_size(&rgba, w, h)?);
+        }
+    }
+    log::info!("rewo-data: {} particle sprite layers", layers.len());
+    Some(ParticleSprites { layers, set_offsets })
+}
+
+/// Point-upscale an RGBA image to `TEX_SIZE` square. Only exact integer
+/// ratios are accepted — a non-divisor would need filtering, and silently
+/// blurring a particle sprite is worse than not drawing it.
+fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || TEX_SIZE % w != 0 || TEX_SIZE % h != 0 {
+        return None;
+    }
+    if rgba.len() < (w * h * 4) as usize {
+        return None;
+    }
+    let (sx, sy) = (TEX_SIZE / w, TEX_SIZE / h);
+    let mut out = vec![0u8; (TEX_SIZE * TEX_SIZE * 4) as usize];
+    for y in 0..TEX_SIZE {
+        for x in 0..TEX_SIZE {
+            let src = (((y / sy) * w + (x / sx)) * 4) as usize;
+            let dst = ((y * TEX_SIZE + x) * 4) as usize;
+            out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+        }
+    }
+    Some(out)
+}
+
 fn bake_env_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
     let mut bytes = Vec::new();
     jar.by_name(&format!("assets/minecraft/textures/environment/{rel}"))
@@ -1769,6 +1882,38 @@ impl<'a> Baker<'a> {
             out.ambient_occlusion = ao;
         }
         Some(out)
+    }
+
+    /// The texture-array layer a block-break shard samples (M35).
+    ///
+    /// Vanilla asks the block-state model set for
+    /// `getParticleMaterial(state).sprite()`, which is the model's `particle`
+    /// texture slot — the reason a broken grass_block throws *dirt*-coloured
+    /// shards rather than green ones, even though its top face is green. So
+    /// this resolves `#particle` through the merged parent chain rather than
+    /// reusing a face texture, which would get exactly that case wrong.
+    ///
+    /// Untinted: vanilla multiplies the shard by the block's tint source
+    /// separately, and baking a colormap into the layer here would double it.
+    fn particle_layer_for(
+        &mut self,
+        bs: Option<&BlockState>,
+        props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> u16 {
+        let Some(bs) = bs else {
+            return NO_PARTICLE_LAYER;
+        };
+        let refs = self.state_refs(bs, props);
+        let Some(first) = refs.first() else {
+            return NO_PARTICLE_LAYER;
+        };
+        let Some(model) = self.resolve_model(&first.model) else {
+            return NO_PARTICLE_LAYER;
+        };
+        let Some(name) = resolve_texture_var("#particle", &model.textures) else {
+            return NO_PARTICLE_LAYER;
+        };
+        self.layer_for(&name, TintKind::None).unwrap_or(NO_PARTICLE_LAYER)
     }
 
     /// Texture-array layer for a texture name; `foliage` picks the tint

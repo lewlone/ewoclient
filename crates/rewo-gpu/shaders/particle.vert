@@ -34,13 +34,18 @@ layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec4 in_color;
 // Block level in bits 16..19, sky in 20..23 — `lm_light`'s word shape.
 layout(location = 3) in uint in_light;
+// Which texture-array layer: a block texture for a terrain shard, a particle
+// sprite for everything else. One array so both share a pipeline.
+layout(location = 4) in uint in_layer;
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
+layout(location = 2) out flat uint v_layer;
 
 void main() {
     gl_Position = pc.mvp * vec4(in_pos, 1.0);
     v_uv = in_uv;
+    v_layer = in_layer;
     vec3 lm = lm_light(in_light, pc.light, pc.sky_col, pc.ambient.rgb);
     v_color = vec4(in_color.rgb * lm, in_color.a);
 }

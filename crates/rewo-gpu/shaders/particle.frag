@@ -13,15 +13,18 @@
 // omits it — fog is applied in the world pass, and a second application would
 // double it.
 
-layout(set = 0, binding = 0) uniform sampler2D u_tex;
+// A single array holding the block textures and the particle sprites, so a
+// block-break shard and a flame reach the same sampler.
+layout(set = 0, binding = 0) uniform sampler2DArray u_tex;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
+layout(location = 2) in flat uint v_layer;
 
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    vec4 color = texture(u_tex, v_uv) * v_color;
+    vec4 color = texture(u_tex, vec3(v_uv, float(v_layer))) * v_color;
     if (color.a < 0.1) {
         discard;
     }

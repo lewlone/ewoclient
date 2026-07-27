@@ -1285,6 +1285,19 @@ pub(crate) fn layer_animations(
 /// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
 /// pitch+ looks down.
 fn eye_view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32; 4]; 4] {
+    let view = eye_view(eye, yaw_deg, pitch_deg);
+    let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
+        70f32.to_radians(),
+        aspect.max(0.01),
+        0.05,
+    ));
+    (proj * view).to_cols_array_2d()
+}
+
+/// The view matrix alone — extracted so the M35 particle billboards take their
+/// right/up basis from exactly the matrix the frame is projected through,
+/// rather than from a second construction that could drift from it.
+fn eye_view(eye: Vec3, yaw_deg: f32, pitch_deg: f32) -> Mat4 {
     let yaw = yaw_deg.to_radians();
     let pitch = pitch_deg.to_radians();
     let dir = Vec3::new(
@@ -1292,13 +1305,7 @@ fn eye_view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32;
         -pitch.sin(),
         yaw.cos() * pitch.cos(),
     );
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
-    let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
-        70f32.to_radians(),
-        aspect.max(0.01),
-        0.05,
-    ));
-    (proj * view).to_cols_array_2d()
+    Mat4::look_to_rh(eye, dir, Vec3::Y)
 }
 
 fn player_eye(session: &PlaySession) -> Vec3 {
@@ -1429,8 +1436,10 @@ fn run_headless(
     world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
+    init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
     let mut weather_assets = WeatherAssets::new(&baked);
     let mut gui_items = GuiItemState::new(&baked);
+    let mut particle_assets = ParticleAssets::new(&baked);
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -1641,6 +1650,10 @@ fn run_headless(
         darkness_option,
         partial,
     );
+    // Drained before `collect_entities` takes its long-lived borrow of the
+    // session; the particle spawn happens further down, once the renderer is
+    // ready for it.
+    let particle_events = std::mem::take(&mut session.particle_events);
     let draws = collect_entities(
         &session,
         &etypes,
@@ -1836,6 +1849,19 @@ fn run_headless(
             (sw, sh),
         );
     }
+    if let Some(p) = particle_assets.as_mut() {
+        let view = eye_view(eye, session.player.yaw, session.player.pitch).to_cols_array_2d();
+        apply_particles(
+            &mut world_renderer,
+            &mut gpu,
+            &session,
+            particle_events,
+            p,
+            &baked,
+            1.0,
+            view,
+        );
+    }
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -2003,6 +2029,9 @@ struct LiveApp {
     /// text pass a few lines later — the two are separated only because the
     /// icons need `&mut gpu` and the text does not.
     screen_labels: Vec<rewo_gpu::world::OwnedTextLine>,
+    /// M37 particles — `None` until the bake arrives, and stays `None` if the
+    /// jar has no particle sprites.
+    particles: Option<ParticleAssets>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -2085,6 +2114,7 @@ impl ApplicationHandler for LiveApp {
             world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
+            init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
@@ -2570,6 +2600,25 @@ impl LiveApp {
                 // 20 ticks per second — .
                 Some(dt * 20.0),
             );
+            if self.particles.is_none() {
+                self.particles = ParticleAssets::new(baked);
+            }
+            if let Some(p) = self.particles.as_mut() {
+                let eye = player_eye(session);
+                let view =
+                    eye_view(eye, session.player.yaw, session.player.pitch).to_cols_array_2d();
+                let events = std::mem::take(&mut session.particle_events);
+                apply_particles(
+                    &mut state.world_renderer,
+                    &mut state.gpu,
+                    session,
+                    events,
+                    p,
+                    baked,
+                    alpha,
+                    view,
+                );
+            }
         }
         state
             .world_renderer
@@ -2642,6 +2691,7 @@ fn run_windowed(
         models: baked.models.clone(),
     })?;
     let mut app = LiveApp {
+        particles: None,
         session: Some(session),
         baked: Some(baked),
         etypes,
@@ -4786,6 +4836,206 @@ fn effective_weather(session: &PlaySession) -> rewo_world::weather::WeatherState
 }
 
 #[allow(clippy::too_many_arguments)]
+
+// ---------------------------------------------------------------------------
+// Particles (M35)
+// ---------------------------------------------------------------------------
+
+/// The live particle system plus the layer bookkeeping the pass needs.
+///
+/// The texture array the pass samples is the block textures followed by the
+/// particle sprites, so a terrain shard (which must sample the *block*
+/// texture, per `getParticleMaterial`) and a flame share one pipeline.
+/// `sprite_base` is where the sprites start.
+pub struct ParticleAssets {
+    sys: rewo_world::particles::ParticleSystem,
+    sprite_base: u32,
+    /// Per kind: first layer and frame count, resolved once from the bake.
+    sets: Vec<(rewo_world::particles::ParticleKind, u32, u32)>,
+    /// Last session tick the system was advanced for, so the 20 Hz simulation
+    /// steps exactly once per game tick however fast frames arrive.
+    ///
+    /// `None` until the first frame that runs it: the session has usually
+    /// ticked for several seconds by then (connect, chunk load, settle), and
+    /// anchoring at 0 would make the first frame fast-forward every one of
+    /// those ticks at once — which ages a whole burst past its lifetime before
+    /// it is ever drawn.
+    last_tick: Option<u64>,
+}
+
+impl ParticleAssets {
+    pub fn new(baked: &assets::BakedAssets) -> Option<Self> {
+        use rewo_world::particles::ParticleKind as K;
+        let sprites = baked.particles.as_ref()?;
+        let sprite_base = baked.layers.len() as u32;
+        let mut sets = Vec::new();
+        for (kind, name) in [
+            (K::Flame, "flame"),
+            (K::Crit, "crit"),
+            (K::Splash, "splash"),
+            (K::Smoke, "smoke"),
+            (K::Poof, "poof"),
+        ] {
+            let (off, n) = sprites.set(name)?;
+            sets.push((kind, sprite_base + off, n));
+        }
+        Some(Self {
+            // A fixed seed: the run is reproducible, which is the property the
+            // M35 gate rests on. Vanilla's per-particle seeds are arbitrary, so
+            // any seed is an equally valid vanilla outcome (REWO_M35_PARTICLES).
+            sys: rewo_world::particles::ParticleSystem::new(0x5EED_1234),
+            sprite_base,
+            sets,
+            last_tick: None,
+        })
+    }
+
+    fn layer_for(&self, kind: rewo_world::particles::ParticleKind, frame: u32) -> Option<u32> {
+        self.sets
+            .iter()
+            .find(|(k, _, _)| *k == kind)
+            .map(|(_, off, n)| off + frame.min(n.saturating_sub(1)))
+    }
+}
+
+/// Build the combined texture array and hand it to the pass.
+fn init_particles_if_present(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+) -> Result<(), String> {
+    let Some(sprites) = baked.particles.as_ref() else {
+        log::warn!("live: no particle sprites in the jar bake — no particles");
+        return Ok(());
+    };
+    let mut layers: Vec<Vec<u8>> = baked.layers.clone();
+    layers.extend(sprites.layers.iter().cloned());
+    wr.init_particles(
+        gpu,
+        &rewo_gpu::particles::ParticleAtlas {
+            layers: &layers,
+            size: assets::TEX_SIZE,
+        },
+    )
+}
+
+/// Drain the frame's spawn requests, advance the simulation on the game tick,
+/// and hand the renderer this frame's quads.
+///
+/// The simulation steps on `session.ticks` rather than on frame time: vanilla's
+/// `ParticleEngine.tick` runs once per 20 Hz client tick, and driving it from
+/// the frame rate would make particles fall faster on a faster machine.
+fn apply_particles(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    // Drained by the caller, so this takes the session immutably and does not
+    // fight the frame's other borrows of it.
+    events: Vec<rewo_world::particles::ParticleEvent>,
+    p: &mut ParticleAssets,
+    baked: &assets::BakedAssets,
+    partial_ticks: f32,
+    view: [[f32; 4]; 4],
+) {
+    use rewo_world::particles::{ParticleEvent, ParticleKind};
+
+    // Collision shapes, from the same table the player's physics uses — so a
+    // shard rests on a slab rather than sinking into it (§0.0 gotcha 2: this
+    // must not key off the render fast-path).
+    let collide = &session.collide;
+    let world = &session.world;
+    let shapes = |x: i32, y: i32, z: i32| -> &[[f32; 6]] {
+        let state = world.block_state_at(x, y, z) as usize;
+        collide.get(state).map(|v| v.as_slice()).unwrap_or(&[])
+    };
+
+    if !events.is_empty() {
+        log::debug!("live: {} particle event(s)", events.len());
+    }
+    for ev in events {
+        match ev {
+            ParticleEvent::Command(cmd) => p.sys.spawn_from_packet(&cmd, &shapes),
+            ParticleEvent::DestroyBlock { x, y, z, block_state } => {
+                // Vanilla iterates the block's collision boxes; a shapeless
+                // block spawns nothing.
+                let shape = collide.get(block_state as usize).cloned().unwrap_or_default();
+                p.sys.spawn_destroy_block(x, y, z, block_state, &shape, &shapes);
+            }
+        }
+    }
+
+    // Vanilla's `ParticleEngine.tick` runs once per client tick and a stalled
+    // client simply misses ticks — it never fast-forwards. Cap the catch-up so
+    // a hitch cannot age a burst out of existence in one frame.
+    const MAX_CATCH_UP: u64 = 4;
+    let last = *p.last_tick.get_or_insert(session.ticks);
+    let steps = session.ticks.saturating_sub(last).min(MAX_CATCH_UP);
+    for _ in 0..steps {
+        p.sys.tick(&shapes);
+    }
+    p.last_tick = Some(session.ticks);
+
+    if p.sys.is_empty() {
+        let _ = wr.set_particles(gpu, &rewo_gpu::particles::ParticleDraw { verts: Vec::new() });
+        return;
+    }
+
+    let quads: Vec<rewo_gpu::particles::ParticleQuad> = p
+        .sys
+        .particles
+        .iter()
+        .filter_map(|q| {
+            // A terrain shard samples the broken block's own particle texture
+            // and takes a quarter-window out of it (`uo`/`vo` in quarters);
+            // everything else takes a whole sprite off the particle strip.
+            let (layer, uv) = if q.kind == ParticleKind::Terrain {
+                let l = *baked.particle_layer.get(q.block_state as usize)? as u32;
+                if l == assets::NO_PARTICLE_LAYER as u32 {
+                    return None;
+                }
+                (
+                    l,
+                    [
+                        q.uo / 4.0,
+                        q.vo / 4.0,
+                        (q.uo + 1.0) / 4.0,
+                        (q.vo + 1.0) / 4.0,
+                    ],
+                )
+            } else {
+                (p.layer_for(q.kind, q.sprite_frame)?, [0.0, 0.0, 1.0, 1.0])
+            };
+            let pos = q.render_pos(partial_ticks as f64);
+            let (block_light, sky_light) = world.light_at(
+                pos[0].floor() as i32,
+                pos[1].floor() as i32,
+                pos[2].floor() as i32,
+            );
+            Some(rewo_gpu::particles::ParticleQuad {
+                pos,
+                // `getQuadSize` is a HALF-extent in vanilla's quad expansion.
+                size: q.quad_size_at(partial_ticks),
+                color: [q.r_col, q.g_col, q.b_col, q.alpha],
+                uv,
+                layer,
+                block_light,
+                sky_light,
+            })
+        })
+        .collect();
+
+    let draw = rewo_gpu::particles::ParticleDraw::build(&quads, view);
+    log::debug!(
+        "live: particles alive={} quads={} verts={}",
+        p.sys.len(),
+        quads.len(),
+        draw.verts.len()
+    );
+    if let Err(e) = wr.set_particles(gpu, &draw) {
+        log::warn!("live: particle upload failed: {e}");
+    }
+}
+
 fn apply_weather(
     wr: &mut WorldRenderer,
     gpu: &mut Gpu,

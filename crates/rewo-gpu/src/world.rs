@@ -1436,7 +1436,7 @@ impl WorldRenderer {
     pub fn init_particles(
         &mut self,
         gpu: &mut Gpu,
-        atlas: &crate::particles::ParticleImage,
+        atlas: &crate::particles::ParticleAtlas,
     ) -> Result<(), String> {
         self.particles = Some(crate::particles::ParticlePass::new(
             gpu,
@@ -3045,7 +3045,9 @@ fn generate_mips(tex_size: u32, mip_levels: u32, base: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-fn upload_texture_array(
+/// `pub(crate)` so the M35 particle pass can build its own layered texture
+/// through the same upload path rather than duplicating it.
+pub(crate) fn upload_texture_array(
     gpu: &mut Gpu,
     image: vk::Image,
     tex_size: u32,
