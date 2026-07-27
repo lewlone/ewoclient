@@ -114,6 +114,13 @@ pub struct PlaySession {
     /// dimension change — so it is deliberately not cleared by the transition.
     /// The server re-sends the contents on respawn anyway.
     pub inventory: rewo_world::inventory::Inventory,
+    /// The local player's entity id, from the login prefix (M38).
+    ///
+    /// `LocalPlayer` is an ordinary `LivingEntity` in vanilla, so giving it an
+    /// id in the entity table's swing machine is not a trick — it is the same
+    /// object the remote-player path already models. `Player.aiStep` calls
+    /// `updateSwingTime`, which is why it ticks at all.
+    pub player_id: Option<i32>,
     /// The overworld world clock, ported from 26.2 `ClientClockManager`. It is
     /// advanced from the same two places vanilla advances it: `set_time`
     /// (`handleUpdates` — advance by the game-time delta, then any explicit
@@ -753,6 +760,7 @@ impl<'a> Connection<'a> {
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
             inventory: rewo_world::inventory::Inventory::default(),
+            player_id: None,
             overworld_clock: None,
             game_time: None,
             dirty: std::collections::HashSet::new(),
@@ -938,6 +946,13 @@ impl PlaySession {
         // `VisualEffects::tick` no-ops until `set_player_id`, so calling it
         // before login (no local entity yet, as in vanilla) does nothing.
         self.visual_effects.tick();
+        // M38: publish what the local player is holding into the entity table,
+        // so its swing runs through M19's machine like any other entity's.
+        //
+        // The server never tells us our own equipment — `set_equipment` is for
+        // *other* entities — but M34's inventory knows, and the swing duration
+        // is a function of the held item. This is the join between the two.
+        self.publish_local_hands();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // `ChestLidController.tickLid` — the client animates the ten ticks the
@@ -1762,6 +1777,7 @@ impl PlaySession {
         let spawn = CommonPlayerSpawnInfo::read(&mut r)
             .map_err(|e| format!("play login: spawn info: {e}"))?;
         self.visual_effects.set_player_id(player_id);
+        self.player_id = Some(player_id);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.biome_zoom_seed = Some(spawn.seed);
         self.sea_level = Some(spawn.sea_level);
@@ -2115,7 +2131,66 @@ impl PlaySession {
         self.swing()
     }
 
+    /// Mirror the local player's two hands into the entity table.
+    ///
+    /// Cheap enough to run every tick — two slot reads and, when nothing
+    /// changed, two map writes of an equal value. Doing it on change instead
+    /// would need every mutation path (`set_held_slot`, a container update, a
+    /// click prediction) to remember to call it.
+    fn publish_local_hands(&mut self) {
+        let Some(id) = self.player_id else {
+            return;
+        };
+        use rewo_world::entities::{HandItem, InteractionHand};
+        let resolve = |slot: Option<rewo_world::inventory::ItemSlot>| -> HandItem {
+            let Some(stack) = slot else {
+                return HandItem::Empty;
+            };
+            let Some(data) = self.swing_data.as_ref() else {
+                // Without the prototype tables the swing duration is
+                // unknowable, and an unknown hand is exactly what
+                // `current_swing_duration` needs to see — it must not fall back
+                // to the default and pose a spear like a fist.
+                return HandItem::Unknown;
+            };
+            match rewo_data::swing_anim::SwingAnimations::of(&data.prototypes, stack.item_id) {
+                Some(swing) => HandItem::Held(rewo_world::entities::HeldItem {
+                    item_id: stack.item_id,
+                    swing,
+                    use_profile: data.use_profiles.of(stack.item_id).unwrap_or_default(),
+                    charged: false,
+                }),
+                None => HandItem::Unknown,
+            }
+        };
+        let main = resolve(self.inventory.held());
+        let off = resolve(self.inventory.offhand());
+        self.world
+            .entities
+            .set_hand_item(id, InteractionHand::MainHand, main);
+        self.world
+            .entities
+            .set_hand_item(id, InteractionHand::OffHand, off);
+    }
+
+    /// `LocalPlayer.getAttackAnim(partialTicks)` — the first-person swing
+    /// (M38), and 0 before login or when the id has no swing yet.
+    pub fn local_attack_anim(&self, partial: f32) -> f32 {
+        self.player_id
+            .map_or(0.0, |id| self.world.entities.attack_anim(id, partial))
+    }
+
     pub fn swing(&mut self) -> Result<(), String> {
+        // Vanilla's `LocalPlayer.swing` runs `super.swing` *and* sends the
+        // packet, so the animation starts locally rather than waiting for the
+        // server to echo it back — which it never does for your own swings.
+        if let Some(id) = self.player_id {
+            self.world.entities.swing(
+                id,
+                rewo_world::entities::InteractionHand::MainHand,
+                true,
+            );
+        }
         if let Some(id) = self.ids.sb_play_swing {
             let mut p = PacketWriter::packet(id);
             p.varint(0); // main hand

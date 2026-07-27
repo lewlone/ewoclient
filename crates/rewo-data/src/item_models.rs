@@ -113,6 +113,23 @@ pub enum ItemModel {
         /// which is what makes a block in the hotbar read as a little cube seen
         /// from its top-front-right corner.
         gui: DisplayTransform,
+        /// `display.firstperson_righthand` — the context the held item is
+        /// drawn through in first person (M38).
+        first_person_right: DisplayTransform,
+        /// `display.firstperson_lefthand`, **with vanilla's fallback already
+        /// applied**: `ItemTransforms`' builder replaces an absent left-hand
+        /// entry with the right-hand one, and *only* in first person — the
+        /// third-person left has no such fallback, which is why the field
+        /// above it records absence instead.
+        ///
+        /// The left/right *mirror* is not baked in. `ItemTransform.apply`
+        /// negates `translation.x`, `rotation.y` and `rotation.z` at draw time
+        /// whenever the context is a left hand, and it does so to whichever
+        /// transform was selected — including one that arrived through the
+        /// fallback. Baking the mirror here would double it for the items that
+        /// declare their own left entry (`handheld` authors it pre-mirrored,
+        /// so the two cancel to the same pose).
+        first_person_left: DisplayTransform,
     },
     /// The definition is one of the five state-dependent / bespoke types.
     /// Carries the type name so the suppression is observable.
@@ -209,11 +226,14 @@ fn read_transform(display: &Value, key: &str) -> Option<DisplayTransform> {
 type ChainResult = (
     bool,
     Vec<String>,
+    // In order: `thirdperson_righthand`, `thirdperson_lefthand`, `ground`,
+    // `gui` (M34), then `firstperson_righthand` and `firstperson_lefthand`
+    // (M38) — the last already through vanilla's absent-left fallback.
     DisplayTransform,
     DisplayTransform,
     DisplayTransform,
-    // The last entry is `display.gui` — the context the hotbar and every
-    // inventory slot render through (M34).
+    DisplayTransform,
+    DisplayTransform,
     DisplayTransform,
 );
 
@@ -230,6 +250,8 @@ fn resolve_chain(
     let mut left: Option<DisplayTransform> = None;
     let mut ground: Option<DisplayTransform> = None;
     let mut gui: Option<DisplayTransform> = None;
+    let mut first_right: Option<DisplayTransform> = None;
+    let mut first_left: Option<DisplayTransform> = None;
     let mut is_generated = false;
     let mut cur = strip_ns(start).to_string();
 
@@ -256,6 +278,12 @@ fn resolve_chain(
                 // viewer, filling the slot. This is absence meaning something,
                 // not a missing default.
                 gui.unwrap_or_default(),
+                first_right.unwrap_or_default(),
+                // `ItemTransforms`' builder: an absent first-person left entry
+                // becomes the right one. `item/generated` really does declare
+                // only the right hand, so this fallback fires for every
+                // extruded sprite that is not `handheld`.
+                first_left.or(first_right).unwrap_or_default(),
             ));
         }
         let json = read(&cur)?;
@@ -279,6 +307,12 @@ fn resolve_chain(
             }
             if gui.is_none() {
                 gui = read_transform(d, "gui");
+            }
+            if first_right.is_none() {
+                first_right = read_transform(d, "firstperson_righthand");
+            }
+            if first_left.is_none() {
+                first_left = read_transform(d, "firstperson_lefthand");
             }
         }
         match json.get("parent").and_then(|p| p.as_str()) {
@@ -337,17 +371,23 @@ pub fn resolve_definition(
             third_person_left: BLOCK_THIRD_PERSON,
             ground: BLOCK_GROUND,
             gui: BLOCK_GUI,
+            first_person_right: BLOCK_FIRST_PERSON_RIGHT,
+            first_person_left: BLOCK_FIRST_PERSON_LEFT,
         };
     }
 
     match resolve_chain(reference, read_model) {
-        Some((true, layers, right, left, ground, gui)) if !layers.is_empty() => {
+        Some((true, layers, right, left, ground, gui, first_right, first_left))
+            if !layers.is_empty() =>
+        {
             ItemModel::Resolved {
                 geometry: ItemGeometry::Sprite(layers),
                 third_person_right: right,
                 third_person_left: left,
                 ground,
                 gui,
+                first_person_right: first_right,
+                first_person_left: first_left,
             }
         }
         // A chain that reaches no `builtin/generated`, or one with no layer0,
@@ -374,6 +414,29 @@ pub const BLOCK_THIRD_PERSON: DisplayTransform = DisplayTransform {
 /// reaches its transforms through the *block* model chain, which the block
 /// bake does not retain. Note the ground scale is 0.25, not the hand's 0.375:
 /// a dropped block is visibly smaller than a held one.
+/// `block/block.json`'s `firstperson_righthand`: `rotation [0, 45, 0],
+/// scale 0.4`. A held block is markedly smaller in first person than in third
+/// (0.4 against 0.375 — very close, but the rotations differ: the third-person
+/// pose tilts the cube, the first-person one only spins it).
+pub const BLOCK_FIRST_PERSON_RIGHT: DisplayTransform = DisplayTransform {
+    rotation: [0.0, 45.0, 0.0],
+    translation: [0.0; 3],
+    scale: [0.4, 0.4, 0.4],
+};
+
+/// `block/block.json`'s `firstperson_lefthand`: `rotation [0, 225, 0],
+/// scale 0.4`.
+///
+/// Declared explicitly rather than inherited, and note it is **not** the
+/// mirror of the right-hand entry — 225 is 45 + 180, a further half-turn, on
+/// top of which `ItemTransform.apply` still negates `rotation.y` at draw time.
+/// The block models author the two independently.
+pub const BLOCK_FIRST_PERSON_LEFT: DisplayTransform = DisplayTransform {
+    rotation: [0.0, 225.0, 0.0],
+    translation: [0.0; 3],
+    scale: [0.4, 0.4, 0.4],
+};
+
 /// `block/block.json`'s `gui`: `rotation [30, 225, 0], scale 0.625`, no
 /// translation. This is what makes a block in a hotbar slot read as a little
 /// cube seen from its top-front-right corner rather than as a flat face.
@@ -473,6 +536,8 @@ mod tests {
                 // identity — this is what tilts a block in the hotbar into the
                 // familiar corner-on cube.
                 gui: BLOCK_GUI,
+                first_person_right: BLOCK_FIRST_PERSON_RIGHT,
+                first_person_left: BLOCK_FIRST_PERSON_LEFT,
             }
         );
     }
@@ -510,6 +575,7 @@ mod tests {
                 third_person_left,
                 ground: _,
                 gui,
+                ..
             } => {
                 assert_eq!(geometry, ItemGeometry::Sprite(vec!["item/diamond_sword".into()]));
                 // A sprite declares no `display.gui` anywhere in its chain, and
@@ -592,6 +658,78 @@ mod tests {
         assert_eq!(DisplayTransform::IDENTITY.rotation, [0.0; 3]);
         assert_eq!(DisplayTransform::IDENTITY.scale, [1.0; 3]);
         assert_ne!(BLOCK_GUI.rotation, DisplayTransform::IDENTITY.rotation);
+    }
+
+    /// **An absent `firstperson_lefthand` falls back to the right-hand entry,
+    /// and only in first person.** `item/generated` declares just the right
+    /// hand; `ItemTransforms`' builder does
+    /// `if (firstPersonLeftHand == NO_TRANSFORM) firstPersonLeftHand = firstPersonRightHand`
+    /// — and there is no equivalent line for the third-person pair, which is
+    /// why the third-person left stays at the identity here.
+    #[test]
+    fn an_absent_first_person_left_falls_back_to_the_right() {
+        let m = resolve_definition(
+            &json(r#"{"model":{"type":"minecraft:model","model":"item/generated"}}"#),
+            &mut reader(vec![(
+                "item/generated",
+                r#"{"parent":"builtin/generated",
+                    "textures":{"layer0":"item/stick"},
+                    "display":{
+                      "firstperson_righthand":{"rotation":[0,-90,25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]},
+                      "thirdperson_righthand":{"rotation":[0,-90,55]}}}"#,
+            )]),
+        );
+        match m {
+            ItemModel::Resolved {
+                first_person_right,
+                first_person_left,
+                third_person_left,
+                ..
+            } => {
+                assert_eq!(first_person_left, first_person_right, "the fallback fired");
+                assert_eq!(first_person_right.rotation, [0.0, -90.0, 25.0]);
+                assert_eq!(first_person_right.scale, [0.68, 0.68, 0.68]);
+                // No such fallback in third person: absence stays absence.
+                assert_eq!(third_person_left, DisplayTransform::IDENTITY);
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+    }
+
+    /// A declared left-hand entry is kept **as authored**, not mirrored here.
+    /// `ItemTransform.apply` negates `translation.x`, `rotation.y` and
+    /// `rotation.z` at draw time for either hand's transform; baking the
+    /// mirror as well would double it. `handheld` authors its left entry
+    /// pre-mirrored, so the two cancel — which is only true if this stage
+    /// leaves it alone.
+    #[test]
+    fn a_declared_first_person_left_is_not_pre_mirrored() {
+        let m = resolve_definition(
+            &json(r#"{"model":{"type":"minecraft:model","model":"item/handheld"}}"#),
+            &mut reader(vec![(
+                "item/handheld",
+                r#"{"parent":"builtin/generated",
+                    "textures":{"layer0":"item/stick"},
+                    "display":{
+                      "firstperson_righthand":{"rotation":[0,-90,25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]},
+                      "firstperson_lefthand":{"rotation":[0,90,-25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]},
+                      "thirdperson_righthand":{"rotation":[0,-90,55]}}}"#,
+            )]),
+        );
+        match m {
+            ItemModel::Resolved {
+                first_person_left, ..
+            } => {
+                assert_eq!(
+                    first_person_left.rotation,
+                    [0.0, 90.0, -25.0],
+                    "kept as authored; the draw-time mirror turns it into the right-hand pose"
+                );
+                // The deserializer's 1/16 scaling still applies to translation.
+                assert!((first_person_left.translation[0] - 1.13 * 0.0625).abs() < 1e-6);
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
     }
 
     /// A model that declares its own `display.gui` beats the inherited one —

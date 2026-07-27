@@ -65,6 +65,15 @@ pub struct HeldItemModel {
     /// flat quad facing the viewer, filling the slot. Blocks inherit
     /// `block/block.json`'s `rotation [30, 225, 0], scale 0.625`.
     pub gui: DisplayTransform,
+    /// `display.firstperson_righthand` — the pose the held item takes in the
+    /// player's own view (M38).
+    pub first_right: DisplayTransform,
+    /// `display.firstperson_lefthand`, with vanilla's absent-left fallback to
+    /// the right-hand entry already applied. The left/right **mirror** is not
+    /// baked in: `ItemTransform.apply` negates `translation.x`, `rotation.y`
+    /// and `rotation.z` at draw time for either hand's transform whenever the
+    /// context is a left hand.
+    pub first_left: DisplayTransform,
     /// True when the geometry came from a block model — recorded so the
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
@@ -199,6 +208,8 @@ mod tests {
             right: DisplayTransform::default(),
             left: DisplayTransform::default(),
             ground: DisplayTransform::default(),
+            first_right: DisplayTransform::default(),
+            first_left: DisplayTransform::default(),
             from_block,
         };
         let items = HeldItems {

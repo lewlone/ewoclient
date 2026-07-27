@@ -284,6 +284,10 @@ pub fn bake_shulker_boxes(
                 // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
             },
         ));
@@ -335,6 +339,10 @@ pub fn bake_chests(
                 // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
             },
         ));
@@ -532,6 +540,10 @@ pub fn bake_skulls(
                 // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
             },
         ));
@@ -684,6 +696,10 @@ pub fn bake_copper_golem_statues(
                     // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
                 },
             ));
@@ -908,6 +924,10 @@ pub fn bake_banners(
                         // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
                     },
                 ));
@@ -1101,6 +1121,10 @@ pub fn bake_decorated_pot(
                         // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
                     },
                 ));
@@ -1215,6 +1239,10 @@ pub fn bake_conduit(
                     // A block entity is not an item and never renders in a
             // hotbar or inventory slot, so it has no `display.gui`.
             gui: DisplayTransform::IDENTITY,
+                // Nor is it ever held, so the first-person poses are
+                // the identity for the same reason.
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
             from_block: false,
                 },
             ));
