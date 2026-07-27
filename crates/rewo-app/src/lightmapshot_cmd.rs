@@ -717,12 +717,149 @@ fn run_cases(
         }
     }
 
+
+    // --- Case 9 (M33b): the two fog bands, and that the shader takes their MAX.
+    //
+    // Rewo's world pass carries two independent fog bands. The push block's is
+    // a render-distance fade whose job is dissolving the chunk edge into the
+    // sky; the `LightmapExtra` UBO's is the **environmental** band, which is
+    // the one rain thickens (`rainFogMultiplier`). Vanilla's `total_fog_value`
+    // is the `max` of an environmental and a render-distance term, and this
+    // pins that it really is a max — not a sum, a product, a min, or a
+    // replacement, each of which would land somewhere else here.
+    //
+    // The camera sits at (8, 80, 8) looking straight down at the quad's plane
+    // at y = 64, so every sampled pixel is 16.0 blocks away and the fog
+    // fraction is exact rather than approximated.
+    {
+        const DIST: f32 = 16.0;
+        // A saturated fog colour, so a channel swap or a wrong blend direction
+        // cannot hide inside a grey.
+        const FOG_LINEAR: [f32; 3] = [0.8, 0.1, 0.0];
+        // Full sky light and no block light: a bright, flat quad to fog.
+        let state = |env: [f32; 2]| WorldLightmapState {
+            env_fog: env,
+            ..Default::default()
+        };
+        let disabled = [1.0e9f32, 1.0e9 + 1.0];
+        let frac = |start: f32, end: f32| ((DIST - start) / (end - start)).clamp(0.0, 1.0);
+
+        wr.set_sky_tint([0.0; 3], [1.0, 1.0, 1.0]);
+        wr.set_sky_fog_base([0.0; 3], FOG_LINEAR);
+
+        // The unfogged baseline: BOTH bands disabled.
+        wr.set_fog(1.0e6, 1.0e6 + 1.0);
+        let clear = render_quad(
+            gpu, off, wr, view_proj, draw, "fog-none", 0, 15, state(disabled), false, args,
+        )?;
+
+        // What the shader must produce for a given fog fraction. The mix runs
+        // in LINEAR space inside the shader and the attachment re-encodes on
+        // store, so the prediction has to make the same round trip.
+        let predict = |f: f32| -> [u8; 3] {
+            let mut out = [0u8; 3];
+            for c in 0..3 {
+                let base = srgb_to_linear(clear[c] as f32 / 255.0);
+                let mixed = base + (FOG_LINEAR[c] - base) * f;
+                out[c] = (linear_to_srgb(mixed.clamp(0.0, 1.0)) * 255.0).round() as u8;
+            }
+            out
+        };
+        let close = |a: [u8; 3], b: [u8; 3]| {
+            (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= 2)
+        };
+
+        // (a) The environmental band alone, with the render-distance band off.
+        let env_only = render_quad(
+            gpu, off, wr, view_proj, draw, "fog-env", 0, 15, state([0.0, 32.0]), false, args,
+        )?;
+        let want_half = predict(frac(0.0, 32.0));
+        println!(
+            "[lightmapshot] fog-env: dist {DIST} band (0, 32) -> f {:.3}; \
+             read {env_only:?} predicted {want_half:?} (unfogged {clear:?})",
+            frac(0.0, 32.0)
+        );
+        if !close(env_only, want_half) {
+            failures.push(format!(
+                "fog-env: read {env_only:?}, predicted {want_half:?} from the unfogged \
+                 {clear:?} — the environmental band is not reaching the shader, or its \
+                 blend is not `mix(color, fog, f)` in linear space"
+            ));
+        }
+        // It must actually have done something, or the case grades nothing.
+        if close(env_only, clear) {
+            failures.push(format!(
+                "fog-env: {env_only:?} is indistinguishable from the unfogged \
+                 {clear:?} — the band had no effect at all"
+            ));
+        }
+
+        // (b) The render-distance band alone, same numbers. The two bands are
+        // symmetric inputs to the max, so this must land on the same colour.
+        wr.set_fog(0.0, 32.0);
+        let rd_only = render_quad(
+            gpu, off, wr, view_proj, draw, "fog-rd", 0, 15, state(disabled), false, args,
+        )?;
+        if !close(rd_only, env_only) {
+            failures.push(format!(
+                "fog-rd: the render-distance band at (0, 32) gives {rd_only:?} where the \
+                 environmental band at the same numbers gives {env_only:?} — they feed \
+                 one `max` and must be interchangeable"
+            ));
+        }
+
+        // (c) The max itself. Render-distance (0, 32) gives 0.5; environmental
+        // (0, 64) gives 0.25. Only `max` lands on 0.5:
+        //   max -> 0.5   sum -> 0.75   product -> 0.125   min -> 0.25
+        // and each of those is far outside the tolerance.
+        let both = render_quad(
+            gpu, off, wr, view_proj, draw, "fog-max", 0, 15, state([0.0, 64.0]), false, args,
+        )?;
+        let want_max = predict(0.5f32.max(0.25));
+        let want_sum = predict(0.75);
+        let want_min = predict(0.25);
+        println!(
+            "[lightmapshot] fog-max: rd 0.5 + env 0.25 -> read {both:?}; max {want_max:?} \
+             sum {want_sum:?} min {want_min:?}"
+        );
+        if !close(both, want_max) {
+            failures.push(format!(
+                "fog-max: read {both:?}, expected the MAX {want_max:?} (a sum would give \
+                 {want_sum:?}, a min {want_min:?})"
+            ));
+        }
+        if close(want_max, want_min) || close(want_max, want_sum) {
+            failures.push(format!(
+                "fog-max is vacuous: max {want_max:?}, sum {want_sum:?} and min \
+                 {want_min:?} are not far enough apart to tell them apart"
+            ));
+        }
+
+        // (d) The weaker band must not pull the stronger one down — the whole
+        // point of a max. Environmental (0, 1024) at 16 blocks is ~0.016, so
+        // this must stay on the render-distance band's 0.5.
+        let weak = render_quad(
+            gpu, off, wr, view_proj, draw, "fog-weak-env", 0, 15, state([0.0, 1024.0]), false, args,
+        )?;
+        if !close(weak, want_max) {
+            failures.push(format!(
+                "fog-weak-env: a nearly-disabled environmental band changed the result to \
+                 {weak:?} from {want_max:?} — a max cannot be reduced by its smaller term"
+            ));
+        }
+
+        // Restore the state the earlier cases assume, so ordering stays free.
+        wr.set_fog(1.0e6, 1.0e6 + 1.0);
+        wr.set_sky_tint([0.0; 3], [0.0; 3]);
+        wr.set_sky_fog_base([0.0; 3], [0.0; 3]);
+    }
+
     // The terrain/water quad in column 0 is no longer needed and would occlude
     // the capsule, so drop it and let its buffers retire before the entity pass.
     wr.remove_column(gpu, 0, 0);
     gpu.wait_idle();
 
-    // --- Case 9: entity light transport. Entities don't sample the lightmap
+    // --- Case 10: entity light transport. Entities don't sample the lightmap
     // texture; the caller hands each `EntityDraw` a per-channel `light: [f32;3]`
     // (its eye's lightmap colour) and CPU vertex generation multiplies the
     // model's scalar directional face shade by it. The production entity

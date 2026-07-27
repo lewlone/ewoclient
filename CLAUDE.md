@@ -2538,7 +2538,10 @@ validation Rewo has.
     `max` of that and an environmental term, and only the latter is what rain
     thickens — applying the offsets to Rewo's tight band half-fogged the air ten
     blocks out. The new band lives in the `LightmapExtra` UBO (the push block is
-    exactly at its 128-byte budget) and defaults to disabled.
+    exactly at its 128-byte budget) and defaults to disabled. The `max` of the two
+    bands is pinned by four pixel witnesses in **`lightmapshot`** (its camera is
+    a known 16 blocks from the quad, so the fog fraction is exact) —
+    mutation-verified against `min` and a sum.
   - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

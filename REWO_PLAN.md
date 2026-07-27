@@ -5911,14 +5911,30 @@ rain the environmental band is vanilla's `(0, 1024)` → `(-160, 768)`, which
 adds roughly 18–28% fog in the near and mid field where Rewo previously had
 none, while the render-distance band still dominates at the edge.
 
-**Verification note.** The shader's `max` of the two bands is verified by live
-measurement, not by a read-back oracle: `weathershot` has no terrain, so its
-three fog witnesses grade the multiplier, the gate and the band arithmetic on
-the CPU. Ground pixels at `[9.5, -60, 1.5]` read `(101,115,80)` clear,
-`(97,108,97)` rain, `(83,92,75)` thunder.
+**The `max` is pinned by a pixel oracle**, in `lightmapshot` rather than
+`weathershot` — the fog case needs terrain, and `lightmapshot` already renders a
+quad at a known distance. Its camera sits at `(8, 80, 8)` looking straight down
+at a plane at `y = 64`, so every sampled pixel is exactly 16 blocks away and the
+fog fraction is exact rather than approximated. The case renders the quad
+unfogged, then predicts each fogged result on the CPU by redoing the shader's
+`mix` in linear space and re-encoding — read `[243, 196, 187]` against a
+predicted `[243, 196, 188]`.
 
-Gates: **561 tests**, `weathershot` 27 → **35/35**, every other gate green with
-validation ON and 0 VUIDs, demo SHA-256 `2cc56b4a…` byte-identical.
+Four witnesses: the environmental band alone matches its prediction and is
+distinguishable from unfogged; the render-distance band at the same numbers
+lands on the same colour, so the two really are interchangeable inputs; the two
+together land on the **max** and not on a sum, a min or a product, each of which
+the case computes and prints; and a nearly-disabled environmental band cannot
+pull the render-distance band's result down. Mutation-verified — rewriting the
+shader's `max` to `min` reads `[249, 228, 224]` against the case's predicted min
+of `[249, 228, 225]`, and to a sum reads `[237, 154, 137]` exactly; both exit 1.
+
+Ground pixels live at `[9.5, -60, 1.5]` for the end-to-end shape:
+`(101,115,80)` clear, `(97,108,97)` rain, `(83,92,75)` thunder.
+
+Gates: **561 tests**, `weathershot` 27 → **35/35**, `lightmapshot` extended with
+the four fog witnesses, every other gate green with validation ON and 0 VUIDs,
+demo SHA-256 `2cc56b4a…` byte-identical.
 
 ### M33 — weather and clouds (2026-07-27)
 
