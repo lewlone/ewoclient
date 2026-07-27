@@ -1666,6 +1666,23 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeIsCustomCrossh
     enabled
 }
 
+/// Quick-edit gate. Called every frame from `EwoQuickEdit`: `1` while the
+/// modifier is held over a cursor-free vanilla screen, `0` otherwise.
+///
+/// Rust owns the mode because it owns the layout — Java only reports whether
+/// the conditions are met, and the transition out of the mode is where an
+/// in-progress drag gets committed.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeQuickEdit(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    on: u8,
+) {
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_hud(|hud| hud.editor.set_quick_edit(on != 0));
+    }));
+}
+
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init
 /// with a direct `ByteBuffer`; Rust resolves its address and writes the block
 /// every frame thereafter.

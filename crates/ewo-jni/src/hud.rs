@@ -1029,6 +1029,14 @@ pub struct Editor {
     /// Media state was pinned by [`Self::set_media`] — skip the SMTC poll so
     /// the pin survives. Only the offscreen harness sets this.
     media_pinned: bool,
+    /// Quick-edit: the modifier is held over a cursor-free vanilla screen
+    /// (inventory, pause, chat…), so widgets can be dragged and resized
+    /// without opening the EwoClient overlay. Driven from Java each frame.
+    quick_edit: bool,
+    /// Whether the *overlay* is open this frame. Mirrors the data-block flag,
+    /// recorded in `draw` so the input handlers — which run outside `draw` and
+    /// have no `HudData` — can tell the two edit modes apart.
+    overlay_open: bool,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
     /// Active snap guide lines (window pixels) while a drag is alignment-snapped.
@@ -1197,6 +1205,8 @@ impl Editor {
             dragging: None,
             resizing: None,
             media_pinned: false,
+            quick_edit: false,
+            overlay_open: false,
             slider_drag: None,
             snap_x: None,
             snap_y: None,
@@ -1374,6 +1384,34 @@ impl Editor {
     /// Liquid-glass intensity from the overlay SETTINGS tab.
     pub fn glass_strength(&self) -> f32 {
         self.layout.glass_strength
+    }
+
+    /// Enter or leave quick-edit — the modifier-held state over a vanilla
+    /// screen. Called from Java each frame.
+    ///
+    /// Leaving mid-drag commits whatever is in progress rather than abandoning
+    /// it: the user let go of the modifier, they did not undo. Dropping the
+    /// drag here would also strand `dragging`/`resizing` set, so the next
+    /// unrelated cursor move would keep dragging a widget.
+    pub fn set_quick_edit(&mut self, on: bool) {
+        if self.quick_edit == on {
+            return;
+        }
+        self.quick_edit = on;
+        if !on {
+            let had_drag = self.dragging.take().is_some() | self.resizing.take().is_some();
+            self.snap_x = None;
+            self.snap_y = None;
+            if had_drag {
+                self.layout.save();
+            }
+        }
+    }
+
+    /// Whether quick-edit is active *and* usable — the overlay being open
+    /// means the real editor is available and takes precedence.
+    fn quick_edit_active(&self) -> bool {
+        self.quick_edit && !self.overlay_open
     }
 
     /// Whether the current view wants the live game frosted behind it. The
@@ -1615,6 +1653,14 @@ impl Editor {
             }
         }
 
+        // Quick-edit intercepts the press before any view dispatch: the
+        // overlay is closed, so `self.view` is whatever tab the user last had
+        // open and is meaningless here.
+        if self.quick_edit_active() {
+            self.editor_press(x, y);
+            return;
+        }
+
         match self.view {
             OverlayView::Home => {
                 let (_, skin_rect, _, media_rect, _) =
@@ -1750,6 +1796,13 @@ impl Editor {
 
     /// Handle a press in the HUD-editor view — the side panel or widget drag.
     fn editor_press(&mut self, x: f32, y: f32) {
+        // Quick-edit has no side panel — the player is standing in their
+        // inventory, not the HUD editor — so skip straight to the widgets.
+        if self.quick_edit && !self.overlay_open {
+            self.widget_press(x, y);
+            return;
+        }
+
         let panel = panel_layout(self.window.1);
 
         // A widget's enable toggle.
@@ -1787,7 +1840,13 @@ impl Editor {
             return;
         }
 
-        // Outside the panel — resize handle first, then move.
+        self.widget_press(x, y);
+    }
+
+    /// Grab the widget (or resize grip) under `(x, y)`. Shared by the HUD
+    /// editor tab and quick-edit, which differ only in whether a side panel
+    /// gets first refusal on the press.
+    fn widget_press(&mut self, x: f32, y: f32) {
         let (w, h) = self.window;
 
         // The selected widget's resize handle. Checked before the move test
@@ -2119,6 +2178,9 @@ pub fn draw(
     // editor tab still needs them visible — that's where the user is
     // positioning them.
     let show_widgets = !data.overlay_open() || editor.view == OverlayView::HudEditor;
+    // Recorded so the input handlers — which run outside `draw`, with no
+    // `HudData` — can tell quick-edit apart from the real editor.
+    editor.overlay_open = data.overlay_open();
 
     for id in WidgetId::ALL {
         let wl = editor.layout.get(id);
@@ -2250,6 +2312,14 @@ pub fn draw(
     }
 
     if !data.overlay_open() {
+        // Quick-edit: the player is in a vanilla screen with the modifier
+        // held. Draw the editor's affordances — outlines, grips, snap guides —
+        // over whatever screen they are in, but none of its chrome: no side
+        // panel, no tab strip, no scrim. They came here to nudge a widget, not
+        // to leave their inventory.
+        if editor.quick_edit {
+            draw_quick_edit(canvas, editor, fonts, w, h);
+        }
         return;
     }
 
@@ -2737,6 +2807,105 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
     border.set_stroke_width(1.0);
     border.set_color4f(rgba(ROSE, 0.12), None);
     canvas.draw_rrect(rrect, &border);
+}
+
+/// Cached target-skin PNG, keyed by the name the mod published it for.
+///
+/// `Image` is a refcounted handle, so re-cloning it per frame is free; the
+/// point of the cache is to avoid re-decoding the PNG, and to avoid stat-ing
+/// the marker file more than a few times a second.
+struct TargetSkinCache {
+    /// Name from `ewo-target.txt` at the last read.
+    name: String,
+    image: Option<Image>,
+    /// `ewo-target.png`'s mtime when it was decoded.
+    mtime: Option<std::time::SystemTime>,
+    /// Frame time of the last disk check.
+    checked_at: f32,
+}
+
+thread_local! {
+    static TARGET_SKIN: RefCell<TargetSkinCache> = RefCell::new(TargetSkinCache {
+        name: String::new(),
+        image: None,
+        mtime: None,
+        checked_at: f32::NEG_INFINITY,
+    });
+}
+
+/// How often to re-read the target marker + PNG. The crosshair can cross a
+/// dozen players a second; the disk should not.
+const TARGET_SKIN_POLL: f32 = 0.25;
+
+/// Draw the targeted player's face into `avatar`, if the mod has exported a
+/// skin for exactly this `name`. Returns whether it did.
+///
+/// The name check is the whole safety property: `EwoTargetSkin` writes the PNG
+/// first and the name marker second, so a marker that matches means the PNG
+/// beside it is settled and belongs to this player. Any mismatch — a mob, a
+/// player whose skin has not arrived, a swap caught mid-write — falls back to
+/// the monogram rather than showing someone else's face.
+fn draw_player_head(canvas: &Canvas, rr: RRect, avatar: Rect, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let image = TARGET_SKIN.with(|cell| {
+        let mut c = cell.borrow_mut();
+        let t = now();
+        if t - c.checked_at >= TARGET_SKIN_POLL {
+            c.checked_at = t;
+            let published = instance_file("ewo-target.txt")
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let mtime = instance_file("ewo-target.png")
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok());
+            if published != c.name || mtime != c.mtime {
+                c.name = published;
+                c.mtime = mtime;
+                c.image = load_skin_image("ewo-target.png");
+            }
+        }
+        if c.name == name {
+            c.image.clone()
+        } else {
+            None
+        }
+    });
+    let Some(skin) = image else {
+        return false;
+    };
+
+    // A Minecraft skin is 64×64; the face is the 8×8 at (8,8) and the hat
+    // overlay the 8×8 at (40,8). Both are drawn with a nearest-neighbour
+    // sampling so the pixel art stays pixel art at 44px — a smooth upscale
+    // would turn a face into a smudge.
+    let saved = canvas.save();
+    canvas.clip_rrect(rr, Some(ClipOp::Intersect), Some(true));
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(false);
+    let sampling = skia_safe::SamplingOptions::from(skia_safe::FilterMode::Nearest);
+
+    let face = Rect::from_xywh(8.0, 8.0, 8.0, 8.0);
+    canvas.draw_image_rect_with_sampling_options(&skin, Some((&face, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+
+    // Hat layer, if the skin has one. Drawn at the same size — vanilla insets
+    // the hat slightly in 3D, but flat-on the two layers are coincident.
+    let hat = Rect::from_xywh(40.0, 8.0, 8.0, 8.0);
+    canvas.draw_image_rect_with_sampling_options(&skin, Some((&hat, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+
+    canvas.restore_to_count(saved);
+
+    // Keep the rose hairline so the tile still reads as part of the widget.
+    let mut edge = Paint::default();
+    edge.set_anti_alias(true);
+    edge.set_style(PaintStyle::Stroke);
+    edge.set_stroke_width(1.0);
+    edge.set_color4f(rgba(ROSE, 0.55), None);
+    canvas.draw_rrect(rr, &edge);
+    true
 }
 
 /// The media scrub bar's fill: liquid in a tube, with a travelling wave for a
@@ -3593,27 +3762,33 @@ fn draw_target(
     }
     canvas.draw_rrect(avatar_rr, &avatar_paint);
 
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_ascii_uppercase())
-        .unwrap_or('?')
-        .to_string();
-    let mut initial_paint = Paint::default();
-    initial_paint.set_anti_alias(true);
-    initial_paint.set_color4f(rgba(PEARL, 1.0), None);
-    let (iw, _) = avatar_font.measure_str(&initial, Some(&initial_paint));
-    let (_, im) = avatar_font.metrics();
-    let icap = if im.cap_height > 0.0 { im.cap_height } else { 22.0 };
-    canvas.draw_str(
-        &initial,
-        (
-            avatar.left + AV / 2.0 - iw / 2.0,
-            avatar.top + AV / 2.0 + icap / 2.0,
-        ),
-        &avatar_font,
-        &initial_paint,
-    );
+    // The target's actual face when the mod has exported a skin for *this*
+    // name; the monogram otherwise. Mobs never have one, and a player's skin
+    // arrives a moment after they are first looked at, so the monogram is the
+    // steady-state fallback rather than an error case.
+    if !draw_player_head(canvas, avatar_rr, avatar, &name) {
+        let initial = name
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .unwrap_or('?')
+            .to_string();
+        let mut initial_paint = Paint::default();
+        initial_paint.set_anti_alias(true);
+        initial_paint.set_color4f(rgba(PEARL, 1.0), None);
+        let (iw, _) = avatar_font.measure_str(&initial, Some(&initial_paint));
+        let (_, im) = avatar_font.metrics();
+        let icap = if im.cap_height > 0.0 { im.cap_height } else { 22.0 };
+        canvas.draw_str(
+            &initial,
+            (
+                avatar.left + AV / 2.0 - iw / 2.0,
+                avatar.top + AV / 2.0 + icap / 2.0,
+            ),
+            &avatar_font,
+            &initial_paint,
+        );
+    }
 
     // ── Meta — name + distance row, then a health bar ──────────────────────
     let meta_x = ox + PAD_X + AV + GAP;
@@ -5241,6 +5416,75 @@ fn glass_value_at(track: Rect, x: f32) -> f32 {
     // Snap to 0.05 so the persisted value is tidy and the readout doesn't
     // jitter in the last decimal while dragging.
     (raw / 0.05).round() * 0.05
+}
+
+/// Quick-edit overlay — the HUD editor's affordances without its furniture.
+///
+/// Drawn over a vanilla screen while the modifier is held, so the widgets the
+/// player can grab are visible without the EwoClient overlay taking over. No
+/// scrim, no panel, no tab strip: the inventory behind stays fully readable.
+fn draw_quick_edit(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+    // Snap guides, same as the editor tab.
+    let mut guide = Paint::default();
+    guide.set_anti_alias(false);
+    guide.set_style(PaintStyle::Stroke);
+    guide.set_stroke_width(1.0);
+    guide.set_color4f(rgba(ROSE, 0.55), None);
+    if let Some(sx) = editor.snap_x {
+        canvas.draw_line((sx, 0.0), (sx, h), &guide);
+    }
+    if let Some(sy) = editor.snap_y {
+        canvas.draw_line((0.0, sy), (w, sy), &guide);
+    }
+
+    let active = editor.active_widget();
+    for id in WidgetId::ALL {
+        let b = editor.bounds[id.index()];
+        if b.width() <= 0.0 {
+            continue;
+        }
+        let wl = editor.layout.get(id);
+        let lit = Some(id) == active || Some(id) == editor.selected;
+        draw_widget_outline(
+            canvas,
+            b,
+            lit,
+            fonts,
+            id.title(),
+            wl.anchor,
+            wl.scale,
+            Some(id) == editor.selected,
+        );
+    }
+
+    // A single quiet line, bottom-centre — enough to explain the mode to
+    // someone who discovered it by accident, small enough to ignore.
+    let hint_font = fonts.jetbrains_mono(11.0);
+    let hint = "QUICK EDIT  ·  DRAG TO MOVE  ·  CORNER TO RESIZE";
+    let hint_w = measure_tracked_em(&hint_font, hint, 0.14);
+    let mut shadow = Paint::default();
+    shadow.set_anti_alias(true);
+    shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.75), None);
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    draw_tracked_em(
+        canvas,
+        hint,
+        ((w - hint_w) * 0.5, h - 28.0),
+        &hint_font,
+        &shadow,
+        0.14,
+    );
+    let mut hint_paint = Paint::default();
+    hint_paint.set_anti_alias(true);
+    hint_paint.set_color4f(rgba(ROSE, 1.0), None);
+    draw_tracked_em(
+        canvas,
+        hint,
+        ((w - hint_w) * 0.5, h - 28.0),
+        &hint_font,
+        &hint_paint,
+        0.14,
+    );
 }
 
 /// One option button in the paint-rate selector.

@@ -22,6 +22,10 @@ public final class EwoFrameHook {
             return;
         }
         EwoSkinExport.tick();
+        EwoTargetSkin.tick();
+        // Before the cursor forward below: the mouse mixin gates on this, and
+        // both want to see the same frame's state.
+        EwoQuickEdit.tick();
         // Forward the cursor position to Rust each frame whenever a *vanilla*
         // screen has the cursor unlocked (inventory / pause / chat / etc.) so
         // the in-world Media widget can render hover state on its transport

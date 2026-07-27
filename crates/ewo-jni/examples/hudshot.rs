@@ -119,6 +119,11 @@ fn main() {
         None => {}
     }
 
+    // `--quick-edit` — render the modifier-held state over a vanilla screen.
+    if args.iter().any(|a| a == "--quick-edit") {
+        editor.set_quick_edit(true);
+    }
+
     // `--select TARGET` — select a widget so its resize grip renders.
     if let Some(name) = flag(&args, "--select") {
         if !editor.select_widget(&name) {
