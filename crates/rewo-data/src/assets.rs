@@ -1446,13 +1446,14 @@ impl<'a> Baker<'a> {
         let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
         for (name, model) in resolved {
             let full = format!("minecraft:{name}");
-            let (geometry, right, left, ground) = match model {
+            let (geometry, right, left, ground, gui) = match model {
                 ItemModel::Resolved {
                     geometry,
                     third_person_right,
                     third_person_left,
                     ground,
-                } => (geometry, third_person_right, third_person_left, ground),
+                    gui,
+                } => (geometry, third_person_right, third_person_left, ground, gui),
                 ItemModel::Unsupported(kind) => {
                     let bucket = if kind.starts_with("model ") {
                         "(bespoke model)".to_string()
@@ -1476,6 +1477,7 @@ impl<'a> Baker<'a> {
                             right,
                             left,
                             ground,
+                            gui,
                             from_block: matches!(geometry, ItemGeometry::Block(_)),
                         },
                     );

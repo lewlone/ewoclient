@@ -61,6 +61,17 @@ pub struct DisplayTransform {
     pub scale: [f32; 3],
 }
 
+impl DisplayTransform {
+    /// No rotation, no translation, unit scale — what an absent `display`
+    /// entry means, and the only sensible value for a model that never renders
+    /// in that context at all.
+    pub const IDENTITY: Self = Self {
+        rotation: [0.0; 3],
+        translation: [0.0; 3],
+        scale: [1.0; 3],
+    };
+}
+
 impl Default for DisplayTransform {
     /// `ItemTransform.NO_TRANSFORM` — identity.
     fn default() -> Self {
@@ -93,6 +104,15 @@ pub enum ItemModel {
         /// wrong place. `item/generated` and `item/handheld` both declare it,
         /// so every extruded sprite has one in practice.
         ground: DisplayTransform,
+        /// `display.gui` — how the item sits in a hotbar or inventory slot
+        /// (M34).
+        ///
+        /// Absent for every extruded sprite, and the identity is right for
+        /// them: a flat quad facing the viewer that fills the slot. Blocks
+        /// inherit `block/block.json`'s `rotation [30, 225, 0], scale 0.625`,
+        /// which is what makes a block in the hotbar read as a little cube seen
+        /// from its top-front-right corner.
+        gui: DisplayTransform,
     },
     /// The definition is one of the five state-dependent / bespoke types.
     /// Carries the type name so the suppression is observable.
@@ -192,6 +212,9 @@ type ChainResult = (
     DisplayTransform,
     DisplayTransform,
     DisplayTransform,
+    // The last entry is `display.gui` — the context the hotbar and every
+    // inventory slot render through (M34).
+    DisplayTransform,
 );
 
 fn resolve_chain(
@@ -206,6 +229,7 @@ fn resolve_chain(
     let mut right: Option<DisplayTransform> = None;
     let mut left: Option<DisplayTransform> = None;
     let mut ground: Option<DisplayTransform> = None;
+    let mut gui: Option<DisplayTransform> = None;
     let mut is_generated = false;
     let mut cur = strip_ns(start).to_string();
 
@@ -227,6 +251,11 @@ fn resolve_chain(
                 right,
                 left.unwrap_or_default(),
                 ground.unwrap_or_default(),
+                // A sprite declares no `display.gui` anywhere in its chain, and
+                // the identity is exactly right for it: a flat quad facing the
+                // viewer, filling the slot. This is absence meaning something,
+                // not a missing default.
+                gui.unwrap_or_default(),
             ));
         }
         let json = read(&cur)?;
@@ -247,6 +276,9 @@ fn resolve_chain(
             }
             if ground.is_none() {
                 ground = read_transform(d, "ground");
+            }
+            if gui.is_none() {
+                gui = read_transform(d, "gui");
             }
         }
         match json.get("parent").and_then(|p| p.as_str()) {
@@ -304,16 +336,20 @@ pub fn resolve_definition(
             third_person_right: BLOCK_THIRD_PERSON,
             third_person_left: BLOCK_THIRD_PERSON,
             ground: BLOCK_GROUND,
+            gui: BLOCK_GUI,
         };
     }
 
     match resolve_chain(reference, read_model) {
-        Some((true, layers, right, left, ground)) if !layers.is_empty() => ItemModel::Resolved {
-            geometry: ItemGeometry::Sprite(layers),
-            third_person_right: right,
-            third_person_left: left,
-            ground,
-        },
+        Some((true, layers, right, left, ground, gui)) if !layers.is_empty() => {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Sprite(layers),
+                third_person_right: right,
+                third_person_left: left,
+                ground,
+                gui,
+            }
+        }
         // A chain that reaches no `builtin/generated`, or one with no layer0,
         // is a bespoke model — suppressed, not guessed.
         _ => ItemModel::Unsupported(format!("model {reference} (not builtin/generated)")),
@@ -338,6 +374,15 @@ pub const BLOCK_THIRD_PERSON: DisplayTransform = DisplayTransform {
 /// reaches its transforms through the *block* model chain, which the block
 /// bake does not retain. Note the ground scale is 0.25, not the hand's 0.375:
 /// a dropped block is visibly smaller than a held one.
+/// `block/block.json`'s `gui`: `rotation [30, 225, 0], scale 0.625`, no
+/// translation. This is what makes a block in a hotbar slot read as a little
+/// cube seen from its top-front-right corner rather than as a flat face.
+pub const BLOCK_GUI: DisplayTransform = DisplayTransform {
+    rotation: [30.0, 225.0, 0.0],
+    translation: [0.0; 3],
+    scale: [0.625, 0.625, 0.625],
+};
+
 pub const BLOCK_GROUND: DisplayTransform = DisplayTransform {
     rotation: [0.0; 3],
     translation: [0.0, 3.0 * 0.0625, 0.0],
@@ -424,6 +469,10 @@ mod tests {
                 third_person_right: BLOCK_THIRD_PERSON,
                 third_person_left: BLOCK_THIRD_PERSON,
                 ground: BLOCK_GROUND,
+                // A block item inherits block/block.json rather than the
+                // identity — this is what tilts a block in the hotbar into the
+                // familiar corner-on cube.
+                gui: BLOCK_GUI,
             }
         );
     }
@@ -460,8 +509,14 @@ mod tests {
                 third_person_right,
                 third_person_left,
                 ground: _,
+                gui,
             } => {
                 assert_eq!(geometry, ItemGeometry::Sprite(vec!["item/diamond_sword".into()]));
+                // A sprite declares no `display.gui` anywhere in its chain, and
+                // the identity is what makes it fill the slot as a flat quad
+                // facing the viewer. Substituting the block transform here
+                // would tilt every sword in the hotbar.
+                assert_eq!(gui, DisplayTransform::IDENTITY);
                 // handheld wins over generated — the child's display is nearer.
                 assert_eq!(third_person_right.rotation, [0.0, -90.0, 55.0]);
                 assert_eq!(third_person_right.scale, [0.85, 0.85, 0.85]);
@@ -523,5 +578,48 @@ mod tests {
         t.insert("layer2".to_string(), "minecraft:item/c".to_string());
         // layer1 missing → the generator `break`s, so layer2 is never reached.
         assert_eq!(layers(&t), vec!["item/a".to_string()]);
+    }
+
+
+    /// The two `gui` cases are genuinely different, and which one an item gets
+    /// is decided by whether its geometry came from a block model. A single
+    /// shared default would tilt every sword or flatten every block.
+    #[test]
+    fn a_block_tilts_in_the_slot_and_a_sprite_does_not() {
+        assert_eq!(BLOCK_GUI.rotation, [30.0, 225.0, 0.0]);
+        assert_eq!(BLOCK_GUI.scale, [0.625; 3]);
+        assert_eq!(BLOCK_GUI.translation, [0.0; 3]);
+        assert_eq!(DisplayTransform::IDENTITY.rotation, [0.0; 3]);
+        assert_eq!(DisplayTransform::IDENTITY.scale, [1.0; 3]);
+        assert_ne!(BLOCK_GUI.rotation, DisplayTransform::IDENTITY.rotation);
+    }
+
+    /// A model that declares its own `display.gui` beats the inherited one —
+    /// 17 vanilla item models do (the conduit is one, at rotation [30, 45, 0]).
+    #[test]
+    fn a_models_own_gui_entry_wins_over_the_chain() {
+        let m = resolve_definition(
+            &json(r#"{"model":{"type":"minecraft:model","model":"item/thing"}}"#),
+            &mut reader(vec![
+                (
+                    "item/thing",
+                    r#"{"parent":"item/generated",
+                        "display":{"gui":{"rotation":[30,45,0],"scale":[1,1,1]}}}"#,
+                ),
+                (
+                    "item/generated",
+                    r#"{"parent":"builtin/generated",
+                        "textures":{"layer0":"item/thing"},
+                        "display":{"thirdperson_righthand":{"rotation":[0,0,0]},
+                                   "gui":{"rotation":[0,180,0]}}}"#,
+                ),
+            ]),
+        );
+        match m {
+            ItemModel::Resolved { gui, .. } => {
+                assert_eq!(gui.rotation, [30.0, 45.0, 0.0], "the child's entry wins");
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
     }
 }

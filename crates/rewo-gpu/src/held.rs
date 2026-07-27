@@ -56,6 +56,10 @@ pub struct HeldItemModel {
     pub left: DisplayTransform,
     /// `display.ground` — `ItemEntityRenderer`'s context (M24b item entities).
     pub ground: DisplayTransform,
+    /// `display.gui` — how the item sits in a hotbar or inventory slot (M34).
+    /// Identity for every extruded sprite; blocks inherit
+    /// `rotation [30, 225, 0], scale 0.625`.
+    pub gui: DisplayTransform,
     pub from_block: bool,
 }
 

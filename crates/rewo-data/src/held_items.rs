@@ -60,6 +60,11 @@ pub struct HeldItemModel {
     /// `display.ground` — the context a *dropped* stack renders through
     /// (`ItemEntityRenderer` → `updateForNonLiving(..., GROUND, ...)`).
     pub ground: DisplayTransform,
+    /// `display.gui` — how the item sits in a hotbar or inventory slot (M34).
+    /// Identity for every extruded sprite, which is exactly right for them: a
+    /// flat quad facing the viewer, filling the slot. Blocks inherit
+    /// `block/block.json`'s `rotation [30, 225, 0], scale 0.625`.
+    pub gui: DisplayTransform,
     /// True when the geometry came from a block model — recorded so the
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
@@ -189,6 +194,7 @@ mod tests {
     #[test]
     fn counts_split_the_two_geometry_sources() {
         let mk = |from_block| HeldItemModel {
+            gui: DisplayTransform::IDENTITY,
             quads: Vec::new(),
             right: DisplayTransform::default(),
             left: DisplayTransform::default(),

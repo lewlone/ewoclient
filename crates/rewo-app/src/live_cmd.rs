@@ -904,6 +904,7 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                         right: conv_t(&m.right),
                         left: conv_t(&m.left),
                         ground: conv_t(&m.ground),
+                        gui: conv_t(&m.gui),
                         from_block: m.from_block,
                     },
                 )

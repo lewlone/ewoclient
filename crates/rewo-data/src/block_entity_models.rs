@@ -281,7 +281,10 @@ pub fn bake_shulker_boxes(
                 right: DisplayTransform::default(),
                 left: DisplayTransform::default(),
                 ground: DisplayTransform::default(),
-                from_block: false,
+                // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
             },
         ));
     }
@@ -329,7 +332,10 @@ pub fn bake_chests(
                 right: DisplayTransform::default(),
                 left: DisplayTransform::default(),
                 ground: DisplayTransform::default(),
-                from_block: false,
+                // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
             },
         ));
         }
@@ -523,7 +529,10 @@ pub fn bake_skulls(
                 right: DisplayTransform::default(),
                 left: DisplayTransform::default(),
                 ground: DisplayTransform::default(),
-                from_block: false,
+                // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
             },
         ));
     }
@@ -672,7 +681,10 @@ pub fn bake_copper_golem_statues(
                     right: DisplayTransform::default(),
                     left: DisplayTransform::default(),
                     ground: DisplayTransform::default(),
-                    from_block: false,
+                    // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
                 },
             ));
         }
@@ -893,7 +905,10 @@ pub fn bake_banners(
                         right: DisplayTransform::default(),
                         left: DisplayTransform::default(),
                         ground: DisplayTransform::default(),
-                        from_block: false,
+                        // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
                     },
                 ));
                 true
@@ -1083,7 +1098,10 @@ pub fn bake_decorated_pot(
                         right: DisplayTransform::default(),
                         left: DisplayTransform::default(),
                         ground: DisplayTransform::default(),
-                        from_block: false,
+                        // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
                     },
                 ));
                 true
@@ -1194,7 +1212,10 @@ pub fn bake_conduit(
                     right: DisplayTransform::default(),
                     left: DisplayTransform::default(),
                     ground: DisplayTransform::default(),
-                    from_block: false,
+                    // A block entity is not an item and never renders in a
+            // hotbar or inventory slot, so it has no `display.gui`.
+            gui: DisplayTransform::IDENTITY,
+            from_block: false,
                 },
             ));
         } else {
