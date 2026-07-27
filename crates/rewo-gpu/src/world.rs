@@ -517,6 +517,8 @@ pub struct WorldRenderer {
     preview: Option<crate::entities::EntityPass>,
     /// This frame's preview matrix and window, or `None` when it is closed.
     preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
+    /// Particles (M35). `None` until `init_particles` supplies the atlas.
+    particles: Option<crate::particles::ParticlePass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -1030,6 +1032,7 @@ impl WorldRenderer {
                 container_open: None,
                 preview: None,
                 preview_state: None,
+                particles: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1424,6 +1427,36 @@ impl WorldRenderer {
         draw: &crate::weather::WeatherDraw,
     ) -> Result<(), String> {
         match self.weather.as_mut() {
+            Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the particle pass (M35) from the particle atlas.
+    pub fn init_particles(
+        &mut self,
+        gpu: &mut Gpu,
+        atlas: &crate::particles::ParticleImage,
+    ) -> Result<(), String> {
+        self.particles = Some(crate::particles::ParticlePass::new(
+            gpu,
+            self.color_format,
+            atlas,
+        )?);
+        Ok(())
+    }
+
+    pub fn particles_ready(&self) -> bool {
+        self.particles.is_some()
+    }
+
+    /// This frame's particle geometry.
+    pub fn set_particles(
+        &mut self,
+        gpu: &mut Gpu,
+        draw: &crate::particles::ParticleDraw,
+    ) -> Result<(), String> {
+        match self.particles.as_mut() {
             Some(pass) => pass.set_draw(gpu, draw),
             None => Ok(()),
         }
@@ -2071,6 +2104,13 @@ impl WorldRenderer {
             pass.draw(gpu, cb, view_proj, extent);
         }
         self.draw_translucent(gpu, cb, view_proj, extent);
+        // Particles (M35) sit with the other blended, depth-tested,
+        // non-depth-writing passes — after everything solid and translucent so
+        // terrain occludes them, before weather so rain layers over smoke.
+        if let Some(pass) = &self.particles {
+            let (light, sky_col) = self.lightmap.push_words();
+            pass.draw(gpu, cb, view_proj, (light, sky_col, self.lightmap.extra_words()), extent);
+        }
         // Rain and snow come after everything solid and translucent, blended
         // and depth-tested but not depth-writing — vanilla's
         // `WEATHER_NO_DEPTH_WRITE` branch.
@@ -2436,6 +2476,7 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.gui_items.take() {
+        if let Some(mut pass) = self.particles.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.weather.take() {
