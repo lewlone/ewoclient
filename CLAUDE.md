@@ -2510,11 +2510,15 @@ validation Rewo has.
     the Nether and End have none. A cloud carries no texture: `clouds.png` is a
     map, one texel per 12×12×4 cell, and the mesh is three bytes per quad the
     vertex shader expands from a fixed table. Weather forced `MOTION_BLOCKING`
-    to stop being decoded-and-discarded. **A witness caught a wrong front-face
-    convention that looked right from below alone** — hence grading the deck
-    from both sides. **Open: not yet wired into `rewo live`**; the passes and
-    the sky darkening are built and graded but the live client does not call
-    them yet.
+    to stop being decoded-and-discarded. **Two witnesses caught real
+    bugs**: a front-face convention that looked right from below alone (hence
+    grading the deck from both sides), and — from the first live frame, not the
+    gate — that vanilla's weather and cloud geometry is **camera-relative**
+    while Rewo's `view_proj` already carries the camera, so the relative form
+    draws every storm around the world origin. The gate had rendered at
+    `[0,0,0]` where the two coincide; it now renders 2,500 blocks out. Wired
+    into `rewo live` (both paths) with `REWO_FORCE_WEATHER=<rain>[,<thunder>]`
+    as the headless knob.
   - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

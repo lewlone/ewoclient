@@ -54,8 +54,10 @@ one texel per 12×12×4 cell, and the mesh is three bytes per quad the vertex
 shader expands. Weather needed `MOTION_BLOCKING`, which Rewo had been decoding
 and discarding. A `weathershot` witness caught a wrong front-face convention
 that **looked right from below alone**, which is why it grades a cloud deck from
-both sides. **Not yet wired into `rewo live`** — see §15. Gate:
-`rewo weathershot --check`, 27/27.
+both sides. Wired into `rewo live`, where the first frame exposed that vanilla's weather
+geometry is **camera-relative** while Rewo's `view_proj` already carries the
+camera — the gate had missed it by rendering at the origin, and now renders
+2,500 blocks away. Gate: `rewo weathershot --check`, 27/27.
 
 **Earlier (2026-07-26): M27/M28 — sign text, and the invisible block entities.**
 Five commits took `blockentityshot` from 70 to **125** witnesses and the
@@ -5900,13 +5902,34 @@ fog term is omitted in both new passes, as in every other Rewo pass. And
 does not, so rain over a freshly-dug hole falls from the old surface until the
 chunk is resent — confined to weather, since nothing else reads it.
 
-**Still open:** the passes are built, unit-tested and pixel-graded, but **not
-yet wired into `rewo live`** — the live client does not draw them. `WorldRenderer`
-carries `init_clouds` / `set_clouds` / `init_weather` / `set_weather` and the
-draw order is in place; what remains is calling them from `live_cmd` with the
-session's weather state, the dimension's cloud attributes and the extracted
-columns. The rain-darkened sky colour and the `rainBrightness` celestial fade
-are likewise implemented and graded but not yet threaded into the sky pass.
+**The live wiring, and what it caught.** Both passes are wired into `rewo live`
+(headless and windowed), along with the rain-darkened sky and the
+`rainBrightness` celestial fade. `REWO_FORCE_WEATHER=<rain>[,<thunder>]` is the
+headless knob — the same shape as `REWO_FORCE_GESTURE` and `REWO_SUMMON` —
+because shooting rain otherwise needs an op'd bot running `/weather`.
+
+The first live frame showed **no rain at all**, and the reason is worth keeping.
+Vanilla's weather and cloud geometry is **camera-relative**, because its
+model-view carries the camera translation; Rewo's `view_proj` already includes
+it, so emitting the relative form draws every storm and every cloud deck around
+the **world origin**. The gate had not caught it because its scenes sat at
+`[0, 0, 0]` and `[0, 4, 0]`, where camera-relative and world-space nearly
+coincide. Both passes now emit world space, `weathershot` renders at
+`[1536.5, 70, -2048.5]`, and a transform that forgot to add the camera back
+cannot pass there.
+
+That fix exposed a second one immediately: the cloud shader's fog fade is
+`length(pos)`, correct on a camera-relative position and nonsense on a
+world-space one — at 2,500 blocks from the origin every cloud faded to nothing.
+The eye is now a uniform and the distance is measured from it.
+
+Verified live against the local 26.2 server: rain renders as camera-facing
+streaks that fade with distance, and the cloud pass uploads 209 faces at the
+Overworld's `#ccffffff` with the deck at y=192.33. The deck itself is not *in*
+that frame — the headless camera looks level and 192.33 over a y=-60 flat world
+is 250 blocks straight up, outside a 70° fov at any horizontal distance the
+192-block mesh reaches — so the cloud pass's pixels are verified by
+`weathershot`, not by that shot.
 
 Gates: **547 tests**, `weathershot` 27/27, and every prior gate green —
 `portalshot` 12/12, `blockentityshot` 172/172, `mobshot` 243/243, `eventshot`,

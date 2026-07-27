@@ -308,7 +308,13 @@ fn build_extruded_cell(
 pub struct CloudPlacement {
     pub cell_x: i32,
     pub cell_z: i32,
-    /// The sub-cell offset, already negated the way the uniform wants it.
+    /// The mesh's origin, in **WORLD** space.
+    ///
+    /// Vanilla's is camera-relative — `(-xInCell, relativeBottomY, -zInCell)` —
+    /// because its model-view carries the camera translation. Rewo's
+    /// `view_proj` already includes it, so the camera is added back here or the
+    /// whole deck would hang over the world origin. That is the same correction
+    /// the weather columns need, and for the same reason.
     pub offset: [f32; 3],
     pub relative_pos: RelativeCameraPos,
 }
@@ -340,7 +346,15 @@ pub fn placement(
     CloudPlacement {
         cell_x,
         cell_z,
-        offset: [-x_in_cell, relative_bottom_y, -z_in_cell],
+        // `camera + (-xInCell, relativeBottomY, -zInCell)`, which in y is just
+        // the deck's own height.
+        offset: [
+            camera[0] as f32 - x_in_cell,
+            bottom_y,
+            camera[2] as f32 - z_in_cell,
+        ],
+        // The classification still keys off the CAMERA-relative height: which
+        // side of the deck you are on is not a world-space question.
         relative_pos: RelativeCameraPos::of(relative_bottom_y),
     }
 }
@@ -359,6 +373,7 @@ struct CloudInfo {
     color: [f32; 4],
     offset: [f32; 4],
     cell_size: [f32; 4],
+    camera: [f32; 4],
 }
 
 #[repr(C)]
@@ -373,6 +388,9 @@ struct Push {
 pub struct CloudDraw {
     pub faces: Vec<[i32; 3]>,
     pub placement: CloudPlacement,
+    /// The eye in world space — the fog fade measures from it, because the
+    /// positions are world-space rather than vanilla's camera-relative.
+    pub camera: [f32; 3],
     /// The dimension's `visual/cloud_color`, as straight ARGB. Alpha 0 means
     /// the caller should not have built this at all.
     pub color_argb: i32,
@@ -502,6 +520,7 @@ impl CloudPass {
                 0.0,
             ],
             cell_size: [CELL_SIZE, CELL_HEIGHT, CELL_SIZE, 0.0],
+            camera: [draw.camera[0], draw.camera[1], draw.camera[2], 0.0],
         };
         self.ubo = Some(crate::end_sky::upload_buffer(
             gpu,

@@ -157,10 +157,16 @@ pub fn light_word(block: u8, sky: u8) -> u32 {
 
 /// `renderInstances` — one column list to four vertices each.
 ///
-/// `camera` is the eye in world space; every emitted position is relative to
-/// it. The alpha ramp is `lerp(min(d²/r², 1), maxAlpha, 0.5) * intensity`, so a
+/// The alpha ramp is `lerp(min(d²/r², 1), maxAlpha, 0.5) * intensity`, so a
 /// column fades from `maxAlpha` at the camera to **half** at the radius — never
 /// to nothing, which is why heavy rain still reads as a wall at the horizon.
+///
+/// **Positions come out in WORLD space, not camera-relative.** Vanilla's are
+/// relative because its model-view carries the camera translation; Rewo's
+/// `view_proj` already includes it, so emitting the relative form would draw
+/// every storm around the world origin. The relative vector is still computed —
+/// the alpha ramp and the facing table both need it — and the camera is added
+/// back on the way out.
 pub fn build_instances(
     out: &mut Vec<WeatherVertex>,
     columns: &[WeatherColumn],
@@ -185,12 +191,14 @@ pub fn build_instances(
         let i = directions.index(c.x, c.z, cam_x, cam_z);
         let half_x = directions.size_x[i] / 2.0;
         let half_z = directions.size_z[i] / 2.0;
-        let x0 = rel_x - half_x;
-        let x1 = rel_x + half_x;
-        let y1 = (c.top_y as f64 - camera[1]) as f32;
-        let y0 = (c.bottom_y as f64 - camera[1]) as f32;
-        let z0 = rel_z - half_z;
-        let z1 = rel_z + half_z;
+        // World space: the relative vector, with the camera added back.
+        let (cx, cz) = (camera[0] as f32, camera[2] as f32);
+        let x0 = rel_x - half_x + cx;
+        let x1 = rel_x + half_x + cx;
+        let y1 = c.top_y as f32;
+        let y0 = c.bottom_y as f32;
+        let z0 = rel_z - half_z + cz;
+        let z1 = rel_z + half_z + cz;
         let u0 = c.u_offset;
         let u1 = c.u_offset + 1.0;
         // The V runs with world height, so the texture scrolls *through* the

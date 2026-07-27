@@ -517,14 +517,20 @@ fn check_cloud_pixels(
     args: &WeathershotArgs,
 ) -> Result<(), String> {
     let tex = solid_clouds();
-    // Camera at the origin looking up; the deck sits 20 blocks overhead.
-    let vp = view_proj([0.0, 0.0, 0.0], [0.0, 1.0, -1.0]);
-    let placement = rewo_gpu::clouds::placement([0.0, 0.0, 0.0], 20.0, 0, 0.0, tex.width, tex.height);
+    // Deliberately FAR from the world origin. Both passes compute their
+    // geometry from a camera-relative vector and then add the camera back;
+    // a version that forgot the second step draws over the origin instead, and
+    // at [0,0,0] that is indistinguishable from correct. This is exactly the
+    // bug the first live shot exposed and this gate did not.
+    const EYE: [f64; 3] = [1536.5, 70.0, -2048.5];
+    let vp = view_proj([EYE[0] as f32, EYE[1] as f32, EYE[2] as f32],
+                       [EYE[0] as f32, EYE[1] as f32 + 1.0, EYE[2] as f32 - 1.0]);
+    let placement = rewo_gpu::clouds::placement(EYE, 90.0, 0, 0.0, tex.width, tex.height);
     let faces = tex.build_mesh(placement.relative_pos, placement.cell_x, placement.cell_z, CloudStatus::Fancy, 8);
 
     let mut shot = |gpu: &mut Gpu, off: &mut Offscreen, color: i32| -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-        wr.set_camera([0.0, 0.0, 0.0]);
+        wr.set_camera([EYE[0] as f32, EYE[1] as f32, EYE[2] as f32]);
         wr.set_sky_mode(SkyMode::None);
         wr.init_clouds(gpu)?;
         wr.set_clouds(
@@ -534,6 +540,7 @@ fn check_cloud_pixels(
                 placement,
                 color_argb: color,
                 fog_clouds_end: 512.0,
+                camera: [EYE[0] as f32, EYE[1] as f32, EYE[2] as f32],
             },
         )?;
         off.render(gpu, Some((&mut wr, vp)), draw, CLEAR)?;
@@ -565,11 +572,11 @@ fn check_cloud_pixels(
     // would prove nothing.
     let above = {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-        wr.set_camera([0.0, 40.0, 0.0]);
+        let above_eye = [EYE[0], 130.0, EYE[2]];
+        wr.set_camera([above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32]);
         wr.set_sky_mode(SkyMode::None);
         wr.init_clouds(gpu)?;
-        let p =
-            rewo_gpu::clouds::placement([0.0, 40.0, 0.0], 20.0, 0, 0.0, tex.width, tex.height);
+        let p = rewo_gpu::clouds::placement(above_eye, 90.0, 0, 0.0, tex.width, tex.height);
         wr.set_clouds(
             gpu,
             &CloudDraw {
@@ -577,9 +584,13 @@ fn check_cloud_pixels(
                 placement: p,
                 color_argb: 0xCCFF_FFFFu32 as i32,
                 fog_clouds_end: 512.0,
+                camera: [above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32],
             },
         )?;
-        let above_vp = view_proj([0.0, 40.0, 0.0], [0.0, 39.0, -1.0]);
+        let above_vp = view_proj(
+            [above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32],
+            [above_eye[0] as f32, above_eye[1] as f32 - 1.0, above_eye[2] as f32 - 1.0],
+        );
         off.render(gpu, Some((&mut wr, above_vp)), draw, CLEAR)?;
         let img = off.read_rgba(gpu)?;
         wr.destroy(gpu);
@@ -635,13 +646,15 @@ fn check_weather_pixels(
     let dirs = ColumnDirections::new();
 
     // A ring of columns around the camera, all fully sky-lit.
+    const WEYE: [f64; 3] = [1536.5, 68.0, -2048.5];
+    let (bx, bz) = (WEYE[0].floor() as i32, WEYE[2].floor() as i32);
     let columns: Vec<WeatherColumn> = (-6..=6)
-        .flat_map(|x| {
-            (-6..=6).map(move |z| WeatherColumn {
-                x,
-                z,
-                bottom_y: 0,
-                top_y: 24,
+        .flat_map(|dx| {
+            (-6..=6).map(move |dz| WeatherColumn {
+                x: bx + dx,
+                z: bz + dz,
+                bottom_y: 64,
+                top_y: 88,
                 u_offset: 0.0,
                 v_offset: 0.0,
                 block_light: 0,
@@ -649,7 +662,10 @@ fn check_weather_pixels(
             })
         })
         .collect();
-    let vp = view_proj([0.0, 4.0, 0.0], [0.0, 4.0, -1.0]);
+    let vp = view_proj(
+        [WEYE[0] as f32, WEYE[1] as f32, WEYE[2] as f32],
+        [WEYE[0] as f32, WEYE[1] as f32, WEYE[2] as f32 - 1.0],
+    );
 
     let mut shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
@@ -658,7 +674,7 @@ fn check_weather_pixels(
                     intensity: f32|
      -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-        wr.set_camera([0.0, 4.0, 0.0]);
+        wr.set_camera([WEYE[0] as f32, WEYE[1] as f32, WEYE[2] as f32]);
         wr.set_sky_mode(SkyMode::None);
         wr.init_weather(
             gpu,
@@ -679,7 +695,7 @@ fn check_weather_pixels(
             rain_columns: rain,
             snow_columns: snow,
         };
-        wr.set_weather(gpu, &WeatherDraw::build(&state, &dirs, [0.0, 4.0, 0.0]))?;
+        wr.set_weather(gpu, &WeatherDraw::build(&state, &dirs, WEYE))?;
         off.render(gpu, Some((&mut wr, vp)), draw, CLEAR)?;
         let img = off.read_rgba(gpu)?;
         wr.destroy(gpu);

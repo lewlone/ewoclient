@@ -1407,6 +1407,8 @@ fn run_headless(
     // M22: the baked held-item models, converted across the crate seam.
     world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
+    init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
+    let mut weather_assets = WeatherAssets::new(&baked);
     world_renderer.set_animations(layer_animations(&baked));
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
@@ -1677,7 +1679,13 @@ fn run_headless(
         session.active_dimension_type.as_ref(),
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
-    world_renderer.set_celestial(celestial_state_of(session.day_ticks));
+    // M33: the sun and moon fade out as rain comes in
+    // (`SkyRenderState.rainBrightness`).
+    let mut cel = celestial_state_of(session.day_ticks);
+    cel.rain_brightness =
+        rewo_world::weather::rain_brightness(effective_weather(&session).rain_level());
+    world_renderer.set_celestial(cel);
+    apply_weather(&mut world_renderer, &mut gpu, &session, &mut weather_assets, 1.0);
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
@@ -1825,6 +1833,10 @@ struct LiveApp {
     /// Item registry, for id → name when resolving held models (M22).
     items: std::sync::Arc<rewo_data::items::Items>,
     pool: MeshPool,
+    /// M33: the cloud map, the climate noises and the cached cloud mesh. Built
+    /// on the first frame that has a bake, since `baked` arrives with the
+    /// session rather than at construction.
+    weather: Option<WeatherAssets>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -1906,6 +1918,7 @@ impl ApplicationHandler for LiveApp {
             init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
             world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
+            init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
@@ -2237,7 +2250,24 @@ impl LiveApp {
         // frame — don't duplicate them. Celestial still tracks the world clock.
         state
             .world_renderer
-            .set_celestial(celestial_state_of(session.day_ticks));
+            .set_celestial({
+                let mut cel = celestial_state_of(session.day_ticks);
+                cel.rain_brightness =
+                    rewo_world::weather::rain_brightness(effective_weather(session).rain_level());
+                cel
+            });
+        // M33: the cloud deck and this frame's precipitation. The assets are
+        // built lazily because `baked` arrives with the session.
+        if let Some(baked) = self.baked.as_ref() {
+            let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
+            apply_weather(
+                &mut state.world_renderer,
+                &mut state.gpu,
+                session,
+                w,
+                alpha,
+            );
+        }
         state
             .world_renderer
             .set_hud(session.health, session.food, self.hotbar_slot);
@@ -2320,6 +2350,7 @@ fn run_windowed(
         bow_item,
         items,
         pool,
+        weather: None,
         keys: Keys::default(),
         want_validation,
         run_seconds: args.run_seconds,
@@ -3638,9 +3669,16 @@ fn apply_lightmap(
 /// context (offline non-biome server) leaves the GPU's default fixed sky.
 fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession) {
     let eye = eye_f64(session);
+    // M33: `AtmosphericFogEnvironment` darkens the sky colour that feeds fog
+    // before anything else uses it. Red and green scale by `1 - rain*0.5` but
+    // blue only by `1 - rain*0.4`, so an overcast sky goes BLUER as it darkens
+    // rather than merely dimmer; thunder then scales all three equally.
+    let w = effective_weather(session);
+    let (rain, thunder) = (w.rain_level(), w.thunder_level());
+    let darken = |c: i32| rewo_world::weather::apply_weather_darken(c, rain, thunder);
     if let Some(sky) = session.world.camera_sky(eye) {
         let fog = session.world.camera_fog(eye).unwrap_or(sky);
-        wr.set_sky_fog_base(argb_to_linear(sky), argb_to_linear(fog));
+        wr.set_sky_fog_base(argb_to_linear(darken(sky)), argb_to_linear(darken(fog)));
         return;
     }
     // No biome context (an offline / non-biome server): the positional layer
@@ -3651,7 +3689,7 @@ fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession) {
     // decompile does not license; `None` there leaves the GPU default.
     let def = session.active_dimension_type.as_ref();
     if let (Some(sky), Some(fog)) = (def.and_then(|d| d.sky_color), def.and_then(|d| d.fog_color)) {
-        wr.set_sky_fog_base(argb_to_linear(sky), argb_to_linear(fog));
+        wr.set_sky_fog_base(argb_to_linear(darken(sky)), argb_to_linear(darken(fog)));
     }
 }
 
@@ -4253,5 +4291,221 @@ mod tests {
         assert!(validate_unit("gamma", 1.01).is_err());
         assert!(validate_unit("gamma", f32::NAN).is_err());
         assert!(validate_unit("gamma", f32::INFINITY).is_err());
+    }
+}
+
+// -- M33: weather and clouds --------------------------------------------------
+
+/// Everything the live client needs to draw weather, built once.
+///
+/// The cloud mesh is **cached across frames**: it is position-independent (the
+/// per-frame motion rides in the uniform), so vanilla rebuilds it only when the
+/// camera crosses a cell boundary or changes which side of the deck it is on.
+/// This mirrors `CloudRenderer`'s own `needsRebuild` / `prevCellX` bookkeeping.
+pub struct WeatherAssets {
+    clouds: Option<rewo_gpu::clouds::CloudTexture>,
+    /// The three `Biome` world-gen noises, built once per client as vanilla
+    /// builds them once per JVM.
+    noise: rewo_world::weather::ClimateNoise,
+    directions: rewo_gpu::weather::ColumnDirections,
+    /// The cached mesh and the state it was built for.
+    cached: Option<(Vec<[i32; 3]>, i32, i32, rewo_gpu::clouds::RelativeCameraPos)>,
+}
+
+impl WeatherAssets {
+    pub fn new(baked: &assets::BakedAssets) -> Self {
+        let clouds = baked.clouds.as_ref().map(|img| {
+            rewo_gpu::clouds::CloudTexture::from_rgba(&img.rgba, img.w, img.h)
+        });
+        if clouds.is_none() {
+            log::warn!("live: no environment/clouds.png in the jar bake — no cloud deck");
+        }
+        Self {
+            clouds,
+            noise: rewo_world::weather::ClimateNoise::new(),
+            directions: rewo_gpu::weather::ColumnDirections::new(),
+            cached: None,
+        }
+    }
+}
+
+/// `weatherRadius`, vanilla's video option. Must stay ≤ 16: the 32×32 direction
+/// table cannot address a column further out than that.
+const WEATHER_RADIUS: i32 = 10;
+/// `cloudRange` — vanilla derives it from the render distance; Rewo pins it
+/// rather than plumbing a video-options struct for one number.
+const CLOUD_RANGE_CHUNKS: i32 = 12;
+/// `FogCloudsEnd`, the distance at which the deck has faded out completely.
+///
+/// **An approximation, not a transcription.** Vanilla's comes from
+/// `FogRenderer`, which Rewo does not have. It must comfortably exceed the
+/// mesh's own reach or the deck is culled by its own fade — the furthest cell
+/// is ~192 blocks out horizontally, and the deck can sit a couple of hundred
+/// blocks overhead as well (192.33 above a y=-60 flat world is 250-odd). Set
+/// too tight, clouds simply never appear; the first live shot did exactly that.
+const CLOUD_FOG_END: f32 = 1024.0;
+
+/// Build the two passes. Clouds need no texture (the shader carries its six
+/// face colours inline); rain and snow need both of theirs, and a missing one
+/// means that precipitation simply does not draw.
+fn init_weather_if_present(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+) -> Result<(), String> {
+    wr.init_clouds(gpu)?;
+    match (&baked.rain, &baked.snow) {
+        (Some(rain), Some(snow)) => wr.init_weather(
+            gpu,
+            &rewo_gpu::weather::WeatherImage {
+                rgba: &rain.rgba,
+                w: rain.w,
+                h: rain.h,
+            },
+            &rewo_gpu::weather::WeatherImage {
+                rgba: &snow.rgba,
+                w: snow.w,
+                h: snow.h,
+            },
+        )?,
+        _ => log::warn!("live: no rain/snow texture in the jar bake — no precipitation"),
+    }
+    Ok(())
+}
+
+/// This frame's cloud deck and precipitation.
+///
+/// Both are skipped cheaply when they cannot apply: a dimension whose
+/// `cloud_color` alpha is zero gets no cloud draw at all (that is how the
+/// Nether and the End have none), and a rain level of zero extracts no columns.
+/// Headless-only knob: `REWO_FORCE_WEATHER=<rain>[,<thunder>]` overrides the
+/// session's levels so the live weather path can be shot without an op'd bot
+/// running `/weather`. The same shape as `REWO_FORCE_GESTURE` and `REWO_SUMMON`.
+fn forced_weather() -> Option<(f32, f32)> {
+    let raw = std::env::var("REWO_FORCE_WEATHER").ok()?;
+    let mut parts = raw.split(',');
+    let rain: f32 = parts.next()?.trim().parse().ok()?;
+    let thunder: f32 = parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0.0);
+    Some((rain.clamp(0.0, 1.0), thunder.clamp(0.0, 1.0)))
+}
+
+/// The weather state this frame draws — the session's, unless the headless
+/// knob overrides it.
+fn effective_weather(session: &PlaySession) -> rewo_world::weather::WeatherState {
+    let mut w = session.weather;
+    if let Some((rain, thunder)) = forced_weather() {
+        w.set_rain(rain);
+        w.set_thunder(thunder);
+    }
+    w
+}
+
+fn apply_weather(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    w: &mut WeatherAssets,
+    partial_ticks: f32,
+) {
+    let eye = eye_f64(session);
+    let game_time = session.game_time();
+    let weather = effective_weather(session);
+
+    // -- clouds --
+    let dim = session.active_dimension_type.as_ref();
+    let color = dim.map(|d| d.cloud_color).unwrap_or(0);
+    let height = dim
+        .map(|d| d.cloud_height)
+        .unwrap_or(rewo_world::dimension::DEFAULT_CLOUD_HEIGHT);
+    // `ARGB.alpha(cloudColor) > 0` is vanilla's whole test — no dimension name
+    // is consulted, and neither is one here.
+    let cloud_alpha = ((color as u32) >> 24) & 0xFF;
+    match (&w.clouds, cloud_alpha > 0) {
+        (Some(tex), true) => {
+            let placement = rewo_gpu::clouds::placement(
+                eye,
+                height,
+                game_time,
+                partial_ticks,
+                tex.width,
+                tex.height,
+            );
+            let key = (placement.cell_x, placement.cell_z, placement.relative_pos);
+            let stale = !matches!(&w.cached, Some((_, cx, cz, rp)) if (*cx, *cz, *rp) == key);
+            if stale {
+                let faces = tex.build_mesh(
+                    placement.relative_pos,
+                    placement.cell_x,
+                    placement.cell_z,
+                    rewo_gpu::clouds::CloudStatus::Fancy,
+                    rewo_gpu::clouds::radius_cells(CLOUD_RANGE_CHUNKS),
+                );
+                w.cached = Some((faces, key.0, key.1, key.2));
+            }
+            let faces = w.cached.as_ref().map(|c| c.0.clone()).unwrap_or_default();
+            if let Err(e) = wr.set_clouds(
+                gpu,
+                &rewo_gpu::clouds::CloudDraw {
+                    faces,
+                    placement,
+                    color_argb: color,
+                    fog_clouds_end: CLOUD_FOG_END,
+                camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
+                },
+            ) {
+                log::warn!("live: cloud upload failed: {e}");
+            }
+        }
+        _ => {
+            // No texture, or a transparent cloud colour: draw nothing rather
+            // than leaving the previous dimension's deck hanging in the sky.
+            let _ = wr.set_clouds(
+                gpu,
+                &rewo_gpu::clouds::CloudDraw {
+                    faces: Vec::new(),
+                    placement: rewo_gpu::clouds::placement(eye, height, game_time, 0.0, 1, 1),
+                    color_argb: 0,
+                    fog_clouds_end: 1.0,
+                camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
+                },
+            );
+            w.cached = None;
+        }
+    }
+
+    // -- rain and snow --
+    // `ClientLevel.getSeaLevel()` comes from the spawn info; before the first
+    // one arrives there is no world to rain on anyway.
+    let sea_level = session.sea_level.unwrap_or(63);
+    let extracted = session.world.extract_weather(
+        &weather,
+        &w.noise,
+        eye,
+        WEATHER_RADIUS,
+        game_time,
+        partial_ticks,
+        sea_level,
+    );
+    let to_gpu = |c: &rewo_world::weather::ColumnInstance| rewo_gpu::weather::WeatherColumn {
+        x: c.x,
+        z: c.z,
+        bottom_y: c.bottom_y,
+        top_y: c.top_y,
+        u_offset: c.u_offset,
+        v_offset: c.v_offset,
+        block_light: rewo_world::weather::light_block(c.light_coords) as u8,
+        sky_light: rewo_world::weather::light_sky(c.light_coords) as u8,
+    };
+    let state = rewo_gpu::weather::WeatherRenderState {
+        intensity: extracted.intensity,
+        radius: extracted.radius,
+        rain_columns: extracted.rain.iter().map(to_gpu).collect(),
+        snow_columns: extracted.snow.iter().map(to_gpu).collect(),
+    };
+    if let Err(e) = wr.set_weather(
+        gpu,
+        &rewo_gpu::weather::WeatherDraw::build(&state, &w.directions, eye),
+    ) {
+        log::warn!("live: weather upload failed: {e}");
     }
 }

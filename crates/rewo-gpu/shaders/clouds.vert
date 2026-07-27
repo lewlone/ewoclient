@@ -21,6 +21,12 @@ layout(std140, set = 0, binding = 0) uniform CloudInfo {
     vec4 cloud_offset;
     // Always (12, 4, 12): `CELL_SIZE_IN_BLOCKS` and the 4-block cloud slab.
     vec4 cell_size;
+    // The eye, in world space. Vanilla needs no such uniform because its
+    // positions are already camera-relative; Rewo's are world-space (see
+    // `CloudPlacement::offset`), so the fog distance has to subtract it back
+    // out. Forgetting to made every cloud fade to nothing at a world position
+    // far from the origin, while looking perfect at [0, 0, 0].
+    vec4 camera;
 } info;
 
 layout(std430, set = 0, binding = 1) readonly buffer CloudFaces {
@@ -107,8 +113,8 @@ void main() {
     gl_Position = pc.mvp * vec4(pos, 1.0);
 
     vec4 color = (use_top_color ? face_colors[1] : face_colors[direction]) * info.cloud_color;
-    // `fog_spherical_distance` is `length(pos)`, and `pos` is already relative
-    // to the camera.
-    color.a *= 1.0 - linear_fog_value(length(pos), 0.0, pc.fog_clouds_end);
+    // `fog_spherical_distance(pos)` is `length(pos)` on a camera-relative
+    // position, so the world-space one is measured from the eye.
+    color.a *= 1.0 - linear_fog_value(length(pos - info.camera.xyz), 0.0, pc.fog_clouds_end);
     v_color = color;
 }

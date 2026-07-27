@@ -175,6 +175,11 @@ pub struct PlaySession {
     biome_global_bits: u32,
     /// `CommonPlayerSpawnInfo.seed` — the `biomeZoomSeed` driving the fiddle.
     pub biome_zoom_seed: Option<i64>,
+    /// `CommonPlayerSpawnInfo.seaLevel` — `ClientLevel.getSeaLevel()`, which
+    /// M33's precipitation rule needs (the snow cutoff is `seaLevel + 17`).
+    /// `None` before the first spawn info; the Overworld's 63 is the only
+    /// sensible stand-in and is applied at the call site, not invented here.
+    pub sea_level: Option<i32>,
     /// The `ResourceKey<Level>` identifier of the dimension we are actually in
     /// (`"minecraft:the_nether"`), taken from `CommonPlayerSpawnInfo.dimension`
     /// — the *level*, which is not the same thing as the dimension **type**
@@ -348,6 +353,7 @@ struct WorldTransition<'a> {
     /// `game_event`. Carrying rain into the Nether would be visible.
     weather: &'a mut rewo_world::weather::WeatherState,
     biome_zoom_seed: &'a mut Option<i64>,
+    sea_level: &'a mut Option<i32>,
     /// The parsed biome registry, *retained* across the change — it is a synced
     /// global registry, not a per-level table — plus the colormaps, so the new
     /// level's `BiomeContext` is rebuilt from the same entries against the new
@@ -438,6 +444,7 @@ impl WorldTransition<'_> {
 
         // `spawnInfo.seed()` is the new level's `biomeZoomSeed`.
         *self.biome_zoom_seed = Some(spawn.seed);
+        *self.sea_level = Some(spawn.sea_level);
         attach_biome_context(
             self.world,
             self.biome_registry,
@@ -761,6 +768,7 @@ impl<'a> Connection<'a> {
             colormaps,
             biome_global_bits,
             biome_zoom_seed: None,
+            sea_level: None,
             // No dimension is active until the login packet names one.
             active_dimension_key: None,
             active_dimension_holder: None,
@@ -1716,6 +1724,7 @@ impl PlaySession {
         self.visual_effects.set_player_id(player_id);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.biome_zoom_seed = Some(spawn.seed);
+        self.sea_level = Some(spawn.sea_level);
         self.build_biome_context(&active.def, spawn.seed);
         log::info!(
             "net: play login — level {} on dimension type {} (holder {}): min_y={} \
@@ -1760,6 +1769,7 @@ impl PlaySession {
             game_time: &mut self.game_time,
             weather: &mut self.weather,
             biome_zoom_seed: &mut self.biome_zoom_seed,
+            sea_level: &mut self.sea_level,
             biome_registry: self.pending_biome_registry.as_ref(),
             colormaps: &self.colormaps,
             active_key: &mut self.active_dimension_key,
@@ -2531,6 +2541,7 @@ mod respawn_tests {
         game_time: Option<i64>,
         weather: rewo_world::weather::WeatherState,
         biome_zoom_seed: Option<i64>,
+        sea_level: Option<i32>,
         colormaps: rewo_world::biome::Colormaps,
         key: Option<String>,
         holder: Option<i32>,
@@ -2571,6 +2582,7 @@ mod respawn_tests {
                 w
             },
             biome_zoom_seed: Some(0x0bad_f00d),
+            sea_level: Some(63),
             colormaps: rewo_world::biome::Colormaps::neutral(),
             key: Some("minecraft:overworld".into()),
             holder: Some(OVERWORLD_HOLDER),
@@ -2592,6 +2604,7 @@ mod respawn_tests {
                 game_time: &mut self.game_time,
                 weather: &mut self.weather,
                 biome_zoom_seed: &mut self.biome_zoom_seed,
+                sea_level: &mut self.sea_level,
                 biome_registry: None,
                 colormaps: &self.colormaps,
                 active_key: &mut self.key,
