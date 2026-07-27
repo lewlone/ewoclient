@@ -77,6 +77,59 @@ fn main() {
     // and profile from disk (relative to cwd) — same as in-game.
     let mut editor = Editor::new();
 
+    // `--scale FPS=1.8,TARGET=0.7` — override widget size multipliers, the
+    // state a corner-drag produces in-game.
+    if let Some(spec) = flag(&args, "--scale") {
+        for pair in spec.split(',') {
+            let Some((name, value)) = pair.split_once('=') else {
+                eprintln!("--scale wants NAME=VALUE pairs, got '{pair}'");
+                std::process::exit(2);
+            };
+            let Ok(scale) = value.trim().parse::<f32>() else {
+                eprintln!("--scale value '{value}' is not a number");
+                std::process::exit(2);
+            };
+            if !editor.set_widget_scale(name.trim(), scale) {
+                eprintln!(
+                    "unknown widget '{}' (one of: {})",
+                    name.trim(),
+                    Editor::widget_titles().join(", ")
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // `--media` — pin a "now playing" state instead of whatever SMTC reports,
+    // so media shots are the same on any machine. `--media off` renders the
+    // idle card.
+    match flag(&args, "--media").as_deref() {
+        Some("off") => {}
+        Some(spec) => {
+            // `Title|Artist|pos|dur|playing`
+            let f: Vec<&str> = spec.split('|').collect();
+            editor.set_media(
+                f.first().copied().unwrap_or("Sofia"),
+                f.get(1).copied().unwrap_or("Clairo"),
+                f.get(4).map(|p| *p != "paused").unwrap_or(true),
+                f.get(2).and_then(|p| p.parse().ok()).unwrap_or(70.0),
+                f.get(3).and_then(|p| p.parse().ok()).unwrap_or(188.0),
+            );
+        }
+        None => {}
+    }
+
+    // `--select TARGET` — select a widget so its resize grip renders.
+    if let Some(name) = flag(&args, "--select") {
+        if !editor.select_widget(&name) {
+            eprintln!(
+                "unknown widget '{name}' (one of: {})",
+                Editor::widget_titles().join(", ")
+            );
+            std::process::exit(2);
+        }
+    }
+
     let targets: Vec<String> = if all {
         let mut t = vec!["widgets".to_string()];
         t.extend(Editor::view_names().into_iter().map(|s| s.to_lowercase()));

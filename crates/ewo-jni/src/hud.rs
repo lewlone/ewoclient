@@ -698,13 +698,41 @@ impl WidgetId {
     }
 }
 
-/// One widget's placement: an anchor and a fractional (0..1) anchor point.
+/// One widget's placement: an anchor, a fractional (0..1) anchor point, and a
+/// size multiplier.
 #[derive(Clone, Copy)]
 struct WidgetLayout {
     enabled: bool,
     anchor: Anchor,
     x: f32,
     y: f32,
+    /// Size multiplier, [`SCALE_MIN`]..=[`SCALE_MAX`].
+    ///
+    /// Applied as a canvas transform about the anchor point rather than by
+    /// threading a scale into all 17 widget renderers. That is safe for text:
+    /// Skia re-shapes and re-rasterizes glyphs at the effective size, so a
+    /// scaled widget is as crisp as a natively-sized one (measured — only
+    /// pre-rasterizing to a layer and *then* scaling goes soft). CLAUDE.md's
+    /// "don't transform anything that contains text" is about *animating*
+    /// scale, which re-rasterizes every frame; this is a static size the user
+    /// chose, rasterized once.
+    scale: f32,
+}
+
+/// Widget size-multiplier bounds. The floor keeps a widget big enough to still
+/// grab its resize handle; the ceiling keeps one from swallowing the screen.
+pub const SCALE_MIN: f32 = 0.5;
+pub const SCALE_MAX: f32 = 3.0;
+
+/// Scale `r` about `(cx, cy)` — maps a rect drawn under a canvas scale
+/// transform back into screen coordinates for hit-testing.
+fn scale_rect_about(r: Rect, cx: f32, cy: f32, s: f32) -> Rect {
+    Rect::new(
+        cx + (r.left - cx) * s,
+        cy + (r.top - cy) * s,
+        cx + (r.right - cx) * s,
+        cy + (r.bottom - cy) * s,
+    )
 }
 
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
@@ -737,25 +765,25 @@ impl HudLayout {
     fn defaults() -> Self {
         HudLayout {
             widgets: [
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0204 }, // fps
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0620 }, // coords
-                WidgetLayout { enabled: true, anchor: Anchor::Br, x: 0.9865, y: 0.9759 }, // ping
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9759 }, // keystrokes
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330 }, // armor
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000 }, // potions
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593 }, // target
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700 }, // jump_reset_text
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300 }, // jump_reset_bar
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500 }, // hit_range
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204 }, // cps
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000 }, // items
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800 }, // shield_cooldown
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100 }, // reach
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800 }, // attack_charge
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800 }, // combo
+                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0204, scale: 1.0 }, // fps
+                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0620, scale: 1.0 }, // coords
+                WidgetLayout { enabled: true, anchor: Anchor::Br, x: 0.9865, y: 0.9759, scale: 1.0 }, // ping
+                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9759, scale: 1.0 }, // keystrokes
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330, scale: 1.0 }, // armor
+                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000, scale: 1.0 }, // potions
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593, scale: 1.0 }, // target
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700, scale: 1.0 }, // jump_reset_text
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300, scale: 1.0 }, // jump_reset_bar
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500, scale: 1.0 }, // hit_range
+                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204, scale: 1.0 }, // cps
+                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000, scale: 1.0 }, // items
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800, scale: 1.0 }, // shield_cooldown
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100, scale: 1.0 }, // reach
+                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800, scale: 1.0 }, // attack_charge
+                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800, scale: 1.0 }, // combo
                 // Media — default off (the user opts in) at top-right under the
                 // CPS chip. Once they enable + place it the layout is persisted.
-                WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100 }, // media
+                WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100, scale: 1.0 }, // media
             ],
             paint_rate: crate::HudPaintRate::Match,
             glass_strength: GLASS_DEFAULT,
@@ -828,6 +856,11 @@ impl HudLayout {
                         wl.y = v;
                     }
                 }
+                "scale" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        wl.scale = v.clamp(SCALE_MIN, SCALE_MAX);
+                    }
+                }
                 _ => {}
             }
         }
@@ -846,12 +879,13 @@ impl HudLayout {
         for id in WidgetId::ALL {
             let wl = self.get(id);
             s.push_str(&format!(
-                "\n[{}]\nenabled = {}\nanchor = \"{}\"\nx = {:.5}\ny = {:.5}\n",
+                "\n[{}]\nenabled = {}\nanchor = \"{}\"\nx = {:.5}\ny = {:.5}\nscale = {:.3}\n",
                 id.key(),
                 wl.enabled,
                 wl.anchor.as_str(),
                 wl.x,
                 wl.y,
+                wl.scale,
             ));
         }
         s.push_str(&format!(
@@ -936,6 +970,46 @@ struct Drag {
     grab_dy: f32,
 }
 
+/// An in-progress corner-drag resize.
+///
+/// Scale tracks the cursor's distance from the *anchor* point rather than a
+/// raw pixel delta, so dragging feels the same whichever corner the handle
+/// sits on and whatever the widget's current size.
+#[derive(Clone, Copy)]
+struct ResizeDrag {
+    id: WidgetId,
+    /// Scale when the handle was grabbed.
+    start_scale: f32,
+    /// Cursor distance from the anchor point when it was grabbed.
+    grab_dist: f32,
+}
+
+/// Side of the square resize handle drawn on the selected widget, in px.
+const RESIZE_HANDLE: f32 = 14.0;
+
+/// The handle's rect for a widget occupying `bounds`.
+///
+/// Placed at the corner furthest from the anchor, so dragging it always moves
+/// *away* from the pinned point and never folds the widget through itself.
+fn resize_handle_rect(bounds: Rect, anchor: Anchor) -> Rect {
+    // Horizontal: anchored right → handle on the left edge, else the right.
+    let hx = match anchor {
+        Anchor::Tr | Anchor::Mr | Anchor::Br => bounds.left,
+        _ => bounds.right,
+    };
+    // Vertical: anchored bottom → handle on the top edge, else the bottom.
+    let hy = match anchor {
+        Anchor::Bl | Anchor::Bc | Anchor::Br => bounds.top,
+        _ => bounds.bottom,
+    };
+    Rect::from_xywh(
+        hx - RESIZE_HANDLE * 0.5,
+        hy - RESIZE_HANDLE * 0.5,
+        RESIZE_HANDLE,
+        RESIZE_HANDLE,
+    )
+}
+
 /// In-game HUD-editor state. Owns the [`HudLayout`], tracks the cursor and any
 /// active drag, and records each widget's drawn bounds for hit-testing. Fed by
 /// the `nativeMouse*` JNI exports while the overlay is open.
@@ -950,6 +1024,11 @@ pub struct Editor {
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
     bounds: [Rect; 17],
     dragging: Option<Drag>,
+    /// An in-progress corner-drag resize of the selected widget.
+    resizing: Option<ResizeDrag>,
+    /// Media state was pinned by [`Self::set_media`] — skip the SMTC poll so
+    /// the pin survives. Only the offscreen harness sets this.
+    media_pinned: bool,
     /// An in-progress MODULES-view slider drag — `(module index, setting slot)`.
     slider_drag: Option<(usize, usize)>,
     /// Active snap guide lines (window pixels) while a drag is alignment-snapped.
@@ -1116,6 +1195,8 @@ impl Editor {
             cursor: (0.0, 0.0),
             bounds: [empty_rect(); 17],
             dragging: None,
+            resizing: None,
+            media_pinned: false,
             slider_drag: None,
             snap_x: None,
             snap_y: None,
@@ -1188,6 +1269,71 @@ impl Editor {
     /// deterministically.
     pub fn set_cursor(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+    }
+
+    /// Look up a widget by its display title (case-insensitive), e.g. `"FPS"`,
+    /// `"TARGET"`. `None` for an unknown name.
+    fn widget_by_title(title: &str) -> Option<WidgetId> {
+        WidgetId::ALL
+            .into_iter()
+            .find(|id| id.title().eq_ignore_ascii_case(title))
+    }
+
+    /// Set a widget's size multiplier. Returns `false` for an unknown name.
+    ///
+    /// In-game this is reached by dragging the resize grip; the offscreen
+    /// harness has no cursor, so it drives the same state through here.
+    pub fn set_widget_scale(&mut self, title: &str, scale: f32) -> bool {
+        let Some(id) = Self::widget_by_title(title) else {
+            return false;
+        };
+        self.layout.get_mut(id).scale = scale.clamp(SCALE_MIN, SCALE_MAX);
+        true
+    }
+
+    /// Select a widget, as clicking it in the HUD editor would — which is what
+    /// makes its resize grip appear.
+    pub fn select_widget(&mut self, title: &str) -> bool {
+        let Some(id) = Self::widget_by_title(title) else {
+            return false;
+        };
+        self.selected = Some(id);
+        true
+    }
+
+    /// Every widget's display title, for harness enumeration + error messages.
+    pub fn widget_titles() -> Vec<&'static str> {
+        WidgetId::ALL.into_iter().map(|id| id.title()).collect()
+    }
+
+    /// Inject a fixed "now playing" state.
+    ///
+    /// Media normally arrives from the SMTC backend, which makes any media
+    /// shot depend on whatever happens to be playing on the machine at the
+    /// time — no good for a harness that is supposed to be deterministic, and
+    /// no good at all on a machine with nothing playing. This pins it.
+    pub fn set_media(
+        &mut self,
+        title: &str,
+        artist: &str,
+        playing: bool,
+        position_seconds: f32,
+        duration_seconds: f32,
+    ) {
+        self.media.title = title.to_string();
+        self.media.artist = artist.to_string();
+        self.media.playing = playing;
+        self.media.position_seconds = position_seconds;
+        self.media.duration_seconds = duration_seconds;
+        self.media.source = "HARNESS".to_string();
+        // Anchor both clocks to now so `displayed_position` does not drift the
+        // scrub head forward between the injection and the draw.
+        let t = std::time::Instant::now();
+        self.media.position_updated_at = t;
+        self.media.title_changed_at = t;
+        // Otherwise the very next `draw` drains a real SMTC update over the
+        // top of this and the pin lasts zero frames.
+        self.media_pinned = true;
     }
 
     /// Rects (framebuffer pixels) where the composite step should leave
@@ -1282,6 +1428,18 @@ impl Editor {
         // ignore `y` (or `x`, for the vertical hue/alpha strips).
         if let Some(slot) = self.crosshair_ui.drag {
             self.drag_crosshair_slider(slot, x, y);
+            return;
+        }
+        // HUD-editor corner resize. Scale follows the cursor's distance from
+        // the anchor relative to where it was grabbed, so the widget's corner
+        // stays under the pointer.
+        if let Some(rs) = self.resizing {
+            let (w, h) = self.window;
+            let wl = self.layout.get(rs.id);
+            let (ax, ay) = (wl.x * w, wl.y * h);
+            let dist = ((x - ax).powi(2) + (y - ay).powi(2)).sqrt();
+            let scale = rs.start_scale * (dist / rs.grab_dist.max(1.0));
+            self.layout.get_mut(rs.id).scale = scale.clamp(SCALE_MIN, SCALE_MAX);
             return;
         }
         // SETTINGS-view glass-strength drag. Tracks `x` even once the cursor
@@ -1400,6 +1558,10 @@ impl Editor {
             }
             if std::mem::take(&mut self.glass_drag) {
                 // A glass-strength drag finished — persist to `hud.toml`.
+                self.layout.save();
+            }
+            if self.resizing.take().is_some() {
+                // A resize finished — persist the new scale.
                 self.layout.save();
             }
             if self.dragging.take().is_some() {
@@ -1625,8 +1787,33 @@ impl Editor {
             return;
         }
 
-        // Outside the panel — select + start dragging the widget under the cursor.
+        // Outside the panel — resize handle first, then move.
         let (w, h) = self.window;
+
+        // The selected widget's resize handle. Checked before the move test
+        // because the handle straddles the widget's corner: a press inside it
+        // is inside the widget's bounds too, and whichever is tested first
+        // wins. Only the *selected* widget shows a handle, so at most one can
+        // ever match.
+        if let Some(id) = self.selected {
+            let b = self.bounds[id.index()];
+            let wl = self.layout.get(id);
+            if b.width() > 0.0 && point_in(resize_handle_rect(b, wl.anchor), x, y) {
+                let (ax, ay) = (wl.x * w, wl.y * h);
+                let dist = ((x - ax).powi(2) + (y - ay).powi(2)).sqrt();
+                // A grab right on the anchor point would divide by ~0 and send
+                // the scale to infinity on the first pixel of movement.
+                if dist > 4.0 {
+                    self.resizing = Some(ResizeDrag {
+                        id,
+                        start_scale: wl.scale,
+                        grab_dist: dist,
+                    });
+                    return;
+                }
+            }
+        }
+
         for id in WidgetId::ALL {
             let b = self.bounds[id.index()];
             if b.width() > 0.0 && point_in(b, x, y) {
@@ -1920,7 +2107,7 @@ pub fn draw(
     // Drain any pending SMTC snapshots into the live media state. The poll is
     // non-blocking — if no update is queued this returns immediately. Split
     // the borrow over disjoint fields so both can be `&mut`.
-    {
+    if !editor.media_pinned {
         let media_ref = &mut editor.media;
         let service_ref = &mut editor.media_service;
         service_ref.poll(media_ref);
@@ -1936,20 +2123,52 @@ pub fn draw(
     for id in WidgetId::ALL {
         let wl = editor.layout.get(id);
         let bounds = if show_widgets && wl.enabled && widget_available(id, data) {
+            let (ax, ay) = (wl.x * w, wl.y * h);
+            let s = wl.scale;
+
+            // Scale about the anchor point, so the anchored corner stays pinned
+            // and the widget grows away from it. Widgets draw at their natural
+            // size inside the transform and never need to know about it.
+            let saved = canvas.save();
+            if s != 1.0 {
+                canvas.translate((ax, ay));
+                canvas.scale((s, s));
+                canvas.translate((-ax, -ay));
+            }
             // Media is dispatched separately — `draw_widget` only has
             // `&HudData` to work with, while the media state lives on Editor.
-            match id {
+            //
+            // Cursor is un-scaled into the widget's own space so hover tests
+            // inside it (the media transport buttons) still line up.
+            let local_cursor = if s != 1.0 {
+                (
+                    ax + (editor.cursor.0 - ax) / s,
+                    ay + (editor.cursor.1 - ay) / s,
+                )
+            } else {
+                editor.cursor
+            };
+            let local = match id {
                 WidgetId::Media => draw_media_compact(
                     canvas,
                     &editor.media,
-                    editor.cursor,
+                    local_cursor,
                     editor.media_button_press,
                     fonts,
                     wl.anchor,
-                    wl.x * w,
-                    wl.y * h,
+                    ax,
+                    ay,
                 ),
-                _ => draw_widget(canvas, id, data, fonts, wl.anchor, wl.x * w, wl.y * h),
+                _ => draw_widget(canvas, id, data, fonts, wl.anchor, ax, ay),
+            };
+            canvas.restore_to_count(saved);
+
+            // The widget reported bounds in the scaled space; hit-testing works
+            // in screen space.
+            if s != 1.0 {
+                scale_rect_about(local, ax, ay, s)
+            } else {
+                local
             }
         } else {
             empty_rect()
@@ -2357,56 +2576,28 @@ fn draw_media_compact(
         let dur_x = text_left + text_w - dur_w;
         canvas.draw_str(&dur, (dur_x, scrub_y + 4.0), &time_font, &tp);
 
-        // The bar itself — pearl track + rose→champ fill + tiny pearl knob.
+        // The bar itself — pearl track + a liquid rose→champ fill whose top
+        // surface is a travelling wave, plus a pearl knob at the head.
         let bar_left = text_left + pos_w + 6.0;
         let bar_right = dur_x - 6.0;
-        let bar_h = 2.0;
+        // 6px rather than 2px: a wave needs vertical room to read as one. Below
+        // ~5px the crest and trough land in the same pixel row and the whole
+        // effect collapses into a slightly fuzzy line.
+        let bar_h = 6.0;
         let bar_rect = Rect::from_xywh(
             bar_left,
             scrub_y - bar_h * 0.5,
             (bar_right - bar_left).max(0.0),
             bar_h,
         );
-        let bar_rr = RRect::new_rect_xy(bar_rect, bar_h, bar_h);
+        let bar_rr = RRect::new_rect_xy(bar_rect, bar_h * 0.5, bar_h * 0.5);
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
         bg.set_color4f(rgba(PEARL, 0.12), None);
         canvas.draw_rrect(bar_rr, &bg);
 
         let frac = (live_pos / media.duration_seconds).clamp(0.0, 1.0);
-        let fill_w = bar_rect.width() * frac;
-        if fill_w > 1.0 {
-            let fill_rect = Rect::from_xywh(bar_rect.left, bar_rect.top, fill_w, bar_h);
-            let mut fp = Paint::default();
-            fp.set_anti_alias(true);
-            if let Some(shader) = gradient_shader::linear(
-                (
-                    Point::new(bar_rect.left, bar_rect.top),
-                    Point::new(bar_rect.right, bar_rect.top),
-                ),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
-                    None,
-                ),
-                None,
-                TileMode::Clamp,
-                None,
-                None,
-            ) {
-                fp.set_shader(shader);
-            } else {
-                fp.set_color4f(rgba(ROSE, 1.0), None);
-            }
-            canvas.draw_rrect(RRect::new_rect_xy(fill_rect, bar_h, bar_h), &fp);
-
-            // Small pearl knob at the current position.
-            let knob_x = bar_rect.left + fill_w;
-            let knob_y = bar_rect.top + bar_h * 0.5;
-            let mut knob = Paint::default();
-            knob.set_anti_alias(true);
-            knob.set_color4f(rgba(PEARL, 1.0), None);
-            canvas.draw_circle((knob_x, knob_y), 3.0, &knob);
-        }
+        draw_liquid_progress(canvas, bar_rect, frac, media.playing);
     }
 
     // Transport buttons — tiny (22×22) circles, the middle one rose-filled.
@@ -2546,6 +2737,100 @@ fn draw_chip(canvas: &Canvas, rect: Rect, radius: f32) {
     border.set_stroke_width(1.0);
     border.set_color4f(rgba(ROSE, 0.12), None);
     canvas.draw_rrect(rrect, &border);
+}
+
+/// The media scrub bar's fill: liquid in a tube, with a travelling wave for a
+/// surface.
+///
+/// The wave runs only while the track is *playing* — a paused bar goes still.
+/// That is the whole reason to animate it: motion that never stops is
+/// decoration, motion tied to state is information you can read at a glance.
+///
+/// Amplitude ramps toward the leading edge so the head of the liquid ripples
+/// and the settled tail behind it is calm.
+fn draw_liquid_progress(canvas: &Canvas, bar: Rect, frac: f32, playing: bool) {
+    let fill_w = bar.width() * frac.clamp(0.0, 1.0);
+    if fill_w <= 1.0 {
+        return;
+    }
+
+    // Clip to the track so the wave can never spill out of the rounded tube.
+    let saved = canvas.save();
+    canvas.clip_rrect(
+        RRect::new_rect_xy(bar, bar.height() * 0.5, bar.height() * 0.5),
+        Some(ClipOp::Intersect),
+        Some(true),
+    );
+
+    const WAVELENGTH: f32 = 24.0;
+    const SPEED: f32 = 2.4; // radians/sec
+    let amp = if playing { 1.3 } else { 0.0 };
+    let phase = now() * SPEED;
+    // Rest a touch below centre so the tube still reads as part-full even at
+    // zero amplitude.
+    let mid = bar.top + bar.height() * 0.42;
+
+    let mut path = skia_safe::Path::new();
+    path.move_to((bar.left, bar.bottom));
+    // ~2px per segment: fine enough that the crest is smooth, coarse enough
+    // that a full-width bar is still only a couple of hundred points.
+    let steps = (fill_w / 2.0).ceil().max(2.0) as i32;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let px = bar.left + fill_w * t;
+        // Taper: calm at the tail, liveliest at the head.
+        let local_amp = amp * (0.35 + 0.65 * t);
+        let py = mid
+            + local_amp * (px / WAVELENGTH * std::f32::consts::TAU - phase).sin()
+            // A second, slower harmonic keeps it from looking like a test
+            // signal — real liquid never repeats on one period.
+            + local_amp * 0.4 * (px / (WAVELENGTH * 2.3) * std::f32::consts::TAU + phase * 0.6).sin();
+        path.line_to((px, py));
+    }
+    path.line_to((bar.left + fill_w, bar.bottom));
+    path.close();
+
+    let mut fp = Paint::default();
+    fp.set_anti_alias(true);
+    if let Some(shader) = gradient_shader::linear(
+        (
+            Point::new(bar.left, bar.top),
+            Point::new(bar.right, bar.top),
+        ),
+        gradient_shader::GradientShaderColors::ColorsInSpace(
+            &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
+            None,
+        ),
+        None,
+        TileMode::Clamp,
+        None,
+        None,
+    ) {
+        fp.set_shader(shader);
+    } else {
+        fp.set_color4f(rgba(ROSE, 1.0), None);
+    }
+    canvas.draw_path(&path, &fp);
+
+    canvas.restore_to_count(saved);
+
+    // Pearl knob at the head, breathing gently while playing.
+    let knob_x = bar.left + fill_w;
+    let knob_y = bar.center_y();
+    let pulse = if playing {
+        1.0 + 0.12 * (now() * 3.1).sin()
+    } else {
+        1.0
+    };
+    let mut halo = Paint::default();
+    halo.set_anti_alias(true);
+    halo.set_color4f(rgba(PEARL, 0.35), None);
+    halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
+    canvas.draw_circle((knob_x, knob_y), 5.0 * pulse, &halo);
+    let mut knob = Paint::default();
+    knob.set_anti_alias(true);
+    knob.set_color4f(rgba(PEARL, 1.0), None);
+    canvas.draw_circle((knob_x, knob_y), 3.0 * pulse, &knob);
 }
 
 /// In-world widget shell — the canonical glass plate every floating widget sits
@@ -4389,8 +4674,23 @@ fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f
         if b.width() <= 0.0 {
             continue;
         }
+        // Every widget keeps its dim outline (that is the "these are
+        // draggable" affordance); the hovered or selected one is lit. The
+        // resize grip is drawn only on the *selected* one, which is also the
+        // only widget `editor_press` will resize — a grip on a merely-hovered
+        // widget would be a target you could see but not hit.
+        let wl = editor.layout.get(id);
         let lit = Some(id) == active || Some(id) == editor.selected;
-        draw_widget_outline(canvas, b, lit, fonts, id.title());
+        draw_widget_outline(
+            canvas,
+            b,
+            lit,
+            fonts,
+            id.title(),
+            wl.anchor,
+            wl.scale,
+            Some(id) == editor.selected,
+        );
     }
 
     draw_side_panel(canvas, editor, fonts, h);
@@ -4398,7 +4698,18 @@ fn draw_editor(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f
 
 /// A drag outline around one widget — a rose rounded-rect; the active widget
 /// gets a brighter ring and a name label above it.
-fn draw_widget_outline(canvas: &Canvas, bounds: Rect, active: bool, fonts: &FontStore, title: &str) {
+fn draw_widget_outline(
+    canvas: &Canvas,
+    bounds: Rect,
+    active: bool,
+    fonts: &FontStore,
+    title: &str,
+    anchor: Anchor,
+    scale: f32,
+    // Draw the resize grip. Only the selected widget can be resized, so only
+    // it gets one.
+    grip: bool,
+) {
     let pad = 4.0;
     let outline = Rect::from_xywh(
         bounds.left - pad,
@@ -4425,14 +4736,53 @@ fn draw_widget_outline(canvas: &Canvas, bounds: Rect, active: bool, fonts: &Font
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
         label_paint.set_color4f(rgba(ROSE, 1.0), None);
+        // Title, plus the size multiplier once it is no longer 1× — so the
+        // user can see what they dragged it to and get back to default.
+        let title = if (scale - 1.0).abs() > 0.005 {
+            format!("{title}  ·  {scale:.2}×")
+        } else {
+            title.to_string()
+        };
         draw_tracked_em(
             canvas,
-            title,
+            &title,
             (outline.left + 2.0, outline.top - 7.0),
             &label_font,
             &label_paint,
             0.12,
         );
+
+    }
+
+    if grip {
+        // Resize grip, at the corner furthest from the anchor. Three stacked
+        // diagonal ticks — the conventional "drag me" affordance, and legible
+        // at 14px where an icon would not be.
+        let grip = resize_handle_rect(bounds, anchor);
+        let mut plate = Paint::default();
+        plate.set_anti_alias(true);
+        plate.set_color4f(rgba(WINE, 0.85), None);
+        canvas.draw_rrect(RRect::new_rect_xy(grip, 4.0, 4.0), &plate);
+        let mut edge = Paint::default();
+        edge.set_anti_alias(true);
+        edge.set_style(PaintStyle::Stroke);
+        edge.set_stroke_width(1.0);
+        edge.set_color4f(rgba(ROSE, 0.95), None);
+        canvas.draw_rrect(RRect::new_rect_xy(grip, 4.0, 4.0), &edge);
+
+        let mut tick = Paint::default();
+        tick.set_anti_alias(true);
+        tick.set_style(PaintStyle::Stroke);
+        tick.set_stroke_width(1.2);
+        tick.set_color4f(rgba(ROSE, 0.95), None);
+        for i in 0..3 {
+            let o = 3.0 + i as f32 * 3.5;
+            canvas.draw_line(
+                (grip.left + o, grip.bottom - 3.0),
+                (grip.right - 3.0, grip.top + o),
+                &tick,
+            );
+        }
     }
 }
 
