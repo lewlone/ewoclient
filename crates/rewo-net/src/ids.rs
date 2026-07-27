@@ -107,6 +107,14 @@ pub struct Ids {
     /// 7, `THUNDER_LEVEL_CHANGE` 8). Required: without it the sky never rains,
     /// and a missing name is a version mismatch rather than clear weather.
     pub cb_play_game_event: i32,
+    /// `ClientboundContainerSetContentPacket` — a whole container's slots
+    /// (M34). Required: without it the client never learns what is in the
+    /// player's own inventory.
+    pub cb_play_container_set_content: i32,
+    /// `ClientboundContainerSetSlotPacket` — one slot.
+    pub cb_play_container_set_slot: i32,
+    /// `ClientboundSetHeldSlotPacket` — the server moving the selection.
+    pub cb_play_set_held_slot: i32,
     /// `ClientboundSetEquipmentPacket` — the held items that decide a swing's
     /// duration and animation type. Required for the same reason: without it
     /// every entity would silently swing with the bare-hand default.
@@ -209,6 +217,9 @@ impl Ids {
             cb_play_animate: req!(p, P, C, "animate"),
             cb_play_damage_event: req!(p, P, C, "damage_event"),
             cb_play_game_event: req!(p, P, C, "game_event"),
+            cb_play_container_set_content: req!(p, P, C, "container_set_content"),
+            cb_play_container_set_slot: req!(p, P, C, "container_set_slot"),
+            cb_play_set_held_slot: req!(p, P, C, "set_held_slot"),
             cb_play_set_equipment: req!(p, P, C, "set_equipment"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),

@@ -1069,6 +1069,144 @@ pub fn route_game_event(
     }
 }
 
+/// Decode one `ItemStack.OPTIONAL_STREAM_CODEC` into the world's slot type.
+///
+/// Returns `None` for an empty stack and `Err` when the reader could not be
+/// left aligned — see [`rewo_world::inventory`] on why a misaligned slot has to
+/// abandon the whole packet rather than half-apply it.
+fn read_slot(
+    r: &mut rewo_proto::reader::PacketReader,
+    components: rewo_data::components::DataComponentIds,
+) -> Result<Option<rewo_world::inventory::ItemSlot>, ()> {
+    let slot = crate::item_stack::read_optional(r, components)?;
+    if !slot.aligned() {
+        return Err(());
+    }
+    Ok(match slot {
+        crate::item_stack::WireSlot::Empty => None,
+        crate::item_stack::WireSlot::Stack(s) => Some(rewo_world::inventory::ItemSlot {
+            item_id: s.item_id,
+            count: s.count,
+        }),
+    })
+}
+
+/// `ClientboundContainerSetContentPacket` (M34).
+///
+/// Body: `VarInt containerId`, `VarInt stateId`, a VarInt-counted list of
+/// optional `ItemStack`s, then the carried stack.
+///
+/// Applies only to `containerId == 0`, the player's own `InventoryMenu`. Every
+/// other id belongs to an open container screen, and Rewo has none — so
+/// ignoring them is not a shortcut, it is the whole truth about what this
+/// client can show.
+pub fn apply_container_set_content(
+    body: &[u8],
+    components: rewo_data::components::DataComponentIds,
+    inventory: &mut rewo_world::inventory::Inventory,
+) -> bool {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
+        return false;
+    };
+    if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
+        return false;
+    }
+    // A hostile or mismatched length is rejected before allocating for it.
+    if !(0..=1024).contains(&count) {
+        return false;
+    }
+    let mut slots = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        match read_slot(&mut r, components) {
+            Ok(s) => slots.push(s),
+            // Abandoned mid-list: everything after this point is garbage, so
+            // the packet is dropped whole and the previous contents stand.
+            Err(()) => return false,
+        }
+    }
+    let Ok(carried) = read_slot(&mut r, components) else {
+        return false;
+    };
+    inventory.set_content(state_id, &slots, carried)
+}
+
+/// `ClientboundContainerSetSlotPacket` (M34).
+///
+/// Body: `VarInt containerId`, `VarInt stateId`, **`i16` slot**, optional
+/// `ItemStack`. The slot is a short, not a var-int — the one field here that a
+/// glance at the neighbouring packets would get wrong.
+pub fn apply_container_set_slot(
+    body: &[u8],
+    components: rewo_data::components::DataComponentIds,
+    inventory: &mut rewo_world::inventory::Inventory,
+) -> bool {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
+        return false;
+    };
+    if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
+        return false;
+    }
+    let Ok(item) = read_slot(&mut r, components) else {
+        return false;
+    };
+    inventory.set_slot(state_id, slot as i32, item)
+}
+
+/// `ClientboundSetHeldSlotPacket` (M34) — one VarInt.
+///
+/// An out-of-range slot is **ignored**, matching
+/// `handleSetHeldSlot`'s `if (Inventory.isHotbarSlot(...))`: it does not clamp
+/// and it does not reset.
+pub fn apply_set_held_slot(
+    body: &[u8],
+    inventory: &mut rewo_world::inventory::Inventory,
+) -> bool {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let Ok(slot) = r.varint() else {
+        return false;
+    };
+    inventory.set_selected(slot)
+}
+
+/// The narrowest clientbound-play dispatch seam for the three inventory
+/// packets: routes a single `(packet id, body)` to whichever applier owns it,
+/// returning whether the id matched — **not** whether the update was applied.
+///
+/// Mirrors [`route_game_event`] so `play::PlaySession` and the `inventoryshot`
+/// oracle drive packet-id → inventory routing through the same production code.
+pub fn route_inventory(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    // `None` before the registry has resolved the data-component ids. The two
+    // container packets carry `ItemStack`s whose patches cannot be walked
+    // without them, and inventing ids would misparse rather than fail — so
+    // those two are matched and dropped. `set_held_slot` carries no stack and
+    // is applied regardless.
+    components: Option<rewo_data::components::DataComponentIds>,
+    inventory: &mut rewo_world::inventory::Inventory,
+) -> bool {
+    if id == ids.cb_play_container_set_content {
+        if let Some(c) = components {
+            apply_container_set_content(body, c, inventory);
+        }
+        return true;
+    }
+    if id == ids.cb_play_container_set_slot {
+        if let Some(c) = components {
+            apply_container_set_slot(body, c, inventory);
+        }
+        return true;
+    }
+    if id == ids.cb_play_set_held_slot {
+        apply_set_held_slot(body, inventory);
+        return true;
+    }
+    false
+}
+
 /// The kind information metadata routing needs, because several slots are
 /// polymorphic and only the entity type can separate them.
 ///

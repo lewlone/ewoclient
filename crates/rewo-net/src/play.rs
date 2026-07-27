@@ -109,6 +109,11 @@ pub struct PlaySession {
     /// Rain and thunder (M33), off `ClientboundGameEventPacket`. Cleared on a
     /// dimension change, the way a fresh `ClientLevel`'s are.
     pub weather: rewo_world::weather::WeatherState,
+    /// The player's own inventory (M34). Unlike the weather this is **not**
+    /// level state — vanilla's `Inventory` lives on the player, who survives a
+    /// dimension change — so it is deliberately not cleared by the transition.
+    /// The server re-sends the contents on respawn anyway.
+    pub inventory: rewo_world::inventory::Inventory,
     /// The overworld world clock, ported from 26.2 `ClientClockManager`. It is
     /// advanced from the same two places vanilla advances it: `set_time`
     /// (`handleUpdates` — advance by the game-time delta, then any explicit
@@ -739,6 +744,7 @@ impl<'a> Connection<'a> {
             block_updates: 0,
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
+            inventory: rewo_world::inventory::Inventory::default(),
             overworld_clock: None,
             game_time: None,
             dirty: std::collections::HashSet::new(),
@@ -1437,6 +1443,15 @@ impl PlaySession {
         ) {
             // M21: the damage response — arms the hurt clock (red overlay) and
             // kicks the walk animation, for a tracked living entity only.
+        } else if crate::route_inventory(
+            id,
+            body,
+            ids,
+            self.swing_data.as_ref().map(|d| d.components),
+            &mut self.inventory,
+        ) {
+            // M34: the player's own inventory — contents, one slot, or the
+            // server moving the selection.
         } else if crate::route_game_event(id, body, ids, &mut self.weather) {
             // M33: rain and thunder levels. The packet also carries a dozen
             // non-weather events; those match the id and change nothing.
