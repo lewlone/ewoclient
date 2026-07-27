@@ -1612,16 +1612,17 @@ M15 onward. All of M10–M33b is now **pushed** to
 clean fast-forward, closing the long-standing unmerged-branch risk.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M33b shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather and clouds)
+## Rewo — from-scratch native Minecraft client (M0–M37 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, and particles)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything through M36 is shipped, gated and merged** to `origin/main`
-(`5f5fbf7`) as of 2026-07-27, closing what had been the project's largest
-non-code risk — 78 commits on one unmerged branch. Branch new work from
-`main`. Rewo (from
+**Everything through M36 is shipped, gated and merged** to `origin/main` as of
+2026-07-27, closing what had been the project's largest non-code risk — 78
+commits on one unmerged branch. Branch new work from `main`. **M37 (particles)
+is shipped and gated on `codex/rewo-m37-particles`, rebased onto that main and
+not yet merged.** Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —
@@ -2648,6 +2649,32 @@ validation Rewo has.
   `REWO_PREVIEW_SKIN=<username|url>` and `REWO_MOUSE=x,y`. **Open:** the model
   stands still (no local-player animation state); lighting is Rewo's entity
   shading, not vanilla's `ENTITY_IN_UI` rig; armour is not shown on it.
+- **M37 particles (2026-07-27)** — the milestone REWO_PLAN §16 refused to
+  propose, because every gate here is geometry-based and particles looked
+  stochastic. They are not: **`Particle.tick()` contains no randomness at all**,
+  every generator is `java.util.Random`'s 48-bit LCG, and a fixed seed turns
+  spawn offset, velocity, lifetime, colour, quad size and sprite index into
+  assertable numbers. Two anchors stop that being circular, and they retire
+  different failure modes — the JDK's own `Random` is genuinely independent
+  ground truth for the generator (MC's `BitRandomSource` reimplements its
+  formulas), and a Java harness of **verbatim decompile source** grades the
+  physics, which is the only thing that can catch a *misreading* rather than a
+  mistranslation. It caught `+ 0.1` where vanilla writes `+ 0.1F` on its first
+  run — a ~1.5e-9 error, invisible in any screenshot, that shifted every
+  subsequent tick. `nextGaussian` is the one primitive graded to a **ULP bound**
+  instead of to the bit, because `Math.log` is a JIT intrinsic spec'd only to
+  1 ULP, so vanilla's own spawn scatter is not bit-reproducible between two
+  JVMs and a zero-tolerance gate there would assert more than vanilla
+  guarantees. Six kinds (block, smoke, flame, splash, crit, poof); a block-break
+  shard samples the **block** texture and a flame the particle strip, unified
+  into one `sampler2DArray` so both share a pipeline; `BakedAssets::
+  particle_layer` resolves each state's model `#particle` slot, which is why a
+  broken grass_block throws *dirt*-coloured shards. Gate **`rewo particleshot
+  --check` 34/34**, mutation-tested against five breakages. Verified live: the
+  shard colour **tracks the block state** (redstone red / lapis blue / gold
+  yellow), and a real `/setblock … air destroy` spawns exactly **64** shards —
+  the 4×4×4 grid the gate asserts from the other direction. **610 tests**; demo
+  PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

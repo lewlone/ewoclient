@@ -517,7 +517,7 @@ pub struct WorldRenderer {
     preview: Option<crate::entities::EntityPass>,
     /// This frame's preview matrix and window, or `None` when it is closed.
     preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
-    /// Particles (M35). `None` until `init_particles` supplies the atlas.
+    /// Particles (M37). `None` until `init_particles` supplies the atlas.
     particles: Option<crate::particles::ParticlePass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
@@ -1432,7 +1432,7 @@ impl WorldRenderer {
         }
     }
 
-    /// Build the particle pass (M35) from the particle atlas.
+    /// Build the particle pass (M37) from the particle atlas.
     pub fn init_particles(
         &mut self,
         gpu: &mut Gpu,
@@ -2104,7 +2104,7 @@ impl WorldRenderer {
             pass.draw(gpu, cb, view_proj, extent);
         }
         self.draw_translucent(gpu, cb, view_proj, extent);
-        // Particles (M35) sit with the other blended, depth-tested,
+        // Particles (M37) sit with the other blended, depth-tested,
         // non-depth-writing passes — after everything solid and translucent so
         // terrain occludes them, before weather so rain layers over smoke.
         if let Some(pass) = &self.particles {
@@ -2476,6 +2476,8 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.gui_items.take() {
+            pass.destroy(gpu);
+        }
         if let Some(mut pass) = self.particles.take() {
             pass.destroy(gpu);
         }
@@ -3045,7 +3047,7 @@ fn generate_mips(tex_size: u32, mip_levels: u32, base: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-/// `pub(crate)` so the M35 particle pass can build its own layered texture
+/// `pub(crate)` so the M37 particle pass can build its own layered texture
 /// through the same upload path rather than duplicating it.
 pub(crate) fn upload_texture_array(
     gpu: &mut Gpu,

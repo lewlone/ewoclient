@@ -1,4 +1,4 @@
-# Trajectory oracle vectors for vanilla 26.2 particles (Rewo M35).
+# Trajectory oracle vectors for vanilla 26.2 particles (Rewo M37).
 #
 # Produced by a standalone Java harness whose class bodies are COPIED
 # VERBATIM from the 26.2 decompile (net.minecraft.client.particle.*),

@@ -1,5 +1,5 @@
 #version 450
-// Particles — `assets/minecraft/shaders/core/particle.vsh` (M35).
+// Particles — `assets/minecraft/shaders/core/particle.vsh` (M37).
 //
 //     gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
 //     texCoord0   = UV0;

@@ -1660,7 +1660,7 @@ pub fn apply_swing_effect(
     entities.set_swing_effect(eid, effect, amplifier);
 }
 
-/// Decode a `level_particles` body (M35).
+/// Decode a `level_particles` body (M37).
 ///
 /// Wire order, from `ClientboundLevelParticlesPacket`'s reading constructor:
 /// `bool overrideLimiter`, `bool alwaysShow`, `f64 x/y/z`, `f32
@@ -1714,7 +1714,7 @@ pub fn route_level_particles(
     }))
 }
 
-/// Decode a `level_event` body (M35).
+/// Decode a `level_event` body (M37).
 ///
 /// Wire order: `i32 type`, `BlockPos pos`, `i32 data`, `bool globalEvent`.
 /// Only 2001 (`PARTICLES_DESTROY_BLOCK`) is a particle effect this milestone

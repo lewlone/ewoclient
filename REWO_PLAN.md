@@ -9,10 +9,12 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M36 shipped, headlessly verified, and MERGED (2026-07-27).**
-`origin/main` is at `5f5fbf7` and carries all of it. The long-standing branch
-risk — everything from M10 on living on one unmerged branch — is closed. See
-§0.0 for the fresh-session handoff and §15 for the per-milestone log.
+**Status: M0–M37 shipped and headlessly verified (2026-07-27).** M0–M36 are
+MERGED — `origin/main` carries all of it, and the long-standing branch risk
+(everything from M10 on living on one unmerged branch) is closed. **M37
+(particles) is on `codex/rewo-m37-particles`, rebased onto that main and not yet
+merged.** See §0.0 for the fresh-session handoff and §15 for the per-milestone
+log.
 
 ---
 
@@ -49,7 +51,20 @@ squashed or lost, and the per-milestone history in §15 still lines up
 one-to-one with the commits. **New work branches from `main` now.** The two
 `codex/rewo-*` branches are redundant and can be deleted whenever convenient.
 
-**Latest (2026-07-27): M36 — the player preview.** The black rectangle M35 left
+**Latest (2026-07-27): M37 — particles.** The one milestone §16 refused to
+propose, because every gate here is geometry-based and particles are stochastic
+and time-driven. They are not: `Particle.tick()` contains no randomness at all,
+every generator is `java.util.Random`'s LCG, and a fixed seed turns the whole
+subsystem into assertable numbers. Two anchors keep that from being circular —
+the JDK's own `Random` for the generator, and a Java harness of **verbatim
+decompile source** for the physics, which caught `+ 0.1` where vanilla writes
+`+ 0.1F` on its first run. `nextGaussian` is the one primitive graded to a ULP
+bound instead of to the bit, because `Math.log` is a JIT intrinsic and vanilla's
+own scatter is not bit-reproducible between two JVMs. Gate: **`rewo particleshot
+--check`, 34/34**, mutation-tested. Shipped on `codex/rewo-m37-particles`,
+rebased onto the merged main and **not yet merged**.
+
+**Before it (2026-07-27): M36 — the player preview.** The black rectangle M35 left
 in the middle of the inventory is `inventory.png`'s own window, and this fills
 it. The transform composes `PictureInPictureRenderer.prepare` and
 `GuiEntityRenderer.renderToTexture`; the step that is easy to miss is on the
@@ -323,27 +338,28 @@ Everything below is the *current* total, re-measured this session. Per-milestone
 figures inside §15 are the measurement taken at that milestone and will not
 match.
 
-- **586 tests** — 525 lib + 61 app. By crate: `rewo-world` 188, `rewo-net` 136,
-  `rewo-gpu` 80, `rewo-data` 72, `rewo-mesh` 38, `rewo-proto` 11, app 61.
-- **Fifteen serverless gates**, all green with Vulkan validation ON and
+- **610 tests** — 549 lib + 61 app. By crate: `rewo-world` 208, `rewo-net` 136,
+  `rewo-gpu` 84, `rewo-data` 72, `rewo-mesh` 38, `rewo-proto` 11, app 61.
+- **Sixteen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `hurtshot` 38/38, `weathershot` 35/35, `eventshot` 28/28, `itemshot` 28/28,
-  `danceshot` 24/24, `inventoryshot` 44/44, `portalshot` 12/12, plus `skyshot`,
-  `lightmapshot`, `tintshot`, `meshshot` and `dimensioncheck` (which report
-  pass/fail rather than a witness count).
+  `inventoryshot` 44/44, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `portalshot`
+  12/12, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot` and
+  `dimensioncheck` (which report pass/fail rather than a witness count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
   mismatches both channels; `play --dimension-check` 4/4 checkpoints + 3/3
   transitions; physics **CORRECTIONS 0** over 600 ticks; build actions prove
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
-  byte-identical from M15 through M36. Any change to it is a regression until
+  byte-identical from M15 through M37. Any change to it is a regression until
   argued otherwise.
 
 ### What to do next
 
-Nothing is mid-flight — every milestone through M36 is shipped, gated and
-merged. Three candidates, in the order I would take them:
+Nothing is mid-flight. M0–M36 are shipped, gated and merged; **M37 (particles)
+is shipped and gated on `codex/rewo-m37-particles`, rebased onto that main and
+awaiting merge.** Three candidates, in the order I would take them:
 
 1. **The first-person hand.** M34's inventory model was the named blocker and
    it is gone: the client knows what it is holding, and M22 already bakes every
@@ -359,9 +375,14 @@ merged. Three candidates, in the order I would take them:
 3. **Something from the survey** — [`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md)
    is the roadmap for picking the next *feature* rather than the next milestone.
 
-Deliberately not next: **particles** (every gate here is geometry-based; it
-needs a verification approach invented first — don't pick it casually) and
-**sound** (outside a renderer's scope).
+~~Deliberately not next: **particles**~~ — **shipped as M37.** The approach that
+unblocked it: vanilla's particle system is not actually stochastic, it is a
+deterministic function of a seed, so a fixed seed turns the whole subsystem into
+assertable numbers. Two anchors keep that honest — a real JVM for the LCG, and a
+Java harness of *verbatim decompile source* for the physics, which is the only
+thing that can catch a misreading rather than a mistranslation. See §15.
+
+Still deliberately not next: **sound** (outside a renderer's scope).
 
 ### The verification toolkit (how to check things yourself — USE THESE)
 
@@ -440,6 +461,23 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   offscreen and measure them as a **difference against the same scene with an
   empty draw list** — counting "non-black" pixels measures nothing, because the
   world pass paints a sky behind everything.
+- `rewo particleshot --check` — **the particle gate** (M37, fail-closed
+  **34/34**, serverless, CPU-only). Three layers. `w1`–`w10` drive raw
+  `level_particles` / `level_event` bodies — hand-assembled from the decompiled
+  *write* methods, not from a Rewo encoder, so a transposed field cannot
+  round-trip — through the production decoders; they pin that `count` is a plain
+  big-endian i32 rather than a VarInt, that `minecraft:block` alone carries an
+  options payload, that unsupported types are dropped rather than guessed at,
+  and that all 47 truncated prefixes decode to `None` without panicking.
+  `f1`–`f13` grade the spawn fan-out, including the `count == 0` inversion (the
+  `*_dist` fields become a **direction** and `max_speed` its magnitude) and the
+  sprite sets against the jar's own `particles/*.json`. `s1`–`s11` assert seeded
+  trajectories **bit-for-bit** against vectors emitted by a Java harness whose
+  class bodies are copied *verbatim* from the decompile — the only anchor that
+  can catch a misreading of vanilla rather than a mistranslation of it, and the
+  one that caught `+ 0.1` where vanilla writes `+ 0.1F`. Mutation-tested against
+  five deliberate breakages. It does **not** grade pixels: a particle quad is a
+  camera-facing billboard the existing passes already cover.
 - `rewo weathershot --check` — **the weather + cloud gate** (M33, fail-closed
   **27/27**, validation required, 0 VUIDs). Three layers: the `game_event` wire
   driven through `route_game_event` (including that **`START_RAINING` sets the
@@ -6298,6 +6336,183 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M37 — particles, and the verification approach they needed first (2026-07-27)
+
+§16 listed particles under "deliberately not next", with a reason rather than a
+shrug: *every gate here is geometry-based; it needs a verification approach
+invented first — don't pick it casually.* That is the right worry. Every gate in
+this project puts the renderer in a known state and asserts a **value** against a
+number derived independently. Particles resist that shape — spawned in bulk by a
+random process, then integrated over time, so no single frame's contents are a
+stated fact. "Render some smoke and see if it looks like smoke" is exactly the
+proxy the mob-texture lesson was written about.
+
+So the first deliverable was an argument, not code.
+
+**Vanilla's particle system is not actually stochastic. It is a deterministic
+function of a seed.** `Particle.tick()` contains no randomness at all — pure f64
+arithmetic over position, velocity, gravity, friction, age and lifetime. Every
+generator is a `LegacyRandomSource`, which is bit-for-bit `java.util.Random`'s
+48-bit LCG and ports to Rust exactly. Fix the seed and spawn offset, velocity,
+lifetime, colour, quad size and sprite index all become assertable numbers.
+
+The claim is not universal and is not rounded to make it so: `WaterDropParticle`
+overrides `tick` entirely — counting the lifetime **down** rather than the age
+up, applying gravity undivided where the base applies `0.04 * gravity`, using a
+hard-coded 0.98 friction, and drawing `nextFloat()` when it lands. Splash is
+built on it.
+
+**Two anchors keep the argument from being circular, and they retire different
+failure modes.** Minecraft's `BitRandomSource` reimplements `next(bits)`,
+`nextInt(bound)` and `nextFloat()` with formulas identical to the JDK's, so
+`java.util.Random`'s own output is genuinely independent ground truth for those
+three — asserted bit-for-bit from six seeds. That proves the generator. It
+cannot prove the *reading*: a second implementation written from the same
+misreading of the decompile would agree with the first. So a Java harness whose
+class bodies are **copied verbatim** out of the decompile emits per-tick
+trajectory vectors, checked in at
+`crates/rewo-world/src/particles_oracle_26_2.txt`. It runs in an empty world, so
+`collideBoundingBox` is the identity and no collision code executes on either
+side — that isolates the constructor and tick arithmetic, which is what these
+vectors grade.
+
+**It caught a bug on the first run.** Four of six kinds failed, all on `yd`, all
+low-bits-only. `+ 0.1` where vanilla writes `+ 0.1F` — widened, that float is
+`0.10000000149011612`. An error of ~1.5e-9: invisible in any screenshot, and it
+shifted every subsequent tick. Note *which* tests caught it. The RNG KATs
+passed. `splash` passed, because it overwrites `yd` a few lines later; `poof`
+passed, because it uses the 4-argument base and never runs that line. Only the
+four kinds routing through the 6-argument base failed. Every float literal now
+goes through a `w(v: f32) -> f64` helper so the widening is visible in the
+source.
+
+**Where bit-exactness is not available, and why that is correct.**
+`nextGaussian` evaluates `sqrt(-2 * log(r²) / r²)`. `sqrt` is IEEE-754
+correctly-rounded — measured 0 ULP divergence over 2M samples. `log` is not:
+vanilla calls `Math.log`, which the JLS specifies only to within 1 ULP and which
+HotSpot implements as an intrinsic. Measured on Temurin 25, `Math.log` and
+`StrictMath.log` differ on ~7% of inputs in (0,1) by ≤1 ULP, amplifying to ≤3
+ULP in the gaussian — so vanilla's own `nextGaussian` disagrees with
+`java.util.Random.nextGaussian` on ~3% of draws. **Vanilla's spawn scatter is
+therefore not bit-reproducible even between two JVMs**, and a gate demanding
+bit-equality there would assert something stronger than vanilla itself
+guarantees. Rust's `f64::ln` against the JVM over a 30,000-draw sweep: 22 draws
+(0.073%) differ, worst **2 ULP**. The bound is 8 — a 4× margin — and is scoped
+to that one primitive; everything else is graded to the bit.
+
+**A wrong theory, tested rather than shipped.** MC declares `DOUBLE_MULTIPLIER`
+as the *float* literal `1.110223E-16F` where the JDK uses `0x1.0p-53`, which
+looks like a real divergence and was written up as one before being checked. It
+is not: 2⁻⁵³ is a power of two and therefore exactly representable as an f32, so
+the literal rounds to precisely 2⁻⁵³. Pinned by a test rather than left as a
+comment.
+
+**One deliberate divergence.** Vanilla seeds each particle from
+`RandomSupport.generateUniqueSeed()`. Those seeds are *arbitrary* — no value is
+more correct than another — so Rewo derives them from a system-level master
+generator instead. Not an approximation: it draws from the same distribution and
+picks a *nameable* sample, which is what makes the gate exist.
+
+**A second defect, found by reading the authoritative data.** After the gate was
+green, checking the jar's own `assets/minecraft/particles/*.json` — rather than
+inferring sprite sets from the texture directory — turned up `splash.json`
+listing **four** textures, picked by `sprite.get(random)`. The trajectory
+witnesses could not catch it: they grade the particle's own generator, which the
+test hands in directly. What was wrong was the **engine** stream. Flame, Crit and
+Splash call `get(random)`; Smoke and Poof pass `sprites.first()` and animate by
+age; Terrain takes its sprite from the block model. The pick is a constructor
+*argument*, so it lands before any of the particle's own draws — and `nextInt(1)`
+looks like a no-op worth skipping but still advances the LCG. The texture
+directory is a proxy for the sprite set; the particle JSON is the property.
+
+**Rendering.** `SingleQuadParticle` billboards, through vanilla's
+`core/particle.vsh` — *the same shader its weather uses*, which is why the pass
+reads so close to `weather.rs`. Facing is `FacingCameraMode.LOOKAT_XYZ`; Rewo
+takes the right/up basis out of the view matrix (for a rotation matrix the
+**rows** are the world axes) rather than carrying a second quaternion that could
+drift. Positions are emitted in **world space** — the M33 weather trap, recorded
+in the module header.
+
+A block-break shard samples the **block** texture
+(`getParticleMaterial(state).sprite()`) while a flame samples the particle strip.
+Vanilla splits that across six `SingleQuadParticle.Layer` variants over three
+atlases; Rewo puts both in one `sampler2DArray` and selects per-vertex — one
+pipeline, one draw. The sprites are 8×8 against the block array's 16×16 and are
+point-upscaled 2×, with the helper refusing any non-integer ratio rather than
+silently blurring. The block half needed `BakedAssets::particle_layer`, which
+resolves each state's model `#particle` slot through the merged parent chain —
+**not** a face texture, because that gets the interesting case exactly wrong: a
+broken grass_block throws *dirt*-coloured shards despite its green top face.
+
+**Two more bugs the live wiring exposed**, both caught by numbers rather than by
+looking. The particle clock was anchored at 0 while `session.ticks` was already
+in the hundreds, so the first frame's catch-up ran every tick since connect and
+aged a 400-flame burst past its lifetime before it was drawn — the log read
+`alive=0` with the event correctly decoded. Anchored on first use now, and capped
+at 4 ticks: vanilla's `ParticleEngine.tick` runs once per client tick and a
+stalled client simply misses ticks. And the windowed path never built its
+`ParticleAssets`, so particles would have been invisible in an actual window
+while every headless check passed.
+
+**Gate: `rewo particleshot --check`** — serverless, CPU-only, fail-closed on both
+a failing witness and a witness that silently stopped running. **34 witnesses.**
+`w1`–`w10` the wire, from packet bodies hand-assembled out of the decompiled
+write methods (not a Rewo encoder: if the same code wrote and read the packet, a
+transposed field would round-trip happily). `f1`–`f13` the fan-out. `s1`–`s11`
+the simulation against the verbatim-source oracle. Witnesses worth naming: `w5`,
+that `count` is a plain big-endian i32 and not a VarInt; `w8`, that all 47
+truncated prefixes decode to `None` without panicking; `f4`, the `count == 0`
+inversion, where the three `*_dist` fields stop being a scatter radius and become
+a **direction** with `max_speed` its magnitude; `f1`/`f2`, that a seeded system
+is byte-identical across runs *and* that a different seed differs, because the
+first would also pass on a constant; `s9`, that `FlameParticle.move` bypasses
+collision **by design** so a "fix" would be the regression; `s10`, that
+`CritParticle` ticks inside its own constructor.
+
+**Mutation-tested**, because a witness that has never failed has not been shown
+to work. Restoring the `+ 0.1F` bug fails 4 trajectory witnesses — and splash and
+poof correctly still pass. Reading `count` as a VarInt fails 9, starting at `w5`.
+Transposing `x_dist`/`y_dist` fails `w4` and `f4`. Coarsening the destroy-block
+density 0.25 → 0.5 fails `f7`/`f8`/`f10` at 8 shards instead of 64. Declaring
+`Splash` single-frame again fails `f12`.
+
+**Live verification** against a real 26.2 server, each render diffed against a
+particle-free control frame of the same scene: `/particle flame` ×400 → 400
+quads, mean RGB (244,160,34) orange; `block{redstone_block}` → (120,20,9) red;
+`block{lapis_block}` → (30,57,112) **blue**; `block{gold_block}` → (195,171,56)
+yellow. The three block rows are load-bearing: the shard colour **tracks the
+block state**, which is what proves the per-state `particle_layer` lookup and the
+array sampling are real rather than a constant fallback. And `/setblock … air
+destroy` — a genuine server-side break — sends `level_event` 2001 and spawns
+exactly **64** shards, the same 4×4×4 grid `particleshot`'s `f7` asserts from the
+other direction.
+
+**Measured after rebasing onto the M0–M36 main.** 610 tests (586 + 24: 20 in
+`rewo-world`, 4 in `rewo-gpu`). All sixteen serverless gates green with Vulkan
+validation ON and 0 VUIDs — `mobshot` 243/243, `blockentityshot` 172,
+`swingshot` 97, `inventoryshot` 44, `hurtshot` 38, `weathershot` 35,
+`particleshot` 34, `eventshot` 28, `itemshot` 28, `danceshot` 24, `portalshot`
+12, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`.
+Canonical demo PNG still
+`2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` — checked
+deliberately rather than assumed, since resolving `#particle` can allocate new
+texture-array layers for sprites no face happened to use, which would reorder the
+array. It did not.
+
+**Open.** Six kinds (block, smoke, flame, splash, crit, poof), not 125 —
+unsupported types are dropped rather than guessed at, which is safe because
+packets are length-framed, and most of the other 119 carry option payloads whose
+codecs are untranscribed. No translucent sorting; particles blend, depth-test and
+do not depth-write, where vanilla sorts its translucent layers. Splash's
+fluid-height removal is half-implemented: vanilla removes a water drop below the
+max of the block's collision height *and its fluid height*, and Rewo has no
+fluid-height query on the collision seam, so a splash over still water lives
+marginally longer. Terrain shards use vanilla's flat 0.6 grey without the
+per-block tint multiply. `roll` is unapplied — none of the six kinds sets it. And
+the gate does not grade pixels: a particle quad is a camera-facing billboard the
+existing passes already cover, and what was novel about particles was the
+simulation.
 
 ### M35 — the inventory screen (2026-07-27)
 

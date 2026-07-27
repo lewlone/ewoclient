@@ -235,7 +235,7 @@ pub struct BakedAssets {
     pub layer_names: Vec<String>,
     /// Per block state: the texture-array layer vanilla's
     /// `getParticleMaterial(state).sprite()` samples for a block-break shard
-    /// (M35) — the model's `#particle` texture slot, resolved through the same
+    /// (M37) — the model's `#particle` texture slot, resolved through the same
     /// parent chain the faces use. `NO_PARTICLE_LAYER` when the block has no
     /// model, no `particle` slot, or its texture is missing from the jar, in
     /// which case no shard is drawn rather than an invented one.
@@ -286,7 +286,7 @@ pub struct BakedAssets {
     /// precipitation draws nothing rather than an invented streak.
     pub rain: Option<DecodedImage>,
     pub snow: Option<DecodedImage>,
-    /// The particle sprites (M35). `None` means particles draw nothing rather
+    /// The particle sprites (M37). `None` means particles draw nothing rather
     /// than an invented sprite.
     pub particles: Option<ParticleSprites>,
     /// `environment/clouds.png` (M33) — a *map*, one texel per 12x12x4 cell,
@@ -952,7 +952,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 }
 
 /// Decode one `assets/minecraft/textures/environment/<rel>` image, or `None`.
-/// The particle sprite sets M35 simulates, taken from the jar's own
+/// The particle sprite sets M37 simulates, taken from the jar's own
 /// `assets/minecraft/particles/<name>.json` rather than guessed from the
 /// texture directory.
 ///
@@ -982,7 +982,7 @@ pub const PARTICLE_SPRITE_SETS: &[(&str, &[&str])] = &[
 
 /// The particle sprites, decoded into `TEX_SIZE`-square layers so they can
 /// live in the same texture array as the block textures a terrain shard needs
-/// (M35). Vanilla's are 8x8; they are point-upscaled 2x, which is exact for
+/// (M37). Vanilla's are 8x8; they are point-upscaled 2x, which is exact for
 /// pixel art.
 pub struct ParticleSprites {
     /// `TEX_SIZE * TEX_SIZE * 4` bytes each, in `PARTICLE_SPRITE_SETS` order,
@@ -1001,7 +1001,7 @@ impl ParticleSprites {
     }
 }
 
-/// Decode every particle sprite M35 needs. A missing file drops the whole
+/// Decode every particle sprite M37 needs. A missing file drops the whole
 /// bake rather than shipping a set with a hole in it — an out-of-range frame
 /// index would otherwise sample a neighbouring sprite.
 fn bake_particle_sprites(jar: Jar) -> Option<ParticleSprites> {
@@ -1884,7 +1884,7 @@ impl<'a> Baker<'a> {
         Some(out)
     }
 
-    /// The texture-array layer a block-break shard samples (M35).
+    /// The texture-array layer a block-break shard samples (M37).
     ///
     /// Vanilla asks the block-state model set for
     /// `getParticleMaterial(state).sprite()`, which is the model's `particle`

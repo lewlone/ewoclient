@@ -1,4 +1,4 @@
-//! registries.json → particle-type table (M35).
+//! registries.json → particle-type table (M37).
 //!
 //! `level_particles` carries the particle as a protocol id into the
 //! `minecraft:particle_type` registry, and the simulation wants the name

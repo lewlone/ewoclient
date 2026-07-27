@@ -1,5 +1,5 @@
 //! Client-side particle simulation — a transcription of vanilla 26.2's
-//! `net.minecraft.client.particle` (M35).
+//! `net.minecraft.client.particle` (M37).
 //!
 //! # Why this subsystem needed a verification approach before it needed code
 //!

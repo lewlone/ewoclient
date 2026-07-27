@@ -92,7 +92,7 @@ pub struct GameData {
     pub components: components::DataComponentIds,
     /// Which entity types are living, and which tick a combat swing (M19).
     pub entity_classes: entity_types::EntityClasses,
-    /// Particle-type registry ids → names (M35 particles).
+    /// Particle-type registry ids → names (M37 particles).
     pub particle_types: particle_types::ParticleTypes,
 }
 

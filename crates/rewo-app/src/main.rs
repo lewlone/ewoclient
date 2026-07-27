@@ -195,7 +195,7 @@ enum Command {
     /// animation type, asserting every value against independent decompiled
     /// transcriptions with `--check` (no server, no GPU).
     Swingshot(swingshot_cmd::SwingshotArgs),
-    /// M35 particle oracle: drive raw `level_particles` / `level_event` bodies
+    /// M37 particle oracle: drive raw `level_particles` / `level_event` bodies
     /// through the production decoders, grade the spawn fan-out, and assert
     /// seeded particle trajectories bit-for-bit against vectors emitted by a
     /// Java harness copied verbatim from the decompile (`--check`, no server,

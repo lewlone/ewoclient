@@ -1,4 +1,4 @@
-//! The particle pass — camera-facing billboards (M35).
+//! The particle pass — camera-facing billboards (M37).
 //!
 //! Ground truth: `net/minecraft/client/particle/SingleQuadParticle.java`
 //! (`extractRotatedQuad`) and `assets/minecraft/shaders/core/particle.vsh`.
@@ -17,7 +17,7 @@
 //! the basis vectors the quaternion would rotate to.
 //!
 //! Vanilla's `roll` (a Z-rotation about the view axis, used by a few types) is
-//! not applied — none of the six kinds M35 simulates sets it. Recorded here so
+//! not applied — none of the six kinds M37 simulates sets it. Recorded here so
 //! the omission is a scope decision rather than an oversight.
 //!
 //! # Deviations, stated rather than implied

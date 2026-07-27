@@ -145,7 +145,7 @@ pub struct PlaySession {
     /// Columns the server dropped — the renderer frees their GPU buffers.
     removed: Vec<(i32, i32)>,
     /// Particle spawn requests decoded from `level_particles` / `level_event`
-    /// (M35), drained by the renderer each frame. Empty for the headless bot,
+    /// (M37), drained by the renderer each frame. Empty for the headless bot,
     /// which has no particle system.
     pub particle_events: Vec<rewo_world::particles::ParticleEvent>,
     /// Registry-id → name for `minecraft:particle_type`, so a version bump
@@ -1300,7 +1300,7 @@ impl PlaySession {
         } else if Some(id) == ids.cb_play_level_particles
             || Some(id) == ids.cb_play_level_event
         {
-            // M35. Both packets feed the same queue; the renderer drains it
+            // M37. Both packets feed the same queue; the renderer drains it
             // and owns the actual spawning, because the particle system needs
             // the block shapes and the RNG that live on that side.
             let ev = if Some(id) == ids.cb_play_level_particles {

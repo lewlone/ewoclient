@@ -1,5 +1,5 @@
 #version 450
-// `assets/minecraft/shaders/core/particle.fsh` (M35):
+// `assets/minecraft/shaders/core/particle.fsh` (M37):
 //
 //     vec4 color = texture(Sampler0, texCoord0) * vertexColor * ColorModulator;
 //     if (color.a < 0.1) discard;

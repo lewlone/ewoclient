@@ -1294,7 +1294,7 @@ fn eye_view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32;
     (proj * view).to_cols_array_2d()
 }
 
-/// The view matrix alone — extracted so the M35 particle billboards take their
+/// The view matrix alone — extracted so the M37 particle billboards take their
 /// right/up basis from exactly the matrix the frame is projected through,
 /// rather than from a second construction that could drift from it.
 fn eye_view(eye: Vec3, yaw_deg: f32, pitch_deg: f32) -> Mat4 {
@@ -4838,7 +4838,7 @@ fn effective_weather(session: &PlaySession) -> rewo_world::weather::WeatherState
 #[allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
-// Particles (M35)
+// Particles (M37)
 // ---------------------------------------------------------------------------
 
 /// The live particle system plus the layer bookkeeping the pass needs.
@@ -4881,8 +4881,8 @@ impl ParticleAssets {
         }
         Some(Self {
             // A fixed seed: the run is reproducible, which is the property the
-            // M35 gate rests on. Vanilla's per-particle seeds are arbitrary, so
-            // any seed is an equally valid vanilla outcome (REWO_M35_PARTICLES).
+            // M37 gate rests on. Vanilla's per-particle seeds are arbitrary, so
+            // any seed is an equally valid vanilla outcome (REWO_PLAN §15, M37).
             sys: rewo_world::particles::ParticleSystem::new(0x5EED_1234),
             sprite_base,
             sets,

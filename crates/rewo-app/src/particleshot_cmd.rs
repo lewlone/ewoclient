@@ -1,4 +1,4 @@
-//! `rewo particleshot --check` — the particle oracle (M35).
+//! `rewo particleshot --check` — the particle oracle (M37).
 //!
 //! Serverless, CPU-only, fail-closed.
 //!
