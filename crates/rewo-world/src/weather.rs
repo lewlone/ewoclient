@@ -879,9 +879,14 @@ mod extract_tests {
 
 /// `AtmosphericFogEnvironment.applyWeatherDarken`.
 ///
-/// Rain scales red and green by `1 - rain*0.5` but blue only by `1 - rain*0.4`,
-/// so a rainy sky does not merely dim — it goes **bluer** as it dims. Thunder
-/// then scales all three equally. Alpha is untouched.
+/// Rain scales red and green by `1 - rain*0.5` but blue only by `1 - rain*0.4`;
+/// thunder then scales all three equally. Alpha is untouched.
+///
+/// **This is a secondary touch-up, not where the sky greys.** It runs inside
+/// `getBaseColor` on the SKY colour only (never on the fog colour), and on a
+/// value that [`WeatherAttributes`] has already blended most of the way to grey.
+/// Implementing this alone — which Rewo did at first — moves a rainy sky by
+/// about 40% and leaves it obviously blue.
 pub fn apply_weather_darken(color: i32, rain_level: f32, thunder_level: f32) -> i32 {
     let mut c = color;
     if rain_level > 0.0 {
@@ -958,5 +963,307 @@ mod darken_tests {
         assert_eq!(rain_brightness(0.0), 1.0);
         assert_eq!(rain_brightness(1.0), 0.0);
         assert_eq!(rain_brightness(0.25), 0.75);
+    }
+}
+
+// -- `WeatherAttributes`: what rain actually does to the sky -------------------
+//
+// This, not `applyWeatherDarken`, is where a rainy sky goes grey. 26.2 moved
+// weather's visual effect into the **environment attribute system**
+// (`net/minecraft/world/attribute/WeatherAttributes.java`): RAIN and THUNDER are
+// attribute *layers* that rewrite the resolved values before any renderer reads
+// them. `AtmosphericFogEnvironment.applyWeatherDarken` still exists and still
+// applies, but only to the sky colour inside fog-colour derivation, and on top
+// of an already-greyed value.
+//
+// Two things about the layering are easy to get wrong. The two levels
+// **partition** rather than stack: `rainLevel = getRainLevel() - thunderLevel`,
+// so a full thunderstorm applies the THUNDER row alone. And the THUNDER
+// modifier is applied to the RAIN row's *output*, not to the base.
+
+/// `ARGB.greyscale` — the luma weights are 0.30 / 0.59 / 0.11, and the result
+/// **truncates**.
+pub fn greyscale(color: i32) -> i32 {
+    let u = color as u32;
+    let ch = |s: u32| ((u >> s) & 0xFF) as f32;
+    let g = (ch(16) * 0.3 + ch(8) * 0.59 + ch(0) * 0.11) as u32;
+    ((u & 0xFF00_0000) | (g << 16) | (g << 8) | g) as i32
+}
+
+/// `ARGB.multiply` — per channel, `a * b / 255`, **including alpha**. `-1`
+/// (opaque white) on either side is the identity, which is the shortcut vanilla
+/// takes and the reason a `#ffffffff` argument changes nothing.
+pub fn multiply(lhs: i32, rhs: i32) -> i32 {
+    if lhs == -1 {
+        return rhs;
+    }
+    if rhs == -1 {
+        return lhs;
+    }
+    let (l, r) = (lhs as u32, rhs as u32);
+    let ch = |s: u32| (((l >> s) & 0xFF) * ((r >> s) & 0xFF) / 255) << s;
+    (ch(24) | ch(16) | ch(8) | ch(0)) as i32
+}
+
+/// `ColorModifier.BLEND_TO_GRAY` — greyscale the subject, scale that to
+/// `brightness`, then `srgbLerp` `factor` of the way toward it.
+///
+/// This is the whole reason a rainy sky greys out. At RAIN's `(0.6, 0.75)` the
+/// sky ends up three quarters of the way to a 60%-bright grey.
+pub fn blend_to_gray(color: i32, brightness: f32, factor: f32) -> i32 {
+    let grey = scale_rgb(greyscale(color), brightness, brightness, brightness);
+    crate::biome::srgb_lerp(factor, color, grey)
+}
+
+/// `ARGB.alphaBlend(destination, source)` — source-over, with vanilla's exact
+/// integer rounding and its two shortcuts.
+pub fn alpha_blend(destination: i32, source: i32) -> i32 {
+    let (d, s) = (destination as u32, source as u32);
+    let (da, sa) = ((d >> 24) & 0xFF, (s >> 24) & 0xFF);
+    if sa == 255 {
+        return source;
+    }
+    if sa == 0 {
+        return destination;
+    }
+    let a = sa + da * (255 - sa) / 255;
+    let ch = |shift: u32| -> u32 {
+        let (dc, sc) = ((d >> shift) & 0xFF, (s >> shift) & 0xFF);
+        if a == 0 {
+            0
+        } else {
+            (sc * sa + dc * da * (255 - sa) / 255) / a
+        }
+    };
+    ((a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)) as i32
+}
+
+/// `Timelines.NIGHT_SKY_LIGHT_COLOR` — `colorFromFloat(1, 0.48, 0.48, 1)`.
+pub const NIGHT_SKY_LIGHT_COLOR: i32 = 0xFF7A7AFFu32 as i32;
+
+/// The visual attributes rain and thunder rewrite.
+///
+/// Every field is the *resolved* value the renderer would otherwise have used,
+/// so [`WeatherAttributes::apply`] is a straight in-place transformation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherAttributes {
+    pub sky_color: i32,
+    pub fog_color: i32,
+    pub cloud_color: i32,
+    pub sky_light_level: f32,
+    pub sky_light_color: i32,
+    pub sky_light_factor: f32,
+    pub star_brightness: f32,
+    pub sunrise_sunset_color: i32,
+}
+
+impl WeatherAttributes {
+    /// Apply the RAIN and then the THUNDER layer.
+    ///
+    /// `rain` and `thunder` are `Level.getRainLevel` and `getThunderLevel` —
+    /// note the latter is already multiplied by the former, and that the rain
+    /// row is driven by the **difference**.
+    pub fn apply(&mut self, rain: f32, thunder: f32) {
+        let rain_only = rain - thunder;
+        if rain_only > 0.0 {
+            self.layer(rain_only, Row::RAIN);
+        }
+        if thunder > 0.0 {
+            self.layer(thunder, Row::THUNDER);
+        }
+    }
+
+    fn layer(&mut self, level: f32, row: Row) {
+        // `stateChangeLerp` is the type's own lerp: `srgbLerp` for colours and
+        // `Mth.lerp` for floats (`AttributeType.ofInterpolated` passes one lerp
+        // into all four slots).
+        let lerp_c = |from: i32, to: i32| crate::biome::srgb_lerp(level, from, to);
+        let lerp_f = |from: f32, to: f32| from + (to - from) * level;
+
+        self.sky_color = lerp_c(
+            self.sky_color,
+            blend_to_gray(self.sky_color, row.sky_gray.0, row.sky_gray.1),
+        );
+        self.fog_color = lerp_c(self.fog_color, multiply(self.fog_color, row.fog_multiply));
+        self.cloud_color = lerp_c(
+            self.cloud_color,
+            blend_to_gray(self.cloud_color, row.cloud_gray.0, row.cloud_gray.1),
+        );
+        // `FloatModifier.ALPHA_BLEND` is `Mth.lerp(alpha, subject, value)`.
+        self.sky_light_level = lerp_f(
+            self.sky_light_level,
+            self.sky_light_level
+                + (row.sky_light_level.0 - self.sky_light_level) * row.sky_light_level.1,
+        );
+        self.sky_light_color = lerp_c(
+            self.sky_light_color,
+            alpha_blend(
+                self.sky_light_color,
+                // `ARGB.color(alpha, NIGHT_SKY_LIGHT_COLOR)` replaces the alpha.
+                (NIGHT_SKY_LIGHT_COLOR & 0x00FF_FFFF)
+                    | (((row.sky_light_alpha * 255.0) as i32) << 24),
+            ),
+        );
+        self.sky_light_factor = lerp_f(
+            self.sky_light_factor,
+            self.sky_light_factor
+                + (row.sky_light_factor.0 - self.sky_light_factor) * row.sky_light_factor.1,
+        );
+        // `.set(...)`, not `.modify(...)`: stars are switched OFF, and the
+        // layer lerps toward off. Rain does not dim them, it removes them.
+        self.star_brightness = lerp_f(self.star_brightness, 0.0);
+        self.sunrise_sunset_color = lerp_c(
+            self.sunrise_sunset_color,
+            multiply(self.sunrise_sunset_color, row.fog_multiply),
+        );
+    }
+}
+
+/// One row of `WeatherAttributes` — the RAIN or THUNDER modifier arguments,
+/// transcribed literally.
+#[derive(Clone, Copy)]
+struct Row {
+    sky_gray: (f32, f32),
+    cloud_gray: (f32, f32),
+    /// The `MULTIPLY_RGB` / `MULTIPLY_ARGB` argument, as ARGB.
+    fog_multiply: i32,
+    /// `FloatWithAlpha(value, alpha)`.
+    sky_light_level: (f32, f32),
+    sky_light_factor: (f32, f32),
+    sky_light_alpha: f32,
+}
+
+impl Row {
+    const RAIN: Self = Self {
+        sky_gray: (0.6, 0.75),
+        cloud_gray: (0.24, 0.5),
+        // `colorFromFloat(1.0, 0.5, 0.5, 0.6)`.
+        fog_multiply: 0xFF80_8099u32 as i32,
+        sky_light_level: (4.0, 0.3125),
+        sky_light_factor: (0.24, 0.3125),
+        sky_light_alpha: 0.3125,
+    };
+    const THUNDER: Self = Self {
+        sky_gray: (0.24, 0.94),
+        cloud_gray: (0.095, 0.94),
+        // `colorFromFloat(1.0, 0.25, 0.25, 0.3)`.
+        fog_multiply: 0xFF40_404Cu32 as i32,
+        sky_light_level: (4.0, 0.527_343_75),
+        sky_light_factor: (0.24, 0.527_343_75),
+        sky_light_alpha: 0.527_343_75,
+    };
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    use super::*;
+
+    /// The Overworld's `visual/sky_color`.
+    const OVERWORLD_SKY: i32 = 0xFF78A7FFu32 as i32;
+
+    fn base() -> WeatherAttributes {
+        WeatherAttributes {
+            sky_color: OVERWORLD_SKY,
+            fog_color: 0xFFC0D8FFu32 as i32,
+            cloud_color: 0xCCFF_FFFFu32 as i32,
+            sky_light_level: 15.0,
+            sky_light_color: -1,
+            sky_light_factor: 1.0,
+            star_brightness: 1.0,
+            sunrise_sunset_color: 0x80FF_A050u32 as i32,
+        }
+    }
+
+    fn rgb(c: i32) -> (i32, i32, i32) {
+        ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF)
+    }
+
+    /// The headline: a rainy sky is DESATURATED, not merely darker. The blue
+    /// channel has to come down toward red and green, which
+    /// `applyWeatherDarken` alone never does.
+    #[test]
+    fn full_rain_greys_the_sky_rather_than_only_dimming_it() {
+        let mut a = base();
+        a.apply(1.0, 0.0);
+        let (r, _g, b) = rgb(a.sky_color);
+        let (r0, _g0, b0) = rgb(OVERWORLD_SKY);
+        let spread0 = b0 - r0;
+        let spread = b - r;
+        assert!(
+            spread * 3 < spread0,
+            "channel spread must collapse: {spread0} -> {spread}"
+        );
+        // #78a7ff (120, 167, 255) -> (106, 114, 136): nearly neutral, and
+        // roughly half as bright. Both halves matter — a pure dim would keep
+        // the spread, and a pure desaturate would keep the luma.
+        assert!(
+            (b as f32) < b0 as f32 * 0.6,
+            "and it darkens substantially: {b0} -> {b}"
+        );
+        assert!(
+            r < r0,
+            "every channel comes down, not just the saturated one: {r0} -> {r}"
+        );
+    }
+
+    /// Thunder is applied to the RAIN row's OUTPUT, and the two levels
+    /// partition — a full thunderstorm is the THUNDER row alone.
+    #[test]
+    fn thunder_is_darker_than_rain_and_does_not_stack_with_it() {
+        let (mut r, mut t) = (base(), base());
+        r.apply(1.0, 0.0);
+        t.apply(1.0, 1.0);
+        assert!(rgb(t.sky_color).2 < rgb(r.sky_color).2, "thunder is darker");
+        // rain - thunder == 0, so the rain row never runs.
+        let mut only_thunder = base();
+        only_thunder.layer(1.0, Row::THUNDER);
+        assert_eq!(t.sky_color, only_thunder.sky_color);
+    }
+
+    #[test]
+    fn clear_weather_is_the_identity() {
+        let mut a = base();
+        a.apply(0.0, 0.0);
+        assert_eq!(a, base());
+    }
+
+    /// Stars are SET to zero, not scaled — at full rain there are none.
+    #[test]
+    fn rain_removes_the_stars() {
+        let mut a = base();
+        a.apply(1.0, 0.0);
+        assert_eq!(a.star_brightness, 0.0);
+        let mut half = base();
+        half.apply(0.5, 0.0);
+        assert_eq!(half.star_brightness, 0.5);
+    }
+
+    /// The lightmap darkens too — this is the piece a `client/`-only search for
+    /// `getRainLevel` misses entirely, because it reaches the level through the
+    /// attribute system.
+    #[test]
+    fn rain_darkens_the_sky_light() {
+        let mut a = base();
+        a.apply(1.0, 0.0);
+        assert!(a.sky_light_level < 15.0, "{}", a.sky_light_level);
+        assert!(a.sky_light_factor < 1.0, "{}", a.sky_light_factor);
+        assert_ne!(a.sky_light_color, -1, "and it tints toward the night colour");
+    }
+
+    /// `ARGB.multiply` treats opaque white as the identity on either side.
+    #[test]
+    fn multiply_shortcuts_on_white() {
+        assert_eq!(multiply(-1, 0x1234_5678), 0x1234_5678);
+        assert_eq!(multiply(0x1234_5678, -1), 0x1234_5678);
+    }
+
+    /// `greyscale` uses luma weights, not a plain average — a saturated blue
+    /// must come out dark, not mid-grey.
+    #[test]
+    fn greyscale_is_luma_weighted() {
+        let blue = greyscale(0xFF0000FFu32 as i32) & 0xFF;
+        assert_eq!(blue, 28, "0.11 * 255 truncated");
+        let green = greyscale(0xFF00FF00u32 as i32) & 0xFF;
+        assert_eq!(green, 150, "0.59 * 255 truncated");
     }
 }

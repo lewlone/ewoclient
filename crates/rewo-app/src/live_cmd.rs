@@ -1677,13 +1677,16 @@ fn run_headless(
         &lightmap,
         session.day_ticks,
         session.active_dimension_type.as_ref(),
+        {
+            let w = effective_weather(&session);
+            (w.rain_level(), w.thunder_level())
+        },
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     // M33: the sun and moon fade out as rain comes in
     // (`SkyRenderState.rainBrightness`).
     let mut cel = celestial_state_of(session.day_ticks);
-    cel.rain_brightness =
-        rewo_world::weather::rain_brightness(effective_weather(&session).rain_level());
+    apply_weather_to_celestial(&mut cel, &session);
     world_renderer.set_celestial(cel);
     apply_weather(&mut world_renderer, &mut gpu, &session, &mut weather_assets, 1.0);
     let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
@@ -2176,6 +2179,10 @@ impl LiveApp {
             &lightmap,
             session.day_ticks,
             session.active_dimension_type.as_ref(),
+            {
+                let w = effective_weather(session);
+                (w.rain_level(), w.thunder_level())
+            },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
         let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time(), (cr, cu));
@@ -2252,8 +2259,7 @@ impl LiveApp {
             .world_renderer
             .set_celestial({
                 let mut cel = celestial_state_of(session.day_ticks);
-                cel.rain_brightness =
-                    rewo_world::weather::rain_brightness(effective_weather(session).rain_level());
+                apply_weather_to_celestial(&mut cel, session);
                 cel
             });
         // M33: the cloud deck and this frame's precipitation. The assets are
@@ -3630,6 +3636,21 @@ fn resolve_lightmap(
 /// Convert the CPU `LightmapState` into the GPU renderer's mirror. The two
 /// structs carry identical fields (only `sky_light_color`/`sky_color` differ in
 /// name), so this is a field-for-field copy.
+/// The lightmap's sky colour is a linear 0..1 triple; `WeatherAttributes`
+/// works in ARGB. These two convert between them **without** an sRGB transfer:
+/// `SKY_LIGHT_COLOR` reaches the shader through `ARGB.vector3fFromRGB24`, a
+/// plain `/255`, so a round trip through here must be the same plain scale or
+/// clear weather would shift.
+fn linear_rgb_to_argb(c: [f32; 3]) -> i32 {
+    let ch = |v: f32| ((v.clamp(0.0, 1.0) * 255.0).round() as i32) & 0xFF;
+    (0xFFu32 as i32) << 24 | (ch(c[0]) << 16) | (ch(c[1]) << 8) | ch(c[2])
+}
+
+fn argb_to_linear_rgb(c: i32) -> [f32; 3] {
+    let ch = |s: u32| ((c as u32 >> s) & 0xFF) as f32 / 255.0;
+    [ch(16), ch(8), ch(0)]
+}
+
 fn to_world_lightmap(s: &LightmapState) -> WorldLightmapState {
     WorldLightmapState {
         sky_factor: s.sky_factor,
@@ -3651,8 +3672,32 @@ fn apply_lightmap(
     state: &LightmapState,
     day_ticks: Option<i64>,
     dimension: Option<&DimensionTypeDef>,
+    // M33: the rain and thunder levels, because `WeatherAttributes` modifies
+    // SKY_LIGHT_FACTOR and SKY_LIGHT_COLOR — the world genuinely dims in a
+    // storm, and without this the terrain stays at clear-weather brightness
+    // under a black sky.
+    weather: (f32, f32),
 ) {
-    wr.set_lightmap_state(to_world_lightmap(state));
+    let mut lm = to_world_lightmap(state);
+    let (rain, thunder) = weather;
+    if rain > 0.0 {
+        let mut a = rewo_world::weather::WeatherAttributes {
+            sky_color: 0,
+            fog_color: 0,
+            cloud_color: 0,
+            sky_light_level: 15.0,
+            // The lightmap's own resolved colour, packed back to ARGB so the
+            // attribute layer's `alphaBlend` sees what vanilla's would.
+            sky_light_color: linear_rgb_to_argb(lm.sky_color),
+            sky_light_factor: lm.sky_factor,
+            star_brightness: 0.0,
+            sunrise_sunset_color: 0,
+        };
+        a.apply(rain, thunder);
+        lm.sky_factor = a.sky_light_factor;
+        lm.sky_color = argb_to_linear_rgb(a.sky_light_color);
+    }
+    wr.set_lightmap_state(lm);
     // The sky/fog gradient multiply is a day-timeline track too, so it is gated
     // on the same dimension test — otherwise a midnight Overworld clock would
     // black out the End's `#000000`-based sky and blue-shift its fog.
@@ -3669,16 +3714,31 @@ fn apply_lightmap(
 /// context (offline non-biome server) leaves the GPU's default fixed sky.
 fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession) {
     let eye = eye_f64(session);
-    // M33: `AtmosphericFogEnvironment` darkens the sky colour that feeds fog
-    // before anything else uses it. Red and green scale by `1 - rain*0.5` but
-    // blue only by `1 - rain*0.4`, so an overcast sky goes BLUER as it darkens
-    // rather than merely dimmer; thunder then scales all three equally.
+    // M33. Two distinct weather effects apply here, and only one of them is
+    // `applyWeatherDarken`:
+    //
+    //   1. `WeatherAttributes` rewrites the resolved SKY and FOG colours before
+    //      any renderer sees them — the sky blends most of the way to grey, the
+    //      fog is multiplied down. This is what actually greys a rainy sky.
+    //   2. `AtmosphericFogEnvironment.getBaseColor` then applies
+    //      `applyWeatherDarken` to the SKY colour only, on top of (1).
+    //
+    // Applying (2) to the fog as well — which this did before — double-darkens
+    // it with a curve that was never meant for it.
     let w = effective_weather(session);
     let (rain, thunder) = (w.rain_level(), w.thunder_level());
-    let darken = |c: i32| rewo_world::weather::apply_weather_darken(c, rain, thunder);
+    let weathered = |sky: i32, fog: i32| -> (i32, i32) {
+        let mut a = weather_attributes(sky, fog, session);
+        a.apply(rain, thunder);
+        (
+            rewo_world::weather::apply_weather_darken(a.sky_color, rain, thunder),
+            a.fog_color,
+        )
+    };
     if let Some(sky) = session.world.camera_sky(eye) {
         let fog = session.world.camera_fog(eye).unwrap_or(sky);
-        wr.set_sky_fog_base(argb_to_linear(darken(sky)), argb_to_linear(darken(fog)));
+        let (sky, fog) = weathered(sky, fog);
+        wr.set_sky_fog_base(argb_to_linear(sky), argb_to_linear(fog));
         return;
     }
     // No biome context (an offline / non-biome server): the positional layer
@@ -3689,7 +3749,8 @@ fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession) {
     // decompile does not license; `None` there leaves the GPU default.
     let def = session.active_dimension_type.as_ref();
     if let (Some(sky), Some(fog)) = (def.and_then(|d| d.sky_color), def.and_then(|d| d.fog_color)) {
-        wr.set_sky_fog_base(argb_to_linear(darken(sky)), argb_to_linear(darken(fog)));
+        let (sky, fog) = weathered(sky, fog);
+        wr.set_sky_fog_base(argb_to_linear(sky), argb_to_linear(fog));
     }
 }
 
@@ -4413,7 +4474,13 @@ fn apply_weather(
 
     // -- clouds --
     let dim = session.active_dimension_type.as_ref();
-    let color = dim.map(|d| d.cloud_color).unwrap_or(0);
+    // `WeatherAttributes` greys the cloud colour too — a rainy deck is a dark
+    // grey one, not the clear-weather white at lower alpha.
+    let color = {
+        let mut a = weather_attributes(0, 0, session);
+        a.apply(weather.rain_level(), weather.thunder_level());
+        a.cloud_color
+    };
     let height = dim
         .map(|d| d.cloud_height)
         .unwrap_or(rewo_world::dimension::DEFAULT_CLOUD_HEIGHT);
@@ -4508,4 +4575,51 @@ fn apply_weather(
     ) {
         log::warn!("live: weather upload failed: {e}");
     }
+}
+
+/// The resolved visual attributes weather rewrites, gathered for one frame.
+///
+/// The cloud, star and sky-light entries come along because
+/// `WeatherAttributes` modifies all of them together; callers take the fields
+/// they need. `sky_light_level` is carried but unused — Rewo's lightmap is
+/// driven by `sky_light_factor` and `sky_light_color`, and `SKY_LIGHT_LEVEL`
+/// feeds `Level.skyDarken`, which is a mob-spawning input rather than a
+/// rendering one.
+fn weather_attributes(
+    sky: i32,
+    fog: i32,
+    session: &PlaySession,
+) -> rewo_world::weather::WeatherAttributes {
+    let dim = session.active_dimension_type.as_ref();
+    rewo_world::weather::WeatherAttributes {
+        sky_color: sky,
+        fog_color: fog,
+        cloud_color: dim.map(|d| d.cloud_color).unwrap_or(0),
+        sky_light_level: 15.0,
+        sky_light_color: dim
+            .map(|d| d.sky_light_color)
+            .unwrap_or(rewo_world::dimension::DEFAULT_SKY_LIGHT_COLOR),
+        sky_light_factor: dim
+            .map(|d| d.sky_light_factor)
+            .unwrap_or(rewo_world::dimension::DEFAULT_SKY_LIGHT_FACTOR),
+        star_brightness: 1.0,
+        sunrise_sunset_color: 0,
+    }
+}
+
+/// Weather's two effects on the celestials.
+///
+/// `SkyRenderer` fades the sun and moon by `1 - rainLevel`, and — separately,
+/// through `WeatherAttributes` — the stars are **set to zero**, not dimmed.
+fn apply_weather_to_celestial(
+    cel: &mut rewo_gpu::celestial::CelestialState,
+    session: &PlaySession,
+) {
+    let w = effective_weather(session);
+    let (rain, thunder) = (w.rain_level(), w.thunder_level());
+    cel.rain_brightness = rewo_world::weather::rain_brightness(rain);
+    let mut a = weather_attributes(0, 0, session);
+    a.star_brightness = cel.star_brightness;
+    a.apply(rain, thunder);
+    cel.star_brightness = a.star_brightness;
 }

@@ -2519,6 +2519,18 @@ validation Rewo has.
     `[0,0,0]` where the two coincide; it now renders 2,500 blocks out. Wired
     into `rewo live` (both paths) with `REWO_FORCE_WEATHER=<rain>[,<thunder>]`
     as the headless knob.
+  - **M33b — the rainy sky greys through `WeatherAttributes`, not
+    `applyWeatherDarken`.** M33 shipped the latter and the sky stayed blue.
+    26.2 puts weather's visuals in the **environment attribute system**
+    (`world/attribute/WeatherAttributes.java`): RAIN/THUNDER layers rewrite
+    SKY_COLOR (`BLEND_TO_GRAY`), FOG_COLOR (`MULTIPLY_RGB`), CLOUD_COLOR,
+    SKY_LIGHT_LEVEL/COLOR/FACTOR, STAR_BRIGHTNESS (`set 0` — stars are removed,
+    not dimmed) and SUNRISE_SUNSET_COLOR before any renderer reads them.
+    `applyWeatherDarken` is a secondary touch-up on the SKY colour only; M33 had
+    also applied it to the fog, double-darkening it. **The lightmap does darken
+    in rain** — a `client/`-only grep for `getRainLevel` misses it because it
+    arrives through the attribute system. The levels **partition**
+    (`rain - thunder`), and THUNDER applies to RAIN's output.
   - 547 tests (486 lib + 61 app); demo PNG byte-identical to M15 onward.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

@@ -24,13 +24,13 @@ use rewo_gpu::weather::{
 use rewo_gpu::world::{perspective_reverse_z, SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_world::weather::{
-    apply_weather_darken, rain_brightness, BiomeClimate, ClimateNoise, Precipitation,
-    TemperatureModifier, WeatherState,
+    apply_weather_darken, greyscale, multiply, rain_brightness, BiomeClimate, ClimateNoise,
+    Precipitation, TemperatureModifier, WeatherAttributes, WeatherState,
 };
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 27;
+const EXPECTED_WITNESSES: usize = 32;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 128;
 const H: u32 = 128;
@@ -105,6 +105,7 @@ fn run_check(
     check_precipitation(&mut c);
     check_cloud_mesh(&mut c);
     check_darken(&mut c);
+    check_attributes(&mut c);
 
     let mut off = Offscreen::new(gpu, W, H)?;
     let ring = OverlayRing::default();
@@ -463,6 +464,90 @@ fn check_darken(c: &mut Checker) {
         "the guards are `> 0.0`, so clear weather does not even truncate; and \
          `rainBrightness = 1 - rainLevel` becomes the sun's and moon's alpha, so \
          M12's celestials fade out as rain comes in",
+    );
+}
+
+/// The attribute layer — where a rainy sky ACTUALLY greys out.
+///
+/// M33 first shipped only `applyWeatherDarken` and the sky stayed obviously
+/// blue. The real mechanism is `WeatherAttributes`, a set of environment
+/// attribute layers that rewrite SKY_COLOR, FOG_COLOR, CLOUD_COLOR,
+/// SKY_LIGHT_*, STAR_BRIGHTNESS and SUNRISE_SUNSET_COLOR before any renderer
+/// reads them.
+fn check_attributes(c: &mut Checker) {
+    const OVERWORLD_SKY: i32 = 0xFF78A7FFu32 as i32;
+    let base = || WeatherAttributes {
+        sky_color: OVERWORLD_SKY,
+        fog_color: 0xFFC0D8FFu32 as i32,
+        cloud_color: 0xCCFF_FFFFu32 as i32,
+        sky_light_level: 15.0,
+        sky_light_color: -1,
+        sky_light_factor: 1.0,
+        star_brightness: 1.0,
+        sunrise_sunset_color: 0x80FF_A050u32 as i32,
+    };
+    let rgb = |c: i32| ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+
+    let mut rain = base();
+    rain.apply(1.0, 0.0);
+    let (r0, _, b0) = rgb(OVERWORLD_SKY);
+    let (r, g, b) = rgb(rain.sky_color);
+    c.record(
+        "a1.rain_greys_the_sky_rather_than_only_dimming_it",
+        (b - r) * 3 < (b0 - r0) && b < b0,
+        format!(
+            "the Overworld sky {:?} becomes ({r},{g},{b}) at full rain — the              channel spread collapses from {} to {}, which is DESATURATION, not              dimming. `BLEND_TO_GRAY(0.6, 0.75)` takes it three quarters of the              way to a 60%-bright luma grey. `applyWeatherDarken` alone (which is              what M33 shipped first) moves it about 40% and leaves it blue",
+            rgb(OVERWORLD_SKY),
+            b0 - r0,
+            b - r
+        ),
+    );
+
+    let mut thunder = base();
+    thunder.apply(1.0, 1.0);
+    let mut thunder_only = base();
+    thunder_only.apply(1.0, 1.0);
+    c.record(
+        "a2.the_two_levels_partition_rather_than_stack",
+        rgb(thunder.sky_color).2 < rgb(rain.sky_color).2 && thunder == thunder_only,
+        format!(
+            "full thunder gives {:?} against rain's {:?}. `rainLevel =              getRainLevel() - thunderLevel`, so a full thunderstorm runs the              THUNDER row ALONE — the rain row contributes nothing at that point",
+            rgb(thunder.sky_color),
+            rgb(rain.sky_color)
+        ),
+    );
+
+    c.record(
+        "a3.rain_removes_the_stars_rather_than_dimming_them",
+        rain.star_brightness == 0.0 && {
+            let mut half = base();
+            half.apply(0.5, 0.0);
+            half.star_brightness == 0.5
+        },
+        "STAR_BRIGHTNESS is `.set(0)`, not a modifier — the layer lerps toward          OFF, so half rain leaves half the stars and full rain leaves none",
+    );
+
+    c.record(
+        "a4.rain_darkens_the_lightmap_and_greys_the_clouds",
+        rain.sky_light_factor < 1.0
+            && rain.sky_light_color != -1
+            && rgb(rain.cloud_color).2 < rgb(base().cloud_color).2,
+        format!(
+            "sky_light_factor {:.3}, sky_light_color {:08x}, cloud {:?}. A              `client/`-only search for `getRainLevel` finds NONE of this: the              lightmap reaches the rain level through the attribute system, which              is why M33 first concluded rain did not affect it",
+            rain.sky_light_factor,
+            rain.sky_light_color,
+            rgb(rain.cloud_color)
+        ),
+    );
+
+    let mut clear = base();
+    clear.apply(0.0, 0.0);
+    c.record(
+        "a5.clear_weather_touches_nothing_and_the_primitives_are_vanillas",
+        clear == base()
+            && greyscale(0xFF0000FFu32 as i32) & 0xFF == 28
+            && multiply(-1, 0x1234_5678) == 0x1234_5678,
+        "both guards are `> 0.0`; `greyscale` is luma-weighted (0.11 * 255          truncates to 28 for pure blue, not 85); and `ARGB.multiply` shortcuts          on opaque white",
     );
 }
 

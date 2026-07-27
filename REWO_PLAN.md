@@ -5833,6 +5833,72 @@ comparison matches its own depth buffer, not vanilla's.
 The third exclusion — "there is no read-back oracle for the rendered pixels" —
 was closed the same day by **M32b**, below.
 
+### M33b — `WeatherAttributes`, where a rainy sky actually greys (2026-07-27)
+
+M33 shipped `AtmosphericFogEnvironment.applyWeatherDarken` — `1 - rain*0.5` on
+red and green, `1 - rain*0.4` on blue — transcribed exactly and gated. The live
+sky then stayed obviously blue, which is what prompted looking again.
+
+**It was the wrong mechanism.** 26.2 moved weather's visual effect into the
+**environment attribute system**: `net/minecraft/world/attribute/
+WeatherAttributes.java` defines RAIN and THUNDER as attribute *layers* that
+rewrite the resolved values before any renderer reads them.
+
+| attribute | RAIN | THUNDER |
+|---|---|---|
+| `SKY_COLOR` | `BLEND_TO_GRAY(0.6, 0.75)` | `BLEND_TO_GRAY(0.24, 0.94)` |
+| `FOG_COLOR` | `MULTIPLY_RGB(0.5, 0.5, 0.6)` | `MULTIPLY_RGB(0.25, 0.25, 0.3)` |
+| `CLOUD_COLOR` | `BLEND_TO_GRAY(0.24, 0.5)` | `BLEND_TO_GRAY(0.095, 0.94)` |
+| `SKY_LIGHT_LEVEL` | `ALPHA_BLEND(4.0, 0.3125)` | `ALPHA_BLEND(4.0, 0.527)` |
+| `SKY_LIGHT_COLOR` | toward the night colour | stronger |
+| `SKY_LIGHT_FACTOR` | `ALPHA_BLEND(0.24, 0.3125)` | same |
+| `STAR_BRIGHTNESS` | `set 0` | `set 0` |
+| `SUNRISE_SUNSET_COLOR` | `MULTIPLY_ARGB` | stronger |
+
+`BLEND_TO_GRAY(brightness, factor)` greyscales the subject with luma weights
+(0.30 / 0.59 / 0.11, truncating), scales that to `brightness`, then `srgbLerp`s
+`factor` of the way toward it. At RAIN's `(0.6, 0.75)` the Overworld's
+`#78a7ff` goes to `(102, 114, 136)` — the channel spread collapses from 135 to
+34. That is **desaturation**, which `applyWeatherDarken` never does; it only
+scales, and its blue-favouring ratio actually makes a rainy sky *bluer*.
+
+`applyWeatherDarken` is still real and still applies — but only to the SKY
+colour, inside `getBaseColor`, on top of the already-greyed value. M33 had
+applied it to the **fog** as well, which double-darkened the fog with a curve
+meant for the sky; the fog's own weather change is the `MULTIPLY_RGB` row.
+
+**Three things this corrected beyond the sky.** The lightmap *does* darken in
+rain, through `SKY_LIGHT_LEVEL` / `SKY_LIGHT_COLOR` / `SKY_LIGHT_FACTOR` — M33
+had concluded it did not, from a `client/`-only grep for `getRainLevel` that
+this path reaches through the attribute system rather than directly. Stars are
+**switched off** (`.set(0)`), not dimmed. And clouds grey too.
+
+**Two layering details worth not re-deriving.** The levels *partition* rather
+than stack — `rainLevel = getRainLevel() - thunderLevel`, so a full
+thunderstorm runs the THUNDER row alone. And THUNDER is applied to the RAIN
+row's *output*, not to the base.
+
+Measured live at `[9.5, -60, 1.5]` on the local 26.2 server, sampling the same
+sky and ground pixels across three runs:
+
+| | sky | ground |
+|---|---|---|
+| clear | `(119, 166, 255)` | `(113, 128, 90)` |
+| rain | `(50, 56, 81)` | `(99, 113, 85)` |
+| thunder | `(10, 11, 15)` | `(89, 101, 81)` |
+
+The rain sky is the attribute layer's `(102, 114, 136)` with
+`applyWeatherDarken`'s `×0.5 / ×0.5 / ×0.6` on top — the two mechanisms
+composing exactly as vanilla composes them.
+
+**Still not implemented:** `rainFogMultiplier`, the fourth `getRainLevel`
+consumer, which pulls `environmentalStart` by −160 and `environmentalEnd` by
+−256 (floored at 96) as rain builds. It thickens distance fog rather than
+changing any colour.
+
+Gates: **554 tests**, `weathershot` 27 → **32/32**, every other gate green with
+validation ON and 0 VUIDs, demo SHA-256 `2cc56b4a…` byte-identical.
+
 ### M33 — weather and clouds (2026-07-27)
 
 Rain, snow and a cloud deck. Both were listed under §16 "deliberately not
