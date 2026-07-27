@@ -18,6 +18,7 @@ pub mod inventory;
 pub mod light;
 pub mod lightmap;
 pub mod palette;
+pub mod particles;
 pub mod physics;
 pub mod raycast;
 pub mod weather;
