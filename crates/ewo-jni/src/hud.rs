@@ -7627,17 +7627,35 @@ fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: 
         // height covers ROW_H + any setting sliders below it.
         let card = row.row;
         let card_rr = RRect::new_rect_xy(card, 12.0, 12.0);
+
+        // Opaque wine base on *every* card, enabled or not.
+        //
+        // The enabled card used to be berry at alpha 0.18 with no base, while
+        // the disabled one was wine at 0.72. That made an enabled card's
+        // appearance a function of whatever happened to be behind it: over
+        // bright sky it washed out to near-white, over dirt it read rich. Two
+        // cards in the same state looked like different states depending on
+        // where the player was standing, which is the "washed out" complaint
+        // in its purest form. The accent now rides *on top* of an opaque base,
+        // so "enabled" looks the same everywhere.
         let mut card_fill = Paint::default();
         card_fill.set_anti_alias(true);
-        card_fill.set_color4f(
-            if st.enabled {
-                Color4f::new(BERRY.0 as f32 / 255.0, BERRY.1 as f32 / 255.0, BERRY.2 as f32 / 255.0, 0.18)
-            } else {
-                rgba(WINE, 0.72)
-            },
-            None,
-        );
+        card_fill.set_color4f(rgba(WINE, 0.72), None);
         canvas.draw_rrect(card_rr, &card_fill);
+        if st.enabled {
+            let mut accent = Paint::default();
+            accent.set_anti_alias(true);
+            accent.set_color4f(
+                Color4f::new(
+                    BERRY.0 as f32 / 255.0,
+                    BERRY.1 as f32 / 255.0,
+                    BERRY.2 as f32 / 255.0,
+                    0.22,
+                ),
+                None,
+            );
+            canvas.draw_rrect(card_rr, &accent);
+        }
         let mut card_border = Paint::default();
         card_border.set_anti_alias(true);
         card_border.set_style(PaintStyle::Stroke);
