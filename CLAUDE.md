@@ -1608,7 +1608,8 @@ that stars merely dim. The rain fog ramp needed a second, *environmental* fog
 band in the world pass, pinned by four mutation-verified pixel witnesses in
 `lightmapshot`. **561 tests**, fourteen gates green, demo PNG byte-identical to
 M15 onward. All of M10–M33b is now **pushed** to
-`codex/rewo-m19-combat-swings` — 72 commits ahead of `origin/main`, unmerged.*
+`codex/rewo-m19-combat-swings`; **merged to `origin/main` on 2026-07-27** as a
+clean fast-forward, closing the long-standing unmerged-branch risk.*
 ---
 
 ## Rewo — from-scratch native Minecraft client (M0–M33b shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather and clouds)
@@ -1617,9 +1618,10 @@ M15 onward. All of M10–M33b is now **pushed** to
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything through M33b is shipped, gated and pushed** to
-`codex/rewo-m19-combat-swings` — which is **72 commits ahead of `origin/main`
-and unmerged**, the largest non-code risk in the project. Rewo (from
+**Everything through M36 is shipped, gated and merged** to `origin/main`
+(`5f5fbf7`) as of 2026-07-27, closing what had been the project's largest
+non-code risk — 78 commits on one unmerged branch. Branch new work from
+`main`. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —

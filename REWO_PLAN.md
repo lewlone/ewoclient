@@ -9,11 +9,10 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M36 shipped + headlessly verified (2026-07-27).** All of it is
-**pushed**, on branch `codex/rewo-m19-combat-swings` (HEAD `ce9028c`) — but
-`origin/main` is still at `973ea5e`, the M0–M9 point, and the branch is **72
-commits ahead of it**. Nothing has been merged. See §0.0 for the fresh-session
-handoff and §15 for the per-milestone log.
+**Status: M0–M36 shipped, headlessly verified, and MERGED (2026-07-27).**
+`origin/main` is at `5f5fbf7` and carries all of it. The long-standing branch
+risk — everything from M10 on living on one unmerged branch — is closed. See
+§0.0 for the fresh-session handoff and §15 for the per-milestone log.
 
 ---
 
@@ -36,14 +35,19 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M36 shipped, M34–M36 local, the rest pushed, none merged
+### Where it is: M0–M36 shipped, pushed and merged to `main`
 
-Everything is on `codex/rewo-m19-combat-swings` (HEAD `ce9028c`), which exists
-on the remote and is **72 commits ahead of `origin/main`**. `origin/main` is
-still at `973ea5e`, the M0–M9 point. The branch name stopped describing its
-contents around M20; renaming or merging it is a standing loose end, and the
-largest non-code risk in the project is that all of M10 onward lives on one
-unmerged branch.
+`origin/main` is at **`5f5fbf7`**, and `codex/rewo-m19-combat-swings` and
+`codex/rewo-m34-inventory` point at the same commit. Everything from M0 to M36
+is on the default branch.
+
+This closed on 2026-07-27, and it had been the project's largest non-code risk
+for a long time: 78 commits, everything from M10 on, on a branch whose name
+stopped describing its contents around M20. It went in as a clean
+fast-forward — `main` had nothing the branch lacked — so nothing was rebased,
+squashed or lost, and the per-milestone history in §15 still lines up
+one-to-one with the commits. **New work branches from `main` now.** The two
+`codex/rewo-*` branches are redundant and can be deleted whenever convenient.
 
 **Latest (2026-07-27): M36 — the player preview.** The black rectangle M35 left
 in the middle of the inventory is `inventory.png`'s own window, and this fills
@@ -338,21 +342,20 @@ match.
 
 ### What to do next
 
-Nothing is mid-flight — every milestone through M36 is shipped and gated (M34,
-M35 and M36 are committed locally, not yet pushed). Three candidates, in the
-order I would take them:
+Nothing is mid-flight — every milestone through M36 is shipped, gated and
+merged. Three candidates, in the order I would take them:
 
-1. **Merge the branch.** `codex/rewo-m19-combat-swings` is 72 commits ahead of
-   `origin/main` and carries everything from M10 on. This is not a milestone,
-   it is the largest non-code risk in the project, and its name stopped
-   describing its contents around M20.
-2. **The inventory model** — the single largest remaining *player* gap, and the
-   named blocker for two deferred features. `container_set_content`,
-   `container_set_slot` and `set_held_slot` are all clientbound in 26.2 and have
-   **zero references** in `rewo-net`, which is why `set_hud(health, food, slot)`
-   draws a hotbar frame with nothing in the nine slots, and why the local player
-   holds nothing even though M22 renders held items on mobs. §16's "first-person
-   hand / GUI — needs an inventory model Rewo does not have" is exactly this.
+1. **The first-person hand.** M34's inventory model was the named blocker and
+   it is gone: the client knows what it is holding, and M22 already bakes every
+   item's geometry through both paths. What is missing is the `firstperson_*`
+   `display` transforms and the arm, which is the last thing standing between
+   Rewo and looking like a Minecraft client from the inside. §16 listed this as
+   "needs an inventory model Rewo does not have" — that sentence is now stale.
+2. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
+   clicking and the player preview; shift-click quick-move is the most-used
+   action still missing, and tooltips are the most visible. Both are bounded
+   ports of arms of `doClick` and `AbstractContainerScreen` that are already
+   half-transcribed.
 3. **Something from the survey** — [`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md)
    is the roadmap for picking the next *feature* rather than the next milestone.
 
