@@ -6478,41 +6478,47 @@ density 0.25 → 0.5 fails `f7`/`f8`/`f10` at 8 shards instead of 64. Declaring
 `Splash` single-frame again fails `f12`.
 
 **Live verification** against a real 26.2 server on a freshly wiped flat world,
-re-run after the rebase, each render diffed against a particle-free control
+re-run after each rebase, every render diffed against a particle-free control
 frame of the same scene:
 
-| trigger | quads | mean RGB of the shards |
+| trigger | quads | mean RGB of the changed pixels |
 |---|---|---|
-| `/particle flame` ×400 | 400 | (248, 162, 32) orange |
-| `/particle block{redstone_block}` ×400 | 400 | (119, 22, 11) red |
-| `/particle block{lapis_block}` ×400 | 400 | (29, 56, 110) **blue** |
-| `/particle block{gold_block}` ×400 | 400 | (194, 169, 54) yellow |
-| `/setblock … air destroy` | **64** | (100, 82, 57) dirt |
+| `/particle flame` ×400 | 400 | (246, 163, 33) orange |
+| `/particle block{redstone_block}` ×400 | 400 | (120, 25, 12) red |
+| `/particle block{lapis_block}` ×400 | 400 | (31, 59, 110) **blue** |
+| `/particle block{gold_block}` ×400 | 400 | (193, 170, 54) yellow |
+| `/setblock … air destroy` | **64** / 384 verts | — see below |
 
 The three `block{…}` rows are the load-bearing ones: the shard colour **tracks
 the block state**, which is what proves the per-state `particle_layer` lookup and
-the array sampling are real rather than a constant fallback. The break row proves
-the other half — a genuine server-side break sends `level_event` 2001 and spawns
-exactly the 4×4×4 grid `particleshot`'s `f7` asserts from the other direction.
+the array sampling are real rather than a constant fallback. Reproduced across
+three separate runs; the means drift by a couple of units run to run (spawn
+position and world time differ per connect), so the assertion is the dominant
+channel and the ordering, not the exact triple.
 
-Two further properties fell out of measuring the break's colour. `grass_block`
-and `dirt` particles render to a **byte-identical** mean, confirming that
-`#particle` really does resolve grass_block to dirt — the case the resolver
-exists for. And the break shards land within **0.04** chromaticity L1 of an
-explicit `block{grass_block}` particle (against 0.84 for redstone), so the
-destroy path and the `level_particles` path resolve the same texture.
+The break row's claim is the **count**: a genuine server-side break sends
+`level_event` 2001 and spawns exactly the 4×4×4 grid `particleshot`'s `f7`
+asserts from the other direction. Reproduced exactly, twice.
 
-**A confounded control, and how it showed.** The first attempt diffed the break
-against a control rendered *before* it, and read the shards as bright neutral
-grey. `/setblock … air destroy` **changes the world**: a removed block two metres
-from the camera covers thousands of pixels, and those were being counted as
-particles. The tell was that restricting to strongly-changed pixels made the
-discrepancy *worse* rather than better, which ruled out the edge-blending
-explanation. The fix is a control rendered in the *same* world state — a second
-`destroy` on the now-air block emits no event, so it is a particle-free frame of
-an identical scene. Recorded because the failure mode is not specific to
-particles: any witness that diffs two frames has to hold everything except the
-thing under test constant, and a world-mutating trigger silently does not.
+**What the break row deliberately does NOT claim, and why.** An earlier run
+measured its shards at within 0.04 chromaticity of an explicit
+`block{grass_block}` particle and that figure was written down as fact. It did
+not survive a second run, which put the same comparison at 0.16 and rising with
+the threshold. **Frame-diffing cannot cleanly measure this trigger**, because
+`/setblock … air destroy` *mutates the world*: the removed block covers thousands
+of pixels, the shards spawn inside the volume it vacated, and the two frames also
+differ in lighting *history* (one relit incrementally from a client-side edit,
+the other received the server's light at chunk load). A control rendered in the
+same world state removes the largest term but not all of them. The tell, both
+times, was that restricting to strongly-changed pixels made the discrepancy
+*worse* rather than better — the signature of a contaminated control rather than
+of edge blending.
+
+So the destroy path's *texture* resolution is left to the evidence that does hold
+it: it is the same `particle_layer` lookup the three `block{…}` rows exercise,
+and `grass_block` reaches `block/dirt` through its model's literal `#particle`
+while `dirt` reaches the same texture through `#all` — a source fact from the
+jar, not a pixel measurement. The first figure is retracted rather than defended.
 
 **Measured after rebasing onto the M0–M36 main.** 610 tests (586 + 24: 20 in
 `rewo-world`, 4 in `rewo-gpu`). All sixteen serverless gates green with Vulkan

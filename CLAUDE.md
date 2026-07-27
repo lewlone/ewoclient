@@ -2675,18 +2675,21 @@ validation Rewo has.
   yellow), and a real `/setblock … air destroy` spawns exactly **64** shards —
   the 4×4×4 grid the gate asserts from the other direction. **610 tests**; demo
   PNG byte-identical to M15 onward.
-- **A frame-diff witness must hold everything but the subject constant** (M37,
-  and not particle-specific). Measuring the block-break shards' colour against a
-  control rendered *before* the break read them as bright grey: `/setblock … air
-  destroy` **changes the world**, and a removed block two metres from the camera
-  covers thousands of pixels that the diff counted as particles. The tell was
-  that restricting to strongly-changed pixels made the discrepancy *worse*, which
-  killed the edge-blending explanation. The fix is a control in the *same* world
-  state — a second `destroy` on the now-air block emits no event, giving a
-  particle-free frame of an identical scene, and the shards then measured dirt
-  brown within 0.04 chromaticity of an explicit `block{grass_block}` particle. Any
-  witness that diffs two frames inherits this trap whenever its trigger mutates
-  the world.
+- **A frame-diff witness must hold everything but the subject constant, and a
+  world-mutating trigger cannot** (M37, not particle-specific). Measuring the
+  block-break shards' colour by frame-diff gave 0.04 chromaticity agreement with
+  an explicit `block{grass_block}` particle on one run and 0.16 on the next, so
+  the first figure was **retracted rather than defended**. `/setblock … air
+  destroy` changes the world: the removed block covers thousands of pixels, the
+  shards spawn inside the volume it vacated, and the two frames differ in
+  lighting *history* (one relit incrementally from a client edit, the other given
+  the server's light at chunk load). A same-world control removes the largest
+  term but not all of them. **The diagnostic tell, both times, was that
+  restricting to strongly-changed pixels made the discrepancy WORSE** — that is
+  the signature of a contaminated control, where edge-blending would have
+  improved. Measure such a path by a property that does not need a clean frame
+  diff (here: the spawn *count*, and the texture resolution the non-mutating
+  `/particle block{…}` rows already exercise).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
