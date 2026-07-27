@@ -6,6 +6,7 @@
 //! `vslider`, `vdrop`, `vstatus`, `pbar`, `toggle`, `pathfield`, etc.
 
 pub mod glass_panel;
+pub mod liquid_glass;
 pub mod meta_pill;
 pub mod pbar;
 pub mod scrollbar;
@@ -18,6 +19,9 @@ pub mod vstatus;
 pub mod vtoggle;
 
 pub use glass_panel::{draw_glass_panel, PANEL_RADIUS};
+pub use liquid_glass::{
+    draw_liquid_glass, Backdrop as GlassBackdrop, Params as LiquidGlassParams,
+};
 pub use meta_pill::{draw_meta_pill, draw_meta_pill_row, meta_pill_size};
 pub use pbar::{draw_pbar, PbarState};
 pub use scrollbar::draw_scrollbar;
