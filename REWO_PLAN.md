@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M37 shipped, headlessly verified, and MERGED (2026-07-27).**
+**Status: M0–M38 shipped and headlessly verified (2026-07-28); M0–M37 merged.**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -49,7 +49,23 @@ squashed or lost, and the per-milestone history in §15 still lines up
 one-to-one with the commits. **New work branches from `main` now.** The two
 `codex/rewo-*` branches are redundant and can be deleted whenever convenient.
 
-**Latest (2026-07-27): M37 — particles.** The one milestone §16 refused to
+**Latest (2026-07-28): M38 — the first-person hand.** The blocker §0.0 named
+was M34's inventory model, and with it gone the hand went in: the held item
+through both geometry paths, the swing, the equip dip and the view sway. Two
+bake rules are invertible — an absent `firstperson_lefthand` falls back to the
+*right* entry and only in first person, and the left/right mirror is applied at
+draw time rather than baked (`handheld` authors its left pre-mirrored, so the
+two cancel). The swing clock is not a new machine: `LocalPlayer` is an ordinary
+`LivingEntity`, so it takes an id in M19's swing table, and M34's inventory
+supplies the held item the duration needs. The hand has **its own projection** —
+`calculateHudFov` returns a hard-coded 70 — and vanilla clears depth before
+drawing it, without which a wall a block away slices your arm off. The render
+was first committed with an unexplained 1.36x width discrepancy; bisecting
+showed the geometry matched a hand derivation to a tenth of a pixel and the
+fault was the *detector*, which was also counting the hotbar's dirt icons.
+`rewo handshot --check`, **19/19**. Detail in §15.
+
+**Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
 and time-driven. They are not: `Particle.tick()` contains no randomness at all,
 every generator is `java.util.Random`'s LCG, and a fixed seed turns the whole
@@ -335,21 +351,22 @@ Everything below is the *current* total, re-measured this session. Per-milestone
 figures inside §15 are the measurement taken at that milestone and will not
 match.
 
-- **610 tests** — 549 lib + 61 app. By crate: `rewo-world` 208, `rewo-net` 136,
-  `rewo-gpu` 84, `rewo-data` 72, `rewo-mesh` 38, `rewo-proto` 11, app 61.
-- **Sixteen serverless gates**, all green with Vulkan validation ON and
+- **623 tests** — 562 lib + 61 app. By crate: `rewo-world` 208, `rewo-net` 136,
+  `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
+- **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `inventoryshot` 44/44, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
-  34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `portalshot`
-  12/12, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot` and
-  `dimensioncheck` (which report pass/fail rather than a witness count).
+  34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `handshot`
+  19/19, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+  `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
+  count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
   mismatches both channels; `play --dimension-check` 4/4 checkpoints + 3/3
   transitions; physics **CORRECTIONS 0** over 600 ticks; build actions prove
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
-  byte-identical from M15 through M37. Any change to it is a regression until
+  byte-identical from M15 through M38. Any change to it is a regression until
   argued otherwise.
 
 ### What to do next
@@ -357,12 +374,12 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The first-person hand.** M34's inventory model was the named blocker and
-   it is gone: the client knows what it is holding, and M22 already bakes every
-   item's geometry through both paths. What is missing is the `firstperson_*`
-   `display` transforms and the arm, which is the last thing standing between
-   Rewo and looking like a Minecraft client from the inside. §16 listed this as
-   "needs an inventory model Rewo does not have" — that sentence is now stale.
+1. **Finish the hand.** M38 draws the held item; the bare arm is plumbed but
+   needs a skin resident in the hand atlas (the `upload_preview_skin` pattern
+   M36 used, about twenty lines). Beyond that the use-driven poses are all
+   out — the two map holds, crossbow and bow charge, eat and drink, brush,
+   spyglass, shield block — each an arm of `submitArmWithItem` keyed on
+   `useItemRemainingTicks`.
 2. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
    clicking and the player preview; shift-click quick-move is the most-used
    action still missing, and tooltips are the most visible. Both are bounded
@@ -6332,6 +6349,101 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M38 — the first-person hand (2026-07-28)
+
+The blocker §0.0 named for this was M34's inventory model, and it was real: you
+cannot draw what the client does not know it is holding. With that gone, the
+hand is the last thing standing between Rewo and looking like a Minecraft
+client from the inside.
+
+**Two rules in the bake, both invertible.** An absent `firstperson_lefthand`
+falls back to the **right-hand** entry, and *only* in first person —
+`ItemTransforms`' builder has a literal
+`if (left == NO_TRANSFORM) left = right` with no equivalent for the
+third-person pair, which is why the third-person left still records absence.
+`item/generated` declares only the right hand, so the fallback fires for every
+sprite that is not `handheld`. And the left/right **mirror is applied at draw
+time, not baked**: `ItemTransform.apply` negates `translation.x`, `rotation.y`
+and `rotation.z` for whichever transform was selected, including one that
+arrived through that fallback. `handheld` authors its left entry pre-mirrored
+(`[0, 90, -25]` against the right's `[0, -90, 25]`) so the two cancel; baking
+the mirror as well would double it.
+
+**The swing clock is not a new machine.** `LocalPlayer` is an ordinary
+`LivingEntity`, and `Player.aiStep` calls `updateSwingTime`, so giving it an id
+in M19's swing table models the same object the remote-player path already
+does. `tick_swings` iterates the swing map rather than the entity map, so it
+ticks even though Rewo never tracks the local player as an entity. The one
+missing input was the held item — the server never sends you your own
+equipment — and M34's inventory supplies it. That is the actual join between
+the two milestones.
+
+**Two clocks, and conflating them is the easy mistake.** `attackAnim` belongs
+to the entity and runs on the swing machine. The equip height belongs to
+`ItemInHandRenderer` and does not exist on the entity at all: it falls to zero
+when the held item changes, swaps the visible item at the bottom *where nothing
+is on screen*, and climbs back at 0.4 a tick. Running it per frame rather than
+per tick would make the dip three frames long and invisible at any sane frame
+rate.
+
+**The hand has its own projection, and vanilla clears depth before it.**
+`GameRenderer` does `hudProjection.setupPerspective(0.05, 100, cameraState.hudFov, …)`
+then `clearDepthTexture(…, 0.0)` — and `calculateHudFov` returns a **hard-coded
+70**, vertical, independent of the player's FOV option. That clear is not an
+optimisation: the hand lives a fraction of a block from the eye, so without it
+a wall in front of you slices your arm off. Rewo already used 70 and 0.05, so
+nothing needed adjusting — but establishing that is what ruled the projection
+out later.
+
+**Three things were measured rather than assumed**, and all three matched. The
+arm chain's `3.6`/`5.6` translates are in **block** units with cube vertices
+divided by 16: with that divide the arm part lands 1.1 blocks below the eye and
+0.7 in front; without it, ten blocks away. The baked item quads really are
+0..16. And the pass turned out to be the GUI-item pass with exactly two
+differences — a view-projection push constant instead of a screen mapping, and
+the world's flipped viewport instead of the HUD's top-left — so they share a
+vertex layout and nothing else moved.
+
+**The 1.36x that was not there.** The render was first committed with an
+unresolved discrepancy: a held block measured 603 px wide against a predicted
+442, while its vertical extent matched exactly. Bisecting it offline settled it
+— a unit test drove the production geometry builder with a synthetic cube and
+projected the result, matching a hand derivation to a tenth of a pixel, which
+eliminated the geometry. The fault was the measurement: the brown-pixel
+detector was also finding the hotbar's dirt icons and the dirt-coloured
+terrain. Re-measured with a diamond block in a window excluding the sky and the
+hotbar, every edge lands within a pixel — 837/838, 1279/1279, 524/524, 719/719.
+
+That was the third detector error of the milestone, all the same shape: a test
+matching more than its subject. Non-black pixels against a painted sky (M34),
+brown against a brown hotbar, then cyan against a blue sky on the first
+re-measurement. **The gate is built around avoiding the class**: it draws a
+synthetic magenta cube, asserts an empty frame contains no magenta at all, and
+only then trusts a count.
+
+Gate: **`rewo handshot --check`** — serverless, validation-required,
+fail-closed, **19 witnesses**. Four on the bake against the real jar, eight on
+the pose chain against a derivation done inside the gate, seven on pixels. The
+strongest is `g2`: every magenta pixel the pass draws falls inside the rectangle
+the CPU builder predicted, computed independently in the same run — which is
+the join between the milestone's two halves. Two of its own witnesses were
+wrong first: the fallback check used a **stick**, which parents `item/handheld`
+and authors both hands, so it failed against correct code (an apple is
+`item/generated`; the witness now asserts both, separating the fallback from
+the authored case), and the fail-closed count caught 19 witnesses declared
+as 17.
+
+Measured: **623 tests**; seventeen serverless gates green with validation ON;
+demo SHA-256 `2cc56b4a…` byte-identical to M15 onward.
+
+**Open.** The bare arm is plumbed but does not appear until a skin is resident
+in the hand atlas — the same `upload_preview_skin` pattern M36 used. The
+`STAB` spear swing is derived but not applied, so a spear swings like a sword.
+And every use-driven pose is out: the two map holds, crossbow and bow charge,
+eat and drink jiggle, brush, spyglass scoping, shield block. Each is its own
+arm of `submitArmWithItem` keyed on `useItemRemainingTicks`, and together they
+would roughly double the milestone.
 
 ### M37 — particles, and the verification approach they needed first (2026-07-27)
 

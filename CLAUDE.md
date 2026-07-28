@@ -1612,7 +1612,7 @@ M15 onward. All of M10–M33b is now **pushed** to
 clean fast-forward, closing the long-standing unmerged-branch risk.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M37 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, and particles)
+## Rewo — from-scratch native Minecraft client (M0–M38 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, and the first-person hand)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
@@ -2688,6 +2688,43 @@ validation Rewo has.
   improved. Measure such a path by a property that does not need a clean frame
   diff (here: the spawn *count*, and the texture resolution the non-mutating
   `/particle block{…}` rows already exercise).
+- **M38 the first-person hand (2026-07-28)** — the blocker §0.0 named was M34's
+  inventory model, and with it gone the hand went in: the held item through
+  both geometry paths, the swing, the equip dip, the view sway. **Two bake
+  rules are invertible** — an absent `firstperson_lefthand` falls back to the
+  **right** entry and *only* in first person (`ItemTransforms`' builder has that
+  line; the third-person pair has none), and the left/right **mirror is applied
+  at draw time, not baked** (`ItemTransform.apply` negates `translation.x`,
+  `rotation.y`, `rotation.z`; `handheld` authors its left pre-mirrored so the
+  two cancel, and baking it would double it). **The swing clock is not a new
+  machine**: `LocalPlayer` is an ordinary `LivingEntity` and `Player.aiStep`
+  calls `updateSwingTime`, so it takes an id in M19's swing table —
+  `tick_swings` iterates the swing map, not the entity map — and M34's
+  inventory supplies the held item the duration needs, which is the real join
+  between the two milestones. **Two clocks, easily conflated**: `attackAnim` is
+  the entity's; the equip height is `ItemInHandRenderer`'s own and ticks per
+  *tick*, not per frame. **The hand has its own projection** —
+  `calculateHudFov` returns a hard-coded **70** vertical — and vanilla
+  **clears depth** before drawing it, without which a wall a block away slices
+  your arm off. Three things measured not assumed: the arm chain's translates
+  are block units with cube vertices divided by 16 (with it the arm lands
+  1.1 blocks below the eye; without it, ten blocks away), the item quads really
+  are 0..16, and the pass is the GUI-item pass with two differences (a
+  view-projection push constant, the world's flipped viewport). **The 1.36x was
+  not there**: the render was first committed with that unexplained width
+  discrepancy, bisecting showed the geometry matched a hand derivation to a
+  tenth of a pixel, and the fault was the **detector**, which was also counting
+  the hotbar's dirt icons — re-measured cleanly, every edge lands within a
+  pixel. That was the **third detector error of the milestone**, all the same
+  shape (non-black against a painted sky, brown against a brown hotbar, cyan
+  against a blue sky), so `handshot` is built around avoiding the class: a
+  synthetic **magenta** cube, with an empty frame asserted to contain none.
+  Gate `rewo handshot --check` **19/19** (two of its own witnesses were wrong
+  first — the fallback check used a *stick*, which parents `item/handheld` and
+  authors both hands; and the fail-closed count caught 19 declared as 17).
+  **623 tests**; demo PNG byte-identical to M15 onward. **Open:** the bare arm
+  needs a resident skin; `STAB` is derived but not applied; every use-driven
+  pose (maps, crossbow/bow charge, eat, brush, spyglass, shield) is out.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
