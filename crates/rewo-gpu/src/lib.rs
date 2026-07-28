@@ -33,6 +33,7 @@ pub mod held;
 pub mod hud;
 pub mod offscreen;
 pub mod text;
+pub mod tooltip;
 pub mod overlay;
 pub mod renderer;
 pub mod swapchain;

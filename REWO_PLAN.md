@@ -6458,6 +6458,140 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M52 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
+
+Shipped. M40 built the tooltip's first pass — measure, position, nine-slice
+box, draw the lines — and stopped there. `GuiGraphicsExtractor.tooltip` walks
+its component list **twice**:
+
+```java
+int localY = y;
+for (int i = 0; i < lines.size(); i++) { lines.get(i).extractText(this, font, x, localY);
+                                         localY += lines.get(i).getHeight(font) + (i == 0 ? 2 : 0); }
+localY = y;                                                     // <- the restart
+for (int i = 0; i < lines.size(); i++) { lines.get(i).extractImage(font, x, localY, w, h, this);
+                                         localY += lines.get(i).getHeight(font) + (i == 0 ? 2 : 0); }
+```
+
+**The `localY = y;` is the load-bearing line, and the two passes are a
+layering device rather than a layout one.** Both loops advance identically, so
+a component's image lands at exactly the `y` its text would have; what the
+split buys is that *every* image draws after *every* text line, whatever order
+the components are in. Run them as one continuous cursor and the grid drops
+below its own box by the height of all the text — 57 px in the gate's fixture —
+which is the overlap the two passes exist to avoid.
+
+Sizing needs no second mechanism. `getWidth`/`getHeight` are polymorphic and
+the measure loop has no special case, so an image contributes its own width and
+height to the box the same way a line does. The one asymmetry worth knowing:
+`lines.size() == 1 ? -2 : 0` counts **components**, not text lines, so giving a
+one-line tooltip an image does not merely add the grid's height — it also hands
+back the two pixels the single-component case subtracts.
+
+`crates/rewo-gpu/src/tooltip.rs` is the whole transcription;
+`container::tooltip_size` now delegates to its `measure` so there is one loop
+rather than two that can drift.
+
+#### Four things the brief had backwards, and the decompile settled
+
+The milestone arrived with an audit's summary of `ClientBundleTooltip`. Half of
+it held and half did not, which is the usual yield and the reason the rule is
+*read the file*.
+
+- **The `+N` badge is the BOTTOM-RIGHT cell, not the top-left.**
+  `shouldRenderSurplusText` is `isOverflowing && column * row == 1`, so the
+  badge takes the first cell *visited* — and both start positions are the
+  grid's far edge with both loops subtracting (`xStartPos = x + offset + 96`,
+  `drawX = xStartPos - columnNumber * 24`), so column 1 is the **rightmost**.
+  The fill order the brief gave was right; the cell it named was the other
+  corner of it.
+- **Thirteen stacks show EIGHT items, not twelve.**
+  `BundleContents.getNumberOfItemsToShow` subtracts the ragged row using the
+  **total** stack count, not the eleven cells a badge leaves free:
+  `13 % 4 = 1`, so three come off eleven and eight show. The grid is still
+  three rows, so its top row comes out blank beside the badge. Reading it as
+  "eleven and a badge" fills three cells vanilla leaves empty.
+- **The badge counts hidden ITEMS, not hidden stacks.**
+  `getAmountOfHiddenItems` is `items().stream().skip(shown).mapToInt(count).sum()`,
+  so thirteen single-item stacks badge `+5` and thirteen full ones badge
+  `+320` — never `+1`.
+- **`SLOT_MARGIN` is the icon's inset inside its cell**, not a gap between
+  cells. Cells tile at exactly `SLOT_SIZE`; the 4 is `graphics.item(item,
+  drawX + 4, drawY + 4, …)` centring a 16 px icon in 24.
+
+What did hold: `getWidth` is a literal `return 96`; `slotCount` is
+`min(12, size)`; the fill order is bottom-right to top-left; the image inserts
+at index 1; `BundleItem.getTooltipImage` is the only override of it in the
+tree; and `ClientTooltipComponent.create`'s third arm throws, so exactly three
+implementations exist and only one of them can come from a stack.
+
+Three more details that are only visible in the source. `getContentXOffset(w)`
+is handed the **tooltip's** measured width, not the component's own 96, so a
+long enchantment line slides the grid right rather than leaving it hard against
+the box's left edge. `extractCount`'s `centeredText` is `x - font.width(str) / 2`
+— integer division, and its vertical anchor is a flat **10**, not the cell's
+half-height of 12. And the whole of `extractImage` sits inside
+`if (!weight.isError())`, so an over-weight bundle contributes its size to the
+box and then draws none of it.
+
+#### The gate
+
+`inventoryshot --check` 91 → **103**. Ten witnesses are arithmetic driven
+through the production functions, two are pixels. Every one names its mutation
+partner, and the four the brief asked for were run as real mutations rather
+than asserted:
+
+| mutation | caught by |
+|---|---|
+| walk top-left to bottom-right | `ti5`, `ti6`, `ti8`, `ti9`, **`ti12`** |
+| one continuous cursor across both passes | `ti4` |
+| badge at twelve (`size >= 12`) | `ti6` |
+| a text-only width | `ti2`, `ti3`, **`ti11`** |
+
+`ti12` is the one worth pointing at: it renders three stacks into the grid as
+real icons through the production `gui_item` pass, positioned by the production
+cell walk, and measures **which column stays empty**. Three stacks in a
+four-column grid leave exactly one unused, and the walk's direction decides
+which — so reversing it swaps the two numbers the witness prints, and it does,
+exactly (678 changed pixels ↔ 0). `ti11` renders the box at the size `measure`
+returns and asserts it reaches at least the grid's 96; a text-only measure
+leaves it 56 px narrower than its own contents.
+
+#### Scope, and one honest deviation
+
+The **cell chrome is not drawn**: `container/bundle/slot_background`,
+`slot_highlight_back`/`front` and the three `bundle_progressbar_*` sprites are
+jar sprites, and reaching them means adding fields to
+`assets::ContainerSprites` and `ContainerSpriteData` — files this milestone was
+fenced out of, and a struct-literal construction that cannot gain a field
+without its caller changing. The geometry for all of it is computed and graded
+(`ProgressBar` carries its rect, fill width, sprite choice and label; `Cell`
+carries its icon and badge anchors); only the blits are missing. Wiring a real
+bundle stack into `live_cmd`'s `screen_tooltip` is the other half of the same
+fence — the contents come from a `BUNDLE_CONTENTS` component patch, which is
+`rewo-net`. **Follow-up:** add the six sprites to the container atlas, feed
+`bundle_image`'s cells to the existing item pass, and the grid renders whole.
+
+Also out: `ClientActivePlayersTooltip` (a server-list component, never an
+item's), the empty bundle's blurb text (`font.split(…, 96)` is passed in as a
+line count rather than wrapped here, since `rewo-gpu` holds no font), and the
+selected-item sub-tooltip `extractSelectedItemTooltip` recurses into.
+
+**And the note the brief itself made: vanilla's shulker-box preview is TEXT** —
+five lines plus an italic `+N more` from `ItemContainerContents` — not an icon
+grid. The grid is the bundle's alone. Pointing this code at a shulker box would
+be inventing a feature, so it is not pointed there.
+
+#### Verification
+
+**648 tests** (641 + 7 new in `rewo-gpu`), all seventeen gates green with
+Vulkan validation ON and **0 VUIDs** — `itemshot` 62, `inventoryshot` **103**,
+`blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
+12, `captureshot` 17, `mobshot` 243/243, plus `skyshot`, `lightmapshot`,
+`tintshot`, `meshshot`, `dimensioncheck`. Demo PNG SHA-256 byte-identical to
+M15 onward (`2cc56b4a…`).
+
 ### M51c — `captureshot`, and the one line the whole suite was blind to (2026-07-28)
 
 Shipped. M51a parameterised `Offscreen` by colour format so a screenshot can

@@ -227,14 +227,21 @@ pub fn preview_view_proj(
     (to_clip * model_view).to_cols_array_2d()
 }
 
-// -- the tooltip (M40) --------------------------------------------------------
+// -- the tooltip (M40, M52) ---------------------------------------------------
 //
-// `GuiGraphicsExtractor.tooltip` measures the lines, asks a positioner where
-// the text goes, blits two sprites behind it, then draws the lines. Every
-// number below is from that method and the two classes it calls.
+// `GuiGraphicsExtractor.tooltip` measures its components, asks a positioner
+// where the text goes, blits two sprites behind it, then walks the list
+// **twice** — all the text, then all the images. Every number below is from
+// that method and the two classes it calls.
+//
+// The components themselves, their polymorphic width/height, the index-1
+// insertion of an image and `ClientBundleTooltip`'s grid live in
+// [`crate::tooltip`] (M52); what stays here is the box the two passes are
+// drawn into. The split is where the crate already draws it: this module owns
+// Vulkan, that one owns arithmetic.
 
 /// `ClientTextTooltip.getHeight` — one line of tooltip text.
-pub const TOOLTIP_LINE_HEIGHT: i32 = 10;
+pub const TOOLTIP_LINE_HEIGHT: i32 = crate::tooltip::LINE_HEIGHT;
 /// `TooltipRenderUtil.PADDING` (3) + `MARGIN` (9). The sprite is blitted this
 /// far outside the text on every side; the padding is the visible gap and the
 /// margin is the sprite's own border art.
@@ -275,18 +282,24 @@ pub fn tooltip_position(
     (x, y)
 }
 
-/// The text block's size for a list of lines, in GUI pixels.
+/// The text block's size for a list of **text** lines, in GUI pixels.
 ///
 /// The height starts at **-2 for a single line** and 0 otherwise
 /// (`lines.size() == 1 ? -2 : 0`), and the loop that draws them adds 2 after
 /// the first — so a one-line tooltip is 8 px of box for a 10 px line, and a
 /// two-line one is 22. Dropping the -2 makes every single-line tooltip two
 /// pixels taller than vanilla's, which is invisible until you diff a frame.
+///
+/// The shorthand for the common case. `lines.size() == 1` counts
+/// **components**, not text lines, so a tooltip carrying an image cannot be
+/// measured through here — it goes through [`crate::tooltip::measure`], which
+/// this delegates to so there is one loop rather than two that can drift.
 pub fn tooltip_size(line_widths: &[i32]) -> (i32, i32) {
-    let w = line_widths.iter().copied().max().unwrap_or(0);
-    let mut h = if line_widths.len() == 1 { -2 } else { 0 };
-    h += TOOLTIP_LINE_HEIGHT * line_widths.len() as i32;
-    (w, h)
+    let components: Vec<crate::tooltip::Component> = line_widths
+        .iter()
+        .map(|&w| crate::tooltip::Component::text(w))
+        .collect();
+    crate::tooltip::measure(&components)
 }
 
 /// `blitNineSlicedSprite` — nine pieces of a `TOOLTIP_SPRITE`-sized source
