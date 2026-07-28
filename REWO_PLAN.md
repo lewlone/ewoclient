@@ -35,20 +35,24 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M50 shipped, pushed and merged to `main`
+### Where it is: M0–M52 shipped (M0–M51 merged to `main`; M52 local)
 
 `origin/main` is at **`8f3ad41`** and everything from M0 to M50 is on it. The
 working tree is clean and there are no stashes.
 
-**One side branch carries real unlanded work** — `claude/rewo-entity-fidelity-aa134c`
-(local and on `origin`, both at `e5bbb8b`), six commits of **ETF**: the emissive
-path (vanilla's eye and warden glow layers), a pack's random entity textures,
-emissive `_e.png` overlays, and the sheep's dye tint. That is the "ETF
-random/emissive textures (M9b)" item this plan lists as open — **do not rebuild
-it from scratch; rebase that branch**. Note its commits are numbered `M36a`–`M36d`,
-which **collides with the M36 already on `main`** (the inventory's player
-preview), so landing it needs a renumber as well as a rebase. An earlier
-revision of this section described it as a "non-Rewo worktree"; that was wrong.
+**The one side branch that carried real unlanded work is landed** —
+`claude/rewo-entity-fidelity-aa134c` (`e5bbb8b`), the ETF/emissive/dye work, is
+**ported and shipped as M52** (renumbered, because its own `M36a`–`M36d` collide
+with the M36 already on `main`, the inventory's player preview). It closes the
+"ETF random/emissive textures (M9b)" item this plan listed as open. It did *not*
+go in as a rebase: the merge-base was two commits after M11 and `main` had moved
+109 commits, which gave 33 conflict hunks plus a compile wall the markers never
+flag, so it was ported file-by-file instead. See the M52 entry in §15 for what
+changed against the branch — and note it also **closed two of the branch's own
+caveats** by decoding the wire inputs that did not exist at M11 (entity_event 61
+for the warden's tendrils, and the metadata slots for the creaking's eyes and
+the sheep's wool). Two of the branch's handoff notes about those slots were
+wrong; §15 records the corrected indices. Nothing else is unlanded.
 
 This closed on 2026-07-27, and it had been the project's largest non-code risk
 for a long time: 78 commits, everything from M10 on, on a branch whose name
@@ -424,11 +428,17 @@ Original M0–M6 (still the foundation):
   1%/0.1% low reporting, frames-in-flight knob. GPU render 0.198 ms avg /
   0.367 ms 0.1%-low on the 5080.
 
-### The current numbers (2026-07-27)
+### The current numbers (2026-07-27; test/gate counts re-measured at M52, 2026-07-28)
 
-Everything below is the *current* total, re-measured this session. Per-milestone
-figures inside §15 are the measurement taken at that milestone and will not
-match.
+Per-milestone figures inside §15 are the measurement taken at that milestone
+and will not match.
+
+**Re-measured at M52 (2026-07-28):** **659 tests** — `rewo-world` 208,
+`rewo-net` 141, `rewo-gpu` 103, `rewo-data` 93, `rewo-mesh` 38, `rewo-proto` 11,
+app 65. **Twenty gate invocations green, 0 VUIDs**, adding `mobshot
+--emissive-check` 5/5, `--etf-check` 8/8 and `--tint-check` 4/4 to the seventeen
+below; `itemshot` is 62/62 and `inventoryshot` 91/91 as of the M40–M50 arc. The
+list that follows is the 2026-07-27 snapshot and is left as written.
 
 - **623 tests** — 562 lib + 61 app. By crate: `rewo-world` 208, `rewo-net` 136,
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
@@ -6444,6 +6454,380 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M52 — entity fidelity: emissive layers, ETF textures, the dye tint (2026-07-28)
+
+Shipped. This closes the entity-appearance gaps §0.0 had left open after the mob
+redo and M9/M9d: mobs that vanilla lights from within rendered dark, a resource
+pack's random entity textures were the never-built half of M9b, and every sheep
+was white.
+
+Everything here is transcribed from the decompiled 26.2 jar **except ETF**,
+which has no decompile because it is an OptiFine feature; that section says
+exactly what it is derived from and where it is knowingly not bit-compatible.
+
+*Provenance: built on a branch off M11 (`claude/rewo-entity-fidelity-aa134c`,
+numbered M36 there) and ported file-by-file onto main 109 commits later. A
+rebase gave 33 conflict hunks and a compile wall the markers never flag, so
+nothing here came through `git merge`. The renumber to M52 is because M36 on
+main is the inventory player preview. What the port changed relative to that
+branch is recorded at the end.*
+
+#### M52a — the emissive path
+
+Eight of the registry's mobs have emissive layers in vanilla and none of them
+glowed. A spider in a dark cave was a black spider; the warden, whose whole
+visual identity is bioluminescence, had none.
+
+**Two `RenderLayer` shapes, both of which re-render the mob's *own model* with a
+second texture at full brightness.** `EyesLayer` (spider, cave spider, enderman,
+phantom) draws `getParentModel()` through `RenderTypes.eyes`.
+`LivingEntityEmissiveLayer` (warden x5, creaking, copper golem, breeze) takes a
+model baked from a *filtered* mesh (`retainExactParts` /
+`retainPartsAndChildren`), an alpha function of `(state, ageInTicks)`, and a
+render type; it skips the submit entirely when the alpha is <= 1e-5.
+`mobs::emissive_layers(kind)` is that table, one entry per `addLayer` call in
+the matching `EntityRenderer`. It is a function rather than a `MobDef` field so
+the 89-entry `MOBS` table did not have to be touched.
+
+| Mob | Texture | Parts | Alpha |
+|---|---|---|---|
+| Spider, cave spider | `spider_eyes` | all | 1 |
+| Enderman | `enderman_eyes` | all | 1 |
+| Phantom | `phantom_eyes` | all | 1 |
+| Breeze | `breeze_eyes` | `head` | 1 |
+| Creaking | `creaking_eyes` | `head` | `isActive() ? 1 : 0` |
+| Copper golem | `copper_golem_eyes` | all | 1 |
+| Warden | `warden_bioluminescent_layer` | head + limbs | 1 |
+| Warden | `warden_pulsating_spots_1` | body + head + limbs | `max(0, cos(age*0.045)*0.25)` |
+| Warden | `warden_pulsating_spots_2` | " | `max(0, cos(age*0.045 + pi)*0.25)` |
+| Warden | `warden.png` (the base) | the two tendrils | `tendrilAnimation` |
+| Warden | `warden_heart` | `body` | `heartAnimation` |
+
+Two entries are worth noticing. The breeze's eyes layer bakes
+`retainPartsAndChildren({"eyes"})`, and vanilla's `eyes` part is an exact
+duplicate of `head`'s two boxes at a zero offset with no children — so filtering
+our model to `head` is the same geometry, and no `eyes` part had to be invented.
+And the warden's tendril layer samples the **base** warden texture: the tendrils
+light up their own texels rather than a separate overlay.
+
+**The geometry is the same quads, another texture.** Because a layer re-renders
+the same model, `build_emissive` takes the mob's own quads, filters them by the
+layer's part set, and re-points their model-px UVs at the overlay texture's
+atlas slot. That is why an overlay must share its base texture's pixel
+dimensions — and they all do (spider_eyes is 64x32 like spider.png; the four
+warden layers are 128^2). One that does not, or is missing from the jar, is
+dropped with a warning rather than rendered scrambled. Part names come from the
+built-in models, and from the `.jem` bone names on a CEM pack model — which
+OptiFine *requires* to be vanilla's part names, since that is how a `.jem` says
+what it is replacing. So the same filter serves both, and a Fresh Animations
+warden keeps its glow.
+
+**The pipeline, also transcribed.** `RenderPipelines.EYES` and
+`ENTITY_TRANSLUCENT_EMISSIVE` both specify translucent blend +
+`CompareOp.GREATER_THAN_OR_EQUAL` + **depth-write off**. Two things fall out of
+reading that:
+
+1. The `GREATER` half confirms 26.x is reversed-Z, the same convention Rewo
+   adopted in M4 — pleasant, if incidental.
+2. The `OR_EQUAL` half is load-bearing. An emissive layer redraws geometry whose
+   depth the solid pass *just wrote*, so under Rewo's existing strict `GREATER`
+   every fragment would be rejected. The emissive draw needed its own pipeline;
+   it could not borrow the nametag one.
+
+And per `entity.vsh`, the `EMISSIVE` shader define means the vertex shader
+**samples no lightmap at all**:
+
+```glsl
+#ifndef EMISSIVE
+    lightMapColor = sample_lightmap(Sampler2, UV2);
+#endif
+```
+
+So the fullbright is not a brightness the layer adds — it is a multiply the
+layer omits. Rewo's emissive draw writes the identity `[1,1,1]` into
+`light_hurt.rgb`, which is exactly the same statement in its ABI, since
+`entity.frag` ends on `c *= v_light_hurt.rgb`.
+
+The two pipelines differ in two further defines, both reproduced:
+`ALPHA_CUTOUT 0.1` on emissive and none on eyes, and `NO_CARDINAL_LIGHTING` on
+eyes (flat) against `PER_FACE_LIGHTING` on emissive (directionally shaded). The
+cutout is applied CPU-side as a layer-wide alpha floor rather than in the
+shader, which is exact for these textures: all nine were checked and every one
+is either fully transparent or at least 0.19 opaque, so `texel.a * alpha < 0.1`
+can only ever fire layer-wide.
+
+**The warden's tendrils** were flat plates folded onto the head, which meant
+they could not carry `animateTendrils` and could not be retained by the tendril
+layer. They are now real head children whose pivots are vanilla's `PartPose`
+offsets — which are exactly the static folds they replaced, so rest geometry is
+unchanged, and the facelabel gate agrees at 243/243. (The same promotion M17 did
+for the ribcages, and for the same reason.) `animateTendrils` is
+`xRot = +/-tendrilAnimation * cos(age*2.25) * pi * 0.1`, the left tendril
+positive.
+
+#### M52b — ETF, a pack's random entity textures
+
+The texture half of M9b. A pack ships a `.properties` file per vanilla entity
+texture listing alternates with weights and conditions; a client picks one per
+entity, stably, so a herd of cows is not all the same cow.
+
+**Provenance — the one subsystem with no ground truth.** Every other part of
+Rewo is transcribed from the decompiled jar. This one cannot be: random entity
+textures are an OptiFine feature and OptiFine is closed source. What
+`rewo-data/src/etf.rs` implements is its *documented*
+`random_entities.properties` format, and two consequences are stated in the
+module docs rather than quietly assumed:
+
+1. **The choice function is ours.** OptiFine's hash is unpublished, so `pick`
+   uses a documented splitmix over the entity UUID. It has the properties that
+   matter — stable per entity, uniform, weight-respecting — but will not give
+   the same cow the same variant OptiFine would. Nothing syncs this between
+   clients in vanilla either, so it is cosmetic.
+2. **Conditions we cannot evaluate never match.** `biomes`, `health`,
+   `professions`, `collarColors`, `weather`, `blocks` and `nbt` are not decoded
+   by Rewo, so a rule carrying one is inert. That direction is deliberate:
+   skipping falls back to the vanilla texture, whereas assuming a match would
+   paint swamp textures on every mob everywhere.
+
+Supported, because Rewo genuinely knows them: `weights`, `names` (plain,
+`pattern:` and `ipattern:` wildcards), `baby`, `sizes`,
+`heights`/`minHeight`/`maxHeight`, `moonPhase`, `dayTime`. One further
+constraint is Rewo's own, not OptiFine's: an alternate must match the vanilla
+texture's dimensions, because the atlas gives it the same UV rectangle.
+
+**How a variant reaches a pixel.** Alternates are shelf-packed into the entity
+atlas alongside the base textures, and each mob gets a table of
+`variant id -> per-texture-slot UV offset`. `EntityDraw` carries one `variant`
+field; a quad adds the offset for **its own** texture slot, which is why
+`GpuQuad` now remembers which texture it came from — the base bake folds `tex`
+into the UVs and would otherwise lose it. Slots a variant does not cover keep
+the vanilla texture, which is what a pack varying only one of a mob's textures
+wants: a rule on `sheep_wool` recolours the wool and leaves the face and legs
+alone. This is the same mechanism real player skins already used (a whole-model
+UV shift onto an uploaded slot), generalized per slot. It is also the machinery
+vanilla's *own* metadata-driven variants will need — cat, horse, llama,
+axolotl, frog, tropical fish — when their metadata indices get decoded; that
+recorded gap is now one decode away rather than a rendering problem.
+
+**Three bugs the tests found**, all invisible in a screenshot and wrong in
+aggregate:
+
+- A rule naming the *vanilla* texture (`textures.1=cow.png`, or the
+  MCPatcher-era `skins.1=1`) is how packs give the original a share of the
+  weighting, and the loader was dropping it as "textureless" — which would have
+  handed that share to the alternates and made nearly every cow a variant cow.
+  Such a rule is now a first-class variant with no image, and `pick` resolves it
+  to 0; a unit test holds the 1:1 split at half the herd.
+- A range with a negative low bound (`-64--30`, a perfectly ordinary `heights`
+  value) split at the sign and failed to parse.
+- `nbt.<index>.<path>` carries its index in the middle, unlike every other key,
+  so those lines were dropped entirely instead of marking the rule unsupported.
+
+#### M52c — ETF emissive overlays
+
+The other half of what ETF does with textures, and cheap once M52a existed. A
+pack shipping `<texture>_e.png` beside a mob texture means "these texels are
+lit"; the loader walks the baked mob textures looking for that sibling (or
+whatever `optifine/emissive.properties` sets `suffix.emissive` to), and the
+entity pass turns each into a whole-model layer with alpha 1 and the alpha
+cutout OptiFine renders them through. The overlay covers exactly the quads that
+sample the texture it belongs to, so on a two-texture mob an overlay on one
+leaves the other alone. It rides the variant atlas machinery under a reserved id
+far above any properties rule index; the constant is mirrored in `rewo-gpu`
+(which cannot depend on `rewo-data`) and a test pins the two together.
+
+#### M52d — the sheep's dye tint
+
+`SheepWoolLayer` renders the fur model tinted by
+`ColorLerper.Type.SHEEP.getColor(woolColor)`, which is
+`DyeColor.getTextureDiffuseColor()` at 0.75 brightness — except WHITE, which
+`ColorLerper.getModifiedColor` overrides outright to `-1644826` (0xE6E6E6)
+rather than dimming. `SHEEP_WOOL_COLORS` is that table with both rules folded
+in, and the entity pass multiplies it into the vertex colour of exactly the
+quads that sample the mob's tinted texture.
+
+**An undyed sheep is not an untinted sheep.** `SheepRenderState.woolColor`
+starts at `DyeColor.WHITE` and the layer tints unconditionally, so vanilla's
+plain white sheep has its wool multiplied by 0xE6E6E6. Rewo was rendering it at
+full brightness. `EntityDraw::dye` is therefore `None = the mob's vanilla
+default`, not `None = no tint`, and every sheep in live play now gets white's
+0.90 multiply — a visible change, and the correct one.
+
+#### The wire inputs (new in the port — these were the branch's open caveats)
+
+The branch shipped all three of the above with the renderer half only, reading
+"vanilla's synched defaults" because the packets were not decoded at M11. All
+three are decoded now, and each is one mapping. **Two of the branch's handoff
+notes were wrong about the details, and the decompile settled both.**
+
+- **entity_event 61 -> the warden's tendrils.** `Warden.handleEntityEvent(61)`
+  is `tendrilAnimation = 10`, decremented once per client tick, read back as
+  `getTendrilAnimation = Mth.lerp(a, prev, cur) / 10`. It is not an
+  `AnimationState` like ids 4 and 62, but it is stamped the same way, so it
+  takes a fourth `EntityEvent` slot through M17's `route_entity_event` and the
+  renderer reads `max(0, 10 - elapsed) / 10`.
+- **`Creaking.IS_ACTIVE` is index 17 BOOLEAN**, not BYTE as the handoff said.
+  `Creaking` declares `CAN_MOVE` first, so `IS_ACTIVE` is its second.
+- **`Sheep.DATA_WOOL_ID` is index 18, not 17.** `AgeableMob` declares **two**
+  accessors — `DATA_BABY_ID` (16) *and* `AGE_LOCKED` (17) — so a `Sheep`'s own
+  first accessor lands one slot further down than a naive count suggests.
+  Counted `defineId`-by-`defineId` up both hierarchies in the 26.2 decompile:
+  Entity 8, LivingEntity 7, Mob 1, PathfinderMob 0, AgeableMob 2, Animal 0. The
+  low nibble is the dye and 0x10 is sheared, per `Sheep.getColor`/`isSheared`.
+
+Index 17 BOOLEAN now has three claimants — `Pillager.IS_CHARGING_CROSSBOW`,
+`Creaking.IS_ACTIVE` and `AgeableMob.AGE_LOCKED` — so the kind gate is what
+separates them, the M18 rule again. `AGE_LOCKED` drives nothing the client
+renders and falls through both gates.
+
+`eventshot`'s `c1.excluded_tendril_inert` witness was renamed and
+**strengthened rather than retired**: it now asserts that 61 stamps the tendril
+slot *and* still leaves both keyframe rigs alone. `Warden.handleEntityEvent` is
+an if/else-if chain, so 61 reaching the attack or sonic-boom `AnimationState`
+would mean the dispatch had fallen through. Witness count unchanged at 28.
+
+#### Verification
+
+Three permanent serverless gates, all following the M17+ named-witness
+convention (each property recorded by name, fail-closed on the count).
+
+**`rewo mobshot --emissive-check` (5 witnesses): an emissive layer ignores world
+light, and nothing else does.** Every mob is rendered lit (the silhouette) and
+at world light 0, where the base model multiplies to exactly black — so any
+pixel still bright can only have come from an emissive layer. That gives a
+two-sided assertion over the whole registry: 7 mobs must glow inside their own
+silhouette, and the other 82 must be perfectly black. The control half is the
+point: it fails if the emissive pass leaks onto the wrong mob, or if the base
+pass ever stops respecting world light. The glow count is also compared against
+what the decompiled layer table predicts, so a mob quietly gaining or losing a
+layer is an error rather than a silent pass.
+
+**A mutation found a real hole in that gate before it was trusted.** The state
+assertion originally compared glow counts at a generic age — and a build with
+the tendril alpha hard-wired to `0.0` still passed, because
+`EmissiveState::tendril` feeds *both* the sway and the alpha, and rotating
+tendrils uncover a few pixels of the glowing head behind them. The gate now
+renders at the exact zero of `cos(age*2.25)`, freezing the sway so only the
+alpha can move the number; the same mutation then fails. Four mutations in
+total: emissive respecting light (8 mobs fail), the tendril alpha pinned (1), a
+layer leaked onto another mob (1), the base pass ignoring light (84).
+
+**`rewo mobshot --etf-check` (8 witnesses).** There is no published pack to
+grade against and no decompile to transcribe, so the gate builds its own
+resource pack in a temp directory — real `.properties` files, real PNGs, loaded
+through the same `load_pack` the live client uses — and paints the alternates
+flat primary colours so the assertions are exact. It pins that a variant paints
+its own texture (catching an offset computed against the wrong slot, an
+alternate that never reached the atlas, and an id that silently falls back),
+that an id with no atlas slot falls back to vanilla rather than sampling
+whatever is packed next door, that a vanilla-texture rule is kept rather than
+dropped, that a rule on one texture moves *only* that texture (a per-slot table
+indexed by the wrong axis passes everything else and fails here), and the pack
+`_e.png` overlay's three properties.
+
+`f7`'s fixture patch was a *quarter* of the sheet at first and lit 87% of the
+rendered pig: the top-left of a 64x64 mob sheet carries the head and most of the
+body, so **the fraction of the sheet an overlay covers is not the fraction of
+the model it lights**. A sixteenth (45%) leaves the "alpha ignored" mutation an
+unambiguous margin.
+
+**`rewo mobshot --tint-check` (4 witnesses), all sixteen dyes.** Comparing
+pixels to the colour table directly would be defeated by the per-face shade, so
+the gate compares **ratios**: because vanilla multiplies the dye into the vertex
+colour, every wool pixel must satisfy
+`linear(dyed)/linear(white) == linear(color[k])/linear(color[0])` per channel,
+whatever the shading or geometry. That prediction comes from the layer's
+semantics, not from the renderer, and it holds for all sixteen at once.
+
+The first version had the same flaw the emissive gate did, and again it took a
+mutation to find: it defined "wool pixels" as those two dyes disagree on, which
+is derived from the behaviour under test — a tint leaking onto every texture
+simply redefined the whole sheep as wool and passed the containment check
+vacuously. The wool set is now bounded against the silhouette, which is
+independent: vanilla's sheep shows a bare face, four legs and hooves, so a
+correct tint can never cover the whole mob. With that fixed, tinting every slot
+fails, and so does dropping the sRGB linearize before the multiply — render
+discipline #1, caught numerically as a 0.805x ratio where vanilla's is 0.621x.
+
+**Measured.** 659 tests (was 637: +14 in `etf.rs`, +8 in `entities.rs`). All
+seventeen gates green with Vulkan validation ON and **0 VUIDs**: mobshot 243/243
++ emissive 5/5 + etf 8/8 + tint 4/4, itemshot 62, inventoryshot 91,
+blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35, handshot 34,
+particleshot 34, eventshot 28, danceshot 24, portalshot 12, plus skyshot,
+lightmapshot, tintshot, meshshot and dimensioncheck. The demo PNG is SHA-256
+byte-identical to M15 onward (`2cc56b4a...46635`).
+
+`rewo bench` is unaffected by construction: it never initializes the entity pass
+(`grep -c init_entities crates/rewo-app/src/bench_cmd.rs` -> 0). Its numbers on
+this machine swing between 0.22 ms and 2.4 ms average across back-to-back runs
+depending on what else is using the GPU, so quoting a delta would be noise
+rather than a measurement.
+
+#### What the port changed relative to the branch
+
+- The branch introduced a `PipeKind` enum to select the emissive pipeline's
+  depth compare. Main's `build_pipeline` already takes
+  `(solid: bool, compare: vk::CompareOp)` — M48 gave it that for the trim — so
+  the enum was **dropped** and the emissive pipeline is one more call site.
+- The vertex ring went from 2 ranges at M11 to **5** on main
+  (`solid | text | glint | trim | armor_glint`). The emissive range is appended
+  at the **end** rather than after `solid`, so every existing first-vertex
+  offset is untouched; storage order is not draw order, which main's own comment
+  there already said. `draw_emissive` still runs immediately after
+  `draw_solid`, which is where vanilla's `order(1)` layer submits land.
+- `EntityDraw::light` became `[f32; 3]` (M13) and `Vertex` gained
+  `light_hurt: [f32; 4]` (M21's hurt flash). The branch's "leave `d.light` out"
+  becomes "write the identity into `light_hurt.rgb`" — the same claim in the
+  current ABI.
+- `emit_model` is a different function now (armour, held items, glint and trim
+  all emit from it). The branch's `place`/`visible` closure extraction was
+  redone against the current body; `visible` had to grow the two `Show` variants
+  M20 added (`IllagerCrossedOnly` / `IllagerNotCrossed`), and the boolean form
+  was checked arm-by-arm against main's guard chain.
+- `collect_entities` went 8 -> 12 params and the branch's `sky: SkyLighting`
+  argument is gone — M13 replaced the entity-light input with
+  `lightmap: &LightmapState`. `SkyLighting` still exists on main but only feeds
+  the sky and dimension path, so it is *not* the entity-light input any more.
+- The three gates were rewritten from the branch's ad-hoc pass/fail loops into
+  the named-witness convention, keeping every assertion and every mutation
+  argument. Per-mob detail survives in the failure strings.
+- The branch's `REWO_M36_ENTITY_FIDELITY.md` is folded into this entry rather
+  than kept as a separate file.
+
+#### Open
+
+- **Vanilla's metadata-driven texture variants** (cat, horse, llama, axolotl,
+  frog, tropical fish, wolf). Still fixed picks. The rendering half now exists —
+  this is the same per-slot variant table ETF uses — so what remains is decoding
+  their metadata indices in `rewo-net`.
+- **Sheep shearing.** The byte is decoded (0x10) but the model has no sheared
+  variant, so our sheep always wear wool. So is the jeb_ rainbow, which is
+  `getLerpedColor` over this same table on a 25-tick cycle.
+- **ETF variant emissive** (`cow2_e.png`): an alternate's own emissive overlay.
+  The base texture's `_e` applies to every variant.
+- **`regex:`/`iregex:` name matching.** Plain and wildcard forms work; a rule
+  using regex is treated as unsupported and never matches — the safe direction
+  but not the complete one.
+- **A real ETF pack.** None was on disk (Fresh Animations is CEM models and
+  animations, no random textures), so the gate builds a fixture. A real pack
+  should be run through `--pack` when one is available; the loader logs every
+  rule and texture it accepts or drops.
+- **The ender dragon's flight animation**, examined during the branch and
+  deliberately deferred. `EnderDragonModel.setupAnim` is driven by
+  `DragonFlightHistory`, a **64-entry ring of `(y, yRot)` samples** the dragon
+  records once per client tick; the five neck segments sample delays 5->1, the
+  head 0, the twelve tail segments 12->23, and the body's roll is the difference
+  between delays 5 and 10 — which is what makes neck and tail trail behind its
+  turns. Rewo already has both inputs per tick. Two mechanisms are missing: a
+  per-entity *tick-rate* ring (`set_draws` runs per frame, and the ring must
+  survive the entity being briefly culled), and chain accumulation in
+  `part_transforms` (vanilla walks the neck imperatively, each segment's
+  position computed from the previous one's resolved angles; Rewo's per-part
+  animation is declarative). Add the model's own transcription and it is a
+  milestone in its own right — against which: the dragon is the rarest mob in
+  the game, one per world, and it already renders with the correct 30-cube mesh.
+  It is posed, not missing.
 
 ### M50 — the worn-armour glint, and the glint's colour space (2026-07-28)
 
