@@ -2729,9 +2729,21 @@ validation Rewo has.
   them outside the atlas, where the sampler clamps to a transparent edge. The
   geometry was there the whole time (72 verts, uploaded), so looking proved
   nothing and printing the UV range settled it in one run. **623 tests**; demo
-  PNG byte-identical to M15 onward. **Open:** `STAB` derived but not applied;
-  every use-driven pose (maps, crossbow/bow charge, eat, brush, spyglass,
-  shield) is out; the arm wears the default skin, not the player's.
+  PNG byte-identical to M15 onward. **The use-driven poses** landed with the plumbing they
+  needed: right-click became a hold (`use_item` + `RELEASE_USE_ITEM`), and the
+  local use clock needed **no new machine** — `startUsingItem` sets shared-flag
+  bit 0, which `set_living_flags` already decodes, so the local id goes through
+  the same door M23 built. Three invertible details: **`hasCustomArmTransform`
+  moves a transform rather than adding one** (true for EAT/DRINK/SPEAR — the
+  resting offset applies *after* the pose), the **brush cycles on
+  `remaining % 10`** rather than on progress through a duration, and **BLOCK
+  excepts a real shield** (it carries its own display transform and would be
+  posed twice). Spyglass is the absence of a pose — vanilla guards all of
+  `submitArmWithItem` on `!isScoping()`. Two gate witnesses failed first for one
+  reason: **`transform_point3(ZERO)` sees only translation**, so a trailing
+  rotation (the brush sweep) measures as motionless — sample an offset point.
+  Gate **29/29**. **Open:** `SPEAR`'s use rig and the crossbow charge need
+  inputs the wire does not carry; the arm wears the default skin.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -63,7 +63,7 @@ drawing it, without which a wall a block away slices your arm off. The render
 was first committed with an unexplained 1.36x width discrepancy; bisecting
 showed the geometry matched a hand derivation to a tenth of a pixel and the
 fault was the *detector*, which was also counting the hotbar's dirt icons.
-`rewo handshot --check`, **22/22**. Detail in §15.
+`rewo handshot --check`, **29/29**. Detail in §15.
 
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
@@ -357,7 +357,7 @@ match.
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `inventoryshot` 44/44, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `handshot`
-  22/22, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+  29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
   count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
@@ -374,16 +374,12 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The use-driven hand poses.** M38 draws the held item and the bare arm;
-   what is left is the eight arms of `submitArmWithItem` keyed on
-   `useItemRemainingTicks` — the two map holds, crossbow and bow charge, eat
-   and drink, brush, spyglass, shield block — plus `STAB`, which is derived
-   but not applied. Together they roughly double the milestone.
-2. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
+1. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
    clicking and the player preview; shift-click quick-move is the most-used
-   action still missing, and tooltips are the most visible. Both are bounded
-   ports of arms of `doClick` and `AbstractContainerScreen` that are already
-   half-transcribed.
+   action still missing, and tooltips the most visible.
+2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
+   charge both need inputs the wire does not carry, and the arm still wears
+   the default skin rather than the player's.
 3. **Something from the survey** — [`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md)
    is the roadmap for picking the next *feature* rather than the next milestone.
 
@@ -6422,9 +6418,9 @@ synthetic magenta cube, asserts an empty frame contains no magenta at all, and
 only then trusts a count.
 
 Gate: **`rewo handshot --check`** — serverless, validation-required,
-fail-closed, **22 witnesses**. Four on the bake against the real jar, eleven on
-the pose chain and the bare arm against a derivation done inside the gate,
-seven on pixels. The
+fail-closed, **29 witnesses**. Four on the bake against the real jar, eighteen
+on the pose chain, the bare arm, the spear thrust and the use rigs against a
+derivation done inside the gate, seven on pixels. The
 strongest is `g2`: every magenta pixel the pass draws falls inside the rectangle
 the CPU builder predicted, computed independently in the same run — which is
 the join between the milestone's two halves. Two of its own witnesses were
@@ -6454,13 +6450,41 @@ why looking at the frame proved nothing and printing the UV range settled it in
 one run. `handshot`'s `a2` now pins it: every arm vertex must land inside the
 skin's rect, which the un-normalised form cannot do.
 
-**Open.** The `STAB` spear swing is derived but not applied, so a spear swings
-like a sword. Every use-driven pose is out: the two map holds, crossbow and bow
-charge, eat and drink jiggle, brush, spyglass scoping, shield block. Each is
-its own arm of `submitArmWithItem` keyed on `useItemRemainingTicks`, and
-together they would roughly double the milestone. The arm also wears the
-default skin rather than the player's own — the hand atlas takes one, but
-nothing yet feeds it the local player's.
+
+**The use-driven poses, and the plumbing they were blocked on.** Right-click is
+a hold: press with nothing to place against sends `use_item` — the no-target
+form Rewo never had — and release sends `RELEASE_USE_ITEM`. The local use clock
+needed **no new machine**, for the same reason the swing did not:
+`LivingEntity.startUsingItem` sets shared-flag bit 0 (bit 1 for the off hand),
+which is exactly what `set_living_flags` already decodes for remote entities, so
+driving the local id through that door gets M23's clock and every rule it
+encodes — a repeat does not restart it, an unresolvable stack latches nothing, a
+hand swap mid-use is caught by the tick rather than the start.
+
+Seven poses from `submitArmWithItem`'s switch, and three invertible details in
+them. **`hasCustomArmTransform` does not add a transform, it moves one**: true
+for exactly `EAT`, `DRINK` and `SPEAR`, and for those the resting arm offset is
+skipped up front and applied *after* the pose instead. **The brush cycles on
+`remaining % 10`**, not on progress through a duration — brushing runs as long
+as you hold it and has no progress to key on. And **`case BLOCK` excepts a real
+shield**, which carries its own `display` transform for the context and would
+otherwise be posed twice. Spyglass is not a pose at all but the absence of one:
+vanilla guards the whole of `submitArmWithItem` on `!isScoping()`.
+
+Two of the five gate witnesses failed first, both for the same reason —
+`transform_point3(ZERO)` sees only **translation**. The brush's sweep is a
+trailing rotation, so the origin never moves and the witness measured it as
+motionless; sampling an offset point shows 0.97 blocks of travel. The other had
+the eat jiggle backwards: `scaledUsageTime` is `remaining / duration` and
+remaining counts *down*, so the item swings aside at the **start** of the use
+and stays there.
+
+**Open.** `SPEAR`'s *use* rig reads a kinetic-hit-feedback counter the wire does
+not carry, and the crossbow's charge pose needs the same kind of unsynced
+input; both are left at the resting pose and recorded rather than approximated.
+The two map holds are component-driven rather than use-driven and are out. The
+arm also wears the default skin rather than the player's own — the hand atlas
+takes one, but nothing yet feeds it the local player's.
 
 ### M37 — particles, and the verification approach they needed first (2026-07-27)
 
