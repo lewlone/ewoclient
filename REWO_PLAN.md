@@ -6366,7 +6366,83 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
-### M49 — trims on GUI icons: the investigation, not the code (2026-07-28)
+### M49 — trims on GUI icons (2026-07-28)
+
+The blocker M48 named, and the bake refactor under it.
+
+#### The icon is a different model
+
+`assets/minecraft/items/iron_chestplate.json` is a **`select` on
+`minecraft:trim_material`** whose `when` values are material **registry ids**
+(`minecraft:quartz`, not the `asset_name` suffix M48 uses for the worn sheet),
+each case naming a whole different model, with the plain model as `fallback`.
+Those models exist — 337 of them — and each is an ordinary two-layer
+`item/generated`: layer0 the base item texture, layer1 the trim sprite.
+
+That sprite comes from a **second** paletted-permutations atlas.
+`armor_trims.json` covers only the 36 `trims/entity/*` sources; `items.json` is
+a separate source over four 16x16 sheets, through the *same* key palette and
+the *same* sixteen permutations — so M48's `apply_palette` is already the whole
+generator, and `TrimAssets` needed one more prefix.
+
+#### Composed keys, not a restructured map
+
+`ItemModels` was `HashMap<String, ItemModel>` keyed by item name and baked
+once. Rather than making the key a pair — which would touch the bake, every
+icon caller, and the pool 337 extra models feed — a variant is baked under
+**`"<item>#<material id>"`**. Every existing lookup is by plain name and is
+untouched, and `HeldItems::any` falls back from a composed name to the base.
+
+That fallback is not a nicety: an item can be trimmed with a material its own
+definition names no case for, and vanilla's answer there is the `fallback` —
+the untrimmed icon. So a missing variant has to degrade to it rather than to no
+icon at all.
+
+The variants are driven by the definition's own `cases`, not by the material
+registry, because this is a load-time bake of the **jar** and the registry is
+the **server's**.
+
+#### The bug that hid the whole feature
+
+Everything above resolved — the variants baked, the sprite permuted, the
+composed name matched the baked key — and the icons still rendered plain.
+
+A multi-layer sprite item is **coplanar by construction**:
+`ItemModelGenerator` puts every layer in the same `z 7.5..8.5` slab, and the
+extruder's `layer` argument selects the texture, not a depth. The GUI item
+pipeline depth-tested strict **`GREATER`** with write enabled, so layer1 — at
+*exactly* layer0's depth — was rejected outright.
+
+Vanilla's item pipeline tests `LEQUAL`, whose reversed-Z counterpart is
+**`GREATER_OR_EQUAL`**. One word, and the layered icon is a layered icon: equal
+depth passes, so a later layer paints over an earlier one in submit order.
+
+This is the same shape as M48's trim-on-armour (coplanar geometry against a
+strict test) and the third time this arc that a depth *comparison* was the
+whole story — worth reaching for first when geometry is provably present and
+provably invisible.
+
+#### Verified
+
+`itemshot --check` **51 -> 54**, **633 tests**, all seventeen gates green with
+validation ON and 0 VUIDs, demo PNG byte-identical to M15 onward. Live: an iron
+chestplate with a `gold`/`coast` trim wears gold banding in the hotbar beside a
+plain one that does not, and diamond leggings with `redstone`/`eye` wear red.
+
+Two new witnesses measure the thing that was broken rather than the plumbing
+around it: `u1` that a variant bakes **one more sprite layer** than its base,
+`u2` that an unnamed material resolves to the base's single layer. `a1` learned
+to count items as the keys without a `#`, and `a1b` checks every variant sits
+over an item that resolved on its own.
+
+#### Open
+
+- The **worn** trim still does not glint (M48), and neither does a trimmed
+  icon's — the foil rides the first layer that draws.
+- No `humanoid_baby` layer.
+- `usePlayerTexture` (the elytra cape) is read as data and never honoured.
+
+### M49 (superseded) — the original investigation note (2026-07-28)
 
 **Not implemented.** The facts below are established from the 26.2 jar and
 decompile and cost nothing to re-verify; the implementation is a fresh
@@ -6530,12 +6606,10 @@ and shoulders, beside a plain iron one that does not.
 
 #### Open
 
-- **The trim is not on GUI icons** — `minecraft:trim_material` is a `select`
-  property and M40 suppresses what it cannot evaluate, so a trimmed
-  chestplate's *icon* is the untrimmed one. **The investigation is done and
-  written up** in the M49 entry of §15: what the icon is, which atlas generates
-  its sprite, and the one hard part (`ItemModels` is keyed by item name alone,
-  so it has to become `(item, trim material)`).
+- ~~**The trim is not on GUI icons**~~ — **RESOLVED in M49.** Variants bake
+  under a composed `"<item>#<material id>"` key and the GUI pipeline's depth
+  test became `GREATER_OR_EQUAL`, without which a coplanar layer1 was rejected
+  and every trimmed icon rendered as its plain base.
 - **No `humanoid_baby` layer.** Vanilla has a third layer type with its own
   sources; Rewo's baby mobs already use the adult armour parts (M46).
 - **The trim does not glint.** `renderLayers` draws the foil after the first

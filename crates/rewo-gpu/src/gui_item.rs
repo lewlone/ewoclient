@@ -934,10 +934,20 @@ fn build_pipeline(
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
         // Depth against this pass's own buffer only, so a block item's faces
         // sort against each other. Reversed-Z, matching the world pass.
+        //
+        // **`GREATER_OR_EQUAL`, not `GREATER`** (M49). A multi-layer sprite
+        // item is coplanar by construction: `ItemModelGenerator` puts every
+        // layer in the same `z 7.5..8.5` slab, so a trimmed icon's layer1 sits
+        // at exactly layer0's depth. Vanilla's item pipeline tests `LEQUAL`,
+        // whose reversed-Z counterpart is this — equal depth passes, so a
+        // later layer paints over an earlier one in submit order, which is
+        // what makes a two-layer icon a *layered* icon. Under strict
+        // `GREATER` layer1 was rejected outright and every trimmed icon
+        // rendered as its plain base.
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
             .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::GREATER);
+            .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL);
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)

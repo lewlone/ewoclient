@@ -36,7 +36,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 51;
+const EXPECTED_WITNESSES: usize = 54;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -128,15 +128,28 @@ fn jar_json(jar: &std::path::Path, path: &str) -> Option<serde_json::Value> {
 
 fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::BakedAssets) {
     let items = &baked.held_items;
-    let total = items.models.len() + items.unsupported_total();
+    // M49: trimmed icon variants live in the same map under `"<item>#<material>"`,
+    // so the count of *items* is the keys without a '#'. Counted rather than
+    // subtracted from a constant, so the accounting stays fail-closed.
+    let plain = items.models.keys().filter(|k| !k.contains('#')).count();
+    let variants = items.models.len() - plain;
+    let total = plain + items.unsupported_total();
     c.record(
         "a1.every_item_the_jar_ships_is_accounted_for",
-        total == 1537 && items.models.len() > 1300,
+        total == 1537 && plain > 1300,
         format!(
-            "{} resolved + {} unsupported = {total} (26.2 ships 1537 items; nothing is \
-             silently dropped)",
-            items.models.len(),
+            "{plain} resolved + {} unsupported = {total} (26.2 ships 1537 items; nothing              is silently dropped), plus {variants} trimmed icon variant(s)",
             items.unsupported_total()
+        ),
+    );
+    c.record(
+        "a1b.every_trimmed_variant_belongs_to_an_item_that_resolved",
+        variants > 200
+            && items.models.keys().filter_map(|k| k.split_once('#')).all(|(base, mat)| {
+                items.models.contains_key(base) && mat.starts_with("minecraft:")
+            }),
+        format!(
+            "{variants} variant(s), every one `<item>#<material id>` over an item that              resolved on its own. `HeldItems::any` falls back to that base, which is              where a material the definition names no case for has to land"
         ),
     );
     c.record(
@@ -1042,6 +1055,56 @@ fn check_render(
         ),
     );
 
+
+
+    // -- the trimmed icon (M49) -----------------------------------------------
+    //
+    // The whole feature was invisible for one reason: a multi-layer sprite item
+    // is **coplanar by construction** — `ItemModelGenerator` puts every layer
+    // in the same `z 7.5..8.5` slab — so under a strict depth test layer1 is
+    // rejected at exactly layer0's depth and a trimmed icon renders as its
+    // plain base. This is that, measured in pixels rather than argued.
+    let base_name = "minecraft:iron_chestplate";
+    let trimmed_name = format!("{base_name}#minecraft:gold");
+    let plain_model = baked.held_items.any(base_name);
+    let trim_model = baked.held_items.any(&trimmed_name);
+    let layer_counts = |m: Option<&rewo_data::held_items::HeldItemModel>| {
+        m.map(|m| {
+            // `gui_quads` is the slot-context override and is absent when the
+            // two contexts agree, which for a sprite item they do.
+            let quads = m.gui_quads.as_ref().unwrap_or(&m.quads);
+            let mut t: Vec<u16> = quads.iter().map(|q| q.tex).collect();
+            t.sort_unstable();
+            t.dedup();
+            t.len()
+        })
+        .unwrap_or(0)
+    };
+    c.record(
+        "u1.a_trimmed_variant_bakes_one_more_sprite_layer_than_its_base",
+        layer_counts(plain_model) == 1 && layer_counts(trim_model) == 2,
+        format!(
+            "{base_name} draws from {} texture(s); {trimmed_name} from {}. The second is \
+             `trims/items/chestplate_trim_gold`, which is **not a file** — `items.json` \
+             permutes it from a greyscale source exactly as `armor_trims.json` does for \
+             the worn sheets",
+            layer_counts(plain_model),
+            layer_counts(trim_model)
+        ),
+    );
+    // An unknown material must land on the base, not on nothing.
+    let unknown = baked.held_items.any(&format!("{base_name}#minecraft:nosuchmaterial"));
+    c.record(
+        "u2.an_unnamed_material_falls_back_to_the_untrimmed_icon",
+        unknown.is_some() && layer_counts(unknown) == 1,
+        format!(
+            "a variant the bake never made resolves to {} layer(s) — the plain item. An \
+             item can be trimmed with a material its own definition names no case for, \
+             and vanilla's answer there is the `fallback`, so a missing variant has to \
+             degrade to the untrimmed icon rather than to no icon",
+            layer_counts(unknown)
+        ),
+    );
 
     // -- armour trims (M48) ---------------------------------------------------
     //

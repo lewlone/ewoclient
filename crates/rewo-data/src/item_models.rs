@@ -979,7 +979,11 @@ mod tests {
         let using = resolve_definition(
             &def,
             &mut reader(vec![]),
-            SelectionContext { display: DisplayContext::FirstPersonRightHand, using_item: true },
+            SelectionContext {
+                display: DisplayContext::FirstPersonRightHand,
+                using_item: true,
+                trim_material: None,
+            },
         );
         assert!(
             matches!(&rest, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "dirt"),

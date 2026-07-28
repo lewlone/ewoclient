@@ -3004,6 +3004,32 @@ validation Rewo has.
   Gate `itemshot` 46 → **51**; **633 tests**. **Open:** trims are not on GUI
   icons (M40 suppresses the `select` property it cannot evaluate), no
   `humanoid_baby` layer, and a trim does not glint.
+- **M49 trims on GUI icons (2026-07-28)** — the blocker M48 named. The icon is a
+  **`select` on `minecraft:trim_material`** whose `when` values are material
+  **registry ids** (not the `asset_name` suffix the worn sheet uses), each case
+  naming a different model — 337 of them, each an ordinary two-layer
+  `item/generated`. Its layer1 sprite comes from a **second** paletted-
+  permutations atlas (`items.json`, four 16x16 sheets, same key palette and
+  same sixteen permutations as `armor_trims.json`), so M48's `apply_palette`
+  was already the whole generator. **The bake refactor**: `ItemModels` was
+  keyed by item name and baked once, so a variant goes in under
+  **`"<item>#<material id>"`** rather than the key becoming a pair — every
+  existing lookup is untouched, and `HeldItems::any` falls back from a composed
+  name to the base, which is required and not a nicety (an item can be trimmed
+  with a material its own definition names no case for, and vanilla's answer
+  there is the `fallback`). Variants come from the definition's own `cases`,
+  not the material registry, because this is a bake of the **jar** and the
+  registry is the **server's**. **The bug that hid the whole feature**:
+  everything resolved and the icons still rendered plain, because a multi-layer
+  sprite is **coplanar by construction** (`ItemModelGenerator` puts every layer
+  in the same `z 7.5..8.5` slab) and the GUI pipeline depth-tested strict
+  `GREATER`, rejecting layer1 at exactly layer0's depth. Vanilla tests `LEQUAL`;
+  the reversed-Z counterpart is **`GREATER_OR_EQUAL`** — one word. That is the
+  third time this arc a depth *comparison* was the whole story, so it is worth
+  reaching for first when geometry is provably present and provably invisible.
+  Gate `itemshot` 51 → **54** (`u1`: a variant bakes one more sprite layer than
+  its base; `u2`: an unnamed material falls back to the base's single layer);
+  **633 tests**.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
