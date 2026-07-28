@@ -1522,10 +1522,16 @@ pub(crate) fn layer_animations(
 
 /// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
 /// pitch+ looks down.
-fn eye_view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32; 4]; 4] {
+fn eye_view_proj(
+    eye: Vec3,
+    yaw_deg: f32,
+    pitch_deg: f32,
+    aspect: f32,
+    fov_deg: f32,
+) -> [[f32; 4]; 4] {
     let view = eye_view(eye, yaw_deg, pitch_deg);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
-        70f32.to_radians(),
+        fov_deg.to_radians(),
         aspect.max(0.01),
         0.05,
     ));
@@ -2284,7 +2290,7 @@ fn run_headless(
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
-    let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0);
+    let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0, crate::modules::VANILLA_FOV);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
         samples_ms: &ring.data,
@@ -2438,6 +2444,10 @@ struct LiveApp {
     dirt_item: Option<i32>,
     /// F3 debug overlay visible (toggled by the F3 key). Default on.
     debug: bool,
+    /// M52 module port: the legit module set, loaded from the active client
+    /// profile's `modules.toml` -- the same file the launcher's Settings →
+    /// Modules tab writes, so a Native instance needs no new config contract.
+    modules: crate::modules::Modules,
     /// F2 was pressed and a capture is owed (M51). Serviced after the frame
     /// rather than inside the key handler, because a capture needs the same
     /// `gpu`/`world_renderer` the render loop owns.
@@ -2590,12 +2600,37 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
                     PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
                     PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
+                    // M52 Toggle Sneak: with the module on, Shift *flips*
+                    // sneak instead of holding it. `!event.repeat` is load
+                    // bearing -- the OS auto-repeats a held key, and without
+                    // the guard holding Shift would flip sneak dozens of times
+                    // a second rather than once.
                     PhysicalKey::Code(KeyCode::ShiftLeft) => {
-                        self.keys.sneak = p;
+                        if self.modules.is_on("toggle_sneak") {
+                            if p && !event.repeat {
+                                self.keys.sneak = !self.keys.sneak;
+                            }
+                        } else {
+                            self.keys.sneak = p;
+                        }
                         self.shift = p;
                     }
                     PhysicalKey::Code(KeyCode::ShiftRight) => self.shift = p,
-                    PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
+                    // M52 Toggle Sprint, same shape as Toggle Sneak.
+                    PhysicalKey::Code(KeyCode::ControlLeft) => {
+                        if self.modules.is_on("toggle_sprint") {
+                            if p && !event.repeat {
+                                self.keys.sprint = !self.keys.sprint;
+                            }
+                        } else {
+                            self.keys.sprint = p;
+                        }
+                    }
+                    // M52 Zoom: a HELD key, not a toggle -- every one of the
+                    // 54 zoom mods in the survey binds it that way. C is
+                    // Zoomify's default. The divide happens in
+                    // `Modules::render` so it composes with FOV Control.
+                    PhysicalKey::Code(KeyCode::KeyC) => self.modules.set_zoom_held(p),
                     // Esc closes the screen if it is open, and only quits
                     // otherwise — the same precedence vanilla gives it.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
@@ -2931,7 +2966,17 @@ impl LiveApp {
             session.active_dimension_type.as_ref(),
             self.flicker.block_factor(),
             snapshot,
-            self.gamma,
+            // M52 Full Bright: pin vanilla's MAXIMUM gamma rather than
+            // bypassing the lightmap. The value still goes through
+            // `darkness_lightmap` -> `brightness_factor` -> the exact mix M13
+            // transcribed, so night vision and the darkness effect keep
+            // composing with it correctly. A bypass would have made Full
+            // Bright silently defeat both.
+            if self.modules.is_on("fullbright") {
+                crate::modules::MAX_GAMMA
+            } else {
+                self.gamma
+            },
             self.darkness_option,
             lightmap_partial,
         );
@@ -3170,7 +3215,18 @@ impl LiveApp {
         {
             log::error!("live: texture animation: {e}");
         }
-        let vp = eye_view_proj(eye, session.player.yaw, session.player.pitch, aspect);
+        // M52: resolve the module state once per frame. Every legit module
+        // defaults off, so an unconfigured client produces exactly the
+        // constants this path used before -- which is what keeps the golden
+        // PNGs byte-identical.
+        let render_modules = self.modules.render();
+        let vp = eye_view_proj(
+            eye,
+            session.player.yaw,
+            session.player.pitch,
+            aspect,
+            render_modules.fov_degrees,
+        );
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,
             head: self.ring.head(),
@@ -3288,6 +3344,7 @@ fn run_windowed(
         hotbar_slot: 0,
         dirt_item,
         debug: true,
+        modules: crate::modules::Modules::load(),
         gestures: GestureTracker::default(),
         flicker: BlockLightFlicker::random(),
         gamma: args.gamma,

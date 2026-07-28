@@ -23,6 +23,7 @@ mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
 mod mobshot_cmd;
+mod modules;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
