@@ -1122,7 +1122,7 @@ fn read_slot(
                     components: c.fingerprint,
                     damage: c.damage,
                     max_damage: c.max_damage,
-                    enchanted: !c.enchantments.is_empty(),
+                    enchanted: c.has_foil(),
                 }),
                 Some((c.fingerprint, text)),
             )
@@ -2214,6 +2214,7 @@ mod animate_tests {
         let comps = DataComponentIds {
             max_damage: 4,
             stored_enchantments: 12,
+            enchantment_glint_override: 13,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

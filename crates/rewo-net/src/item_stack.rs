@@ -233,6 +233,10 @@ pub struct StackComponents {
     /// `(enchantment registry id, level)`.
     pub enchantments: Vec<(i32, i32)>,
     pub unbreakable: bool,
+    /// `minecraft:enchantment_glint_override` (M43). `None` is absent, which
+    /// is *not* the same as `Some(false)`: absent defers to whether the stack
+    /// is enchanted, false suppresses the glint on one that is.
+    pub glint_override: Option<bool>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -253,6 +257,22 @@ impl StackComponents {
     /// `stack.isDamaged()` — a damage value above zero.
     pub fn is_damaged(&self) -> bool {
         self.damage.unwrap_or(0) > 0
+    }
+
+    /// `ItemStack.hasFoil()` — whether this stack draws an enchantment glint.
+    ///
+    /// ```java
+    /// Boolean override = get(ENCHANTMENT_GLINT_OVERRIDE);
+    /// return override != null ? override : getItem().isFoil(this);
+    /// ```
+    ///
+    /// and `Item.isFoil` is `stack.isEnchanted()`. So the override wins **both
+    /// ways**: `true` puts a glint on a golden apple, `false` takes it off a
+    /// Sharpness V sword. Reading the glint straight off the enchantment list
+    /// gets the common case right and both of those wrong.
+    pub fn has_foil(&self) -> bool {
+        self.glint_override
+            .unwrap_or(!self.enchantments.is_empty())
     }
 
     /// The name a tooltip shows, given the item's translated display name.
@@ -421,6 +441,10 @@ fn read_interpreted(
         out.rarity = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
     }
+    if ty == ids.enchantment_glint_override {
+        out.glint_override = Some(r.u8().map_err(|_| ())? != 0);
+        return Ok(true);
+    }
     if ty == ids.unbreakable {
         // `Unit` — zero bytes. The presence of the entry is the value.
         out.unbreakable = true;
@@ -553,6 +577,7 @@ mod tests {
         lore: 10,
         enchantments: 11,
         stored_enchantments: 12,
+        enchantment_glint_override: 13,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -570,6 +595,7 @@ mod tests {
             ("minecraft:item_name", 9),
             ("minecraft:lore", 10),
             ("minecraft:enchantments", 11),
+            ("minecraft:enchantment_glint_override", 13),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -708,13 +734,22 @@ mod tests {
         );
     }
 
+    /// A component id no registry can contain, so the walk has no shape for it.
+    ///
+    /// The three tests below used a hard-coded `13` until M43 gave that id a
+    /// codec, at which point they silently started asserting the opposite of
+    /// their names. An impossible id cannot rot the same way: the property is
+    /// "an id with no shape stops the walk", not "this component happens to be
+    /// uncovered today".
+    const NO_SUCH_COMPONENT: i32 = i32::MAX;
+
     #[test]
     fn an_unknown_component_before_the_swing_stops_the_walk() {
         install_test_shapes();
         let s = read(&stack(
             1,
             100,
-            &[(13, vec![0xAA, 0xBB, 0xCC])],
+            &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB, 0xCC])],
             &[IDS.swing_animation],
         ))
         .unwrap();
@@ -733,7 +768,7 @@ mod tests {
             100,
             &[
                 (IDS.swing_animation, swing_value(2, 11)),
-                (13, vec![0xAA, 0xBB]),
+                (NO_SUCH_COMPONENT, vec![0xAA, 0xBB]),
             ],
             &[],
         );
@@ -748,7 +783,7 @@ mod tests {
         // The three junk bytes after the un-transcribed component are NOT
         // consumed — which is exactly why the caller must stop rather than
         // read a second slot out of them.
-        let bytes = stack(1, 100, &[(13, vec![0xAA, 0xBB, 0xCC])], &[]);
+        let bytes = stack(1, 100, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB, 0xCC])], &[]);
         let mut r = PacketReader::new(&bytes);
         let s = read_optional(&mut r, IDS).unwrap();
         assert!(!s.aligned());

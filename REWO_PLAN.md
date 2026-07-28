@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M42 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M43 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -355,7 +355,7 @@ match.
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `inventoryshot` 85/85, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  `inventoryshot` 91/91, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
   29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
@@ -374,11 +374,11 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The enchantment glint.** M42 gives the client `isEnchanted` and the
-   enchantment list; the shimmer itself is a second render pass with its own
-   texture, matrix and blend, and it applies to the hand, the ground item and
-   the GUI icon alike. Beyond that: the seven syncable components still
-   without codecs (`equippable`, `can_place_on`, `can_break`,
+1. **The glint on the other three surfaces.** M43 ships it on the GUI icons;
+   the **first-person hand** is the same item scale (8.0) through a sibling
+   pass, and ground / mob-held items and worn armour want the entity scales
+   (0.5 and 0.16) through the entity pass. Beyond that: the seven syncable
+   components still without codecs (`equippable`, `can_place_on`, `can_break`,
    `blocks_attacks`, `jukebox_playable`, `kinetic_weapon`, `bees`), and armour
    trim *models*, which need the trim's material and pattern resolved to asset
    ids rather than merely walked past.
@@ -6349,6 +6349,101 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M43 — the enchantment glint (2026-07-28)
+
+M42 left the client knowing an item is enchanted and drawing it plain. The
+shimmer is a **second pass over the same geometry**, and almost all of it is
+three pieces of state rather than any new maths.
+
+#### The transform
+
+`TextureTransform.setupGlintTexturing`, entire:
+
+```java
+long millis = (long)(Util.getMillis() * glintSpeed * 8.0);
+float o0 = (millis % 110000L) / 110000.0F;
+float o1 = (millis %  30000L) /  30000.0F;
+Matrix4f m = new Matrix4f().translation(-o0, o1, 0.0F);
+m.rotateZ((float)(Math.PI / 18)).scale(scale);
+```
+
+Two periods, 110 s and 30 s, so the pattern never visibly repeats; the u
+offset runs **negative** and the v offset positive, which is what sends the
+sheen diagonally rather than straight across. The cast to `long` happens
+**before** the modulo — doing the remainder in floating point drifts once a
+session has been up a few hours.
+
+**JOML post-multiplies**, so `translation().rotateZ().scale()` builds
+`T · Rz · S` and the shader applies it to a column vector: read as operations
+on the coordinate it is **scale, then rotate, then translate** — the reverse of
+the order the calls appear in. The three scales are the only difference between
+contexts: **8.0** for an item (a GUI icon or a hand), 0.5 for an entity, 0.16
+for armour.
+
+**The UV fed in is the quad's own `0..1` texture coordinate**, not its place in
+Rewo's atlas. Vanilla gives the glint pass the same `UV0` the item pass uses,
+which is a coordinate in the item's own sprite; feeding an atlas coordinate
+would make the pattern depend on where the packer happened to put the item.
+
+#### Three pieces of pipeline state, each load-bearing
+
+- **`BlendFunction.GLINT` is `(SRC_COLOR, ONE, ZERO, ONE)`.** The colour source
+  factor is the source colour itself, so a dark glint texel contributes nothing
+  and a bright one blooms, and it only ever adds. Alpha takes the
+  destination's, which leaves the frame's alpha alone — that matters because
+  every headless gate reads it back.
+- **`DepthStencilState(EQUAL, false)`** — test equal, do not write. That is what
+  lands the sheen exactly on the item's own fragments and nowhere else; a
+  `LESS`/`GREATER` test would paint it over faces the item itself had hidden.
+  It works because the glint geometry *is* the item geometry, so the depths
+  match exactly.
+- **REPEAT and LINEAR sampling.** The matrix scales the UV by 8, so the sheet
+  is sampled far outside `0..1` and clamping would smear one edge texel across
+  the whole item. `blur: true` in the texture's own `.mcmeta` is the one place
+  Minecraft asks for a filtered GUI texture.
+
+The phase is **wall-clock**, not the game tick: vanilla reads `Util.getMillis()`
+directly, so the glint keeps scrolling on a paused screen and never stutters
+with the tick rate.
+
+#### The bug the render caught
+
+`hasFoil()` is **not** `isEnchanted()`:
+
+```java
+Boolean override = get(ENCHANTMENT_GLINT_OVERRIDE);
+return override != null ? override : getItem().isFoil(this);
+```
+
+The override wins in **both** directions — a golden apple can be told to glint
+and a Sharpness V sword can be told not to. The first build read the flag
+straight off the enchantment list, which gets the common case right and both of
+those wrong; a frame with all four cases side by side is what showed it.
+
+#### And the fixtures rotted again
+
+Three `item_stack` tests used a hard-coded component id as their "unknown
+codec", and M43 gave that id one — so they silently began asserting the
+opposite of their names. Same shape as the `swingshot` fixture M41 fixed, and
+fixed the same way: an **impossible** id, because the property is "an id with
+no shape stops the walk" and not "this component happens to be uncovered
+today". That is twice now; a fixture that names a real-but-uncovered thing is a
+fixture with an expiry date.
+
+#### Verified
+
+`inventoryshot --check` **85 -> 91**, **630 tests**, all seventeen gates green,
+demo PNG byte-identical to M15 onward. Live, four stacks side by side: an
+enchanted sword glints, a plain one does not, a golden apple with the override
+on does, and an enchanted sword with the override off does not. The sheen
+**moves** — 311 of a slot's 2,500 pixels differ between two frames seven
+seconds apart, over an item that is otherwise static.
+
+**Open.** The glint is on the GUI icons only. The **first-person hand** is the
+same item scale (8.0) through a sibling pass and is the natural next step;
+**ground and mob-held** items want `ENTITY_GLINT_TEXTURING` at 0.5, and worn
+armour `ARMOR_ENTITY_GLINT_TEXTURING` at 0.16, through the entity pass.
 
 ### M42 — the enchantment registry, and the tooltip lines it unlocks (2026-07-28)
 

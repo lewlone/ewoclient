@@ -52,7 +52,10 @@
 use ash::vk;
 use glam::{Mat3, Vec3};
 
+use gpu_allocator::vulkan::Allocation;
+
 use crate::end_sky::{upload_buffer, Buf};
+use crate::entities::create_texture;
 use crate::held::{DisplayTransform, HeldItemModel, HeldItems};
 use crate::Gpu;
 
@@ -143,6 +146,71 @@ pub fn direction_normal(dir: u8) -> Vec3 {
     }
 }
 
+// -- the enchantment glint (M43) ----------------------------------------------
+//
+// `TextureTransform.setupGlintTexturing`, which is the whole animation:
+//
+// ```java
+// long millis = (long)(Util.getMillis() * glintSpeed * 8.0);
+// float o0 = (millis % 110000L) / 110000.0F;
+// float o1 = (millis %  30000L) /  30000.0F;
+// Matrix4f m = new Matrix4f().translation(-o0, o1, 0.0F);
+// m.rotateZ((float)(Math.PI / 18)).scale(scale);
+// ```
+//
+// JOML post-multiplies, so the result is `T * Rz * S` and the shader applies
+// it as `TextureMat * vec4(UV0, 0, 1)` — a column vector. Read as operations
+// on the UV that is **scale, then rotate, then translate**, which is the
+// opposite of the order the calls appear in.
+
+/// `Options.glintSpeed`'s default.
+pub const GLINT_SPEED: f32 = 0.5;
+/// `Options.glintStrength`'s default — the shader's `GlintAlpha`.
+pub const GLINT_STRENGTH: f32 = 0.75;
+/// `TextureTransform.GLINT_TEXTURING`'s scale — the item glint, which is what
+/// a GUI icon and a first-person hand both use.
+pub const GLINT_SCALE_ITEM: f32 = 8.0;
+/// `ENTITY_GLINT_TEXTURING` — a dropped or mob-held stack. Not used yet;
+/// recorded because the three scales are the only difference between the
+/// contexts and picking the wrong one is invisible until compared.
+pub const GLINT_SCALE_ENTITY: f32 = 0.5;
+/// `ARMOR_ENTITY_GLINT_TEXTURING`.
+pub const GLINT_SCALE_ARMOR: f32 = 0.16;
+
+/// The two scrolling offsets at a wall-clock time in **milliseconds**.
+///
+/// The two periods are deliberately coprime-ish (110 s and 30 s) so the
+/// pattern does not visibly repeat; the first runs **negative** in u and the
+/// second positive in v, which is what makes the sheen travel diagonally.
+///
+/// `millis` is a `long` before the modulo, so this truncates the same way —
+/// doing the remainder in floating point drifts once the session has been up
+/// for a few hours.
+pub fn glint_offsets(millis_since_start: f64, speed: f32) -> (f32, f32) {
+    let millis = (millis_since_start * speed as f64 * 8.0) as i64;
+    let o0 = (millis.rem_euclid(110_000)) as f32 / 110_000.0;
+    let o1 = (millis.rem_euclid(30_000)) as f32 / 30_000.0;
+    (o0, o1)
+}
+
+/// Apply the glint texture matrix to one model-space UV.
+///
+/// The input is the quad's **own** `0..1` texture coordinate, not its place in
+/// Rewo's atlas: vanilla feeds the glint pass the same `UV0` the item pass
+/// uses, and that is a coordinate in the item's own sprite. Feeding an atlas
+/// coordinate instead would make the pattern depend on where the packer
+/// happened to put the item.
+pub fn glint_uv(uv: [f32; 2], offsets: (f32, f32), scale: f32) -> [f32; 2] {
+    // Scale, then rotate by 10 degrees, then translate — see the note above on
+    // JOML's post-multiplication.
+    let (s, c) = (std::f32::consts::PI / 18.0).sin_cos();
+    let (x, y) = (uv[0] * scale, uv[1] * scale);
+    [
+        c * x - s * y - offsets.0,
+        s * x + c * y + offsets.1,
+    ]
+}
+
 /// One item to draw, at a slot's top-left corner in screen pixels.
 #[derive(Clone, Debug)]
 pub struct GuiItem {
@@ -154,6 +222,23 @@ pub struct GuiItem {
     /// Slot size in pixels — 16 for a vanilla hotbar at GUI scale 1, larger
     /// when the HUD is scaled up.
     pub size: f32,
+    /// Whether this stack draws an enchantment glint (M43).
+    ///
+    /// `ItemStack.hasFoil()`, which for a plain item is
+    /// `!getEnchantments().isEmpty()` unless `ENCHANTMENT_GLINT_OVERRIDE` says
+    /// otherwise. Carried per-item rather than looked up here because the pass
+    /// has no idea what a stack is — it draws rectangles.
+    pub glint: bool,
+}
+
+struct GlintParts {
+    pipeline: vk::Pipeline,
+    sampler: vk::Sampler,
+    image: vk::Image,
+    image_alloc: Option<Allocation>,
+    view: vk::ImageView,
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
 }
 
 #[repr(C)]
@@ -198,6 +283,56 @@ pub fn place(t: &DisplayTransform, p: [f32; 3], slot_centre: [f32; 2], px_per_bl
 /// An item whose model is not baked contributes nothing — the same
 /// "draw nothing rather than something wrong" rule the rest of the item path
 /// uses for the 147 state-dependent definitions M22 suppresses.
+/// The glint quads for a set of items, in the same screen positions the icons
+/// occupy (M43).
+///
+/// Vanilla draws the glint as a **second pass over the same geometry** — the
+/// item's own quads, re-fed to a pipeline that samples the glint sheet through
+/// a scrolling matrix. That is why this takes the same inputs as
+/// [`build_vertices`] and differs only in what it puts in the UV slot: the
+/// positions have to match exactly, or the depth-equal test the glint pass
+/// relies on would reject every fragment.
+pub fn build_glint_vertices(
+    items: &HeldItems,
+    slots: &[GuiItem],
+    millis: f64,
+) -> Vec<GuiItemVertex> {
+    let offsets = glint_offsets(millis, GLINT_SPEED);
+    let mut out = Vec::new();
+    for slot in slots {
+        if !slot.glint {
+            continue;
+        }
+        let Some(model): Option<&HeldItemModel> = items.any(&slot.model) else {
+            continue;
+        };
+        let centre = [slot.x + slot.size / 2.0, slot.y + slot.size / 2.0];
+        let px = slot.size / 16.0 * PX_PER_BLOCK;
+        for q in model.quads_for_gui() {
+            let p: Vec<[f32; 3]> = q
+                .verts
+                .iter()
+                .map(|v| place(&model.gui, *v, centre, px))
+                .collect();
+            // The quad's **own** 0..1 UV, not its place in the atlas — see
+            // [`glint_uv`].
+            let uvs: Vec<[f32; 2]> = q
+                .uv
+                .iter()
+                .map(|t| glint_uv(*t, offsets, GLINT_SCALE_ITEM))
+                .collect();
+            let v = |i: usize| GuiItemVertex {
+                pos: p[i],
+                uv: uvs[i],
+                // The item pass's diffuse slot carries `GlintAlpha` here.
+                shade: GLINT_STRENGTH,
+            };
+            out.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);
+        }
+    }
+    out
+}
+
 pub fn build_vertices(
     items: &HeldItems,
     slots: &[GuiItem],
@@ -241,6 +376,16 @@ pub fn build_vertices(
 }
 
 pub struct GuiItemPass {
+    /// The glint's own pipeline, sampler, image and descriptor set (M43).
+    ///
+    /// It shares the vertex shader and the pipeline layout — the geometry and
+    /// the push constants are identical — and differs in three things that all
+    /// have to change together: a fragment shader that ignores the item atlas,
+    /// a `SRC_COLOR / ONE` blend, and a depth test of **EQUAL with no write**,
+    /// which is what lands the sheen exactly on the item's own fragments and
+    /// nowhere else.
+    glint: Option<GlintParts>,
+    glint_verts: u32,
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
@@ -356,6 +501,8 @@ impl GuiItemPass {
             allocs: vec![alloc],
             vbuf: None,
             vert_count: 0,
+            glint: None,
+            glint_verts: 0,
         })
     }
 
@@ -371,6 +518,155 @@ impl GuiItemPass {
             vk::BufferUsageFlags::VERTEX_BUFFER,
         )?);
         Ok(())
+    }
+
+    /// Build the glint's pipeline and upload its sheet (M43).
+    ///
+    /// Separate from [`Self::new`] because the glint is optional: a jar
+    /// without `misc/enchanted_glint_item.png` draws no shimmer rather than
+    /// failing to start, the same rule every other optional texture follows.
+    pub fn init_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.glint.is_some() {
+            return Ok(());
+        }
+        let device = gpu.device.clone();
+        let (image, image_alloc, view) = create_texture(gpu, rgba, w, h)?;
+        // **REPEAT and LINEAR**, both load-bearing. The scrolling matrix
+        // scales the UV by 8, so the sheet is sampled far outside `0..1` and
+        // clamping would smear one edge texel across the whole item; and the
+        // texture's own `.mcmeta` sets `blur: true`, which is the one place
+        // Minecraft asks for a filtered GUI texture.
+        let sampler = unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .address_mode_u(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_v(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_w(vk::SamplerAddressMode::REPEAT),
+                    None,
+                )
+                .map_err(|e| format!("glint sampler: {e}"))?
+        };
+        let sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)];
+        let pool = unsafe {
+            device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(1)
+                        .pool_sizes(&sizes),
+                    None,
+                )
+                .map_err(|e| format!("glint pool: {e}"))?
+        };
+        let set_layouts = [self.set_layout];
+        let set = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(pool)
+                        .set_layouts(&set_layouts),
+                )
+                .map_err(|e| format!("glint set: {e}"))?[0]
+        };
+        let info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(sampler)];
+        unsafe {
+            device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&info)],
+                &[],
+            );
+        }
+        let pipeline = build_glint_pipeline(gpu, self.layout, color_format)?;
+        self.glint = Some(GlintParts {
+            pipeline,
+            sampler,
+            image,
+            image_alloc: Some(image_alloc),
+            view,
+            pool,
+            set,
+        });
+        Ok(())
+    }
+
+    pub fn glint_ready(&self) -> bool {
+        self.glint.is_some()
+    }
+
+    /// This frame's glint geometry. Appended to the same buffer after the item
+    /// vertices, so one upload serves both draws.
+    pub fn set_vertices_with_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[GuiItemVertex],
+        glint: &[GuiItemVertex],
+    ) -> Result<(), String> {
+        let mut all = Vec::with_capacity(verts.len() + glint.len());
+        all.extend_from_slice(verts);
+        all.extend_from_slice(glint);
+        self.set_vertices(gpu, &all)?;
+        self.vert_count = verts.len() as u32;
+        self.glint_verts = glint.len() as u32;
+        Ok(())
+    }
+
+    /// The glint, over the icons it belongs to.
+    pub fn draw_glint(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        let (Some(parts), Some(vbuf)) = (self.glint.as_ref(), self.vbuf.as_ref()) else {
+            return;
+        };
+        if self.glint_verts == 0 {
+            return;
+        }
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, parts.pipeline);
+            let viewport = vk::Viewport::default()
+                .width(extent.width as f32)
+                .height(extent.height as f32)
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[parts.set],
+                &[],
+            );
+            let push = Push {
+                screen: [extent.width as f32, extent.height as f32],
+                depth_scale: DEPTH_SCALE,
+                _pad: 0.0,
+            };
+            device.cmd_push_constants(
+                cb,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&push),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_draw(cb, self.glint_verts, 1, self.vert_count, 0);
+        }
     }
 
     pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
@@ -427,6 +723,16 @@ impl GuiItemPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.atlas.1, None);
             device.destroy_image(self.atlas.0, None);
+            if let Some(mut g) = self.glint.take() {
+                device.destroy_pipeline(g.pipeline, None);
+                device.destroy_descriptor_pool(g.pool, None);
+                device.destroy_sampler(g.sampler, None);
+                device.destroy_image_view(g.view, None);
+                device.destroy_image(g.image, None);
+                if let Some(a) = g.image_alloc.take() {
+                    self.allocs.push(a);
+                }
+            }
         }
         for a in self.allocs.drain(..) {
             let _ = gpu.allocator.free(a);
@@ -440,6 +746,129 @@ fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
         if let Some(a) = b.alloc.take() {
             let _ = gpu.allocator.free(a);
         }
+    }
+}
+
+/// The glint's pipeline (M43) — the item pass's vertex shader with a different
+/// fragment shader, blend and depth rule.
+///
+/// Three differences from [`build_pipeline`], all of them from
+/// `RenderPipelines.GLINT`:
+///
+/// - `BlendFunction.GLINT` is `(SRC_COLOR, ONE, ZERO, ONE)`. The colour source
+///   factor is the **source colour itself**, so a dark glint texel contributes
+///   nothing and a bright one blooms; and it only ever adds. Alpha takes the
+///   destination's, leaving the frame's alpha alone — which matters because
+///   the headless gates read it back.
+/// - `DepthStencilState(CompareOp.EQUAL, false)`: test equal, **do not
+///   write**. This is what puts the sheen exactly on the item's own fragments
+///   and nowhere else — a `LESS`/`GREATER` test would paint it over faces the
+///   item itself had hidden.
+/// - Culling off, matching the item pass, because a rotated block shows faces
+///   of both windings.
+fn build_glint_pipeline(
+    gpu: &Gpu,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    let device = &gpu.device;
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/gui_item.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/gui_glint.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<GuiItemVertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let attrs = [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(12),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .format(vk::Format::R32_SFLOAT)
+                .offset(20),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attrs);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::EQUAL);
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B
+                    | vk::ColorComponentFlags::A,
+            )];
+        let blend_state =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(crate::world::DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend_state)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None)
+            .map_err(|(_, e)| format!("glint pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
     }
 }
 

@@ -51,6 +51,9 @@ pub struct DataComponentIds {
     /// A book's enchantments (M42). Rendered by the same `addToTooltip`, so
     /// it is read into the same list.
     pub stored_enchantments: i32,
+    /// `minecraft:enchantment_glint_override` (M43) — a per-stack yes/no that
+    /// **overrides** the enchantment test in both directions.
+    pub enchantment_glint_override: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -131,6 +134,7 @@ impl DataComponentIds {
             lore: id("minecraft:lore")?,
             enchantments: id("minecraft:enchantments")?,
             stored_enchantments: id("minecraft:stored_enchantments")?,
+            enchantment_glint_override: id("minecraft:enchantment_glint_override")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

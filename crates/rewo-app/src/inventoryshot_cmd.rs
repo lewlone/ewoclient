@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 85;
+const EXPECTED_WITNESSES: usize = 91;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -89,6 +89,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_names(&mut c, &baked, &jar)?;
     check_components(&mut c, &paths)?;
     check_enchantments(&mut c, &baked, &jar);
+    check_glint(&mut c, &baked);
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -1538,6 +1539,101 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
     let _ = jar;
 }
 
+/// The enchantment glint's transform and its `hasFoil` gate (M43).
+fn check_glint(c: &mut Checker, baked: &assets::BakedAssets) {
+    use rewo_gpu::gui_item::{glint_offsets, glint_uv, GLINT_SCALE_ITEM, GLINT_SPEED};
+
+    // The two offsets, at a time chosen so both moduli are exact.
+    // millis = 1000 * 0.5 * 8 = 4000 → 4000/110000 and 4000/30000.
+    let o = glint_offsets(1000.0, GLINT_SPEED);
+    let want = (4000.0 / 110_000.0, 4000.0 / 30_000.0);
+    c.record(
+        "x1.the_two_glint_offsets_run_on_their_own_periods",
+        (o.0 - want.0).abs() < 1e-6 && (o.1 - want.1).abs() < 1e-6,
+        format!(
+            "at one second: {o:?} against {want:?}. The periods are 110 s and 30 s, \
+             which is why the sheen never visibly repeats, and the `long` cast \
+             happens **before** the modulo — doing the remainder in floating point \
+             drifts after the session has been up a few hours"
+        ),
+    );
+    // …and they wrap, rather than growing without bound.
+    let late = glint_offsets(1000.0 + 110_000.0 / (GLINT_SPEED as f64 * 8.0), GLINT_SPEED);
+    c.record(
+        "x2.the_first_offset_wraps_at_its_period",
+        (late.0 - o.0).abs() < 1e-4,
+        format!("one full 110 s period later the u offset is {:?} against {:?}", late.0, o.0),
+    );
+
+    // The matrix: scale by 8, rotate 10 degrees, then translate. The order
+    // matters and is the reverse of the call order in the decompile.
+    let at_origin = glint_uv([0.0, 0.0], (0.0, 0.0), GLINT_SCALE_ITEM);
+    let unit_u = glint_uv([1.0, 0.0], (0.0, 0.0), GLINT_SCALE_ITEM);
+    let ten = (std::f32::consts::PI / 18.0).sin_cos();
+    let expect = [GLINT_SCALE_ITEM * ten.1, GLINT_SCALE_ITEM * ten.0];
+    c.record(
+        "x3.the_glint_matrix_scales_then_rotates_then_translates",
+        at_origin == [0.0, 0.0]
+            && (unit_u[0] - expect[0]).abs() < 1e-4
+            && (unit_u[1] - expect[1]).abs() < 1e-4,
+        format!(
+            "uv (0,0) → {at_origin:?}; uv (1,0) → {unit_u:?} against {expect:?}. \
+             JOML post-multiplies, so `translation().rotateZ().scale()` reads as \
+             scale-then-rotate-then-translate on the coordinate — the reverse of \
+             the order the calls appear in"
+        ),
+    );
+    // The offset really does move the sample, and in the sign vanilla uses:
+    // negative in u, positive in v.
+    let shifted = glint_uv([0.0, 0.0], (0.25, 0.5), GLINT_SCALE_ITEM);
+    c.record(
+        "x4.the_u_offset_is_negative_and_the_v_offset_positive",
+        (shifted[0] + 0.25).abs() < 1e-6 && (shifted[1] - 0.5).abs() < 1e-6,
+        format!(
+            "{shifted:?} for offsets (0.25, 0.5) — `translation(-o0, o1, 0)`, and \
+             the opposing signs are what send the sheen diagonally rather than \
+             straight across"
+        ),
+    );
+
+    // `ItemStack.hasFoil()` — the override wins in **both** directions.
+    let foil = |enchanted: bool, over: Option<bool>| {
+        let mut comps = rewo_net::item_stack::StackComponents::default();
+        if enchanted {
+            comps.enchantments.push((0, 1));
+        }
+        comps.glint_override = over;
+        comps.has_foil()
+    };
+    let table = [
+        foil(true, None),
+        foil(false, None),
+        foil(false, Some(true)),
+        foil(true, Some(false)),
+    ];
+    c.record(
+        "x5.the_glint_override_wins_in_both_directions",
+        table == [true, false, true, false],
+        format!(
+            "enchanted={:?} plain={:?} plain+override={:?} enchanted+override-off={:?}. \
+             `hasFoil` is `override != null ? override : isEnchanted()`, so a golden \
+             apple can glint and a Sharpness V sword can be told not to. Reading the \
+             glint straight off the enchantment list gets the common case right and \
+             both of these wrong",
+            table[0], table[1], table[2], table[3]
+        ),
+    );
+    c.record(
+        "x6.the_glint_sheet_is_present_in_the_jar",
+        baked.glint.as_ref().is_some_and(|g| g.w > 0 && g.h > 0),
+        format!(
+            "misc/enchanted_glint_item.png is {:?} — absent, no glint is drawn \
+             rather than an invented shimmer",
+            baked.glint.as_ref().map(|g| (g.w, g.h))
+        ),
+    );
+}
+
 fn changed(a: &[u8], b: &[u8], x: u32, y: u32, w: u32, h: u32) -> i64 {
     let mut n = 0;
     for yy in y..(y + h).min(H) {
@@ -1603,12 +1699,14 @@ fn check_pixels(
             x: 32.0,
             y: 96.0,
             size: 48.0,
+            glint: false,
         },
         GuiItem {
             model: block.into(),
             x: 144.0,
             y: 96.0,
             size: 48.0,
+            glint: false,
         },
     ];
     let names: Vec<String> = slots.iter().map(|s| s.model.clone()).collect();
@@ -1625,6 +1723,7 @@ fn check_pixels(
         x: 32.0,
         y: 96.0,
         size: 48.0,
+        glint: false,
     }];
     c.record(
         "g2.an_unbaked_model_contributes_nothing",
@@ -1734,6 +1833,7 @@ fn pixels_inner(
         x: 144.0,
         y: 96.0,
         size: 48.0,
+        glint: false,
     }];
     let lights = ItemLights::default();
     let flat_verts = build_vertices(&flat, &flat_slots, &lights, &|t| {

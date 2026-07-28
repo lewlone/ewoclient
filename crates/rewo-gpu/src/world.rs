@@ -1473,6 +1473,39 @@ impl WorldRenderer {
         }
     }
 
+    /// The icons plus this frame's enchantment glint (M43), which rides in the
+    /// same buffer after them.
+    pub fn set_gui_items_with_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[crate::gui_item::GuiItemVertex],
+        glint: &[crate::gui_item::GuiItemVertex],
+    ) -> Result<(), String> {
+        match self.gui_items.as_mut() {
+            Some(p) => p.set_vertices_with_glint(gpu, verts, glint),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the glint's pipeline and upload `misc/enchanted_glint_item.png`.
+    ///
+    /// The item pass is rebuilt whenever its atlas is repacked, and this goes
+    /// with it — hence the call site being beside `init_gui_items` rather than
+    /// once at startup.
+    pub fn init_gui_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let format = self.color_format;
+        match self.gui_items.as_mut() {
+            Some(p) => p.init_glint(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
     /// Build the weather pass (M33) from `rain.png` and `snow.png`.
     pub fn init_weather(
         &mut self,
@@ -2232,6 +2265,7 @@ impl WorldRenderer {
             if screen.is_none() {
                 if let Some(items) = &self.gui_items {
                     items.draw(gpu, cb, extent);
+                    items.draw_glint(gpu, cb, extent);
                 }
                 // A hotbar bar goes over its icon, same as in the screen.
                 if let Some(pass) = &self.container {
@@ -2250,6 +2284,7 @@ impl WorldRenderer {
             }
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);
+                items.draw_glint(gpu, cb, extent);
             }
             pass.draw_front(gpu, cb, extent);
             pass.draw_bars(gpu, cb, extent);

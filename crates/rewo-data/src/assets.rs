@@ -195,6 +195,9 @@ pub struct BakedAssets {
     /// their tooltip lines (M42). The *registry* half is runtime data and
     /// lives on the session.
     pub enchantment_text: crate::enchantments::EnchantmentText,
+    /// `misc/enchanted_glint_item.png` (M43). `None` means no glint is drawn
+    /// rather than an invented shimmer.
+    pub glint: Option<DecodedImage>,
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
     /// Per-state full-cube collision flag — true for a `Cube` OR a `Model`
@@ -700,6 +703,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let container = bake_container(&mut jar);
     let item_names = bake_item_names(&mut jar);
     let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar);
+    let glint = bake_misc_texture(&mut jar, "enchanted_glint_item.png");
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
@@ -948,6 +952,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     Ok(BakedAssets {
         item_names,
         enchantment_text,
+        glint,
         held_items,
         render,
         solid,
@@ -1073,6 +1078,17 @@ fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// One `textures/misc/` PNG — the enchantment glint (M43).
+fn bake_misc_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("assets/minecraft/textures/misc/{rel}"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let (rgba, w, h) = decode_png_any(&bytes)?;
+    Some(DecodedImage { rgba, w, h })
 }
 
 fn bake_env_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {

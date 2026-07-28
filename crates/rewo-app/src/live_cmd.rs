@@ -6451,6 +6451,10 @@ fn icon_for(
         x,
         y,
         size,
+        // `ItemStack.hasFoil()` (M43). Every slot icon goes through this one
+        // constructor, so the hotbar, the screen and the cursor stack all get
+        // the glint from the same place.
+        glint: stack.enchanted,
     })
 }
 
@@ -6762,6 +6766,10 @@ pub struct GuiItemState {
     /// building the icons needs `&items` while uploading them needs `&mut wr`,
     /// and one copy cannot be both.
     held: rewo_gpu::held::HeldItems,
+    /// When this session started, for the glint's wall-clock phase (M43).
+    started: std::time::Instant,
+    /// `misc/enchanted_glint_item.png` as `(rgba, w, h)`; `None` draws none.
+    glint: Option<(Vec<u8>, u32, u32)>,
 }
 
 impl GuiItemState {
@@ -6771,6 +6779,11 @@ impl GuiItemState {
             uv: std::collections::HashMap::new(),
             lights: rewo_gpu::gui_item::ItemLights::default(),
             held: to_gpu_held_items(&baked.held_items),
+            started: std::time::Instant::now(),
+            glint: baked
+                .glint
+                .as_ref()
+                .map(|i| (i.rgba.clone(), i.w, i.h)),
         }
     }
 }
@@ -6801,6 +6814,13 @@ fn apply_hotbar_icons(
             log::warn!("live: gui-item atlas upload failed: {e}");
             return;
         }
+        // The glint rides on the item pass, and the item pass is rebuilt
+        // whenever its atlas is repacked — so the glint is rebuilt here too.
+        if let Some(g) = state.glint.as_ref() {
+            if let Err(e) = wr.init_gui_glint(gpu, &g.0, g.1, g.2) {
+                log::warn!("live: glint upload failed: {e}");
+            }
+        }
         // The UVs come from the same packing the atlas was built from, so the
         // two cannot disagree.
         state.uv = atlas.uv;
@@ -6816,6 +6836,7 @@ fn apply_hotbar_icons(
                 x: slots[i].0,
                 y: slots[i].1,
                 size: slots[i].2,
+                glint: session.inventory.hotbar(i).is_some_and(|s| s.enchanted),
             })
         })
         .collect();
@@ -6846,6 +6867,13 @@ fn apply_gui_icons(
             log::warn!("live: gui-item atlas upload failed: {e}");
             return;
         }
+        // The glint rides on the item pass, and the item pass is rebuilt
+        // whenever its atlas is repacked — so the glint is rebuilt here too.
+        if let Some(g) = state.glint.as_ref() {
+            if let Err(e) = wr.init_gui_glint(gpu, &g.0, g.1, g.2) {
+                log::warn!("live: glint upload failed: {e}");
+            }
+        }
         state.uv = atlas.uv;
         state.resident = wanted;
     }
@@ -6861,7 +6889,12 @@ fn upload_gui_icons(
     let verts = rewo_gpu::gui_item::build_vertices(&state.held, icons, &state.lights, &|t| {
         state.uv.get(&t).copied()
     });
-    if let Err(e) = wr.set_gui_items(gpu, &verts) {
+    // The glint's phase is wall-clock, not the game tick: vanilla reads
+    // `Util.getMillis()` directly, so it keeps scrolling on a paused screen
+    // and does not stutter with the tick rate (M43).
+    let millis = state.started.elapsed().as_secs_f64() * 1000.0;
+    let glint = rewo_gpu::gui_item::build_glint_vertices(&state.held, icons, millis);
+    if let Err(e) = wr.set_gui_items_with_glint(gpu, &verts, &glint) {
         log::warn!("live: gui-item upload failed: {e}");
     }
 }

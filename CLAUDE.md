@@ -2843,6 +2843,31 @@ validation Rewo has.
   sword renders curse-first-and-red, `Sharpness V`, `Unbreaking III`,
   `Mending` with no numeral. **Open:** the glint (a second render pass, not a
   tooltip concern).
+- **M43 the enchantment glint (2026-07-28)** — a **second pass over the same
+  geometry**, and almost all of it is state rather than new maths.
+  `setupGlintTexturing`: two offsets on **110 s and 30 s** periods (so the
+  pattern never visibly repeats), u **negative** and v positive (which sends
+  the sheen diagonally), and the cast to `long` **before** the modulo. **JOML
+  post-multiplies**, so `translation().rotateZ().scale()` reads as
+  scale-then-rotate-then-translate on the coordinate — the reverse of the call
+  order. Scale **8.0** for an item, 0.5 entity, 0.16 armour. **The UV fed in is
+  the quad's own `0..1` coordinate, not its atlas position** — otherwise the
+  pattern depends on where the packer put the item. Three pieces of pipeline
+  state, each load-bearing: `BlendFunction.GLINT` is `(SRC_COLOR, ONE, ZERO,
+  ONE)` so a dark texel adds nothing and alpha is left alone (the headless
+  gates read it back); depth **EQUAL with no write**, which lands the sheen on
+  the item's own fragments and nowhere else; and **REPEAT + LINEAR** sampling,
+  because scale 8 samples far outside `0..1` and the `.mcmeta` sets
+  `blur: true`. The phase is **wall-clock**, not the tick. **The render caught
+  a bug**: `hasFoil()` is *not* `isEnchanted()` — `ENCHANTMENT_GLINT_OVERRIDE`
+  wins **both ways**, so a golden apple can glint and a Sharpness V sword can
+  be told not to. **And three `item_stack` fixtures rotted the same way
+  `swingshot`'s did in M41** — they named a real-but-uncovered component id as
+  their "unknown codec" and M43 gave it one; both now use an *impossible* id.
+  Gate `inventoryshot` 85 -> **91**; **630 tests**; live, all four `hasFoil`
+  cases correct and the sheen moves (311 of 2,500 slot pixels differ across
+  seven seconds). **Open:** the glint on the first-person hand, on ground /
+  mob-held items (scale 0.5) and on worn armour (0.16).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
