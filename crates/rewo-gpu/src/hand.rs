@@ -231,6 +231,39 @@ fn swing_arm(arm: Arm, attack: f32) -> Mat4 {
     translate(invert * x, y, z) * item_arm_attack_transform(arm, attack)
 }
 
+/// `SpearAnimations.firstPersonAttack` — the `STAB` swing.
+///
+/// A different shape from `WHACK`, not a retuning of it: three easings run over
+/// three overlapping windows of the same `attack`, and the pose is built from
+/// their *differences*. `startingAmount - middleAmount` drives the wind-up and
+/// `startingAmount - endingAmount` the thrust, so the spear draws back before
+/// it goes forward. `outBack` overshoots past one, which is what makes the
+/// middle read as a lunge rather than a slide.
+fn spear_attack(arm: Arm, attack: f32) -> Mat4 {
+    use crate::entities::{ease_in_out_expo, ease_in_out_sine, ease_out_back, spear_progress};
+    let invert = arm.invert();
+    let starting = ease_in_out_sine(spear_progress(attack, 0.0, 0.05));
+    let middle = ease_out_back(spear_progress(attack, 0.05, 0.2));
+    let ending = ease_in_out_expo(spear_progress(attack, 0.4, 1.0));
+    translate(
+        invert * 0.1 * (starting - middle),
+        -0.075 * (starting - ending),
+        0.65 * (starting - middle),
+    ) * rot_x(-70.0 * (starting - ending))
+        * translate(0.0, 0.0, -0.25 * (ending - middle))
+}
+
+/// Which swing rig an item plays — `ItemStack.getSwingAnimation().type()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwingKind {
+    /// The item does not move with the arm.
+    None,
+    /// The ordinary sweep — every item but the spears.
+    Whack,
+    /// The seven spears' thrust.
+    Stab,
+}
+
 /// The model-view for a **held item**, up to but not including the item's own
 /// `display.firstperson_*` transform.
 ///
@@ -239,11 +272,26 @@ fn swing_arm(arm: Arm, attack: f32) -> Mat4 {
 /// `NONE`, which skips the swing entirely — the item stays put while the
 /// player's arm animation plays out.
 pub fn item_hand(arm: Arm, inverse_height: f32, attack: f32, swings: bool) -> Mat4 {
+    item_hand_kind(
+        arm,
+        inverse_height,
+        attack,
+        if swings { SwingKind::Whack } else { SwingKind::None },
+    )
+}
+
+/// [`item_hand`] with the rig named rather than inferred.
+///
+/// The three arms are vanilla's own `switch` on the swing type, and `NONE` is
+/// a true no-op: the item holds still while the *player's* arm animation plays
+/// out elsewhere.
+pub fn item_hand_kind(arm: Arm, inverse_height: f32, attack: f32, kind: SwingKind) -> Mat4 {
     let base = item_arm_transform(arm, inverse_height);
-    if swings && attack > 0.0 {
-        base * swing_arm(arm, attack)
-    } else {
-        base
+    match kind {
+        SwingKind::None => base,
+        _ if attack <= 0.0 => base,
+        SwingKind::Whack => base * swing_arm(arm, attack),
+        SwingKind::Stab => base * spear_attack(arm, attack),
     }
 }
 
@@ -337,8 +385,10 @@ pub struct HandDraw<'a> {
     pub attack: f32,
     /// `1 - lerp(oHeight, height)`; see [`EquipHeight::inverse`].
     pub inverse_height: f32,
-    /// False for `SwingAnimation.NONE`, which skips the swing entirely.
-    pub swings: bool,
+    /// Which rig this item's swing plays — `getSwingAnimation().type()`.
+    /// `None` holds it still; the seven spears `Stab`; everything else
+    /// `Whack`.
+    pub swings: SwingKind,
     /// Whether this is the main hand. Vanilla draws the bare arm **only** for
     /// the main hand: an empty off-hand shows nothing.
     pub main_hand: bool,
@@ -391,7 +441,7 @@ pub fn build_vertices(
                 let left = h.arm == Arm::Left;
                 let display = if left { &model.first_left } else { &model.first_right };
                 let m = view
-                    * item_hand(h.arm, h.inverse_height, h.attack, h.swings)
+                    * item_hand_kind(h.arm, h.inverse_height, h.attack, h.swings)
                     * display_transform(display, left);
                 for q in &model.quads {
                     let Some(rect) = atlas(q.tex) else { continue };
@@ -699,7 +749,7 @@ mod tests {
                 item: Some(&model),
                 attack: 0.0,
                 inverse_height: 0.0,
-                swings: true,
+                swings: SwingKind::Whack,
                 main_hand: true,
             }],
             &|_| Some([0.0, 0.0, 1.0, 1.0]),

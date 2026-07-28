@@ -24,7 +24,8 @@ use clap::Args as ClapArgs;
 use glam::{Mat4, Vec4};
 use rewo_data::{assets, DataPaths};
 use rewo_gpu::hand::{
-    build_vertices, display_transform, item_hand, player_arm, Arm, EquipHeight, HandDraw, ViewBob,
+    build_vertices, display_transform, item_hand, player_arm, Arm, EquipHeight, HandDraw,
+    SwingKind, ViewBob,
 };
 use rewo_gpu::held::{DisplayTransform, HeldItemModel, HeldQuad};
 use rewo_gpu::offscreen::Offscreen;
@@ -34,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 22;
+const EXPECTED_WITNESSES: usize = 24;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -267,7 +268,7 @@ fn draw_one(arm: Arm, item: &HeldItemModel, attack: f32, inverse_height: f32) ->
             item: Some(item),
             attack,
             inverse_height,
-            swings: true,
+            swings: SwingKind::Whack,
             main_hand: true,
         }],
         &|_| Some([0.0, 0.0, 1.0, 1.0]),
@@ -345,7 +346,7 @@ fn check_placement(c: &mut Checker) {
             item: Some(&item),
             attack: 0.5,
             inverse_height: 0.0,
-            swings: false,
+            swings: SwingKind::None,
             main_hand: true,
         }],
         &|_| Some([0.0, 0.0, 1.0, 1.0]),
@@ -433,6 +434,47 @@ fn check_placement(c: &mut Checker) {
         ),
     );
 
+    // -- STAB, the spear rig -----------------------------------------------
+    //
+    // A different shape from WHACK, not a retuning: three easings over three
+    // overlapping windows, combined by *difference*, so the spear draws back
+    // before it thrusts.
+    let stab_at = |a: f32| {
+        rewo_gpu::hand::item_hand_kind(Arm::Right, 0.0, a, SwingKind::Stab)
+            .transform_point3(glam::Vec3::ZERO)
+    };
+    let whack_at = |a: f32| {
+        rewo_gpu::hand::item_hand_kind(Arm::Right, 0.0, a, SwingKind::Whack)
+            .transform_point3(glam::Vec3::ZERO)
+    };
+    let rest_pt = stab_at(0.0);
+    c.record(
+        "s1.the_spear_rig_differs_from_the_sweep_through_the_middle",
+        (1..8)
+            .map(|i| i as f32 / 8.0)
+            .all(|a| (stab_at(a) - whack_at(a)).length() > 0.02)
+            && (stab_at(0.0) - whack_at(0.0)).length() < 1e-6
+            && (stab_at(1.0) - whack_at(1.0)).length() < 1e-3,
+        format!(
+            "at half way the spear is at {:?} and the sweep at {:?}, and the two              coincide at both ends — every swing returns to rest, so a witness              demanding they differ *everywhere* is wrong at `attack == 1`.              Sharing one rig would make a trident swing like a sword, which is              what this milestone shipped before the type was read",
+            stab_at(0.5),
+            whack_at(0.5)
+        ),
+    );
+
+    // The wind-up: `starting - middle` is negative once `outBack` overshoots,
+    // so the spear moves *back* before it goes forward. z is toward the viewer.
+    let early = stab_at(0.04);
+    let mid = stab_at(0.3);
+    c.record(
+        "s2.the_spear_draws_back_before_it_thrusts",
+        early.z > rest_pt.z && mid.z < early.z,
+        format!(
+            "z goes {:.4} at rest, {:.4} early, {:.4} mid — toward the viewer, then              away. The pose is built from *differences* of three easings over              overlapping windows, which is what produces the retraction; reading              any one of them alone gives a monotonic slide",
+            rest_pt.z, early.z, mid.z
+        ),
+    );
+
     // -- the bare arm ------------------------------------------------------
     //
     // The skin occupies a quarter of this atlas, so a UV that escaped its rect
@@ -449,7 +491,7 @@ fn check_placement(c: &mut Checker) {
                 item: None,
                 attack: 0.0,
                 inverse_height: 0.0,
-                swings: true,
+                swings: SwingKind::Whack,
                 main_hand,
             }],
             &|_| Some([0.0, 0.0, 1.0, 1.0]),

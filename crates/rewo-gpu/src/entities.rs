@@ -1590,7 +1590,7 @@ fn attack_body_yrot(a: &mobs::SwingPose) -> f32 {
 }
 
 /// `SpearAnimations.progress` — `clamp(Mth.inverseLerp(t, start, end), 0, 1)`.
-fn spear_progress(t: f32, start: f32, end: f32) -> f32 {
+pub(crate) fn spear_progress(t: f32, start: f32, end: f32) -> f32 {
     ((t - start) / (end - start)).clamp(0.0, 1.0)
 }
 
@@ -1601,8 +1601,18 @@ fn ease_out_quart(x: f32) -> f32 {
 }
 
 /// `Ease.inOutSine(x) = −(Mth.cos(π·x) − 1) / 2` — `Mth.cos`, not libm's.
-fn ease_in_out_sine(x: f32) -> f32 {
+pub(crate) fn ease_in_out_sine(x: f32) -> f32 {
     -(mth_cos((std::f32::consts::PI * x) as f64) - 1.0) / 2.0
+}
+
+/// `Ease.outBack(x) = 1 + c3·(x−1)³ + c1·(x−1)²` with `c1 = 1.70158` and
+/// `c3 = c1 + 1`. The overshoot past 1 is the point — it is what makes the
+/// spear's mid-thrust read as a lunge rather than a slide.
+pub(crate) fn ease_out_back(x: f32) -> f32 {
+    const C1: f32 = 1.70158;
+    const C3: f32 = 2.70158;
+    let d = x - 1.0;
+    1.0 + C3 * d * d * d + C1 * d * d
 }
 
 /// `Ease.inQuad(x) = x·x`.
@@ -1612,7 +1622,7 @@ fn ease_in_quad(x: f32) -> f32 {
 
 /// `Ease.inOutExpo` — the exact two-branch form, including its `x == 0` /
 /// `x == 1` special cases and its `double`-precision `Math.pow`.
-fn ease_in_out_expo(x: f32) -> f32 {
+pub(crate) fn ease_in_out_expo(x: f32) -> f32 {
     if x < 0.5 {
         if x == 0.0 {
             0.0

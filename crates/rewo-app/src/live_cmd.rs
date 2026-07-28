@@ -5693,9 +5693,25 @@ fn apply_hand(
     let attack = state
         .forced_attack
         .unwrap_or_else(|| session.local_attack_anim(partial));
-    // `SwingAnimation.NONE` skips the swing; anything else whacks. The STAB
-    // spear rig is not ported, so a spear swings like a sword here.
-    let swings = true;
+    // The rig comes from the item's own `SwingAnimation` — the seven spears
+    // STAB, everything else WHACK, and an item whose animation is NONE holds
+    // still. Resolved through the same prototype table M19 uses for every
+    // other entity's swing, so a spear thrusts in first person exactly as it
+    // does in third.
+    let swing_kind = |id: Option<i32>| {
+        use rewo_data::swing_anim::SwingAnimationType;
+        use rewo_gpu::hand::SwingKind;
+        match id.and_then(|i| session.swing_data.as_ref().and_then(|d| d.prototypes.of(i))) {
+            Some(a) => match a.kind {
+                SwingAnimationType::None => SwingKind::None,
+                SwingAnimationType::Stab => SwingKind::Stab,
+                SwingAnimationType::Whack => SwingKind::Whack,
+            },
+            // An item this build cannot resolve holds still rather than
+            // guessing a rig — the rule the click arithmetic uses too.
+            None => SwingKind::None,
+        }
+    };
     let sway = state
         .bob
         .sway(session.player.pitch, session.player.yaw, partial);
@@ -5707,7 +5723,7 @@ fn apply_hand(
             item: main_item,
             attack,
             inverse_height: state.main_equip.inverse(partial),
-            swings,
+            swings: swing_kind(state.main_equip.visible_item()),
             main_hand: true,
         },
         HandDraw {
@@ -5717,7 +5733,7 @@ fn apply_hand(
             // always the main hand's — `LocalPlayer.swing` passes MAIN_HAND.
             attack: 0.0,
             inverse_height: state.off_equip.inverse(partial),
-            swings,
+            swings: swing_kind(state.off_equip.visible_item()),
             main_hand: false,
         },
     ];
