@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 91;
+const EXPECTED_WITNESSES: usize = 106;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -87,6 +87,8 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_click_packet(&mut c, &paths)?;
     check_preview(&mut c);
     check_names(&mut c, &baked, &jar)?;
+    check_lang(&mut c, &baked, &jar)?;
+    check_rarity(&mut c, &paths)?;
     check_components(&mut c, &paths)?;
     check_enchantments(&mut c, &baked, &jar);
     check_glint(&mut c, &baked);
@@ -1184,6 +1186,417 @@ fn check_names(
         format!(
             "of the items carrying both an `item.` and a `block.` key, {} disagree              ({disagree:?}) — so preferring the block spelling, which is what              `BlockItem.getDescriptionId` returns, is unobservable in 26.2.              Written down because a version where they diverge would pick silently",
             disagree.len()
+        ),
+    );
+
+    Ok(())
+}
+
+/// The language map (M50) — the deprecation pass, and the substitution.
+///
+/// The subject throughout is `baked.lang`, the map the **production** bake
+/// built, so a gate that assembled its own could not hide a renderer still
+/// reading the raw file. The mutation partner throughout is
+/// [`rewo_data::lang::Language::raw`], which is step 1 alone — literally what
+/// Rewo did before this milestone.
+fn check_lang(
+    c: &mut Checker,
+    baked: &assets::BakedAssets,
+    jar: &std::path::Path,
+) -> Result<(), String> {
+    use rewo_data::lang::{format, DeprecatedTranslations, Language, DEPRECATED_PATH, EN_US_PATH};
+    use std::collections::{HashMap, HashSet};
+
+    let raw_json = assets::jar_text(jar, EN_US_PATH).ok_or("en_us.json missing from the jar")?;
+    let dep_json =
+        assets::jar_text(jar, DEPRECATED_PATH).ok_or("deprecated.json missing from the jar")?;
+    let dep = DeprecatedTranslations::parse(&dep_json)?;
+    // The mutation partner: `en_us.json` with no deprecation pass.
+    let raw = Language::raw(&raw_json);
+    let lang = &baked.lang;
+
+    // The two keys the brief named, which a tooltip line generator needs and
+    // which resolve to nothing without the pass.
+    let named = [
+        ("item.container.item_count", "%s x%s"),
+        ("item.container.more_items", "and %s more..."),
+    ];
+    let after: Vec<Option<&str>> = named.iter().map(|(k, _)| lang.get(k)).collect();
+    let before: Vec<Option<&str>> = named.iter().map(|(k, _)| raw.get(k)).collect();
+    c.record(
+        "l1.the_container_count_keys_resolve_only_after_the_rename_pass",
+        after
+            .iter()
+            .zip(named)
+            .all(|(got, (_, want))| *got == Some(want))
+            && before.iter().all(Option::is_none),
+        format!(
+            "after the pass {after:?}; MUTATION — reading en_us.json raw, as Rewo did \
+             before M50, gives {before:?}. Both values are moved off \
+             `container.shulkerBox.itemCount`/`.more`, so the new keys are not in the \
+             file at all"
+        ),
+    );
+
+    // The scale of it, measured rather than asserted from the brief.
+    let targets: Vec<&str> = dep.renamed().map(|(_, t)| t).collect();
+    let absent = targets.iter().filter(|t| !raw.has(t)).count();
+    let overwritten = targets.iter().filter(|t| raw.has(t)).count();
+    // Six of the overwritten targets are handed a string identical to the one
+    // they already had — including `subtitles.entity.sulfur_cube.squish`,
+    // which is renamed onto itself — so the *observable* half is smaller than
+    // the mechanical one, and both are worth stating.
+    let differs = targets
+        .iter()
+        .filter(|t| raw.has(t) && raw.get(t) != lang.get(t))
+        .count();
+    let all_resolve = targets.iter().all(|t| lang.has(t));
+    c.record(
+        "l2.every_rename_target_resolves_after_the_pass_and_a_hundred_and_five_only_then",
+        all_resolve && absent == 105 && overwritten == 41 && differs == 35,
+        format!(
+            "{} renames: {absent} of the targets do not exist in en_us.json at all, \
+             {overwritten} already do and are overwritten ({differs} of them with a \
+             different string); all {} resolve after the pass. MUTATION — the raw \
+             read answers `None` for the first group and the pre-rename value for the \
+             second (e.g. item.minecraft.bolt_armor_trim_smithing_template)",
+            targets.len(),
+            targets.len()
+        ),
+    );
+
+    // The removal pass, and the three keys a later rename writes back.
+    let target_set: HashSet<&str> = targets.iter().copied().collect();
+    let mut survivors: Vec<&str> = dep
+        .removed()
+        .iter()
+        .filter(|k| lang.has(k))
+        .map(String::as_str)
+        .collect();
+    survivors.sort_unstable();
+    let raw_present = dep.removed().iter().filter(|k| raw.has(k)).count();
+    c.record(
+        "l3.the_removed_keys_are_gone_except_the_three_a_rename_writes_back",
+        dep.removed().len() == 383
+            && raw_present == 381
+            && survivors.len() == 3
+            && survivors.iter().all(|k| target_set.contains(k)),
+        format!(
+            "{} declared removed, {raw_present} of them present in the raw file, {} \
+             present after the pass — {survivors:?}, every one of them also a rename \
+             *target*. MUTATION — skipping the removal pass leaves all {raw_present}",
+            dep.removed().len(),
+            survivors.len()
+        ),
+    );
+
+    // ...which is only true because removal runs first. The mutation is the
+    // same two passes in the other order.
+    let mut reversed: HashMap<String, String> = raw
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    for (from, to) in dep.renamed() {
+        match reversed.remove(from) {
+            Some(v) => {
+                reversed.insert(to.to_string(), v);
+            }
+            None => {
+                reversed.remove(to);
+            }
+        }
+    }
+    for k in dep.removed() {
+        reversed.remove(k);
+    }
+    let lost: Vec<&&str> = survivors.iter().filter(|k| !reversed.contains_key(**k)).collect();
+    c.record(
+        "l4.the_removals_run_before_the_renames",
+        lost.len() == survivors.len() && !survivors.is_empty(),
+        format!(
+            "MUTATION — renaming first and removing second loses {} of the {} keys that \
+             are both removed and renamed onto ({lost:?}). `applyToMap` removes, then \
+             renames, so `debug.crash.message` is deleted and then written back from \
+             `debug.crash.message.rebindable`",
+            lost.len(),
+            survivors.len()
+        ),
+    );
+
+    // The branch 26.2's own data never takes: a rename whose source is absent
+    // **deletes** the target. Synthetic because there is nothing to observe it
+    // on — and that is exactly why it is worth pinning.
+    let orphans = dep.renamed().filter(|(f, _)| !raw.has(f)).count();
+    let synthetic = DeprecatedTranslations::parse(r#"{"removed":[],"renamed":{"gone":"live"}}"#)?;
+    let mut m: HashMap<String, String> = HashMap::new();
+    m.insert("live".into(), "stale".into());
+    m.insert("other".into(), "kept".into());
+    synthetic.apply_to_map(&mut m);
+    c.record(
+        "l5.a_rename_whose_source_is_absent_deletes_the_target",
+        !m.contains_key("live") && m.contains_key("other") && orphans == 0,
+        format!(
+            "a rename `gone -> live` over a map that has `live` but not `gone` leaves \
+             {:?}. MUTATION — treating the missing source as a no-op keeps the stale \
+             `live`. Unobservable on 26.2's data ({orphans} of {} renames have an \
+             absent source), which is why it is pinned synthetically",
+            m.keys().collect::<Vec<_>>(),
+            targets.len()
+        ),
+    );
+
+    // The M40 safety check, restated as a measurement: the pass must not cost
+    // an item its name, and it visibly improves 27 of them.
+    let items = assets::jar_item_ids(jar)?;
+    let raw_name = |n: &str| {
+        raw.get(&std::format!("block.minecraft.{n}"))
+            .or_else(|| raw.get(&std::format!("item.minecraft.{n}")))
+    };
+    let mut lost_names = 0usize;
+    let mut changed: Vec<&str> = Vec::new();
+    for name in &items {
+        let after = baked.item_names.get(&std::format!("minecraft:{name}")).map(String::as_str);
+        if after.is_none() {
+            lost_names += 1;
+        }
+        if after != raw_name(name) {
+            changed.push(name);
+        }
+    }
+    let template = baked
+        .item_names
+        .get("minecraft:bolt_armor_trim_smithing_template")
+        .map(String::as_str);
+    c.record(
+        "l6.the_pass_costs_no_item_its_name_and_corrects_twenty_seven",
+        lost_names == 0 && changed.len() == 27 && template == Some("Bolt Armor Trim"),
+        format!(
+            "{} items, {lost_names} without a display name, {} whose name the pass \
+             changes; bolt_armor_trim_smithing_template is {template:?}. MUTATION — \
+             the raw read calls it {:?}, because `item.minecraft.<x>.new` is renamed \
+             onto `item.minecraft.<x>` for the eighteen templates and nine banner \
+             patterns",
+            items.len(),
+            changed.len(),
+            raw_name("bolt_armor_trim_smithing_template")
+        ),
+    );
+
+    // The M42 safety check: no enchantment string moves, so M42's tooltip
+    // lines are untouched by all of the above.
+    let ench: Vec<&str> = raw
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with("enchantment."))
+        .collect();
+    let moved: Vec<&&str> = ench
+        .iter()
+        .filter(|k| raw.get(k) != lang.get(k))
+        .collect();
+    c.record(
+        "l7.no_enchantment_string_is_removed_or_renamed",
+        ench.len() == 54 && moved.is_empty(),
+        format!(
+            "{} `enchantment.*` keys, {} of which read differently after the pass. \
+             MUTATION — a version that renamed one would show here, and M42's tooltip \
+             line for it would have silently disappeared",
+            ench.len(),
+            moved.len()
+        ),
+    );
+
+    // `TranslatableContents.decomposeTemplate`, driven directly.
+    let plain = format("%s x%s", &["Dirt", "64"]);
+    let positional = format("%2$s then %1$s", &["a", "b"]);
+    let counter = format("%s %1$s %s", &["a", "b"]);
+    c.record(
+        "l8.the_implicit_and_positional_forms_share_one_counter",
+        plain == "Dirt x64" && positional == "b then a" && counter == "a a b",
+        format!(
+            "`%s x%s` -> {plain:?}, `%2$s then %1$s` -> {positional:?}, \
+             `%s %1$s %s` -> {counter:?}. MUTATION — a positional specifier that also \
+             advanced `replacementIndex` would render the last as \"a a c\" and run off \
+             the end of a two-argument list; vanilla increments only on the implicit \
+             form"
+        ),
+    );
+
+    let literal = format("100%% sure", &[]);
+    let unsupported = format("%d apples", &["3"]);
+    let short = format("%s and %s", &["one"]);
+    let stray = format("50% of %s", &["x"]);
+    c.record(
+        "l9.a_literal_percent_renders_and_every_error_renders_the_raw_pattern",
+        literal == "100% sure"
+            && unsupported == "%d apples"
+            && short == "%s and %s"
+            && stray == "50% of %s",
+        format!(
+            "`100%%%% sure` -> {literal:?}; the three error shapes render unsubstituted \
+             — unsupported type {unsupported:?}, too few arguments {short:?}, a stray \
+             percent in the prefix {stray:?}. MUTATION — dropping the line, or \
+             substituting anyway, instead of `decompose`'s \
+             `catch (TranslatableFormatException) -> FormattedText.of(format)`"
+        ),
+    );
+
+    Ok(())
+}
+
+/// `ItemStack.getRarity()` (M50) — the prototype half the wire cannot carry,
+/// and the enchantment promotion.
+fn check_rarity(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
+    use crate::live_cmd::stack_rarity;
+    use rewo_data::components::{DataComponentIds, DataComponentRegistry};
+    use rewo_data::item_props_table::{rarity, DEFAULT_RARITY};
+
+    const COMMON: i32 = 0;
+    const UNCOMMON: i32 = 1;
+    const RARE: i32 = 2;
+    const EPIC: i32 = 3;
+    /// `Rarity`'s name and `color()`, so a *failing* message names the colour
+    /// actually resolved rather than the one the witness expected.
+    fn label(r: i32) -> &'static str {
+        match r {
+            COMMON => "COMMON, white",
+            UNCOMMON => "UNCOMMON, yellow",
+            RARE => "RARE, aqua",
+            EPIC => "EPIC, light purple",
+            _ => "outside the enum",
+        }
+    }
+
+    // The witness the brief asks to fail before the fix: today's
+    // `rarity.unwrap_or(0)` is exactly `patch.unwrap_or(COMMON)`.
+    let disc = "minecraft:music_disc_13";
+    let got = stack_rarity(Some(disc), None, false);
+    let patch_only: i32 = None.unwrap_or(DEFAULT_RARITY);
+    c.record(
+        "r1.a_music_disc_with_an_empty_patch_is_uncommon",
+        got == UNCOMMON && patch_only == COMMON,
+        format!(
+            "{disc} with no component patch resolves rarity {got} ({}). MUTATION — \
+             reading the patch alone, which is what Rewo did before M50, gives \
+             {patch_only} ({}); a music disc's name is yellow in vanilla. \
+             `getOrDefault(RARITY, COMMON)` answers from the item's *prototype*, and \
+             the wire never sends one",
+            label(got),
+            label(patch_only)
+        ),
+    );
+
+    // How much of the game that covers.
+    let items = rewo_data::items::Items::load(&paths.registries_json())?;
+    let names: Vec<&str> = (0..)
+        .map_while(|i| items.name(i))
+        .collect();
+    let non_default: Vec<&&str> = names.iter().filter(|n| rarity(n) != DEFAULT_RARITY).collect();
+    let buckets = [UNCOMMON, RARE, EPIC].map(|r| names.iter().filter(|n| rarity(**n) == r).count());
+    c.record(
+        "r2.the_prototype_table_covers_a_hundred_and_fifteen_items",
+        non_default.len() == 115 && buckets == [78, 18, 19] && DEFAULT_RARITY == COMMON,
+        format!(
+            "{} of {} registry items differ from Rarity.COMMON — {} uncommon, {} rare, \
+             {} epic. MUTATION — without the generated column every one of them is \
+             white, and the count is the number of items that render wrong",
+            non_default.len(),
+            names.len(),
+            buckets[0],
+            buckets[1],
+            buckets[2]
+        ),
+    );
+
+    // The patch still wins where it speaks — a plugin may set it.
+    let overridden = stack_rarity(Some(disc), Some(EPIC), false);
+    let unknown_item = stack_rarity(None, None, false);
+    c.record(
+        "r3.a_patch_rarity_overrides_the_prototype",
+        overridden == EPIC && unknown_item == COMMON,
+        format!(
+            "{disc} with an explicit EPIC patch resolves {overridden}; an item this \
+             build cannot name resolves {unknown_item}. MUTATION — taking the table \
+             first would ignore the patch, which is the half `getOrDefault` gets right \
+             by construction"
+        ),
+    );
+
+    // The promotion, all four arms.
+    let promote = |base: i32| {
+        // Driven through the production function by way of a patch, so the
+        // switch is the shipped one.
+        stack_rarity(None, Some(base), true)
+    };
+    let unenchanted: Vec<i32> = (0..4).map(|b| stack_rarity(None, Some(b), false)).collect();
+    c.record(
+        "r4.enchanting_promotes_common_and_uncommon_to_rare",
+        promote(COMMON) == RARE && promote(UNCOMMON) == RARE && unenchanted == vec![0, 1, 2, 3],
+        format!(
+            "COMMON -> {}, UNCOMMON -> {} when enchanted; unenchanted the four ids are \
+             {unenchanted:?}. MUTATION — promoting by one step would send COMMON to \
+             UNCOMMON, but vanilla's `case COMMON, UNCOMMON -> Rarity.RARE` collapses \
+             both onto RARE",
+            promote(COMMON),
+            promote(UNCOMMON)
+        ),
+    );
+
+    let beyond = promote(9);
+    c.record(
+        "r5.rare_becomes_epic_and_epic_is_the_ceiling",
+        promote(RARE) == EPIC && promote(EPIC) == EPIC && beyond == 9,
+        format!(
+            "RARE -> {}, EPIC -> {}, and an id outside the enum ({beyond}) passes \
+             through. MUTATION — a `+ 1` promotion would push EPIC to 4, which is not \
+             a rarity; vanilla's `default -> baseRarity` is what stops it",
+            promote(RARE),
+            promote(EPIC)
+        ),
+    );
+
+    // The wire input the promotion reads, through the production decoder: an
+    // enchanted book carries `stored_enchantments` and is **not** enchanted.
+    let registry = DataComponentRegistry::load(&paths.registries_json())?;
+    let ids = DataComponentIds::load(&paths.registries_json())?;
+    rewo_net::component_wire::install_shapes(registry.ids());
+    let stack = |ty: i32| -> Vec<u8> {
+        let mut v = Vec::new();
+        push_varint(&mut v, 1); // count
+        push_varint(&mut v, 276); // item
+        push_varint(&mut v, 1); // one component added
+        push_varint(&mut v, 0); // none removed
+        push_varint(&mut v, ty);
+        push_varint(&mut v, 1); // one enchantment
+        push_varint(&mut v, 5); // registry id
+        push_varint(&mut v, 3); // level
+        v
+    };
+    let read = |ty: i32| -> Option<(bool, usize)> {
+        let bytes = stack(ty);
+        let mut r = rewo_proto::reader::PacketReader::new(&bytes);
+        match rewo_net::item_stack::read_optional(&mut r, ids) {
+            Ok(rewo_net::item_stack::WireSlot::Stack(s)) if r.remaining() == 0 => {
+                Some((s.components.is_enchanted, s.components.enchantments.len()))
+            }
+            _ => None,
+        }
+    };
+    let worn = read(ids.enchantments);
+    let book = read(ids.stored_enchantments);
+    // `unwrap_or(true)` rather than `false`: a decode that failed outright must
+    // not accidentally satisfy the "not enchanted" half of this witness.
+    let book_enchanted = book.map(|b| b.0).unwrap_or(true);
+    let book_rarity = stack_rarity(Some("minecraft:enchanted_book"), None, book_enchanted);
+    c.record(
+        "r6.a_book_carries_stored_enchantments_and_is_not_enchanted",
+        worn == Some((true, 1)) && book == Some((false, 1)) && book_rarity == RARE,
+        format!(
+            "minecraft:enchantments -> (is_enchanted, listed) {worn:?}; \
+             minecraft:stored_enchantments -> {book:?}; an enchanted book resolves \
+             {book_rarity} ({}), its prototype. MUTATION — deriving `isEnchanted` \
+             from the merged tooltip list, which is the union of both components, \
+             promotes the book to EPIC. `isEnchanted()` reads ENCHANTMENTS alone",
+            label(book_rarity)
         ),
     );
 

@@ -6573,13 +6573,54 @@ fn item_bars(
     out
 }
 
-/// `Rarity.color()` — the hover name's colour, by the rarity component's id.
+/// `ItemStack.getRarity()` — the id whose colour the hover name takes (M50).
 ///
-/// Absent is `COMMON`, and an unknown id is treated as common rather than
-/// wrapping into another colour: the component is a small enum today and a
-/// version that grows it should not repaint every item.
-fn rarity_color(rarity: Option<i32>) -> [f32; 3] {
-    let rgb = match rarity.unwrap_or(0) {
+/// ```java
+/// Rarity baseRarity = this.getOrDefault(DataComponents.RARITY, Rarity.COMMON);
+/// if (!this.isEnchanted()) return baseRarity;
+/// return switch (baseRarity) {
+///    case COMMON, UNCOMMON -> Rarity.RARE;
+///    case RARE             -> Rarity.EPIC;
+///    default               -> baseRarity;
+/// };
+/// ```
+///
+/// Two halves, and Rewo could previously see only one of them. `getOrDefault`
+/// answers from the item's **prototype** when the patch says nothing, and the
+/// patch is all the wire carries — so `rarity.unwrap_or(COMMON)` painted all
+/// **115** of 26.2's non-common items white. The prototype half is
+/// [`rewo_data::item_props_table::rarity`], generated from the datagen
+/// component report.
+///
+/// `is_enchanted` is `minecraft:enchantments` alone — see
+/// [`rewo_world::inventory::SlotText::is_enchanted`] on why an enchanted book
+/// is not enchanted.
+///
+/// An id outside the enum passes through the `default` arm unchanged, exactly
+/// as a future `Rarity` constant would.
+pub(crate) fn stack_rarity(item_name: Option<&str>, patch: Option<i32>, is_enchanted: bool) -> i32 {
+    let base = patch.unwrap_or_else(|| {
+        item_name
+            .map(rewo_data::item_props_table::rarity)
+            .unwrap_or(rewo_data::item_props_table::DEFAULT_RARITY)
+    });
+    if !is_enchanted {
+        return base;
+    }
+    match base {
+        0 | 1 => 2,
+        2 => 3,
+        other => other,
+    }
+}
+
+/// `Rarity.color()` — the hover name's colour, by rarity id.
+///
+/// An unknown id is treated as common rather than wrapping into another
+/// colour: the enum is a small one today and a version that grows it should
+/// not repaint every item.
+fn rarity_color(rarity: i32) -> [f32; 3] {
+    let rgb = match rarity {
         1 => 0xFFFF55u32, // UNCOMMON — yellow
         2 => 0x55FFFF,    // RARE — aqua
         3 => 0xFF55FF,    // EPIC — light purple
@@ -6676,7 +6717,8 @@ fn screen_tooltip(
     let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
     let slot = rewo_world::inventory::slot_at(gx, gy)?;
     let stack = inv.menu_slot(slot)?;
-    let translated = names.get(items.name(stack.item_id)?)?;
+    let item_name = items.name(stack.item_id)?;
+    let translated = names.get(item_name)?;
 
     // `getTooltipLines` in vanilla's order: the styled hover name, then the
     // details each component contributes. Rewo produces the three it can read
@@ -6688,7 +6730,11 @@ fn screen_tooltip(
         text.and_then(|t| t.name.as_deref())
             .unwrap_or(translated)
             .to_string(),
-        rarity_color(text.and_then(|t| t.rarity)),
+        rarity_color(stack_rarity(
+            Some(item_name),
+            text.and_then(|t| t.rarity),
+            text.is_some_and(|t| t.is_enchanted),
+        )),
     ));
     if let Some(t) = text {
         // Vanilla's order: the enchantments come before the lore.

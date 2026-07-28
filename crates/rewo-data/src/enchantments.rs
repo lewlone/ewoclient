@@ -10,9 +10,15 @@
 //! Both sources are read out of the client jar, so neither can drift from the
 //! assets they describe:
 //!
-//! - `assets/minecraft/lang/en_us.json` for `enchantment.minecraft.<path>` and
-//!   `enchantment.level.<n>`,
+//! - the loaded [`crate::lang::Language`] for `enchantment.minecraft.<path>`
+//!   and `enchantment.level.<n>`,
 //! - `data/minecraft/tags/enchantment/curse.json` and `tooltip_order.json`.
+//!
+//! The strings come through `Language` rather than straight out of
+//! `en_us.json` because the raw file is not the language map (M50) — see
+//! [`crate::lang`]. None of 26.2's 54 `enchantment.*` keys is removed or
+//! renamed, so the two readings agree *today*; taking the map anyway is what
+//! stops a future rename from silently blanking a tooltip line.
 //!
 //! The tags being under `data/` rather than `assets/` is not a mistake — the
 //! client jar carries the vanilla datapack, which is also where M19 reads
@@ -35,16 +41,13 @@ pub struct EnchantmentText {
 }
 
 impl EnchantmentText {
-    pub fn load(client_jar: &Path) -> Self {
+    pub fn load(client_jar: &Path, lang: &crate::lang::Language) -> Self {
         let mut out = Self::default();
-        if let Some(raw) = crate::assets::jar_text(client_jar, "assets/minecraft/lang/en_us.json") {
-            if let Ok(lang) = serde_json::from_str::<HashMap<String, String>>(&raw) {
-                out.names = lang
-                    .into_iter()
-                    .filter(|(k, _)| k.starts_with("enchantment."))
-                    .collect();
-            }
-        }
+        out.names = lang
+            .iter()
+            .filter(|(k, _)| k.starts_with("enchantment."))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         out.curse = Self::tag(client_jar, "curse");
         out.order = Self::tag(client_jar, "tooltip_order");
         log::info!(

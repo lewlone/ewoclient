@@ -230,8 +230,19 @@ pub struct StackComponents {
     pub lore: Vec<String>,
     /// `minecraft:rarity`'s id — the name's colour.
     pub rarity: Option<i32>,
-    /// `(enchantment registry id, level)`.
+    /// `(enchantment registry id, level)`, from **both**
+    /// `minecraft:enchantments` and `minecraft:stored_enchantments`, because a
+    /// tooltip lists an enchanted book's stored ones the same way.
     pub enchantments: Vec<(i32, i32)>,
+    /// `ItemStack.isEnchanted()`, which is
+    /// `!getOrDefault(ENCHANTMENTS, EMPTY).isEmpty()` — `minecraft:enchantments`
+    /// **only**.
+    ///
+    /// Separate from the list above precisely because the list is the union of
+    /// two components and this one is not. An enchanted book carries
+    /// `stored_enchantments` and is not `isEnchanted()`, so it stays RARE
+    /// where the merged list would promote it to EPIC (M50).
+    pub is_enchanted: bool,
     pub unbreakable: bool,
     /// `minecraft:enchantment_glint_override` (M43). `None` is absent, which
     /// is *not* the same as `Some(false)`: absent defers to whether the stack
@@ -511,6 +522,9 @@ fn read_interpreted(
         if !(0..=65536).contains(&n) {
             return Err(());
         }
+        // `isEnchanted` reads `ENCHANTMENTS` alone. The two components share
+        // this branch because they share a codec, not a meaning.
+        out.is_enchanted |= ty == ids.enchantments && n > 0;
         for _ in 0..n {
             // `Enchantment.STREAM_CODEC` is `holderRegistry` — a **raw** id,
             // not `holder`'s `id + 1`.

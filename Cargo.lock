@@ -2342,6 +2342,7 @@ name = "rewo-data"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "indexmap",
  "log",
  "png",
  "serde",
