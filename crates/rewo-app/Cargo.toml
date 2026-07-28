@@ -21,6 +21,8 @@ glam = { workspace = true }
 bytemuck = { workspace = true }
 dirs = { workspace = true }
 png = { workspace = true }
+# The ETF gate builds its fixture resource pack in-process.
+zip = { workspace = true }
 ash = { workspace = true }
 # M7c player skins — resolve username→skin URL + fetch the PNG.
 ureq = { workspace = true }

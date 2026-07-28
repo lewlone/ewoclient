@@ -107,6 +107,35 @@ pub struct MobshotArgs {
     pack: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
+    /// Emissive gate (M52): assert every mob's vanilla emissive layers ignore
+    /// world light, and that mobs without such layers go fully black in the
+    /// dark. Nonzero exit on any mismatch.
+    #[arg(long, default_value_t = false)]
+    emissive_check: bool,
+    /// ETF gate (M52): build a fixture resource pack and assert its
+    /// random-entity variants land on the right mob and the right texture slot.
+    #[arg(long, default_value_t = false)]
+    etf_check: bool,
+    /// Dye gate (M52): assert every dye renders vanilla's wool colour and only
+    /// tints the wool.
+    #[arg(long, default_value_t = false)]
+    tint_check: bool,
+    /// Sheet mode: `Warden.getTendrilAnimation` 0..1 — the countdown
+    /// entity_event 61 starts. Sways the tendrils and lights their emissive
+    /// layer.
+    #[arg(long, default_value_t = 0.0)]
+    tendril: f32,
+    /// Sheet mode: render mobs with this pack texture variant (ETF / M52). 0 is
+    /// the vanilla texture; needs `--pack`.
+    #[arg(long, default_value_t = 0)]
+    variant: u16,
+    /// Sheet mode: dye colour 0..15 for a mob's tinted texture — the sheep's
+    /// wool (vanilla `SheepWoolLayer`).
+    #[arg(long)]
+    dye: Option<u8>,
+    /// Sheet mode: `Creaking.isActive()` — lights the creaking's eyes.
+    #[arg(long, default_value_t = false)]
+    eyes_glow: bool,
 }
 
 pub fn run(args: MobshotArgs) -> Result<(), String> {
@@ -121,6 +150,12 @@ pub fn run(args: MobshotArgs) -> Result<(), String> {
 
     let result = if args.check {
         run_check(&mut gpu, &baked, &args)
+    } else if args.emissive_check {
+        run_emissive_check(&mut gpu, &baked, &args)
+    } else if args.etf_check {
+        run_etf_check(&mut gpu, &baked, &args)
+    } else if args.tint_check {
+        run_tint_check(&mut gpu, &baked, &args)
     } else {
         run_sheet(&mut gpu, &baked, &args)
     };
@@ -199,6 +234,9 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         anim_id: 0.0,
         // Stills are fullbright because there is no world lightmap to sample.
         light: [1.0, 1.0, 1.0],
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
     }
 }
 
@@ -454,15 +492,21 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let (w, h) = (2560u32, 1440u32);
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    // --pack: parse the pack's CEM .jem models, override the matching kinds.
+    // --pack: the pack's CEM .jem models override the matching kinds, and its
+    // ETF alternates join the atlas so `--variant` can select one.
     let cem = match &args.pack {
         Some(path) => load_cem_overrides(path)?,
         None => std::collections::HashMap::new(),
     };
+    let etf = match &args.pack {
+        Some(path) => rewo_data::etf::load_pack(path)?,
+        None => rewo_data::etf::EtfPack::default(),
+    };
+    let tex = crate::live_cmd::entity_textures_with(baked, &etf);
     if cem.is_empty() {
-        wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
+        wr.init_entities(gpu, crate::live_cmd::font_data(baked), tex)?;
     } else {
-        wr.init_entities_with_cem(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked), cem)?;
+        wr.init_entities_with_cem(gpu, crate::live_cmd::font_data(baked), tex, cem)?;
     }
     // --skin: fetch a real player skin, upload it, remember its UV offset +
     // model so the Player draw wears it (the M7c verification path).
@@ -548,6 +592,12 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             d.limb_amount = walk_amt;
             d.gesture = gesture;
             d.shell = args.shell;
+            d.variant = args.variant;
+            d.dye = args.dye;
+            d.emissive = rewo_gpu::entities::EmissiveState {
+                tendril: args.tendril.clamp(0.0, 1.0),
+                eyes_glow: args.eyes_glow,
+            };
             if *k == EntityModelKind::Allay {
                 d.allay_dance = args.dance.map(|spin| rewo_gpu::mobs::AllayDance {
                     is_spinning: spin > 0.0,
@@ -637,4 +687,815 @@ fn client_jar(version: &str) -> Option<PathBuf> {
     p.push(version);
     p.push(format!("{version}.jar"));
     p.exists().then_some(p)
+}
+
+// ===========================================================================
+// M52 gates: --emissive-check, --etf-check, --tint-check
+// ===========================================================================
+
+/// Named-observation accumulator, the M17+ convention (`itemshot_cmd.rs`).
+/// Each property increments `witnessed` only on a real pass; a failure is
+/// recorded without incrementing, so a run reports every bad property and the
+/// count-vs-expected guard catches a *skipped* one.
+struct Checker {
+    witnessed: usize,
+    failures: Vec<String>,
+}
+
+impl Checker {
+    fn new() -> Self {
+        Self {
+            witnessed: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, name: &str, pass: bool, detail: impl std::fmt::Display) {
+        println!(
+            "[mobshot] {}  {name}: {detail}",
+            if pass { " ok " } else { "FAIL" }
+        );
+        if pass {
+            self.witnessed += 1;
+        } else {
+            self.failures.push(name.to_string());
+        }
+    }
+
+    fn finish(self, gate: &str, expected: usize) -> Result<(), String> {
+        println!("[mobshot] {gate} witnesses observed: {} / {expected}", self.witnessed);
+        if !self.failures.is_empty() {
+            return Err(format!(
+                "{} propert{} failed: {}",
+                self.failures.len(),
+                if self.failures.len() == 1 { "y" } else { "ies" },
+                self.failures.join(", ")
+            ));
+        }
+        if self.witnessed != expected {
+            return Err(format!(
+                "witness count {} != expected {expected} — a named property was \
+                 skipped (fail-closed)",
+                self.witnessed
+            ));
+        }
+        println!("[mobshot] {gate} PASS — {} witnesses", self.witnessed);
+        Ok(())
+    }
+}
+
+/// Frame one mob the way the facelabel gate does, returning `(view_proj, right,
+/// up, eye)`. Shared by all three M52 gates so a camera difference can never be
+/// the reason one of them disagrees with another.
+fn frame_kind(wr: &WorldRenderer, kind: EntityModelKind) -> Option<([[f32; 4]; 4], [f32; 3], [f32; 3], Vec3)> {
+    let quads = wr.entity_pass()?.neutral_quads(kind)?;
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for (pos, _, _) in &quads {
+        for p in pos {
+            for i in 0..3 {
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
+            }
+        }
+    }
+    let center = Vec3::new((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5);
+    let radius = (0..3).map(|i| hi[i] - lo[i]).fold(0f32, f32::max) * 0.5;
+    let dir = Vec3::new(0.0, 0.0, -1.0);
+    let eye = center - dir * (radius * 3.0 + 1.0);
+    let vp = (Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
+        55f32.to_radians(),
+        1.0,
+        0.05,
+    )) * Mat4::look_to_rh(eye, dir, Vec3::Y))
+    .to_cols_array_2d();
+    let right = dir.cross(Vec3::Y).normalize_or_zero().to_array();
+    Some((vp, right, [0.0, 1.0, 0.0], eye))
+}
+
+// ---------------------------------------------------------------------------
+// --emissive-check: the fullbright gate
+// ---------------------------------------------------------------------------
+
+/// Named properties this gate observes. Fail-closed: a skipped one is an error.
+const EMISSIVE_WITNESSES: usize = 5;
+
+/// A pixel counts as *glowing* when any channel clears this. The base model
+/// renders as exactly `texel · 0` at world light 0 — pure black — so anything
+/// above the sRGB round-trip noise floor came from an emissive layer.
+const GLOW_LEVEL: u8 = 12;
+/// A mob must cover at least this many pixels to be worth grading.
+const MIN_SILHOUETTE: usize = 400;
+/// The age (ticks) the emissive gate renders at, chosen so that
+/// `cos(age · 2.25) == 0` — the exact zero of `WardenModel.animateTendrils`.
+///
+/// This matters. `EmissiveState::tendril` feeds **both** the tendril sway and
+/// the tendril layer's alpha, so at a generic age raising it moves the tendrils
+/// *and* lights them. An early version of this gate compared glow pixel counts
+/// across the two states and was fooled by the movement alone — rotating
+/// tendrils uncover a few pixels of the (glowing) head behind them, so a build
+/// with the alpha hard-wired to 0 still "grew". Freezing the sway isolates the
+/// alpha path, which is what the assertion claims to test.
+const CHECK_AGE_TICKS: f32 = std::f32::consts::FRAC_PI_2 / 2.25;
+
+/// The emissive gate: **an emissive layer ignores world light, and nothing else
+/// does.**
+///
+/// For every mob, render it once lit (the silhouette) and once at world light
+/// 0. At light 0 the base model is multiplied to black, so any pixel that is
+/// still bright can only have come from an emissive layer. That gives a
+/// two-sided assertion over the whole registry:
+///
+/// - a mob whose `mobs::emissive_layers` are active at this state **must** show
+///   bright pixels in the dark, and they must lie inside its silhouette (a
+///   layer drifting off its model would show up here);
+/// - every other mob — 80-odd of them — **must** be perfectly black. That
+///   control half is what makes this a gate rather than a rubber stamp: it
+///   fails if the emissive pass leaks onto the wrong mob, or if the base pass
+///   ever stops respecting world light.
+///
+/// The state-driven layers (the warden's tendrils, the creaking's eyes) get a
+/// third render with their state raised, and the glow must strictly grow —
+/// proving the alpha functions actually reach the draw rather than sitting at a
+/// constant.
+///
+/// Four mutations were run against it: emissive respecting light (8 mobs fail),
+/// the tendril alpha pinned to 0 (1), a layer leaked onto another mob (1), and
+/// the base pass ignoring light (84).
+fn run_emissive_check(
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+    _args: &MobshotArgs,
+) -> Result<(), String> {
+    use rewo_gpu::entities::EmissiveState;
+    use rewo_gpu::mobs::EmissiveAlpha;
+
+    let (w, h) = (512u32, 512u32);
+    let mut off = Offscreen::new(gpu, w, h)?;
+    let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    wr.init_entities(
+        gpu,
+        crate::live_cmd::font_data(baked),
+        crate::live_cmd::entity_textures(baked),
+    )?;
+    let kinds = wr.entity_pass().expect("entity pass").available_kinds();
+    let ring = OverlayRing::default();
+    let draw = overlay_offscreen(&ring);
+    let mut c = Checker::new();
+
+    // Per-property failure lists, so one bad mob names itself instead of
+    // collapsing 89 observations into one opaque boolean.
+    let (mut dark_fail, mut black_fail, mut stray_fail, mut state_fail) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut checked, mut glowing, mut expected_glowing, mut state_driven_n) = (0usize, 0usize, 0usize, 0usize);
+    let age = CHECK_AGE_TICKS;
+
+    for kind in kinds {
+        let layers = rewo_gpu::mobs::emissive_layers(kind);
+        // What the decompiled alpha functions say this mob does at rest
+        // (vanilla synched defaults) — computed from the layer table itself,
+        // independently of the renderer.
+        let rest_alpha = |a: EmissiveAlpha| -> f32 {
+            match a {
+                EmissiveAlpha::Always => 1.0,
+                EmissiveAlpha::PulsatingSpots { phase } => {
+                    ((age * 0.045 + phase).cos() * 0.25).max(0.0)
+                }
+                // Both are 0 at their vanilla defaults (tendril countdown spent,
+                // IS_ACTIVE false).
+                EmissiveAlpha::Tendril | EmissiveAlpha::EyesGlowing => 0.0,
+                // `heartAnimation` counts 10 down to 0 over the ticks after each
+                // beat.
+                EmissiveAlpha::Heart => ((10.0 - age) / 10.0).max(0.0),
+            }
+        };
+        let expect_rest = layers.iter().any(|l| {
+            let a = rest_alpha(l.alpha);
+            a > 1.0e-5 && !(l.cutout && a < 0.1)
+        });
+        let state_driven = layers
+            .iter()
+            .any(|l| matches!(l.alpha, EmissiveAlpha::Tendril | EmissiveAlpha::EyesGlowing));
+
+        let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else {
+            continue;
+        };
+        wr.set_camera(eye.to_array());
+
+        let mut shoot = |wr: &mut WorldRenderer,
+                         gpu: &mut Gpu,
+                         off: &mut Offscreen,
+                         entity: Option<(f32, EmissiveState)>|
+         -> Result<Vec<u8>, String> {
+            match entity {
+                Some((light, emissive)) => {
+                    let d = EntityDraw {
+                        light: [light; 3],
+                        emissive,
+                        ..neutral_draw(kind)
+                    };
+                    wr.set_entities(std::slice::from_ref(&d), right, up, age / 20.0);
+                }
+                None => wr.set_entities(&[], right, up, age / 20.0),
+            }
+            off.render(gpu, Some((wr, vp)), &draw, BG)?;
+            off.read_rgba(gpu)
+        };
+        let bg = shoot(&mut wr, gpu, &mut off, None)?;
+        let lit = shoot(&mut wr, gpu, &mut off, Some((1.0, EmissiveState::default())))?;
+        let dark = shoot(&mut wr, gpu, &mut off, Some((0.0, EmissiveState::default())))?;
+
+        let silhouette: Vec<bool> = (0..bg.len() / 4)
+            .map(|i| lit[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3])
+            .collect();
+        let sil_px = silhouette.iter().filter(|v| **v).count();
+        let glow = |img: &[u8]| -> (usize, usize) {
+            let (mut inside, mut outside) = (0, 0);
+            for i in 0..img.len() / 4 {
+                let px = &img[i * 4..i * 4 + 3];
+                if px.iter().all(|c| *c < GLOW_LEVEL) {
+                    continue;
+                }
+                // Outside the silhouette everything is sky, which is bright —
+                // only count pixels the mob covers.
+                if silhouette[i] {
+                    inside += 1;
+                } else if img[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3] {
+                    outside += 1;
+                }
+            }
+            (inside, outside)
+        };
+        let (dark_glow, stray) = glow(&dark);
+        checked += 1;
+        if dark_glow > 0 {
+            glowing += 1;
+        }
+        if expect_rest {
+            expected_glowing += 1;
+        }
+        if sil_px < MIN_SILHOUETTE {
+            black_fail.push(format!("{kind:?} barely visible ({sil_px} px)"));
+            continue;
+        }
+        if stray > 0 {
+            stray_fail.push(format!("{kind:?}: {stray} px"));
+        }
+        match (expect_rest, dark_glow) {
+            (true, 0) => dark_fail.push(format!("{kind:?}")),
+            (false, n) if n > 0 => black_fail.push(format!("{kind:?}: {n} px")),
+            _ => {}
+        }
+        if state_driven {
+            state_driven_n += 1;
+            let on = EmissiveState {
+                tendril: 1.0,
+                eyes_glow: true,
+            };
+            let dark_on = shoot(&mut wr, gpu, &mut off, Some((0.0, on)))?;
+            let (on_glow, _) = glow(&dark_on);
+            if on_glow <= dark_glow {
+                state_fail.push(format!("{kind:?} ({dark_glow} → {on_glow} px)"));
+            }
+        }
+    }
+
+    wr.destroy(gpu);
+    off.destroy(gpu);
+
+    c.record(
+        "m1.an_active_layer_still_glows_at_world_light_zero",
+        dark_fail.is_empty(),
+        format!(
+            "{expected_glowing} mob(s) have a layer active at vanilla's synched \
+             defaults; {} went black instead{}",
+            dark_fail.len(),
+            if dark_fail.is_empty() { String::new() } else { format!(" ({})", dark_fail.join(", ")) }
+        ),
+    );
+    c.record(
+        "m2.every_other_mob_is_perfectly_black_at_light_zero",
+        black_fail.is_empty(),
+        format!(
+            "{} of {checked} mobs graded as the control half; {} stayed lit{}",
+            checked - expected_glowing,
+            black_fail.len(),
+            if black_fail.is_empty() { String::new() } else { format!(" ({})", black_fail.join(", ")) }
+        ),
+    );
+    c.record(
+        "m3.no_emissive_pixel_lands_outside_the_mobs_silhouette",
+        stray_fail.is_empty(),
+        format!(
+            "a layer drifting off its model would paint here; {} did{}",
+            stray_fail.len(),
+            if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+        ),
+    );
+    c.record(
+        "m4.raising_the_entity_state_grows_the_glow",
+        state_fail.is_empty() && state_driven_n > 0,
+        format!(
+            "{state_driven_n} state-driven mob(s) (warden tendrils, creaking eyes), \
+             rendered at the sway's zero crossing so only the alpha can move the \
+             count; {} did not grow{}",
+            state_fail.len(),
+            if state_fail.is_empty() { String::new() } else { format!(" ({})", state_fail.join(", ")) }
+        ),
+    );
+    c.record(
+        "m5.the_glow_count_matches_the_layer_table",
+        glowing == expected_glowing && checked > 80,
+        format!(
+            "{glowing} of {checked} mobs glow in the dark; the decompiled layer \
+             table predicts {expected_glowing}"
+        ),
+    );
+    c.finish("EMISSIVE", EMISSIVE_WITNESSES)
+}
+
+// ---------------------------------------------------------------------------
+// --etf-check: the random-entity-texture gate
+// ---------------------------------------------------------------------------
+
+const ETF_WITNESSES: usize = 8;
+
+/// Flat colours the fixture pack paints its alternate textures, chosen to be
+/// unmistakable against any vanilla mob texture and against each other.
+const ETF_COLORS: [([u8; 3], &str); 3] =
+    [([255, 0, 0], "red"), ([0, 255, 0], "green"), ([0, 0, 255], "blue")];
+
+/// The ETF gate: **a pack's variant rules end up on the mob's pixels, and only
+/// on the slot the rule names.**
+///
+/// There is no published OptiFine pack to grade against and no decompile to
+/// transcribe (see `rewo_data::etf` — this is the one Rewo subsystem with no
+/// ground truth), so this builds its own resource pack in a temp directory:
+/// real `.properties` files, real PNGs, loaded through the same `etf::load_pack`
+/// the live client uses. Flat primary colours make the assertion exact — variant
+/// *n* must paint the mob colour *n*, which no partial success can fake.
+///
+/// Mutations run against it: making the UV offset ignore the quad's texture slot
+/// fails `f5`; making the draw ignore its variant fails `f2`; pointing the
+/// emissive overlay's UVs at a single transparent texel fails `f6`; making the
+/// overlay fully opaque fails `f7`.
+fn run_etf_check(
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+    _args: &MobshotArgs,
+) -> Result<(), String> {
+    let dir = std::env::temp_dir().join("rewo-etf-fixture");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("etf fixture dir: {e}"))?;
+    let pack_path = dir.join("rewo-etf-fixture.zip");
+    write_etf_fixture(&pack_path)?;
+    let etf = rewo_data::etf::load_pack(&pack_path)?;
+    println!("[mobshot] etf fixture: {}", pack_path.display());
+
+    let mut c = Checker::new();
+    c.record(
+        "f1.the_fixture_packs_rules_load",
+        etf.rules.len() == 2 && etf.textures.len() >= 4,
+        format!(
+            "{} texture(s) carry rules (want 2: cow + sheep_wool), {} alternate \
+             image(s) packed",
+            etf.rules.len(),
+            etf.textures.len()
+        ),
+    );
+    // A rule naming the *vanilla* texture (`textures.1=cow_temperate.png`) is
+    // how packs give the original a share of the weighting. Dropping it as
+    // "textureless" would hand that share to the alternates and make nearly
+    // every cow a variant cow — invisible in any single screenshot, badly wrong
+    // in aggregate.
+    c.record(
+        "f4.a_rule_naming_the_vanilla_texture_is_kept_not_dropped",
+        etf.rules
+            .get("cow")
+            .is_some_and(|v| v.iter().filter(|r| r.texture.is_none()).count() == 1),
+        format!(
+            "cow rules: {:?}",
+            etf.rules
+                .get("cow")
+                .map(|v| v.iter().map(|r| (r.index, r.texture.is_some())).collect::<Vec<_>>())
+        ),
+    );
+
+    let (w, h) = (512u32, 512u32);
+    let mut off = Offscreen::new(gpu, w, h)?;
+    let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    wr.init_entities(
+        gpu,
+        crate::live_cmd::font_data(baked),
+        crate::live_cmd::entity_textures_with(baked, &etf),
+    )?;
+    let ring = OverlayRing::default();
+    let draw = overlay_offscreen(&ring);
+
+    // ---- the cow wears the variant it was given ---------------------------
+    let kind = EntityModelKind::Cow;
+    let (vp, right, up, eye) = frame_kind(&wr, kind).ok_or("the cow model is unavailable")?;
+    wr.set_camera(eye.to_array());
+
+    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, variant: u16| {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(kind)
+        };
+        wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
+        off.render(gpu, Some((wr, vp)), &draw, BG)?;
+        off.read_rgba(gpu)
+    };
+    let vanilla = shot(&mut wr, gpu, &mut off, 0)?;
+    // The fixture's `textures.1` is the vanilla texture, which the loader
+    // resolves to "no variant" — so nothing ever draws with id 1, and an id the
+    // atlas has no slot for must fall back rather than sample garbage.
+    let one = shot(&mut wr, gpu, &mut off, 1)?;
+    let one_diff = one.chunks(4).zip(vanilla.chunks(4)).filter(|(a, b)| a != b).count();
+    c.record(
+        "f3.a_variant_id_with_no_atlas_slot_falls_back_to_vanilla",
+        one == vanilla,
+        format!("{one_diff} px differ from the no-variant render (want 0)"),
+    );
+
+    let mut colour_fail = Vec::new();
+    let mut colour_detail = Vec::new();
+    for (n, (rgb, name)) in ETF_COLORS.iter().enumerate() {
+        let variant = n as u16 + 2;
+        let img = shot(&mut wr, gpu, &mut off, variant)?;
+        let (mut hits, mut mob) = (0usize, 0usize);
+        for i in 0..img.len() / 4 {
+            if img[i * 4..i * 4 + 3] == vanilla[i * 4..i * 4 + 3] {
+                continue; // background (identical in both shots)
+            }
+            mob += 1;
+            // The flat colour arrives shaded per face, so compare by dominant
+            // channel rather than exact value.
+            let px = &img[i * 4..i * 4 + 3];
+            let brightest = px.iter().enumerate().max_by_key(|(_, c)| **c).map(|(c, _)| c);
+            let want = rgb.iter().position(|c| *c == 255);
+            if brightest == want && px.iter().max() >= Some(&24) {
+                hits += 1;
+            }
+        }
+        if mob == 0 {
+            colour_fail.push(format!("variant {variant} never reached the draw"));
+            continue;
+        }
+        let share = hits as f64 / mob as f64;
+        colour_detail.push(format!("{name} {:.0}%", share * 100.0));
+        if share < 0.9 {
+            colour_fail.push(format!("variant {variant} ({name}) only {hits}/{mob} px"));
+        }
+    }
+    c.record(
+        "f2.each_variant_paints_the_mob_its_own_texture",
+        colour_fail.is_empty(),
+        format!(
+            "3 alternates, by dominant channel over the mob's own pixels: {}{}",
+            colour_detail.join(", "),
+            if colour_fail.is_empty() { String::new() } else { format!(" — {}", colour_fail.join("; ")) }
+        ),
+    );
+
+    // ---- a pack `_e.png` glows, and only where it is opaque ---------------
+    // Rendered at world light 0, where the base model is black: the patch must
+    // be lit and the rest of the pig must not be.
+    let pig = EntityModelKind::Pig;
+    let dark = EntityDraw {
+        light: [0.0; 3],
+        kind: pig,
+        ..neutral_draw(pig)
+    };
+    wr.set_entities(std::slice::from_ref(&dark), right, up, 0.0);
+    off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+    let pig_img = off.read_rgba(gpu)?;
+    wr.set_entities(&[], right, up, 0.0);
+    off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+    let bg = off.read_rgba(gpu)?;
+    let (mut lit, mut body) = (0usize, 0usize);
+    for i in 0..pig_img.len() / 4 {
+        if pig_img[i * 4..i * 4 + 3] == bg[i * 4..i * 4 + 3] {
+            continue;
+        }
+        body += 1;
+        if pig_img[i * 4..i * 4 + 3].iter().any(|c| *c >= GLOW_LEVEL) {
+            lit += 1;
+        }
+    }
+    c.record(
+        "f6.a_pack_emissive_overlay_glows_at_world_light_zero",
+        etf.emissive.contains(&"pig") && lit > 0,
+        format!(
+            "pig_temperate_e.png picked up = {}, {lit}/{body} px lit at light 0",
+            etf.emissive.contains(&"pig")
+        ),
+    );
+    c.record(
+        "f7.the_overlays_alpha_is_respected_not_ignored",
+        lit > 0 && lit < body,
+        format!(
+            "the fixture overlay is opaque over one sixteenth of the sheet; \
+             {lit}/{body} px of the pig lit. The bound is the mutation: an \
+             ignored alpha lights every pixel the mob covers"
+        ),
+    );
+    let plain = EntityDraw {
+        light: [0.0; 3],
+        kind: EntityModelKind::Cow,
+        ..neutral_draw(EntityModelKind::Cow)
+    };
+    wr.set_entities(std::slice::from_ref(&plain), right, up, 0.0);
+    off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+    let cow_img = off.read_rgba(gpu)?;
+    let stray = (0..cow_img.len() / 4)
+        .filter(|i| {
+            cow_img[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3]
+                && cow_img[i * 4..i * 4 + 3].iter().any(|c| *c >= GLOW_LEVEL)
+        })
+        .count();
+    c.record(
+        "f8.a_mob_the_pack_gives_no_overlay_stays_black",
+        stray == 0,
+        format!("{stray} px stayed lit on the cow at light 0 (want 0)"),
+    );
+
+    // ---- a rule on one texture moves only that texture --------------------
+    // The sheep has two (body, wool); a pack varying the wool must leave the
+    // body's UVs at zero offset. A per-slot table indexed by the wrong axis
+    // passes every property above and fails here.
+    let offsets = wr
+        .entity_pass()
+        .expect("entity pass")
+        .variant_offsets(EntityModelKind::Sheep, 2)
+        .map(|o| o.to_vec());
+    c.record(
+        "f5.a_rule_on_one_texture_shifts_only_that_texture",
+        offsets
+            .as_ref()
+            .is_some_and(|o| o.len() == 2 && o[0] == [0.0, 0.0] && o[1] != [0.0, 0.0]),
+        format!("sheep per-slot offsets (body, wool) = {offsets:?}"),
+    );
+
+    wr.destroy(gpu);
+    off.destroy(gpu);
+    // The pack is left in place: `rewo live --pack` uses the same fixture for
+    // an end-to-end look, and it costs a few KB in the temp dir.
+    c.finish("ETF", ETF_WITNESSES)
+}
+
+/// Build the fixture resource pack: a cow with alternates (the vanilla texture
+/// plus three flat colours), a sheep whose *wool* alone varies, a pig with an
+/// emissive overlay, and one rule carrying an unevaluatable condition — which
+/// must load without disturbing the others.
+fn write_etf_fixture(path: &std::path::Path) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("etf fixture: {e}"))?;
+    let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
+    let opts: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut put = |name: &str, bytes: &[u8]| -> Result<(), String> {
+        use std::io::Write;
+        zip.start_file(name, opts).map_err(|e| format!("etf fixture {name}: {e}"))?;
+        zip.write_all(bytes).map_err(|e| format!("etf fixture {name}: {e}"))
+    };
+
+    // The cow: `textures.1` is the vanilla file, 2..4 the flat colours, and 5
+    // carries a biome condition Rewo cannot evaluate (so it must never be
+    // picked, and must not shift the others' weighting off their ids).
+    let mut props = String::from("# rewo etf fixture\ntextures.1=cow_temperate.png\n");
+    for (n, (_, name)) in ETF_COLORS.iter().enumerate() {
+        props += &format!("textures.{}=rewo_{name}.png\n", n + 2);
+    }
+    props += "textures.5=rewo_red.png\nbiomes.5=swamp\n";
+    put(
+        "assets/minecraft/optifine/random/entity/cow/cow_temperate.properties",
+        props.as_bytes(),
+    )?;
+    for (rgb, name) in ETF_COLORS {
+        put(
+            &format!("assets/minecraft/textures/entity/cow/rewo_{name}.png"),
+            &flat_png(64, 64, rgb),
+        )?;
+    }
+    // A pig with an emissive overlay: transparent except for a patch, which must
+    // glow at world light 0 and must not tint the pig anywhere else.
+    put(
+        "assets/minecraft/textures/entity/pig/pig_temperate_e.png",
+        &patch_png(64, 64, [0, 255, 255]),
+    )?;
+    // The sheep: only the wool varies (sheep_wool.png is 64x32).
+    put(
+        "assets/minecraft/optifine/random/entity/sheep/sheep_wool.properties",
+        b"textures.2=rewo_wool.png\n",
+    )?;
+    put(
+        "assets/minecraft/textures/entity/sheep/rewo_wool.png",
+        &flat_png(64, 32, [255, 0, 0]),
+    )?;
+    zip.finish().map_err(|e| format!("etf fixture finish: {e}"))?;
+    Ok(())
+}
+
+/// A transparent RGBA PNG with an opaque block in its top-left sixteenth — the
+/// shape of an emissive overlay, which covers part of a texture.
+///
+/// A *quarter* was the first size tried, and it lit 87% of the rendered pig:
+/// the top-left of a 64x64 mob sheet carries the head and most of the body, so
+/// the fraction of the *sheet* an overlay covers is not the fraction of the
+/// *model* it lights. A sixteenth leaves `f7` an unambiguous margin below the
+/// "alpha ignored" case it is there to exclude.
+fn patch_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let on = x < w / 4 && y < h / 4;
+            px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], if on { 255 } else { 0 }]);
+        }
+    }
+    encode_png(w, h, &px)
+}
+
+/// A flat opaque RGBA PNG.
+fn flat_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..w * h {
+        px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+    encode_png(w, h, &px)
+}
+
+fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(std::io::Cursor::new(&mut out), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().expect("png header");
+        writer.write_image_data(px).expect("png data");
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// --tint-check: the dye gate
+// ---------------------------------------------------------------------------
+
+const TINT_WITNESSES: usize = 4;
+
+/// The dye gate: **a dyed texture renders vanilla's colour, and nothing else on
+/// the mob moves.**
+///
+/// Comparing pixels against the colour table directly would be defeated by the
+/// per-face shade, so this compares *ratios*: vanilla multiplies the dye into
+/// the vertex colour, so for any wool pixel
+/// `linear(dyed) / linear(white) == linear(color[k]) / linear(color[0])`, per
+/// channel, whatever the face shading or the geometry is. That prediction comes
+/// from `SheepWoolLayer`'s semantics rather than from the renderer, and it holds
+/// for all sixteen dyes at once.
+///
+/// The first version had a real flaw, and it took a mutation to find: it defined
+/// "wool pixels" as those two dyes disagree on, which is derived from the
+/// behaviour under test — a tint leaking onto every texture simply redefined the
+/// whole sheep as wool and passed the containment check vacuously. The wool set
+/// is now bounded against the silhouette, which is independent: vanilla's sheep
+/// shows a bare face, four legs and hooves, so a correct tint can never cover
+/// the whole mob. With that fixed, tinting every slot fails, and so does
+/// dropping the sRGB linearize before the multiply (render discipline #1 —
+/// caught numerically as a 0.805x ratio where vanilla's is 0.621x).
+fn run_tint_check(
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+    _args: &MobshotArgs,
+) -> Result<(), String> {
+    let (w, h) = (512u32, 512u32);
+    let mut off = Offscreen::new(gpu, w, h)?;
+    let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    wr.init_entities(
+        gpu,
+        crate::live_cmd::font_data(baked),
+        crate::live_cmd::entity_textures(baked),
+    )?;
+    let kind = EntityModelKind::Sheep;
+    let (vp, right, up, eye) = frame_kind(&wr, kind).ok_or("the sheep model is unavailable")?;
+    wr.set_camera(eye.to_array());
+    let ring = OverlayRing::default();
+    let draw = overlay_offscreen(&ring);
+    let mut c = Checker::new();
+
+    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+        let d = EntityDraw {
+            dye,
+            ..neutral_draw(kind)
+        };
+        wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
+        off.render(gpu, Some((wr, vp)), &draw, BG)?;
+        off.read_rgba(gpu)
+    };
+    // Vanilla's default wool colour is WHITE, not "untinted" — the layer tints
+    // unconditionally, so a plain sheep's wool is 0xE6E6E6. An undyed draw must
+    // therefore render exactly like dye 0.
+    let white = shot(&mut wr, gpu, &mut off, Some(0))?;
+    let undyed = shot(&mut wr, gpu, &mut off, None)?;
+    let undyed_diff = undyed
+        .chunks(4)
+        .zip(white.chunks(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    c.record(
+        "t1.an_undyed_sheep_renders_as_dyecolor_white",
+        white == undyed,
+        format!(
+            "`None` is the mob's vanilla default dye, not \"no tint\": \
+             {undyed_diff} px differ from dye 0 (want 0)"
+        ),
+    );
+
+    let black = shot(&mut wr, gpu, &mut off, Some(15))?;
+    // Wool pixels: those the two most extreme dyes disagree on. Anything else on
+    // the sheep samples the untinted texture.
+    let wool: Vec<usize> = (0..white.len() / 4)
+        .filter(|i| white[i * 4..i * 4 + 3] != black[i * 4..i * 4 + 3])
+        .collect();
+    wr.set_entities(&[], right, up, 0.0);
+    off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+    let bg = off.read_rgba(gpu)?;
+    let silhouette = (0..white.len() / 4)
+        .filter(|i| white[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3])
+        .count();
+    let bare = silhouette.saturating_sub(wool.len());
+    c.record(
+        "t2.the_wool_set_is_bounded_by_an_independent_silhouette",
+        wool.len() >= 400 && bare * 20 >= silhouette,
+        format!(
+            "{}/{silhouette} px are wool, {bare} bare — vanilla's sheep shows a \
+             bare face, four legs and hooves, so a tint that reached every \
+             texture would redefine the whole mob as wool and pass t4 vacuously",
+            wool.len()
+        ),
+    );
+
+    let lin = |c: u8| rewo_gpu::entities::srgb_to_linear(c as f32 / 255.0);
+    let table = rewo_gpu::mobs::SHEEP_WOOL_COLORS;
+    let mut ratio_fail = Vec::new();
+    let mut stray_fail = Vec::new();
+    for dye in 0..16u8 {
+        let img = shot(&mut wr, gpu, &mut off, Some(dye))?;
+        // Predicted per-channel ratio against the white reference.
+        let want: [f32; 3] =
+            std::array::from_fn(|c| lin(table[dye as usize][c]) / lin(table[0][c]));
+        let mut sum = [0.0f64; 3];
+        let mut n = [0u32; 3];
+        for &i in &wool {
+            for c in 0..3 {
+                let (a, b) = (white[i * 4 + c], img[i * 4 + c]);
+                // Skip near-black references: at 8 bits the ratio there is
+                // mostly quantization.
+                if a < 24 {
+                    continue;
+                }
+                sum[c] += (lin(b) / lin(a)) as f64;
+                n[c] += 1;
+            }
+        }
+        for c in 0..3 {
+            if n[c] == 0 {
+                continue;
+            }
+            let got = (sum[c] / n[c] as f64) as f32;
+            // 8% covers the 8-bit round trip at the dark end of the table.
+            if (got - want[c]).abs() > want[c].max(0.02) * 0.08 {
+                ratio_fail.push(format!("dye {dye} ch{c}: {got:.3}x vs {:.3}x", want[c]));
+            }
+        }
+        // Containment: every non-wool pixel is untouched by the dye.
+        let strayed = (0..img.len() / 4)
+            .filter(|i| wool.binary_search(i).is_err() && img[i * 4..i * 4 + 3] != white[i * 4..i * 4 + 3])
+            .count();
+        if strayed > 0 {
+            stray_fail.push(format!("dye {dye}: {strayed} px"));
+        }
+    }
+    c.record(
+        "t3.every_dye_renders_vanillas_wool_colour_as_a_ratio",
+        ratio_fail.is_empty(),
+        format!(
+            "16 dyes x 3 channels against `linear(color[k])/linear(color[0])`, a \
+             prediction from `SheepWoolLayer`'s semantics rather than from the \
+             renderer; {} outside tolerance{}",
+            ratio_fail.len(),
+            if ratio_fail.is_empty() { String::new() } else { format!(" ({})", ratio_fail.join(", ")) }
+        ),
+    );
+    c.record(
+        "t4.no_dye_touches_a_pixel_outside_the_wool",
+        stray_fail.is_empty(),
+        format!(
+            "the sheep's face and legs sample its *other* texture and must be \
+             byte-identical across every dye; {} dye(s) moved them{}",
+            stray_fail.len(),
+            if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+        ),
+    );
+
+    wr.destroy(gpu);
+    off.destroy(gpu);
+    c.finish("TINT", TINT_WITNESSES)
 }

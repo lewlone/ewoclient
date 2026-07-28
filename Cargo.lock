@@ -2335,6 +2335,7 @@ dependencies = [
  "tracy-client",
  "ureq",
  "winit",
+ "zip",
 ]
 
 [[package]]

@@ -294,6 +294,10 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
     // M20: the index-17 BOOLEAN is `Pillager.IS_CHARGING_CROSSBOW`.
     session.pillager_type_id = data.entity_types.id_of("minecraft:pillager");
+    // M52: the two kinds that disambiguate an otherwise-shared metadata slot —
+    // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
+    session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
+    session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M19 combat swings — every production `PlaySession` consumer interprets
     // them, not just `live_cmd`: the player type id gates the swing clock and
     // the equipment tables supply each swing's duration + animation type.
