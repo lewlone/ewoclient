@@ -2167,10 +2167,10 @@ impl PlaySession {
         let off = resolve(self.inventory.offhand());
         self.world
             .entities
-            .set_hand_item(id, InteractionHand::MainHand, main);
+            .set_hand_item(id, rewo_world::entities::InteractionHand::MainHand, main);
         self.world
             .entities
-            .set_hand_item(id, InteractionHand::OffHand, off);
+            .set_hand_item(id, rewo_world::entities::InteractionHand::OffHand, off);
     }
 
     /// `LocalPlayer.getAttackAnim(partialTicks)` — the first-person swing
@@ -2178,6 +2178,109 @@ impl PlaySession {
     pub fn local_attack_anim(&self, partial: f32) -> f32 {
         self.player_id
             .map_or(0.0, |id| self.world.entities.attack_anim(id, partial))
+    }
+
+
+    /// `ServerboundUseItemPacket` — using the held item at nothing in
+    /// particular (M38): eating, drawing a bow, raising a shield.
+    ///
+    /// Distinct from `use_item_on`, which targets a block. Vanilla sends this
+    /// one when the right button goes down and the pick ray hits nothing
+    /// usable, and it is what starts every use-driven arm pose.
+    ///
+    /// ```text
+    /// rewo_world::entities::InteractionHand hand    // VarInt enum: 0 main, 1 off
+    /// VarInt          sequence
+    /// float           yRot
+    /// float           xRot
+    /// ```
+    ///
+    /// The two rotations are the player's look at the moment of use — the
+    /// server replays the interaction against them rather than against
+    /// whatever the last movement packet said.
+    pub fn use_item(&mut self, hand: rewo_world::entities::InteractionHand) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_use_item else {
+            return Err("use_item unavailable".into());
+        };
+        let seq = self.next_sequence();
+        let mut p = PacketWriter::packet(id);
+        p.varint(match hand {
+            rewo_world::entities::InteractionHand::MainHand => 0,
+            rewo_world::entities::InteractionHand::OffHand => 1,
+        });
+        p.varint(seq);
+        p.f32(self.player.yaw);
+        p.f32(self.player.pitch);
+        self.send(p)
+    }
+
+    /// `ServerboundPlayerActionPacket` with `RELEASE_USE_ITEM`.
+    ///
+    /// The position and face are ignored by the server for this action but are
+    /// still part of the packet, so vanilla sends `BlockPos.ZERO` and `DOWN`.
+    fn release_use_item(&mut self) -> Result<(), String> {
+        let seq = self.next_sequence();
+        let mut p = PacketWriter::packet(self.ids.sb_play_player_action);
+        p.varint(5); // RELEASE_USE_ITEM
+        write_position(&mut p, 0, 0, 0);
+        p.u8(0); // DOWN
+        p.varint(seq);
+        self.send(p)
+    }
+
+    /// Start using the held item — the local half of `startUsingItem` (M38).
+    ///
+    /// Drives the **same** door the remote-entity path uses:
+    /// `LivingEntity.startUsingItem` sets shared-flag bit 0 (and bit 1 for the
+    /// off hand), which is exactly what `set_living_flags` decodes. So the
+    /// local player's use clock is M23's machine with an id, in the way its
+    /// swing is M19's — no second implementation, and every rule the flags
+    /// path already encodes (a repeat does not restart, an unresolvable stack
+    /// latches nothing) applies unchanged.
+    ///
+    /// Returns whether a use actually began: an item with no use duration —
+    /// most of them — is not usable, and vanilla plays no pose for it.
+    pub fn start_use(&mut self, hand: rewo_world::entities::InteractionHand) -> Result<bool, String> {
+        let Some(id) = self.player_id else {
+            return Ok(false);
+        };
+        // `Item.getUseDuration() == 0` means the item cannot be used at all,
+        // which is the overwhelming majority. Checking here keeps a pickaxe
+        // from sending a use packet on every right click.
+        let usable = self
+            .world
+            .entities
+            .hand_item(id, hand)
+            .use_profile()
+            .is_some_and(|p| p.duration > 0);
+        if !usable {
+            return Ok(false);
+        }
+        self.use_item(hand)?;
+        let flags = 1 | if hand == rewo_world::entities::InteractionHand::OffHand { 2 } else { 0 };
+        self.world.entities.set_living_flags(id, flags);
+        Ok(true)
+    }
+
+    /// Stop using it — `releaseUsingItem`. Idempotent, so a mouse release with
+    /// no use in progress costs one packet and nothing else.
+    pub fn stop_use(&mut self) -> Result<(), String> {
+        let Some(id) = self.player_id else {
+            return Ok(());
+        };
+        if !self.world.entities.use_state(id).using {
+            return Ok(());
+        }
+        self.world.entities.set_living_flags(id, 0);
+        self.release_use_item()
+    }
+
+    /// `LivingEntity.getUseItemRemainingTicks()` for the local player, and the
+    /// hand it is using — what the first-person use poses are keyed on.
+    pub fn local_use_state(&self) -> rewo_world::entities::UseState {
+        self.player_id
+            .map(|id| self.world.entities.use_state(id))
+            .unwrap_or_default()
     }
 
     pub fn swing(&mut self) -> Result<(), String> {

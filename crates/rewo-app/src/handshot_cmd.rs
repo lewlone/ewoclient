@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 24;
+const EXPECTED_WITNESSES: usize = 29;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -270,6 +270,8 @@ fn draw_one(arm: Arm, item: &HeldItemModel, attack: f32, inverse_height: f32) ->
             inverse_height,
             swings: SwingKind::Whack,
             main_hand: true,
+            using: None,
+            is_shield: false,
         }],
         &|_| Some([0.0, 0.0, 1.0, 1.0]),
         None,
@@ -348,6 +350,8 @@ fn check_placement(c: &mut Checker) {
             inverse_height: 0.0,
             swings: SwingKind::None,
             main_hand: true,
+            using: None,
+            is_shield: false,
         }],
         &|_| Some([0.0, 0.0, 1.0, 1.0]),
         None,
@@ -434,6 +438,104 @@ fn check_placement(c: &mut Checker) {
         ),
     );
 
+    // -- the use-driven poses ----------------------------------------------
+    use rewo_gpu::hand::{use_hand, UseAnim, UsePose};
+    let pose = |anim: UseAnim, remaining: i32, duration: i32| UsePose {
+        anim,
+        remaining,
+        duration,
+    };
+    // **Sample an offset point, not the origin.** A rotation applied last
+    // leaves the origin exactly where it was, so `transform_point3(ZERO)` is
+    // blind to it — which is how the first cut of `u3` measured the brush's
+    // sweep as motionless.
+    let probe = glam::Vec3::new(0.0, 0.5, 0.0);
+    let at = |p: &UsePose, shield: bool| {
+        use_hand(Arm::Right, 0.0, p, 1.0, shield).map(|m| m.transform_point3(probe))
+    };
+
+    // `hasCustomArmTransform` is true for exactly three, and it inverts the
+    // order of two calls: the pose runs *before* the resting offset rather
+    // than after. Composing the other way is a plausible tidying that moves an
+    // eaten apple most of a block.
+    let custom: Vec<UseAnim> = [
+        UseAnim::None, UseAnim::Eat, UseAnim::Drink, UseAnim::Block, UseAnim::Bow,
+        UseAnim::Trident, UseAnim::Crossbow, UseAnim::Spyglass, UseAnim::TootHorn,
+        UseAnim::Brush, UseAnim::Bundle, UseAnim::Spear,
+    ]
+    .into_iter()
+    .filter(|a| a.has_custom_arm_transform())
+    .collect();
+    c.record(
+        "u1.exactly_three_use_animations_invert_the_transform_order",
+        custom == vec![UseAnim::Eat, UseAnim::Drink, UseAnim::Spear],
+        format!(
+            "{custom:?} — `ItemUseAnimation`'s third constructor argument. For              these the resting arm transform is skipped up front and applied              *after* the pose; for the other nine it is applied first and the              pose refines it"
+        ),
+    );
+
+    // `scaledUsageTime` is `remaining / duration`, and remaining counts
+    // **down** — so it starts at one and ends at zero, and `1 - scaled^27`
+    // does the opposite. The exponent is what makes the item leave the rest
+    // pose almost immediately and stay aside for the whole use.
+    let rest = at(&pose(UseAnim::None, 5, 32), false).unwrap();
+    let start = at(&pose(UseAnim::Eat, 32, 32), false).unwrap();
+    let two_in = at(&pose(UseAnim::Eat, 30, 32), false).unwrap();
+    let end = at(&pose(UseAnim::Eat, 1, 32), false).unwrap();
+    c.record(
+        "u2.eating_leaves_the_rest_pose_at_once_and_stays_aside",
+        (start - rest).length() < 0.02
+            && (two_in - rest).length() > 0.4
+            && (end - rest).length() > 0.4,
+        format!(
+            "at the first tick the item is {:.3} from rest, two ticks in {:.2},              and at the last tick still {:.2}. `1 - scaled^27` climbs to one              within a couple of ticks and holds — a gentler exponent would ease              the food aside over the whole use instead of snapping it there",
+            (start - rest).length(),
+            (two_in - rest).length(),
+            (end - rest).length()
+        ),
+    );
+
+    // The brush cycles on its own ten ticks, not on the use's duration.
+    let a = at(&pose(UseAnim::Brush, 100, 200), false).unwrap();
+    let b = at(&pose(UseAnim::Brush, 110, 200), false).unwrap();
+    let mid = at(&pose(UseAnim::Brush, 105, 200), false).unwrap();
+    c.record(
+        "u3.the_brush_sweeps_on_a_ten_tick_loop_of_its_own",
+        (a - b).length() < 1e-5 && (a - mid).length() > 0.01,
+        format!(
+            "ten ticks apart the pose repeats exactly ({:.5} apart) while five              ticks in it differs ({:.3}). Brushing runs as long as you hold it,              so the sweep cannot key on progress through a duration the way              eating does — `remaining % 10` is what makes it cycle",
+            (a - b).length(),
+            (a - mid).length()
+        ),
+    );
+
+    // The bow's draw saturates, and the shake only appears past a tenth.
+    let drawn = |ticks: i32| at(&pose(UseAnim::Bow, 72000 - ticks, 72000), false).unwrap();
+    c.record(
+        "u4.the_bow_draw_saturates_after_twenty_ticks",
+        (drawn(20) - drawn(60)).length() < 0.02 && (drawn(0) - drawn(20)).length() > 0.005,
+        format!(
+            "twenty ticks and sixty are {:.4} apart, while nought and twenty are              {:.4}. `power` is clamped to one, so holding a fully drawn bow              longer changes nothing — only the sub-4mm strain shake keeps moving",
+            (drawn(20) - drawn(60)).length(),
+            (drawn(0) - drawn(20)).length()
+        ),
+    );
+
+    // A shield is excepted from the BLOCK pose, and scoping hides the hand.
+    let shield_posed = at(&pose(UseAnim::Block, 10, 72000), true).unwrap();
+    let other_posed = at(&pose(UseAnim::Block, 10, 72000), false).unwrap();
+    c.record(
+        "u5.a_shield_is_excepted_and_a_spyglass_hides_the_hand",
+        (shield_posed - rest).length() < 1e-6
+            && (other_posed - rest).length() > 0.1
+            && at(&pose(UseAnim::Spyglass, 10, 72000), false).is_none(),
+        format!(
+            "a shield stays at rest ({:.4} from it) because it carries its own              display transform for the context and would be posed twice;              anything else blocking moves {:.2}. Scoping returns no matrix at              all — vanilla guards the whole of `submitArmWithItem` on              `!isScoping()`, so the hand is not drawn rather than drawn wrongly",
+            (shield_posed - rest).length(),
+            (other_posed - rest).length()
+        ),
+    );
+
     // -- STAB, the spear rig -----------------------------------------------
     //
     // A different shape from WHACK, not a retuning: three easings over three
@@ -493,6 +595,8 @@ fn check_placement(c: &mut Checker) {
                 inverse_height: 0.0,
                 swings: SwingKind::Whack,
                 main_hand,
+                using: None,
+                is_shield: false,
             }],
             &|_| Some([0.0, 0.0, 1.0, 1.0]),
             Some(&geo),

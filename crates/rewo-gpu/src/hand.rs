@@ -295,6 +295,224 @@ pub fn item_hand_kind(arm: Arm, inverse_height: f32, attack: f32, kind: SwingKin
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// The use-driven poses (M38).
+//
+// `submitArmWithItem`'s middle branch: while the player is using an item in
+// this hand, the resting pose is replaced by one keyed on the item's
+// `ItemUseAnimation`. Every one of them reads `useItemRemainingTicks`, which
+// M23 established the client *derives* rather than receives.
+// ---------------------------------------------------------------------------
+
+/// `ItemUseAnimation` — the rig an item plays while it is being used.
+///
+/// The wire ids are the enum's declared ints, and the `custom` flag below is
+/// its third constructor argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseAnim {
+    None,
+    Eat,
+    Drink,
+    Block,
+    Bow,
+    Trident,
+    Crossbow,
+    Spyglass,
+    TootHorn,
+    Brush,
+    Bundle,
+    Spear,
+}
+
+impl UseAnim {
+    /// `hasCustomArmTransform()` — **true only for `EAT`, `DRINK` and
+    /// `SPEAR`**, and it inverts the order of two calls.
+    ///
+    /// For everything else the resting arm transform is applied *first* and
+    /// the pose refines it. For these three it is skipped there and applied
+    /// *after* the pose instead, so the pose operates in an un-offset frame.
+    /// Getting the order wrong puts an eaten apple most of a block from where
+    /// vanilla holds it, which looks like a bad constant rather than a
+    /// misordering.
+    pub fn has_custom_arm_transform(self) -> bool {
+        matches!(self, UseAnim::Eat | UseAnim::Drink | UseAnim::Spear)
+    }
+
+    /// From `ItemUseAnimation`'s declared int, which is also its wire id.
+    pub fn from_id(id: i32) -> Option<Self> {
+        Some(match id {
+            0 => UseAnim::None,
+            1 => UseAnim::Eat,
+            2 => UseAnim::Drink,
+            3 => UseAnim::Block,
+            4 => UseAnim::Bow,
+            5 => UseAnim::Trident,
+            6 => UseAnim::Crossbow,
+            7 => UseAnim::Spyglass,
+            8 => UseAnim::TootHorn,
+            9 => UseAnim::Brush,
+            10 => UseAnim::Bundle,
+            11 => UseAnim::Spear,
+            _ => return None,
+        })
+    }
+}
+
+/// What the hand needs to know about an in-progress use.
+#[derive(Clone, Copy, Debug)]
+pub struct UsePose {
+    pub anim: UseAnim,
+    /// `getUseItemRemainingTicks()`, which counts **down** and is deliberately
+    /// unclamped — see `rewo_world::entities::UseState::remaining`.
+    pub remaining: i32,
+    /// `getUseDuration()` for the stack in hand.
+    pub duration: i32,
+}
+
+impl UsePose {
+    /// `timeHeld` — how long the item has been held, the rising counterpart of
+    /// `remaining`.
+    fn time_held(&self, partial: f32) -> f32 {
+        self.duration as f32 - (self.remaining as f32 - partial + 1.0)
+    }
+}
+
+/// `applyEatTransform` — the food jiggle.
+///
+/// Two parts. A small bob, `|cos(t/4 · π)| · 0.1`, which runs only for the
+/// first four fifths of the use — `scaledUsageTime < 0.8` — and is what makes
+/// eating look like chewing rather than holding. And the jiggle proper,
+/// `1 - scaledUsageTime²⁷`, whose absurd exponent keeps it near **one** for
+/// almost the whole use and collapses only at the very end: the item is swung
+/// aside for the duration and snaps back as the last bite lands.
+fn eat_transform(arm: Arm, use_pose: &UsePose, partial: f32) -> Mat4 {
+    let invert = arm.invert();
+    let curr = use_pose.remaining as f32 - partial + 1.0;
+    let scaled = curr / use_pose.duration.max(1) as f32;
+    let bob = if scaled < 0.8 {
+        let h = ((curr / 4.0 * std::f32::consts::PI).cos() * 0.1).abs();
+        translate(0.0, h, 0.0)
+    } else {
+        Mat4::IDENTITY
+    };
+    // `Math.pow(x, 27)` in double, which matters at the tail where the value
+    // is collapsing fast.
+    let jiggle = 1.0 - (scaled as f64).powf(27.0) as f32;
+    bob * translate(jiggle * 0.6 * invert, jiggle * -0.5, 0.0)
+        * rot_y(invert * jiggle * 90.0)
+        * rot_x(jiggle * 10.0)
+        * rot_z(invert * jiggle * 30.0)
+}
+
+/// `applyBrushTransform` — the sweep, which is on its **own ten-tick loop**
+/// rather than the use's duration.
+///
+/// `remaining % 10` is the whole trick: brushing runs for as long as you hold
+/// it, so the animation cannot key on progress through a fixed duration the
+/// way eating does. It cycles instead.
+fn brush_transform(arm: Arm, use_pose: &UsePose, partial: f32) -> Mat4 {
+    let cycle = (use_pose.remaining % 10) as f32;
+    let scaled = 1.0 - (cycle - partial + 1.0) / 10.0;
+    let angle = -15.0 + 75.0 * (scaled * 2.0 * std::f32::consts::PI).cos();
+    if arm == Arm::Right {
+        translate(-0.25, 0.22, 0.35) * rot_x(-80.0) * rot_y(90.0) * rot_x(angle)
+    } else {
+        translate(0.1, 0.83, 0.35)
+            * rot_x(-80.0)
+            * rot_y(-90.0)
+            * rot_x(angle)
+            * translate(-0.3, 0.22, 0.35)
+    }
+}
+
+/// The bow's draw — and the shake that appears once it is nearly full.
+///
+/// `power = (p² + 2p) / 3` over twenty ticks, clamped to one. Past 0.1 the
+/// item jitters by `sin((timeHeld - 0.1) · 1.3) · (power - 0.1) · 0.004`,
+/// which is four thousandths of a block: the strain, not a wobble you could
+/// mistake for a bug. The z scale stretches the bow as it draws.
+fn bow_transform(arm: Arm, use_pose: &UsePose, partial: f32) -> Mat4 {
+    let invert = arm.invert();
+    let time_held = use_pose.time_held(partial);
+    let mut power = time_held / 20.0;
+    power = (power * power + power * 2.0) / 3.0;
+    power = power.min(1.0);
+    let mut m = translate(invert * -0.2785682, 0.18344387, 0.15731531)
+        * rot_x(-13.935)
+        * rot_y(invert * 35.3)
+        * rot_z(invert * -9.785);
+    if power > 0.1 {
+        let shake = ((time_held - 0.1) * 1.3).sin() * (power - 0.1);
+        m *= translate(0.0, shake * 0.004, 0.0);
+    }
+    m * translate(0.0, 0.0, power * 0.04)
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + power * 0.2))
+        // `Axis.YN` — the *negative* Y axis, so this is a rotation the other
+        // way round from every `YP` in this file.
+        * rot_y(-invert * 45.0)
+}
+
+/// The shield-block pose, and the exception inside it.
+///
+/// `case BLOCK` applies its offsets **only when the item is not a shield** —
+/// a real shield carries its own `display` transform for the context and
+/// would be posed twice. Anything else with a `BLOCK` use animation gets the
+/// hand-authored pose instead.
+fn block_transform(arm: Arm, is_shield: bool) -> Mat4 {
+    if is_shield {
+        return Mat4::IDENTITY;
+    }
+    let invert = arm.invert();
+    translate(invert * -0.14142136, 0.08, 0.14142136)
+        * rot_x(-102.25)
+        * rot_y(invert * 13.365)
+        * rot_z(invert * 78.05)
+}
+
+/// The trident's wind-up.
+fn trident_transform(arm: Arm) -> Mat4 {
+    let invert = arm.invert();
+    translate(invert * -0.5, 0.7, 0.1) * rot_x(-55.0) * rot_y(invert * 35.3) * rot_z(invert * -9.785)
+}
+
+/// The pose for an item being used, composed with the resting transform in
+/// the order `hasCustomArmTransform` dictates.
+///
+/// `Spyglass` returns `None`: vanilla suppresses the whole hand while
+/// scoping (`if (!player.isScoping())` guards the entire body of
+/// `submitArmWithItem`), so the caller draws nothing rather than drawing
+/// something in the wrong place.
+pub fn use_hand(
+    arm: Arm,
+    inverse_height: f32,
+    use_pose: &UsePose,
+    partial: f32,
+    is_shield: bool,
+) -> Option<Mat4> {
+    let base = item_arm_transform(arm, inverse_height);
+    let pose = match use_pose.anim {
+        UseAnim::Spyglass => return None,
+        UseAnim::None | UseAnim::TootHorn | UseAnim::Bundle | UseAnim::Crossbow => Mat4::IDENTITY,
+        UseAnim::Eat | UseAnim::Drink => eat_transform(arm, use_pose, partial),
+        UseAnim::Block => block_transform(arm, is_shield),
+        UseAnim::Bow => bow_transform(arm, use_pose, partial),
+        UseAnim::Trident => trident_transform(arm),
+        UseAnim::Brush => brush_transform(arm, use_pose, partial),
+        // `SPEAR`'s use rig is `SpearAnimations.firstPersonUse`, which reads a
+        // kinetic-hit-feedback counter the wire does not carry. Left at the
+        // resting pose rather than approximated.
+        UseAnim::Spear => Mat4::IDENTITY,
+    };
+    Some(if use_pose.anim.has_custom_arm_transform() {
+        // The pose first, the resting offset after — see
+        // [`UseAnim::has_custom_arm_transform`].
+        pose * base
+    } else {
+        base * pose
+    })
+}
+
 /// `ItemTransform.apply` — the item's own `display` transform, with the
 /// left-hand mirror.
 ///
@@ -392,6 +610,12 @@ pub struct HandDraw<'a> {
     /// Whether this is the main hand. Vanilla draws the bare arm **only** for
     /// the main hand: an empty off-hand shows nothing.
     pub main_hand: bool,
+    /// An in-progress use in *this* hand, which replaces the swing entirely —
+    /// `submitArmWithItem` takes the use branch or the swing branch, never
+    /// both. `None` when the player is not using this hand's item.
+    pub using: Option<UsePose>,
+    /// Whether the held item is a shield, which the `BLOCK` pose excepts.
+    pub is_shield: bool,
 }
 
 /// The skin's placement in the hand atlas, and the arm quads to draw.
@@ -440,9 +664,18 @@ pub fn build_vertices(
             Some(model) => {
                 let left = h.arm == Arm::Left;
                 let display = if left { &model.first_left } else { &model.first_right };
-                let m = view
-                    * item_hand_kind(h.arm, h.inverse_height, h.attack, h.swings)
-                    * display_transform(display, left);
+                // A use in progress replaces the swing: vanilla's branch is
+                // `if (isUsingItem() && remaining > 0 && usedHand == hand)`,
+                // and the swing `switch` lives in its `else`.
+                let pose = match &h.using {
+                    Some(u) => match use_hand(h.arm, h.inverse_height, u, 1.0, h.is_shield) {
+                        Some(m) => m,
+                        // Scoping hides the hand outright.
+                        None => continue,
+                    },
+                    None => item_hand_kind(h.arm, h.inverse_height, h.attack, h.swings),
+                };
+                let m = view * pose * display_transform(display, left);
                 for q in &model.quads {
                     let Some(rect) = atlas(q.tex) else { continue };
                     // The item's quads are in 0..16 model units; the display
@@ -751,6 +984,8 @@ mod tests {
                 inverse_height: 0.0,
                 swings: SwingKind::Whack,
                 main_hand: true,
+                using: None,
+                is_shield: false,
             }],
             &|_| Some([0.0, 0.0, 1.0, 1.0]),
             None,

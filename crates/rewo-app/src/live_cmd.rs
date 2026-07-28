@@ -2250,20 +2250,41 @@ impl ApplicationHandler for LiveApp {
                     );
                 }
             }
+            // Releasing the right button ends a use — eating stops, a bow
+            // fires, a shield drops. Vanilla sends `RELEASE_USE_ITEM`, and the
+            // pose ends locally at the same moment.
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Right,
+                ..
+            } => {
+                if let Some(session) = self.session.as_mut() {
+                    let _ = session.stop_use();
+                }
+            }
             WindowEvent::MouseInput {
                 state: btn, button, ..
             } if btn == ElementState::Pressed => {
                 // Left-click digs the targeted block; right-click places
-                // against its hit face. (Creative: dig breaks instantly.)
+                // against its hit face, or — with nothing to place against —
+                // starts *using* the held item (M38).
                 if let Some(session) = self.session.as_mut() {
                     // The pick ray starts from the f64 eye (`eye_f64`), not the
                     // f32 render eye — at large coordinates the two disagree by
                     // more than a block.
-                    if let Some(h) = session.target_block(
+                    let hit = session.target_block(
                         eye_f64(session),
                         look_dir(session.player.yaw, session.player.pitch),
                         REACH,
-                    ) {
+                    );
+                    // Right-clicking thin air uses the item. Vanilla also uses
+                    // it when the *block* interaction is declined, which needs
+                    // the server's answer; this is the half that needs no round
+                    // trip, and it covers eating, drawing and blocking.
+                    if hit.is_none() && button == MouseButton::Right {
+                        let _ = session.start_use(rewo_world::entities::InteractionHand::MainHand);
+                    }
+                    if let Some(h) = hit {
                         let [x, y, z] = h.block;
                         let face = face_index(h.face);
                         match button {
@@ -5717,6 +5738,43 @@ fn apply_hand(
         .sway(session.player.pitch, session.player.yaw, partial);
     let view = rewo_gpu::hand::view_sway(sway);
 
+    // The use in progress, if any — it poses exactly one hand, and replaces
+    // that hand's swing rather than combining with it.
+    let use_state = session.local_use_state();
+    let use_for = |hand: rewo_world::entities::InteractionHand| {
+        use rewo_data::use_item::ItemUseAnimation as A;
+        use rewo_gpu::hand::{UseAnim, UsePose};
+        if !use_state.poses_hand(hand) {
+            return None;
+        }
+        let id = use_state.item_id?;
+        let profile = session.swing_data.as_ref()?.use_profiles.of(id)?;
+        let anim = match profile.animation {
+            A::None => UseAnim::None,
+            A::Eat => UseAnim::Eat,
+            A::Drink => UseAnim::Drink,
+            A::Block => UseAnim::Block,
+            A::Bow => UseAnim::Bow,
+            A::Trident => UseAnim::Trident,
+            A::Crossbow => UseAnim::Crossbow,
+            A::Spyglass => UseAnim::Spyglass,
+            A::TootHorn => UseAnim::TootHorn,
+            A::Brush => UseAnim::Brush,
+            A::Bundle => UseAnim::Bundle,
+            A::Spear => UseAnim::Spear,
+        };
+        Some(UsePose {
+            anim,
+            remaining: use_state.remaining_ticks(),
+            duration: profile.duration,
+        })
+    };
+    // `case BLOCK` excepts a real shield, which carries its own display
+    // transform for the context and would otherwise be posed twice.
+    let is_shield = |id: Option<i32>| {
+        id.and_then(|i| items.name(i)) == Some("minecraft:shield")
+    };
+
     let hands = [
         HandDraw {
             arm: Arm::Right,
@@ -5725,6 +5783,8 @@ fn apply_hand(
             inverse_height: state.main_equip.inverse(partial),
             swings: swing_kind(state.main_equip.visible_item()),
             main_hand: true,
+            using: use_for(rewo_world::entities::InteractionHand::MainHand),
+            is_shield: is_shield(state.main_equip.visible_item()),
         },
         HandDraw {
             arm: Arm::Left,
@@ -5735,6 +5795,8 @@ fn apply_hand(
             inverse_height: state.off_equip.inverse(partial),
             swings: swing_kind(state.off_equip.visible_item()),
             main_hand: false,
+            using: use_for(rewo_world::entities::InteractionHand::OffHand),
+            is_shield: is_shield(state.off_equip.visible_item()),
         },
     ];
     let arm_geo = state
