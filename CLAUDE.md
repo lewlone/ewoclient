@@ -1632,14 +1632,23 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
 what to build *after* the M-series milestones, derived from a survey of all
 9,291 open-source client-side Fabric mods on Modrinth (2026-07-26,
 regenerate with `python tools/survey_modrinth.py`). Read it when picking the
-next feature rather than the next milestone. Two things from it are
-load-bearing anywhere in the repo: (1) **Sodium, EntityCulling and Xaero's
-Minimap are source-available but NOT open source** (Polyform Shield / bespoke
-protective / All-Rights-Reserved) — their source must not be read as a
-reference for Rewo, though bundling the jars in EwoLoader is a separate
-question; (2) 33.7% of all client-mod download mass exists only because the
-game is a JVM client with a mod loader, which is the strongest external
-validation Rewo has.
+next feature rather than the next milestone. Three things from it are
+load-bearing anywhere in the repo: (1) **the market leader in every big solved
+category is non-open-source** — Sodium (Polyform Shield), EntityCulling
+(bespoke protective), Xaero's Minimap + JourneyMap (All-Rights-Reserved), Jade
++ WTHIT (CC-BY-NC-SA, NonCommercial); ~509M downloads whose source must not be
+read as reference for Rewo, though bundling the jars in EwoLoader is a
+separate question; (2) **53.4% of all client-mod download mass** exists only because the
+game is a JVM client with a mod loader (modding infrastructure 25.4% +
+JVM performance 17.5% + OptiFine-pack parity 10.5%), which is the strongest
+external validation Rewo has; (3) the 9,291 mods collapse to **69 distinct
+features** — 48 QoL to build, 12 that are one "port the modules + HUD set into
+Rewo" milestone, 3 blocked on Rewo having no audio subsystem — with a long
+tail of 4,621 mods at a **median of 890 downloads each** that is correctly
+ignorable. **Treat 69 as a floor and every count as ±20%**: sampling the
+unread tail suggests 75–85 real features, and sampling the *covered* set found
+a ~20% false-positive rate. The error is roughly uniform, so the ranking
+survives it — use the doc as a prioritisation, never as a citation.
 
 - **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
   playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
