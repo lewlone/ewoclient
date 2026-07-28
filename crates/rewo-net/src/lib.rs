@@ -1226,6 +1226,7 @@ fn read_slot(
                 rarity: c.rarity,
                 unbreakable: c.unbreakable,
                 enchantments: c.enchantments.clone(),
+                is_enchanted: c.is_enchanted,
             };
             (
                 Some(rewo_world::inventory::ItemSlot {

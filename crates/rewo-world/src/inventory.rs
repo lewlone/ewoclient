@@ -266,6 +266,13 @@ pub struct SlotText {
     /// registry, which the *renderer* holds — this is the wire's own answer,
     /// carried no further than it can be trusted.
     pub enchantments: Vec<(i32, i32)>,
+    /// `ItemStack.isEnchanted()` — `minecraft:enchantments` alone, **not** the
+    /// union above (M50).
+    ///
+    /// The two differ for exactly one thing a player holds: an enchanted book
+    /// carries `stored_enchantments` and is *not* enchanted, so its rarity is
+    /// not promoted.
+    pub is_enchanted: bool,
 }
 
 impl SlotText {
@@ -281,6 +288,7 @@ impl SlotText {
             && self.rarity.is_none()
             && !self.unbreakable
             && self.enchantments.is_empty()
+            && !self.is_enchanted
     }
 }
 

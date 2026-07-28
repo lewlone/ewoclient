@@ -188,6 +188,10 @@ struct TintInfo {
 }
 
 pub struct BakedAssets {
+    /// The language map (M50) — `en_us.json` **after** the deprecation pass,
+    /// which is what `ClientLanguage.loadFrom` produces and what every key
+    /// lookup in the client resolves against.
+    pub lang: crate::lang::Language,
     /// Every item's English display name, for tooltips (M40). Keyed by full
     /// registry name; an item whose language key is missing has no entry.
     pub item_names: HashMap<String, String>,
@@ -710,8 +714,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     }
     let hud = bake_hud(&mut jar);
     let container = bake_container(&mut jar);
-    let item_names = bake_item_names(&mut jar);
-    let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar);
+    let lang = crate::lang::Language::load(client_jar);
+    let item_names = bake_item_names(&mut jar, &lang);
+    let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar, &lang);
     let glint = bake_misc_texture(&mut jar, "enchanted_glint_item.png");
     // M50: `ARMOR_ENTITY_GLINT` binds its own sheet. Both live in `misc/` and
     // they are different images — the worn foil is not the item foil at a
@@ -965,6 +970,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::info!("rewo-data: {} animated texture layers", baker.animations.len());
     }
     Ok(BakedAssets {
+        lang,
         item_names,
         enchantment_text,
         glint,
@@ -1199,22 +1205,16 @@ pub struct ContainerSprites {
 ///
 /// A missing key yields no entry at all rather than a prettified id: a
 /// tooltip that says nothing is better than one that says `Diamond_sword`.
-fn bake_item_names(jar: Jar) -> HashMap<String, String> {
+///
+/// The lookup goes through the loaded [`crate::lang::Language`], not the raw
+/// `en_us.json` (M50). That is not bookkeeping: 27 items read differently
+/// through the two, because `deprecated.json` renames
+/// `item.minecraft.<x>.new` onto `item.minecraft.<x>` for the eighteen
+/// smithing templates and nine banner patterns — so the raw file says every
+/// one of them is a "Smithing Template" or a "Banner Pattern" and the
+/// language map says "Bolt Armor Trim" and "Creeper Charge Banner Pattern".
+fn bake_item_names(jar: Jar, lang: &crate::lang::Language) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    let mut raw = String::new();
-    {
-        let Ok(mut e) = jar.by_name("assets/minecraft/lang/en_us.json") else {
-            log::warn!("rewo-data: no en_us.json — items will have no display names");
-            return out;
-        };
-        if std::io::Read::read_to_string(&mut e, &mut raw).is_err() {
-            return out;
-        }
-    }
-    let Ok(lang) = serde_json::from_str::<HashMap<String, String>>(&raw) else {
-        log::warn!("rewo-data: en_us.json did not parse — items will have no display names");
-        return out;
-    };
     let names: Vec<String> = jar
         .file_names()
         .filter_map(|p| {
@@ -1229,7 +1229,7 @@ fn bake_item_names(jar: Jar) -> HashMap<String, String> {
             .get(&format!("block.minecraft.{name}"))
             .or_else(|| lang.get(&format!("item.minecraft.{name}")));
         if let Some(text) = key {
-            out.insert(format!("minecraft:{name}"), text.clone());
+            out.insert(format!("minecraft:{name}"), text.to_string());
         }
     }
     log::info!("rewo-data: {} item display name(s)", out.len());

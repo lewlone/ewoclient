@@ -6750,6 +6750,163 @@ living entity the server syncs, which in practice is the syncable subset
 (`isClientSyncable`), and no consumer reads anything but `max_health` so far.
 `AttributeInstance`'s permanent-vs-transient modifier distinction is not
 modelled, because the packet only ever carries the merged set.
+### M54 — the language map, the substitution, and the rarity a stack never sent (2026-07-28)
+
+The foundation a tooltip line generator needs, and one live bug found on the way
+in. Three pieces, none of which touches the entity pass.
+
+#### `en_us.json` is not the language map
+
+It is step 1 of three, and `ClientLanguage.loadFrom` — the same sequence
+`Language.loadDefault` runs for the built-in instance — is:
+
+1. `Language.loadFromJson` parses the file **and rewrites every unsupported
+   format specifier**: `UNSUPPORTED_FORMAT_PATTERN` is `%(\d+\$)?[\d.]*[df]`,
+   replaced with `%$1s`. This is why `decomposeTemplate` only understands `s`.
+   Neither the brief nor I expected this step; it is **inert on 26.2** (0 of
+   8,123 values match) and is transcribed anyway, because its absence would be
+   invisible until the day a pack carried a `%d` — and then the whole line
+   would collapse to its raw pattern.
+2. `DeprecatedTranslationsInfo.applyToMap`, from
+   `assets/minecraft/lang/deprecated.json`: **383 removed keys and 146
+   renames**.
+3. `Map.copyOf`.
+
+`applyToMap` is two passes, and **the order between them is load-bearing**:
+remove first, then for each rename move the value off the old key, deleting the
+new key when the old one is absent. The rename map is kept in **file order** —
+`Codec.unboundedMap` decodes an insertion-ordered gson `JsonObject` into an
+`ImmutableMap` and `forEach` walks it in that order. 26.2's data happens to be
+order-free (no two renames share a target; the one rename whose target is also a
+source is `subtitles.entity.sulfur_cube.squish` onto **itself**), but a version
+that chained two would depend on it.
+
+The cost of skipping the pass, measured rather than asserted: of the 146 rename
+targets, **105 do not appear in `en_us.json` at all** — including
+`item.container.item_count` (`%s x%s`) and `item.container.more_items` (`and %s
+more...`), which resolve to nothing today.
+
+Rewo read the raw file in two places with narrow filters
+(`assets.rs::bake_item_names` and `enchantments.rs`). Both now go through one
+`rewo_data::lang::Language`, which `assets::bake` builds and `BakedAssets`
+carries — so no two callers can disagree about what a key resolves to.
+
+#### Two things the brief had were incomplete, and the gate says so
+
+**The safety check was on the *absent* targets only.** It is true that 0 of the
+105 absent targets start with `item.minecraft.` or `enchantment.`. But 41
+targets **are** present and are *overwritten* (35 of them with a different
+string; the other six are handed a value identical to the one they had). Those
+overwrites are mostly `item.minecraft.<x>.new -> item.minecraft.<x>`, and the
+consequence is that **27 item display names change** — the eighteen smithing
+templates stop reading "Smithing Template" and start reading "Bolt Armor Trim",
+"Coast Armor Trim", …, and the nine banner patterns stop reading "Banner
+Pattern". Every one of those changes is *toward* vanilla. `inventoryshot`'s `t8`
+stays green because no item **loses** a name — 1537 items, 0 without one, which
+is the property that actually had to hold. The enchantment strings are
+genuinely untouched: 54 keys, 0 that read differently.
+
+**"The 383 removed keys are gone after load" is false for three of them.**
+`debug.crash.message`, `debug.profiling.start` and
+`selectWorld.backupRequiredTooltip` are each *also* a rename target, so removal
+deletes them and a later rename writes them back. (Two of the 383 were never in
+the file: 381 are present before the pass.) That is not a wrinkle to work
+around — it is the **observable consequence of the pass order**, and it makes a
+better witness than the one the brief asked for: running the renames first
+loses all three.
+
+#### `Component.translatable`'s substitution
+
+`FORMAT_PATTERN` is `%(?:(\d+)\$)?([A-Za-z%]|$)`, hand-scanned (no regex dep),
+with Java's greedy-then-backtrack attempt order for the optional positional
+group. Three details are easy to get wrong:
+
+- **A positional specifier does not advance the implicit counter.** `%s %1$s %s`
+  over `["a","b"]` is `"a a b"`, not `"a a c"` — and a version that advanced it
+  would run off the end of a two-argument list.
+- **`%%` is guarded on the whole match, not just the format type.** `%1$%` also
+  has `%` for a type, and is an *error*.
+- **Every error renders the unsubstituted pattern.** `decompose` wraps
+  `decomposeTemplate` in `catch (TranslatableFormatException) ->
+  FormattedText.of(format)`, so an unsupported type, too few arguments, a stray
+  `%` in the prefix or tail, and `%0$s` all render the raw string rather than
+  dropping the line. That is why `lang::format` returns a `String` and not a
+  `Result`.
+
+Java's non-multiline `$` also matches before a *final* line terminator; that is
+implemented as end-of-input, and the difference is unobservable — both readings
+end in the same exception for the same template.
+
+#### The rarity a stack never sent
+
+`live_cmd::rarity_color` did `rarity.unwrap_or(0)`. But `ItemStack.getRarity()`
+is `getOrDefault(DataComponents.RARITY, Rarity.COMMON)` over the **prototype**
+patched by the delta, and the wire carries only the delta — so **115 items**
+(78 uncommon, 18 rare, 19 epic, measured from the datagen component report)
+rendered their hover name white. A music disc's name is yellow in vanilla.
+`tools/gen_item_props.py` grew a sixth column; the ids come from `Rarity.java`
+(read, not assumed, like the equipment slots beside them) and the default from
+`ItemStack.getRarity`'s own `getOrDefault` call, because the table is a delta
+from it.
+
+Then the promotion: enchanted, `COMMON, UNCOMMON -> RARE`, `RARE -> EPIC`,
+`default -> baseRarity`. Two arms are worth naming — COMMON and UNCOMMON
+**collapse onto the same value** (a one-step promotion would send COMMON to
+UNCOMMON), and the `default` arm is what stops EPIC becoming a 4.
+
+**The input it reads was not there, and taking the obvious one would have been a
+new bug.** `isEnchanted()` is `!getOrDefault(ENCHANTMENTS, EMPTY).isEmpty()` —
+`minecraft:enchantments` **alone**. Rewo's decoder merges `enchantments` and
+`stored_enchantments` into one list, deliberately, because a tooltip lists an
+enchanted book's stored ones the same way. Deriving `isEnchanted` from that
+merged list promotes an enchanted book RARE → EPIC, which vanilla does not do.
+`StackComponents`/`SlotText` gained an `is_enchanted` flag set from the one
+component. (`has_foil` still reads the merged list — a pre-existing
+approximation that happens to be right for books by the wrong route, since
+`enchanted_book`'s prototype carries `ENCHANTMENT_GLINT_OVERRIDE: true` and Rewo
+cannot see a prototype. Left alone; it is M43's question, not this one.)
+
+#### Gates and measurement
+
+`inventoryshot --check` **91 → 106**: `l1`–`l9` the language map (the two
+container keys resolving only after the pass; the 146 renames measured; the
+383/381/3 removals; the pass order; the absent-source deletion, pinned
+synthetically because 0 of 26.2's renames take that branch; the item names; the
+enchantment strings; the substitution; the literal percent and the three error
+shapes) and `r1`–`r6` the rarity. The subject throughout the language witnesses
+is `baked.lang` — the map the production bake built — with
+`Language::raw` (step 1 alone, literally what Rewo did before this) as the
+mutation partner, so a gate that assembled its own map could not hide a renderer
+still reading the raw file.
+
+**`r1` was verified to fail before the fix**, not just argued to: reverting
+`stack_rarity` to `patch.unwrap_or(0)` drops the gate to 104/106 (`r1` and `r6`),
+and mutating `is_enchanted` to the merged list drops it to 105/106 (`r6` alone).
+
+**652 tests** (rewo-data 79 → 94: 14 in `lang`, one pinning the rarity buckets;
+the rest unchanged), release build green, `git diff --check` clean, demo PNG
+SHA-256 `2cc56b4a…` byte-identical to M15 onward, and all seventeen serverless
+gates exit 0 with 0 VUIDs: `itemshot` 62, `inventoryshot` 106,
+`blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
+12, `mobshot` 243/243, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
+`dimensioncheck`.
+
+#### Open
+
+- **The tooltip line generator itself.** `item.container.item_count` now
+  resolves and `format` can fill it, but nothing calls either yet — the lines
+  are still assembled ad hoc in `live_cmd::screen_tooltip`. That refactor is the
+  next milestone, and it is what the two container keys exist for.
+- **Only `en_us` and only the client jar.** `ClientLanguage.loadFrom` walks a
+  *stack* of language codes across every resource-pack namespace; Rewo reads one
+  file from one place. A resource pack's overrides are not applied.
+- **The substitution takes `&str` arguments.** Vanilla's are `Object`, and a
+  `Component` argument brings its own style — so a nested coloured argument
+  would flatten. Nothing Rewo renders needs one yet.
+- **`Rarity` is an `i32` throughout**, matching the wire (`STREAM_CODEC` is
+  `idMapper(BY_ID, r -> r.id)`) rather than an enum. An id outside 0..3 passes
+  through the promotion unchanged and colours as common.
 
 ### M50 — the worn-armour glint, and the glint's colour space (2026-07-28)
 
