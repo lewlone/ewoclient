@@ -881,6 +881,17 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
         translation: t.translation,
         scale: t.scale,
     };
+    let conv_quads = |qs: &[rewo_data::held_items::HeldQuad]| -> Vec<g::HeldQuad> {
+        qs.iter()
+            .map(|q| g::HeldQuad {
+                verts: q.verts,
+                uv: q.uv,
+                tex: q.tex,
+                part: q.part,
+                dir: q.dir,
+            })
+            .collect()
+    };
     let conv_models = |m: &std::collections::HashMap<
         String,
         rewo_data::held_items::HeldItemModel,
@@ -890,17 +901,7 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                 (
                     k.clone(),
                     g::HeldItemModel {
-                        quads: m
-                            .quads
-                            .iter()
-                            .map(|q| g::HeldQuad {
-                                verts: q.verts,
-                                uv: q.uv,
-                                tex: q.tex,
-                                part: q.part,
-                                dir: q.dir,
-                            })
-                            .collect(),
+                        quads: conv_quads(&m.quads),
                         right: conv_t(&m.right),
                         left: conv_t(&m.left),
                         ground: conv_t(&m.ground),
@@ -908,6 +909,7 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
                         first_right: conv_t(&m.first_right),
                         first_left: conv_t(&m.first_left),
                         from_block: m.from_block,
+                        gui_quads: m.gui_quads.as_deref().map(conv_quads),
                     },
                 )
             })
@@ -1251,6 +1253,8 @@ pub(crate) fn container_sprites(
         background: s(&c.background),
         highlight_back: s(&c.highlight_back),
         highlight_front: s(&c.highlight_front),
+        tooltip_background: s(&c.tooltip_background),
+        tooltip_frame: s(&c.tooltip_frame),
     })
 }
 
@@ -1536,39 +1540,121 @@ fn run_headless(
         // fired mid-give would echo a stale one and be resynced. Forty ticks
         // is two seconds of quiet.
         if !clicked && session.spawned && !session.inventory.is_empty() && tick >= 40 {
-            if let Ok(spec) = std::env::var("REWO_CLICK") {
+            if let Ok(whole) = std::env::var("REWO_CLICK") {
+              let before_all = session.inventory.content_updates();
+              // Semicolon-separated, so a run can pick a stack up and then do
+              // something with it — a drag needs a stack on the cursor, and no
+              // single click can leave one there and use it.
+              for spec in whole.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                // `d:<slot>,<slot>,…[,one]` is a quick-craft drag over those
+                // slots; the trailing `one` selects type 1 (one per slot).
+                if let Some(rest) = spec.strip_prefix("d:") {
+                    let one = rest.trim_end().ends_with("one");
+                    let kind = if one {
+                        rewo_world::inventory::QUICK_CRAFT_ONE
+                    } else {
+                        rewo_world::inventory::QUICK_CRAFT_SPLIT
+                    };
+                    let touched: Vec<usize> = rest
+                        .split(',')
+                        .filter_map(|v| v.trim().parse::<usize>().ok())
+                        .collect();
+                    let props = |id: i32| item_props(&items, id);
+                    let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
+                    match session.inventory.click_quick_craft(&accepted, kind, &props) {
+                        Some(end) => {
+                            use rewo_world::inventory::Inventory as Inv;
+                            let input = rewo_world::inventory::CONTAINER_INPUT_QUICK_CRAFT;
+                            let carried = session.inventory.carried();
+                            let phase = |slot: i16, header: i32| {
+                                rewo_world::inventory::ClickPrediction {
+                                    slot,
+                                    button: Inv::quick_craft_button(kind, header),
+                                    changed: Vec::new(),
+                                    carried,
+                                }
+                            };
+                            let no_slot = rewo_world::inventory::QUICK_CRAFT_NO_SLOT;
+                            let mut ok = session
+                                .container_click_input(&phase(no_slot, 0), input)
+                                .is_ok();
+                            for &sl in &accepted {
+                                ok = ok
+                                    && session
+                                        .container_click_input(&phase(sl as i16, 1), input)
+                                        .is_ok();
+                            }
+                            if ok && session.container_click_input(&end, input).is_ok() {
+                                session.inventory.apply_prediction(&end);
+                                println!(
+                                    "[rewo-m35] DRAG over {accepted:?} type {kind}: \
+                                     3 + {} packet(s), {} changed slot(s), carried {:?}",
+                                    accepted.len(),
+                                    end.changed.len(),
+                                    session.inventory.carried()
+                                );
+                            } else {
+                                println!("[rewo-m35] DRAG send failed");
+                            }
+                        }
+                        None => println!("[rewo-m35] DRAG over {accepted:?}: not predictable"),
+                    }
+                    continue;
+                }
                 let mut parts = spec.split(',');
                 let slot: i32 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1);
                 let button: i8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
                 let props = |id: i32| item_props(&items, id);
-                // `REWO_CLICK=<slot>,<button>,q` shift-clicks instead.
-                let quick = spec.split(',').nth(2).is_some_and(|f| f.trim() == "q");
-                let predicted = if quick {
-                    session.inventory.click_quick_move(slot, &props)
-                } else {
-                    session.inventory.click_pickup(slot, button, &props)
+                // `REWO_CLICK=<slot>,<button>[,<kind>]`, where `kind` selects
+                // the `ContainerInput`: `q` quick-move, `s` swap (the button
+                // is then an inventory index), `t` throw, `a` pickup-all.
+                let kind = spec
+                    .split(',')
+                    .nth(2)
+                    .map(|f| f.trim().to_string())
+                    .unwrap_or_default();
+                let (input, predicted) = match kind.as_str() {
+                    "q" => (
+                        rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
+                        session.inventory.click_quick_move(slot, &props),
+                    ),
+                    "s" => (
+                        rewo_world::inventory::CONTAINER_INPUT_SWAP,
+                        session.inventory.click_swap(slot, button as i32, &props),
+                    ),
+                    "t" => (
+                        rewo_world::inventory::CONTAINER_INPUT_THROW,
+                        session.inventory.click_throw(slot, button, &props),
+                    ),
+                    "a" => (
+                        rewo_world::inventory::CONTAINER_INPUT_PICKUP_ALL,
+                        session.inventory.click_pickup_all(slot, button, &props),
+                    ),
+                    _ => (0, session.inventory.click_pickup(slot, button, &props)),
                 };
                 match predicted {
                     Some(prediction) => {
-                        let before = session.inventory.content_updates();
-                        match session.container_click(&prediction) {
+                        match session.container_click_input(&prediction, input) {
                             Ok(()) => {
                                 session.inventory.apply_prediction(&prediction);
                                 println!(
-                                    "[rewo-m35] CLICK slot {slot} button {button}: predicted \
-                                     {} changed slot(s), carried {:?}",
+                                    "[rewo-m35] CLICK slot {slot} button {button} input \
+                                     {input}: predicted {} changed slot(s), carried {:?}",
                                     prediction.changed.len(),
                                     session.inventory.carried()
                                 );
-                                click_resyncs_at = Some(before);
                             }
                             Err(e) => println!("[rewo-m35] CLICK send failed: {e}"),
                         }
                     }
                     None => println!("[rewo-m35] CLICK slot {slot}: not predictable"),
                 }
-                clicked = true;
-                std::env::remove_var("REWO_CLICK");
+              }
+              // One window over the whole sequence, so a drag's three packets
+              // are graded together with the click that set it up.
+              click_resyncs_at = Some(before_all);
+              clicked = true;
+              std::env::remove_var("REWO_CLICK");
             }
         }
         tick += 1;
@@ -2052,6 +2138,14 @@ struct LiveApp {
     screen: ScreenState,
     /// The first-person hand (M38).
     hand: Option<HandState>,
+    /// A quick-craft drag in progress (M40).
+    drag: DragState,
+    /// Whether left control is held — Ctrl+Q drops a whole stack (M40).
+    ctrl: bool,
+    /// The slot the last left click landed on and when, for the double click
+    /// that becomes `PICKUP_ALL` (M40).
+    last_click: Option<usize>,
+    last_click_at: std::time::Instant,
     /// Whether either shift is held — a shift-click in the inventory is a
     /// quick-move rather than a pickup.
     shift: bool,
@@ -2192,13 +2286,41 @@ impl ApplicationHandler for LiveApp {
                 // two keys that close it are read, and every movement key is
                 // released so a key held at the moment of opening does not
                 // stick down behind it.
-                if self.screen.open
-                    && !matches!(
+                // With the screen open the keys that reach the world are
+                // swallowed, but the screen has keys of its own: a number key
+                // or F swaps the hovered slot with a hotbar slot, Q drops from
+                // it. Ctrl is tracked either way, because Ctrl+Q drops the
+                // whole stack.
+                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
+                    self.ctrl = p;
+                }
+                if self.screen.open {
+                    if p {
+                        if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
+                            let ext = self.state.as_ref().map(|s| s.window.inner_size());
+                            let items = self.items.clone();
+                            if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
+                                click_screen(
+                                    session,
+                                    &items,
+                                    &self.screen,
+                                    action,
+                                    ext.width as f32,
+                                    ext.height as f32,
+                                );
+                            }
+                            return;
+                        }
+                    }
+                    if !matches!(
                         event.physical_key,
-                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyE)
-                    )
-                {
-                    return;
+                        PhysicalKey::Code(KeyCode::Escape)
+                            | PhysicalKey::Code(KeyCode::KeyE)
+                            | PhysicalKey::Code(KeyCode::ShiftLeft)
+                            | PhysicalKey::Code(KeyCode::ShiftRight)
+                    ) {
+                        return;
+                    }
                 }
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyW) => self.keys.w = p,
@@ -2254,15 +2376,57 @@ impl ApplicationHandler for LiveApp {
                         MouseButton::Right => 1,
                         _ => return,
                     };
+                    // `AbstractContainerScreen.mouseClicked`'s double click:
+                    // the **same slot**, the **left** button, and under 250 ms
+                    // since the last one. Not "two clicks anywhere in
+                    // 250 ms" — moving to a neighbouring slot resets it.
+                    let slot = self
+                        .screen
+                        .hovered(ext.width as f32, ext.height as f32);
+                    let now = std::time::Instant::now();
+                    let doubled = b == 0
+                        && slot.is_some()
+                        && self.last_click == slot
+                        && now.duration_since(self.last_click_at).as_millis() < 250;
+                    self.last_click = slot;
+                    self.last_click_at = now;
+                    // With a stack already on the cursor a press starts a
+                    // drag rather than a click. The two are told apart at
+                    // *release*: a drag that never left its slot collapses
+                    // back into the click it looks like, which is exactly what
+                    // vanilla's one-slot special case does.
+                    if session.inventory.carried().is_some() && !self.shift && !doubled {
+                        self.drag.begin(b);
+                        if let Some(slot) = slot {
+                            self.drag.add(slot);
+                        }
+                        return;
+                    }
+                    let action = if doubled {
+                        SlotAction::PickupAll
+                    } else if self.shift {
+                        SlotAction::QuickMove
+                    } else {
+                        SlotAction::Pickup(b)
+                    };
                     click_screen(
                         session,
                         &items,
                         &self.screen,
-                        b,
-                        self.shift,
+                        action,
                         ext.width as f32,
                         ext.height as f32,
                     );
+                }
+            }
+            // Releasing a button over the open screen ends any drag (M40).
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } if self.screen.open => {
+                let items = self.items.clone();
+                if let Some(session) = self.session.as_mut() {
+                    finish_drag(session, &items, &mut self.drag);
                 }
             }
             // Releasing the right button ends a use — eating stops, a bow
@@ -2316,6 +2480,18 @@ impl ApplicationHandler for LiveApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.screen.mouse = (position.x, position.y);
+                // Crossing a slot with the button down extends a drag. The
+                // slot only *joins* it if the server would accept it, and that
+                // is decided at release — this records the path.
+                if self.screen.open {
+                    if let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) {
+                        if let Some(slot) =
+                            self.screen.hovered(ext.width as f32, ext.height as f32)
+                        {
+                            self.drag.add(slot);
+                        }
+                    }
+                }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
@@ -2789,6 +2965,10 @@ fn run_windowed(
         screen: ScreenState::default(),
         hand: None,
         shift: false,
+        ctrl: false,
+        drag: DragState::default(),
+        last_click: None,
+        last_click_at: std::time::Instant::now(),
         screen_labels: Vec::new(),
         preview_skin: None,
         keys: Keys::default(),
@@ -5892,6 +6072,20 @@ fn apply_screen(
         rewo_world::inventory::slot_at(gx, gy).and_then(rewo_world::inventory::slot_position),
     );
 
+    // The tooltip's box and its one line. Both need the font's advances, so a
+    // build with no baked font simply draws no tooltip.
+    let tooltip = wr.font_advance().and_then(|advance| {
+        screen_tooltip(
+            &session.inventory,
+            items,
+            &baked.item_names,
+            &advance,
+            mouse,
+            (w, h),
+        )
+    });
+    wr.set_container_tooltip(tooltip.as_ref().map(|(box_, _)| *box_));
+
     // The preview's pass is built the first time the screen opens, so a
     // session that never opens it never pays for the second entity atlas.
     if !wr.preview_ready() {
@@ -5927,6 +6121,9 @@ fn apply_screen(
         }
         wr.set_preview(Some((&draw, vp, rect)));
     }
+    // The tooltip's text goes last so it draws over the icons and the count
+    // labels, matching the order the box is drawn in.
+    labels.extend(tooltip.map(|(_, line)| line));
     labels
 }
 
@@ -5952,6 +6149,62 @@ fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory:
 /// Returns the draw list plus the count labels, which go through the text pass
 /// — vanilla's `itemCount` draws them at `x + 19 - 2 - width` and `y + 6 + 3`,
 /// right-aligned inside the slot, and **only when the count is not one**.
+/// The hovered slot's tooltip: the box to draw, and the text line inside it
+/// (M40).
+///
+/// Vanilla builds the lines with `Screen.getTooltipFromItem`, which starts
+/// with the stack's hover name and then appends everything its **components**
+/// say — enchantments, lore, durability, attribute modifiers, the "When on
+/// body" block. Rewo can see none of those: `rewo_net::item_stack` reports
+/// only *whether* a patch was present. So a Rewo tooltip is the first line and
+/// nothing else, which is exactly what vanilla shows for a plain stack, and
+/// short of what it shows for an enchanted one. Drawing a wrong second line
+/// would be worse than drawing none.
+///
+/// The name is also always in the common rarity's white: rarity rides on
+/// `DataComponents.RARITY`, which is another component.
+fn screen_tooltip(
+    inv: &rewo_world::inventory::Inventory,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    advance: &[u8; 256],
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(((i32, i32), (i32, i32)), rewo_gpu::world::OwnedTextLine)> {
+    // A stack on the cursor suppresses the tooltip: vanilla's guard is
+    // `hoveredSlot.hasItem() && getCarried().isEmpty()`, so picking something
+    // up hides the label of whatever you drag it over.
+    if inv.carried().is_some() {
+        return None;
+    }
+    let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
+    let slot = rewo_world::inventory::slot_at(gx, gy)?;
+    let stack = inv.menu_slot(slot)?;
+    let text = names.get(items.name(stack.item_id)?)?.clone();
+
+    let line_w = rewo_data::sign_text::width(&text, advance).round() as i32;
+    let (tw, th) = rewo_gpu::container::tooltip_size(&[line_w]);
+    // The positioner works in GUI pixels, and so does the screen size it
+    // clamps against — `guiWidth()`/`guiHeight()` are the *scaled* dimensions,
+    // not the framebuffer's. Passing raw pixels here would let a tooltip run
+    // off the right of a small window before the flip ever triggered.
+    let scale = rewo_gpu::hud::gui_scale(w, h);
+    let (sw, sh) = ((w / scale) as i32, (h / scale) as i32);
+    let (mx, my) = ((mouse.0 / scale as f64) as i32, (mouse.1 / scale as f64) as i32);
+    let (tx, ty) = rewo_gpu::container::tooltip_position(sw, sh, mx, my, tw, th);
+    Some((
+        ((tx, ty), (tw, th)),
+        rewo_gpu::world::OwnedTextLine {
+            x: tx as f32 * scale,
+            y: ty as f32 * scale,
+            px: scale,
+            color: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            text,
+        },
+    ))
+}
+
 fn screen_icons(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
@@ -6071,12 +6324,163 @@ fn item_props(
 /// A click that cannot be predicted is dropped entirely rather than sent with
 /// an empty changed-slot map, which the server would reject and answer with a
 /// full resynchronisation.
+/// What the player did to the hovered slot (M35, M39, M40).
+///
+/// One enum rather than a pile of booleans because each variant is a
+/// **different `ContainerInput`**, not a modifier on one — `doClick` branches
+/// on the input before it ever reads the button, so shift-clicking is not
+/// "a click with shift" in the protocol's terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotAction {
+    /// A plain click. `0` primary, `1` secondary.
+    Pickup(i8),
+    /// Shift-click.
+    QuickMove,
+    /// A number key (an **inventory** index, `0..9`) or F (`40`).
+    Swap(i32),
+    /// Q, or Ctrl+Q for the whole stack.
+    Throw { all: bool },
+    /// The second click of a double click.
+    PickupAll,
+}
+
+/// The screen's own keys (M40): a number key or F swaps, Q throws.
+///
+/// `AbstractContainerScreen.checkHotbarKeyPressed` maps the nine hotbar
+/// keys and the off-hand key to a `SWAP` whose button is the **inventory
+/// index**, and `keyPressed` maps the drop key to a `THROW` whose button
+/// distinguishes one item from the stack.
+fn screen_key_action(key: PhysicalKey, ctrl: bool) -> Option<SlotAction> {
+    let PhysicalKey::Code(code) = key else {
+        return None;
+    };
+    if let Some(n) = digit_key(code) {
+        return Some(SlotAction::Swap(n as i32));
+    }
+    match code {
+        // `Inventory.SLOT_OFFHAND`, the one button outside `0..9`.
+        KeyCode::KeyF => Some(SlotAction::Swap(
+            rewo_world::inventory::SWAP_OFFHAND_BUTTON,
+        )),
+        KeyCode::KeyQ => Some(SlotAction::Throw { all: ctrl }),
+        _ => None,
+    }
+}
+
+/// A quick-craft drag in progress (M40).
+///
+/// The drag is **three packets**, not one: a begin, one add per slot, and an
+/// end that carries the whole changed-slot map. Only the end predicts
+/// anything, so this holds the slots as they are touched and does the
+/// arithmetic once at release.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DragState {
+    /// `quickcraftType` — 0 spreads the stack evenly, 1 puts one in each.
+    kind: i32,
+    /// Every slot the cursor has crossed, in order. Filtered at release, not
+    /// here, so the same list can be re-tested if the cursor stack changed.
+    touched: Vec<usize>,
+    active: bool,
+}
+
+impl DragState {
+    /// Begin a drag with the button that started it. Returns the phase-0
+    /// packet to send.
+    fn begin(&mut self, button: i8) -> i32 {
+        // Left drag spreads, right drag places one each — vanilla reads the
+        // button at `mouseDragged` time, not at press.
+        self.kind = if button == 0 {
+            rewo_world::inventory::QUICK_CRAFT_SPLIT
+        } else {
+            rewo_world::inventory::QUICK_CRAFT_ONE
+        };
+        self.touched.clear();
+        self.active = true;
+        self.kind
+    }
+
+    fn add(&mut self, slot: usize) -> bool {
+        if !self.active || self.touched.contains(&slot) {
+            return false;
+        }
+        self.touched.push(slot);
+        true
+    }
+}
+
+/// Run a drag to its end: send the accepted adds, then the end packet.
+///
+/// The three phases are sent here rather than as they happen because a slot
+/// only joins the drag if the server would accept it, and that test needs the
+/// cursor stack — which is unchanged throughout, so testing once at release
+/// gives the same answer while keeping the state machine in one place.
+fn finish_drag(
+    session: &mut PlaySession,
+    items: &rewo_data::items::Items,
+    drag: &mut DragState,
+) {
+    let touched = std::mem::take(&mut drag.touched);
+    let kind = drag.kind;
+    drag.active = false;
+    if touched.is_empty() || session.inventory.carried().is_none() {
+        return;
+    }
+    let props = |id: i32| item_props(items, id);
+    let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
+    if accepted.is_empty() {
+        return;
+    }
+    // A one-slot drag is a plain click in disguise — vanilla resets the
+    // quick-craft state and re-dispatches it as `PICKUP`, so sending it as a
+    // drag would desync a prediction the server never makes.
+    if let Some((slot, button)) =
+        rewo_world::inventory::Inventory::quick_craft_is_pickup(&accepted, kind)
+    {
+        if let Some(p) = session.inventory.click_pickup(slot as i32, button, &props) {
+            if session.container_click_input(&p, 0).is_ok() {
+                session.inventory.apply_prediction(&p);
+            }
+        }
+        return;
+    }
+    let Some(end) = session.inventory.click_quick_craft(&accepted, kind, &props) else {
+        return;
+    };
+    use rewo_world::inventory::Inventory as Inv;
+    let input = rewo_world::inventory::CONTAINER_INPUT_QUICK_CRAFT;
+    let carried = session.inventory.carried();
+    // Phase 0 and the phase-1 adds change nothing; only their button and slot
+    // carry information.
+    let phase = |slot: i16, header: i32| rewo_world::inventory::ClickPrediction {
+        slot,
+        button: Inv::quick_craft_button(kind, header),
+        changed: Vec::new(),
+        carried,
+    };
+    if session
+        .container_click_input(&phase(rewo_world::inventory::QUICK_CRAFT_NO_SLOT, 0), input)
+        .is_err()
+    {
+        return;
+    }
+    for &slot in &accepted {
+        if session
+            .container_click_input(&phase(slot as i16, 1), input)
+            .is_err()
+        {
+            return;
+        }
+    }
+    if session.container_click_input(&end, input).is_ok() {
+        session.inventory.apply_prediction(&end);
+    }
+}
+
 fn click_screen(
     session: &mut PlaySession,
     items: &rewo_data::items::Items,
     screen: &ScreenState,
-    button: i8,
-    shift: bool,
+    action: SlotAction,
     w: f32,
     h: f32,
 ) {
@@ -6084,21 +6488,39 @@ fn click_screen(
         return;
     };
     let props = |id: i32| item_props(items, id);
-    // Shift-click is a different `ContainerInput`, not a modifier on the same
-    // one — vanilla's `doClick` branches on it before reading the button.
-    let (input, predicted) = if shift {
-        (
-            rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
-            session.inventory.click_quick_move(slot as i32, &props),
-        )
-    } else {
-        (
+    use rewo_world::inventory as inv;
+    let slot = slot as i32;
+    let (input, button, predicted) = match action {
+        SlotAction::Pickup(b) => (0, b, session.inventory.click_pickup(slot, b, &props)),
+        SlotAction::QuickMove => (
+            inv::CONTAINER_INPUT_QUICK_MOVE,
             0,
-            session.inventory.click_pickup(slot as i32, button, &props),
-        )
+            session.inventory.click_quick_move(slot, &props),
+        ),
+        // The button here is an inventory index, not a menu slot — see
+        // `Inventory::click_swap`.
+        SlotAction::Swap(index) => (
+            inv::CONTAINER_INPUT_SWAP,
+            index as i8,
+            session.inventory.click_swap(slot, index, &props),
+        ),
+        SlotAction::Throw { all } => {
+            let b = i8::from(all);
+            (
+                inv::CONTAINER_INPUT_THROW,
+                b,
+                session.inventory.click_throw(slot, b, &props),
+            )
+        }
+        SlotAction::PickupAll => (
+            inv::CONTAINER_INPUT_PICKUP_ALL,
+            0,
+            session.inventory.click_pickup_all(slot, 0, &props),
+        ),
     };
+    let _ = button;
     let Some(prediction) = predicted else {
-        log::debug!("live: click on slot {slot} not predictable — not sent");
+        log::debug!("live: {action:?} on slot {slot} not predictable — not sent");
         return;
     };
     if prediction.changed.is_empty() && prediction.carried == session.inventory.carried() {

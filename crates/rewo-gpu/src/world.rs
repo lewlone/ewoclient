@@ -502,6 +502,9 @@ pub struct WorldRenderer {
     /// Whether the screen is open, and which slot's GUI-space top-left the
     /// cursor is over.
     container_open: Option<Option<(i32, i32)>>,
+    /// This frame's tooltip: the text block's GUI-space top-left and size,
+    /// both measured by the caller (M40). The pass owns no font.
+    container_tooltip: Option<((i32, i32), (i32, i32))>,
     /// A **second** entity pass, for the inventory screen's player preview
     /// (M36).
     ///
@@ -1034,6 +1037,7 @@ impl WorldRenderer {
                 gui_items: None,
                 container: None,
                 container_open: None,
+                container_tooltip: None,
                 preview: None,
                 preview_state: None,
                 hand: None,
@@ -1431,6 +1435,14 @@ impl WorldRenderer {
     /// top-left of the slot under the cursor, or `None`.
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
         self.container_open = open.then_some(hovered);
+    }
+
+    /// This frame's tooltip box, or `None` for no tooltip. The caller measures
+    /// it with [`crate::container::tooltip_size`] and places it with
+    /// [`crate::container::tooltip_position`]; only the box lives here,
+    /// because the text goes through the ordinary text pass.
+    pub fn set_container_tooltip(&mut self, tooltip: Option<((i32, i32), (i32, i32))>) {
+        self.container_tooltip = tooltip;
     }
 
     pub fn gui_items_ready(&self) -> bool {
@@ -2201,7 +2213,7 @@ impl WorldRenderer {
             }
         }
         if let (Some(pass), Some(hovered)) = (self.container.as_mut(), screen) {
-            pass.set_state(extent, hovered);
+            pass.set_state(extent, hovered, self.container_tooltip);
             pass.draw_back(gpu, cb, extent);
             // The player preview sits between the panel and the icons: it is
             // inside the window the panel paints, and an item on the cursor
@@ -2214,6 +2226,9 @@ impl WorldRenderer {
                 items.draw(gpu, cb, extent);
             }
             pass.draw_front(gpu, cb, extent);
+            // The tooltip box goes over everything else the screen draws. Its
+            // text follows in the text pass below, which is drawn last of all.
+            pass.draw_tooltip(gpu, cb, extent);
         }
         if let Some(text) = self.text.as_mut() {
             if !self.text_lines.is_empty() {

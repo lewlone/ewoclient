@@ -67,6 +67,17 @@ pub struct HeldItemModel {
     pub first_right: DisplayTransform,
     pub first_left: DisplayTransform,
     pub from_block: bool,
+    /// Separate geometry for a slot, when the item's definition selects a
+    /// different model in the `gui` context (M40) — the spears and bundles.
+    pub gui_quads: Option<Vec<HeldQuad>>,
+}
+
+impl HeldItemModel {
+    /// The quads a slot draws: [`Self::gui_quads`] when the item has them,
+    /// [`Self::quads`] otherwise.
+    pub fn quads_for_gui(&self) -> &[HeldQuad] {
+        self.gui_quads.as_deref().unwrap_or(&self.quads)
+    }
 }
 
 /// One texture a held item samples.

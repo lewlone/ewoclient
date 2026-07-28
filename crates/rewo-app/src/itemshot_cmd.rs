@@ -24,7 +24,9 @@
 use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use rewo_data::assets;
-use rewo_data::item_models::{resolve_definition, ItemGeometry, ItemModel};
+use rewo_data::item_models::{
+    resolve_definition, DisplayContext, ItemGeometry, ItemModel, SelectionContext,
+};
 use rewo_gpu::entities::{EntityDraw, EntityModelKind};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
@@ -33,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 28;
+const EXPECTED_WITNESSES: usize = 33;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -146,32 +148,48 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
             items.textures.len()
         ),
     );
-    // The five state-dependent definition types must each be represented in
-    // the suppressed set — if one silently started resolving, its items would
-    // be drawn from a guessed state.
+    // M40 reduced the branching types, so the suppressed set is now the two
+    // that are real work rather than a branch to evaluate: `composite` layers
+    // several models into one draw, `special` hands the stack to a bespoke
+    // renderer. Both must still be there — one silently starting to resolve
+    // would draw a bed as whichever of its layers came first.
     let kinds: Vec<&str> = items.unsupported.keys().map(String::as_str).collect();
-    let wanted = [
-        "minecraft:select",
-        "minecraft:special",
-        "minecraft:composite",
-        "minecraft:condition",
-        "minecraft:range_dispatch",
-    ];
+    let wanted = ["minecraft:special", "minecraft:composite"];
     let missing: Vec<&str> = wanted
         .iter()
         .copied()
         .filter(|w| !kinds.contains(w))
         .collect();
     c.record(
-        "a3.every_state_dependent_definition_type_is_suppressed",
+        "a3.the_two_non_branching_definition_types_are_still_suppressed",
         missing.is_empty(),
         format!("suppressed buckets {kinds:?}; missing {missing:?}"),
+    );
+    // The other half of the same claim, and the one that would catch a
+    // reduction that quietly stopped working: `condition` and
+    // `range_dispatch` must *not* appear as suppressed buckets any more. They
+    // are gone because their branches are evaluated now, not because they
+    // vanished from the jar — a3's `composite`/`special` counts prove the
+    // suppression machinery still runs.
+    let still_branching: Vec<&str> = ["minecraft:condition", "minecraft:range_dispatch"]
+        .into_iter()
+        .filter(|k| kinds.contains(k))
+        .collect();
+    c.record(
+        "a3b.the_branching_definition_types_are_no_longer_suppressed",
+        still_branching.is_empty(),
+        format!(
+            "{} items resolved, {} suppressed; branching types still suppressed: {:?}",
+            items.models.len(),
+            items.unsupported.values().sum::<usize>(),
+            still_branching
+        ),
     );
 
     // Spot-check the two paths against the definitions themselves, so a
     // renamed asset cannot quietly move an item to the other source.
     let sword = jar_json(jar, "assets/minecraft/items/diamond_sword.json")
-        .map(|d| resolve_definition(&d, &mut |_| None));
+        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::hand()));
     c.record(
         "a4.a_sword_definition_names_an_item_model",
         matches!(&sword, Some(ItemModel::Unsupported(k)) if k.starts_with("model item/")),
@@ -181,7 +199,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         ),
     );
     let dirt = jar_json(jar, "assets/minecraft/items/dirt.json")
-        .map(|d| resolve_definition(&d, &mut |_| None));
+        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::hand()));
     c.record(
         "a5.a_block_item_resolves_without_touching_a_model_file",
         matches!(
@@ -190,12 +208,79 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         ),
         format!("dirt → {dirt:?} (a block/ reference needs no chain walk)"),
     );
+    // M40. The bow is a `condition` on `using_item` whose `on_true` is a
+    // `range_dispatch` over draw progress. At rest that condition is false, so
+    // the reduction must reach `item/bow` — the *reference*, which the stubbed
+    // reader here then fails to walk. Seeing `model item/bow` rather than
+    // `minecraft:condition` is the whole proof: the branch was evaluated.
     let bow = jar_json(jar, "assets/minecraft/items/bow.json")
-        .map(|d| resolve_definition(&d, &mut |_| None));
+        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::hand()));
     c.record(
-        "a6.a_pull_dependent_item_is_suppressed",
-        matches!(&bow, Some(ItemModel::Unsupported(k)) if k == "minecraft:condition"),
-        format!("bow → {bow:?} (its model depends on draw progress)"),
+        "a6.an_unused_bow_reduces_to_its_resting_model",
+        matches!(&bow, Some(ItemModel::Unsupported(k))
+            if k == "model item/bow (not builtin/generated)"),
+        format!("bow → {bow:?} (condition using_item=false takes on_false)"),
+    );
+    // The same tree with the condition true must take the *other* branch, or
+    // the reduction is only ever returning the first thing it finds.
+    let drawn = jar_json(jar, "assets/minecraft/items/bow.json").map(|d| {
+        resolve_definition(
+            &d,
+            &mut |_| None,
+            SelectionContext {
+                display: DisplayContext::FirstPersonRightHand,
+                using_item: true,
+            },
+        )
+    });
+    c.record(
+        "a6b.a_drawn_bow_reduces_to_a_different_model",
+        matches!(&drawn, Some(ItemModel::Unsupported(k))
+            if k == "model item/bow_pulling_0 (not builtin/generated)"),
+        format!(
+            "bow with using_item=true → {drawn:?} (on_true, then a range_dispatch \
+             at zero pull → its fallback)"
+        ),
+    );
+    // An untrimmed helmet: `select` on `minecraft:trim_material`, a component
+    // a plain stack does not carry, so no case matches and vanilla renders the
+    // fallback. This is the witness the armour icons hang on.
+    let helmet = jar_json(jar, "assets/minecraft/items/diamond_helmet.json")
+        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::gui()));
+    c.record(
+        "a7.an_untrimmed_helmet_reduces_to_the_plain_model",
+        matches!(&helmet, Some(ItemModel::Unsupported(k))
+            if k == "model item/diamond_helmet (not builtin/generated)"),
+        format!("diamond_helmet → {helmet:?} (no TRIM component, so no case matches)"),
+    );
+    // The fail-closed half: a property Rewo cannot evaluate must still
+    // suppress. A clock branches on which dimension you are in, which a baked
+    // model has no way to know.
+    let clock = jar_json(jar, "assets/minecraft/items/clock.json")
+        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::gui()));
+    c.record(
+        "a8.an_unevaluable_property_still_suppresses",
+        matches!(&clock, Some(ItemModel::Unsupported(k))
+            if k == "minecraft:select (minecraft:context_dimension)"),
+        format!(
+            "clock → {clock:?} — the reason names the property, not just the type,              so a bucket says what could not be answered"
+        ),
+    );
+    // And the context half: a spear selects *different geometry* per display
+    // context, which is why the reduction takes a context at all.
+    let spear = |ctx| {
+        jar_json(jar, "assets/minecraft/items/copper_spear.json")
+            .map(|d| resolve_definition(&d, &mut |_| None, ctx))
+    };
+    let (in_slot, in_hand) = (spear(SelectionContext::gui()), spear(SelectionContext::hand()));
+    c.record(
+        "a9.a_spear_selects_different_geometry_in_a_slot_and_in_the_hand",
+        in_slot != in_hand
+            && matches!(&in_slot, Some(ItemModel::Unsupported(k))
+                if k == "model item/copper_spear (not builtin/generated)")
+            && matches!(&in_hand, Some(ItemModel::Unsupported(k))
+                if k == "model item/copper_spear_in_hand (not builtin/generated)"),
+        format!("gui → {in_slot:?}; hand → {in_hand:?}"),
     );
 }
 
@@ -406,7 +491,7 @@ fn check_render(
     let empty = render([None, None], &mut gpu, &mut wr, &mut off)?;
     let sword = render([Some("minecraft:diamond_sword"), None], &mut gpu, &mut wr, &mut off)?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
-    let bow = render([Some("minecraft:bow"), None], &mut gpu, &mut wr, &mut off)?;
+    let bow = render([Some("minecraft:white_bed"), None], &mut gpu, &mut wr, &mut off)?;
     if let Some(dir_out) = &args.out_dir {
         std::fs::create_dir_all(dir_out).map_err(|e| format!("out-dir: {e}"))?;
         let _ = off.save_png(&mut gpu, &dir_out.join("itemshot-empty.png"));
@@ -442,7 +527,11 @@ fn check_render(
     c.record(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
-        format!("{} pixels differ (want 0 — the bow has no baked model)", bow_px.len()),
+        format!(
+            "{} pixels differ (want 0) — a bed is a `composite` of several \
+             models, which M40's reduction deliberately does not resolve",
+            bow_px.len()
+        ),
     );
     // Placement: the item must appear on the right side of the body (the
     // entity faces the camera at yaw 0, so its right arm is screen-left) and
@@ -613,12 +702,12 @@ fn check_render(
     );
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
-    let g_bow = ground(Some("minecraft:bow"), 1, 0.0, 3, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_bow = ground(Some("minecraft:white_bed"), 1, 0.0, 3, 0.0, &mut gpu, &mut wr, &mut off)?;
     c.record(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — the bow's definition is state-dependent, \
+            "{} pixels differ (want 0) — a bed's definition is a `composite`, \
              so it has no baked model in either context",
             changed(&g_none, &g_bow).len()
         ),

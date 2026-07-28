@@ -211,7 +211,10 @@ pub fn build_vertices(
         };
         let centre = [slot.x + slot.size / 2.0, slot.y + slot.size / 2.0];
         let px = slot.size / 16.0 * PX_PER_BLOCK;
-        for q in &model.quads {
+        // A slot draws `gui_quads` when the item's definition selects
+        // different geometry there — a spear is a flat sprite in a slot and a
+        // 3D model in the hand (M40).
+        for q in model.quads_for_gui() {
             let Some(uv) = atlas(q.tex) else {
                 continue; // texture not resident — nothing, never garbage
             };

@@ -37,7 +37,7 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 1024;
 const RING: usize = 2;
 const ATLAS_W: u32 = 512;
-const ATLAS_H: u32 = 256;
+const ATLAS_H: u32 = 288;
 
 /// `AbstractContainerScreen.imageWidth` / `imageHeight` for the player
 /// inventory. Mirrored from [`rewo_world::inventory`] rather than imported —
@@ -57,6 +57,9 @@ pub struct ContainerSpriteData<'a> {
     pub background: crate::hud::HudSpriteData<'a>,
     pub highlight_back: crate::hud::HudSpriteData<'a>,
     pub highlight_front: crate::hud::HudSpriteData<'a>,
+    /// The two 100x100 nine-slice tooltip sprites (M40).
+    pub tooltip_background: crate::hud::HudSpriteData<'a>,
+    pub tooltip_frame: crate::hud::HudSpriteData<'a>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -224,8 +227,164 @@ pub fn preview_view_proj(
     (to_clip * model_view).to_cols_array_2d()
 }
 
+// -- the tooltip (M40) --------------------------------------------------------
+//
+// `GuiGraphicsExtractor.tooltip` measures the lines, asks a positioner where
+// the text goes, blits two sprites behind it, then draws the lines. Every
+// number below is from that method and the two classes it calls.
+
+/// `ClientTextTooltip.getHeight` — one line of tooltip text.
+pub const TOOLTIP_LINE_HEIGHT: i32 = 10;
+/// `TooltipRenderUtil.PADDING` (3) + `MARGIN` (9). The sprite is blitted this
+/// far outside the text on every side; the padding is the visible gap and the
+/// margin is the sprite's own border art.
+pub const TOOLTIP_INSET: i32 = 12;
+/// The nine-slice border of `tooltip/background.png.mcmeta`.
+const TOOLTIP_BG_BORDER: i32 = 9;
+/// …and of `tooltip/frame.png.mcmeta`, which also sets `stretch_inner`.
+const TOOLTIP_FRAME_BORDER: i32 = 10;
+/// Both sprites are authored at this size.
+const TOOLTIP_SPRITE: i32 = 100;
+
+/// Where the text block's top-left corner goes, in GUI pixels.
+///
+/// `DefaultTooltipPositioner`: start at the cursor plus `(12, -12)`, then pull
+/// back inside the screen. The horizontal recovery is **not** a clamp — it
+/// flips the tooltip to the cursor's other side (`x - 24 - width`) and only
+/// then floors at 4, so a tooltip near the right edge jumps rather than
+/// squashing against it.
+pub fn tooltip_position(
+    screen_w: i32,
+    screen_h: i32,
+    mouse_x: i32,
+    mouse_y: i32,
+    w: i32,
+    h: i32,
+) -> (i32, i32) {
+    let mut x = mouse_x + 12;
+    let mut y = mouse_y - 12;
+    if x + w > screen_w {
+        x = (x - 24 - w).max(4);
+    }
+    // The vertical recovery *is* a clamp, and it uses `h + 3` — the text
+    // height plus the bottom padding but not the margin, so a tooltip may sit
+    // with its border art off the bottom of the screen. That is vanilla.
+    if y + h + 3 > screen_h {
+        y = screen_h - (h + 3);
+    }
+    (x, y)
+}
+
+/// The text block's size for a list of lines, in GUI pixels.
+///
+/// The height starts at **-2 for a single line** and 0 otherwise
+/// (`lines.size() == 1 ? -2 : 0`), and the loop that draws them adds 2 after
+/// the first — so a one-line tooltip is 8 px of box for a 10 px line, and a
+/// two-line one is 22. Dropping the -2 makes every single-line tooltip two
+/// pixels taller than vanilla's, which is invisible until you diff a frame.
+pub fn tooltip_size(line_widths: &[i32]) -> (i32, i32) {
+    let w = line_widths.iter().copied().max().unwrap_or(0);
+    let mut h = if line_widths.len() == 1 { -2 } else { 0 };
+    h += TOOLTIP_LINE_HEIGHT * line_widths.len() as i32;
+    (w, h)
+}
+
+/// `blitNineSlicedSprite` — nine pieces of a `TOOLTIP_SPRITE`-sized source
+/// into an arbitrary destination rect.
+///
+/// The corners keep their natural size; the four edges and the middle fill
+/// whatever is left. Vanilla either **stretches** those five
+/// (`stretch_inner`) or **tiles** them, and the two tooltip sprites disagree —
+/// background `border: 9` tiles, frame `border: 10` stretches. Both of their
+/// middles are a single flat colour, so a stretch reproduces a tile exactly
+/// here; `stretch` is still threaded through so a sprite with a patterned
+/// middle fails visibly rather than silently smearing.
+#[allow(clippy::too_many_arguments)]
+fn nine_slice(
+    v: &mut Vec<Vertex>,
+    r: Rect,
+    border: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    left: f32,
+    top: f32,
+    scale: f32,
+) {
+    // `Math.min(border, width / 2)` — a destination narrower than two borders
+    // shrinks them rather than overlapping the corners.
+    let bl = border.min(w / 2).max(0);
+    let bt = border.min(h / 2).max(0);
+    let s = TOOLTIP_SPRITE as f32;
+    let (du, dv) = (r.u1 - r.u0, r.v1 - r.v0);
+    let cols = [
+        (0.0, bl as f32, x, bl),
+        (bl as f32, s - 2.0 * bl as f32, x + bl, w - 2 * bl),
+        (s - bl as f32, bl as f32, x + w - bl, bl),
+    ];
+    let rows = [
+        (0.0, bt as f32, y, bt),
+        (bt as f32, s - 2.0 * bt as f32, y + bt, h - 2 * bt),
+        (s - bt as f32, bt as f32, y + h - bt, bt),
+    ];
+    for &(su, suw, dx, dw) in &cols {
+        for &(sv, svh, dy, dh) in &rows {
+            if dw <= 0 || dh <= 0 {
+                continue;
+            }
+            let piece = Rect {
+                u0: r.u0 + du * (su / s),
+                v0: r.v0 + dv * (sv / s),
+                u1: r.u0 + du * ((su + suw) / s),
+                v1: r.v0 + dv * ((sv + svh) / s),
+            };
+            push_quad(
+                v,
+                left + dx as f32 * scale,
+                top + dy as f32 * scale,
+                dw as f32 * scale,
+                dh as f32 * scale,
+                piece,
+                WHITE,
+                WHITE,
+            );
+        }
+    }
+}
+
+/// One textured quad, top colour `c0` and bottom `c1` — equal for a flat blit,
+/// different for the backdrop's gradient.
+fn push_quad(
+    v: &mut Vec<Vertex>,
+    x: f32,
+    y: f32,
+    qw: f32,
+    qh: f32,
+    r: Rect,
+    c0: [f32; 4],
+    c1: [f32; 4],
+) {
+    let corners = [
+        ([x, y], [r.u0, r.v0], c0),
+        ([x + qw, y], [r.u1, r.v0], c0),
+        ([x + qw, y + qh], [r.u1, r.v1], c1),
+        ([x, y], [r.u0, r.v0], c0),
+        ([x + qw, y + qh], [r.u1, r.v1], c1),
+        ([x, y + qh], [r.u0, r.v1], c1),
+    ];
+    for (pos, uv, color) in corners {
+        if v.len() < MAX_VERTS {
+            v.push(Vertex { pos, uv, color });
+        }
+    }
+}
+
 pub struct ContainerPass {
     layout: vk::PipelineLayout,
+    tooltip_bg: Rect,
+    tooltip_frame: Rect,
+    tooltip_verts: u32,
     set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
     pool: vk::DescriptorPool,
@@ -269,6 +428,9 @@ impl ContainerPass {
         place(&mut atlas, &sprites.background, 0, 0);
         place(&mut atlas, &sprites.highlight_back, 256, 0);
         place(&mut atlas, &sprites.highlight_front, 280, 0);
+        // The two 100x100 tooltip sprites, below the 176x166 panel.
+        place(&mut atlas, &sprites.tooltip_background, 0, 166);
+        place(&mut atlas, &sprites.tooltip_frame, 100, 166);
         // One opaque texel, so the untextured backdrop can share this pipeline.
         let w = (304 * 4) as usize;
         atlas[w..w + 4].copy_from_slice(&[255, 255, 255, 255]);
@@ -284,6 +446,8 @@ impl ContainerPass {
         let highlight_front = uv(280.0, 0.0, 24.0, 24.0);
         // Half a texel in, so bilinear filtering cannot reach a neighbour.
         let white = uv(304.5, 0.5, 0.0, 0.0);
+        let tooltip_bg = uv(0.0, 166.0, 100.0, 100.0);
+        let tooltip_frame = uv(100.0, 166.0, 100.0, 100.0);
 
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let device = gpu.device.clone();
@@ -392,6 +556,9 @@ impl ContainerPass {
             highlight_back,
             highlight_front,
             white,
+            tooltip_bg,
+            tooltip_frame,
+            tooltip_verts: 0,
         })
     }
 
@@ -399,36 +566,17 @@ impl ContainerPass {
     /// top-left, already resolved by the caller — this pass deliberately does
     /// not know the slot layout, which lives once in
     /// `rewo_world::inventory::slot_position`.
-    pub fn set_state(&mut self, extent: vk::Extent2D, hovered: Option<(i32, i32)>) {
+    pub fn set_state(
+        &mut self,
+        extent: vk::Extent2D,
+        hovered: Option<(i32, i32)>,
+        tooltip: Option<((i32, i32), (i32, i32))>,
+    ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let (left, top, scale) = gui_origin(w, h);
         self.cursor = (self.cursor + 1) % RING;
-        let mut v: Vec<Vertex> = Vec::with_capacity(64);
-
-        let quad = |v: &mut Vec<Vertex>,
-                        x: f32,
-                        y: f32,
-                        qw: f32,
-                        qh: f32,
-                        r: Rect,
-                        c0: [f32; 4],
-                        c1: [f32; 4]| {
-            // `c0` is the top colour and `c1` the bottom, so one helper covers
-            // both the flat blits (equal colours) and the backdrop gradient.
-            let corners = [
-                ([x, y], [r.u0, r.v0], c0),
-                ([x + qw, y], [r.u1, r.v0], c0),
-                ([x + qw, y + qh], [r.u1, r.v1], c1),
-                ([x, y], [r.u0, r.v0], c0),
-                ([x + qw, y + qh], [r.u1, r.v1], c1),
-                ([x, y + qh], [r.u0, r.v1], c1),
-            ];
-            for (pos, uv, color) in corners {
-                if v.len() < MAX_VERTS {
-                    v.push(Vertex { pos, uv, color });
-                }
-            }
-        };
+        let mut v: Vec<Vertex> = Vec::with_capacity(192);
+        let quad = push_quad;
 
         // 1. The backdrop, over everything the world drew.
         quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
@@ -455,6 +603,21 @@ impl ContainerPass {
             quad(&mut v, x, y, size, size, self.highlight_front, WHITE, WHITE);
         }
         self.total_verts = v.len() as u32;
+
+        // 5. The tooltip, last of all — `extractTooltipBackground` blits the
+        //    two sprites at the same rect, the background painting the fill
+        //    and the frame the edge over it.
+        if let Some(((tx, ty), (tw, th))) = tooltip {
+            let (bx, by) = (tx - TOOLTIP_INSET, ty - TOOLTIP_INSET);
+            let (bw, bh) = (tw + TOOLTIP_INSET * 2, th + TOOLTIP_INSET * 2);
+            for (rect, border) in [
+                (self.tooltip_bg, TOOLTIP_BG_BORDER),
+                (self.tooltip_frame, TOOLTIP_FRAME_BORDER),
+            ] {
+                nine_slice(&mut v, rect, border, bx, by, bw, bh, left, top, scale);
+            }
+        }
+        self.tooltip_verts = v.len() as u32 - self.total_verts;
         self.upload(&v);
     }
 
@@ -490,6 +653,11 @@ impl ContainerPass {
             self.back_verts,
             self.total_verts - self.back_verts,
         );
+    }
+
+    /// The tooltip, over the icons, the front highlight and the carried stack.
+    pub fn draw_tooltip(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        self.draw_range(gpu, cb, extent, self.total_verts, self.tooltip_verts);
     }
 
     fn draw_range(

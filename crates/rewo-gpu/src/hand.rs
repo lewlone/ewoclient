@@ -956,6 +956,7 @@ mod tests {
             first_right,
             first_left: DisplayTransform::default(),
             from_block: true,
+            gui_quads: None,
         }
     }
 

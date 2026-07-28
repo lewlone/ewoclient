@@ -338,21 +338,277 @@ fn layers(textures: &HashMap<String, String>) -> Vec<String> {
     out
 }
 
+
+// ---------------------------------------------------------------------------
+// Reducing a state-dependent definition (M40).
+//
+// M22 suppressed every definition type but `minecraft:model` — 147 of 1537
+// items — on the grounds that they "branch on stack state this client does not
+// track". That was true of the *tree*, and false of the *outcome*: surveying
+// the real jar, **all 71 `select` definitions carry a `fallback`**, and every
+// `condition` carries an `on_false`. For a stack with no components those are
+// not defaults to fall back on, they are the answer. An untrimmed helmet has
+// no `TRIM` component, `SelectItemModel` finds nothing to match, and vanilla
+// renders the fallback — which is the plain helmet sprite.
+//
+// So the rule is not "suppress the type", it is **suppress the property we
+// cannot evaluate**. Rewo can answer `trim_material` (absent), `charge_type`
+// (none), `block_state` (absent), `using_item` (it has a use clock), and
+// `display_context` (it knows which pass is drawing). It cannot answer
+// `local_time` or `context_dimension`, and those two stay suppressed.
+// ---------------------------------------------------------------------------
+
+/// `ItemDisplayContext` — which pass is asking for the model.
+///
+/// It has to be an input rather than a constant because a spear's definition
+/// selects *different geometry* per context: a flat sprite in a slot, a 3D
+/// `_in_hand` model in the hand. Everything else in 26.2 that consults this
+/// property splits the same way, `gui` against the rest, but that is a fact
+/// about the data rather than a rule, so the match below is by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayContext {
+    Gui,
+    FirstPersonRightHand,
+    FirstPersonLeftHand,
+    ThirdPersonRightHand,
+    ThirdPersonLeftHand,
+    Ground,
+    Fixed,
+    Head,
+    OnShelf,
+}
+
+impl DisplayContext {
+    /// The name `ItemDisplayContext` serialises to, which is what a `when`
+    /// entry carries.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            DisplayContext::Gui => "gui",
+            DisplayContext::FirstPersonRightHand => "firstperson_righthand",
+            DisplayContext::FirstPersonLeftHand => "firstperson_lefthand",
+            DisplayContext::ThirdPersonRightHand => "thirdperson_righthand",
+            DisplayContext::ThirdPersonLeftHand => "thirdperson_lefthand",
+            DisplayContext::Ground => "ground",
+            DisplayContext::Fixed => "fixed",
+            DisplayContext::Head => "head",
+            DisplayContext::OnShelf => "on_shelf",
+        }
+    }
+}
+
+/// The stack state a definition may branch on, as far as Rewo can see it.
+///
+/// Every field but `display` describes a **component-free, unused** stack,
+/// because that is the only kind Rewo can describe: `rewo_net::item_stack`
+/// reports *whether* a patch was present, never what was in it. A stack that
+/// does carry components is still drawn through this reduction, and that is
+/// the one approximation here — a trimmed helmet renders untrimmed rather than
+/// not at all. It is the same direction of error [`ItemModel::Unsupported`]
+/// takes (show less, never show wrong geometry for the wrong item), traded for
+/// a visible icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionContext {
+    pub display: DisplayContext,
+    /// `minecraft:using_item` — true while the player holds right-click on
+    /// this stack. M38's use clock can answer it for the local player's hand;
+    /// a slot icon is never using anything.
+    pub using_item: bool,
+}
+
+impl SelectionContext {
+    pub fn gui() -> Self {
+        Self {
+            display: DisplayContext::Gui,
+            using_item: false,
+        }
+    }
+    pub fn hand() -> Self {
+        Self {
+            display: DisplayContext::FirstPersonRightHand,
+            using_item: false,
+        }
+    }
+}
+
+/// Properties whose value on a component-free stack is *known to be absent*,
+/// so a `select` over them takes its fallback.
+///
+/// Listed rather than defaulted: a property missing from here is one nobody
+/// has checked, and it suppresses the item. That is the same fail-closed rule
+/// the registry lookups use — a version bump that adds a property makes the
+/// item disappear, which is visible, instead of silently picking a branch.
+const ABSENT_ON_A_PLAIN_STACK: &[&str] = &[
+    "minecraft:trim_material",
+    "minecraft:block_state",
+    "minecraft:custom_model_data",
+    "minecraft:main_hand",
+    "minecraft:charge_type",
+];
+
+/// Conditions that are false for a component-free, unused stack.
+const FALSE_ON_A_PLAIN_STACK: &[&str] = &[
+    "minecraft:broken",
+    "minecraft:damaged",
+    "minecraft:has_component",
+    "minecraft:custom_model_data",
+    "minecraft:fishing_rod/cast",
+    "minecraft:bundle/has_selected_item",
+    "minecraft:extended_view",
+    "minecraft:selected",
+    "minecraft:carried",
+    "minecraft:keybind_down",
+    "minecraft:view_entity",
+];
+
+/// Numeric properties that read **zero** on a component-free, unused stack, so
+/// a `range_dispatch` over them takes the entry at or below zero.
+const ZERO_ON_A_PLAIN_STACK: &[&str] = &[
+    "minecraft:use_duration",
+    "minecraft:use_cycle",
+    "minecraft:crossbow/pull",
+    "minecraft:damage",
+    "minecraft:cooldown",
+];
+
+/// Walk a definition tree down to the `minecraft:model` node this stack and
+/// context select, or `None` where a property cannot be evaluated.
+///
+/// The recursion is what makes the coverage worth having: a bow is a
+/// `condition` whose `on_true` is a `range_dispatch`, and reducing only the
+/// top level would leave it suppressed. Depth is bounded because a definition
+/// is a finite tree, but a hostile pack could nest arbitrarily, so the depth
+/// is capped rather than trusted.
+pub fn reduce_definition(node: &Value, ctx: SelectionContext) -> Result<&Value, String> {
+    fn blocked(node: &Value, property: Option<&str>) -> String {
+        let kind = node
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("(no type)");
+        match property {
+            Some(p) => format!("{kind} ({p})"),
+            None => kind.to_string(),
+        }
+    }
+    fn go(node: &Value, ctx: SelectionContext, depth: u32) -> Result<&Value, String> {
+        if depth > 16 {
+            return Err("(definition nested past 16 levels)".into());
+        }
+        let Some(kind) = node.get("type").and_then(|t| t.as_str()) else {
+            return Err(blocked(node, None));
+        };
+        match kind {
+            "minecraft:model" => Ok(node),
+            "minecraft:select" => {
+                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                    return Err(blocked(node, None));
+                };
+                let chosen = if property == "minecraft:display_context" {
+                    let want = ctx.display.wire_name();
+                    node.get("cases")
+                        .and_then(|c| c.as_array())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .find(|c| match c.get("when") {
+                            // `when` is either one name or a list of them, and
+                            // the list form is not rare — a spear's slot case
+                            // names four contexts at once.
+                            Some(Value::String(s)) => s == want,
+                            Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
+                            _ => false,
+                        })
+                } else if ABSENT_ON_A_PLAIN_STACK.contains(&property) {
+                    // The property reads absent, so no case matches. This is
+                    // vanilla's own answer, not a substitution.
+                    None
+                } else {
+                    return Err(blocked(node, Some(property)));
+                };
+                let next = match chosen {
+                    Some(case) => case.get("model"),
+                    None => node.get("fallback"),
+                };
+                match next {
+                    Some(n) => go(n, ctx, depth + 1),
+                    None => Err(blocked(node, Some(property))),
+                }
+            }
+            "minecraft:condition" => {
+                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                    return Err(blocked(node, None));
+                };
+                let value = if property == "minecraft:using_item" {
+                    ctx.using_item
+                } else if FALSE_ON_A_PLAIN_STACK.contains(&property) {
+                    false
+                } else {
+                    return Err(blocked(node, Some(property)));
+                };
+                match node.get(if value { "on_true" } else { "on_false" }) {
+                    Some(n) => go(n, ctx, depth + 1),
+                    None => Err(blocked(node, Some(property))),
+                }
+            }
+            "minecraft:range_dispatch" => {
+                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                    return Err(blocked(node, None));
+                };
+                if !ZERO_ON_A_PLAIN_STACK.contains(&property) {
+                    return Err(blocked(node, Some(property)));
+                }
+                // `RangeSelectItemModel` picks the **last** entry whose
+                // threshold the value has reached, and its `fallback` when it
+                // has reached none. At zero that is an entry with a threshold
+                // of zero or below, which `clock` has and `brush` does not.
+                let mut best: Option<(f64, &Value)> = None;
+                let entries = node
+                    .get("entries")
+                    .and_then(|e| e.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                for e in entries {
+                    let (Some(t), Some(m)) = (e.get("threshold").and_then(|t| t.as_f64()), e.get("model"))
+                    else {
+                        return Err(blocked(node, Some(property)));
+                    };
+                    if t <= 0.0 && best.is_none_or(|(bt, _)| t >= bt) {
+                        best = Some((t, m));
+                    }
+                }
+                match best.map(|(_, m)| m).or_else(|| node.get("fallback")) {
+                    Some(n) => go(n, ctx, depth + 1),
+                    None => Err(blocked(node, Some(property))),
+                }
+            }
+            // `composite` layers several models into one draw and `special`
+            // hands the stack to a bespoke renderer. Both are real work rather
+            // than a branch to evaluate, and both stay suppressed.
+            _ => Err(blocked(node, None)),
+        }
+    }
+    go(node, ctx, 0)
+}
+
 /// Resolve one item definition. `read_model` fetches `models/<path>.json`.
 pub fn resolve_definition(
     def: &Value,
     read_model: &mut dyn FnMut(&str) -> Option<Value>,
+    ctx: SelectionContext,
 ) -> ItemModel {
-    let Some(model) = def.get("model") else {
+    let Some(root) = def.get("model") else {
         return ItemModel::Unsupported("(no model)".into());
     };
-    let kind = model
-        .get("type")
-        .and_then(|t| t.as_str())
-        .unwrap_or("(no type)");
-    if kind != "minecraft:model" {
-        return ItemModel::Unsupported(kind.to_string());
-    }
+    // Walk the branches this stack and context select. A plain
+    // `minecraft:model` reduces to itself, so this costs nothing for the 1390
+    // items that were already resolving.
+    let model = match reduce_definition(root, ctx) {
+        Ok(m) => m,
+        // The reason names the node the walk **stopped at**, not the root: a
+        // `condition` whose chosen branch is a `special` is blocked by the
+        // special, and bucketing it under `condition` would read as "the
+        // reduction cannot do conditions", which is the opposite of true.
+        Err(reason) => return ItemModel::Unsupported(reason),
+    };
     let Some(reference) = model.get("model").and_then(|m| m.as_str()) else {
         return ItemModel::Unsupported("minecraft:model (no reference)".into());
     };
@@ -460,6 +716,7 @@ pub const BLOCK_GROUND: DisplayTransform = DisplayTransform {
 pub fn resolve_all(
     names: impl IntoIterator<Item = String>,
     read: &mut dyn FnMut(&str) -> Option<Value>,
+    ctx: SelectionContext,
 ) -> ItemModels {
     let mut by_name = HashMap::new();
     let mut unsupported: HashMap<String, usize> = HashMap::new();
@@ -470,7 +727,7 @@ pub fn resolve_all(
             Some(d) => {
                 let mut read_model =
                     |p: &str| read(&format!("assets/minecraft/models/{p}.json"));
-                resolve_definition(&d, &mut read_model)
+                resolve_definition(&d, &mut read_model, ctx)
             }
             None => ItemModel::Unsupported("(missing definition)".into()),
         };
@@ -524,6 +781,7 @@ mod tests {
         let m = resolve_definition(
             &json(r#"{"model":{"type":"minecraft:model","model":"minecraft:block/dirt"}}"#),
             &mut reader(vec![]),
+            SelectionContext::hand(),
         );
         assert_eq!(
             m,
@@ -567,6 +825,7 @@ mod tests {
                             "translation":[0,3,1],"scale":[0.55,0.55,0.55]}}}"#,
                 ),
             ]),
+            SelectionContext::hand(),
         );
         match m {
             ItemModel::Resolved {
@@ -594,18 +853,22 @@ mod tests {
         }
     }
 
+    /// M40: `composite` and `special` are the two types the reduction does not
+    /// evaluate, and a branching type with no `property` at all is malformed —
+    /// all three must suppress rather than guess.
     #[test]
-    fn every_state_dependent_definition_type_is_suppressed() {
+    fn a_definition_that_cannot_be_reduced_is_suppressed() {
         for kind in [
-            "minecraft:select",
             "minecraft:special",
             "minecraft:composite",
+            "minecraft:select",
             "minecraft:condition",
             "minecraft:range_dispatch",
         ] {
             let m = resolve_definition(
                 &json(&format!(r#"{{"model":{{"type":"{kind}"}}}}"#)),
                 &mut reader(vec![]),
+                SelectionContext::hand(),
             );
             assert_eq!(
                 m,
@@ -615,12 +878,90 @@ mod tests {
         }
     }
 
+    /// The reduction's own rules, on trees small enough to read.
+    #[test]
+    fn a_select_over_an_absent_component_takes_its_fallback() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:trim_material",
+                 "cases":[{"when":"minecraft:gold","model":{"type":"minecraft:model",
+                   "model":"minecraft:block/gold_block"}}],
+                 "fallback":{"type":"minecraft:model","model":"minecraft:block/dirt"}}}"#,
+        );
+        let m = resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui());
+        assert!(
+            matches!(&m, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "dirt"),
+            "an untrimmed stack matches no case, so vanilla renders the fallback; got {m:?}"
+        );
+    }
+
+    #[test]
+    fn a_select_over_the_display_context_answers_per_context() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:display_context",
+                 "cases":[{"when":["gui","ground"],"model":{"type":"minecraft:model",
+                   "model":"minecraft:block/dirt"}}],
+                 "fallback":{"type":"minecraft:model","model":"minecraft:block/stone"}}}"#,
+        );
+        let in_slot = resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui());
+        let in_hand = resolve_definition(&def, &mut reader(vec![]), SelectionContext::hand());
+        assert!(
+            matches!(&in_slot, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "dirt"),
+            "the list form of `when` must match any of its names; got {in_slot:?}"
+        );
+        assert!(
+            matches!(&in_hand, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "stone"),
+            "got {in_hand:?}"
+        );
+    }
+
+    #[test]
+    fn an_unevaluable_property_names_itself_in_the_reason() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:local_time",
+                 "cases":[],"fallback":{"type":"minecraft:model","model":"minecraft:block/dirt"}}}"#,
+        );
+        let m = resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui());
+        assert_eq!(
+            m,
+            ItemModel::Unsupported("minecraft:select (minecraft:local_time)".into()),
+            "a property nobody has checked must suppress, and say which one"
+        );
+    }
+
+    #[test]
+    fn the_reduction_recurses_through_nested_branches() {
+        // A bow's shape: a condition whose true branch is a range dispatch.
+        let def = json(
+            r#"{"model":{"type":"minecraft:condition","property":"minecraft:using_item",
+                 "on_false":{"type":"minecraft:model","model":"minecraft:block/dirt"},
+                 "on_true":{"type":"minecraft:range_dispatch","property":"minecraft:use_duration",
+                   "entries":[{"threshold":0.65,"model":{"type":"minecraft:model",
+                     "model":"minecraft:block/gold_block"}}],
+                   "fallback":{"type":"minecraft:model","model":"minecraft:block/stone"}}}}"#,
+        );
+        let rest = resolve_definition(&def, &mut reader(vec![]), SelectionContext::hand());
+        let using = resolve_definition(
+            &def,
+            &mut reader(vec![]),
+            SelectionContext { display: DisplayContext::FirstPersonRightHand, using_item: true },
+        );
+        assert!(
+            matches!(&rest, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "dirt"),
+            "got {rest:?}"
+        );
+        assert!(
+            matches!(&using, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "stone"),
+            "a use just started has not reached the 0.65 threshold, so the              dispatch takes its fallback; got {using:?}"
+        );
+    }
+
     #[test]
     fn a_chain_that_never_reaches_builtin_generated_is_suppressed() {
         // `models/item/shield.json` has no parent at all.
         let m = resolve_definition(
             &json(r#"{"model":{"type":"minecraft:model","model":"minecraft:item/shield"}}"#),
             &mut reader(vec![("item/shield", r#"{"textures":{"layer0":"item/shield"}}"#)]),
+            SelectionContext::hand(),
         );
         assert!(matches!(m, ItemModel::Unsupported(_)), "got {m:?}");
     }
@@ -633,6 +974,7 @@ mod tests {
                 ("item/a", r#"{"parent":"item/b"}"#),
                 ("item/b", r#"{"parent":"item/a"}"#),
             ]),
+            SelectionContext::hand(),
         );
         assert!(matches!(m, ItemModel::Unsupported(_)), "got {m:?}");
     }
@@ -678,6 +1020,7 @@ mod tests {
                       "firstperson_righthand":{"rotation":[0,-90,25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]},
                       "thirdperson_righthand":{"rotation":[0,-90,55]}}}"#,
             )]),
+            SelectionContext::hand(),
         );
         match m {
             ItemModel::Resolved {
@@ -715,6 +1058,7 @@ mod tests {
                       "firstperson_lefthand":{"rotation":[0,90,-25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]},
                       "thirdperson_righthand":{"rotation":[0,-90,55]}}}"#,
             )]),
+            SelectionContext::hand(),
         );
         match m {
             ItemModel::Resolved {
@@ -752,6 +1096,7 @@ mod tests {
                                    "gui":{"rotation":[0,180,0]}}}"#,
                 ),
             ]),
+            SelectionContext::hand(),
         );
         match m {
             ItemModel::Resolved { gui, .. } => {

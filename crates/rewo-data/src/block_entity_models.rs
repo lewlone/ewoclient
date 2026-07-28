@@ -289,6 +289,7 @@ pub fn bake_shulker_boxes(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
             },
         ));
     }
@@ -344,6 +345,7 @@ pub fn bake_chests(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
             },
         ));
         }
@@ -545,6 +547,7 @@ pub fn bake_skulls(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
             },
         ));
     }
@@ -701,6 +704,7 @@ pub fn bake_copper_golem_statues(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
                 },
             ));
         }
@@ -929,6 +933,7 @@ pub fn bake_banners(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
                     },
                 ));
                 true
@@ -1126,6 +1131,7 @@ pub fn bake_decorated_pot(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
                     },
                 ));
                 true
@@ -1244,6 +1250,7 @@ pub fn bake_conduit(
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
             from_block: false,
+            gui_quads: None,
                 },
             ));
         } else {

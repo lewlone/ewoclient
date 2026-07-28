@@ -30,13 +30,14 @@ use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 use rewo_world::inventory::{
+    OFFHAND_MENU_SLOT, QUICK_CRAFT_ONE, QUICK_CRAFT_SPLIT, SWAP_OFFHAND_BUTTON,
     slot_at, slot_contains, slot_position, ArmorPiece, Inventory, ItemProps, ItemSlot,
     ARMOR_MENU_START, HOTBAR_MENU_START, MENU_SLOTS,
 };
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 49;
+const EXPECTED_WITNESSES: usize = 70;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -85,6 +86,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_screen(&mut c);
     check_click_packet(&mut c, &paths)?;
     check_preview(&mut c);
+    check_names(&mut c, &baked, &jar)?;
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -636,6 +638,223 @@ fn check_screen(c: &mut Checker) {
         ),
     );
 
+    // -- the keyboard actions (M40) ------------------------------------------
+    //
+    // 700 is this function's stand-in helmet; everything else stacks to 64.
+    let mixed = |id: i32| {
+        Some(if id == 700 {
+            props_for(1, Some(ArmorPiece::Head))
+        } else {
+            props_for(64, None)
+        })
+    };
+
+    // SWAP's button is an INVENTORY index while its slot is a MENU slot — two
+    // numbers counted from different origins, which is the whole hazard.
+    let mut swp = Inventory::default();
+    let mut ss = [None; MENU_SLOTS];
+    ss[36] = plain(700, 1); // a helmet at hotbar index 0
+    swp.set_content(1, &ss, None);
+    let swapped = swp
+        .click_swap(ARMOR_MENU_START as i32, 0, &mixed)
+        .map(|p| p.changed)
+        .unwrap_or_default();
+    // The same press with something the slot refuses. `Slot.mayPlace` gates a
+    // swap exactly as it gates a placement, so a stack of dirt cannot be worn
+    // on your head — which is also why the fixture above has to be a helmet.
+    let mut plainswp = Inventory::default();
+    let mut ps = [None; MENU_SLOTS];
+    ps[36] = plain(1, 3);
+    plainswp.set_content(1, &ps, None);
+    let refused = plainswp
+        .click_swap(ARMOR_MENU_START as i32, 0, &mixed)
+        .map(|p| p.changed)
+        .unwrap_or_default();
+    c.record(
+        "n1.swap_reads_its_button_as_an_inventory_index",
+        swapped == vec![(ARMOR_MENU_START as u16, plain(700, 1)), (36u16, None)]
+            && refused.is_empty(),
+        format!(
+            "pressing 1 over menu slot {ARMOR_MENU_START} equips: {swapped:?}. Button \
+             0 is inventory index 0, which is **menu slot 36** — reading it as a menu \
+             slot would have reached into the crafting grid instead. The same press \
+             with a stack of dirt at that index changes {} slot(s), because \
+             `mayPlace` gates a swap the same way it gates a placement",
+            refused.len()
+        ),
+    );
+    // Buttons 40 and 9, from an ordinary slot that actually holds something —
+    // a swap between two empty slots is a no-op whatever the button, and would
+    // have made this witness pass for the wrong reason.
+    let mut rng = Inventory::default();
+    let mut rs = [None; MENU_SLOTS];
+    rs[9] = plain(1, 2);
+    rng.set_content(1, &rs, None);
+    let off = rng.click_swap(9, SWAP_OFFHAND_BUTTON, &mixed);
+    let bad = rng.click_swap(9, 9, &mixed);
+    c.record(
+        "n2.the_swap_button_range_rejects_rather_than_clamps",
+        off.is_some_and(|p| p.changed.contains(&(OFFHAND_MENU_SLOT as u16, plain(1, 2))))
+            && bad.is_none(),
+        format!(
+            "button 40 sends the stack to menu slot {OFFHAND_MENU_SLOT}, and button 9 \
+             predicts {} — the guard is `0..9 || == 40`, so 9 through 39 do nothing \
+             at all. Clamping 9 to 8 would move a stack the player never named",
+            bad.is_some()
+        ),
+    );
+
+    // THROW: Q takes one, Ctrl+Q the stack, and neither runs while dragging.
+    let mut thr = Inventory::default();
+    let mut ts = [None; MENU_SLOTS];
+    ts[9] = plain(1, 5);
+    thr.set_content(1, &ts, None);
+    let one = thr.click_throw(9, 0, &mixed).map(|p| p.changed);
+    let all = thr.click_throw(9, 1, &mixed).map(|p| p.changed);
+    c.record(
+        "n3.throw_drops_one_or_the_whole_stack",
+        one == Some(vec![(9u16, plain(1, 4))]) && all == Some(vec![(9u16, None)]),
+        format!("button 0 leaves {one:?}, button 1 leaves {all:?}"),
+    );
+    let mut carrying = Inventory::default();
+    carrying.set_content(1, &ts, plain(2, 1));
+    c.record(
+        "n4.throw_does_nothing_with_a_stack_on_the_cursor",
+        carrying.click_throw(9, 0, &mixed).is_none(),
+        "`doClick`'s guard is `getCarried().isEmpty()`, so Q over a slot while \
+         dragging drops neither the slot's item nor the cursor's",
+    );
+
+    // PICKUP_ALL: the two-pass sweep, and the guard that stops an ordinary
+    // second click from becoming one.
+    let mut sweep = Inventory::default();
+    let mut ws = [None; MENU_SLOTS];
+    ws[10] = plain(1, 64); // full — pass 1 only
+    ws[11] = plain(1, 5); // partial — pass 0
+    ws[12] = plain(1, 7); // partial — pass 0
+    sweep.set_content(1, &ws, plain(1, 1));
+    let gathered = sweep.click_pickup_all(9, 0, &mixed);
+    let carried_after = gathered.as_ref().and_then(|p| p.carried);
+    let left = gathered.map(|p| p.changed).unwrap_or_default();
+    c.record(
+        "n5.pickup_all_takes_the_partial_stacks_before_the_full_one",
+        carried_after == plain(1, 64)
+            && left.contains(&(11u16, None))
+            && left.contains(&(12u16, None))
+            && left.contains(&(10u16, plain(1, 13))),
+        format!(
+            "the cursor ends at {carried_after:?} and the slots at {left:?}. \
+             `pass != 0 || count != maxStackSize` skips a full stack on the first \
+             pass, so the 5 and the 7 go first and only the remainder comes out of \
+             the 64 — one pass would have emptied the full stack and left the \
+             partials sitting there"
+        ),
+    );
+    let mut occupied = Inventory::default();
+    let mut os = [None; MENU_SLOTS];
+    os[9] = plain(1, 3);
+    os[11] = plain(1, 5);
+    occupied.set_content(1, &os, plain(1, 1));
+    c.record(
+        "n6.pickup_all_needs_the_clicked_slot_to_be_empty",
+        occupied.click_pickup_all(9, 0, &mixed).is_none(),
+        "the guard is `!slot.hasItem() || !slot.mayPickup` — the second click of a \
+         double click lands on the slot the first one emptied. Without it, any \
+         second click on a full slot would hoover up the inventory",
+    );
+
+    // -- the drag (M40) ------------------------------------------------------
+    //
+    // One byte carries two fields, and reading it as one is the mistake that
+    // turns a one-per-slot drag into an even spread.
+    let masks = [
+        Inventory::quick_craft_button(QUICK_CRAFT_SPLIT, 0),
+        Inventory::quick_craft_button(QUICK_CRAFT_ONE, 1),
+        Inventory::quick_craft_button(QUICK_CRAFT_ONE, 2),
+    ];
+    c.record(
+        "d1.the_quick_craft_button_packs_a_type_and_a_header",
+        masks == [0, 5, 6],
+        format!(
+            "{masks:?} — `type << 2 | header`, so type 1 header 1 is 5 and not 1. \
+             `getQuickcraftType` reads `mask >> 2 & 3` and `getQuickcraftHeader` \
+             `mask & 3`; sending a bare header makes every drag type 0"
+        ),
+    );
+
+    // The even spread divides by the SLOT COUNT and floors.
+    let mut dg = Inventory::default();
+    let ds = [None; MENU_SLOTS];
+    dg.set_content(1, &ds, plain(1, 3));
+    let three_over_two = dg.click_quick_craft(&[9, 10], QUICK_CRAFT_SPLIT, &mixed);
+    let counts: Vec<i32> = three_over_two
+        .as_ref()
+        .map(|p| p.changed.iter().filter_map(|(_, v)| v.map(|s| s.count)).collect())
+        .unwrap_or_default();
+    let leftover = three_over_two.as_ref().and_then(|p| p.carried);
+    c.record(
+        "d2.an_even_spread_floors_and_leaves_the_remainder_on_the_cursor",
+        counts == vec![1, 1] && leftover == plain(1, 1),
+        format!(
+            "three items over two slots gives {counts:?} with {leftover:?} left. \
+             `Mth.floor(count / slots)` is one each — not two and one, and not \
+             an empty cursor"
+        ),
+    );
+    let one_each = dg
+        .click_quick_craft(&[9, 10], QUICK_CRAFT_ONE, &mixed)
+        .and_then(|p| p.carried);
+    c.record(
+        "d3.the_one_per_slot_type_leaves_the_rest_behind",
+        one_each == plain(1, 1),
+        format!(
+            "{one_each:?} — type 1 places exactly one per slot regardless of the \
+             stack, so three over two slots keeps one on the cursor. Type 0 happens \
+             to agree here, which is why d2 measures the counts and this the cursor"
+        ),
+    );
+
+    // A one-slot drag is a click in disguise.
+    c.record(
+        "d4.a_single_slot_drag_collapses_into_a_pickup",
+        Inventory::quick_craft_is_pickup(&[9], QUICK_CRAFT_ONE) == Some((9, 1))
+            && Inventory::quick_craft_is_pickup(&[9, 10], QUICK_CRAFT_ONE).is_none()
+            && dg.click_quick_craft(&[9], QUICK_CRAFT_SPLIT, &mixed).is_none(),
+        "vanilla resets the quick-craft state and re-dispatches a one-slot drag as \
+         `PICKUP` with `buttonNum = quickcraftType`. So the drag path must refuse \
+         it — sending it as a drag would predict a spread the server never makes",
+    );
+
+    // A slot the drag cannot use never enters the set.
+    let mut occ = Inventory::default();
+    let mut oc = [None; MENU_SLOTS];
+    oc[10] = plain(2, 1); // a different item
+    occ.set_content(1, &oc, plain(1, 8));
+    let accepted = occ.quick_craft_accepts(&[9, 10, 11], QUICK_CRAFT_SPLIT, &mixed);
+    c.record(
+        "d5.a_slot_holding_something_else_is_not_dragged_into",
+        accepted == vec![9, 11],
+        format!(
+            "dragging over 9, 10 and 11 accepts {accepted:?} — slot 10 holds a \
+             different item, so `canItemQuickReplace` refuses it and it never \
+             reaches a packet. Filtering only at the end would still have sent an \
+             add for it"
+        ),
+    );
+    // …and a stack too small to feed them all stops claiming slots.
+    let mut small = Inventory::default();
+    small.set_content(1, &ds, plain(1, 2));
+    let claimed = small.quick_craft_accepts(&[9, 10, 11], QUICK_CRAFT_SPLIT, &mixed);
+    c.record(
+        "d6.a_drag_claims_no_more_slots_than_the_stack_can_feed",
+        claimed == vec![9, 10],
+        format!(
+            "two items dragged over three slots claim {claimed:?} — the guard is \
+             `carried.getCount() > quickcraftSlots.size()` as each is added, so the \
+             third is never taken and the spread stays one each"
+        ),
+    );
+
     // Nothing to move is not a change.
     let empty_src = qm.click_quick_move(20, &props);
     c.record(
@@ -888,6 +1107,64 @@ fn check_preview(c: &mut Checker) {
 /// non-black pixels: the world pass paints a sky behind everything, so "not the
 /// clear colour" would be true of every pixel in both frames and measure
 /// nothing.
+/// The display-name table (M40) — read from the jar's own `en_us.json`, so a
+/// generated table cannot drift from the assets it describes.
+fn check_names(
+    c: &mut Checker,
+    baked: &assets::BakedAssets,
+    jar: &std::path::Path,
+) -> Result<(), String> {
+    let item_count = assets::jar_item_ids(jar)?.len();
+    let raw = assets::jar_text(jar, "assets/minecraft/lang/en_us.json")
+        .ok_or("en_us.json missing from the jar")?;
+    let lang: std::collections::HashMap<String, String> =
+        serde_json::from_str(&raw).map_err(|e| format!("parse lang: {e}"))?;
+
+    // The names themselves. The tooltip is only as good as this lookup, and
+    // it is the one part of M40 that reads a file nothing else in Rewo reads.
+    let names = &baked.item_names;
+    let sword = names.get("minecraft:diamond_sword").map(String::as_str);
+    let dirt = names.get("minecraft:dirt").map(String::as_str);
+    c.record(
+        "t7.an_item_and_a_block_item_both_resolve_a_display_name",
+        sword == Some("Diamond Sword") && dirt == Some("Dirt"),
+        format!(
+            "diamond_sword {sword:?}, dirt {dirt:?}. `Item.getDescriptionId` is              `item.minecraft.<id>`, but `BlockItem` overrides it to the block's              `block.minecraft.<id>` — `item.minecraft.dirt` does not exist, so              reading only the item spelling loses every block in the game"
+        ),
+    );
+    // Every item must have one, or some slot in the inventory would hover
+    // silently.
+    let total = item_count;
+    c.record(
+        "t8.every_item_the_jar_ships_has_a_name",
+        total > 0 && names.len() == total,
+        format!(
+            "{} names for {total} items",
+            names.len()
+        ),
+    );
+    // The seven items that carry both spellings. The preference is for the
+    // block one, and it cannot be observed, because the two strings agree.
+    let both = ["brewing_stand", "cauldron", "flower_pot", "nether_wart"];
+    let disagree: Vec<&str> = both
+        .into_iter()
+        .filter(|n| {
+            let l = |k: &str| lang.get(&format!("{k}.minecraft.{n}"));
+            l("item") != l("block")
+        })
+        .collect();
+    c.record(
+        "t9.the_ambiguous_items_spell_their_name_the_same_either_way",
+        disagree.is_empty(),
+        format!(
+            "of the items carrying both an `item.` and a `block.` key, {} disagree              ({disagree:?}) — so preferring the block spelling, which is what              `BlockItem.getDescriptionId` returns, is unobservable in 26.2.              Written down because a version where they diverge would pick silently",
+            disagree.len()
+        ),
+    );
+
+    Ok(())
+}
+
 fn changed(a: &[u8], b: &[u8], x: u32, y: u32, w: u32, h: u32) -> i64 {
     let mut n = 0;
     for yy in y..(y + h).min(H) {
@@ -1226,6 +1503,91 @@ fn pixels_inner(
             "the panel's centre is {:?} closed against {:?} open",
             at(&world_only, 90, 150),
             at(&open, 90, 150)
+        ),
+    );
+
+    // -- the tooltip (M40) ---------------------------------------------------
+    //
+    // The layout is arithmetic, so it is checked as arithmetic first and as
+    // pixels second. A one-line tooltip is the whole of what Rewo can show:
+    // every further line vanilla adds comes from a component.
+    let (one_w, one_h) = rewo_gpu::container::tooltip_size(&[40]);
+    let (two_w, two_h) = rewo_gpu::container::tooltip_size(&[40, 55]);
+    c.record(
+        "t1.a_single_line_tooltip_is_two_pixels_shorter_than_its_line",
+        (one_w, one_h) == (40, 8) && (two_w, two_h) == (55, 20),
+        format!(
+            "one line -> {one_w}x{one_h}, two -> {two_w}x{two_h}.              `tempHeight = lines.size() == 1 ? -2 : 0` then += 10 per line, so one              line measures 8 and two measure 20, not 10 and 20. The width is the              widest line, not their sum"
+        ),
+    );
+    // The positioner's horizontal recovery is a *flip*, not a clamp.
+    let clear = rewo_gpu::container::tooltip_position(400, 300, 100, 100, 50, 8);
+    let tight = rewo_gpu::container::tooltip_position(400, 300, 380, 100, 50, 8);
+    let cramped = rewo_gpu::container::tooltip_position(60, 300, 50, 100, 50, 8);
+    c.record(
+        "t2.a_tooltip_near_the_right_edge_flips_to_the_other_side",
+        clear == (112, 88) && tight == (318, 88) && cramped == (4, 88),
+        format!(
+            "clear {clear:?}, tight {tight:?}, cramped {cramped:?}. Away from the              edge it sits at the cursor +(12, -12); against it the x becomes              `max(x - 24 - w, 4)` — and the `x` there is the **already-offset**              392, not the raw cursor's 380, so the answer is 318 and not 306.              Reading it as the cursor puts the tooltip twelve pixels too far left;              a clamp instead of a flip would have given 350"
+        ),
+    );
+    // The vertical recovery, both ways: it fires only once `y + h + 3` really
+    // is past the bottom, which at `h = 8` means a cursor below 301 — not
+    // merely one near the edge.
+    let near = rewo_gpu::container::tooltip_position(400, 300, 100, 295, 50, 8);
+    let low = rewo_gpu::container::tooltip_position(400, 300, 100, 305, 50, 8);
+    c.record(
+        "t3.the_vertical_recovery_is_a_clamp_and_uses_only_the_padding",
+        near == (112, 283) && low == (112, 289),
+        format!(
+            "at cursor y 295 the box sits at {near:?} untouched; at 305 it is              {low:?} — `y + h + 3 > screenHeight` pushes it to              `screenHeight - (h + 3)` = 289, so the box's *border art* is allowed              off the bottom. Using the full 12 px inset here would lift it three              pixels too high, and clamping unconditionally would move the first case"
+        ),
+    );
+
+    // And the pixels. Hovering a slot with an item must draw a box that is not
+    // there when the slot is empty.
+    let tip_at = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, t| -> Result<Vec<u8>, String> {
+        wr.set_container(true, rewo_world::inventory::slot_position(9));
+        wr.set_container_tooltip(t);
+        let f = shot(gpu, off, wr, &[])?;
+        wr.set_container_tooltip(None);
+        Ok(f)
+    };
+    let no_tip = tip_at(wr, gpu, off, None)?;
+    let with_tip = tip_at(wr, gpu, off, Some(((60, 40), (40, 8))))?;
+    let tip_box = changed_bounds(&no_tip, &with_tip);
+    // The sprite is blitted `TOOLTIP_INSET` outside the text on every side.
+    let inset = rewo_gpu::container::TOOLTIP_INSET;
+    let want = (
+        (left + (60 - inset) as f32 * scale) as u32,
+        (top + (40 - inset) as f32 * scale) as u32,
+        (left + (60 + 40 + inset) as f32 * scale) as u32,
+        (top + (40 + 8 + inset) as f32 * scale) as u32,
+    );
+    let fits = tip_box.is_some_and(|(x0, y0, x1, y1)| {
+        x0 >= want.0 && y0 >= want.1 && x1 <= want.2 && y1 <= want.3 && x1 > x0 && y1 > y0
+    });
+    c.record(
+        "t4.the_tooltip_box_covers_the_text_plus_its_inset_and_no_more",
+        fits,
+        format!(
+            "the box changes {tip_box:?}, inside the padded rect {want:?} —              `PADDING` 3 + `MARGIN` 9 outside a 40x8 text block. A box drawn at the              text's own rect, or at the full 100x100 sprite size, falls outside this"
+        ),
+    );
+    c.record(
+        "t5.no_tooltip_is_byte_identical_to_the_plain_screen",
+        no_tip == hovering && with_tip != hovering,
+        "passing `None` restores the hovering frame byte for byte, and passing a          box changes it — so every pixel t4 measured came from the tooltip and          none from a stale buffer",
+    );
+    // Two boxes at different places must not land in the same pixels: a pass
+    // that ignored the origin would pass t4 by accident.
+    let moved = tip_at(wr, gpu, off, Some(((100, 90), (40, 8))))?;
+    c.record(
+        "t6.the_tooltip_follows_its_origin",
+        changed_bounds(&no_tip, &moved) != tip_box,
+        format!(
+            "at (60,40) the box is {tip_box:?}; at (100,90) it is {:?}",
+            changed_bounds(&no_tip, &moved)
         ),
     );
 

@@ -188,6 +188,9 @@ struct TintInfo {
 }
 
 pub struct BakedAssets {
+    /// Every item's English display name, for tooltips (M40). Keyed by full
+    /// registry name; an item whose language key is missing has no entry.
+    pub item_names: HashMap<String, String>,
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
     /// Per-state full-cube collision flag — true for a `Cube` OR a `Model`
@@ -521,6 +524,25 @@ fn fluid_light(lava: bool) -> (u8, u8) {
     (emission, dampening)
 }
 
+/// Every item id the jar ships, from `assets/minecraft/items/*.json` — the
+/// same list the bake walks, exposed so an oracle can count it independently
+/// of a bake it is grading.
+pub fn jar_item_ids(client_jar: &Path) -> Result<Vec<String>, String> {
+    let f = std::fs::File::open(client_jar).map_err(|e| format!("open jar: {e}"))?;
+    let zip = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("zip: {e}"))?;
+    let mut out: Vec<String> = zip
+        .file_names()
+        .filter_map(|p| {
+            p.strip_prefix("assets/minecraft/items/")
+                .and_then(|r| r.strip_suffix(".json"))
+                .filter(|r| !r.contains('/'))
+                .map(str::to_string)
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 /// Read one text entry out of a client jar. For oracles that need to look at
 /// a raw asset without standing up the whole bake.
 pub fn jar_text(client_jar: &Path, path: &str) -> Option<String> {
@@ -672,6 +694,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     }
     let hud = bake_hud(&mut jar);
     let container = bake_container(&mut jar);
+    let item_names = bake_item_names(&mut jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
@@ -918,6 +941,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         log::info!("rewo-data: {} animated texture layers", baker.animations.len());
     }
     Ok(BakedAssets {
+        item_names,
         held_items,
         render,
         solid,
@@ -1105,6 +1129,71 @@ pub struct ContainerSprites {
     /// `container/slot_highlight_front`, drawn over it. Both are 24×24 and are
     /// blitted at their own size, so the `.mcmeta` nine-slice never engages.
     pub highlight_front: HudSprite,
+    /// `tooltip/background` and `tooltip/frame` (M40) — the two sprites
+    /// `TooltipRenderUtil.extractTooltipBackground` blits, one over the other,
+    /// at the same rect.
+    ///
+    /// Both are 100×100 nine-slice sprites, and **they are never blitted at
+    /// that size**: a tooltip is whatever the text needs, so the corners come
+    /// out at their natural size and the edges are stretched or tiled between
+    /// them. The two disagree about which — background `border: 9` tiles its
+    /// middles, frame `border: 10` sets `stretch_inner`, so it stretches them.
+    pub tooltip_background: HudSprite,
+    pub tooltip_frame: HudSprite,
+}
+
+/// Every item's English display name, keyed by full registry name (M40).
+///
+/// `Item.getDescriptionId()` is `Util.makeDescriptionId("item", id)` — so
+/// `item.minecraft.diamond_sword` — except that `BlockItem` overrides it to
+/// return its **block's** id, `block.minecraft.dirt`. Rather than model that
+/// override, this reads whichever of the two keys the language file actually
+/// has, preferring the block spelling because that is the override's answer.
+///
+/// The ambiguity is real but empirically inert: of 26.2's 1537 items, exactly
+/// seven carry both keys (`brewing_stand`, `cauldron`, `flower_pot`,
+/// `nether_wart`, `pitcher_plant`, `resin_clump`, and one more), and in every
+/// case the two strings are **identical** — so the preference cannot be
+/// observed. It is written down anyway, because a future version where they
+/// diverge would otherwise pick silently.
+///
+/// A missing key yields no entry at all rather than a prettified id: a
+/// tooltip that says nothing is better than one that says `Diamond_sword`.
+fn bake_item_names(jar: Jar) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut raw = String::new();
+    {
+        let Ok(mut e) = jar.by_name("assets/minecraft/lang/en_us.json") else {
+            log::warn!("rewo-data: no en_us.json — items will have no display names");
+            return out;
+        };
+        if std::io::Read::read_to_string(&mut e, &mut raw).is_err() {
+            return out;
+        }
+    }
+    let Ok(lang) = serde_json::from_str::<HashMap<String, String>>(&raw) else {
+        log::warn!("rewo-data: en_us.json did not parse — items will have no display names");
+        return out;
+    };
+    let names: Vec<String> = jar
+        .file_names()
+        .filter_map(|p| {
+            p.strip_prefix("assets/minecraft/items/")
+                .and_then(|r| r.strip_suffix(".json"))
+                .filter(|r| !r.contains('/'))
+                .map(str::to_string)
+        })
+        .collect();
+    for name in names {
+        let key = lang
+            .get(&format!("block.minecraft.{name}"))
+            .or_else(|| lang.get(&format!("item.minecraft.{name}")));
+        if let Some(text) = key {
+            out.insert(format!("minecraft:{name}"), text.clone());
+        }
+    }
+    log::info!("rewo-data: {} item display name(s)", out.len());
+    out
 }
 
 /// Extract the container-screen textures. Any missing one → no screen.
@@ -1122,6 +1211,8 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         background: get(jar, "gui/container/inventory.png")?,
         highlight_back: get(jar, "gui/sprites/container/slot_highlight_back.png")?,
         highlight_front: get(jar, "gui/sprites/container/slot_highlight_front.png")?,
+        tooltip_background: get(jar, "gui/sprites/tooltip/background.png")?,
+        tooltip_frame: get(jar, "gui/sprites/tooltip/frame.png")?,
     })
 }
 
@@ -1560,7 +1651,7 @@ impl<'a> Baker<'a> {
     /// what the jar ships.
     fn bake_held_items(&mut self) -> crate::held_items::HeldItems {
         use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
-        use crate::item_models::{resolve_definition, ItemGeometry, ItemModel};
+        use crate::item_models::{resolve_definition, ItemGeometry, ItemModel, SelectionContext};
 
         let mut names: Vec<String> = self
             .jar
@@ -1575,25 +1666,40 @@ impl<'a> Baker<'a> {
         names.sort();
 
         // Phase 1: resolve definitions (no geometry yet).
-        let mut resolved: Vec<(String, ItemModel)> = Vec::with_capacity(names.len());
+        let mut resolved: Vec<(String, ItemModel, Option<ItemGeometry>)> =
+            Vec::with_capacity(names.len());
         for name in &names {
             let Some(def) = self.read_json(&format!("assets/minecraft/items/{name}.json")) else {
                 resolved.push((
                     name.clone(),
                     ItemModel::Unsupported("(missing definition)".into()),
+                    None,
                 ));
                 continue;
             };
             let mut read_model =
                 |p: &str| self.read_json(&format!("assets/minecraft/models/{p}.json"));
-            resolved.push((name.clone(), resolve_definition(&def, &mut read_model)));
+            let hand = resolve_definition(&def, &mut read_model, SelectionContext::hand());
+            // Resolve a second time for the slot context. Almost always the
+            // identical result — only a `select` on `minecraft:display_context`
+            // can differ — so the geometry is compared rather than assumed,
+            // and a second bake happens only when it really is different.
+            let gui = resolve_definition(&def, &mut read_model, SelectionContext::gui());
+            let gui_geometry = match (&hand, &gui) {
+                (
+                    ItemModel::Resolved { geometry: h, .. },
+                    ItemModel::Resolved { geometry: g, .. },
+                ) if h != g => Some(g.clone()),
+                _ => None,
+            };
+            resolved.push((name.clone(), hand, gui_geometry));
         }
 
         // Phase 2: bake geometry.
         let mut pool = TexturePool::default();
         let mut models = HashMap::new();
         let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
-        for (name, model) in resolved {
+        for (name, model, gui_geometry) in resolved {
             let full = format!("minecraft:{name}");
             let (geometry, right, left, ground, gui, first_right, first_left) = match model {
                 ItemModel::Resolved {
@@ -1627,6 +1733,14 @@ impl<'a> Baker<'a> {
                 ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
                 ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool),
             };
+            // The slot geometry, when the definition selects a different
+            // model there. A variant that fails to bake leaves `None`, so the
+            // slot falls back to the hand's quads rather than drawing nothing.
+            let gui_quads = gui_geometry.and_then(|g| match &g {
+                ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
+                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool),
+            })
+            .filter(|q| !q.is_empty());
             match baked {
                 Some(quads) if !quads.is_empty() => {
                     models.insert(
@@ -1640,6 +1754,7 @@ impl<'a> Baker<'a> {
                             first_right,
                             first_left,
                             from_block: matches!(geometry, ItemGeometry::Block(_)),
+                            gui_quads,
                         },
                     );
                 }

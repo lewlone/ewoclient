@@ -78,6 +78,16 @@ pub struct HeldItemModel {
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
     pub from_block: bool,
+    /// Separate geometry for the `gui` context, when the item's definition
+    /// actually selects a different model there (M40).
+    ///
+    /// `None` for all but a handful: only a `minecraft:select` on
+    /// `minecraft:display_context` can produce this, and in 26.2 it is the
+    /// spears and the bundles. A spear is a flat sprite in a slot and a real
+    /// 3D model in the hand, so one geometry cannot serve both — this is not
+    /// a transform difference, which the six `DisplayTransform`s above already
+    /// cover, but different quads.
+    pub gui_quads: Option<Vec<HeldQuad>>,
 }
 
 /// Every resolvable item's baked model, keyed by full registry name.
@@ -93,6 +103,14 @@ pub struct HeldItems {
     /// Definition types that were deliberately not resolved, and how many
     /// items each accounted for. Sorted so the load log is stable.
     pub unsupported: BTreeMap<String, usize>,
+}
+
+impl HeldItemModel {
+    /// The quads to draw in a given context — [`Self::gui_quads`] for a slot
+    /// when the item has them, [`Self::quads`] otherwise.
+    pub fn quads_for_gui(&self) -> &[HeldQuad] {
+        self.gui_quads.as_deref().unwrap_or(&self.quads)
+    }
 }
 
 impl HeldItems {
@@ -211,6 +229,7 @@ mod tests {
             first_right: DisplayTransform::default(),
             first_left: DisplayTransform::default(),
             from_block,
+            gui_quads: None,
         };
         let items = HeldItems {
             models: [

@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M39 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M40 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -355,8 +355,8 @@ match.
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `inventoryshot` 49/49, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
-  34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `handshot`
+  `inventoryshot` 70/70, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
   29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
   count).
@@ -374,10 +374,12 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **Tooltips.** The most visible thing the inventory screen still lacks, and
-   the only one needing a new data source: `en_us.json` for display names,
-   plus text layout and a panel. Everything else on the screen is bounded
-   polish — drag, number-key swap, Q-drop, durability bars.
+1. **The inventory screen is done to the limit of what Rewo can see.** What
+   is left there is blocked rather than unbuilt: durability bars, enchantment
+   and lore tooltip lines, and armour trim models all need the *contents* of a
+   stack's `DataComponentPatch`, and `rewo_net::item_stack` reports only
+   whether one was present. Decoding the component codecs is the milestone
+   that unblocks all of them at once. The recipe book is a separate screen.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6345,6 +6347,149 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M40 — the rest of the inventory screen: icons for armour, tooltips, and every remaining interaction (2026-07-28)
+
+Three things §0.0 listed as open, and the first of them turned out not to be
+about armour at all.
+
+#### The suppressed items were suppressed for the wrong reason
+
+M22 resolved the 1,390 items whose definition is a plain `minecraft:model` and
+suppressed the other 147, on the grounds that they "branch on stack state this
+client does not track". That is true of the **tree** and false of the
+**outcome**. Surveying the real jar: **all 71 `select` definitions carry a
+`fallback`**, and every `condition` carries an `on_false`. For a stack with no
+components those are not defaults to fall back on — they are the answer. An
+untrimmed helmet has no `TRIM` component, `SelectItemModel` finds no case to
+match, and vanilla renders the fallback, which is the plain helmet sprite.
+
+So the rule is not "suppress the type", it is **suppress the property you
+cannot evaluate**. Rewo can answer `trim_material` (absent), `charge_type`
+(none), `block_state` (absent), the boolean conditions (`broken`,
+`has_component`, `fishing_rod/cast` — all false on a plain stack),
+`using_item` (M38 gave it a use clock) and `display_context` (it knows which
+pass is drawing). It cannot answer `local_time` or `context_dimension`, and
+those two stay suppressed along with `composite`, which layers several models
+into one draw, and `special`, which hands the stack to a bespoke renderer.
+**1,390 → 1,438 resolved, 147 → 99 suppressed**, and the armour icons the
+inventory screen has been drawing blank since M35 now have geometry.
+
+The reduction is recursive, and it has to be: a bow is a `condition` whose
+`on_true` is a `range_dispatch`, so reducing only the top level would leave it
+where it was.
+
+**`display_context` selects different *geometry*, not a different transform.**
+A spear is a flat sprite in a slot and a 3D `_in_hand` model in the hand, so
+one baked model cannot serve both and `HeldItemModel` grew a `gui_quads`. In
+26.2 every item that consults the property splits the same way, `gui` against
+the rest, but that is a fact about the data rather than a rule, so the match is
+by name and the bake compares the two resolutions instead of assuming.
+
+**A witness corrected the diagnostics.** I wrote one asserting that `condition`
+and `range_dispatch` would vanish from the suppressed buckets, and it failed:
+the bucket recorded the definition's **root** type, so a `condition` whose
+chosen branch is a `special` still bucketed as `condition` — which reads as
+"the reduction cannot do conditions", the opposite of true. The reason string
+now names the node the walk **stopped at** and the property it could not
+answer, so a bucket says `minecraft:select (minecraft:context_dimension)`.
+
+#### Tooltips
+
+One line, the item's display name, white. That is the whole of what Rewo can
+show and exactly what vanilla shows for a plain stack: `getTooltipFromItem`
+starts with the hover name and appends what the **components** say —
+enchantments, lore, durability, attribute modifiers — and Rewo sees only
+whether a patch was present. Rarity rides on a component too, hence the white.
+
+The names come from the jar's own `en_us.json`, read during the bake so a
+generated table cannot drift from the assets. `Item.getDescriptionId` is
+`item.minecraft.<id>`, but **`BlockItem` overrides it to the block's**
+`block.minecraft.<id>` — and `item.minecraft.dirt` does not exist, so reading
+only the item spelling loses every block in the game. Seven items carry both
+keys and all seven spell the name identically, so the preference for the block
+form is unobservable in 26.2; it is written down anyway.
+
+Layout facts, each of which is a way to be two pixels wrong:
+
+- The text block's height starts at **-2 for a single line** and 0 otherwise,
+  and the draw loop adds 2 after the first. A one-line tooltip is 8 px of box
+  for a 10 px line.
+- The horizontal recovery is a **flip, not a clamp** — `max(x - 24 - w, 4)`
+  puts the tooltip on the cursor's other side. **And the `x` it subtracts from
+  is the already-offset one**, cursor + 12, not the raw cursor. My first
+  witness expected 306 and the answer is 318; reading it as the cursor puts
+  every edge tooltip twelve pixels too far left.
+- The vertical recovery *is* a clamp, and it uses `h + 3` — the padding but not
+  the margin — so a tooltip near the bottom is allowed to hang its border art
+  off the screen. It also fires later than it looks: at `h = 8` the cursor has
+  to be past 301 on a 300-tall screen.
+
+The background is **two nine-slice sprites blitted at the same rect**,
+`tooltip/background` (border 9, tiled middles) then `tooltip/frame` (border 10,
+`stretch_inner`). Both middles are one flat colour, so a stretch reproduces a
+tile exactly here; the flag is threaded through anyway.
+
+#### The interactions
+
+Four `ContainerInput`s, each with something that reads backwards.
+
+**`SWAP`'s button is a third coordinate system.** `slotIndex` is a menu slot as
+everywhere else, but `buttonNum` indexes `player.getInventory()` — `0..9` for
+the hotbar and a literal **40** for the off-hand. Pressing `1` over the helmet
+slot is `slot = 5, button = 0`, and the two numbers are counted from different
+origins. The guard `0 <= b < 9 || b == 40` **rejects rather than clamps**: 9
+through 39 do nothing at all.
+
+**`THROW`'s trailing `while` loop never runs twice.** With `button == 1` the
+amount is the slot's whole count, so the first `safeTake` empties it and the
+loop's `isSameItem` compares against an empty stack. It reads like a repeat and
+is a no-op. It is also gated on the cursor being empty — Q while dragging drops
+neither.
+
+**`PICKUP_ALL` runs two passes, and the first skips full stacks.** So a double
+click gathers the partial stacks first and only breaks into a full one if it
+still has room, which is why it leaves tidy stacks alone when it can. Its guard
+is that the clicked slot is **empty or unpickable** — that is the slot the
+first click of the double click just emptied. Without it, any second click on a
+full slot would hoover up the inventory.
+
+**`QUICK_CRAFT` packs two fields into one byte**: `type << 2 | header`, read
+back by `getQuickcraftType` (`mask >> 2 & 3`) and `getQuickcraftHeader`
+(`mask & 3`). Send a bare header and the server reads type 0, so a one-per-slot
+drag spreads evenly instead. It is three packets — a begin, one add per slot,
+and an end that carries the whole changed-slot map — and **a one-slot drag is
+not a drag**: vanilla resets the state and re-dispatches it as `PICKUP` with
+`buttonNum = quickcraftType`, which maps type 0 to a primary click and type 1
+to a secondary one. The even spread divides the stack by the **slot count** and
+floors, so three items over two slots is one each with one left on the cursor.
+
+#### Verified
+
+Gate: `inventoryshot --check` **44 → 70**, `itemshot --check` **28 → 33**.
+Live against a real 26.2 server, every one accepted with **0 container
+resyncs** — the server replays the click and compares, so that is the check
+rather than a claim about bytes:
+
+```
+SWAP        slot 5 button 1   → 2 changed slots
+THROW       slot 36 button 0  → 1 changed slot
+PICKUP_ALL  slot 20           → took the 7 first, then 47 of the 64 → cursor 64
+QUICK_CRAFT 40 dirt over 3    → 3 + 3 packets, 13 each, 1 left on the cursor
+```
+
+`REWO_CLICK` became semicolon-separated to make the last two testable at all —
+a drag needs a stack on the cursor, and no single click can both leave one
+there and use it. `d:<slot>,<slot>,…[,one]` is a drag.
+
+**Open, with reasons.** *Durability bars* are blocked, not skipped: the bar is
+`stack.getDamageValue()` against `getMaxDamage()`, both components, and Rewo
+knows only whether a patch was present. Drawing a full bar on a worn pickaxe
+would be worse than drawing none. *Enchantment, lore and attribute tooltip
+lines* are blocked the same way. The *recipe book* is a separate screen with
+its own data. The 99 items still suppressed are the two `composite`/`special`
+families plus `local_time`, `context_dimension` and `compass` — real work or
+genuinely unanswerable, not oversights.
 
 ### M39 — shift-click, the quick-move (2026-07-28)
 

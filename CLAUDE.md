@@ -2759,6 +2759,35 @@ validation Rewo has.
   plain click both accepted with **0 container resyncs**. **Open:** tooltips
   (needs `en_us.json` + text layout), drag/quick-craft, number-key swap,
   Q-drop, durability bars, armour icons.
+- **M40 the rest of the inventory screen (2026-07-28)** — armour icons,
+  tooltips, and every remaining interaction. **The suppressed items were
+  suppressed for the wrong reason**: M22 called the five non-`model`
+  definition types state-dependent, but **all 71 `select`s carry a
+  `fallback`** and every `condition` an `on_false`, so for a component-free
+  stack those *are* the answer, not a default. The rule is suppress the
+  **property** you cannot evaluate, not the type — **1,390 → 1,438 resolved,
+  147 → 99 suppressed**. The reduction must recurse (a bow is a `condition`
+  whose `on_true` is a `range_dispatch`), and `display_context` selects
+  different **geometry**, not a transform (a spear is a flat sprite in a slot
+  and a 3D model in the hand), hence `HeldItemModel::gui_quads`. A witness
+  caught the diagnostics naming the definition's *root* type rather than the
+  node the walk stopped at. **Tooltips** are one line — the display name from
+  the jar's `en_us.json`, preferring `block.minecraft.<id>` because
+  `BlockItem` overrides `getDescriptionId` (`item.minecraft.dirt` does not
+  exist); everything vanilla adds beyond it comes from a component Rewo cannot
+  read. Layout traps: the height starts at **-2 for a single line**; the
+  horizontal recovery is a **flip** whose `x` is the **already-offset** one
+  (my witness expected 306, the answer is 318); the vertical is a clamp using
+  `h + 3`. **The interactions**: `SWAP`'s button is a **third coordinate
+  system** (an inventory index, 0..9 or a literal 40) and its range **rejects
+  rather than clamps**; `THROW`'s trailing `while` never runs twice;
+  `PICKUP_ALL` is two passes whose first **skips full stacks**, gated on the
+  clicked slot being empty; `QUICK_CRAFT` packs `type << 2 | header` into one
+  byte, is three packets, and **a one-slot drag collapses into a `PICKUP`**.
+  Gates `inventoryshot` 44 → **70**, `itemshot` 28 → **33**; all four
+  interactions live-verified with **0 container resyncs**. **Blocked, not
+  skipped:** durability bars and enchantment/lore tooltip lines need the
+  *contents* of a `DataComponentPatch`, which Rewo does not decode.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

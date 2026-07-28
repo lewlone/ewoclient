@@ -875,3 +875,397 @@ mod tests {
         assert_eq!(inv.state_id(), 0);
     }
 }
+
+/// `ContainerInput.SWAP` — a number key, or F for the off-hand.
+pub const CONTAINER_INPUT_SWAP: i32 = 2;
+/// `ContainerInput.THROW` — Q.
+pub const CONTAINER_INPUT_THROW: i32 = 4;
+/// `ContainerInput.PICKUP_ALL` — a double click.
+pub const CONTAINER_INPUT_PICKUP_ALL: i32 = 6;
+/// `Inventory.SLOT_OFFHAND` — the button `SWAP` uses for the off-hand.
+pub const SWAP_OFFHAND_BUTTON: i32 = 40;
+
+impl Inventory {
+    /// `doClick`'s `SWAP` arm — a number key, or F for the off-hand.
+    ///
+    /// **Its button is a third coordinate system.** `slotIndex` is a menu slot,
+    /// as everywhere else, but `buttonNum` indexes `player.getInventory()`
+    /// directly — `0..9` for the hotbar and the literal `40` for the off-hand.
+    /// So pressing `1` over the helmet slot is `slot = 5, button = 0`, and the
+    /// two numbers are counted from different origins.
+    ///
+    /// Vanilla's guard is `buttonNum >= 0 && buttonNum < 9 || buttonNum == 40`,
+    /// which is not a range check — 9 through 39 are rejected outright rather
+    /// than clamped.
+    pub fn click_swap(
+        &self,
+        slot: i32,
+        button: i32,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        if !((0..HOTBAR_SIZE as i32).contains(&button) || button == SWAP_OFFHAND_BUTTON) {
+            return None;
+        }
+        let target_index = usize::try_from(slot).ok()?;
+        let kind = slot_kind(target_index)?;
+        // The inventory index the button names, back in menu coordinates.
+        let source_index = if button == SWAP_OFFHAND_BUTTON {
+            OFFHAND_MENU_SLOT
+        } else {
+            HOTBAR_MENU_START + button as usize
+        };
+        // Swapping a slot with itself is a no-op in vanilla too (the source
+        // and target are the same `ItemStack`), and predicting it would emit a
+        // changed-slot map for a click that changed nothing.
+        if source_index == target_index {
+            return None;
+        }
+        let source = self.slots[source_index];
+        let target = self.slots[target_index];
+        let mut changed: Vec<SlotChange> = Vec::new();
+
+        match (source, target) {
+            (None, None) => {}
+            // The target's stack goes to the hotbar. `mayPickup` is only false
+            // for slots Rewo does not model, so this is unconditional here.
+            (None, Some(t)) => {
+                changed.push((source_index as u16, Some(t)));
+                changed.push((target_index as u16, None));
+            }
+            (Some(s), None) => {
+                let p = props(s.item_id)?;
+                if !Self::may_place(kind, p) {
+                    return Some(ClickPrediction {
+                        slot: slot as i16,
+                        button: button as i8,
+                        changed,
+                        carried: self.carried,
+                    });
+                }
+                let cap = slot_max_stack(kind).min(p.max_stack);
+                if s.count > cap {
+                    // `source.split(maxStackSize)` — the hotbar keeps the rest.
+                    changed.push((target_index as u16, Some(ItemSlot { count: cap, ..s })));
+                    changed.push((
+                        source_index as u16,
+                        Some(ItemSlot { count: s.count - cap, ..s }),
+                    ));
+                } else {
+                    changed.push((target_index as u16, Some(s)));
+                    changed.push((source_index as u16, None));
+                }
+            }
+            (Some(s), Some(t)) => {
+                let p = props(s.item_id)?;
+                if !Self::may_place(kind, p) {
+                    return Some(ClickPrediction {
+                        slot: slot as i16,
+                        button: button as i8,
+                        changed,
+                        carried: self.carried,
+                    });
+                }
+                let cap = slot_max_stack(kind).min(p.max_stack);
+                if s.count > cap {
+                    // The displaced stack goes through `inventory.add`, and if
+                    // that fails, `player.drop` — a search Rewo does not model
+                    // and a dropped entity it cannot predict. Declining is the
+                    // honest answer; the case needs a source stack larger than
+                    // the target's cap, so in the player menu it is an armour
+                    // slot with a stack of more than one armour piece.
+                    return None;
+                }
+                changed.push((source_index as u16, Some(t)));
+                changed.push((target_index as u16, Some(s)));
+            }
+        }
+        if changed.is_empty() {
+            return None;
+        }
+        changed.sort_by_key(|&(s, _)| s);
+        Some(ClickPrediction {
+            slot: slot as i16,
+            button: button as i8,
+            changed,
+            carried: self.carried,
+        })
+    }
+
+    /// `doClick`'s `THROW` arm — Q drops one, Ctrl+Q the whole stack.
+    ///
+    /// Gated on the cursor being **empty**: with something on the cursor, Q
+    /// does nothing at all rather than dropping what you are holding.
+    ///
+    /// The trailing `while` loop in vanilla never runs a second time. With
+    /// `button == 1` the amount is the slot's whole count, so the first
+    /// `safeTake` empties it and `isSameItem(slot.getItem(), …)` compares
+    /// against an empty stack. It reads like a repeat and is a no-op.
+    ///
+    /// The dropped entity is the server's business — Rewo predicts the slot
+    /// and nothing else, which is exactly the part the `changedSlots` map
+    /// carries.
+    pub fn click_throw(
+        &self,
+        slot: i32,
+        button: i8,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        if self.carried.is_some() {
+            return None;
+        }
+        let index = usize::try_from(slot).ok()?;
+        let kind = slot_kind(index)?;
+        let stack = self.slots[index]?;
+        let p = props(stack.item_id)?;
+        let amount = if button == 0 { 1 } else { stack.count };
+        // `safeTake(amount, Integer.MAX_VALUE, player)` with a partial amount
+        // still consults `allowModification`, which is what stops one item
+        // being taken out of a crafting result.
+        if amount < stack.count && !Self::allow_modification(kind, p) {
+            return None;
+        }
+        let left = stack.count - amount;
+        Some(ClickPrediction {
+            slot: slot as i16,
+            button,
+            changed: vec![(
+                index as u16,
+                (left > 0).then(|| ItemSlot { count: left, ..stack }),
+            )],
+            carried: self.carried,
+        })
+    }
+
+    /// `doClick`'s `PICKUP_ALL` arm — the double click that sweeps a stack up.
+    ///
+    /// Three things about it are easy to get wrong.
+    ///
+    /// It only runs when the cursor is **full** and the clicked slot is empty
+    /// or unpickable — the second click of a double click lands on a slot the
+    /// first one just emptied, which is exactly that condition. Firing it on a
+    /// full slot would make an ordinary second click hoover up the inventory.
+    ///
+    /// It runs **two passes**, and the first one skips full stacks
+    /// (`pass != 0 || count != maxStackSize`). So a double click gathers the
+    /// partial stacks first and only breaks into full ones if it still has
+    /// room — which is why it leaves the tidy stacks alone when it can.
+    ///
+    /// And `canItemQuickReplace(target, carried, true)` passes `ignoreSize`,
+    /// so a stack is a candidate on identity alone; the room left on the
+    /// cursor is what bounds each take.
+    pub fn click_pickup_all(
+        &self,
+        slot: i32,
+        button: i8,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        let index = usize::try_from(slot).ok()?;
+        let kind = slot_kind(index)?;
+        let mut carried = self.carried?;
+        let cp = props(carried.item_id)?;
+        let clicked = self.slots[index];
+        // `!slot.hasItem() || !slot.mayPickup(player)`.
+        if let Some(stack) = clicked {
+            if Self::allow_modification(kind, props(stack.item_id)?) {
+                return None;
+            }
+        }
+        let max = cp.max_stack;
+        let mut slots = self.slots;
+        let mut changed: Vec<SlotChange> = Vec::new();
+        let order: Vec<usize> = if button == 0 {
+            (0..MENU_SLOTS).collect()
+        } else {
+            (0..MENU_SLOTS).rev().collect()
+        };
+        for pass in 0..2 {
+            for &i in &order {
+                if carried.count >= max {
+                    break;
+                }
+                let Some(target) = slots[i] else { continue };
+                if !Self::same_item_same_components(carried, target) {
+                    continue;
+                }
+                let tp = props(target.item_id)?;
+                if !Self::allow_modification(slot_kind(i)?, tp) {
+                    continue;
+                }
+                // Pass 0 leaves full stacks alone.
+                if pass == 0 && target.count == tp.max_stack {
+                    continue;
+                }
+                let take = target.count.min(max - carried.count);
+                if take <= 0 {
+                    continue;
+                }
+                carried.count += take;
+                let left = target.count - take;
+                slots[i] = (left > 0).then(|| ItemSlot { count: left, ..target });
+                changed.retain(|&(s, _)| s != i as u16);
+                changed.push((i as u16, slots[i]));
+            }
+        }
+        if changed.is_empty() {
+            return None;
+        }
+        changed.sort_by_key(|&(s, _)| s);
+        Some(ClickPrediction {
+            slot: slot as i16,
+            button,
+            changed,
+            carried: Some(carried),
+        })
+    }
+}
+
+/// `ContainerInput.QUICK_CRAFT` — the drag that spreads a stack over slots.
+pub const CONTAINER_INPUT_QUICK_CRAFT: i32 = 5;
+/// `getQuickcraftType` 0 — spread the stack evenly.
+pub const QUICK_CRAFT_SPLIT: i32 = 0;
+/// Type 1 — one item into each slot.
+pub const QUICK_CRAFT_ONE: i32 = 1;
+/// `slotIndex` for the two phases that name no slot.
+pub const QUICK_CRAFT_NO_SLOT: i16 = -999;
+
+impl Inventory {
+    /// The packed `buttonNum` a quick-craft phase carries.
+    ///
+    /// **One byte holds two fields**: `type << 2 | header`, read back out by
+    /// `getQuickcraftType` (`mask >> 2 & 3`) and `getQuickcraftHeader`
+    /// (`mask & 3`). Header 0 begins the drag, 1 adds a slot, 2 ends it. Send
+    /// a bare header and the server reads type 0 — a stack meant to go one per
+    /// slot would be spread evenly instead.
+    pub fn quick_craft_button(kind: i32, header: i32) -> i8 {
+        ((kind << 2) | header) as i8
+    }
+
+    /// `getQuickCraftPlaceCount` — how much lands in **each** dragged slot.
+    ///
+    /// Note what it divides: the stack over the **slot count**, floored. Three
+    /// items over two slots is one each and one left on the cursor, not two
+    /// and one.
+    fn quick_craft_place_count(slot_count: usize, kind: i32, stack: ItemSlot, p: ItemProps) -> i32 {
+        match kind {
+            QUICK_CRAFT_SPLIT => stack.count / slot_count.max(1) as i32,
+            QUICK_CRAFT_ONE => 1,
+            // Type 2 is the creative clone, which needs `hasInfiniteMaterials`.
+            2 => p.max_stack,
+            _ => stack.count,
+        }
+    }
+
+    /// Whether a slot can join the drag — `canItemQuickReplace(slot, carried,
+    /// true) && mayPlace`.
+    ///
+    /// `ignoreSize` is passed **true**, so a slot already holding the same
+    /// item qualifies on identity alone and the room left in it is worked out
+    /// later. An empty slot always qualifies.
+    fn may_drag_into(&self, index: usize, carried: ItemSlot, p: ItemProps) -> bool {
+        let Some(kind) = slot_kind(index) else {
+            return false;
+        };
+        if !Self::may_place(kind, p) {
+            return false;
+        }
+        match self.slots[index] {
+            None => true,
+            Some(occupant) => Self::same_item_same_components(carried, occupant),
+        }
+    }
+
+    /// The slots a drag would actually accept, in the order they were touched.
+    ///
+    /// Vanilla filters as each one is added (`quickcraftStatus == 1`), so a
+    /// slot the drag passed over but could not use never enters the set and
+    /// never appears in a packet. The `count > size` test is what stops a drag
+    /// from claiming more slots than the stack can feed.
+    pub fn quick_craft_accepts(
+        &self,
+        touched: &[usize],
+        kind: i32,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Vec<usize> {
+        let Some(carried) = self.carried else {
+            return Vec::new();
+        };
+        let Some(p) = props(carried.item_id) else {
+            return Vec::new();
+        };
+        let mut out: Vec<usize> = Vec::new();
+        for &i in touched {
+            if out.contains(&i) {
+                continue;
+            }
+            if kind != 2 && carried.count <= out.len() as i32 {
+                continue;
+            }
+            if self.may_drag_into(i, carried, p) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// `doClick`'s `QUICK_CRAFT` end phase — what the drag leaves behind.
+    ///
+    /// `slots` is the accepted set from [`Self::quick_craft_accepts`].
+    ///
+    /// **A one-slot drag is not a drag.** Vanilla resets the state and
+    /// re-dispatches as `PICKUP` with `buttonNum = quickcraftType`, which maps
+    /// type 0 to a primary click (place everything) and type 1 to a secondary
+    /// one (place one). So a click-and-release inside a single slot behaves
+    /// exactly like the click it looks like, and the caller must send it as a
+    /// `PICKUP` rather than a quick-craft — [`Self::quick_craft_is_pickup`]
+    /// reports that.
+    pub fn click_quick_craft(
+        &self,
+        slots: &[usize],
+        kind: i32,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        if slots.len() < 2 {
+            return None;
+        }
+        let source = self.carried?;
+        let p = props(source.item_id)?;
+        let mut remaining = source.count;
+        let mut changed: Vec<SlotChange> = Vec::new();
+        for &i in slots {
+            let kind_of = slot_kind(i)?;
+            if !self.may_drag_into(i, source, p) {
+                continue;
+            }
+            if kind != 2 && source.count < slots.len() as i32 {
+                continue;
+            }
+            let carry = self.slots[i].map_or(0, |s| s.count);
+            let max = p.max_stack.min(slot_max_stack(kind_of));
+            let place = Self::quick_craft_place_count(slots.len(), kind, source, p);
+            let new_count = (place + carry).min(max);
+            remaining -= new_count - carry;
+            changed.push((i as u16, Some(ItemSlot { count: new_count, ..source })));
+        }
+        if changed.is_empty() {
+            return None;
+        }
+        changed.sort_by_key(|&(s, _)| s);
+        Some(ClickPrediction {
+            slot: QUICK_CRAFT_NO_SLOT,
+            button: Self::quick_craft_button(kind, 2),
+            changed,
+            // `source.setCount(remaining)` — an exhausted cursor is empty,
+            // not a stack of zero.
+            carried: (remaining > 0).then(|| ItemSlot { count: remaining, ..source }),
+        })
+    }
+
+    /// The `PICKUP` button a one-slot drag collapses into, if it is one.
+    ///
+    /// Type 0 becomes button 0 and type 1 becomes button 1 — the two numbers
+    /// happen to line up, which is why vanilla passes `quickcraftType`
+    /// straight through as the button.
+    pub fn quick_craft_is_pickup(slots: &[usize], kind: i32) -> Option<(usize, i8)> {
+        (slots.len() == 1).then(|| (slots[0], kind as i8))
+    }
+}
