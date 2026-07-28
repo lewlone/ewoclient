@@ -53,6 +53,10 @@ pub struct PlaySession {
     /// The Pillager's protocol type id (M20) — disambiguates the index-17
     /// BOOLEAN (`IS_CHARGING_CROSSBOW`). `None` routes it nowhere.
     pub pillager_type_id: Option<i32>,
+    /// `minecraft:sheep` — gates the index-18 wool byte (M52).
+    pub sheep_type_id: Option<i32>,
+    /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
+    pub creaking_type_id: Option<i32>,
     /// The block-entity type ids whose `triggerEvent` this client implements
     /// (M26). Default-empty, which routes every `block_event` nowhere — the
     /// correct behaviour for a harness that never renders a chest, and the
@@ -756,6 +760,8 @@ impl<'a> Connection<'a> {
             armadillo_type_id: None,
             allay_type_id: None,
             pillager_type_id: None,
+            sheep_type_id: None,
+            creaking_type_id: None,
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
@@ -1481,6 +1487,8 @@ impl PlaySession {
             crate::MetaKinds {
                 allay: self.allay_type_id,
                 pillager: self.pillager_type_id,
+                sheep: self.sheep_type_id,
+                creaking: self.creaking_type_id,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
             },

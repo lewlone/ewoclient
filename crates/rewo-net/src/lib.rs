@@ -852,8 +852,12 @@ pub(crate) fn apply_entity_event(
         4 if is(warden_type_id) => Some(EntityEvent::WardenAttack),
         62 if is(warden_type_id) => Some(EntityEvent::WardenSonicBoom),
         64 if is(armadillo_type_id) => Some(EntityEvent::ArmadilloPeek),
+        // `Warden.handleEntityEvent(61)` is `tendrilAnimation = 10` — a plain
+        // 10-tick countdown rather than an `AnimationState`, but it is stamped
+        // the same way and read back as `max(0, 10 − elapsed) / 10` (M52).
+        61 if is(warden_type_id) => Some(EntityEvent::WardenTendril),
         // Wrong kind for this id, or an unmodelled event (hurt, particles,
-        // sound, the excluded warden tendril 61, …) — no model-visible effect.
+        // sound, …) — no model-visible effect.
         _ => None,
     };
     if let Some(ev) = mapped {
@@ -1293,6 +1297,11 @@ pub struct MetaKinds<'a> {
     pub allay: Option<i32>,
     /// `minecraft:pillager` type id (M20).
     pub pillager: Option<i32>,
+    /// `minecraft:sheep` type id (M52) — gates the index-18 BYTE.
+    pub sheep: Option<i32>,
+    /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
+    /// `Pillager` also claims.
+    pub creaking: Option<i32>,
     /// The machine-extracted ancestry sets — mob / raider / spellcaster.
     pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
     /// Data-component registry ids, needed to walk an ITEM_STACK metadata
@@ -1403,10 +1412,25 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_spell_casting(eid, spell);
         }
     }
-    // Slot 17 BOOLEAN → `Pillager.IS_CHARGING_CROSSBOW`.
-    if let Some(charging) = meta.bool17 {
+    // Slot 17 BOOLEAN → `Pillager.IS_CHARGING_CROSSBOW`, or `Creaking.IS_ACTIVE`
+    // (M52). Two different classes, same index and same serializer — only the
+    // kind separates them, the M18 rule again. (`AgeableMob.AGE_LOCKED` is a
+    // third claimant at 17 BOOLEAN; it drives nothing the client renders, so it
+    // simply falls through both gates.)
+    if let Some(b) = meta.bool17 {
         if kinds.pillager == Some(type_id) {
-            entities.set_charging_crossbow(eid, charging);
+            entities.set_charging_crossbow(eid, b);
+        } else if kinds.creaking == Some(type_id) {
+            entities.set_creaking_active(eid, b);
+        }
+    }
+    // Slot 18 BYTE → `Sheep.DATA_WOOL_ID` (M52): low nibble the dye, 0x10 the
+    // sheared flag. Kind-gated — `Creaking.IS_TEARING_DOWN` is also at 18, with
+    // a different serializer, and nothing else the client models claims the
+    // BYTE there.
+    if let Some(wool) = meta.byte18 {
+        if kinds.sheep == Some(type_id) {
+            entities.set_wool(eid, wool);
         }
     }
 }
