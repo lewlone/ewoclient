@@ -10,6 +10,7 @@
 //! real client this runs on the net thread (REWO_PLAN.md §4); for the M1
 //! soak/replay tools it runs on its own driver.
 
+pub mod attributes;
 pub mod biome_parse;
 pub mod chat_sign;
 pub mod component_wire;
@@ -1053,6 +1054,102 @@ pub fn route_damage_event(
 ) -> bool {
     if id == ids.cb_play_damage_event {
         apply_damage_event(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
+/// `ClientboundUpdateAttributesPacket` → `handleUpdateAttributes` (M55).
+///
+/// The handler is narrower than the packet: for each snapshot it calls
+/// `AttributeMap.getInstance`, which returns null — logged as `"Entity {} does
+/// not have attribute {}"` and **skipped** — when the entity type's
+/// `AttributeSupplier` does not declare that attribute. So the supplier is a
+/// filter on receipt, not merely a source of defaults, and a zombie's
+/// `spawn_reinforcements` snapshot must not stick to a pig.
+///
+/// Three gates before anything is stored, matching the handler's own order:
+///
+/// * an untracked entity is inert (`getEntity(id) == null` → the whole `if`
+///   body is skipped);
+/// * a non-living entity is inert. Vanilla *throws* `IllegalStateException`
+///   here ("Server tried to update attributes of a non-living entity"), killing
+///   the packet thread; dropping the packet is the closest safe equivalent and
+///   is the same choice [`apply_damage_event`] makes;
+/// * an attribute id outside the registry is dropped, where vanilla's
+///   `byIdOrThrow` would throw.
+///
+/// Storage is per attribute and wholesale: `setBaseValue` → `removeModifiers()`
+/// → add each, so a snapshot replaces that attribute's state and leaves the
+/// rest of the entity's attributes alone.
+///
+/// Not public: the packet stream reaches this only through
+/// [`route_update_attributes`] (which owns the id → decoder selection).
+/// External callers (the `attributeshot` oracle) go through that seam so
+/// packet-id selection is exercised too.
+pub(crate) fn apply_update_attributes(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+    types: Option<&rewo_data::entity_types::EntityTypes>,
+    reg: Option<&rewo_data::attributes::AttributeRegistry>,
+) {
+    // Decode first and completely: a body that does not fully parse changes
+    // nothing, so a malformed packet can never half-apply.
+    let Some(packet) = crate::attributes::parse(body) else {
+        return;
+    };
+    let Some(type_id) = entities.get(packet.entity_id).map(|e| e.type_id) else {
+        return; // getEntity(id) == null
+    };
+    // Measured, not assumed: `is_living` and "has an `AttributeSupplier`" are
+    // the same 93 types of 158 (`attributeshot` d14 asserts it over the whole
+    // registry), so this gate changes no outcome the `defaults_for` lookup
+    // below would not also reject. It is kept because it is the gate
+    // `handleUpdateAttributes` actually has, and it is the documented reason a
+    // boat is inert; if a version ever ships a non-living type with a supplier,
+    // d14 fails and this stops being redundant.
+    if !classes.is_some_and(|c| c.is_living(type_id)) {
+        return; // not a LivingEntity — vanilla throws, we drop
+    }
+    let (Some(reg), Some(types)) = (reg, types) else {
+        return; // without the registry nothing can be resolved or filtered
+    };
+    let Some(entity_name) = types.name(type_id) else {
+        return;
+    };
+    let Some(defaults) = reg.defaults_for(entity_name) else {
+        return; // no AttributeSupplier — holds no attributes at all
+    };
+    for snap in packet.snapshots {
+        let Some(def) = reg.def(snap.attribute) else {
+            continue; // byIdOrThrow would throw; drop the snapshot
+        };
+        if !defaults.iter().any(|(n, _)| *n == def.name) {
+            continue; // "Entity {} does not have attribute {}"
+        }
+        entities.set_attribute(packet.entity_id, snap.attribute, snap.base, snap.modifiers);
+    }
+}
+
+/// The narrowest clientbound-play dispatch seam for entity attributes: routes a
+/// single `(packet id, body)` to [`apply_update_attributes`] iff `id` is the
+/// resolved `update_attributes` id, returning whether it matched. Mirrors
+/// [`route_damage_event`] so `play::PlaySession` and the `attributeshot` oracle
+/// drive packet-id → attribute routing through the same production code.
+#[allow(clippy::too_many_arguments)]
+pub fn route_update_attributes(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+    types: Option<&rewo_data::entity_types::EntityTypes>,
+    reg: Option<&rewo_data::attributes::AttributeRegistry>,
+) -> bool {
+    if id == ids.cb_play_update_attributes {
+        apply_update_attributes(body, entities, classes, types, reg);
         true
     } else {
         false

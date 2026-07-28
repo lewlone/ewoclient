@@ -230,6 +230,12 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     );
     log::info!("live: session up, opening window…");
     let etypes = data.entity_types;
+    // M52 attributes: the type registry turns a spawned entity's type id into
+    // the name `DefaultAttributes.SUPPLIERS` is keyed by, and the attribute
+    // registry supplies both the clamp and the supplier filter. Without both,
+    // `route_update_attributes` recognises the packet and stores nothing.
+    session.entity_types = Some(std::sync::Arc::new(etypes.clone()));
+    session.attribute_registry = Some(data.attributes.clone());
 
     let want_validation = cfg!(debug_assertions) && !args.no_validation;
     match &args.out {

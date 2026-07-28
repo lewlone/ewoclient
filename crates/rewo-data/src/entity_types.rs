@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::read_json_file;
 
+#[derive(Clone)]
 pub struct EntityTypes {
     by_id: HashMap<i32, String>,
     pub player_id: i32,

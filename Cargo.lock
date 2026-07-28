@@ -2321,6 +2321,7 @@ dependencies = [
  "clap",
  "dirs",
  "env_logger",
+ "ewo-core",
  "glam",
  "log",
  "png",

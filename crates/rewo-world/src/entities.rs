@@ -537,6 +537,14 @@ pub struct EntityTable {
     /// means `DeathState::ALIVE`, which is exact: `entityData.define` seeds
     /// health at 1.0. Cleared on removal.
     deaths: HashMap<i32, DeathState>,
+    /// `ClientboundUpdateAttributesPacket` snapshots — M52. Absent means the
+    /// server has synced nothing for this entity, which is **not** the same as
+    /// "the defaults apply": that distinction is what
+    /// [`crate::attributes::resolve`] returns as
+    /// [`crate::attributes::Source`], so a caller can never mistake an
+    /// untracked entity for a healthy one. Cleared on removal, so a reused id
+    /// cannot inherit the previous occupant's max health.
+    attributes: HashMap<i32, crate::attributes::EntityAttributes>,
     /// `ItemEntity.DATA_ITEM` (index 8, ITEM_STACK) → `(item protocol id,
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
@@ -835,6 +843,7 @@ impl EntityTable {
         self.uses.remove(&id);
         self.deaths.remove(&id);
         self.item_stacks.remove(&id);
+        self.attributes.remove(&id);
         self.clear_swing(id);
     }
 
@@ -949,6 +958,35 @@ impl EntityTable {
     /// the *writing* side (`setHealth`); what arrives over the wire is the
     /// already-clamped value, so it is stored as sent. Only the sign matters
     /// here: `isDeadOrDying()` tests `<= 0`.
+    /// Apply one `AttributeSnapshot` from `update_attributes` (M52).
+    ///
+    /// Replaces that attribute's base and modifier list wholesale, per
+    /// `handleUpdateAttributes`' `setBaseValue` → `removeModifiers()` → add
+    /// sequence, and leaves every other attribute untouched.
+    pub fn set_attribute(
+        &mut self,
+        id: i32,
+        attr: i32,
+        base: f64,
+        modifiers: Vec<crate::attributes::Modifier>,
+    ) {
+        self.attributes
+            .entry(id)
+            .or_default()
+            .apply(attr, base, modifiers);
+    }
+
+    /// Everything the server has synced for this entity, or `None` when it has
+    /// synced nothing.
+    ///
+    /// `None` is deliberately not an empty set: [`crate::attributes::resolve`]
+    /// treats "no packet" and "a packet that cleared everything" identically
+    /// only because both fall back to the supplier, and a caller that wants to
+    /// know whether the server has ever spoken can ask here.
+    pub fn attributes(&self, id: i32) -> Option<&crate::attributes::EntityAttributes> {
+        self.attributes.get(&id)
+    }
+
     pub fn set_health(&mut self, id: i32, health: f32) {
         self.deaths.entry(id).or_default().health = health;
     }

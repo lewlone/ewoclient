@@ -10,6 +10,7 @@
 mod capture;
 mod captureshot_cmd;
 mod bench_cmd;
+mod attributeshot_cmd;
 mod danceshot_cmd;
 mod hurtshot_cmd;
 mod itemshot_cmd;
@@ -193,6 +194,13 @@ enum Command {
     /// dance transforms against independent decompiled formulas with `--check`
     /// (no server, no GPU).
     Danceshot(danceshot_cmd::DanceshotArgs),
+    /// M52 entity-attribute oracle: drive raw `update_attributes` bodies
+    /// through the real packet routing → `handleUpdateAttributes` receipt gates
+    /// → `AttributeInstance.calculateValue` → `RangedAttribute.sanitizeValue`,
+    /// asserting the wire encoding, the operation order, the clamp and the
+    /// fail-closed default resolution against independent decompiled literals
+    /// with `--check` (no server, no GPU).
+    Attributeshot(attributeshot_cmd::AttributeshotArgs),
     /// M21: the combat damage response — hurt clock + the red flash.
     Hurtshot(hurtshot_cmd::HurtshotArgs),
     /// M22: held items — both geometry paths, placement and suppression.
@@ -245,6 +253,7 @@ fn main() {
         Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
+        Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),

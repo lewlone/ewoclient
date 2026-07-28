@@ -9,6 +9,7 @@
 //! Native-instance setup is an M1-followon.
 
 pub mod assets;
+pub mod attributes;
 pub mod be_transform;
 pub mod block_entity_models;
 pub mod block_entity_types;
@@ -20,6 +21,7 @@ pub mod copper_golem_poses;
 pub mod components;
 pub mod enchantments;
 pub mod equipment;
+pub mod entity_attributes;
 pub mod entity_classes;
 pub mod entity_types;
 pub mod items;
@@ -100,6 +102,9 @@ pub struct GameData {
     pub entity_classes: entity_types::EntityClasses,
     /// Particle-type registry ids → names (M37 particles).
     pub particle_types: particle_types::ParticleTypes,
+    /// The `minecraft:attribute` id table joined with the extracted
+    /// per-attribute clamps and per-entity-type suppliers (M52).
+    pub attributes: std::sync::Arc<attributes::AttributeRegistry>,
 }
 
 impl GameData {
@@ -115,6 +120,8 @@ impl GameData {
             components::DataComponentRegistry::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
+        let attributes =
+            std::sync::Arc::new(attributes::AttributeRegistry::load(&paths.registries_json())?);
         Ok(Self {
             blocks,
             packets,
@@ -126,6 +133,7 @@ impl GameData {
             component_registry,
             entity_classes,
             particle_types,
+            attributes,
         })
     }
 

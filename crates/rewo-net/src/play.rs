@@ -79,6 +79,14 @@ pub struct PlaySession {
     /// naming a boat mutates nothing) and decides whose swing clock advances.
     /// `None` (the headless protocol harnesses) interprets no swing packets.
     pub entity_classes: Option<std::sync::Arc<rewo_data::entity_types::EntityClasses>>,
+    /// The entity-type registry, for turning a spawned entity's type id into
+    /// the registry name `DefaultAttributes.SUPPLIERS` is keyed by (M52).
+    /// `None` (the headless protocol harnesses) → attribute packets are
+    /// recognised but store nothing, because nothing can filter them.
+    pub entity_types: Option<std::sync::Arc<rewo_data::entity_types::EntityTypes>>,
+    /// The `minecraft:attribute` registry plus the per-entity suppliers (M52).
+    /// `None` → as above.
+    pub attribute_registry: Option<std::sync::Arc<rewo_data::attributes::AttributeRegistry>>,
     /// Item → prototype swing animation + the data-component ids the equipment
     /// patch reader needs (M19). `None` (the headless protocol harnesses) →
     /// equipment packets are recognised but interpret no item, so every swing
@@ -762,6 +770,8 @@ impl<'a> Connection<'a> {
             water_states: Vec::new(),
             conduit_frame_states: Vec::new(),
             entity_classes: None,
+            entity_types: None,
+            attribute_registry: None,
             swing_data: None,
             swing_effect_ids,
             global_bits,
@@ -1497,6 +1507,18 @@ impl PlaySession {
         ) {
             // M21: the damage response — arms the hurt clock (red overlay) and
             // kicks the walk animation, for a tracked living entity only.
+        } else if crate::route_update_attributes(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+            self.entity_types.as_deref(),
+            self.attribute_registry.as_deref(),
+        ) {
+            // M52: entity attribute snapshots — max health and the rest. Each
+            // snapshot replaces one attribute's base + modifiers, filtered by
+            // the entity type's `AttributeSupplier`.
         } else if crate::route_inventory(
             id,
             body,
