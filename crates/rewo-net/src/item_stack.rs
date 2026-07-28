@@ -87,7 +87,7 @@ pub enum PatchOutcome {
 }
 
 /// One decoded slot value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WireSlot {
     /// `count <= 0` → `ItemStack.EMPTY` (nothing else is encoded).
     Empty,
@@ -105,7 +105,7 @@ impl WireSlot {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WireStack {
     pub count: i32,
     /// Item registry protocol id, exactly as sent — validated in
@@ -128,6 +128,8 @@ pub struct WireStack {
     /// so two patched stacks swap rather than merge. See
     /// [`rewo_world::inventory::ItemSlot::has_components`].
     pub patched: bool,
+    /// What the patch said, for the components the client reads (M41).
+    pub components: StackComponents,
 }
 
 impl WireStack {
@@ -197,14 +199,89 @@ pub fn read_optional(r: &mut PacketReader, ids: DataComponentIds) -> Result<Wire
         return Ok(WireSlot::Empty);
     }
     let item_id = r.varint().map_err(|_| ())?;
-    let (patch, charged, patched) = read_patch(r, ids)?;
+    let (patch, charged, patched, components) = read_patch(r, ids)?;
     Ok(WireSlot::Stack(WireStack {
         count,
         item_id,
         patch,
         charged,
         patched,
+        components,
     }))
+}
+
+/// What one stack's patch said, for the components the client reads (M41).
+///
+/// Built during the walk rather than looked up afterwards, because the walk is
+/// the only place the values exist: the patch is a delta, and a component it
+/// does not mention is answered by the item's prototype, not by this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StackComponents {
+    /// `minecraft:damage`, the value a durability bar is drawn from.
+    pub damage: Option<i32>,
+    /// `minecraft:max_damage`. Usually absent — the prototype carries it — so
+    /// a bar needs the item table as well as the patch.
+    pub max_damage: Option<i32>,
+    /// `minecraft:custom_name`, the anvil-given name, reduced to plain text.
+    pub custom_name: Option<String>,
+    /// `minecraft:item_name`, a *default* name an item may carry. Lower
+    /// precedence than `custom_name` and higher than the translated id.
+    pub item_name: Option<String>,
+    pub lore: Vec<String>,
+    /// `minecraft:rarity`'s id — the name's colour.
+    pub rarity: Option<i32>,
+    /// `(enchantment registry id, level)`.
+    pub enchantments: Vec<(i32, i32)>,
+    pub unbreakable: bool,
+    /// Component ids the patch **removed**. A removal is not the same as an
+    /// absence: `getOrDefault` then answers with the type's default rather
+    /// than the item's prototype value.
+    pub removed: Vec<i32>,
+    /// A canonical digest of every entry, added or removed, interpreted or
+    /// not.
+    ///
+    /// This is what makes `ItemStack.isSameItemSameComponents` **exact** where
+    /// M35 could only ask "does either side carry components at all". Built
+    /// from the (type id, raw value bytes) pairs **sorted by type id**, so two
+    /// patches that encode the same entries in a different order still agree —
+    /// the patch is written from a map, and map order is not part of its
+    /// meaning.
+    pub fingerprint: u64,
+}
+
+impl StackComponents {
+    /// `stack.isDamaged()` — a damage value above zero.
+    pub fn is_damaged(&self) -> bool {
+        self.damage.unwrap_or(0) > 0
+    }
+
+    /// The name a tooltip shows, given the item's translated display name.
+    ///
+    /// `ItemStack.getHoverName` is `getOrDefault(CUSTOM_NAME, getItemName())`,
+    /// and `getItemName` is `getOrDefault(ITEM_NAME, item.getName())` — so the
+    /// two components are a two-level override rather than alternatives.
+    pub fn hover_name<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.custom_name
+            .as_deref()
+            .or(self.item_name.as_deref())
+            .unwrap_or(fallback)
+    }
+}
+
+/// A 64-bit FNV-1a digest, used only to compare patches with each other.
+///
+/// Not a cryptographic hash and not a wire value: a collision would merge two
+/// stacks vanilla keeps apart, which is the error direction M35's
+/// approximation was written to avoid — but at 64 bits over the handful of
+/// stacks in one inventory the probability is far below that of the
+/// approximation it replaces.
+fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
+    let mut h = seed;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// How deep a `charged_projectiles` chain may nest before the walk gives up.
@@ -226,7 +303,7 @@ const MAX_PATCH_DEPTH: u32 = 4;
 fn read_patch(
     r: &mut PacketReader,
     ids: DataComponentIds,
-) -> Result<(PatchOutcome, PatchCharged, bool), ()> {
+) -> Result<(PatchOutcome, PatchCharged, bool, StackComponents), ()> {
     read_patch_at(r, ids, 0)
 }
 
@@ -234,7 +311,7 @@ fn read_patch_at(
     r: &mut PacketReader,
     ids: DataComponentIds,
     depth: u32,
-) -> Result<(PatchOutcome, PatchCharged, bool), ()> {
+) -> Result<(PatchOutcome, PatchCharged, bool, StackComponents), ()> {
     let added = r.varint().map_err(|_| ())?;
     let removed = r.varint().map_err(|_| ())?;
     if added == 0 && removed == 0 {
@@ -243,6 +320,7 @@ fn read_patch_at(
             PatchOutcome::Walked(PatchSwing::Absent),
             PatchCharged::Absent,
             false,
+            StackComponents::default(),
         ));
     }
     // The decoder sizes its map with `min(added + removed, 65536)`; a nonsense
@@ -252,31 +330,45 @@ fn read_patch_at(
     }
     let mut swing = PatchSwing::Absent;
     let mut charged = PatchCharged::Absent;
+    let mut comps = StackComponents::default();
+    // Sorted by type id so the digest does not depend on the order the server
+    // happened to iterate its map in.
+    let mut digest: Vec<(i32, u64)> = Vec::new();
     for _ in 0..added {
         let ty = r.varint().map_err(|_| ())?;
+        // The value's bytes, for the fingerprint. Taken as a span rather than
+        // copied: the walk moves the reader past exactly this value, so the
+        // two offsets bracket it whatever its codec was.
+        let from = r.offset();
+        // Every component this decoder interprets is *also* in the shape
+        // table, so the table decides walkability and the match below decides
+        // meaning. Keeping them separate is what stops a new interpretation
+        // from silently becoming the only thing keeping a codec walkable.
+        let Some(shape) = crate::component_wire::shape_for_id(ty) else {
+            // An un-transcribed codec: the reader stops here, mid-value.
+            crate::component_wire::report_unwalkable(ty);
+            return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps));
+        };
         if ty == ids.swing_animation {
             // `SwingAnimation.STREAM_CODEC` = composite(type idMapper, VarInt).
             let kind = SwingAnimationType::from_wire_id(r.varint().map_err(|_| ())?);
             let duration = r.varint().map_err(|_| ())?;
             swing = PatchSwing::Set(SwingAnimation::new(kind, duration));
-            continue;
-        }
-        if ty == ids.damage {
-            r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT
-            continue;
-        }
-        if ty == ids.charged_projectiles {
+        } else if ty == ids.charged_projectiles {
             match read_projectile_list(r, ids, depth)? {
                 Some(non_empty) => charged = PatchCharged::Set(non_empty),
                 // A nested patch this decoder cannot walk. The reader is parked
                 // mid-value, so the whole enclosing stack is unwalkable — the
                 // charge answer is lost with it.
-                None => return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true)),
+                None => {
+                    return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps))
+                }
             }
-            continue;
+        } else if !read_interpreted(r, ty, ids, shape, &mut comps)? {
+            return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps));
         }
-        // An un-transcribed codec: the reader stops here, mid-value.
-        return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true));
+        let to = r.offset();
+        digest.push((ty, fnv1a(0xcbf2_9ce4_8422_2325, r.bytes_between(from, to))));
     }
     for _ in 0..removed {
         let ty = r.varint().map_err(|_| ())?;
@@ -288,8 +380,88 @@ fn read_patch_at(
         if ty == ids.charged_projectiles {
             charged = PatchCharged::Removed;
         }
+        comps.removed.push(ty);
+        // A removal has no value, so its own id is all there is to fold in —
+        // and it must be folded in, or "damage removed" and "damage absent"
+        // would fingerprint identically.
+        digest.push((ty, 0));
     }
-    Ok((PatchOutcome::Walked(swing), charged, true))
+    digest.sort_unstable();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for (ty, v) in digest {
+        h = fnv1a(h, &ty.to_le_bytes());
+        h = fnv1a(h, &v.to_le_bytes());
+    }
+    comps.fingerprint = h;
+    Ok((PatchOutcome::Walked(swing), charged, true, comps))
+}
+
+/// Walk one value, reading it out when the client has a use for it.
+///
+/// Returns `false` only when the shape itself could not be walked (a nested
+/// unknown component or the depth limit) — a value that is walked but not
+/// interpreted is a success.
+fn read_interpreted(
+    r: &mut PacketReader,
+    ty: i32,
+    ids: DataComponentIds,
+    shape: &crate::component_wire::Shape,
+    out: &mut StackComponents,
+) -> Result<bool, ()> {
+    use crate::component_wire::{nbt_text, walk};
+    if ty == ids.damage {
+        out.damage = Some(r.varint().map_err(|_| ())?);
+        return Ok(true);
+    }
+    if ty == ids.max_damage {
+        out.max_damage = Some(r.varint().map_err(|_| ())?);
+        return Ok(true);
+    }
+    if ty == ids.rarity {
+        out.rarity = Some(r.varint().map_err(|_| ())?);
+        return Ok(true);
+    }
+    if ty == ids.unbreakable {
+        // `Unit` — zero bytes. The presence of the entry is the value.
+        out.unbreakable = true;
+        return Ok(true);
+    }
+    if ty == ids.custom_name || ty == ids.item_name {
+        let tag = rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
+        let text = nbt_text(&tag);
+        if ty == ids.custom_name {
+            out.custom_name = Some(text);
+        } else {
+            out.item_name = Some(text);
+        }
+        return Ok(true);
+    }
+    if ty == ids.lore {
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=256).contains(&n) {
+            return Err(());
+        }
+        for _ in 0..n {
+            let tag = rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
+            out.lore.push(nbt_text(&tag));
+        }
+        return Ok(true);
+    }
+    if ty == ids.enchantments {
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=65536).contains(&n) {
+            return Err(());
+        }
+        for _ in 0..n {
+            // `Enchantment.STREAM_CODEC` is `holderRegistry` — a **raw** id,
+            // not `holder`'s `id + 1`.
+            let id = r.varint().map_err(|_| ())?;
+            let level = r.varint().map_err(|_| ())?;
+            out.enchantments.push((id, level));
+        }
+        return Ok(true);
+    }
+    walk(r, shape, 0)
 }
 
 /// `ByteBufCodecs.list(1024)` of `ItemStackTemplate.STREAM_CODEC`, which is
@@ -318,7 +490,7 @@ fn read_projectile_list(
     for _ in 0..len {
         r.varint().map_err(|_| ())?; // Item.STREAM_CODEC — raw registry id
         r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT — count
-        let (outcome, _, _) = read_patch_at(r, ids, depth + 1)?;
+        let (outcome, _, _, _) = read_patch_at(r, ids, depth + 1)?;
         if outcome == PatchOutcome::Unwalkable {
             return Ok(None);
         }
@@ -373,7 +545,36 @@ mod tests {
         swing_animation: 40,
         damage: 3,
         charged_projectiles: 7,
+        max_damage: 4,
+        rarity: 5,
+        unbreakable: 6,
+        custom_name: 8,
+        item_name: 9,
+        lore: 10,
+        enchantments: 11,
     };
+
+    /// The walk is table-driven now, and the table is keyed by *name* against
+    /// the live registry — so these unit fixtures have to install shapes for
+    /// the ids they use, or every component would read as unwalkable.
+    fn install_test_shapes() {
+        let ids: std::collections::HashMap<String, i32> = [
+            ("minecraft:swing_animation", 40),
+            ("minecraft:damage", 3),
+            ("minecraft:charged_projectiles", 7),
+            ("minecraft:max_damage", 4),
+            ("minecraft:rarity", 5),
+            ("minecraft:unbreakable", 6),
+            ("minecraft:custom_name", 8),
+            ("minecraft:item_name", 9),
+            ("minecraft:lore", 10),
+            ("minecraft:enchantments", 11),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        crate::component_wire::install_shapes(&ids);
+    }
 
     fn varint(v: i32, out: &mut Vec<u8>) {
         let mut n = v as u32;
@@ -420,7 +621,7 @@ mod tests {
         read_optional(&mut PacketReader::new(bytes), IDS)
     }
 
-    fn patch_of(slot: WireSlot) -> PatchOutcome {
+    fn patch_of(slot: &WireSlot) -> PatchOutcome {
         match slot {
             WireSlot::Stack(s) => s.patch,
             WireSlot::Empty => panic!("expected a stack"),
@@ -429,6 +630,7 @@ mod tests {
 
     #[test]
     fn non_positive_count_is_the_empty_stack_and_reads_nothing_more() {
+        install_test_shapes();
         for count in [0, -1, -128] {
             let mut b = Vec::new();
             varint(count, &mut b);
@@ -438,16 +640,18 @@ mod tests {
 
     #[test]
     fn a_plain_stack_has_an_empty_patch() {
+        install_test_shapes();
         let s = read(&stack(1, 949, &[], &[])).unwrap();
         assert!(s.aligned());
-        assert_eq!(patch_of(s), PatchOutcome::Walked(PatchSwing::Absent));
+        assert_eq!(patch_of(&s), PatchOutcome::Walked(PatchSwing::Absent));
     }
 
     #[test]
     fn an_explicit_swing_animation_override_is_decoded() {
+        install_test_shapes();
         let s = read(&stack(1, 100, &[(IDS.swing_animation, swing_value(2, 11))], &[])).unwrap();
         assert_eq!(
-            patch_of(s),
+            patch_of(&s),
             PatchOutcome::Walked(PatchSwing::Set(SwingAnimation::new(
                 SwingAnimationType::Stab,
                 11
@@ -457,6 +661,7 @@ mod tests {
 
     #[test]
     fn the_walk_continues_past_the_swing_component_and_stays_aligned() {
+        install_test_shapes();
         // swing_animation FIRST, then a damage entry and a removal. Returning
         // as soon as the swing was found would leave 3 unread entries and
         // desynchronise the next slot — the exact bug this test pins.
@@ -472,7 +677,7 @@ mod tests {
         let slot = read_optional(&mut r, IDS).unwrap();
         assert!(slot.aligned());
         assert_eq!(
-            patch_of(slot),
+            patch_of(&slot),
             PatchOutcome::Walked(PatchSwing::Set(SwingAnimation::new(
                 SwingAnimationType::Stab,
                 11
@@ -483,6 +688,7 @@ mod tests {
 
     #[test]
     fn damage_is_walked_past_to_reach_a_later_override() {
+        install_test_shapes();
         let mut dmg = Vec::new();
         varint(37, &mut dmg);
         let s = read(&stack(
@@ -493,7 +699,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            patch_of(s),
+            patch_of(&s),
             PatchOutcome::Walked(PatchSwing::Set(SwingAnimation::new(
                 SwingAnimationType::None,
                 4
@@ -503,6 +709,7 @@ mod tests {
 
     #[test]
     fn an_unknown_component_before_the_swing_stops_the_walk() {
+        install_test_shapes();
         let s = read(&stack(
             1,
             100,
@@ -510,12 +717,13 @@ mod tests {
             &[IDS.swing_animation],
         ))
         .unwrap();
-        assert_eq!(patch_of(s), PatchOutcome::Unwalkable);
+        assert_eq!(patch_of(&s), PatchOutcome::Unwalkable);
         assert!(!s.aligned());
     }
 
     #[test]
     fn an_unknown_component_after_the_swing_still_stops_the_walk() {
+        install_test_shapes();
         // The override *was* read, but the reader is now stuck: reporting
         // `Walked` here would desynchronise the packet, so the whole stack is
         // Unwalkable and its swing unknown.
@@ -529,12 +737,13 @@ mod tests {
             &[],
         );
         let s = read(&body).unwrap();
-        assert_eq!(patch_of(s), PatchOutcome::Unwalkable);
+        assert_eq!(patch_of(&s), PatchOutcome::Unwalkable);
         assert!(!s.aligned());
     }
 
     #[test]
     fn an_unresolved_patch_leaves_the_reader_mid_value() {
+        install_test_shapes();
         // The three junk bytes after the un-transcribed component are NOT
         // consumed — which is exactly why the caller must stop rather than
         // read a second slot out of them.
@@ -547,15 +756,17 @@ mod tests {
 
     #[test]
     fn a_removal_only_patch_is_fully_walkable() {
+        install_test_shapes();
         let s = read(&stack(1, 100, &[], &[3, IDS.swing_animation, 19])).unwrap();
-        assert_eq!(patch_of(s), PatchOutcome::Walked(PatchSwing::Removed));
+        assert_eq!(patch_of(&s), PatchOutcome::Walked(PatchSwing::Removed));
         // …and a removal list without the swing component is Absent.
         let s = read(&stack(1, 100, &[], &[3, 19])).unwrap();
-        assert_eq!(patch_of(s), PatchOutcome::Walked(PatchSwing::Absent));
+        assert_eq!(patch_of(&s), PatchOutcome::Walked(PatchSwing::Absent));
     }
 
     #[test]
     fn a_truncated_stack_is_an_error_not_a_guess() {
+        install_test_shapes();
         assert_eq!(read(&[]), Err(()));
         assert_eq!(read(&[1]), Err(())); // count but no item
         assert_eq!(read(&[1, 100]), Err(())); // item but no patch header

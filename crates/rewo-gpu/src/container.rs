@@ -380,11 +380,79 @@ fn push_quad(
     }
 }
 
+// -- the durability bar (M41) -------------------------------------------------
+//
+// `GuiGraphicsExtractor.itemBar`, which runs for any stack whose
+// `isBarVisible()` is true — `Item.isBarVisible` is `stack.isDamaged()`, so a
+// pristine tool has no bar at all rather than a full one.
+
+/// One slot's durability bar, in **screen pixels**.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemBar {
+    /// The slot's top-left, the same origin the icon is placed from.
+    pub x: f32,
+    pub y: f32,
+    /// Pixels per GUI pixel.
+    pub scale: f32,
+    /// `getBarWidth()`, already clamped to `0..=13`.
+    pub width: i32,
+    /// `getBarColor()` as linear-ish sRGB.
+    pub color: [f32; 3],
+}
+
+/// `Item.getBarWidth` — `clamp(round(13 - damage * 13 / maxDamage), 0, 13)`.
+///
+/// Note it counts **down** from 13: the argument is damage, and the bar shows
+/// what is left. Computing it as `13 * remaining / max` is off by a rounding
+/// step in the middle of the range, which is visible as a bar that disagrees
+/// with vanilla by a pixel on most of a tool's life.
+pub fn bar_width(damage: i32, max_damage: i32) -> i32 {
+    if max_damage <= 0 {
+        return 0;
+    }
+    let raw = 13.0 - damage as f32 * 13.0 / max_damage as f32;
+    raw.round().clamp(0.0, 13.0) as i32
+}
+
+/// `Item.getBarColor` — `Mth.hsvToRgb(healthPercentage / 3, 1, 1)`.
+///
+/// A third of the hue circle is red through yellow to green, which is why the
+/// division is by three and not by anything to do with the bar's length.
+pub fn bar_color(damage: i32, max_damage: i32) -> [f32; 3] {
+    if max_damage <= 0 {
+        return [1.0, 0.0, 0.0];
+    }
+    let health = ((max_damage - damage) as f32 / max_damage as f32).max(0.0);
+    hsv_to_rgb(health / 3.0, 1.0, 1.0)
+}
+
+/// `Mth.hsvToArgb`, transcribed including its integer sector arithmetic.
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
+    let h = ((hue * 6.0) as i32).rem_euclid(6);
+    let f = hue * 6.0 - h as f32;
+    let p = value * (1.0 - saturation);
+    let q = value * (1.0 - f * saturation);
+    let t = value * (1.0 - (1.0 - f) * saturation);
+    match h {
+        0 => [value, t, p],
+        1 => [q, value, p],
+        2 => [p, value, t],
+        3 => [p, q, value],
+        4 => [t, p, value],
+        _ => [value, p, q],
+    }
+}
+
+/// `itemBar`'s background fill, `-16777216` — opaque black.
+const BAR_BED: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
 pub struct ContainerPass {
     layout: vk::PipelineLayout,
     tooltip_bg: Rect,
     tooltip_frame: Rect,
     tooltip_verts: u32,
+    /// `(first vertex, count)` of this frame's durability bars.
+    bar_range: (u32, u32),
     set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
     pool: vk::DescriptorPool,
@@ -559,6 +627,7 @@ impl ContainerPass {
             tooltip_bg,
             tooltip_frame,
             tooltip_verts: 0,
+            bar_range: (0, 0),
         })
     }
 
@@ -569,8 +638,10 @@ impl ContainerPass {
     pub fn set_state(
         &mut self,
         extent: vk::Extent2D,
+        open: bool,
         hovered: Option<(i32, i32)>,
         tooltip: Option<((i32, i32), (i32, i32))>,
+        bars: &[ItemBar],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let (left, top, scale) = gui_origin(w, h);
@@ -579,10 +650,12 @@ impl ContainerPass {
         let quad = push_quad;
 
         // 1. The backdrop, over everything the world drew.
-        quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
-        // 2. The panel.
-        let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
-        quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+        if open {
+            quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
+            // 2. The panel.
+            let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
+            quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+        }
         // 3. The hovered slot's *back* highlight, at `slot - 4` and 24×24 —
         //    a four-pixel bleed on every side of the 16 px icon.
         let hl = hovered.map(|(sx, sy)| {
@@ -602,6 +675,40 @@ impl ContainerPass {
         if let Some((x, y, size)) = hl {
             quad(&mut v, x, y, size, size, self.highlight_front, WHITE, WHITE);
         }
+        // The bars belong with the front half — they go over the icons —
+        // and they are built whether or not the screen is open, because the
+        // hotbar draws them too.
+        let bars_from = v.len() as u32;
+        // 6. The durability bars, over the icons. Two fills per slot: a 13x2
+        //    black bed, then `getBarWidth()` x **1** of colour on top of it, so
+        //    the bottom row of black reads as the bar's shadow.
+        for bar in bars {
+            let px = |n: i32| n as f32 * bar.scale;
+            push_quad(
+                &mut v,
+                bar.x + px(2),
+                bar.y + px(13),
+                px(13),
+                px(2),
+                self.white,
+                BAR_BED,
+                BAR_BED,
+            );
+            if bar.width > 0 {
+                let c = [bar.color[0], bar.color[1], bar.color[2], 1.0];
+                push_quad(
+                    &mut v,
+                    bar.x + px(2),
+                    bar.y + px(13),
+                    px(bar.width),
+                    px(1),
+                    self.white,
+                    c,
+                    c,
+                );
+            }
+        }
+        self.bar_range = (bars_from, v.len() as u32 - bars_from);
         self.total_verts = v.len() as u32;
 
         // 5. The tooltip, last of all — `extractTooltipBackground` blits the
@@ -614,7 +721,13 @@ impl ContainerPass {
                 (self.tooltip_bg, TOOLTIP_BG_BORDER),
                 (self.tooltip_frame, TOOLTIP_FRAME_BORDER),
             ] {
-                nine_slice(&mut v, rect, border, bx, by, bw, bh, left, top, scale);
+                // **Screen space, not panel space.** `tooltip_position` works
+                // from the whole screen's GUI dimensions — it has to, because
+                // a tooltip flips against the *screen's* edge, not the
+                // panel's — so its result must not be offset by the panel's
+                // origin the way a slot's is. Adding `left`/`top` here puts
+                // the box a panel's width away from its own text.
+                nine_slice(&mut v, rect, border, bx, by, bw, bh, 0.0, 0.0, scale);
             }
         }
         self.tooltip_verts = v.len() as u32 - self.total_verts;
@@ -653,6 +766,12 @@ impl ContainerPass {
             self.back_verts,
             self.total_verts - self.back_verts,
         );
+    }
+
+    /// The durability bars. Drawn on their own so the hotbar can have them
+    /// without the panel behind it.
+    pub fn draw_bars(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        self.draw_range(gpu, cb, extent, self.bar_range.0, self.bar_range.1);
     }
 
     /// The tooltip, over the icons, the front highlight and the carried stack.

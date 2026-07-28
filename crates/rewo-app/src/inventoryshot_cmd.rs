@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 70;
+const EXPECTED_WITNESSES: usize = 79;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -87,6 +87,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_click_packet(&mut c, &paths)?;
     check_preview(&mut c);
     check_names(&mut c, &baked, &jar)?;
+    check_components(&mut c, &paths)?;
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -188,11 +189,7 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         "w2.a_full_container_reaches_the_hotbar_through_the_real_route",
         matched
             && inv.hotbar(2)
-                == Some(ItemSlot {
-                    item_id: 276,
-                    count: 5,
-                    has_components: false,
-                })
+                == plain(276, 5)
             && inv.hotbar(0).is_none(),
         format!(
             "hotbar 2 is {:?}, hotbar 0 empty. Menu slot {} is hotbar index 2 — the \
@@ -365,6 +362,24 @@ fn plain(item_id: i32, count: i32) -> Option<ItemSlot> {
         item_id,
         count,
         has_components: false,
+        components: 0,
+        damage: None,
+        max_damage: None,
+        enchanted: false,
+    })
+}
+
+/// A stack carrying a patch, identified by its digest (M41). Two stacks with
+/// the same `fingerprint` are the same components.
+fn patched_stack(item_id: i32, count: i32, fingerprint: u64) -> Option<ItemSlot> {
+    Some(ItemSlot {
+        item_id,
+        count,
+        has_components: true,
+        components: fingerprint,
+        damage: None,
+        max_damage: None,
+        enchanted: false,
     })
 }
 
@@ -543,24 +558,30 @@ fn check_screen(c: &mut Checker) {
     // of that ignorance.
     let mut inv4 = Inventory::default();
     let mut slots4 = [None; MENU_SLOTS];
-    slots4[9] = Some(ItemSlot {
-        item_id: 55,
-        count: 3,
-        has_components: true,
-    });
-    inv4.set_content(1, &slots4, plain(55, 5));
-    let patched = inv4.click_pickup(9, 0, &props).unwrap();
+    slots4[9] = patched_stack(55, 3, 0xAAAA);
+    inv4.set_content(1, &slots4, patched_stack(55, 5, 0xBBBB));
+    let differing = inv4.click_pickup(9, 0, &props).unwrap();
+    // …and the same two stacks with the *same* patch, which M35 could not tell
+    // apart from the case above and therefore also swapped.
+    let mut inv5 = Inventory::default();
+    let mut slots5 = [None; MENU_SLOTS];
+    slots5[9] = patched_stack(55, 3, 0xAAAA);
+    inv5.set_content(1, &slots5, patched_stack(55, 5, 0xAAAA));
+    let matching = inv5.click_pickup(9, 0, &props).unwrap();
     c.record(
-        "s9.a_component_bearing_stack_swaps_rather_than_merging",
-        patched.changed == vec![(9u16, plain(55, 5))]
-            && patched.carried.map(|s| s.has_components) == Some(true),
+        "s9.two_stacks_merge_when_their_components_match_and_swap_when_they_differ",
+        differing.changed == vec![(9u16, patched_stack(55, 5, 0xBBBB))]
+            && differing.carried == patched_stack(55, 3, 0xAAAA)
+            && matching.changed == vec![(9u16, patched_stack(55, 8, 0xAAAA))]
+            && matching.carried.is_none(),
         format!(
-            "same item id, but the slot's stack carries components: {:?} → the two \
-             swap. Rewo decodes *whether* a patch was present, never what it held, \
-             so treating a patched stack as unique is the direction that cannot \
-             destroy anything — the server corrects a missed merge, but a wrong \
-             merge would have fused two different tools",
-            patched.changed[0].1
+            "different patches swap ({:?}); identical ones merge to {:?}. M41 walks \
+             the patch and digests it, so `isSameItemSameComponents` is exact — \
+             M35 could only ask whether either side carried components at all, \
+             which swapped both of these and left two identically-enchanted books \
+             unable to stack",
+            differing.changed[0].1,
+            matching.changed[0].1
         ),
     );
 
@@ -1165,6 +1186,215 @@ fn check_names(
     Ok(())
 }
 
+/// The component walk (M41) — coverage, the values read out, and the digest
+/// that makes `isSameItemSameComponents` exact.
+fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
+    use rewo_data::components::{DataComponentIds, DataComponentRegistry};
+    use rewo_net::component_wire::{install_shapes, shape_for_id, CODECS};
+
+    let registry = DataComponentRegistry::load(&paths.registries_json())?;
+    let ids = DataComponentIds::load(&paths.registries_json())?;
+    let installed = install_shapes(registry.ids());
+    c.record(
+        "m1.every_transcribed_codec_resolves_to_a_registry_id",
+        installed == CODECS.len() && installed > 90,
+        format!(
+            "{installed} of {} table rows resolved against {} registered components. \
+             A row whose name the registry does not know is dropped rather than \
+             panicking, so this is what catches a component renamed by a version bump",
+            CODECS.len(),
+            registry.len()
+        ),
+    );
+    // The fail-closed half: a component with no codec must stay unwalkable.
+    // `minecraft:custom_data` is never network-synchronised, so it can never
+    // appear on the wire and is deliberately absent from the table.
+    let never_synced = registry.ids().get("minecraft:custom_data").copied();
+    c.record(
+        "m2.a_component_with_no_codec_is_not_walkable",
+        never_synced.is_some_and(|id| shape_for_id(id).is_none())
+            && shape_for_id(ids.damage).is_some(),
+        format!(
+            "custom_data (id {never_synced:?}) has no shape; damage (id {}) does. \
+             The walk refuses what it cannot measure rather than skipping a \
+             guessed number of bytes",
+            ids.damage
+        ),
+    );
+
+    // A synthetic patch, built exactly as the wire encodes one, walked through
+    // the production decoder.
+    let stack = |entries: &[(i32, Vec<u8>)], removed: &[i32]| -> Vec<u8> {
+        let mut v = Vec::new();
+        push_varint(&mut v, 1); // count
+        push_varint(&mut v, 276); // item
+        push_varint(&mut v, entries.len() as i32);
+        push_varint(&mut v, removed.len() as i32);
+        for (ty, value) in entries {
+            push_varint(&mut v, *ty);
+            v.extend_from_slice(value);
+        }
+        for ty in removed {
+            push_varint(&mut v, *ty);
+        }
+        v
+    };
+    let varint = |n: i32| {
+        let mut v = Vec::new();
+        push_varint(&mut v, n);
+        v
+    };
+    // An NBT string tag: type 8, then a modified-UTF8 length and bytes.
+    let nbt_string = |s: &str| {
+        let mut v = vec![8u8];
+        v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        v.extend_from_slice(s.as_bytes());
+        v
+    };
+
+    let read = |bytes: &[u8]| {
+        let mut r = rewo_proto::reader::PacketReader::new(bytes);
+        rewo_net::item_stack::read_optional(&mut r, ids).map(|s| (s, r.remaining()))
+    };
+
+    let damaged = stack(&[(ids.damage, varint(120))], &[]);
+    let got = read(&damaged);
+    let dmg = match &got {
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => {
+            (s.components.damage, s.aligned_stack(), *rest)
+        }
+        _ => (None, false, usize::MAX),
+    };
+    c.record(
+        "m3.a_damage_patch_is_read_and_leaves_the_reader_aligned",
+        dmg == (Some(120), true, 0),
+        format!("damage {:?}, walked {}, {} byte(s) left over", dmg.0, dmg.1, dmg.2),
+    );
+
+    // Three entries, the middle one a component the decoder walks but does not
+    // interpret — the whole point of the shape table is that the third is
+    // still reached.
+    let mixed = stack(
+        &[
+            (ids.unbreakable, Vec::new()), // `Unit` — **zero bytes**
+            (
+                registry.ids()["minecraft:enchantment_glint_override"],
+                vec![1],
+            ),
+            (ids.damage, varint(7)),
+        ],
+        &[],
+    );
+    let after = match read(&mixed) {
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => {
+            (s.components.damage, s.components.unbreakable, rest)
+        }
+        _ => (None, false, usize::MAX),
+    };
+    c.record(
+        "m4.the_walk_reaches_a_value_behind_two_others",
+        after == (Some(7), true, 0),
+        format!(
+            "damage {:?} and unbreakable {} read from behind a zero-byte `Unit` and \
+             an uninterpreted bool, with {} byte(s) left. Reading even one byte for \
+             `unbreakable` would shift everything after it",
+            after.0, after.1, after.2
+        ),
+    );
+
+    // The digest: same entries, same answer; a different value, a different one.
+    let a = read(&stack(&[(ids.damage, varint(5))], &[]));
+    let b = read(&stack(&[(ids.damage, varint(5))], &[]));
+    let d = read(&stack(&[(ids.damage, varint(6))], &[]));
+    let fp = |r: &Result<(rewo_net::item_stack::WireSlot, usize), ()>| match r {
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), _)) => Some(s.components.fingerprint),
+        _ => None,
+    };
+    c.record(
+        "m5.the_component_digest_is_equal_for_equal_patches_and_not_otherwise",
+        fp(&a).is_some() && fp(&a) == fp(&b) && fp(&a) != fp(&d),
+        format!(
+            "damage=5 twice gives {:?} and {:?}; damage=6 gives {:?}. This is what \
+             makes `isSameItemSameComponents` exact — M35 answered it with \
+             \"either side carries components\", which swapped every patched stack",
+            fp(&a),
+            fp(&b),
+            fp(&d)
+        ),
+    );
+    // A *removal* is not an absence, and must not digest like one.
+    let removed = read(&stack(&[], &[ids.damage]));
+    let empty = read(&stack(&[], &[]));
+    c.record(
+        "m6.a_removed_component_digests_differently_from_an_absent_one",
+        fp(&removed).is_some() && fp(&removed) != fp(&empty),
+        format!(
+            "removing damage gives {:?} against an empty patch's {:?}. \
+             `getOrDefault` answers a removal with the *type's* default rather \
+             than the item's prototype, so the two are different stacks",
+            fp(&removed),
+            fp(&empty)
+        ),
+    );
+
+    // A chat component is one NBT tag, which is why `custom_name` needs no
+    // codec of its own.
+    let named = read(&stack(&[(ids.custom_name, nbt_string("Old Faithful"))], &[]));
+    let name = match &named {
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => {
+            (s.components.custom_name.clone(), *rest)
+        }
+        _ => (None, usize::MAX),
+    };
+    c.record(
+        "m7.a_chat_component_reduces_to_one_nbt_tag",
+        name == (Some("Old Faithful".to_string()), 0),
+        format!(
+            "custom_name {:?} with {} byte(s) left — `ComponentSerialization`'s \
+             stream codec is `fromCodecWithRegistries`, which is one tag on the \
+             wire, so the walk needs the NBT reader and not the chat codec",
+            name.0, name.1
+        ),
+    );
+
+    // The durability bar's arithmetic, which is not a proportion of what is
+    // left but a count down from 13.
+    let widths = [
+        rewo_gpu::container::bar_width(0, 1561),
+        rewo_gpu::container::bar_width(780, 1561),
+        rewo_gpu::container::bar_width(1400, 1561),
+        rewo_gpu::container::bar_width(1561, 1561),
+    ];
+    c.record(
+        "m8.the_bar_counts_down_from_thirteen",
+        widths == [13, 7, 1, 0],
+        format!(
+            "{widths:?} for damage 0, 780, 1400 and 1561 of 1561. \
+             `round(13 - damage * 13 / max)` — computing it as \
+             `13 * remaining / max` rounds the other way in the middle of the range"
+        ),
+    );
+    let hues = [
+        rewo_gpu::container::bar_color(0, 100),
+        rewo_gpu::container::bar_color(50, 100),
+        rewo_gpu::container::bar_color(100, 100),
+    ];
+    c.record(
+        "m9.the_bar_runs_green_through_yellow_to_red",
+        hues[0] == [0.0, 1.0, 0.0]
+            && (hues[1][0] - 1.0).abs() < 1e-6
+            && (hues[1][1] - 1.0).abs() < 1e-6
+            && hues[2] == [1.0, 0.0, 0.0],
+        format!(
+            "full {:?}, half {:?}, empty {:?} — `hsvToRgb(health / 3, 1, 1)`, so a \
+             third of the hue circle. Dividing by anything else lands the halfway \
+             point off yellow",
+            hues[0], hues[1], hues[2]
+        ),
+    );
+    Ok(())
+}
+
 fn changed(a: &[u8], b: &[u8], x: u32, y: u32, w: u32, h: u32) -> i64 {
     let mut n = 0;
     for yy in y..(y + h).min(H) {
@@ -1558,14 +1788,33 @@ fn pixels_inner(
     let tip_box = changed_bounds(&no_tip, &with_tip);
     // The sprite is blitted `TOOLTIP_INSET` outside the text on every side.
     let inset = rewo_gpu::container::TOOLTIP_INSET;
+    // **Screen space, not panel space.** The positioner works from the whole
+    // screen's GUI size, because a tooltip flips against the screen's edge —
+    // so its result is not offset by the panel's origin the way a slot's is,
+    // and the text pass places the lines the same way. Adding `left`/`top`
+    // here put the box a panel's width from its own text, and this witness
+    // agreed with it until it was rewritten to bracket the *text*.
     let want = (
-        (left + (60 - inset) as f32 * scale) as u32,
-        (top + (40 - inset) as f32 * scale) as u32,
-        (left + (60 + 40 + inset) as f32 * scale) as u32,
-        (top + (40 + 8 + inset) as f32 * scale) as u32,
+        ((60 - inset) as f32 * scale) as u32,
+        ((40 - inset) as f32 * scale) as u32,
+        ((60 + 40 + inset) as f32 * scale) as u32,
+        ((40 + 8 + inset) as f32 * scale) as u32,
     );
+    // The property that matters: the box has to contain where the text lands.
+    let text_origin = ((60.0 * scale) as u32, (40.0 * scale) as u32);
     let fits = tip_box.is_some_and(|(x0, y0, x1, y1)| {
-        x0 >= want.0 && y0 >= want.1 && x1 <= want.2 && y1 <= want.3 && x1 > x0 && y1 > y0
+        x0 >= want.0
+            && y0 >= want.1
+            && x1 <= want.2
+            && y1 <= want.3
+            && x1 > x0
+            && y1 > y0
+            // …and it brackets the text, which is the half a box drawn in the
+            // wrong coordinate space fails.
+            && x0 <= text_origin.0
+            && y0 <= text_origin.1
+            && x1 >= text_origin.0
+            && y1 >= text_origin.1
     });
     c.record(
         "t4.the_tooltip_box_covers_the_text_plus_its_inset_and_no_more",

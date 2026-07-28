@@ -6,8 +6,12 @@
 //! and those numbers move between versions — so they are resolved by name here
 //! and never hard-coded, exactly like the packet ids (REWO_PLAN §0.0 gotcha 5).
 //!
-//! Only the components a decoder actually transcribes are listed; adding one
-//! means adding its stream codec too (see `rewo_net::item_stack`).
+//! Every registered component's id is kept (M41), not just the handful with
+//! a transcribed codec: `rewo_net::component_wire` is keyed by name and the
+//! wire by id, so the mapping has to cover whatever the registry ships. Which
+//! of them Rewo can actually *walk* is that module's table, and the two are
+//! deliberately separate — a component with an id and no codec is the
+//! fail-closed case, and it has to be nameable to be reported.
 
 use std::path::Path;
 
@@ -34,6 +38,66 @@ pub struct DataComponentIds {
     /// every charged crossbow made its stack unresolvable and suppressed the
     /// entity's whole combat pose.
     pub charged_projectiles: i32,
+    /// The six components M41 reads a *value* out of, rather than merely
+    /// walking past. Each is resolved by name for the same reason the three
+    /// above are: the numbers move between versions.
+    pub max_damage: i32,
+    pub rarity: i32,
+    pub unbreakable: i32,
+    pub custom_name: i32,
+    pub item_name: i32,
+    pub lore: i32,
+    pub enchantments: i32,
+}
+
+/// Every `minecraft:data_component_type` the registry ships, by name (M41).
+#[derive(Clone, Debug, Default)]
+pub struct DataComponentRegistry {
+    by_name: std::collections::HashMap<String, i32>,
+    by_id: std::collections::HashMap<i32, String>,
+}
+
+impl DataComponentRegistry {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let json = read_json_file(path)?;
+        let entries = json
+            .get("minecraft:data_component_type")
+            .and_then(|r| r.get("entries"))
+            .and_then(|e| e.as_object())
+            .ok_or("registries.json: no minecraft:data_component_type registry")?;
+        let mut by_name = std::collections::HashMap::new();
+        let mut by_id = std::collections::HashMap::new();
+        for (name, entry) in entries {
+            let Some(id) = entry.get("protocol_id").and_then(|i| i.as_i64()) else {
+                continue;
+            };
+            by_name.insert(name.clone(), id as i32);
+            by_id.insert(id as i32, name.clone());
+        }
+        if by_name.is_empty() {
+            return Err("registries.json: data_component_type registry is empty".into());
+        }
+        Ok(Self { by_name, by_id })
+    }
+
+    pub fn ids(&self) -> &std::collections::HashMap<String, i32> {
+        &self.by_name
+    }
+
+    /// The registry name for a protocol id — used to *report* which component
+    /// stopped a walk, which is the difference between a diagnosable failure
+    /// and a mystery.
+    pub fn name_of(&self, id: i32) -> Option<&str> {
+        self.by_id.get(&id).map(String::as_str)
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
 }
 
 impl DataComponentIds {
@@ -56,6 +120,13 @@ impl DataComponentIds {
             swing_animation: id("minecraft:swing_animation")?,
             damage: id("minecraft:damage")?,
             charged_projectiles: id("minecraft:charged_projectiles")?,
+            max_damage: id("minecraft:max_damage")?,
+            rarity: id("minecraft:rarity")?,
+            unbreakable: id("minecraft:unbreakable")?,
+            custom_name: id("minecraft:custom_name")?,
+            item_name: id("minecraft:item_name")?,
+            lore: id("minecraft:lore")?,
+            enchantments: id("minecraft:enchantments")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

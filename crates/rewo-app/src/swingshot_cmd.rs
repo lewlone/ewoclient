@@ -116,6 +116,15 @@ pub fn run(args: SwingshotArgs) -> Result<(), String> {
     let entity_types = EntityTypes::load(&paths.registries_json())?;
     let items = Items::load(&paths.registries_json())?;
     let components = DataComponentIds::load(&paths.registries_json())?;
+    // M41: the patch walk is table-driven and the table is keyed by name, so
+    // it has to be installed before any synthetic patch is decoded. Without
+    // this every component reads as unwalkable and each of the witnesses that
+    // builds a patch below fails — which is how this line came to be here.
+    {
+        let registry =
+            rewo_data::components::DataComponentRegistry::load(&paths.registries_json())?;
+        rewo_net::component_wire::install_shapes(registry.ids());
+    }
     let wire = SwingWireData {
         prototypes: SwingAnimations::resolve(&items)?,
         components,
@@ -648,9 +657,16 @@ fn push_stack(b: &mut Vec<u8>, s: &Stack, comp: DataComponentIds) {
             varint(*item, b);
             varint(1, b);
             varint(0, b);
-            // `minecraft:enchantments` (id 13 in 26.2) — a codec this decoder
-            // does not transcribe, so the walk must stop right here.
-            varint(13, b);
+            // A component id no registry can contain, so the walk has no
+            // shape for it and must stop right here.
+            //
+            // This used to name `minecraft:enchantments`, which was untranscribed
+            // when the witness was written and is not any more — M41 walks 97 of
+            // the 111 codecs, and the fixture quietly stopped testing what it
+            // claimed. An impossible id cannot rot the same way: the property is
+            // "an id with no shape suppresses", not "this particular component
+            // happens to be uncovered today".
+            varint(i32::MAX, b);
             b.extend_from_slice(&[0x01, 0x02, 0x03]);
         }
     }

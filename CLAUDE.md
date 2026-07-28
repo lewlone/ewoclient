@@ -2788,6 +2788,39 @@ validation Rewo has.
   interactions live-verified with **0 container resyncs**. **Blocked, not
   skipped:** durability bars and enchantment/lore tooltip lines need the
   *contents* of a `DataComponentPatch`, which Rewo does not decode.
+- **M41 the `DataComponentPatch` decode (2026-07-28)** — the blocker every
+  milestone since M35 named. **The patch has no length prefix**: each entry's
+  value uses that component's own stream codec, so an untranscribed one cannot
+  be *skipped* — the reader parks mid-value and the rest of the packet is
+  garbage. That is why M19 knew 3 of 111 codecs and treated the rest as fatal.
+  Nearly all 104 syncable codecs compose from a dozen primitives, so
+  `rewo-net/src/component_wire.rs` writes them as **data** (a `Shape` tree per
+  component) and one interpreter walks them: **97 of 111 transcribed**, and 7
+  of the 14 remaining are **never network-synchronised**, so there are 7 real
+  gaps. Wire facts that read backwards: **a chat component is one NBT tag**
+  (`fromCodecWithRegistries` — which makes `custom_name`/`item_name`/`lore`
+  walkable with no chat codec at all); **`Unit` is zero bytes**; **`holderSet`'s
+  var-int is `count + 1` and a literal 0 means a *tag name* follows**, not an
+  empty set; `holder` is `id + 1` with 0 = inline while `holderRegistry` is
+  raw; `either` writes **true for the left**. A sorted digest of every entry's
+  (type id, raw bytes) makes **`isSameItemSameComponents` exact** — M35 could
+  only ask "carries components at all", so every patched stack swapped and two
+  identically-enchanted books could not stack; a *removal* folds in its id
+  because `getOrDefault` answers it with the type's default, not the item's
+  prototype. **Durability bars**: `round(13 - damage * 13 / max)` **counts
+  down**, colour is `hsvToRgb(health / 3, 1, 1)`, the draw is a 13x2 black bed
+  under a 1px bar, and `isBarVisible` is `isDamaged()` so a pristine tool has
+  none; only the numerator is on the wire, so `gen_item_props.py` grew a
+  `max_damage` column (84 items). Tooltips gained the name override, lore and
+  `Unbreakable`. **Two witnesses caught real bugs** — the tooltip box was drawn
+  in panel space while its text was in screen space (and `t4` had agreed with
+  the implementation until rewritten to bracket the *text*), and `swingshot`'s
+  "unwalkable" fixture named `enchantments`, which M41 transcribes, so it
+  silently stopped testing its claim (now an impossible id). Gate
+  `inventoryshot` 70 -> **79**; **628 tests**; live: named stacks **merge** and
+  differently-named ones **swap**, 0 container resyncs. **Open:** the
+  enchantment registry (a datapack registry Rewo does not decode) blocks the
+  enchantment tooltip lines and the glint.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

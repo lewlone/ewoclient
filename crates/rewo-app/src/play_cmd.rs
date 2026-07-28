@@ -300,6 +300,18 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.entity_classes = Some(std::sync::Arc::new(
         rewo_data::entity_types::EntityClasses::resolve(&data.entity_types)?,
     ));
+    // The component walker is keyed by name and the wire by id, so the table
+    // is installed once the registry is known. Without this every component is
+    // unwalkable and the first enchanted sword in a packet costs every stack
+    // after it — so the count is logged rather than assumed.
+    {
+        let n = rewo_net::component_wire::install_shapes(data.component_registry.ids());
+        log::info!(
+            "rewo-net: {n}/{} data component codec(s) transcribed of {} registered",
+            rewo_net::component_wire::CODECS.len(),
+            data.component_registry.len()
+        );
+    }
     session.swing_data = Some(rewo_net::item_stack::SwingWireData {
         prototypes: rewo_data::swing_anim::SwingAnimations::resolve(&data.items)?,
         components: data.components,

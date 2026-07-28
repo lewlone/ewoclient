@@ -60,6 +60,7 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "..", "crates", "rewo-data", "src", "item_props_table.rs")
 
 SIZE_KEY = "minecraft:max_stack_size"
+DAMAGE_KEY = "minecraft:max_damage"
 EQUIP_KEY = "minecraft:equippable"
 # The members `ArmorSlot`/`InventoryMenu` name, plus the two hands. A report
 # naming anything else is a hard error rather than a dropped row.
@@ -153,22 +154,36 @@ def main():
                 die(f"{name}: equippable slot {slot!r} is not one this table "
                     f"emits ({SLOT_VARIANTS})")
 
-        if size != default or slot is not None:
-            rows[item] = (size if size != default else None, slot)
+        # `minecraft:max_damage` — the denominator of a durability bar.
+        # Only damageable items carry it, so its absence is the answer for
+        # everything else rather than a gap.
+        max_damage = components.get(DAMAGE_KEY)
+        if max_damage is not None:
+            if not isinstance(max_damage, int) or isinstance(max_damage, bool):
+                die(f"{name}: `{DAMAGE_KEY}` is {max_damage!r}, not an integer")
+            if max_damage <= 0:
+                die(f"{name}: `{DAMAGE_KEY}` is {max_damage}, which cannot be a "
+                    f"denominator")
+
+        if size != default or slot is not None or max_damage is not None:
+            rows[item] = (size if size != default else None, slot, max_damage)
 
     body = "\n".join(
-        '    ("minecraft:{}", {}, {}),'.format(
+        '    ("minecraft:{}", {}, {}, {}),'.format(
             item,
             "None" if s is None else f"Some({s})",
-            "None" if q is None else f"Some(EquipSlot::{q.capitalize()})")
-        for item, (s, q) in sorted(rows.items()))
+            "None" if q is None else f"Some(EquipSlot::{q.capitalize()})",
+            "None" if d is None else f"Some({d})")
+        for item, (s, q, d) in sorted(rows.items()))
 
-    sizes, slots = {}, {}
-    for s, q in rows.values():
+    sizes, slots, damaged = {}, {}, 0
+    for s, q, d in rows.values():
         if s is not None:
             sizes[s] = sizes.get(s, 0) + 1
         if q is not None:
             slots[q] = slots.get(q, 0) + 1
+        if d is not None:
+            damaged += 1
     n_sized = sum(sizes.values())
     size_summary = ", ".join(f"{n} at {v}" for v, n in sorted(sizes.items()))
     slot_summary = ", ".join(f"{n} {v}" for v, n in sorted(slots.items()))
@@ -180,8 +195,9 @@ def main():
 //!
 //! Source: the datagen per-item component report for {VERSION}. Of {total}
 //! items, {n_sized} differ from `Item.DEFAULT_MAX_STACK_SIZE` = {default}
-//! ({size_summary}) and {sum(slots.values())} carry `minecraft:equippable`
-//! ({slot_summary}). Items that are neither are not listed.
+//! ({size_summary}), {sum(slots.values())} carry `minecraft:equippable`
+//! ({slot_summary}) and {damaged} carry `minecraft:max_damage`. Items with
+//! none of the three are not listed.
 //!
 //! Both feed the container click arithmetic. A wrong cap or a wrongly-allowed
 //! armour placement predicts a wrong slot, the server's `HashedStack.matches`
@@ -203,15 +219,28 @@ pub const ABSOLUTE_MAX_STACK: i32 = {absolute_max};
 
 /// Every item that is not (default stack size, not equippable), sorted by name
 /// so a binary search finds it. A `None` size means the default.
-pub const ITEM_PROPS: &[(&str, Option<i32>, Option<EquipSlot>)] = &[
+pub const ITEM_PROPS: &[(&str, Option<i32>, Option<EquipSlot>, Option<i32>)] = &[
 {body}
 ];
 
-fn lookup(name: &str) -> Option<(Option<i32>, Option<EquipSlot>)> {{
+type Props = (Option<i32>, Option<EquipSlot>, Option<i32>);
+
+fn lookup(name: &str) -> Option<Props> {{
     ITEM_PROPS
-        .binary_search_by(|(n, _, _)| (*n).cmp(name))
+        .binary_search_by(|(n, _, _, _)| (*n).cmp(name))
         .ok()
-        .map(|i| (ITEM_PROPS[i].1, ITEM_PROPS[i].2))
+        .map(|i| (ITEM_PROPS[i].1, ITEM_PROPS[i].2, ITEM_PROPS[i].3))
+}}
+
+/// `stack.getMaxDamage()` — the denominator of a durability bar, or `None` for
+/// an item that cannot be damaged.
+///
+/// The **numerator** is `minecraft:damage`, which does travel on the wire as a
+/// patch; this does not, because a pickaxe's 1561 is the same on every
+/// pickaxe. A patch that overrides `max_damage` wins over this, which is why
+/// the caller takes the patch's value first.
+pub fn max_damage(name: &str) -> Option<i32> {{
+    lookup(name).and_then(|(_, _, d)| d)
 }}
 
 /// `stack.getMaxStackSize()` for an item name.
@@ -224,7 +253,7 @@ fn lookup(name: &str) -> Option<(Option<i32>, Option<EquipSlot>)> {{
 /// `Items::name` returns `None`, and the click path declines to predict rather
 /// than guessing a cap.
 pub fn max_stack_size(name: &str) -> i32 {{
-    lookup(name).and_then(|(s, _)| s).unwrap_or(DEFAULT_MAX_STACK)
+    lookup(name).and_then(|(s, _, _)| s).unwrap_or(DEFAULT_MAX_STACK)
 }}
 
 /// The slot an item can be equipped into, or `None` if it carries no
@@ -234,7 +263,7 @@ pub fn max_stack_size(name: &str) -> i32 {{
 /// so an item without the component is refused by every armour slot — which is
 /// why this returns an `Option` rather than defaulting to anything.
 pub fn equip_slot(name: &str) -> Option<EquipSlot> {{
-    lookup(name).and_then(|(_, q)| q)
+    lookup(name).and_then(|(_, q, _)| q)
 }}
 
 #[cfg(test)]
@@ -246,6 +275,14 @@ mod tests {{
     #[test]
     fn the_table_is_sorted() {{
         assert!(ITEM_PROPS.windows(2).all(|w| w[0].0 < w[1].0));
+    }}
+
+    /// A durability bar needs both halves, and only one of them is on the
+    /// wire.
+    #[test]
+    fn damageable_items_carry_a_maximum() {{
+        assert_eq!(max_damage("minecraft:diamond_pickaxe"), Some(1561));
+        assert_eq!(max_damage("minecraft:dirt"), None);
     }}
 
     /// One item per stack-size bucket, pinned by hand from the report, so a

@@ -40,15 +40,27 @@ pub struct ItemSlot {
     /// Item registry protocol id, exactly as sent.
     pub item_id: i32,
     pub count: i32,
-    /// Whether the stack's `DataComponentPatch` carried any entry (M35).
-    ///
-    /// Not *which* — comparing components needs the per-type codecs, and only
-    /// a handful are transcribed. But `ItemStack.isSameItemSameComponents`
-    /// gates the merge arms of the click arithmetic, and answering it wrongly
-    /// in the merging direction would fuse two stacks vanilla keeps apart. So
-    /// a patched stack is never "the same" as anything: it swaps instead.
-    /// See [`Inventory::same_item_same_components`].
+    /// Whether the stack's `DataComponentPatch` carried any entry.
     pub has_components: bool,
+    /// A digest of the stack's whole patch (M41).
+    ///
+    /// `0` for a stack with no patch. Two stacks are the same components iff
+    /// this matches, which is what `ItemStack.isSameItemSameComponents` asks
+    /// and what M35 could only approximate: before the component codecs were
+    /// transcribed, "carries any component at all" was the only honest answer,
+    /// so every patched stack swapped rather than merging.
+    pub components: u64,
+    /// `minecraft:damage`, for the durability bar (M41). `None` is an
+    /// undamaged stack — the component is absent until something wears it.
+    pub damage: Option<i32>,
+    /// `minecraft:max_damage` **when the patch overrides it**. Usually `None`,
+    /// because the item's prototype carries the real maximum; a bar therefore
+    /// needs the item table too.
+    pub max_damage: Option<i32>,
+    /// Whether the patch carried `minecraft:enchantments` with at least one
+    /// entry — `ItemStack.isEnchanted`, which is what the glint and the
+    /// tooltip's enchantment lines key on.
+    pub enchanted: bool,
 }
 
 /// `InventoryMenu` (container 0) — the 46-slot menu the server synchronises.
@@ -85,6 +97,8 @@ pub struct Inventory {
     /// It also sends one on join and on any inventory change it originates,
     /// so the count is only meaningful as a delta across a click.
     content_updates: u32,
+    /// Tooltip text by component fingerprint (M41) — see [`SlotText`].
+    texts: std::collections::HashMap<u64, SlotText>,
 }
 
 impl Default for Inventory {
@@ -95,6 +109,7 @@ impl Default for Inventory {
             selected: 0,
             state_id: 0,
             content_updates: 0,
+            texts: std::collections::HashMap::new(),
         }
     }
 }
@@ -217,6 +232,60 @@ impl Inventory {
     /// re-sends the contents, and stale slots would show through until it did.
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+}
+
+/// The text a stack's components contribute to its tooltip (M41).
+///
+/// Kept beside [`Inventory`] rather than inside [`ItemSlot`] because the slot
+/// is `Copy` and the click arithmetic moves it through a dozen expressions;
+/// growing it to own three strings would make every one of those a clone.
+///
+/// Keyed by the **component fingerprint**, which is the reason this works at
+/// all: the text is derived from the patch, so two slots holding the same
+/// components share one entry, and a locally-predicted click that moves a
+/// stack from one slot to another carries its text with it for free — the
+/// fingerprint travels in the `ItemSlot`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SlotText {
+    /// `custom_name` if present, else `item_name`. Either overrides the item's
+    /// translated name; the caller supplies that fallback.
+    pub name: Option<String>,
+    pub lore: Vec<String>,
+    pub rarity: Option<i32>,
+    pub unbreakable: bool,
+}
+
+impl SlotText {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.lore.is_empty() && self.rarity.is_none() && !self.unbreakable
+    }
+}
+
+/// How many distinct component sets keep their text.
+///
+/// One entry per *patch*, not per slot, so an ordinary inventory holds a
+/// handful. The cap exists because a server that sends thousands of distinct
+/// patches would otherwise grow this without bound; past it the oldest are
+/// dropped and those stacks fall back to their translated name, which is a
+/// missing tooltip line rather than a wrong one.
+const MAX_SLOT_TEXTS: usize = 512;
+
+impl Inventory {
+    /// Remember what a component set says, so a tooltip can read it back.
+    pub fn record_text(&mut self, fingerprint: u64, text: SlotText) {
+        if fingerprint == 0 || text.is_empty() {
+            return;
+        }
+        if self.texts.len() >= MAX_SLOT_TEXTS {
+            self.texts.clear();
+        }
+        self.texts.insert(fingerprint, text);
+    }
+
+    /// What this stack's components say, if anything was recorded.
+    pub fn text_of(&self, stack: ItemSlot) -> Option<&SlotText> {
+        self.texts.get(&stack.components)
     }
 }
 
@@ -377,21 +446,20 @@ pub struct ClickPrediction {
 }
 
 impl Inventory {
-    /// `ItemStack.isSameItemSameComponents`, as far as Rewo can answer it.
+    /// `ItemStack.isSameItemSameComponents` (M41 — exact).
     ///
-    /// The item ids must match **and neither stack may carry components**.
-    /// Rewo decodes whether a patch was present but not what was in it, so a
-    /// patched stack is treated as unique. The error is one-directional by
-    /// construction: two stacks vanilla would merge may be swapped instead,
-    /// but two stacks vanilla keeps apart are never fused. The server corrects
-    /// the first case with a `container_set_content`; the second would have
-    /// destroyed an item's components.
+    /// The item ids must match and the patches must agree. M35 could only ask
+    /// "does either side carry components at all", because nothing decoded
+    /// them; every patched stack therefore swapped rather than merging, and
+    /// two identically-enchanted books would not stack. Now the patch is
+    /// walked and digested, so equal patches compare equal.
     ///
-    /// In practice the case barely arises: the components that travel on a
-    /// stack — damage, enchantments — belong to items that stack to one, where
-    /// no merge arm is ever reached.
+    /// The remaining error is a digest collision, which would merge two stacks
+    /// vanilla keeps apart — the direction M35's approximation was written to
+    /// avoid. At 64 bits over the few dozen stacks in one inventory that is
+    /// far less likely than the approximation it replaces was to be wrong.
     pub fn same_item_same_components(a: ItemSlot, b: ItemSlot) -> bool {
-        a.item_id == b.item_id && !a.has_components && !b.has_components
+        a.item_id == b.item_id && a.components == b.components
     }
 
     /// `Slot.mayPlace`.
@@ -567,15 +635,14 @@ impl Inventory {
 pub const CONTAINER_INPUT_QUICK_MOVE: i32 = 1;
 
 impl Inventory {
-    /// `ItemStack.isStackable()` — `getMaxStackSize() > 1 && !isDamaged()`.
+    /// `ItemStack.isStackable()` — `getMaxStackSize() > 1 && !isDamaged()`
+    /// (M41 — exact).
     ///
-    /// Rewo cannot see damage, only whether a stack carries components at all,
-    /// so a patched stack is treated as unstackable. That is the same
-    /// one-directional caution [`Self::same_item_same_components`] takes, and
-    /// it errs the same way: a damaged tool is never merged into another,
-    /// which is what vanilla does anyway.
+    /// `isDamaged` is `damage > 0`, which the patch now carries. M35 read it
+    /// as "carries any component", which made an item with, say, a custom name
+    /// unstackable when vanilla stacks it happily.
     fn is_stackable(stack: ItemSlot, props: ItemProps) -> bool {
-        props.max_stack > 1 && !stack.has_components
+        props.max_stack > 1 && stack.damage.unwrap_or(0) <= 0
     }
 
     /// `AbstractContainerMenu.moveItemStackTo` — two passes over a slot range.
@@ -769,6 +836,10 @@ mod tests {
             item_id: id,
             count: n,
             has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
         })
     }
 

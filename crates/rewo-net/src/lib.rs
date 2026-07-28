@@ -12,6 +12,7 @@
 
 pub mod biome_parse;
 pub mod chat_sign;
+pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
 pub mod effects;
@@ -1074,21 +1075,45 @@ pub fn route_game_event(
 /// Returns `None` for an empty stack and `Err` when the reader could not be
 /// left aligned — see [`rewo_world::inventory`] on why a misaligned slot has to
 /// abandon the whole packet rather than half-apply it.
+type SlotAndText = (
+    Option<rewo_world::inventory::ItemSlot>,
+    Option<(u64, rewo_world::inventory::SlotText)>,
+);
+
 fn read_slot(
     r: &mut rewo_proto::reader::PacketReader,
     components: rewo_data::components::DataComponentIds,
-) -> Result<Option<rewo_world::inventory::ItemSlot>, ()> {
+) -> Result<SlotAndText, ()> {
     let slot = crate::item_stack::read_optional(r, components)?;
     if !slot.aligned() {
         return Err(());
     }
     Ok(match slot {
-        crate::item_stack::WireSlot::Empty => None,
-        crate::item_stack::WireSlot::Stack(s) => Some(rewo_world::inventory::ItemSlot {
-            item_id: s.item_id,
-            count: s.count,
-            has_components: s.patched,
-        }),
+        crate::item_stack::WireSlot::Empty => (None, None),
+        crate::item_stack::WireSlot::Stack(s) => {
+            let c = &s.components;
+            let text = rewo_world::inventory::SlotText {
+                // `getItemName` is `getOrDefault(ITEM_NAME, item.getName())`
+                // and `getHoverName` wraps that in `CUSTOM_NAME`, so the two
+                // are a two-level override rather than alternatives.
+                name: c.custom_name.clone().or_else(|| c.item_name.clone()),
+                lore: c.lore.clone(),
+                rarity: c.rarity,
+                unbreakable: c.unbreakable,
+            };
+            (
+                Some(rewo_world::inventory::ItemSlot {
+                    item_id: s.item_id,
+                    count: s.count,
+                    has_components: s.patched,
+                    components: c.fingerprint,
+                    damage: c.damage,
+                    max_damage: c.max_damage,
+                    enchanted: !c.enchantments.is_empty(),
+                }),
+                Some((c.fingerprint, text)),
+            )
+        }
     })
 }
 
@@ -1129,7 +1154,15 @@ pub fn apply_container_set_content(
     let Ok(carried) = read_slot(&mut r, components) else {
         return false;
     };
-    inventory.set_content(state_id, &slots, carried)
+    // The tooltip text is recorded before the contents, so a slot is never
+    // visible without the text its components imply.
+    for (_, text) in slots.iter().chain(std::iter::once(&carried)) {
+        if let Some((fingerprint, text)) = text {
+            inventory.record_text(*fingerprint, text.clone());
+        }
+    }
+    let stacks: Vec<_> = slots.into_iter().map(|(s, _)| s).collect();
+    inventory.set_content(state_id, &stacks, carried.0)
 }
 
 /// `ClientboundContainerSetSlotPacket` (M34).
@@ -1149,9 +1182,12 @@ pub fn apply_container_set_slot(
     if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
         return false;
     }
-    let Ok(item) = read_slot(&mut r, components) else {
+    let Ok((item, text)) = read_slot(&mut r, components) else {
         return false;
     };
+    if let Some((fingerprint, text)) = text {
+        inventory.record_text(fingerprint, text);
+    }
     inventory.set_slot(state_id, slot as i32, item)
 }
 
@@ -1505,7 +1541,7 @@ pub(crate) fn apply_set_equipment(
         if let Some(hand) = hand {
             let item = match slot {
                 WireSlot::Empty => HandItem::Empty,
-                WireSlot::Stack(s) => match item_stack::resolve_swing(&s, &data.prototypes) {
+                WireSlot::Stack(ref s) => match item_stack::resolve_swing(s, &data.prototypes) {
                     // A stack whose swing resolves has a walked patch and a
                     // registered item, which is exactly what `resolve_use`
                     // needs too — so the `None` arm below is unreachable in
@@ -2163,6 +2199,13 @@ mod animate_tests {
         apply_swing_effect(&[5, 3, 1, 100, 0], &mut t, ids, true, Some(&classes()));
         assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
         let comps = DataComponentIds {
+            max_damage: 4,
+            rarity: 5,
+            unbreakable: 6,
+            custom_name: 8,
+            item_name: 9,
+            lore: 10,
+            enchantments: 11,
             swing_animation: 40,
             damage: 3,
             charged_projectiles: 7,

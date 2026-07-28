@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M40 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M41 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -355,7 +355,7 @@ match.
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `inventoryshot` 70/70, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  `inventoryshot` 79/79, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
   29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
@@ -374,12 +374,16 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The inventory screen is done to the limit of what Rewo can see.** What
-   is left there is blocked rather than unbuilt: durability bars, enchantment
-   and lore tooltip lines, and armour trim models all need the *contents* of a
-   stack's `DataComponentPatch`, and `rewo_net::item_stack` reports only
-   whether one was present. Decoding the component codecs is the milestone
-   that unblocks all of them at once. The recipe book is a separate screen.
+1. **The enchantment registry.** M41 decodes the component patch, so an
+   enchanted stack now yields ids and levels — and nothing to translate them
+   with, because `minecraft:enchantment` is a *datapack* registry sent at
+   runtime in `registry_data` and Rewo decodes only biomes and dimension
+   types. Decoding it unblocks the enchantment tooltip lines and the glint.
+   Beyond that: the seven syncable components still without codecs
+   (`equippable`, `can_place_on`, `can_break`, `blocks_attacks`,
+   `jukebox_playable`, `kinetic_weapon`, `bees`), and armour trim *models*,
+   which need the trim's material and pattern resolved to asset ids rather
+   than merely walked past.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6347,6 +6351,147 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M41 — decoding the `DataComponentPatch` (2026-07-28)
+
+The blocker every milestone since M35 has named. Durability bars, enchantment
+and lore tooltip lines, armour trim models and an exact
+`isSameItemSameComponents` were all waiting on the same thing: Rewo could see
+*whether* a stack carried a component patch and never what was in it.
+
+#### Why it was hard, and why it is a table
+
+The patch encodes each entry's value with that component's **own stream codec
+and no length prefix**. So a codec you have not transcribed cannot be skipped —
+the reader parks mid-value and every stack after it in the packet is parsed out
+of garbage. That is why M19 transcribed three codecs and treated the other 108
+as fatal, and why one enchanted sword in an equipment update cost the whole
+rest of the packet.
+
+26.2 registers **111** components, 104 network-synchronised. Nearly all of them
+are built from a dozen primitives by the same handful of combinators, so
+`rewo-net/src/component_wire.rs` writes the codecs as **data** — a `Shape` tree
+per component — and one interpreter walks them. A new component is a table row,
+and the coverage is a number a gate can read rather than a claim.
+
+**97 of 111 transcribed. Of the 14 left, 7 are never network-synchronised**
+(`custom_data`, `lock`, `recipes`, `map_decorations`, `container_loot`,
+`debug_stick_state`, `intangible_projectile`) and so cannot appear on the wire
+at all. The seven real gaps are `bees`, `blocks_attacks`, `can_break`,
+`can_place_on`, `equippable`, `jukebox_playable` and `kinetic_weapon`. Reaching
+one still fails closed — and now says so, naming the component id, which turns
+"an item is missing from my inventory" into a table row.
+
+#### Wire facts that read backwards
+
+- **A chat component is one NBT tag.** `ComponentSerialization.STREAM_CODEC` is
+  `fromCodecWithRegistries`, which writes a tag and parses it with a Codec — so
+  `custom_name`, `item_name` and `lore` are walkable through the NBT reader
+  Rewo already had, without transcribing the chat codec at all. That one fact
+  covers three components and every future `fromCodec*` one.
+- **`Unit` is zero bytes.** `unbreakable` is a marker: its presence *is* the
+  value. Reading even one byte for it shifts everything after.
+- **`holderSet`'s var-int is not a count.** It is `count + 1`, and a literal
+  `0` means a **tag name follows as a string** rather than any entries. So `0`
+  is one string, `1` is the empty set, and `n` is `n - 1` ids.
+- **`holder` is `id + 1` with `0` meaning an inline value; `holderRegistry` is
+  the raw id.** M14 recorded the same distinction for a different codec; it
+  bites again here, and reading one as the other shifts every id by one before
+  desynchronising on the first direct holder.
+- **`either` writes `true` for the *left*** alternative, which is the opposite
+  of the intuition that a flag marks the special case.
+
+#### The fingerprint, and what it fixes
+
+Every entry's raw value bytes are digested with its type id, **sorted by type
+id**, into one 64-bit number. Sorted because the patch is written from a map
+and its iteration order is not part of its meaning; a removal folds in its own
+id, because `getOrDefault` answers a removal with the *type's* default rather
+than the item's prototype, so "damage removed" and "damage absent" are
+different stacks.
+
+That makes `isSameItemSameComponents` **exact**. M35 could only ask "does
+either side carry components at all", so every patched stack swapped rather
+than merging and two identically-enchanted books could not stack. It also fixes
+`isStackable`, which is `maxStackSize > 1 && !isDamaged()` — M35 read the
+second half as "carries any component", which made a custom-named stack of dirt
+unstackable when vanilla stacks it happily.
+
+The remaining error is a digest collision, which would merge two stacks vanilla
+keeps apart — the direction M35's approximation was built to avoid. At 64 bits
+over the few dozen stacks in an inventory that is far less likely than the
+approximation it replaces was to be wrong.
+
+#### Durability bars
+
+`Item.getBarWidth` is `clamp(round(13 - damage * 13 / maxDamage), 0, 13)` — it
+**counts down from 13**, and computing it as `13 * remaining / max` rounds the
+other way through the middle of the range. The colour is
+`hsvToRgb(health / 3, 1, 1)`: a third of the hue circle, red through yellow to
+green. The draw is a 13x2 black bed with `getBarWidth()` x **1** of colour on
+top, so the bottom row of black reads as the bar's shadow. And
+`isBarVisible()` is `isDamaged()`, so a pristine tool has **no bar** rather
+than a full one.
+
+Only the numerator is on the wire. `minecraft:max_damage` lives in the item's
+prototype — every diamond pickaxe has the same 1561 — so
+`tools/gen_item_props.py` grew a third column and the generated table now
+carries it for the 84 damageable items. A patch that overrides it still wins.
+
+#### Tooltips
+
+The lines are now `getStyledHoverName` (custom_name over item_name over the
+translated id, coloured by the rarity component), the lore, and `Unbreakable` —
+vanilla's order, and the gap after the **first** line only.
+
+The enchantment lines are still missing, and deliberately: they need each
+enchantment's display name, and `minecraft:enchantment` is a **datapack**
+registry sent at runtime in `registry_data`, which Rewo does not decode. The
+patch gives ids and levels and nothing to translate them with. Printing
+"Enchanted" instead would be inventing a line vanilla never shows.
+
+The tooltip text is kept beside `Inventory` keyed by the **component
+fingerprint**, not by slot — `ItemSlot` is `Copy` and the click arithmetic
+moves it through a dozen expressions. Keying by the fingerprint means a
+locally-predicted click that moves a stack carries its text along for free.
+
+#### Two witnesses caught real bugs
+
+The **tooltip box was drawn in panel space while its text was drawn in screen
+space**, putting the box a panel's width from its own words. `t4` had passed
+throughout, because I wrote its expectation to match the implementation instead
+of to bracket the text. It now asserts that the box contains the text's origin,
+which is the property a wrong coordinate space fails.
+
+And `swingshot`'s "an unwalkable patch suppresses the pose" fixture named
+`minecraft:enchantments` as its untranscribed codec — which M41 transcribes, so
+the witness quietly stopped testing its own claim and started asserting the
+opposite. It now uses an **impossible** component id, which cannot rot the same
+way: the property is "an id with no shape suppresses", not "this component
+happens to be uncovered today".
+
+Both are the same shape as the detector errors M38 hit: **a witness written
+against the implementation rather than against the property.**
+
+#### Verified
+
+`inventoryshot --check` **70 -> 79**, `swingshot` 97/97, **628 tests**, all
+seventeen gates green, demo PNG byte-identical to M15 onward. Live against a
+real 26.2 server:
+
+```
+enchanted + named + damaged sword   walks, damage 100, enchanted
+written book, firework, tool, food  walk (each needed a codec M41 added)
+player head, compass, shulker box   walk, including nested container stacks
+two identically-named dirt stacks   MERGE   (M35 swapped them)
+a differently-named one             SWAPS
+                                    both accepted, 0 container resyncs
+```
+
+**Open.** The seven syncable components without codecs; the enchantment
+registry, which unblocks the enchantment tooltip lines and is its own decode;
+armour trim *models*, which need the trim material and pattern resolved to
+asset ids rather than merely walked.
 
 ### M40 — the rest of the inventory screen: icons for armour, tooltips, and every remaining interaction (2026-07-28)
 

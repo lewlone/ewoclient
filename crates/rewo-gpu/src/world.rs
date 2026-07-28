@@ -505,6 +505,9 @@ pub struct WorldRenderer {
     /// This frame's tooltip: the text block's GUI-space top-left and size,
     /// both measured by the caller (M40). The pass owns no font.
     container_tooltip: Option<((i32, i32), (i32, i32))>,
+    /// This frame's durability bars, in screen pixels (M41). Independent of
+    /// the screen being open — a worn pickaxe shows one in the hotbar.
+    item_bars: Vec<crate::container::ItemBar>,
     /// A **second** entity pass, for the inventory screen's player preview
     /// (M36).
     ///
@@ -1038,6 +1041,7 @@ impl WorldRenderer {
                 container: None,
                 container_open: None,
                 container_tooltip: None,
+                item_bars: Vec::new(),
                 preview: None,
                 preview_state: None,
                 hand: None,
@@ -1443,6 +1447,13 @@ impl WorldRenderer {
     /// because the text goes through the ordinary text pass.
     pub fn set_container_tooltip(&mut self, tooltip: Option<((i32, i32), (i32, i32))>) {
         self.container_tooltip = tooltip;
+    }
+
+    /// This frame's durability bars (M41). The caller decides which stacks
+    /// have one — `isBarVisible` needs the item's max damage, which is not on
+    /// the wire.
+    pub fn set_item_bars(&mut self, bars: Vec<crate::container::ItemBar>) {
+        self.item_bars = bars;
     }
 
     pub fn gui_items_ready(&self) -> bool {
@@ -2204,16 +2215,31 @@ impl WorldRenderer {
         // nine, and this order puts them between the two highlight halves,
         // where vanilla puts them.
         let screen = self.container_open.filter(|_| self.container.is_some());
+        // The container pass owns the durability bars whether or not the
+        // screen is open, because the hotbar draws them too — so its geometry
+        // is built unconditionally and only the panel is gated on `open`.
+        if let Some(pass) = self.container.as_mut() {
+            pass.set_state(
+                extent,
+                screen.is_some(),
+                screen.flatten(),
+                self.container_tooltip,
+                &self.item_bars,
+            );
+        }
         if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(gpu, cb, extent, health, food, slot);
             if screen.is_none() {
                 if let Some(items) = &self.gui_items {
                     items.draw(gpu, cb, extent);
                 }
+                // A hotbar bar goes over its icon, same as in the screen.
+                if let Some(pass) = &self.container {
+                    pass.draw_bars(gpu, cb, extent);
+                }
             }
         }
-        if let (Some(pass), Some(hovered)) = (self.container.as_mut(), screen) {
-            pass.set_state(extent, hovered, self.container_tooltip);
+        if let (Some(pass), Some(_)) = (self.container.as_ref(), screen) {
             pass.draw_back(gpu, cb, extent);
             // The player preview sits between the panel and the icons: it is
             // inside the window the panel paints, and an item on the cursor
@@ -2226,6 +2252,7 @@ impl WorldRenderer {
                 items.draw(gpu, cb, extent);
             }
             pass.draw_front(gpu, cb, extent);
+            pass.draw_bars(gpu, cb, extent);
             // The tooltip box goes over everything else the screen draws. Its
             // text follows in the text pass below, which is drawn last of all.
             pass.draw_tooltip(gpu, cb, extent);

@@ -13,6 +13,24 @@ impl<'a> PacketReader<'a> {
         Self { buf, pos: 0 }
     }
 
+    /// The read cursor, in bytes from the frame's start.
+    ///
+    /// Exposed so a caller can bracket a value whose length it does not know
+    /// in advance — the component walk reads one value of an arbitrary codec
+    /// and then takes the span it covered (M41).
+    pub fn offset(&self) -> usize {
+        self.pos
+    }
+
+    /// The bytes between two offsets from [`Self::offset`]. An inverted or
+    /// out-of-range pair yields an empty slice rather than panicking.
+    pub fn bytes_between(&self, from: usize, to: usize) -> &'a [u8] {
+        if from > to || to > self.buf.len() {
+            return &[];
+        }
+        &self.buf[from..to]
+    }
+
     pub fn remaining(&self) -> usize {
         self.buf.len() - self.pos
     }

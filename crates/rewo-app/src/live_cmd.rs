@@ -204,6 +204,18 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // universal), and the equipment tables decide how long each swing lasts and
     // which arm animation it plays.
     session.entity_classes = Some(std::sync::Arc::new(data.entity_classes));
+    // The component walker is keyed by name and the wire by id, so the table
+    // is installed once the registry is known. Without this every component is
+    // unwalkable and the first enchanted sword in a packet costs every stack
+    // after it — so the count is logged rather than assumed.
+    {
+        let n = rewo_net::component_wire::install_shapes(data.component_registry.ids());
+        log::info!(
+            "rewo-net: {n}/{} data component codec(s) transcribed of {} registered",
+            rewo_net::component_wire::CODECS.len(),
+            data.component_registry.len()
+        );
+    }
     session.swing_data = Some(rewo_net::item_stack::SwingWireData {
         prototypes: data.swing_animations,
         components: data.components,
@@ -1540,6 +1552,21 @@ fn run_headless(
         // fired mid-give would echo a stale one and be resynced. Forty ticks
         // is two seconds of quiet.
         if !clicked && session.spawned && !session.inventory.is_empty() && tick >= 40 {
+            // `REWO_DUMP_INVENTORY=1`: print every occupied slot once the
+            // container has settled. The components are the point — a stack
+            // that decoded at all proves the walk reached the end of its
+            // patch, and the values prove it read the right bytes (M41).
+            if std::env::var("REWO_DUMP_INVENTORY").is_ok() {
+                for i in 0..rewo_world::inventory::MENU_SLOTS {
+                    if let Some(s) = session.inventory.menu_slot(i) {
+                        println!(
+                            "[rewo-m41] slot {i:2}: item {:4} x{:<3} components {:#018x}                              damage {:?} max_damage {:?} enchanted {}",
+                            s.item_id, s.count, s.components, s.damage, s.max_damage, s.enchanted
+                        );
+                    }
+                }
+                std::env::remove_var("REWO_DUMP_INVENTORY");
+            }
             if let Ok(whole) = std::env::var("REWO_CLICK") {
               let before_all = session.inventory.content_updates();
               // Semicolon-separated, so a run can pick a stack up and then do
@@ -6072,6 +6099,21 @@ fn apply_screen(
         rewo_world::inventory::slot_at(gx, gy).and_then(rewo_world::inventory::slot_position),
     );
 
+    // Every visible slot's durability bar, plus the cursor's. The screen's
+    // rects and the hotbar's go through the same builder.
+    {
+        let rects = screen_slot_rects(w, h);
+        let mut stacks: Vec<_> = (0..rewo_world::inventory::MENU_SLOTS)
+            .map(|i| (session.inventory.menu_slot(i), rects[i]))
+            .collect();
+        if let Some(carried) = session.inventory.carried() {
+            if let Some((icon, _)) = carried_icon(&session.inventory, items, mouse, w, h) {
+                stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
+            }
+        }
+        wr.set_item_bars(item_bars(&stacks, items));
+    }
+
     // The tooltip's box and its one line. Both need the font's advances, so a
     // build with no baked font simply draws no tooltip.
     let tooltip = wr.font_advance().and_then(|advance| {
@@ -6123,7 +6165,7 @@ fn apply_screen(
     }
     // The tooltip's text goes last so it draws over the icons and the count
     // labels, matching the order the box is drawn in.
-    labels.extend(tooltip.map(|(_, line)| line));
+    labels.extend(tooltip.into_iter().flat_map(|(_, l)| l));
     labels
 }
 
@@ -6163,6 +6205,74 @@ fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory:
 ///
 /// The name is also always in the common rarity's white: rarity rides on
 /// `DataComponents.RARITY`, which is another component.
+/// The durability bars for a set of slots (M41).
+///
+/// `ItemStack.isBarVisible()` is `isDamaged()`, so a pristine tool has **no
+/// bar**, not a full one — which is why this returns nothing for an undamaged
+/// stack rather than a 13-wide green one.
+///
+/// The two halves of the fraction come from different places, and that is the
+/// point of the milestone: the numerator `minecraft:damage` rides on the wire
+/// as a component patch, the denominator does not — every diamond pickaxe has
+/// the same 1561, so it lives in the generated item table. A patch that
+/// overrides `max_damage` still wins, because a plugin may.
+fn item_bars(
+    slots: &[(Option<rewo_world::inventory::ItemSlot>, (f32, f32, f32))],
+    items: &rewo_data::items::Items,
+) -> Vec<rewo_gpu::container::ItemBar> {
+    let mut out = Vec::new();
+    for (stack, (x, y, size)) in slots {
+        let Some(stack) = stack else { continue };
+        let damage = stack.damage.unwrap_or(0);
+        if damage <= 0 {
+            continue;
+        }
+        let max = stack
+            .max_damage
+            .or_else(|| items.name(stack.item_id).and_then(rewo_data::item_props_table::max_damage));
+        // An item whose maximum this build cannot resolve gets no bar. A bar
+        // needs a denominator, and inventing one would draw a confident and
+        // wrong amount of remaining life.
+        let Some(max) = max.filter(|m| *m > 0) else {
+            continue;
+        };
+        out.push(rewo_gpu::container::ItemBar {
+            x: *x,
+            y: *y,
+            // The slot rects are in screen pixels at `size` per 16 GUI pixels.
+            scale: size / 16.0,
+            width: rewo_gpu::container::bar_width(damage, max),
+            color: rewo_gpu::container::bar_color(damage, max),
+        });
+    }
+    out
+}
+
+/// `Rarity.color()` — the hover name's colour, by the rarity component's id.
+///
+/// Absent is `COMMON`, and an unknown id is treated as common rather than
+/// wrapping into another colour: the component is a small enum today and a
+/// version that grows it should not repaint every item.
+fn rarity_color(rarity: Option<i32>) -> [f32; 3] {
+    let rgb = match rarity.unwrap_or(0) {
+        1 => 0xFFFF55u32, // UNCOMMON — yellow
+        2 => 0x55FFFF,    // RARE — aqua
+        3 => 0xFF55FF,    // EPIC — light purple
+        _ => 0xFFFFFF,    // COMMON
+    };
+    [
+        ((rgb >> 16) & 0xFF) as f32 / 255.0,
+        ((rgb >> 8) & 0xFF) as f32 / 255.0,
+        (rgb & 0xFF) as f32 / 255.0,
+    ]
+}
+
+/// `ItemLore`'s style — dark purple and italic. Rewo has no italic face, so
+/// only the colour carries.
+const LORE_COLOR: [f32; 3] = [170.0 / 255.0, 0.0, 170.0 / 255.0];
+/// `ItemStack.UNBREAKABLE_TOOLTIP`, which is blue.
+const UNBREAKABLE_COLOR: [f32; 3] = [85.0 / 255.0, 85.0 / 255.0, 1.0];
+
 fn screen_tooltip(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
@@ -6170,7 +6280,7 @@ fn screen_tooltip(
     advance: &[u8; 256],
     mouse: (f64, f64),
     (w, h): (f32, f32),
-) -> Option<(((i32, i32), (i32, i32)), rewo_gpu::world::OwnedTextLine)> {
+) -> Option<(((i32, i32), (i32, i32)), Vec<rewo_gpu::world::OwnedTextLine>)> {
     // A stack on the cursor suppresses the tooltip: vanilla's guard is
     // `hoveredSlot.hasItem() && getCarried().isEmpty()`, so picking something
     // up hides the label of whatever you drag it over.
@@ -6180,10 +6290,40 @@ fn screen_tooltip(
     let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
     let slot = rewo_world::inventory::slot_at(gx, gy)?;
     let stack = inv.menu_slot(slot)?;
-    let text = names.get(items.name(stack.item_id)?)?.clone();
+    let translated = names.get(items.name(stack.item_id)?)?;
 
-    let line_w = rewo_data::sign_text::width(&text, advance).round() as i32;
-    let (tw, th) = rewo_gpu::container::tooltip_size(&[line_w]);
+    // `getTooltipLines` in vanilla's order: the styled hover name, then the
+    // details each component contributes. Rewo produces the three it can read
+    // exactly — the name, the lore, and the `Unbreakable` marker.
+    //
+    // The enchantment lines are **missing on purpose**. They need each
+    // enchantment's display name, and `minecraft:enchantment` is a *datapack*
+    // registry sent at runtime in `registry_data`, which Rewo does not decode;
+    // the patch gives ids and levels and nothing to translate them with.
+    // Printing "Enchanted" instead would be inventing a line vanilla never
+    // shows.
+    let text = inv.text_of(stack);
+    let mut lines: Vec<(String, [f32; 3])> = Vec::new();
+    lines.push((
+        text.and_then(|t| t.name.as_deref())
+            .unwrap_or(translated)
+            .to_string(),
+        rarity_color(text.and_then(|t| t.rarity)),
+    ));
+    if let Some(t) = text {
+        for line in &t.lore {
+            lines.push((line.clone(), LORE_COLOR));
+        }
+        if t.unbreakable {
+            lines.push(("Unbreakable".to_string(), UNBREAKABLE_COLOR));
+        }
+    }
+
+    let widths: Vec<i32> = lines
+        .iter()
+        .map(|(t, _)| rewo_data::sign_text::width(t, advance).round() as i32)
+        .collect();
+    let (tw, th) = rewo_gpu::container::tooltip_size(&widths);
     // The positioner works in GUI pixels, and so does the screen size it
     // clamps against — `guiWidth()`/`guiHeight()` are the *scaled* dimensions,
     // not the framebuffer's. Passing raw pixels here would let a tooltip run
@@ -6192,17 +6332,27 @@ fn screen_tooltip(
     let (sw, sh) = ((w / scale) as i32, (h / scale) as i32);
     let (mx, my) = ((mouse.0 / scale as f64) as i32, (mouse.1 / scale as f64) as i32);
     let (tx, ty) = rewo_gpu::container::tooltip_position(sw, sh, mx, my, tw, th);
-    Some((
-        ((tx, ty), (tw, th)),
-        rewo_gpu::world::OwnedTextLine {
-            x: tx as f32 * scale,
-            y: ty as f32 * scale,
-            px: scale,
-            color: [1.0, 1.0, 1.0],
-            alpha: 1.0,
-            text,
-        },
-    ))
+    // `localY += line.getHeight(font) + (i == 0 ? 2 : 0)` — the gap goes after
+    // the **first** line only, which is what separates the name from the
+    // details without spacing the details apart.
+    let mut y = ty;
+    let out = lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, (text, color))| {
+            let line = rewo_gpu::world::OwnedTextLine {
+                x: tx as f32 * scale,
+                y: y as f32 * scale,
+                px: scale,
+                color,
+                alpha: 1.0,
+                text,
+            };
+            y += rewo_gpu::container::TOOLTIP_LINE_HEIGHT + if i == 0 { 2 } else { 0 };
+            line
+        })
+        .collect();
+    Some((((tx, ty), (tw, th)), out))
 }
 
 fn screen_icons(
@@ -6607,6 +6757,12 @@ fn apply_hotbar_icons(
         })
         .collect();
     upload_gui_icons(wr, gpu, state, &gui);
+    // The nine hotbar stacks' durability bars, in the same rects the icons
+    // were placed from.
+    let stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
+        .map(|i| (session.inventory.hotbar(i), slots[i]))
+        .collect();
+    wr.set_item_bars(item_bars(&stacks, items));
 }
 
 /// Place, shade and upload an arbitrary list of icons (M35).

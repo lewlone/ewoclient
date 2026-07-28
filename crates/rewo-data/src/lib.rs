@@ -90,6 +90,10 @@ pub struct GameData {
     pub use_profiles: use_item::UseProfiles,
     /// Data-component registry ids an item-stack patch is keyed by.
     pub components: components::DataComponentIds,
+    /// Every data component's name and id (M41). Separate from the handful of
+    /// named ids above because the component walker is keyed by name and needs
+    /// the whole registry, not the ones with a special meaning.
+    pub component_registry: components::DataComponentRegistry,
     /// Which entity types are living, and which tick a combat swing (M19).
     pub entity_classes: entity_types::EntityClasses,
     /// Particle-type registry ids → names (M37 particles).
@@ -105,6 +109,8 @@ impl GameData {
         let swing_animations = swing_anim::SwingAnimations::resolve(&items)?;
         let use_profiles = use_item::UseProfiles::resolve(&items)?;
         let components = components::DataComponentIds::load(&paths.registries_json())?;
+        let component_registry =
+            components::DataComponentRegistry::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
         Ok(Self {
@@ -115,6 +121,7 @@ impl GameData {
             swing_animations,
             use_profiles,
             components,
+            component_registry,
             entity_classes,
             particle_types,
         })
