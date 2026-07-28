@@ -2438,6 +2438,10 @@ struct LiveApp {
     dirt_item: Option<i32>,
     /// F3 debug overlay visible (toggled by the F3 key). Default on.
     debug: bool,
+    /// F2 was pressed and a capture is owed (M51). Serviced after the frame
+    /// rather than inside the key handler, because a capture needs the same
+    /// `gpu`/`world_renderer` the render loop owns.
+    capture_pending: bool,
     /// Per-entity gesture state-change clocks (pose-driven rigs).
     gestures: GestureTracker,
     /// Block-light flicker (M13): ticked once per successful 20 Hz tick,
@@ -2609,6 +2613,10 @@ impl ApplicationHandler for LiveApp {
                     }
                     // F3 toggles the debug overlay (edge-triggered on press).
                     PhysicalKey::Code(KeyCode::F3) if p => self.debug = !self.debug,
+                    // F2 captures a screenshot — vanilla's `keyScreenshot`,
+                    // GLFW key 291. Only the request is recorded here; the
+                    // capture itself happens after the frame.
+                    PhysicalKey::Code(KeyCode::F2) if p => self.capture_pending = true,
                     // Number keys 1..9 select the hotbar slot (HUD frame +
                     // sent to the server so the held item matches).
                     PhysicalKey::Code(code) if p => {
@@ -3176,6 +3184,27 @@ impl LiveApp {
             renderer,
             world_renderer,
         } = state;
+        if std::mem::take(&mut self.capture_pending) {
+            // Vanilla copies the framebuffer it just presented. Rewo's
+            // swapchain images carry no `TRANSFER_SRC`, so the equivalent is to
+            // render the same state again into an offscreen target — which is
+            // also what makes a supersampled capture possible later.
+            //
+            // **At the swapchain's format**, not the gates' default: a
+            // `WorldRenderer` bakes its colour format into every pipeline, so
+            // the live renderer can only draw into a matching attachment.
+            match crate::capture::grab(
+                gpu,
+                world_renderer,
+                vp,
+                &draw,
+                renderer.swapchain.format,
+                renderer.swapchain.extent,
+            ) {
+                Ok(path) => log::info!("saved screenshot as {}", path.display()),
+                Err(e) => log::warn!("screenshot failed: {e}"),
+            }
+        }
         match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
             Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
             Ok(RenderOutcome::NeedsRecreate) => {
@@ -3217,6 +3246,7 @@ fn run_windowed(
         models: baked.models.clone(),
     })?;
     let mut app = LiveApp {
+        capture_pending: false,
         particles: None,
         session: Some(session),
         // Cloned before the bake is stored, because it is `take`n when the

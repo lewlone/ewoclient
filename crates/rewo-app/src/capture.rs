@@ -130,6 +130,40 @@ pub fn next_capture_path() -> Option<PathBuf> {
     Some(next_free_path(&dir, &filename_stem(y, mo, d, h, mi, s)))
 }
 
+/// Render the current scene to a fresh offscreen target and save it (M51).
+///
+/// `format` must be the live renderer's colour format — `WorldRenderer` bakes
+/// it into every pipeline, so an offscreen in the gates' RGBA default would be
+/// a dynamic-rendering format mismatch rather than a screenshot.
+///
+/// The target is built per capture rather than kept: `Offscreen` has no
+/// `resize`, its extent is fixed at construction, and a window that changed
+/// size between captures would otherwise write a stale-sized PNG.
+pub fn grab(
+    gpu: &mut rewo_gpu::Gpu,
+    world: &mut rewo_gpu::world::WorldRenderer,
+    view_proj: [[f32; 4]; 4],
+    draw: &rewo_gpu::overlay::OverlayDraw,
+    format: ash::vk::Format,
+    extent: ash::vk::Extent2D,
+) -> Result<PathBuf, String> {
+    let (w, h) = (extent.width, extent.height);
+    let path = next_capture_path().ok_or("no config directory for screenshots")?;
+    let mut off = rewo_gpu::offscreen::Offscreen::with_format(gpu, w, h, format)?;
+    let res = (|| {
+        off.render(gpu, Some((world, view_proj)), draw, CLEAR)?;
+        off.save_png(gpu, &path)
+    })();
+    // Destroy either way — a failed capture must not leak an image, an
+    // allocation and a command pool per keypress.
+    off.destroy(gpu);
+    res.map(|_| path)
+}
+
+/// The world pass clears to opaque black before the sky paints over it; a
+/// capture wants the same clear the live frame uses.
+const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
 #[cfg(test)]
 mod tests {
     use super::*;
