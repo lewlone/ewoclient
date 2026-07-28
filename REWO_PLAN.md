@@ -35,20 +35,30 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M49 shipped, pushed and merged to `main`
+### Where it is: M0–M50 shipped, pushed and merged to `main`
 
-`origin/main` is at **`12ecb1f`** and everything from M0 to M49 is on it. The
-working tree is clean, there are no stashes, and no Rewo work lives on a
-side branch. (`claude/fabric-client-ui-*` and `claude/rewo-entity-fidelity-*`
-are older non-Rewo worktrees, untouched.)
+`origin/main` is at **`8f3ad41`** and everything from M0 to M50 is on it. The
+working tree is clean and there are no stashes.
+
+**One side branch carries real unlanded work** — `claude/rewo-entity-fidelity-aa134c`
+(local and on `origin`, both at `e5bbb8b`), six commits of **ETF**: the emissive
+path (vanilla's eye and warden glow layers), a pack's random entity textures,
+emissive `_e.png` overlays, and the sheep's dye tint. That is the "ETF
+random/emissive textures (M9b)" item this plan lists as open — **do not rebuild
+it from scratch; rebase that branch**. Note its commits are numbered `M36a`–`M36d`,
+which **collides with the M36 already on `main`** (the inventory's player
+preview), so landing it needs a renumber as well as a rebase. An earlier
+revision of this section described it as a "non-Rewo worktree"; that was wrong.
 
 This closed on 2026-07-27, and it had been the project's largest non-code risk
 for a long time: 78 commits, everything from M10 on, on a branch whose name
 stopped describing its contents around M20. It went in as a clean
 fast-forward — `main` had nothing the branch lacked — so nothing was rebased,
 squashed or lost, and the per-milestone history in §15 still lines up
-one-to-one with the commits. **New work branches from `main` now.** The two
-`codex/rewo-*` branches are redundant and can be deleted whenever convenient.
+one-to-one with the commits. **New work branches from `main` now.** The
+`codex/rewo-*` branches and `claude/fabric-client-ui-*` were redundant and have
+since been deleted; `claude/rewo-entity-fidelity-*` is the one that was not (see
+above).
 
 **Latest (2026-07-28): the armour arc, M46–M49.** Mobs wear armour, it is
 dyed, it is trimmed, and the trim shows on the icon.
