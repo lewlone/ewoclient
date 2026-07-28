@@ -22,6 +22,7 @@ pub mod enchantments;
 pub mod equipment;
 pub mod entity_classes;
 pub mod entity_types;
+pub mod etf;
 pub mod items;
 pub mod held_items;
 pub mod item_geometry;
