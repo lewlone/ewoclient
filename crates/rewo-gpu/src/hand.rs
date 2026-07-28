@@ -637,6 +637,97 @@ mod tests {
         );
     }
 
+
+    /// A cube of 0..16 model units, as the block bake produces.
+    fn unit_cube_item(first_right: DisplayTransform) -> HeldItemModel {
+        // Only the +Z face is needed to bound the shape in x and y; the eight
+        // corners are what the projection is compared on, and every face draws
+        // from the same eight.
+        let mut quads = Vec::new();
+        for (dir, verts) in [
+            (5u8, [[16.0, 0.0, 0.0], [16.0, 16.0, 0.0], [16.0, 16.0, 16.0], [16.0, 0.0, 16.0]]),
+            (4u8, [[0.0, 0.0, 0.0], [0.0, 16.0, 0.0], [0.0, 16.0, 16.0], [0.0, 0.0, 16.0]]),
+        ] {
+            quads.push(crate::held::HeldQuad {
+                verts,
+                uv: [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+                tex: 0,
+                part: 0,
+                dir,
+            });
+        }
+        HeldItemModel {
+            quads,
+            right: DisplayTransform::default(),
+            left: DisplayTransform::default(),
+            ground: DisplayTransform::default(),
+            gui: DisplayTransform::default(),
+            first_right,
+            first_left: DisplayTransform::default(),
+            from_block: true,
+        }
+    }
+
+    /// Where a held block lands on a 1280×720 frame, all the way through the
+    /// production geometry builder and the world's own projection.
+    ///
+    /// The expected numbers are an independent CPU derivation: the pose from
+    /// `ItemInHandRenderer`'s constants, the transform from `block/block.json`,
+    /// and the projection from `calculateHudFov`'s hard-coded 70 vertical at
+    /// near 0.05 — the three things M38 measured rather than assumed.
+    #[test]
+    fn a_held_block_lands_where_the_decompile_puts_it() {
+        // `block/block.json`'s firstperson_righthand.
+        let t = DisplayTransform {
+            rotation: [0.0, 45.0, 0.0],
+            translation: [0.0; 3],
+            scale: [0.4, 0.4, 0.4],
+        };
+        let model = unit_cube_item(t);
+        let verts = build_vertices(
+            Mat4::IDENTITY,
+            &[HandDraw {
+                arm: Arm::Right,
+                item: Some(&model),
+                attack: 0.0,
+                inverse_height: 0.0,
+                swings: true,
+                main_hand: true,
+            }],
+            &|_| Some([0.0, 0.0, 1.0, 1.0]),
+            None,
+        );
+        assert!(!verts.is_empty(), "the builder produced geometry");
+
+        let (w, h) = (1280.0f32, 720.0f32);
+        let proj = Mat4::from_cols_array_2d(&crate::world::perspective_reverse_z(
+            70f32.to_radians(),
+            w / h,
+            0.05,
+        ));
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for v in &verts {
+            let clip = proj * glam::Vec4::new(v.pos[0], v.pos[1], v.pos[2], 1.0);
+            if clip.w <= 0.0 {
+                continue;
+            }
+            let sx = (clip.x / clip.w + 1.0) / 2.0 * w;
+            // The pass draws through a flipped viewport, so clip +y is up and
+            // screen y counts down from the top.
+            let sy = (1.0 - clip.y / clip.w) / 2.0 * h;
+            x0 = x0.min(sx);
+            x1 = x1.max(sx);
+            y0 = y0.min(sy);
+            y1 = y1.max(sy);
+        }
+        println!("built bbox: x {x0:.1}..{x1:.1}  y {y0:.1}..{y1:.1}");
+        // Derived by hand from the decompile, not from this code.
+        assert!((x0 - 837.9).abs() < 1.5, "left edge {x0}");
+        assert!((x1 - 1298.6).abs() < 1.5, "right edge {x1}");
+        assert!((y0 - 524.1).abs() < 1.5, "top edge {y0}");
+        assert!((y1 - 1206.8).abs() < 1.5, "bottom edge {y1}");
+    }
+
     /// The view sway is a tenth of the difference between the camera and its
     /// lagged copy, and it vanishes once the bob has caught up.
     #[test]
