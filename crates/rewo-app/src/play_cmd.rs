@@ -300,6 +300,9 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.entity_classes = Some(std::sync::Arc::new(
         rewo_data::entity_types::EntityClasses::resolve(&data.entity_types)?,
     ));
+    // M52 attributes — see the same pair in `live_cmd`.
+    session.entity_types = Some(std::sync::Arc::new(data.entity_types.clone()));
+    session.attribute_registry = Some(data.attributes.clone());
     // The component walker is keyed by name and the wire by id, so the table
     // is installed once the registry is known. Without this every component is
     // unwalkable and the first enchanted sword in a packet costs every stack

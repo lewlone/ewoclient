@@ -119,6 +119,12 @@ pub struct Ids {
     /// duration and animation type. Required for the same reason: without it
     /// every entity would silently swing with the bare-hand default.
     pub cb_play_set_equipment: i32,
+    /// `ClientboundUpdateAttributesPacket` — the entity attribute snapshots
+    /// (M52), and the only source of a mob's *maximum* health: metadata index
+    /// 9 carries the current value and nothing carries the range. Required —
+    /// every living entity gets one on spawn, so a missing name is a version
+    /// mismatch rather than an absent feature.
+    pub cb_play_update_attributes: i32,
     /// Player visual effects (M13 lightmap). Required: the lightmap's
     /// night-vision / darkness factors depend on them, so a missing name is a
     /// version-mismatch that should fail loud rather than silently disable the
@@ -227,6 +233,7 @@ impl Ids {
             cb_play_container_set_slot: req!(p, P, C, "container_set_slot"),
             cb_play_set_held_slot: req!(p, P, C, "set_held_slot"),
             cb_play_set_equipment: req!(p, P, C, "set_equipment"),
+            cb_play_update_attributes: req!(p, P, C, "update_attributes"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),
             cb_play_remove_mob_effect: req!(p, P, C, "remove_mob_effect"),
             cb_play_start_configuration: opt!(p, P, C, "start_configuration"),

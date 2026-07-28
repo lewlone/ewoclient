@@ -6445,6 +6445,186 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M52 — entity attributes, the data half of a health bar (2026-07-28)
+
+Shipped. Rewo has decoded an entity's *current* health since M24 (`DATA_HEALTH_ID`,
+metadata index 9) and has had no way at all to know its *maximum*, because
+`MAX_HEALTH` is not metadata — it is an **attribute**, and
+`ClientboundUpdateAttributesPacket` (id **131**) was falling off the dispatch
+chain as an unknown id. This is the data half only: no rendering, nothing in
+`rewo-gpu`.
+
+**The wire shape**, from the decompiled `STREAM_CODEC`:
+
+```text
+VarInt entityId
+VarInt snapshotCount                 // ByteBufCodecs.list(128)
+  VarInt attributeHolder             // holderRegistry — RAW 0-based id
+  f64    base                        // big-endian
+  VarInt modifierCount
+    String id                        // Identifier.STREAM_CODEC = STRING_UTF8
+    f64    amount
+    VarInt operation                 // idMapper — a VarInt, not a byte
+```
+
+**The holder is `holderRegistry`, so the id is raw and 0-based** — the question
+the brief flagged, and the answer is the one that has bitten this project twice
+already (M16 dimension types, M21 damage types).
+`Attribute.STREAM_CODEC = ByteBufCodecs.holderRegistry(Registries.ATTRIBUTE)`
+resolves through `registry(...)`, whose decode is a bare `VarInt.read` into
+`byIdOrThrow`; there is no `id + 1` and no `0 = inline`. Here the failure mode
+would have been quiet rather than loud: `max_health` is **23** and
+`max_absorption` is **22**, both real syncable attributes on the same entity, so
+an off-by-one would have clamped health against the wrong range rather than
+throwing. The gate pins it from both sides (`a4`/`a5`).
+
+**Two more fields are not what their shape suggests.** The operation is a
+**VarInt** (`Operation.STREAM_CODEC` is `ByteBufCodecs.idMapper`, whose decode
+is `VarInt.read`), not the single byte a three-valued enum invites — `a6` sends
+a redundant two-byte encoding, which a byte reader would desynchronise on. And
+an **out-of-range operation id is not an error**: `BY_ID` is
+`ByIdMap.continuous(..., OutOfBoundsStrategy.ZERO)`, so operation 9 is
+`ADD_VALUE`, not a rejected packet.
+
+**The operation order** (`AttributeInstance.calculateValue`) is the thing that
+cannot be guessed from the enum:
+
+```text
+base = baseValue
+for m in ADD_VALUE:            base   += m.amount
+result = base
+for m in ADD_MULTIPLIED_BASE:  result += base * m.amount
+for m in ADD_MULTIPLIED_TOTAL: result *= 1.0 + m.amount
+return sanitizeValue(result)
+```
+
+`ADD_MULTIPLIED_BASE` reads the **post-`ADD_VALUE`** base, and every such
+modifier reads that same base — they do not compound with each other, where
+`ADD_MULTIPLIED_TOTAL` does. **A single modifier cannot tell the two apart**:
+either one at `+0.5` turns base 20 into 30, and so does either one at `+0.5`
+after an `ADD_VALUE` of 10 (both give 45). It takes *two* to separate them —
+`b3` (two `ADD_MULTIPLIED_BASE` → 40) against `b4` (two `ADD_MULTIPLIED_TOTAL`
+→ 45). `b6` sends all three groups **reversed** in the packet and still requires
+90, which is what pins grouping-by-operation rather than packet order; applied
+in packet order the same modifiers give 50.
+
+**The clamp is per attribute and it is not optional.** Every one of the 40
+registered attributes is a `RangedAttribute`, so `sanitizeValue` always runs:
+`NaN ? min : Mth.clamp(v, min, max)`. `max_health` is `(20.0, 1.0, 1024.0)`, so
+a server sending base 0 resolves to **1.0**, and **NaN resolves to the minimum**
+— an entity whose modifiers multiply out to NaN has half a heart, not an empty
+bar and not a full one.
+
+**`DefaultAttributes` is a filter, not just a fallback** — the part of this
+milestone that was larger than it looks. `handleUpdateAttributes` looks each
+attribute up with `AttributeMap.getInstance`, which returns null (logged
+`"Entity {} does not have attribute {}"` and **skipped**) when the entity type's
+`AttributeSupplier` does not declare it. So the supplier decides what an entity
+may hold at all: a zombie has `spawn_reinforcements`, a pig does not, and a
+snapshot naming it must not stick to the pig.
+
+That table is `DefaultAttributes.SUPPLIERS`, ~93 entries of
+`EntityTypes.X -> SomeClass.createAttributes().build()`, whose builders chain up
+the class hierarchy (`Zombie` → `Monster` → `Mob` → `LivingEntity`) across ~85
+files. **`tools/gen_entity_attributes.py`** extracts it, for the same reason
+`gen_copper_golem_poses.py` exists — hand-copying fails silently. Four things it
+has to get right, each of which would otherwise be invisible:
+
+* **`add()` twice keeps the LAST** — `build()` is `buildKeepingLast()`, so
+  `Zombie`'s `FOLLOW_RANGE 35.0` overrides the `16.0` it inherited from `Mob`
+  rather than throwing (`d11`).
+* **A float literal is widened, not rounded.** `.add(MOVEMENT_SPEED, 0.23F)` is
+  a `float` promoted to `double` = `0.23000000417232513`, not `0.23`. Same class
+  of error as M37's `+ 0.1F`; `d9` requires the widened value *and* rejects the
+  decimal.
+* **The constant name is not the registry name** —
+  `SPAWN_REINFORCEMENTS_CHANCE` registers as `"spawn_reinforcements"`. The
+  extractor parses the mapping instead of lowercasing the constant, which is the
+  same irregularity `gen_block_light.py` records for copper.
+* **A static can be inherited both ways** — `DefaultAttributes` calls
+  `Cow.createAttributes()` though `AbstractCow` declares it, and `ArmorStand`
+  calls `createLivingAttributes()` unqualified. Both resolve by walking
+  `extends`.
+
+**Fail-closed resolution.** `rewo_world::attributes::resolve` returns
+`Option<(f64, Source)>`, and the `Source` is the point: `Synced` means a packet
+established the value, `Default` means the type's supplier did, and **`None`
+means nothing does** — an unknown type, a type with no supplier (a boat), or an
+attribute its supplier does not declare. A health bar that got `Some(20.0)` for
+a boat would draw a full bar over it, so `d3` requires `None` there and `d1`
+requires `Some((20.0, Default))` for a zombie.
+
+**Gate: `rewo attributeshot --check`** — serverless, CPU-only, fail-closed,
+**43 witnesses**, driving raw packet bodies through the production path
+(`route_update_attributes` → `apply_update_attributes` → `attributes::parse` →
+`EntityTable::set_attribute` → `resolve`). Nothing reimplements the decoder and
+grades the reimplementation; the expected numbers are hand-derived literals from
+`calculateValue`/`sanitizeValue`. **The fail-closed count immediately earned its
+keep**: the first run reported 42 observed against a declared 34 and exited
+nonzero on my own miscount.
+
+**Ten mutations were applied to the production sources and nine are caught** by
+the witnesses named for them — `holder_id_plus_one` (23 witnesses, `a4`/`a5`
+among them), `multiplied_base_uses_pre_add_base` and `packet_order` (`b5`,
+`b6`), `no_clamp` (`b7`, `b8`), `nan_to_max` (`b10`),
+`default_instead_of_none` (`d3`, `d4`, `d5`), `no_supplier_filter` (`c3`),
+`oob_operation_rejected` (`a7`), `remove_keeps_attributes` (`c6`).
+
+**The tenth is uncatchable, and finding out why was the useful part.** Deleting
+the living-entity gate from `apply_update_attributes` changes **no** outcome.
+The witness I wrote for it (`c2`, a boat) passed for the wrong reason: a boat is
+not a `LivingEntity` *and* has no supplier, so the lookup two lines later
+rejects it anyway. Measured over the whole registry, `is_living` and "has an
+`AttributeSupplier`" are the **same 93 types of 158, exactly** — which follows
+from vanilla's own typing (`SUPPLIERS` is keyed by
+`EntityType<? extends LivingEntity>`) but was worth measuring rather than
+assuming. The gate is kept, because it is the gate `handleUpdateAttributes`
+actually has and it is the documented reason a boat is inert; `d14` now asserts
+the set equality over all 158 types, so the redundancy is a checked fact and the
+gate stops being redundant the moment a version ships a non-living type with a
+supplier.
+
+**Deviations, all deliberate and all recorded in the code:**
+
+* A **non-living** entity is dropped where vanilla **throws**
+  `IllegalStateException` and kills the packet thread — the same choice
+  `apply_damage_event` makes.
+* A **duplicate modifier id** within one snapshot keeps the first, where
+  vanilla's `addModifier` throws on the second (`putIfAbsent` returning
+  non-null). The first-wins state is what its map would have been left in.
+* Modifiers are applied in **packet order within each operation group**.
+  Vanilla iterates `Object2ObjectOpenHashMap.values()`, whose order is
+  unspecified, so vanilla's own `ADD_MULTIPLIED_TOTAL` product is not
+  bit-reproducible between two JVMs when several are present; packet order is
+  deterministic and agrees to within float-multiplication reassociation.
+* An attribute id outside the registry drops that snapshot, where
+  `byIdOrThrow` throws.
+
+**Measured:** **651 tests** (637 + 14 new: 8 in `rewo-world/attributes.rs`,
+6 in `rewo-net/attributes.rs`), all passing. Eighteen serverless gates green
+with **0 VUIDs** — `blockentityshot` 172, `swingshot` 97, `inventoryshot` 91,
+`itemshot` 62, **`attributeshot` 43**, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `eventshot` 28, `danceshot` 24, `portalshot` 12, `mobshot`
+243/243, plus `particleshot`, `skyshot`, `lightmapshot`, `tintshot`,
+`meshshot`, `dimensioncheck`. Demo PNG SHA-256
+`2cc56b4a…46635`, byte-identical to M15 onward. `git diff --check` clean.
+
+**One house-rule trap re-confirmed**, worth the line because it cost a revert:
+`crates/rewo-data/src/lib.rs` is mixed CRLF/LF, and editing it as *text*
+normalised the whole file (50 insertions / 48 deletions for a 2-line addition).
+Re-done at byte level it is 8 insertions / 0 deletions with **zero** unchanged
+lines' endings altered. The follow-on detail: an **added** line must be LF even
+inside a CRLF neighbourhood, because `git diff --check` reads a trailing CR on
+an added line as trailing whitespace — which is exactly why the repo's mixed
+files are mixed.
+
+**Open.** Nothing renders this yet: the health bar itself, and the nametag
+health display, are a rendering milestone. Attributes are stored for every
+living entity the server syncs, which in practice is the syncable subset
+(`isClientSyncable`), and no consumer reads anything but `max_health` so far.
+`AttributeInstance`'s permanent-vs-transient modifier distinction is not
+modelled, because the packet only ever carries the merged set.
+
 ### M50 — the worn-armour glint, and the glint's colour space (2026-07-28)
 
 Shipped. The milestone the facts entry below predicted turned out to be a small
