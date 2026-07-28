@@ -6366,6 +6366,57 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M50 — the armour glint: the facts, not the code (2026-07-28)
+
+**Not implemented.** Established from the 26.2 decompile and jar; the build is a
+fresh session's work. Recorded because one of these facts changes what the
+milestone *is*.
+
+#### The trim does not glint, and that is a rule to reproduce
+
+`EquipmentLayerRenderer.renderLayers` clears the flag inside the layer loop:
+
+```java
+for (Layer layer : layers) {
+   int color = getColorForLayer(layer, dyeColor);
+   if (color != 0) {
+      submitModel(..., armorCutoutNoCull(layerTexture), ..., color, ...);
+      if (renderFoil) submitModel(..., armorEntityGlint(), ..., color, ...);
+      renderFoil = false;
+   }
+}
+ArmorTrim trim = itemStack.get(DataComponents.TRIM);   // submitted after; never foiled
+```
+
+So the foil rides the **first layer that draws** — once, with *that layer's
+colour* — and the trim, submitted after the loop, never gets one. A glinting
+trim would be a Rewo invention. What is actually missing is the **worn-armour
+glint**, which M45 called its fourth surface and could not reach because
+nothing rendered armour; M46 made it reachable.
+
+#### What the armour glint is
+
+- **A different sheet.** `ARMOR_ENTITY_GLINT` binds
+  `misc/enchanted_glint_armor.png`, not the `enchanted_glint_item.png` M43
+  loads. Both exist in the jar; only the item one is baked today.
+- **Scale 0.16** — `ARMOR_ENTITY_GLINT_TEXTURING` is
+  `setupGlintTexturing(0.16F)`, against the entity contexts' 0.5 and the item
+  contexts' 8.0. It matches the `GLINT_SCALE_ARMOR` constant M43 already
+  transcribed and nothing has used.
+- **`VIEW_OFFSET_Z_LAYERING`**, *not* a depth-EQUAL pass — the projection is
+  nudged toward the viewer (`applyLayeringTransform(matrix, 1.0F)`). That is a
+  different mechanism from every glint Rewo has shipped, all of which depth-test
+  EQUAL, and it is the part to get right rather than to assume.
+- **Tinted by the layer's colour**, so a dyed leather piece's foil carries the
+  dye — the same `color` argument the armour layer itself took.
+
+#### The one structural piece
+
+Rewo's `EntityGlint` owns its pipeline, image, sampler, pool and set, and the
+glint is one vertex range. A second sheet needs a second `EntityGlint` (the
+pipeline can be shared) plus a fifth vertex range and its draw — the same shape
+as M48's fourth range, and about that much work.
+
 ### M49 — trims on GUI icons (2026-07-28)
 
 The blocker M48 named, and the bake refactor under it.
@@ -6437,8 +6488,10 @@ over an item that resolved on its own.
 
 #### Open
 
-- The **worn** trim still does not glint (M48), and neither does a trimmed
-  icon's — the foil rides the first layer that draws.
+- The **worn armour does not glint** — M45's fourth surface, reachable since
+  M46. The *trim* correctly must not: `renderFoil` is cleared before the trim
+  is submitted, so a glinting trim would be an invention. Facts gathered in the
+  M50 entry.
 - No `humanoid_baby` layer.
 - `usePlayerTexture` (the elytra cape) is read as data and never honoured.
 
