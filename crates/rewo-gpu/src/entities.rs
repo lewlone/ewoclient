@@ -66,6 +66,22 @@ pub struct FontData<'a> {
     pub white_texel: (u32, u32),
 }
 
+/// Entity state the vanilla emissive layers read ([`mobs::EmissiveAlpha`]).
+///
+/// Every field defaults to vanilla's *synched default*, so an entity whose
+/// metadata or entity_event we don't decode renders exactly like a
+/// freshly-spawned one rather than approximately.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct EmissiveState {
+    /// `Warden.getTendrilAnimation(partial)` in `0..1` — a 10-tick countdown
+    /// started by **entity_event 61** (the warden hearing a vibration), so the
+    /// resting value really is 0 and the tendrils hang still.
+    pub tendril: f32,
+    /// `Creaking.isActive()` — metadata `IS_ACTIVE`, whose vanilla
+    /// `defineSynchedData` default is `false`.
+    pub eyes_glow: bool,
+}
+
 /// The most sub-layers one armour piece may draw.
 ///
 /// Two, because the 26.2 jar's largest humanoid layer list is leather's two
@@ -222,6 +238,23 @@ pub struct EntityDraw<'a> {
     /// retained so warm block light and cool sky light tint the model exactly;
     /// `[1.0, 1.0, 1.0]` is fullbright for serverless still renders.
     pub light: EntityLight,
+    /// Inputs to this entity's vanilla emissive layers (warden tendrils,
+    /// creaking eyes). Defaults are vanilla's synched defaults.
+    pub emissive: EmissiveState,
+    /// Resource-pack texture variant (ETF / M52): 0 is the vanilla texture,
+    /// any other id is one this mob's pack rules chose — see
+    /// `rewo_data::etf::EtfPack::pick`. An id the atlas has no slot for falls
+    /// back to the vanilla texture.
+    pub variant: u16,
+    /// Dye colour `0..15` for the mob's tinted texture, if it has one
+    /// (`mobs::tinted_texture`) — the sheep's wool.
+    ///
+    /// `None` means the mob's vanilla *default* dye, not "no tint":
+    /// `SheepRenderState.woolColor` starts at `DyeColor.WHITE`, and
+    /// `SheepWoolLayer` tints by it unconditionally — so even a plain white
+    /// sheep has its wool multiplied by 0xE6E6E6 rather than left at full
+    /// brightness.
+    pub dye: Option<u8>,
 }
 
 #[repr(C)]
@@ -254,6 +287,12 @@ const ATLAS_H: u32 = 1408;
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
 /// above the dynamic bands so it never collides.
+/// The variant id a pack's emissive overlay arrives under — mirrors
+/// `rewo_data::etf::EMISSIVE_INDEX`. Kept as a plain constant so this crate
+/// stays free of a rewo-data dependency (the same reason `FontData` and the
+/// texture slices are borrowed views).
+pub const EMISSIVE_VARIANT: u32 = 1 << 16;
+
 const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
@@ -361,6 +400,109 @@ fn item_slot_origin(i: u32) -> (u32, u32) {
     )
 }
 
+/// Resolve a mob's vanilla emissive layers against the packed atlas.
+///
+/// A vanilla emissive layer re-renders the *same model* with a different
+/// texture, so each layer is the mob's own quads — filtered to the layer's
+/// parts — with their raw model-px UVs normalized against the overlay
+/// texture's atlas slot instead of the base texture's. That is why the overlay
+/// must share the base texture's pixel dimensions (they all do: spider_eyes is
+/// 64x32 like spider.png, the four warden layers are 128^2 like warden.png); a
+/// layer whose texture is missing or differently sized is dropped with a
+/// warning rather than rendering scrambled.
+fn build_emissive(
+    m: &mobs::Model,
+    def: &mobs::MobDef,
+    slots: &std::collections::HashMap<&str, (u32, u32, u32, u32)>,
+    pack_emissive: &std::collections::HashMap<&'static str, (u32, u32)>,
+) -> Vec<EmissiveDraw> {
+    // Re-point one raw quad's model-px UVs at `(ox, oy)`, keeping geometry.
+    let repoint = |q: &mobs::RawQuad, ox: u32, oy: u32, tw: u32, th: u32| GpuQuad {
+        pos: q.pos,
+        uv: q.uv.map(|[u, v]| {
+            [
+                (ox as f32 + u.clamp(0.0, tw as f32)) / ATLAS_W as f32,
+                (oy as f32 + v.clamp(0.0, th as f32)) / ATLAS_H as f32,
+            ]
+        }),
+        shade: q.shade,
+        part: q.part as u16,
+        tex: q.tex as u8,
+        facing: q.facing,
+        normal: q.normal,
+    };
+    let mut out = Vec::new();
+    // A resource pack's `<texture>_e.png` (ETF / M52) is an always-on
+    // fullbright overlay of the whole model — the same shape as a vanilla
+    // `EyesLayer`, so it goes through the same path. It sits on the base
+    // texture's own UVs at the overlay's atlas slot, and only covers quads that
+    // sample the texture it belongs to.
+    for (slot, key) in def.textures.iter().enumerate() {
+        let Some(&(ox, oy)) = pack_emissive.get(key) else { continue };
+        let Some(&(_, _, tw, th)) = slots.get(key) else { continue };
+        let quads: Vec<GpuQuad> = m
+            .quads
+            .iter()
+            .filter(|q| q.tex == slot)
+            .map(|q| repoint(q, ox, oy, tw, th))
+            .collect();
+        if quads.is_empty() {
+            continue;
+        }
+        log::info!("etf: {:?} gains an emissive overlay from {key}", def.kind);
+        // Cutout, like vanilla's `entityTranslucentEmissive` — OptiFine renders
+        // emissive textures through the same alpha-cutout path.
+        out.push(EmissiveDraw { quads, alpha: mobs::EmissiveAlpha::Always, cutout: true });
+    }
+    for layer in mobs::emissive_layers(def.kind) {
+        let Some(&(ox, oy, tw, th)) = slots.get(layer.tex) else {
+            log::warn!(
+                "entities: {:?} emissive layer {} missing from the atlas — layer dropped",
+                def.kind,
+                layer.tex
+            );
+            continue;
+        };
+        // The base texture the layer's quads were authored against.
+        let Some(&(_, _, bw, bh)) = slots.get(def.textures[0]) else { continue };
+        if (tw, th) != (bw, bh) {
+            log::warn!(
+                "entities: {:?} emissive layer {} is {tw}x{th} but the base texture is {bw}x{bh} — layer dropped",
+                def.kind,
+                layer.tex
+            );
+            continue;
+        }
+        // Part names: the built-ins carry vanilla's, and a CEM pack model
+        // carries the `.jem` bone names — which OptiFine *requires* to be
+        // vanilla's part names (that is how a `.jem` identifies what it is
+        // replacing), so the same filter applies to both.
+        let keep = |part: usize| match layer.parts {
+            mobs::PartFilter::All => true,
+            mobs::PartFilter::Exact(names) => match m.cem_names.get(part) {
+                Some(n) => names.contains(&n.as_str()),
+                None => names.contains(&m.parts[part].name),
+            },
+        };
+        let quads: Vec<GpuQuad> = m
+            .quads
+            .iter()
+            .filter(|q| keep(q.part))
+            .map(|q| repoint(q, ox, oy, tw, th))
+            .collect();
+        if quads.is_empty() {
+            log::warn!(
+                "entities: {:?} emissive layer {} matched no parts — layer dropped",
+                def.kind,
+                layer.tex
+            );
+            continue;
+        }
+        out.push(EmissiveDraw { quads, alpha: layer.alpha, cutout: layer.cutout });
+    }
+    out
+}
+
 /// Shelf-pack `sizes` into the atlas, avoiding the font block. Deterministic:
 /// callers pass entries sorted however they like; shelves grow downward,
 /// each shelf as tall as its tallest member. Returns per-entry origins
@@ -412,11 +554,27 @@ pub struct MobTexEntry<'a> {
     pub rgba: &'a [u8],
 }
 
+/// One resource-pack alternate texture (ETF / M52): the same pixels-worth of
+/// a mob texture, packed elsewhere in the atlas, addressed by a variant id.
+/// Must be the base texture's size — the variant reuses its UVs.
+pub struct VariantTexEntry<'a> {
+    /// The mob-texture key this varies.
+    pub base_key: &'static str,
+    /// Variant id (`rewo_data::etf::Variant::index`); 0 is the vanilla
+    /// texture and never appears here.
+    pub index: u32,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: &'a [u8],
+}
+
 /// Borrowed view of the baked mob-texture table for `EntityPass::new`. A
 /// missing entry degrades that mob to the capsule fallback.
 #[derive(Default)]
 pub struct MobTextures<'a> {
     pub entries: Vec<MobTexEntry<'a>>,
+    /// Resource-pack alternates, if a pack supplied any.
+    pub variants: Vec<VariantTexEntry<'a>>,
 }
 
 pub struct EntityPass {
@@ -424,6 +582,11 @@ pub struct EntityPass {
     set_layout: vk::DescriptorSetLayout,
     solid_pipeline: vk::Pipeline,
     text_pipeline: vk::Pipeline,
+    /// Vanilla's `EYES` / `ENTITY_TRANSLUCENT_EMISSIVE` (M52): translucent,
+    /// depth-write off, and `GREATER_OR_EQUAL` so a layer lands on the base
+    /// model's own depth instead of being rejected by it.
+    emissive_pipeline: vk::Pipeline,
+    emissive_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -505,6 +668,17 @@ const CEM_STATE_TTL: u64 = 600;
 /// atlas-normalized UVs, the animated parts, and the px→block scale.
 pub struct MobModel {
     quads: Vec<GpuQuad>,
+    /// The texture slot vanilla renders through a dye tint (the sheep's
+    /// wool), if any — `EntityDraw::dye` multiplies only that slot.
+    tinted_slot: Option<u8>,
+    /// ETF alternates: variant id → per-texture-slot UV offset, added to the
+    /// quad's UVs to move it onto the alternate's atlas slot. A variant with
+    /// no entry for a slot leaves that slot on the vanilla texture, which is
+    /// what a pack varying only one of a mob's textures wants.
+    variants: std::collections::HashMap<u16, Vec<[f32; 2]>>,
+    /// Vanilla emissive layers (`EyesLayer` / `LivingEntityEmissiveLayer`), in
+    /// the renderer's `addLayer` order. Empty for most mobs.
+    emissive: Vec<EmissiveDraw>,
     parts: Vec<mobs::Part>,
     keyframes: Vec<mobs::KfAnim>,
     /// Wire-event one-shot rigs (`ClientboundEntityEventPacket`).
@@ -546,11 +720,25 @@ fn cem_key(d: &EntityDraw<'_>) -> u64 {
     ((d.kind.index() as u64) << 32) | d.anim_id.to_bits() as u64
 }
 
+/// One emissive layer, resolved against the atlas: the mob's own quads,
+/// filtered to the layer's parts and re-pointed at the overlay texture's slot
+/// (same raw UVs — vanilla re-renders the same geometry).
+struct EmissiveDraw {
+    quads: Vec<GpuQuad>,
+    alpha: mobs::EmissiveAlpha,
+    cutout: bool,
+}
+
 struct GpuQuad {
     pos: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     shade: f32,
     part: u16,
+    /// Which of the mob's textures this samples (index into
+    /// `MobDef::textures`). An ETF variant shifts each slot by its own offset,
+    /// so the quad has to remember which one it came from — the base bake
+    /// folds `tex` into the UVs and would otherwise lose it.
+    tex: u8,
     /// Vanilla face label + static-folded model-space normal — kept for the
     /// mobshot facelabel verification (`neutral_quads`).
     facing: Facing,
@@ -599,13 +787,16 @@ impl EntityPass {
         atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
 
         // Shelf-pack every provided mob texture (tallest first for tight
-        // shelves; the key map keeps lookups order-independent).
+        // shelves; the key map keeps lookups order-independent). Pack
+        // alternates (ETF) ride along in the same pass so they share the
+        // packer's guarantees.
         let mut order: Vec<usize> = (0..tex.entries.len()).collect();
         order.sort_by_key(|&i| {
             let e = &tex.entries[i];
             (std::cmp::Reverse(e.h), std::cmp::Reverse(e.w), e.key)
         });
-        let sizes: Vec<(u32, u32)> = order.iter().map(|&i| (tex.entries[i].w, tex.entries[i].h)).collect();
+        let mut sizes: Vec<(u32, u32)> = order.iter().map(|&i| (tex.entries[i].w, tex.entries[i].h)).collect();
+        sizes.extend(tex.variants.iter().map(|v| (v.w, v.h)));
         let origins = pack_shelves(&sizes);
         let mut slots: std::collections::HashMap<&str, (u32, u32, u32, u32)> =
             std::collections::HashMap::new();
@@ -616,6 +807,31 @@ impl EntityPass {
                     slots.insert(e.key, (x, y, e.w, e.h));
                 }
                 _ => log::warn!("entities: mob texture {} ({}×{}) didn't pack", e.key, e.w, e.h),
+            }
+        }
+        // (base key, variant id) -> atlas origin, for the offset table below.
+        // The reserved emissive id is split out: it is a layer, not a variant a
+        // mob can be drawn as.
+        let mut variant_slots: std::collections::HashMap<(&'static str, u32), (u32, u32)> =
+            std::collections::HashMap::new();
+        let mut pack_emissive: std::collections::HashMap<&'static str, (u32, u32)> =
+            std::collections::HashMap::new();
+        for (n, v) in tex.variants.iter().enumerate() {
+            match origins[order.len() + n] {
+                Some((x, y)) if blit_tex(&mut atlas, Some(v.rgba), x, y, v.w, v.h) => {
+                    if v.index == EMISSIVE_VARIANT {
+                        pack_emissive.insert(v.base_key, (x, y));
+                    } else {
+                        variant_slots.insert((v.base_key, v.index), (x, y));
+                    }
+                }
+                _ => log::warn!(
+                    "entities: variant {} of {} ({}×{}) didn't pack",
+                    v.index,
+                    v.base_key,
+                    v.w,
+                    v.h
+                ),
             }
         }
 
@@ -668,6 +884,15 @@ impl EntityPass {
                     }
                 }
             }
+            // Vanilla emissive layers: the same geometry, filtered to the
+            // layer's parts and sampled from an overlay texture. Skipped in
+            // facelabel mode — the overlay would repaint texels the base model
+            // already labelled and make every emissive mob ambiguous.
+            let emissive = if debug_tex {
+                Vec::new()
+            } else {
+                build_emissive(&m, def, &slots, &pack_emissive)
+            };
             let quads = m
                 .quads
                 .iter()
@@ -687,13 +912,36 @@ impl EntityPass {
                         uv,
                         shade: q.shade,
                         part: q.part as u16,
+                        tex: q.tex as u8,
                         facing: q.facing,
                         normal: q.normal,
                     }
                 })
                 .collect();
+            // Per-variant UV offsets: for each variant id the pack packed for
+            // any of this mob's textures, the shift from that texture's slot to
+            // the alternate's. Slots the variant doesn't cover stay at zero
+            // (i.e. keep the vanilla texture).
+            let mut variants: std::collections::HashMap<u16, Vec<[f32; 2]>> =
+                std::collections::HashMap::new();
+            for (&(base_key, index), &(vx, vy)) in &variant_slots {
+                let Some(slot) = def.textures.iter().position(|k| *k == base_key) else { continue };
+                let (bx, by, _, _) = origins[slot];
+                let e = variants
+                    .entry(index as u16)
+                    .or_insert_with(|| vec![[0.0, 0.0]; def.textures.len()]);
+                e[slot] = [
+                    (vx as f32 - bx as f32) / ATLAS_W as f32,
+                    (vy as f32 - by as f32) / ATLAS_H as f32,
+                ];
+            }
             models[def.kind.index()] = Some(MobModel {
                 quads,
+                tinted_slot: mobs::tinted_texture(def.kind)
+                    .and_then(|k| def.textures.iter().position(|t| *t == k))
+                    .map(|s| s as u8),
+                variants,
+                emissive,
                 parts: m.parts,
                 keyframes: m.keyframes,
                 event_rigs: m.event_rigs,
@@ -792,6 +1040,20 @@ impl EntityPass {
             // against the armour it decorates.
             let trim_pipeline =
                 build_pipeline(&device, layout, color_format, false, vk::CompareOp::EQUAL)?;
+            // M52: vanilla's `RenderPipelines.EYES` / `ENTITY_TRANSLUCENT_EMISSIVE`
+            // — translucent blend, depth-write off, `CompareOp.GREATER_THAN_OR_EQUAL`.
+            // The `OR_EQUAL` is load-bearing: an emissive layer redraws geometry
+            // whose depth the solid pass just wrote, so under the plain `GREATER`
+            // every fragment would be rejected. (The `GREATER` half of vanilla's
+            // own constant incidentally confirms 26.x is reversed-Z, the
+            // convention Rewo adopted in M4.)
+            let emissive_pipeline = build_pipeline(
+                &device,
+                layout,
+                color_format,
+                false,
+                vk::CompareOp::GREATER_OR_EQUAL,
+            )?;
 
             let mut bufs = [vk::Buffer::null(); RING];
             let mut allocs: [Option<Allocation>; RING] = [None, None];
@@ -828,6 +1090,8 @@ impl EntityPass {
                 set_layout,
                 solid_pipeline,
                 text_pipeline,
+                emissive_pipeline,
+                emissive_verts: 0,
                 glint_pipeline: None,
                 glint: None,
                 glint_verts: 0,
@@ -1008,6 +1272,17 @@ impl EntityPass {
         &self.debug_ambiguous
     }
 
+    /// The per-texture-slot UV offsets a pack variant applies to a mob — what
+    /// `rewo mobshot --etf-check` asserts against, since a variant that shifts
+    /// the wrong slot is invisible in a silhouette.
+    pub fn variant_offsets(&self, kind: EntityModelKind, variant: u16) -> Option<&[[f32; 2]]> {
+        self.models[kind.index()]
+            .as_ref()?
+            .variants
+            .get(&variant)
+            .map(|v| v.as_slice())
+    }
+
     /// Kinds with a built model (all textures were present).
     pub fn available_kinds(&self) -> Vec<EntityModelKind> {
         EntityModelKind::ALL
@@ -1043,6 +1318,7 @@ impl EntityPass {
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,
             mob: mobs::MobCombat::default(),
+            tendril: 0.0,
         };
         let xf = part_transforms(model, &ctx, None, None);
         Some(
@@ -1109,6 +1385,10 @@ impl EntityPass {
         // above because it samples a different sheet, which is a descriptor
         // change and therefore a separate draw.
         let mut armor_glint_verts: Vec<Vertex> = Vec::new();
+        // M52: the vanilla emissive layers. Their pipeline is
+        // `GREATER_OR_EQUAL` with no depth write, so like the trim they cannot
+        // share the solid range's strict `GREATER`.
+        let mut emissive_verts: Vec<Vertex> = Vec::new();
         let glint_offsets = crate::gui_item::glint_offsets(
             (time as f64) * 1000.0,
             crate::gui_item::GLINT_SPEED,
@@ -1166,6 +1446,7 @@ impl EntityPass {
                 self.emit_model(
                     &mut verts,
                     &mut trim_verts,
+                    &mut emissive_verts,
                     d,
                     model,
                     time,
@@ -1224,20 +1505,28 @@ impl EntityPass {
             log::warn!("entities: vertex budget hit — some entities/tags dropped");
         }
 
-        // Five ranges in one buffer: solid | text | glint | trim | armor_glint.
+        // Six ranges in one buffer:
+        //     solid | text | glint | trim | armor_glint | emissive
         // The order here is storage, not draw order — `draw_armor_glint` runs
-        // before `draw_trim` because vanilla submits the foil under the trim.
+        // before `draw_trim` because vanilla submits the foil under the trim,
+        // and `draw_emissive` runs right after `draw_solid`, which is where
+        // vanilla's `order(1)` layer submits land. M52 appends its range at the
+        // *end* deliberately: every offset above it is then unchanged, so the
+        // five existing ranges keep their exact first-vertex arithmetic.
         let text_end = verts.len();
         verts.append(&mut glint_verts);
         let glint_end = verts.len();
         verts.append(&mut trim_verts);
         let trim_end = verts.len();
         verts.append(&mut armor_glint_verts);
+        let armor_glint_end = verts.len();
+        verts.append(&mut emissive_verts);
         self.solid_verts = solid as u32;
         self.text_verts = (text_end - solid) as u32;
         self.glint_verts = (glint_end - text_end) as u32;
         self.trim_verts = (trim_end - glint_end) as u32;
-        self.armor_glint_verts = (verts.len() - trim_end) as u32;
+        self.armor_glint_verts = (armor_glint_end - trim_end) as u32;
+        self.emissive_verts = (verts.len() - armor_glint_end) as u32;
         let total = verts.len();
         if let Some(slice) = self.allocs[self.cursor]
             .as_mut()
@@ -1521,10 +1810,14 @@ impl EntityPass {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_model(
         &self,
         verts: &mut Vec<Vertex>,
         trim_verts: &mut Vec<Vertex>,
+        // Vanilla emissive-layer geometry (M52). Its own range because it
+        // needs its own pipeline (depth GREATER_OR_EQUAL, no depth write).
+        emis: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -1558,6 +1851,7 @@ impl EntityPass {
             attack: d.attack,
             arm_poses: d.arm_poses,
             mob: d.mob,
+            tendril: d.emissive.tendril,
         };
         // Resource-pack CEM animation (M9c): evaluate the expression program
         // this frame → per-bone [rx,ry,rz,tx,ty,tz] deltas, applied in
@@ -1613,37 +1907,10 @@ impl EntityPass {
         // Per-entity render scale (slime/magma size) on top of the baked px→
         // block scale — vanilla scales the whole model uniformly by `size`.
         let s = model.scale * if d.scale_mul > 0.0 { d.scale_mul } else { 1.0 };
-        for q in &model.quads {
-            if verts.len() + 6 > MAX_VERTS {
-                return;
-            }
-            // CEM `bone.visible` (goat horns, bee stinger, sheared faces …).
-            if cem_visible.as_ref().is_some_and(|v| !v[q.part as usize]) {
-                continue;
-            }
-            match model.parts[q.part as usize].show {
-                mobs::Show::Always => {}
-                mobs::Show::ShellOnly if !d.shell => continue,
-                mobs::Show::NotShell if d.shell => continue,
-                mobs::Show::During(g)
-                    if !matches!(d.gesture, Some((active, _)) if active == g) =>
-                {
-                    continue
-                }
-                // `IllagerModel.setupAnim`'s tail: `arms.visible = crossedArms`
-                // and `left/rightArm.visible = !crossedArms`.
-                mobs::Show::IllagerCrossedOnly
-                    if d.mob.illager_pose != mobs::IllagerArmPose::Crossed =>
-                {
-                    continue
-                }
-                mobs::Show::IllagerNotCrossed
-                    if d.mob.illager_pose == mobs::IllagerArmPose::Crossed =>
-                {
-                    continue
-                }
-                _ => {}
-            }
+        // Model-space quad corners -> world space, through this entity's pose.
+        // Shared by the base pass and the emissive layers so a layer can never
+        // drift off the model it is glowing on (M52).
+        let place = |q: &GpuQuad| {
             let (m, o) = &xf[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
             for (i, corner) in q.pos.iter().enumerate() {
@@ -1671,15 +1938,70 @@ impl EntityPass {
                 }
                 p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
             }
-            // Directional face shade × the entity's per-channel world light.
-            let [light_r, light_g, light_b] = d.light;
-            let hurt = if d.hurt { 1.0f32 } else { 0.0 };
-            // Shade only — the light rides its own attribute so the hurt
-            // overlay can be mixed in before it (vanilla's `entity.fsh` order).
-            let c = [q.shade, q.shade, q.shade];
-            // Player skin: shift the (default-Steve) UVs onto this player's
-            // uploaded slot. Same 64² layout, so a constant offset suffices.
-            let du = d.skin_uv.unwrap_or([0.0, 0.0]);
+            p4
+        };
+        // Per-part visibility (CEM bone hides + the vanilla shell / gesture /
+        // illager swaps). Vanilla's emissive layers run the *same* `setupAnim`
+        // on a copy of the model, so they obey exactly the same rules.
+        let visible = |part: usize| {
+            // CEM `bone.visible` (goat horns, bee stinger, sheared faces ...).
+            if cem_visible.as_ref().is_some_and(|v| !v[part]) {
+                return false;
+            }
+            match model.parts[part].show {
+                mobs::Show::Always => true,
+                mobs::Show::ShellOnly => d.shell,
+                mobs::Show::NotShell => !d.shell,
+                mobs::Show::During(g) => matches!(d.gesture, Some((active, _)) if active == g),
+                // `IllagerModel.setupAnim`'s tail: `arms.visible = crossedArms`
+                // and `left/rightArm.visible = !crossedArms`.
+                mobs::Show::IllagerCrossedOnly => {
+                    d.mob.illager_pose == mobs::IllagerArmPose::Crossed
+                }
+                mobs::Show::IllagerNotCrossed => {
+                    d.mob.illager_pose != mobs::IllagerArmPose::Crossed
+                }
+            }
+        };
+        // The pack variant this entity drew, if the atlas has a slot for it.
+        let variant_uv = (d.variant != 0)
+            .then(|| model.variants.get(&d.variant))
+            .flatten()
+            .map(|v| v.as_slice());
+        // Directional face shade x the entity's per-channel world light.
+        let [light_r, light_g, light_b] = d.light;
+        let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        for q in &model.quads {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            if !visible(q.part as usize) {
+                continue;
+            }
+            let p4 = place(q);
+            // Shade only -- the light rides its own attribute so the hurt
+            // overlay can be mixed in before it (vanilla's `entity.fsh` order)
+            // -- and, on the one texture vanilla dyes, the wool colour, which
+            // `SheepWoolLayer` multiplies into the vertex colour the same way.
+            // Linearized first: the table is sRGB and the attachment encodes on
+            // store (render discipline #1).
+            let c = match (model.tinted_slot, d.dye.unwrap_or(0)) {
+                (Some(slot), dye) if slot == q.tex => {
+                    let rgb = mobs::SHEEP_WOOL_COLORS[(dye & 15) as usize];
+                    [
+                        q.shade * srgb_to_linear(rgb[0] as f32 / 255.0),
+                        q.shade * srgb_to_linear(rgb[1] as f32 / 255.0),
+                        q.shade * srgb_to_linear(rgb[2] as f32 / 255.0),
+                    ]
+                }
+                _ => [q.shade, q.shade, q.shade],
+            };
+            // Two things can move a quad's UVs onto a different texture of the
+            // same size: a player's uploaded skin, and a pack's ETF variant.
+            // They never apply to the same mob (skins are the player model's),
+            // so the variant wins where it exists.
+            let du = variant_uv
+                .map_or_else(|| d.skin_uv.unwrap_or([0.0, 0.0]), |v| v[q.tex as usize]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
@@ -1711,6 +2033,57 @@ impl EntityPass {
                     hurt,
                     glint.as_deref_mut().filter(|_| d.held_glint[i]),
                 );
+            }
+        }
+        // ---- vanilla emissive layers (M52) ------------------------------
+        // `LivingEntityEmissiveLayer.submit`: skip the layer outright when its
+        // alpha function is ~0, else render the filtered model with
+        // `ARGB.white(alpha)` through an EMISSIVE pipeline — which, per
+        // `entity.vsh`, samples **no lightmap at all**:
+        //
+        //     #ifndef EMISSIVE
+        //         lightMapColor = sample_lightmap(Sampler2, UV2);
+        //     #endif
+        //
+        // So the fullbright is not a brightness the layer adds, it is a
+        // multiply the layer omits. `light_hurt.rgb` is therefore the identity
+        // `[1,1,1]` below rather than `d.light` — the same statement in Rewo's
+        // ABI, since `entity.frag` ends on `c *= v_light_hurt.rgb`.
+        for layer in &model.emissive {
+            let alpha = emissive_alpha(layer.alpha, ctx.age, &d.emissive);
+            if alpha <= 1.0e-5 {
+                continue;
+            }
+            // Vanilla's `ALPHA_CUTOUT` 0.1 on `entityTranslucentEmissive`
+            // discards fragments with `texel.a * alpha < 0.1`. Every vanilla
+            // emissive texture is either fully transparent or at least 0.19
+            // opaque (checked across all nine), so the cutout only ever fires
+            // layer-wide, as an alpha floor — which is what this is.
+            if layer.cutout && alpha < 0.1 {
+                continue;
+            }
+            // `NO_CARDINAL_LIGHTING` (the `eyes` pipeline) passes the vertex
+            // colour through unshaded; `PER_FACE_LIGHTING` (emissive) keeps the
+            // per-face directional term, which for us is the baked `shade`.
+            // Same split as vanilla's two pipelines.
+            let shaded = layer.cutout;
+            for q in &layer.quads {
+                if emis.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                if !visible(q.part as usize) {
+                    continue;
+                }
+                let p4 = place(q);
+                let c = if shaded { q.shade } else { 1.0 };
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    emis.push(Vertex {
+                        pos: p4[i],
+                        uv: q.uv[i],
+                        color: [c, c, c, alpha],
+                        light_hurt: [1.0, 1.0, 1.0, 0.0],
+                    });
+                }
             }
         }
     }
@@ -1833,6 +2206,39 @@ impl EntityPass {
 
     /// Build the glint pipeline and upload `misc/enchanted_glint_item.png`
     /// (M45). Optional, like the other two glints: no sheet, no shimmer.
+    /// Vanilla emissive layers (mob eyes, the warden's glow) — drawn
+    /// immediately after the solid models, which is where vanilla's `order(1)`
+    /// layer submits land: on top of the base model, under the translucent
+    /// world (M52).
+    pub fn draw_emissive(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        if self.emissive_verts == 0 {
+            return;
+        }
+        unsafe {
+            self.bind_common(gpu, cb, view_proj, extent);
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.emissive_pipeline);
+            // Last range in the buffer — see the storage comment in `set_draws`.
+            device.cmd_draw(
+                cb,
+                self.emissive_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts,
+                0,
+            );
+        }
+    }
+
     pub fn init_glint(
         &mut self,
         gpu: &mut Gpu,
@@ -2118,6 +2524,7 @@ impl EntityPass {
             }
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
+            device.destroy_pipeline(self.emissive_pipeline, None);
             if let Some(p) = self.trim_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
@@ -2219,6 +2626,9 @@ struct AnimCtx {
     arm_poses: mobs::ArmPoses,
     /// Synced mob state driving the undead / skeleton / illager arm rigs.
     mob: mobs::MobCombat,
+    /// `Warden.getTendrilAnimation` — drives the tendril sway as well as the
+    /// tendril emissive layer's alpha (M52).
+    tendril: f32,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
@@ -2226,6 +2636,46 @@ const DEG: f32 = std::f32::consts::PI / 180.0;
 /// Vanilla `Mth.triangleWave`.
 fn triangle_wave(a: f32, b: f32) -> f32 {
     ((a.rem_euclid(b) - b * 0.5).abs() - b * 0.25) / (b * 0.25)
+}
+
+/// Warden heartbeat period in ticks at anger 0 — vanilla `getHeartBeatDelay()
+/// = 40 - floor(clamp(anger / ANGRY.minimumAnger, 0, 1) * 30)`. The client
+/// anger level rides metadata we don't decode, so a calm warden's 40 ticks is
+/// the constant; an angry one beats up to 4x faster in vanilla.
+const WARDEN_HEARTBEAT_TICKS: f32 = 40.0;
+/// Ticks a warden's heart/tendril countdown runs (`= 10`, decremented once per
+/// client tick), and the divisor `getHeartAnimation` normalizes by.
+const WARDEN_PULSE_TICKS: f32 = 10.0;
+
+/// One emissive layer's alpha this frame — vanilla's `AlphaFunction` bodies,
+/// with `age` in ticks (M52).
+fn emissive_alpha(a: mobs::EmissiveAlpha, age: f32, state: &EmissiveState) -> f32 {
+    match a {
+        mobs::EmissiveAlpha::Always => 1.0,
+        // `(warden, ageInTicks) -> max(0, cos(ageInTicks * 0.045 + phi) * 0.25)`.
+        mobs::EmissiveAlpha::PulsatingSpots { phase } => {
+            ((age * 0.045 + phase).cos() * 0.25).max(0.0)
+        }
+        mobs::EmissiveAlpha::Tendril => state.tendril.clamp(0.0, 1.0),
+        // `Warden.tick` sets `heartAnimation = 10` every heartbeat delay and
+        // decrements it each tick; `getHeartAnimation` lerps between the
+        // previous and current value and divides by 10 — which for a continuous
+        // clock is exactly `max(0, 10 - (age mod delay)) / 10`. The phase here
+        // is the *world* clock rather than the entity's own tickCount (we do
+        // not track spawn ticks), so a herd of wardens would beat in unison;
+        // one warden is indistinguishable.
+        mobs::EmissiveAlpha::Heart => {
+            ((WARDEN_PULSE_TICKS - age.rem_euclid(WARDEN_HEARTBEAT_TICKS)) / WARDEN_PULSE_TICKS)
+                .max(0.0)
+        }
+        mobs::EmissiveAlpha::EyesGlowing => {
+            if state.eyes_glow {
+                1.0
+            } else {
+                0.0
+            }
+        }
+    }
 }
 
 /// Vanilla `Mth`'s sine-table scale: `65536 / 2π`.
@@ -2493,6 +2943,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         // `super.setupAnim` left, then runs the arm-pose switch.
         IllagerArmRight | IllagerArmLeft => {
             illager_arm(&mut rot, &mut off, anim == IllagerArmLeft, c);
+        }
+        // `WardenModel.animateTendrils`: one shared angle, the right tendril
+        // taking its negation (M52).
+        WardenTendril { left } => {
+            let x = c.tendril * ((c.age as f64 * 2.25).cos() as f32 * PI * 0.1);
+            rot[0] = if left { x } else { -x };
         }
     }
     (rot, off)
@@ -3627,6 +4083,9 @@ pub struct OracleInputs {
     pub arm_poses: mobs::ArmPoses,
     /// Synced mob state for the undead / skeleton / illager rigs (M20).
     pub mob: mobs::MobCombat,
+    /// `Warden.getTendrilAnimation` in `0..1` (M52) — 0 at rest, which is
+    /// vanilla's synched default for a warden that has heard nothing.
+    pub tendril: f32,
 }
 
 /// The per-part animation deltas (added rotation radians ZYX + pivot offset
@@ -3655,6 +4114,7 @@ pub fn oracle_part_deltas(
         attack: inputs.attack,
         arm_poses: inputs.arm_poses,
         mob: inputs.mob,
+        tendril: inputs.tendril,
     };
     let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
     Some(
@@ -4616,5 +5076,301 @@ mod tests {
             }
             rects.push((x, y, w, h));
         }
+    }
+
+    // ---- emissive layers, the dye table, the tendrils (M52) -------------
+
+    /// Fabricated atlas slots for the warden and its four overlay textures,
+    /// deliberately at awkward origins so a dropped or transposed offset shows
+    /// up.
+    fn warden_slots() -> std::collections::HashMap<&'static str, (u32, u32, u32, u32)> {
+        [
+            ("warden", (0u32, 0u32, 128u32, 128u32)),
+            ("warden_bioluminescent", (256, 384, 128, 128)),
+            ("warden_pulsating_1", (384, 256, 128, 128)),
+            ("warden_pulsating_2", (512, 128, 128, 128)),
+            ("warden_heart", (128, 512, 128, 128)),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// No resource pack loaded — the built-in layers only.
+    fn no_pack_emissive() -> std::collections::HashMap<&'static str, (u32, u32)> {
+        std::collections::HashMap::new()
+    }
+
+    fn warden_def() -> &'static mobs::MobDef {
+        mobs::MOBS
+            .iter()
+            .find(|d| d.kind == EntityModelKind::Warden)
+            .expect("warden is in the registry")
+    }
+
+    /// The invariant that makes an emissive layer *the same pixels, a different
+    /// texture*: every layer quad must land on the overlay texture's atlas slot
+    /// at exactly the model-px texel its base quad names. Checked against the
+    /// raw `mobs::Model` UVs — the input to the bake, not its output.
+    #[test]
+    fn emissive_quads_sample_the_overlay_slot_at_the_base_texel() {
+        let def = warden_def();
+        let m = (def.build)();
+        let slots = warden_slots();
+        let layers = build_emissive(&m, def, &slots, &no_pack_emissive());
+        assert_eq!(layers.len(), 5, "WardenRenderer adds five emissive layers");
+
+        for (layer, spec) in layers.iter().zip(mobs::emissive_layers(def.kind)) {
+            let (ox, oy, _, _) = slots[spec.tex];
+            // The base quads this layer should have kept, filtered the same way
+            // but by an independent expression of the rule.
+            let want: Vec<&mobs::RawQuad> = m
+                .quads
+                .iter()
+                .filter(|q| match spec.parts {
+                    mobs::PartFilter::All => true,
+                    mobs::PartFilter::Exact(names) => names.contains(&m.parts[q.part].name),
+                })
+                .collect();
+            assert_eq!(layer.quads.len(), want.len(), "{} quad count", spec.tex);
+            for (got, raw) in layer.quads.iter().zip(&want) {
+                for k in 0..4 {
+                    let u = got.uv[k][0] * ATLAS_W as f32 - ox as f32;
+                    let v = got.uv[k][1] * ATLAS_H as f32 - oy as f32;
+                    assert!(
+                        (u - raw.uv[k][0]).abs() < 1e-3 && (v - raw.uv[k][1]).abs() < 1e-3,
+                        "{}: quad corner {k} sampled ({u}, {v}), base texel is {:?}",
+                        spec.tex,
+                        raw.uv[k]
+                    );
+                }
+                assert_eq!(got.pos, raw.pos, "{}: geometry must be identical", spec.tex);
+            }
+        }
+    }
+
+    /// `retainExactParts` really excludes parts. The heart layer is body-only
+    /// and the bioluminescent layer is everything *but* the body, so between
+    /// them a filter that silently passed everything is impossible to miss.
+    #[test]
+    fn emissive_part_filters_select_vanillas_parts() {
+        let def = warden_def();
+        let m = (def.build)();
+        let layers = build_emissive(&m, def, &warden_slots(), &no_pack_emissive());
+        let body_quads = m.quads.iter().filter(|q| m.parts[q.part].name == "body").count();
+        assert!(body_quads > 0);
+        // Layer 0 = bioluminescent (head + limbs, no body).
+        assert!(
+            layers[0].quads.iter().all(|q| m.parts[q.part as usize].name != "body"),
+            "the bioluminescent layer must not include the body"
+        );
+        // Layer 3 = tendrils. Each tendril is a 16x16x0 plate, so only its two
+        // zero-depth faces survive `cube_faces`' area filter.
+        assert_eq!(layers[3].quads.len(), 4, "two tendril plates, two faces each");
+        assert!(layers[3]
+            .quads
+            .iter()
+            .all(|q| m.parts[q.part as usize].name.ends_with("_tendril")));
+        // Layer 4 = heart, body only.
+        assert_eq!(layers[4].quads.len(), body_quads);
+    }
+
+    /// A layer whose overlay texture is a different size than the base can't
+    /// share its UVs, so it must be dropped rather than rendered scrambled.
+    #[test]
+    fn emissive_layer_with_a_mismatched_texture_is_dropped() {
+        let def = warden_def();
+        let m = (def.build)();
+        let mut slots = warden_slots();
+        slots.insert("warden_heart", (128, 512, 64, 64));
+        let layers = build_emissive(&m, def, &slots, &no_pack_emissive());
+        assert_eq!(layers.len(), 4, "the mismatched layer is dropped, the rest stay");
+        // And a missing one, likewise.
+        let mut slots = warden_slots();
+        slots.remove("warden_pulsating_2");
+        assert_eq!(build_emissive(&m, def, &slots, &no_pack_emissive()).len(), 4);
+    }
+
+    /// A pack's `<texture>_e.png` (ETF) becomes an always-on fullbright layer
+    /// over exactly the quads that sample that texture — so on a two-texture
+    /// mob it covers one and leaves the other alone.
+    #[test]
+    fn a_pack_emissive_overlay_covers_only_its_own_texture() {
+        let def = mobs::MOBS
+            .iter()
+            .find(|d| d.kind == EntityModelKind::Sheep)
+            .expect("sheep is in the registry");
+        let m = (def.build)();
+        assert_eq!(def.textures, &["sheep", "sheep_wool"]);
+        let slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> =
+            [("sheep", (0u32, 0u32, 64u32, 32u32)), ("sheep_wool", (64, 0, 64, 32))]
+                .into_iter()
+                .collect();
+        // An overlay on the wool only.
+        let pack: std::collections::HashMap<&'static str, (u32, u32)> =
+            [("sheep_wool", (256u32, 128u32))].into_iter().collect();
+        let layers = build_emissive(&m, def, &slots, &pack);
+        assert_eq!(layers.len(), 1, "the sheep has no built-in emissive layers");
+        let wool_quads = m.quads.iter().filter(|q| q.tex == 1).count();
+        assert!(wool_quads > 0);
+        assert_eq!(layers[0].quads.len(), wool_quads, "only the wool's quads glow");
+        assert!(layers[0].cutout, "OptiFine emissive textures are alpha-cutout");
+        // And it samples the overlay's slot at the wool's own texels.
+        for (got, raw) in layers[0].quads.iter().zip(m.quads.iter().filter(|q| q.tex == 1)) {
+            let u = got.uv[0][0] * ATLAS_W as f32 - 256.0;
+            let v = got.uv[0][1] * ATLAS_H as f32 - 128.0;
+            assert!((u - raw.uv[0][0]).abs() < 1e-3 && (v - raw.uv[0][1]).abs() < 1e-3);
+        }
+    }
+
+    /// The wool colours against the two rules that produced them:
+    /// `DyeColor.getTextureDiffuseColor()` scaled to 0.75, with white
+    /// overridden by `ColorLerper.getModifiedColor`'s literal.
+    #[test]
+    fn sheep_wool_colors_match_the_dye_table_at_sheep_brightness() {
+        // `DyeColor`'s third constructor field, in ordinal order.
+        const DIFFUSE: [u32; 16] = [
+            16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495,
+            1481884, 8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
+        ];
+        let t = mobs::SHEEP_WOOL_COLORS;
+        // White is special-cased outright: `-1644826` = 0xFFE6E6E6.
+        assert_eq!(t[0], [0xE6, 0xE6, 0xE6]);
+        assert_ne!(
+            t[0],
+            [
+                (DIFFUSE[0] >> 16 & 255) as u8,
+                (DIFFUSE[0] >> 8 & 255) as u8,
+                (DIFFUSE[0] & 255) as u8
+            ],
+            "white must be the override, not the dimmed diffuse colour"
+        );
+        for i in 1..16 {
+            let src = DIFFUSE[i];
+            for c in 0..3 {
+                let ch = (src >> (16 - 8 * c) & 255) as f32;
+                assert_eq!(t[i][c], (ch * 0.75).floor() as u8, "dye {i} channel {c}");
+            }
+        }
+    }
+
+    /// The `AlphaFunction` bodies, against values computed by hand from the
+    /// decompiled expressions.
+    #[test]
+    fn emissive_alpha_matches_vanillas_alpha_functions() {
+        let rest = EmissiveState::default();
+        let a = |f, age, s: &EmissiveState| emissive_alpha(f, age, s);
+        assert_eq!(a(mobs::EmissiveAlpha::Always, 123.0, &rest), 1.0);
+
+        // max(0, cos(age*0.045 + phi)*0.25): the two spot layers are exactly out
+        // of phase, so at any age one is lit and the other is clamped off — the
+        // pulse vanilla shows.
+        let spots =
+            |phase: f32, age: f32| a(mobs::EmissiveAlpha::PulsatingSpots { phase }, age, &rest);
+        assert!((spots(0.0, 0.0) - 0.25).abs() < 1e-6);
+        assert_eq!(spots(std::f32::consts::PI, 0.0), 0.0);
+        // Quarter period of cos(age*0.045) is age = (pi/2)/0.045 ~ 34.9.
+        assert!(spots(0.0, std::f32::consts::FRAC_PI_2 / 0.045).abs() < 1e-6);
+        for age in [0.0, 7.5, 34.9, 70.0, 130.0] {
+            assert!(spots(0.0, age) + spots(std::f32::consts::PI, age) > 0.0 - 1e-9);
+            assert!(spots(0.0, age) <= 0.25 && spots(std::f32::consts::PI, age) <= 0.25);
+        }
+
+        // heartAnimation: 10 at the beat, decrementing to 0 over 10 ticks, then
+        // flat until the next beat 40 ticks after the last.
+        let heart = |age: f32| a(mobs::EmissiveAlpha::Heart, age, &rest);
+        assert_eq!(heart(0.0), 1.0);
+        assert!((heart(5.0) - 0.5).abs() < 1e-6);
+        assert_eq!(heart(10.0), 0.0);
+        assert_eq!(heart(39.9), 0.0);
+        assert!((heart(40.0) - 1.0).abs() < 1e-6, "the beat repeats every 40 ticks");
+        assert!((heart(82.0) - 0.8).abs() < 1e-5);
+
+        // The two entity-state functions pass their state through, and both sit
+        // at 0 for vanilla's synched defaults.
+        assert_eq!(a(mobs::EmissiveAlpha::Tendril, 0.0, &rest), 0.0);
+        assert_eq!(a(mobs::EmissiveAlpha::EyesGlowing, 0.0, &rest), 0.0);
+        let on = EmissiveState {
+            tendril: 0.7,
+            eyes_glow: true,
+        };
+        assert_eq!(a(mobs::EmissiveAlpha::Tendril, 0.0, &on), 0.7);
+        assert_eq!(a(mobs::EmissiveAlpha::EyesGlowing, 0.0, &on), 1.0);
+    }
+
+    /// `WardenModel.animateTendrils`: one angle, mirrored between the two
+    /// tendrils, scaled by the countdown and zero without it.
+    #[test]
+    fn warden_tendril_sway_matches_vanilla() {
+        let ctx = |tendril, age| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril,
+        };
+        // At rest the tendrils do not move, whatever the age.
+        for age in [0.0, 3.0, 17.5] {
+            let (r, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(0.0, age));
+            assert_eq!(r, [0.0; 3]);
+        }
+        // Full countdown at age 0: cos(0) = 1 -> +/-pi*0.1, left positive.
+        let peak = std::f32::consts::PI * 0.1;
+        let (l, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(1.0, 0.0));
+        let (r, _) = anim_delta(mobs::Anim::WardenTendril { left: false }, 1.0, &ctx(1.0, 0.0));
+        assert!((l[0] - peak).abs() < 1e-6 && (r[0] + peak).abs() < 1e-6);
+        assert_eq!([l[1], l[2]], [0.0, 0.0], "tendrils rotate about X only");
+        // Half a countdown scales the same angle.
+        let (h, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(0.5, 0.0));
+        assert!((h[0] - peak * 0.5).abs() < 1e-6);
+        // cos(age*2.25) = 0 at age = (pi/2)/2.25 — the still point the emissive
+        // gate renders at.
+        let (z, _) = anim_delta(
+            mobs::Anim::WardenTendril { left: true },
+            1.0,
+            &ctx(1.0, std::f32::consts::FRAC_PI_2 / 2.25),
+        );
+        assert!(z[0].abs() < 1e-6, "the sway must vanish at its zero crossing");
+    }
+
+    /// The tendril split must not have moved the tendrils: their rest geometry
+    /// has to match the plates they replaced, which were folded onto the head at
+    /// the same offsets. (This is what keeps `mobshot --check` at 243/243.)
+    #[test]
+    fn warden_tendrils_keep_their_rest_position() {
+        let m = (warden_def().build)();
+        let quads: Vec<&mobs::RawQuad> = m
+            .quads
+            .iter()
+            .filter(|q| m.parts[q.part].name.ends_with("_tendril"))
+            .collect();
+        assert_eq!(quads.len(), 4);
+        // Vanilla: right_tendril box [-16,-13,0]+[16,16,0] at pose (-8,-12,0)
+        // inside a head pivoted at (0,-13,0) under a body at (0,3,0) — but `pos`
+        // here is still part-local, so the box corners are the raw `addBox` ones.
+        let xs: Vec<f32> = quads.iter().flat_map(|q| q.pos.iter().map(|p| p[0])).collect();
+        let (lo, hi) = (
+            xs.iter().cloned().fold(f32::MAX, f32::min),
+            xs.iter().cloned().fold(f32::MIN, f32::max),
+        );
+        assert_eq!((lo, hi), (-16.0, 16.0), "both plates span the head's sides");
+        for q in &quads {
+            for p in &q.pos {
+                assert_eq!(p[2], 0.0, "tendril plates are flat at z=0");
+                assert!((-13.0..=3.0).contains(&p[1]), "y {} out of the box", p[1]);
+            }
+        }
+        // And the pivots are vanilla's PartPose offsets.
+        let pivot = |name: &str| m.parts.iter().find(|p| p.name == name).unwrap().pivot;
+        assert_eq!(pivot("right_tendril"), [-8.0, -12.0, 0.0]);
+        assert_eq!(pivot("left_tendril"), [8.0, -12.0, 0.0]);
     }
 }

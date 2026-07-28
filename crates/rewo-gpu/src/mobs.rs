@@ -143,6 +143,12 @@ pub enum Anim {
     /// i·0.15π)·π·ry·(1+|i−2|)`, `x += sin(same)·π·tx·|i−2|`.
     /// `with_x` mirrors vanilla's wing layers that copy yRot only.
     Crawl { i: u8, ry: f32, tx: f32, with_x: bool },
+    /// Warden tendrils (`WardenModel.animateTendrils`):
+    /// `xRot = ±tendrilAnimation · cos(age·2.25) · π · 0.1`, the left tendril
+    /// taking the positive sign. `tendrilAnimation` is the entity's 10-tick
+    /// countdown ([`crate::entities::EmissiveState::tendril`]) — 0 at rest, so
+    /// the tendrils hang still until the warden hears something.
+    WardenTendril { left: bool },
     /// `HumanoidModel` **body** under a combat swing:
     /// `body.yRot = sin(sqrt(attackTime)·2π)·0.2`, negated when the attack arm
     /// is the left one. Zero when `attackTime <= 0` — vanilla's
@@ -1576,6 +1582,217 @@ pub struct MobDef {
     pub kind: EntityModelKind,
     pub textures: &'static [&'static str],
     pub build: fn() -> Model,
+}
+
+// ---------------------------------------------------------------------------
+// Dye tint (vanilla `SheepWoolLayer`)
+// ---------------------------------------------------------------------------
+
+/// The 16 dye colours as vanilla renders sheep wool, sRGB.
+///
+/// `SheepWoolLayer` draws the fur model tinted by
+/// `ColorLerper.Type.SHEEP.getColor(woolColor)`, which is
+/// `DyeColor.getTextureDiffuseColor()` scaled to 0.75 brightness — except
+/// white, which the lerper overrides outright to `-1644826` (0xE6E6E6) rather
+/// than dimming. Both rules are folded in here, so these are the literal RGB
+/// values vanilla multiplies into the wool's vertex colour.
+///
+/// (The jeb_ rainbow is `getLerpedColor` over this same table on a 25-tick
+/// cycle; it keys off the sheep's custom name, which Rewo decodes, but also
+/// needs the wool colour.)
+pub const SHEEP_WOOL_COLORS: [[u8; 3]; 16] = [
+    [230, 230, 230], //  0 white
+    [186, 96, 21],   //  1 orange
+    [149, 58, 141],  //  2 magenta
+    [43, 134, 163],  //  3 light_blue
+    [190, 162, 45],  //  4 yellow
+    [96, 149, 23],   //  5 lime
+    [182, 104, 127], //  6 pink
+    [53, 59, 61],    //  7 gray
+    [117, 117, 113], //  8 light_gray
+    [16, 117, 117],  //  9 cyan
+    [102, 37, 138],  // 10 purple
+    [45, 51, 127],   // 11 blue
+    [98, 63, 37],    // 12 brown
+    [70, 93, 16],    // 13 green
+    [132, 34, 28],   // 14 red
+    [21, 21, 24],    // 15 black
+];
+
+/// Which of a mob's textures vanilla renders through a dye tint. Only the
+/// sheep's wool today; wolf and cat collars and llama carpets are the same
+/// shape at other metadata indices.
+pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
+    match kind {
+        EntityModelKind::Sheep => Some("sheep_wool"),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Emissive layers (vanilla `EyesLayer` / `LivingEntityEmissiveLayer`)
+// ---------------------------------------------------------------------------
+
+/// How a mob's model parts are filtered into an emissive layer — vanilla's two
+/// `MeshDefinition` retain modes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PartFilter {
+    /// The whole parent model (`EyesLayer::getParentModel`).
+    All,
+    /// `retainExactParts(names)` — only these parts, children dropped.
+    Exact(&'static [&'static str]),
+}
+
+/// The layer's per-frame alpha — vanilla's `AlphaFunction`. `age` is
+/// `ageInTicks`; the entity-state inputs come from
+/// [`crate::entities::EmissiveState`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum EmissiveAlpha {
+    /// `(state, age) -> 1.0` — the eye layers and the warden's bioluminescent
+    /// skin.
+    Always,
+    /// `max(0, cos(age·0.045 + phase)·0.25)` — the warden's two pulsating spot
+    /// layers, half a period apart (phase 0 and π).
+    PulsatingSpots { phase: f32 },
+    /// `Warden.tendrilAnimation` — a 10-tick countdown started by entity_event
+    /// 61, so the tendrils only glow just after the warden hears a vibration.
+    Tendril,
+    /// `Warden.heartAnimation` — a 10-tick countdown restarted every
+    /// `40 − floor(clamp(anger,0,1)·30)` ticks. Fully client-side.
+    Heart,
+    /// `Creaking.isActive()` ? 1 : 0 (metadata `IS_ACTIVE`, vanilla default
+    /// false).
+    EyesGlowing,
+}
+
+/// One vanilla emissive layer: a filtered copy of the mob's own geometry
+/// re-rendered with an overlay texture at full brightness.
+///
+/// Both vanilla render types this covers (`RenderTypes.eyes` and
+/// `entityTranslucentEmissive`) are, per `RenderPipelines`, translucent blend +
+/// `CompareOp.GREATER_THAN_OR_EQUAL` + **depth-write off**; they differ only in
+/// `ALPHA_CUTOUT` (0.1 on emissive, none on eyes), which
+/// [`cutout`](Self::cutout) carries, and in cardinal lighting — `eyes` defines
+/// `NO_CARDINAL_LIGHTING` (flat), emissive defines `PER_FACE_LIGHTING`
+/// (directionally shaded).
+pub struct EmissiveLayer {
+    /// Texture key in the baked mob-texture table. Must have the same pixel
+    /// dimensions as the mob's base texture — the layer re-uses the base quads'
+    /// UVs verbatim, exactly as vanilla re-renders the same model.
+    pub tex: &'static str,
+    pub parts: PartFilter,
+    pub alpha: EmissiveAlpha,
+    /// Vanilla's `ALPHA_CUTOUT` 0.1 (`entityTranslucentEmissive`); the `eyes`
+    /// pipeline has none.
+    pub cutout: bool,
+}
+
+const CUTOUT: bool = true;
+const NO_CUTOUT: bool = false;
+
+/// The emissive layers a mob kind renders, transcribed one-for-one from its
+/// `EntityRenderer`'s `addLayer` calls in the 26.2 decompile. Kinds with no
+/// emissive layer return `&[]` — which is most of them.
+///
+/// Kept as a function rather than a [`MobDef`] field so the 89-entry `MOBS`
+/// table stays untouched.
+pub fn emissive_layers(kind: EntityModelKind) -> &'static [EmissiveLayer] {
+    use EmissiveAlpha::*;
+    use EntityModelKind as K;
+    // `SpiderRenderer`/`EndermanRenderer`/`PhantomRenderer` add an `EyesLayer`,
+    // which re-renders the *whole* parent model.
+    const SPIDER: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "spider_eyes",
+        parts: PartFilter::All,
+        alpha: Always,
+        cutout: NO_CUTOUT,
+    }];
+    const ENDERMAN: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "enderman_eyes",
+        parts: PartFilter::All,
+        alpha: Always,
+        cutout: NO_CUTOUT,
+    }];
+    const PHANTOM: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "phantom_eyes",
+        parts: PartFilter::All,
+        alpha: Always,
+        cutout: NO_CUTOUT,
+    }];
+    // `BreezeEyesLayer` bakes `BreezeModel.createEyesLayer()` —
+    // `retainPartsAndChildren({"eyes"})`, and vanilla's `eyes` part is an exact
+    // duplicate of `head`'s two boxes at a zero offset, with no children. Our
+    // model folds that duplicate away, so filtering to `head` is the same
+    // geometry.
+    const BREEZE: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "breeze_eyes",
+        parts: PartFilter::Exact(&["head"]),
+        alpha: Always,
+        cutout: NO_CUTOUT,
+    }];
+    // `CreakingModel.createEyesLayer()` = `retainExactParts({"head"})`.
+    const CREAKING: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "creaking_eyes",
+        parts: PartFilter::Exact(&["head"]),
+        alpha: EyesGlowing,
+        cutout: NO_CUTOUT,
+    }];
+    // `CopperGolemRenderer` re-renders the whole model with the eye texture for
+    // its weathering stage; we bake the un-weathered stage.
+    const COPPER_GOLEM: &[EmissiveLayer] = &[EmissiveLayer {
+        tex: "copper_golem_eyes",
+        parts: PartFilter::All,
+        alpha: Always,
+        cutout: NO_CUTOUT,
+    }];
+    // `WardenRenderer`, in its `addLayer` order. The tendril layer samples the
+    // *base* warden texture — the tendrils light up their own texels.
+    const WARDEN: &[EmissiveLayer] = &[
+        EmissiveLayer {
+            tex: "warden_bioluminescent",
+            parts: PartFilter::Exact(&["head", "left_arm", "right_arm", "left_leg", "right_leg"]),
+            alpha: Always,
+            cutout: CUTOUT,
+        },
+        EmissiveLayer {
+            tex: "warden_pulsating_1",
+            parts: PartFilter::Exact(&[
+                "body", "head", "left_arm", "right_arm", "left_leg", "right_leg",
+            ]),
+            alpha: PulsatingSpots { phase: 0.0 },
+            cutout: CUTOUT,
+        },
+        EmissiveLayer {
+            tex: "warden_pulsating_2",
+            parts: PartFilter::Exact(&[
+                "body", "head", "left_arm", "right_arm", "left_leg", "right_leg",
+            ]),
+            alpha: PulsatingSpots { phase: std::f32::consts::PI },
+            cutout: CUTOUT,
+        },
+        EmissiveLayer {
+            tex: "warden",
+            parts: PartFilter::Exact(&["left_tendril", "right_tendril"]),
+            alpha: Tendril,
+            cutout: CUTOUT,
+        },
+        EmissiveLayer {
+            tex: "warden_heart",
+            parts: PartFilter::Exact(&["body"]),
+            alpha: Heart,
+            cutout: CUTOUT,
+        },
+    ];
+    match kind {
+        K::Spider | K::CaveSpider => SPIDER,
+        K::Enderman => ENDERMAN,
+        K::Phantom => PHANTOM,
+        K::Breeze => BREEZE,
+        K::Creaking => CREAKING,
+        K::CopperGolem => COPPER_GOLEM,
+        K::Warden => WARDEN,
+        _ => &[],
+    }
 }
 
 pub static MOBS: &[MobDef] = &[
@@ -3210,8 +3427,30 @@ fn warden() -> Model {
     b.cube_f(ribcage_l, 0, (90.0, 11.0), [-7.0, -11.0, -0.1], [9.0, 21.0, 0.0], 0.0, true, NONE);
     let head = b.part_named("head", [0.0, -13.0, 0.0], [0.0; 3], Anim::Head, 1.0, Some(body));
     b.cube(head, 0, (0.0, 32.0), [-8.0, -16.0, -5.0], [16.0, 16.0, 10.0], NONE);
-    b.cube_f(head, 0, (52.0, 32.0), [-16.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([-8.0, -12.0, 0.0])]);
-    b.cube_f(head, 0, (58.0, 0.0), [0.0, -13.0, 0.0], [16.0, 16.0, 0.0], 0.0, false, &[Fold::at([8.0, -12.0, 0.0])]);
+    // The tendrils are real head children, not folded plates: they carry their
+    // own `animateTendrils` rotation and are the parts the tendril emissive
+    // layer retains (M52). Pivot = vanilla's `PartPose.offset`, which is exactly
+    // the static fold this replaced — rest geometry is unchanged, so the
+    // facelabel gate is untouched. (The same promotion M17 did for the
+    // ribcages, for the same reason.)
+    let tendril_r = b.part_named(
+        "right_tendril",
+        [-8.0, -12.0, 0.0],
+        [0.0; 3],
+        Anim::WardenTendril { left: false },
+        1.0,
+        Some(head),
+    );
+    b.cube(tendril_r, 0, (52.0, 32.0), [-16.0, -13.0, 0.0], [16.0, 16.0, 0.0], NONE);
+    let tendril_l = b.part_named(
+        "left_tendril",
+        [8.0, -12.0, 0.0],
+        [0.0; 3],
+        Anim::WardenTendril { left: true },
+        1.0,
+        Some(head),
+    );
+    b.cube(tendril_l, 0, (58.0, 0.0), [0.0, -13.0, 0.0], [16.0, 16.0, 0.0], NONE);
     let arm_r = b.part_named("right_arm", [-13.0, -13.0, 1.0], [0.0; 3], Anim::ArmRight, 1.0, Some(body));
     b.cube(arm_r, 0, (44.0, 50.0), [-4.0, 0.0, -4.0], [8.0, 28.0, 8.0], NONE);
     let arm_l = b.part_named("left_arm", [13.0, -13.0, 1.0], [0.0; 3], Anim::ArmLeft, 1.0, Some(body));
