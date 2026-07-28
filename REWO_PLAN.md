@@ -9,14 +9,14 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M45 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M49 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, 2026-07-27)
+## 0.0 HANDOFF — read this first (fresh session, 2026-07-28)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -35,11 +35,12 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M36 shipped, pushed and merged to `main`
+### Where it is: M0–M49 shipped, pushed and merged to `main`
 
-`origin/main` is at **`5f5fbf7`**, and `codex/rewo-m19-combat-swings` and
-`codex/rewo-m34-inventory` point at the same commit. Everything from M0 to M36
-is on the default branch.
+`origin/main` is at **`12ecb1f`** and everything from M0 to M49 is on it. The
+working tree is clean, there are no stashes, and no Rewo work lives on a
+side branch. (`claude/fabric-client-ui-*` and `claude/rewo-entity-fidelity-*`
+are older non-Rewo worktrees, untouched.)
 
 This closed on 2026-07-27, and it had been the project's largest non-code risk
 for a long time: 78 commits, everything from M10 on, on a branch whose name
@@ -49,21 +50,68 @@ squashed or lost, and the per-milestone history in §15 still lines up
 one-to-one with the commits. **New work branches from `main` now.** The two
 `codex/rewo-*` branches are redundant and can be deleted whenever convenient.
 
-**Latest (2026-07-28): M38 — the first-person hand.** The blocker §0.0 named
-was M34's inventory model, and with it gone the hand went in: the held item
-through both geometry paths, the swing, the equip dip and the view sway. Two
-bake rules are invertible — an absent `firstperson_lefthand` falls back to the
-*right* entry and only in first person, and the left/right mirror is applied at
-draw time rather than baked (`handheld` authors its left pre-mirrored, so the
-two cancel). The swing clock is not a new machine: `LocalPlayer` is an ordinary
-`LivingEntity`, so it takes an id in M19's swing table, and M34's inventory
-supplies the held item the duration needs. The hand has **its own projection** —
-`calculateHudFov` returns a hard-coded 70 — and vanilla clears depth before
-drawing it, without which a wall a block away slices your arm off. The render
-was first committed with an unexplained 1.36x width discrepancy; bisecting
-showed the geometry matched a hand derivation to a tenth of a pixel and the
-fault was the *detector*, which was also counting the hotbar's dirt icons.
-`rewo handshot --check`, **34/34**. Detail in §15.
+**Latest (2026-07-28): the armour arc, M46–M49.** Mobs wear armour, it is
+dyed, it is trimmed, and the trim shows on the icon.
+
+- **M46 worn armour.** The layer follows the **renderer**, not the mesh: all
+  eight `HumanoidArmorLayer` sites are the player/zombie/skeleton/piglin
+  families, so an allay, an illager and a creaking each have enough humanoid
+  mesh to pass a geometric test and wear nothing in vanilla. Only the *player*
+  has a named `body` part (M19 gave it one), so every mob's chestplate torso
+  box resolved to nothing — **and the witness passed anyway, because it asked
+  the player model**.
+- **M47 the leather dye.** Zero is not a black tint, it is "do not draw this
+  layer" — that is the whole of `Layer.onlyIfDyed`. An undyed leather piece is
+  **brown** (`LEATHER_COLOR`), not the greyscale its sheet is authored in.
+- **M48 armour trims.** The sprites do not exist as files; a
+  `paletted_permutations` source generates them. `assetId(equipmentAsset)` is
+  what stops a same-material trim vanishing. Drawn depth-**EQUAL** over the
+  armour, as a fourth vertex range.
+- **M49 trims on GUI icons**, including the bake refactor: variants live under a
+  composed `"<item>#<material id>"` key rather than the map's key becoming a
+  pair. **The bug that hid the whole feature** was a depth comparison: a
+  multi-layer sprite is coplanar by construction, and the GUI pipeline tested
+  strict `GREATER`, so layer1 was rejected at exactly layer0's depth. Vanilla
+  tests `LEQUAL` → reversed-Z `GREATER_OR_EQUAL`. **That was the third time in
+  this arc a depth comparison was the whole story** — reach for it first when
+  geometry is provably present and provably invisible.
+
+**Verified at `12ecb1f`:** 633 tests, zero failures; seventeen serverless gates
+green with Vulkan validation ON and 0 VUIDs (`itemshot` 54, `inventoryshot` 91,
+`blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
+12, `mobshot` 243/243, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`
+and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`, byte-identical since M15.
+
+### What to do next
+
+**M50 — the worn-armour glint** is the natural next step and its facts are
+already gathered (§15, "M50 — the armour glint: the facts"). Read that entry
+before writing code; one of its findings changes the milestone's shape.
+
+The short version: **the trim must not glint** (`renderFoil` is cleared before
+the trim is submitted, so a glinting trim is an invention), and what is missing
+is the armour glint itself. It needs a **different sheet**
+(`misc/enchanted_glint_armor.png`), **scale 0.16**, the layer's colour as its
+tint, and — unlike every glint Rewo has shipped — **`VIEW_OFFSET_Z_LAYERING`**,
+a projection nudge toward the viewer rather than a depth-EQUAL pass. **Settle
+that last one first**; it is the one mechanism here Rewo has no precedent for.
+Structurally it is a second `EntityGlint` plus a fifth vertex range, the same
+shape as M48's fourth.
+
+If something else is wanted instead, `REWO_FEATURE_SURVEY.md` picks the next
+*feature* rather than the next milestone.
+
+### How to run the live checks
+
+The test server is `%APPDATA%/EwoClient/rewo/26.2/testserver-inv`, port
+**25610**, opped player **RewoOp**. It **stops on stdin EOF**, so a backgrounded
+`java` from a shell dies immediately; start it detached instead
+(`Start-Process -WindowStyle Hidden`), and stop it when done. `REWO_PRECMD`
+runs `/`-commands as that player on join and `REWO_SETTLE=<n>` holds the
+session before the shot — together they make a scene reproducible in one frame,
+which matters because **two live runs are not the same scene** (mobs move,
+weather changes, spawn drifts).
 
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
