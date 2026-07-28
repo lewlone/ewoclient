@@ -6121,6 +6121,8 @@ fn apply_screen(
             &session.inventory,
             items,
             &baked.item_names,
+            &session.enchantments,
+            &baked.enchantment_text,
             &advance,
             mouse,
             (w, h),
@@ -6273,10 +6275,71 @@ const LORE_COLOR: [f32; 3] = [170.0 / 255.0, 0.0, 170.0 / 255.0];
 /// `ItemStack.UNBREAKABLE_TOOLTIP`, which is blue.
 const UNBREAKABLE_COLOR: [f32; 3] = [85.0 / 255.0, 85.0 / 255.0, 1.0];
 
+/// `ChatFormatting.GRAY` — an ordinary enchantment line.
+const ENCHANT_COLOR: [f32; 3] = [170.0 / 255.0, 170.0 / 255.0, 170.0 / 255.0];
+/// `ChatFormatting.RED` — a curse's.
+const CURSE_COLOR: [f32; 3] = [1.0, 85.0 / 255.0, 85.0 / 255.0];
+
+/// `Enchantment.getFullname` for each of a stack's enchantments, in
+/// `ItemEnchantments.addToTooltip`'s order (M42).
+///
+/// Three rules, each of which is a way to be visibly wrong:
+///
+/// - **The level numeral is suppressed only when `level == 1 && maxLevel == 1`.**
+///   So a level-1 Mending (max 1) reads "Mending" and a level-1 Sharpness
+///   (max 5) reads "Sharpness I". Suppressing on `level == 1` alone loses the
+///   numeral from every single-level enchant a player actually applies.
+/// - **A curse is red**, everything else grey.
+/// - **The order is the `minecraft:tooltip_order` tag first**, then whatever
+///   the stack carries that the tag does not mention — appended after, in the
+///   stack's own order, whatever their ids.
+///
+/// An id the registry does not contain yields **no line**. That case means the
+/// server sent an enchantment this session never synced, and inventing a name
+/// for it would be worse than the omission.
+pub(crate) fn enchantment_lines(
+    enchantments: &[(i32, i32)],
+    registry: &[rewo_net::enchantment_parse::EnchantmentDef],
+    text: &rewo_data::enchantments::EnchantmentText,
+) -> Vec<(String, [f32; 3])> {
+    let mut rows: Vec<(Option<usize>, usize, String, [f32; 3])> = Vec::new();
+    for (order, &(id, level)) in enchantments.iter().enumerate() {
+        let Some(def) = usize::try_from(id).ok().and_then(|i| registry.get(i)) else {
+            continue;
+        };
+        // A datapack may name an enchantment with literal text rather than a
+        // translation key; translating that would find nothing.
+        let name = if def.literal {
+            Some(def.description_key.clone())
+        } else {
+            text.translate(&def.description_key).map(str::to_string)
+        };
+        let Some(name) = name else { continue };
+        let line = if level == 1 && def.max_level == 1 {
+            name
+        } else {
+            format!("{name} {}", text.level(level))
+        };
+        let color = if text.is_curse(&def.id) {
+            CURSE_COLOR
+        } else {
+            ENCHANT_COLOR
+        };
+        rows.push((text.tooltip_rank(&def.id), order, line, color));
+    }
+    // `None` sorts after `Some` for an `Option` key, which is exactly the
+    // behaviour wanted here: the tag's members first, in tag order, then the
+    // rest in the order the stack listed them.
+    rows.sort_by_key(|(rank, order, _, _)| (rank.is_none(), *rank, *order));
+    rows.into_iter().map(|(_, _, l, c)| (l, c)).collect()
+}
+
 fn screen_tooltip(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     names: &std::collections::HashMap<String, String>,
+    enchant_registry: &[rewo_net::enchantment_parse::EnchantmentDef],
+    enchant_text: &rewo_data::enchantments::EnchantmentText,
     advance: &[u8; 256],
     mouse: (f64, f64),
     (w, h): (f32, f32),
@@ -6296,12 +6359,6 @@ fn screen_tooltip(
     // details each component contributes. Rewo produces the three it can read
     // exactly — the name, the lore, and the `Unbreakable` marker.
     //
-    // The enchantment lines are **missing on purpose**. They need each
-    // enchantment's display name, and `minecraft:enchantment` is a *datapack*
-    // registry sent at runtime in `registry_data`, which Rewo does not decode;
-    // the patch gives ids and levels and nothing to translate them with.
-    // Printing "Enchanted" instead would be inventing a line vanilla never
-    // shows.
     let text = inv.text_of(stack);
     let mut lines: Vec<(String, [f32; 3])> = Vec::new();
     lines.push((
@@ -6311,6 +6368,12 @@ fn screen_tooltip(
         rarity_color(text.and_then(|t| t.rarity)),
     ));
     if let Some(t) = text {
+        // Vanilla's order: the enchantments come before the lore.
+        lines.extend(enchantment_lines(
+            &t.enchantments,
+            enchant_registry,
+            enchant_text,
+        ));
         for line in &t.lore {
             lines.push((line.clone(), LORE_COLOR));
         }

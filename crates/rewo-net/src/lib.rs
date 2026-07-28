@@ -15,6 +15,7 @@ pub mod chat_sign;
 pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
+pub mod enchantment_parse;
 pub mod effects;
 pub mod ids;
 pub mod item_stack;
@@ -210,6 +211,9 @@ pub struct Connection<'a> {
     swing_effect_ids: SwingEffectIds,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
     biome_defs: Vec<rewo_world::biome::BiomeDef>,
+    /// The `minecraft:enchantment` registry in wire order — the index is the
+    /// protocol id a component patch carries (M42).
+    enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
 }
 
 impl<'a> Connection<'a> {
@@ -236,6 +240,7 @@ impl<'a> Connection<'a> {
             darkness_id: None,
             swing_effect_ids: SwingEffectIds::default(),
             biome_defs: Vec::new(),
+            enchantments: Vec::new(),
         })
     }
 
@@ -468,6 +473,13 @@ impl<'a> Connection<'a> {
         let Ok(count) = r.count("registry entries", 1) else {
             return Ok(());
         };
+        if registry == crate::enchantment_parse::ENCHANTMENT_REGISTRY {
+            // Datapack-driven, so both the contents and the id order are the
+            // server's — nothing here may be assumed from bootstrap order.
+            self.enchantments = crate::enchantment_parse::parse_enchantment_registry(&mut r, count);
+            log::info!("net: {} enchantment(s) synced", self.enchantments.len());
+            return Ok(());
+        }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
             self.dim_types = dimension_parse::parse_dimension_registry(&mut r, count)?;
             log::info!("net: {} dimension type(s) synced", self.dim_types.len());
@@ -1100,6 +1112,7 @@ fn read_slot(
                 lore: c.lore.clone(),
                 rarity: c.rarity,
                 unbreakable: c.unbreakable,
+                enchantments: c.enchantments.clone(),
             };
             (
                 Some(rewo_world::inventory::ItemSlot {
@@ -2200,6 +2213,7 @@ mod animate_tests {
         assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
         let comps = DataComponentIds {
             max_damage: 4,
+            stored_enchantments: 12,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

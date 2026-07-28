@@ -2821,6 +2821,28 @@ validation Rewo has.
   differently-named ones **swap**, 0 container resyncs. **Open:** the
   enchantment registry (a datapack registry Rewo does not decode) blocks the
   enchantment tooltip lines and the glint.
+- **M42 the enchantment registry (2026-07-28)** — M41's other half. The
+  registry **has to come from the wire**: `minecraft:enchantment` is a
+  **datapack** registry, so its contents *and its id order* are the server's,
+  and it arrives in Configuration's `registry_data` (kept in wire order — the
+  index **is** the protocol id, the same rule M16 records for dimension types).
+  `max_level` is **top-level in the entry compound, not nested under
+  `definition`**, because `EnchantmentDefinition.CODEC` is a `MapCodec` whose
+  fields inline into the parent. The **strings and tags come from the client
+  jar** — `en_us.json` plus `data/minecraft/tags/enchantment/{curse,
+  tooltip_order}.json`, the vanilla datapack the jar carries (where M19 already
+  reads `ItemTags.SPEARS`). Three `getFullname` rules: the level numeral is
+  suppressed **only when `level == 1 && maxLevel == 1`** (so a level-1 Mending
+  has none and a level-1 Sharpness does — suppressing on `level == 1` alone
+  loses it from every single-level enchant applied); a curse is **red**; and
+  the order is the **`tooltip_order` tag**, then the rest. An unsynced id
+  yields **no line**. **The render caught a bug**: `SlotText::is_empty` gates
+  whether a stack's text is recorded at all and had not been taught the new
+  field, so a stack carrying *only* enchantments looked empty and was dropped.
+  Gate `inventoryshot` 79 -> **85**; **629 tests**; live, a four-enchantment
+  sword renders curse-first-and-red, `Sharpness V`, `Unbreaking III`,
+  `Mending` with no numeral. **Open:** the glint (a second render pass, not a
+  tooltip concern).
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -254,11 +254,28 @@ pub struct SlotText {
     pub lore: Vec<String>,
     pub rarity: Option<i32>,
     pub unbreakable: bool,
+    /// `(enchantment protocol id, level)` from `minecraft:enchantments`, and
+    /// from `minecraft:stored_enchantments` for a book (M42).
+    ///
+    /// Ids, not names: translating them needs the runtime enchantment
+    /// registry, which the *renderer* holds — this is the wire's own answer,
+    /// carried no further than it can be trusted.
+    pub enchantments: Vec<(i32, i32)>,
 }
 
 impl SlotText {
+    /// Whether this contributes nothing to a tooltip.
+    ///
+    /// **Every field has to be listed.** `record_text` drops an empty one, so
+    /// a field missing from here is a whole class of stack whose tooltip
+    /// silently loses its lines — which is exactly what happened to the
+    /// enchantments before they were added.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.lore.is_empty() && self.rarity.is_none() && !self.unbreakable
+        self.name.is_none()
+            && self.lore.is_empty()
+            && self.rarity.is_none()
+            && !self.unbreakable
+            && self.enchantments.is_empty()
     }
 }
 

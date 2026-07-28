@@ -84,6 +84,9 @@ pub struct PlaySession {
     /// equipment packets are recognised but interpret no item, so every swing
     /// keeps the bare-hand `SwingAnimation.DEFAULT`.
     pub swing_data: Option<crate::item_stack::SwingWireData>,
+    /// The `minecraft:enchantment` registry from configuration (M42), indexed
+    /// by protocol id. Empty on a server that syncs none.
+    pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
@@ -714,6 +717,9 @@ impl<'a> Connection<'a> {
         let visual_effects =
             crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
         let swing_effect_ids = self.swing_effect_ids;
+        // The enchantment registry, in wire order (M42) — the index is the
+        // protocol id a component patch carries.
+        let enchantments = std::mem::take(&mut self.enchantments);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -734,6 +740,7 @@ impl<'a> Connection<'a> {
             codec,
             rx,
             ids: self.ids,
+            enchantments,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,

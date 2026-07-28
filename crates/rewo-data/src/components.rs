@@ -48,6 +48,9 @@ pub struct DataComponentIds {
     pub item_name: i32,
     pub lore: i32,
     pub enchantments: i32,
+    /// A book's enchantments (M42). Rendered by the same `addToTooltip`, so
+    /// it is read into the same list.
+    pub stored_enchantments: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -127,6 +130,7 @@ impl DataComponentIds {
             item_name: id("minecraft:item_name")?,
             lore: id("minecraft:lore")?,
             enchantments: id("minecraft:enchantments")?,
+            stored_enchantments: id("minecraft:stored_enchantments")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

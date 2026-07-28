@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M41 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M42 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -355,7 +355,7 @@ match.
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `inventoryshot` 79/79, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  `inventoryshot` 85/85, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
   29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
@@ -374,16 +374,14 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The enchantment registry.** M41 decodes the component patch, so an
-   enchanted stack now yields ids and levels — and nothing to translate them
-   with, because `minecraft:enchantment` is a *datapack* registry sent at
-   runtime in `registry_data` and Rewo decodes only biomes and dimension
-   types. Decoding it unblocks the enchantment tooltip lines and the glint.
-   Beyond that: the seven syncable components still without codecs
-   (`equippable`, `can_place_on`, `can_break`, `blocks_attacks`,
-   `jukebox_playable`, `kinetic_weapon`, `bees`), and armour trim *models*,
-   which need the trim's material and pattern resolved to asset ids rather
-   than merely walked past.
+1. **The enchantment glint.** M42 gives the client `isEnchanted` and the
+   enchantment list; the shimmer itself is a second render pass with its own
+   texture, matrix and blend, and it applies to the hand, the ground item and
+   the GUI icon alike. Beyond that: the seven syncable components still
+   without codecs (`equippable`, `can_place_on`, `can_break`,
+   `blocks_attacks`, `jukebox_playable`, `kinetic_weapon`, `bees`), and armour
+   trim *models*, which need the trim's material and pattern resolved to asset
+   ids rather than merely walked past.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6351,6 +6349,78 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M42 — the enchantment registry, and the tooltip lines it unlocks (2026-07-28)
+
+M41 decoded the component patch, so an enchanted stack yielded `(registry id,
+level)` pairs — and nothing to translate them with. This is the other half, and
+it is split across two sources for a reason worth writing down.
+
+**The registry has to come from the wire.** `minecraft:enchantment` is a
+**datapack** registry, so both its contents and its id order are whatever the
+server's packs say; deriving an id from bootstrap order is the mistake §0.0
+gotcha 5 warns about, one registry further down. It arrives in Configuration's
+`registry_data`, and `rewo-net/src/enchantment_parse.rs` keeps it in wire order
+because **the index is the protocol id** — the same rule M16 records for
+dimension types.
+
+Two fields matter, and one is not where it looks. `description` is a chat
+component; `max_level` is **top-level in the entry compound, not nested under
+`definition`**, because `EnchantmentDefinition.CODEC` is a `MapCodec` and its
+fields are inlined into the parent map.
+
+**The strings and the tags come from the client jar**, because they are what the
+*client* ships: `assets/minecraft/lang/en_us.json` for the names and the level
+numerals, and `data/minecraft/tags/enchantment/{curse,tooltip_order}.json`. The
+tags living under `data/` is not a mistake — the client jar carries the vanilla
+datapack, which is where M19 already reads `ItemTags.SPEARS`.
+
+#### The three rules in `getFullname`
+
+- **The level numeral is suppressed only when `level == 1 && maxLevel == 1`.**
+  A level-1 Mending (max 1) reads "Mending"; a level-1 Sharpness (max 5) reads
+  "Sharpness I". Suppressing on `level == 1` alone loses the numeral from every
+  single-level enchantment a player actually applies — which is why `max_level`
+  is parsed at all.
+- **A curse is red**, everything else grey.
+- **The order is the `minecraft:tooltip_order` tag**, then whatever the stack
+  carries that the tag does not mention, appended after in the stack's own
+  order. Not the ids, and not the order the patch listed them in.
+
+An id the registry never synced yields **no line**: the server sent an
+enchantment this session does not know, and inventing a name would be worse
+than the omission. A level past ten has no `enchantment.level.N` key, and
+vanilla renders the raw key there; Rewo prints the number instead, which is
+this milestone's one deliberate divergence.
+
+#### The bug the render caught
+
+The first build showed "Diamond Sword" and nothing else. `SlotText::is_empty`
+gates whether a stack's text is recorded at all, and it had not been taught
+about the new field — so a stack carrying **only** enchantments looked empty
+and was dropped. A field missing from that method is a whole class of stack
+whose tooltip silently loses its lines, which is now said in the doc comment
+above it.
+
+#### Verified
+
+`inventoryshot --check` **79 -> 85**, **629 tests**, all seventeen gates green,
+demo PNG byte-identical to M15 onward, `play` 30 s with CORRECTIONS 0 and both
+build actions server-accepted. Live, a sword with four enchantments renders:
+
+```
+Diamond Sword          white
+Curse of Vanishing     RED, and first — the curses lead the tooltip_order tag
+Sharpness V
+Unbreaking III
+Mending                no numeral: level 1 and max level 1
+```
+
+**Open.** The **glint** — an enchanted item's shimmer is a second render pass
+with its own texture and matrix, not a tooltip concern, and Rewo has the
+`isEnchanted` bit for it already. Armour trim *models*, which need the trim's
+material and pattern resolved to asset ids rather than merely walked past. And
+the seven syncable components still without codecs.
 
 ### M41 — decoding the `DataComponentPatch` (2026-07-28)
 

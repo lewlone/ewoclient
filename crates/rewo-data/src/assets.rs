@@ -191,6 +191,10 @@ pub struct BakedAssets {
     /// Every item's English display name, for tooltips (M40). Keyed by full
     /// registry name; an item whose language key is missing has no entry.
     pub item_names: HashMap<String, String>,
+    /// Enchantment display strings and the two tags that colour and order
+    /// their tooltip lines (M42). The *registry* half is runtime data and
+    /// lives on the session.
+    pub enchantment_text: crate::enchantments::EnchantmentText,
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
     /// Per-state full-cube collision flag — true for a `Cube` OR a `Model`
@@ -695,6 +699,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let hud = bake_hud(&mut jar);
     let container = bake_container(&mut jar);
     let item_names = bake_item_names(&mut jar);
+    let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
@@ -942,6 +947,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     }
     Ok(BakedAssets {
         item_names,
+        enchantment_text,
         held_items,
         render,
         solid,

@@ -447,7 +447,7 @@ fn read_interpreted(
         }
         return Ok(true);
     }
-    if ty == ids.enchantments {
+    if ty == ids.enchantments || ty == ids.stored_enchantments {
         let n = r.varint().map_err(|_| ())?;
         if !(0..=65536).contains(&n) {
             return Err(());
@@ -552,6 +552,7 @@ mod tests {
         item_name: 9,
         lore: 10,
         enchantments: 11,
+        stored_enchantments: 12,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against

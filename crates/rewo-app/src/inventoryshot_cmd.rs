@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 79;
+const EXPECTED_WITNESSES: usize = 85;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -88,6 +88,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_preview(&mut c);
     check_names(&mut c, &baked, &jar)?;
     check_components(&mut c, &paths)?;
+    check_enchantments(&mut c, &baked, &jar);
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -1393,6 +1394,148 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         ),
     );
     Ok(())
+}
+
+/// The enchantment registry and the tooltip lines it unlocks (M42).
+fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::path::Path) {
+    use rewo_net::enchantment_parse::{parse_enchantment_registry, EnchantmentDef};
+
+    let text = &baked.enchantment_text;
+    // The two tags and the strings all come out of the client jar.
+    c.record(
+        "e1.the_client_jar_supplies_the_strings_and_the_two_tags",
+        text.translate("enchantment.minecraft.sharpness") == Some("Sharpness")
+            && text.level(5) == "V"
+            && text.is_curse("minecraft:vanishing_curse")
+            && !text.is_curse("minecraft:sharpness")
+            && text.tooltip_rank("minecraft:vanishing_curse")
+                < text.tooltip_rank("minecraft:sharpness"),
+        format!(
+            "sharpness={:?} level(5)={:?}; vanishing_curse is a curse={} at rank {:?} \
+             against sharpness at {:?}. The tags live under `data/` in the client \
+             jar — the vanilla datapack ships inside it, which is also where M19 \
+             reads `ItemTags.SPEARS`",
+            text.translate("enchantment.minecraft.sharpness"),
+            text.level(5),
+            text.is_curse("minecraft:vanishing_curse"),
+            text.tooltip_rank("minecraft:vanishing_curse"),
+            text.tooltip_rank("minecraft:sharpness"),
+        ),
+    );
+    // A level past the ten `enchantment.level.N` keys 26.2 ships.
+    c.record(
+        "e2.a_level_without_a_numeral_falls_back_to_the_number",
+        text.level(1) == "I" && text.level(10) == "X" && text.level(11) == "11",
+        format!(
+            "1={:?} 10={:?} 11={:?} — vanilla renders the raw key past ten; the \
+             number is this milestone's one deliberate divergence, and it is \
+             strictly more readable than `enchantment.level.11`",
+            text.level(1),
+            text.level(10),
+            text.level(11)
+        ),
+    );
+
+    // The registry parse, from bytes shaped exactly as `registry_data` sends
+    // them: an identifier, then an optional NBT payload.
+    let mut body: Vec<u8> = Vec::new();
+    let mut entry = |name: &str, payload: Option<(&str, i32)>| {
+        push_varint(&mut body, name.len() as i32);
+        body.extend_from_slice(name.as_bytes());
+        match payload {
+            None => body.push(0),
+            Some((key, max_level)) => {
+                body.push(1);
+                // A network NBT compound: {description:{translate:"…"},
+                // max_level:<int>}. `max_level` is top-level because
+                // `EnchantmentDefinition.CODEC` is a MapCodec and its fields
+                // are inlined rather than nested under "definition".
+                body.push(10); // TAG_Compound, unnamed
+                body.push(10); // TAG_Compound "description"
+                body.extend_from_slice(&(11u16).to_be_bytes());
+                body.extend_from_slice(b"description");
+                body.push(8); // TAG_String "translate"
+                body.extend_from_slice(&(9u16).to_be_bytes());
+                body.extend_from_slice(b"translate");
+                body.extend_from_slice(&(key.len() as u16).to_be_bytes());
+                body.extend_from_slice(key.as_bytes());
+                body.push(0); // end description
+                body.push(3); // TAG_Int "max_level"
+                body.extend_from_slice(&(9u16).to_be_bytes());
+                body.extend_from_slice(b"max_level");
+                body.extend_from_slice(&max_level.to_be_bytes());
+                body.push(0); // end root
+            }
+        }
+    };
+    entry("minecraft:sharpness", Some(("enchantment.minecraft.sharpness", 5)));
+    entry("minecraft:mending", Some(("enchantment.minecraft.mending", 1)));
+    entry("minecraft:vanishing_curse", Some(("enchantment.minecraft.vanishing_curse", 1)));
+    entry("minecraft:nameless", None);
+
+    let mut r = rewo_proto::reader::PacketReader::new(&body);
+    let registry = parse_enchantment_registry(&mut r, 4);
+    c.record(
+        "e3.the_registry_parses_in_wire_order_with_its_max_levels",
+        registry.len() == 4
+            && registry[0].id == "minecraft:sharpness"
+            && registry[0].max_level == 5
+            && registry[1].max_level == 1
+            && registry[3].description_key == "enchantment.minecraft.nameless",
+        format!(
+            "{} entries; [0]={} max {}, [1] max {}, [3] key {:?}. The index **is** \
+             the protocol id, and an entry sent without its payload falls back to \
+             the `makeDescriptionId` key rather than losing its slot",
+            registry.len(),
+            registry[0].id,
+            registry[0].max_level,
+            registry[1].max_level,
+            registry[3].description_key
+        ),
+    );
+
+    // The three rules, through the production line builder.
+    let lines = crate::live_cmd::enchantment_lines(
+        &[(0, 5), (1, 1), (2, 1)],
+        &registry,
+        text,
+    );
+    let names: Vec<&str> = lines.iter().map(|(t, _)| t.as_str()).collect();
+    c.record(
+        "e4.the_level_numeral_is_suppressed_only_when_the_maximum_is_also_one",
+        names.contains(&"Sharpness V") && names.contains(&"Mending"),
+        format!(
+            "{names:?} — `getFullname` appends the numeral when \
+             `level != 1 || maxLevel != 1`, so a level-1 Mending (max 1) has none \
+             and a level-1 Sharpness (max 5) would. Suppressing on `level == 1` \
+             alone loses the numeral from every single-level enchant applied"
+        ),
+    );
+    let curse_first = names.first() == Some(&"Curse of Vanishing");
+    let curse_red = lines
+        .first()
+        .is_some_and(|(_, col)| col[0] > 0.9 && col[1] < 0.5);
+    c.record(
+        "e5.a_curse_is_red_and_the_tooltip_order_tag_leads",
+        curse_first && curse_red,
+        format!(
+            "first line {:?} coloured {:?}. The order is the \
+             `minecraft:tooltip_order` tag, not the ids and not the stack's own \
+             order — the curses sit at the top of that tag",
+            names.first(),
+            lines.first().map(|(_, c)| *c)
+        ),
+    );
+    // An id the registry never synced yields no line at all.
+    let unknown = crate::live_cmd::enchantment_lines(&[(99, 1)], &registry, text);
+    c.record(
+        "e6.an_unsynced_enchantment_id_yields_no_line",
+        unknown.is_empty(),
+        "an id past the registry's end is omitted rather than named — the server \
+         sent an enchantment this session never synced, and inventing a name for \
+         it would be worse than the omission",
+    );
+    let _ = jar;
 }
 
 fn changed(a: &[u8], b: &[u8], x: u32, y: u32, w: u32, h: u32) -> i64 {
