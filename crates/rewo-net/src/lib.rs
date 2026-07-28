@@ -1139,6 +1139,8 @@ fn read_slot(
                     damage: c.damage,
                     max_damage: c.max_damage,
                     enchanted: c.has_foil(),
+                    // M49: only the material — the icon's `select` is on it alone.
+                    trim_material: c.trim.map(|(m, _)| m),
                 }),
                 Some((c.fingerprint, text)),
             )

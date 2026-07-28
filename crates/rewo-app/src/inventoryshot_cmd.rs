@@ -368,6 +368,7 @@ fn plain(item_id: i32, count: i32) -> Option<ItemSlot> {
         damage: None,
         max_damage: None,
         enchanted: false,
+        trim_material: None,
     })
 }
 
@@ -382,6 +383,7 @@ fn patched_stack(item_id: i32, count: i32, fingerprint: u64) -> Option<ItemSlot>
         damage: None,
         max_damage: None,
         enchanted: false,
+        trim_material: None,
     })
 }
 

@@ -5870,11 +5870,21 @@ pub fn gui_atlas_wanted(
 }
 
 /// This frame's hotbar, as model names per slot (`None` for an empty slot).
-pub fn hotbar_models<'a>(
+pub fn hotbar_models(
     inv: &rewo_world::inventory::Inventory,
-    items: &'a rewo_data::items::Items,
-) -> [Option<&'a str>; 9] {
-    std::array::from_fn(|i| inv.hotbar(i).and_then(|s| items.name(s.item_id)))
+    items: &rewo_data::items::Items,
+    trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
+) -> [Option<String>; 9] {
+    std::array::from_fn(|i| {
+        let s = inv.hotbar(i)?;
+        let base = items.name(s.item_id)?;
+        // M49: the same composed name the screen slots use, so a trimmed piece
+        // wears its trim in the hotbar too.
+        Some(match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
+            Some(m) => format!("{base}#{}", m.id),
+            None => base.to_string(),
+        })
+    })
 }
 
 /// The player model shown in the inventory screen's window (M36).
@@ -6358,8 +6368,9 @@ fn apply_screen(
     mouse: (f64, f64),
     (w, h): (f32, f32),
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    let (mut icons, mut labels) = screen_icons(&session.inventory, items, w, h);
-    if let Some((icon, label)) = carried_icon(&session.inventory, items, mouse, w, h) {
+    let (mut icons, mut labels) =
+        screen_icons(&session.inventory, items, &session.trim_materials, w, h);
+    if let Some((icon, label)) = carried_icon(&session.inventory, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
     }
@@ -6379,7 +6390,7 @@ fn apply_screen(
             .map(|i| (session.inventory.menu_slot(i), rects[i]))
             .collect();
         if let Some(carried) = session.inventory.carried() {
-            if let Some((icon, _)) = carried_icon(&session.inventory, items, mouse, w, h) {
+            if let Some((icon, _)) = carried_icon(&session.inventory, items, &session.trim_materials, mouse, w, h) {
                 stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
             }
         }
@@ -6693,6 +6704,7 @@ fn screen_tooltip(
 fn screen_icons(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
+    trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
     w: f32,
     h: f32,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
@@ -6702,7 +6714,7 @@ fn screen_icons(
     let mut labels = Vec::new();
     for (slot, rect) in rects.iter().enumerate() {
         if let Some(stack) = inv.menu_slot(slot) {
-            if let Some(icon) = icon_for(items, stack, rect.0, rect.1, rect.2) {
+            if let Some(icon) = icon_for(items, trim_materials, stack, rect.0, rect.1, rect.2) {
                 icons.push(icon);
             }
             labels.extend(count_label(stack, rect.0, rect.1, scale));
@@ -6713,13 +6725,25 @@ fn screen_icons(
 
 fn icon_for(
     items: &rewo_data::items::Items,
+    trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
     stack: rewo_world::inventory::ItemSlot,
     x: f32,
     y: f32,
     size: f32,
 ) -> Option<rewo_gpu::gui_item::GuiItem> {
+    let base = items.name(stack.item_id)?;
+    // M49: a trimmed stack asks for its variant. `HeldItems::any` falls back to
+    // the plain item when the bake has no such variant, so composing here is
+    // always safe.
+    let model = match stack
+        .trim_material
+        .and_then(|m| trim_materials.get(m as usize))
+    {
+        Some(m) => format!("{base}#{}", m.id),
+        None => base.to_string(),
+    };
     Some(rewo_gpu::gui_item::GuiItem {
-        model: items.name(stack.item_id)?.to_string(),
+        model,
         x,
         y,
         size,
@@ -6761,6 +6785,7 @@ fn count_label(
 fn carried_icon(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
+    trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
     mouse: (f64, f64),
     w: f32,
     h: f32,
@@ -6774,7 +6799,7 @@ fn carried_icon(
         mouse.0 as f32 - 8.0 * scale,
         mouse.1 as f32 - 8.0 * scale,
     );
-    let icon = icon_for(items, stack, x, y, 16.0 * scale)?;
+    let icon = icon_for(items, trim_materials, stack, x, y, 16.0 * scale)?;
     Some((icon, count_label(stack, x, y, scale)))
 }
 
@@ -7073,7 +7098,7 @@ fn apply_hotbar_icons(
     extent: (f32, f32),
 ) {
     let held = &state.held;
-    let names = hotbar_models(&session.inventory, items);
+    let names = hotbar_models(&session.inventory, items, &session.trim_materials);
     let models: Vec<String> = names.iter().flatten().map(|n| n.to_string()).collect();
     let wanted = gui_atlas_wanted(held, &models);
 
@@ -7103,8 +7128,8 @@ fn apply_hotbar_icons(
         .iter()
         .enumerate()
         .filter_map(|(i, n)| {
-            n.map(|name| rewo_gpu::gui_item::GuiItem {
-                model: name.to_string(),
+            n.as_ref().map(|name| rewo_gpu::gui_item::GuiItem {
+                model: name.clone(),
                 x: slots[i].0,
                 y: slots[i].1,
                 size: slots[i].2,

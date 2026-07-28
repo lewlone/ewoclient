@@ -122,7 +122,16 @@ impl HeldItems {
     /// since a draw carries a name and does not care which kind it is. The
     /// namespaces cannot collide: block-entity models are `rewo:be/…`.
     pub fn any(&self, name: &str) -> Option<&HeldItemModel> {
-        self.models.get(name).or_else(|| self.block_entities.get(name))
+        if let Some(m) = self.models.get(name).or_else(|| self.block_entities.get(name)) {
+            return Some(m);
+        }
+        // M49: `"<item>#<trim material>"` is a trimmed icon variant. Falling
+        // back to the plain item is not a nicety — an item can be trimmed with
+        // a material its own definition names no case for, and vanilla's
+        // answer there is the `fallback`, which *is* the untrimmed icon. So a
+        // missing variant must degrade to it rather than to no icon at all.
+        let (base, _) = name.split_once('#')?;
+        self.models.get(base)
     }
 
     /// Items whose geometry came from a block model.

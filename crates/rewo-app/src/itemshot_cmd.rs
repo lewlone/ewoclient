@@ -230,6 +230,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
             &mut |_| None,
             SelectionContext {
                 display: DisplayContext::FirstPersonRightHand,
+                trim_material: None,
                 using_item: true,
             },
         )

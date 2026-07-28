@@ -61,6 +61,11 @@ pub struct ItemSlot {
     /// entry — `ItemStack.isEnchanted`, which is what the glint and the
     /// tooltip's enchantment lines key on.
     pub enchanted: bool,
+    /// `minecraft:trim`'s material registry id (M49), for picking the icon
+    /// variant. The pattern is not here: an item definition's `select` is on
+    /// `minecraft:trim_material` alone, so the pattern changes the worn model
+    /// and never the icon.
+    pub trim_material: Option<i32>,
 }
 
 /// `InventoryMenu` (container 0) — the 46-slot menu the server synchronises.
@@ -857,6 +862,7 @@ mod tests {
             damage: None,
             max_damage: None,
             enchanted: false,
+            trim_material: None,
         })
     }
 

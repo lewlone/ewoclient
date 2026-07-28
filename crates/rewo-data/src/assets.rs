@@ -941,7 +941,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     }
 
     // M22: held items, after every block layer exists (block items copy them).
-    let held_items = baker.bake_held_items();
+    let held_items = baker.bake_held_items(&trims);
 
     stats.textures = baker.layers.len();
     log::info!(
@@ -1383,6 +1383,39 @@ fn font_advances(atlas: &[u8], size: u32, cell: u32) -> [u8; 256] {
 
 type Jar<'a> = &'a mut zip::ZipArchive<std::io::BufReader<std::fs::File>>;
 
+/// The trim materials an item definition names its own icon variants for (M49).
+///
+/// Read from the definition rather than from the material registry: this is a
+/// load-time bake of the *jar*, and the registry is the server's. An item
+/// trimmed with a material its definition does not name simply has no variant,
+/// which lands on vanilla's own fallback — the untrimmed icon.
+fn trim_material_cases(def: &serde_json::Value) -> Vec<String> {
+    let model = def.get("model");
+    if model.and_then(|m| m.get("property")).and_then(|p| p.as_str())
+        != Some("minecraft:trim_material")
+    {
+        return Vec::new();
+    }
+    model
+        .and_then(|m| m.get("cases"))
+        .and_then(|c| c.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|c| c.get("when"))
+        .flat_map(|w| match w {
+            // `when` is one name or a list of them — the same shape every
+            // other `select` property uses.
+            serde_json::Value::String(s) => vec![s.clone()],
+            serde_json::Value::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
 struct Baker<'a> {
     jar: Jar<'a>,
     model_cache: HashMap<String, Option<ResolvedModel>>,
@@ -1680,7 +1713,7 @@ impl<'a> Baker<'a> {
     /// list comes from the jar itself (`assets/minecraft/items/*.json`) rather
     /// than the registry, so this needs no extra input and cannot drift from
     /// what the jar ships.
-    fn bake_held_items(&mut self) -> crate::held_items::HeldItems {
+    fn bake_held_items(&mut self, trims: &crate::equipment::TrimAssets) -> crate::held_items::HeldItems {
         use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
         use crate::item_models::{resolve_definition, ItemGeometry, ItemModel, SelectionContext};
 
@@ -1724,6 +1757,34 @@ impl<'a> Baker<'a> {
                 _ => None,
             };
             resolved.push((name.clone(), hand, gui_geometry));
+
+            // M49: a trimmed icon is a *different model*, so it needs its own
+            // bake. Keyed `"<item>#<material id>"` rather than by restructuring
+            // the map: every existing lookup is by plain name and stays exact,
+            // and a caller that knows a trim asks for the composed name first.
+            //
+            // Driven by the definition's own `cases` rather than by the
+            // material registry, because the registry is the *server's* and
+            // this is a load-time bake of the *jar's* assets — an item trimmed
+            // with a material its own definition does not name has no icon
+            // variant, which is vanilla's fallback.
+            for material in trim_material_cases(&def) {
+                let ctx = SelectionContext::hand().with_trim(Some(&material));
+                let m = resolve_definition(&def, &mut read_model, ctx);
+                let g = resolve_definition(
+                    &def,
+                    &mut read_model,
+                    SelectionContext::gui().with_trim(Some(&material)),
+                );
+                let gg = match (&m, &g) {
+                    (
+                        ItemModel::Resolved { geometry: h, .. },
+                        ItemModel::Resolved { geometry: q, .. },
+                    ) if h != q => Some(q.clone()),
+                    _ => None,
+                };
+                resolved.push((format!("{name}#{material}"), m, gg));
+            }
         }
 
         // Phase 2: bake geometry.
@@ -1762,14 +1823,14 @@ impl<'a> Baker<'a> {
             };
             let baked = match &geometry {
                 ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
-                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool),
+                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
             };
             // The slot geometry, when the definition selects a different
             // model there. A variant that fails to bake leaves `None`, so the
             // slot falls back to the hand's quads rather than drawing nothing.
             let gui_quads = gui_geometry.and_then(|g| match &g {
                 ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
-                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool),
+                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
             })
             .filter(|q| !q.is_empty());
             match baked {
@@ -1925,6 +1986,7 @@ impl<'a> Baker<'a> {
         &mut self,
         layers: &[String],
         pool: &mut crate::held_items::TexturePool,
+        trims: &crate::equipment::TrimAssets,
     ) -> Option<Vec<crate::held_items::HeldQuad>> {
         use crate::held_items::{HeldQuad, HeldTexture};
         use crate::item_geometry::{extrude, SpriteMask};
@@ -1938,10 +2000,23 @@ impl<'a> Baker<'a> {
                 .by_name(&path)
                 .ok()
                 .and_then(|mut e| e.read_to_end(&mut bytes).ok());
-            if read.is_none() {
+            // M49: a trimmed icon's layer1 is `trims/items/<piece>_trim_<material>`,
+            // which is **not a file** — `items.json` generates it by palette
+            // permutation exactly as `armor_trims.json` does for the entity
+            // sheets. So a miss under that prefix is a sprite to make, not a
+            // layer to drop.
+            let permuted = if read.is_none() {
+                tex_name
+                    .strip_prefix("trims/items/")
+                    .and_then(|_| tex_name.rsplit_once('_'))
+                    .and_then(|(stem, suffix)| trims.permute(stem, suffix))
+            } else {
+                None
+            };
+            if read.is_none() && permuted.is_none() {
                 continue; // a layer whose texture is absent contributes nothing
             }
-            let Some((rgba, w, h)) = decode_png_any(&bytes) else {
+            let Some((rgba, w, h)) = permuted.or_else(|| decode_png_any(&bytes)) else {
                 continue;
             };
             // An animation strip stacks square frames; the item uses frame 0.

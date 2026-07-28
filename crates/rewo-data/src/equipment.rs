@@ -343,10 +343,18 @@ impl TrimAssets {
             return out;
         };
         const SRC: &str = "assets/minecraft/textures/trims/entity/";
+        // M49: the **second** paletted-permutations atlas. `armor_trims.json`
+        // covers only `trims/entity/*`; `items.json` is a separate source over
+        // four 16x16 sheets, through the same key palette and the same sixteen
+        // permutations — so one loader and one `apply_palette` serve both.
+        const ITEMS: &str = "assets/minecraft/textures/trims/items/";
         const PAL: &str = "assets/minecraft/textures/trims/color_palettes/";
         let names: Vec<String> = zip
             .file_names()
-            .filter(|p| (p.starts_with(SRC) || p.starts_with(PAL)) && p.ends_with(".png"))
+            .filter(|p| {
+                (p.starts_with(SRC) || p.starts_with(ITEMS) || p.starts_with(PAL))
+                    && p.ends_with(".png")
+            })
             .map(str::to_string)
             .collect();
         for path in names {
@@ -370,6 +378,10 @@ impl TrimAssets {
                 let name = rest.trim_end_matches(".png");
                 out.sources
                     .insert(format!("trims/entity/{name}"), (rgba, w, h));
+            } else if let Some(rest) = path.strip_prefix(ITEMS) {
+                let name = rest.trim_end_matches(".png");
+                out.sources
+                    .insert(format!("trims/items/{name}"), (rgba, w, h));
             }
         }
         log::info!(

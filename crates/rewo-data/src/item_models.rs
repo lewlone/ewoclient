@@ -407,25 +407,43 @@ impl DisplayContext {
 /// takes (show less, never show wrong geometry for the wrong item), traded for
 /// a visible icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SelectionContext {
+pub struct SelectionContext<'a> {
     pub display: DisplayContext,
+    /// `minecraft:trim_material` — the trim material's **registry id**
+    /// (`minecraft:quartz`), not its `asset_name` suffix, because that is what
+    /// the item definition's `when` values are (M49).
+    ///
+    /// `None` means "this stack has no trim", which is not the same as "the
+    /// property is unevaluable": a `select` over it then takes its fallback,
+    /// which is vanilla's own answer for an untrimmed stack.
+    pub trim_material: Option<&'a str>,
     /// `minecraft:using_item` — true while the player holds right-click on
     /// this stack. M38's use clock can answer it for the local player's hand;
     /// a slot icon is never using anything.
     pub using_item: bool,
 }
 
-impl SelectionContext {
+impl<'a> SelectionContext<'a> {
     pub fn gui() -> Self {
         Self {
             display: DisplayContext::Gui,
             using_item: false,
+            trim_material: None,
         }
     }
     pub fn hand() -> Self {
         Self {
             display: DisplayContext::FirstPersonRightHand,
             using_item: false,
+            trim_material: None,
+        }
+    }
+
+    /// The same context, for a stack wearing this trim material.
+    pub fn with_trim(self, material: Option<&'a str>) -> Self {
+        Self {
+            trim_material: material,
+            ..self
         }
     }
 }
@@ -478,7 +496,7 @@ const ZERO_ON_A_PLAIN_STACK: &[&str] = &[
 /// top level would leave it suppressed. Depth is bounded because a definition
 /// is a finite tree, but a hostile pack could nest arbitrarily, so the depth
 /// is capped rather than trusted.
-pub fn reduce_definition(node: &Value, ctx: SelectionContext) -> Result<&Value, String> {
+pub fn reduce_definition<'v>(node: &'v Value, ctx: SelectionContext<'_>) -> Result<&'v Value, String> {
     fn blocked(node: &Value, property: Option<&str>) -> String {
         let kind = node
             .get("type")
@@ -489,7 +507,7 @@ pub fn reduce_definition(node: &Value, ctx: SelectionContext) -> Result<&Value, 
             None => kind.to_string(),
         }
     }
-    fn go(node: &Value, ctx: SelectionContext, depth: u32) -> Result<&Value, String> {
+    fn go<'v>(node: &'v Value, ctx: SelectionContext<'_>, depth: u32) -> Result<&'v Value, String> {
         if depth > 16 {
             return Err("(definition nested past 16 levels)".into());
         }
@@ -517,6 +535,24 @@ pub fn reduce_definition(node: &Value, ctx: SelectionContext) -> Result<&Value, 
                             Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
                             _ => false,
                         })
+                } else if property == "minecraft:trim_material" {
+                    // M49. A trimmed stack picks the case whose `when` is its
+                    // material's registry id; an untrimmed one matches nothing
+                    // and falls back, which is what vanilla does.
+                    ctx.trim_material.and_then(|want| {
+                        node.get("cases")
+                            .and_then(|c| c.as_array())
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[])
+                            .iter()
+                            .find(|c| match c.get("when") {
+                                Some(Value::String(s)) => s == want,
+                                Some(Value::Array(a)) => {
+                                    a.iter().any(|v| v.as_str() == Some(want))
+                                }
+                                _ => false,
+                            })
+                    })
                 } else if ABSENT_ON_A_PLAIN_STACK.contains(&property) {
                     // The property reads absent, so no case matches. This is
                     // vanilla's own answer, not a substitution.
@@ -593,7 +629,7 @@ pub fn reduce_definition(node: &Value, ctx: SelectionContext) -> Result<&Value, 
 pub fn resolve_definition(
     def: &Value,
     read_model: &mut dyn FnMut(&str) -> Option<Value>,
-    ctx: SelectionContext,
+    ctx: SelectionContext<'_>,
 ) -> ItemModel {
     let Some(root) = def.get("model") else {
         return ItemModel::Unsupported("(no model)".into());
@@ -716,7 +752,7 @@ pub const BLOCK_GROUND: DisplayTransform = DisplayTransform {
 pub fn resolve_all(
     names: impl IntoIterator<Item = String>,
     read: &mut dyn FnMut(&str) -> Option<Value>,
-    ctx: SelectionContext,
+    ctx: SelectionContext<'_>,
 ) -> ItemModels {
     let mut by_name = HashMap::new();
     let mut unsupported: HashMap<String, usize> = HashMap::new();
