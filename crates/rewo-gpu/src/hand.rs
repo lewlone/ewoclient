@@ -317,6 +317,10 @@ pub fn player_arm(arm: Arm, inverse_height: f32, attack: f32) -> Mat4 {
 /// blocks away.
 pub const MODEL_UNIT: f32 = 1.0 / 16.0;
 
+/// A player skin's edge in texels — 64x64 since 1.8, which the entity pass's
+/// skin pool assumes as well.
+const SKIN_PX: f32 = 64.0;
+
 /// `AvatarRenderer.renderHand`'s fixed tilt: `rightArm.zRot = 0.1`,
 /// `leftArm.zRot = -0.1`, in **radians**.
 ///
@@ -456,12 +460,16 @@ fn append_arm(out: &mut Vec<GuiItemVertex>, m: &Mat4, arm: Arm, geo: &ArmGeometr
                 q.pos[i][2] * MODEL_UNIT,
             ]
         });
-        // The model's UVs are in 64×64 skin space, normalised; the skin sits
-        // somewhere in the hand atlas, so they are remapped into its rect.
+        // **The model's UVs are in texels, not fractions.** A player arm's
+        // span 16..56 of the 64-px skin, so they must be normalised before
+        // being remapped into the skin's rect in the hand atlas. Treating them
+        // as fractions pushes them far outside it, where the sampler clamps to
+        // a transparent edge and the arm renders as nothing at all — which is
+        // exactly what it did.
         let uv: [[f32; 2]; 4] = std::array::from_fn(|i| {
             [
-                geo.skin_uv[0] + q.uv[i][0] * geo.skin_uv[2],
-                geo.skin_uv[1] + q.uv[i][1] * geo.skin_uv[3],
+                geo.skin_uv[0] + q.uv[i][0] / SKIN_PX * geo.skin_uv[2],
+                geo.skin_uv[1] + q.uv[i][1] / SKIN_PX * geo.skin_uv[3],
             ]
         });
         quad_verts(out, &m, &pos, &uv, q.shade);

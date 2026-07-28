@@ -5491,13 +5491,22 @@ const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
 pub struct HandState {
     /// The item textures resident in the atlas, and where each landed.
     resident: Vec<u16>,
+    /// Whether the resident atlas was packed with the current skin. A skin
+    /// that arrives after the first pack must force one, or the arm keeps
+    /// sampling the default.
+    skin_resident: bool,
     uv: std::collections::HashMap<u16, [f32; 4]>,
     /// The two equip clocks — `mainHandHeight` and `offHandHeight`.
     main_equip: rewo_gpu::hand::EquipHeight,
     off_equip: rewo_gpu::hand::EquipHeight,
     /// `LocalPlayer.xBob` / `yBob`.
     bob: rewo_gpu::hand::ViewBob,
-    /// The skin as it sits in the atlas, and whether the model is slim.
+    /// The skin in the hand atlas, and whether the model is slim.
+    ///
+    /// Seeded with the jar's own default so an empty hand shows an arm from
+    /// the first frame — which is also what vanilla shows on an offline server,
+    /// where no player carries a `textures` property. A real skin replaces it
+    /// when one arrives.
     skin: Option<(Vec<u8>, bool)>,
     held: rewo_gpu::held::HeldItems,
     /// The tick the clocks were last advanced on, so they step once per client
@@ -5512,11 +5521,18 @@ impl HandState {
     pub fn new(baked: &assets::BakedAssets) -> Self {
         Self {
             resident: Vec::new(),
+            skin_resident: false,
             uv: std::collections::HashMap::new(),
             main_equip: Default::default(),
             off_equip: Default::default(),
             bob: Default::default(),
-            skin: None,
+            // `entity/player/wide/steve.png`, the 64x64 the bake already
+            // carries for the entity pass's default player.
+            skin: baked
+                .mob_textures
+                .iter()
+                .find(|t| t.key == "player")
+                .map(|t| (t.rgba.clone(), false)),
             held: to_gpu_held_items(&baked.held_items),
             last_tick: 0,
             forced_attack: None,
@@ -5659,7 +5675,7 @@ fn apply_hand(
             }
         }
     }
-    if wanted != state.resident || !wr.hand_ready() {
+    if wanted != state.resident || !state.skin_resident || !wr.hand_ready() {
         let (rgba, uv) = pack_hand_atlas(
             &state.held,
             &wanted,
@@ -5671,6 +5687,7 @@ fn apply_hand(
         }
         state.uv = uv;
         state.resident = wanted;
+        state.skin_resident = state.skin.is_some();
     }
 
     let attack = state

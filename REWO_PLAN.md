@@ -63,7 +63,7 @@ drawing it, without which a wall a block away slices your arm off. The render
 was first committed with an unexplained 1.36x width discrepancy; bisecting
 showed the geometry matched a hand derivation to a tenth of a pixel and the
 fault was the *detector*, which was also counting the hotbar's dirt icons.
-`rewo handshot --check`, **19/19**. Detail in §15.
+`rewo handshot --check`, **22/22**. Detail in §15.
 
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
@@ -357,7 +357,7 @@ match.
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `inventoryshot` 44/44, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `handshot`
-  19/19, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+  22/22, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
   count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
@@ -374,12 +374,11 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **Finish the hand.** M38 draws the held item; the bare arm is plumbed but
-   needs a skin resident in the hand atlas (the `upload_preview_skin` pattern
-   M36 used, about twenty lines). Beyond that the use-driven poses are all
-   out — the two map holds, crossbow and bow charge, eat and drink, brush,
-   spyglass, shield block — each an arm of `submitArmWithItem` keyed on
-   `useItemRemainingTicks`.
+1. **The use-driven hand poses.** M38 draws the held item and the bare arm;
+   what is left is the eight arms of `submitArmWithItem` keyed on
+   `useItemRemainingTicks` — the two map holds, crossbow and bow charge, eat
+   and drink, brush, spyglass, shield block — plus `STAB`, which is derived
+   but not applied. Together they roughly double the milestone.
 2. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
    clicking and the player preview; shift-click quick-move is the most-used
    action still missing, and tooltips are the most visible. Both are bounded
@@ -6423,8 +6422,9 @@ synthetic magenta cube, asserts an empty frame contains no magenta at all, and
 only then trusts a count.
 
 Gate: **`rewo handshot --check`** — serverless, validation-required,
-fail-closed, **19 witnesses**. Four on the bake against the real jar, eight on
-the pose chain against a derivation done inside the gate, seven on pixels. The
+fail-closed, **22 witnesses**. Four on the bake against the real jar, eleven on
+the pose chain and the bare arm against a derivation done inside the gate,
+seven on pixels. The
 strongest is `g2`: every magenta pixel the pass draws falls inside the rectangle
 the CPU builder predicted, computed independently in the same run — which is
 the join between the milestone's two halves. Two of its own witnesses were
@@ -6437,13 +6437,30 @@ as 17.
 Measured: **623 tests**; seventeen serverless gates green with validation ON;
 demo SHA-256 `2cc56b4a…` byte-identical to M15 onward.
 
-**Open.** The bare arm is plumbed but does not appear until a skin is resident
-in the hand atlas — the same `upload_preview_skin` pattern M36 used. The
-`STAB` spear swing is derived but not applied, so a spear swings like a sword.
-And every use-driven pose is out: the two map holds, crossbow and bow charge,
-eat and drink jiggle, brush, spyglass scoping, shield block. Each is its own
-arm of `submitArmWithItem` keyed on `useItemRemainingTicks`, and together they
-would roughly double the milestone.
+
+**The bare arm, and the bug that hid it.** An empty hand draws the player's own
+arm — `renderHand` submits *one named part* with `resetPose()` and a fixed
+`zRot` of ±0.1 rad, so it is the rest pose plus one nudge rather than whatever
+the body animation left behind, and only ever for the main hand. The atlas is
+seeded with the jar's `entity/player/wide/steve.png`, which is what vanilla
+shows on an offline server too.
+
+It rendered as nothing at first, and the reason is worth keeping: **the model's
+UVs are texels, not fractions.** An arm's span 16..56 of the 64-px skin, and
+remapping them into the atlas without dividing by the skin size sends them to
+16..56 in a 0..1 space, where the sampler clamps to a transparent edge. The
+geometry was there the whole time — 72 vertices, built and uploaded — which is
+why looking at the frame proved nothing and printing the UV range settled it in
+one run. `handshot`'s `a2` now pins it: every arm vertex must land inside the
+skin's rect, which the un-normalised form cannot do.
+
+**Open.** The `STAB` spear swing is derived but not applied, so a spear swings
+like a sword. Every use-driven pose is out: the two map holds, crossbow and bow
+charge, eat and drink jiggle, brush, spyglass scoping, shield block. Each is
+its own arm of `submitArmWithItem` keyed on `useItemRemainingTicks`, and
+together they would roughly double the milestone. The arm also wears the
+default skin rather than the player's own — the hand atlas takes one, but
+nothing yet feeds it the local player's.
 
 ### M37 — particles, and the verification approach they needed first (2026-07-27)
 

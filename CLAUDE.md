@@ -2719,12 +2719,19 @@ validation Rewo has.
   shape (non-black against a painted sky, brown against a brown hotbar, cyan
   against a blue sky), so `handshot` is built around avoiding the class: a
   synthetic **magenta** cube, with an empty frame asserted to contain none.
-  Gate `rewo handshot --check` **19/19** (two of its own witnesses were wrong
+  Gate `rewo handshot --check` **22/22** (two of its own witnesses were wrong
   first — the fallback check used a *stick*, which parents `item/handheld` and
   authors both hands; and the fail-closed count caught 19 declared as 17).
-  **623 tests**; demo PNG byte-identical to M15 onward. **Open:** the bare arm
-  needs a resident skin; `STAB` is derived but not applied; every use-driven
-  pose (maps, crossbow/bow charge, eat, brush, spyglass, shield) is out.
+  **The bare arm** draws for the main hand only, from one named part with
+  `resetPose()` plus a fixed `zRot` of ±0.1 rad. It rendered as *nothing* at
+  first because **the model's UVs are texels, not fractions** — an arm's span
+  16..56 of a 64 px skin, so remapping without dividing by the skin size sends
+  them outside the atlas, where the sampler clamps to a transparent edge. The
+  geometry was there the whole time (72 verts, uploaded), so looking proved
+  nothing and printing the UV range settled it in one run. **623 tests**; demo
+  PNG byte-identical to M15 onward. **Open:** `STAB` derived but not applied;
+  every use-driven pose (maps, crossbow/bow charge, eat, brush, spyglass,
+  shield) is out; the arm wears the default skin, not the player's.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -34,7 +34,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 19;
+const EXPECTED_WITNESSES: usize = 22;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -430,6 +430,81 @@ fn check_placement(c: &mut Checker) {
              units, and with the cube vertices divided by 16 the whole chain is \
              self-consistent; without that divide the arm is ten blocks away",
             arm_rest.x, arm_rest.y, arm_rest.z
+        ),
+    );
+
+    // -- the bare arm ------------------------------------------------------
+    //
+    // The skin occupies a quarter of this atlas, so a UV that escaped its rect
+    // is unmistakable.
+    let geo = rewo_gpu::hand::ArmGeometry {
+        skin_uv: [0.25, 0.5, 0.25, 0.25],
+        slim: false,
+    };
+    let bare = |main_hand: bool| {
+        build_vertices(
+            Mat4::IDENTITY,
+            &[HandDraw {
+                arm: Arm::Right,
+                item: None,
+                attack: 0.0,
+                inverse_height: 0.0,
+                swings: true,
+                main_hand,
+            }],
+            &|_| Some([0.0, 0.0, 1.0, 1.0]),
+            Some(&geo),
+        )
+    };
+    let arm_verts = bare(true);
+    c.record(
+        "a1.the_bare_arm_draws_for_the_main_hand_only",
+        !arm_verts.is_empty() && bare(false).is_empty(),
+        format!(
+            "{} verts for the main hand, none for the off hand.              `submitArmWithItem` renders the player's arm only when `isMainHand`              — an empty off-hand shows nothing at all, not a second arm",
+            arm_verts.len()
+        ),
+    );
+
+    // The model's UVs are texels, and normalising them is what keeps the arm
+    // inside its rect. Without the divide they land far outside, where the
+    // sampler clamps to a transparent edge and the arm vanishes — which is
+    // precisely how this shipped broken once.
+    let outside = arm_verts
+        .iter()
+        .filter(|v| {
+            v.uv[0] < geo.skin_uv[0] - 1e-4
+                || v.uv[0] > geo.skin_uv[0] + geo.skin_uv[2] + 1e-4
+                || v.uv[1] < geo.skin_uv[1] - 1e-4
+                || v.uv[1] > geo.skin_uv[1] + geo.skin_uv[3] + 1e-4
+        })
+        .count();
+    let span = arm_verts
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+            (lo.min(v.uv[0]).min(v.uv[1]), hi.max(v.uv[0]).max(v.uv[1]))
+        });
+    c.record(
+        "a2.the_arms_texel_uvs_are_normalised_into_the_skins_rect",
+        outside == 0 && span.1 - span.0 > 0.01,
+        format!(
+            "{outside} of {} vertices fall outside the skin's rect, and the UVs              span {:.3}..{:.3} — the model publishes texels (an arm's are 16..56              of a 64 px skin), so they divide by the skin size before the remap.              Skipping that divide sends them to 16..56 in a 0..1 atlas, and the              arm renders as nothing",
+            arm_verts.len(),
+            span.0,
+            span.1
+        ),
+    );
+
+    // The arm's rest pose carries the fixed tilt, not the model's animation.
+    let tilted = arm_verts
+        .iter()
+        .any(|v| v.pos[0].abs() > 1e-3 && v.pos[1].abs() > 1e-3);
+    c.record(
+        "a3.the_arm_is_posed_and_placed_rather_than_left_at_the_origin",
+        tilted
+            && arm_verts.iter().all(|v| v.pos[2] < 0.0),
+        format!(
+            "every vertex sits in front of the eye (negative z) and off-axis.              `renderHand` resets the part's pose and sets a fixed `zRot` of              ±0.1 rad, so the first-person arm is the rest pose plus one nudge —              not whatever the body animation left it at"
         ),
     );
 
