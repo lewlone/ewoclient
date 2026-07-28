@@ -8,6 +8,7 @@
 //! and writes a PNG — the self-check harness for machines/agents.
 
 mod capture;
+mod captureshot_cmd;
 mod bench_cmd;
 mod danceshot_cmd;
 mod hurtshot_cmd;
@@ -208,6 +209,12 @@ enum Command {
     /// Java harness copied verbatim from the decompile (`--check`, no server,
     /// no GPU).
     Particleshot(particleshot_cmd::ParticleshotArgs),
+    /// M51c screenshot-capture oracle: render through a **BGRA** `Offscreen` —
+    /// the live swapchain's format, which no other gate exercises — and grade
+    /// the saved PNG's channel order, opacity and row order, then drive
+    /// production `capture::grab` end to end and pin vanilla's filename pattern
+    /// and dedup ladder with `--check` (no server, no client jar).
+    Captureshot(captureshot_cmd::CaptureshotArgs),
 }
 
 fn main() {
@@ -241,6 +248,7 @@ fn main() {
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
+        Some(Command::Captureshot(cap_args)) => captureshot_cmd::run(cap_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),
