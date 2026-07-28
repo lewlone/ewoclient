@@ -610,6 +610,10 @@ pub struct HandDraw<'a> {
     /// Whether this is the main hand. Vanilla draws the bare arm **only** for
     /// the main hand: an empty off-hand shows nothing.
     pub main_hand: bool,
+    /// Whether this item draws an enchantment glint — `ItemStack.hasFoil()`
+    /// (M44). Resolved by the caller, which is the only side that knows what
+    /// a stack is.
+    pub glint: bool,
     /// An in-progress use in *this* hand, which replaces the swing entirely —
     /// `submitArmWithItem` takes the use branch or the swing branch, never
     /// both. `None` when the player is not using this hand's item.
@@ -652,6 +656,58 @@ fn quad_verts(
 /// opening bob pair. `atlas` resolves an item texture index to its rect in the
 /// hand atlas; `arm_geometry` is `None` when no skin is resident, which draws
 /// the item but no bare arm rather than an untextured one.
+/// The first-person hand's enchantment glint (M44).
+///
+/// Same geometry as [`build_vertices`] and the **same pose**, because the
+/// glint pass depth-tests `EQUAL` against what the hand pass just wrote: a
+/// vertex that lands a fraction of a unit away is rejected outright rather
+/// than drawn wrong. So this repeats the pose derivation exactly rather than
+/// re-deriving it a second, subtly different way.
+///
+/// Only items glint. The bare arm is skin, and vanilla's `submitArmWithItem`
+/// takes the arm branch before any foil is considered.
+pub fn build_glint_vertices(
+    view: Mat4,
+    hands: &[HandDraw<'_>],
+    millis: f64,
+) -> Vec<GuiItemVertex> {
+    let offsets = crate::gui_item::glint_offsets(millis, crate::gui_item::GLINT_SPEED);
+    let mut out = Vec::new();
+    for h in hands {
+        let Some(model) = h.item.filter(|_| h.glint) else {
+            continue;
+        };
+        let left = h.arm == Arm::Left;
+        let display = if left { &model.first_left } else { &model.first_right };
+        let pose = match &h.using {
+            Some(u) => match use_hand(h.arm, h.inverse_height, u, 1.0, h.is_shield) {
+                Some(m) => m,
+                None => continue,
+            },
+            None => item_hand_kind(h.arm, h.inverse_height, h.attack, h.swings),
+        };
+        let m = view * pose * display_transform(display, left);
+        for q in &model.quads {
+            let pos: [[f32; 3]; 4] = std::array::from_fn(|i| {
+                [
+                    q.verts[i][0] * MODEL_UNIT,
+                    q.verts[i][1] * MODEL_UNIT,
+                    q.verts[i][2] * MODEL_UNIT,
+                ]
+            });
+            // The quad's own 0..1 UV through the scrolling matrix — the same
+            // input the GUI glint uses, and for the same reason: the pattern
+            // must not depend on where the atlas packer put the item.
+            let uv: [[f32; 2]; 4] = std::array::from_fn(|i| {
+                crate::gui_item::glint_uv(q.uv[i], offsets, crate::gui_item::GLINT_SCALE_ITEM)
+            });
+            // The item pass's diffuse slot carries `GlintAlpha` here.
+            quad_verts(&mut out, &m, &pos, &uv, crate::gui_item::GLINT_STRENGTH);
+        }
+    }
+    out
+}
+
 pub fn build_vertices(
     view: Mat4,
     hands: &[HandDraw<'_>],
@@ -985,6 +1041,7 @@ mod tests {
                 inverse_height: 0.0,
                 swings: SwingKind::Whack,
                 main_hand: true,
+                glint: false,
                 using: None,
                 is_shield: false,
             }],

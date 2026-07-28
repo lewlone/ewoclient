@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 29;
+const EXPECTED_WITNESSES: usize = 34;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -85,6 +85,7 @@ pub fn run(args: HandshotArgs) -> Result<(), String> {
     };
     check_bake(&mut c, &baked);
     check_placement(&mut c);
+    check_glint(&mut c);
     check_pixels(&mut c, &args)?;
 
     println!(
@@ -271,12 +272,114 @@ fn draw_one(arm: Arm, item: &HeldItemModel, attack: f32, inverse_height: f32) ->
             inverse_height,
             swings: SwingKind::Whack,
             main_hand: true,
+            glint: false,
             using: None,
             is_shield: false,
         }],
         &|_| Some([0.0, 0.0, 1.0, 1.0]),
         None,
     )
+}
+
+/// The hand's enchantment glint (M44).
+fn check_glint(c: &mut Checker) {
+    use rewo_gpu::hand::{build_glint_vertices, build_vertices, Arm, HandDraw, SwingKind};
+
+    let item = cube_item(block_transform(), block_transform());
+    let hands = |glint: bool| {
+        vec![HandDraw {
+            arm: Arm::Right,
+            item: Some(&item),
+            attack: 0.0,
+            inverse_height: 0.0,
+            swings: SwingKind::Whack,
+            main_hand: true,
+            glint,
+            using: None,
+            is_shield: false,
+        }]
+    };
+    let view = Mat4::IDENTITY;
+    let on = build_glint_vertices(view, &hands(true), 1000.0);
+    let off = build_glint_vertices(view, &hands(false), 1000.0);
+    let plain = build_vertices(view, &hands(true), &|_| Some([0.0, 0.0, 1.0, 1.0]), None);
+    c.record(
+        "n1.the_glint_is_drawn_only_for_a_foiled_item",
+        !on.is_empty() && off.is_empty(),
+        format!(
+            "{} glint vertices with the flag set and {} without — `hasFoil` is \
+             resolved by the caller, which is the only side that knows what a \
+             stack is",
+            on.len(),
+            off.len()
+        ),
+    );
+    // **The positions have to match exactly.** The glint pass depth-tests
+    // `EQUAL` against what the hand pass just wrote, so a vertex a fraction of
+    // a unit away is rejected outright — which is why the glint builder
+    // repeats the pose derivation rather than re-deriving it a second,
+    // subtly different way.
+    let same_positions = on.len() == plain.len()
+        && on
+            .iter()
+            .zip(plain.iter())
+            .all(|(g, p)| g.pos == p.pos);
+    c.record(
+        "n2.the_glint_geometry_is_the_item_geometry_to_the_bit",
+        same_positions,
+        format!(
+            "{} glint vertices against {} item vertices, positions identical: \
+             {same_positions}. The glint pipeline tests depth `EQUAL`, so a pose \
+             derived a second time — even one that only rounds differently — \
+             would be rejected fragment by fragment and draw nothing",
+            on.len(),
+            plain.len()
+        ),
+    );
+    // …and only the UVs differ, which is the whole point of the second pass.
+    let uvs_differ = on
+        .iter()
+        .zip(plain.iter())
+        .any(|(g, p)| g.uv != p.uv);
+    c.record(
+        "n3.only_the_texture_coordinates_differ",
+        uvs_differ && on.iter().all(|v| v.shade == rewo_gpu::gui_item::GLINT_STRENGTH),
+        format!(
+            "the UVs differ ({uvs_differ}) and every glint vertex carries \
+             `GlintAlpha` {:?} in the slot the item pass uses for its diffuse",
+            rewo_gpu::gui_item::GLINT_STRENGTH
+        ),
+    );
+    // The bare arm never glints: `submitArmWithItem` takes the arm branch
+    // before any foil is considered, and an arm is skin.
+    let bare = vec![HandDraw {
+        arm: Arm::Right,
+        item: None,
+        attack: 0.0,
+        inverse_height: 0.0,
+        swings: SwingKind::Whack,
+        main_hand: true,
+        glint: true,
+        using: None,
+        is_shield: false,
+    }];
+    c.record(
+        "n4.a_bare_arm_never_glints",
+        build_glint_vertices(view, &bare, 1000.0).is_empty(),
+        "an empty hand with the flag forced on still produces no glint geometry — \
+         the arm is skin, and vanilla takes the arm branch before any foil",
+    );
+    // The sheen moves: two times, two different sets of UVs, same positions.
+    let later = build_glint_vertices(view, &hands(true), 1000.0 + 3000.0);
+    c.record(
+        "n5.the_glint_scrolls_with_wall_clock_time",
+        later.len() == on.len()
+            && later.iter().zip(on.iter()).all(|(a, b)| a.pos == b.pos)
+            && later.iter().zip(on.iter()).any(|(a, b)| a.uv != b.uv),
+        "three seconds later the positions are unchanged and the UVs are not — the \
+         phase is `Util.getMillis()`, so it keeps scrolling on a paused screen and \
+         never stutters with the tick rate",
+    );
 }
 
 fn check_placement(c: &mut Checker) {
@@ -351,6 +454,7 @@ fn check_placement(c: &mut Checker) {
             inverse_height: 0.0,
             swings: SwingKind::None,
             main_hand: true,
+            glint: false,
             using: None,
             is_shield: false,
         }],
@@ -596,6 +700,7 @@ fn check_placement(c: &mut Checker) {
                 inverse_height: 0.0,
                 swings: SwingKind::Whack,
                 main_hand,
+                glint: false,
                 using: None,
                 is_shield: false,
             }],

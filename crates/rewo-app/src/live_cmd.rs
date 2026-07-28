@@ -5759,6 +5759,10 @@ pub struct HandState {
     /// A swing frozen for a headless shot (`REWO_HAND_SWING`). `None` in a
     /// real session, where the clock is the entity table's.
     forced_attack: Option<f32>,
+    /// When this session started, for the glint's wall-clock phase (M44).
+    started: std::time::Instant,
+    /// `misc/enchanted_glint_item.png` as `(rgba, w, h)`; `None` draws none.
+    glint: Option<(Vec<u8>, u32, u32)>,
 }
 
 impl HandState {
@@ -5780,6 +5784,11 @@ impl HandState {
             held: to_gpu_held_items(&baked.held_items),
             last_tick: 0,
             forced_attack: None,
+            started: std::time::Instant::now(),
+            glint: baked
+                .glint
+                .as_ref()
+                .map(|i| (i.rgba.clone(), i.w, i.h)),
         }
     }
 
@@ -5929,6 +5938,16 @@ fn apply_hand(
             log::warn!("live: hand atlas upload failed: {e}");
             return;
         }
+        // **After** `init_hand`, not before: that call destroys and rebuilds
+        // the pass, so a glint installed first is thrown away with it. The
+        // first build had these the other way round and drew no shimmer at
+        // all — the GUI path gets this right by having grown in the same
+        // order.
+        if let Some(g) = state.glint.as_ref() {
+            if let Err(e) = wr.init_hand_glint(gpu, &g.0, g.1, g.2) {
+                log::warn!("live: hand glint upload failed: {e}");
+            }
+        }
         state.uv = uv;
         state.resident = wanted;
         state.skin_resident = state.skin.is_some();
@@ -5997,6 +6016,12 @@ fn apply_hand(
     let is_shield = |id: Option<i32>| {
         id.and_then(|i| items.name(i)) == Some("minecraft:shield")
     };
+    // `ItemStack.hasFoil()` for each hand (M44). It comes from the
+    // **inventory**, not the equipment feed: the server never sends a player
+    // their own equipment, which is the same reason M38's swing duration reads
+    // the inventory too.
+    let main_glint = session.inventory.held().is_some_and(|s| s.enchanted);
+    let off_glint = session.inventory.offhand().is_some_and(|s| s.enchanted);
 
     let hands = [
         HandDraw {
@@ -6006,6 +6031,7 @@ fn apply_hand(
             inverse_height: state.main_equip.inverse(partial),
             swings: swing_kind(state.main_equip.visible_item()),
             main_hand: true,
+            glint: main_glint,
             using: use_for(rewo_world::entities::InteractionHand::MainHand),
             is_shield: is_shield(state.main_equip.visible_item()),
         },
@@ -6018,6 +6044,7 @@ fn apply_hand(
             inverse_height: state.off_equip.inverse(partial),
             swings: swing_kind(state.off_equip.visible_item()),
             main_hand: false,
+            glint: off_glint,
             using: use_for(rewo_world::entities::InteractionHand::OffHand),
             is_shield: is_shield(state.off_equip.visible_item()),
         },
@@ -6040,8 +6067,12 @@ fn apply_hand(
         &|t| state.uv.get(&t).copied(),
         arm_geo.as_ref(),
     );
+    // Wall-clock phase, exactly as the GUI glint uses — vanilla reads
+    // `Util.getMillis()` for both.
+    let millis = state.started.elapsed().as_secs_f64() * 1000.0;
+    let glint = rewo_gpu::hand::build_glint_vertices(view, &hands, millis);
     let vp = hand_view_proj(aspect).to_cols_array_2d();
-    if let Err(e) = wr.set_hand(gpu, &verts, vp) {
+    if let Err(e) = wr.set_hand_with_glint(gpu, &verts, &glint, vp) {
         log::warn!("live: hand upload failed: {e}");
     }
 }

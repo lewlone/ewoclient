@@ -2868,6 +2868,25 @@ validation Rewo has.
   cases correct and the sheen moves (311 of 2,500 slot pixels differ across
   seven seconds). **Open:** the glint on the first-person hand, on ground /
   mob-held items (scale 0.5) and on worn armour (0.16).
+- **M44 the glint on the first-person hand (2026-07-28)** — M43's transform,
+  blend, depth rule and sampler unchanged (the item scale is 8.0 in both
+  contexts), so the milestone is about where the second pass hangs. **The
+  glint geometry has to be the item geometry to the bit**: the pass
+  depth-tests `EQUAL` against what the hand pass just wrote, so a vertex a
+  fraction of a unit away is rejected fragment by fragment and draws nothing —
+  the glint builder repeats the pose derivation (use branch, swing branch,
+  display transform, left-hand mirror) rather than re-deriving it a second,
+  subtly different way. **Only items glint** — the bare arm is skin, and
+  `submitArmWithItem` takes the arm branch before any foil. `hasFoil` comes
+  from the **inventory**, not the equipment feed, because a server never sends
+  a player their own equipment. **The bug**: the first build drew nothing
+  because `init_hand` *destroys and rebuilds the pass*, and the glint was
+  installed **before** it, so every rebuild threw it away — no error, no
+  warning, no validation message; a rebuilt pass with no glint is perfectly
+  valid, and the only signal was two frames that should have differed and did
+  not. Gate `handshot` 29 -> **34**; **635 tests**. **Open:** ground and
+  mob-held items (scale 0.5) and worn armour (0.16), both through the entity
+  pass.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

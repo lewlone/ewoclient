@@ -1395,9 +1395,36 @@ impl WorldRenderer {
         verts: &[crate::gui_item::GuiItemVertex],
         view_proj: [[f32; 4]; 4],
     ) -> Result<(), String> {
+        self.set_hand_with_glint(gpu, verts, &[], view_proj)
+    }
+
+    /// The hand plus this frame's enchantment glint (M44), in one buffer.
+    pub fn set_hand_with_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[crate::gui_item::GuiItemVertex],
+        glint: &[crate::gui_item::GuiItemVertex],
+        view_proj: [[f32; 4]; 4],
+    ) -> Result<(), String> {
         self.hand_vp = (!verts.is_empty()).then_some(view_proj);
         match self.hand.as_mut() {
-            Some(p) => p.set_vertices(gpu, verts),
+            Some(p) => p.set_vertices_with_glint(gpu, verts, glint),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the hand glint's pipeline and upload its sheet. Goes with
+    /// `init_hand`, which is rebuilt whenever the held item's atlas changes.
+    pub fn init_hand_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let format = self.color_format;
+        match self.hand.as_mut() {
+            Some(p) => p.init_glint(gpu, rgba, w, h, format),
             None => Ok(()),
         }
     }
@@ -2240,6 +2267,7 @@ impl WorldRenderer {
                 vk::Rect2D::default().extent(extent),
             );
             pass.draw(gpu, cb, vp, extent);
+            pass.draw_glint(gpu, cb, vp, extent);
         }
         // HUD, then the inventory screen over it, then text — all screen
         // space. The item icons are one pass drawn once, so when the screen is

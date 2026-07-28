@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M43 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M44 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -63,7 +63,7 @@ drawing it, without which a wall a block away slices your arm off. The render
 was first committed with an unexplained 1.36x width discrepancy; bisecting
 showed the geometry matched a hand derivation to a tenth of a pixel and the
 fault was the *detector*, which was also counting the hotbar's dirt icons.
-`rewo handshot --check`, **29/29**. Detail in §15.
+`rewo handshot --check`, **34/34**. Detail in §15.
 
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
@@ -357,7 +357,7 @@ match.
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `inventoryshot` 91/91, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
-  29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
+  34/34, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
   count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
@@ -374,14 +374,15 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The glint on the other three surfaces.** M43 ships it on the GUI icons;
-   the **first-person hand** is the same item scale (8.0) through a sibling
-   pass, and ground / mob-held items and worn armour want the entity scales
-   (0.5 and 0.16) through the entity pass. Beyond that: the seven syncable
-   components still without codecs (`equippable`, `can_place_on`, `can_break`,
-   `blocks_attacks`, `jukebox_playable`, `kinetic_weapon`, `bees`), and armour
-   trim *models*, which need the trim's material and pattern resolved to asset
-   ids rather than merely walked past.
+1. **The glint on the last two surfaces.** M43 and M44 ship it on the GUI
+   icons and the first-person hand, both at the item scale 8.0. Ground and
+   mob-held items want `ENTITY_GLINT_TEXTURING` at 0.5 and worn armour
+   `ARMOR_ENTITY_GLINT_TEXTURING` at 0.16, both through the entity pass.
+   Beyond that: the seven syncable components still without codecs
+   (`equippable`, `can_place_on`, `can_break`, `blocks_attacks`,
+   `jukebox_playable`, `kinetic_weapon`, `bees`), and armour trim *models*,
+   which need the trim's material and pattern resolved to asset ids rather
+   than merely walked past.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6349,6 +6350,52 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M44 — the glint on the first-person hand (2026-07-28)
+
+M43 put the shimmer on the GUI icons; this puts it on the item you are holding.
+The transform, the blend, the depth rule and the sampler are all M43's — the
+item scale is 8.0 in both contexts — so the milestone is almost entirely about
+where the second pass hangs.
+
+**The glint geometry has to be the item geometry, to the bit.** The pass
+depth-tests `EQUAL` against what the hand pass just wrote, so a vertex a
+fraction of a unit away is rejected fragment by fragment and draws nothing. The
+glint builder therefore repeats the pose derivation — the use branch, the swing
+branch, the display transform, the left-hand mirror — rather than re-deriving
+it a second, subtly different way. That is the property `handshot`'s `n2`
+pins, and it is the one a refactor is most likely to break.
+
+**Only items glint.** The bare arm is skin, and `submitArmWithItem` takes the
+arm branch before any foil is considered — so a hand with the flag forced on
+and no item still produces nothing.
+
+`hasFoil` comes from the **inventory**, not the equipment feed: a server never
+sends a player their own equipment, which is the same reason M38's swing
+duration reads the inventory.
+
+#### The bug, and why it was invisible
+
+The first build drew no shimmer at all, and the two frames — enchanted and
+plain — came out identical. `init_hand` **destroys and rebuilds the pass**
+whenever the held item's atlas changes, and the glint was being installed
+*before* it, so every rebuild threw it away. The GUI path had the two calls the
+other way round and worked from the first frame; this one had grown in the
+opposite order and never once drew.
+
+It is worth naming because nothing failed: no error, no warning, no validation
+message. A rebuilt pass with no glint is a perfectly valid pass. The only
+signal was two frames that should have differed and did not.
+
+#### Verified
+
+`handshot --check` **29 -> 34**, **635 tests**, all seventeen gates green, demo
+PNG byte-identical to M15 onward. Live, the same sword held twice: enchanted it
+carries the diagonal sheen, plain it is clean.
+
+**Open.** Ground and mob-held items want `ENTITY_GLINT_TEXTURING` at scale 0.5
+and worn armour `ARMOR_ENTITY_GLINT_TEXTURING` at 0.16, both through the entity
+pass — the last two of the four surfaces.
 
 ### M43 — the enchantment glint (2026-07-28)
 
