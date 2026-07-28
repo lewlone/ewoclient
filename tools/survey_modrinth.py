@@ -270,6 +270,12 @@ FEATURES = {
     "Controller support":         r"controller support|gamepad|touch control|\bcontrolify\b",
     "Toggle sprint / sneak":      r"toggle ?(sprint|sneak)|auto ?sprint",
     "Walk while in inventory":    r"walk around while|move while.{0,20}(inventor|screen|gui)|invmove",
+    "FOV control":                r"\bfov\b|field of view|zoom-?free fov|dynamic fov",
+    "Death recap / waypoint":     r"death (log|recap|point|marker|waypoint|history)|where you died|track\w* .{0,20}death|deaths? (coordinate|location)",
+    "Inventory slot locking":     r"(lock|reserve)\w* .{0,15}(slot|inventory)|slot lock|reserved slot|locked slot",
+    "Recipe book QoL":            r"recipe book",
+    "World downloader":           r"world downloader|download\w* .{0,20}world|save .{0,15}server world",
+    "Window focus behaviour":     r"minimi[sz]e.{0,25}(focus|fullscreen)|focus loss|alt.?tab",
     "Block placement helper":     r"block placement|bridging|reach[- ]?around|smart\\w* block placement|pro placer|accurate block break",
     "Reach / hit indicators":     r"hit ?(range|indicator|colou?r|reg)|reach|attack indicator|hitbox",
     # -- social / session
@@ -419,7 +425,14 @@ MODS_WEIGHT = 1.0
 #   audio  -- BLOCKED. Rewo has no audio subsystem at all (rewo-world/src/
 #             entities.rs:940 says so). 117M of demand sitting behind one
 #             prerequisite that is a subsystem, not a feature.
-#   have   -- already in the rewo-* crates.
+#   parity -- Rewo already implements VANILLA's version; the mod cluster is
+#             about exceeding it. Real work, but not greenfield, so the effort
+#             number means "beyond parity" and the demand is partly satisfied
+#             already. Audit these against the crates before scheduling -- the
+#             first revision of this table had five of them marked `qol` and
+#             two of those shipped (M40 tooltips, M41 durability bars) before
+#             the survey was even written.
+#   have   -- already in the rewo-* crates, nothing meaningful left.
 #   na     -- does not port. See the per-row note.
 #
 # effort: 1 (a weekend) .. 5 (a milestone)
@@ -438,14 +451,21 @@ MODS_WEIGHT = 1.0
 #   audio  -- BLOCKED. Rewo has no audio subsystem at all (see
 #             rewo-world/src/entities.rs:940). ~117M of demand behind one
 #             prerequisite that is a subsystem, not a feature.
-#   have   -- already in the rewo-* crates.
+#   parity -- Rewo already implements VANILLA's version; the mod cluster is
+#             about exceeding it. Real work, but not greenfield, so the effort
+#             number means "beyond parity" and the demand is partly satisfied
+#             already. Audit these against the crates before scheduling -- the
+#             first revision of this table had five of them marked `qol` and
+#             two of those shipped (M40 tooltips, M41 durability bars) before
+#             the survey was even written.
+#   have   -- already in the rewo-* crates, nothing meaningful left.
 #   na     -- does not port; see the note.
 #
 # effort: 1 (a weekend) .. 5 (a milestone)
 DISPOSITION = {
-    "Tooltip overhaul":           (2, "qol"),
-    "Item durability display":    (1, "qol"),
-    "Screenshot tooling":         (2, "qol"),
+    "Tooltip overhaul":           (2, "parity"),  # M40/41/42 tooltip sprites + layout, container.rs:230
+    "Item durability display":    (1, "parity"),  # M41 bar_width/bar_color, rewo-gpu/src/container.rs:409
+    "Screenshot tooling":         (2, "parity"),  # M51a/b capture + F2, rewo-app/src/capture.rs
     "Reach / hit indicators":     (2, "port"),
     "Debug / F3 overlay":         (1, "have"),   # rewo-gpu/src/overlay.rs
     "Minimap / waypoints":        (5, "qol"),
@@ -453,7 +473,7 @@ DISPOSITION = {
     "Loading / menu flow":        (4, "qol"),
     "Scoreboard / tab list":      (2, "qol"),
     "Zoom":                       (1, "port"),
-    "Custom crosshair":           (2, "port"),
+    "Custom crosshair":           (2, "parity"),  # vanilla crosshair drawn, rewo-gpu/src/hud.rs:36
     "Fullbright / gamma":         (1, "port"),
     "Player / mob health bars":   (2, "qol"),
     "Chat QoL":                   (3, "qol"),
@@ -465,7 +485,7 @@ DISPOSITION = {
     "Schematics":                 (5, "qol"),
     "Toggle sprint / sneak":      (1, "port"),
     "Inventory sorting":          (4, "qol"),
-    "Block highlight / outline":  (1, "qol"),
+    "Block highlight / outline":  (1, "parity"),  # selection outline, rewo-gpu/src/world.rs:449
     "Block info under crosshair": (2, "qol"),   # Jade/WAILA class    # M-targeting draws the outline; config is the gap
     "Status-effect timers":       (2, "qol"),
     "Discord rich presence":      (1, "qol"),    # tension with OFFLINE FIRST -- opt-in only
@@ -503,6 +523,12 @@ DISPOSITION = {
     "Dynamic lights":             (3, "qol"),
     "Auto-reconnect":             (1, "qol"),
     "Walk while in inventory":    (1, "qol"),
+    "FOV control":                (1, "qol"),
+    "Death recap / waypoint":     (2, "qol"),
+    "Inventory slot locking":     (2, "qol"),
+    "Recipe book QoL":            (3, "qol"),
+    "World downloader":           (4, "qol"),
+    "Window focus behaviour":     (1, "qol"),
     # -- added after random-sampling the unread tail; see §1 of the doc.
     "Accessibility":              (2, "qol"),   # narrator/subtitles/colourblind/sticky keys/GUI scale
     "Account switching":          (2, "qol"),   # Rewo already owns the auth chain via the launcher
@@ -548,7 +574,7 @@ def rank() -> None:
         raise SystemExit(f"FEATURES with no disposition: {sorted(untriaged)}")
 
     rows = [(n, stats[n][0], stats[n][1], e, k) for n, (e, k) in DISPOSITION.items()]
-    buildable = [r for r in rows if r[4] in ("qol", "port", "atmos", "audio")]
+    buildable = [r for r in rows if r[4] in ("qol", "port", "atmos", "audio", "parity")]
     max_mods = max(r[1] for r in buildable)
     max_dl = max(r[2] for r in buildable)
 
@@ -572,6 +598,7 @@ def rank() -> None:
 
     print(f"breadth-first ranking  (MODS_WEIGHT={MODS_WEIGHT}, score = demand / effort)")
     table({"qol", "port"}, "QoL + features  ([port] rows are ONE milestone, see below)")
+    table({"parity"}, "Vanilla parity already shipped -- these rank the work BEYOND it")
     table({"atmos"}, "Atmosphere (cosmetic -- competes on taste, ranked apart)")
     table({"audio"}, "Audio (BLOCKED: Rewo has no audio subsystem)")
 
@@ -585,6 +612,7 @@ def rank() -> None:
             print(f"\n{label}: " + ", ".join(f"{r[0]} ({r[1]} mods, {r[2]:.0f}M)" for r in sel))
     qol = [r for r in rows if r[4] == "qol"]
     print(f"\ntotals: {len(rows)} distinct features = {len(qol)} qol + {len(ports)} port "
+          f"+ {sum(1 for r in rows if r[4]=='parity')} parity "
           f"+ {sum(1 for r in rows if r[4]=='audio')} audio-blocked "
           f"+ {sum(1 for r in rows if r[4]=='atmos')} atmosphere "
           f"+ {sum(1 for r in rows if r[4]=='have')} have "

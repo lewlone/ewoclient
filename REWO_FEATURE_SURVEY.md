@@ -15,37 +15,35 @@ load-bearing rather than decorative — see §2.
 
 ## §0 Handoff — the seven things worth knowing
 
-1. **9,291 mods collapse to 69 distinct features.** The unit that matters is
-   "a problem someone solved", not "a mod". 55 zoom mods are one feature. Of
-   the 69: **48 are QoL work to build**, 12 are one port milestone, 3 are
-   blocked on audio, 2 are atmosphere, 1 already exists, 3 don't port (§4).
-   **Treat 69 as a floor and every count as ±20%** — both directions are
-   measured in §1.
-2. **More than half the ecosystem is not Rewo's problem.** 53.4% of download
+1. **9,291 mods collapse to 75 distinct features.** The unit that matters is
+   "a problem someone solved", not "a mod". 54 zoom mods are one feature. Of
+   the 75: **50 QoL to build**, 11 one port milestone, **5 already at vanilla
+   parity**, 3 blocked on audio, 2 atmosphere, 1 done, 3 don't port (§4).
+2. **Five top-ranked features were already built** — M40 tooltips, M41
+   durability bars, M51 screenshots, plus the vanilla crosshair and selection
+   outline. They are `parity` now, ranked in their own table, because the mod
+   clusters exist to *exceed* vanilla and the work starts from a base rather
+   than from zero. **Audit any feature against the crates before scheduling
+   it**; this table was wrong about five of them.
+3. **More than half the ecosystem is not Rewo's problem.** 53.4% of download
    mass is modding infrastructure, JVM performance, and OptiFine-pack parity —
-   all dissolved by construction (§3). That is the strongest external
-   validation Rewo has.
-3. **The long tail is real and correctly ignorable.** After the 69 features
-   and the class split, **4,621 mods remain carrying ~11% of downloads at a
-   median of 890 each** — one-off gameplay, localization and cosmetic tweaks.
-   The 69 features are **27.5% of all downloads**; do not read that as "the
-   features are everything", read it as "the features plus the JVM tax are
-   ~81% and the rest is dust".
+   all dissolved by construction (§3).
 4. **The market leader in every big solved category is non-open-source.**
-   Rendering (Sodium), culling (EntityCulling), minimap (Xaero's,
-   JourneyMap) and block-info (Jade, WTHIT) — ~509M downloads, none of it
-   readable as reference. That is a pattern, not a coincidence, and it means
-   Rewo solves those four from scratch with no source to consult (§2).
-5. **The largest still-open OptiFine-parity item is ETF at 88M downloads** —
-   emissive + random entity textures. That is Rewo's existing M9b.
-6. **Independent-reimplementation count beats download count** as a signal,
-   and the two disagree usefully. 111 people wrote a tooltip mod and none
-   stuck; 33 wrote inventory sorting and Mouse Tweaks won at 50M. Those imply
-   opposite strategies, separable by downloads-per-mod (§5).
-7. **The effort column is the weakest input in this document.** It is
-   guesswork, never validated against an implementation, and it is the
-   *denominator* of the whole ranking. Grounding one estimate against real
-   work is the cheapest thing that would improve the ordering.
+   Rendering (Sodium), culling (EntityCulling), minimap (Xaero's, JourneyMap)
+   and block-info (Jade, WTHIT) — ~509M downloads, none of it readable as
+   reference. Rewo solves those four from scratch with no source to consult (§2).
+5. **The counts carry a measured ~22-25% error and the list is a floor.** Two
+   independent samples of the unread tail agree on the rate; a sample of the
+   covered set found the same magnitude going the other way (§1).
+6. **The error is NOT uniform — it tracks keyword distinctiveness.** Measured
+   per-cluster: `Tooltip overhaul` 0% wrong, `Accessibility` and
+   `Loading / menu flow` 25%, `Scoreboard / tab list` 31%, `Reach / hit
+   indicators` 38%. Clusters keyed on a word that only ever means one thing
+   are clean; clusters keyed on a common word are inflated. **This is a
+   systematic bias, not noise: vague-keyword features rank too high.**
+7. **The effort column is still the weakest input** — guesswork, and the
+   ranking's denominator. It is now partly bounded from the other end: five
+   features turned out to be already built, which is the same class of error.
 
 ---
 
@@ -132,10 +130,38 @@ one, so the sum of per-feature counts exceeds the unique count by ~12%. That
 is defensible — a mod can genuinely do two things — but it means per-feature
 `mods` is not a partition and must not be summed.
 
-Net: **treat any individual count as ±20% and the feature list as a floor.**
-The error is roughly uniform across clusters, which is why the *ranking*
-survives it while individual figures should not be quoted as fact. That
-uniformity is itself an untested assumption.
+**The uniformity assumption was then tested, and it is false.** Sampling five
+clusters separately, eight mods each:
+
+| cluster | wrong | rate |
+|---|---:|---:|
+| Tooltip overhaul | 0 / 8 | **0%** |
+| Accessibility | 2 / 8 | 25% |
+| Loading / menu flow | 2 / 8 | 25% |
+| Scoreboard / tab list | ~3 / 8 | 31% |
+| Reach / hit indicators | ~3 / 8 | **38%** |
+
+**The error tracks keyword distinctiveness.** `tooltip` and `subtitle` are
+nouns that only ever mean one thing. `reach` catches "reacharound placement"
+and "crafting directly from reach"; `tab list` catches ping-display mods;
+`menu` catches an in-game mod browser. So the bias is *systematic* — features
+whose names are common words are inflated relative to features with
+distinctive names, and **`Reach / hit indicators` in particular is
+over-ranked.** Weight a cluster's count by how specific its keyword is before
+trusting its position.
+
+**The floor was tested too, twice.** Two random samples of the never-read tail
+(seeds 7 and 41, 40 and 32 mods) found 25% and 22% to be features absent from
+the list — a stable rate. The second surfaced `FOV control`, which had been in
+the *first* exploratory pass and was dropped during a rebuild: **a feature can
+leave the list as well as fail to enter it.** Fifteen clusters have been added
+across the two samples; the count went 55 → 59 → 68 → 69 → 75 and is still a
+floor.
+
+Net: **treat any individual count as ±25%, biased upward for vague-keyword
+clusters, and the feature list as a floor.** The *ranking* survives this only
+where the gap between adjacent entries exceeds the bias — which is true at the
+top and false in the middle.
 
 Three guards now exist because each failed at least once: `report()` prints
 the residue's head *and* median; `rank()` asserts every FEATURES key has a
@@ -231,7 +257,7 @@ Class A hides **three algorithms worth lifting**, all reference-safe:
 
 ---
 
-## §4 The 69 distinct features
+## §4 The 75 distinct features
 
 `tools/survey_modrinth.py` measures `mods` and `dl` **live** from the survey —
 they are not stored. `DISPOSITION` in that file holds only effort and kind, so
@@ -240,27 +266,28 @@ copy behind. Disposition:
 
 | disposition | count | |
 |---|---:|---|
-| **QoL — build these** | **48** | the roadmap |
-| **[port]** — in the Fabric client, not in Rewo | 12 | **one milestone** |
+| **QoL — build these** | **50** | the roadmap |
+| **parity** — vanilla version already shipped | 5 | work is *beyond* vanilla; ranked separately |
+| **[port]** — in the Fabric client, not in Rewo | 11 | **one milestone** |
 | **audio** — blocked | 3 | Rewo has no audio subsystem at all |
 | **atmosphere** — cosmetic, ranked apart | 2 | ambient particles, motion blur |
 | already in the `rewo-*` crates | 1 | Debug / F3 overlay (`overlay.rs`) |
 | does not port | 3 | see below |
-| **total distinct features** | **69** | from 9,291 mods (a floor — see §1) |
+| **total distinct features** | **75** | from 9,291 mods (still a floor — see §1) |
 
-**Coverage, stated honestly.** These 69 account for 1,584 of 6,205 class-D
-mods (25.5%) and **27.5% of all downloads** — roughly **half of class D's own
+**Coverage, stated honestly.** These 75 account for 1,650 of 6,205 class-D
+mods (26.6%) and **27.7% of all downloads** — roughly **half of class D's own
 download mass**. They are not "basically everything". Full accounting of the
 5,720M:
 
 | segment | share |
 |---|---:|
 | JVM tax (classes A + B + C) | 53.4% |
-| the 69 distinct features | 27.5% |
+| the 75 distinct features | 27.7% |
 | addon ecosystem (111 mods) | 3.5% |
-| uncovered long tail (4,621 mods) | ~11% |
+| uncovered long tail (4,555 mods) | ~10% |
 
-The uncovered tail's **median is 890 downloads** and — now that the classifier
+The uncovered tail's **median is 893 downloads** and — now that the classifier
 misses are folded in — its head is gameplay (Cut Through, Do a Barrel Roll,
 Fabric Seasons), localization (I18nUpdateMod, JustEnoughCharacters — English-
 only is a stated scope exclusion), cosmetics (Eating Animation) and
