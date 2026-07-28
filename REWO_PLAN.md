@@ -101,12 +101,13 @@ dyed, it is trimmed, and the trim shows on the icon.
   this arc a depth comparison was the whole story** — reach for it first when
   geometry is provably present and provably invisible.
 
-**Verified at M50:** 633 tests, zero failures; seventeen serverless gates
+**Verified at M51c:** 641 tests, zero failures; **eighteen** serverless gates
 green with Vulkan validation ON and 0 VUIDs (`itemshot` 62, `inventoryshot` 91,
 `blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
-`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
-12, `mobshot` 243/243, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`
-and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`, byte-identical since M15.
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `captureshot`
+17, `portalshot` 12, `mobshot` 243/243, plus `skyshot`, `lightmapshot`,
+`tintshot`, `meshshot` and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`,
+byte-identical since M15.
 
 ### What to do next
 
@@ -592,6 +593,18 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   pins the screen-welded sampling (a screen-covering portal is byte-identical
   under camera and world motion) and the clock scroll. `--out-dir <dir>` dumps
   the frames.
+- `rewo captureshot --check` — **the screenshot-capture gate** (M51c,
+  fail-closed **17/17**, validation required, 0 VUIDs, and it needs neither a
+  jar nor a server): the only thing in the suite that renders through a **BGRA**
+  `Offscreen`, which is the format a live capture uses and which all sixteen
+  other call sites take the RGBA default instead of. It grades both halves of
+  the swizzle — the raw readback really is byte-permuted (`a2`, the fault) and
+  the saved file is nevertheless red-first and byte-identical to the RGBA path
+  (`a1`/`a3`, the correction) — so it can tell a missing swizzle from a spurious
+  one. Also pins opacity, the row order (the "do not copy vanilla's vertical
+  flip" rule, previously a comment), production `capture::grab` end to end, and
+  vanilla's filename pattern and dedup ladder. `--out-dir <dir>` keeps the
+  frames.
 - `rewo swingshot --check` — **the combat-animation gate** (M19/M20,
   fail-closed **97/97**, serverless, CPU-only): the exact `LivingEntity` swing
   state machine, item-driven swing duration, the `ArmPose` hold baseline, and
@@ -6444,6 +6457,120 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M51c — `captureshot`, and the one line the whole suite was blind to (2026-07-28)
+
+Shipped. M51a parameterised `Offscreen` by colour format so a screenshot can
+target the live swapchain's `B8G8R8A8_SRGB`, and added a swizzle to `save_png`
+because a BGRA attachment reads back B,G,R,A while PNG is R,G,B,A. M51b wired F2
+to it and recorded the hole in as many words: *no gate exercises a BGRA
+`Offscreen`*. All sixteen existing call sites take the RGBA default, so nothing
+in the suite could see the branch that decides whether every screenshot this
+client will ever take has its red and blue exchanged.
+
+**The swizzle is correct, and that was not the foregone conclusion.** Two
+failure modes were equally available and both produce a plausible picture: the
+swizzle *missing* (M51a's own worry), or the swizzle *spurious* — if the copy
+did not actually hand back permuted bytes, applying it would introduce the swap
+it claims to fix. A gate that only checked "the file is red-first" could not
+tell those apart, because it would pass in the second world too, having been
+made right by a correction that was itself the bug.
+
+`a2` is the discriminator, and it is the reason the gate is worth more than a
+green tick: it reads the **raw** `read_rgba` from both targets and compares them
+against the explicit channel-0/2 permutation. Measured: 32,768 of 65,536 bytes
+differ before the exchange and **0 after** — exactly two bytes per texel, in
+every texel. `cmd_copy_image_to_buffer` copies the image's memory verbatim and a
+`B8G8R8A8` image stores B,G,R,A, so the fault is real and the correction is the
+right one. `a1` and `a3` then show the saved file is nevertheless red-first and
+byte-identical to the RGBA path. Either half alone would have been worth little.
+
+#### Facts the gate pinned that were previously only asserted
+
+- **`VkClearColorValue`'s four floats map to the format's R,G,B,A *components*,
+  not to its memory layout** — index 0 is red in a BGRA image exactly as in an
+  RGBA one. That is what makes an absolute channel-order assertion possible at
+  all, with no reference render to compare against.
+- **The clear value *is* sRGB-encoded on an sRGB attachment; alpha is not.**
+  Measured from one clear: linear `0.25` stores as **137**, while alpha `0.5`
+  stores as **127**. Only the ordering is load-bearing for `a1` (any transfer
+  function is monotonic), but the asymmetry is worth having written down.
+- **Rewo must not copy vanilla's vertical flip** — `capture.rs` said so in a
+  comment and nothing tested it. `a7` now does, using the overlay chart as a
+  spec-anchored ruler: Vulkan puts a framebuffer's *and* `gl_FragCoord`'s origin
+  at the upper left, `read_rgba` copies rows tightly packed from image row 0,
+  and the encoder writes row 0 first. A chart at framebuffer (8,8) size 40×40
+  occupies exactly file rows 8..47 and columns 8..47 — 1,600 texels, 0 misplaced.
+  `Screenshot.takeScreenshot` writes `setPixelABGR(x, height - y - 1, …)` only
+  because `glReadPixels` hands back a bottom-up image.
+- **Vanilla's screenshots are opaque by construction** (`argb | 0xFF000000`) and
+  Rewo's are opaque by consequence: the overlay pipeline's `color_write_mask` is
+  `R|G|B`, so the clear's alpha survives untouched. `a6` renders the same frame
+  at clear alpha 0.5 and reads 127 back, so `a5` is a measurement rather than a
+  channel the encoder was hard-writing.
+
+#### Every witness names a mutation, and every mutation was run
+
+| mutation | fails |
+|---|---|
+| delete the `if self.is_bgra()` swap | `a1` (reads `[0, 137, 255, 255]` — blue-first), `a3`, `b1` |
+| add `R8G8B8A8_SRGB` to `is_bgra`'s match (double-apply) | `a3`, `a4` |
+| copy vanilla's row inversion into `save_png` | `a7` (3,200 texels misplaced) |
+| start the dedup ladder at `_1` | `c2` |
+| `/` and `%` for `div_euclid`/`rem_euclid` | `c3` — and the stem really does come out `…4294967295`, verbatim as its detail string predicted |
+
+The first of those is the whole point: without the gate, a live screenshot would
+have shipped with red and blue exchanged and would have looked entirely
+plausible.
+
+#### `grab` is driven, not reimplemented
+
+The M45/M47 lesson — a gate that reimplements a slice of the app's setup misses
+whatever the app later adds to it. `b1`–`b3` call production `capture::grab`
+with a `WorldRenderer` built for `B8G8R8A8_SRGB`, which only renders at all
+because `grab` passes the caller's format through to `Offscreen::with_format`
+(a `WorldRenderer` bakes its colour format into every pipeline it builds). `b2`
+then shows `grab`'s file is byte-identical to a hand-driven
+`with_format` + `render(Some(world))` + `save_png` — with `grab`'s clear
+transcribed in the gate rather than exported from `capture.rs`, so a change to
+it shows up as a difference instead of as two implementations agreeing with each
+other. The frame is a red-dominant gradient sky spanning 74 units top to bottom,
+so `b2` is not two black images agreeing.
+
+`grab` writes into the user's real screenshots directory, because that is what
+F2 does; the gate removes what it wrote, and does so even on the mutated runs.
+
+**Needs no client jar and no server** — `upload_texture_array` substitutes one
+white layer for an empty slice, so a frame with no terrain in it needs no bake,
+and every colour graded is a clear value or a sky uniform the gate chose itself.
+
+#### A small process note
+
+The gate's own output is grepped for validation-id tokens, so a detail string
+that *quotes* one registers as a validation failure in exactly the check that is
+supposed to catch leaks. `b1` names the mismatch in prose instead. Worth
+remembering for any future witness that wants to describe what validation would
+say.
+
+**Measured.** `captureshot --check` **17/17**, validation ON, 0 validation
+messages, two consecutive release runs identical apart from the two lines that
+legitimately carry the wall clock. **641 tests** (637 + 4). All eighteen gates
+exit 0 with zero validation messages: `mobshot` 243/243, `blockentityshot`
+172/172, `swingshot` 97/97, `inventoryshot` 91/91, `itemshot` 62/62, `hurtshot`
+38/38, `weathershot` 35/35, `handshot` 34/34, `particleshot` 34/34, `eventshot`
+28/28, `danceshot` 24/24, `captureshot` 17/17, `portalshot` 12/12, plus
+`skyshot`, `lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`. Demo PNG
+SHA-256 `2cc56b4a…` byte-identical to M15 onward.
+
+**Open, and deliberately so.** Proving a capture matches what the *window*
+presented is out of reach — Rewo's swapchain images carry no `TRANSFER_SRC`, so
+there is nothing to read back from a presented frame, and a gate cannot open a
+window; `b2`'s equivalence against a hand-driven `Offscreen` is what stands in
+for it. `local_offset_seconds()` still returns 0, so filenames are UTC where
+vanilla's are local — `c4` records that in place rather than pretending
+otherwise. Vanilla's `downscaleFactor` (the supersampled capture) is not
+implemented, and neither is the chat feedback `Screenshot.grab` sends through
+its callback.
 
 ### M50 — the worn-armour glint, and the glint's colour space (2026-07-28)
 
