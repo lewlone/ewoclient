@@ -41,6 +41,25 @@ struct Vertex {
     color: [f32; 4],
 }
 
+/// `Font.width(String)` — the sum of the per-glyph advances.
+///
+/// The same sum [`push_line`](TextPass::push_line) pens out, in whole pixels
+/// rather than scaled ones, so a caller can place text it has not drawn yet.
+pub fn width(text: &str, advance: &[u8; 256]) -> i32 {
+    text.bytes().map(|b| advance[b as usize] as i32).sum()
+}
+
+/// `GuiGraphicsExtractor.centeredText` — `text(font, str, x - font.width(str)
+/// / 2, y, color)`.
+///
+/// **Integer division**, and it truncates toward zero, so an odd-width string
+/// sits half a pixel left of the true centre. Rounding it instead moves the
+/// `+N` bundle badge — and every other centred label — by a pixel against
+/// vanilla.
+pub fn centered_x(text: &str, advance: &[u8; 256], center_x: i32) -> i32 {
+    center_x - width(text, advance) / 2
+}
+
 pub struct TextPass {
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,

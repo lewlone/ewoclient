@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 91;
+const EXPECTED_WITNESSES: usize = 103;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -90,6 +90,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_components(&mut c, &paths)?;
     check_enchantments(&mut c, &baked, &jar);
     check_glint(&mut c, &baked);
+    check_tooltip_image(&mut c, &baked);
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -1636,6 +1637,326 @@ fn check_glint(c: &mut Checker, baked: &assets::BakedAssets) {
     );
 }
 
+// -- the tooltip's image pass (M52) --------------------------------------------
+//
+// `GuiGraphicsExtractor.tooltip` walks its component list twice — all the
+// text, then all the images — and `ClientBundleTooltip` is the only image an
+// *item* can produce, because `BundleItem.getTooltipImage` is the only
+// override of it in the tree.
+//
+// Every number below is arithmetic, so it is graded as arithmetic here and as
+// pixels in `pixels_inner`. The production functions are driven directly:
+// nothing in this section reimplements the walk.
+
+/// Where the grid's pixel witness puts it: a screen origin and pixels per GUI
+/// pixel, chosen so a whole four-column grid fits inside the 256 px frame with
+/// the leftmost — deliberately empty — column visible beside it.
+const GRID_ORIGIN: (f32, f32) = (24.0, 24.0);
+const GRID_PX: f32 = 2.0;
+
+/// The grid's item icons, placed from the **production** cell walk.
+///
+/// One function so the render and the measurement cannot drift: the witness
+/// asks `bundle_image` where the cells are, and so does the thing it grades.
+fn bundle_grid_items(model: &str) -> Vec<GuiItem> {
+    let bundle = test_bundle(3);
+    let image = rewo_gpu::tooltip::bundle_image(&bundle, 0, 0, rewo_gpu::tooltip::GRID_WIDTH);
+    image
+        .cells
+        .iter()
+        .map(|cell| {
+            let (ix, iy) = cell.icon();
+            GuiItem {
+                model: model.into(),
+                x: GRID_ORIGIN.0 + ix as f32 * GRID_PX,
+                y: GRID_ORIGIN.1 + iy as f32 * GRID_PX,
+                size: 16.0 * GRID_PX,
+                glint: false,
+            }
+        })
+        .collect()
+}
+
+/// The screen rect a cell at tooltip-space `x` would put its icon in.
+fn grid_icon_rect(cell_x: i32, cell_y: i32) -> (u32, u32, u32, u32) {
+    let m = rewo_gpu::tooltip::SLOT_MARGIN;
+    (
+        (GRID_ORIGIN.0 + (cell_x + m) as f32 * GRID_PX) as u32,
+        (GRID_ORIGIN.1 + (cell_y + m) as f32 * GRID_PX) as u32,
+        (16.0 * GRID_PX) as u32,
+        (16.0 * GRID_PX) as u32,
+    )
+}
+
+/// A bundle of `n` single-item stacks, half full, nothing selected.
+fn test_bundle(n: usize) -> rewo_gpu::tooltip::Bundle {
+    rewo_gpu::tooltip::Bundle {
+        counts: vec![1; n],
+        selected: -1,
+        weight: rewo_gpu::tooltip::Fraction::new(1, 2),
+        weight_ok: true,
+        empty_description_lines: 2,
+    }
+}
+
+fn check_tooltip_image(c: &mut Checker, baked: &assets::BakedAssets) {
+    use rewo_gpu::tooltip::{
+        bundle_image, content_x_offset, continuous_cursor_end, image_pass_offsets, insert_image,
+        measure, text_pass_offsets, BarLabel, CellKind, Component, Fraction, GRID_WIDTH,
+    };
+
+    // 1. Where the image goes in the list.
+    let mut list = vec![Component::text(40), Component::text(55)];
+    insert_image(&mut list, Component::Bundle(test_bundle(3)));
+    let mut alone: Vec<Component> = Vec::new();
+    insert_image(&mut alone, Component::Bundle(test_bundle(3)));
+    c.record(
+        "ti1.the_image_component_is_inserted_at_index_one",
+        matches!(list[0], Component::Text { width: 40 })
+            && matches!(list[1], Component::Bundle(_))
+            && matches!(list[2], Component::Text { width: 55 })
+            && alone.len() == 1
+            && matches!(alone[0], Component::Bundle(_)),
+        format!(
+            "with a name and one detail the grid lands at index 1 of {}; with an \
+             empty list it lands at 0. `components.add(components.isEmpty() ? 0 : 1, …)` \
+             — appending instead puts the grid below the enchantment lines, and \
+             dropping the `isEmpty` guard throws `IndexOutOfBoundsException` on a \
+             stack whose name its tooltip display hides",
+            list.len()
+        ),
+    );
+
+    // 2. A bundle's width is a constant, not a measurement.
+    let one = Component::Bundle(test_bundle(1));
+    let twelve = Component::Bundle(test_bundle(12));
+    c.record(
+        "ti2.a_bundle_is_a_fixed_96_wide_whatever_it_holds",
+        one.width() == GRID_WIDTH && twelve.width() == GRID_WIDTH && one.height() != twelve.height(),
+        format!(
+            "1 stack -> {}x{}, 12 -> {}x{}. `ClientBundleTooltip.getWidth` is a \
+             literal `return 96`, so only the *height* tracks the contents — a \
+             width that grew with the row count would narrow a one-item bundle's box",
+            one.width(),
+            one.height(),
+            twelve.width(),
+            twelve.height()
+        ),
+    );
+
+    // 3. The measure loop runs over every component kind, which is what makes
+    //    the box account for an image at all.
+    let name_only = vec![Component::text(40)];
+    let mut with_grid = name_only.clone();
+    insert_image(&mut with_grid, Component::Bundle(test_bundle(3)));
+    let (tw, th) = measure(&name_only);
+    let (bw, bh) = measure(&with_grid);
+    // One row of cells (24) + the bar (13) + its two 4 px margins.
+    let grid_h = 24 + 13 + 8;
+    c.record(
+        "ti3.the_box_widens_and_deepens_to_the_image",
+        (tw, th) == (40, 8) && (bw, bh) == (GRID_WIDTH, 10 + grid_h),
+        format!(
+            "the name alone measures {tw}x{th}; with the grid it is {bw}x{bh}. \
+             `getWidth`/`getHeight` are polymorphic and the measure loop has no \
+             special case, so the image contributes its own 96 and its own \
+             {grid_h}. A text-only width leaves the box narrower than the grid \
+             it must contain. Note the height is 10+{grid_h} and not 8+{grid_h}: \
+             `lines.size() == 1 ? -2 : 0` counts **components**, so the image \
+             hands back the two pixels a lone name gives up"
+        ),
+    );
+
+    // 4. The restart between the passes.
+    let text_y = text_pass_offsets(&with_grid, 100);
+    let image_y = image_pass_offsets(&with_grid, 100);
+    let continued = continuous_cursor_end(&with_grid, 100);
+    c.record(
+        "ti4.the_image_pass_restarts_localY_at_the_box_top",
+        text_y == image_y && image_y == vec![100, 112] && continued == 157,
+        format!(
+            "text pass {text_y:?}, image pass {image_y:?}, and a single continuous \
+             cursor would have reached {continued}. The `localY = y;` between the \
+             two loops is the whole difference between them — run them as one \
+             cursor and the grid draws {} px below its own box, which is exactly \
+             the overlap-the-text failure the two passes exist to avoid",
+            continued - 100
+        ),
+    );
+
+    // 5. The fill order.
+    let three = test_bundle(3);
+    let img = bundle_image(&three, 0, 0, GRID_WIDTH);
+    let walk: Vec<(i32, i32, usize)> = img
+        .cells
+        .iter()
+        .map(|cell| match cell.kind {
+            CellKind::Slot { item, .. } => (cell.x, cell.y, item),
+            CellKind::Badge { .. } => (cell.x, cell.y, usize::MAX),
+        })
+        .collect();
+    c.record(
+        "ti5.the_grid_fills_bottom_right_to_top_left",
+        walk == vec![(72, 0, 2), (48, 0, 1), (24, 0, 0)],
+        format!(
+            "three stacks occupy {walk:?} as (x, y, item). Both start positions are \
+             the grid's *far* edge and both subtract — `xStartPos = x + offset + 96` \
+             then `drawX = xStartPos - columnNumber * 24` — so column 1 is the \
+             rightmost and the leftmost cell at x 0 stays empty. Walking top-left \
+             to bottom-right would give [(0,0,0),(24,0,1),(48,0,2)]: different \
+             cells *and* the reversed item mapping, since \
+             `itemVisualOrderIndex = shownItems.size() - slotNumber` puts the last \
+             stack in the first cell visited"
+        ),
+    );
+
+    // 6. The overflow boundary, and where the badge lands.
+    let twelve_b = test_bundle(12);
+    let thirteen = test_bundle(13);
+    let twelve_img = bundle_image(&twelve_b, 0, 0, GRID_WIDTH);
+    let thirteen_img = bundle_image(&thirteen, 0, 0, GRID_WIDTH);
+    let badges = |i: &rewo_gpu::tooltip::BundleImage| {
+        i.cells
+            .iter()
+            .filter(|cell| matches!(cell.kind, CellKind::Badge { .. }))
+            .count()
+    };
+    c.record(
+        "ti6.thirteen_stacks_badge_and_exactly_twelve_do_not",
+        badges(&twelve_img) == 0
+            && twelve_img.cells.len() == 12
+            && badges(&thirteen_img) == 1
+            && thirteen_img.cells[0].kind == CellKind::Badge { hidden: 5 }
+            && (thirteen_img.cells[0].x, thirteen_img.cells[0].y) == (72, 48),
+        format!(
+            "12 stacks -> {} cells, {} badges; 13 -> {} cells, {} badges with the \
+             badge at {:?}. `isOverflowing` is `size() > 12`, so twelve fills the \
+             grid exactly; and `shouldRenderSurplusText`'s `column * row == 1` is \
+             the *first cell visited*, which the reversed walk makes the \
+             **bottom-right** — not the top-left. `min(13, …)` for the slot count, \
+             or a badge at twelve, moves both of these",
+            twelve_img.cells.len(),
+            badges(&twelve_img),
+            thirteen_img.cells.len(),
+            badges(&thirteen_img),
+            (thirteen_img.cells[0].x, thirteen_img.cells[0].y)
+        ),
+    );
+
+    // 7. What the badge counts, and how many items a full bundle shows.
+    let mut heavy = test_bundle(13);
+    heavy.counts = vec![64; 13];
+    let heavy_hidden = match bundle_image(&heavy, 0, 0, GRID_WIDTH).cells[0].kind {
+        CellKind::Badge { hidden } => hidden,
+        _ => -1,
+    };
+    c.record(
+        "ti7.the_badge_counts_hidden_items_not_hidden_stacks",
+        thirteen.shown_items() == 8 && heavy_hidden == 5 * 64 && thirteen.hidden_item_count() == 5,
+        format!(
+            "13 stacks show {} of them; hidden 13x1 badges +{} and 13x64 badges \
+             +{heavy_hidden}. Two things read backwards here. \
+             `getNumberOfItemsToShow` subtracts the ragged row using \
+             `numberOfItemStacks % 4` — 13 % 4 = 1, so 3 come off the 11 \
+             available and **eight** show, leaving the grid's top row blank \
+             beside the badge. And `getAmountOfHiddenItems` sums the hidden \
+             stacks' `count()`, so it is +320 for full stacks, not +5",
+            thirteen.shown_items(),
+            thirteen.hidden_item_count()
+        ),
+    );
+
+    // 8. The grid is centred in the whole box, not under its own component.
+    let wide = vec![Component::text(200), Component::Bundle(test_bundle(3))];
+    let (wide_w, _) = measure(&wide);
+    let centred = bundle_image(&test_bundle(3), 0, 0, wide_w);
+    c.record(
+        "ti8.the_grid_centres_in_the_whole_box",
+        content_x_offset(wide_w) == 52
+            && centred.cells[0].x == 124
+            && content_x_offset(GRID_WIDTH) == 0,
+        format!(
+            "a 200 px line makes the box {wide_w} wide, so `getContentXOffset` is \
+             {} and the first cell moves from x 72 to {}. `extractImage` is handed \
+             the *tooltip's* measured w, not the component's own 96 — centring \
+             against 96 (offset 0) or left-aligning both leave the grid hard \
+             against the box's left edge under a long enchantment line",
+            content_x_offset(wide_w),
+            centred.cells[0].x
+        ),
+    );
+
+    // 9. The badge's own placement, through the real centring helper and the
+    //    real font. A missing font fails rather than skips.
+    let advance = baked.font.as_ref().map(|f| f.advance);
+    let badge_geom = advance.map(|adv| {
+        let cell = thirteen_img.cells[0];
+        let (ax, ay) = cell.badge_anchor();
+        // The label the badge itself carries — reading it back off the cell
+        // rather than restating it, so this cannot agree with a walk that has
+        // stopped producing a badge at all.
+        let hidden = match cell.kind {
+            CellKind::Badge { hidden } => hidden,
+            CellKind::Slot { .. } => -1,
+        };
+        let label = format!("+{hidden}");
+        (
+            rewo_gpu::text::centered_x(&label, &adv, ax),
+            ay,
+            rewo_gpu::text::width(&label, &adv),
+        )
+    });
+    c.record(
+        "ti9.the_badge_is_centred_on_its_cell_by_integer_division",
+        badge_geom.is_some_and(|(x, y, w)| {
+            let (ax, _) = thirteen_img.cells[0].badge_anchor();
+            x == ax - w / 2 && (ax, y) == (72 + 12, 48 + 10) && w > 0
+        }),
+        format!(
+            "anchor {:?}, laid out at {badge_geom:?} as (x, y, width). \
+             `extractCount` is `centeredText(font, \"+\"+n, drawX + 12, drawY + 10, -1)` \
+             and `centeredText` is `x - font.width(str) / 2` — **integer** \
+             division, and the vertical anchor is a flat 10 rather than the \
+             cell's own half-height of 12. Rounding the halving, or using 12 for \
+             the y, moves the badge a pixel each way",
+            thirteen_img.cells[0].badge_anchor()
+        ),
+    );
+
+    // 10. The progress bar's three states.
+    let bar_at = |num: i32, den: i32| {
+        let mut b = test_bundle(1);
+        b.weight = Fraction::new(num, den);
+        bundle_image(&b, 0, 0, GRID_WIDTH).bar
+    };
+    let (mid, full, empty) = (bar_at(1, 2), bar_at(1, 1), bar_at(0, 1));
+    let bars = (
+        mid.map(|b| (b.fill, b.full, b.label)),
+        full.map(|b| (b.fill, b.full, b.label)),
+        empty.map(|b| (b.fill, b.full, b.label)),
+    );
+    c.record(
+        "ti10.the_bar_is_labelled_only_at_its_two_ends",
+        bars == (
+            Some((47, false, None)),
+            Some((94, true, Some(BarLabel::Full))),
+            Some((0, false, Some(BarLabel::Empty))),
+        ) && mid.is_some_and(|b| (b.x, b.y) == (0, 24 + 4)),
+        format!(
+            "half {:?}, full {:?}, empty {:?} as (fill, full, label), and the bar \
+             sits at {:?}. `getProgressBarFillText` returns the empty label at \
+             exactly zero, the full label at one **or more**, and `null` in \
+             between — a label on every state would write \"empty\" across a \
+             half-full bar. The fill is `mulAndTruncate(weight, 94)`, so a half \
+             weight is 47 of the 94 the border's 96 leaves room for, and the bar's \
+             y is the component's own top plus the *full* grid height, not the \
+             last row that happened to be drawn",
+            bars.0, bars.1, bars.2,
+            mid.map(|b| (b.x, b.y))
+        ),
+    );
+}
+
 fn changed(a: &[u8], b: &[u8], x: u32, y: u32, w: u32, h: u32) -> i64 {
     let mut n = 0;
     for yy in y..(y + h).min(H) {
@@ -1741,6 +2062,11 @@ fn check_pixels(
     if args.check && !gpu.validation_active {
         return Err("inventoryshot: Vulkan validation requested but not active".into());
     }
+    // The bundle grid's icons, built through the same pass and the same atlas
+    // as the hotbar's. `bundle_image` decides where they go.
+    let grid_items = bundle_grid_items(block);
+    let grid_verts = build_vertices(&held, &grid_items, &lights, &|t| uv.get(&t).copied());
+
     let mut off = Offscreen::new(&mut gpu, W, H)?;
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
@@ -1754,7 +2080,7 @@ fn check_pixels(
     let layers = [white];
     let mut wr = WorldRenderer::new(&mut gpu, off.format, 16, &layers)?;
     let r = pixels_inner(
-        c, &mut gpu, &mut off, &mut wr, baked, &atlas, &verts, &draw, args,
+        c, &mut gpu, &mut off, &mut wr, baked, &atlas, &verts, &grid_verts, &draw, args,
     );
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);
@@ -1770,6 +2096,7 @@ fn pixels_inner(
     baked: &assets::BakedAssets,
     atlas: &crate::live_cmd::GuiAtlas,
     verts: &[rewo_gpu::gui_item::GuiItemVertex],
+    grid_verts: &[rewo_gpu::gui_item::GuiItemVertex],
     draw: &OverlayDraw,
     args: &InventoryshotArgs,
 ) -> Result<(), String> {
@@ -2082,6 +2409,74 @@ fn pixels_inner(
         format!(
             "at (60,40) the box is {tip_box:?}; at (100,90) it is {:?}",
             changed_bounds(&no_tip, &moved)
+        ),
+    );
+
+    // -- the image pass, in pixels (M52) -------------------------------------
+    //
+    // The arithmetic is graded in `check_tooltip_image`; these two ask whether
+    // it reached the framebuffer. Both drive the production measure and the
+    // production cell walk — a witness that placed its own rectangles would
+    // grade this file rather than the client.
+    let name_only = vec![rewo_gpu::tooltip::Component::text(40)];
+    let mut with_grid = name_only.clone();
+    rewo_gpu::tooltip::insert_image(
+        &mut with_grid,
+        rewo_gpu::tooltip::Component::Bundle(test_bundle(3)),
+    );
+    let text_box = rewo_gpu::tooltip::measure(&name_only);
+    let grid_box = rewo_gpu::tooltip::measure(&with_grid);
+    let narrow = tip_at(wr, gpu, off, Some(((40, 30), text_box)))?;
+    let widened = tip_at(wr, gpu, off, Some(((40, 30), grid_box)))?;
+    let narrow_box = changed_bounds(&no_tip, &narrow);
+    let wide_box = changed_bounds(&no_tip, &widened);
+    let span = |b: Option<(u32, u32, u32, u32)>| b.map(|(x0, _, x1, _)| x1 - x0);
+    let grid_w = rewo_gpu::tooltip::GRID_WIDTH as f32;
+    c.record(
+        "ti11.a_bundle_widens_the_rendered_box_to_hold_its_grid",
+        match (span(wide_box), span(narrow_box)) {
+            (Some(wide), Some(thin)) => {
+                wide > thin
+                    && wide as f32 >= grid_w * scale
+                    && wide as f32 <= (grid_w + 2.0 * inset as f32) * scale
+            }
+            _ => false,
+        },
+        format!(
+            "the name alone draws a box {:?} wide, the name plus the grid {:?} — \
+             measured {text_box:?} against {grid_box:?}. The image contributes its \
+             fixed 96 through the same measure loop as any text line, so the box \
+             has to reach at least {} px before the grid could fit inside it. \
+             Measuring the text only, which is what M40 did, leaves the box \
+             {} px narrower than its own contents",
+            span(narrow_box),
+            span(wide_box),
+            grid_w * scale,
+            (grid_box.0 - text_box.0) as f32 * scale
+        ),
+    );
+
+    // And the cells themselves, as real icons through the real item pass. The
+    // discriminator is which column stays empty: with three stacks in a
+    // four-column grid, one column is unused, and the walk's direction decides
+    // which one.
+    let grid_base = shot(gpu, off, wr, &[])?;
+    let grid_img = shot(gpu, off, wr, grid_verts)?;
+    let first = grid_icon_rect(72, 0);
+    let unused = grid_icon_rect(0, 0);
+    let ink = |r: (u32, u32, u32, u32)| changed(&grid_base, &grid_img, r.0, r.1, r.2, r.3);
+    c.record(
+        "ti12.the_rendered_icons_land_in_the_cells_the_walk_reports",
+        ink(first) > 0 && ink(unused) == 0 && !grid_verts.is_empty(),
+        format!(
+            "the bottom-right cell at {first:?} changed {} pixels; the leftmost \
+             column at {unused:?} changed {}. Three stacks fill three of the four \
+             columns, and `drawX = xStartPos - columnNumber * 24` fills them from \
+             the right — so column 4 is the empty one. A top-left-to-bottom-right \
+             walk swaps these two numbers exactly, leaving the *right* column \
+             blank instead",
+            ink(first),
+            ink(unused)
         ),
     );
 
