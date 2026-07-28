@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M44 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M45 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -356,7 +356,7 @@ match.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
   `inventoryshot` 91/91, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
-  34/34, `eventshot` 28/28, `itemshot` 33/33, `danceshot` 24/24, `handshot`
+  34/34, `eventshot` 28/28, `itemshot` 37/37, `danceshot` 24/24, `handshot`
   34/34, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
   count).
@@ -374,15 +374,15 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **The glint on the last two surfaces.** M43 and M44 ship it on the GUI
-   icons and the first-person hand, both at the item scale 8.0. Ground and
-   mob-held items want `ENTITY_GLINT_TEXTURING` at 0.5 and worn armour
-   `ARMOR_ENTITY_GLINT_TEXTURING` at 0.16, both through the entity pass.
-   Beyond that: the seven syncable components still without codecs
-   (`equippable`, `can_place_on`, `can_break`, `blocks_attacks`,
-   `jukebox_playable`, `kinetic_weapon`, `bees`), and armour trim *models*,
-   which need the trim's material and pattern resolved to asset ids rather
-   than merely walked past.
+1. **Worn armour** — not the glint, the armour. Rewo renders none at all, on
+   any entity or on the inventory's player preview, which is why M45 could
+   not ship `ARMOR_ENTITY_GLINT_TEXTURING`: there is no geometry to shimmer.
+   The equipment slots are decoded already; what is missing is the armour
+   models and their layer. Beyond that: the seven syncable components still
+   without codecs (`equippable`, `can_place_on`, `can_break`,
+   `blocks_attacks`, `jukebox_playable`, `kinetic_weapon`, `bees`), and
+   armour trim *models*, which need the trim's material and pattern resolved
+   to asset ids rather than merely walked past.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6350,6 +6350,64 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M45 — the glint on world-space items (2026-07-28)
+
+The third and last reachable surface: a stack lying on the ground, and one a
+mob is holding. `ENTITY_GLINT_TEXTURING`'s scale is **0.5** against the item
+contexts' 8.0 — a factor of sixteen, which is why a dropped sword wears a few
+broad bands where an icon wears a fine weave.
+
+**Worn armour is the fourth surface and it is not reachable.** Rewo renders no
+armour on any entity — there is no armour geometry in the entity pass at all —
+so `ARMOR_ENTITY_GLINT_TEXTURING` at 0.16 has nothing to apply to. That is
+worth saying rather than shipping a constant nothing calls: the glint is
+complete for everything Rewo actually draws.
+
+#### Emitted at the same moment, not derived twice
+
+The glint quads are pushed **from inside the two item emitters**, beside the
+vertex they shadow, rather than rebuilt afterwards. M44 records why for the
+hand — the pipeline depth-tests `EQUAL`, so a vertex a fraction off is rejected
+fragment by fragment — and it matters more here: a dropped stack carries a
+death topple, a bob, a spin and a per-copy jitter, so a parallel derivation
+would have four more chances to disagree. A `GlintSink` threaded through
+`emit_held_item`, `emit_ground_item` and `emit_model` takes the position the
+item just used and substitutes only the UV.
+
+The glint is a **third vertex range** in the entity pass's single buffer —
+solid, then text, then glint — drawn after the solid pass whose depth it tests
+against, and before the translucent ones because it is additive over opaque
+pixels. And it has **no lightmap term**: vanilla's glint shader multiplies by
+`GlintAlpha` and the fog fade and nothing else, so a dropped enchanted sword
+shimmers as brightly in a cave as in daylight.
+
+`hasFoil` rides in with the stack — on `HeldItem` for equipment and in the
+`DATA_ITEM` metadata tuple for a dropped one — because it exists only in the
+component patch. There is nothing about an item *id* that says whether a
+particular stack is enchanted.
+
+#### The gate measured zero, and was right to
+
+`itemshot` calls `init_entities` directly rather than through the app's
+`init_entities_maybe_cem`, so it never installed the glint and both pixel
+witnesses read 0 while the live render was visibly correct. Same shape as the
+`swingshot`/`install_shapes` gap M41 hit: **a gate that reimplements a slice of
+the app's setup will miss whatever the app adds to it.** The fix is one call
+and a comment saying why it is there.
+
+`entities.rs` is also one of the **mixed CRLF/LF** files §0.0 warns about —
+1,969 CRLF lines against 3,763 LF. The scripted edits had to match either
+ending and emit the one the matched region used; normalising would have buried
+a 40-line change in a 3,000-line diff.
+
+#### Verified
+
+`itemshot --check` **33 -> 37**, **629 tests**, all seventeen gates green, demo
+PNG byte-identical to M15 onward. Live: a dropped enchanted sword glints beside
+an identical plain one that does not, and a zombie holding an enchanted sword
+glints beside a zombie holding a plain one — both pairs in a single frame, so
+the comparison is controlled.
 
 ### M44 — the glint on the first-person hand (2026-07-28)
 

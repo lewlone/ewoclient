@@ -980,6 +980,22 @@ pub(crate) fn resolve_held_items<'a>(
 ///
 /// The hash is the 64-bit splitmix64 finalizer, used only to decorrelate
 /// consecutive entity ids; nothing depends on its exact value.
+/// `ItemStack.hasFoil()` for what an entity holds in one hand (M45).
+///
+/// The flag comes off the wire with the equipment, because it lives only in
+/// the component patch — there is nothing about the item *id* that says
+/// whether a particular stack is enchanted.
+pub(crate) fn held_foil(
+    session: &PlaySession,
+    id: i32,
+    hand: rewo_world::entities::InteractionHand,
+) -> bool {
+    matches!(
+        session.world.entities.hand_item(id, hand),
+        rewo_world::entities::HandItem::Held(h) if h.glint
+    )
+}
+
 pub(crate) fn bob_offset_for(id: i32) -> f32 {
     let mut z = (id as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -1147,14 +1163,21 @@ fn collect_entities<'a>(
             death_time: session.world.entities.death_state(id).render_death_time(alpha),
             // M24b: a dropped stack. `Some` makes the renderer draw the item
             // instead of a model — `ItemEntityRenderer` has no body of its own.
-            ground_item: ground_stack.and_then(|(i, _)| item_names.name(i)),
-            ground_count: ground_stack.map_or(0, |(_, n)| n),
+            ground_item: ground_stack.and_then(|(i, _, _)| item_names.name(i)),
+            // `ItemStack.hasFoil()` (M45), decoded at the wire because it
+            // lives only in the component patch.
+            held_glint: [
+                held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
+                held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),
+            ],
+            ground_glint: ground_stack.is_some_and(|(_, _, foil)| foil),
+            ground_count: ground_stack.map_or(0, |(_, n, _)| n),
             // `ItemEntity.bobOffs` is `random.nextFloat() * 2 * PI`, rolled in
             // the constructor and never sent. Derived from the entity id here
             // so it is stable per entity; there is no server value it could
             // match, because vanilla's own clients each roll their own.
             bob_offset: bob_offset_for(id),
-            ground_seed: ground_stack.map_or(0, |(i, _)| i),
+            ground_seed: ground_stack.map_or(0, |(i, _, _)| i),
             head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
             pitch: e.pitch,
             limb_swing,
@@ -1211,7 +1234,15 @@ pub(crate) fn init_entities_maybe_cem(
             wr.init_entities_with_cem(gpu, font_data(baked), entity_textures(baked), cem)
         }
         None => wr.init_entities(gpu, font_data(baked), entity_textures(baked)),
+    }?;
+    // **After** the pass exists — `init_entities` builds it, and installing
+    // the glint first would have nothing to install into. M44 learned this
+    // one the expensive way on the hand pass, where the order was reversed
+    // and the shimmer silently never drew.
+    if let Some(g) = baked.glint.as_ref() {
+        wr.init_entity_glint(gpu, &g.rgba, g.w, g.h)?;
     }
+    Ok(())
 }
 
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
@@ -3866,6 +3897,8 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         hurt: false,
         held: [None, None],
         ground_item: None,
+        held_glint: [false; 2],
+        ground_glint: false,
         ground_count: 0,
         ground_seed: 0,
         bob_offset: 0.0,
@@ -4547,6 +4580,7 @@ mod tests {
                 swing: SwingAnimation::new(SwingAnimationType::Stab, 19),
                 use_profile: rewo_data::use_item::UseProfile::UNUSABLE,
                 charged: false,
+                glint: false,
             }),
         );
         t.swing(1, InteractionHand::OffHand, true);
@@ -5678,6 +5712,8 @@ fn preview_draw<'a>(
         yaw: 180.0 + x_angle,
         death_time: 0.0,
         ground_item: None,
+        held_glint: [false; 2],
+        ground_glint: false,
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,

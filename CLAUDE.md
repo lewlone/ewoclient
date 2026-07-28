@@ -2887,6 +2887,29 @@ validation Rewo has.
   not. Gate `handshot` 29 -> **34**; **635 tests**. **Open:** ground and
   mob-held items (scale 0.5) and worn armour (0.16), both through the entity
   pass.
+- **M45 the glint on world-space items (2026-07-28)** — ground stacks and
+  mob-held ones. `ENTITY_GLINT_TEXTURING`'s scale is **0.5** against the item
+  contexts' 8.0, a factor of sixteen, so a dropped sword wears broad bands
+  where an icon wears a fine weave. **Worn armour is the fourth surface and is
+  not reachable**: Rewo renders no armour on any entity, so the 0.16 scale has
+  nothing to apply to — the glint is complete for everything Rewo draws. The
+  glint quads are pushed **from inside the two item emitters**, beside the
+  vertex they shadow: the pipeline depth-tests `EQUAL`, and a dropped stack
+  carries a death topple, a bob, a spin and a per-copy jitter, so a parallel
+  derivation would have four more chances to disagree. It is a **third vertex
+  range** (solid, text, glint) drawn after the solid pass and before the
+  translucent ones, with **no lightmap term** — vanilla's glint shader
+  multiplies by `GlintAlpha` and the fog fade and nothing else, so a dropped
+  enchanted sword shimmers as brightly in a cave as in daylight. `hasFoil`
+  rides in with the stack (on `HeldItem`, and in the `DATA_ITEM` metadata
+  tuple) because it exists only in the component patch. **The gate measured
+  zero and was right to**: `itemshot` calls `init_entities` directly rather
+  than through the app's helper, so it never installed the glint — the same
+  shape as the `swingshot`/`install_shapes` gap M41 hit, and the general rule
+  is that *a gate reimplementing a slice of the app's setup will miss whatever
+  the app adds to it*. `entities.rs` is also one of the **mixed CRLF/LF** files
+  §0.0 warns about (1,969 CRLF against 3,763 LF), so the scripted edits had to
+  match either ending. Gate `itemshot` 33 -> **37**; **629 tests**.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

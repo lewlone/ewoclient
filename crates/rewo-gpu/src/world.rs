@@ -1645,6 +1645,21 @@ impl WorldRenderer {
     /// Attach the entity pass (mob models / capsules + nametags).
     /// Callers that never attach it (demo/view/bench snapshots) pay
     /// nothing. Mobs whose textures are missing fall back to capsules.
+    /// Build the entity glint's pipeline and upload its sheet (M45).
+    pub fn init_entity_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let format = self.color_format;
+        match self.entities.as_mut() {
+            Some(p) => p.init_glint(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
     pub fn init_entities(
         &mut self,
         gpu: &mut Gpu,
@@ -2222,6 +2237,10 @@ impl WorldRenderer {
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
+            // The glint sits on the solid geometry it just wrote — its depth
+            // test is `EQUAL`, so it has to follow, and it precedes the
+            // translucent passes because it is additive over opaque pixels.
+            pass.draw_glint(gpu, cb, view_proj, extent);
         }
         // End portals (M32). After solid geometry and before the translucent
         // pass: the shader writes opaque pixels and depth, so it belongs with

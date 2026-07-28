@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 33;
+const EXPECTED_WITNESSES: usize = 37;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -382,6 +382,14 @@ fn check_render(
         crate::live_cmd::font_data(baked),
         crate::live_cmd::entity_textures(baked),
     )?;
+    // M45: the glint is a second pipeline on the entity pass and has to be
+    // installed **after** it exists. The live path does this in
+    // `init_entities_maybe_cem`; a gate that calls `init_entities` directly
+    // has to do it too, or every glint witness measures zero — which is
+    // exactly how this line came to be here.
+    if let Some(g) = baked.glint.as_ref() {
+        wr.init_entity_glint(&mut gpu, &g.rgba, g.w, g.h)?;
+    }
     wr.set_held_items(crate::live_cmd::to_gpu_held_items(&baked.held_items));
 
     let eye = Vec3::new(0.0, 1.0, 2.6);
@@ -397,7 +405,12 @@ fn check_render(
     let view_proj = (proj * view).to_cols_array_2d();
     let right = dir.cross(up).normalize_or_zero().to_array();
 
-    let render = |held: [Option<&str>; 2], gpu: &mut Gpu, wr: &mut WorldRenderer, off: &mut Offscreen| -> Result<Vec<u8>, String> {
+    let render_glint = |held: [Option<&str>; 2],
+                        held_glint: [bool; 2],
+                        gpu: &mut Gpu,
+                        wr: &mut WorldRenderer,
+                        off: &mut Offscreen|
+     -> Result<Vec<u8>, String> {
         let names: Vec<&str> = held.iter().flatten().copied().collect();
         wr.prepare_held_items(gpu, &names)?;
         let d = EntityDraw {
@@ -410,6 +423,8 @@ fn check_render(
             yaw: 0.0,
             death_time: 0.0,
             ground_item: None,
+            held_glint,
+            ground_glint: false,
             ground_count: 0,
             bob_offset: 0.0,
             ground_seed: 0,
@@ -436,6 +451,10 @@ fn check_render(
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
         off.read_rgba(gpu)
     };
+    // The unglinted case, which is every witness written before M45.
+    let render = |held: [Option<&str>; 2], gpu: &mut Gpu, wr: &mut WorldRenderer, off: &mut Offscreen| {
+        render_glint(held, [false; 2], gpu, wr, off)
+    };
 
     // M24b: the same scene, but as a *dropped* stack — no model, no capsule,
     // the item is the entity. `EntityModelKind::Capsule` is passed to prove
@@ -445,6 +464,7 @@ fn check_render(
                   bob: f32,
                   seed: i32,
                   time: f32,
+                  glint: bool,
                   gpu: &mut Gpu,
                   wr: &mut WorldRenderer,
                   off: &mut Offscreen|
@@ -461,6 +481,8 @@ fn check_render(
             yaw: 0.0,
             death_time: 0.0,
             ground_item: name,
+            held_glint: [false; 2],
+            ground_glint: glint,
             ground_count: count,
             bob_offset: bob,
             ground_seed: seed,
@@ -570,10 +592,10 @@ fn check_render(
     // An item name with no baked model draws nothing, which is the only
     // honest empty baseline here: `ground_item: None` falls through to the
     // *capsule fallback*, so it is a control rather than a blank.
-    let g_none = ground(Some("minecraft:__absent__"), 1, 0.0, 0, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_capsule = ground(None, 0, 0.0, 0, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_sword = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_dirt = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_none = ground(Some("minecraft:__absent__"), 1, 0.0, 0, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_capsule = ground(None, 0, 0.0, 0, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_sword = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_dirt = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     let g_sword_px = changed(&g_none, &g_sword);
     let g_dirt_px = changed(&g_none, &g_dirt);
     c.record(
@@ -630,8 +652,8 @@ fn check_render(
     // at the same instant must place the item at different heights.
     // The offsets must be sine *extrema*, not 0 and PI — those are both zeros,
     // which is what the first version of this witness got wrong.
-    let g_bob_a = ground(Some("minecraft:dirt"), 1, std::f32::consts::FRAC_PI_2, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_bob_b = ground(Some("minecraft:dirt"), 1, 3.0 * std::f32::consts::FRAC_PI_2, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_bob_a = ground(Some("minecraft:dirt"), 1, std::f32::consts::FRAC_PI_2, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_bob_b = ground(Some("minecraft:dirt"), 1, 3.0 * std::f32::consts::FRAC_PI_2, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     let (_, ya) = centroid(&changed(&g_none, &g_bob_a));
     let (_, yb) = centroid(&changed(&g_none, &g_bob_b));
     c.record(
@@ -645,8 +667,8 @@ fn check_render(
 
     // The spin is `age / 20 + bobOffset`: advancing the clock a quarter turn
     // must change the silhouette of an asymmetric item.
-    let g_t0 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_t1 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.25 * std::f32::consts::PI / 2.0 * 20.0 / 20.0, &mut gpu, &mut wr, &mut off)?;
+    let g_t0 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_t1 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.25 * std::f32::consts::PI / 2.0 * 20.0 / 20.0, false, &mut gpu, &mut wr, &mut off)?;
     c.record(
         "g4.the_item_spins_with_the_clock",
         !changed(&g_t0, &g_t1).is_empty(),
@@ -659,8 +681,8 @@ fn check_render(
 
     // `getRenderedAmount` is a step function, and each step adds copies that
     // the seeded LCG jitters apart — so more copies cover more pixels.
-    let g_one = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_many = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_one = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_many = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     let one_px = changed(&g_none, &g_one).len();
     let many_px = changed(&g_none, &g_many).len();
     c.record(
@@ -674,8 +696,8 @@ fn check_render(
 
     // The bucketing is a step, not a ramp: 17 and 32 both render 3 copies, so
     // they must be pixel-identical.
-    let g_17 = ground(Some("minecraft:dirt"), 17, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_32 = ground(Some("minecraft:dirt"), 32, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_17 = ground(Some("minecraft:dirt"), 17, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_32 = ground(Some("minecraft:dirt"), 32, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     c.record(
         "g6.the_copy_count_is_bucketed_not_proportional",
         g_17 == g_32,
@@ -688,8 +710,8 @@ fn check_render(
 
     // The jitter is seeded by the item, so the same stack is stable across
     // renders and a different seed lays the copies out differently.
-    let g_seed_a = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, &mut gpu, &mut wr, &mut off)?;
-    let g_seed_b = ground(Some("minecraft:dirt"), 64, 0.0, 4242, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_seed_a = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_seed_b = ground(Some("minecraft:dirt"), 64, 0.0, 4242, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     c.record(
         "g7.the_copy_jitter_is_seeded_and_reproducible",
         g_many == g_seed_a && g_many != g_seed_b,
@@ -702,7 +724,7 @@ fn check_render(
     );
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
-    let g_bow = ground(Some("minecraft:white_bed"), 1, 0.0, 3, 0.0, &mut gpu, &mut wr, &mut off)?;
+    let g_bow = ground(Some("minecraft:white_bed"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
     c.record(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
@@ -724,6 +746,54 @@ fn check_render(
             "dropped sword centroid x {gx} vs held sword x {cx} (frame centre {}) — \
              a dropped stack hangs off the entity origin, a held one off an arm",
             W / 2
+        ),
+    );
+
+    // -- the entity glint (M45) ----------------------------------------------
+    //
+    // The scale is the whole difference from the GUI and hand contexts, and it
+    // is a big one: `ENTITY_GLINT_TEXTURING` is 0.5 against their 8.0, so a
+    // dropped stack wears a few broad bands where an icon wears a fine weave.
+    let scale_item = rewo_gpu::gui_item::GLINT_SCALE_ITEM;
+    let scale_entity = rewo_gpu::gui_item::GLINT_SCALE_ENTITY;
+    let uv_item = rewo_gpu::gui_item::glint_uv([1.0, 0.0], (0.0, 0.0), scale_item);
+    let uv_entity = rewo_gpu::gui_item::glint_uv([1.0, 0.0], (0.0, 0.0), scale_entity);
+    c.record(
+        "n1.the_entity_glint_uses_its_own_texture_scale",
+        (scale_item, scale_entity) == (8.0, 0.5)
+            && (uv_item[0] / uv_entity[0] - 16.0).abs() < 1e-3,
+        format!(
+            "item {scale_item} against entity {scale_entity} - a factor of sixteen.              The same unit UV maps to {uv_item:?} and {uv_entity:?}"
+        ),
+    );
+
+    let g_plain = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_glint = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, true, &mut gpu, &mut wr, &mut off)?;
+    let ground_px = changed(&g_glint, &g_plain).len();
+    c.record(
+        "n2.a_dropped_enchanted_stack_glints",
+        ground_px > 50,
+        format!(
+            "{ground_px} pixels differ between a dropped stack with the foil flag              and the same one without - `ItemEntityRenderer` draws the item and              nothing else, so every changed pixel is on the item"
+        ),
+    );
+    let again = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "n3.no_foil_flag_is_byte_identical",
+        again == g_plain,
+        "the same draw twice without the flag is byte-identical, so every pixel n2          measured came from the glint pass and none from a stale buffer",
+    );
+
+    let h_plain = render_glint([Some("minecraft:diamond_sword"), None], [false; 2], &mut gpu, &mut wr, &mut off)?;
+    let h_main = render_glint([Some("minecraft:diamond_sword"), None], [true, false], &mut gpu, &mut wr, &mut off)?;
+    let h_off = render_glint([Some("minecraft:diamond_sword"), None], [false, true], &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "n4.a_mob_held_stack_glints_in_the_hand_that_holds_it",
+        changed(&h_main, &h_plain).len() > 50 && changed(&h_off, &h_plain).is_empty(),
+        format!(
+            "{} pixels differ with the main hand's flag set and {} with the *off*              hand's - the flag is per hand, and the off hand is empty here, so              setting it changes nothing at all",
+            changed(&h_main, &h_plain).len(),
+            changed(&h_off, &h_plain).len()
         ),
     );
 

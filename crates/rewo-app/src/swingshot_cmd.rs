@@ -1333,6 +1333,8 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         yaw: 0.0,
         death_time: 0.0,
         ground_item: None,
+        held_glint: [false; 2],
+        ground_glint: false,
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,

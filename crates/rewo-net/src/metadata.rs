@@ -114,7 +114,9 @@ pub struct EntityMeta {
     /// rendering rather than keep its last one. `Some(Some((item, count)))`
     /// carries the count too: `getRenderedAmount` buckets it into how many
     /// copies the dropped stack draws.
-    pub item_stack: Option<Option<(i32, i32)>>,
+    /// `(item id, count, hasFoil)` — the foil rides along because it
+    /// exists only in the patch this decode already walked (M45).
+    pub item_stack: Option<Option<(i32, i32, bool)>>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -163,7 +165,7 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             (8, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
                 Some(crate::item_stack::WireSlot::Empty) => meta.item_stack = Some(None),
                 Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
-                    meta.item_stack = Some(Some((s.item_id, s.count)))
+                    meta.item_stack = Some(Some((s.item_id, s.count, s.components.has_foil())))
                 }
                 _ => break,
             },

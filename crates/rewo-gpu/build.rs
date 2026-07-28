@@ -35,6 +35,7 @@ fn main() {
         ("shaders/gui_item.vert", "gui_item.vert.spv"),
         ("shaders/gui_item.frag", "gui_item.frag.spv"),
         ("shaders/gui_glint.frag", "gui_glint.frag.spv"),
+        ("shaders/entity_glint.frag", "entity_glint.frag.spv"),
         ("shaders/clouds.vert", "clouds.vert.spv"),
         ("shaders/particle.vert", "particle.vert.spv"),
         ("shaders/particle.frag", "particle.frag.spv"),

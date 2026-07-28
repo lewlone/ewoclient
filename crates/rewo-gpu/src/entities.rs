@@ -136,6 +136,11 @@ pub struct EntityDraw<'a> {
     /// the model/capsule entirely: `ItemEntityRenderer` draws the item and
     /// nothing else.
     pub ground_item: Option<&'a str>,
+    /// `ItemStack.hasFoil()` for each held stack, and for a dropped one
+    /// (M45). Resolved by the app, which is the only side that knows what a
+    /// stack is; the pass draws quads.
+    pub held_glint: [bool; 2],
+    pub ground_glint: bool,
     /// The dropped stack's raw count. The renderer applies vanilla's
     /// `getRenderedAmount` bucketing (1/2/3/4/5), so this is the count as
     /// sent, not the copy count.
@@ -183,7 +188,7 @@ pub struct EntityDraw<'a> {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Vertex {
+pub(crate) struct Vertex {
     pos: [f32; 3],
     uv: [f32; 2],
     /// Base tint × directional face shade. **The world light is deliberately
@@ -237,6 +242,46 @@ fn skin_slot_origin(i: u32) -> (u32, u32) {
 }
 
 /// Atlas origin of dynamic item slot `i` (0..ITEM_SLOTS).
+/// Where an item's glint quads go while its own quads are being built (M45).
+///
+/// Threaded into the two item emitters rather than recomputed afterwards. The
+/// glint pipeline depth-tests `EQUAL`, so its vertices must land on **exactly**
+/// the positions the item pass wrote — and the only way to be sure of that is
+/// to emit them from the same expression, at the same moment, rather than from
+/// a second derivation that agrees today. M44 records the same rule for the
+/// hand; here the pose involves a death topple, a bob, a spin and a per-copy
+/// jitter, so a parallel derivation would be far easier to get subtly wrong.
+struct EntityGlint {
+    pipeline: vk::Pipeline,
+    sampler: vk::Sampler,
+    image: vk::Image,
+    image_alloc: Option<gpu_allocator::vulkan::Allocation>,
+    view: vk::ImageView,
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
+}
+
+pub(crate) struct GlintSink<'a> {
+    pub verts: &'a mut Vec<Vertex>,
+    /// `ENTITY_GLINT_TEXTURING`'s scrolling offsets for this frame.
+    pub offsets: (f32, f32),
+}
+
+impl GlintSink<'_> {
+    /// Push one triangle's worth, taking the position the item just used and
+    /// substituting the quad's own `0..1` UV through the glint matrix.
+    fn push(&mut self, pos: [f32; 3], uv: [f32; 2]) {
+        self.verts.push(Vertex {
+            pos,
+            uv: crate::gui_item::glint_uv(uv, self.offsets, crate::gui_item::GLINT_SCALE_ENTITY),
+            // `GlintAlpha` rides in the alpha slot; the glint shader has no
+            // lightmap term, so the light channels are unused here.
+            color: [1.0, 1.0, 1.0, crate::gui_item::GLINT_STRENGTH],
+            light_hurt: [1.0, 1.0, 1.0, 0.0],
+        });
+    }
+}
+
 fn item_slot_origin(i: u32) -> (u32, u32) {
     (
         (i % ITEM_POOL_COLS) * ITEM_SLOT,
@@ -307,6 +352,10 @@ pub struct EntityPass {
     set_layout: vk::DescriptorSetLayout,
     solid_pipeline: vk::Pipeline,
     text_pipeline: vk::Pipeline,
+    /// The glint's pipeline, sheet and descriptor set (M45). `None` when the
+    /// jar carried no glint texture, in which case none is drawn.
+    glint: Option<EntityGlint>,
+    glint_verts: u32,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -686,6 +735,8 @@ impl EntityPass {
                 set_layout,
                 solid_pipeline,
                 text_pipeline,
+                glint: None,
+                glint_verts: 0,
                 pool,
                 set,
                 sampler,
@@ -909,6 +960,13 @@ impl EntityPass {
         self.cam_pos = cam_pos;
         self.cursor = (self.cursor + 1) % RING;
         let mut verts: Vec<Vertex> = Vec::with_capacity(1024);
+        // The glint's own range, built alongside the geometry it sits on and
+        // appended after the nametags — see [`GlintSink`].
+        let mut glint_verts: Vec<Vertex> = Vec::new();
+        let glint_offsets = crate::gui_item::glint_offsets(
+            (time as f64) * 1000.0,
+            crate::gui_item::GLINT_SPEED,
+        );
 
         // Advance the animation clock. `frame_time` drives FA's integrators and
         // `frame_counter` its same-frame guard, so both must be real. `time` is
@@ -931,11 +989,20 @@ impl EntityPass {
             // A dropped stack is drawn by `ItemEntityRenderer` and has no
             // model or capsule of its own — the item IS the entity (M24b).
             if let Some(name) = d.ground_item {
-                self.emit_ground_item(&mut verts, d, name, time, hurt);
+                let mut sink = GlintSink { verts: &mut glint_verts, offsets: glint_offsets };
+                self.emit_ground_item(
+                    &mut verts,
+                    d,
+                    name,
+                    time,
+                    hurt,
+                    d.ground_glint.then_some(&mut sink),
+                );
                 continue;
             }
             if let Some(model) = &self.models[d.kind.index()] {
-                self.emit_model(&mut verts, d, model, time, &mut cem_state);
+                let mut sink = GlintSink { verts: &mut glint_verts, offsets: glint_offsets };
+                self.emit_model(&mut verts, d, model, time, &mut cem_state, Some(&mut sink));
                 continue;
             }
             let base = d.color;
@@ -987,8 +1054,14 @@ impl EntityPass {
             log::warn!("entities: vertex budget hit — some entities/tags dropped");
         }
 
+        // The glint rides after the tags, so the three ranges are
+        // solid | text | glint in one buffer.
+        let text_end = verts.len();
+        verts.append(&mut glint_verts);
         self.solid_verts = solid as u32;
-        self.text_verts = (total - solid) as u32;
+        self.text_verts = (text_end - solid) as u32;
+        self.glint_verts = (verts.len() - text_end) as u32;
+        let total = verts.len();
         if let Some(slice) = self.allocs[self.cursor]
             .as_mut()
             .and_then(|a| a.mapped_slice_mut())
@@ -1036,6 +1109,7 @@ impl EntityPass {
         st: f32,
         ct: f32,
         hurt: f32,
+        glint: Option<&mut GlintSink<'_>>,
     ) {
         let Some(items) = self.held_items.as_ref() else {
             return;
@@ -1043,6 +1117,7 @@ impl EntityPass {
         let Some(item) = items.any(name) else {
             return;
         };
+        let mut glint = glint;
         // The arm this hangs off. A model with no such part is not a humanoid,
         // so it simply holds nothing — which is what vanilla's `ArmedModel`
         // bound expresses at the type level.
@@ -1106,6 +1181,10 @@ impl EntityPass {
                     color: [shade, shade, shade, 1.0],
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
+                // Same position, same moment — see [`GlintSink`].
+                if let Some(g) = glint.as_deref_mut() {
+                    g.push(p4[i], q.uv[i]);
+                }
             }
         }
     }
@@ -1117,7 +1196,9 @@ impl EntityPass {
         model: &MobModel,
         time: f32,
         cem_state: &mut std::collections::HashMap<u64, CemVars>,
+        glint: Option<&mut GlintSink<'_>>,
     ) {
+        let mut glint = glint;
         let theta = (180.0 - d.yaw).to_radians();
         let (st, ct) = theta.sin_cos();
         // M24 death topple. `LivingEntityRenderer.setupRotations` pushes
@@ -1280,7 +1361,19 @@ impl EntityPass {
         for (i, left) in [(0usize, false), (1usize, true)] {
             if let Some(name) = d.held[i] {
                 let hurt = if d.hurt { 1.0f32 } else { 0.0 };
-                self.emit_held_item(verts, d, model, &xf, left, name, s, st, ct, hurt);
+                self.emit_held_item(
+                    verts,
+                    d,
+                    model,
+                    &xf,
+                    left,
+                    name,
+                    s,
+                    st,
+                    ct,
+                    hurt,
+                    glint.as_deref_mut().filter(|_| d.held_glint[i]),
+                );
             }
         }
     }
@@ -1401,6 +1494,128 @@ impl EntityPass {
         }
     }
 
+    /// Build the glint pipeline and upload `misc/enchanted_glint_item.png`
+    /// (M45). Optional, like the other two glints: no sheet, no shimmer.
+    pub fn init_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.glint.is_some() {
+            return Ok(());
+        }
+        let device = gpu.device.clone();
+        let (image, image_alloc, view) = create_texture(gpu, rgba, w, h)?;
+        let sampler = unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .address_mode_u(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_v(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_w(vk::SamplerAddressMode::REPEAT),
+                    None,
+                )
+                .map_err(|e| format!("entity glint sampler: {e}"))?
+        };
+        let sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)];
+        let pool = unsafe {
+            device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(1)
+                        .pool_sizes(&sizes),
+                    None,
+                )
+                .map_err(|e| format!("entity glint pool: {e}"))?
+        };
+        let set_layouts = [self.set_layout];
+        let set = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(pool)
+                        .set_layouts(&set_layouts),
+                )
+                .map_err(|e| format!("entity glint set: {e}"))?[0]
+        };
+        let info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(sampler)];
+        unsafe {
+            device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&info)],
+                &[],
+            );
+        }
+        let pipeline = build_glint_pipeline(&device, self.layout, color_format)?;
+        self.glint = Some(EntityGlint {
+            pipeline,
+            sampler,
+            image,
+            image_alloc: Some(image_alloc),
+            view,
+            pool,
+            set,
+        });
+        Ok(())
+    }
+
+    pub fn glint_ready(&self) -> bool {
+        self.glint.is_some()
+    }
+
+    /// The glint over held and dropped items. Drawn after the solid pass —
+    /// its depth test is `EQUAL`, so the geometry it sits on has to be there
+    /// already — and before the nametags, which are blended.
+    pub fn draw_glint(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let Some(g) = self.glint.as_ref() else {
+            return;
+        };
+        if self.glint_verts == 0 {
+            return;
+        }
+        unsafe {
+            self.bind_common(gpu, cb, view_proj, extent);
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, g.pipeline);
+            // The glint sheet, not the entity atlas — `bind_common` bound the
+            // latter, so this overrides it for these draws only.
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[g.set],
+                &[],
+            );
+            device.cmd_draw(
+                cb,
+                self.glint_verts,
+                1,
+                self.solid_verts + self.text_verts,
+                0,
+            );
+        }
+    }
+
     /// Blended nametag text — draw last (after water).
     pub fn draw_text(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
         if self.text_verts == 0 {
@@ -1417,6 +1632,16 @@ impl EntityPass {
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         unsafe {
             let device = &gpu.device;
+            if let Some(mut g) = self.glint.take() {
+                device.destroy_pipeline(g.pipeline, None);
+                device.destroy_descriptor_pool(g.pool, None);
+                device.destroy_sampler(g.sampler, None);
+                device.destroy_image_view(g.view, None);
+                device.destroy_image(g.image, None);
+                if let Some(a) = g.image_alloc.take() {
+                    let _ = gpu.allocator.free(a);
+                }
+            }
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
@@ -2574,6 +2799,7 @@ impl EntityPass {
         name: &str,
         time: f32,
         hurt: f32,
+        glint: Option<&mut GlintSink<'_>>,
     ) {
         let Some(items) = self.held_items.as_ref() else {
             return;
@@ -2581,6 +2807,7 @@ impl EntityPass {
         let Some(item) = items.any(name) else {
             return;
         };
+        let mut glint = glint;
         let amount = rendered_amount(d.ground_count);
         if amount == 0 {
             return;
@@ -2691,6 +2918,12 @@ impl EntityPass {
                         color: [shade, shade, shade, 1.0],
                         light_hurt: [light_r, light_g, light_b, hurt],
                     });
+                    // Same position, same moment — a dropped stack bobs, spins
+                    // and jitters per copy, so a second derivation of any of
+                    // that would miss the depth-equal test.
+                    if let Some(g) = glint.as_deref_mut() {
+                        g.push(p4[i], q.uv[i]);
+                    }
                 }
             }
         }
@@ -3571,6 +3804,120 @@ pub(crate) fn create_texture(
             )
             .map_err(|e| format!("font view: {e}"))?;
         Ok((image, alloc, view))
+    }
+}
+
+/// The entity glint's pipeline (M45) — `build_pipeline`'s solid variant with
+/// `RenderPipelines.GLINT`'s three differences, over the entity vertex layout.
+fn build_glint_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/entity.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/entity_glint.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let attrs = [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(12),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(20),
+            vk::VertexInputAttributeDescription::default()
+                .location(3)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(36),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attrs);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        // EQUAL, no write. The world pass is reversed-Z, so its ordinary test
+        // is GREATER — but equality is equality either way, and it is what
+        // lands the sheen on the item's own fragments.
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::EQUAL);
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B
+                    | vk::ColorComponentFlags::A,
+            )];
+        let blend_state =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(crate::world::DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend_state)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None)
+            .map_err(|(_, e)| format!("entity glint pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
     }
 }
 

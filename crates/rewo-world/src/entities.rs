@@ -58,6 +58,10 @@ pub struct HeldItem {
     /// (M23). Drives the client-side use clock and the eight use-driven arm
     /// poses.
     pub use_profile: UseProfile,
+    /// `ItemStack.hasFoil()` — whether this stack draws an enchantment glint
+    /// (M45). Like `charged`, it exists only in the patch, so it is decoded at
+    /// the wire and carried rather than derived from the item id.
+    pub glint: bool,
     /// `CrossbowItem.isCharged(stack)` — the patch's
     /// `minecraft:charged_projectiles` list is non-empty. The sole gate on
     /// `ArmPose::CrossbowHold`, and the one held-item property that comes from
@@ -516,7 +520,7 @@ pub struct EntityTable {
     /// `ItemEntity.DATA_ITEM` (index 8, ITEM_STACK) → `(item protocol id,
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
-    item_stacks: HashMap<i32, (i32, i32)>,
+    item_stacks: HashMap<i32, (i32, i32, bool)>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -990,7 +994,7 @@ impl EntityTable {
     /// Set an `ItemEntity`'s stack from `DATA_ITEM` (metadata index 8,
     /// ITEM_STACK). `None` is an explicitly empty stack, which clears it —
     /// vanilla's `ItemEntity` with an empty stack renders nothing.
-    pub fn set_item_stack(&mut self, id: i32, stack: Option<(i32, i32)>) {
+    pub fn set_item_stack(&mut self, id: i32, stack: Option<(i32, i32, bool)>) {
         match stack {
             Some(s) => {
                 self.item_stacks.insert(id, s);
@@ -1003,7 +1007,7 @@ impl EntityTable {
 
     /// The `(item id, count)` a dropped stack shows, or `None` when the entity
     /// has sent no stack (or an empty one).
-    pub fn item_stack(&self, id: i32) -> Option<(i32, i32)> {
+    pub fn item_stack(&self, id: i32) -> Option<(i32, i32, bool)> {
         self.item_stacks.get(&id).copied()
     }
 
@@ -1652,6 +1656,7 @@ mod tests {
             swing: SwingAnimation::new(kind, duration),
             use_profile: UseProfile::UNUSABLE,
             charged: false,
+            glint: false,
         })
     }
 
@@ -2054,6 +2059,7 @@ mod m21_hurt_tests {
                 animation: ItemUseAnimation::Block,
             },
             charged: false,
+            glint: false,
         })
     }
 
