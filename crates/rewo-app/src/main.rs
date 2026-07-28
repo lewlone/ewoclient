@@ -24,6 +24,7 @@ mod mobshot_cmd;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
+mod handshot_cmd;
 mod inventoryshot_cmd;
 mod particleshot_cmd;
 mod portalshot_cmd;
@@ -178,6 +179,11 @@ enum Command {
     /// diffuse on the CPU, then render real baked items into real hotbar slots
     /// offscreen and assert their pixels with `--check` (no server).
     Inventoryshot(inventoryshot_cmd::InventoryshotArgs),
+    /// M38 first-person hand oracle: grade the two first-person display
+    /// transforms on the real jar, the pose chain against a derivation from the
+    /// decompile, and the pass's pixels — with a synthetic magenta texture, so
+    /// the detector cannot match anything but the hand.
+    Handshot(handshot_cmd::HandshotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
@@ -227,6 +233,7 @@ fn main() {
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
+        Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
