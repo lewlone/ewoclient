@@ -111,8 +111,11 @@ and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`, byte-identical since M15.
 ### What to do next
 
 **M50 is done** — the worn-armour glint, and with it the glint's colour space.
-Pick the next milestone from §16, or `REWO_FEATURE_SURVEY.md` for the next
-*feature* rather than the next milestone.
+**§16 is history, not a forward plan** (it covers M23–M25, all shipped), so the
+live queue is `REWO_FEATURE_SURVEY.md` §5 "Sequence". Its next item is
+**M9b (ETF)** — and roughly six commits of that already exist on
+`claude/rewo-entity-fidelity-aa134c`, so it is a rebase and a renumber rather
+than a build.
 
 Two things M50 leaves behind that a fresh session should know:
 
