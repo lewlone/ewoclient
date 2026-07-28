@@ -1558,7 +1558,12 @@ pub(crate) fn apply_set_equipment(
             let index = (5 - (slot_id & 127)) as usize;
             let worn = match &slot {
                 WireSlot::Empty => None,
-                WireSlot::Stack(s) => Some(s.item_id),
+                // M47: the dye travels with the piece. It is only ever in the
+                // component patch, so this packet is the sole opportunity.
+                WireSlot::Stack(s) => Some(rewo_world::entities::WornPiece {
+                    item: s.item_id,
+                    dye: s.components.dyed_color,
+                }),
             };
             entities.set_armor(eid, index, worn);
         }
@@ -2227,6 +2232,7 @@ mod animate_tests {
             max_damage: 4,
             stored_enchantments: 12,
             enchantment_glint_override: 13,
+            dyed_color: 14,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

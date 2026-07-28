@@ -66,6 +66,27 @@ pub struct FontData<'a> {
     pub white_texel: (u32, u32),
 }
 
+/// The most sub-layers one armour piece may draw.
+///
+/// Two, because the 26.2 jar's largest humanoid layer list is leather's two
+/// (a dyeable base plus its overlay) and the other twenty are one. A piece
+/// naming more is truncated with a warning rather than silently dropped — the
+/// cap is a fact about the shipped data, and if the data changes the log says
+/// so.
+pub const MAX_ARMOR_SUBLAYERS: usize = 2;
+
+/// One worn piece, resolved to what it actually draws (M47).
+///
+/// Each entry is an atlas key and the tint it is drawn with, already through
+/// `EquipmentLayerRenderer.getColorForLayer` — so a layer whose colour came
+/// back 0 is **absent from this list**, not present with a zero tint. That is
+/// vanilla's `if (color != 0)` guard, resolved before the frame rather than
+/// inside the emitter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArmorPiece<'a> {
+    pub layers: [Option<(&'a str, [f32; 3])>; MAX_ARMOR_SUBLAYERS],
+}
+
 /// One entity to draw this frame — position already frame-interpolated.
 pub type EntityLight = [f32; 3];
 
@@ -142,7 +163,7 @@ pub struct EntityDraw<'a> {
     /// The armour atlas key for each slot, head first (M46) —
     /// `<asset>/<layer>` as `rewo_data::equipment` packs it. `None` is an
     /// empty slot, or one whose asset this jar does not describe.
-    pub armor: [Option<&'a str>; 4],
+    pub armor: [Option<ArmorPiece<'a>>; 4],
     pub held_glint: [bool; 2],
     pub ground_glint: bool,
     /// The dropped stack's raw count. The renderer applies vanilla's
@@ -766,7 +787,9 @@ impl EntityPass {
                 // model is fixed at build time, but what it wears is not.
                 armor_slots: slots
                     .iter()
-                    .filter(|(k, _)| k.contains("/humanoid"))
+                    // `<layer dir>/<texture>` — both humanoid layer types
+                    // start with `humanoid`, and no mob texture does.
+                    .filter(|(k, _)| k.starts_with("humanoid"))
                     .map(|(k, v)| ((*k).to_string(), *v))
                     .collect(),
                 skin_next: 0,
@@ -1231,14 +1254,17 @@ impl EntityPass {
         }
         let [light_r, light_g, light_b] = d.light;
         let hurt = if d.hurt { 1.0f32 } else { 0.0 };
-        for (slot, key) in [
+        for (slot, piece) in [
             (mobs::ArmorSlot::Chest, d.armor[1]),
             (mobs::ArmorSlot::Legs, d.armor[2]),
             (mobs::ArmorSlot::Feet, d.armor[3]),
             (mobs::ArmorSlot::Head, d.armor[0]),
         ] {
-            let Some(key) = key else { continue };
-            let Some(&(ax, ay, _, _)) = self.armor_slots.get(key) else {
+            let Some(piece) = piece else { continue };
+            // In list order: `renderLayers` walks the layers in order, and an
+            // overlay has to land on top of the base it covers.
+            for (key, tint) in piece.layers.iter().flatten() {
+            let Some(&(ax, ay, _, _)) = self.armor_slots.get(*key) else {
                 continue;
             };
             for b in mobs::armor_boxes(slot) {
@@ -1280,15 +1306,21 @@ impl EntityPass {
                             (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
                         ]
                     });
+                    // The dye is a **vertex colour**, which is where vanilla
+                    // puts it: `submitModel(..., color, ...)`, and `entity.fsh`
+                    // multiplies `texture * vertexColor`. It rides in the same
+                    // channel and the same space as the directional shade, so
+                    // an untinted layer is exactly `tint = 1`.
                     for &i in &[0usize, 1, 2, 0, 2, 3] {
                         verts.push(Vertex {
                             pos: p4[i],
                             uv: uv4[i],
-                            color: [shade, shade, shade, 1.0],
+                            color: [shade * tint[0], shade * tint[1], shade * tint[2], 1.0],
                             light_hurt: [light_r, light_g, light_b, hurt],
                         });
                     }
                 }
+            }
             }
         }
     }

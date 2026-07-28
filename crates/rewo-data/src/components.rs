@@ -54,6 +54,10 @@ pub struct DataComponentIds {
     /// `minecraft:enchantment_glint_override` (M43) — a per-stack yes/no that
     /// **overrides** the enchantment test in both directions.
     pub enchantment_glint_override: i32,
+    /// `minecraft:dyed_color` (M47) — `DyedItemColor`, whose stream codec is a
+    /// bare `ByteBufCodecs.INT`. The value is an **RGB** with no alpha, which
+    /// is why `DyedItemColor.getOrDefault` runs it through `ARGB.opaque`.
+    pub dyed_color: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -135,6 +139,7 @@ impl DataComponentIds {
             enchantments: id("minecraft:enchantments")?,
             stored_enchantments: id("minecraft:stored_enchantments")?,
             enchantment_glint_override: id("minecraft:enchantment_glint_override")?,
+            dyed_color: id("minecraft:dyed_color")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

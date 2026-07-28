@@ -488,6 +488,18 @@ impl EntityState {
     }
 }
 
+/// One worn armour piece: the item, and the dye its component patch carried.
+///
+/// The dye rides here rather than being looked up later because it exists only
+/// in the stack's `DataComponentPatch` — the equipment packet is the one place
+/// it is ever seen, and by the time a frame is drawn the stack is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WornPiece {
+    pub item: i32,
+    /// `minecraft:dyed_color`'s RGB, absent on an undyed piece.
+    pub dye: Option<i32>,
+}
+
 #[derive(Default)]
 pub struct EntityTable {
     map: HashMap<i32, EntityState>,
@@ -522,7 +534,7 @@ pub struct EntityTable {
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
     item_stacks: HashMap<i32, (i32, i32, bool)>,
     /// Worn armour item ids per entity, head first (M46).
-    armor: HashMap<i32, [Option<i32>; 4]>,
+    armor: HashMap<i32, [Option<WornPiece>; 4]>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1139,12 +1151,12 @@ impl EntityTable {
     /// Set one hand's item — `ClientboundSetEquipmentPacket`'s MAINHAND /
     /// OFFHAND slots. Armour slots never reach here: they change no swing
     /// input. [`HandItem::Unknown`] is a first-class value, not an absence.
-    /// The item id worn in each armour slot, head first (M46).
+    /// What is worn in one armour slot (M46), with the dye it carries (M47).
     ///
     /// `EquipmentSlot`'s wire ids are `0 mainhand, 1 offhand, 2 feet, 3 legs,
     /// 4 chest, 5 head` — so the armour occupies **2..=5 and runs bottom-up**,
     /// which is why this indexes by `5 - id` rather than by the id.
-    pub fn set_armor(&mut self, id: i32, slot: usize, item: Option<i32>) {
+    pub fn set_armor(&mut self, id: i32, slot: usize, item: Option<WornPiece>) {
         if slot >= 4 {
             return;
         }
@@ -1154,7 +1166,7 @@ impl EntityTable {
 
     /// What this entity wears, head first. All `None` for anything the server
     /// has not equipped.
-    pub fn armor(&self, id: i32) -> [Option<i32>; 4] {
+    pub fn armor(&self, id: i32) -> [Option<WornPiece>; 4] {
         self.armor.get(&id).copied().unwrap_or([None; 4])
     }
 

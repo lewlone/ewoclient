@@ -2944,6 +2944,34 @@ validation Rewo has.
   is a *list* — dyeable base plus overlay — and Rewo takes the first, so the
   greyscale base is never tinted by `dyed_color`), no trims, the inventory
   preview does not wear its armour, and baby mobs use the adult parts.
+- **M47 the leather dye (2026-07-28)** — M46 shipped leather grey and called it
+  "the dyeable base drawn untinted"; both halves were wrong. **Zero is not a
+  black tint, it is "do not draw this layer"** — `renderLayers`' guard is
+  `if (color != 0)`, and that is the entire implementation of
+  `Layer.onlyIfDyed`, whose `Dyeable` carries *no* `color_when_undyed`. Three
+  states hide behind one `Optional<Dyeable>` (absent = untinted always,
+  present-with-a-colour = tinted always, present-without = only when dyed), so
+  it survives as `Option<Option<u32>>`. **An undyed leather piece is brown, not
+  grey**: `LEATHER_COLOR` is `0xA06540`, and the sheet is authored greyscale
+  *because* it is always tinted — there is no path that draws it untinted. A
+  layer type maps to a **list**: surveyed on the jar, 20 humanoid lists of one
+  and 3 of two, all three of them leather's (a dyeable base plus an untinted
+  overlay, which is what keeps the studs their own colour on a dyed piece).
+  `DyedItemColor`'s stream codec is **`ByteBufCodecs.INT`** — a fixed
+  big-endian i32 among the var-ints, M34's trap again — holding an **RGB**,
+  which is why `getOrDefault` is the thing that calls `ARGB.opaque`, and why an
+  absent dye is `0` while a *black* dye is `0xFF000000`. The tint is a **vertex
+  colour** (`submitModel(..., color, ...)`; `entity.fsh` does
+  `texture * vertexColor`), riding the same channel as the directional shade,
+  so untinted is exactly `tint = 1`. **The pixel witness caught a key-format
+  break**: `d4` measures red/green and red/blue over the armour's own pixels,
+  and its first run measured **zero** — correctly, because M47 changed the
+  atlas key to `<layer>/<texture>` while the renderer's slot filter still
+  looked for `"/humanoid"` as a substring, so **all** armour had gone
+  invisible, not just leather. Gate `itemshot` 42 -> **46**; **631 tests**.
+  **Open:** no trims, the glint-order rule is transcribed but unreachable until
+  armour glints, and `usePlayerTexture` (the elytra cape) is read as data and
+  never honoured.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

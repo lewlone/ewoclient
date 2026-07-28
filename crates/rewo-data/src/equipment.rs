@@ -17,6 +17,16 @@
 //! `entity/equipment/<layer>/<texture>.png` — a **64x32** sheet in the classic
 //! armour layout, not a 64x64 skin.
 //!
+//! # A layer type maps to a *list* (M47)
+//!
+//! `EquipmentClientInfo.Layer(textureId, Optional<Dyeable>, usePlayerTexture)`,
+//! and a layer type holds a non-empty list of them. In the 26.2 jar only
+//! **leather** has two — a dyeable base plus an untinted overlay — and only
+//! leather carries `dyeable` at all (20 humanoid lists of one, 3 of two, all
+//! three of them leather's). The list is read generally anyway, because the
+//! per-layer rule below is what decides *whether a layer draws*, and hard-
+//! coding "base plus optional overlay" would bury that rule in a shape.
+//!
 //! # Why two layer types and not four
 //!
 //! `HumanoidArmorLayer.usesInnerModel` is `slot == LEGS`, so the leggings get
@@ -50,6 +60,63 @@ impl ArmorLayer {
     }
 }
 
+/// `DyedItemColor.LEATHER_COLOR` — the `color_when_undyed` every leather layer
+/// in the vanilla jar declares. An undyed leather boot is therefore **brown**,
+/// not the greyscale its sheet is authored in.
+pub const LEATHER_COLOR: u32 = 0xA0_65_40;
+
+/// One layer of a piece: which sheet, and how it is tinted.
+#[derive(Clone, Debug)]
+pub struct ArmorLayerDef {
+    /// The atlas key of this layer's sheet.
+    pub key: String,
+    /// The `dyeable` field. `None` is **absent**, which is not the same as
+    /// `Some(None)`: absent draws untinted always, `Some(None)` draws *only*
+    /// when the stack is dyed (`Layer.onlyIfDyed`).
+    pub dyeable: Option<Option<u32>>,
+}
+
+/// `EquipmentLayerRenderer.getColorForLayer`, verbatim.
+///
+/// ```java
+/// Optional<Dyeable> dyeable = layer.dyeable();
+/// if (dyeable.isPresent()) {
+///    int colorWhenUndyed = dyeable.get().colorWhenUndyed().map(ARGB::opaque).orElse(0);
+///    return dyeColor != 0 ? dyeColor : colorWhenUndyed;
+/// } else {
+///    return -1;
+/// }
+/// ```
+///
+/// **Zero means do not draw this layer at all** — the caller's guard is
+/// `if (color != 0)`. That is the whole mechanism behind `Layer.onlyIfDyed`: a
+/// `Dyeable` carrying no `color_when_undyed` returns 0 for an undyed stack and
+/// the dye for a dyed one. `-1` is `0xFFFFFFFF`, white, which multiplies to
+/// nothing.
+pub fn color_for_layer(dyeable: Option<Option<u32>>, dye_argb: u32) -> u32 {
+    match dyeable {
+        Some(color_when_undyed) => {
+            if dye_argb != 0 {
+                dye_argb
+            } else {
+                // `ARGB::opaque` — the JSON value is an RGB.
+                color_when_undyed.map_or(0, |c| 0xFF00_0000 | (c & 0x00FF_FFFF))
+            }
+        }
+        None => 0xFFFF_FFFF,
+    }
+}
+
+/// `DyedItemColor.getOrDefault(stack, 0)` — an item's dye as an opaque ARGB,
+/// or **0** for "undyed". The component holds an RGB, so the alpha goes on
+/// here rather than arriving on the wire.
+pub fn dye_argb(dyed_color: Option<i32>) -> u32 {
+    match dyed_color {
+        Some(rgb) => 0xFF00_0000 | (rgb as u32 & 0x00FF_FFFF),
+        None => 0,
+    }
+}
+
 /// One decoded 64x32 armour sheet.
 #[derive(Clone, Debug)]
 pub struct ArmorTexture {
@@ -63,8 +130,10 @@ pub struct ArmorTexture {
 /// Every armour asset's humanoid layers, and the sheets they name.
 #[derive(Clone, Debug, Default)]
 pub struct EquipmentAssets {
-    /// `(asset, layer)` → index into [`Self::textures`].
-    by_asset: HashMap<(String, ArmorLayer), usize>,
+    /// `(asset, layer)` → that layer type's ordered layer list. Ordered
+    /// because `renderLayers` draws them in order and the overlay must land on
+    /// top of the base it covers.
+    by_asset: HashMap<(String, ArmorLayer), Vec<ArmorLayerDef>>,
     pub textures: Vec<ArmorTexture>,
 }
 
@@ -90,7 +159,8 @@ impl EquipmentAssets {
             .collect();
         // `(asset, layer) -> texture name`, gathered before any decode so the
         // same sheet named by two assets is decoded once.
-        let mut wanted: Vec<((String, ArmorLayer), String)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut wanted: Vec<((String, ArmorLayer), String, Option<Option<u32>>)> = Vec::new();
         for path in &names {
             let Some(asset) = path
                 .rsplit('/')
@@ -111,27 +181,36 @@ impl EquipmentAssets {
                 continue;
             };
             for layer in [ArmorLayer::Humanoid, ArmorLayer::Leggings] {
-                // **The first entry only.** A layer is a *list* — leather has
-                // a dyeable base plus an overlay — and Rewo draws one sheet
-                // per piece, so it takes the base and leaves the overlay. That
-                // is why an undyed leather helmet looks right and a dyed one
-                // is not tinted yet.
-                let Some(tex) = json
+                let Some(list) = json
                     .get("layers")
                     .and_then(|l| l.get(layer.dir()))
                     .and_then(|a| a.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|e| e.get("texture"))
-                    .and_then(|t| t.as_str())
                 else {
                     continue;
                 };
-                let tex = tex.strip_prefix("minecraft:").unwrap_or(tex).to_string();
-                wanted.push(((format!("minecraft:{asset}"), layer), tex));
+                for entry in list {
+                    let Some(tex) = entry.get("texture").and_then(|t| t.as_str()) else {
+                        continue;
+                    };
+                    // `Optional<Dyeable>` — absent, or present with an
+                    // optional `color_when_undyed`. The three states are
+                    // distinct and each renders differently, so they survive
+                    // as `Option<Option<u32>>` rather than collapsing.
+                    let dyeable = entry.get("dyeable").map(|d| {
+                        d.get("color_when_undyed")
+                            .and_then(|c| c.as_i64())
+                            .map(|c| c as u32 & 0x00FF_FFFF)
+                    });
+                    let tex = tex.strip_prefix("minecraft:").unwrap_or(tex).to_string();
+                    wanted.push(((format!("minecraft:{asset}"), layer), tex, dyeable));
+                }
             }
         }
-        for ((asset, layer), tex) in wanted {
-            let key = format!("{asset}/{}", layer.dir());
+        for ((asset, layer), tex, dyeable) in wanted {
+            // Keyed by the **texture**, not by the asset: two assets naming the
+            // same sheet share one atlas entry, and one asset's two layers name
+            // two different sheets.
+            let key = format!("{}/{tex}", layer.dir());
             let path = format!(
                 "assets/minecraft/textures/entity/equipment/{}/{tex}.png",
                 layer.dir()
@@ -145,22 +224,29 @@ impl EquipmentAssets {
             let Some((rgba, w, h)) = decoded else {
                 continue;
             };
-            out.by_asset.insert((asset, layer), out.textures.len());
-            out.textures.push(ArmorTexture { key, w, h, rgba });
+            if !out.textures.iter().any(|t| t.key == key) {
+                out.textures.push(ArmorTexture { key: key.clone(), w, h, rgba });
+            }
+            out.by_asset
+                .entry((asset, layer))
+                .or_default()
+                .push(ArmorLayerDef { key, dyeable });
         }
         log::info!(
-            "rewo-data: {} armour sheet(s) over {} asset/layer pair(s)",
+            "rewo-data: {} armour sheet(s) over {} asset/layer pair(s), {} layer(s)",
             out.textures.len(),
-            out.by_asset.len()
+            out.by_asset.len(),
+            out.by_asset.values().map(Vec::len).sum::<usize>(),
         );
         out
     }
 
-    /// The atlas key for an asset's layer, or `None` if the jar named none.
-    pub fn key(&self, asset: &str, layer: ArmorLayer) -> Option<&str> {
+    /// An asset's layer list, in draw order. Empty for anything the jar does
+    /// not describe with a humanoid layer.
+    pub fn layers(&self, asset: &str, layer: ArmorLayer) -> &[ArmorLayerDef] {
         self.by_asset
             .get(&(asset.to_string(), layer))
-            .map(|&i| self.textures[i].key.as_str())
+            .map_or(&[], |v| v.as_slice())
     }
 
     pub fn is_empty(&self) -> bool {

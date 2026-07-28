@@ -6366,6 +6366,101 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M47 — the leather dye (2026-07-28)
+
+M46 shipped with leather rendering grey, and called it "the dyeable base drawn
+untinted". Both halves of that were wrong: the greyscale is not what an undyed
+piece looks like, and the tint is not an afterthought applied to one layer — it
+is the mechanism that decides **whether each layer draws at all**.
+
+The whole rule is four lines of `EquipmentLayerRenderer`:
+
+```java
+int dyeColor = DyedItemColor.getOrDefault(itemStack, 0);
+for (Layer layer : layers) {
+   int color = getColorForLayer(layer, dyeColor);
+   if (color != 0) { ...submitModel(..., color, ...); }
+}
+
+private static int getColorForLayer(Layer layer, int dyeColor) {
+   Optional<Dyeable> dyeable = layer.dyeable();
+   if (dyeable.isPresent()) {
+      int colorWhenUndyed = dyeable.get().colorWhenUndyed().map(ARGB::opaque).orElse(0);
+      return dyeColor != 0 ? dyeColor : colorWhenUndyed;
+   } else {
+      return -1;
+   }
+}
+```
+
+**Zero is not a black tint, it is "do not draw this layer".** That is the entire
+implementation of `Layer.onlyIfDyed`, which builds a `Dyeable` carrying *no*
+`color_when_undyed`: undyed it returns 0 and the layer vanishes; dyed it returns
+the dye. Three distinct states hide behind one `Optional<Dyeable>` — absent
+draws untinted always, present-with-a-colour draws tinted always, and
+present-without-one draws only when dyed — so the field survives as
+`Option<Option<u32>>` rather than collapsing to a bool.
+
+**An undyed leather piece is brown, not grey.** `DyedItemColor.LEATHER_COLOR` is
+`-6265536` = `0xA06540`, and every leather layer in the jar declares it as
+`color_when_undyed`. The sheet is authored greyscale precisely *because* it is
+always tinted — there is no code path that draws it untinted. M46's grey boots
+were the tint being skipped, not the base being correct.
+
+**A layer type maps to a list.** Surveyed on the real jar: 20 humanoid lists of
+one layer, 3 of two, and all three of the twos are leather's — a dyeable base
+plus an untinted overlay, which is what keeps the studs and stitching their own
+colour on a dyed piece. Only leather carries `dyeable` at all. The list is read
+generally anyway: the per-layer rule above is what decides whether a layer
+draws, and hard-coding "base plus optional overlay" would bury it in a shape.
+The renderer caps at `MAX_ARMOR_SUBLAYERS = 2` and **logs** a piece that names
+more, so the cap stays a statement about the shipped data rather than a silent
+truncation.
+
+**`ByteBufCodecs.INT`** — `DyedItemColor`'s stream codec is a fixed big-endian
+i32 among the var-ints, the same trap `container_set_slot`'s signed short is
+(M34). Read as a var-int, `0xB02E26` consumes three bytes and leaves the fourth
+to be parsed as the next component's type id. The component holds an **RGB**,
+which is why `getOrDefault` is the thing that calls `ARGB.opaque` — and why an
+absent dye is `0` while a *black* dye is `0xFF000000`. Those are different
+values and they render differently.
+
+The tint is a **vertex colour**, which is where vanilla puts it:
+`submitModel(..., color, ...)`, and `entity.fsh` multiplies
+`texture * vertexColor`. It rides in the same channel and the same space as the
+directional shade, so an untinted layer is exactly `tint = 1` and no branch is
+needed.
+
+#### The pixel witness caught a key-format break
+
+`d4` renders the same sheet twice, once with `color_when_undyed` and once with a
+red dye, and measures the red/green and red/blue ratios **over the armour's own
+pixels** — so it cannot be satisfied by drawing anything at all. Its first run
+measured **zero armour pixels**, which was correct: M47 changed the atlas key
+from `<asset>/<layer>` to `<layer>/<texture>` (two assets can name one sheet,
+and one asset's two layers name two), and the renderer's slot filter still
+looked for `"/humanoid"` as a substring. Nothing matched, and **all** armour had
+gone invisible — not just leather. A witness that only checked the resolution
+arithmetic would have passed.
+
+#### Verified
+
+`itemshot --check` **42 -> 46**, **631 tests** (two new: the fixed-i32 decode,
+and that absence is not a black dye), all seventeen gates green, demo PNG
+byte-identical to M15 onward. Live, in one frame: an undyed leather chestplate
+renders brown and a `dyed_color` red one renders red — and the leather boots on
+M46's mixed-material zombie, grey in that screenshot, are now brown.
+
+#### Open
+
+- **No trims.** `ArmorTrim` is a third layer with its own palette and atlas,
+  drawn after the dye layers.
+- The **glint order** is transcribed but unreachable: `renderLayers` draws the
+  foil after the *first* layer that draws and then sets `renderFoil = false`,
+  which matters only once armour glints (M45's fourth surface).
+- `usePlayerTexture` is read as data and never honoured — it is for the elytra's
+  cape texture, which Rewo does not render.
+
 ### M46 — worn armour (2026-07-28)
 
 Every mob that could hold a sword has been able to since M22, and every one of
@@ -6486,10 +6581,10 @@ sheet.
 
 #### Open
 
-- **Leather is not dyed.** A layer is a *list* — leather has a dyeable base plus
-  an overlay — and Rewo takes the first entry and draws one sheet per piece. The
-  base is greyscale, meant to be tinted by `dyed_color`, so undyed leather reads
-  grey and dyed leather is not tinted at all.
+- ~~**Leather is not dyed.**~~ — **RESOLVED in M47.** Both layers are read and
+  each goes through `getColorForLayer`, so an undyed piece is brown
+  (`LEATHER_COLOR`) and a dyed one takes its dye while the overlay stays
+  untinted.
 - **No trims.** `ArmorTrim` is a third layer with its own palette.
 - The **inventory preview** does not wear the armour it is carrying.
 - **Baby** mobs use the adult armour parts; vanilla has a separate

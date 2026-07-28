@@ -237,6 +237,12 @@ pub struct StackComponents {
     /// is *not* the same as `Some(false)`: absent defers to whether the stack
     /// is enchanted, false suppresses the glint on one that is.
     pub glint_override: Option<bool>,
+    /// `minecraft:dyed_color`'s RGB (M47), the tint a dyeable armour layer
+    /// takes. Absent is **not** "black": `DyedItemColor.getOrDefault` returns
+    /// 0 for an absent component, and 0 is the value `getColorForLayer` reads
+    /// as "this stack is undyed" — which sends a dyeable layer to its
+    /// `color_when_undyed` instead.
+    pub dyed_color: Option<i32>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -441,6 +447,12 @@ fn read_interpreted(
         out.rarity = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
     }
+    if ty == ids.dyed_color {
+        // `ByteBufCodecs.INT` — a fixed big-endian i32 among the var-ints,
+        // the same trap `container_set_slot`'s signed short is.
+        out.dyed_color = Some(r.i32().map_err(|_| ())?);
+        return Ok(true);
+    }
     if ty == ids.enchantment_glint_override {
         out.glint_override = Some(r.u8().map_err(|_| ())? != 0);
         return Ok(true);
@@ -578,6 +590,7 @@ mod tests {
         enchantments: 11,
         stored_enchantments: 12,
         enchantment_glint_override: 13,
+        dyed_color: 14,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -596,11 +609,50 @@ mod tests {
             ("minecraft:lore", 10),
             ("minecraft:enchantments", 11),
             ("minecraft:enchantment_glint_override", 13),
+            ("minecraft:dyed_color", 14),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
         crate::component_wire::install_shapes(&ids);
+    }
+
+
+    /// `DyedItemColor.STREAM_CODEC` is `ByteBufCodecs.INT` — a **fixed**
+    /// big-endian i32 among the var-ints, the same trap `container_set_slot`'s
+    /// signed short is. Read as a var-int, 0xB02E26 would consume three bytes
+    /// and leave the fourth to be parsed as the next component's type id.
+    #[test]
+    fn dyed_color_is_a_fixed_i32_not_a_varint() {
+        install_test_shapes();
+        let raw = stack(1, 1, &[(14, vec![0x00, 0xB0, 0x2E, 0x26])], &[]);
+        let mut r = PacketReader::new(&raw);
+        let slot = read_optional(&mut r, IDS).expect("decodes");
+        let WireSlot::Stack(s) = slot else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.dyed_color, Some(0x00B0_2E26));
+        // The whole patch was consumed: nothing is left for a later entry to
+        // misread.
+        assert_eq!(r.remaining(), 0);
+    }
+
+    /// Absence is **not** a black dye. `getOrDefault` answers 0 for an absent
+    /// component, and 0 is what `getColorForLayer` reads as "undyed" — which
+    /// sends a dyeable layer to its `color_when_undyed` rather than tinting it
+    /// black.
+    #[test]
+    fn an_undyed_stack_carries_no_dye_rather_than_zero() {
+        install_test_shapes();
+        let raw = stack(1, 1, &[], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.dyed_color, None);
+        assert_eq!(rewo_data::equipment::dye_argb(s.components.dyed_color), 0);
+        // ...and a *black* dye is a real dye, distinct from absence.
+        assert_eq!(rewo_data::equipment::dye_argb(Some(0)), 0xFF00_0000);
     }
 
     fn varint(v: i32, out: &mut Vec<u8>) {

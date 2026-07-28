@@ -994,24 +994,59 @@ pub(crate) fn resolve_held_items<'a>(
 /// The **leggings take the inner sheet** and the other three the outer one —
 /// `usesInnerModel` is `slot == LEGS`, which is the whole reason two layer
 /// types exist.
+/// What each armour slot draws, head first — the atlas key and tint of every
+/// sub-layer that survives `getColorForLayer` (M46, dyed in M47).
 pub(crate) fn armor_keys<'a>(
     session: &PlaySession,
     id: i32,
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
-) -> [Option<&'a str>; 4] {
-    use rewo_data::equipment::ArmorLayer;
+) -> [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4] {
+    use rewo_data::equipment::{color_for_layer, dye_argb, ArmorLayer};
     let worn = session.world.entities.armor(id);
     std::array::from_fn(|i| {
-        let item = worn[i]?;
-        let asset = rewo_data::item_props_table::equip_asset(items.name(item)?)?;
+        let piece = worn[i]?;
+        let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
         // head 0, chest 1, legs 2, feet 3 — only the legs are inner.
         let layer = if i == 2 {
             ArmorLayer::Leggings
         } else {
             ArmorLayer::Humanoid
         };
-        equipment.key(asset, layer)
+        let dye = dye_argb(piece.dye);
+        let defs = equipment.layers(asset, layer);
+        if defs.len() > rewo_gpu::entities::MAX_ARMOR_SUBLAYERS {
+            log::warn!(
+                "armour: {asset} {:?} declares {} layers, drawing the first {}",
+                layer,
+                defs.len(),
+                rewo_gpu::entities::MAX_ARMOR_SUBLAYERS
+            );
+        }
+        let mut out = rewo_gpu::entities::ArmorPiece::default();
+        let mut n = 0;
+        for def in defs {
+            let color = color_for_layer(def.dyeable, dye);
+            // **Zero is not a black tint, it is no draw at all** — vanilla's
+            // `if (color != 0)`. An undyed `onlyIfDyed` layer lands here.
+            if color == 0 {
+                continue;
+            }
+            if n == rewo_gpu::entities::MAX_ARMOR_SUBLAYERS {
+                break;
+            }
+            out.layers[n] = Some((
+                def.key.as_str(),
+                [
+                    ((color >> 16) & 0xFF) as f32 / 255.0,
+                    ((color >> 8) & 0xFF) as f32 / 255.0,
+                    (color & 0xFF) as f32 / 255.0,
+                ],
+            ));
+            n += 1;
+        }
+        // Every layer suppressed is the same as no piece.
+        (n > 0).then_some(out)
     })
 }
 

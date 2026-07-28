@@ -24,6 +24,7 @@
 use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use rewo_data::assets;
+use rewo_data::equipment;
 use rewo_data::item_models::{
     resolve_definition, DisplayContext, ItemGeometry, ItemModel, SelectionContext,
 };
@@ -35,7 +36,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 42;
+const EXPECTED_WITNESSES: usize = 46;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -404,6 +405,54 @@ fn check_render(
     ));
     let view_proj = (proj * view).to_cols_array_2d();
     let right = dir.cross(up).normalize_or_zero().to_array();
+
+    // M47: the same draw, wearing a resolved armour piece. Takes the piece
+    // rather than an item name so the witness exercises the *renderer* with a
+    // known tint; the resolution from item to piece is graded separately.
+    let render_armor = |armor: [Option<rewo_gpu::entities::ArmorPiece<'_>>; 4],
+                        gpu: &mut Gpu,
+                        wr: &mut WorldRenderer,
+                        off: &mut Offscreen|
+     -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            armor,
+            pos: [0.0, 0.0, 0.0],
+            width: 0.6,
+            height: 1.8,
+            color: [1.0, 1.0, 1.0],
+            name: None,
+            kind: EntityModelKind::Player,
+            yaw: 0.0,
+            death_time: 0.0,
+            ground_item: None,
+            held_glint: [false; 2],
+            ground_glint: false,
+            ground_count: 0,
+            bob_offset: 0.0,
+            ground_seed: 0,
+            head_yaw: 0.0,
+            pitch: 0.0,
+            limb_swing: 0.0,
+            limb_amount: 0.0,
+            gesture: None,
+            events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+            shell: false,
+            allay_dance: None,
+            attack: rewo_gpu::mobs::SwingPose::NONE,
+            mob: rewo_gpu::mobs::MobCombat::default(),
+            hurt: false,
+            held: [None; 2],
+            arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+            skin_uv: None,
+            scale_mul: 1.0,
+            mount: None,
+            anim_id: 0.0,
+            light: [1.0, 1.0, 1.0],
+        };
+        wr.set_entities(&[d], right, up.to_array(), 0.0);
+        off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
+        off.read_rgba(gpu)
+    };
 
     let render_glint = |held: [Option<&str>; 2],
                         held_glint: [bool; 2],
@@ -863,6 +912,131 @@ fn check_render(
         mesh_says_humanoid.len() == 3 && none_wear.is_empty() && excluded > 60,
         format!(
             "{excluded} mob(s) wear nothing. {mesh_says_humanoid:?} carry humanoid              arms and would pass a mesh test, yet {none_wear:?} of the sampled              set wears armour — vanilla mentions `HumanoidArmorLayer` in eight              renderers and none of them is an illager, an allay or a creaking"
+        ),
+    );
+
+
+    // -- the leather dye (M47) ------------------------------------------------
+    //
+    // `getColorForLayer` is four lines and three cases, and the third one is
+    // the surprise: **zero means the layer does not draw**, which is the whole
+    // mechanism behind `Layer.onlyIfDyed`. Transcribed here independently of
+    // the shipped function.
+    let independent = |dyeable: Option<Option<u32>>, dye: u32| -> u32 {
+        match dyeable {
+            None => 0xFFFF_FFFF,
+            Some(undyed) => {
+                if dye != 0 {
+                    dye
+                } else {
+                    match undyed {
+                        Some(c) => 0xFF00_0000 | (c & 0xFF_FFFF),
+                        None => 0,
+                    }
+                }
+            }
+        }
+    };
+    let red = 0xFFB0_2E26u32;
+    let cases: [(Option<Option<u32>>, u32); 6] = [
+        (None, 0),
+        (None, red),
+        (Some(Some(equipment::LEATHER_COLOR)), 0),
+        (Some(Some(equipment::LEATHER_COLOR)), red),
+        (Some(None), 0),
+        (Some(None), red),
+    ];
+    let got: Vec<u32> = cases.iter().map(|&(d, y)| equipment::color_for_layer(d, y)).collect();
+    let want: Vec<u32> = cases.iter().map(|&(d, y)| independent(d, y)).collect();
+    c.record(
+        "d1.get_color_for_layer_matches_an_independent_transcription",
+        got == want
+            && got[0] == 0xFFFF_FFFF
+            && got[2] == 0xFF00_0000 | equipment::LEATHER_COLOR
+            && got[3] == red
+            && got[4] == 0,
+        format!(
+            "{got:02x?}. An absent `dyeable` is -1 (white, untinted); a dyeable \
+             base is its `color_when_undyed` until dyed and the dye after; and a \
+             dyeable with no `color_when_undyed` is **0**, which vanilla's \
+             `if (color != 0)` reads as do-not-draw"
+        ),
+    );
+
+    // The jar's own data, not a belief about it.
+    let leather = baked.equipment.layers("minecraft:leather", equipment::ArmorLayer::Humanoid);
+    let iron = baked.equipment.layers("minecraft:iron", equipment::ArmorLayer::Humanoid);
+    c.record(
+        "d2.only_leather_is_dyeable_and_it_is_a_base_plus_an_overlay",
+        leather.len() == 2
+            && leather[0].dyeable == Some(Some(equipment::LEATHER_COLOR))
+            && leather[1].dyeable.is_none()
+            && iron.len() == 1
+            && iron[0].dyeable.is_none(),
+        format!(
+            "leather {} layer(s) {:?}; iron {} layer(s) {:?}. The base carries \
+             `color_when_undyed` 0x{:06X} and the overlay carries no `dyeable` \
+             at all, so the overlay is never tinted — which is what keeps the \
+             studs and stitching their own colour on a dyed piece",
+            leather.len(),
+            leather.iter().map(|l| l.dyeable).collect::<Vec<_>>(),
+            iron.len(),
+            iron.iter().map(|l| l.dyeable).collect::<Vec<_>>(),
+            equipment::LEATHER_COLOR
+        ),
+    );
+
+    // An undyed leather piece is **brown**, not the greyscale its sheet is
+    // authored in — the bug M46 shipped with and this milestone closes.
+    let undyed = equipment::color_for_layer(leather[0].dyeable, equipment::dye_argb(None));
+    let dyed = equipment::color_for_layer(leather[0].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
+    let overlay_dyed = equipment::color_for_layer(leather[1].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
+    c.record(
+        "d3.an_undyed_leather_piece_is_brown_and_a_dye_moves_only_the_base",
+        undyed == 0xFF00_0000 | equipment::LEATHER_COLOR
+            && dyed == 0xFFB0_2E26
+            && overlay_dyed == 0xFFFF_FFFF,
+        format!(
+            "undyed base 0x{undyed:08X}, dyed base 0x{dyed:08X}, and the overlay \
+             stays 0x{overlay_dyed:08X} under the same dye. `dye_argb` puts the \
+             alpha on, because the component holds an RGB and \
+             `DyedItemColor.getOrDefault` is the one that calls `ARGB.opaque`"
+        ),
+    );
+
+    // ...and it reaches pixels. The same piece rendered undyed and dyed red
+    // must differ, and the dyed frame must be redder — measured as a channel
+    // ratio on the armour's own pixels, so it cannot be satisfied by drawing
+    // anything at all.
+    let piece = |tint: [f32; 3]| rewo_gpu::entities::ArmorPiece {
+        layers: [Some((leather[0].key.as_str(), tint)), None],
+    };
+    let brown = [0.627_451, 0.396_078_4, 0.250_980_4];
+    let f_brown = render_armor([None, Some(piece(brown)), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_red = render_armor([None, Some(piece([0.690_196, 0.180_392, 0.149_02])), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_none = render_armor([None; 4], &mut gpu, &mut wr, &mut off)?;
+    let armour_px = changed(&f_brown, &f_none);
+    let ratio = |img: &[u8], px: &[(u32, u32)]| -> (f64, f64) {
+        let (mut r, mut g, mut b) = (0f64, 0f64, 0f64);
+        for &(x, y) in px {
+            let i = (y as usize * W as usize + x as usize) * 4;
+            r += img[i] as f64;
+            g += img[i + 1] as f64;
+            b += img[i + 2] as f64;
+        }
+        (r / g.max(1.0), r / b.max(1.0))
+    };
+    let (br_rg, br_rb) = ratio(&f_brown, &armour_px);
+    let (rd_rg, rd_rb) = ratio(&f_red, &armour_px);
+    c.record(
+        "d4.the_tint_reaches_the_rendered_pixels",
+        !armour_px.is_empty() && f_red != f_brown && rd_rg > br_rg && rd_rb > br_rb,
+        format!(
+            "{} armour pixel(s); red/green {br_rg:.3} -> {rd_rg:.3} and red/blue \
+             {br_rb:.3} -> {rd_rb:.3} when the same sheet is drawn with the dye \
+             instead of `color_when_undyed`. The tint rides the **vertex \
+             colour**, which is where `submitModel`'s colour argument lands",
+            armour_px.len()
         ),
     );
 
