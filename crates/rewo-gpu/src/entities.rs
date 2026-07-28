@@ -91,6 +91,13 @@ pub struct ArmorPiece<'a> {
     /// is generated on first sighting into the demand-filled trim pool, so
     /// where it lives is decided at runtime.
     pub trim: Option<(u32, u32)>,
+    /// `ItemStack.hasFoil()` for the stack this piece came from (M50).
+    ///
+    /// One flag for the whole piece, not one per layer: `renderLayers` clears
+    /// `renderFoil` inside the loop, so the foil is submitted **once**, riding
+    /// the first layer that draws — and never for the trim, which is submitted
+    /// after the loop.
+    pub foil: bool,
 }
 
 /// One entity to draw this frame — position already frame-interpolated.
@@ -306,8 +313,13 @@ fn skin_slot_origin(i: u32) -> (u32, u32) {
 /// a second derivation that agrees today. M44 records the same rule for the
 /// hand; here the pose involves a death topple, a bob, a spin and a per-copy
 /// jitter, so a parallel derivation would be far easier to get subtly wrong.
+/// One glint **sheet** and its descriptor. The pipeline is not here: vanilla
+/// has a single `RenderPipelines.GLINT` that all four glint render types share
+/// and vary only by texture and texture-transform, so Rewo builds one too
+/// ([`EntityPass::glint_pipeline`]) and hangs both sheets off it. Two identical
+/// pipelines would also be two things to destroy, and M48's leak was exactly
+/// one pipeline that outlived its `destroy`.
 struct EntityGlint {
-    pipeline: vk::Pipeline,
     sampler: vk::Sampler,
     image: vk::Image,
     image_alloc: Option<gpu_allocator::vulkan::Allocation>,
@@ -320,6 +332,11 @@ pub(crate) struct GlintSink<'a> {
     pub verts: &'a mut Vec<Vertex>,
     /// `ENTITY_GLINT_TEXTURING`'s scrolling offsets for this frame.
     pub offsets: (f32, f32),
+    /// The `TextureTransform`'s scale. `GLINT_SCALE_ENTITY` (0.5) for an item
+    /// this entity holds or has dropped; `GLINT_SCALE_ARMOR` (0.16) for a worn
+    /// piece — the two glints share this sink and differ in the scale and the
+    /// sheet, which is the whole of `ARMOR_ENTITY_GLINT` against `ENTITY_GLINT`.
+    pub scale: f32,
 }
 
 impl GlintSink<'_> {
@@ -328,7 +345,7 @@ impl GlintSink<'_> {
     fn push(&mut self, pos: [f32; 3], uv: [f32; 2]) {
         self.verts.push(Vertex {
             pos,
-            uv: crate::gui_item::glint_uv(uv, self.offsets, crate::gui_item::GLINT_SCALE_ENTITY),
+            uv: crate::gui_item::glint_uv(uv, self.offsets, self.scale),
             // `GlintAlpha` rides in the alpha slot; the glint shader has no
             // lightmap term, so the light channels are unused here.
             color: [1.0, 1.0, 1.0, crate::gui_item::GLINT_STRENGTH],
@@ -407,10 +424,18 @@ pub struct EntityPass {
     set_layout: vk::DescriptorSetLayout,
     solid_pipeline: vk::Pipeline,
     text_pipeline: vk::Pipeline,
-    /// The glint's pipeline, sheet and descriptor set (M45). `None` when the
-    /// jar carried no glint texture, in which case none is drawn.
+    /// The glint pipeline, shared by both sheets (M50). Built by whichever of
+    /// the two `init_*_glint` calls runs first.
+    glint_pipeline: Option<vk::Pipeline>,
+    /// The item glint's sheet and descriptor set (M45) —
+    /// `misc/enchanted_glint_item.png`, over what an entity holds or has
+    /// dropped. `None` when the jar carried no such texture, in which case
+    /// none is drawn.
     glint: Option<EntityGlint>,
     glint_verts: u32,
+    /// The worn-armour glint's sheet (M50) — `misc/enchanted_glint_armor.png`.
+    armor_glint: Option<EntityGlint>,
+    armor_glint_verts: u32,
     trim_verts: u32,
     trim_pipeline: Option<vk::Pipeline>,
     pool: vk::DescriptorPool,
@@ -803,8 +828,11 @@ impl EntityPass {
                 set_layout,
                 solid_pipeline,
                 text_pipeline,
+                glint_pipeline: None,
                 glint: None,
                 glint_verts: 0,
+                armor_glint: None,
+                armor_glint_verts: 0,
                 trim_verts: 0,
                 trim_pipeline: Some(trim_pipeline),
                 pool,
@@ -1077,6 +1105,10 @@ impl EntityPass {
         // M48: the trim's own range. It depth-tests EQUAL against the armour
         // it decorates, so it cannot share the solid range's GREATER test.
         let mut trim_verts: Vec<Vertex> = Vec::new();
+        // M50: the worn-armour foil. A separate range from the item glint
+        // above because it samples a different sheet, which is a descriptor
+        // change and therefore a separate draw.
+        let mut armor_glint_verts: Vec<Vertex> = Vec::new();
         let glint_offsets = crate::gui_item::glint_offsets(
             (time as f64) * 1000.0,
             crate::gui_item::GLINT_SPEED,
@@ -1103,7 +1135,11 @@ impl EntityPass {
             // A dropped stack is drawn by `ItemEntityRenderer` and has no
             // model or capsule of its own — the item IS the entity (M24b).
             if let Some(name) = d.ground_item {
-                let mut sink = GlintSink { verts: &mut glint_verts, offsets: glint_offsets };
+                let mut sink = GlintSink {
+                    verts: &mut glint_verts,
+                    offsets: glint_offsets,
+                    scale: crate::gui_item::GLINT_SCALE_ENTITY,
+                };
                 self.emit_ground_item(
                     &mut verts,
                     d,
@@ -1115,8 +1151,28 @@ impl EntityPass {
                 continue;
             }
             if let Some(model) = &self.models[d.kind.index()] {
-                let mut sink = GlintSink { verts: &mut glint_verts, offsets: glint_offsets };
-                self.emit_model(&mut verts, &mut trim_verts, d, model, time, &mut cem_state, Some(&mut sink));
+                let mut sink = GlintSink {
+                    verts: &mut glint_verts,
+                    offsets: glint_offsets,
+                    scale: crate::gui_item::GLINT_SCALE_ENTITY,
+                };
+                // The armour foil's own sink: same scrolling clock, different
+                // sheet and a sixteenth-ish of the scale (0.16 against 0.5).
+                let mut armor_sink = GlintSink {
+                    verts: &mut armor_glint_verts,
+                    offsets: glint_offsets,
+                    scale: crate::gui_item::GLINT_SCALE_ARMOR,
+                };
+                self.emit_model(
+                    &mut verts,
+                    &mut trim_verts,
+                    d,
+                    model,
+                    time,
+                    &mut cem_state,
+                    Some(&mut sink),
+                    &mut armor_sink,
+                );
                 continue;
             }
             let base = d.color;
@@ -1168,21 +1224,31 @@ impl EntityPass {
             log::warn!("entities: vertex budget hit — some entities/tags dropped");
         }
 
-        // The glint rides after the tags and the trims after the glint, so
-        // the four ranges are solid | text | glint | trim in one buffer.
+        // Five ranges in one buffer: solid | text | glint | trim | armor_glint.
+        // The order here is storage, not draw order — `draw_armor_glint` runs
+        // before `draw_trim` because vanilla submits the foil under the trim.
         let text_end = verts.len();
         verts.append(&mut glint_verts);
         let glint_end = verts.len();
         verts.append(&mut trim_verts);
+        let trim_end = verts.len();
+        verts.append(&mut armor_glint_verts);
         self.solid_verts = solid as u32;
         self.text_verts = (text_end - solid) as u32;
         self.glint_verts = (glint_end - text_end) as u32;
-        self.trim_verts = (verts.len() - glint_end) as u32;
+        self.trim_verts = (trim_end - glint_end) as u32;
+        self.armor_glint_verts = (verts.len() - trim_end) as u32;
         let total = verts.len();
         if let Some(slice) = self.allocs[self.cursor]
             .as_mut()
             .and_then(|a| a.mapped_slice_mut())
         {
+            // Clamp to the buffer. The per-emitter `MAX_VERTS` guards bound
+            // each range on its own, but five ranges are appended after them,
+            // so their sum can exceed the allocation — and the copy below would
+            // panic rather than degrade. Whole vertices only, so a truncated
+            // frame drops geometry instead of corrupting it.
+            let total = total.min(MAX_VERTS);
             let bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(verts.as_ptr() as *const u8, total * VERTEX_STRIDE as usize)
             };
@@ -1322,6 +1388,7 @@ impl EntityPass {
         &self,
         verts: &mut Vec<Vertex>,
         trim_verts: &mut Vec<Vertex>,
+        armor_glint: &mut GlintSink<'_>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         xf: &[([[f32; 3]; 3], [f32; 3])],
@@ -1350,13 +1417,25 @@ impl EntityPass {
             // trim's colour is baked into its palette-permuted sprite.
             let dyed = piece.layers.iter().flatten().map(|(k, t)| (Some(*k), None, *t));
             let trimmed = piece.trim.into_iter().map(|o| (None, Some(o), [1.0f32; 3]));
+            // M50: `renderLayers` clears `renderFoil` inside the loop, so the
+            // foil is drawn **once per piece**, riding the first layer that
+            // draws — and the trim, submitted after the loop, never gets one.
+            // A glinting trim would be an invention; a second glint on
+            // leather's overlay layer would double an additive blend.
+            let mut foil_pending = piece.foil;
             for (key, trim_origin, tint) in dyed.chain(trimmed) {
-            let Some((ax, ay)) = (match (key, trim_origin) {
-                (Some(k), _) => self.armor_slots.get(k).map(|&(x, y, _, _)| (x, y)),
-                (_, o) => o,
+            let Some((ax, ay, sheet_w, sheet_h)) = (match (key, trim_origin) {
+                (Some(k), _) => self.armor_slots.get(k).copied(),
+                // A trim never carries the foil, so its sheet size is never
+                // read; the pool slot's own dimensions are the honest answer.
+                (_, Some((x, y))) => Some((x, y, TRIM_SLOT_W, TRIM_SLOT_H)),
+                _ => None,
             }) else {
                 continue;
             };
+            // This layer is the one the foil rides, if the piece has one.
+            let foil_here = foil_pending && trim_origin.is_none();
+            foil_pending &= !foil_here;
             // The trim goes to its own range: its depth test is EQUAL, so it
             // paints only where the armour it decorates already won.
             let verts: &mut Vec<Vertex> = if trim_origin.is_some() { trim_verts } else { verts };
@@ -1411,6 +1490,30 @@ impl EntityPass {
                             color: [shade * tint[0], shade * tint[1], shade * tint[2], 1.0],
                             light_hurt: [light_r, light_g, light_b, hurt],
                         });
+                        // M50: the foil, from the same `p4` at the same moment.
+                        // Its pipeline depth-tests EQUAL, so a position derived
+                        // a second time — however faithfully — would be rejected
+                        // fragment by fragment. M45 records the same rule.
+                        //
+                        // The UV is the quad's **own** `0..1` in its own sheet,
+                        // not its place in Rewo's atlas: vanilla feeds the glint
+                        // pass the model's `UV0`, which `ModelPart.Cube` already
+                        // divided by the 64x32 sheet. An atlas coordinate would
+                        // make the pattern depend on the packer.
+                        //
+                        // No tint. `RenderPipelines.GLINT` binds
+                        // `DefaultVertexFormat.POSITION_TEX` — no Color element,
+                        // so `BufferBuilder` drops the colour `submitModel` was
+                        // handed — `glint.vsh` declares no colour attribute, and
+                        // `RenderType.writeDynamicTransforms` writes
+                        // `ColorModulator` as WHITE. A dyed leather piece's foil
+                        // is the plain sheen.
+                        if foil_here {
+                            armor_glint.push(
+                                p4[i],
+                                [uvs[i][0] / sheet_w as f32, uvs[i][1] / sheet_h as f32],
+                            );
+                        }
                     }
                 }
             }
@@ -1427,6 +1530,7 @@ impl EntityPass {
         time: f32,
         cem_state: &mut std::collections::HashMap<u64, CemVars>,
         glint: Option<&mut GlintSink<'_>>,
+        armor_glint: &mut GlintSink<'_>,
     ) {
         let mut glint = glint;
         let theta = (180.0 - d.yaw).to_radians();
@@ -1587,7 +1691,7 @@ impl EntityPass {
         }
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
-        self.emit_armor(verts, trim_verts, d, model, &xf, s, st, ct, sr, cr);
+        self.emit_armor(verts, trim_verts, armor_glint, d, model, &xf, s, st, ct, sr, cr);
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.
@@ -1740,8 +1844,40 @@ impl EntityPass {
         if self.glint.is_some() {
             return Ok(());
         }
+        self.glint = Some(self.load_glint_sheet(gpu, rgba, w, h, color_format)?);
+        Ok(())
+    }
+
+    /// The same, for `misc/enchanted_glint_armor.png` (M50) — a second sheet on
+    /// the shared pipeline. Independent of [`Self::init_glint`]: a jar with one
+    /// texture and not the other draws the glint it has.
+    pub fn init_armor_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.armor_glint.is_some() {
+            return Ok(());
+        }
+        self.armor_glint = Some(self.load_glint_sheet(gpu, rgba, w, h, color_format)?);
+        Ok(())
+    }
+
+    /// Upload one glint sheet and point a descriptor set at it, building the
+    /// shared pipeline on the first call.
+    fn load_glint_sheet(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<EntityGlint, String> {
         let device = gpu.device.clone();
-        let (image, image_alloc, view) = create_texture(gpu, rgba, w, h)?;
+        let (image, image_alloc, view) = create_glint_texture(gpu, rgba, w, h)?;
         let sampler = unsafe {
             device
                 .create_sampler(
@@ -1792,21 +1928,36 @@ impl EntityPass {
                 &[],
             );
         }
-        let pipeline = build_glint_pipeline(&device, self.layout, color_format)?;
-        self.glint = Some(EntityGlint {
-            pipeline,
+        if self.glint_pipeline.is_none() {
+            self.glint_pipeline = Some(build_glint_pipeline(&device, self.layout, color_format)?);
+        }
+        Ok(EntityGlint {
             sampler,
             image,
             image_alloc: Some(image_alloc),
             view,
             pool,
             set,
-        });
-        Ok(())
+        })
     }
 
     pub fn glint_ready(&self) -> bool {
         self.glint.is_some()
+    }
+
+    pub fn armor_glint_ready(&self) -> bool {
+        self.armor_glint.is_some()
+    }
+
+    /// Vertices in the worn-armour foil range for the last [`Self::set_entities`].
+    ///
+    /// Exposed for `itemshot`, where "how much foil geometry was emitted" is
+    /// the exact property two of vanilla's rules are about — one foil per
+    /// piece however many layers it has, and none at all for the trim — and a
+    /// count states them without the pixel confounds of an additive blend
+    /// under an opaque decal. `handshot` counts its glint vertices the same way.
+    pub fn armor_glint_vertex_count(&self) -> u32 {
+        self.armor_glint_verts
     }
 
     /// The glint over held and dropped items. Drawn after the solid pass —
@@ -1819,16 +1970,73 @@ impl EntityPass {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let Some(g) = self.glint.as_ref() else {
+        self.draw_one_glint(
+            gpu,
+            cb,
+            view_proj,
+            extent,
+            self.glint.as_ref(),
+            self.glint_verts,
+            self.solid_verts + self.text_verts,
+        );
+    }
+
+    /// The glint over **worn armour** (M50). Same pipeline and the same
+    /// depth-`EQUAL` rule as the item glint — `RenderPipelines.GLINT` is
+    /// `DepthStencilState(CompareOp.EQUAL, false)` and both glints use it — over
+    /// a different sheet, at a different scale, from a different vertex range.
+    ///
+    /// Drawn **before** the trim: `renderLayers` submits layer, then foil, then
+    /// the trim, and `SubmitNodeStorage` keeps its phases in an
+    /// `Int2ObjectAVLTreeMap` keyed by that increasing `order`, so a trim's
+    /// opaque texels paint over the foil rather than under it.
+    ///
+    /// The `VIEW_OFFSET_Z_LAYERING` those render types carry is **not** what
+    /// separates the foil from the armour. `ARMOR_CUTOUT_NO_CULL`,
+    /// `ARMOR_DECAL_CUTOUT_NO_CULL` and `ARMOR_ENTITY_GLINT` all set it, all
+    /// with bias `1.0` on a fresh `getModelViewMatrixCopy()`, so it cancels
+    /// exactly within the stack — which is the only reason an `EQUAL` test can
+    /// work here at all. What it separates is the armour from the *body*, and
+    /// Rewo's armour is inflated geometry that already wins that comparison.
+    pub fn draw_armor_glint(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        self.draw_one_glint(
+            gpu,
+            cb,
+            view_proj,
+            extent,
+            self.armor_glint.as_ref(),
+            self.armor_glint_verts,
+            self.solid_verts + self.text_verts + self.glint_verts + self.trim_verts,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_one_glint(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+        sheet: Option<&EntityGlint>,
+        verts: u32,
+        first: u32,
+    ) {
+        let (Some(g), Some(pipeline)) = (sheet, self.glint_pipeline) else {
             return;
         };
-        if self.glint_verts == 0 {
+        if verts == 0 {
             return;
         }
         unsafe {
             self.bind_common(gpu, cb, view_proj, extent);
             let device = &gpu.device;
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, g.pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             // The glint sheet, not the entity atlas — `bind_common` bound the
             // latter, so this overrides it for these draws only.
             device.cmd_bind_descriptor_sets(
@@ -1839,13 +2047,7 @@ impl EntityPass {
                 &[g.set],
                 &[],
             );
-            device.cmd_draw(
-                cb,
-                self.glint_verts,
-                1,
-                self.solid_verts + self.text_verts,
-                0,
-            );
+            device.cmd_draw(cb, verts, 1, first, 0);
         }
     }
 
@@ -1898,8 +2100,11 @@ impl EntityPass {
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         unsafe {
             let device = &gpu.device;
-            if let Some(mut g) = self.glint.take() {
-                device.destroy_pipeline(g.pipeline, None);
+            // Both sheets, then the one pipeline they share. M48's leak was a
+            // pipeline that outlived its `destroy` and showed up only as a
+            // `vkDestroyDevice` VUID with every witness still green.
+            for sheet in [self.glint.take(), self.armor_glint.take()] {
+                let Some(mut g) = sheet else { continue };
                 device.destroy_descriptor_pool(g.pool, None);
                 device.destroy_sampler(g.sampler, None);
                 device.destroy_image_view(g.view, None);
@@ -1907,6 +2112,9 @@ impl EntityPass {
                 if let Some(a) = g.image_alloc.take() {
                     let _ = gpu.allocator.free(a);
                 }
+            }
+            if let Some(p) = self.glint_pipeline.take() {
+                device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
@@ -3908,13 +4116,39 @@ pub(crate) fn create_texture(
     width: u32,
     height: u32,
 ) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
+    create_texture_fmt(gpu, rgba, width, height, vk::Format::R8G8B8A8_SRGB)
+}
+
+/// A glint sheet, uploaded **UNORM** (M50).
+///
+/// Vanilla binds no sRGB texture views, so its `texture(Sampler0, ...)` hands
+/// `core/glint.fsh` the raw byte/255 and every number downstream — including
+/// the `(SRC_COLOR, ONE)` square — is gamma-encoded. Sampling the same sheet
+/// through an sRGB view would hand the shader a linearised value instead, and
+/// squaring that is a different quantity entirely.
+pub(crate) fn create_glint_texture(
+    gpu: &mut Gpu,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
+    create_texture_fmt(gpu, rgba, width, height, vk::Format::R8G8B8A8_UNORM)
+}
+
+fn create_texture_fmt(
+    gpu: &mut Gpu,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    format: vk::Format,
+) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
     unsafe {
         let device = gpu.device.clone();
         let image = device
             .create_image(
                 &vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_2D)
-                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .format(format)
                     .extent(vk::Extent3D {
                         width,
                         height,
@@ -4067,7 +4301,7 @@ pub(crate) fn create_texture(
                 &vk::ImageViewCreateInfo::default()
                     .image(image)
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .format(format)
                     .subresource_range(range),
                 None,
             )

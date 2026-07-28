@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M49 shipped and headlessly verified (2026-07-28).**
+**Status: M0–M50 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -67,6 +67,21 @@ dyed, it is trimmed, and the trim shows on the icon.
   `paletted_permutations` source generates them. `assetId(equipmentAsset)` is
   what stops a same-material trim vanishing. Drawn depth-**EQUAL** over the
   armour, as a fourth vertex range.
+- **M50 the worn-armour glint** — and the finding under it. Two of the facts
+  gathered in advance were wrong: `VIEW_OFFSET_Z_LAYERING` is carried by *all
+  three* armour render types, so it cancels within the stack and the foil is an
+  ordinary depth-EQUAL pass; and the foil is **untinted**, because
+  `RenderPipelines.GLINT` binds `POSITION_TEX`, which has no Color element.
+  Then the real work: the foil rendered a byte-delta of **exactly 0**, because
+  the glint's blend squares its input and **squaring is not invariant under the
+  sRGB transfer function** — vanilla evaluates it in gamma space and Rewo was
+  blending in linear. No fixed-function blend can bridge that (every candidate
+  needs to read the destination), so the glint now renders through a **UNORM
+  view of the same image**. The item glint had carried the same error since M43
+  and hid it, because a dropped stack sits against a dark background where the
+  sRGB curve is steep. **When an effect is provably drawn and provably
+  invisible, ask what space its blend is in** — the arc's fourth "the whole
+  story was one line of pipeline state".
 - **M49 trims on GUI icons**, including the bake refactor: variants live under a
   composed `"<item>#<material id>"` key rather than the map's key becoming a
   pair. **The bug that hid the whole feature** was a depth comparison: a
@@ -76,8 +91,8 @@ dyed, it is trimmed, and the trim shows on the icon.
   this arc a depth comparison was the whole story** — reach for it first when
   geometry is provably present and provably invisible.
 
-**Verified at `12ecb1f`:** 633 tests, zero failures; seventeen serverless gates
-green with Vulkan validation ON and 0 VUIDs (`itemshot` 54, `inventoryshot` 91,
+**Verified at M50:** 633 tests, zero failures; seventeen serverless gates
+green with Vulkan validation ON and 0 VUIDs (`itemshot` 62, `inventoryshot` 91,
 `blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
 `handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
 12, `mobshot` 243/243, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`
@@ -85,19 +100,22 @@ and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`, byte-identical since M15.
 
 ### What to do next
 
-**M50 — the worn-armour glint** is the natural next step and its facts are
-already gathered (§15, "M50 — the armour glint: the facts"). Read that entry
-before writing code; one of its findings changes the milestone's shape.
+**M50 is done** — the worn-armour glint, and with it the glint's colour space.
+Pick the next milestone from §16, or `REWO_FEATURE_SURVEY.md` for the next
+*feature* rather than the next milestone.
 
-The short version: **the trim must not glint** (`renderFoil` is cleared before
-the trim is submitted, so a glinting trim is an invention), and what is missing
-is the armour glint itself. It needs a **different sheet**
-(`misc/enchanted_glint_armor.png`), **scale 0.16**, the layer's colour as its
-tint, and — unlike every glint Rewo has shipped — **`VIEW_OFFSET_Z_LAYERING`**,
-a projection nudge toward the viewer rather than a depth-EQUAL pass. **Settle
-that last one first**; it is the one mechanism here Rewo has no precedent for.
-Structurally it is a second `EntityGlint` plus a fifth vertex range, the same
-shape as M48's fourth.
+Two things M50 leaves behind that a fresh session should know:
+
+- **The glint now renders through a UNORM view of the colour target**, because
+  its `(SRC_COLOR, ONE)` blend squares its input and vanilla evaluates that in
+  gamma space. On a device without `VK_KHR_swapchain_mutable_format` there is no
+  such view and **no glint is drawn at all**. If glints ever go missing, check
+  that first.
+- **A frame-diff against this test world is not a usable oracle.** M50's live
+  control run (same item twice) differed in 41,284 pixels against the test's
+  16,329 — noise larger than signal, almost certainly the entity-atlas collision
+  M46 records. Verify live paths by a *property* (a decoded value, a count), not
+  by diffing two frames.
 
 If something else is wanted instead, `REWO_FEATURE_SURVEY.md` picks the next
 *feature* rather than the next milestone.
@@ -6414,7 +6432,164 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
-### M50 — the armour glint: the facts, not the code (2026-07-28)
+### M50 — the worn-armour glint, and the glint's colour space (2026-07-28)
+
+Shipped. The milestone the facts entry below predicted turned out to be a small
+thing wrapped around a much larger one: the armour foil itself is a second sheet
+and a fifth vertex range, but making it *visible* meant putting every glint's
+blend back into the space vanilla evaluates it in.
+
+#### Two of the recorded facts were wrong, and the decompile says so plainly
+
+**`VIEW_OFFSET_Z_LAYERING` is not the glint's mechanism.** All three armour
+render types carry it — `ARMOR_CUTOUT_NO_CULL` (`RenderTypes.java:38`),
+`ARMOR_DECAL_CUTOUT_NO_CULL` (`:410`) and `ARMOR_ENTITY_GLINT` (`:243`) — each
+applying the same bias to a fresh `getModelViewMatrixCopy()`, so it **cancels
+exactly within the armour stack**. What it separates is the armour from the
+*body*, not the foil from the armour. And `RenderPipelines.GLINT` is
+`DepthStencilState(CompareOp.EQUAL, false)`: the foil *is* a depth-EQUAL pass,
+the same one Rewo had shipped three times. That cancellation is the only reason
+an EQUAL test can work there at all.
+
+For `PERSPECTIVE` the nudge is `matrix.scale(1 - 1/4096)` on the **modelview**,
+which is a uniform scale about the camera — a slide along the view ray. The
+perspective divide cancels it in x and y (`a·k·x / −k·z`), so it moves depth and
+nothing else, which is what "view offset Z" means.
+
+**The foil is untinted.** The facts entry had it carrying the layer's colour.
+Three independent confirmations: `RenderPipelines.GLINT` binds
+`DefaultVertexFormat.POSITION_TEX` — Position and UV0, **no Color element** —
+and `BufferBuilder.beginElement` returns `UNKNOWN_ELEMENT` for an absent one, so
+`setColor` is a no-op; `glint.vsh` declares only `in vec3 Position; in vec2
+UV0;`; and `RenderType.writeDynamicTransforms` calls the `(Matrix4f, Matrix4f)`
+overload, which writes `ColorModulator` as **WHITE**. The `color` argument
+reaches the glint's `submitModel` and is dropped. A dyed leather chestplate's
+foil is the plain sheen.
+
+The one fact that held is the headline: **the trim must not glint**.
+`renderLayers` clears `renderFoil` inside the layer loop and submits the trim
+after it, so the foil rides the first layer that draws, once, and the trim never
+gets one.
+
+#### The glint's blend does not survive a colour-space change
+
+The armour foil went in structurally correct — geometry, depth, UVs and sheet
+all verified — and rendered a byte-delta of **exactly 0**. Not a threshold
+artefact; nothing at all.
+
+`BlendFunction.GLINT` is `(SRC_COLOR, ONE, ZERO, ONE)`, so the contribution is
+`src²`, and vanilla evaluates that in **gamma** space: Minecraft binds no sRGB
+framebuffer and no sRGB texture view, so both the sampled texel and the
+destination are gamma-encoded numbers. Rewo works in linear light. **Squaring is
+not invariant under the transfer function.** A mid armour-glint texel (byte 85)
+adds `(0.333 × 0.75)² = 0.0625` in gamma — **+16/255** on a bright chestplate —
+against `(0.0925 × 0.75)² = 0.0048` in linear, which is +0.9/255 and quantises
+away. The item glint had the same error since M43 and hid it, because a dropped
+stack sits against a *dark* background where the sRGB curve is steep enough to
+make a tiny linear increment visible: measured side by side on one frame, item
+glint max byte delta **137**, armour foil **0**.
+
+**No fixed-function blend can fix it.** `(SRC_COLOR, ONE)` gives `dst + out²`,
+needing `out² = to_linear(to_srgb(dst) + g²) − dst`; `(DST_COLOR, ONE)` gives
+`dst·(1 + out)`, needing `out = 2.4·g²/to_srgb(dst)`. Both require reading the
+destination, which a fragment shader cannot do here. An intermediate attempt
+that emitted `sqrt(to_linear(g²))` is exact against black and falls away as the
+destination brightens — it left iron still byte-identical — and was dropped.
+
+So the glint renders **through a UNORM view of the same image**: the offscreen
+image and the swapchain are created `MUTABLE_FORMAT` with a format list naming
+both, `world::draw` closes the surrounding rendering scope around each glint
+draw and reopens it against the UNORM view (`LOAD`/`STORE` on both attachments,
+so the depth the solid pass wrote survives for the EQUAL test), and the sheets
+upload UNORM so `texture()` hands the shader vanilla's raw byte/255. Both glint
+shaders are then vanilla's line verbatim, needing no conversion in either
+direction. `VK_KHR_swapchain_mutable_format` is an extension rather than core;
+without it there is no gamma target and **no glint is drawn**, the same
+degradation as a missing sheet.
+
+#### The milestone proper
+
+One `EntityGlint` per sheet over one shared pipeline (vanilla has a single
+`RenderPipelines.GLINT` behind all four glint render types); a fifth vertex
+range, `solid | text | glint | trim | armor_glint`; and `draw_armor_glint`
+before `draw_trim`, because `renderLayers` submits layer, foil, trim at
+increasing `order` and `SubmitNodeStorage` keeps its phases in an
+`Int2ObjectAVLTreeMap` — a sorted map, drained ascending — so a trim's opaque
+texels paint over the foil. The foil quads are pushed from inside the armour
+emitter, beside the vertex they shadow, for the reason M45 records: the pass
+depth-tests EQUAL, so a position derived a second time would be rejected
+fragment by fragment. Their UV is the quad's own `0..1` in its own **64×32**
+sheet, which is what `ModelPart.Cube` already divided by.
+
+#### Three detector errors, all mine
+
+The pattern M38 named recurred, and each was caught by measuring rather than
+looking. `a3` used `changed`, whose `> 8` threshold was built for the item glint
+against a dark background, and read a real 5/255 sheen as nothing. `a5` compared
+a ~0.005 linear contribution *per channel* through an 8-bit sRGB pipe where one
+LSB at that brightness is ~0.006 — the quantisation step was larger than the
+signal. And its first fixture used brown against red leather, both bright enough
+that red and green pinned at 255 and were skipped, so it measured **exactly
+zero** in two of three channels. The fix moved the measurement into the space
+the blend now works in: vanilla's add is base-independent **in bytes**, so the
+byte delta between two dyes is the property — and it comes out **0**.
+
+A hue ratio would not have worked either: `enchanted_glint_armor.png` is
+blue-dominant (mean R18 G7 B46), and at scale 0.16 the patch each face samples
+is blue-only, so red/green is 0/0.
+
+#### Verified
+
+`itemshot --check` **54 → 62**. Eight new witnesses: the armour foil has its own
+sheet; its own texture scale (0.16 against the entity glint's 0.5, a factor of
+3.125); it lands on the armour's own fragments and nowhere else (3,475 pixels, 0
+strays); the same piece unenchanted twice is byte-identical; it is not tinted by
+the layer's colour (byte contribution differs by **at most 0** between two
+opposite dyes); one foil per piece however many layers it draws (108 vertices
+for one layer and for two); the trim never glints (a trimmed enchanted piece
+emits the same 108, a trimmed unenchanted one emits 0); and the trim paints over
+the foil, measured on 870 pixels identified as fully-opaque trim by rendering
+the same trim over two different armour colours and taking where they agree.
+
+**633 tests**; all seventeen gates green with Vulkan validation ON and **0
+VUIDs**; demo PNG SHA-256 `2cc56b4a…`, byte-identical since M15.
+
+#### The live check, and what it could not do
+
+The wire path is the one thing the gate cannot cover — it constructs
+`ArmorPiece` directly — so it was verified live: an enchanted chestplate on a
+summoned zombie decodes `ench=[(28, 4)]` off the equipment packet's component
+patch and reaches the renderer with `foil=true`, where a plain one does not.
+
+**The frame diff was rejected as an oracle.** Enchanted-against-plain changed
+16,329 pixels; a same-item control run changed **41,284** — the noise exceeded
+the signal, so the number means nothing. That is M37's rule (a frame-diff
+witness must hold everything but the subject constant) and its diagnostic tell.
+The likely source is the pre-existing entity-atlas collision M46 records, which
+makes a mob's texture vary run to run.
+
+**And the first live run failed on the harness, not the client.** The summon
+used the pre-1.21.5 `enchantments:{levels:{…}}` wrapper; 26.2's
+`ItemEnchantments` codec takes the map directly, so the server silently produced
+an *unenchanted* chestplate, and the component id that showed up was a stale
+entity's trim. Cross-checking Rewo's id table against the datagen report —
+`swing_animation` 40, `damage` 3, `charged_projectiles` 49, `dyed_color` 44, all
+exact — is what pointed at the command rather than the decoder. Same shape as
+M35's click against a stale state id and M20.1's build gate.
+
+#### Open
+
+- The glint is dropped entirely on a device without
+  `VK_KHR_swapchain_mutable_format`. Every desktop driver we target advertises
+  it; a fallback would need the gamma-space add done somewhere it can read the
+  destination.
+- The gamma-space transcription is exact for the *blend*; Rewo's remaining
+  colour handling is unchanged, so this closes the glint's discrepancy and says
+  nothing about any other additive effect.
+- No `humanoid_baby` layer, and `usePlayerTexture` (the elytra cape) is still
+  read as data and never honoured — both inherited from M46/M47.
+
+### M50 (superseded) — the armour glint: the facts, not the code (2026-07-28)
 
 **Not implemented.** Established from the 26.2 decompile and jar; the build is a
 fresh session's work. Recorded because one of these facts changes what the

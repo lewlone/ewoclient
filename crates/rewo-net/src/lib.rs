@@ -1582,6 +1582,10 @@ pub(crate) fn apply_set_equipment(
                     item: s.item_id,
                     dye: s.components.dyed_color,
                     trim: s.components.trim,
+                    // M50: the same `hasFoil` a held stack resolves, which is
+                    // `ENCHANTMENT_GLINT_OVERRIDE` when present and
+                    // `!enchantments.isEmpty()` otherwise.
+                    foil: s.components.has_foil(),
                 }),
             };
             entities.set_armor(eid, index, worn);

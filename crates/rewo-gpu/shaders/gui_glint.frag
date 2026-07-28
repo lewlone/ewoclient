@@ -13,6 +13,17 @@
 // The blend is what makes it a sheen rather than a wash: `SRC_COLOR, ONE` on
 // colour, so the glint's own brightness scales its contribution and it only
 // ever *adds*. A dark texel adds nothing; a bright one blooms.
+//
+// M50 — **this runs in gamma space**, and that is load-bearing rather than
+// incidental. `BlendFunction.GLINT` is `(SRC_COLOR, ONE)`, so the contribution
+// is `src²`, and squaring is not invariant under the sRGB transfer function:
+// blended into an sRGB attachment the same expression loses almost all of the
+// sheen (a worn armour foil measured a byte-delta of exactly 0). Vanilla binds
+// no sRGB framebuffer and no sRGB texture view, so both the sampled texel and
+// the destination are gamma-encoded numbers — and Rewo reproduces that by
+// rendering the glint through a UNORM view of the same image and uploading the
+// sheet UNORM. So the line below is vanilla's, verbatim, and needs no
+// conversion in either direction.
 
 layout(set = 0, binding = 0) uniform sampler2D u_glint;
 

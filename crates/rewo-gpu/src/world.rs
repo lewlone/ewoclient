@@ -45,6 +45,33 @@ pub struct OwnedTextLine {
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
+/// The attachment views the glint's gamma-space scope needs (M50).
+///
+/// `color_srgb` is the view the surrounding scope was opened with and the one
+/// `draw` must leave open; `color_unorm` is a second view of the **same image**
+/// in the non-sRGB counterpart format, which is where the glint blends.
+#[derive(Clone, Copy)]
+pub struct GammaScope {
+    pub color_srgb: vk::ImageView,
+    pub color_unorm: vk::ImageView,
+    pub depth: vk::ImageView,
+}
+
+/// The non-sRGB counterpart of an sRGB attachment format.
+///
+/// Same bit layout, no transfer function on store — so a shader writing the
+/// identical value produces the identical bytes, and the fixed-function blender
+/// operates on the gamma-encoded numbers exactly as vanilla's does.
+pub fn unorm_of(format: vk::Format) -> Option<vk::Format> {
+    match format {
+        vk::Format::R8G8B8A8_SRGB => Some(vk::Format::R8G8B8A8_UNORM),
+        vk::Format::B8G8R8A8_SRGB => Some(vk::Format::B8G8R8A8_UNORM),
+        // Already linear-encoded: the blend is in gamma space by construction.
+        vk::Format::R8G8B8A8_UNORM | vk::Format::B8G8R8A8_UNORM => Some(format),
+        _ => None,
+    }
+}
+
 // -- Arena capacity facts (public so tooling can report utilization without
 //    duplicating these numbers; see `rewo bench --mesh-runs`). Changing a value
 //    here changes the allocator, not just the report. --------------------------
@@ -475,6 +502,8 @@ pub struct WorldRenderer {
     count_readback_alloc: Option<Allocation>,
     // -- entities + HUD (optional passes; drawn after terrain in `draw`) --
     color_format: vk::Format,
+    /// This frame's attachment views for the glint's gamma-space scope (M50).
+    gamma: Option<GammaScope>,
     entities: Option<EntityPass>,
     /// Sun/moon/star pass (M12), drawn between the gradient sky and terrain.
     /// `None` when celestial textures were unavailable (degrade to bare sky).
@@ -1029,6 +1058,7 @@ impl WorldRenderer {
                 count_readback,
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
+                gamma: None,
                 entities: None,
                 celestial: None,
                 celestial_state: crate::celestial::CelestialState::default(),
@@ -1422,7 +1452,12 @@ impl WorldRenderer {
         w: u32,
         h: u32,
     ) -> Result<(), String> {
-        let format = self.color_format;
+        // M50: the glint renders into the UNORM view, so its pipeline must
+        // declare that format. No counterpart format means no gamma-space
+        // target, and the glint is dropped rather than blended in linear light.
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
         match self.hand.as_mut() {
             Some(p) => p.init_glint(gpu, rgba, w, h, format),
             None => Ok(()),
@@ -1526,7 +1561,12 @@ impl WorldRenderer {
         w: u32,
         h: u32,
     ) -> Result<(), String> {
-        let format = self.color_format;
+        // M50: the glint renders into the UNORM view, so its pipeline must
+        // declare that format. No counterpart format means no gamma-space
+        // target, and the glint is dropped rather than blended in linear light.
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
         match self.gui_items.as_mut() {
             Some(p) => p.init_glint(gpu, rgba, w, h, format),
             None => Ok(()),
@@ -1653,9 +1693,112 @@ impl WorldRenderer {
         w: u32,
         h: u32,
     ) -> Result<(), String> {
-        let format = self.color_format;
+        // M50: the glint renders into the UNORM view, so its pipeline must
+        // declare that format. No counterpart format means no gamma-space
+        // target, and the glint is dropped rather than blended in linear light.
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
         match self.entities.as_mut() {
             Some(p) => p.init_glint(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
+    /// Re-open the surrounding rendering scope against `view`, preserving both
+    /// attachments (M50).
+    ///
+    /// `LOAD`/`STORE` on both, and no clear: the colour already holds the frame
+    /// so far, and the depth already holds what the solid pass wrote — which is
+    /// the whole point, since the glint depth-tests `EQUAL` against it.
+    unsafe fn reopen_scope(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        color: vk::ImageView,
+        depth: vk::ImageView,
+    ) {
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(color)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE);
+        let depth_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(depth)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE);
+        let info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D::default().extent(extent))
+            .layer_count(1)
+            .color_attachments(std::slice::from_ref(&color_attachment))
+            .depth_attachment(&depth_attachment);
+        gpu.device.cmd_begin_rendering(cb, &info);
+    }
+
+    /// Run `f` with the colour attachment swapped for its UNORM view, so the
+    /// fixed-function blend inside sees gamma-encoded numbers — vanilla's
+    /// space. A no-op (and `f` is skipped) when there is no such view: a glint
+    /// blended in linear light is wrong rather than merely dimmer.
+    fn in_gamma_space(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        f: impl FnOnce(),
+    ) {
+        let Some(g) = self.gamma else {
+            return;
+        };
+        unsafe {
+            gpu.device.cmd_end_rendering(cb);
+            self.reopen_scope(gpu, cb, extent, g.color_unorm, g.depth);
+            f();
+            gpu.device.cmd_end_rendering(cb);
+            self.reopen_scope(gpu, cb, extent, g.color_srgb, g.depth);
+        }
+    }
+
+    /// This frame's attachment views, for the glint's gamma-space scope (M50).
+    ///
+    /// `None` — no mutable-format target — draws no glint at all. Set by
+    /// whoever owns the attachments, which is the caller: `draw` runs inside a
+    /// rendering scope it did not begin, and to put the glint's blend in
+    /// vanilla's space it has to close that scope, reopen it against the UNORM
+    /// view, and hand it back unchanged.
+    pub fn set_gamma_scope(&mut self, scope: Option<GammaScope>) {
+        self.gamma = scope;
+    }
+
+    /// Vertices in the worn-armour foil range after the last `set_entities`
+    /// (M50). `0` with no entity pass. See
+    /// [`crate::entities::EntityPass::armor_glint_vertex_count`].
+    pub fn armor_glint_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.armor_glint_vertex_count())
+            .unwrap_or(0)
+    }
+
+    /// Upload `misc/enchanted_glint_armor.png` for the worn-armour foil (M50).
+    /// Separate from [`Self::init_entity_glint`] because it is a separate
+    /// sheet; they share the pipeline underneath.
+    pub fn init_entity_armor_glint(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        // M50: the glint renders into the UNORM view, so its pipeline must
+        // declare that format. No counterpart format means no gamma-space
+        // target, and the glint is dropped rather than blended in linear light.
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
+        match self.entities.as_mut() {
+            Some(p) => p.init_armor_glint(gpu, rgba, w, h, format),
             None => Ok(()),
         }
     }
@@ -2250,15 +2393,24 @@ impl WorldRenderer {
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
-            // The armour trim, then the glint. Both depth-test `EQUAL` against
-            // the solid geometry just written, so both must follow it; the
-            // trim comes first because vanilla draws it as another armour
-            // layer, under the foil rather than over it.
+            // M50: the worn-armour foil, then the trim. All three depth-test
+            // `EQUAL` against the solid geometry just written, so all three
+            // must follow it — and the foil precedes the trim because
+            // `renderLayers` submits layer, foil, trim in that order and
+            // `SubmitNodeStorage` drains its phases in ascending `order`. A
+            // trim's opaque texels therefore paint over the foil.
+            // Both foils blend in gamma space; the trim between them is an
+            // ordinary alpha blend and stays in the sRGB scope.
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_armor_glint(gpu, cb, view_proj, extent)
+            });
             pass.draw_trim(gpu, cb, view_proj, extent);
             // The glint sits on the solid geometry it just wrote — its depth
             // test is `EQUAL`, so it has to follow, and it precedes the
             // translucent passes because it is additive over opaque pixels.
-            pass.draw_glint(gpu, cb, view_proj, extent);
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_glint(gpu, cb, view_proj, extent)
+            });
         }
         // End portals (M32). After solid geometry and before the translucent
         // pass: the shader writes opaque pixels and depth, so it belongs with
@@ -2304,7 +2456,7 @@ impl WorldRenderer {
                 vk::Rect2D::default().extent(extent),
             );
             pass.draw(gpu, cb, vp, extent);
-            pass.draw_glint(gpu, cb, vp, extent);
+            self.in_gamma_space(gpu, cb, extent, || pass.draw_glint(gpu, cb, vp, extent));
         }
         // HUD, then the inventory screen over it, then text — all screen
         // space. The item icons are one pass drawn once, so when the screen is
@@ -2330,7 +2482,7 @@ impl WorldRenderer {
             if screen.is_none() {
                 if let Some(items) = &self.gui_items {
                     items.draw(gpu, cb, extent);
-                    items.draw_glint(gpu, cb, extent);
+                    self.in_gamma_space(gpu, cb, extent, || items.draw_glint(gpu, cb, extent));
                 }
                 // A hotbar bar goes over its icon, same as in the screen.
                 if let Some(pass) = &self.container {
@@ -2349,7 +2501,7 @@ impl WorldRenderer {
             }
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);
-                items.draw_glint(gpu, cb, extent);
+                self.in_gamma_space(gpu, cb, extent, || items.draw_glint(gpu, cb, extent));
             }
             pass.draw_front(gpu, cb, extent);
             pass.draw_bars(gpu, cb, extent);

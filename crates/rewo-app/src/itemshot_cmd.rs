@@ -36,7 +36,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 54;
+const EXPECTED_WITNESSES: usize = 62;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -404,6 +404,13 @@ fn check_render(
     // exactly how this line came to be here.
     if let Some(g) = baked.glint.as_ref() {
         wr.init_entity_glint(&mut gpu, &g.rgba, g.w, g.h)?;
+    }
+    // M50: the worn-armour foil is a *second* sheet, and it needs its own line
+    // here for the same reason the first one did. This is the general rule, not
+    // an accident twice over: a gate that reimplements a slice of the app's
+    // setup misses whatever the app later adds to it.
+    if let Some(g) = baked.armor_glint.as_ref() {
+        wr.init_entity_armor_glint(&mut gpu, &g.rgba, g.w, g.h)?;
     }
     wr.set_held_items(crate::live_cmd::to_gpu_held_items(&baked.held_items));
 
@@ -1025,6 +1032,7 @@ fn check_render(
     let piece = |tint: [f32; 3]| rewo_gpu::entities::ArmorPiece {
         layers: [Some((leather[0].key.as_str(), tint)), None],
         trim: None,
+        foil: false,
     };
     let brown = [0.627_451, 0.396_078_4, 0.250_980_4];
     let f_brown = render_armor([None, Some(piece(brown)), None, None], &mut gpu, &mut wr, &mut off)?;
@@ -1233,6 +1241,7 @@ fn check_render(
     let bare = rewo_gpu::entities::ArmorPiece {
         layers: [Some((iron_key.as_str(), [1.0; 3])), None],
         trim: None,
+        foil: false,
     };
     let trimmed = rewo_gpu::entities::ArmorPiece {
         trim: trim_origin,
@@ -1301,6 +1310,265 @@ fn check_render(
             "{} pixels differ with the main hand's flag set and {} with the *off*              hand's - the flag is per hand, and the off hand is empty here, so              setting it changes nothing at all",
             changed(&h_main, &h_plain).len(),
             changed(&h_off, &h_plain).len()
+        ),
+    );
+
+    // -- the worn-armour glint (M50) ------------------------------------------
+    //
+    // `ARMOR_ENTITY_GLINT` differs from the `ENTITY_GLINT` above in three
+    // things and one non-thing. The three: its own sheet
+    // (`misc/enchanted_glint_armor.png`), scale **0.16** against 0.5, and
+    // `renderLayers`' rules about which submit carries the foil. The non-thing
+    // is `VIEW_OFFSET_Z_LAYERING` — `ARMOR_CUTOUT_NO_CULL`,
+    // `ARMOR_DECAL_CUTOUT_NO_CULL` and `ARMOR_ENTITY_GLINT` all set it, with
+    // the same bias applied to a fresh `getModelViewMatrixCopy()`, so it
+    // cancels exactly within the armour stack. That cancellation is the only
+    // reason `RenderPipelines.GLINT`'s `DepthStencilState(CompareOp.EQUAL,
+    // false)` can land the foil on the armour at all, and a3 is what measures
+    // that it does.
+    let sheets = match (baked.glint.as_ref(), baked.armor_glint.as_ref()) {
+        (Some(i), Some(a)) => Some((i, a)),
+        _ => None,
+    };
+    c.record(
+        "a1.the_armour_foil_has_its_own_sheet",
+        sheets.is_some_and(|(i, a)| (i.w, i.h) != (a.w, a.h) || i.rgba != a.rgba),
+        match sheets {
+            Some((i, a)) => format!(
+                "enchanted_glint_item.png is {}x{} and enchanted_glint_armor.png is \
+                 {}x{}, and they are different images. The worn foil is not the item \
+                 foil at another scale — `ARMOR_ENTITY_GLINT` binds a second texture",
+                i.w, i.h, a.w, a.h
+            ),
+            None => "one of the two glint sheets is missing from the jar".to_string(),
+        },
+    );
+
+    // Its own texture scale, the same way n1 states the entity glint's.
+    let scale_armor = rewo_gpu::gui_item::GLINT_SCALE_ARMOR;
+    let uv_armor = rewo_gpu::gui_item::glint_uv([1.0, 0.0], (0.0, 0.0), scale_armor);
+    c.record(
+        "a2.the_armour_glint_uses_its_own_texture_scale",
+        scale_armor == 0.16 && (uv_entity[0] / uv_armor[0] - 3.125).abs() < 1e-3,
+        format!(
+            "armour {scale_armor} against entity {scale_entity} and item {scale_item}. \
+             The same unit UV maps to {uv_armor:?} and {uv_entity:?} — a factor of \
+             {:.3}, so a worn piece wears bands three times broader than a dropped one",
+            uv_entity[0] / uv_armor[0]
+        ),
+    );
+
+    // The renders. Iron is one layer; leather is two, which is what makes the
+    // "once per piece, not once per layer" rule observable at all.
+    let iron_piece = |foil: bool, trim: Option<(u32, u32)>| rewo_gpu::entities::ArmorPiece {
+        layers: [Some((iron_key.as_str(), [1.0; 3])), None],
+        trim,
+        foil,
+    };
+    let chest = |p: rewo_gpu::entities::ArmorPiece<'_>,
+                 gpu: &mut Gpu,
+                 wr: &mut WorldRenderer,
+                 off: &mut Offscreen|
+     -> Result<Vec<u8>, String> { render_armor([None, Some(p), None, None], gpu, wr, off) };
+
+    let a_plain = chest(iron_piece(false, None), &mut gpu, &mut wr, &mut off)?;
+    let a_foil = chest(iron_piece(true, None), &mut gpu, &mut wr, &mut off)?;
+    let foil_verts_one_layer = wr.armor_glint_vertex_count();
+    let a_naked = render_armor([None; 4], &mut gpu, &mut wr, &mut off)?;
+    let armour_px: std::collections::HashSet<(u32, u32)> =
+        changed(&a_plain, &a_naked).into_iter().collect();
+    // **Not `changed`.** Its `> 8` threshold was built for the item glint,
+    // which is measured against a *dark* background where the sRGB curve is
+    // steep. A worn foil sits on a lit chestplate and vanilla's own is subtle:
+    // the real magnitude here is a handful of bytes, so a detector tuned for a
+    // brighter effect reads it as nothing at all. Any change is the right test
+    // for "where did it land", and a4 — the same draw twice, byte-identical —
+    // is what establishes there is no noise floor to clear.
+    let changed_any = |a: &[u8], b: &[u8]| -> Vec<(u32, u32)> {
+        let mut v = Vec::new();
+        for y in 0..H {
+            for x in 0..W {
+                let i = ((y * W + x) * 4) as usize;
+                if (0..3).any(|k| a[i + k] != b[i + k]) {
+                    v.push((x, y));
+                }
+            }
+        }
+        v
+    };
+    let foil_px = changed_any(&a_foil, &a_plain);
+    let strays = foil_px.iter().filter(|p| !armour_px.contains(p)).count();
+    c.record(
+        "a3.the_foil_lands_on_the_armours_own_fragments_and_nowhere_else",
+        !armour_px.is_empty() && foil_px.len() > 50 && strays == 0,
+        format!(
+            "{} pixel(s) change when the piece is enchanted, {strays} of them outside \
+             the {} the armour itself covers. The pass depth-tests EQUAL, so a foil \
+             fragment survives only where the armour's own already won — which it can \
+             only do because the armour and the foil carry the *same* \
+             `VIEW_OFFSET_Z_LAYERING` and it cancels",
+            foil_px.len(),
+            armour_px.len()
+        ),
+    );
+    let a_again = chest(iron_piece(false, None), &mut gpu, &mut wr, &mut off)?;
+    c.record(
+        "a4.no_foil_flag_is_byte_identical",
+        a_again == a_plain,
+        "the same unenchanted piece twice is byte-identical, so every pixel a3 \
+         measured came from the foil pass and none from a stale buffer",
+    );
+
+    // The foil is **untinted**. `RenderPipelines.GLINT` binds
+    // `DefaultVertexFormat.POSITION_TEX` — Position and UV0, no Color element,
+    // so `BufferBuilder.beginElement` drops the colour `submitModel` was handed
+    // — `glint.vsh` declares no colour attribute, and
+    // `RenderType.writeDynamicTransforms` writes `ColorModulator` as WHITE. So
+    // a dyed piece's foil is the plain sheen, and this is the exact inverse of
+    // d4: the same measurement that showed the *armour* takes the dye must show
+    // the *foil* does not.
+    //
+    // Differenced in **linear** light. The attachment is `R8G8B8A8_SRGB`, so
+    // the additive blend happens linearly and the store encodes; the raw byte
+    // delta of a base-independent contribution is not base-independent, and
+    // comparing bytes would fail this for the wrong reason.
+    let leather_piece = |tint: [f32; 3], foil: bool| rewo_gpu::entities::ArmorPiece {
+        layers: [Some((leather[0].key.as_str(), tint)), None],
+        trim: None,
+        foil,
+    };
+    // **Dark and opposed**, not the two plausible leather dyes. A bright base
+    // saturates a channel, and a saturated channel cannot show a contribution
+    // at all — the first fixture here used brown against red and measured
+    // *exactly* zero in red and green because both pinned at 255. These two sit
+    // low enough that every channel has headroom, and far enough apart that a
+    // foil carrying the dye would be unmistakable: red over one, blue over the
+    // other.
+    let dye_a = [0.30, 0.06, 0.06];
+    let dye_b = [0.06, 0.06, 0.30];
+    let l_brown_off = chest(leather_piece(dye_a, false), &mut gpu, &mut wr, &mut off)?;
+    let l_brown_on = chest(leather_piece(dye_a, true), &mut gpu, &mut wr, &mut off)?;
+    let l_red_off = chest(leather_piece(dye_b, false), &mut gpu, &mut wr, &mut off)?;
+    let l_red_on = chest(leather_piece(dye_b, true), &mut gpu, &mut wr, &mut off)?;
+    // **In bytes, not in linear light.** The blend now runs in gamma space, so
+    // vanilla's contribution is `dst + src²` on the *encoded* numbers and the
+    // byte delta is base-independent by construction — which is the whole
+    // property. Measured in linear light instead it is not: the same gamma-space
+    // increment lands differently depending on how bright the destination is,
+    // and an earlier cut of this witness read 15.83 against 11.74 for two dyes
+    // carrying an identical foil.
+    //
+    // A hue ratio is no good here either: `enchanted_glint_armor.png` is
+    // blue-dominant (mean R18 G7 B46) and at scale 0.16 the patch each face
+    // samples is blue-only, so red/green is 0/0. Comparing the deltas
+    // themselves needs no such assumption about the sheet.
+    let mut worst = 0i32;
+    let mut lit = 0usize;
+    for p in 0..(W * H) as usize {
+        for k in 0..3 {
+            let i = p * 4 + k;
+            // A saturated channel cannot show a contribution either way.
+            if l_brown_on[i] == 255 || l_red_on[i] == 255 {
+                continue;
+            }
+            let da = l_brown_on[i] as i32 - l_brown_off[i] as i32;
+            let db = l_red_on[i] as i32 - l_red_off[i] as i32;
+            if da != 0 || db != 0 {
+                lit += 1;
+            }
+            worst = worst.max((da - db).abs());
+        }
+    }
+    c.record(
+        "a5.the_foil_is_not_tinted_by_the_layers_colour",
+        lit > 500 && worst <= 1,
+        format!(
+            "over {lit} channel(s) the foil moves, its byte contribution differs by at              most {worst} between two opposite dyes — the same foil over a red-tinted              piece and a blue-tinted one. d4 showed the *armour* takes the dye; the              foil does not, because `RenderPipelines.GLINT` binds `POSITION_TEX` — no              Color element to take it with, and `writeDynamicTransforms` passes              `ColorModulator` as WHITE"
+        ),
+    );
+
+    // Once per piece, not once per layer. `renderLayers` clears `renderFoil`
+    // inside the loop, so leather's two layers get one foil between them; an
+    // emitter that ran per layer would double an additive blend.
+    let two_layers = rewo_gpu::entities::ArmorPiece {
+        layers: [
+            Some((iron_key.as_str(), [1.0; 3])),
+            Some((iron_key.as_str(), [1.0; 3])),
+        ],
+        trim: None,
+        foil: true,
+    };
+    chest(two_layers, &mut gpu, &mut wr, &mut off)?;
+    let foil_verts_two_layers = wr.armor_glint_vertex_count();
+    c.record(
+        "a6.one_foil_per_piece_however_many_layers_it_draws",
+        foil_verts_one_layer > 0 && foil_verts_two_layers == foil_verts_one_layer,
+        format!(
+            "{foil_verts_one_layer} foil vertices for a one-layer piece and \
+             {foil_verts_two_layers} for a two-layer one. `renderFoil = false` runs \
+             inside the layer loop, so the foil rides the first layer that draws and \
+             no other"
+        ),
+    );
+
+    // And never the trim, which is submitted **after** the loop that clears the
+    // flag — the finding that reshaped this milestone.
+    chest(iron_piece(true, trim_origin), &mut gpu, &mut wr, &mut off)?;
+    let foil_verts_trimmed = wr.armor_glint_vertex_count();
+    chest(iron_piece(false, trim_origin), &mut gpu, &mut wr, &mut off)?;
+    let foil_verts_trim_only = wr.armor_glint_vertex_count();
+    c.record(
+        "a7.the_trim_never_glints",
+        trim_origin.is_some()
+            && foil_verts_trimmed == foil_verts_one_layer
+            && foil_verts_trim_only == 0,
+        format!(
+            "a trimmed enchanted piece emits {foil_verts_trimmed} foil vertices — the \
+             same {foil_verts_one_layer} as the untrimmed one, not more — and a trimmed \
+             *un*enchanted piece emits {foil_verts_trim_only}. `renderLayers` submits \
+             the trim outside the loop that clears `renderFoil`, so a glinting trim \
+             would be an invention"
+        ),
+    );
+
+    // The trim paints **over** the foil. `renderLayers` submits layer, foil,
+    // trim at increasing `order`, and `SubmitNodeStorage` keeps its phases in
+    // an `Int2ObjectAVLTreeMap` — a sorted map, drained ascending.
+    //
+    // A pixel is fully-opaque trim wherever the same trim over two *different*
+    // armour colours reads identically; that construction needs no knowledge of
+    // the sprite's alpha. On those pixels the foil must change nothing.
+    let leather_trimmed = |tint: [f32; 3], foil: bool| rewo_gpu::entities::ArmorPiece {
+        layers: [Some((leather[0].key.as_str(), tint)), None],
+        trim: trim_origin,
+        foil,
+    };
+    let t_brown = chest(leather_trimmed(dye_a, false), &mut gpu, &mut wr, &mut off)?;
+    let t_red = chest(leather_trimmed(dye_b, false), &mut gpu, &mut wr, &mut off)?;
+    let t_brown_foil = chest(leather_trimmed(dye_a, true), &mut gpu, &mut wr, &mut off)?;
+    let opaque_trim: Vec<(u32, u32)> = armour_px
+        .iter()
+        .copied()
+        .filter(|&(x, y)| {
+            let i = ((y * W + x) * 4) as usize;
+            (0..3).all(|k| t_brown[i + k] == t_red[i + k])
+        })
+        .collect();
+    let disturbed = opaque_trim
+        .iter()
+        .filter(|&&(x, y)| {
+            let i = ((y * W + x) * 4) as usize;
+            (0..3).any(|k| t_brown_foil[i + k] != t_brown[i + k])
+        })
+        .count();
+    c.record(
+        "a8.the_trim_paints_over_the_foil_not_under_it",
+        opaque_trim.len() > 20 && disturbed == 0,
+        format!(
+            "{} fully-opaque trim pixel(s) — where the same trim over a brown and a red \
+             piece read identically — and the foil changes {disturbed} of them. Reverse \
+             the two draws and every one of them gains the sheen additively",
+            opaque_trim.len()
         ),
     );
 

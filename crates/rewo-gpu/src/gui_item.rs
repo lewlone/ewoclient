@@ -55,7 +55,6 @@ use glam::{Mat3, Vec3};
 use gpu_allocator::vulkan::Allocation;
 
 use crate::end_sky::{upload_buffer, Buf};
-use crate::entities::create_texture;
 use crate::held::{DisplayTransform, HeldItemModel, HeldItems};
 use crate::Gpu;
 
@@ -537,7 +536,7 @@ impl GuiItemPass {
             return Ok(());
         }
         let device = gpu.device.clone();
-        let (image, image_alloc, view) = create_texture(gpu, rgba, w, h)?;
+        let (image, image_alloc, view) = crate::entities::create_glint_texture(gpu, rgba, w, h)?;
         // **REPEAT and LINEAR**, both load-bearing. The scrolling matrix
         // scales the UV by 8, so the sheet is sampled far outside `0..1` and
         // clamping would smear one edge texel across the whole item; and the

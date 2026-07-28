@@ -1118,7 +1118,13 @@ pub(crate) fn armor_keys<'a>(
                 rewo_gpu::entities::MAX_ARMOR_SUBLAYERS
             );
         }
-        let mut out = rewo_gpu::entities::ArmorPiece::default();
+        let mut out = rewo_gpu::entities::ArmorPiece {
+            // M50: `hasFoil`, decoded off the equipment packet's component
+            // patch. One flag per piece — vanilla submits the foil once,
+            // riding whichever layer draws first.
+            foil: piece.foil,
+            ..Default::default()
+        };
         // The trim, if this piece has one and its sprite made it into the pool.
         out.trim = trim_sprite_path(session, &piece, asset, layer)
             .and_then(|p| trim_slots.get(&p).copied());
@@ -1411,6 +1417,10 @@ pub(crate) fn init_entities_maybe_cem(
     // and the shimmer silently never drew.
     if let Some(g) = baked.glint.as_ref() {
         wr.init_entity_glint(gpu, &g.rgba, g.w, g.h)?;
+    }
+    // M50: the worn-armour foil's own sheet, same ordering rule.
+    if let Some(g) = baked.armor_glint.as_ref() {
+        wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
     }
     Ok(())
 }

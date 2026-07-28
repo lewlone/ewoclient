@@ -180,7 +180,7 @@ impl HandPass {
             return Ok(());
         }
         let device = gpu.device.clone();
-        let (image, image_alloc, view) = crate::entities::create_texture(gpu, rgba, w, h)?;
+        let (image, image_alloc, view) = crate::entities::create_glint_texture(gpu, rgba, w, h)?;
         // REPEAT and LINEAR, for the reasons `gui_item::init_glint` records:
         // the matrix scales the UV by 8, and the sheet's `.mcmeta` asks for
         // filtering.

@@ -502,6 +502,10 @@ pub struct WornPiece {
     /// the same reason the dye is: the component patch on the equipment packet
     /// is the only place either is ever seen.
     pub trim: Option<(i32, i32)>,
+    /// `ItemStack.hasFoil()` — whether this piece wears an enchantment glint
+    /// (M50). Third component-patch fact riding the same packet, for the same
+    /// reason: the stack is gone by the time a frame is drawn.
+    pub foil: bool,
 }
 
 #[derive(Default)]

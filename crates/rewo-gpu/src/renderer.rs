@@ -300,6 +300,18 @@ impl Renderer {
                     .color_attachments(std::slice::from_ref(&color_attachment))
                     .depth_attachment(&depth_attachment);
                 device.cmd_begin_rendering(frame.cb, &rendering_info);
+                // M50: the views the glint's gamma-space scope reopens against.
+                world_renderer.set_gamma_scope(
+                    self.swapchain
+                        .views_unorm
+                        .get(image_index as usize)
+                        .zip(self.depth.as_ref())
+                        .map(|(&unorm, depth)| crate::world::GammaScope {
+                            color_srgb: view,
+                            color_unorm: unorm,
+                            depth: depth.view,
+                        }),
+                );
                 world_renderer.draw(gpu, frame.cb, *view_proj, extent);
                 device.cmd_end_rendering(frame.cb);
                 let _ = view_proj;

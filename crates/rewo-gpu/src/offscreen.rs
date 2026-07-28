@@ -18,6 +18,9 @@ use crate::{color_range, image_barrier, Gpu};
 
 pub struct Offscreen {
     pub extent: vk::Extent2D,
+    /// Gamma-space counterpart of [`Self::view`] (M50); `None` when the
+    /// format has no UNORM twin, in which case no glint is drawn.
+    pub view_unorm: Option<vk::ImageView>,
     pub format: vk::Format,
     image: vk::Image,
     image_alloc: Option<Allocation>,
@@ -45,9 +48,16 @@ impl Offscreen {
         let depth = DepthTarget::new(gpu, extent)?;
         unsafe {
             let device = &gpu.device;
-            let image = device
-                .create_image(
-                    &vk::ImageCreateInfo::default()
+            // M50: the glint blends in gamma space, so it renders through a
+            // UNORM view of this same image. That needs MUTABLE_FORMAT and a
+            // format list naming both — the pair differs only in the transfer
+            // function applied on store, so the bytes are shared verbatim.
+            let unorm = crate::world::unorm_of(format);
+            let view_formats: Vec<vk::Format> =
+                unorm.into_iter().chain(std::iter::once(format)).collect();
+            let mut format_list =
+                vk::ImageFormatListCreateInfo::default().view_formats(&view_formats);
+            let mut image_ci = vk::ImageCreateInfo::default()
                         .image_type(vk::ImageType::TYPE_2D)
                         .format(format)
                         .extent(vk::Extent3D {
@@ -64,9 +74,14 @@ impl Offscreen {
                                 | vk::ImageUsageFlags::TRANSFER_SRC,
                         )
                         .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                        .initial_layout(vk::ImageLayout::UNDEFINED),
-                    None,
-                )
+                        .initial_layout(vk::ImageLayout::UNDEFINED);
+            if unorm.is_some() {
+                image_ci = image_ci
+                    .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
+                    .push_next(&mut format_list);
+            }
+            let image = device
+                .create_image(&image_ci, None)
                 .map_err(|e| format!("offscreen image: {e}"))?;
             let req = device.get_image_memory_requirements(image);
             let image_alloc = gpu
@@ -92,6 +107,23 @@ impl Offscreen {
                     None,
                 )
                 .map_err(|e| format!("offscreen view: {e}"))?;
+            // The gamma-space counterpart. Same image, same bytes, no transfer
+            // function on store — which is exactly vanilla's framebuffer.
+            let view_unorm = match unorm {
+                Some(f) => Some(
+                    device
+                        .create_image_view(
+                            &vk::ImageViewCreateInfo::default()
+                                .image(image)
+                                .view_type(vk::ImageViewType::TYPE_2D)
+                                .format(f)
+                                .subresource_range(color_range()),
+                            None,
+                        )
+                        .map_err(|e| format!("offscreen unorm view: {e}"))?,
+                ),
+                None => None,
+            };
 
             let readback_size = (width as u64) * (height as u64) * 4;
             let readback = device
@@ -150,6 +182,7 @@ impl Offscreen {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
+                view_unorm,
                 depth,
                 readback,
                 readback_alloc: Some(readback_alloc),
@@ -237,6 +270,14 @@ impl Offscreen {
                     .color_attachments(std::slice::from_ref(&color_attachment))
                     .depth_attachment(&depth_attachment);
                 device.cmd_begin_rendering(self.cb, &rendering_info);
+                // M50: the views the glint's gamma-space scope reopens against.
+                world_renderer.set_gamma_scope(self.view_unorm.map(|unorm| {
+                    crate::world::GammaScope {
+                        color_srgb: self.view,
+                        color_unorm: unorm,
+                        depth: self.depth.view,
+                    }
+                }));
                 world_renderer.draw(gpu, self.cb, *view_proj, self.extent);
                 device.cmd_end_rendering(self.cb);
                 image_barrier(
@@ -428,6 +469,9 @@ impl Offscreen {
             device.destroy_buffer(self.readback, None);
             if let Some(a) = self.readback_alloc.take() {
                 let _ = gpu.allocator.free(a);
+            }
+            if let Some(v) = self.view_unorm.take() {
+                device.destroy_image_view(v, None);
             }
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);

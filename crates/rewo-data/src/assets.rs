@@ -198,6 +198,10 @@ pub struct BakedAssets {
     /// `misc/enchanted_glint_item.png` (M43). `None` means no glint is drawn
     /// rather than an invented shimmer.
     pub glint: Option<DecodedImage>,
+    /// `misc/enchanted_glint_armor.png` (M50) — a **different sheet** from the
+    /// item one above, which is the first of the three things that separate a
+    /// worn piece's foil from a held stack's. `None` means no armour glint.
+    pub armor_glint: Option<DecodedImage>,
     /// Armour layer definitions and their 64x32 sheets (M46).
     pub equipment: crate::equipment::EquipmentAssets,
     /// Trim pattern sources + palettes; the sprites themselves are permuted on
@@ -709,6 +713,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let item_names = bake_item_names(&mut jar);
     let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar);
     let glint = bake_misc_texture(&mut jar, "enchanted_glint_item.png");
+    // M50: `ARMOR_ENTITY_GLINT` binds its own sheet. Both live in `misc/` and
+    // they are different images — the worn foil is not the item foil at a
+    // different scale, it is a different texture at a different scale.
+    let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
     let equipment = crate::equipment::EquipmentAssets::load(client_jar);
     let trims = crate::equipment::TrimAssets::load(client_jar);
     if hud.is_none() {
@@ -960,6 +968,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         item_names,
         enchantment_text,
         glint,
+        armor_glint,
         equipment,
         trims,
         held_items,

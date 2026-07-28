@@ -1612,7 +1612,7 @@ M15 onward. All of M10–M33b is now **pushed** to
 clean fast-forward, closing the long-standing unmerged-branch risk.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M38 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, and the first-person hand)
+## Rewo — from-scratch native Minecraft client (M0–M50 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, and the first-person hand)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
@@ -3030,6 +3030,54 @@ validation Rewo has.
   Gate `itemshot` 51 → **54** (`u1`: a variant bakes one more sprite layer than
   its base; `u2`: an unnamed material falls back to the base's single layer);
   **633 tests**.
+- **M50 the worn-armour glint, and the glint's colour space (2026-07-28)** —
+  M45 called worn armour "the fourth surface and not reachable"; M46 made it
+  reachable and this draws it. **Two of the facts gathered in advance were
+  wrong.** `VIEW_OFFSET_Z_LAYERING` is not the foil's mechanism: all three
+  armour render types carry it (`ARMOR_CUTOUT_NO_CULL`,
+  `ARMOR_DECAL_CUTOUT_NO_CULL`, `ARMOR_ENTITY_GLINT`), each with the same bias
+  on a fresh `getModelViewMatrixCopy()`, so it **cancels within the stack** —
+  what it separates is armour from *body* — and `RenderPipelines.GLINT` is
+  `DepthStencilState(CompareOp.EQUAL, false)`, so the foil is the same
+  depth-EQUAL pass Rewo had shipped three times. And the foil is **untinted**:
+  `POSITION_TEX` has no Color element, `glint.vsh` declares no colour
+  attribute, and `writeDynamicTransforms` passes `ColorModulator` as WHITE, so
+  `submitModel`'s colour is dropped. The fact that held is the headline —
+  **the trim must not glint**, because `renderLayers` clears `renderFoil`
+  inside the layer loop and submits the trim after it. **Then the real
+  finding**: the foil went in structurally correct and rendered a byte-delta of
+  **exactly 0**. `BlendFunction.GLINT` is `(SRC_COLOR, ONE)`, so the
+  contribution is `src²` — and **squaring is not invariant under the sRGB
+  transfer function**. Vanilla evaluates it in gamma space (no sRGB framebuffer,
+  no sRGB texture views); Rewo was blending in linear, where a mid texel adds
+  +0.9/255 against vanilla's +16/255 and quantises away. **The item glint had
+  the same error since M43** and hid it, because a dropped stack sits against a
+  *dark* background where the sRGB curve is steep enough to show a tiny linear
+  increment (measured on one frame: item 137, armour 0). No fixed-function
+  blend can bridge it — every candidate needs to read the destination — so the
+  glint now renders through a **UNORM view of the same image**
+  (`MUTABLE_FORMAT` + format list on the offscreen image and the swapchain,
+  `world::draw` reopening its scope around each glint draw, sheets uploaded
+  UNORM), and both glint shaders are vanilla's line verbatim. **Without
+  `VK_KHR_swapchain_mutable_format` no glint is drawn at all** — check that
+  first if glints ever go missing. Structure: one `EntityGlint` per sheet over
+  one shared pipeline, a fifth vertex range
+  (`solid | text | glint | trim | armor_glint`), and the foil drawn **before**
+  the trim because `SubmitNodeStorage` drains its phases in ascending `order`.
+  Gate `itemshot` 54 → **62**; **633 tests**; demo PNG byte-identical to M15
+  onward. **Three detector errors, all mine** (M38's pattern again): a `> 8`
+  threshold built for the item glint read a real 5/255 sheen as nothing; a
+  per-channel linear comparison sat below the 8-bit quantisation step; and the
+  first fixture used two *bright* dyes whose red and green pinned at 255. The
+  fix moved the measurement into the space the blend now works in — vanilla's
+  add is base-independent **in bytes**, and the byte delta between two opposite
+  dyes comes out **0**. **The live frame-diff was rejected as an oracle**: a
+  same-item control differed in 41,284 pixels against the test's 16,329, so the
+  wire path was verified by a *property* instead (`ench=[(28,4)]` decoded,
+  `foil=true` at the renderer). And the first live run failed on the
+  **harness**: the summon used the pre-1.21.5 `enchantments:{levels:{…}}`
+  wrapper, so 26.2 silently produced an unenchanted piece — same shape as M35's
+  stale state id and M20.1's build gate.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

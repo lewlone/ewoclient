@@ -77,6 +77,19 @@ pub struct Gpu {
     pub graphics_queue: vk::Queue,
     pub allocator: ManuallyDrop<Allocator>,
     pub validation_active: bool,
+    /// `VK_KHR_swapchain_mutable_format` (M50) — whether a swapchain can hand
+    /// out a **UNORM** view of its own sRGB images.
+    ///
+    /// The enchantment glint's blend is `(SRC_COLOR, ONE)`, i.e. `dst + src²`,
+    /// and vanilla evaluates it in gamma space because Minecraft binds no sRGB
+    /// framebuffer. Squaring is not invariant under the transfer function, so
+    /// blending it into an sRGB attachment loses almost all of the sheen — a
+    /// worn armour foil measured a byte-delta of exactly 0. Rendering the glint
+    /// through a UNORM view of the same image puts the blend back in vanilla's
+    /// space. Without the extension there is no such view, and the glint is
+    /// dropped rather than drawn wrong — the same degradation as a missing
+    /// sheet.
+    pub swapchain_mutable: bool,
 }
 
 impl Gpu {
@@ -221,11 +234,33 @@ impl Gpu {
             let queue_infos = [vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(graphics_family)
                 .queue_priorities(&priorities)];
-            let device_exts: Vec<*const c_char> = if surface != vk::SurfaceKHR::null() {
-                vec![khr::swapchain::NAME.as_ptr()]
-            } else {
-                Vec::new()
-            };
+            // M50: a UNORM view of the swapchain's sRGB images, for the glint's
+            // gamma-space blend. Optional — advertised by every desktop driver
+            // we target, but a machine without it loses the glint rather than
+            // the client.
+            let have_mutable = instance
+                .enumerate_device_extension_properties(physical)
+                .map(|props| {
+                    props.iter().any(|p| {
+                        p.extension_name_as_c_str()
+                            == Ok(khr::swapchain_mutable_format::NAME)
+                    })
+                })
+                .unwrap_or(false);
+            let windowed = surface != vk::SurfaceKHR::null();
+            let swapchain_mutable = windowed && have_mutable;
+            let mut device_exts: Vec<*const c_char> = Vec::new();
+            if windowed {
+                device_exts.push(khr::swapchain::NAME.as_ptr());
+                if swapchain_mutable {
+                    device_exts.push(khr::swapchain_mutable_format::NAME.as_ptr());
+                } else {
+                    log::warn!(
+                        "gpu: VK_KHR_swapchain_mutable_format absent — the enchantment \
+                         glint needs a gamma-space target and will not be drawn"
+                    );
+                }
+            }
             let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
                 .dynamic_rendering(true)
                 .synchronization2(true);
@@ -271,6 +306,7 @@ impl Gpu {
                 graphics_queue,
                 allocator: ManuallyDrop::new(allocator),
                 validation_active,
+                swapchain_mutable,
             })
         }
     }

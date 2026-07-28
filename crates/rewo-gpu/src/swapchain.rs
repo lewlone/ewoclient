@@ -11,6 +11,11 @@ pub struct Swapchain {
     pub handle: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub views: Vec<vk::ImageView>,
+    /// Gamma-space counterparts of [`Self::views`] (M50) — a UNORM view of each
+    /// sRGB swapchain image, where the enchantment glint blends. Empty when
+    /// `VK_KHR_swapchain_mutable_format` is unavailable, in which case no glint
+    /// is drawn rather than one blended in the wrong space.
+    pub views_unorm: Vec<vk::ImageView>,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
     pub present_mode: vk::PresentModeKHR,
@@ -38,7 +43,7 @@ impl Swapchain {
         gpu.wait_idle();
         let next = Self::create(gpu, width, height, preferred, self.handle)?;
         unsafe {
-            for &v in &self.views {
+            for &v in self.views.iter().chain(&self.views_unorm) {
                 gpu.device.destroy_image_view(v, None);
             }
             self.fns.destroy_swapchain(self.handle, None);
@@ -105,7 +110,16 @@ impl Swapchain {
                 image_count = image_count.min(caps.max_image_count);
             }
 
-            let ci = vk::SwapchainCreateInfoKHR::default()
+            // M50: a UNORM twin of each image, for the glint's gamma-space
+            // blend. Needs the swapchain itself to be mutable-format, which is
+            // an extension rather than core.
+            let unorm = crate::world::unorm_of(format.format).filter(|f| *f != format.format);
+            let mutable = gpu.swapchain_mutable && unorm.is_some();
+            let view_formats: Vec<vk::Format> =
+                unorm.into_iter().chain(std::iter::once(format.format)).collect();
+            let mut format_list =
+                vk::ImageFormatListCreateInfo::default().view_formats(&view_formats);
+            let mut ci = vk::SwapchainCreateInfoKHR::default()
                 .surface(gpu.surface)
                 .min_image_count(image_count)
                 .image_format(format.format)
@@ -119,6 +133,11 @@ impl Swapchain {
                 .present_mode(present_mode)
                 .clipped(true)
                 .old_swapchain(old);
+            if mutable {
+                ci = ci
+                    .flags(vk::SwapchainCreateFlagsKHR::MUTABLE_FORMAT)
+                    .push_next(&mut format_list);
+            }
 
             let fns = khr::swapchain::Device::new(&gpu.instance, &gpu.device);
             let handle = fns
@@ -140,6 +159,22 @@ impl Swapchain {
                         .map_err(|e| format!("image view: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let views_unorm = match (mutable, unorm) {
+                (true, Some(f)) => images
+                    .iter()
+                    .map(|&img| {
+                        let vi = vk::ImageViewCreateInfo::default()
+                            .image(img)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .format(f)
+                            .subresource_range(crate::color_range());
+                        gpu.device
+                            .create_image_view(&vi, None)
+                            .map_err(|e| format!("unorm image view: {e}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => Vec::new(),
+            };
 
             log::info!(
                 "vk: swapchain {}x{} {:?} {:?} ({} images)",
@@ -155,6 +190,7 @@ impl Swapchain {
                 handle,
                 images,
                 views,
+                views_unorm,
                 format: format.format,
                 extent,
                 present_mode,
@@ -164,10 +200,11 @@ impl Swapchain {
 
     pub fn destroy(&mut self, gpu: &Gpu) {
         unsafe {
-            for &v in &self.views {
+            for &v in self.views.iter().chain(&self.views_unorm) {
                 gpu.device.destroy_image_view(v, None);
             }
             self.views.clear();
+            self.views_unorm.clear();
             if self.handle != vk::SwapchainKHR::null() {
                 self.fns.destroy_swapchain(self.handle, None);
                 self.handle = vk::SwapchainKHR::null();
