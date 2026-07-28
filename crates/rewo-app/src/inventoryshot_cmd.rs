@@ -31,12 +31,12 @@ use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 use rewo_world::inventory::{
     slot_at, slot_contains, slot_position, ArmorPiece, Inventory, ItemProps, ItemSlot,
-    HOTBAR_MENU_START, MENU_SLOTS,
+    ARMOR_MENU_START, HOTBAR_MENU_START, MENU_SLOTS,
 };
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 44;
+const EXPECTED_WITNESSES: usize = 49;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -562,9 +562,89 @@ fn check_screen(c: &mut Checker) {
         ),
     );
 
-    // -- the slot rules -----------------------------------------------------
     let helmet = |_id: i32| Some(props_for(1, Some(ArmorPiece::Head)));
     let dirt = |_id: i32| Some(props_for(64, None));
+
+    // -- shift-click (QUICK_MOVE) ------------------------------------------
+    //
+    // The routing is not "the other half of the inventory": armour and the
+    // off-hand are checked first, which is why shift-clicking a helmet equips
+    // it rather than moving it.
+    let mut qm = Inventory::default();
+    let mut qs = [None; MENU_SLOTS];
+    qs[36] = plain(55, 10); // dirt in the hotbar
+    qm.set_content(1, &qs, None);
+    let moved = qm.click_quick_move(36, &props).unwrap();
+    c.record(
+        "q1.the_hotbar_moves_up_into_the_main_grid",
+        moved.changed.iter().any(|(s, v)| *s == 9 && *v == plain(55, 10))
+            && moved.changed.iter().any(|(s, v)| *s == 36 && v.is_none()),
+        format!(
+            "slot 36 empties into slot 9: {:?}. `quickMoveStack` routes 36..45 to              9..36 and 9..36 to 36..45, so the two halves swap rather than              everything piling into one",
+            moved.changed
+        ),
+    );
+
+    let mut qm2 = Inventory::default();
+    let mut qs2 = [None; MENU_SLOTS];
+    qs2[9] = plain(55, 10);
+    qm2.set_content(1, &qs2, None);
+    let down = qm2.click_quick_move(9, &props).unwrap();
+    c.record(
+        "q2.the_main_grid_moves_down_into_the_hotbar",
+        down.changed.iter().any(|(s, _)| *s == 36),
+        format!("slot 9 lands in the hotbar: {:?}", down.changed),
+    );
+
+    // A helmet goes to the helmet slot first, and only if it is empty.
+    let mut hm = Inventory::default();
+    let mut hs = [None; MENU_SLOTS];
+    hs[9] = plain(700, 1);
+    hm.set_content(1, &hs, None);
+    let equipped = hm.click_quick_move(9, &helmet).unwrap();
+    hs[ARMOR_MENU_START] = plain(701, 1); // already wearing one
+    let mut hm2 = Inventory::default();
+    hm2.set_content(1, &hs, None);
+    let not_equipped = hm2.click_quick_move(9, &helmet).unwrap();
+    c.record(
+        "q3.a_helmet_equips_before_it_travels_and_only_into_an_empty_slot",
+        equipped.changed.iter().any(|(s, _)| *s == ARMOR_MENU_START as u16)
+            && !not_equipped
+                .changed
+                .iter()
+                .any(|(s, _)| *s == ARMOR_MENU_START as u16),
+        format!(
+            "with the head slot empty it equips ({:?}); with one already worn it              travels instead ({:?}). The armour check is guarded on the target              being empty, so shift-clicking a second helmet does not swap the              first out",
+            equipped.changed,
+            not_equipped.changed
+        ),
+    );
+
+    // The merge pass fills an existing stack to its cap before using an empty.
+    let mut mm = Inventory::default();
+    let mut ms = [None; MENU_SLOTS];
+    ms[36] = plain(55, 40);
+    ms[9] = plain(55, 60);
+    mm.set_content(1, &ms, None);
+    let merged = mm.click_quick_move(36, &props).unwrap();
+    let into_9 = merged.changed.iter().find(|(s, _)| *s == 9).and_then(|(_, v)| *v);
+    c.record(
+        "q4.quick_move_tops_up_an_existing_stack_before_taking_an_empty_slot",
+        into_9 == plain(55, 64),
+        format!(
+            "slot 9 goes to {into_9:?} — filled to 64 first. `moveItemStackTo`              runs a merge pass over the whole range before its placement pass,              so shift-clicking never scatters a stack while a partial one waits"
+        ),
+    );
+
+    // Nothing to move is not a change.
+    let empty_src = qm.click_quick_move(20, &props);
+    c.record(
+        "q5.shift_clicking_an_empty_slot_predicts_nothing",
+        empty_src.is_none(),
+        "no prediction at all, so the caller sends no packet — an empty          changed-slot map would be a claim that the click did nothing, which          the server would answer with a resynchronisation",
+    );
+
+    // -- the slot rules -----------------------------------------------------
     let mut inv5 = Inventory::default();
     inv5.set_content(1, &[None; MENU_SLOTS], plain(700, 1));
     let into_head = inv5.click_pickup(5, 0, &helmet).unwrap();

@@ -563,6 +563,203 @@ impl Inventory {
     }
 }
 
+/// `ContainerInput.QUICK_MOVE`'s wire id — shift-click.
+pub const CONTAINER_INPUT_QUICK_MOVE: i32 = 1;
+
+impl Inventory {
+    /// `ItemStack.isStackable()` — `getMaxStackSize() > 1 && !isDamaged()`.
+    ///
+    /// Rewo cannot see damage, only whether a stack carries components at all,
+    /// so a patched stack is treated as unstackable. That is the same
+    /// one-directional caution [`Self::same_item_same_components`] takes, and
+    /// it errs the same way: a damaged tool is never merged into another,
+    /// which is what vanilla does anyway.
+    fn is_stackable(stack: ItemSlot, props: ItemProps) -> bool {
+        props.max_stack > 1 && !stack.has_components
+    }
+
+    /// `AbstractContainerMenu.moveItemStackTo` — two passes over a slot range.
+    ///
+    /// The first merges into slots already holding the same item; the second
+    /// places the remainder into the first empty slot that will take it. The
+    /// asymmetry between them is easy to miss: the merge pass runs to the end
+    /// of the range, but the placement pass **stops after one slot**, so a
+    /// stack too large for one empty slot leaves the rest behind rather than
+    /// spreading across several.
+    ///
+    /// `backwards` walks the range from its top, which the crafting result
+    /// uses so a craft fills the hotbar from the right.
+    fn move_stack_to(
+        slots: &mut [Option<ItemSlot>; MENU_SLOTS],
+        moving: &mut ItemSlot,
+        range: std::ops::Range<usize>,
+        backwards: bool,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+        changed: &mut Vec<SlotChange>,
+    ) -> Option<bool> {
+        let mut any = false;
+        let p = props(moving.item_id)?;
+        let order: Vec<usize> = if backwards {
+            range.clone().rev().collect()
+        } else {
+            range.clone().collect()
+        };
+
+        if Self::is_stackable(*moving, p) {
+            for &i in &order {
+                if moving.count == 0 {
+                    break;
+                }
+                let Some(target) = slots[i] else { continue };
+                if !Self::same_item_same_components(*moving, target) {
+                    continue;
+                }
+                let kind = slot_kind(i)?;
+                let cap = slot_max_stack(kind).min(props(target.item_id)?.max_stack);
+                let total = target.count + moving.count;
+                if total <= cap {
+                    moving.count = 0;
+                    slots[i] = Some(ItemSlot { count: total, ..target });
+                    changed.push((i as u16, slots[i]));
+                    any = true;
+                } else if target.count < cap {
+                    moving.count -= cap - target.count;
+                    slots[i] = Some(ItemSlot { count: cap, ..target });
+                    changed.push((i as u16, slots[i]));
+                    any = true;
+                }
+            }
+        }
+
+        if moving.count > 0 {
+            for &i in &order {
+                if slots[i].is_some() {
+                    continue;
+                }
+                let kind = slot_kind(i)?;
+                if !Self::may_place(kind, p) {
+                    continue;
+                }
+                let cap = slot_max_stack(kind).min(p.max_stack);
+                let n = moving.count.min(cap);
+                slots[i] = Some(ItemSlot { count: n, ..*moving });
+                changed.push((i as u16, slots[i]));
+                moving.count -= n;
+                any = true;
+                // Vanilla breaks here — one empty slot only.
+                break;
+            }
+        }
+        Some(any)
+    }
+
+    /// `InventoryMenu.quickMoveStack` — where a shift-clicked stack goes.
+    ///
+    /// The routing is not "the other half of the inventory": armour and the
+    /// off-hand are checked *first* for an item that fits them and whose slot
+    /// is empty, which is why shift-clicking a helmet equips it rather than
+    /// moving it to the hotbar.
+    fn quick_move_destination(
+        slot: usize,
+        item: ItemSlot,
+        slots: &[Option<ItemSlot>; MENU_SLOTS],
+        p: ItemProps,
+    ) -> Option<(std::ops::Range<usize>, bool)> {
+        Some(match slot {
+            // The crafting result fills backwards, so a craft lands in the
+            // hotbar's right-hand slots first.
+            0 => (9..45, true),
+            1..=8 => (9..45, false),
+            _ => {
+                // Armour first: `8 - eqSlot.getIndex()` is the menu slot, and
+                // it only applies when that slot is empty.
+                if let Some(piece) = p.equips {
+                    let armour = ARMOR_MENU_START
+                        + match piece {
+                            ArmorPiece::Head => 0,
+                            ArmorPiece::Chest => 1,
+                            ArmorPiece::Legs => 2,
+                            ArmorPiece::Feet => 3,
+                        };
+                    if slots[armour].is_none() {
+                        return Some((armour..armour + 1, false));
+                    }
+                }
+                let _ = item;
+                match slot {
+                    9..=35 => (36..45, false),
+                    36..=44 => (9..36, false),
+                    _ => (9..45, false),
+                }
+            }
+        })
+    }
+
+    /// `doClick`'s `QUICK_MOVE` arm — shift-click.
+    ///
+    /// The outer loop is vanilla's:
+    ///
+    /// ```text
+    /// clicked = quickMoveStack(player, slotIndex);
+    /// while (!clicked.isEmpty() && isSameItem(slot.getItem(), clicked))
+    ///     clicked = quickMoveStack(player, slotIndex);
+    /// ```
+    ///
+    /// which repeats until the source slot is empty or stops changing — a
+    /// single call moves at most one destination slot's worth, so a full stack
+    /// spread across several empty slots needs several passes.
+    pub fn click_quick_move(
+        &self,
+        slot: i32,
+        props: &dyn Fn(i32) -> Option<ItemProps>,
+    ) -> Option<ClickPrediction> {
+        let index = usize::try_from(slot).ok()?;
+        let kind = slot_kind(index)?;
+        let source = self.slots[index]?;
+        let p = props(source.item_id)?;
+        let _ = kind;
+
+        let mut slots = self.slots;
+        let mut changed: Vec<SlotChange> = Vec::new();
+        // Bounded rather than `loop`: each pass either empties the source or
+        // fills one destination, and 46 slots cannot absorb more than that.
+        for _ in 0..MENU_SLOTS {
+            let Some(current) = slots[index] else { break };
+            let mut moving = current;
+            let (range, backwards) = Self::quick_move_destination(index, moving, &slots, p)?;
+            let moved = Self::move_stack_to(
+                &mut slots, &mut moving, range, backwards, props, &mut changed,
+            )?;
+            if !moved {
+                break;
+            }
+            slots[index] = (moving.count > 0).then_some(moving);
+            changed.push((index as u16, slots[index]));
+            if moving.count == 0 {
+                break;
+            }
+        }
+        if changed.is_empty() {
+            return None;
+        }
+        // One entry per slot, last write wins — the wire carries a map, and a
+        // slot touched twice by two passes must appear once.
+        let mut seen: Vec<SlotChange> = Vec::new();
+        for (s, v) in changed.into_iter().rev() {
+            if !seen.iter().any(|(t, _)| *t == s) {
+                seen.push((s, v));
+            }
+        }
+        seen.sort_by_key(|(s, _)| *s);
+        Some(ClickPrediction {
+            slot: slot as i16,
+            button: 0,
+            changed: seen,
+            carried: self.carried,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

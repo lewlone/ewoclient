@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M38 shipped and headlessly verified (2026-07-28); M0–M37 merged.**
+**Status: M0–M39 shipped and headlessly verified (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -355,7 +355,7 @@ match.
   `rewo-gpu` 97, `rewo-data` 74, `rewo-mesh` 38, `rewo-proto` 11, app 61.
 - **Seventeen serverless gates**, all green with Vulkan validation ON and
   **0 VUIDs**: `mobshot` 243/243, `blockentityshot` 172/172, `swingshot` 97/97,
-  `inventoryshot` 44/44, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
+  `inventoryshot` 49/49, `hurtshot` 38/38, `weathershot` 35/35, `particleshot`
   34/34, `eventshot` 28/28, `itemshot` 28/28, `danceshot` 24/24, `handshot`
   29/29, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
   `meshshot` and `dimensioncheck` (which report pass/fail rather than a witness
@@ -374,9 +374,10 @@ match.
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:
 
-1. **Finish the inventory screen.** M35/M36 ship the panel, the slots, PICKUP
-   clicking and the player preview; shift-click quick-move is the most-used
-   action still missing, and tooltips the most visible.
+1. **Tooltips.** The most visible thing the inventory screen still lacks, and
+   the only one needing a new data source: `en_us.json` for display names,
+   plus text layout and a panel. Everything else on the screen is bounded
+   polish — drag, number-key swap, Q-drop, durability bars.
 2. **The hand's remaining unknowns** — `SPEAR`'s use rig and the crossbow
    charge both need inputs the wire does not carry, and the arm still wears
    the default skin rather than the player's.
@@ -6344,6 +6345,47 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M39 — shift-click, the quick-move (2026-07-28)
+
+The most-used inventory action after picking a stack up, and the one §0.0 named
+first. `ContainerInput.QUICK_MOVE` is a *different input*, not a modifier on
+PICKUP — `doClick` branches on it before it reads the button.
+
+**The routing is not "the other half of the inventory".** `quickMoveStack`
+checks armour and the off-hand **first**, for an item that fits them and whose
+target slot is *empty*, which is why shift-clicking a helmet equips it rather
+than moving it — and why shift-clicking a second helmet does not swap the first
+out. Only after that does it fall through to the hotbar-to-grid and
+grid-to-hotbar swap. The crafting result is the one destination walked
+**backwards**, so a craft fills the hotbar from the right.
+
+**`moveItemStackTo` is two passes, and they are asymmetric.** The first merges
+into every slot already holding the same item, across the whole range; the
+second places the remainder into the first empty slot that will take it and
+then **breaks**. So a stack tops up a partial one before it ever takes an empty
+slot, but a stack too large for one empty slot leaves the rest behind rather
+than spreading. The outer loop in `doClick` is what repeats it — `while
+(!clicked.isEmpty() && isSameItem(...))` — so a full stack across several empty
+slots takes several passes.
+
+Rewo's one approximation carries over from M35: `isStackable()` is
+`maxStackSize > 1 && !isDamaged()`, and Rewo sees only *whether* a stack has
+components, so a patched stack is treated as unstackable. Same one-directional
+caution, erring the same way — a damaged tool is never merged into another,
+which is what vanilla does anyway.
+
+Gate: `inventoryshot --check` **44 → 49**, five witnesses on the routing, the
+merge-before-place order, the armour exception and the decline. Verified live
+as well: a shift-click and a plain click on the same stack, each accepted by
+the server with **0 container resyncs** — the server replays the click and
+compares, so that is the real check rather than a claim about bytes.
+
+**Open.** Tooltips are the most visible thing still missing, and they need a
+new data source — `en_us.json` for the display names — plus text layout, so
+they are their own piece of work. Also out: drag / quick-craft, number-key
+swap, Q-to-drop, double-click pickup-all, the recipe book, durability bars, and
+armour icons (their `select` trim definitions are among M22's 147 suppressed).
 
 ### M38 — the first-person hand (2026-07-28)
 

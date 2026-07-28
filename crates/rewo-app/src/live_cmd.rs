@@ -1541,7 +1541,14 @@ fn run_headless(
                 let slot: i32 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1);
                 let button: i8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
                 let props = |id: i32| item_props(&items, id);
-                match session.inventory.click_pickup(slot, button, &props) {
+                // `REWO_CLICK=<slot>,<button>,q` shift-clicks instead.
+                let quick = spec.split(',').nth(2).is_some_and(|f| f.trim() == "q");
+                let predicted = if quick {
+                    session.inventory.click_quick_move(slot, &props)
+                } else {
+                    session.inventory.click_pickup(slot, button, &props)
+                };
+                match predicted {
                     Some(prediction) => {
                         let before = session.inventory.content_updates();
                         match session.container_click(&prediction) {
@@ -2045,6 +2052,9 @@ struct LiveApp {
     screen: ScreenState,
     /// The first-person hand (M38).
     hand: Option<HandState>,
+    /// Whether either shift is held — a shift-click in the inventory is a
+    /// quick-move rather than a pickup.
+    shift: bool,
     /// The local player's skin as it sits in the **preview** pass's atlas
     /// (M36): the raw pixels, whether the model is slim, and the UV once
     /// uploaded. Held separately from `skins` because the two passes have
@@ -2196,7 +2206,11 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
                     PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
                     PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
-                    PhysicalKey::Code(KeyCode::ShiftLeft) => self.keys.sneak = p,
+                    PhysicalKey::Code(KeyCode::ShiftLeft) => {
+                        self.keys.sneak = p;
+                        self.shift = p;
+                    }
+                    PhysicalKey::Code(KeyCode::ShiftRight) => self.shift = p,
                     PhysicalKey::Code(KeyCode::ControlLeft) => self.keys.sprint = p,
                     // Esc closes the screen if it is open, and only quits
                     // otherwise — the same precedence vanilla gives it.
@@ -2245,6 +2259,7 @@ impl ApplicationHandler for LiveApp {
                         &items,
                         &self.screen,
                         b,
+                        self.shift,
                         ext.width as f32,
                         ext.height as f32,
                     );
@@ -2773,6 +2788,7 @@ fn run_windowed(
         gui_items: None,
         screen: ScreenState::default(),
         hand: None,
+        shift: false,
         screen_labels: Vec::new(),
         preview_skin: None,
         keys: Keys::default(),
@@ -6060,6 +6076,7 @@ fn click_screen(
     items: &rewo_data::items::Items,
     screen: &ScreenState,
     button: i8,
+    shift: bool,
     w: f32,
     h: f32,
 ) {
@@ -6067,7 +6084,20 @@ fn click_screen(
         return;
     };
     let props = |id: i32| item_props(items, id);
-    let Some(prediction) = session.inventory.click_pickup(slot as i32, button, &props) else {
+    // Shift-click is a different `ContainerInput`, not a modifier on the same
+    // one — vanilla's `doClick` branches on it before reading the button.
+    let (input, predicted) = if shift {
+        (
+            rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
+            session.inventory.click_quick_move(slot as i32, &props),
+        )
+    } else {
+        (
+            0,
+            session.inventory.click_pickup(slot as i32, button, &props),
+        )
+    };
+    let Some(prediction) = predicted else {
         log::debug!("live: click on slot {slot} not predictable — not sent");
         return;
     };
@@ -6076,7 +6106,7 @@ fn click_screen(
         // slot refuses). Vanilla still sends it; there is no reason to.
         return;
     }
-    if let Err(e) = session.container_click(&prediction) {
+    if let Err(e) = session.container_click_input(&prediction, input) {
         log::warn!("live: container_click: {e}");
         return;
     }

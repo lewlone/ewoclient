@@ -2019,6 +2019,16 @@ impl PlaySession {
         &mut self,
         prediction: &rewo_world::inventory::ClickPrediction,
     ) -> Result<(), String> {
+        self.container_click_input(prediction, CONTAINER_INPUT_PICKUP)
+    }
+
+    /// [`Self::container_click`] with the `ContainerInput` named — PICKUP for a
+    /// plain click, QUICK_MOVE for a shift-click.
+    pub fn container_click_input(
+        &mut self,
+        prediction: &rewo_world::inventory::ClickPrediction,
+        input: i32,
+    ) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_container_click else {
             return Err("container_click unavailable".into());
         };
@@ -2037,7 +2047,7 @@ impl PlaySession {
         p.varint(self.inventory.state_id());
         p.u16(prediction.slot as u16);
         p.i8(prediction.button);
-        p.varint(CONTAINER_INPUT_PICKUP);
+        p.varint(input);
         p.varint(prediction.changed.len() as i32);
         for &(slot, value) in &prediction.changed {
             p.u16(slot);

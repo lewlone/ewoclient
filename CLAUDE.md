@@ -2744,6 +2744,21 @@ validation Rewo has.
   rotation (the brush sweep) measures as motionless — sample an offset point.
   Gate **29/29**. **Open:** `SPEAR`'s use rig and the crossbow charge need
   inputs the wire does not carry; the arm wears the default skin.
+- **M39 shift-click, the quick-move (2026-07-28)** — `ContainerInput.QUICK_MOVE`
+  is a **different input**, not a modifier on PICKUP. **The routing is not "the
+  other half of the inventory"**: `quickMoveStack` checks armour and the
+  off-hand *first*, for an item that fits and whose target is **empty** — which
+  is why shift-clicking a helmet equips it, and why a second helmet does not
+  swap the first out. The crafting result is the one destination walked
+  **backwards**, so a craft fills the hotbar from the right.
+  **`moveItemStackTo` is two asymmetric passes**: the merge pass runs the whole
+  range, the placement pass takes one empty slot and **breaks** — so a stack
+  tops up a partial one before taking an empty, but never scatters across
+  several. `doClick`'s outer `while` is what repeats it. Gate
+  `inventoryshot --check` 44 → **49/49**, plus a live check: shift-click and
+  plain click both accepted with **0 container resyncs**. **Open:** tooltips
+  (needs `en_us.json` + text layout), drag/quick-craft, number-key swap,
+  Q-drop, durability bars, armour icons.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
