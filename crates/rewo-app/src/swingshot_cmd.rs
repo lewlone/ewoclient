@@ -1357,6 +1357,11 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         mount: None,
         anim_id: 0.0,
         light: [1.0; 3],
+        // M52: no emissive state, no pack variant, no dye — the
+        // vanilla defaults, which is what this gate renders.
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
     }
 }
 
@@ -2516,6 +2521,11 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
         rewo_net::MetaKinds {
             allay: None,
             pillager: Some(ctx.pillager_tid),
+            // M52: not exercised here — this oracle drives the M19/M20 arm
+            // rigs, and neither the sheep's wool nor the creaking's eyes reach
+            // them. `None` means the kind gate can never match.
+            sheep: None,
+            creaking: None,
             classes: Some(&ctx.classes),
             components: Some(ctx.wire.components),
         },

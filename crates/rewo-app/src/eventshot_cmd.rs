@@ -511,8 +511,10 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
             format!("attack={a:?} sonic={s:?} (want both None)"),
         );
     }
-    // The warden tendril-shiver status (id 61) is deliberately excluded — only
-    // 4/62 are model-visible.
+    // The warden tendril-shiver status (id 61) maps to its OWN slot (M52) and
+    // must not touch either keyframe rig. `Warden.handleEntityEvent` is an
+    // if/else-if chain, so 61 reaching the attack or sonic-boom
+    // `AnimationState` would mean the dispatch had fallen through.
     {
         let mut t = EntityTable::default();
         add(&mut t, 1, warden_tid());
@@ -528,10 +530,11 @@ fn check_dispatch(c: &mut Checker, ids: &Ids, ev: i32, wrong: i32) {
         );
         let a = t.event_start(1, EntityEvent::WardenAttack);
         let s = t.event_start(1, EntityEvent::WardenSonicBoom);
+        let d = t.event_start(1, EntityEvent::WardenTendril);
         c.record(
-            "c1.excluded_tendril_inert",
-            a.is_none() && s.is_none(),
-            format!("attack={a:?} sonic={s:?} (want both None)"),
+            "c1.tendril_event_stamps_only_the_tendril",
+            a.is_none() && s.is_none() && d == Some(24),
+            format!("attack={a:?} sonic={s:?} tendril={d:?} (want None, None, Some(24))"),
         );
     }
 }

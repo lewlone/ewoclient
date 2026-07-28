@@ -954,6 +954,9 @@ fn run_entity_case(
         scale_mul: 1.0,
         mount: None,
         anim_id: 0.0,
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
         light,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);

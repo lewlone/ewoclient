@@ -318,6 +318,37 @@ pub struct BakedAssets {
     pub stats: BakeStats,
 }
 
+/// The mob-texture key a vanilla texture path maps to — e.g.
+/// `"entity/cow/cow_temperate.png"` → `"cow"`. The join [`crate::etf`] uses
+/// to attach a pack's random-entity rules to the textures the entity pass
+/// actually bakes.
+pub fn mob_texture_key(rel_path: &str) -> Option<&'static str> {
+    MOB_TEXTURE_SPECS
+        .iter()
+        .find(|(_, path, _, _)| *path == rel_path)
+        .map(|(key, _, _, _)| *key)
+}
+
+/// Every baked mob texture as `(key, jar-relative path, w, h)` — what
+/// [`crate::etf`] walks to find a pack's `_e` emissive siblings.
+pub fn mob_texture_specs() -> impl Iterator<Item = (&'static str, &'static str, u32, u32)> {
+    MOB_TEXTURE_SPECS.iter().copied()
+}
+
+/// The vanilla pixel dimensions of a mob texture, by key.
+pub fn mob_texture_size(key: &str) -> Option<(u32, u32)> {
+    MOB_TEXTURE_SPECS
+        .iter()
+        .find(|(k, _, _, _)| *k == key)
+        .map(|(_, _, w, h)| (*w, *h))
+}
+
+/// Decode an entity-sized PNG (any colour type) to `(RGBA8, w, h)` —
+/// [`crate::etf`] needs it for a pack's alternate textures.
+pub fn decode_entity_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    decode_png_any(bytes)
+}
+
 /// One decoded mob skin: RGBA8 + dimensions, keyed for the model registry.
 pub struct MobTexture {
     pub key: &'static str,
@@ -423,6 +454,20 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("copper_golem", "entity/copper_golem/copper_golem.png", 64, 64),
     ("nautilus", "entity/nautilus/nautilus.png", 128, 128),
     ("zombie_nautilus", "entity/nautilus/zombie_nautilus.png", 128, 128),
+    // Emissive overlay layers (M52) — the textures vanilla's `EyesLayer` /
+    // `LivingEntityEmissiveLayer` re-render the model with. Each is the
+    // same size as its mob's base texture, which is what lets the emissive
+    // pass reuse the base quads' UVs (`rewo_gpu::mobs::emissive_layers`).
+    ("spider_eyes", "entity/spider/spider_eyes.png", 64, 32),
+    ("enderman_eyes", "entity/enderman/enderman_eyes.png", 64, 32),
+    ("phantom_eyes", "entity/phantom/phantom_eyes.png", 64, 64),
+    ("breeze_eyes", "entity/breeze/breeze_eyes.png", 32, 32),
+    ("creaking_eyes", "entity/creaking/creaking_eyes.png", 64, 64),
+    ("copper_golem_eyes", "entity/copper_golem/copper_golem_eyes.png", 64, 64),
+    ("warden_bioluminescent", "entity/warden/warden_bioluminescent_layer.png", 128, 128),
+    ("warden_pulsating_1", "entity/warden/warden_pulsating_spots_1.png", 128, 128),
+    ("warden_pulsating_2", "entity/warden/warden_pulsating_spots_2.png", 128, 128),
+    ("warden_heart", "entity/warden/warden_heart.png", 128, 128),
 ];
 
 /// A decoded GUI sprite: RGBA8 + pixel dimensions.

@@ -101,6 +101,11 @@ pub struct EntityMeta {
     pub byte17: Option<u8>,
     /// Raw index-17 BOOLEAN — `Pillager.IS_CHARGING_CROSSBOW`.
     pub bool17: Option<bool>,
+    /// Index 18 BYTE. `Sheep.DATA_WOOL_ID` (M52) — `AgeableMob` claims 16
+    /// (`DATA_BABY_ID`) *and* 17 (`AGE_LOCKED`), so a `Sheep`'s own first
+    /// accessor is 18. The kind gate lives in `apply_set_entity_data`;
+    /// `Creaking.IS_TEARING_DOWN` shares the index with a different serializer.
+    pub byte18: Option<u8>,
     /// `ItemEntity.DATA_ITEM` — index 8, **ITEM_STACK** serializer (id 7).
     ///
     /// Index 8 is shared with `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, which is
@@ -185,6 +190,7 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             // `Pillager.IS_CHARGING_CROSSBOW` (BOOLEAN) both sit at 17.
             (17, 0) => meta.byte17 = r.u8().ok(),
             (17, 8) => meta.bool17 = r.u8().ok().map(|b| b != 0),
+            (18, 0) => meta.byte18 = r.u8().ok(),
             _ => {
                 if !skip_value_with(r, ty, components) {
                     break; // unknown/complex type — stop (already have ours)

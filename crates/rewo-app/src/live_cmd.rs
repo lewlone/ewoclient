@@ -172,6 +172,10 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.allay_type_id = data.entity_types.id_of("minecraft:allay");
     // M20: the index-17 BOOLEAN is `Pillager.IS_CHARGING_CROSSBOW`.
     session.pillager_type_id = data.entity_types.id_of("minecraft:pillager");
+    // M52: the two kinds that disambiguate an otherwise-shared metadata slot —
+    // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
+    session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
+    session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M26: `block_event`'s `b0 == 1` means a different thing to each block
     // entity, so the type is what selects the body. Resolving through the
     // classification table rather than looking three names up directly is what
@@ -1182,6 +1186,76 @@ pub(crate) fn bob_offset_for(id: i32) -> f32 {
     unit * std::f32::consts::TAU
 }
 
+/// Resolve one entity's vanilla emissive-layer inputs (M52).
+///
+/// Both are real wire state now, so neither is the branch's "vanilla synched
+/// default" placeholder any more:
+///
+/// * `tendril` — `Warden.getTendrilAnimation(partial)`. Entity event **61**
+///   sets `tendrilAnimation = 10` and `Warden.tick` decrements it once per
+///   client tick, so a continuous clock reads it as `max(0, 10 - elapsed) / 10`.
+///   A warden that has heard nothing has no receipt tick and reads 0 — still,
+///   dark tendrils, which is exactly what vanilla shows.
+/// * `eyes_glow` — `Creaking.isActive()`, metadata index 17 BOOLEAN, whose
+///   `defineSynchedData` default is `false`.
+fn emissive_state(
+    session: &PlaySession,
+    id: i32,
+    kind: EntityModelKind,
+    _now: f32,
+) -> rewo_gpu::entities::EmissiveState {
+    use rewo_world::entities::EntityEvent;
+    let ents = &session.world.entities;
+    let tendril = match kind {
+        EntityModelKind::Warden => ents
+            .event_start(id, EntityEvent::WardenTendril)
+            .map_or(0.0, |start| {
+                let elapsed = (session.ticks as i64 - start).max(0) as f32;
+                ((WARDEN_TENDRIL_TICKS - elapsed) / WARDEN_TENDRIL_TICKS).clamp(0.0, 1.0)
+            }),
+        _ => 0.0,
+    };
+    rewo_gpu::entities::EmissiveState {
+        tendril,
+        eyes_glow: matches!(kind, EntityModelKind::Creaking) && ents.creaking_active(id),
+    }
+}
+
+/// `Warden.tendrilAnimation`'s start value, and the divisor
+/// `getTendrilAnimation` normalizes by.
+const WARDEN_TENDRIL_TICKS: f32 = 10.0;
+
+/// Choose one entity's ETF texture variant. The properties are keyed by the
+/// mob-texture key, so a mob whose model uses several textures varies on its
+/// *first* — the one a pack's `<entity>.properties` names.
+fn etf_variant(
+    etf: &rewo_data::etf::EtfPack,
+    kind: EntityModelKind,
+    e: &rewo_world::entities::EntityState,
+    id: i32,
+    session: &PlaySession,
+    cube_size: Option<i32>,
+) -> u16 {
+    let Some(key) = rewo_gpu::mobs::MOBS
+        .iter()
+        .find(|d| d.kind == kind)
+        .and_then(|d| d.textures.first())
+    else {
+        return 0;
+    };
+    let props = rewo_data::etf::EntityProps {
+        uuid: e.uuid,
+        name: session.world.entities.custom_name(id),
+        baby: session.world.entities.is_baby(id),
+        size: cube_size,
+        y: e.y.floor() as i32,
+        // Before the first time packet the world clock reads 0 (dawn), which is
+        // the same assumption the renderer makes elsewhere.
+        day_ticks: session.day_ticks.unwrap_or(0),
+    };
+    etf.pick(key, &props) as u16
+}
+
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
@@ -1198,6 +1272,9 @@ fn collect_entities<'a>(
     equipment: &'a rewo_data::equipment::EquipmentAssets,
     // Where this frame's trim sprites landed in the pool (M48).
     trim_slots: &std::collections::HashMap<String, (u32, u32)>,
+    // The resource pack's ETF random-entity rules (M52). Empty without a pack,
+    // in which case every entity keeps its vanilla texture.
+    etf: &rewo_data::etf::EtfPack,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -1382,6 +1459,21 @@ fn collect_entities<'a>(
             mount: None,
             anim_id: (id & 0xffff) as f32,
             light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap),
+            // M52. Vanilla's synched defaults: the warden's tendril countdown
+            // rides entity_event 61 and the creaking's glow rides metadata
+            // IS_ACTIVE — both resolved below.
+            emissive: emissive_state(session, id, kind, now),
+            // ETF (M52): the pack's rules choose a texture per entity, keyed on
+            // its UUID so the choice is stable and a herd varies. No pack (or
+            // no rule for this mob) → 0, the vanilla texture.
+            variant: if etf.is_empty() {
+                0
+            } else {
+                etf_variant(etf, kind, e, id, session, cube_size)
+            },
+            // The sheep's wool colour (`Sheep.DATA_WOOL_ID`). `None` is
+            // vanilla's `DyeColor.WHITE` default, which still tints.
+            dye: session.world.entities.wool_color(id),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -1396,27 +1488,47 @@ fn collect_entities<'a>(
 /// Initialize the entity pass, optionally overriding mob models from an
 /// OptiFine CEM resource pack (`--pack` / `REWO_PACK`). Shared by the
 /// headless and windowed live paths (M9).
+///
+/// Also loads the pack's ETF texture variants (M52) — models and textures come
+/// out of the same zip — and returns its random-entity rules for the draw
+/// builder to pick with. Empty when there is no pack.
 pub(crate) fn init_entities_maybe_cem(
     wr: &mut WorldRenderer,
     gpu: &mut Gpu,
     baked: &assets::BakedAssets,
     pack: &Option<PathBuf>,
-) -> Result<(), String> {
+) -> Result<rewo_data::etf::EtfPack, String> {
     let pack = pack
         .clone()
         .or_else(|| std::env::var("REWO_PACK").ok().map(PathBuf::from));
-    match pack {
+    let etf = match pack {
         Some(path) => {
             let cem = crate::mobshot_cmd::load_cem_overrides(&path)?;
+            let etf = rewo_data::etf::load_pack(&path).unwrap_or_else(|e| {
+                // A pack with unreadable random-entity data still gets its
+                // models; the mobs simply keep vanilla textures.
+                log::warn!("live: ETF load failed ({e}) — vanilla textures");
+                rewo_data::etf::EtfPack::default()
+            });
             log::info!(
-                "live: CEM pack {} → {} model overrides",
+                "live: pack {} → {} model overrides, {} texture-variant rules",
                 path.display(),
-                cem.len()
+                cem.len(),
+                etf.rules.len()
             );
-            wr.init_entities_with_cem(gpu, font_data(baked), entity_textures(baked), cem)
+            wr.init_entities_with_cem(
+                gpu,
+                font_data(baked),
+                entity_textures_with(baked, &etf),
+                cem,
+            )?;
+            etf
         }
-        None => wr.init_entities(gpu, font_data(baked), entity_textures(baked)),
-    }?;
+        None => {
+            wr.init_entities(gpu, font_data(baked), entity_textures(baked))?;
+            rewo_data::etf::EtfPack::default()
+        }
+    };
     // **After** the pass exists — `init_entities` builds it, and installing
     // the glint first would have nothing to install into. M44 learned this
     // one the expensive way on the hand pass, where the order was reversed
@@ -1428,11 +1540,13 @@ pub(crate) fn init_entities_maybe_cem(
     if let Some(g) = baked.armor_glint.as_ref() {
         wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
     }
-    Ok(())
+    Ok(etf)
 }
 
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
     MobTextures {
+        // No pack: no alternates. `entity_textures_with` fills this in.
+        variants: Vec::new(),
         entries: baked
             .mob_textures
             .iter()
@@ -1452,6 +1566,28 @@ pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
                 rgba: &t.rgba,
             }))
             .collect(),
+    }
+}
+
+/// `entity_textures` plus a pack's ETF alternates (M52), which the entity pass
+/// packs into the same atlas and addresses by variant id.
+pub(crate) fn entity_textures_with<'a>(
+    baked: &'a assets::BakedAssets,
+    etf: &'a rewo_data::etf::EtfPack,
+) -> MobTextures<'a> {
+    MobTextures {
+        variants: etf
+            .textures
+            .iter()
+            .map(|t| rewo_gpu::entities::VariantTexEntry {
+                base_key: t.key,
+                index: t.index,
+                w: t.w,
+                h: t.h,
+                rgba: &t.rgba,
+            })
+            .collect(),
+        ..entity_textures(baked)
     }
 }
 
@@ -1681,7 +1817,7 @@ fn run_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &pack)?;
+    let etf = init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &pack)?;
     // M22: the baked held-item models, converted across the crate seam.
     world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
@@ -2024,6 +2160,7 @@ fn run_headless(
         &items,
         &baked.equipment,
         &trim_slots,
+        &etf,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -2472,6 +2609,9 @@ struct LiveApp {
     /// OptiFine CEM resource pack (M9) — mob-model overrides, applied at
     /// entity-pass init.
     pack: Option<PathBuf>,
+    /// The same pack's ETF random-entity rules (M52), consulted per entity per
+    /// frame. Empty without a pack.
+    etf: rewo_data::etf::EtfPack,
     init_error: Option<String>,
 }
 
@@ -2517,7 +2657,7 @@ impl ApplicationHandler for LiveApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
-            init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
+            self.etf = init_entities_maybe_cem(&mut world_renderer, &mut gpu, &baked, &self.pack)?;
             world_renderer.set_held_items(to_gpu_held_items(&baked.held_items));
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
@@ -3006,6 +3146,7 @@ impl LiveApp {
             &self.items,
             &self.equipment,
             &trim_slots,
+            &self.etf,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -3357,6 +3498,7 @@ fn run_windowed(
         darkness_option: args.darkness_effect_scale,
         skins: SkinLoader::new(),
         pack: args.pack.clone(),
+        etf: rewo_data::etf::EtfPack::default(),
         init_error: None,
     };
     event_loop
@@ -4214,6 +4356,9 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         mount: Some(m.mount),
         anim_id: 0.0,
         light: m.light,
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
     }
 }
 
@@ -6056,6 +6201,11 @@ fn preview_draw<'a>(
         // is both light channels at full — the preview is lit by the GUI's own
         // two-light rig, not by wherever the player happens to be standing.
         light: [1.0, 1.0, 1.0],
+        // M52: no emissive state, no pack variant, no dye — the
+        // vanilla defaults, which is what this gate renders.
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);

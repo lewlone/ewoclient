@@ -469,6 +469,11 @@ fn check_render(
             mount: None,
             anim_id: 0.0,
             light: [1.0, 1.0, 1.0],
+            // M52: no emissive state, no pack variant, no dye — the
+            // vanilla defaults, which is what this gate renders.
+            emissive: rewo_gpu::entities::EmissiveState::default(),
+            variant: 0,
+            dye: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -517,6 +522,11 @@ fn check_render(
             mount: None,
             anim_id: 0.0,
             light: [1.0, 1.0, 1.0],
+            // M52: no emissive state, no pack variant, no dye — the
+            // vanilla defaults, which is what this gate renders.
+            emissive: rewo_gpu::entities::EmissiveState::default(),
+            variant: 0,
+            dye: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -576,6 +586,11 @@ fn check_render(
             mount: None,
             anim_id: 0.0,
             light: [1.0, 1.0, 1.0],
+            // M52: no emissive state, no pack variant, no dye — the
+            // vanilla defaults, which is what this gate renders.
+            emissive: rewo_gpu::entities::EmissiveState::default(),
+            variant: 0,
+            dye: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;

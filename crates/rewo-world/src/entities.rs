@@ -286,11 +286,16 @@ pub enum EntityEvent {
     /// metadata-driven SCARED/balled state (which normally holds the peek at
     /// its end pose) persists.
     ArmadilloPeek,
+    /// Warden id 61 — `tendrilAnimation = 10` (M57). Not a keyframe rig: a
+    /// 10-tick countdown decremented once per client tick, which drives both
+    /// `WardenModel.animateTendrils`' sway and the tendril emissive layer's
+    /// alpha (`getTendrilAnimation` = `lerp(a, prev, cur) / 10`).
+    WardenTendril,
 }
 
 impl EntityEvent {
     /// Dense count for the fixed-size per-entity store.
-    pub const COUNT: usize = 3;
+    pub const COUNT: usize = 4;
 
     /// Slot index into [`EntityEventStarts`].
     pub const fn index(self) -> usize {
@@ -537,7 +542,7 @@ pub struct EntityTable {
     /// means `DeathState::ALIVE`, which is exact: `entityData.define` seeds
     /// health at 1.0. Cleared on removal.
     deaths: HashMap<i32, DeathState>,
-    /// `ClientboundUpdateAttributesPacket` snapshots — M52. Absent means the
+    /// `ClientboundUpdateAttributesPacket` snapshots — M57. Absent means the
     /// server has synced nothing for this entity, which is **not** the same as
     /// "the defaults apply": that distinction is what
     /// [`crate::attributes::resolve`] returns as
@@ -752,6 +757,18 @@ pub struct MobState {
     pub spell_casting: u8,
     /// `Pillager.isChargingCrossbow()`.
     pub charging_crossbow: bool,
+    /// `Sheep.DATA_WOOL_ID` (metadata index **18**, BYTE): the low nibble is
+    /// the `DyeColor` id and bit 0x10 is the sheared flag. Vanilla's
+    /// `define(DATA_WOOL_ID, (byte)0)` default is white-and-woolly, which is
+    /// what 0 means here too.
+    ///
+    /// Index 18, not 17: `AgeableMob` declares **two** accessors —
+    /// `DATA_BABY_ID` (16) then `AGE_LOCKED` (17) — so `Sheep`'s own first
+    /// accessor lands one slot further down than a naive count suggests.
+    pub wool: u8,
+    /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN) — the eyes' emissive layer
+    /// alpha. `Creaking` declares `CAN_MOVE` (16) first, so `IS_ACTIVE` is 17.
+    pub creaking_active: bool,
 }
 
 impl MobState {
@@ -769,6 +786,16 @@ impl MobState {
     /// synced byte, not the server-only tick counter.
     pub fn is_casting_spell(self) -> bool {
         self.spell_casting > 0
+    }
+
+    /// `Sheep.getColor()` — `DyeColor.byId(DATA_WOOL_ID & 15)`.
+    pub fn wool_color(self) -> u8 {
+        self.wool & 15
+    }
+
+    /// `Sheep.isSheared()` — `(DATA_WOOL_ID & 16) != 0`.
+    pub fn is_sheared(self) -> bool {
+        self.wool & 16 != 0
     }
 }
 
@@ -958,7 +985,7 @@ impl EntityTable {
     /// the *writing* side (`setHealth`); what arrives over the wire is the
     /// already-clamped value, so it is stored as sent. Only the sign matters
     /// here: `isDeadOrDying()` tests `<= 0`.
-    /// Apply one `AttributeSnapshot` from `update_attributes` (M52).
+    /// Apply one `AttributeSnapshot` from `update_attributes` (M57).
     ///
     /// Replaces that attribute's base and modifier list wholesale, per
     /// `handleUpdateAttributes`' `setBaseValue` → `removeModifiers()` → add
@@ -1306,6 +1333,31 @@ impl EntityTable {
     }
 
     /// `Pillager.setChargingCrossbow` (index 17, BOOLEAN).
+    /// `Sheep.DATA_WOOL_ID` (index 18, BYTE). Kind-gated by the caller.
+    pub fn set_wool(&mut self, id: i32, wool: u8) {
+        self.mob_state.entry(id).or_default().wool = wool;
+    }
+
+    /// The sheep's dye colour `0..15`, or `None` for an entity that has sent no
+    /// wool byte. `None` is *not* "untinted": `SheepWoolLayer` tints
+    /// unconditionally and `DyeColor.WHITE` is the default, so the renderer
+    /// treats `None` and `Some(0)` identically — the distinction only says
+    /// whether the server has spoken.
+    pub fn wool_color(&self, id: i32) -> Option<u8> {
+        self.mob_state.get(&id).map(|s| s.wool_color())
+    }
+
+    /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN). Kind-gated by the caller.
+    pub fn set_creaking_active(&mut self, id: i32, active: bool) {
+        self.mob_state.entry(id).or_default().creaking_active = active;
+    }
+
+    /// `Creaking.isActive()` — vanilla's synched default is `false`, so an
+    /// untracked entity reads as a creaking that has not woken.
+    pub fn creaking_active(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.creaking_active)
+    }
+
     pub fn set_charging_crossbow(&mut self, id: i32, charging: bool) {
         self.mob_state.entry(id).or_default().charging_crossbow = charging;
     }
