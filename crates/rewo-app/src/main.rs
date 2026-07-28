@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod capture;
 mod bench_cmd;
 mod danceshot_cmd;
 mod hurtshot_cmd;

@@ -38,8 +38,27 @@ pub struct Offscreen {
 }
 
 impl Offscreen {
+    /// An offscreen target in the gates' own `R8G8B8A8_SRGB`.
     pub fn new(gpu: &mut Gpu, width: u32, height: u32) -> Result<Self, String> {
-        let format = vk::Format::R8G8B8A8_SRGB;
+        Self::with_format(gpu, width, height, vk::Format::R8G8B8A8_SRGB)
+    }
+
+    /// The same, in a caller-chosen colour format (M51).
+    ///
+    /// A capture from the **live** client has to match that client's format, and
+    /// on Windows the swapchain is `B8G8R8A8_SRGB` where this file's default is
+    /// `R8G8B8A8_SRGB`. That is not cosmetic: `WorldRenderer::new` bakes its
+    /// colour format into every pipeline it builds, so a renderer built for the
+    /// swapchain cannot draw into an RGBA attachment at all.
+    ///
+    /// Added alongside `new` rather than replacing it — sixteen call sites want
+    /// the default, and none of them should have to say so.
+    pub fn with_format(
+        gpu: &mut Gpu,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+    ) -> Result<Self, String> {
         let extent = vk::Extent2D {
             width,
             height,
@@ -442,8 +461,27 @@ impl Offscreen {
     }
 
     /// Copy the last rendered frame to the readback buffer and encode a PNG.
+    /// Whether this target's texels come back byte-swapped relative to PNG's
+    /// RGBA order (M51).
+    ///
+    /// A `B8G8R8A8_*` attachment reads back B,G,R,A, and PNG is R,G,B,A. Every
+    /// gate runs the RGBA default, so nothing in the suite would ever have
+    /// noticed — a live capture would simply have shipped with red and blue
+    /// swapped, and looked plausible.
+    pub fn is_bgra(&self) -> bool {
+        matches!(
+            self.format,
+            vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM
+        )
+    }
+
     pub fn save_png(&mut self, gpu: &Gpu, path: &Path) -> Result<(), String> {
-        let pixels = self.read_rgba(gpu)?;
+        let mut pixels = self.read_rgba(gpu)?;
+        if self.is_bgra() {
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
         let file = std::fs::File::create(path).map_err(|e| format!("create {path:?}: {e}"))?;
         let writer = std::io::BufWriter::new(file);
         let mut encoder = png::Encoder::new(writer, self.extent.width, self.extent.height);
