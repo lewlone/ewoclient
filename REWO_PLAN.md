@@ -6366,6 +6366,69 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M49 — trims on GUI icons: the investigation, not the code (2026-07-28)
+
+**Not implemented.** The facts below are established from the 26.2 jar and
+decompile and cost nothing to re-verify; the implementation is a fresh
+session's work. Recorded here so that session starts at the code.
+
+#### What the icon actually is
+
+`assets/minecraft/items/iron_chestplate.json` is a **`select` on
+`minecraft:trim_material`**, whose `when` values are material **registry ids**
+(`minecraft:quartz`, not the `asset_name` suffix), each case naming a whole
+different model, with the plain model as `fallback`:
+
+```json
+{"model": {"type": "minecraft:select", "property": "minecraft:trim_material",
+  "cases": [{"when": "minecraft:quartz",
+             "model": {"type": "minecraft:model",
+                       "model": "minecraft:item/iron_chestplate_quartz_trim"}}, ...],
+  "fallback": {"type": "minecraft:model", "model": "minecraft:item/iron_chestplate"}}}
+```
+
+Those models exist — **337** `_trim` model files — and each is an ordinary
+two-layer `item/generated`:
+
+```json
+{"parent": "minecraft:item/generated",
+ "textures": {"layer0": "minecraft:item/iron_chestplate",
+              "layer1": "minecraft:trims/items/chestplate_trim_quartz"}}
+```
+
+#### The layer1 sprite is generated, by a *second* atlas
+
+`armor_trims.json` holds only the 36 `trims/entity/*` sources M48 reads.
+The item sprites come from **`assets/minecraft/atlases/items.json`**, a second
+`paletted_permutations` source over just four textures —
+`trims/items/{helmet,chestplate,leggings,boots}_trim` — through the **same**
+`trims/color_palettes/trim_palette` key and the same 16 permutations.
+
+So M48's `equipment::apply_palette` is already the whole generator. Only
+4 x 16 = **64** sprites, 16x16 each, which is small enough to pre-generate at
+bake time and register under their permuted names rather than demand-fill.
+
+#### The one hard part
+
+`ItemModels` is `HashMap<String, ItemModel>` — **keyed by item name alone**,
+baked once. A trimmed icon is a *different model*, so the key has to become
+`(item, trim material)`, which touches the bake, every caller that resolves an
+icon (GUI slots, the hotbar, the hand, ground items), and the item texture pool
+that 337 extra models feed. That is the milestone; the rest is small.
+
+`SelectionContext` needs the material's registry id, which means either a
+lifetime on a currently `Copy` lifetime-free struct or an owned field. The value
+comes from `StackComponents.trim` (M48 captures `(material, pattern)` ids)
+through `session.trim_materials[id].id`.
+
+#### Two things that are already done
+
+- The wire half: `minecraft:trim` is captured (M48), so a slot knows its
+  material id — `ItemSlot` needs to carry it, nothing needs decoding.
+- The palette half: `apply_palette` + the key palette are loaded and gated
+  (`itemshot` t1/t2). `TrimAssets::load` reads `trims/entity/` and
+  `trims/color_palettes/`; it needs `trims/items/` added, one line.
+
 ### M48 — armour trims (2026-07-28)
 
 The third armour layer, and the one that is not a texture in the jar.
@@ -6467,9 +6530,12 @@ and shoulders, beside a plain iron one that does not.
 
 #### Open
 
-- **The trim is not on GUI icons** — `minecraft:trim` is one of the properties a
-  `select` item definition dispatches on, and M40 suppresses what it cannot
-  evaluate. A trimmed chestplate's *icon* is the untrimmed one.
+- **The trim is not on GUI icons** — `minecraft:trim_material` is a `select`
+  property and M40 suppresses what it cannot evaluate, so a trimmed
+  chestplate's *icon* is the untrimmed one. **The investigation is done and
+  written up** in the M49 entry of §15: what the icon is, which atlas generates
+  its sprite, and the one hard part (`ItemModels` is keyed by item name alone,
+  so it has to become `(item, trim material)`).
 - **No `humanoid_baby` layer.** Vanilla has a third layer type with its own
   sources; Rewo's baby mobs already use the adult armour parts (M46).
 - **The trim does not glint.** `renderLayers` draws the foil after the first
