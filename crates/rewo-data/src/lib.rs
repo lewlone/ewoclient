@@ -19,6 +19,7 @@ pub mod chest_states;
 pub mod copper_golem_poses;
 pub mod components;
 pub mod enchantments;
+pub mod equipment;
 pub mod entity_classes;
 pub mod entity_types;
 pub mod items;

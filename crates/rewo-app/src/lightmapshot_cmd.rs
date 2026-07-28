@@ -931,6 +931,7 @@ fn run_entity_case(
         yaw: 0.0,
         death_time: 0.0,
         ground_item: None,
+        armor: [None; 4],
         held_glint: [false; 2],
         ground_glint: false,
         ground_count: 0,

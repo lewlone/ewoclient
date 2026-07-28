@@ -659,6 +659,21 @@ the code's author. Nothing below is settled truth.
   **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
+- **A mob can render with another mob's texture when more than one is in
+  the scene** — OPEN, found 2026-07-28 during M46, **pre-existing** (a
+  stashed pre-M46 build reproduces it exactly). Two zombies summoned side
+  by side both rendered with a villager's brown head and magenta legs;
+  a *single* zombie in the same spot rendered correctly. Ruled out: the
+  atlas (the packed slot table is byte-identical with and without M46's
+  fifteen armour sheets — `zombie -> (768, 512, 64, 64)` either way), and
+  `skin_uv` (only set for players). Not yet ruled out: the per-entity draw
+  ranges, or kind resolution for entities that stream in together.
+  **`mobshot` is structurally blind to it** — its check substitutes
+  per-face debug colours, so it verifies UV/face correspondence and cannot
+  see the wrong *sheet* being sampled. A gate for this wants a
+  real-texture witness (a known mob's known pixel colour), not a facelabel
+  one. Repro: `REWO_PRECMD` two `summon zombie` at one spot, `REWO_SETTLE=13`.
+
 - ~~Entities are decoded into a table but NOT rendered~~ — **RESOLVED
   2026-07-21.** Full entity track: movement/teleport/position-sync/
   player-info decode, vanilla 3-tick lerp + partial-tick blend, capsule
@@ -6350,6 +6365,135 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M46 — worn armour (2026-07-28)
+
+Every mob that could hold a sword has been able to since M22, and every one of
+them has been standing there naked. This dresses them.
+
+26.x splits a worn piece the same way it splits a held one. The **item** names
+an asset — `Equippable.assetId()`, `minecraft:diamond` — which is in the item
+prototype and never on the wire, so `tools/gen_item_props.py` extracts it
+alongside the max stack size and durability it already pulled. The **asset**
+then names its layers:
+
+```text
+assets/minecraft/equipment/diamond.json
+  { "layers": { "humanoid":          [ { "texture": "minecraft:diamond" } ],
+                "humanoid_leggings": [ { "texture": "minecraft:diamond" } ],
+                "horse_body":        [ ... ] } }
+```
+
+and each layer's texture is `entity/equipment/<layer>/<texture>.png` — a
+**64x32** sheet in the classic armour layout, not a 64x64 skin. Fifteen of them
+load from the jar. Only the two humanoid layers are read: `horse_body`,
+`llama_body` and the saddles describe geometry Rewo does not render, and a table
+nothing can draw is worse than no table.
+
+**Two humanoid layers rather than four, and the split is not per slot.**
+`HumanoidArmorLayer.usesInnerModel` is `slot == LEGS`, so the leggings get
+`humanoid_leggings` and the helmet, chestplate and boots share `humanoid`. The
+leggings sit *inside* the chestplate — `INNER_ARMOR_DEFORMATION` 0.5 against
+`OUTER` 1.0 — and that thinner inflation, on its own sheet, is what stops the
+two z-fighting where they overlap.
+
+**The body is in two pieces at once.** `ADULT_ARMOR_PARTS_PER_SLOT` gives CHEST
+`{body, left_arm, right_arm}` and LEGS `{left_leg, right_leg, body}`, so a
+chestplate covers both arms and the leggings cover the torso. The legs are not
+the humanoid's own leg boxes either: `createBaseArmorMesh` **replaces** them
+with `texOffs(0, 16)`, box `(-2, 0, -2)` 4x12x4 at `g.extend(-0.1)`, a tenth
+thinner again so a boot and a legging do not fight.
+
+The armour is posed from the **same `xf` the body just used**, not derived a
+second time. `HumanoidArmorLayer` is a render layer over a model whose angles
+are already set; recomputing them would drift the moment an arm swung.
+
+#### The armour layer follows the renderer, not the mesh
+
+The first build hung armour off any model that looked humanoid. That is
+*nearly* the right set and wrong at both edges. Every mention of
+`HumanoidArmorLayer` in 26.2 is one of eight renderers:
+
+```text
+AvatarRenderer                       player
+AbstractZombieRenderer               zombie, husk, drowned
+AbstractSkeletonRenderer             skeleton, stray, bogged, wither_skeleton, parched
+ZombieVillagerRenderer               zombie_villager
+ZombifiedPiglinRenderer              zombified_piglin
+PiglinRenderer                       piglin, piglin_brute
+ArmorStandRenderer, GiantMobRenderer (Rewo models neither)
+```
+
+An **allay** has arms and no legs; an **illager** and a **creaking** have the
+full humanoid limb set. None of the three has an armour layer, so equipping one
+renders nothing in vanilla — and a mesh test dresses all three. The set is
+transcribed as `mobs::wears_humanoid_armor` and checked before anything is
+emitted.
+
+#### Only the player has a `body` part
+
+`humanoid_head_body` puts every **mob's** torso cube straight on the static
+root. Only the player model has a real named `body`, and only because M19 gave
+it one so `setupAttackAnimation` could rotate the torso. So a chestplate's body
+box resolved to nothing on every mob, and they wore armoured arms over a bare
+chest.
+
+`armor_part` now falls back to the root for the torso — safe unconditionally,
+because the kind gate above has already run. It is the same space: the cube the
+fallback stands in for is on that root.
+
+**The witness passed while the render was broken.** It asked the *player* model,
+the one humanoid that has the named part. A helper tested in isolation proves
+nothing about the models the client actually draws, so it now walks every
+registered mob and the two directions are separate witnesses: `r4` that all
+fourteen wearers resolve all six parts, `r5` that the seventy-five others
+resolve none.
+
+The plain piglin swings the *generic* `ArmRight`/`ArmLeft` rather than a
+humanoid arm animation, so those are in the fallback list too. Widening it is
+safe precisely because the kind gate runs first — the enderman and the villager
+also carry `ArmRight` and are never asked.
+
+#### A trace beat four screenshots
+
+Whether the arms were armoured survived several rounds of squinting at crops,
+one of which was a husk rather than the zombie under test and another of which
+compared two live runs whose scenes had drifted apart. Logging which part each
+armour box resolved to answered it in one run: every arm and leg resolved,
+`body` did not. The bare green mass in the middle of every crop was the
+**torso** — the opposite of what the pictures had been read as saying.
+
+#### A wrong texture that was not this milestone's
+
+An armoured zombie rendered with a villager's brown head and magenta legs,
+which looked exactly like an atlas collision caused by the fifteen new sheets.
+It was not. Logging the packed slot table showed placements **byte-identical**
+with and without them (`zombie -> (768, 512, 64, 64)` either way); a single
+unarmoured mob rendered correctly *with* the sheets present; and the same scene
+on a stashed pre-M46 build reproduced the fault exactly. It is a pre-existing
+bug that needs more than one entity in the scene to show, unrelated to armour,
+and it is recorded in §0.0 rather than fixed here.
+
+`mobshot` cannot see it: its check substitutes per-face debug colours, so it
+proves UV/face correspondence and is blind to sampling the wrong sheet.
+
+#### Verified
+
+`itemshot --check` **37 -> 42**, **629 tests**, all seventeen gates green, demo
+PNG byte-identical to M15 onward. Live: a zombie in a diamond helmet, a diamond
+chestplate, **golden** leggings and leather boots renders each slot from its own
+sheet.
+
+#### Open
+
+- **Leather is not dyed.** A layer is a *list* — leather has a dyeable base plus
+  an overlay — and Rewo takes the first entry and draws one sheet per piece. The
+  base is greyscale, meant to be tinted by `dyed_color`, so undyed leather reads
+  grey and dyed leather is not tinted at all.
+- **No trims.** `ArmorTrim` is a third layer with its own palette.
+- The **inventory preview** does not wear the armour it is carrying.
+- **Baby** mobs use the adult armour parts; vanilla has a separate
+  `BABY_ARMOR_PARTS_PER_SLOT` with its own deformations.
 
 ### M45 — the glint on world-space items (2026-07-28)
 

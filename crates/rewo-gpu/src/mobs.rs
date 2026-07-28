@@ -3770,6 +3770,244 @@ mod tests {
 /// Built once per variant and shared: the hand needs one named part out of it
 /// every frame, and rebuilding a whole humanoid mesh to read two cubes would
 /// be the same per-frame allocation the 2026-05-31 leak pass went looking for.
+// -- worn armour (M46) --------------------------------------------------------
+//
+// `HumanoidModel.createArmorMeshSet` builds four models from the same humanoid
+// mesh, differing only in how far it is inflated and which parts survive:
+//
+// ```java
+// OUTER_ARMOR_DEFORMATION = new CubeDeformation(1.0F);
+// INNER_ARMOR_DEFORMATION = new CubeDeformation(0.5F);
+// ADULT_ARMOR_PARTS_PER_SLOT = {
+//     HEAD:  {head},                        // retainPartsAndChildren
+//     CHEST: {body, left_arm, right_arm},
+//     LEGS:  {left_leg, right_leg, body},   // inner deformation
+//     FEET:  {left_leg, right_leg},
+// };
+// ```
+//
+// So a chestplate is the body and both arms grown by 1.0, and leggings are the
+// body and both legs grown by 0.5 — **the body appears in both**, which is
+// exactly why the leggings need the thinner inflation: they sit inside the
+// chestplate rather than z-fighting it.
+//
+// The legs are not the humanoid's own leg boxes. `createBaseArmorMesh`
+// *replaces* them with `texOffs(0, 16)`, box `(-2, 0, -2)` 4x12x4 at
+// `g.extend(-0.1)` — a tenth thinner than the rest of the piece, so the boot
+// and the legging do not fight each other where they overlap.
+
+/// Find the body part an armour box hangs off (M46).
+///
+/// **Not by name alone.** Only `body`, `left_arm` and `right_arm` carry names
+/// in Rewo's humanoid builders — a name exists where a keyframe channel or a
+/// CEM bone needs to target the part, and the head and legs never did. Naming
+/// them to suit the armour would newly bind them to any CEM pack that declares
+/// those bones, which is a behaviour change nothing here asked for. So the
+/// lookup falls back to the part's **animation kind**, which is what actually
+/// identifies a humanoid limb.
+pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
+    if let Some(i) = parts.iter().position(|p| p.name == want) {
+        return Some(i);
+    }
+    let kinds: &[Anim] = match want {
+        "head" => &[Anim::Head],
+        "body" => &[Anim::HumanoidBody],
+        // The plain piglin swings the *generic* arm animation, so
+        // `ArmRight`/`ArmLeft` are here too. Widening the list is safe because
+        // the caller has already filtered to the fourteen kinds vanilla gives
+        // an armour layer — the enderman and villager also carry `ArmRight`
+        // and are never asked.
+        "right_arm" => &[Anim::HumanoidArmRight, Anim::UndeadArmRight, Anim::ArmRight],
+        "left_arm" => &[Anim::HumanoidArmLeft, Anim::UndeadArmLeft, Anim::ArmLeft],
+        "right_leg" => &[Anim::LegRight],
+        "left_leg" => &[Anim::LegLeft],
+        _ => return None,
+    };
+    if let Some(i) = parts
+        .iter()
+        .position(|p| kinds.iter().any(|k| std::mem::discriminant(&p.anim) == std::mem::discriminant(k)))
+    {
+        return Some(i);
+    }
+    // A humanoid **mob** has no `body` part at all: `humanoid_head_body` puts
+    // its torso cube straight on the static root, because only the player's
+    // torso animates (M19 gave it one for `setupAttackAnimation`). The armour
+    // belongs on the root, in exactly the space that cube occupies.
+    //
+    // Safe as an unconditional fallback because the caller has already asked
+    // [`wears_humanoid_armor`] — nothing reaches here that vanilla would not
+    // hang a humanoid armour model off.
+    if want == "body" {
+        return Some(STATIC_PART);
+    }
+    None
+}
+
+/// Whether vanilla gives this entity a `HumanoidArmorLayer`.
+///
+/// **Transcribed from the renderers, not inferred from the model.** Every
+/// mention of `HumanoidArmorLayer` in 26.2 is one of:
+///
+/// ```text
+/// AvatarRenderer                       player
+/// AbstractZombieRenderer               zombie, husk (extends ZombieRenderer), drowned
+/// AbstractSkeletonRenderer             skeleton, stray, bogged, wither_skeleton, parched
+/// ZombieVillagerRenderer               zombie_villager
+/// ZombifiedPiglinRenderer              zombified_piglin
+/// PiglinRenderer                       piglin, piglin_brute
+/// ArmorStandRenderer, GiantMobRenderer (Rewo models neither)
+/// ```
+///
+/// Deliberately not a geometric test. An earlier form asked "does the model
+/// have humanoid arms", which is *nearly* the same set and wrong at both
+/// edges: an **allay** has arms and no legs, and an **illager** or a
+/// **creaking** has the full humanoid limb set — yet none of the three has an
+/// armour layer, so equipping one renders nothing in vanilla. The renderers
+/// are the rule; the mesh only looks like it is.
+pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
+    matches!(
+        kind,
+        EntityModelKind::Player
+            | EntityModelKind::PlayerSlim
+            | EntityModelKind::Zombie
+            | EntityModelKind::Husk
+            | EntityModelKind::Drowned
+            | EntityModelKind::ZombieVillager
+            | EntityModelKind::ZombifiedPiglin
+            | EntityModelKind::Skeleton
+            | EntityModelKind::Stray
+            | EntityModelKind::Bogged
+            | EntityModelKind::WitherSkeleton
+            | EntityModelKind::Parched
+            | EntityModelKind::Piglin
+            | EntityModelKind::PiglinBrute
+    )
+}
+
+/// Which humanoid parts a slot's armour covers, and how far the mesh is grown.
+///
+/// The names are the *body* model's part names: the armour is posed by the
+/// same transforms the body was, which is what makes a chestplate swing with
+/// the arm it is on rather than floating beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmorSlot {
+    Head,
+    Chest,
+    Legs,
+    Feet,
+}
+
+impl ArmorSlot {
+    /// `usesInnerModel` — only the leggings.
+    pub fn inner(self) -> bool {
+        matches!(self, ArmorSlot::Legs)
+    }
+
+    /// `CubeDeformation` for this slot: 0.5 inside a chestplate, 1.0 outside.
+    pub fn grow(self) -> f32 {
+        if self.inner() {
+            0.5
+        } else {
+            1.0
+        }
+    }
+
+    /// `ADULT_ARMOR_PARTS_PER_SLOT`.
+    pub fn parts(self) -> &'static [&'static str] {
+        match self {
+            ArmorSlot::Head => &["head"],
+            ArmorSlot::Chest => &["body", "left_arm", "right_arm"],
+            ArmorSlot::Legs => &["left_leg", "right_leg", "body"],
+            ArmorSlot::Feet => &["left_leg", "right_leg"],
+        }
+    }
+}
+
+/// One armour box, in the part's own local space.
+///
+/// `part` names the body part whose transform poses it — `emit_model` already
+/// computes those, and reusing them is the only way the armour can follow a
+/// walk cycle or a combat swing without a second animation implementation.
+pub struct ArmorBox {
+    pub part: &'static str,
+    /// Texture offset into the 64x32 armour sheet.
+    pub uv: (f32, f32),
+    pub min: [f32; 3],
+    pub dims: [f32; 3],
+    /// Extra inflation beyond the slot's, for the legs' `extend(-0.1)`.
+    pub extend: f32,
+    pub mirror: bool,
+}
+
+/// The armour boxes for one slot, from `HumanoidModel.createMesh` with
+/// `createBaseArmorMesh`'s leg replacement.
+///
+/// The head's `retainPartsAndChildren` keeps the hat too, but the hat is the
+/// *skin's* second layer — the armour sheet has nothing at those coordinates,
+/// so only the head box is emitted.
+pub fn armor_boxes(slot: ArmorSlot) -> Vec<ArmorBox> {
+    let leg = |mirror: bool| ArmorBox {
+        part: if mirror { "left_leg" } else { "right_leg" },
+        uv: (0.0, 16.0),
+        min: [-2.0, 0.0, -2.0],
+        dims: [4.0, 12.0, 4.0],
+        // `g.extend(-0.1)` — the legs are a tenth thinner than the rest.
+        extend: -0.1,
+        mirror,
+    };
+    match slot {
+        ArmorSlot::Head => vec![ArmorBox {
+            part: "head",
+            uv: (0.0, 0.0),
+            min: [-4.0, -8.0, -4.0],
+            dims: [8.0, 8.0, 8.0],
+            extend: 0.0,
+            mirror: false,
+        }],
+        ArmorSlot::Chest => vec![
+            ArmorBox {
+                part: "body",
+                uv: (16.0, 16.0),
+                min: [-4.0, 0.0, -2.0],
+                dims: [8.0, 12.0, 4.0],
+                extend: 0.0,
+                mirror: false,
+            },
+            ArmorBox {
+                part: "right_arm",
+                uv: (40.0, 16.0),
+                min: [-3.0, -2.0, -2.0],
+                dims: [4.0, 12.0, 4.0],
+                extend: 0.0,
+                mirror: false,
+            },
+            // The left arm is the **mirrored right rect**, not its own — the
+            // armour sheet is 64x32 and has no second arm on it.
+            ArmorBox {
+                part: "left_arm",
+                uv: (40.0, 16.0),
+                min: [-1.0, -2.0, -2.0],
+                dims: [4.0, 12.0, 4.0],
+                extend: 0.0,
+                mirror: true,
+            },
+        ],
+        ArmorSlot::Legs => vec![
+            ArmorBox {
+                part: "body",
+                uv: (16.0, 16.0),
+                min: [-4.0, 0.0, -2.0],
+                dims: [8.0, 12.0, 4.0],
+                extend: 0.0,
+                mirror: false,
+            },
+            leg(false),
+            leg(true),
+        ],
+        ArmorSlot::Feet => vec![leg(false), leg(true)],
+    }
+}
+
 pub fn player_model_for_hand(slim: bool) -> &'static Model {
     static WIDE: std::sync::OnceLock<Model> = std::sync::OnceLock::new();
     static SLIM: std::sync::OnceLock<Model> = std::sync::OnceLock::new();

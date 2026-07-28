@@ -985,6 +985,36 @@ pub(crate) fn resolve_held_items<'a>(
 /// The flag comes off the wire with the equipment, because it lives only in
 /// the component patch — there is nothing about the item *id* that says
 /// whether a particular stack is enchanted.
+/// The armour atlas key each slot wears, head first (M46).
+///
+/// Two lookups, and both are **prototype** data rather than wire data: the
+/// item's `Equippable.assetId()` comes from the generated item table, and the
+/// asset's layer names from the jar. The wire sends only an item id.
+///
+/// The **leggings take the inner sheet** and the other three the outer one —
+/// `usesInnerModel` is `slot == LEGS`, which is the whole reason two layer
+/// types exist.
+pub(crate) fn armor_keys<'a>(
+    session: &PlaySession,
+    id: i32,
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+) -> [Option<&'a str>; 4] {
+    use rewo_data::equipment::ArmorLayer;
+    let worn = session.world.entities.armor(id);
+    std::array::from_fn(|i| {
+        let item = worn[i]?;
+        let asset = rewo_data::item_props_table::equip_asset(items.name(item)?)?;
+        // head 0, chest 1, legs 2, feet 3 — only the legs are inner.
+        let layer = if i == 2 {
+            ArmorLayer::Leggings
+        } else {
+            ArmorLayer::Humanoid
+        };
+        equipment.key(asset, layer)
+    })
+}
+
 pub(crate) fn held_foil(
     session: &PlaySession,
     id: i32,
@@ -1017,6 +1047,9 @@ fn collect_entities<'a>(
     spears: &rewo_data::item_tags::ItemTag,
     bow_item: Option<i32>,
     item_names: &'a rewo_data::items::Items,
+    // Armour layer definitions, for resolving what each entity wears into an
+    // atlas key (M46).
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -1166,6 +1199,7 @@ fn collect_entities<'a>(
             ground_item: ground_stack.and_then(|(i, _, _)| item_names.name(i)),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
+            armor: armor_keys(session, id, item_names, equipment),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),
@@ -1256,6 +1290,15 @@ pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
                 h: t.h,
                 rgba: &t.rgba,
             })
+            // M46: the armour sheets share the entity atlas. They are 64x32
+            // rather than 64x64, so the shelf packer fits them alongside the
+            // mob textures with no special case.
+            .chain(baked.equipment.textures.iter().map(|t| MobTexEntry {
+                key: &t.key,
+                w: t.w,
+                h: t.h,
+                rgba: &t.rgba,
+            }))
             .collect(),
     }
 }
@@ -1818,6 +1861,7 @@ fn run_headless(
         &spears,
         bow_item,
         &items,
+        &baked.equipment,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -2184,6 +2228,10 @@ struct LiveApp {
     bow_item: Option<i32>,
     /// Item registry, for id → name when resolving held models (M22).
     items: std::sync::Arc<rewo_data::items::Items>,
+    /// Armour layer definitions (M46). Cloned out of the bake because
+    /// `self.baked` is *taken* when the window opens, and the entity draws
+    /// need this every frame after that.
+    equipment: std::sync::Arc<rewo_data::equipment::EquipmentAssets>,
     pool: MeshPool,
     /// M33: the cloud map, the climate noises and the cached cloud mesh. Built
     /// on the first frame that has a bake, since `baked` arrives with the
@@ -2738,6 +2786,7 @@ impl LiveApp {
             &self.spears,
             self.bow_item,
             &self.items,
+            &self.equipment,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -3010,6 +3059,9 @@ fn run_windowed(
     let mut app = LiveApp {
         particles: None,
         session: Some(session),
+        // Cloned before the bake is stored, because it is `take`n when the
+        // window opens and the entity draws need this every frame after.
+        equipment: std::sync::Arc::new(baked.equipment.clone()),
         baked: Some(baked),
         etypes,
         spears,
@@ -3897,6 +3949,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         hurt: false,
         held: [None, None],
         ground_item: None,
+        armor: [None; 4],
         held_glint: [false; 2],
         ground_glint: false,
         ground_count: 0,
@@ -5712,6 +5765,7 @@ fn preview_draw<'a>(
         yaw: 180.0 + x_angle,
         death_time: 0.0,
         ground_item: None,
+        armor: [None; 4],
         held_glint: [false; 2],
         ground_glint: false,
         ground_count: 0,

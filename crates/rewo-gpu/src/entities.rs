@@ -139,6 +139,10 @@ pub struct EntityDraw<'a> {
     /// `ItemStack.hasFoil()` for each held stack, and for a dropped one
     /// (M45). Resolved by the app, which is the only side that knows what a
     /// stack is; the pass draws quads.
+    /// The armour atlas key for each slot, head first (M46) —
+    /// `<asset>/<layer>` as `rewo_data::equipment` packs it. `None` is an
+    /// empty slot, or one whose asset this jar does not describe.
+    pub armor: [Option<&'a str>; 4],
     pub held_glint: [bool; 2],
     pub ground_glint: bool,
     /// The dropped stack's raw count. The renderer applies vanilla's
@@ -334,7 +338,7 @@ fn pack_shelves(sizes: &[(u32, u32)]) -> Vec<Option<(u32, u32)>> {
 /// One baked mob texture, keyed by the registry names in
 /// [`mobs::MobDef::textures`] (e.g. "cow", "sheep_wool").
 pub struct MobTexEntry<'a> {
-    pub key: &'static str,
+    pub key: &'a str,
     pub w: u32,
     pub h: u32,
     pub rgba: &'a [u8],
@@ -388,6 +392,8 @@ pub struct EntityPass {
     held_items: Option<crate::held::HeldItems>,
     /// Texture index -> atlas item slot, for the textures currently resident.
     item_slots: std::collections::HashMap<u16, u32>,
+    /// `<asset>/<layer>` → the sheet's packed rect in the entity atlas (M46).
+    armor_slots: std::collections::HashMap<String, (u32, u32, u32, u32)>,
     /// Round-robin cursor into the item pool, like `skin_next`.
     item_next: u32,
     /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
@@ -520,7 +526,7 @@ impl EntityPass {
         });
         let sizes: Vec<(u32, u32)> = order.iter().map(|&i| (tex.entries[i].w, tex.entries[i].h)).collect();
         let origins = pack_shelves(&sizes);
-        let mut slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> =
+        let mut slots: std::collections::HashMap<&str, (u32, u32, u32, u32)> =
             std::collections::HashMap::new();
         for (slot, &i) in order.iter().enumerate() {
             let e = &tex.entries[i];
@@ -756,6 +762,13 @@ impl EntityPass {
                 white_uv,
                 has_font,
                 player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
+                // Armour sheets are looked up by name every frame — a mob's
+                // model is fixed at build time, but what it wears is not.
+                armor_slots: slots
+                    .iter()
+                    .filter(|(k, _)| k.contains("/humanoid"))
+                    .map(|(k, v)| ((*k).to_string(), *v))
+                    .collect(),
                 skin_next: 0,
                 held_items: None,
                 item_slots: std::collections::HashMap::new(),
@@ -1189,6 +1202,97 @@ impl EntityPass {
         }
     }
 
+    /// Worn armour, over the body it sits on (M46).
+    ///
+    /// `HumanoidArmorLayer` is a render *layer*: it re-poses the humanoid mesh
+    /// with the model's own angles and draws it inflated, so the armour is
+    /// built here from the same `xf` the body just used. Deriving the pose a
+    /// second time would drift the moment an arm swung.
+    ///
+    /// Nothing is drawn at all unless vanilla gives this entity the layer —
+    /// see [`mobs::wears_humanoid_armor`], which is transcribed from the
+    /// renderers rather than sniffed from the mesh. An illager has the whole
+    /// humanoid limb set and still wears no armour.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_armor(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        xf: &[([[f32; 3]; 3], [f32; 3])],
+        scale: f32,
+        st: f32,
+        ct: f32,
+        sr: f32,
+        cr: f32,
+    ) {
+        if !mobs::wears_humanoid_armor(d.kind) {
+            return;
+        }
+        let [light_r, light_g, light_b] = d.light;
+        let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        for (slot, key) in [
+            (mobs::ArmorSlot::Chest, d.armor[1]),
+            (mobs::ArmorSlot::Legs, d.armor[2]),
+            (mobs::ArmorSlot::Feet, d.armor[3]),
+            (mobs::ArmorSlot::Head, d.armor[0]),
+        ] {
+            let Some(key) = key else { continue };
+            let Some(&(ax, ay, _, _)) = self.armor_slots.get(key) else {
+                continue;
+            };
+            for b in mobs::armor_boxes(slot) {
+                let Some(pi) = mobs::armor_part(&model.parts, b.part) else {
+                    continue;
+                };
+                let (m, o) = &xf[pi];
+                // The sheet is 64x32 in the classic armour layout, packed into
+                // the shared atlas at `(ax, ay)`.
+                for (_facing, pos, uvs) in
+                    mobs::cube_faces(b.uv, b.min, b.dims, slot.grow() + b.extend, b.mirror)
+                {
+                    if verts.len() + 6 > MAX_VERTS {
+                        return;
+                    }
+                    let mut p4 = [[0f32; 3]; 4];
+                    for (i, corner) in pos.iter().enumerate() {
+                        let r = mat_apply(m, *corner);
+                        let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
+                        let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                        let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+                        let x = e[0] * ct + e[2] * st;
+                        let z = -e[0] * st + e[2] * ct;
+                        let mut l = [x * scale, e[1] * scale, z * scale];
+                        if let Some(mm) = &d.mount {
+                            l = [
+                                mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
+                                mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
+                                mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
+                            ];
+                        }
+                        p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+                    }
+                    let n = face_normal(&p4);
+                    let shade = mobs::shade_for(n);
+                    let uv4: [[f32; 2]; 4] = std::array::from_fn(|i| {
+                        [
+                            (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
+                            (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
+                        ]
+                    });
+                    for &i in &[0usize, 1, 2, 0, 2, 3] {
+                        verts.push(Vertex {
+                            pos: p4[i],
+                            uv: uv4[i],
+                            color: [shade, shade, shade, 1.0],
+                            light_hurt: [light_r, light_g, light_b, hurt],
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     fn emit_model(
         &self,
         verts: &mut Vec<Vertex>,
@@ -1355,6 +1459,9 @@ impl EntityPass {
                 });
             }
         }
+        // M46: worn armour, a render layer over the body, before the held
+        // item so a chestplate does not paint over a sword.
+        self.emit_armor(verts, d, model, &xf, s, st, ct, sr, cr);
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.

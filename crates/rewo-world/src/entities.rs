@@ -521,6 +521,8 @@ pub struct EntityTable {
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
     item_stacks: HashMap<i32, (i32, i32, bool)>,
+    /// Worn armour item ids per entity, head first (M46).
+    armor: HashMap<i32, [Option<i32>; 4]>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1137,6 +1139,25 @@ impl EntityTable {
     /// Set one hand's item — `ClientboundSetEquipmentPacket`'s MAINHAND /
     /// OFFHAND slots. Armour slots never reach here: they change no swing
     /// input. [`HandItem::Unknown`] is a first-class value, not an absence.
+    /// The item id worn in each armour slot, head first (M46).
+    ///
+    /// `EquipmentSlot`'s wire ids are `0 mainhand, 1 offhand, 2 feet, 3 legs,
+    /// 4 chest, 5 head` — so the armour occupies **2..=5 and runs bottom-up**,
+    /// which is why this indexes by `5 - id` rather than by the id.
+    pub fn set_armor(&mut self, id: i32, slot: usize, item: Option<i32>) {
+        if slot >= 4 {
+            return;
+        }
+        let e = self.armor.entry(id).or_insert([None; 4]);
+        e[slot] = item;
+    }
+
+    /// What this entity wears, head first. All `None` for anything the server
+    /// has not equipped.
+    pub fn armor(&self, id: i32) -> [Option<i32>; 4] {
+        self.armor.get(&id).copied().unwrap_or([None; 4])
+    }
+
     pub fn set_hand_item(&mut self, id: i32, hand: InteractionHand, item: HandItem) {
         let slot = self.hands.entry(id).or_default();
         slot[hand_slot(hand)] = item;

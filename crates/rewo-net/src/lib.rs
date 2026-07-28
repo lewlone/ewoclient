@@ -1549,8 +1549,19 @@ pub(crate) fn apply_set_equipment(
         let hand = match slot_id & 127 {
             0 => Some(InteractionHand::MainHand),
             1 => Some(InteractionHand::OffHand),
-            _ => None, // armour / body / saddle: decoded, then discarded
+            _ => None, // armour handled below; body / saddle still discarded
         };
+        // M46: the four armour slots. `EquipmentSlot`'s wire ids run
+        // `2 feet, 3 legs, 4 chest, 5 head` — **bottom-up**, so the index into
+        // a head-first array is `5 - id` and not `id - 2`.
+        if (2..=5).contains(&(slot_id & 127)) {
+            let index = (5 - (slot_id & 127)) as usize;
+            let worn = match &slot {
+                WireSlot::Empty => None,
+                WireSlot::Stack(s) => Some(s.item_id),
+            };
+            entities.set_armor(eid, index, worn);
+        }
         if let Some(hand) = hand {
             let item = match slot {
                 WireSlot::Empty => HandItem::Empty,

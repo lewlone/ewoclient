@@ -143,10 +143,17 @@ def main():
         total += 1
 
         slot = None
+        asset = None
         equippable = components.get(EQUIP_KEY)
         if equippable is not None:
             if not isinstance(equippable, dict):
                 die(f"{name}: `{EQUIP_KEY}` is {equippable!r}, not an object")
+            # `Equippable.assetId()` — which `assets/minecraft/equipment/
+            # <asset>.json` describes this piece's armour layers. Optional:
+            # a carved pumpkin is worn and has no armour model.
+            asset = equippable.get("asset_id")
+            if asset is not None and not isinstance(asset, str):
+                die(f"{name}: `{EQUIP_KEY}` has a non-string `asset_id`")
             slot = equippable.get("slot")
             if not isinstance(slot, str):
                 die(f"{name}: `{EQUIP_KEY}` has no string `slot`")
@@ -166,18 +173,21 @@ def main():
                     f"denominator")
 
         if size != default or slot is not None or max_damage is not None:
-            rows[item] = (size if size != default else None, slot, max_damage)
+            rows[item] = (size if size != default else None, slot, max_damage,
+                          asset)
 
     body = "\n".join(
-        '    ("minecraft:{}", {}, {}, {}),'.format(
+        '    ("minecraft:{}", {}, {}, {}, {}),'.format(
             item,
             "None" if s is None else f"Some({s})",
             "None" if q is None else f"Some(EquipSlot::{q.capitalize()})",
-            "None" if d is None else f"Some({d})")
-        for item, (s, q, d) in sorted(rows.items()))
+            "None" if d is None else f"Some({d})",
+            "None" if a is None else f'Some("{a}")')
+        for item, (s, q, d, a) in sorted(rows.items()))
 
+    assets = len({a for _, _, _, a in rows.values() if a is not None})
     sizes, slots, damaged = {}, {}, 0
-    for s, q, d in rows.values():
+    for s, q, d, _ in rows.values():
         if s is not None:
             sizes[s] = sizes.get(s, 0) + 1
         if q is not None:
@@ -196,7 +206,8 @@ def main():
 //! Source: the datagen per-item component report for {VERSION}. Of {total}
 //! items, {n_sized} differ from `Item.DEFAULT_MAX_STACK_SIZE` = {default}
 //! ({size_summary}), {sum(slots.values())} carry `minecraft:equippable`
-//! ({slot_summary}) and {damaged} carry `minecraft:max_damage`. Items with
+//! ({slot_summary}), {damaged} carry `minecraft:max_damage` and {assets}
+//! distinct equipment assets are named. Items with
 //! none of the three are not listed.
 //!
 //! Both feed the container click arithmetic. A wrong cap or a wrongly-allowed
@@ -219,17 +230,45 @@ pub const ABSOLUTE_MAX_STACK: i32 = {absolute_max};
 
 /// Every item that is not (default stack size, not equippable), sorted by name
 /// so a binary search finds it. A `None` size means the default.
-pub const ITEM_PROPS: &[(&str, Option<i32>, Option<EquipSlot>, Option<i32>)] = &[
+pub const ITEM_PROPS: &[(
+    &str,
+    Option<i32>,
+    Option<EquipSlot>,
+    Option<i32>,
+    Option<&str>,
+)] = &[
 {body}
 ];
 
-type Props = (Option<i32>, Option<EquipSlot>, Option<i32>);
+type Props = (
+    Option<i32>,
+    Option<EquipSlot>,
+    Option<i32>,
+    Option<&'static str>,
+);
 
 fn lookup(name: &str) -> Option<Props> {{
     ITEM_PROPS
-        .binary_search_by(|(n, _, _, _)| (*n).cmp(name))
+        .binary_search_by(|(n, _, _, _, _)| (*n).cmp(name))
         .ok()
-        .map(|i| (ITEM_PROPS[i].1, ITEM_PROPS[i].2, ITEM_PROPS[i].3))
+        .map(|i| {{
+            (
+                ITEM_PROPS[i].1,
+                ITEM_PROPS[i].2,
+                ITEM_PROPS[i].3,
+                ITEM_PROPS[i].4,
+            )
+        }})
+}}
+
+/// `Equippable.assetId()` — which `assets/minecraft/equipment/<asset>.json`
+/// describes this item's armour layers (M46).
+///
+/// `None` covers two cases the caller must not confuse: an item that is not
+/// equippable at all, and one that is worn but names no armour model (a carved
+/// pumpkin). Both render no armour, which is why they share a return.
+pub fn equip_asset(name: &str) -> Option<&'static str> {{
+    lookup(name).and_then(|(_, _, _, a)| a)
 }}
 
 /// `stack.getMaxDamage()` — the denominator of a durability bar, or `None` for
@@ -240,7 +279,7 @@ fn lookup(name: &str) -> Option<Props> {{
 /// pickaxe. A patch that overrides `max_damage` wins over this, which is why
 /// the caller takes the patch's value first.
 pub fn max_damage(name: &str) -> Option<i32> {{
-    lookup(name).and_then(|(_, _, d)| d)
+    lookup(name).and_then(|(_, _, d, _)| d)
 }}
 
 /// `stack.getMaxStackSize()` for an item name.
@@ -253,7 +292,7 @@ pub fn max_damage(name: &str) -> Option<i32> {{
 /// `Items::name` returns `None`, and the click path declines to predict rather
 /// than guessing a cap.
 pub fn max_stack_size(name: &str) -> i32 {{
-    lookup(name).and_then(|(s, _, _)| s).unwrap_or(DEFAULT_MAX_STACK)
+    lookup(name).and_then(|(s, _, _, _)| s).unwrap_or(DEFAULT_MAX_STACK)
 }}
 
 /// The slot an item can be equipped into, or `None` if it carries no
@@ -263,7 +302,7 @@ pub fn max_stack_size(name: &str) -> i32 {{
 /// so an item without the component is refused by every armour slot — which is
 /// why this returns an `Option` rather than defaulting to anything.
 pub fn equip_slot(name: &str) -> Option<EquipSlot> {{
-    lookup(name).and_then(|(_, q, _)| q)
+    lookup(name).and_then(|(_, q, _, _)| q)
 }}
 
 #[cfg(test)]
@@ -283,6 +322,11 @@ mod tests {{
     fn damageable_items_carry_a_maximum() {{
         assert_eq!(max_damage("minecraft:diamond_pickaxe"), Some(1561));
         assert_eq!(max_damage("minecraft:dirt"), None);
+        assert_eq!(
+            equip_asset("minecraft:diamond_chestplate"),
+            Some("minecraft:diamond")
+        );
+        assert_eq!(equip_asset("minecraft:dirt"), None);
     }}
 
     /// One item per stack-size bucket, pinned by hand from the report, so a

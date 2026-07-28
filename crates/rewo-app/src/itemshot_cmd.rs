@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 37;
+const EXPECTED_WITNESSES: usize = 42;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -414,6 +414,7 @@ fn check_render(
         let names: Vec<&str> = held.iter().flatten().copied().collect();
         wr.prepare_held_items(gpu, &names)?;
         let d = EntityDraw {
+            armor: [None; 4],
             pos: [0.0, 0.0, 0.0],
             width: 0.6,
             height: 1.8,
@@ -481,6 +482,7 @@ fn check_render(
             yaw: 0.0,
             death_time: 0.0,
             ground_item: name,
+            armor: [None; 4],
             held_glint: [false; 2],
             ground_glint: glint,
             ground_count: count,
@@ -746,6 +748,121 @@ fn check_render(
             "dropped sword centroid x {gx} vs held sword x {cx} (frame centre {}) — \
              a dropped stack hangs off the entity origin, a held one off an arm",
             W / 2
+        ),
+    );
+
+    // -- worn armour (M46) ---------------------------------------------------
+    //
+    // `ADULT_ARMOR_PARTS_PER_SLOT` and the two `CubeDeformation`s, which
+    // together decide what a piece covers and how far it stands off the skin.
+    use rewo_gpu::mobs::{armor_boxes, armor_part, ArmorSlot};
+    let parts_of = |s: ArmorSlot| {
+        let mut v: Vec<&str> = armor_boxes(s).iter().map(|b| b.part).collect();
+        v.sort_unstable();
+        v
+    };
+    c.record(
+        "r1.each_slot_covers_the_parts_vanilla_gives_it",
+        parts_of(ArmorSlot::Head) == ["head"]
+            && parts_of(ArmorSlot::Chest) == ["body", "left_arm", "right_arm"]
+            && parts_of(ArmorSlot::Legs) == ["body", "left_leg", "right_leg"]
+            && parts_of(ArmorSlot::Feet) == ["left_leg", "right_leg"],
+        format!(
+            "head {:?}, chest {:?}, legs {:?}, feet {:?}. A chestplate covers both              **arms** as well as the body, and the leggings cover the **body** as              well as the legs — the body is in two pieces at once, which is the              whole reason they are inflated differently",
+            parts_of(ArmorSlot::Head),
+            parts_of(ArmorSlot::Chest),
+            parts_of(ArmorSlot::Legs),
+            parts_of(ArmorSlot::Feet)
+        ),
+    );
+    c.record(
+        "r2.only_the_leggings_use_the_inner_inflation",
+        ArmorSlot::Legs.grow() == 0.5
+            && [ArmorSlot::Head, ArmorSlot::Chest, ArmorSlot::Feet]
+                .iter()
+                .all(|s| s.grow() == 1.0),
+        format!(
+            "legs {} against head/chest/feet {} — `usesInnerModel` is              `slot == LEGS`, and the thinner inflation is what lets leggings sit              inside a chestplate instead of z-fighting it",
+            ArmorSlot::Legs.grow(),
+            ArmorSlot::Head.grow()
+        ),
+    );
+    // The legs are a *replacement* box, a tenth thinner again.
+    let leg_extend = armor_boxes(ArmorSlot::Feet)
+        .iter()
+        .map(|b| b.extend)
+        .fold(f32::NAN, f32::max);
+    c.record(
+        "r3.the_leg_box_is_a_tenth_thinner_than_the_rest_of_its_piece",
+        (leg_extend + 0.1).abs() < 1e-6,
+        format!(
+            "the boot's leg box carries `extend` {leg_extend} —              `createBaseArmorMesh` replaces the humanoid legs with              `g.extend(-0.1)`, so a boot and a legging do not fight where they              overlap"
+        ),
+    );
+    // The lookup has to find a humanoid limb even where Rewo never named it.
+    //
+    // Walked over **every registered mob**, not one hand-picked model. An
+    // earlier form of this witness asked the *player* model, which is the one
+    // humanoid that carries a named `body` — M19 gave it one so a combat swing
+    // could rotate the torso. Every other humanoid puts its torso cube on the
+    // static root, so a chestplate's body box resolved to nothing and mobs
+    // wore armoured arms over a bare chest while this passed.
+    let parts = ["head", "body", "right_arm", "left_arm", "right_leg", "left_leg"];
+    let mut wearers = 0usize;
+    let mut incomplete: Vec<(&str, &str)> = Vec::new();
+    for def in rewo_gpu::mobs::MOBS {
+        if !rewo_gpu::mobs::wears_humanoid_armor(def.kind) {
+            continue;
+        }
+        let m = (def.build)();
+        wearers += 1;
+        for p in parts {
+            if armor_part(&m.parts, p).is_none() {
+                incomplete.push((def.kind.name(), p));
+            }
+        }
+    }
+    c.record(
+        "r4.every_armour_wearing_mob_resolves_all_six_parts",
+        wearers >= 13 && incomplete.is_empty(),
+        format!(
+            "{wearers} armour-wearing mob(s), {} unresolved part(s)              {incomplete:?}. A name exists only where a keyframe or CEM bone              targets the part, so the lookup falls back to the animation kind              and then, for the torso alone, to the static root the cube sits on",
+            incomplete.len()
+        ),
+    );
+    // ...and the fallback must not hand a humanoid torso to something that is
+    // not humanoid. `HumanoidArmorLayer` is `RenderLayer<S, M extends
+    // HumanoidModel>`, so vanilla draws nothing at all for these.
+    // ...and the set is the *renderers*, not the mesh. These three are the
+    // whole reason a geometric test is wrong: each has enough humanoid mesh to
+    // pass one, and none has an armour layer in vanilla.
+    let mesh_says_humanoid: Vec<&str> = ["allay", "pillager", "creaking"]
+        .iter()
+        .filter(|n| {
+            rewo_gpu::mobs::MOBS.iter().any(|d| {
+                d.kind.name() == **n && armor_part(&(d.build)().parts, "right_arm").is_some()
+            })
+        })
+        .copied()
+        .collect();
+    let none_wear: Vec<&str> = ["allay", "pillager", "creaking", "creeper", "cow"]
+        .iter()
+        .filter(|n| {
+            rewo_gpu::mobs::MOBS
+                .iter()
+                .any(|d| d.kind.name() == **n && rewo_gpu::mobs::wears_humanoid_armor(d.kind))
+        })
+        .copied()
+        .collect();
+    let excluded = rewo_gpu::mobs::MOBS
+        .iter()
+        .filter(|d| !rewo_gpu::mobs::wears_humanoid_armor(d.kind))
+        .count();
+    c.record(
+        "r5.the_armour_layer_follows_the_renderer_not_the_mesh",
+        mesh_says_humanoid.len() == 3 && none_wear.is_empty() && excluded > 60,
+        format!(
+            "{excluded} mob(s) wear nothing. {mesh_says_humanoid:?} carry humanoid              arms and would pass a mesh test, yet {none_wear:?} of the sampled              set wears armour — vanilla mentions `HumanoidArmorLayer` in eight              renderers and none of them is an illager, an allay or a creaking"
         ),
     );
 

@@ -2910,6 +2910,40 @@ validation Rewo has.
   the app adds to it*. `entities.rs` is also one of the **mixed CRLF/LF** files
   §0.0 warns about (1,969 CRLF against 3,763 LF), so the scripted edits had to
   match either ending. Gate `itemshot` 33 -> **37**; **629 tests**.
+- **M46 worn armour (2026-07-28)** — M45 called this "the fourth surface and
+  not reachable"; this makes it reachable. An item names an **asset**
+  (`Equippable.assetId()`, in the prototype, never on the wire — so
+  `gen_item_props.py` extracts it), and the asset names **layers** whose
+  textures are **64x32** sheets, not 64x64 skins. Only two humanoid layers
+  exist because `usesInnerModel` is `slot == LEGS`: the leggings sit *inside*
+  the chestplate at deformation 0.5 against 1.0, which is what stops them
+  z-fighting. **The body is in two pieces at once** — CHEST covers
+  `{body, both arms}` and LEGS covers `{both legs, body}` — and the leg boxes
+  are a **replacement**, `texOffs(0,16)` at `extend(-0.1)`. The armour is posed
+  from the **same `xf` the body just used**, since it is a render layer over a
+  model whose angles are already set. **The layer follows the RENDERER, not the
+  mesh**: all eight `HumanoidArmorLayer` sites are player/zombie/skeleton/
+  piglin families, so an **allay** (arms, no legs), an **illager** and a
+  **creaking** — each with enough humanoid mesh to pass a geometric test — wear
+  nothing in vanilla. **Only the player has a `body` part** (M19 gave it one
+  for `setupAttackAnimation`); every mob's torso cube is on the static root, so
+  a chestplate's body box resolved to nothing and mobs wore armoured arms over
+  a bare chest — **and the witness passed anyway, because it asked the player
+  model**, the one humanoid with the named part. A **trace beat four
+  screenshots**: several rounds of squinting at crops (one of which was a husk,
+  another comparing two live runs whose scenes had drifted) never settled
+  whether the arms were armoured; logging which part each box resolved to
+  answered it in one run, and the bare green mass every crop had been read as
+  "arms" was the **torso**. An armoured zombie also rendered with a villager's
+  texture, which looked exactly like an atlas collision from the fifteen new
+  sheets — it is **pre-existing** (a stashed pre-M46 build reproduces it), needs
+  more than one entity in the scene, and `mobshot` is structurally blind to it
+  because its check substitutes per-face debug colours and so verifies UV/face
+  correspondence rather than which *sheet* is sampled (recorded in §0.0). Gate
+  `itemshot` 37 -> **42**; **629 tests**. **Open:** leather is undyed (a layer
+  is a *list* — dyeable base plus overlay — and Rewo takes the first, so the
+  greyscale base is never tinted by `dyed_color`), no trims, the inventory
+  preview does not wear its armour, and baby mobs use the adult parts.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
