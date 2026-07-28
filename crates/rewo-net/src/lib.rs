@@ -16,6 +16,7 @@ pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
 pub mod enchantment_parse;
+pub mod trim_parse;
 pub mod effects;
 pub mod ids;
 pub mod item_stack;
@@ -214,6 +215,8 @@ pub struct Connection<'a> {
     /// The `minecraft:enchantment` registry in wire order — the index is the
     /// protocol id a component patch carries (M42).
     enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
+    trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
+    trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
 }
 
 impl<'a> Connection<'a> {
@@ -241,6 +244,8 @@ impl<'a> Connection<'a> {
             swing_effect_ids: SwingEffectIds::default(),
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
+            trim_materials: Vec::new(),
+            trim_patterns: Vec::new(),
         })
     }
 
@@ -478,6 +483,17 @@ impl<'a> Connection<'a> {
             // server's — nothing here may be assumed from bootstrap order.
             self.enchantments = crate::enchantment_parse::parse_enchantment_registry(&mut r, count);
             log::info!("net: {} enchantment(s) synced", self.enchantments.len());
+            return Ok(());
+        }
+        // M48: the two trim registries, datapack-driven for the same reason.
+        if registry == crate::trim_parse::TRIM_MATERIAL_REGISTRY {
+            self.trim_materials = crate::trim_parse::parse_trim_material_registry(&mut r, count);
+            log::info!("net: {} trim material(s) synced", self.trim_materials.len());
+            return Ok(());
+        }
+        if registry == crate::trim_parse::TRIM_PATTERN_REGISTRY {
+            self.trim_patterns = crate::trim_parse::parse_trim_pattern_registry(&mut r, count);
+            log::info!("net: {} trim pattern(s) synced", self.trim_patterns.len());
             return Ok(());
         }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
@@ -1563,6 +1579,7 @@ pub(crate) fn apply_set_equipment(
                 WireSlot::Stack(s) => Some(rewo_world::entities::WornPiece {
                     item: s.item_id,
                     dye: s.components.dyed_color,
+                    trim: s.components.trim,
                 }),
             };
             entities.set_armor(eid, index, worn);
@@ -2233,6 +2250,7 @@ mod animate_tests {
             stored_enchantments: 12,
             enchantment_glint_override: 13,
             dyed_color: 14,
+            trim: 15,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

@@ -58,6 +58,9 @@ pub struct DataComponentIds {
     /// bare `ByteBufCodecs.INT`. The value is an **RGB** with no alpha, which
     /// is why `DyedItemColor.getOrDefault` runs it through `ARGB.opaque`.
     pub dyed_color: i32,
+    /// `minecraft:trim` (M48) — `ArmorTrim.STREAM_CODEC`, a pair of
+    /// `ByteBufCodecs.holder`s (material then pattern).
+    pub trim: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -140,6 +143,7 @@ impl DataComponentIds {
             stored_enchantments: id("minecraft:stored_enchantments")?,
             enchantment_glint_override: id("minecraft:enchantment_glint_override")?,
             dyed_color: id("minecraft:dyed_color")?,
+            trim: id("minecraft:trim")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

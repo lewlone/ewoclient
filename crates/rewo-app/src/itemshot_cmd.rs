@@ -36,7 +36,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 46;
+const EXPECTED_WITNESSES: usize = 51;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1010,6 +1010,7 @@ fn check_render(
     // anything at all.
     let piece = |tint: [f32; 3]| rewo_gpu::entities::ArmorPiece {
         layers: [Some((leather[0].key.as_str(), tint)), None],
+        trim: None,
     };
     let brown = [0.627_451, 0.396_078_4, 0.250_980_4];
     let f_brown = render_armor([None, Some(piece(brown)), None, None], &mut gpu, &mut wr, &mut off)?;
@@ -1037,6 +1038,157 @@ fn check_render(
              instead of `color_when_undyed`. The tint rides the **vertex \
              colour**, which is where `submitModel`'s colour argument lands",
             armour_px.len()
+        ),
+    );
+
+
+    // -- armour trims (M48) ---------------------------------------------------
+    //
+    // The permuted sprites do not exist as files: `armor_trims.json` declares a
+    // `paletted_permutations` source and the client generates one per
+    // (pattern x material) at load. This is that swap, transcribed
+    // independently of the shipped function.
+    let independent = |src: &[u8], key: &[u8], value: &[u8]| -> Vec<u8> {
+        let mut out = src.to_vec();
+        for px in out.chunks_exact_mut(4) {
+            if px[3] == 0 {
+                continue;
+            }
+            let mut hit = None;
+            for i in (0..key.len()).step_by(4) {
+                if key[i + 3] != 0 && key[i..i + 3] == px[0..3] {
+                    hit = Some([value[i], value[i + 1], value[i + 2], value[i + 3]]);
+                    break;
+                }
+            }
+            if let Some(v) = hit {
+                let a = px[3] as u32 * v[3] as u32 / 255;
+                px[0] = v[0];
+                px[1] = v[1];
+                px[2] = v[2];
+                px[3] = a as u8;
+            }
+        }
+        out
+    };
+    // key: two opaque entries + one fully transparent (which must be ignored).
+    let key = [10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 0];
+    let val = [200u8, 0, 0, 255, 0, 200, 0, 128, 9, 9, 9, 255];
+    // src: a matching pixel, the *other* match at half alpha, the entry whose
+    // key was transparent (so unmatched), a wholly unmatched colour, and a
+    // transparent pixel.
+    let src = [
+        10u8, 20, 30, 255, 40, 50, 60, 200, 70, 80, 90, 255, 1, 2, 3, 255, 4, 5, 6, 0,
+    ];
+    let got = equipment::apply_palette(&src, &key, &val).expect("same length");
+    let want = independent(&src, &key, &val);
+    c.record(
+        "t1.the_palette_swap_matches_an_independent_transcription",
+        got == want
+            && got[0..4] == [200, 0, 0, 255]
+            && got[4..8] == [0, 200, 0, 100]
+            && got[8..12] == src[8..12]
+            && got[12..16] == src[12..16]
+            && got[16..20] == src[16..20],
+        format!(
+            "{got:?}. The match is on RGB with alpha masked off, so a \
+             half-transparent pixel of a palette colour still maps and takes \
+             `pixelAlpha * valueAlpha / 255` = 200*128/255 = {}. A key entry \
+             with alpha 0 is skipped when the map is built, and an unmatched \
+             pixel is **not** dropped — `getOrDefault` hands back \
+             `opaque(pixelRGB)`, whose alpha 255 leaves it untouched",
+            got[7]
+        ),
+    );
+    let mismatched = equipment::apply_palette(&src, &key, &val[..8]);
+    c.record(
+        "t2.a_palette_pair_of_different_lengths_is_refused",
+        mismatched.is_none(),
+        "vanilla throws `IllegalArgumentException` when the key and value \
+         palettes differ in length; nothing is guessed from a partial map"
+            .to_string(),
+    );
+
+    // The real jar: the same source through two palettes must differ, and both
+    // must differ from the greyscale it started as.
+    let src_path = "trims/entity/humanoid/coast";
+    let gold = baked.trims.permute(src_path, "gold");
+    let iron = baked.trims.permute(src_path, "iron");
+    let gold_darker = baked.trims.permute(src_path, "gold_darker");
+    let sizes_ok = matches!((&gold, &iron), (Some((_, 64, 32)), Some((_, 64, 32))));
+    c.record(
+        "t3.one_source_permutes_into_distinct_material_sprites",
+        sizes_ok
+            && gold.as_ref().map(|g| &g.0) != iron.as_ref().map(|i| &i.0)
+            && gold.as_ref().map(|g| &g.0) != gold_darker.as_ref().map(|d| &d.0),
+        format!(
+            "coast x {{gold, iron, gold_darker}} → {} distinct 64x32 sprite(s) \
+             from one greyscale source. `gold` and `gold_darker` are separate \
+             palettes, which is what an `override_armor_assets` entry selects",
+            [&gold, &iron, &gold_darker].iter().filter(|s| s.is_some()).count()
+        ),
+    );
+
+    // The override is the reason a same-material trim is visible at all.
+    let iron_material = rewo_net::trim_parse::TrimMaterialDef {
+        id: "minecraft:iron".into(),
+        asset_name: "iron".into(),
+        overrides: vec![("minecraft:iron".into(), "iron_darker".into())],
+    };
+    let on_iron = rewo_net::trim_parse::layer_asset_path(
+        "minecraft:coast",
+        "trims/entity/humanoid",
+        iron_material.suffix_for("minecraft:iron"),
+    );
+    let on_diamond = rewo_net::trim_parse::layer_asset_path(
+        "minecraft:coast",
+        "trims/entity/humanoid",
+        iron_material.suffix_for("minecraft:diamond"),
+    );
+    c.record(
+        "t4.a_same_material_trim_takes_the_darker_palette",
+        on_iron == "trims/entity/humanoid/coast_iron_darker"
+            && on_diamond == "trims/entity/humanoid/coast_iron",
+        format!(
+            "iron trim on iron armour → {on_iron}; on diamond → {on_diamond}. \
+             `assetId(equipmentAsset)` is `overrides.getOrDefault(asset, base)`, \
+             and without it an iron trim would paint iron onto iron and vanish"
+        ),
+    );
+
+    // ...and it reaches pixels, in its own depth-EQUAL range.
+    let trim_origin = gold.as_ref().and_then(|(rgba, w, h)| {
+        wr.upload_entity_trim(&mut gpu, "gate/coast_gold", rgba, *w, *h)
+    });
+    let iron_key = baked
+        .equipment
+        .layers("minecraft:iron", equipment::ArmorLayer::Humanoid)
+        .first()
+        .map(|l| l.key.clone())
+        .unwrap_or_default();
+    let bare = rewo_gpu::entities::ArmorPiece {
+        layers: [Some((iron_key.as_str(), [1.0; 3])), None],
+        trim: None,
+    };
+    let trimmed = rewo_gpu::entities::ArmorPiece {
+        trim: trim_origin,
+        ..bare
+    };
+    let f_bare = render_armor([None, Some(bare), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_trim = render_armor([None, Some(trimmed), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_none = render_armor([None; 4], &mut gpu, &mut wr, &mut off)?;
+    let trim_px = changed(&f_trim, &f_bare).len();
+    let armour_px = changed(&f_bare, &f_none).len();
+    c.record(
+        "t5.the_trim_paints_only_on_the_armour_it_decorates",
+        trim_origin.is_some() && trim_px > 20 && trim_px < armour_px,
+        format!(
+            "{trim_px} pixel(s) change when the trim is added, inside the \
+             {armour_px} the armour itself covers. Its pipeline depth-tests \
+             EQUAL and writes no depth — `ARMOR_DECAL_CUTOUT_NO_CULL`'s \
+             `DepthStencilState(CompareOp.EQUAL, false)` — so it can only paint \
+             where the armour's own fragments already won, and a pattern that \
+             covered *more* than the armour would fail this"
         ),
     );
 

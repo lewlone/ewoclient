@@ -24,6 +24,15 @@ impl<'a> PacketReader<'a> {
 
     /// The bytes between two offsets from [`Self::offset`]. An inverted or
     /// out-of-range pair yields an empty slice rather than panicking.
+    /// Rewind to an offset taken from [`Self::offset`].
+    ///
+    /// Only for a **peek**: read a discriminator, and put the cursor back so a
+    /// generic reader can consume the whole structure from its start. Clamped,
+    /// so a bad offset cannot move the cursor past the end.
+    pub fn rewind_to(&mut self, offset: usize) {
+        self.pos = offset.min(self.buf.len());
+    }
+
     pub fn bytes_between(&self, from: usize, to: usize) -> &'a [u8] {
         if from > to || to > self.buf.len() {
             return &[];

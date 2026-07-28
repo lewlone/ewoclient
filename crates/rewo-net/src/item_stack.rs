@@ -243,6 +243,15 @@ pub struct StackComponents {
     /// as "this stack is undyed" — which sends a dyeable layer to its
     /// `color_when_undyed` instead.
     pub dyed_color: Option<i32>,
+    /// `minecraft:trim`'s `(material, pattern)` registry ids (M48).
+    ///
+    /// Captured only when **both** holders are registry references. `holder`
+    /// writes `id + 1` with 0 meaning an inline definition follows, and an
+    /// inline `TrimMaterial` is a chat component and an asset map — decodable,
+    /// but never sent by a server whose registries the client already has.
+    /// An inline one leaves this `None` and falls through to the generic walk,
+    /// which consumes it correctly.
+    pub trim: Option<(i32, i32)>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -483,6 +492,20 @@ fn read_interpreted(
         }
         return Ok(true);
     }
+    if ty == ids.trim {
+        // Two `ByteBufCodecs.holder`s: `id + 1`, 0 = inline. Peeked rather
+        // than consumed — if either side is inline the generic walk has to see
+        // the whole component from the start, so this rewinds and defers.
+        let save = r.offset();
+        let m = r.varint().map_err(|_| ())?;
+        let p = if m > 0 { r.varint().map_err(|_| ())? } else { 0 };
+        if m > 0 && p > 0 {
+            out.trim = Some((m - 1, p - 1));
+            return Ok(true);
+        }
+        r.rewind_to(save);
+        return walk(r, shape, 0);
+    }
     if ty == ids.enchantments || ty == ids.stored_enchantments {
         let n = r.varint().map_err(|_| ())?;
         if !(0..=65536).contains(&n) {
@@ -591,6 +614,7 @@ mod tests {
         stored_enchantments: 12,
         enchantment_glint_override: 13,
         dyed_color: 14,
+        trim: 15,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against

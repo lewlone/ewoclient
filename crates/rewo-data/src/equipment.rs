@@ -253,3 +253,146 @@ impl EquipmentAssets {
         self.textures.is_empty()
     }
 }
+
+// -- armour trims (M48) -------------------------------------------------------
+
+/// `PalettedPermutations.createPaletteMapping` + `NativeImage.mappedCopy`.
+///
+/// The trim sprites do **not** exist as files. `assets/minecraft/atlases/
+/// armor_trims.json` declares a `paletted_permutations` source, and the client
+/// generates one sprite per (pattern x material) at load by swapping colours
+/// through a palette pair:
+///
+/// ```java
+/// for (int i = 0; i < keys.length; i++) {
+///    int key = keys[i];
+///    if (ARGB.alpha(key) != 0) palette.put(ARGB.transparent(key), values[i]);
+/// }
+/// return pixel -> {
+///    int pixelAlpha = ARGB.alpha(pixel);
+///    if (pixelAlpha == 0) return pixel;
+///    int pixelRGB = ARGB.transparent(pixel);
+///    int value = palette.getOrDefault(pixelRGB, ARGB.opaque(pixelRGB));
+///    return ARGB.color(pixelAlpha * ARGB.alpha(value) / 255, value);
+/// };
+/// ```
+///
+/// Two things are easy to get wrong. The match is on **RGB with the alpha
+/// masked off**, both when building the map and when looking up — so a
+/// half-transparent pixel of a palette colour still maps. And an **unmatched**
+/// pixel is not dropped: `getOrDefault` hands back `opaque(pixelRGB)`, whose
+/// alpha is 255, so the pixel survives with its own alpha and colour intact.
+///
+/// Working in RGBA bytes rather than packed ints sidesteps the question of
+/// whether `NativeImage.getPixels` is ARGB or ABGR: keys, values and source all
+/// come from the same decoder, so a consistent channel order cancels.
+pub fn apply_palette(src: &[u8], key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
+    if key.len() != value.len() {
+        // Vanilla throws here — the two palettes must be the same length.
+        return None;
+    }
+    let mut map: HashMap<[u8; 3], [u8; 4]> = HashMap::with_capacity(key.len() / 4);
+    for i in (0..key.len()).step_by(4) {
+        if key[i + 3] == 0 {
+            continue;
+        }
+        map.insert(
+            [key[i], key[i + 1], key[i + 2]],
+            [value[i], value[i + 1], value[i + 2], value[i + 3]],
+        );
+    }
+    let mut out = src.to_vec();
+    for px in out.chunks_exact_mut(4) {
+        let pa = px[3];
+        if pa == 0 {
+            continue;
+        }
+        match map.get(&[px[0], px[1], px[2]]) {
+            Some(v) => {
+                px[0] = v[0];
+                px[1] = v[1];
+                px[2] = v[2];
+                // `pixelAlpha * valueAlpha / 255`, integer.
+                px[3] = ((pa as u32 * v[3] as u32) / 255) as u8;
+            }
+            // `opaque(pixelRGB)` — alpha 255, so the pixel is unchanged.
+            None => {}
+        }
+    }
+    Some(out)
+}
+
+/// The trim source textures and palettes, read once from the jar (M48).
+#[derive(Clone, Debug, Default)]
+pub struct TrimAssets {
+    /// `trims/entity/<layer>/<pattern>` → the greyscale source, RGBA.
+    sources: HashMap<String, (Vec<u8>, u32, u32)>,
+    /// The `palette_key` strip every permutation is matched against.
+    key_palette: Vec<u8>,
+    /// `<suffix>` → that material's palette strip.
+    palettes: HashMap<String, Vec<u8>>,
+}
+
+impl TrimAssets {
+    pub fn load(client_jar: &Path) -> Self {
+        let mut out = Self::default();
+        let Ok(file) = std::fs::File::open(client_jar) else {
+            return out;
+        };
+        let Ok(mut zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+            return out;
+        };
+        const SRC: &str = "assets/minecraft/textures/trims/entity/";
+        const PAL: &str = "assets/minecraft/textures/trims/color_palettes/";
+        let names: Vec<String> = zip
+            .file_names()
+            .filter(|p| (p.starts_with(SRC) || p.starts_with(PAL)) && p.ends_with(".png"))
+            .map(str::to_string)
+            .collect();
+        for path in names {
+            let mut bytes = Vec::new();
+            let decoded = zip
+                .by_name(&path)
+                .ok()
+                .and_then(|mut e| std::io::Read::read_to_end(&mut e, &mut bytes).ok())
+                .and_then(|_| crate::assets::decode_png_any(&bytes));
+            let Some((rgba, w, h)) = decoded else {
+                continue;
+            };
+            if let Some(rest) = path.strip_prefix(PAL) {
+                let name = rest.trim_end_matches(".png");
+                if name == "trim_palette" {
+                    out.key_palette = rgba;
+                } else {
+                    out.palettes.insert(name.to_string(), rgba);
+                }
+            } else if let Some(rest) = path.strip_prefix(SRC) {
+                let name = rest.trim_end_matches(".png");
+                out.sources
+                    .insert(format!("trims/entity/{name}"), (rgba, w, h));
+            }
+        }
+        log::info!(
+            "rewo-data: {} trim source(s), {} palette(s)",
+            out.sources.len(),
+            out.palettes.len()
+        );
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() || self.key_palette.is_empty()
+    }
+
+    /// Generate one permuted sprite: `<prefix>/<pattern>_<suffix>`.
+    ///
+    /// Takes the two halves separately because the *source* is named without
+    /// the material — `trims/entity/humanoid/coast` is one file, and the
+    /// seventeen `coast_<material>` sprites are all made from it.
+    pub fn permute(&self, source_path: &str, suffix: &str) -> Option<(Vec<u8>, u32, u32)> {
+        let (src, w, h) = self.sources.get(source_path)?;
+        let palette = self.palettes.get(suffix)?;
+        let rgba = apply_palette(src, &self.key_palette, palette)?;
+        Some((rgba, *w, *h))
+    }
+}

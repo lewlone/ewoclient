@@ -200,6 +200,9 @@ pub struct BakedAssets {
     pub glint: Option<DecodedImage>,
     /// Armour layer definitions and their 64x32 sheets (M46).
     pub equipment: crate::equipment::EquipmentAssets,
+    /// Trim pattern sources + palettes; the sprites themselves are permuted on
+    /// demand (M48).
+    pub trims: crate::equipment::TrimAssets,
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
     /// Per-state full-cube collision flag — true for a `Cube` OR a `Model`
@@ -707,6 +710,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar);
     let glint = bake_misc_texture(&mut jar, "enchanted_glint_item.png");
     let equipment = crate::equipment::EquipmentAssets::load(client_jar);
+    let trims = crate::equipment::TrimAssets::load(client_jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");
     }
@@ -957,6 +961,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         enchantment_text,
         glint,
         equipment,
+        trims,
         held_items,
         render,
         solid,

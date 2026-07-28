@@ -85,6 +85,12 @@ pub const MAX_ARMOR_SUBLAYERS: usize = 2;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArmorPiece<'a> {
     pub layers: [Option<(&'a str, [f32; 3])>; MAX_ARMOR_SUBLAYERS],
+    /// The trim sprite's atlas origin, already permuted and uploaded (M48).
+    ///
+    /// An origin rather than a key because a trim sprite has no fixed home: it
+    /// is generated on first sighting into the demand-filled trim pool, so
+    /// where it lives is decided at runtime.
+    pub trim: Option<(u32, u32)>,
 }
 
 /// One entity to draw this frame — position already frame-interpolated.
@@ -236,7 +242,7 @@ const ATLAS_W: u32 = 1024;
 /// (still `y < ITEM_POOL_Y` = 896) so mob packing is byte-for-byte what it was;
 /// only the V denominator moves, which maps the same texels to the same
 /// samples.
-const ATLAS_H: u32 = 1280;
+const ATLAS_H: u32 = 1408;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -245,7 +251,31 @@ const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
 const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
-const SKIN_POOL_Y: u32 = ATLAS_H - SKIN_POOL_ROWS * SKIN_SLOT; // 1152
+const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 1152
+
+// -- the trim pool (M48) ------------------------------------------------------
+//
+// Demand-filled, like the skin and item pools before it, and for the same
+// reason: 18 patterns x 17 palettes x 2 layer types is 612 sheets, which no
+// band of this atlas can hold. Only the combinations actually worn are ever
+// generated.
+//
+// Placed at the **top** of the atlas, with the skin and item pools defined
+// downward from it, so growing `ATLAS_H` moved nothing that was already there
+// — every mob, item and skin address is what it was before M48.
+const TRIM_SLOT_W: u32 = 64;
+const TRIM_SLOT_H: u32 = 32;
+const TRIM_POOL_COLS: u32 = ATLAS_W / TRIM_SLOT_W; // 16
+const TRIM_POOL_ROWS: u32 = 4;
+const TRIM_SLOTS: u32 = TRIM_POOL_COLS * TRIM_POOL_ROWS; // 64
+const TRIM_POOL_Y: u32 = ATLAS_H - TRIM_POOL_ROWS * TRIM_SLOT_H; // 1280
+
+fn trim_slot_origin(slot: u32) -> (u32, u32) {
+    (
+        (slot % TRIM_POOL_COLS) * TRIM_SLOT_W,
+        TRIM_POOL_Y + (slot / TRIM_POOL_COLS) * TRIM_SLOT_H,
+    )
+}
 
 /// Dynamic held-item texture pool (M22): 16×16 slots in the band between the
 /// mob shelves and the skin pool. 26.2 ships 1233 distinct held-item textures —
@@ -381,6 +411,8 @@ pub struct EntityPass {
     /// jar carried no glint texture, in which case none is drawn.
     glint: Option<EntityGlint>,
     glint_verts: u32,
+    trim_verts: u32,
+    trim_pipeline: Option<vk::Pipeline>,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -415,6 +447,9 @@ pub struct EntityPass {
     item_slots: std::collections::HashMap<u16, u32>,
     /// `<asset>/<layer>` → the sheet's packed rect in the entity atlas (M46).
     armor_slots: std::collections::HashMap<String, (u32, u32, u32, u32)>,
+    /// Sprite path → its origin in the trim pool (M48).
+    trim_slots: std::collections::HashMap<String, (u32, u32)>,
+    trim_next: u32,
     /// Round-robin cursor into the item pool, like `skin_next`.
     item_next: u32,
     /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
@@ -724,8 +759,14 @@ impl EntityPass {
                     None,
                 )
                 .map_err(|e| format!("entity layout: {e}"))?;
-            let solid_pipeline = build_pipeline(&device, layout, color_format, true)?;
-            let text_pipeline = build_pipeline(&device, layout, color_format, false)?;
+            let solid_pipeline =
+                build_pipeline(&device, layout, color_format, true, vk::CompareOp::GREATER)?;
+            let text_pipeline =
+                build_pipeline(&device, layout, color_format, false, vk::CompareOp::GREATER)?;
+            // M48: the armour trim. Blended, no depth write, and `EQUAL`
+            // against the armour it decorates.
+            let trim_pipeline =
+                build_pipeline(&device, layout, color_format, false, vk::CompareOp::EQUAL)?;
 
             let mut bufs = [vk::Buffer::null(); RING];
             let mut allocs: [Option<Allocation>; RING] = [None, None];
@@ -764,6 +805,8 @@ impl EntityPass {
                 text_pipeline,
                 glint: None,
                 glint_verts: 0,
+                trim_verts: 0,
+                trim_pipeline: Some(trim_pipeline),
                 pool,
                 set,
                 sampler,
@@ -782,6 +825,8 @@ impl EntityPass {
                 advance,
                 white_uv,
                 has_font,
+                trim_slots: std::collections::HashMap::new(),
+                trim_next: 0,
                 player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
                 // Armour sheets are looked up by name every frame — a mob's
                 // model is fixed at build time, but what it wears is not.
@@ -884,6 +929,36 @@ impl EntityPass {
             ITEM_SLOT as f32 / ATLAS_W as f32,
             ITEM_SLOT as f32 / ATLAS_H as f32,
         ])
+    }
+
+    /// Put one generated trim sprite in the pool, or return where it already
+    /// is (M48).
+    ///
+    /// Keyed by the sprite path, so the same pattern-and-material worn by two
+    /// entities is permuted and uploaded once. The pool wraps round-robin like
+    /// the skin pool: sixty-four live sprites is far past any real scene, and
+    /// wrapping recycles rather than failing.
+    pub fn upload_trim(
+        &mut self,
+        gpu: &mut Gpu,
+        key: &str,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Option<(u32, u32)> {
+        if let Some(&o) = self.trim_slots.get(key) {
+            return Some(o);
+        }
+        if w != TRIM_SLOT_W || h != TRIM_SLOT_H || rgba.len() != (w * h * 4) as usize {
+            log::warn!("entities: trim sprite {key} is {w}x{h}, expected {TRIM_SLOT_W}x{TRIM_SLOT_H}");
+            return None;
+        }
+        let slot = self.trim_next % TRIM_SLOTS;
+        self.trim_next += 1;
+        let (sx, sy) = trim_slot_origin(slot);
+        upload_region(gpu, self.image, rgba, sx, sy, TRIM_SLOT_W, TRIM_SLOT_H).ok()?;
+        self.trim_slots.insert(key.to_string(), (sx, sy));
+        Some((sx, sy))
     }
 
     pub fn upload_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<[f32; 2], String> {
@@ -999,6 +1074,9 @@ impl EntityPass {
         // The glint's own range, built alongside the geometry it sits on and
         // appended after the nametags — see [`GlintSink`].
         let mut glint_verts: Vec<Vertex> = Vec::new();
+        // M48: the trim's own range. It depth-tests EQUAL against the armour
+        // it decorates, so it cannot share the solid range's GREATER test.
+        let mut trim_verts: Vec<Vertex> = Vec::new();
         let glint_offsets = crate::gui_item::glint_offsets(
             (time as f64) * 1000.0,
             crate::gui_item::GLINT_SPEED,
@@ -1038,7 +1116,7 @@ impl EntityPass {
             }
             if let Some(model) = &self.models[d.kind.index()] {
                 let mut sink = GlintSink { verts: &mut glint_verts, offsets: glint_offsets };
-                self.emit_model(&mut verts, d, model, time, &mut cem_state, Some(&mut sink));
+                self.emit_model(&mut verts, &mut trim_verts, d, model, time, &mut cem_state, Some(&mut sink));
                 continue;
             }
             let base = d.color;
@@ -1090,13 +1168,16 @@ impl EntityPass {
             log::warn!("entities: vertex budget hit — some entities/tags dropped");
         }
 
-        // The glint rides after the tags, so the three ranges are
-        // solid | text | glint in one buffer.
+        // The glint rides after the tags and the trims after the glint, so
+        // the four ranges are solid | text | glint | trim in one buffer.
         let text_end = verts.len();
         verts.append(&mut glint_verts);
+        let glint_end = verts.len();
+        verts.append(&mut trim_verts);
         self.solid_verts = solid as u32;
         self.text_verts = (text_end - solid) as u32;
-        self.glint_verts = (verts.len() - text_end) as u32;
+        self.glint_verts = (glint_end - text_end) as u32;
+        self.trim_verts = (verts.len() - glint_end) as u32;
         let total = verts.len();
         if let Some(slice) = self.allocs[self.cursor]
             .as_mut()
@@ -1240,6 +1321,7 @@ impl EntityPass {
     fn emit_armor(
         &self,
         verts: &mut Vec<Vertex>,
+        trim_verts: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         xf: &[([[f32; 3]; 3], [f32; 3])],
@@ -1262,11 +1344,22 @@ impl EntityPass {
         ] {
             let Some(piece) = piece else { continue };
             // In list order: `renderLayers` walks the layers in order, and an
-            // overlay has to land on top of the base it covers.
-            for (key, tint) in piece.layers.iter().flatten() {
-            let Some(&(ax, ay, _, _)) = self.armor_slots.get(*key) else {
+            // overlay has to land on top of the base it covers. The trim is
+            // appended as a further "layer" with its own origin and no tint —
+            // `submitModel(..., -1, sprite, ...)` passes white, because a
+            // trim's colour is baked into its palette-permuted sprite.
+            let dyed = piece.layers.iter().flatten().map(|(k, t)| (Some(*k), None, *t));
+            let trimmed = piece.trim.into_iter().map(|o| (None, Some(o), [1.0f32; 3]));
+            for (key, trim_origin, tint) in dyed.chain(trimmed) {
+            let Some((ax, ay)) = (match (key, trim_origin) {
+                (Some(k), _) => self.armor_slots.get(k).map(|&(x, y, _, _)| (x, y)),
+                (_, o) => o,
+            }) else {
                 continue;
             };
+            // The trim goes to its own range: its depth test is EQUAL, so it
+            // paints only where the armour it decorates already won.
+            let verts: &mut Vec<Vertex> = if trim_origin.is_some() { trim_verts } else { verts };
             for b in mobs::armor_boxes(slot) {
                 let Some(pi) = mobs::armor_part(&model.parts, b.part) else {
                     continue;
@@ -1328,6 +1421,7 @@ impl EntityPass {
     fn emit_model(
         &self,
         verts: &mut Vec<Vertex>,
+        trim_verts: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -1493,7 +1587,7 @@ impl EntityPass {
         }
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
-        self.emit_armor(verts, d, model, &xf, s, st, ct, sr, cr);
+        self.emit_armor(verts, trim_verts, d, model, &xf, s, st, ct, sr, cr);
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.
@@ -1755,6 +1849,39 @@ impl EntityPass {
         }
     }
 
+    /// The armour trim (M48) — drawn after the solid pass, before the glint.
+    ///
+    /// Its pipeline depth-tests `EQUAL` and writes no depth, so it paints only
+    /// where the armour it decorates already won. It samples the **entity
+    /// atlas** like the armour does, so `bind_common`'s descriptor is right and
+    /// there is no set to override.
+    pub fn draw_trim(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let Some(pipeline) = self.trim_pipeline else {
+            return;
+        };
+        if self.trim_verts == 0 {
+            return;
+        }
+        unsafe {
+            self.bind_common(gpu, cb, view_proj, extent);
+            gpu.device
+                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            gpu.device.cmd_draw(
+                cb,
+                self.trim_verts,
+                1,
+                self.solid_verts + self.text_verts + self.glint_verts,
+                0,
+            );
+        }
+    }
+
     /// Blended nametag text — draw last (after water).
     pub fn draw_text(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
         if self.text_verts == 0 {
@@ -1783,6 +1910,9 @@ impl EntityPass {
             }
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
+            if let Some(p) = self.trim_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -4060,11 +4190,18 @@ fn build_glint_pipeline(
     }
 }
 
+/// The entity pipeline.
+///
+/// `compare` is the depth test. The world pass is reversed-Z, so the ordinary
+/// one is `GREATER`; the trim pass (M48) uses `EQUAL` with no write, which is
+/// `ARMOR_DECAL_CUTOUT_NO_CULL`'s `DepthStencilState(CompareOp.EQUAL, false)`
+/// and lands the decoration on exactly the armour fragments that won.
 fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
     solid: bool,
+    compare: vk::CompareOp,
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
@@ -4127,7 +4264,7 @@ fn build_pipeline(
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
             .depth_write_enable(solid)
-            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
+            .depth_compare_op(compare);
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(!solid)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)

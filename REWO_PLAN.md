@@ -6366,6 +6366,118 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M48 — armour trims (2026-07-28)
+
+The third armour layer, and the one that is not a texture in the jar.
+
+#### The sprite does not exist until you make it
+
+`assets/minecraft/atlases/armor_trims.json` declares a **`paletted_permutations`**
+source: 18 greyscale pattern sheets, one key palette, 16 material palettes, and
+the client generates every `pattern x material` sprite at load by swapping
+colours. The algorithm is small and has two invertible details:
+
+```java
+for (int i = 0; i < keys.length; i++)
+   if (ARGB.alpha(keys[i]) != 0) palette.put(ARGB.transparent(keys[i]), values[i]);
+
+pixel -> {
+   int pixelAlpha = ARGB.alpha(pixel);
+   if (pixelAlpha == 0) return pixel;
+   int value = palette.getOrDefault(ARGB.transparent(pixel), ARGB.opaque(pixel));
+   return ARGB.color(pixelAlpha * ARGB.alpha(value) / 255, value);
+}
+```
+
+The match is on **RGB with the alpha masked off**, both when building the map
+and when looking up — so a half-transparent pixel of a palette colour still
+maps, and takes `pixelAlpha * valueAlpha / 255`. And an **unmatched pixel is
+not dropped**: `getOrDefault` hands back `opaque(pixelRGB)`, whose alpha is 255,
+so the pixel survives untouched. Working in RGBA bytes rather than packed ints
+sidesteps whether `NativeImage.getPixels` is ARGB or ABGR — keys, values and
+source all come from one decoder, so a consistent channel order cancels.
+
+#### Two more datapack registries
+
+`trim_material` and `trim_pattern` are **datapack** registries, so — exactly as
+for M42's enchantments — their contents *and their id order* are the server's,
+and the vector index is the protocol id. Both are parsed out of Configuration's
+`registry_data` (11 materials, 18 patterns from a vanilla server). Both carry
+`MapCodec`s that **inline** into the entry compound, so `asset_name` and
+`override_armor_assets` are top-level fields and not nested — the same rule M42
+found for `max_level`.
+
+The sprite name is `ArmorTrim.layerAssetId`:
+
+```java
+MaterialAssetGroup.AssetInfo materialAsset = material.assets().assetId(equipmentAsset);
+return pattern.assetId().withPath(p -> layerAssetPrefix + "/" + p + "_" + materialAsset.suffix());
+```
+
+**`assetId(equipmentAsset)` is what stops a trim disappearing.** It is
+`overrides.getOrDefault(equipmentAssetId, base)`, and iron/gold/diamond/
+netherite/copper each declare an override to `<material>_darker` **for their own
+armour** — without it an iron trim on iron armour paints iron onto iron and
+vanishes. Note the key is the *equipment asset*, not the material.
+
+#### Depth EQUAL, because the geometry is identical
+
+`ARMOR_DECAL_CUTOUT_NO_CULL` is `DepthStencilState(CompareOp.EQUAL, false)` —
+depth-test equal, write nothing. That is the same trick M43's glint uses, and
+it is the only sane way to paint a decoration onto geometry it is coplanar
+with: Rewo's world pass is reversed-Z with a strict `GREATER`, so a second draw
+of the same triangles would be rejected outright.
+
+Vanilla has two pipelines here — `decal` selects the EQUAL one and the ordinary
+armour pipeline is `LEQUAL`. **Both collapse to the same result** because the
+trim's geometry is the armour's geometry to the bit, so "equal passes" and
+"less-or-equal passes" select the same fragments. `decal` is decoded and
+recorded rather than acted on, and the trim gets one pipeline.
+
+The trim is a **fourth vertex range** — `solid | text | glint | trim` — drawn
+after the solid pass and before the glint, which is where vanilla puts it: it is
+another armour layer, submitted under the foil rather than over it.
+
+#### A demand-filled pool, and an atlas that grew at the top
+
+18 patterns x 17 palettes x 2 layer types is 612 sheets, which no band of the
+entity atlas can hold — the same arithmetic that sent M22's items to a pool.
+Trims get one too: 64 slots of 64x32, filled on first sighting, keyed by sprite
+path so a pattern worn by two entities is permuted once.
+
+`ATLAS_H` grew 1280 -> 1408 and the pool went at the **top**, with the skin and
+item pools redefined *downward* from it. Every existing region kept its exact
+address — `SKIN_POOL_Y` is still 1152 and `ITEM_POOL_Y` still 896 — so no mob,
+item or skin UV moved, and `mobshot` stayed 243/243 without needing to be
+re-verified for placement.
+
+#### A leak the gates caught
+
+The new pipeline was created and never destroyed, which no witness tests for
+directly — `VUID-vkDestroyDevice-device-05137` fired in three gates at once
+(`itemshot`, `hurtshot`, `lightmapshot`) with **zero failed witnesses**. The
+project's "0 VUIDs" bar is what caught it; a green witness count would not have.
+
+#### Verified
+
+`itemshot --check` **46 -> 51**, **633 tests**, all seventeen gates green with
+validation ON and 0 VUIDs, demo PNG byte-identical to M15 onward. Live: an iron
+chestplate with a `gold`/`coast` trim renders the gold banding across the chest
+and shoulders, beside a plain iron one that does not.
+
+#### Open
+
+- **The trim is not on GUI icons** — `minecraft:trim` is one of the properties a
+  `select` item definition dispatches on, and M40 suppresses what it cannot
+  evaluate. A trimmed chestplate's *icon* is the untrimmed one.
+- **No `humanoid_baby` layer.** Vanilla has a third layer type with its own
+  sources; Rewo's baby mobs already use the adult armour parts (M46).
+- **The trim does not glint.** `renderLayers` draws the foil after the first
+  layer that draws and then clears the flag, so a foil trim is one more pass
+  that armour glinting (M45's fourth surface) would need.
+- **`decal` is decoded, not acted on** — see above; it is a no-op here by
+  construction, not an oversight.
+
 ### M47 — the leather dye (2026-07-28)
 
 M46 shipped with leather rendering grey, and called it "the dyeable base drawn
@@ -6453,8 +6565,9 @@ M46's mixed-material zombie, grey in that screenshot, are now brown.
 
 #### Open
 
-- **No trims.** `ArmorTrim` is a third layer with its own palette and atlas,
-  drawn after the dye layers.
+- ~~**No trims.**~~ — **RESOLVED in M48.** The pattern sprites are permuted
+  from a greyscale source through the material's palette and drawn as a fourth
+  vertex range with depth EQUAL.
 - The **glint order** is transcribed but unreachable: `renderLayers` draws the
   foil after the *first* layer that draws and then sets `renderFoil = false`,
   which matters only once armour glints (M45's fourth surface).

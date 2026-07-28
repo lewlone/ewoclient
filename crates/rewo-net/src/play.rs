@@ -87,6 +87,9 @@ pub struct PlaySession {
     /// The `minecraft:enchantment` registry from configuration (M42), indexed
     /// by protocol id. Empty on a server that syncs none.
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
+    /// The two trim registries, index = protocol id (M48).
+    pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
+    pub trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
@@ -720,6 +723,8 @@ impl<'a> Connection<'a> {
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
         let enchantments = std::mem::take(&mut self.enchantments);
+        let trim_materials = std::mem::take(&mut self.trim_materials);
+        let trim_patterns = std::mem::take(&mut self.trim_patterns);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -741,6 +746,8 @@ impl<'a> Connection<'a> {
             rx,
             ids: self.ids,
             enchantments,
+            trim_materials,
+            trim_patterns,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,

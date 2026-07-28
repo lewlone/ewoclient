@@ -996,11 +996,106 @@ pub(crate) fn resolve_held_items<'a>(
 /// types exist.
 /// What each armour slot draws, head first — the atlas key and tint of every
 /// sub-layer that survives `getColorForLayer` (M46, dyed in M47).
+/// The sprite path one worn piece's trim resolves to, or `None` if the piece
+/// carries no trim (M48).
+///
+/// `ArmorTrim.layerAssetId`, with the two halves looked up in the registries
+/// the server synced:
+///
+/// ```java
+/// MaterialAssetGroup.AssetInfo materialAsset = material.assets().assetId(equipmentAsset);
+/// return pattern.assetId().withPath(p -> layerAssetPrefix + "/" + p + "_" + materialAsset.suffix());
+/// ```
+///
+/// The `assetId(equipmentAsset)` step is what stops an iron trim on iron
+/// armour vanishing: the material's `override_armor_assets` sends that pairing
+/// to `iron_darker`.
+pub(crate) fn trim_sprite_path(
+    session: &PlaySession,
+    piece: &rewo_world::entities::WornPiece,
+    equipment_asset: &str,
+    layer: rewo_data::equipment::ArmorLayer,
+) -> Option<String> {
+    let (material_id, pattern_id) = piece.trim?;
+    let material = session.trim_materials.get(material_id as usize)?;
+    let pattern = session.trim_patterns.get(pattern_id as usize)?;
+    let suffix = material.suffix_for(equipment_asset);
+    // `LayerType.trimAssetPrefix()` — `"trims/entity/" + this.id`.
+    let prefix = format!("trims/entity/{}", layer.dir());
+    Some(rewo_net::trim_parse::layer_asset_path(
+        &pattern.asset_id,
+        &prefix,
+        suffix,
+    ))
+}
+
+/// Permute and upload every trim sprite this frame needs, returning where each
+/// one landed (M48).
+///
+/// A pre-pass because the upload needs `&mut` on the renderer while
+/// [`collect_entities`] hands out borrows of the session. `upload_trim` caches
+/// by path, so the second frame — and every frame after — does no work beyond
+/// the lookups.
+pub(crate) fn ensure_trims(
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    trims: &rewo_data::equipment::TrimAssets,
+    gpu: &mut Gpu,
+    wr: &mut WorldRenderer,
+) -> std::collections::HashMap<String, (u32, u32)> {
+    use rewo_data::equipment::ArmorLayer;
+    let mut out = std::collections::HashMap::new();
+    if trims.is_empty() {
+        return out;
+    }
+    for (id, _) in session.world.entities.iter() {
+        let worn = session.world.entities.armor(id);
+        for (i, piece) in worn.iter().enumerate() {
+            let Some(piece) = piece else { continue };
+            if piece.trim.is_none() {
+                continue;
+            }
+            let Some(asset) = items
+                .name(piece.item)
+                .and_then(rewo_data::item_props_table::equip_asset)
+            else {
+                continue;
+            };
+            let layer = if i == 2 {
+                ArmorLayer::Leggings
+            } else {
+                ArmorLayer::Humanoid
+            };
+            let Some(path) = trim_sprite_path(session, piece, asset, layer) else {
+                continue;
+            };
+            if out.contains_key(&path) {
+                continue;
+            }
+            // `<prefix>/<pattern>_<suffix>` splits back into the source file
+            // and the palette: the source is named without the material,
+            // because one greyscale sheet makes all seventeen permutations.
+            let Some((stem, suffix)) = path.rsplit_once('_') else {
+                continue;
+            };
+            let Some(o) = trims
+                .permute(stem, suffix)
+                .and_then(|(rgba, w, h)| wr.upload_entity_trim(gpu, &path, &rgba, w, h))
+            else {
+                continue;
+            };
+            out.insert(path, o);
+        }
+    }
+    out
+}
+
 pub(crate) fn armor_keys<'a>(
     session: &PlaySession,
     id: i32,
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
+    trim_slots: &std::collections::HashMap<String, (u32, u32)>,
 ) -> [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4] {
     use rewo_data::equipment::{color_for_layer, dye_argb, ArmorLayer};
     let worn = session.world.entities.armor(id);
@@ -1024,6 +1119,9 @@ pub(crate) fn armor_keys<'a>(
             );
         }
         let mut out = rewo_gpu::entities::ArmorPiece::default();
+        // The trim, if this piece has one and its sprite made it into the pool.
+        out.trim = trim_sprite_path(session, &piece, asset, layer)
+            .and_then(|p| trim_slots.get(&p).copied());
         let mut n = 0;
         for def in defs {
             let color = color_for_layer(def.dyeable, dye);
@@ -1045,8 +1143,9 @@ pub(crate) fn armor_keys<'a>(
             ));
             n += 1;
         }
-        // Every layer suppressed is the same as no piece.
-        (n > 0).then_some(out)
+        // Every layer suppressed is the same as no piece — but a trim alone
+        // still draws, because vanilla submits it outside the layer loop.
+        (n > 0 || out.trim.is_some()).then_some(out)
     })
 }
 
@@ -1085,6 +1184,8 @@ fn collect_entities<'a>(
     // Armour layer definitions, for resolving what each entity wears into an
     // atlas key (M46).
     equipment: &'a rewo_data::equipment::EquipmentAssets,
+    // Where this frame's trim sprites landed in the pool (M48).
+    trim_slots: &std::collections::HashMap<String, (u32, u32)>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -1234,7 +1335,7 @@ fn collect_entities<'a>(
             ground_item: ground_stack.and_then(|(i, _, _)| item_names.name(i)),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
-            armor: armor_keys(session, id, item_names, equipment),
+            armor: armor_keys(session, id, item_names, equipment, trim_slots),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),
@@ -1885,6 +1986,9 @@ fn run_headless(
     // session; the particle spawn happens further down, once the renderer is
     // ready for it.
     let particle_events = std::mem::take(&mut session.particle_events);
+    // M48: permute + upload any trim sprites this frame needs, before the
+    // draws take their borrow of the session.
+    let trim_slots = ensure_trims(&session, &items, &baked.trims, &mut gpu, &mut world_renderer);
     let draws = collect_entities(
         &session,
         &etypes,
@@ -1897,6 +2001,7 @@ fn run_headless(
         bow_item,
         &items,
         &baked.equipment,
+        &trim_slots,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -2267,6 +2372,8 @@ struct LiveApp {
     /// `self.baked` is *taken* when the window opens, and the entity draws
     /// need this every frame after that.
     equipment: std::sync::Arc<rewo_data::equipment::EquipmentAssets>,
+    /// Trim sources + palettes (M48), cloned for the same reason.
+    trims: std::sync::Arc<rewo_data::equipment::TrimAssets>,
     pool: MeshPool,
     /// M33: the cloud map, the climate noises and the cached cloud mesh. Built
     /// on the first frame that has a bake, since `baked` arrives with the
@@ -2810,6 +2917,13 @@ impl LiveApp {
             self.darkness_option,
             lightmap_partial,
         );
+        let trim_slots = ensure_trims(
+            session,
+            &self.items,
+            &self.trims,
+            &mut state.gpu,
+            &mut state.world_renderer,
+        );
         let draws = collect_entities(
             session,
             &self.etypes,
@@ -2822,6 +2936,7 @@ impl LiveApp {
             self.bow_item,
             &self.items,
             &self.equipment,
+            &trim_slots,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -3097,6 +3212,7 @@ fn run_windowed(
         // Cloned before the bake is stored, because it is `take`n when the
         // window opens and the entity draws need this every frame after.
         equipment: std::sync::Arc::new(baked.equipment.clone()),
+        trims: std::sync::Arc::new(baked.trims.clone()),
         baked: Some(baked),
         etypes,
         spears,

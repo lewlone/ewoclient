@@ -2972,6 +2972,38 @@ validation Rewo has.
   **Open:** no trims, the glint-order rule is transcribed but unreachable until
   armour glints, and `usePlayerTexture` (the elytra cape) is read as data and
   never honoured.
+- **M48 armour trims (2026-07-28)** — the third armour layer, and the one that
+  is **not a texture in the jar**: `armor_trims.json` declares a
+  `paletted_permutations` source and the client generates every
+  `pattern x material` sprite at load by swapping colours through a palette
+  pair. Two invertible details — the match is on **RGB with alpha masked off**
+  (so a half-transparent pixel of a palette colour still maps, taking
+  `pixelAlpha * valueAlpha / 255`), and an **unmatched pixel is not dropped**,
+  because `getOrDefault` returns `opaque(pixelRGB)` whose alpha 255 leaves it
+  untouched. Working in RGBA bytes sidesteps whether `NativeImage.getPixels` is
+  ARGB or ABGR. `trim_material` and `trim_pattern` are two more **datapack**
+  registries (M42's rule: contents *and* id order are the server's; index = id),
+  and their `MapCodec`s inline, so `asset_name`/`override_armor_assets` are
+  top-level fields. **`assetId(equipmentAsset)` is what stops a trim
+  disappearing**: it is `overrides.getOrDefault(equipmentAsset, base)`, keyed by
+  the *equipment asset*, and iron/gold/diamond/netherite/copper each override to
+  `<material>_darker` for their own armour — else an iron trim paints iron onto
+  iron. The trim draws with **depth EQUAL, no write**
+  (`ARMOR_DECAL_CUTOUT_NO_CULL`), M43's glint trick, and it is the only sane
+  option: Rewo's reversed-Z `GREATER` would reject a coplanar redraw outright.
+  Vanilla's two pipelines (`decal` vs not) **collapse to one here** because the
+  trim's geometry is the armour's to the bit. It is a **fourth vertex range**
+  (`solid | text | glint | trim`), drawn under the foil as vanilla does. 612
+  possible sheets means a **demand-filled pool** (M22's item-pool arithmetic
+  again): 64 slots, keyed by sprite path; `ATLAS_H` grew 1280→1408 with the
+  pool at the **top** and the skin/item pools redefined downward, so every
+  existing address is unchanged and `mobshot` stayed 243/243. **A leak the
+  gates caught**: the new pipeline was never destroyed, and
+  `VUID-vkDestroyDevice-device-05137` fired in three gates with **zero failed
+  witnesses** — the 0-VUID bar caught what a green witness count could not.
+  Gate `itemshot` 46 → **51**; **633 tests**. **Open:** trims are not on GUI
+  icons (M40 suppresses the `select` property it cannot evaluate), no
+  `humanoid_baby` layer, and a trim does not glint.
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

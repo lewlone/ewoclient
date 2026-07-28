@@ -1749,6 +1749,19 @@ impl WorldRenderer {
         }
     }
 
+    /// Put one permuted armour-trim sprite in the entity atlas's trim pool,
+    /// or return where it already is (M48).
+    pub fn upload_entity_trim(
+        &mut self,
+        gpu: &mut Gpu,
+        key: &str,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Option<(u32, u32)> {
+        self.entities.as_mut()?.upload_trim(gpu, key, rgba, w, h)
+    }
+
     pub fn upload_player_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
         let pass = self.entities.as_mut()?;
         match pass.upload_skin(gpu, rgba) {
@@ -2237,6 +2250,11 @@ impl WorldRenderer {
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
+            // The armour trim, then the glint. Both depth-test `EQUAL` against
+            // the solid geometry just written, so both must follow it; the
+            // trim comes first because vanilla draws it as another armour
+            // layer, under the foil rather than over it.
+            pass.draw_trim(gpu, cb, view_proj, extent);
             // The glint sits on the solid geometry it just wrote — its depth
             // test is `EQUAL`, so it has to follow, and it precedes the
             // translucent passes because it is additive over opaque pixels.

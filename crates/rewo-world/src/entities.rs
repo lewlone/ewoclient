@@ -498,6 +498,10 @@ pub struct WornPiece {
     pub item: i32,
     /// `minecraft:dyed_color`'s RGB, absent on an undyed piece.
     pub dye: Option<i32>,
+    /// `minecraft:trim`'s `(material, pattern)` registry ids (M48). Here for
+    /// the same reason the dye is: the component patch on the equipment packet
+    /// is the only place either is ever seen.
+    pub trim: Option<(i32, i32)>,
 }
 
 #[derive(Default)]
