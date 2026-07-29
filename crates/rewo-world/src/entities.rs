@@ -651,6 +651,35 @@ pub struct EntityTable {
     /// gate on the way in — index 0 is `Entity`'s own first slot, so every
     /// entity that exists owns it. Cleared on removal.
     shared_flags: HashMap<i32, u8>,
+    /// `Entity.DATA_CUSTOM_NAME_VISIBLE` — metadata index **3**, BOOLEAN
+    /// (M70). Absent means the flag has never been sent, which is exact:
+    /// `defineSynchedData` seeds it `false`. Membership means `true`; the
+    /// router removes the id when the server sends `false`, so a toggle back
+    /// off is not a latch. Cleared on removal.
+    ///
+    /// The index is pinned by counting `Entity`'s own `defineId` calls in
+    /// declaration order — 0 shared flags, 1 air supply, 2 custom name,
+    /// **3 custom-name-visible**, 4 silent, 5 no-gravity, 6 pose, 7 ticks
+    /// frozen — the same argument that pins `DATA_POSE` to 6, which is
+    /// independently confirmed by the working pose decode.
+    custom_name_visible: std::collections::HashSet<i32>,
+    /// `ClientboundSetPassengersPacket` — vehicle id → its passengers, in wire
+    /// order (M70). Present-and-empty and absent both mean "nothing is
+    /// riding"; the packet is the only writer, so an entity never seen as a
+    /// vehicle simply has no entry.
+    ///
+    /// This exists for `Entity.isVehicle()`, which is `!passengers.isEmpty()`
+    /// — **something is riding this entity**, not the reverse. Cleared on
+    /// removal from both directions.
+    passengers: HashMap<i32, Vec<i32>>,
+    /// The inverse index — passenger id → the vehicle it rides.
+    ///
+    /// Not a convenience: vanilla's `handleSetEntityPassengers` calls
+    /// `passenger.startRiding(vehicle)`, which detaches the passenger from
+    /// whatever it was riding first. Without this map a passenger that moves
+    /// between vehicles would leave the old one reading as still ridden, and
+    /// that vehicle's label would stay suppressed forever.
+    vehicle_of: HashMap<i32, i32>,
     /// `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE) — the
     /// skin-part toggle mask, players only (M60). Absent means the byte has
     /// never been sent; vanilla seeds it at `(byte) 0`, so an absent entry
@@ -1020,9 +1049,30 @@ impl EntityTable {
         self.item_stacks.remove(&id);
         self.attributes.remove(&id);
         self.shared_flags.remove(&id);
+        self.custom_name_visible.remove(&id);
+        self.clear_riding(id);
         self.model_customisation.remove(&id);
         self.wavy_capes.remove(&id);
         self.clear_swing(id);
+    }
+
+    /// Detach an entity from the passenger graph in **both** directions (M70).
+    ///
+    /// The second direction is the one that matters. A rider that despawns
+    /// while mounted is never mentioned by another `set_passengers`, so
+    /// without this its vehicle keeps a stale roster, reads as ridden forever,
+    /// and silently loses its label for the rest of the session.
+    fn clear_riding(&mut self, id: i32) {
+        if let Some(riders) = self.passengers.remove(&id) {
+            for rider in riders {
+                self.vehicle_of.remove(&rider);
+            }
+        }
+        if let Some(vehicle) = self.vehicle_of.remove(&id) {
+            if let Some(list) = self.passengers.get_mut(&vehicle) {
+                list.retain(|&p| p != id);
+            }
+        }
     }
 
     /// Drop every swing-related record for an id — the swing clock, the held
@@ -1187,6 +1237,79 @@ impl EntityTable {
     /// `FLAG_INVISIBLE` is **5**.
     pub fn is_invisible(&self, id: i32) -> bool {
         self.shared_flag(id, 5)
+    }
+
+    /// `Entity.isDiscrete()` — which is `isShiftKeyDown()`, which is
+    /// `getSharedFlag(FLAG_SHIFT_KEY_DOWN)`, and that flag is **1** (M70).
+    ///
+    /// Three `Entity` methods share this one bit verbatim — `isDiscrete`,
+    /// `isSuppressingBounce` and `isDescending` — so the flag is not
+    /// "sneaking" in any narrower sense than the shift key being down. Note it
+    /// is *not* `isCrouching()`, which reads the pose instead: a player
+    /// sneaking while flying is discrete but not crouching.
+    pub fn is_discrete(&self, id: i32) -> bool {
+        self.shared_flag(id, 1)
+    }
+
+    // -- custom-name visibility + passengers (M70) -----------------------------
+
+    /// Apply `Entity.DATA_CUSTOM_NAME_VISIBLE` (metadata index 3, BOOLEAN).
+    pub fn set_custom_name_visible(&mut self, id: i32, visible: bool) {
+        if visible {
+            self.custom_name_visible.insert(id);
+        } else {
+            self.custom_name_visible.remove(&id);
+        }
+    }
+
+    /// `Entity.isCustomNameVisible()`, which is also
+    /// `LivingEntity.shouldShowName()`.
+    pub fn is_custom_name_visible(&self, id: i32) -> bool {
+        self.custom_name_visible.contains(&id)
+    }
+
+    /// Apply `ClientboundSetPassengersPacket` — the vehicle's roster,
+    /// replacing whatever it held.
+    ///
+    /// Mirrors `handleSetEntityPassengers`: every listed passenger
+    /// `startRiding`s this vehicle, which detaches it from its previous one
+    /// first, and anyone dropped from the roster stops riding.
+    pub fn set_passengers(&mut self, vehicle: i32, riders: Vec<i32>) {
+        // Anyone the vehicle used to carry and no longer does has dismounted.
+        if let Some(previous) = self.passengers.get(&vehicle) {
+            for old in previous.clone() {
+                if !riders.contains(&old) {
+                    self.vehicle_of.remove(&old);
+                }
+            }
+        }
+        // Each new rider detaches from whatever it rode before.
+        for &rider in &riders {
+            if let Some(&prior) = self.vehicle_of.get(&rider) {
+                if prior != vehicle {
+                    if let Some(list) = self.passengers.get_mut(&prior) {
+                        list.retain(|&p| p != rider);
+                    }
+                }
+            }
+            self.vehicle_of.insert(rider, vehicle);
+        }
+        self.passengers.insert(vehicle, riders);
+    }
+
+    /// `Entity.isVehicle()` — `!this.passengers.isEmpty()`.
+    ///
+    /// True when **something is riding this entity**. The mirror question
+    /// ("is this entity riding something") is [`Self::vehicle_of`], and the
+    /// two are not interchangeable: a ridden horse is a vehicle, its rider is
+    /// not.
+    pub fn is_vehicle(&self, id: i32) -> bool {
+        self.passengers.get(&id).is_some_and(|p| !p.is_empty())
+    }
+
+    /// The vehicle this entity is riding, if any — `Entity.getVehicle()`.
+    pub fn vehicle_of(&self, id: i32) -> Option<i32> {
+        self.vehicle_of.get(&id).copied()
     }
 
     /// Apply `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE).

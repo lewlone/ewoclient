@@ -18,6 +18,7 @@ pub mod daylight;
 pub mod dimension;
 pub mod entities;
 pub mod inventory;
+pub mod label;
 pub mod light;
 pub mod lightmap;
 pub mod palette;

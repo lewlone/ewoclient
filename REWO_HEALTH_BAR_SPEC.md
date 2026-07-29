@@ -138,6 +138,45 @@ bar scales with `TAG_PX` exactly as a nametag does.
      rule is `entity != getCameraEntity()`, which the local-player exclusion
      already covers.
 
+   **M70 implemented this rule properly, and it is no longer a list.** The
+   three gates M59 shipped (living, distance, invisible) were a strict subset
+   of what suppresses a nametag, and the nametag path had a *different* subset
+   — namely none at all — so "suppressed by everything that suppresses a
+   nametag" was aspirational rather than true. Both features now call
+   [`rewo_world::label`], and the sentence is true by construction.
+
+   What that means concretely, and three findings that qualify the text above:
+
+   - **The bar takes the *suppression* half of
+     `LivingEntityRenderer.shouldShowName`, not the whole predicate.** The
+     rules enumerated in this file — invisible, spectator, distance — are
+     exactly that half, joined by the `isDiscrete()` sneak cut-off, the four
+     `Team.Visibility` arms, `isVehicle()`, the camera entity and
+     `hud.isHidden()`. What the bar deliberately does **not** take is
+     `MobRenderer`'s extra `entity.shouldShowName() || (hasCustomName &&
+     crosshairPick)` conjunct: that is a question about whether a *name*
+     exists, and gating a bar on it would hide the bar from every un-named mob
+     in the world.
+   - **The name-render distance is the attribute, but the sneak cut-off is
+     not.** `LivingEntityRenderer.shouldShowName` hides a sneaking entity at
+     `distanceToCameraSq >= 1024.0` — a folded literal, **not**
+     `Mth.square(nameTagDistance)` — so a server that raises the attribute
+     does not move the 32-block sneak bound with it.
+   - **One recorded divergence, and it is deliberate.** Vanilla's
+     `ArmorStandRenderer.shouldShowName` is a *full* override that returns
+     `isCustomNameVisible()` and skips every suppression rule. That override is
+     about names; this file is the authority for bars, so an armour stand's bar
+     does take the suppression rules. Letting an invisible armour stand keep a
+     health bar because of a naming quirk would be the stranger answer.
+
+   **Still not answerable, and it suppresses rather than guesses.**
+   `crosshairPickEntity` needs an entity raycast Rewo does not have, so the
+   pick clause is transcribed, graded both ways by `labelshot`, and fed `false`
+   live. That is closer to vanilla than the pre-M70 behaviour, not further: the
+   old path showed a custom name unconditionally, which is wrong for every
+   non-visible named mob at all times, where this is wrong only while one is
+   under the crosshair.
+
 ---
 
 ## What the gate asserts

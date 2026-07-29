@@ -358,6 +358,53 @@ impl Teams {
     }
 }
 
+/// `Team.Visibility` (the wire enum) → `rewo_world::label::NameTagVisibility`
+/// (the label predicate's) — M70.
+///
+/// Two enums rather than one because `rewo-world` must not depend on
+/// `rewo-net`. Exhaustive on purpose: adding a variant to either side becomes
+/// a compile error here rather than a silently wrong arm.
+pub fn label_visibility(v: Visibility) -> rewo_world::label::NameTagVisibility {
+    use rewo_world::label::NameTagVisibility as L;
+    match v {
+        Visibility::Always => L::Always,
+        Visibility::Never => L::Never,
+        Visibility::HideForOtherTeams => L::HideForOtherTeams,
+        Visibility::HideForOwnTeam => L::HideForOwnTeam,
+    }
+}
+
+/// `Entity.getTeam()` reduced to what the label predicate reads, for a
+/// scoreboard name the caller has already resolved (M70).
+///
+/// Pure and standalone so a gate can drive the real mapping from a real
+/// `Teams` without a live session.
+///
+/// A team whose parameters have somehow never arrived falls back to
+/// `PlayerTeam`'s own **constructor** defaults — `ALWAYS` and
+/// `seeFriendlyInvisibles = true`. That second one is not `false`, which is
+/// the easy assumption: a bare `new PlayerTeam(...)` sees friendly invisibles
+/// until a parameters packet says otherwise. In practice method 0 always
+/// carries parameters, so this is a defensive arm rather than a live path.
+pub fn label_team<'a>(
+    teams: &'a Teams,
+    member: &str,
+) -> Option<rewo_world::label::TeamView<'a>> {
+    let team = teams.team(teams.team_of_member(member)?)?;
+    let (visibility, see_friendly_invisibles) = match &team.parameters {
+        Some(p) => (
+            label_visibility(p.name_tag_visibility),
+            p.see_friendly_invisibles(),
+        ),
+        None => (rewo_world::label::NameTagVisibility::Always, true),
+    };
+    Some(rewo_world::label::TeamView {
+        name: &team.name,
+        visibility,
+        see_friendly_invisibles,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! Every body here is built by hand and run through the real

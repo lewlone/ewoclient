@@ -1661,6 +1661,43 @@ impl VariantKinds {
     }
 }
 
+/// Decode a `set_passengers` body — `(vehicle, passengers)` (M70).
+///
+/// `ClientboundSetPassengersPacket`'s reader is two lines: `readVarInt()` then
+/// `readVarIntArray()`, which is itself a var-int count followed by that many
+/// var-ints. Standalone and pure so a test drives the real walk.
+///
+/// **An empty roster is meaningful and must not be confused with a decode
+/// failure**: it is exactly how the server says everyone dismounted, and it is
+/// the only thing that lets a vehicle's label come back.
+pub fn parse_set_passengers(body: &[u8]) -> rewo_proto::Result<(i32, Vec<i32>)> {
+    let mut r = PacketReader::new(body);
+    let vehicle = r.varint()?;
+    // A passenger id is at least one byte, which is what `count` bounds
+    // against — a hostile length cannot make us reserve unbounded memory.
+    let n = r.count("passengers", 1)?;
+    let mut riders = Vec::with_capacity(n);
+    for _ in 0..n {
+        riders.push(r.varint()?);
+    }
+    Ok((vehicle, riders))
+}
+
+/// Apply a decoded `set_passengers` to the entity table.
+///
+/// Unlike `set_entity_data`, this is **not** gated on the vehicle being
+/// tracked. `handleSetEntityPassengers` does log and return for an unknown
+/// vehicle, but Rewo's table is also written by the chunk/entity stream in a
+/// different order, and refusing here would make the rule depend on packet
+/// arrival order. The roster is inert until something asks about that id, and
+/// `remove` cleans both directions, so keeping it is safe and order-free.
+pub(crate) fn apply_set_passengers(body: &[u8], entities: &mut rewo_world::entities::EntityTable) {
+    match parse_set_passengers(body) {
+        Ok((vehicle, riders)) => entities.set_passengers(vehicle, riders),
+        Err(e) => log::debug!("play: set_passengers parse: {e}"),
+    }
+}
+
 pub(crate) fn apply_set_entity_data<'a>(
     body: &[u8],
     entities: &mut rewo_world::entities::EntityTable,
@@ -1730,6 +1767,14 @@ pub(crate) fn apply_set_entity_data<'a>(
     // can. Parsed since M1 and discarded until now.
     if let Some(flags) = meta.flags {
         entities.set_shared_flags(eid, flags);
+    }
+    // Slot 3 BOOLEAN → `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). No kind gate,
+    // for the same reason as slot 0: `Entity` owns 0..7, so nothing else can
+    // claim it. `false` is applied as eagerly as `true` — the server toggles it
+    // off as well as on, and treating this as a latch would leave a nametag up
+    // after `/data merge` cleared the flag.
+    if let Some(visible) = meta.custom_name_visible {
+        entities.set_custom_name_visible(eid, visible);
     }
     // Slot 8 BYTE → `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (M23 item use).
     // Gated on the type actually being a `LivingEntity`: `Entity` owns 0..7, so
@@ -1835,6 +1880,23 @@ pub fn route_set_entity_data<'a>(
 ) -> bool {
     if id == ids.cb_play_set_entity_data {
         apply_set_entity_data(body, entities, kinds);
+        true
+    } else {
+        false
+    }
+}
+
+/// Decode + dispatch a `set_passengers` body onto the entity table (M70) — the
+/// same seam `route_set_entity_data` gives the metadata path, so a gate can
+/// drive the id match and the applier rather than reaching past them.
+pub fn route_set_passengers(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+) -> bool {
+    if id == ids.cb_play_set_passengers {
+        apply_set_passengers(body, entities);
         true
     } else {
         false
@@ -2909,4 +2971,191 @@ pub fn hashed_stack_bytes(slot: Option<rewo_world::inventory::ItemSlot>) -> Vec<
     let before = w.buf.len();
     crate::play::write_hashed_stack(&mut w, slot);
     w.buf[before..].to_vec()
+}
+
+#[cfg(test)]
+mod passenger_tests {
+    //! `set_passengers` (M70) — the decode and the riding graph. Every body is
+    //! built by hand and pushed through the real `parse_set_passengers` /
+    //! `apply_set_passengers`, so the walk and the state machine are what is
+    //! under test rather than a local copy.
+
+    use super::{apply_set_passengers, parse_set_passengers};
+    use rewo_world::entities::{EntityState, EntityTable};
+
+    /// A `ClientboundSetPassengersPacket` body: VarInt vehicle then a VarInt
+    /// array (count, then that many VarInts). Ids are kept < 128 so each is a
+    /// single byte.
+    fn body(vehicle: u8, riders: &[u8]) -> Vec<u8> {
+        let mut b = vec![vehicle, riders.len() as u8];
+        b.extend_from_slice(riders);
+        b
+    }
+
+    fn table() -> EntityTable {
+        let mut t = EntityTable::default();
+        for id in 1..=4 {
+            t.add(id, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        }
+        t
+    }
+
+    #[test]
+    fn the_body_is_a_vehicle_then_a_varint_array() {
+        assert_eq!(
+            parse_set_passengers(&body(7, &[8, 9])).unwrap(),
+            (7, vec![8, 9])
+        );
+    }
+
+    #[test]
+    fn an_empty_roster_decodes_rather_than_erroring() {
+        // The only way a server says "everyone dismounted". Reading it as a
+        // truncation would leave the vehicle suppressed forever.
+        assert_eq!(parse_set_passengers(&body(7, &[])).unwrap(), (7, vec![]));
+    }
+
+    #[test]
+    fn a_truncated_array_is_an_error_rather_than_a_short_roster() {
+        // Count says two, only one id follows.
+        assert!(parse_set_passengers(&[7, 2, 8]).is_err());
+    }
+
+    #[test]
+    fn is_vehicle_asks_whether_something_rides_this_entity() {
+        let mut t = table();
+        apply_set_passengers(&body(1, &[2]), &mut t);
+        assert!(t.is_vehicle(1), "the horse is ridden");
+        assert!(!t.is_vehicle(2), "the rider is not itself a vehicle");
+        assert_eq!(t.vehicle_of(2), Some(1));
+        assert_eq!(t.vehicle_of(1), None);
+    }
+
+    #[test]
+    fn an_empty_roster_clears_the_vehicle() {
+        let mut t = table();
+        apply_set_passengers(&body(1, &[2]), &mut t);
+        apply_set_passengers(&body(1, &[]), &mut t);
+        assert!(!t.is_vehicle(1));
+        assert_eq!(t.vehicle_of(2), None, "the dismounted rider is detached");
+    }
+
+    #[test]
+    fn moving_a_rider_to_another_vehicle_frees_the_first() {
+        // `startRiding` detaches from the previous vehicle. Without the
+        // inverse index the old vehicle reads as ridden forever and silently
+        // loses its label for the rest of the session.
+        let mut t = table();
+        apply_set_passengers(&body(1, &[3]), &mut t);
+        apply_set_passengers(&body(2, &[3]), &mut t);
+        assert!(!t.is_vehicle(1), "the abandoned vehicle is free again");
+        assert!(t.is_vehicle(2));
+        assert_eq!(t.vehicle_of(3), Some(2));
+    }
+
+    #[test]
+    fn removing_a_rider_frees_its_vehicle() {
+        // The despawn direction: nothing else will ever mention this rider.
+        let mut t = table();
+        apply_set_passengers(&body(1, &[2, 3]), &mut t);
+        t.remove(2);
+        assert!(t.is_vehicle(1), "3 is still aboard");
+        t.remove(3);
+        assert!(!t.is_vehicle(1), "the last rider left with its entity");
+    }
+
+    #[test]
+    fn removing_a_vehicle_detaches_its_riders() {
+        let mut t = table();
+        apply_set_passengers(&body(1, &[2, 3]), &mut t);
+        t.remove(1);
+        assert_eq!(t.vehicle_of(2), None);
+        assert_eq!(t.vehicle_of(3), None);
+    }
+
+    #[test]
+    fn a_partial_roster_change_keeps_the_survivors_aboard() {
+        let mut t = table();
+        apply_set_passengers(&body(1, &[2, 3]), &mut t);
+        apply_set_passengers(&body(1, &[3]), &mut t);
+        assert_eq!(t.vehicle_of(2), None, "dropped from the roster");
+        assert_eq!(t.vehicle_of(3), Some(1), "still aboard");
+        assert!(t.is_vehicle(1));
+    }
+}
+
+#[cfg(test)]
+mod custom_name_visible_tests {
+    //! `Entity.DATA_CUSTOM_NAME_VISIBLE` — metadata index 3, BOOLEAN (M70).
+
+    use super::apply_set_entity_data;
+    use rewo_world::entities::{EntityState, EntityTable};
+
+    fn body(eid: u8, index: u8, serializer: u8, value: &[u8]) -> Vec<u8> {
+        let mut b = vec![eid, index, serializer];
+        b.extend_from_slice(value);
+        b.push(0xFF);
+        b
+    }
+
+    #[test]
+    fn index_three_boolean_sets_and_clears_the_flag() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert!(!t.is_custom_name_visible(1), "the seeded default is false");
+
+        apply_set_entity_data(&body(1, 3, 8, &[0x01]), &mut t, None);
+        assert!(t.is_custom_name_visible(1));
+
+        // Not a latch: the server toggles it off too, and a stuck `true` would
+        // leave a nametag up after the flag was cleared.
+        apply_set_entity_data(&body(1, 3, 8, &[0x00]), &mut t, None);
+        assert!(!t.is_custom_name_visible(1));
+    }
+
+    #[test]
+    fn the_flag_dies_with_the_entity() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 3, 8, &[0x01]), &mut t, None);
+        t.remove(1);
+        assert!(
+            !t.is_custom_name_visible(1),
+            "a recycled id must not inherit it"
+        );
+    }
+
+    #[test]
+    fn a_later_field_still_parses_past_index_three() {
+        // The skip table already handled serializer 8; this pins that *reading*
+        // it consumes exactly one byte, so the pose that follows still lands.
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let b = vec![1u8, 3, 8, 0x01, 6, 20, 5, 0xFF];
+        apply_set_entity_data(&b, &mut t, None);
+        assert!(t.is_custom_name_visible(1));
+        assert_eq!(t.pose(1), 5, "a one-byte over-read would lose the pose");
+    }
+}
+
+#[cfg(test)]
+mod scoreboard_name_tests {
+    #[test]
+    fn a_uuid_renders_in_the_dashed_lowercase_form_entity_uses() {
+        // `Entity.stringUUID` is `UUID.toString()`, and it is the scoreboard
+        // key for every non-player entity.
+        let uuid = 0x069a79f4_44e9_4726_a5be_fca90e38aaf5u128;
+        assert_eq!(
+            crate::play::uuid_to_dashed(uuid),
+            "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+        );
+    }
+
+    #[test]
+    fn leading_zeroes_are_preserved() {
+        assert_eq!(
+            crate::play::uuid_to_dashed(1),
+            "00000000-0000-0000-0000-000000000001"
+        );
+    }
 }
