@@ -3764,6 +3764,21 @@ impl LiveApp {
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
+            // M71 — a client-generated system message (currently only
+            // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,
+            // because vanilla builds a `Component.translatable` and resolves
+            // it against the loaded language at render time. This is that
+            // resolution; the key itself is the fallback, which is what
+            // vanilla shows for a key the language file lacks.
+            for key in session.game_state.take_system_messages() {
+                let text = self
+                    .baked
+                    .as_ref()
+                    .and_then(|b| b.lang.get(key))
+                    .unwrap_or(key)
+                    .to_string();
+                session.chat_log.push(text);
+            }
             // `Hud.tick`'s held-item label clock (M66) — once per client tick,
             // and it reads the selected stack *after* the tick that may have
             // changed it, exactly as vanilla's `Gui.tick` does.

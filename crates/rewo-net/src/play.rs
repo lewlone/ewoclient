@@ -560,6 +560,11 @@ pub struct PlaySession {
     /// than unbounded precisely because no consumer exists; see
     /// [`Self::MAX_PENDING_SOUNDS`].
     pub sound_events: Vec<crate::sounds::SoundEvent>,
+    /// The ten non-weather `game_event` types (M71) — gamemode, the death-
+    /// screen and limited-crafting flags, the win/demo/chunk-load markers.
+    /// The four weather ids go to [`Self::weather`] instead; one packet feeds
+    /// both, decoded once.
+    pub game_state: crate::game_event::ClientGameState,
     pub chat_log: Vec<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
@@ -1216,6 +1221,7 @@ impl<'a> Connection<'a> {
             particle_events: Vec::new(),
             particle_types: self.data.particle_types.clone(),
             sound_events: Vec::new(),
+            game_state: crate::game_event::ClientGameState::default(),
             chat_log: Vec::new(),
             health: 20.0,
             food: 20,
@@ -1344,6 +1350,31 @@ impl PlaySession {
     /// unused today, which is why the queue is capped above.
     pub fn take_sound_events(&mut self) -> Vec<crate::sounds::SoundEvent> {
         std::mem::take(&mut self.sound_events)
+    }
+
+    /// Apply one `ClientboundGameEventPacket` body — all fourteen types (M71).
+    ///
+    /// Decoded **once**; the weather four go to [`Self::weather`] (which owns
+    /// the counter-intuitive start/stop rule), the other ten to
+    /// [`Self::game_state`], and three of them additionally queue a
+    /// client-local sound at the player's position.
+    ///
+    /// A short body or an unregistered type id does nothing, which is
+    /// vanilla's own behaviour — see [`crate::game_event::decode`].
+    fn apply_game_event(&mut self, body: &[u8]) {
+        // Deliberately no logic here: `PlaySession` owns a socket and has no
+        // unit tests, so a fan-out written at this call site is unwitnessed —
+        // a mutation battery proved it, surviving the removal of each branch
+        // in turn. Everything lives in `game_event::apply`, which is tested.
+        let applied = crate::game_event::apply(
+            body,
+            &mut self.weather,
+            &mut self.game_state,
+            &self.player,
+        );
+        for s in applied.sounds {
+            self.push_sound_event(crate::sounds::SoundEvent::Local(s));
+        }
     }
 
     /// Drain newly-announced player skins (UUID → skin) for the app to
@@ -2054,9 +2085,11 @@ impl PlaySession {
         } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
             // M67 — the server's view area. Decode and state only; nothing
             // evicts a column or gates a tick on it yet.
-        } else if crate::route_game_event(id, body, ids, &mut self.weather) {
-            // M33: rain and thunder levels. The packet also carries a dozen
-            // non-weather events; those match the id and change nothing.
+        } else if id == ids.cb_play_game_event {
+            // M33 took the four weather ids; M71 took the other ten. One
+            // decode feeds the weather levels, the client game state and the
+            // local sound queue — see `apply_game_event`.
+            self.apply_game_event(body);
         } else if crate::route_animate(
             id,
             body,

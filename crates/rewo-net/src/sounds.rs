@@ -342,16 +342,49 @@ impl StopSound {
     }
 }
 
-/// What a decoded sound packet asks the client to do.
+/// A sound the **client itself** decided to play, at a world position.
 ///
-/// One queue for all three so the order the server sent them in survives —
-/// a `stop_sound` that overtook the `sound` it was meant to cancel would
-/// leave the sound playing forever.
+/// M71's `game_event` branches produce these: `PLAY_ARROW_HIT_SOUND`,
+/// `PUFFER_FISH_STING` and `GUARDIAN_ELDER_EFFECT`'s curse all call
+/// `level.playSound(...)` directly rather than arriving as a sound packet.
+///
+/// It is a separate type from [`PositionedSound`] for one reason: **there is
+/// no seed**. A wire sound carries one so every client picks the same variant
+/// and the same pitch jitter; a client-local sound draws
+/// `level.random.nextLong()` at play time, so there is no number to record
+/// here. Folding these into `PositionedSound` would mean inventing a seed and
+/// putting it in a field documented as coming off the wire.
+///
+/// The name is the registry id (`entity.arrow.hit_player`), not a
+/// [`SoundRef`], because vanilla names these with a `SoundEvents` constant —
+/// a direct `SoundEvent`, never a `Holder` that could be an inline definition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalSound {
+    pub name: String,
+    pub source: SoundSource,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// What the client should play.
+///
+/// One queue for all four so the order survives — a `stop_sound` that overtook
+/// the `sound` it was meant to cancel would leave the sound playing forever.
+///
+/// Three variants are decoded packets; [`Self::Local`] is the client's own
+/// doing (see [`LocalSound`]). They share a queue because a playback layer
+/// wants one ordered stream, and because `stop_sound` can silence a category
+/// containing both.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SoundEvent {
     At(PositionedSound),
     OnEntity(EntitySound),
     Stop(StopSound),
+    /// Not from a packet — see [`LocalSound`].
+    Local(LocalSound),
 }
 
 #[cfg(test)]

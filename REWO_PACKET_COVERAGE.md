@@ -243,18 +243,52 @@ empty body and closes a control loop Rewo currently answers with the literal
 
 ## §4 "Handled" is not "complete"
 
-`ids.rs` cannot express *partially*. These six are consumed by the dispatch and
+`ids.rs` cannot express *partially*. These are consumed by the dispatch and
 decode less than the body carries. Listed because a future audit run by the
 same two greps will call every one of them handled.
 
+**`game_event` closed in M71** and is kept below as a worked example of the
+class — the row it used to have is the "what is not" column that turned into a
+milestone.
+
 | Packet | What is consumed | What is not |
 |---|---|---|
-| `game_event` (38) | The four weather types (`START_RAINING` 1, `STOP_RAINING` 2, `RAIN_LEVEL_CHANGE` 7, `THUNDER_LEVEL_CHANGE` 8), via `WeatherState::apply_game_event`. | The other ten, including **`CHANGE_GAME_MODE` (3)** — the local player's own gamemode change — plus `WIN_GAME`, `IMMEDIATE_RESPAWN`, `LIMITED_CRAFTING`, `LEVEL_CHUNKS_LOAD_START`, `NO_RESPAWN_BLOCK_AVAILABLE`, and the three sound-only ones. `apply_game_event` reads `(u8, f32)` and hands both to weather; the id match returns `true` regardless. |
+| `game_event` (38) — **closed, M71** | All fourteen types, via `rewo_net::game_event`. Ten are applied: the four weather levels (unchanged, still `WeatherState`), `CHANGE_GAME_MODE` → `ClientGameState::game_mode`, the `IMMEDIATE_RESPAWN` / `LIMITED_CRAFTING` flags, `WIN_GAME` / `DEMO_EVENT` / `LEVEL_CHUNKS_LOAD_START` as markers, `NO_RESPAWN_BLOCK_AVAILABLE` as a queued translation key the app resolves into chat, and the three local sounds (`PLAY_ARROW_HIT_SOUND`, `PUFFER_FISH_STING`, `GUARDIAN_ELDER_EFFECT`'s conditional curse). | **`GUARDIAN_ELDER_EFFECT`'s particle** — `ParticleTypes.ELDER_GUARDIAN` is not one of M37's six transcribed kinds, and M37's rule is that an unknown kind is dropped rather than rendered as something else, so it is recorded as a gap instead of being given a fake home. The gamemode is **modelled, not acted on**: nothing in `rewo-world::physics` has a flight, no-clip or invulnerability concept, so `updatePlayerAbilities` has nothing to update (see §4.1). `WIN_GAME` and `DEMO_EVENT` open screens Rewo has no screen system for. |
 | `level_event` (46) | The particle half, through M37's `route_level_event`. | The sound half of the same id table — deliberately, per M63: playback, not decode. |
 | `chunk_batch_finished` (11) | The id, as a trigger. | The `batchSize` float, and the batch clock it feeds. The reply is the constant `64.0`. |
 | `block_changed_ack` (4) | The id. The arm is a `log::debug!`. | The sequence number and the block-prediction rollback it acknowledges — Rewo does not predict block changes, so there is nothing to roll back yet. |
 | `container_set_content` / `container_set_slot` (18 / 20) | Container id **0** — the player's own inventory. | Every other container id, dropped whole (M34's documented choice: there is no screen to put them in). |
 | `player_info_update` (70) | `ADD_PLAYER`, `UPDATE_GAME_MODE`, `UPDATE_LATENCY`, `UPDATE_LIST_ORDER`, and the walk past the rest. | `UPDATE_DISPLAY_NAME` and `INITIALIZE_CHAT` are walked and discarded rather than stored. The walk is correct — M62 unified it into one function after finding a drifted copy — but the values do not survive it. |
+
+### §4.1 What wiring the gamemode to physics would actually take
+
+M71 models `CHANGE_GAME_MODE` and stops there, because acting on it is a
+larger job than the packet suggests. `MultiPlayerGameMode.setLocalMode` ends in
+`GameType.updatePlayerAbilities(abilities)`, which writes four booleans —
+`mayfly`, `instabuild`, `invulnerable`, `flying` (and note **SPECTATOR sets
+`flying = true` while CREATIVE only sets `mayfly`**, so entering creative does
+not start you flying). Rewo has **none of those concepts**: a grep for
+`abilities`, `may_fly`, `flying` or `no_clip` across `rewo-world` and
+`rewo-app` finds nothing but the elytra `fall_flying` cape term. The work is
+therefore:
+
+1. An abilities struct on `PlayerState`, and `GameType::updatePlayerAbilities`
+   transcribed onto it.
+2. A flight branch in `rewo_world::physics::tick` — vanilla's creative flight
+   is its own velocity model, not gravity with a different constant.
+3. Spectator no-clip: `physics` currently always consults `baked.solid`.
+4. `player_abilities` (clientbound **and** serverbound) — neither is in
+   `ids.rs`. The server is authoritative about `mayfly`, and the client must
+   send its flying state back or the server rubber-bands it.
+
+Two other authoritative sources also feed this state and are not wired, which
+is why `ClientGameState` is complete for the *packet* and not for the *state*:
+the **login packet** carries `showDeathScreen` and `doLimitedCrafting` (the
+`game_event` ids 11/12 are only the mid-session gamerule change), and
+**`spawn_info`** carries `gameType` + `previousGameType` on both login and
+respawn — `crates/rewo-net/src/spawn_info.rs` already decodes both fields and
+nothing consumes them. `handleRespawn` also copies `showDeathScreen` onto the
+new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 
 ---
 
@@ -303,7 +337,7 @@ same two greps will call every one of them handled.
 | 35 | `entity_position_sync` | handled | `req!` → `cb_play_entity_position_sync` | |
 | 36 | `explode` | absent | **A** | **Decoded by M68** (physics prefix only — the particle/sound/weighted-list tail is deliberately not consumed). `playerKnockback` is `addDeltaMovement` on the local player — **physics state**. The particle and sound halves are separate (B / audio). |
 | 37 | `forget_level_chunk` | handled | `req!` → `cb_play_forget_chunk` | |
-| 38 | `game_event` | handled | `req!` → `cb_play_game_event` | |
+| 38 | `game_event` | handled | `req!` → `cb_play_game_event` | All 14 types since M71 (`rewo_net::game_event`). Was 4 of 14 — the §4 worked example. |
 | 39 | `game_rule_values` | absent | **A** | `Map<ResourceKey<GameRule>, String>`. |
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
 | 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |

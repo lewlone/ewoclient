@@ -22,6 +22,7 @@ pub mod enchantment_parse;
 pub mod trim_parse;
 pub mod variant_parse;
 pub mod effects;
+pub mod game_event;
 pub mod ids;
 pub mod item_stack;
 pub mod metadata;
@@ -1210,17 +1211,33 @@ pub fn route_update_attributes(
 ///
 /// Body: an **unsigned byte** event id and an `f32` param — not a var-int pair.
 /// The packet carries a dozen unrelated things (game-mode changes, the win
-/// screen, demo hints); M33 consumes only the four weather ids and reports
-/// whether this one was among them.
+/// screen, demo hints); this entry point consumes only the four weather ids and
+/// reports whether this one was among them. M71 handles the other ten — see
+/// [`crate::game_event`] and [`play::PlaySession::game_state`].
+///
+/// It is a **thin view of [`game_event::apply`]**, the same function
+/// `PlaySession` runs, rather than a second decode-and-route beside it. That
+/// matters because `weathershot` is this entry point's only caller: a gate
+/// driving a path the client itself no longer takes grades nothing, which is
+/// the failure M45 recorded (`itemshot` calling `init_entities` directly and
+/// so never installing the glint). Routing both through one function keeps the
+/// gate pointed at the client's real behaviour. The discarded game state and
+/// origin player are exactly the parts weather does not depend on.
 ///
 /// A short body is inert: vanilla's reader would throw, and dropping the packet
-/// is the closest safe equivalent to a client that never applied it.
+/// is the closest safe equivalent to a client that never applied it. An
+/// unregistered type id is likewise inert — that is vanilla's own behaviour,
+/// not a tolerance added here.
 pub fn apply_game_event(body: &[u8], weather: &mut rewo_world::weather::WeatherState) -> bool {
-    let mut r = rewo_proto::reader::PacketReader::new(body);
-    let (Ok(event), Ok(param)) = (r.u8(), r.f32()) else {
-        return false;
-    };
-    weather.apply_game_event(event, param)
+    // The bool has always meant "was it a weather event", not "did a level
+    // move" — `RAIN_LEVEL_CHANGE` to the level already held is still weather.
+    game_event::apply(
+        body,
+        weather,
+        &mut game_event::ClientGameState::default(),
+        &rewo_world::physics::PlayerState::at(0.0, 0.0, 0.0),
+    )
+    .was_weather()
 }
 
 /// The narrowest clientbound-play dispatch seam for the game event: routes a
