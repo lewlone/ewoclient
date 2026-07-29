@@ -3324,6 +3324,76 @@ them findable by reading. The sharpest: a depth witness sized as
 so it passes at 8 and at 64 alike and only ever witnesses "recursion
 terminates".
 
+### The sound registry and the server-driven display packets (M64, M65)
+
+Two more headless subsystems, same test as the batch before: no eyeball, no
+design decision. Nothing is wired to a renderer.
+
+**M64 — the `sound_event` registry table.** M63 named it as step 1 toward
+playback. Parsed at load from the datagen report, matching
+`particle_types.rs`; 1,968 entries, dense ids, both-direction lookup.
+
+**The alphabetisation trap here is the sharpest "invisible to every gate" case
+in the project so far.** `serde_json`'s default `Map` is a sorted `BTreeMap`,
+so iterating `entries` hands you the registry **alphabetically**. The real 26.2
+registry is not: ids 0–6 are the seven `entity.allay.*` events and
+`ambient.cave` is id 7, where sorted order would put
+`ambient.basalt_deltas.additions` at 0. An `enumerate()`-based table therefore
+gives **a different wrong name for every one of 1,968 sounds** — and no decode
+gate can catch it, because the ids still round-trip and the strings are still
+real sound names. It is visible only to someone *listening*. Read `protocol_id`
+off each entry; never derive an id from position.
+
+Two resolution rules: an **inline** sound event returns its own identifier
+*without* consulting the table, because it may name a resource-pack sound with
+no registry id anywhere; and an unknown registry id returns `None`, never a
+substitute — a wrong sound is harder to notice than a missing one.
+
+**M65 — scoreboard objectives/scores/display, boss bars, tab header/footer.**
+Six packets Rewo decoded none of. `Scoreboard` now **owns** M62's `Teams`
+rather than sitting beside it, because vanilla's `Scoreboard` is one object and
+the halves touch; `PlaySession.teams` became `PlaySession.scoreboard`.
+
+**Two enum-decoding conventions sit one field apart, and only the decompile
+distinguishes them.** `RenderType`, `BossBarColor`, `BossBarOverlay` and the
+boss `OperationType` are `readEnum` — an array index, so out-of-range is an
+**error**. `DisplaySlot` is `ByIdMap.continuous(…, ZERO)` — out-of-range is
+**`LIST`**. Assuming either convention globally is wrong half the time.
+
+Other findings, each witnessed: `NumberFormat`'s body length depends on its
+registry id (`blank` is **zero bytes**), and an unnameable id is not skippable —
+M41's no-length-prefix rule again — so it is a decode error; `reset_score` with
+**no** objective name means *every* objective, not none; `set_display_objective`
+naming an unknown objective **clears** the slot rather than being ignored, or a
+stale sidebar is stranded; `removeObjective` keeps an emptied holder while
+`resetSinglePlayerScore` drops one; a repeat boss-bar ADD replaces **in place**
+(`LinkedHashMap::put` keeps insertion order), so re-pushing the id would
+reorder bars on screen; and `tab_list`'s "no header" is a component whose
+*flattened text* is empty, not an absent field.
+
+**The mutation survivor was a real gap, not an equivalent mutant** — the first
+in this project's batches where that turned out to be true. Deleting
+`display.retain(...)` in `remove_objective` survived because the witness
+asserted `display_objective(Sidebar).is_none()`, which resolves *through* the
+objective map and so reports `None` for a stale entry too: **the witness was
+measuring the wrong thing.** Fixed with an accessor that sees the stored name,
+plus a behavioural test that re-creating a removed objective of the same name
+must not resurrect its old sidebar — the actual bug, since servers run
+remove/re-add cycles constantly.
+
+**Integration.** Both agents branched from the same base and both added a
+module, a `GameData` field and a load call to the same three regions of
+`crates/rewo-data/src/lib.rs`. The 3-way patch **conflicted**, which is the
+correct outcome — a file copy would have deleted the other silently. Both sides
+were purely additive, so the resolution was the union.
+
+**`crates/rewo-data/src/lib.rs` is the third file to hit the mixed-CRLF trap**
+(after `entities.rs` and `chunk.rs`), and both agents hit it independently: an
+editing tool normalised its 95 CRLF / 58 LF into a 60–123-line diff for a
+7-line change. Both recovered byte-precisely. A `.gitattributes` policy would
+retire this class of problem, but it touches line endings repo-wide and is a
+decision, not a cleanup.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
