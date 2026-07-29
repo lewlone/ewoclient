@@ -35,10 +35,19 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M52 shipped (M0–M51 merged to `main`; M52 local)
+### Where it is: M0–M57 shipped and merged to `main`
 
-`origin/main` is at **`8f3ad41`** and everything from M0 to M50 is on it. The
+`origin/main` is at **`aadd8e9`** and everything from M0 to M57 is on it. The
 working tree is clean and there are no stashes.
+
+**A numbering note, because the ladder is not contiguous by accident.** M52 is
+the **EwoClient module port**, which landed on `main` from a second concurrent
+session (`ec531cd`) while five agents were building M51/M54–M57 in parallel
+worktrees. Three of those agents independently self-numbered their work M52
+before that commit existed; they were renumbered on merge. **M53 is a
+specification, not code** (`REWO_HEALTH_BAR_SPEC.md`) — its implementation is
+still open. If §15's entries read out of order, that is why: they were authored
+concurrently and merged, not written in sequence.
 
 **The one side branch that carried real unlanded work is landed** —
 `claude/rewo-entity-fidelity-aa134c` (`e5bbb8b`), the ETF/emissive/dye work, is
@@ -115,28 +124,37 @@ byte-identical since M15.
 
 ### What to do next
 
-**M50 is done** — the worn-armour glint, and with it the glint's colour space.
-**§16 is history, not a forward plan** (it covers M23–M25, all shipped), so the
-live queue is `REWO_FEATURE_SURVEY.md` §5 "Sequence". Its next item is
-**M9b (ETF)** — and roughly six commits of that already exist on
-`claude/rewo-entity-fidelity-aa134c`, so it is a rebase and a renumber rather
-than a build.
+**§16 is history, not a forward plan** (M23–M25, all shipped). The live queue is
+`REWO_FEATURE_SURVEY.md` §5 "Sequence", and items 2–5 of it are now **done**:
+ETF (M57), tooltips (M54 data + M56 image pass), screenshots (M51), and the data
+half of health bars (M55).
 
-Two things M50 leaves behind that a fresh session should know:
+Two pieces are finished-but-for-one-step, and are the cheapest things to pick up:
 
-- **The glint now renders through a UNORM view of the colour target**, because
-  its `(SRC_COLOR, ONE)` blend squares its input and vanilla evaluates that in
-  gamma space. On a device without `VK_KHR_swapchain_mutable_format` there is no
-  such view and **no glint is drawn at all**. If glints ever go missing, check
-  that first.
-- **A frame-diff against this test world is not a usable oracle.** M50's live
-  control run (same item twice) differed in 41,284 pixels against the test's
-  16,329 — noise larger than signal, almost certainly the entity-atlas collision
-  M46 records. Verify live paths by a *property* (a decoded value, a count), not
-  by diffing two frames.
+- **The health bar's render half.** The spec is written
+  (`REWO_HEALTH_BAR_SPEC.md`) and the data is decoded (M55 `update_attributes`,
+  43 witnesses). What is missing is a `push_health_bar` sibling to
+  `entities.rs::push_tag` — the nametag's backing plate is already a
+  camera-billboarded untextured coloured rect, so this needs no new geometry
+  type, texture, pipeline or blend state. **This is the first Rewo feature with
+  no vanilla oracle**; read the spec's preamble before writing a witness.
+- **The bundle grid's cell chrome.** M56 computes and grades every cell
+  position but does not blit `container/bundle/slot_background`, the two
+  highlights or the three `bundle_progressbar_*` sprites — they need fields on
+  `assets::ContainerSprites`, and that agent was fenced out of `assets.rs` to
+  keep it from racing the ETF port. Geometry is done; only the blits are absent.
 
-If something else is wanted instead, `REWO_FEATURE_SURVEY.md` picks the next
-*feature* rather than the next milestone.
+**Survey item 1 — porting the EwoClient module + HUD set — is USER-GATED.** The
+repo owner's instruction: it "must not go ahead without my explicit go ahead, it
+has a couple caveats and it itself isn't fully finished and working, so we'd be
+porting broken stuff." `ec531cd` landed a first slice of it from a different
+session; that is not the same as the gate being lifted. **Ask before extending
+it.**
+
+After those, the survey's remaining ranked items are capes (larger than the
+survey implies — see the M-series notes: the cape URL is *not* parsed today, and
+`rotateBy` composes `Rx·Rz·Ry`, not Rewo's `rotate_zyx`) and then the Tier-2 set.
+
 
 ### How to run the live checks
 
@@ -429,12 +447,12 @@ Original M0–M6 (still the foundation):
   1%/0.1% low reporting, frames-in-flight knob. GPU render 0.198 ms avg /
   0.367 ms 0.1%-low on the 5080.
 
-### The current numbers (2026-07-27; test/gate counts re-measured at M52, 2026-07-28)
+### The current numbers (2026-07-27; test/gate counts re-measured at M57, 2026-07-29)
 
 Per-milestone figures inside §15 are the measurement taken at that milestone
 and will not match.
 
-**Re-measured at M52 (2026-07-28):** **659 tests** — `rewo-world` 208,
+**Re-measured at M57 (2026-07-29):** **705 tests** — `rewo-world` 208,
 `rewo-net` 141, `rewo-gpu` 103, `rewo-data` 93, `rewo-mesh` 38, `rewo-proto` 11,
 app 65. **Twenty gate invocations green, 0 VUIDs**, adding `mobshot
 --emissive-check` 5/5, `--etf-check` 8/8 and `--tint-check` 4/4 to the seventeen
@@ -6468,7 +6486,7 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
-### M52 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
+### M56 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
 
 Shipped. M40 built the tooltip's first pass — measure, position, nine-slice
 box, draw the lines — and stopped there. `GuiGraphicsExtractor.tooltip` walks
@@ -7065,11 +7083,11 @@ exactly what it is derived from and where it is knowingly not bit-compatible.
 *Provenance: built on a branch off M11 (`claude/rewo-entity-fidelity-aa134c`,
 numbered M36 there) and ported file-by-file onto main 109 commits later. A
 rebase gave 33 conflict hunks and a compile wall the markers never flag, so
-nothing here came through `git merge`. The renumber to M52 is because M36 on
+nothing here came through `git merge`. The renumber to M57 is because M36 on
 main is the inventory player preview. What the port changed relative to that
 branch is recorded at the end.*
 
-#### M52a — the emissive path
+#### M57a — the emissive path
 
 Eight of the registry's mobs have emissive layers in vanilla and none of them
 glowed. A spider in a dark cave was a black spider; the warden, whose whole
@@ -7162,7 +7180,7 @@ for the ribcages, and for the same reason.) `animateTendrils` is
 `xRot = +/-tendrilAnimation * cos(age*2.25) * pi * 0.1`, the left tendril
 positive.
 
-#### M52b — ETF, a pack's random entity textures
+#### M57b — ETF, a pack's random entity textures
 
 The texture half of M9b. A pack ships a `.properties` file per vanilla entity
 texture listing alternates with weights and conditions; a client picks one per
@@ -7220,9 +7238,9 @@ aggregate:
 - `nbt.<index>.<path>` carries its index in the middle, unlike every other key,
   so those lines were dropped entirely instead of marking the rule unsupported.
 
-#### M52c — ETF emissive overlays
+#### M57c — ETF emissive overlays
 
-The other half of what ETF does with textures, and cheap once M52a existed. A
+The other half of what ETF does with textures, and cheap once M57a existed. A
 pack shipping `<texture>_e.png` beside a mob texture means "these texels are
 lit"; the loader walks the baked mob textures looking for that sibling (or
 whatever `optifine/emissive.properties` sets `suffix.emissive` to), and the
@@ -7233,7 +7251,7 @@ leaves the other alone. It rides the variant atlas machinery under a reserved id
 far above any properties rule index; the constant is mirrored in `rewo-gpu`
 (which cannot depend on `rewo-data`) and a test pins the two together.
 
-#### M52d — the sheep's dye tint
+#### M57d — the sheep's dye tint
 
 `SheepWoolLayer` renders the fur model tinted by
 `ColorLerper.Type.SHEEP.getColor(woolColor)`, which is
