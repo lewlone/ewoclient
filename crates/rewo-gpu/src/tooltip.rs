@@ -359,6 +359,244 @@ pub fn to_velvet_spans(
         .collect()
 }
 
+// ── The advanced block (M66) ──────────────────────────────────────────────
+//
+// `Screen.getTooltipFromItem` picks the flag:
+//
+// ```java
+// itemStack.getTooltipLines(
+//    Item.TooltipContext.of(minecraft.level),
+//    minecraft.player,
+//    minecraft.options.advancedItemTooltips ? TooltipFlag.Default.ADVANCED
+//                                           : TooltipFlag.Default.NORMAL);
+// ```
+//
+// and `ItemStack.addDetailsToTooltip` ends with the block this models.
+
+/// `TooltipFlag.Default` — two booleans, and only the first is reachable from
+/// a key press.
+///
+/// `creative` is set by `asCreative()` for the creative inventory's own
+/// tooltips; Rewo has no creative screen, so nothing constructs it and it is
+/// here to keep the record straight rather than to be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TooltipFlag {
+    pub advanced: bool,
+    pub creative: bool,
+}
+
+impl TooltipFlag {
+    /// `TooltipFlag.NORMAL = new Default(false, false)`.
+    pub const NORMAL: TooltipFlag = TooltipFlag {
+        advanced: false,
+        creative: false,
+    };
+    /// `TooltipFlag.ADVANCED = new Default(true, false)` — **advanced is not
+    /// creative**. F3+H turns on the first alone.
+    pub const ADVANCED: TooltipFlag = TooltipFlag {
+        advanced: true,
+        creative: false,
+    };
+
+    /// `options.advancedItemTooltips ? ADVANCED : NORMAL`.
+    pub fn of(advanced_item_tooltips: bool) -> TooltipFlag {
+        if advanced_item_tooltips {
+            TooltipFlag::ADVANCED
+        } else {
+            TooltipFlag::NORMAL
+        }
+    }
+}
+
+/// `ChatFormatting.DARK_GRAY` — the two lines under the durability.
+pub const DARK_GRAY: [f32; 3] = [
+    0x55 as f32 / 255.0,
+    0x55 as f32 / 255.0,
+    0x55 as f32 / 255.0,
+];
+
+/// One line of the advanced block, before translation.
+///
+/// A description rather than a string, because `rewo-gpu` holds no language
+/// file: the caller resolves `item.durability` and `item.components` and knows
+/// the registry key. What is decided *here* is the order, the arguments and
+/// which lines exist at all — the three things a transcription can get wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdvancedLine {
+    /// `Component.translatable("item.durability", getMaxDamage() -
+    /// getDamageValue(), getMaxDamage())` — **remaining first, then max**.
+    ///
+    /// `item.durability` is `"Durability: %s / %s"`, so passing the damage
+    /// instead of the remaining reads as a nearly-full tool on a nearly-broken
+    /// one and vice versa. The two arguments are also easy to swap and the
+    /// result still looks like a durability line.
+    Durability { remaining: i32, max: i32 },
+    /// `Component.literal(BuiltInRegistries.ITEM.getKey(getItem()).toString())`
+    /// in DARK_GRAY.
+    ///
+    /// A **literal**, not a translation key — `minecraft:diamond_sword` is
+    /// printed verbatim. Running it through the language file would find
+    /// nothing and (per `TranslatableContents`' fallback) print the key
+    /// anyway, which is the same string by luck rather than by rule; a
+    /// datapack that happened to define `minecraft:diamond_sword` as a key
+    /// would show its value.
+    RegistryId,
+    /// `Component.translatable("item.components", count)` in DARK_GRAY,
+    /// emitted only when `count > 0`.
+    Components { count: i32 },
+}
+
+/// `ItemStack.addDetailsToTooltip`'s advanced block, verbatim:
+///
+/// ```java
+/// if (tooltipFlag.isAdvanced()) {
+///    if (this.isDamaged() && display.shows(DataComponents.DAMAGE)) {
+///       builder.accept(Component.translatable("item.durability",
+///           this.getMaxDamage() - this.getDamageValue(), this.getMaxDamage()));
+///    }
+///    builder.accept(Component.literal(BuiltInRegistries.ITEM.getKey(this.getItem()).toString())
+///        .withStyle(ChatFormatting.DARK_GRAY));
+///    int count = this.components.size();
+///    if (count > 0) {
+///       builder.accept(Component.translatable("item.components", count)
+///           .withStyle(ChatFormatting.DARK_GRAY));
+///    }
+/// }
+/// ```
+///
+/// Three things the shape says that a paraphrase loses. The registry id is
+/// **unconditional** — every advanced tooltip has it, damaged or not, and it
+/// is the one line that cannot be absent. `item.nbt_tags` is **gone**: 26.x
+/// removed it when components replaced NBT, so a client still emitting it
+/// prints a line vanilla does not. And `count` is
+/// [`super::tooltip`]'s only input that is not on the wire — see
+/// `StackComponents::component_count`, which is the merged map's size and not
+/// the patch's.
+///
+/// `component_count` is `None` when this build cannot resolve the item's
+/// prototype, in which case the line is dropped rather than guessed.
+pub fn advanced_lines(
+    flag: TooltipFlag,
+    damaged: DurabilityState,
+    shows_damage: bool,
+    component_count: Option<i32>,
+) -> Vec<AdvancedLine> {
+    if !flag.advanced {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if damaged.is_damaged() && shows_damage {
+        out.push(AdvancedLine::Durability {
+            remaining: damaged.max - damaged.damage_value(),
+            max: damaged.max,
+        });
+    }
+    out.push(AdvancedLine::RegistryId);
+    if let Some(count) = component_count {
+        if count > 0 {
+            out.push(AdvancedLine::Components { count });
+        }
+    }
+    out
+}
+
+/// The three components `ItemStack.isDamaged()` reads, kept together because
+/// two of them are easy to forget.
+///
+/// ```java
+/// isDamageableItem() = has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE)
+/// isDamaged()        = isDamageableItem() && getDamageValue() > 0
+/// getDamageValue()   = Mth.clamp(getOrDefault(DAMAGE, 0), 0, getMaxDamage())
+/// ```
+///
+/// **An `Unbreakable` tool is never damaged**, however much damage it carries
+/// — which is also what `isBarVisible()` reads, so it draws no durability bar
+/// either. And the damage is **clamped** to the maximum, so a server sending a
+/// value past it reports a full-max line rather than a negative remainder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DurabilityState {
+    /// `getOrDefault(DAMAGE, 0)`, before the clamp.
+    pub damage: i32,
+    /// `getOrDefault(MAX_DAMAGE, 0)`.
+    pub max: i32,
+    /// `has(MAX_DAMAGE)` — the *prototype* counts, not just the patch.
+    pub has_max_damage: bool,
+    /// `has(DAMAGE)`. Also a prototype component on every damageable item.
+    pub has_damage: bool,
+    /// `has(UNBREAKABLE)`.
+    pub unbreakable: bool,
+}
+
+impl DurabilityState {
+    pub fn damage_value(&self) -> i32 {
+        self.damage.clamp(0, self.max)
+    }
+
+    pub fn is_damageable_item(&self) -> bool {
+        self.has_max_damage && !self.unbreakable && self.has_damage
+    }
+
+    /// `isDamaged()`, which is also `isBarVisible()`.
+    pub fn is_damaged(&self) -> bool {
+        self.is_damageable_item() && self.damage_value() > 0
+    }
+}
+
+// ── The container's lines (M66) ───────────────────────────────────────────
+
+/// How many `item.container.item_count` lines a container draws, and what the
+/// trailing `item.container.more_items` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContainerPlan {
+    /// How many of the present stacks get a line. At most five.
+    pub shown: usize,
+    /// `itemCount - lineCount`, the argument to `item.container.more_items`.
+    /// Zero means **no** trailing line.
+    pub more: i32,
+}
+
+/// `ItemContainerContents.addToTooltip`, verbatim:
+///
+/// ```java
+/// int lineCount = 0;
+/// int itemCount = 0;
+/// for (Optional<ItemStackTemplate> item : this.items) {
+///    if (!item.isEmpty()) {
+///       itemCount++;
+///       if (lineCount <= 4) {
+///          lineCount++;
+///          ItemStack itemStack = item.get().create();
+///          consumer.accept(Component.translatable("item.container.item_count",
+///              itemStack.getHoverName(), itemStack.getCount()));
+///       }
+///    }
+/// }
+/// if (itemCount - lineCount > 0) {
+///    consumer.accept(Component.translatable("item.container.more_items", itemCount - lineCount)
+///        .withStyle(ChatFormatting.ITALIC));
+/// }
+/// ```
+///
+/// **`lineCount <= 4` with the increment inside gives five lines, not four.**
+/// The guard reads 0,1,2,3,4 before it reads 5, so a five-stack shulker box
+/// lists everything and says nothing more; a six-stack one lists five and says
+/// "and 1 more…". Writing it as `lineCount < 4` loses a line *and* moves the
+/// remainder by one, which still looks plausible.
+pub fn container_plan(present_stacks: usize) -> ContainerPlan {
+    let mut line_count = 0i32;
+    let mut item_count = 0i32;
+    for _ in 0..present_stacks {
+        item_count += 1;
+        if line_count <= 4 {
+            line_count += 1;
+        }
+    }
+    ContainerPlan {
+        shown: line_count as usize,
+        more: item_count - line_count,
+    }
+}
+
 /// `optionalImage.ifPresent(image -> components.add(components.isEmpty() ? 0 : 1, …))`
 ///
 /// **Index 1** — immediately after the name, before the enchantments and the
@@ -733,6 +971,105 @@ mod tests {
         assert!(img.cells.is_empty() && img.bar.is_none());
         // …but it still measures, so the box keeps the hole.
         assert_eq!(Component::Bundle(b).height(), 24 + 13 + 8);
+    }
+}
+
+#[cfg(test)]
+mod advanced_tests {
+    use super::*;
+
+    fn tool(damage: i32, max: i32) -> DurabilityState {
+        DurabilityState {
+            damage,
+            max,
+            has_max_damage: true,
+            has_damage: true,
+            unbreakable: false,
+        }
+    }
+
+    #[test]
+    fn the_durability_arguments_are_remaining_then_max() {
+        let lines = advanced_lines(TooltipFlag::ADVANCED, tool(61, 1561), true, Some(19));
+        assert_eq!(
+            lines[0],
+            AdvancedLine::Durability {
+                remaining: 1500,
+                max: 1561
+            }
+        );
+    }
+
+    #[test]
+    fn a_pristine_tool_has_no_durability_line_and_an_unbreakable_one_never_does() {
+        let lines = advanced_lines(TooltipFlag::ADVANCED, tool(0, 1561), true, Some(19));
+        assert_eq!(lines[0], AdvancedLine::RegistryId);
+
+        let mut u = tool(61, 1561);
+        u.unbreakable = true;
+        assert!(!u.is_damaged());
+        let lines = advanced_lines(TooltipFlag::ADVANCED, u, true, Some(19));
+        assert_eq!(lines[0], AdvancedLine::RegistryId);
+    }
+
+    #[test]
+    fn the_damage_value_is_clamped_to_the_maximum() {
+        // A server sending more damage than the item can take reports a
+        // remainder of zero, not a negative one.
+        assert_eq!(tool(9999, 1561).damage_value(), 1561);
+        let lines = advanced_lines(TooltipFlag::ADVANCED, tool(9999, 1561), true, Some(19));
+        assert_eq!(
+            lines[0],
+            AdvancedLine::Durability {
+                remaining: 0,
+                max: 1561
+            }
+        );
+    }
+
+    #[test]
+    fn the_order_is_durability_then_the_id_then_the_count() {
+        let lines = advanced_lines(TooltipFlag::ADVANCED, tool(61, 1561), true, Some(19));
+        assert_eq!(
+            lines,
+            vec![
+                AdvancedLine::Durability {
+                    remaining: 1500,
+                    max: 1561
+                },
+                AdvancedLine::RegistryId,
+                AdvancedLine::Components { count: 19 },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_count_line_is_suppressed_at_zero_and_when_unknown() {
+        let zero = advanced_lines(TooltipFlag::ADVANCED, tool(0, 0), true, Some(0));
+        assert_eq!(zero, vec![AdvancedLine::RegistryId]);
+        let unknown = advanced_lines(TooltipFlag::ADVANCED, tool(0, 0), true, None);
+        assert_eq!(unknown, vec![AdvancedLine::RegistryId]);
+        // …but the id is unconditional, so the block is never empty.
+        assert_eq!(zero.len(), 1);
+    }
+
+    #[test]
+    fn the_normal_flag_emits_nothing_at_all() {
+        assert!(advanced_lines(TooltipFlag::NORMAL, tool(61, 1561), true, Some(19)).is_empty());
+        assert_eq!(TooltipFlag::of(false), TooltipFlag::NORMAL);
+        assert_eq!(TooltipFlag::of(true), TooltipFlag::ADVANCED);
+        // Advanced is not creative.
+        assert!(!TooltipFlag::ADVANCED.creative);
+    }
+
+    #[test]
+    fn five_lines_fit_and_the_sixth_becomes_a_remainder() {
+        assert_eq!(container_plan(0), ContainerPlan { shown: 0, more: 0 });
+        assert_eq!(container_plan(1), ContainerPlan { shown: 1, more: 0 });
+        // The boundary the `<= 4` guard decides: five fit exactly.
+        assert_eq!(container_plan(5), ContainerPlan { shown: 5, more: 0 });
+        assert_eq!(container_plan(6), ContainerPlan { shown: 5, more: 1 });
+        assert_eq!(container_plan(27), ContainerPlan { shown: 5, more: 22 });
     }
 }
 

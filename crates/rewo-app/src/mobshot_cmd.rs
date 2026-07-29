@@ -120,6 +120,10 @@ pub struct MobshotArgs {
     /// tints the wool.
     #[arg(long, default_value_t = false)]
     tint_check: bool,
+    /// Variant gate (M64): assert vanilla's metadata-driven texture variants
+    /// bake, decode, route and render — cat, wolf, frog, axolotl, horse, llama.
+    #[arg(long, default_value_t = false)]
+    variant_check: bool,
     /// Sheet mode: `Warden.getTendrilAnimation` 0..1 — the countdown
     /// entity_event 61 starts. Sways the tendrils and lights their emissive
     /// layer.
@@ -156,6 +160,8 @@ pub fn run(args: MobshotArgs) -> Result<(), String> {
         run_etf_check(&mut gpu, &baked, &args)
     } else if args.tint_check {
         run_tint_check(&mut gpu, &baked, &args)
+    } else if args.variant_check {
+        run_variant_check(&mut gpu, &baked, &args)
     } else {
         run_sheet(&mut gpu, &baked, &args)
     };
@@ -239,6 +245,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     }
 }
@@ -1342,7 +1349,432 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // --tint-check: the dye gate
 // ---------------------------------------------------------------------------
 
-const TINT_WITNESSES: usize = 4;
+// ---------------------------------------------------------------------------
+// --variant-check: vanilla's metadata-driven texture variants (M64)
+// ---------------------------------------------------------------------------
+
+const VARIANT_WITNESSES: usize = 8;
+
+/// The six mobs whose texture a synched metadata field chooses, and the
+/// registry name each carries in the `entity_types` table.
+const VARIANT_MOBS: [(EntityModelKind, &str); 6] = [
+    (EntityModelKind::Cat, "minecraft:cat"),
+    (EntityModelKind::Wolf, "minecraft:wolf"),
+    (EntityModelKind::Frog, "minecraft:frog"),
+    (EntityModelKind::Axolotl, "minecraft:axolotl"),
+    (EntityModelKind::Horse, "minecraft:horse"),
+    (EntityModelKind::Llama, "minecraft:llama"),
+];
+
+/// The variant gate: **the sheet the server names is the sheet that renders,
+/// and nothing else on the mob moves.**
+///
+/// The subject is the production path throughout — `rewo_data`'s bake, the
+/// shipped `EntityPass` atlas, `rewo_net`'s real `route_set_entity_data`, and
+/// `live_cmd`'s own `vanilla_variant`. Nothing here assembles a parallel
+/// mapping, which is M45's and M41's failure mode.
+fn run_variant_check(
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+    _args: &MobshotArgs,
+) -> Result<(), String> {
+    use rewo_data::mob_variants as mv;
+    let mut c = Checker::new();
+
+    // ---- 1. the bake -------------------------------------------------------
+    //
+    // Every alternate must be its base's size, because it reuses the base's
+    // UVs — the constraint M57b puts on a pack's alternates, and one vanilla
+    // satisfies by construction. One that did not would render scrambled.
+    let baked_ids: std::collections::HashMap<u16, (&str, u32, u32)> = baked
+        .mob_variant_textures
+        .iter()
+        .map(|t| (t.index, (t.key, t.w, t.h)))
+        .collect();
+    let declared: Vec<(&str, u16, &str)> = mv::specs().collect();
+    let missing: Vec<&str> = declared
+        .iter()
+        .filter(|(_, id, _)| !baked_ids.contains_key(id))
+        .map(|(_, _, p)| *p)
+        .collect();
+    let wrong_size: Vec<&str> = declared
+        .iter()
+        .filter(|(k, id, _)| {
+            baked_ids
+                .get(id)
+                .zip(rewo_data::assets::mob_texture_size(k))
+                .is_some_and(|((_, w, h), (bw, bh))| (*w, *h) != (bw, bh))
+        })
+        .map(|(_, _, p)| *p)
+        .collect();
+    c.record(
+        "n1.every_declared_variant_sheet_baked_at_its_bases_size",
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 42,
+        format!(
+            "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
+             {wrong_size:?}. Size is not a formality: a variant reuses its \
+             base's UVs, so a differently-shaped sheet renders scrambled rather \
+             than failing",
+            declared.len(),
+            baked.mob_variant_textures.len(),
+            missing.len(),
+            wrong_size.len()
+        ),
+    );
+
+    // ---- 2. the ordinal tables --------------------------------------------
+    //
+    // Each of the three int-carrying mobs has its own out-of-bounds strategy,
+    // and they genuinely differ. Asserted end-to-end — ordinal to atlas id —
+    // rather than against the table this reads.
+    let axo = |i: i32| mv::variant_id(mv::axolotl_texture(i));
+    let llama = |i: i32| mv::variant_id(mv::llama_texture(i));
+    let horse = |i: i32| mv::variant_id(mv::horse_texture(i));
+    let distinct = |f: &dyn Fn(i32) -> Option<u16>, n: i32| {
+        (0..n).map(|i| f(i)).collect::<std::collections::HashSet<_>>().len() == n as usize
+    };
+    c.record(
+        "n2.each_ordinal_table_is_a_bijection_with_its_own_out_of_range_rule",
+        distinct(&axo, 5)
+            && distinct(&llama, 4)
+            && distinct(&horse, 7)
+            && axo(5) == axo(0)
+            && axo(-1) == axo(0)
+            && llama(9) == llama(3)
+            && llama(-3) == llama(0)
+            && horse(7) == horse(0)
+            && horse(3 | (2 << 8)) == horse(3),
+        format!(
+            "axolotl 5 ids (ZERO: 5 -> {:?} = 0's {:?}), llama 4 (CLAMP: 9 -> \
+             {:?} = 3's {:?}), horse 7 (WRAP: 7 -> {:?} = 0's {:?}). Three \
+             different `ByIdMap` strategies, transcribed one by one — reading \
+             any of them as a clamp would put a wrong coat on a horse at 7 and \
+             a wrong axolotl at 5. The horse's markings live in the HIGH byte \
+             and must not shift the coat: 0x203 -> {:?} = 3's {:?}",
+            axo(5), axo(0), llama(9), llama(3), horse(7), horse(0),
+            horse(3 | (2 << 8)), horse(3)
+        ),
+    );
+
+    // ---- 3. the registry join ---------------------------------------------
+    //
+    // Cat/wolf/frog ids are the SERVER's, so the join is on the texture path.
+    // Two registries with the same entries in opposite orders must resolve the
+    // same cat to the same sheet.
+    let cat_names = ["black", "jellie", "red"];
+    let pack = |order: &[&str]| -> Vec<rewo_net::variant_parse::MobVariantDef> {
+        let mut out = Vec::new();
+        for n in order {
+            let mut w = rewo_proto::writer::PacketWriter::default();
+            w.string(&format!("minecraft:{n}")).bool(true);
+            let mut body = w.buf;
+            rewo_net::dimension_parse::builtin::write_network_nbt(
+                &mut body,
+                &rewo_proto::nbt::Nbt::Compound(vec![(
+                    "asset_id".into(),
+                    rewo_proto::nbt::Nbt::String(format!("minecraft:entity/cat/cat_{n}")),
+                )]),
+            );
+            out.extend_from_slice(&body);
+        }
+        rewo_net::variant_parse::parse_single_asset_registry(
+            &mut rewo_proto::reader::PacketReader::new(&out),
+            order.len(),
+        )
+    };
+    let fwd = pack(&cat_names);
+    let mut rev_names = cat_names;
+    rev_names.reverse();
+    let rev = pack(&rev_names);
+    let id_of = |defs: &[rewo_net::variant_parse::MobVariantDef], i: usize| {
+        defs[i].texture(false).and_then(mv::variant_id)
+    };
+    c.record(
+        "n3.the_registry_join_is_on_the_texture_not_on_the_id",
+        id_of(&fwd, 0) == id_of(&rev, 2)
+            && id_of(&fwd, 1) == id_of(&rev, 1)
+            && id_of(&fwd, 0) != id_of(&fwd, 1),
+        format!(
+            "the same three cat variants registered in opposite orders resolve \
+             black to {:?} either way and jellie to {:?}. cat/wolf/frog are \
+             DATAPACK registries, so both the contents and the id order are the \
+             server's; MUTATION keying the atlas on the wire id instead of the \
+             texture path passes on a vanilla server and paints the wrong coat \
+             on every cat the moment a datapack reorders the registry",
+            id_of(&fwd, 0),
+            id_of(&fwd, 1)
+        ),
+    );
+    // The wolf's second input: `getTexture` picks `tame` over `wild`.
+    let mut wbody = rewo_proto::writer::PacketWriter::default();
+    wbody.string("minecraft:ashen").bool(true);
+    let mut wb = wbody.buf;
+    rewo_net::dimension_parse::builtin::write_network_nbt(
+        &mut wb,
+        &rewo_proto::nbt::Nbt::Compound(vec![(
+            "assets".into(),
+            rewo_proto::nbt::Nbt::Compound(vec![
+                ("wild".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen".into())),
+                ("tame".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_tame".into())),
+                ("angry".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_angry".into())),
+            ]),
+        )]),
+    );
+    let wolves = rewo_net::variant_parse::parse_wolf_variant_registry(
+        &mut rewo_proto::reader::PacketReader::new(&wb),
+        1,
+    );
+    let (wild, tame) = (
+        wolves[0].texture(false).and_then(mv::variant_id),
+        wolves[0].texture(true).and_then(mv::variant_id),
+    );
+    c.record(
+        "n4.a_tame_wolf_takes_a_different_sheet_from_a_wild_one",
+        wild.is_some() && tame.is_some() && wild != tame && wolves[0].angry.is_some(),
+        format!(
+            "ashen wild -> {wild:?}, tame -> {tame:?}, and the entry's third \
+             sheet ({:?}) is decoded but never chosen: `isAngry()` is \
+             `remainingPersistentAngerTime > 0`, i.e. DATA_ANGER_END_TIME \
+             (index 22, LONG) against the world clock — a texture that changes \
+             with *time* rather than with a synched value, so it is recorded as \
+             a gap rather than half-implemented",
+            wolves[0].angry
+        ),
+    );
+
+    // ---- 4. the atlas, and the render -------------------------------------
+    let (w, h) = (512u32, 512u32);
+    let mut off = Offscreen::new(gpu, w, h)?;
+    let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    let r = (|| -> Result<(), String> {
+        wr.init_entities(
+            gpu,
+            crate::live_cmd::font_data(baked),
+            crate::live_cmd::entity_textures(baked),
+        )?;
+        let ring = OverlayRing::default();
+        let draw = overlay_offscreen(&ring);
+        let pass = wr.entity_pass().ok_or("no entity pass")?;
+        // Every declared variant reached the atlas with an offset, and every
+        // offset is distinct — two variants sharing a slot would render as one.
+        let mut no_slot = Vec::new();
+        let mut offsets = std::collections::HashSet::new();
+        let mut collided = Vec::new();
+        for (kind, _) in VARIANT_MOBS {
+            let key = rewo_gpu::mobs::MOBS
+                .iter()
+                .find(|d| d.kind == kind)
+                .and_then(|d| d.textures.first())
+                .copied()
+                .unwrap_or("");
+            for (k, id, path) in mv::specs().filter(|(k, _, _)| *k == key) {
+                match pass.variant_offsets(kind, id) {
+                    Some(o) => {
+                        let bits: Vec<[u32; 2]> =
+                            o.iter().map(|v| [v[0].to_bits(), v[1].to_bits()]).collect();
+                        if !offsets.insert(bits) {
+                            collided.push(path);
+                        }
+                    }
+                    None => no_slot.push((k, path)),
+                }
+            }
+        }
+        c.record(
+            "n5.every_variant_has_its_own_atlas_slot",
+            no_slot.is_empty() && collided.is_empty(),
+            format!(
+                "{} of {} declared variants reached the atlas with a distinct \
+                 per-slot UV offset; unpacked {no_slot:?}, collided {collided:?}. \
+                 M64 grew the shelf region by 128 rows to fit them — before \
+                 that, seven failed to pack and silently fell back to the base \
+                 texture, which is a bug a render alone would not show",
+                offsets.len(),
+                declared.len()
+            ),
+        );
+
+        // The render. Each mob at each of its variants must differ from its
+        // base *and* from every other variant, and must move only its own
+        // texture slot — a sheep's-wool-style containment check, generalized.
+        let mut same_as_base = Vec::new();
+        let mut dupes = Vec::new();
+        for (kind, _) in VARIANT_MOBS {
+            let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else { continue };
+            wr.set_camera(eye.to_array());
+            let key = rewo_gpu::mobs::MOBS
+                .iter()
+                .find(|d| d.kind == kind)
+                .and_then(|d| d.textures.first())
+                .copied()
+                .unwrap_or("");
+            let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, v: u16| {
+                let d = EntityDraw {
+                    variant: v,
+                    ..neutral_draw(kind)
+                };
+                wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
+                off.render(gpu, Some((wr, vp)), &draw, BG)?;
+                off.read_rgba(gpu)
+            };
+            let base = shot(&mut wr, gpu, &mut off, 0)?;
+            let mut seen: Vec<(u16, Vec<u8>)> = Vec::new();
+            for (_, id, path) in mv::specs().filter(|(k, _, _)| *k == key) {
+                let img = shot(&mut wr, gpu, &mut off, id)?;
+                if img == base {
+                    same_as_base.push(path);
+                }
+                if let Some((_, other)) = seen.iter().find(|(_, o)| *o == img) {
+                    let _ = other;
+                    dupes.push(path);
+                }
+                seen.push((id, img));
+            }
+        }
+        c.record(
+            "n6.each_variant_renders_as_itself_and_not_as_its_neighbour",
+            same_as_base.is_empty() && dupes.is_empty(),
+            format!(
+                "over all six mobs, {} variant(s) rendered identically to their \
+                 base {same_as_base:?} and {} identically to another variant of \
+                 the same mob {dupes:?}. Both halves are needed: an id with no \
+                 slot silently falls back to the base (which is correct \
+                 behaviour and would hide a missing bake), and two ids sharing \
+                 a slot would render one coat for two variants",
+                same_as_base.len(),
+                dupes.len()
+            ),
+        );
+        Ok(())
+    })();
+    wr.destroy(gpu);
+    off.destroy(gpu);
+    r?;
+
+    // ---- 5. the wire ------------------------------------------------------
+    //
+    // Driven through the real `route_set_entity_data`, so a slot that moves or
+    // a kind gate that stops matching fails here rather than in a screenshot.
+    check_variant_routing(&mut c)?;
+    c.finish("VARIANT", VARIANT_WITNESSES)
+}
+
+/// The metadata half of M64, through the production dispatcher.
+///
+/// Every index below was derived by counting `defineId` up the 26.2 hierarchy,
+/// not from a wiki: `Entity` 0..7, `LivingEntity` 8..14, `Mob` 15,
+/// `PathfinderMob` none, `AgeableMob` 16 **and** 17, `Animal` none,
+/// `TamableAnimal` 18 and 19.
+fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
+    use rewo_net::VariantKinds;
+    let paths = rewo_data::DataPaths::for_version("26.2")
+        .ok_or("no config dir for version data")?;
+    let packets = rewo_data::packets::Packets::load(&paths.packets_json())?;
+    let ids = rewo_net::ids::Ids::resolve(&packets)?;
+    let etypes = rewo_data::entity_types::EntityTypes::load(&paths.registries_json())?;
+    let tid = |n: &str| etypes.id_of(n).ok_or_else(|| format!("no {n}"));
+    let kinds = VariantKinds {
+        cat: etypes.id_of("minecraft:cat"),
+        wolf: etypes.id_of("minecraft:wolf"),
+        frog: etypes.id_of("minecraft:frog"),
+        axolotl: etypes.id_of("minecraft:axolotl"),
+        horse: etypes.id_of("minecraft:horse"),
+        llama: etypes.id_of("minecraft:llama"),
+    };
+    let sheep = tid("minecraft:sheep")?;
+
+    // eid, then (index, serializer, varint value), then the 0xFF terminator.
+    let send = |type_id: i32, index: u8, ser: u8, value: u8, k: VariantKinds| {
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            1,
+            rewo_world::entities::EntityState::new(0, type_id, 0.0, 0.0, 0.0, 0.0, 0.0),
+        );
+        rewo_net::route_set_entity_data(
+            ids.cb_play_set_entity_data,
+            &[1u8, index, ser, value, 0xFF],
+            &ids,
+            &mut t,
+            rewo_net::MetaKinds {
+                sheep: Some(sheep),
+                variant_kinds: k,
+                ..Default::default()
+            },
+        );
+        t
+    };
+
+    // Each mob's own (index, serializer), and the value landing.
+    let rows: [(&str, Option<i32>, u8, u8); 6] = [
+        ("cat", kinds.cat, 20, 21),
+        ("wolf", kinds.wolf, 23, 25),
+        ("frog", kinds.frog, 18, 27),
+        ("axolotl", kinds.axolotl, 18, 1),
+        ("horse", kinds.horse, 19, 1),
+        ("llama", kinds.llama, 21, 1),
+    ];
+    let mut landed = Vec::new();
+    let mut wrong_index = Vec::new();
+    for (name, id, index, ser) in rows {
+        let Some(id) = id else { continue };
+        if send(id, index, ser, 3, kinds).variant(1) == Some(3) {
+            landed.push(name);
+        }
+        // One slot either side must not: a neighbouring index is somebody
+        // else's field, and reading it would give the mob a coat from a
+        // number that means something else.
+        for off in [index - 1, index + 1] {
+            if send(id, off, ser, 3, kinds).variant(1).is_some() {
+                wrong_index.push(format!("{name}@{off}"));
+            }
+        }
+    }
+    c.record(
+        "n7.each_mobs_variant_arrives_at_its_own_index_and_nowhere_else",
+        landed.len() == 6 && wrong_index.is_empty(),
+        format!(
+            "{landed:?} routed through the production dispatcher at cat 20 / \
+             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21; \
+             {} neighbouring slot(s) also accepted {wrong_index:?}. Counted \
+             `defineId` up the 26.2 hierarchy — Entity 0..7, LivingEntity \
+             8..14, Mob 15, AgeableMob 16 AND 17, TamableAnimal 18 and 19 — \
+             because this project has been bitten twice by a remembered index \
+             (the sheep's wool is 18 not 17, and the player's customisation \
+             mask is 16 in 26.2 where 1.21 put it at 17)",
+            wrong_index.len()
+        ),
+    );
+
+    // The shared slot. Index 18 BYTE is the sheep's wool byte *and* the
+    // tamable flags byte, with the same serializer — only the kind separates
+    // them, which is the M18 rule.
+    let wolf = kinds.wolf.ok_or("no minecraft:wolf")?;
+    let as_wolf = send(wolf, 18, 0, 0b0000_0100, kinds);
+    let as_sheep = send(sheep, 18, 0, 0b0000_0100, kinds);
+    c.record(
+        "n8.index_18_byte_is_a_wool_byte_or_tamable_flags_by_kind_alone",
+        as_wolf.is_tame(1)
+            && !as_wolf.is_sheared(1)
+            && as_wolf.wool_color(1) == Some(0)
+            && !as_sheep.is_tame(1)
+            && as_sheep.wool_color(1) == Some(4),
+        format!(
+            "the byte 0x04 makes a wolf tame ({}) and a sheep dye {:?}. Both \
+             classes extend `Animal`, whose own accessor count is zero, so \
+             `Sheep.DATA_WOOL_ID` and `TamableAnimal.DATA_FLAGS_ID` are the \
+             same index AND the same serializer — the M18 rule, where only the \
+             entity kind can tell them apart. MUTATION dropping the wolf's gate \
+             and letting it fall through to the wool setter gives every tame \
+             wolf dye 4 (yellow) and a fleece it does not have. The wolf's own              wool byte reads {:?} — untouched, which is the containment half",
+            as_wolf.is_tame(1),
+            as_sheep.wool_color(1),
+            as_wolf.wool_color(1)
+        ),
+    );
+    Ok(())
+}
+
+const TINT_WITNESSES: usize = 6;
 
 /// The dye gate: **a dyed texture renders vanilla's colour, and nothing else on
 /// the mob moves.**
@@ -1384,14 +1816,22 @@ fn run_tint_check(
     let draw = overlay_offscreen(&ring);
     let mut c = Checker::new();
 
-    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+    let mut shot_of = |wr: &mut WorldRenderer,
+                       gpu: &mut Gpu,
+                       off: &mut Offscreen,
+                       dye: Option<u8>,
+                       sheared: bool| {
         let d = EntityDraw {
             dye,
+            sheared,
             ..neutral_draw(kind)
         };
         wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
         off.render(gpu, Some((wr, vp)), &draw, BG)?;
         off.read_rgba(gpu)
+    };
+    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+        shot_of(wr, gpu, off, dye, false)
     };
     // Vanilla's default wool colour is WHITE, not "untinted" — the layer tints
     // unconditionally, so a plain sheep's wool is 0xE6E6E6. An undyed draw must
@@ -1496,6 +1936,55 @@ fn run_tint_check(
              byte-identical across every dye; {} dye(s) moved them{}",
             stray_fail.len(),
             if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+        ),
+    );
+
+    // --- M64: shearing ---------------------------------------------------
+    //
+    // `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so shearing does
+    // not recolour the fleece — the fur model is never submitted. The wool
+    // pixel set computed above is independent of this (it is where two dyes
+    // disagree), so it can grade the removal without being defined by it.
+    let shorn = shot_of(&mut wr, gpu, &mut off, Some(0), true)?;
+    fn px(img: &[u8], i: usize) -> &[u8] {
+        &img[i * 4..i * 4 + 3]
+    }
+    let changed: Vec<usize> = (0..white.len() / 4)
+        .filter(|&i| px(&shorn, i) != px(&white, i))
+        .collect();
+    let strayed = changed.iter().filter(|i| wool.binary_search(i).is_err()).count();
+    let shorn_sil = (0..white.len() / 4)
+        .filter(|&i| px(&shorn, i) != px(&bg, i))
+        .count();
+    c.record(
+        "t5.shearing_removes_the_fleece_geometry_and_nothing_else",
+        strayed == 0 && !changed.is_empty() && shorn_sil * 20 < silhouette * 19,
+        format!(
+            "{} px change, all inside the independently-derived wool set ({} \
+             strayed), and the silhouette drops {silhouette} -> {shorn_sil}. \
+             Both halves are needed: MUTATION ignoring the sheared bit changes \
+             0 px, and MUTATION implementing it as \"skip the tint\" rather \
+             than \"skip the layer\" leaves the silhouette exactly where it \
+             was — the fleece is inflated 0.6/1.75/0.5 over the body, so a \
+             shorn sheep is thinner, not merely a different colour",
+            changed.len(),
+            strayed
+        ),
+    );
+
+    // And the other side of the same statement: with the tinted layer gone
+    // there is nothing left for the dye to reach.
+    let shorn_black = shot_of(&mut wr, gpu, &mut off, Some(15), true)?;
+    c.record(
+        "t6.a_shorn_sheep_is_inert_to_the_dye_that_moved_a_woolly_one",
+        shorn == shorn_black && white != black,
+        format!(
+            "dyes 0 and 15 render byte-identically once the sheep is shorn, \
+             where on a woolly one they differ over {} px — the only tinted \
+             texture is the one the layer stopped submitting. MUTATION \
+             dropping the *tint* instead of the *geometry* passes this row and \
+             fails t5; the two together pin which one happened",
+            wool.len()
         ),
     );
 

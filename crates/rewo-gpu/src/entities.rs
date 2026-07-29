@@ -314,6 +314,14 @@ pub struct EntityDraw<'a> {
     /// sheep has its wool multiplied by 0xE6E6E6 rather than left at full
     /// brightness.
     pub dye: Option<u8>,
+    /// `Sheep.isSheared()` — bit 0x10 of the wool byte (M64).
+    ///
+    /// Drops the quads of `mobs::shearable_texture(kind)`, because
+    /// `SheepWoolLayer.submit` returns before submitting the fur model at all.
+    /// Removing the *geometry* is the point: the fleece is inflated 0.6/1.75/
+    /// 0.5 over the body, so a shorn sheep is visibly thinner, not just
+    /// differently coloured. Inert on a mob with no shearable layer.
+    pub sheared: bool,
     /// The worn cape (M60), or `None` when any of `CapeLayer`'s four gates
     /// suppresses it. The gates are resolved upstream, where the equipment
     /// and metadata live; by the time a draw is built the answer is already
@@ -404,10 +412,20 @@ pub(crate) struct Vertex {
 /// texture, one pipeline family.
 const ATLAS_W: u32 = 1024;
 /// M22 grew this by the held-item band, M48 by the trim band, M60 by the cape
-/// band. The **mob shelf region is unchanged** (still `y < ITEM_POOL_Y` = 896)
-/// so mob packing is byte-for-byte what it was; only the V denominator moves,
-/// which maps the same texels to the same samples.
-const ATLAS_H: u32 = 1472;
+/// band — each time at the *bottom*, so the mob shelf region above them was
+/// unchanged and only the V denominator moved.
+///
+/// **M64 is the first growth that is not that**, and it is worth saying why
+/// the recipe stopped applying. What ran out this time was the shelf region
+/// itself: 42 vanilla mob-variant sheets did not fit under `ITEM_POOL_Y`, and
+/// that ceiling is defined by subtraction from `ATLAS_H` — so raising it by
+/// 128 rows necessarily slides the item, skin, trim and cape pools 128 rows
+/// down with it. Nothing on disk or in a golden image depends on those
+/// origins (every consumer computes them from these constants, and the atlas
+/// is rebuilt at startup), and the *mob* shelf packing is still byte-for-byte
+/// what it was because the packer is sequential and the region only grew at
+/// its far end — which is what keeps `mobshot --check` at 243/243.
+const ATLAS_H: u32 = 1600;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -468,10 +486,10 @@ const CAPE_SLOT_H: u32 = 32;
 const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
 const CAPE_POOL_ROWS: u32 = 2;
 const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
-const CAPE_POOL_Y: u32 = ATLAS_H - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1408
+const CAPE_POOL_Y: u32 = ATLAS_H - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1536
 
 /// Atlas origin of dynamic cape slot `i` (0..CAPE_SLOTS).
-fn cape_slot_origin(i: u32) -> (u32, u32) {
+pub fn cape_slot_origin(i: u32) -> (u32, u32) {
     (
         (i % CAPE_POOL_COLS) * CAPE_SLOT_W,
         CAPE_POOL_Y + (i / CAPE_POOL_COLS) * CAPE_SLOT_H,
@@ -841,6 +859,9 @@ pub struct MobModel {
     /// The texture slot vanilla renders through a dye tint (the sheep's
     /// wool), if any — `EntityDraw::dye` multiplies only that slot.
     tinted_slot: Option<u8>,
+    /// The texture slot belonging to a render layer a shorn mob skips
+    /// (`mobs::shearable_texture`) — `EntityDraw::sheared` drops it (M64).
+    shearable_slot: Option<u8>,
     /// ETF alternates: variant id → per-texture-slot UV offset, added to the
     /// quad's UVs to move it onto the alternate's atlas slot. A variant with
     /// no entry for a slot leaves that slot on the vanilla texture, which is
@@ -1108,6 +1129,9 @@ impl EntityPass {
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 tinted_slot: mobs::tinted_texture(def.kind)
+                    .and_then(|k| def.textures.iter().position(|t| *t == k))
+                    .map(|s| s as u8),
+                shearable_slot: mobs::shearable_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
                 variants,
@@ -2409,11 +2433,21 @@ impl EntityPass {
         // Directional face shade x the entity's per-channel world light.
         let [light_r, light_g, light_b] = d.light;
         let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        // M64: `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so a
+        // shorn mob's fleece is not submitted at all. Rewo bakes that layer as
+        // a texture slot of the one model, so the layer's absence is the
+        // absence of its quads — and *removing* them is the point: the fleece
+        // is inflated over the body, so a shorn sheep is thinner, not
+        // recoloured.
+        let shorn_slot = d.sheared.then_some(model.shearable_slot).flatten();
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
             if !visible(q.part as usize) {
+                continue;
+            }
+            if shorn_slot == Some(q.tex) {
                 continue;
             }
             let p4 = place(q);

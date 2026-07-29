@@ -1629,6 +1629,34 @@ pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
     }
 }
 
+/// Which of a mob's textures belongs to a render layer a **shorn** mob skips
+/// entirely (M64).
+///
+/// `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so shearing does not
+/// recolour or hide the fleece — the fur model is never submitted. Rewo bakes
+/// `SheepFurModel`'s inflated boxes into the sheep model as its second texture
+/// slot, so "do not submit that layer" is "drop the quads that sample it".
+///
+/// It is deliberately a second table rather than a reuse of
+/// [`tinted_texture`], even though both answer `sheep_wool` for the one mob
+/// that has either: they are two independent facts about two different lines
+/// of `SheepWoolLayer`, and a wolf's dyed collar will be tinted-but-not-
+/// shearable the moment it exists.
+///
+/// **Not modelled: `SheepWoolUndercoatLayer`.** 26.x added a second fleece
+/// layer that draws `sheep_wool_undercoat.png` over the *body* mesh
+/// (`SHEEP_WOOL_UNDERCOAT` maps to `sheepBodyLayer`, not the fur one) for any
+/// non-white, non-baby sheep — and it is **not** gated on `isSheared`, so a
+/// shorn coloured sheep keeps a dyed undercoat where a shorn white one is
+/// bare. Rewo bakes no such texture, so a shorn coloured sheep here shows the
+/// plain body. That is a missing layer, recorded, not a wrong one.
+pub fn shearable_texture(kind: EntityModelKind) -> Option<&'static str> {
+    match kind {
+        EntityModelKind::Sheep => Some("sheep_wool"),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Emissive layers (vanilla `EyesLayer` / `LivingEntityEmissiveLayer`)
 // ---------------------------------------------------------------------------

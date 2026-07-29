@@ -1985,6 +1985,220 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M64 — closing M57, M60 and M61's open entity-rendering items (2026-07-29)
+
+Four jobs, no new subsystems: the texture variants M57b said were "one decode
+away", the sheep shearing M57d left, the cape the M36 preview never wore, and
+the collision M61's spec rule 10 recorded as un-re-projected.
+
+#### The metadata-driven texture variants
+
+Six mobs picked their sheet from synched metadata and Rewo baked one of each —
+every cat a tabby, every horse brown, every axolotl leucistic. M57b was right
+that the rendering half already existed: a pack's ETF alternate is a same-sized
+texture packed elsewhere in the entity atlas and addressed by a per-draw
+variant id, which is exactly the shape vanilla's own variants need. What was
+missing was the sheets, the id → texture mapping, and the decode.
+
+**The indices, counted `defineId` by `defineId` up the 26.2 decompile.** The
+base chain is `Entity` 0..7, `LivingEntity` 8..14, `Mob` 15, `PathfinderMob`
+none, `AgeableMob` **16 and 17**, `Animal` none, `TamableAnimal` 18 and 19.
+
+| mob | index | serializer | why |
+|---|---:|---|---|
+| Cat | 20 | `CAT_VARIANT` (21) | `Cat extends TamableAnimal`, so 18/19 are taken |
+| Wolf | 23 | `WOLF_VARIANT` (25) | after `DATA_INTERESTED_ID` 20, `DATA_COLLAR_COLOR` 21, `DATA_ANGER_END_TIME` 22 |
+| Frog | 18 | `FROG_VARIANT` (27) | `Frog extends Animal` |
+| Axolotl | 18 | `INT` (1) | `Axolotl extends Animal` |
+| Horse | 19 | `INT` (1) | `AbstractHorse` declares exactly one, `DATA_ID_FLAGS` at 18 |
+| Llama | 21 | `INT` (1) | `AbstractChestedHorse` 19, `DATA_STRENGTH_ID` 20 |
+
+**Two kinds of variant, and only one is a constant.** Horse, llama and axolotl
+carry an enum ordinal, so those are transcribed tables — with **three different
+out-of-bounds strategies**, which is not a detail that can be averaged:
+`Axolotl.Variant`'s `ByIdMap` is `ZERO` (an id past the end is LUCY),
+`Llama.Variant`'s is `CLAMP`, and `equine::Variant`'s is `WRAP`, so a horse at 7
+is WHITE again rather than DARK_BROWN. The horse's coat is also the **low byte**
+of its int (`typeVariant & 0xFF`); the high byte is the markings layer.
+
+Cat, wolf and frog moved to **datapack registries** in 26.x
+(`Holder<CatVariant>` over `ByteBufCodecs.holderRegistry`, so the wire value is
+a raw 0-based id). Their contents *and their id order* are the server's — §0.0's
+rule, the same one M16 records for dimension types and M42 for enchantments —
+and `RegistryDataLoader.SYNCHRONIZED_REGISTRIES` gives all three a
+`NETWORK_CODEC` that carries the asset ids. **So the join is on the texture
+path, never on the id.** Keying the atlas on the wire id passes on a vanilla
+server and paints the wrong coat on every cat the moment a datapack reorders
+the registry; the mutation was run and `n3` is the only witness that sees it.
+Joining by path has a second payoff: a variant that resolves to a sheet Rewo
+already bakes gets id 0 and costs no atlas space.
+
+**Index 18 BYTE now has two claimants with the same serializer.**
+`Sheep.DATA_WOOL_ID` and `TamableAnimal.DATA_FLAGS_ID` are both a BYTE at 18,
+because `Sheep` and `TamableAnimal` both extend `Animal` and `Animal` declares
+nothing — so only the entity **kind** separates them, M18's rule again. Reading
+a wolf's flags as a wool byte gives every tame wolf dye 4 (yellow) and a fleece
+it does not have. `isTame()` is bit 0x04 there, and it is what `Wolf.getTexture`
+branches on between `assets.wild` and `assets.tame`.
+
+**The atlas grew the other way round, and that is the finding.** M22, M48 and
+M60 each added a band at the *bottom*, leaving the mob shelf region above
+untouched — the recipe §0.0 recommends. What ran out here is the shelf region
+itself: seven of the 42 sheets did not pack and **silently fell back to their
+base texture**, which no render would have shown. The shelf ceiling is defined
+by subtraction from `ATLAS_H`, so raising it 128 rows (1472 → 1600)
+*necessarily* slid the item, skin, trim and cape pools down with it. Nothing on
+disk depends on those origins and mob packing is byte-for-byte unchanged (the
+packer is sequential and the region only grew at its far end), so `mobshot`
+stays 243/243 — but `capeshot`'s `f2`, which asserted the cape pool sits at
+exactly the pre-M60 `ATLAS_H`, had to be rewritten to say what is now true. It
+had also hard-coded `(0, 1408)` as a fixture origin, which is the same mistake
+one layer down; it reads `cape_slot_origin(0)` now.
+
+Vanilla's variant wins over a pack's ETF rule where both apply, and the reason
+is not precedence for its own sake: an ETF rule randomises the *base* texture,
+and a black cat is not drawing that texture at all. The two occupy disjoint id
+bands (`VANILLA_VARIANT_BASE = 0x4000`).
+
+**Excluded, each recorded where a reader would look for it.** Baby sheets — the
+baby model is a uniform 0.5 scale approximation, so there is no baby model for a
+baby texture to sit on. Wolf `angry` — `isAngry()` is
+`remainingPersistentAngerTime > 0`, i.e. `DATA_ANGER_END_TIME` (index 22, LONG)
+against the world clock, which makes it a texture that changes with *time*
+rather than with a synched value; the field **is** decoded so the gap is visible
+in the parsed data rather than only in a comment. Tropical fish — its packed int
+selects a **model** (`TropicalFishSmallModel` vs `TropicalFishLargeModel`, which
+is what `tropical_a.png` and `tropical_b.png` belong to) plus a pattern layer
+and two dye tints, none of which is a texture swap on a model Rewo has, so it
+belongs to a mob-model milestone. Collars, horse markings and llama carpets are
+all second render layers.
+
+Gate: **`rewo mobshot --variant-check`, 8 witnesses** — the bake and its size
+constraint, the three ordinal tables and their three strategies, the
+path-not-id join, the wolf's tame branch, the atlas slots, a render of every
+variant of every mob against its base *and* its neighbours, and the wire
+through the real `route_set_entity_data` at each index **and its two
+neighbours**.
+
+#### Sheep shearing
+
+`SheepWoolLayer.submit` opens `if (!state.isSheared)`, so shearing does not
+recolour the fleece — the fur model is never submitted. Rewo bakes
+`SheepFurModel`'s inflated boxes as the sheep model's second texture slot, so
+"do not submit that layer" is "drop the quads that sample it". **Removing the
+geometry is the point**: the fleece sits 0.6/1.75/0.5 proud of the body, so a
+shorn sheep is thinner, not differently coloured — measured, the silhouette
+drops 27,502 → 21,290 px. `shearable_texture` is deliberately a second table
+beside `tinted_texture` even though both answer `sheep_wool` for the one mob
+that has either: they are two independent facts about two different lines of
+the same layer, and a wolf's dyed collar will be tinted-but-not-shearable the
+moment it exists.
+
+**Found and not shipped:** 26.x added `SheepWoolUndercoatLayer`, a second
+fleece drawn from `sheep_wool_undercoat.png` over the **body** mesh
+(`SHEEP_WOOL_UNDERCOAT` maps to `sheepBodyLayer`, not the fur one) for any
+non-white non-baby sheep — and it is **not** gated on `isSheared`, so vanilla
+leaves a shorn coloured sheep with a dyed undercoat where a shorn white one is
+bare. Rewo bakes no such texture; recorded as a missing layer rather than a
+wrong one.
+
+`mobshot --tint-check` 4 → 6. `t5` asserts the change is contained in the
+independently-derived wool set **and** that the silhouette shrinks; `t6` that a
+shorn sheep is inert to a dye that moves a woolly one. Both mutations were run,
+and the second is why both rows exist: implementing shearing as "skip the tint"
+instead of "skip the layer" leaves the silhouette byte-for-byte where it was —
+failing `t5` while *passing* `t6`.
+
+#### The inventory preview's cape
+
+M36's preview owns a **second** `EntityPass` with its own atlas, so it needed
+its own cape pool and its own upload. This is the stronger of the two cases,
+not the weaker: a cape address is an absolute texel origin rather than a UV
+delta, so a borrowed one samples a fixed wrong rectangle. And because both
+pools fill from empty, **the first cape in each lands on the same texel** — a
+borrowed address would have looked right until a second player joined, which is
+what `p3` exists to catch (it claims a second world slot to move the two apart,
+then shows the preview rendering nothing from the world's address).
+
+The three cape angles are zero, and that is not a simplification of vanilla so
+much as the same consequence as the preview's still legs:
+`capeFlap`/`capeLean`/`capeLean2` are driven entirely by the gap between the
+player and their lagging cloak anchor, and a player standing in an open
+inventory has let that gap close. What is genuinely missing is the *moving*
+preview, for the reason the limbs are missing. `chest_humanoid` is false
+because the preview draws no armour at all, so neither of `CapeLayer`'s other
+two gates has anything to act on.
+
+`preview_cape` was extracted as the production resolver so the gate grades the
+decision the client makes rather than a restatement of it — M45's and M41's
+gates both quietly stopped testing their subject by reimplementing a slice of
+the app. `capeshot` 65 → 69; the preview draws only with the container screen
+open, so the gate builds that too, and `p1`'s threshold is derived from the
+sheet's own projected area (478 marker px of a possible 562 with the model
+turned away; 46 in the pose a player actually sees, where the body hides all
+but the edges).
+
+#### The wavy cape's re-projected collision
+
+`REWO_WAVY_CAPE_SPEC.md` rule 10 recorded that M61 relaxed and *then* collided
+once, so a joint the push-out shoved off the torso left its links stretched
+until the next tick — 0.230 model units, a fifth of a slab, on a 30°/tick turn.
+`solve` now runs `RELAX_PASSES` iterations of (relax, push-out), so every
+push-out but the last is answered by the sweep after it.
+
+**Measured over that turn, worst post-tick link error against pass count:**
+`2.30e-1 / 9.60e-3 / 4.27e-4 / 5.14e-5` at 1/2/3/4. The alternation converges
+geometrically, and `RELAX_PASSES = 4` turns out to be the *first* count that
+clears the spec's own 1e-4 tolerance — both numbers were fixed before the
+interleave existed, so that is a coincidence recorded rather than a derivation.
+
+**The push-out stays last inside the loop**, which is the load-bearing half:
+ending the solve on a relax would satisfy the links exactly and let the final
+sweep pull a joint back inside the cylinder, trading rule 5's assertable
+guarantee for a tolerance in the one place a naive chain visibly fails. The
+closest approach through the turn is still `TORSO_RADIUS` to the bit under
+either order. Passes 2–4 are no longer the exact no-ops M61 recorded.
+
+`capeshot` gains `w23`, the only witness that can tell the two orders apart —
+`w9` asserts the residual is small and `w12` that the cylinder holds, and the
+M61 build passed both because it read its residual at a point the finished
+state no longer occupied. `w9` moved its measurement from mid-solve to the end
+of the tick, which is where it can now live. The mutation (revert `solve` to
+the M61 order) fails `w9` and `w23` and nothing else — and it **withdrew an M61
+claim in spec rule 10**: that a cloak gap "never fires the push-out at all,
+only a turn does". A 1.5-block gap swinging through a full circle leaves 2.4e-2
+of un-re-projected stretch under the old order, which it could only have got
+from the push-out. A gap that *rotates* sweeps the cape across the body; a held
+one does not. Spec rules 1, 8 and 10 and the gate table are updated — the spec
+is the source of truth for that feature and must not be left describing the old
+order.
+
+#### Measured
+
+**950 tests** (was 944; +2 `mob_variants`, +3 `variant_parse`, +1 `wavy_cape`),
+zero failures. Every gate green with Vulkan validation ON and **0 VUIDs**:
+`capeshot` 69, `itemshot` 62, `inventoryshot` 127, `healthbarshot` 33,
+`attributeshot` 43, `captureshot` 17, `blockentityshot` 172, `swingshot` 97,
+`hurtshot` 38, `weathershot` 35, `handshot` 34, `particleshot` 34, `eventshot`
+28, `danceshot` 24, `portalshot` 12, `hudshot` 41, `mobshot` 243/243 + emissive
+5 + etf 8 + tint 6 + **variant 8**, plus `skyshot`, `lightmapshot`, `tintshot`,
+`meshshot`, `dimensioncheck`. Demo PNG SHA-256
+`2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+byte-identical since M15. `git diff --check` exits 0.
+
+**Not verified:** no live sighting of any of it. Nobody has watched a black cat,
+a shorn sheep or a caped inventory preview on a real server, and M60/M61's "no
+live sighting" note still stands for the wavy cape.
+
+**Process note.** The Edit tool normalises a file's line endings, and
+`mobshot_cmd.rs` and `rewo-data/src/lib.rs` are both mixed CRLF/LF — each
+ballooned to a whole-file diff (1,860 and 117 lines) and had to be rebuilt
+per-line against `HEAD`, keeping each unchanged line's own terminator and
+giving new lines LF. §0.0 warns about this; the warning is worth a second
+mention because the *first* symptom is `git diff --check` reporting trailing
+whitespace on lines nobody touched.
+
+
 **2026-07-21 — plan v1 + M0 shipped.**
 
 - Plan drafted (as FERRIC_PLAN.md), renamed to Rewo per user; network
@@ -6518,6 +6732,169 @@ model — armour items have no baked geometry at all yet (their `select` trim
 definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
+
+### M66 — the remaining tooltip stages: advanced, container, held-item (2026-07-29)
+
+The three stages M54 (the language layer), M56 (the image pass) and M58 (the
+bundle chrome) left. `inventoryshot` grew from 131 witnesses to **143**.
+
+**It was written as M62 and rebased.** Two agents ran in parallel and both
+decoded `minecraft:container` — this one and M63's. Main carries M63's, this
+one dropped its copy rather than being hand-merged, which is the right way
+round: an independent second protocol decoder is exactly where a silent desync
+gets introduced. What survived the drop is recorded under stage 4 below. The
+number moved because M60–M65 were all taken by the time it landed.
+
+**Stage 3 — the advanced block (F3+H).** `ItemStack.addDetailsToTooltip` ends
+with three lines whose *order* is the transcription and whose arguments are the
+trap. `item.durability` takes **remaining then max**
+(`getMaxDamage() - getDamageValue()`, `getMaxDamage()`), and swapping them
+still renders a well-formed `Durability: 1561 / 1500`. The registry key is a
+`Component.literal` in DARK_GRAY, not a translation key — running it through
+the language file finds nothing and `TranslatableContents`' fallback then
+prints the key anyway, so the mistake is invisible until a datapack defines
+that key. The old `item.nbt_tags` line is gone from 26.x entirely.
+
+**The count is the merged map's, not the patch's.** `int count =
+this.components.size()` reads a `PatchedDataComponentMap`, whose `size()` is
+
+```java
+int size = this.prototype.size();
+for (entry : this.patch) {
+   if (entry.getValue().isPresent() != this.prototype.has(entry.getKey()))
+      size += entry.getValue().isPresent() ? 1 : -1;
+}
+```
+
+The prototype dominates it. An unpatched dirt reads **12 component(s)** and a
+diamond sword **18** — reading the patch's own entry count would print `0` for
+nearly every stack in the game, and `count > 0`'s suppression branch would then
+fire constantly instead of never. This needed data the wire does not carry, so
+**`tools/gen_item_components.py`** extracts it: twelve components are on all
+1,537 items and only 47 more exist at all, so the table is those twelve once
+plus a 64-bit mask per item — 912 non-universal entries instead of 19,356
+strings. Every item is listed, including the 1,091 with an empty mask, because
+*membership is an answer*: an item the table does not know drops the line
+rather than guessing the base count.
+
+**Stage 4 — the container's lines.** `ItemContainerContents.addToTooltip`'s
+guard is `lineCount <= 4` **with the increment inside it**, so five stacks fit
+and the sixth becomes `and 1 more...`; `lineCount < 4` loses a line *and*
+invents a remainder under the four it kept. Both keys resolve **only** through
+M54's `deprecated.json` rename — `en_us.json` still spells them
+`container.shulkerBox.itemCount`/`.more`, so a raw read produces no container
+block at all (witness `l1` pins the rename, `cn3` pins that the lines come out).
+
+The decode is M63's, and its positional shape is the right one: the gaps stay
+as `None` because `ItemContainerContents.items` is indexed by slot number, and
+the tooltip filters them at the point of use (`nonEmptyItemsStream`).
+
+**One capability was kept from the dropped copy.** M63's `ContainerSlot`
+captured `custom_name` alone, on the stated reasoning that `ITEM_NAME` is
+"answered by the item table on the rendering side". Verified rather than
+assumed, and it is half right: the item table answers `item.getName()`, which
+*is* the prototype's `item_name`, but a **patched** `item_name` is a different
+value that nothing else carries. `getHoverName` is two levels of override, not
+a name and a fallback:
+
+```java
+getHoverName() = getOrDefault(CUSTOM_NAME, getItemName())
+getItemName()  = getOrDefault(ITEM_NAME, item.getName())
+```
+
+so `ContainerSlot` gained an `item_name` and a `hover_name` helper, and
+`read_container_slot` takes a `NameIds` pair rather than one id — a pair
+because two loose `i32`s in a call is exactly where they get swapped, and a
+swap would render every renamed stack under its default name and look like a
+missing feature rather than a bug. `walk_patch_with` needed no change: both
+components are `fromCodecWithRegistries` chat components, i.e. one
+`Shape::NbtTag` each, so the capture reads exactly what the walk would.
+
+**The carrier.** M61 recorded that its blocker had *moved* from the decode to
+the carrier, and that is still true: `ItemSlot` is `Copy` and `SlotText` would
+need its `is_empty` taught a new field. This milestone does not touch
+`rewo-world` at all, so the container slots and the raw patch ids ride a
+**third** carrier — `rewo_net::item_stack::StackDetails`, keyed by the same
+component fingerprint, owned by whoever routes the packets. Same shape, same
+lifetime, one more table; `route_inventory` takes it as an `Option` so a caller
+that draws no tooltips passes `None` and the decode is unchanged either way.
+M63 was decode-only, so nothing else was competing for the wiring.
+
+**Stage 5 — the held-item label.** Two clocks and a placement rule.
+`Hud.tick`'s re-trigger is three-part —
+`last.isEmpty() || !selected.is(last.getItem()) || !selected.getHoverName().equals(last.getHoverName())`
+— and it is the **third** clause that matters: comparing item identity alone is
+the obvious reading, and an anvil rename hands back the same item, so the new
+name would never appear. The fade is `min(255, timer * 256 / 10)`, i.e. opaque
+for thirty of the default forty ticks and linear over the last ten; spreading
+it over the whole timer makes the label translucent the moment it appears *and*
+overflows 255 with no clamp to catch it. The row is `guiHeight() - 59`, **plus
+14 when `!canHurtPlayer()`** — and `canHurtPlayer()` is
+`localPlayerMode.isSurvival()`, which is SURVIVAL **or ADVENTURE**.
+
+F3 became a **modifier**: `keyDebugModifier` and `keyDebugOverlay` are the same
+key, so vanilla toggles the overlay on *release* and skips it when a chord
+already fired. Toggling on press, which is what Rewo did, would flip the
+overlay every time you pressed F3+H.
+
+**A bug the transcription found.** `isDamageableItem()` is
+`has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE)`, and `isBarVisible()` is
+`isDamaged()` — so an **Unbreakable** tool draws no durability bar however much
+damage it carries. M41's `item_bars` read the damage alone and drew one. Fixed,
+along with `getDamageValue()`'s clamp to the maximum.
+
+**Gates.** `inventoryshot --check` 131 → **143**, every new witness naming a
+mutation partner that is *actually executed*: the durability args swapped
+(renders `Durability: 61 / 1561`), the `count > 0` guard dropped (renders
+`0 component(s)`), the id run through the language file (finds `None`), the
+count read as the patch size (`(0, 1, 1)` against `(12, 13, 18)`), the hover
+name resolved from `custom_name` alone (loses the middle stack's patched
+`item_name`), `lineCount < 4` (`(4, 1)` for five stacks), the remainder as the
+total, the raw `en_us.json` (0 lines), the identity-only timer comparison (38
+where vanilla resets to 40), and a fade over all 40 ticks (`256` at the top).
+The container *wire* decode is not re-graded here — M63's `ct1`–`ct4` already
+pin the optional list, the gaps and the alignment to the byte, and a second
+copy of those witnesses would be the same duplication the decoder itself was.
+
+**1037 tests** (from 1019); all 21 other gates green with validation ON and 0
+VUIDs — capeshot 64, itemshot 62, healthbarshot 33, attributeshot 43,
+captureshot 17, blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35,
+handshot 34, particleshot 34, eventshot 28, danceshot 24, portalshot 12,
+hudshot 41, mobshot 243/243 + emissive 5 + etf 8 + tint 4, plus skyshot,
+lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG SHA-256
+`2cc56b4a…` byte-identical to M15 onward.
+
+**Two hand-counted numbers were wrong and a machine caught both.** The
+generator's emitted test first claimed 13 components for dirt and the gate's
+`ad5` first claimed 19 for a sword; both are off by one from the report. Fixed
+by deriving them — the generator reads the two counts out of the report, and
+`ad5` asserts **deltas from the table** rather than absolutes. Hand-counting a
+JSON object is exactly the operation a gate exists to remove.
+
+**Open.**
+
+- **No live sighting.** Nobody has pressed F3+H in a running client, hovered a
+  shulker box, or watched the label fade. The gate is authoritative for the
+  properties it names and for nothing else.
+- **`minecraft:tooltip_display` is decoded-and-discarded**, so
+  `display.shows(DataComponents.DAMAGE)` is hard-coded true. A server hiding
+  the durability line would still see it. This predates the milestone — every
+  component line M40 onward ships ignores the same gate.
+- **ITALIC does not reach the HUD.** The tooltip's span model carries it (the
+  container's `and N more...` really does slant through the Velvet pass), but
+  `text.rs` has one colour per line and no italic face, so a `CUSTOM_NAME`
+  stack's held-item label stands upright. Colour and fade do carry. Same gap
+  M42 records for the bitmap tooltip fallback.
+- **`textWithBackdrop`'s fill is never drawn.** That is not a divergence at
+  defaults — `getBackgroundColor(0.0F)` is zero while `backgroundForChatOnly`
+  is set, which it is — but Rewo has no options file, so a player who set "Text
+  Background: Everywhere" would get nothing. The rule is transcribed and both
+  arms are graded; only the input is pinned.
+- **`advancedItemTooltips` does not persist.** Vanilla writes it to
+  `options.txt`; Rewo resets it each session.
+- A container slot's *other* components are still reduced to one bit, so a line
+  cannot show an enchanted sword's colour — M63's exclusion, unchanged by the
+  `item_name` addition.
 
 ### M63 — the container's contents, and a flake that was hiding real failures (2026-07-29)
 

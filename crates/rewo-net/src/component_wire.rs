@@ -992,14 +992,38 @@ pub struct ContainerSlot {
     pub count: i32,
     /// The nested `minecraft:custom_name`, reduced to plain text.
     ///
-    /// **Only `custom_name`.** `getHoverName` reads `CUSTOM_NAME`, then
-    /// `ITEM_NAME`, then the item's description id; the first is the only one
-    /// a server ever patches onto a stack inside a container, and the other two
-    /// are answered by the item table on the rendering side. A patch that
-    /// *removes* `custom_name` leaves this `None`, which is the same answer as
-    /// an absent one — and correct, because both send `getHoverName` on to the
-    /// next fallback.
+    /// A patch that *removes* `custom_name` leaves this `None`, which is the
+    /// same answer as an absent one — and correct, because both send
+    /// `getHoverName` on to the next fallback.
     pub custom_name: Option<String>,
+    /// The nested `minecraft:item_name` (M66).
+    ///
+    /// **`getHoverName` is a two-level override, not a name and a fallback:**
+    ///
+    /// ```java
+    /// getHoverName() = getOrDefault(CUSTOM_NAME, getItemName())
+    /// getItemName()  = getOrDefault(ITEM_NAME, item.getName())
+    /// ```
+    ///
+    /// M63 captured only the first and reasoned that "the other two are
+    /// answered by the item table on the rendering side". That is true of
+    /// `item.getName()` and **not** of a patched `ITEM_NAME`: the item table
+    /// answers the *prototype's* `item_name`, which every item carries as its
+    /// own translate key, so a nested stack whose patch overrides it would
+    /// render under its plain translated name instead. `item_name` is
+    /// syncable and a plugin renaming an item's default name (without the
+    /// custom-name italics) sets exactly this.
+    pub item_name: Option<String>,
+}
+
+impl ContainerSlot {
+    /// `ItemStack.getHoverName()`, given the item's translated display name.
+    pub fn hover_name<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.custom_name
+            .as_deref()
+            .or(self.item_name.as_deref())
+            .unwrap_or(fallback)
+    }
 }
 
 /// One `Optional<ItemStackTemplate>`, keeping what a container tooltip needs.
@@ -1012,20 +1036,27 @@ pub struct ContainerSlot {
 pub fn read_container_slot(
     r: &mut PacketReader,
     depth: u32,
-    custom_name_id: i32,
+    names: NameIds,
 ) -> Result<Option<ContainerSlot>, ()> {
     let item_id = r.varint().map_err(|_| ())?;
     let count = r.varint().map_err(|_| ())?;
     let mut custom_name = None;
+    let mut item_name = None;
     let walked = walk_patch_with(r, depth + 1, &mut |ty, r| {
-        if ty != custom_name_id {
+        // Both of `getHoverName`'s levels, and they share a codec — each is a
+        // `fromCodecWithRegistries` chat component, i.e. one `Shape::NbtTag`.
+        let slot = if ty == names.custom_name {
+            &mut custom_name
+        } else if ty == names.item_name {
+            &mut item_name
+        } else {
             return None;
-        }
+        };
         // Exactly what `Shape::NbtTag` reads, which is what the generic walk
         // would have read for this entry. Anything else here desynchronises.
         Some(match Nbt::read_network(r) {
             Ok(tag) => {
-                custom_name = Some(nbt_text(&tag));
+                *slot = Some(nbt_text(&tag));
                 Ok(true)
             }
             Err(_) => Err(()),
@@ -1035,7 +1066,20 @@ pub fn read_container_slot(
         item_id,
         count,
         custom_name,
+        item_name,
     }))
+}
+
+/// The two component ids a container slot's hover name can come from (M66).
+///
+/// A pair rather than two loose `i32`s because they are only ever meaningful
+/// together, and because a two-argument call is exactly where a caller swaps
+/// them — which would render every renamed stack under its *default* name and
+/// look like a missing feature rather than a bug.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NameIds {
+    pub custom_name: i32,
+    pub item_name: i32,
 }
 
 /// `ItemContainerContents.STREAM_CODEC` — a list of optional templates.
@@ -1049,7 +1093,7 @@ pub fn read_container_slot(
 pub fn read_container_slot_list(
     r: &mut PacketReader,
     depth: u32,
-    custom_name_id: i32,
+    names: NameIds,
 ) -> Result<Option<Vec<Option<ContainerSlot>>>, ()> {
     let n = bounded_count(r)?;
     let mut out = Vec::new();
@@ -1060,7 +1104,7 @@ pub fn read_container_slot_list(
             out.push(None);
             continue;
         }
-        match read_container_slot(r, depth, custom_name_id)? {
+        match read_container_slot(r, depth, names)? {
             Some(slot) => out.push(Some(slot)),
             None => return Ok(None),
         }
@@ -1241,7 +1285,12 @@ mod tests {
     const CAN_PLACE_ON_ID: i32 = 13;
     const BUNDLE_ID: i32 = 50;
     const CUSTOM_NAME_ID: i32 = 9;
+    const ITEM_NAME_ID: i32 = 10;
     const CONTAINER_ID: i32 = 51;
+    const NAME_IDS: NameIds = NameIds {
+        custom_name: CUSTOM_NAME_ID,
+        item_name: ITEM_NAME_ID,
+    };
     /// An id no registry can hold, so nothing can ever give it a shape. A real
     /// but merely-uncovered id would silently stop testing this property the
     /// day its codec landed — which is how three `item_stack` fixtures rotted
@@ -1255,6 +1304,7 @@ mod tests {
             ("minecraft:can_place_on", CAN_PLACE_ON_ID),
             ("minecraft:bundle_contents", BUNDLE_ID),
             ("minecraft:custom_name", CUSTOM_NAME_ID),
+            ("minecraft:item_name", ITEM_NAME_ID),
             ("minecraft:container", CONTAINER_ID),
         ]
         .into_iter()
@@ -1877,7 +1927,7 @@ mod tests {
     /// [`walked`], as [`captured`] is for bundles.
     fn captured_container(bytes: &[u8]) -> Option<(Vec<Option<ContainerSlot>>, usize)> {
         let mut r = PacketReader::new(bytes);
-        match read_container_slot_list(&mut r, 0, CUSTOM_NAME_ID) {
+        match read_container_slot_list(&mut r, 0, NAME_IDS) {
             Ok(Some(slots)) => Some((slots, r.offset())),
             _ => None,
         }
@@ -1960,6 +2010,55 @@ mod tests {
         let s = slots[0].as_ref().unwrap();
         assert_eq!(s.custom_name, None);
         assert_eq!((s.item_id, s.count), (5, 2));
+    }
+
+    /// `getHoverName` is a **two-level** override, so a nested `item_name`
+    /// has to be captured too (M66).
+    ///
+    /// M63 captured `custom_name` alone, on the reasoning that `ITEM_NAME` is
+    /// "answered by the item table on the rendering side". The item table
+    /// answers the item's *prototype* `item_name`; a patched one is a
+    /// different value, and dropping it renders the stack under its plain
+    /// translated name.
+    #[test]
+    fn a_container_slot_captures_both_levels_of_the_hover_name() {
+        install_test_shapes();
+        let named = |text: &str| -> Vec<u8> {
+            let mut v = vec![8u8];
+            v.extend_from_slice(&(text.len() as u16).to_be_bytes());
+            v.extend_from_slice(text.as_bytes());
+            v
+        };
+        let mut b = Vec::new();
+        varint(3, &mut b);
+        // Both levels: `custom_name` wins.
+        slot(
+            Some((
+                2,
+                1,
+                &[
+                    (CUSTOM_NAME_ID, named("Skullcrusher")),
+                    (ITEM_NAME_ID, named("Blade")),
+                ],
+            )),
+            &mut b,
+        );
+        // Only `item_name`: it beats the translated fallback.
+        slot(Some((3, 1, &[(ITEM_NAME_ID, named("Blade"))])), &mut b);
+        // Neither: the fallback stands.
+        slot(Some((4, 1, &[])), &mut b);
+        let (slots, read) = captured_container(&b).expect("captures");
+        assert_eq!(read, b.len(), "the capture consumed exactly the list");
+        let s = |i: usize| slots[i].as_ref().unwrap();
+        assert_eq!(s(0).custom_name.as_deref(), Some("Skullcrusher"));
+        assert_eq!(s(0).item_name.as_deref(), Some("Blade"));
+        assert_eq!(s(0).hover_name("Diamond Sword"), "Skullcrusher");
+        assert_eq!(s(1).custom_name, None);
+        assert_eq!(s(1).hover_name("Diamond Sword"), "Blade");
+        assert_eq!(s(2).hover_name("Diamond Sword"), "Diamond Sword");
+        // …and the generic walk consumes the same bytes, which is the property
+        // that stops a capture from desynchronising the enclosing packet.
+        assert_eq!(walked(shape("minecraft:container"), &b), Some(b.len()));
     }
 
     /// The nested patch inherits the patch's fail-closed rule: a component

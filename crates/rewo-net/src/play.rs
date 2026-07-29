@@ -64,6 +64,14 @@ impl GameMode {
     pub fn is_spectator(self) -> bool {
         self == GameMode::Spectator
     }
+
+    /// `GameType.isSurvival()` — **`SURVIVAL || ADVENTURE`**, not just the
+    /// first. It is what `MultiPlayerGameMode.canHurtPlayer()` returns, which
+    /// decides whether the HUD draws hearts and therefore whether the
+    /// held-item name sits fourteen rows lower (M66's held-item info).
+    pub fn is_survival(self) -> bool {
+        self == GameMode::Survival || self == GameMode::Adventure
+    }
 }
 
 /// One entry of a `player_info_update` body.
@@ -299,6 +307,11 @@ pub struct PlaySession {
     /// also what an unsent mask means, so a harness that never resolves it
     /// behaves like one whose players never sent one.
     pub player_type_id: Option<i32>,
+    /// The six mobs whose texture a metadata field chooses (M64). Default-
+    /// empty routes every variant nowhere, which leaves those mobs on the
+    /// texture Rewo baked — the same "`None` means don't interpret" rule the
+    /// type ids above use.
+    pub variant_type_ids: crate::VariantKinds,
     /// The block-entity type ids whose `triggerEvent` this client implements
     /// (M26). Default-empty, which routes every `block_event` nowhere — the
     /// correct behaviour for a harness that never renders a chest, and the
@@ -344,6 +357,12 @@ pub struct PlaySession {
     /// The two trim registries, index = protocol id (M48).
     pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     pub trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
+    /// The three metadata-variant registries (M64), index = protocol id.
+    /// Empty on a server that syncs none, which leaves those mobs on their
+    /// base textures rather than guessing an order.
+    pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
+    pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
+    pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
@@ -374,6 +393,21 @@ pub struct PlaySession {
     /// dimension change — so it is deliberately not cleared by the transition.
     /// The server re-sends the contents on respawn anyway.
     pub inventory: rewo_world::inventory::Inventory,
+    /// The `minecraft:data_component_type` registry, kept so a *name* can be
+    /// recovered from a patch's raw ids (M66).
+    ///
+    /// `component_count` needs it: `PatchedDataComponentMap.size()` asks
+    /// whether the item's prototype carries each patched component, the
+    /// prototype table is keyed by name, and the wire is keyed by id. `None`
+    /// before the registry arrives, in which case the count is unanswerable
+    /// and the tooltip line is dropped rather than guessed.
+    pub component_names: Option<std::sync::Arc<rewo_data::components::DataComponentRegistry>>,
+    /// The third slot carrier (M66) — a shulker box's contents and each
+    /// patch's raw component ids, keyed by the same fingerprint the
+    /// inventory's `SlotText` uses. Kept beside the inventory rather than in
+    /// it, because neither of that crate's carriers can hold a `Vec` of
+    /// stacks and the raw ids mean nothing without the runtime registry.
+    pub stack_details: crate::item_stack::StackDetails,
     /// The local player's entity id, from the login prefix (M38).
     ///
     /// `LocalPlayer` is an ordinary `LivingEntity` in vanilla, so giving it an
@@ -987,6 +1021,9 @@ impl<'a> Connection<'a> {
         let enchantments = std::mem::take(&mut self.enchantments);
         let trim_materials = std::mem::take(&mut self.trim_materials);
         let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        let cat_variants = std::mem::take(&mut self.cat_variants);
+        let wolf_variants = std::mem::take(&mut self.wolf_variants);
+        let frog_variants = std::mem::take(&mut self.frog_variants);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -1023,6 +1060,9 @@ impl<'a> Connection<'a> {
             enchantments,
             trim_materials,
             trim_patterns,
+            cat_variants,
+            wolf_variants,
+            frog_variants,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
@@ -1034,6 +1074,7 @@ impl<'a> Connection<'a> {
             sheep_type_id: None,
             creaking_type_id: None,
             player_type_id: None,
+            variant_type_ids: crate::VariantKinds::default(),
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
@@ -1054,6 +1095,8 @@ impl<'a> Connection<'a> {
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
             inventory: rewo_world::inventory::Inventory::default(),
+            component_names: None,
+            stack_details: crate::item_stack::StackDetails::default(),
             player_id: None,
             overworld_clock: None,
             game_time: None,
@@ -1808,6 +1851,7 @@ impl PlaySession {
                 sheep: self.sheep_type_id,
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,
+                variant_kinds: self.variant_type_ids,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
             },
@@ -1842,6 +1886,7 @@ impl PlaySession {
             ids,
             self.swing_data.as_ref().map(|d| d.components),
             &mut self.inventory,
+            Some(&mut self.stack_details),
         ) {
             // M34: the player's own inventory — contents, one slot, or the
             // server moving the selection.

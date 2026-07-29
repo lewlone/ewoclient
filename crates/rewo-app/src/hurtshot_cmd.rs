@@ -499,6 +499,7 @@ fn render_capsule(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);
@@ -859,6 +860,7 @@ fn silhouette(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     };
     d.kind = EntityModelKind::Zombie;

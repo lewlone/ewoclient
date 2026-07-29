@@ -20,6 +20,7 @@ pub mod crypt;
 pub mod dimension_parse;
 pub mod enchantment_parse;
 pub mod trim_parse;
+pub mod variant_parse;
 pub mod effects;
 pub mod ids;
 pub mod item_stack;
@@ -225,6 +226,10 @@ pub struct Connection<'a> {
     enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
     trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
+    /// The three metadata-variant registries (M64), in raw wire order.
+    cat_variants: Vec<crate::variant_parse::MobVariantDef>,
+    wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
+    frog_variants: Vec<crate::variant_parse::MobVariantDef>,
 }
 
 impl<'a> Connection<'a> {
@@ -253,6 +258,9 @@ impl<'a> Connection<'a> {
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
             trim_materials: Vec::new(),
+            cat_variants: Vec::new(),
+            wolf_variants: Vec::new(),
+            frog_variants: Vec::new(),
             trim_patterns: Vec::new(),
         })
     }
@@ -502,6 +510,23 @@ impl<'a> Connection<'a> {
         if registry == crate::trim_parse::TRIM_PATTERN_REGISTRY {
             self.trim_patterns = crate::trim_parse::parse_trim_pattern_registry(&mut r, count);
             log::info!("net: {} trim pattern(s) synced", self.trim_patterns.len());
+            return Ok(());
+        }
+        // M64: the three mob-variant registries, datapack-driven for the
+        // same reason — the index is the raw holder id the metadata carries.
+        if registry == crate::variant_parse::CAT_VARIANT_REGISTRY {
+            self.cat_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            log::info!("net: {} cat variant(s) synced", self.cat_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::WOLF_VARIANT_REGISTRY {
+            self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
+            log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::FROG_VARIANT_REGISTRY {
+            self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
             return Ok(());
         }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
@@ -1211,9 +1236,15 @@ pub fn route_game_event(
 /// Returns `None` for an empty stack and `Err` when the reader could not be
 /// left aligned — see [`rewo_world::inventory`] on why a misaligned slot has to
 /// abandon the whole packet rather than half-apply it.
+///
+/// The third element is M66's [`crate::item_stack::StackDetail`] — the
+/// container contents and the raw patch ids, which neither of the world's slot
+/// carriers can hold. Keyed by the same fingerprint as the text, so a caller
+/// that wants it records both from one decode.
 type SlotAndText = (
     Option<rewo_world::inventory::ItemSlot>,
     Option<(u64, rewo_world::inventory::SlotText)>,
+    Option<(u64, crate::item_stack::StackDetail)>,
 );
 
 fn read_slot(
@@ -1225,7 +1256,7 @@ fn read_slot(
         return Err(());
     }
     Ok(match slot {
-        crate::item_stack::WireSlot::Empty => (None, None),
+        crate::item_stack::WireSlot::Empty => (None, None, None),
         crate::item_stack::WireSlot::Stack(s) => {
             let c = &s.components;
             let text = rewo_world::inventory::SlotText {
@@ -1252,6 +1283,7 @@ fn read_slot(
                     trim_material: c.trim.map(|(m, _)| m),
                 }),
                 Some((c.fingerprint, text)),
+                Some((c.fingerprint, c.detail())),
             )
         }
     })
@@ -1270,6 +1302,7 @@ pub fn apply_container_set_content(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
     inventory: &mut rewo_world::inventory::Inventory,
+    mut details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
@@ -1296,12 +1329,15 @@ pub fn apply_container_set_content(
     };
     // The tooltip text is recorded before the contents, so a slot is never
     // visible without the text its components imply.
-    for (_, text) in slots.iter().chain(std::iter::once(&carried)) {
+    for (_, text, detail) in slots.iter().chain(std::iter::once(&carried)) {
         if let Some((fingerprint, text)) = text {
             inventory.record_text(*fingerprint, text.clone());
         }
+        if let (Some(sink), Some((fingerprint, detail))) = (details.as_deref_mut(), detail) {
+            sink.record(*fingerprint, detail.clone());
+        }
     }
-    let stacks: Vec<_> = slots.into_iter().map(|(s, _)| s).collect();
+    let stacks: Vec<_> = slots.into_iter().map(|(s, _, _)| s).collect();
     inventory.set_content(state_id, &stacks, carried.0)
 }
 
@@ -1314,6 +1350,7 @@ pub fn apply_container_set_slot(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
     inventory: &mut rewo_world::inventory::Inventory,
+    details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
@@ -1322,11 +1359,14 @@ pub fn apply_container_set_slot(
     if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
         return false;
     }
-    let Ok((item, text)) = read_slot(&mut r, components) else {
+    let Ok((item, text, detail)) = read_slot(&mut r, components) else {
         return false;
     };
     if let Some((fingerprint, text)) = text {
         inventory.record_text(fingerprint, text);
+    }
+    if let (Some(sink), Some((fingerprint, detail))) = (details, detail) {
+        sink.record(fingerprint, detail);
     }
     inventory.set_slot(state_id, slot as i32, item)
 }
@@ -1364,16 +1404,20 @@ pub fn route_inventory(
     // is applied regardless.
     components: Option<rewo_data::components::DataComponentIds>,
     inventory: &mut rewo_world::inventory::Inventory,
+    // M66's third slot carrier. `None` for a caller that does not draw
+    // tooltips — the decode is unchanged either way, so passing it or not
+    // cannot move a byte.
+    details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     if id == ids.cb_play_container_set_content {
         if let Some(c) = components {
-            apply_container_set_content(body, c, inventory);
+            apply_container_set_content(body, c, inventory, details);
         }
         return true;
     }
     if id == ids.cb_play_container_set_slot {
         if let Some(c) = components {
-            apply_container_set_slot(body, c, inventory);
+            apply_container_set_slot(body, c, inventory, details);
         }
         return true;
     }
@@ -1411,6 +1455,15 @@ pub struct MetaKinds<'a> {
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
+    /// The six mobs whose texture is chosen by synched metadata (M64), in the
+    /// order `[cat, wolf, frog, axolotl, horse, llama]`.
+    ///
+    /// Three of them (cat, wolf, frog) carry a `Holder` whose serializer is
+    /// unique to them and would need no gate at all; the other three carry a
+    /// plain `int` at an index other classes also claim, and those genuinely
+    /// do. Both are gated, so the two read the same and a slot that moves
+    /// fails loudly rather than half-silently.
+    pub variant_kinds: VariantKinds,
     /// The machine-extracted ancestry sets — mob / raider / spellcaster.
     pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
     /// Data-component registry ids, needed to walk an ITEM_STACK metadata
@@ -1428,6 +1481,28 @@ impl<'a> From<Option<i32>> for MetaKinds<'a> {
             allay,
             ..Default::default()
         }
+    }
+}
+
+/// The entity-type ids of the six mobs whose texture a metadata field selects
+/// (M64). `None` for any the caller could not resolve, which leaves that mob
+/// on its baked texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VariantKinds {
+    pub cat: Option<i32>,
+    pub wolf: Option<i32>,
+    pub frog: Option<i32>,
+    pub axolotl: Option<i32>,
+    pub horse: Option<i32>,
+    pub llama: Option<i32>,
+}
+
+impl VariantKinds {
+    /// Whether this type is one of the two `TamableAnimal`s Rewo renders a
+    /// variant for — the gate on the index-18 BYTE, which the sheep's wool
+    /// byte shares slot *and* serializer with.
+    pub fn is_tamable(&self, type_id: i32) -> bool {
+        self.cat == Some(type_id) || self.wolf == Some(type_id)
     }
 }
 
@@ -1558,6 +1633,35 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(wool) = meta.byte18 {
         if kinds.sheep == Some(type_id) {
             entities.set_wool(eid, wool);
+        } else if kinds.variant_kinds.is_tamable(type_id) {
+            // Slot 18 BYTE again, and this time it is
+            // `TamableAnimal.DATA_FLAGS_ID` — bit 0x04 `isTame()`, which is
+            // what `Wolf.getTexture` branches on. Same index, same
+            // serializer, different class: `Sheep` and `TamableAnimal` both
+            // extend `Animal`, whose own accessor count is zero, so both
+            // land their first byte at 18 and only the kind separates them
+            // (M18's rule). Reading a wolf's flags as a wool byte would give
+            // it dye 4 — yellow — and a shorn fleece it does not have.
+            entities.set_tamable_flags(eid, wool);
+        }
+    }
+    // M64: the six metadata-driven texture variants. Three carry a `Holder`
+    // whose serializer is theirs alone; three carry an `int` at an index
+    // other classes claim. The value's *units* differ — a registry id for
+    // the first three, an enum ordinal for the rest — and only the kind
+    // says which, which is why they all funnel through one setter the
+    // renderer reads back with the kind in hand.
+    let vk = kinds.variant_kinds;
+    for (value, kind) in [
+        (meta.cat_variant, vk.cat),
+        (meta.wolf_variant, vk.wolf),
+        (meta.frog_variant, vk.frog),
+        (meta.int18, vk.axolotl),
+        (meta.int19, vk.horse),
+        (meta.int21, vk.llama),
+    ] {
+        if let (Some(v), true) = (value, kind == Some(type_id)) {
+            entities.set_variant(eid, v);
         }
     }
 }

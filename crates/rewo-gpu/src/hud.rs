@@ -526,6 +526,240 @@ impl HudPass {
     }
 }
 
+// ── The held-item name (M66) ──────────────────────────────────────────────
+//
+// `Hud.extractSelectedItemName` — the label that fades in over the hotbar when
+// you change what you are holding. Two clocks and a placement rule, none of
+// which is guessable from a screenshot.
+
+/// `Hud.tick`'s reset: `(int)(40.0 * options.notificationDisplayTime().get())`.
+///
+/// The multiplier's own default is 1.0 (`OptionInstance.IntRange(5, 100)`
+/// mapped through `v / 10.0`), so the timer starts at 40 ticks — two seconds.
+pub const TOOL_HIGHLIGHT_TICKS: f64 = 40.0;
+
+/// `graphics.guiHeight() - 59` — the label's baseline row above the hotbar.
+pub const SELECTED_ITEM_NAME_BOTTOM: i32 = 59;
+
+/// `if (!this.minecraft.gameMode.canHurtPlayer()) y += 14;`
+///
+/// Creative and spectator draw no health bar, so the label drops into the row
+/// the hearts would have used. Rewo cannot see the game mode, so this is the
+/// rule and [`selected_item_name_pos`]'s caller supplies the input.
+pub const SELECTED_ITEM_NAME_NO_HEALTH_SHIFT: i32 = 14;
+
+/// `Hud.lastToolHighlight` + `toolHighlightTimer`, which vanilla keeps as two
+/// fields on the HUD and ticks together.
+///
+/// The stack is reduced to `(item id, hover name)` because those are exactly
+/// the two things the re-trigger compares:
+///
+/// ```java
+/// if (selected.isEmpty()) {
+///    this.toolHighlightTimer = 0;
+/// } else if (this.lastToolHighlight.isEmpty()
+///        || !selected.is(this.lastToolHighlight.getItem())
+///        || !selected.getHoverName().equals(this.lastToolHighlight.getHoverName())) {
+///    this.toolHighlightTimer = (int)(40.0 * options.notificationDisplayTime().get());
+/// } else if (this.toolHighlightTimer > 0) {
+///    this.toolHighlightTimer--;
+/// }
+/// this.lastToolHighlight = selected;
+/// ```
+///
+/// **The hover-name half is the one worth naming.** Comparing item identity
+/// alone is the obvious reading and it is wrong in a way a player notices:
+/// renaming a sword on an anvil hands back the same item, so the label would
+/// never re-show and the new name would never appear. Swapping two stacks of
+/// the same item with different names is the same case.
+///
+/// The assignment is **unconditional** — it runs on the empty branch too, so
+/// emptying your hand clears `lastToolHighlight` as well as the timer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolHighlight {
+    /// `toolHighlightTimer`.
+    pub timer: i32,
+    /// `lastToolHighlight`, as `(item id, hover name)`. `None` is
+    /// `ItemStack.EMPTY`.
+    pub last: Option<(i32, String)>,
+}
+
+impl ToolHighlight {
+    /// One `Hud.tick`.
+    ///
+    /// `selected` is `player.getInventory().getSelectedItem()` reduced to the
+    /// two compared fields; `display_time` is `notificationDisplayTime`.
+    pub fn tick(&mut self, selected: Option<(i32, &str)>, display_time: f64) {
+        match selected {
+            None => self.timer = 0,
+            Some((id, name)) => {
+                let changed = match &self.last {
+                    None => true,
+                    Some((last_id, last_name)) => *last_id != id || last_name != name,
+                };
+                if changed {
+                    self.timer = (TOOL_HIGHLIGHT_TICKS * display_time) as i32;
+                } else if self.timer > 0 {
+                    self.timer -= 1;
+                }
+            }
+        }
+        self.last = selected.map(|(id, n)| (id, n.to_string()));
+    }
+
+    /// `if (this.toolHighlightTimer > 0 && !this.lastToolHighlight.isEmpty())`
+    /// — what `extractSelectedItemName` renders, or nothing.
+    pub fn showing(&self) -> Option<(i32, &str)> {
+        if self.timer <= 0 {
+            return None;
+        }
+        self.last.as_ref().map(|(id, n)| (*id, n.as_str()))
+    }
+}
+
+/// `int alpha = (int)(timer * 256.0F / 10.0F); if (alpha > 255) alpha = 255;`
+///
+/// Opaque for the first thirty ticks of the default forty, then a linear fade
+/// over the last ten. Fading over the whole timer instead — the natural
+/// `timer / 40` reading — makes the label translucent the moment it appears.
+///
+/// Vanilla clamps only the top: a zero timer gives zero, and the caller's
+/// `if (alpha > 0)` is what stops the draw.
+pub fn tool_highlight_alpha(timer: i32) -> i32 {
+    let alpha = (timer as f32 * 256.0 / 10.0) as i32;
+    if alpha > 255 { 255 } else { alpha }
+}
+
+/// `extractSelectedItemName`'s placement, in **GUI pixels**.
+///
+/// ```java
+/// int x = (graphics.guiWidth() - strWidth) / 2;
+/// int y = graphics.guiHeight() - 59;
+/// if (!this.minecraft.gameMode.canHurtPlayer()) y += 14;
+/// ```
+///
+/// Integer division, so an odd-width label sits half a pixel left of centre —
+/// the same truncation `centered_x` documents.
+pub fn selected_item_name_pos(
+    gui_w: i32,
+    gui_h: i32,
+    str_width: i32,
+    can_hurt_player: bool,
+) -> (i32, i32) {
+    let x = (gui_w - str_width) / 2;
+    let mut y = gui_h - SELECTED_ITEM_NAME_BOTTOM;
+    if !can_hurt_player {
+        y += SELECTED_ITEM_NAME_NO_HEALTH_SHIFT;
+    }
+    (x, y)
+}
+
+/// `GuiGraphicsExtractor.textWithBackdrop`'s fill, or `None`.
+///
+/// ```java
+/// int backgroundColor = this.minecraft.options.getBackgroundColor(0.0F);
+/// if (backgroundColor != 0) {
+///    int padding = 2;
+///    this.fill(textX - 2, textY - 2, textX + textWidth + 2, textY + 9 + 2, …);
+/// }
+/// this.text(font, str, textX, textY, textColor, true);
+/// ```
+///
+/// **At vanilla's defaults there is no fill.** `getBackgroundColor(0.0F)` is
+/// `colorFromFloat(getBackgroundOpacity(0.0F), 0, 0, 0)` and
+/// `getBackgroundOpacity` returns the *fallback* while
+/// `backgroundForChatOnly` is set — which it is by default — so the argument
+/// `0.0F` makes the whole colour zero and the fill is skipped. It appears only
+/// for a player who set "Text Background: Everywhere".
+///
+/// The box is asymmetric: 2 px of padding on every side of a **9** px-tall
+/// text row, which is the font's line height and not the 10 the tooltip's
+/// components use.
+pub fn text_backdrop_rect(
+    x: i32,
+    y: i32,
+    text_width: i32,
+    background_color: u32,
+) -> Option<(i32, i32, i32, i32)> {
+    if background_color == 0 {
+        return None;
+    }
+    Some((x - 2, y - 2, x + text_width + 2, y + 9 + 2))
+}
+
+#[cfg(test)]
+mod selected_item_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_rename_re_shows_the_label_for_the_same_item() {
+        let mut h = ToolHighlight::default();
+        h.tick(Some((1, "Diamond Sword")), 1.0);
+        assert_eq!(h.timer, 40);
+        // Held still: the timer runs down.
+        h.tick(Some((1, "Diamond Sword")), 1.0);
+        assert_eq!(h.timer, 39);
+        // MUTATION partner: comparing item identity alone leaves this at 38.
+        h.tick(Some((1, "Skullcrusher")), 1.0);
+        assert_eq!(h.timer, 40, "an anvil rename re-triggers it");
+    }
+
+    #[test]
+    fn an_empty_hand_zeroes_it_and_clears_the_last_stack() {
+        let mut h = ToolHighlight::default();
+        h.tick(Some((1, "Dirt")), 1.0);
+        h.tick(None, 1.0);
+        assert_eq!(h.timer, 0);
+        assert_eq!(h.last, None);
+        assert_eq!(h.showing(), None);
+        // …and picking the same item back up re-triggers, because
+        // `lastToolHighlight` was assigned on the empty branch too.
+        h.tick(Some((1, "Dirt")), 1.0);
+        assert_eq!(h.timer, 40);
+    }
+
+    #[test]
+    fn the_timer_stops_at_zero_rather_than_going_negative() {
+        let mut h = ToolHighlight::default();
+        h.tick(Some((1, "Dirt")), 1.0);
+        for _ in 0..80 {
+            h.tick(Some((1, "Dirt")), 1.0);
+        }
+        assert_eq!(h.timer, 0);
+        assert_eq!(h.showing(), None);
+        // The stack is still remembered — only the timer expired.
+        assert!(h.last.is_some());
+    }
+
+    #[test]
+    fn the_fade_is_the_last_ten_ticks_only() {
+        assert_eq!(tool_highlight_alpha(40), 255);
+        assert_eq!(tool_highlight_alpha(11), 255);
+        assert_eq!(tool_highlight_alpha(10), 256_i32.min(255));
+        assert_eq!(tool_highlight_alpha(9), 230);
+        assert_eq!(tool_highlight_alpha(5), 128);
+        assert_eq!(tool_highlight_alpha(1), 25);
+        assert_eq!(tool_highlight_alpha(0), 0);
+    }
+
+    #[test]
+    fn the_label_drops_fourteen_rows_when_there_is_no_health_bar() {
+        let (x, y) = selected_item_name_pos(320, 240, 41, true);
+        assert_eq!((x, y), ((320 - 41) / 2, 240 - 59));
+        let (_, creative) = selected_item_name_pos(320, 240, 41, false);
+        assert_eq!(creative, 240 - 59 + 14);
+    }
+
+    #[test]
+    fn the_backdrop_is_absent_at_the_default_options() {
+        assert_eq!(text_backdrop_rect(10, 20, 40, 0), None);
+        assert_eq!(
+            text_backdrop_rect(10, 20, 40, 0x80_00_00_00),
+            Some((8, 18, 52, 31))
+        );
+    }
+}
+
 #[cfg(test)]
 mod hotbar_slot_tests {
     use super::*;

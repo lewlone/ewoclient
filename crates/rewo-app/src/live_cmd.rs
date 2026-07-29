@@ -191,6 +191,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    // M64: the six mobs whose texture a metadata field chooses. An id that
+    // does not resolve leaves that mob on its baked texture.
+    session.variant_type_ids = rewo_net::VariantKinds {
+        cat: data.entity_types.id_of("minecraft:cat"),
+        wolf: data.entity_types.id_of("minecraft:wolf"),
+        frog: data.entity_types.id_of("minecraft:frog"),
+        axolotl: data.entity_types.id_of("minecraft:axolotl"),
+        horse: data.entity_types.id_of("minecraft:horse"),
+        llama: data.entity_types.id_of("minecraft:llama"),
+    };
     // M61: opt-in cloth capes. Off leaves `EntityTable` allocating and
     // ticking nothing, so the vanilla cape path is exactly M60's.
     if wavy_cape_requested(args.wavy_cape) {
@@ -241,6 +251,10 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             data.component_registry.len()
         );
     }
+    // …and kept, because M66's advanced tooltip has to walk the other way: a
+    // patch's raw ids back to names, so the item's prototype table can say
+    // whether each one is an addition or an override.
+    session.component_names = Some(std::sync::Arc::new(data.component_registry));
     session.swing_data = Some(rewo_net::item_stack::SwingWireData {
         prototypes: data.swing_animations,
         components: data.components,
@@ -351,6 +365,25 @@ pub(crate) struct PlayerSkin {
 }
 
 pub(crate) type SkinRegistry = std::collections::HashMap<u128, PlayerSkin>;
+
+/// The local player's own textures, staged for the inventory preview's
+/// **second** entity pass (M36 skin, M64 cape).
+///
+/// The raw pixels are kept alongside the addresses because the preview pass
+/// is built lazily — the first time the screen opens — so a texture can
+/// arrive before there is anywhere to put it. Each address is filled in on
+/// the first frame the pass exists and never recomputed.
+#[derive(Default)]
+pub(crate) struct PreviewTextures {
+    /// 64x64 RGBA skin, and whether the profile names the slim model.
+    pub skin: Option<(Vec<u8>, bool)>,
+    /// 64x32 RGBA cape sheet.
+    pub cape: Option<Vec<u8>>,
+    /// `EntityDraw::skin_uv` once uploaded into the preview's atlas.
+    pub skin_uv: Option<[f32; 2]>,
+    /// `CapeDraw::origin` once uploaded into the preview's atlas.
+    pub cape_origin: Option<(u32, u32)>,
+}
 
 /// Async player-texture loader: a worker thread fetches + decodes skin and
 /// cape PNGs off the render/tick path; the main loop uploads each result
@@ -1475,6 +1508,62 @@ fn etf_variant(
     etf.pick(key, &props) as u16
 }
 
+/// Vanilla's own metadata-driven texture variant for one entity (M64).
+///
+/// 0 — the baked base texture — for a mob that has none, for one whose server
+/// never sent one, and for one whose variant names a texture the jar does not
+/// ship. That last case is the M57b rule: a variant we cannot resolve leaves
+/// the mob on its vanilla sheet rather than painting an invented one.
+///
+/// **The value's units depend on the mob and the kind is what says which.**
+/// Cat, wolf and frog carry a raw datapack-registry id, so this walks the
+/// registry the server synced and joins on the *texture path* — never on the
+/// id, which is the server's to choose (REWO_PLAN §0.0, and M16/M42's rule).
+/// Horse, llama and axolotl carry an enum ordinal, so those are transcribed
+/// tables, each with its own out-of-bounds strategy.
+///
+/// The wolf is the one that reads a second field: `Wolf.getTexture` picks
+/// `assets.tame` over `assets.wild` on `isTame()`, which is bit 0x04 of the
+/// index-18 byte. Its third sheet, `angry`, is not chosen here — see
+/// `rewo_data::mob_variants`.
+pub(crate) fn vanilla_variant(
+    kind: EntityModelKind,
+    id: i32,
+    session: &PlaySession,
+) -> u16 {
+    let Some(v) = session.world.entities.variant(id) else {
+        return 0;
+    };
+    let registry = |defs: &[rewo_net::variant_parse::MobVariantDef], tame: bool| {
+        usize::try_from(v)
+            .ok()
+            .and_then(|i| defs.get(i))
+            .and_then(|d| d.texture(tame))
+            .and_then(rewo_data::mob_variants::variant_id)
+            .unwrap_or(0)
+    };
+    match kind {
+        EntityModelKind::Cat => registry(&session.cat_variants, false),
+        EntityModelKind::Wolf => {
+            registry(&session.wolf_variants, session.world.entities.is_tame(id))
+        }
+        EntityModelKind::Frog => registry(&session.frog_variants, false),
+        EntityModelKind::Axolotl => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::axolotl_texture(v))
+                .unwrap_or(0)
+        }
+        EntityModelKind::Llama => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        EntityModelKind::Horse => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::horse_texture(v))
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
@@ -1703,17 +1792,22 @@ fn collect_entities<'a>(
             // rides entity_event 61 and the creaking's glow rides metadata
             // IS_ACTIVE — both resolved below.
             emissive: emissive_state(session, id, kind, now),
-            // ETF (M52): the pack's rules choose a texture per entity, keyed on
-            // its UUID so the choice is stable and a herd varies. No pack (or
-            // no rule for this mob) → 0, the vanilla texture.
-            variant: if etf.is_empty() {
-                0
-            } else {
-                etf_variant(etf, kind, e, id, session, cube_size)
+            // Two things can move a mob off its baked texture, and vanilla's
+            // own wins. M64's variant is what the *server* says this cat or
+            // horse is; M57b's ETF rule is a pack randomising the base
+            // texture — and a black cat is not drawing that texture at all,
+            // so the two never mean the same slot. Vanilla first, ETF only
+            // where vanilla has nothing to say.
+            variant: match vanilla_variant(kind, id, session) {
+                0 if !etf.is_empty() => etf_variant(etf, kind, e, id, session, cube_size),
+                v => v,
             },
             // The sheep's wool colour (`Sheep.DATA_WOOL_ID`). `None` is
             // vanilla's `DyeColor.WHITE` default, which still tints.
             dye: session.world.entities.wool_color(id),
+            // …and bit 0x10 of the same byte (M64), which drops the fleece
+            // rather than recolouring it.
+            sheared: session.world.entities.is_sheared(id),
             // M60. `player_skin` is this profile's uploaded textures; its
             // `cape` is `None` both when the profile carries no cape and
             // when one is still in flight, and either way vanilla's second
@@ -1798,8 +1892,11 @@ pub(crate) fn init_entities_maybe_cem(
 
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
     MobTextures {
-        // No pack: no alternates. `entity_textures_with` fills this in.
-        variants: Vec::new(),
+        // M64: vanilla's own metadata-driven alternates are always present —
+        // they are jar textures, not a pack's, so they do not wait for one.
+        // `entity_textures_with` appends a pack's ETF alternates after these;
+        // the two live in disjoint id bands.
+        variants: vanilla_variants(baked),
         entries: baked
             .mob_textures
             .iter()
@@ -1829,19 +1926,41 @@ pub(crate) fn entity_textures_with<'a>(
     etf: &'a rewo_data::etf::EtfPack,
 ) -> MobTextures<'a> {
     MobTextures {
-        variants: etf
-            .textures
-            .iter()
-            .map(|t| rewo_gpu::entities::VariantTexEntry {
-                base_key: t.key,
-                index: t.index,
-                w: t.w,
-                h: t.h,
-                rgba: &t.rgba,
-            })
+        variants: vanilla_variants(baked)
+            .into_iter()
+            .chain(
+                etf.textures
+                    .iter()
+                    .map(|t| rewo_gpu::entities::VariantTexEntry {
+                        base_key: t.key,
+                        index: t.index,
+                        w: t.w,
+                        h: t.h,
+                        rgba: &t.rgba,
+                    }),
+            )
             .collect(),
         ..entity_textures(baked)
     }
+}
+
+/// Vanilla's metadata-driven alternates as atlas entries (M64).
+///
+/// They are appended *after* the base textures in the packer's input, exactly
+/// as a pack's ETF alternates are, so every existing texel address is
+/// unchanged and `mobshot --check` still grades the geometry it graded before.
+fn vanilla_variants(baked: &assets::BakedAssets) -> Vec<rewo_gpu::entities::VariantTexEntry<'_>> {
+    baked
+        .mob_variant_textures
+        .iter()
+        .map(|t| rewo_gpu::entities::VariantTexEntry {
+            base_key: t.key,
+            index: t.index as u32,
+            w: t.w,
+            h: t.h,
+            rgba: &t.rgba,
+        })
+        .collect()
 }
 
 pub(crate) fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
@@ -2566,25 +2685,43 @@ fn run_headless(
                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
             })
             .unwrap_or((sw as f64 / 2.0, sh as f64 / 2.0));
-        // `REWO_PREVIEW_SKIN=<username|url>` fetches one skin for the shot.
-        // Offline test servers carry no textures property, so this is the only
-        // way to photograph the preview wearing a real skin.
+        // `REWO_PREVIEW_SKIN=<username|url>` fetches one profile's textures
+        // for the shot. Offline test servers carry no textures property, so
+        // this is the only way to photograph the preview wearing a real skin
+        // — or, since M64, a real cape.
         let mut skin = std::env::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
-            match crate::skin_fetch::resolve(&spec)
-                .and_then(|info| {
-                    let url = info.url.clone().ok_or("profile carries no skin")?;
-                    crate::skin_fetch::fetch_rgba64(&url).map(|r| (r, info.slim))
-                })
-            {
-                Ok((rgba, slim)) => {
-                    log::info!("preview: skin {spec} ({} model)", if slim { "slim" } else { "wide" });
-                    Some((rgba, slim, None))
-                }
+            let info = match crate::skin_fetch::resolve(&spec) {
+                Ok(i) => i,
                 Err(e) => {
-                    log::warn!("preview: skin {spec}: {e}");
-                    None
+                    log::warn!("preview: {spec}: {e}");
+                    return None;
+                }
+            };
+            // The two are independent: a profile may carry a cape and no
+            // skin, exactly as `SkinLoader::request` treats them.
+            let mut t = PreviewTextures::default();
+            if let Some(url) = info.url.as_ref() {
+                match crate::skin_fetch::fetch_rgba64(url) {
+                    Ok(rgba) => {
+                        log::info!(
+                            "preview: skin {spec} ({} model)",
+                            if info.slim { "slim" } else { "wide" }
+                        );
+                        t.skin = Some((rgba, info.slim));
+                    }
+                    Err(e) => log::warn!("preview: skin {spec}: {e}"),
                 }
             }
+            if let Some(url) = info.cape.as_ref() {
+                match crate::skin_fetch::fetch_cape_rgba(url) {
+                    Ok(rgba) => {
+                        log::info!("preview: cape {spec}");
+                        t.cape = Some(rgba);
+                    }
+                    Err(e) => log::warn!("preview: cape {spec}: {e}"),
+                }
+            }
+            (t.skin.is_some() || t.cape.is_some()).then_some(t)
         });
         // The headless path takes no glyph cache: the gates' golden images
         // are graded against the bitmap tooltip, and swapping the typeface
@@ -2599,6 +2736,9 @@ fn run_headless(
             &baked,
             skin.as_mut(),
             None,
+            // The headless screen renders the normal tooltip: the gates' golden
+            // images grade what a default session shows, and F3+H is not it.
+            rewo_gpu::tooltip::TooltipFlag::NORMAL,
             mouse,
             (sw, sh),
         );
@@ -2824,11 +2964,11 @@ struct LiveApp {
     /// Whether either shift is held — a shift-click in the inventory is a
     /// quick-move rather than a pickup.
     shift: bool,
-    /// The local player's skin as it sits in the **preview** pass's atlas
-    /// (M36): the raw pixels, whether the model is slim, and the UV once
-    /// uploaded. Held separately from `skins` because the two passes have
-    /// separate atlases and a UV from one is meaningless in the other.
-    preview_skin: Option<(Vec<u8>, bool, Option<[f32; 2]>)>,
+    /// The local player's textures as they sit in the **preview** pass's
+    /// atlas (M36 skin, M64 cape). Held separately from `skins` because the
+    /// two passes have separate atlases and an address from one is
+    /// meaningless in the other.
+    preview_skin: Option<PreviewTextures>,
     /// This frame's stack-count labels. Built with the icons, consumed by the
     /// text pass a few lines later — the two are separated only because the
     /// icons need `&mut gpu` and the text does not.
@@ -2853,8 +2993,24 @@ struct LiveApp {
     hotbar_slot: u8,
     /// Dirt item id (for right-click place), resolved from the item table.
     dirt_item: Option<i32>,
-    /// F3 debug overlay visible (toggled by the F3 key). Default on.
+    /// F3 debug overlay visible. Default on.
+    ///
+    /// Toggled on **release**, not press: `keyDebugModifier` and
+    /// `keyDebugOverlay` are the same key, so vanilla's `KeyboardHandler` waits
+    /// to see whether F3 was used as a chord modifier before treating it as a
+    /// toggle (`if (this.usedDebugKeyAsModifier) { clear it } else { toggle }`).
     debug: bool,
+    /// F3 is held — the `keyDebugModifier` half (M66).
+    f3_down: bool,
+    /// `usedDebugKeyAsModifier` — a chord fired while F3 was down, so its
+    /// release must not also toggle the overlay.
+    f3_used_as_modifier: bool,
+    /// `Options.advancedItemTooltips` — F3+H (M66). Vanilla persists it to
+    /// `options.txt`; Rewo has no options file, so it resets each session.
+    advanced_tooltips: bool,
+    /// `Hud.lastToolHighlight` + `toolHighlightTimer` (M66) — the held-item
+    /// name that fades in over the hotbar.
+    tool_highlight: rewo_gpu::hud::ToolHighlight,
     /// M52 module port: the legit module set, loaded from the active client
     /// profile's `modules.toml` -- the same file the launcher's Settings →
     /// Modules tab writes, so a Native instance needs no new config contract.
@@ -3076,8 +3232,35 @@ impl ApplicationHandler for LiveApp {
                         let open = !self.screen.open;
                         self.set_screen_open(open);
                     }
-                    // F3 toggles the debug overlay (edge-triggered on press).
-                    PhysicalKey::Code(KeyCode::F3) if p => self.debug = !self.debug,
+                    // F3 is a **modifier** whose release toggles the overlay
+                    // (M66). `keyDebugModifier` and `keyDebugOverlay` are the
+                    // same key, so `KeyboardHandler` defers the toggle to
+                    // `action == 0` and skips it when a chord already fired:
+                    //
+                    //   if (usedDebugKeyAsModifier) usedDebugKeyAsModifier = false;
+                    //   else                        toggleDebugOverlay();
+                    //
+                    // Toggling on press instead would flip the overlay every
+                    // time you pressed F3+H.
+                    PhysicalKey::Code(KeyCode::F3) => {
+                        self.f3_down = p;
+                        if !p {
+                            if self.f3_used_as_modifier {
+                                self.f3_used_as_modifier = false;
+                            } else {
+                                self.debug = !self.debug;
+                            }
+                        }
+                    }
+                    // F3+H — `keyDebugShowAdvancedTooltips`.
+                    PhysicalKey::Code(KeyCode::KeyH) if p && self.f3_down => {
+                        self.advanced_tooltips = !self.advanced_tooltips;
+                        self.f3_used_as_modifier = true;
+                        log::info!(
+                            "debug.advanced_tooltips.{}",
+                            if self.advanced_tooltips { "on" } else { "off" }
+                        );
+                    }
                     // F2 captures a screenshot — vanilla's `keyScreenshot`,
                     // GLFW key 291. Only the request is recorded here; the
                     // capture itself happens after the frame.
@@ -3307,6 +3490,17 @@ impl LiveApp {
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
+            // `Hud.tick`'s held-item label clock (M66) — once per client tick,
+            // and it reads the selected stack *after* the tick that may have
+            // changed it, exactly as vanilla's `Gui.tick` does.
+            let label = self
+                .baked
+                .as_ref()
+                .and_then(|b| selected_item_label(session, &self.items, &b.item_names));
+            self.tool_highlight.tick(
+                label.as_ref().map(|(id, n)| (*id, n.as_str())),
+                NOTIFICATION_DISPLAY_TIME,
+            );
             ran_tick = true;
         }
         if let Some(reason) = session.disconnect.clone() {
@@ -3556,6 +3750,7 @@ impl LiveApp {
                     baked,
                     self.preview_skin.as_mut(),
                     self.glyphs.as_mut(),
+                    rewo_gpu::tooltip::TooltipFlag::of(self.advanced_tooltips),
                     self.screen.mouse,
                     (sw, sh),
                 );
@@ -3649,6 +3844,18 @@ impl LiveApp {
         let px = gui_px(extent.width, extent.height);
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
         let mut text = build_text(session, px, extent.height as f32, fps, self.debug);
+        // M66: the held-item name over the hotbar. Needs the font's advances
+        // to centre itself, so it is built here rather than in `build_text`.
+        if let Some(advance) = state.world_renderer.font_advance() {
+            text.extend(selected_item_name_line(
+                session,
+                &self.items,
+                &self.tool_highlight,
+                &advance,
+                px,
+                (extent.width as f32, extent.height as f32),
+            ));
+        }
         // The stack counts are text like any other line, drawn after the icons
         // because the text pass runs last.
         text.extend(self.screen_labels.drain(..));
@@ -3788,6 +3995,10 @@ fn run_windowed(
         hotbar_slot: 0,
         dirt_item,
         debug: true,
+        f3_down: false,
+        f3_used_as_modifier: false,
+        advanced_tooltips: false,
+        tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         modules: crate::modules::Modules::load(),
         glyphs: load_velvet_fonts(),
         gestures: GestureTracker::default(),
@@ -3942,6 +4153,110 @@ fn build_text(
         });
     }
     lines
+}
+
+/// `options.notificationDisplayTime` — the multiplier on the 40-tick timer.
+///
+/// Rewo has no options file, so this is vanilla's default (`1.0`, the middle
+/// of an `IntRange(5, 100)` mapped through `v / 10.0`), which makes the label
+/// hold for two seconds.
+pub const NOTIFICATION_DISPLAY_TIME: f64 = 1.0;
+
+/// `ItemStack.getHoverName()` for the selected hotbar stack, as the two fields
+/// `Hud.tick`'s re-trigger compares (M66).
+///
+/// `None` is an empty hand, which zeroes the timer.
+fn selected_item_label(
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+) -> Option<(i32, String)> {
+    let stack = session.inventory.held()?;
+    let translated = items.name(stack.item_id).and_then(|n| names.get(n))?;
+    let name = session
+        .inventory
+        .text_of(stack)
+        .and_then(|t| t.name.clone())
+        .unwrap_or_else(|| translated.clone());
+    Some((stack.item_id, name))
+}
+
+/// `Hud.extractSelectedItemName` (M66) — the held-item label over the hotbar.
+///
+/// Vanilla's call site skips it entirely in spectator mode:
+///
+/// ```java
+/// if (this.minecraft.gameMode.getPlayerMode() != GameType.SPECTATOR) {
+///    this.extractSelectedItemName(graphics);
+/// }
+/// ```
+///
+/// **The ITALIC that `CUSTOM_NAME` adds is not rendered.** The HUD's text pass
+/// carries one colour per line and has no italic face, so a renamed stack's
+/// label shows its name and its rarity colour but stands upright. The colour
+/// and the fade do carry, which is the visible bulk of it — and the same gap
+/// M42 records for the bitmap tooltip fallback.
+///
+/// The backdrop (`textWithBackdrop`'s `fill`) is likewise absent, and there it
+/// is not a divergence: `getBackgroundColor(0.0F)` is zero at vanilla's
+/// defaults, so vanilla draws no fill either. See
+/// [`rewo_gpu::hud::text_backdrop_rect`].
+fn selected_item_name_line(
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    highlight: &rewo_gpu::hud::ToolHighlight,
+    advance: &[u8; 256],
+    px: f32,
+    (screen_w, screen_h): (f32, f32),
+) -> Option<rewo_gpu::world::OwnedTextLine> {
+    if session
+        .own_game_mode()
+        .is_some_and(rewo_net::play::GameMode::is_spectator)
+    {
+        return None;
+    }
+    let (item_id, name) = highlight.showing()?;
+    let alpha = rewo_gpu::hud::tool_highlight_alpha(highlight.timer);
+    // `if (alpha > 0)` — the draw's own guard, separate from the timer's.
+    if alpha <= 0 {
+        return None;
+    }
+    let width = rewo_gpu::text::width(name, advance);
+    // `canHurtPlayer()` is `localPlayerMode.isSurvival()`, and **that is
+    // SURVIVAL || ADVENTURE**. A server that never sent the local player an
+    // `UPDATE_GAME_MODE` leaves it unknown, and survival is the assumption the
+    // rest of Rewo's HUD already makes — it draws hearts unconditionally.
+    let can_hurt = session
+        .own_game_mode()
+        .map(rewo_net::play::GameMode::is_survival)
+        .unwrap_or(true);
+    let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
+    let (x, y) = rewo_gpu::hud::selected_item_name_pos(gw, gh, width, can_hurt);
+    // The rarity colour is read off the stack the label names. A stack that
+    // changed since the last tick is a different label anyway, so the mismatch
+    // is not reachable in practice; white is the fallback rather than the
+    // wrong rarity's colour.
+    let color = session
+        .inventory
+        .held()
+        .filter(|s| s.item_id == item_id)
+        .map(|s| {
+            let text = session.inventory.text_of(s);
+            rarity_color(stack_rarity(
+                items.name(s.item_id),
+                text.and_then(|t| t.rarity),
+                text.is_some_and(|t| t.is_enchanted),
+            ))
+        })
+        .unwrap_or([1.0, 1.0, 1.0]);
+    Some(rewo_gpu::world::OwnedTextLine {
+        x: x as f32 * px,
+        y: y as f32 * px,
+        px,
+        color,
+        alpha: alpha as f32 / 255.0,
+        text: name.to_string(),
+    })
 }
 
 /// Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
@@ -4659,6 +4974,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     }
 }
@@ -6436,6 +6752,36 @@ pub fn hotbar_models(
     })
 }
 
+/// The inventory preview's cape, from its slot in the **preview** pass's own
+/// atlas (M64).
+///
+/// Extracted so `capeshot` grades the decision the client actually makes
+/// rather than a restatement of it — M45's and M41's gates both quietly
+/// stopped testing their subject by reimplementing a slice of the app.
+///
+/// All three angles are zero, which is not a simplification of vanilla so
+/// much as the same consequence as the preview's still legs:
+/// `capeFlap`/`capeLean`/`capeLean2` are driven entirely by the gap between
+/// the player and their lagging cloak anchor, and a player standing in an
+/// open inventory has let that gap close. What is genuinely missing is the
+/// *moving* case, for the reason the limbs are missing — nothing in Rewo
+/// consumes the local player's animation state.
+///
+/// `chest_humanoid` is false because the preview draws no armour at all
+/// (`armor: [None; 4]`): nothing there can be wearing a chestplate to shift
+/// the cape clear, and by the same token nothing can be wearing an elytra to
+/// suppress it — so `CapeLayer`'s other two gates have nothing to act on.
+pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entities::CapeDraw> {
+    origin.map(|origin| rewo_gpu::entities::CapeDraw {
+        origin,
+        flap: 0.0,
+        lean: 0.0,
+        lean2: 0.0,
+        chest_humanoid: false,
+        wavy: None,
+    })
+}
+
 /// The player model shown in the inventory screen's window (M36).
 ///
 /// `extractEntityInInventoryFollowsMouse` poses it from the cursor: the body
@@ -6447,10 +6793,14 @@ pub fn hotbar_models(
 /// from the live player's render state, so a walking player's legs move in the
 /// preview too; that would need the local player's animation state, which
 /// nothing else in Rewo consumes yet.
+///
+/// **The cape (M64)** hangs from `cape_origin`, an address in the preview
+/// pass's own atlas — see [`preview_cape`] for why its three angles are zero.
 fn preview_draw<'a>(
     session: &PlaySession,
     skin: Option<[f32; 2]>,
     slim: bool,
+    cape_origin: Option<(u32, u32)>,
     held: [Option<&'a str>; 2],
     w: f32,
     h: f32,
@@ -6509,7 +6859,8 @@ fn preview_draw<'a>(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
-        cape: None,
+        sheared: false,
+        cape: preview_cape(cape_origin),
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
@@ -6921,8 +7272,10 @@ fn apply_screen(
     items: &rewo_data::items::Items,
     gui: &mut GuiItemState,
     baked: &assets::BakedAssets,
-    skin: Option<&mut (Vec<u8>, bool, Option<[f32; 2]>)>,
+    skin: Option<&mut PreviewTextures>,
     mut glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    // `options.advancedItemTooltips` — F3+H (M66).
+    flag: rewo_gpu::tooltip::TooltipFlag,
     mouse: (f64, f64),
     (w, h): (f32, f32),
 ) -> (
@@ -6955,7 +7308,12 @@ fn apply_screen(
                 stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
             }
         }
-        wr.set_item_bars(item_bars(&stacks, items));
+        // `!has(UNBREAKABLE)`. No item's *prototype* carries the component in
+    // 26.2 — it is only ever patched on — so the patch flag is the whole
+    // answer here.
+    wr.set_item_bars(item_bars(&stacks, items, |s| {
+        session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
+    }));
     }
 
     // The tooltip's box and its one line. Both need the font's advances, so a
@@ -6965,8 +7323,12 @@ fn apply_screen(
             &session.inventory,
             items,
             &baked.item_names,
+            &baked.lang,
             &session.enchantments,
             &baked.enchantment_text,
+            &session.stack_details,
+            session.component_names.as_deref(),
+            flag,
             &advance,
             glyphs.as_deref_mut(),
             mouse,
@@ -6993,18 +7355,33 @@ fn apply_screen(
                 .offhand()
                 .and_then(|s| items.name(s.item_id)),
         ];
-        // The skin goes into the preview's own atlas the first time the
-        // screen opens, and stays there.
-        let (skin_uv, slim) = match skin {
-            Some(entry) => {
-                if entry.2.is_none() {
-                    entry.2 = wr.upload_preview_skin(gpu, &entry.0);
+        // The skin and the cape go into the preview's *own* atlas the first
+        // time the screen opens, and stay there. Both have to be uploaded
+        // again here rather than reusing the world pass's addresses: the two
+        // passes hold separate atlases, and a cape address is an absolute
+        // texel origin, so a borrowed one samples a fixed wrong rectangle.
+        let (skin_uv, slim, cape_origin) = match skin {
+            Some(t) => {
+                if t.skin_uv.is_none() {
+                    if let Some((rgba, _)) = t.skin.as_ref() {
+                        t.skin_uv = wr.upload_preview_skin(gpu, rgba);
+                    }
                 }
-                (entry.2, entry.1)
+                if t.cape_origin.is_none() {
+                    if let Some(rgba) = t.cape.as_ref() {
+                        t.cape_origin = wr.upload_preview_cape(gpu, rgba);
+                    }
+                }
+                (
+                    t.skin_uv,
+                    t.skin.as_ref().is_some_and(|(_, slim)| *slim),
+                    t.cape_origin,
+                )
             }
-            None => (None, false),
+            None => (None, false, None),
         };
-        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse);
+        let (draw, vp, rect) =
+            preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
         if let Err(e) = wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>()) {
             log::warn!("live: preview held items: {e}");
         }
@@ -7140,14 +7517,11 @@ fn velvet_line_width(
 fn item_bars(
     slots: &[(Option<rewo_world::inventory::ItemSlot>, (f32, f32, f32))],
     items: &rewo_data::items::Items,
+    unbreakable: impl Fn(rewo_world::inventory::ItemSlot) -> bool,
 ) -> Vec<rewo_gpu::container::ItemBar> {
     let mut out = Vec::new();
     for (stack, (x, y, size)) in slots {
         let Some(stack) = stack else { continue };
-        let damage = stack.damage.unwrap_or(0);
-        if damage <= 0 {
-            continue;
-        }
         let max = stack
             .max_damage
             .or_else(|| items.name(stack.item_id).and_then(rewo_data::item_props_table::max_damage));
@@ -7157,6 +7531,16 @@ fn item_bars(
         let Some(max) = max.filter(|m| *m > 0) else {
             continue;
         };
+        // `isBarVisible()` is `isDamaged()`, and that is
+        // `has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE) && damage > 0`
+        // — so an **Unbreakable** tool never shows one however much damage it
+        // carries (M66 corrected this; M41 read the damage alone). The damage
+        // is also clamped to the maximum, which is what stops a server sending
+        // more than the item can take from producing a negative width.
+        let damage = stack.damage.unwrap_or(0).clamp(0, max);
+        if damage <= 0 || unbreakable(*stack) {
+            continue;
+        }
         out.push(rewo_gpu::container::ItemBar {
             x: *x,
             y: *y,
@@ -7299,12 +7683,146 @@ pub(crate) fn enchantment_lines(
         .collect()
 }
 
+/// `ItemContainerContents.addToTooltip` (M66) — the shulker-box preview.
+///
+/// The line count comes from [`rewo_gpu::tooltip::container_plan`], which is
+/// the loop verbatim; what happens here is the translation, and the two keys
+/// it needs (`item.container.item_count`, `item.container.more_items`) exist
+/// **only after M54's deprecation pass** — `en_us.json` still carries them
+/// under their pre-rename `container.shulkerBox.*` names, so a raw read of the
+/// language file produces no container lines at all.
+///
+/// A present stack whose item id this session cannot name drops the **whole**
+/// block rather than one line: the remainder is computed from the stack count,
+/// so omitting a line silently makes "and 2 more…" wrong as well.
+pub(crate) fn container_lines(
+    slots: &[Option<rewo_net::item_stack::ContainerSlot>],
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_gpu::tooltip::Line> {
+    use rewo_gpu::tooltip::Span;
+    // `nonEmptyItemsStream` — a gap is a real slot position, and the tooltip
+    // is the one consumer that does not care. The filter belongs here rather
+    // than in the decode, which is exactly why M63 keeps the gaps.
+    let entries: Vec<&rewo_net::item_stack::ContainerSlot> = slots.iter().flatten().collect();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let (Some(count_key), Some(more_key)) = (
+        lang.get("item.container.item_count"),
+        lang.get("item.container.more_items"),
+    ) else {
+        return Vec::new();
+    };
+    let plan = rewo_gpu::tooltip::container_plan(entries.len());
+    let mut out = Vec::new();
+    for e in entries.iter().take(plan.shown) {
+        let Some(translated) = items.name(e.item_id).and_then(|n| names.get(n)) else {
+            return Vec::new();
+        };
+        out.push(vec![Span::new(
+            rewo_data::lang::format(
+                count_key,
+                &[e.hover_name(translated), &e.count.to_string()],
+            ),
+            GRAY_TEXT,
+        )]);
+    }
+    if plan.more > 0 {
+        // `.withStyle(ChatFormatting.ITALIC)` — expressible since M52b's span
+        // model, and rendered as the italic face by the Velvet pass.
+        out.push(vec![Span::new(
+            rewo_data::lang::format(more_key, &[&plan.more.to_string()]),
+            GRAY_TEXT,
+        )
+        .italic()]);
+    }
+    out
+}
+
+/// `ItemStack.addDetailsToTooltip`'s advanced block, translated (M66).
+///
+/// The order and the arguments are [`rewo_gpu::tooltip::advanced_lines`]'s;
+/// this resolves the two keys and the registry id, which is a **literal** and
+/// therefore never goes through the language file.
+pub(crate) fn advanced_tooltip_lines(
+    lines: &[rewo_gpu::tooltip::AdvancedLine],
+    registry_key: &str,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_gpu::tooltip::Line> {
+    use rewo_gpu::tooltip::{AdvancedLine, Span, DARK_GRAY};
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            AdvancedLine::Durability { remaining, max } => {
+                let key = lang.get("item.durability")?;
+                Some(vec![Span::new(
+                    rewo_data::lang::format(key, &[&remaining.to_string(), &max.to_string()]),
+                    WHITE_TEXT,
+                )])
+            }
+            AdvancedLine::RegistryId => {
+                Some(vec![Span::new(registry_key.to_string(), DARK_GRAY)])
+            }
+            AdvancedLine::Components { count } => {
+                let key = lang.get("item.components")?;
+                Some(vec![Span::new(
+                    rewo_data::lang::format(key, &[&count.to_string()]),
+                    DARK_GRAY,
+                )])
+            }
+        })
+        .collect()
+}
+
+/// `PatchedDataComponentMap.has(type)` for a decoded stack (M66).
+///
+/// The prototype answers first and the patch overrides it, which is what
+/// separates an addition from an override for
+/// [`rewo_net::item_stack::StackComponents::component_count`] — and is also
+/// how `isDamageableItem`'s three `has(...)` calls are resolved.
+///
+/// `None` means unanswerable: either the item is outside this build's
+/// prototype table or the component id has no name in the runtime registry.
+pub(crate) fn stack_has_component(
+    item: &str,
+    component: &str,
+    detail: Option<&rewo_net::item_stack::StackDetail>,
+    registry: Option<&rewo_data::components::DataComponentRegistry>,
+) -> Option<bool> {
+    let mut has = rewo_data::item_components_table::prototype_has_component(item, component)?;
+    if let (Some(d), Some(reg)) = (detail, registry) {
+        for &id in &d.added {
+            if reg.name_of(id)? == component {
+                has = true;
+            }
+        }
+        for &id in &d.removed {
+            if reg.name_of(id)? == component {
+                has = false;
+            }
+        }
+    }
+    Some(has)
+}
+
+/// `ChatFormatting.GRAY` — the container's own preview lines.
+const GRAY_TEXT: [f32; 3] = [170.0 / 255.0, 170.0 / 255.0, 170.0 / 255.0];
+/// An unstyled tooltip line, which `GuiGraphics.tooltip` draws in white.
+const WHITE_TEXT: [f32; 3] = [1.0, 1.0, 1.0];
+
+#[allow(clippy::too_many_arguments)]
 fn screen_tooltip(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
     enchant_registry: &[rewo_net::enchantment_parse::EnchantmentDef],
     enchant_text: &rewo_data::enchantments::EnchantmentText,
+    details: &rewo_net::item_stack::StackDetails,
+    component_registry: Option<&rewo_data::components::DataComponentRegistry>,
+    flag: rewo_gpu::tooltip::TooltipFlag,
     advance: &[u8; 256],
     glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
     mouse: (f64, f64),
@@ -7369,6 +7887,52 @@ fn screen_tooltip(
                 UNBREAKABLE_COLOR,
             )]);
         }
+    }
+    // M66 stage 4: `minecraft:container`'s preview. Vanilla's component
+    // tooltips run in `DataComponents` registration order and `container`
+    // comes after the lore block, which is where this sits.
+    let detail = details.get(stack.components);
+    if let Some(d) = detail {
+        lines.extend(container_lines(&d.container, items, names, lang));
+    }
+    // M66 stage 3: the advanced block, last of everything a component adds.
+    {
+        let has = |c: &str| stack_has_component(item_name, c, detail, component_registry);
+        let durability = rewo_gpu::tooltip::DurabilityState {
+            damage: stack.damage.unwrap_or(0),
+            max: stack
+                .max_damage
+                .or_else(|| rewo_data::item_props_table::max_damage(item_name))
+                .unwrap_or(0),
+            has_max_damage: has("minecraft:max_damage").unwrap_or(false),
+            has_damage: has("minecraft:damage").unwrap_or(false),
+            unbreakable: has("minecraft:unbreakable").unwrap_or(false),
+        };
+        // `PatchedDataComponentMap.size()`. Both halves can decline — an item
+        // outside the prototype table, or a component id with no name — and
+        // either way the line is dropped rather than guessed.
+        let count = match detail {
+            Some(d) => rewo_net::item_stack::StackComponents {
+                added: d.added.clone(),
+                removed: d.removed.clone(),
+                ..Default::default()
+            }
+            .component_count(
+                || rewo_data::item_components_table::prototype_component_count(item_name),
+                |id| {
+                    let name = component_registry?.name_of(id)?;
+                    rewo_data::item_components_table::prototype_has_component(item_name, name)
+                },
+            ),
+            // No patch at all: the merged size is the prototype's.
+            None => rewo_data::item_components_table::prototype_component_count(item_name),
+        };
+        // `display.shows(DataComponents.DAMAGE)` — Rewo does not interpret
+        // `minecraft:tooltip_display`, so this is `TooltipDisplay.DEFAULT`,
+        // which shows everything. A server that hid the damage line would
+        // still see it here.
+        let advanced = rewo_gpu::tooltip::advanced_lines(flag, durability, true, count);
+        lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
     }
 
     // Measure with the font that will DRAW. Once the tooltip renders in
@@ -7943,7 +8507,12 @@ fn apply_hotbar_icons(
     let stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
         .map(|i| (session.inventory.hotbar(i), slots[i]))
         .collect();
-    wr.set_item_bars(item_bars(&stacks, items));
+    // `!has(UNBREAKABLE)`. No item's *prototype* carries the component in
+    // 26.2 — it is only ever patched on — so the patch flag is the whole
+    // answer here.
+    wr.set_item_bars(item_bars(&stacks, items, |s| {
+        session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
+    }));
 }
 
 /// Place, shade and upload an arbitrary list of icons (M35).
