@@ -190,6 +190,7 @@ EwoLoader may ship the jar.
 | 60M | **Jade** | `CC-BY-NC-SA-4.0` | block info ("what am I looking at") |
 | 13M | **JourneyMap** | `LicenseRef-All-Rights-Reserved` | minimap |
 | 3.9M | **WTHIT** | `CC-BY-NC-SA-4.0` | block info |
+| n/a | **Wavey Capes** | `LicenseRef-tr7zw-Protective-License` | cloth-simulated capes |
 
 **~509M downloads, and every one of the four biggest solved categories is in
 here.** NonCommercial (CC-BY-NC-SA) is not OSI-open either — it discriminates
@@ -198,6 +199,17 @@ surveyed population entirely, and why the `Block info under crosshair`
 cluster measures a near-empty 2 mods despite the category being worth 64M.
 **An empty-looking cluster may mean the category is licensed out of the
 population, not that nobody wants it.**
+
+**Wavey Capes is the worked example, added 2026-07-29.** It does not appear
+anywhere in the surveyed population, and the reason is this table: same author
+and same LicenseRef as EntityCulling, plus a NonCommercial clause in substance
+(*"may not be used to get a) a commercial advantage, or b) monetary
+compensation"*). It was checked because the repo owner asked for the feature by
+name — the metadata and the LICENSE text were read to determine the terms, and
+nothing else was. Rewo builds it clean-room instead; see
+`REWO_WAVY_CAPE_SPEC.md`. **A behaviour is not protected, only its expression** —
+constrained-particle cloth is Verlet (1967), Provot (1995) and Jakobsen (2001),
+decades older than the mod.
 
 Polyform Shield permits use and redistribution but carves out **competing**
 use. Rewo is a competing renderer. **EwoLoader bundling the jars is a separate
