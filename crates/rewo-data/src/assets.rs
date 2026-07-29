@@ -287,6 +287,11 @@ pub struct BakedAssets {
     /// carry no skin data, so every player wears it until online-mode
     /// profile fetching lands).
     pub mob_textures: Vec<MobTexture>,
+    /// Vanilla's metadata-driven alternates (M64) — the cat's ten other coats,
+    /// the wolf's eight other variants and their tame sheets, and so on. Same
+    /// shape as [`MobTexture`] plus the variant id that addresses it, because
+    /// they ride M57b's ETF variant machinery into the same atlas.
+    pub mob_variant_textures: Vec<MobVariantTexture>,
     /// Held-item models (M22): every resolvable item's quads + textures.
     pub held_items: crate::held_items::HeldItems,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
@@ -352,6 +357,18 @@ pub fn decode_entity_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 /// One decoded mob skin: RGBA8 + dimensions, keyed for the model registry.
 pub struct MobTexture {
     pub key: &'static str,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// One of vanilla's own metadata-driven alternates (M64).
+pub struct MobVariantTexture {
+    /// The mob-texture key it varies (`"cat"`, `"wolf"`, …).
+    pub key: &'static str,
+    /// `rewo_data::mob_variants` variant id — always in the reserved high
+    /// band, so it cannot collide with a pack's ETF rule index.
+    pub index: u16,
     pub w: u32,
     pub h: u32,
     pub rgba: Vec<u8>,
@@ -757,6 +774,28 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             None => log::warn!("rewo-data: {path} missing — {key} renders as a capsule"),
         }
     }
+    // M64: vanilla's metadata-driven alternates. Each must be its base's size,
+    // because it reuses the base's UVs — the same constraint M57b puts on a
+    // pack's ETF alternates, and every vanilla one satisfies it by
+    // construction. One that does not is dropped rather than rendered
+    // scrambled.
+    let mut mob_variant_textures = Vec::new();
+    for (key, index, path) in crate::mob_variants::specs() {
+        let Some((w, h)) = mob_texture_size(key) else {
+            log::warn!("rewo-data: variant {path} names unknown mob key {key}");
+            continue;
+        };
+        match bake_entity_tex(&mut jar, path, w, h) {
+            Some(rgba) => mob_variant_textures.push(MobVariantTexture {
+                key,
+                index,
+                w,
+                h,
+                rgba,
+            }),
+            None => log::warn!("rewo-data: {path} missing — {key} keeps its base texture there"),
+        }
+    }
     let hud = bake_hud(&mut jar);
     let container = bake_container(&mut jar);
     let lang = crate::lang::Language::load(client_jar);
@@ -1042,6 +1081,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         dry_foliage_colormap,
         font,
         mob_textures,
+        mob_variant_textures,
         hud,
         container,
         celestial,

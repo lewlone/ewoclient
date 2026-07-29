@@ -121,6 +121,40 @@ pub struct EntityMeta {
     /// accessor is 18. The kind gate lives in `apply_set_entity_data`;
     /// `Creaking.IS_TEARING_DOWN` shares the index with a different serializer.
     pub byte18: Option<u8>,
+    /// Index 18 **INT** — `Axolotl.DATA_VARIANT` (M64). `Axolotl extends
+    /// Animal`, so its first own accessor is 18: Entity 0..7, LivingEntity
+    /// 8..14, Mob 15, PathfinderMob none, AgeableMob 16 + 17, Animal none.
+    /// Kind-gated by the caller; the BYTE and the FROG_VARIANT at the same
+    /// index are separated here by serializer.
+    pub int18: Option<i32>,
+    /// Index 19 **INT** — `Horse.DATA_ID_TYPE_VARIANT` (M64). `Horse extends
+    /// AbstractHorse extends Animal`, and `AbstractHorse` declares exactly one
+    /// accessor (`DATA_ID_FLAGS`, 18), so the horse's own is 19. The low byte
+    /// is the coat and the high byte the markings.
+    pub int19: Option<i32>,
+    /// Index 21 **INT** — `Llama.DATA_VARIANT_ID` (M64). `Llama extends
+    /// AbstractChestedHorse extends AbstractHorse`: 18 flags, 19 chest, 20
+    /// `DATA_STRENGTH_ID`, 21 the variant.
+    pub int21: Option<i32>,
+    /// Index 20, **CAT_VARIANT** serializer (id 21) — `Cat.DATA_VARIANT_ID`
+    /// (M64), a raw `minecraft:cat_variant` registry id.
+    ///
+    /// `Cat extends TamableAnimal`, which adds two accessors of its own
+    /// (`DATA_FLAGS_ID` 18, `DATA_OWNERUUID_ID` 19) on top of `Animal`'s 18,
+    /// so the cat's first is 20. **The serializer alone would have been
+    /// enough** — `EntityDataSerializers.CAT_VARIANT` has exactly one
+    /// claimant in the whole game — but it is keyed on `(index, serializer)`
+    /// like every other field here, so a slot that moves fails loudly.
+    pub cat_variant: Option<i32>,
+    /// Index 23, **WOLF_VARIANT** serializer (id 25) — `Wolf.DATA_VARIANT_ID`
+    /// (M64). `Wolf` declares `DATA_INTERESTED_ID` 20, `DATA_COLLAR_COLOR` 21
+    /// and `DATA_ANGER_END_TIME` 22 first, so the variant is 23.
+    pub wolf_variant: Option<i32>,
+    /// Index 18, **FROG_VARIANT** serializer (id 27) — `Frog.DATA_VARIANT_ID`
+    /// (M64). `Frog extends Animal`, so 18 — the same slot the sheep's wool
+    /// byte and the axolotl's int variant use, and here too it is the
+    /// serializer that separates them.
+    pub frog_variant: Option<i32>,
     /// `ItemEntity.DATA_ITEM` — index 8, **ITEM_STACK** serializer (id 7).
     ///
     /// Index 8 is shared with `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, which is
@@ -211,6 +245,16 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             (17, 0) => meta.byte17 = r.u8().ok(),
             (17, 8) => meta.bool17 = r.u8().ok().map(|b| b != 0),
             (18, 0) => meta.byte18 = r.u8().ok(),
+            // M64's variant slots. Index 18 now has three readings — BYTE
+            // (sheep wool / tamable flags), INT (axolotl) and FROG_VARIANT —
+            // and the serializer separates all three; only the two BYTE
+            // claimants need the caller's kind gate.
+            (18, 1) => meta.int18 = r.varint().ok(),
+            (18, 27) => meta.frog_variant = r.varint().ok(),
+            (19, 1) => meta.int19 = r.varint().ok(),
+            (20, 21) => meta.cat_variant = r.varint().ok(),
+            (21, 1) => meta.int21 = r.varint().ok(),
+            (23, 25) => meta.wolf_variant = r.varint().ok(),
             _ => {
                 if !skip_value_with(r, ty, components) {
                     break; // unknown/complex type — stop (already have ours)

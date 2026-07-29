@@ -2532,6 +2532,8 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             creaking: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,
+            // M64: nor does a texture variant; none of the six is a humanoid.
+            variant_kinds: Default::default(),
             classes: Some(&ctx.classes),
             components: Some(ctx.wire.components),
         },

@@ -32,6 +32,7 @@ pub mod item_models;
 pub mod item_props_table;
 pub mod item_tags;
 pub mod lang;
+pub mod mob_variants;
 pub mod packets;
 pub mod particle_types;
 pub mod server_jar;

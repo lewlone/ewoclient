@@ -191,6 +191,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    // M64: the six mobs whose texture a metadata field chooses. An id that
+    // does not resolve leaves that mob on its baked texture.
+    session.variant_type_ids = rewo_net::VariantKinds {
+        cat: data.entity_types.id_of("minecraft:cat"),
+        wolf: data.entity_types.id_of("minecraft:wolf"),
+        frog: data.entity_types.id_of("minecraft:frog"),
+        axolotl: data.entity_types.id_of("minecraft:axolotl"),
+        horse: data.entity_types.id_of("minecraft:horse"),
+        llama: data.entity_types.id_of("minecraft:llama"),
+    };
     // M61: opt-in cloth capes. Off leaves `EntityTable` allocating and
     // ticking nothing, so the vanilla cape path is exactly M60's.
     if wavy_cape_requested(args.wavy_cape) {
@@ -1494,6 +1504,62 @@ fn etf_variant(
     etf.pick(key, &props) as u16
 }
 
+/// Vanilla's own metadata-driven texture variant for one entity (M64).
+///
+/// 0 — the baked base texture — for a mob that has none, for one whose server
+/// never sent one, and for one whose variant names a texture the jar does not
+/// ship. That last case is the M57b rule: a variant we cannot resolve leaves
+/// the mob on its vanilla sheet rather than painting an invented one.
+///
+/// **The value's units depend on the mob and the kind is what says which.**
+/// Cat, wolf and frog carry a raw datapack-registry id, so this walks the
+/// registry the server synced and joins on the *texture path* — never on the
+/// id, which is the server's to choose (REWO_PLAN §0.0, and M16/M42's rule).
+/// Horse, llama and axolotl carry an enum ordinal, so those are transcribed
+/// tables, each with its own out-of-bounds strategy.
+///
+/// The wolf is the one that reads a second field: `Wolf.getTexture` picks
+/// `assets.tame` over `assets.wild` on `isTame()`, which is bit 0x04 of the
+/// index-18 byte. Its third sheet, `angry`, is not chosen here — see
+/// `rewo_data::mob_variants`.
+pub(crate) fn vanilla_variant(
+    kind: EntityModelKind,
+    id: i32,
+    session: &PlaySession,
+) -> u16 {
+    let Some(v) = session.world.entities.variant(id) else {
+        return 0;
+    };
+    let registry = |defs: &[rewo_net::variant_parse::MobVariantDef], tame: bool| {
+        usize::try_from(v)
+            .ok()
+            .and_then(|i| defs.get(i))
+            .and_then(|d| d.texture(tame))
+            .and_then(rewo_data::mob_variants::variant_id)
+            .unwrap_or(0)
+    };
+    match kind {
+        EntityModelKind::Cat => registry(&session.cat_variants, false),
+        EntityModelKind::Wolf => {
+            registry(&session.wolf_variants, session.world.entities.is_tame(id))
+        }
+        EntityModelKind::Frog => registry(&session.frog_variants, false),
+        EntityModelKind::Axolotl => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::axolotl_texture(v))
+                .unwrap_or(0)
+        }
+        EntityModelKind::Llama => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        EntityModelKind::Horse => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::horse_texture(v))
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
@@ -1722,13 +1788,15 @@ fn collect_entities<'a>(
             // rides entity_event 61 and the creaking's glow rides metadata
             // IS_ACTIVE — both resolved below.
             emissive: emissive_state(session, id, kind, now),
-            // ETF (M52): the pack's rules choose a texture per entity, keyed on
-            // its UUID so the choice is stable and a herd varies. No pack (or
-            // no rule for this mob) → 0, the vanilla texture.
-            variant: if etf.is_empty() {
-                0
-            } else {
-                etf_variant(etf, kind, e, id, session, cube_size)
+            // Two things can move a mob off its baked texture, and vanilla's
+            // own wins. M64's variant is what the *server* says this cat or
+            // horse is; M57b's ETF rule is a pack randomising the base
+            // texture — and a black cat is not drawing that texture at all,
+            // so the two never mean the same slot. Vanilla first, ETF only
+            // where vanilla has nothing to say.
+            variant: match vanilla_variant(kind, id, session) {
+                0 if !etf.is_empty() => etf_variant(etf, kind, e, id, session, cube_size),
+                v => v,
             },
             // The sheep's wool colour (`Sheep.DATA_WOOL_ID`). `None` is
             // vanilla's `DyeColor.WHITE` default, which still tints.
@@ -1820,8 +1888,11 @@ pub(crate) fn init_entities_maybe_cem(
 
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
     MobTextures {
-        // No pack: no alternates. `entity_textures_with` fills this in.
-        variants: Vec::new(),
+        // M64: vanilla's own metadata-driven alternates are always present —
+        // they are jar textures, not a pack's, so they do not wait for one.
+        // `entity_textures_with` appends a pack's ETF alternates after these;
+        // the two live in disjoint id bands.
+        variants: vanilla_variants(baked),
         entries: baked
             .mob_textures
             .iter()
@@ -1851,19 +1922,41 @@ pub(crate) fn entity_textures_with<'a>(
     etf: &'a rewo_data::etf::EtfPack,
 ) -> MobTextures<'a> {
     MobTextures {
-        variants: etf
-            .textures
-            .iter()
-            .map(|t| rewo_gpu::entities::VariantTexEntry {
-                base_key: t.key,
-                index: t.index,
-                w: t.w,
-                h: t.h,
-                rgba: &t.rgba,
-            })
+        variants: vanilla_variants(baked)
+            .into_iter()
+            .chain(
+                etf.textures
+                    .iter()
+                    .map(|t| rewo_gpu::entities::VariantTexEntry {
+                        base_key: t.key,
+                        index: t.index,
+                        w: t.w,
+                        h: t.h,
+                        rgba: &t.rgba,
+                    }),
+            )
             .collect(),
         ..entity_textures(baked)
     }
+}
+
+/// Vanilla's metadata-driven alternates as atlas entries (M64).
+///
+/// They are appended *after* the base textures in the packer's input, exactly
+/// as a pack's ETF alternates are, so every existing texel address is
+/// unchanged and `mobshot --check` still grades the geometry it graded before.
+fn vanilla_variants(baked: &assets::BakedAssets) -> Vec<rewo_gpu::entities::VariantTexEntry<'_>> {
+    baked
+        .mob_variant_textures
+        .iter()
+        .map(|t| rewo_gpu::entities::VariantTexEntry {
+            base_key: t.key,
+            index: t.index as u32,
+            w: t.w,
+            h: t.h,
+            rgba: &t.rgba,
+        })
+        .collect()
 }
 
 pub(crate) fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {

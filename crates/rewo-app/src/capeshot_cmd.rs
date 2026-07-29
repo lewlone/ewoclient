@@ -56,6 +56,11 @@ const H: u32 = 256;
 /// was added below everything, so every address under it is unmoved.
 const ATLAS_H_BEFORE_M60: u32 = 1408;
 
+/// The rows M64 added to the **mob shelf region** for vanilla's 42 metadata
+/// variant sheets. Unlike M22/M48/M60's bands this one is not at the bottom,
+/// so it slid every dynamic pool — including the cape's — down with it.
+const M64_SHELF_GROWTH: u32 = 128;
+
 #[derive(ClapArgs)]
 pub struct CapeshotArgs {
     #[arg(long, default_value_t = false)]
@@ -532,7 +537,10 @@ fn player_table(chest: Option<i32>) -> EntityTable {
 }
 
 fn check_suppression(c: &mut Checker, f: &Fixture) {
-    let origin = Some((0u32, 1408u32));
+    // The first cape slot, wherever the pool currently starts. Hard-coding it
+    // would have made this fixture silently wrong the moment M64 moved the
+    // pool, which is exactly what happened to `f2` below.
+    let origin = Some(rewo_gpu::entities::cape_slot_origin(0));
     let resolve = |t: &EntityTable, kind| {
         crate::live_cmd::resolve_cape(t, 1, kind, 1.0, origin, &f.items, &f.equipment)
     };
@@ -720,12 +728,20 @@ fn check_pool(c: &mut Checker) {
         format!("{slots} slots of {sw}x{sh} at y={pool_y}, atlas {aw}x{ah}"),
     );
     c.record(
-        "f2.the_atlas_grew_by_exactly_the_new_band_so_nothing_below_it_moved",
-        pool_y == ATLAS_H_BEFORE_M60 && ah == ATLAS_H_BEFORE_M60 + sh * 2,
+        "f2.the_cape_band_sits_exactly_where_the_shelf_growth_left_it",
+        pool_y == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH
+            && ah == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + sh * 2,
         format!(
-            "cape pool starts at {pool_y} = the pre-M60 ATLAS_H, so every mob, item, \
-             skin and trim texel address is unchanged — `mobshot --check` staying at \
-             243/243 is the empirical half of this claim"
+            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at \
+             the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it \
+             moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for \
+             vanilla's 42 metadata variant sheets, and the shelf ceiling is defined \
+             by subtraction from ATLAS_H — so the item, skin, trim and cape pools \
+             all slid down by exactly that. Nothing on disk depends on those \
+             origins, and the *mob* packing is still byte-for-byte what it was \
+             because the packer is sequential and the region only grew at its far \
+             end: `mobshot --check` staying at 243/243 is the empirical half of \
+             that claim"
         ),
     );
 }
