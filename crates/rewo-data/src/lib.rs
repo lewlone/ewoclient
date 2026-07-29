@@ -27,6 +27,7 @@ pub mod entity_types;
 pub mod etf;
 pub mod items;
 pub mod held_items;
+pub mod item_components_table;
 pub mod item_geometry;
 pub mod item_models;
 pub mod item_props_table;

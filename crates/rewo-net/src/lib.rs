@@ -1210,9 +1210,15 @@ pub fn route_game_event(
 /// Returns `None` for an empty stack and `Err` when the reader could not be
 /// left aligned — see [`rewo_world::inventory`] on why a misaligned slot has to
 /// abandon the whole packet rather than half-apply it.
+///
+/// The third element is M66's [`crate::item_stack::StackDetail`] — the
+/// container contents and the raw patch ids, which neither of the world's slot
+/// carriers can hold. Keyed by the same fingerprint as the text, so a caller
+/// that wants it records both from one decode.
 type SlotAndText = (
     Option<rewo_world::inventory::ItemSlot>,
     Option<(u64, rewo_world::inventory::SlotText)>,
+    Option<(u64, crate::item_stack::StackDetail)>,
 );
 
 fn read_slot(
@@ -1224,7 +1230,7 @@ fn read_slot(
         return Err(());
     }
     Ok(match slot {
-        crate::item_stack::WireSlot::Empty => (None, None),
+        crate::item_stack::WireSlot::Empty => (None, None, None),
         crate::item_stack::WireSlot::Stack(s) => {
             let c = &s.components;
             let text = rewo_world::inventory::SlotText {
@@ -1251,6 +1257,7 @@ fn read_slot(
                     trim_material: c.trim.map(|(m, _)| m),
                 }),
                 Some((c.fingerprint, text)),
+                Some((c.fingerprint, c.detail())),
             )
         }
     })
@@ -1269,6 +1276,7 @@ pub fn apply_container_set_content(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
     inventory: &mut rewo_world::inventory::Inventory,
+    mut details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
@@ -1295,12 +1303,15 @@ pub fn apply_container_set_content(
     };
     // The tooltip text is recorded before the contents, so a slot is never
     // visible without the text its components imply.
-    for (_, text) in slots.iter().chain(std::iter::once(&carried)) {
+    for (_, text, detail) in slots.iter().chain(std::iter::once(&carried)) {
         if let Some((fingerprint, text)) = text {
             inventory.record_text(*fingerprint, text.clone());
         }
+        if let (Some(sink), Some((fingerprint, detail))) = (details.as_deref_mut(), detail) {
+            sink.record(*fingerprint, detail.clone());
+        }
     }
-    let stacks: Vec<_> = slots.into_iter().map(|(s, _)| s).collect();
+    let stacks: Vec<_> = slots.into_iter().map(|(s, _, _)| s).collect();
     inventory.set_content(state_id, &stacks, carried.0)
 }
 
@@ -1313,6 +1324,7 @@ pub fn apply_container_set_slot(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
     inventory: &mut rewo_world::inventory::Inventory,
+    details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
@@ -1321,11 +1333,14 @@ pub fn apply_container_set_slot(
     if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
         return false;
     }
-    let Ok((item, text)) = read_slot(&mut r, components) else {
+    let Ok((item, text, detail)) = read_slot(&mut r, components) else {
         return false;
     };
     if let Some((fingerprint, text)) = text {
         inventory.record_text(fingerprint, text);
+    }
+    if let (Some(sink), Some((fingerprint, detail))) = (details, detail) {
+        sink.record(fingerprint, detail);
     }
     inventory.set_slot(state_id, slot as i32, item)
 }
@@ -1363,16 +1378,20 @@ pub fn route_inventory(
     // is applied regardless.
     components: Option<rewo_data::components::DataComponentIds>,
     inventory: &mut rewo_world::inventory::Inventory,
+    // M66's third slot carrier. `None` for a caller that does not draw
+    // tooltips — the decode is unchanged either way, so passing it or not
+    // cannot move a byte.
+    details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
     if id == ids.cb_play_container_set_content {
         if let Some(c) = components {
-            apply_container_set_content(body, c, inventory);
+            apply_container_set_content(body, c, inventory, details);
         }
         return true;
     }
     if id == ids.cb_play_container_set_slot {
         if let Some(c) = components {
-            apply_container_set_slot(body, c, inventory);
+            apply_container_set_slot(body, c, inventory, details);
         }
         return true;
     }

@@ -293,6 +293,15 @@ pub struct StackComponents {
     /// a real position and not a shorter list. `addToTooltip` skips the gaps
     /// (`nonEmptyItemsStream`); anything drawing a grid needs them.
     pub container: Option<Vec<Option<ContainerSlot>>>,
+    /// Component ids the patch **added**, in wire order.
+    ///
+    /// Kept for `PatchedDataComponentMap.size()` (M66), which is the number
+    /// the advanced tooltip's `item.components` line prints. That count is the
+    /// **merged** map's, so it needs to know which entries are additions the
+    /// item's prototype does not already carry — an override changes nothing.
+    /// The names those ids resolve to live in the runtime component registry,
+    /// so the arithmetic happens above this layer.
+    pub added: Vec<i32>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -374,6 +383,49 @@ impl StackComponents {
             .filter_map(Option::as_ref)
     }
 
+    /// `PatchedDataComponentMap.size()` — the number the advanced tooltip's
+    /// `item.components` line prints (M66).
+    ///
+    /// ```java
+    /// int size = this.prototype.size();
+    /// for (entry : this.patch) {
+    ///    boolean inPatch     = entry.getValue().isPresent();
+    ///    boolean inPrototype = this.prototype.has(entry.getKey());
+    ///    if (inPatch != inPrototype) size += inPatch ? 1 : -1;
+    /// }
+    /// ```
+    ///
+    /// **The prototype dominates it.** A plain dirt stack has an empty patch
+    /// and still reads 12, because every item carries twelve common
+    /// components. Printing the patch's own entry count — the obvious reading
+    /// of `this.components.size()` — shows `0` for nearly every stack in the
+    /// game.
+    ///
+    /// The two closures are how this layer stays free of the item table and
+    /// the component registry: `prototype_size` answers `prototype.size()` for
+    /// the stack's item and `prototype_has` answers `prototype.has(type)` for
+    /// one component id. Either returning `None` means this build cannot know,
+    /// and the whole count is then `None` rather than a guess — the line is
+    /// dropped instead of printed wrong.
+    pub fn component_count(
+        &self,
+        prototype_size: impl FnOnce() -> Option<i32>,
+        mut prototype_has: impl FnMut(i32) -> Option<bool>,
+    ) -> Option<i32> {
+        let mut size = prototype_size()?;
+        for &ty in &self.added {
+            if !prototype_has(ty)? {
+                size += 1;
+            }
+        }
+        for &ty in &self.removed {
+            if prototype_has(ty)? {
+                size -= 1;
+            }
+        }
+        Some(size)
+    }
+
     /// The name a tooltip shows, given the item's translated display name.
     ///
     /// `ItemStack.getHoverName` is `getOrDefault(CUSTOM_NAME, getItemName())`,
@@ -384,6 +436,96 @@ impl StackComponents {
             .as_deref()
             .or(self.item_name.as_deref())
             .unwrap_or(fallback)
+    }
+}
+
+/// What a patch says that the world's own slot carriers cannot hold (M66).
+///
+/// `rewo_world::inventory` has two: `ItemSlot`, which is `Copy` so the click
+/// arithmetic can move it through struct-update expressions, and `SlotText`,
+/// the non-`Copy` side-channel keyed by the component fingerprint. Neither is
+/// the right home for these two — the container's slots are a `Vec<Option<_>>`
+/// away from `Copy`, and the raw component ids are wire values that mean
+/// nothing without the runtime registry, which the *renderer* holds.
+///
+/// So this is a third carrier, keyed by the same fingerprint, owned by
+/// whoever routes the packets. Same shape, same lifetime, one more table.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StackDetail {
+    /// `minecraft:container`'s slots, gaps included — the positional list M63
+    /// decodes, carried as-is so the filtering stays where vanilla puts it
+    /// (`nonEmptyItemsStream`, i.e. [`StackComponents::container_items`]).
+    pub container: Vec<Option<ContainerSlot>>,
+    /// The patch's added component ids, for `component_count`.
+    pub added: Vec<i32>,
+    /// Its removed ones, for the same.
+    pub removed: Vec<i32>,
+}
+
+impl StackDetail {
+    /// Whether this contributes nothing, and can be dropped rather than stored.
+    ///
+    /// **Every field has to be listed** — the same trap `SlotText::is_empty`
+    /// documents, which cost M42 its enchantment lines: a field missing here
+    /// is a whole class of stack whose detail is silently discarded.
+    pub fn is_empty(&self) -> bool {
+        self.container.is_empty() && self.added.is_empty() && self.removed.is_empty()
+    }
+
+    /// The occupied slots, in order — [`StackComponents::container_items`] for
+    /// a detail that has already left the decoder.
+    pub fn container_items(&self) -> impl Iterator<Item = &ContainerSlot> {
+        self.container.iter().filter_map(Option::as_ref)
+    }
+}
+
+impl StackComponents {
+    /// The parts of this patch that ride the [`StackDetail`] side-channel.
+    pub fn detail(&self) -> StackDetail {
+        StackDetail {
+            container: self.container.clone().unwrap_or_default(),
+            added: self.added.clone(),
+            removed: self.removed.clone(),
+        }
+    }
+}
+
+/// How many distinct component sets keep their detail.
+///
+/// The same bound and the same reason as `inventory::MAX_SLOT_TEXTS`: one
+/// entry per *patch*, so an ordinary inventory holds a handful, and a server
+/// sending thousands of distinct patches would otherwise grow this without
+/// bound. Past the cap the table is cleared and those stacks fall back to no
+/// detail — a missing tooltip line rather than a wrong one.
+const MAX_STACK_DETAILS: usize = 512;
+
+/// Fingerprint -> [`StackDetail`], the third slot carrier.
+#[derive(Clone, Debug, Default)]
+pub struct StackDetails {
+    map: std::collections::HashMap<u64, StackDetail>,
+}
+
+impl StackDetails {
+    pub fn record(&mut self, fingerprint: u64, detail: StackDetail) {
+        if fingerprint == 0 || detail.is_empty() {
+            return;
+        }
+        if self.map.len() >= MAX_STACK_DETAILS {
+            self.map.clear();
+        }
+        self.map.insert(fingerprint, detail);
+    }
+
+    pub fn get(&self, fingerprint: u64) -> Option<&StackDetail> {
+        self.map.get(&fingerprint)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 }
 
@@ -486,6 +628,10 @@ fn read_patch_at(
         } else if !read_interpreted(r, ty, ids, shape, &mut comps)? {
             return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps));
         }
+        // Recorded after the walk, so an entry that parked the reader is not
+        // counted as present — `component_count` would otherwise add one for a
+        // component the stack was dropped over.
+        comps.added.push(ty);
         let to = r.offset();
         digest.push((ty, fnv1a(0xcbf2_9ce4_8422_2325, r.bytes_between(from, to))));
     }
@@ -633,7 +779,13 @@ fn read_interpreted(
         // turn every later slot in the packet into garbage.
         //
         // Depth 0 to match the generic fall-through's `walk(r, shape, 0)`.
-        return Ok(match read_container_slot_list(r, 0, ids.custom_name)? {
+        // **Both** levels of `getHoverName` (M66): a nested `item_name` is a
+        // patched value the item table cannot answer.
+        let names = crate::component_wire::NameIds {
+            custom_name: ids.custom_name,
+            item_name: ids.item_name,
+        };
+        return Ok(match read_container_slot_list(r, 0, names)? {
             Some(slots) => {
                 out.container = Some(slots);
                 true

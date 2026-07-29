@@ -64,6 +64,14 @@ impl GameMode {
     pub fn is_spectator(self) -> bool {
         self == GameMode::Spectator
     }
+
+    /// `GameType.isSurvival()` — **`SURVIVAL || ADVENTURE`**, not just the
+    /// first. It is what `MultiPlayerGameMode.canHurtPlayer()` returns, which
+    /// decides whether the HUD draws hearts and therefore whether the
+    /// held-item name sits fourteen rows lower (M66's held-item info).
+    pub fn is_survival(self) -> bool {
+        self == GameMode::Survival || self == GameMode::Adventure
+    }
 }
 
 /// One entry of a `player_info_update` body.
@@ -357,6 +365,21 @@ pub struct PlaySession {
     /// dimension change — so it is deliberately not cleared by the transition.
     /// The server re-sends the contents on respawn anyway.
     pub inventory: rewo_world::inventory::Inventory,
+    /// The `minecraft:data_component_type` registry, kept so a *name* can be
+    /// recovered from a patch's raw ids (M66).
+    ///
+    /// `component_count` needs it: `PatchedDataComponentMap.size()` asks
+    /// whether the item's prototype carries each patched component, the
+    /// prototype table is keyed by name, and the wire is keyed by id. `None`
+    /// before the registry arrives, in which case the count is unanswerable
+    /// and the tooltip line is dropped rather than guessed.
+    pub component_names: Option<std::sync::Arc<rewo_data::components::DataComponentRegistry>>,
+    /// The third slot carrier (M66) — a shulker box's contents and each
+    /// patch's raw component ids, keyed by the same fingerprint the
+    /// inventory's `SlotText` uses. Kept beside the inventory rather than in
+    /// it, because neither of that crate's carriers can hold a `Vec` of
+    /// stacks and the raw ids mean nothing without the runtime registry.
+    pub stack_details: crate::item_stack::StackDetails,
     /// The local player's entity id, from the login prefix (M38).
     ///
     /// `LocalPlayer` is an ordinary `LivingEntity` in vanilla, so giving it an
@@ -1036,6 +1059,8 @@ impl<'a> Connection<'a> {
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
             inventory: rewo_world::inventory::Inventory::default(),
+            component_names: None,
+            stack_details: crate::item_stack::StackDetails::default(),
             player_id: None,
             overworld_clock: None,
             game_time: None,
@@ -1824,6 +1849,7 @@ impl PlaySession {
             ids,
             self.swing_data.as_ref().map(|d| d.components),
             &mut self.inventory,
+            Some(&mut self.stack_details),
         ) {
             // M34: the player's own inventory — contents, one slot, or the
             // server moving the selection.

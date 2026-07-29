@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 131;
+const EXPECTED_WITNESSES: usize = 143;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -93,6 +93,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     check_enchantments(&mut c, &baked, &jar);
     check_glint(&mut c, &baked);
     check_tooltip_image(&mut c, &baked);
+    check_advanced_tooltip(&mut c, &baked, &paths)?;
     check_pixels(&mut c, &baked, &args)?;
 
     println!(
@@ -160,7 +161,7 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     let components = rewo_data::components::DataComponentIds::load(&paths.registries_json())
         .map_err(|e| format!("component ids: {e}"))?;
     let route = |id: i32, body: &[u8], inv: &mut Inventory| -> bool {
-        rewo_net::route_inventory(id, body, &ids, Some(components), inv)
+        rewo_net::route_inventory(id, body, &ids, Some(components), inv, None)
     };
 
     c.record(
@@ -2364,6 +2365,526 @@ fn inner_slices_uniform(rgba: &[u8], w: u32, h: u32, b: u32) -> bool {
         }
     }
     true
+}
+
+/// M66 — the three tooltip stages the milestone closes: the advanced block
+/// (F3+H), `minecraft:container`'s preview lines, and the held-item label.
+///
+/// Driven through the production functions in every case — the wire decode
+/// through `read_optional`, the line generators through `live_cmd`'s own, the
+/// rules through `rewo_gpu::{tooltip, hud}`. A gate that reimplemented any of
+/// them would be grading its own copy, which is the M45 lesson.
+fn check_advanced_tooltip(
+    c: &mut Checker,
+    baked: &assets::BakedAssets,
+    paths: &DataPaths,
+) -> Result<(), String> {
+    use rewo_data::components::{DataComponentIds, DataComponentRegistry};
+    use rewo_data::item_components_table::{prototype_component_count, prototype_has_component};
+    use rewo_gpu::tooltip::{advanced_lines, container_plan, AdvancedLine, DurabilityState, TooltipFlag};
+    use rewo_net::item_stack::{read_optional, StackComponents, StackDetail, WireSlot};
+
+    let registry = DataComponentRegistry::load(&paths.registries_json())?;
+    let ids = DataComponentIds::load(&paths.registries_json())?;
+    rewo_net::component_wire::install_shapes(registry.ids());
+    let items = rewo_data::items::Items::load(&paths.registries_json())?;
+    let lang = &baked.lang;
+    // The registry key the advanced block's literal line prints.
+    fn key_placeholder() -> &'static str {
+        "minecraft:diamond_sword"
+    }
+
+    // ── Stage 3: the advanced block ───────────────────────────────────────
+
+    let tool = |damage: i32| DurabilityState {
+        damage,
+        max: 1561,
+        has_max_damage: true,
+        has_damage: true,
+        unbreakable: false,
+    };
+    let damaged = advanced_lines(TooltipFlag::ADVANCED, tool(61), true, Some(19));
+    let pristine = advanced_lines(TooltipFlag::ADVANCED, tool(0), true, Some(19));
+    let mut unbreakable = tool(61);
+    unbreakable.unbreakable = true;
+    let never = advanced_lines(TooltipFlag::ADVANCED, unbreakable, true, Some(19));
+    // MUTATION — the same line built from the damage rather than the
+    // remaining, rendered so the difference is a string a reader can compare.
+    let mutant_damage = crate::live_cmd::advanced_tooltip_lines(
+        &[AdvancedLine::Durability {
+            remaining: tool(61).damage_value(),
+            max: 1561,
+        }],
+        key_placeholder(),
+        lang,
+    );
+    let mutant_text = mutant_damage
+        .first()
+        .map(rewo_gpu::tooltip::line_text)
+        .unwrap_or_default();
+    c.record(
+        "ad1.the_durability_arguments_are_remaining_then_max",
+        damaged.first()
+            == Some(&AdvancedLine::Durability {
+                remaining: 1500,
+                max: 1561,
+            })
+            && pristine.first() == Some(&AdvancedLine::RegistryId)
+            && never.first() == Some(&AdvancedLine::RegistryId)
+            && mutant_text == "Durability: 61 / 1561",
+        format!(
+            "a 61/1561-damaged tool reports {:?}. MUTATION (run) — emitting the \
+             *damage* instead of the remaining renders {mutant_text:?}, which \
+             reads as a nearly-broken tool on a nearly-full one and looks \
+             entirely plausible. Two more mutations, also run: a pristine tool \
+             emits no durability line at all ({} before the id) because \
+             `isDamaged()` needs `damage > 0`, and an **Unbreakable** one never \
+             does however damaged ({} before the id), because \
+             `isDamageableItem()` is `has(MAX_DAMAGE) && !has(UNBREAKABLE) && \
+             has(DAMAGE)`",
+            damaged.first(),
+            pristine.iter().take_while(|l| **l != AdvancedLine::RegistryId).count(),
+            never.iter().take_while(|l| **l != AdvancedLine::RegistryId).count()
+        ),
+    );
+
+    let full = advanced_lines(TooltipFlag::ADVANCED, tool(61), true, Some(19));
+    let zero = advanced_lines(TooltipFlag::ADVANCED, tool(0), true, Some(0));
+    let unknown = advanced_lines(TooltipFlag::ADVANCED, tool(0), true, None);
+    let normal = advanced_lines(TooltipFlag::NORMAL, tool(61), true, Some(19));
+    // MUTATION — the `count > 0` guard dropped, rendered.
+    let ungated = crate::live_cmd::advanced_tooltip_lines(
+        &[AdvancedLine::Components { count: 0 }],
+        key_placeholder(),
+        lang,
+    );
+    let ungated_text = ungated
+        .first()
+        .map(rewo_gpu::tooltip::line_text)
+        .unwrap_or_default();
+    c.record(
+        "ad2.the_order_is_durability_then_a_dark_gray_literal_id_then_the_count",
+        full
+            == vec![
+                AdvancedLine::Durability {
+                    remaining: 1500,
+                    max: 1561
+                },
+                AdvancedLine::RegistryId,
+                AdvancedLine::Components { count: 19 },
+            ]
+            && zero == vec![AdvancedLine::RegistryId]
+            && unknown == vec![AdvancedLine::RegistryId]
+            && normal.is_empty()
+            && ungated_text == "0 component(s)",
+        format!(
+            "{} lines in order {full:?}; at count 0 the block is just the id \
+             ({} line), and an unresolvable count drops the line rather than \
+             guessing ({} line); the NORMAL flag emits nothing. MUTATION (run) — \
+             `count > 0` is the only guard, so dropping it renders \
+             {ungated_text:?} on a stack vanilla says nothing about",
+            full.len(),
+            zero.len(),
+            unknown.len()
+        ),
+    );
+
+    // The id is a **literal**, so it must not be run through the language
+    // file. The mutation is exactly that: treat it as a key.
+    let key = "minecraft:diamond_sword";
+    let rendered = crate::live_cmd::advanced_tooltip_lines(
+        &advanced_lines(TooltipFlag::ADVANCED, tool(61), true, Some(19)),
+        key,
+        lang,
+    );
+    let id_line = rendered.get(1).map(|l| rewo_gpu::tooltip::line_text(l));
+    let as_key = lang.get(key);
+    let dark_gray = rendered.get(1).and_then(|l| l.first()).map(|s| s.color);
+    c.record(
+        "ad3.the_registry_id_is_a_literal_in_dark_gray",
+        id_line.as_deref() == Some(key)
+            && as_key.is_none()
+            && dark_gray == Some(rewo_gpu::tooltip::DARK_GRAY),
+        format!(
+            "the second line is {id_line:?} at colour {dark_gray:?} \
+             (DARK_GRAY 0x555555). MUTATION — `Component.literal` is not \
+             `Component.translatable`; running the id through the language file \
+             finds {as_key:?}, and `TranslatableContents`' fallback then prints \
+             the key anyway — the same string by luck, until a datapack defines \
+             that key and the tooltip shows its value instead"
+        ),
+    );
+
+    let dur_line = rendered.first().map(|l| rewo_gpu::tooltip::line_text(l));
+    let count_line = rendered.get(2).map(|l| rewo_gpu::tooltip::line_text(l));
+    // MUTATION — the two arguments swapped, run through the same formatter.
+    let swapped = lang
+        .get("item.durability")
+        .map(|t| rewo_data::lang::format(t, &["1561", "1500"]));
+    c.record(
+        "ad4.the_two_translated_lines_read_as_vanilla_renders_them",
+        dur_line.as_deref() == Some("Durability: 1500 / 1561")
+            && count_line.as_deref() == Some("19 component(s)")
+            && swapped.as_deref() == Some("Durability: 1561 / 1500"),
+        format!(
+            "{dur_line:?} and {count_line:?}, from `item.durability` \
+             ({:?}) and `item.components` ({:?}). MUTATION (run) — swapping the \
+             two `%s`s gives {swapped:?}, which reads as a tool with more life \
+             than it can hold and is otherwise a perfectly well-formed line",
+            lang.get("item.durability"),
+            lang.get("item.components")
+        ),
+    );
+
+    // `PatchedDataComponentMap.size()` — the merged map's, not the patch's.
+    let count_of = |item: &str, added: &[&str], removed: &[&str]| -> Option<i32> {
+        let name_id = |n: &str| registry.ids().get(n).copied().expect("registered");
+        let detail = StackDetail {
+            container: Vec::new(),
+            added: added.iter().map(|n| name_id(n)).collect(),
+            removed: removed.iter().map(|n| name_id(n)).collect(),
+        };
+        StackComponents {
+            added: detail.added.clone(),
+            removed: detail.removed.clone(),
+            ..Default::default()
+        }
+        .component_count(
+            || prototype_component_count(item),
+            |id| prototype_has_component(item, registry.name_of(id)?),
+        )
+    };
+    // The expectations are **deltas from the table**, not hand-written
+    // absolutes: the first draft of this witness guessed 13 and 19 for the two
+    // prototype sizes and both were off by one, which is exactly the kind of
+    // hand-counting error a gate is supposed to make impossible.
+    let (p_dirt, p_sword) = (
+        prototype_component_count("minecraft:dirt"),
+        prototype_component_count("minecraft:diamond_sword"),
+    );
+    let bare = count_of("minecraft:dirt", &[], &[]);
+    let named = count_of("minecraft:dirt", &["minecraft:custom_name"], &[]);
+    let override_ = count_of("minecraft:diamond_sword", &["minecraft:damage"], &[]);
+    let removed = count_of("minecraft:diamond_sword", &[], &["minecraft:damage"]);
+    let unknown_item = count_of("minecraft:not_an_item", &[], &[]);
+    // MUTATION — `this.components.size()` read as the patch's own entry count.
+    let as_patch_size = |added: usize, removed: usize| (added + removed) as i32;
+    let patch_sizes = (
+        as_patch_size(0, 0),
+        as_patch_size(1, 0),
+        as_patch_size(1, 0),
+    );
+    c.record(
+        "ad5.the_count_is_the_merged_maps_size_not_the_patchs",
+        p_dirt.is_some()
+            && p_sword.is_some()
+            && bare == p_dirt
+            && named == p_dirt.map(|n| n + 1)
+            && override_ == p_sword
+            && removed == p_sword.map(|n| n - 1)
+            && unknown_item.is_none()
+            // The two must not coincide, or "equals the prototype" proves
+            // nothing about the addition arm.
+            && p_dirt != p_sword
+            && patch_sizes == (0, 1, 1),
+        format!(
+            "an unpatched dirt is {bare:?} (its prototype's {p_dirt:?}) and one \
+             carrying a `custom_name` — which no prototype has — is {named:?}; a \
+             sword whose `damage` the patch *overrides* stays {override_:?} \
+             (its prototype's {p_sword:?}, unchanged, because an override is not \
+             an addition) and one whose `damage` it *removes* drops to \
+             {removed:?}; an item outside the table is {unknown_item:?}. \
+             MUTATION (run) — reading `this.components.size()` as the patch's \
+             own entry count gives {patch_sizes:?} for those first three, which \
+             is what a client that never consults the item prototype shows for \
+             nearly every stack in the game"
+        ),
+    );
+
+    // ── Stage 4: the container's lines ────────────────────────────────────
+
+    // The wire decode itself is main's `ct1`/`ct2` (M63), which grade the
+    // optional list, the gaps and the alignment to the byte. What is new here
+    // is the **second** level of `getHoverName`: M63 captured `custom_name`
+    // alone and reasoned that `ITEM_NAME` is "answered by the item table on
+    // the rendering side". The item table answers the item's *prototype*
+    // `item_name`; a patched one is a different value entirely.
+    let name_tag = |text: &str| -> Vec<u8> {
+        let mut v = vec![10u8, 8u8];
+        v.extend_from_slice(&(4u16).to_be_bytes());
+        v.extend_from_slice(b"text");
+        v.extend_from_slice(&(text.len() as u16).to_be_bytes());
+        v.extend_from_slice(text.as_bytes());
+        v.push(0);
+        v
+    };
+    // `(item, count, custom_name, item_name)` per present slot.
+    let named_container = |slots: &[(i32, i32, Option<&str>, Option<&str>)]| -> Vec<u8> {
+        let mut v = Vec::new();
+        push_varint(&mut v, 1); // stack count
+        push_varint(&mut v, 276); // the shulker box's own item id
+        push_varint(&mut v, 1); // one component added
+        push_varint(&mut v, 0); // none removed
+        push_varint(&mut v, ids.container);
+        push_varint(&mut v, slots.len() as i32);
+        for (item, count, custom, item_name) in slots {
+            v.push(1); // present
+            push_varint(&mut v, *item);
+            push_varint(&mut v, *count);
+            let entries = usize::from(custom.is_some()) + usize::from(item_name.is_some());
+            push_varint(&mut v, entries as i32);
+            push_varint(&mut v, 0);
+            if let Some(n) = custom {
+                push_varint(&mut v, ids.custom_name);
+                v.extend_from_slice(&name_tag(n));
+            }
+            if let Some(n) = item_name {
+                push_varint(&mut v, ids.item_name);
+                v.extend_from_slice(&name_tag(n));
+            }
+        }
+        // A sentinel a misread would eat.
+        v.push(0xAB);
+        v
+    };
+    let dirt_id = items.id("minecraft:dirt").ok_or("no dirt in the registry")?;
+    let sword_id = items
+        .id("minecraft:diamond_sword")
+        .ok_or("no diamond_sword in the registry")?;
+    let both = named_container(&[
+        (sword_id, 1, Some("Skullcrusher"), Some("Blade")),
+        (sword_id, 1, None, Some("Blade")),
+        (sword_id, 1, None, None),
+    ]);
+    let decoded = {
+        let mut r = rewo_proto::reader::PacketReader::new(&both);
+        match read_optional(&mut r, ids) {
+            Ok(WireSlot::Stack(s)) => s
+                .components
+                .container_contents()
+                .map(|slots| (slots.to_vec(), r.remaining())),
+            _ => None,
+        }
+    };
+    let hovers: Vec<String> = decoded
+        .as_ref()
+        .map(|(slots, _)| {
+            slots
+                .iter()
+                .flatten()
+                .map(|s| s.hover_name("Diamond Sword").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    // MUTATION (run) — `custom_name` alone, which is what M63 captured.
+    let custom_only: Vec<String> = decoded
+        .as_ref()
+        .map(|(slots, _)| {
+            slots
+                .iter()
+                .flatten()
+                .map(|s| {
+                    s.custom_name
+                        .clone()
+                        .unwrap_or_else(|| "Diamond Sword".to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    c.record(
+        "cn1.the_container_slots_hover_name_is_a_two_level_override",
+        decoded.as_ref().map(|(_, rest)| *rest) == Some(1)
+            && hovers == vec!["Skullcrusher", "Blade", "Diamond Sword"]
+            && custom_only == vec!["Skullcrusher", "Diamond Sword", "Diamond Sword"],
+        format!(
+            "three slots — both names, `item_name` only, neither — resolve to \
+             {hovers:?}, and the sentinel is still unread. `getHoverName` is \
+             `getOrDefault(CUSTOM_NAME, getOrDefault(ITEM_NAME, item.getName()))`, \
+             two levels of override rather than a name and a fallback. \
+             MUTATION (run) — capturing `custom_name` alone gives \
+             {custom_only:?}: the middle stack loses its patched name and \
+             renders under the item table's answer, which is the *prototype's* \
+             `item_name` and not the patch's"
+        ),
+    );
+
+    // The line rule. `lineCount <= 4` with the increment inside the guard.
+    let plans: Vec<_> = [0usize, 1, 4, 5, 6, 27].iter().map(|n| container_plan(*n)).collect();
+    let mutated = |n: usize| {
+        // MUTATION — the same loop with `lineCount < 4`.
+        let (mut line, mut item) = (0i32, 0i32);
+        for _ in 0..n {
+            item += 1;
+            if line < 4 {
+                line += 1;
+            }
+        }
+        (line as usize, item - line)
+    };
+    // MUTATION — the remainder reported as the total rather than
+    // `itemCount - lineCount`.
+    let remainder_as_total: Vec<usize> = [5usize, 6, 27].to_vec();
+    c.record(
+        "cn2.five_lines_fit_and_the_sixth_becomes_a_remainder",
+        plans[3].shown == 5
+            && plans[3].more == 0
+            && plans[4].shown == 5
+            && plans[4].more == 1
+            && plans[5].shown == 5
+            && plans[5].more == 22
+            && mutated(5) == (4, 1)
+            && remainder_as_total[0] as i32 != plans[3].more,
+        format!(
+            "0/1/4/5/6/27 stacks -> {:?}. A five-stack box lists all five and says \
+             nothing more; a six-stack one lists five and says `and 1 more…`. \
+             MUTATION (run) — `lineCount < 4` turns five stacks into {:?}, i.e. \
+             four lines *and* a spurious remainder. A second mutation (run) — \
+             reporting the remainder as the **total** gives {:?} for those same \
+             three counts, so a full box would say `and 5 more…` underneath all \
+             five of the lines it just printed",
+            plans
+                .iter()
+                .map(|p| (p.shown, p.more))
+                .collect::<Vec<_>>(),
+            mutated(5),
+            remainder_as_total
+        ),
+    );
+
+    // The translation, through the production line generator. The two keys
+    // exist only after M54's deprecation pass (witness `l1`); this is the
+    // functional half — that the *lines* come out.
+    // Seven slots, one of them a gap — `nonEmptyItemsStream` skips it, so six
+    // stacks reach the line rule and the seventh position changes nothing.
+    let six: Vec<Option<rewo_net::item_stack::ContainerSlot>> = (0..7)
+        .map(|i| {
+            (i != 1).then(|| rewo_net::item_stack::ContainerSlot {
+                item_id: dirt_id,
+                count: 64,
+                custom_name: (i == 0).then(|| "Skullcrusher".to_string()),
+                item_name: None,
+            })
+        })
+        .collect();
+    let lines = crate::live_cmd::container_lines(&six, &items, &baked.item_names, lang);
+    let raw_json = assets::jar_text(
+        &client_jar("26.2").ok_or("client jar not found")?,
+        rewo_data::lang::EN_US_PATH,
+    )
+    .ok_or("en_us.json missing from the jar")?;
+    let raw = rewo_data::lang::Language::raw(&raw_json);
+    let without_rename = crate::live_cmd::container_lines(&six, &items, &baked.item_names, &raw);
+    let texts: Vec<String> = lines.iter().map(rewo_gpu::tooltip::line_text).collect();
+    c.record(
+        "cn3.the_container_lines_read_as_vanilla_renders_them",
+        texts.len() == 6
+            && texts[0] == "Skullcrusher x64"
+            && texts[1] == "Dirt x64"
+            && texts[5] == "and 1 more..."
+            && lines[5][0].italic
+            && !lines[0][0].italic
+            && without_rename.is_empty(),
+        format!(
+            "{texts:?}; the trailing line is italic ({}) per \
+             `.withStyle(ChatFormatting.ITALIC)` and the item lines are not. The \
+             first entry's own `custom_name` wins over the translated item name, \
+             which is `getHoverName`'s two-level override. MUTATION — the same \
+             call against a **raw** `en_us.json` produces {} lines, because both \
+             keys live under their pre-rename `container.shulkerBox.*` names \
+             until M54's deprecation pass moves them",
+            lines[5][0].italic,
+            without_rename.len()
+        ),
+    );
+
+    // ── Stage 5: the held-item label ──────────────────────────────────────
+
+    use rewo_gpu::hud::{selected_item_name_pos, text_backdrop_rect, tool_highlight_alpha, ToolHighlight};
+
+    let mut h = ToolHighlight::default();
+    h.tick(Some((1, "Diamond Sword")), 1.0);
+    let after_pick = h.timer;
+    h.tick(Some((1, "Diamond Sword")), 1.0);
+    let held_still = h.timer;
+    h.tick(Some((1, "Skullcrusher")), 1.0);
+    let after_rename = h.timer;
+    // MUTATION — the same clock comparing item identity alone.
+    let mut ident = ToolHighlight::default();
+    ident.tick(Some((1, "Diamond Sword")), 1.0);
+    ident.tick(Some((1, "Diamond Sword")), 1.0);
+    let mutated_rename = {
+        // `selected.is(last.getItem())` only: the name change is invisible, so
+        // the timer keeps counting down.
+        ident.tick(Some((1, "Diamond Sword")), 1.0);
+        ident.timer
+    };
+    c.record(
+        "hh1.the_timer_re_triggers_on_a_hover_name_change_with_the_same_item",
+        after_pick == 40 && held_still == 39 && after_rename == 40 && mutated_rename == 38,
+        format!(
+            "picking it up sets {after_pick}, holding it runs down to {held_still}, \
+             and an anvil rename of the **same item** resets it to \
+             {after_rename}. MUTATION — comparing `selected.is(last.getItem())` \
+             alone leaves it at {mutated_rename} and the new name never appears \
+             over the hotbar. Vanilla's guard is three-part: \
+             `last.isEmpty() || !selected.is(last.getItem()) || \
+             !selected.getHoverName().equals(last.getHoverName())`"
+        ),
+    );
+
+    let alphas: Vec<i32> = [40, 11, 10, 9, 5, 1, 0]
+        .iter()
+        .map(|t| tool_highlight_alpha(*t))
+        .collect();
+    // MUTATION — a fade spread over the whole 40-tick timer.
+    let over_forty: Vec<i32> = [40, 11, 10, 9, 5, 1, 0]
+        .iter()
+        .map(|t| (*t as f32 * 256.0 / 40.0) as i32)
+        .collect();
+    c.record(
+        "hh2.the_fade_is_the_last_ten_ticks_only",
+        alphas == vec![255, 255, 255, 230, 128, 25, 0] && over_forty[0] == 256,
+        format!(
+            "timers 40/11/10/9/5/1/0 -> alphas {alphas:?}: opaque for the first \
+             thirty ticks, then linear over the last ten, clamped at 255. \
+             MUTATION — `timer * 256 / 40` gives {over_forty:?}, which is \
+             translucent the moment the label appears *and* overflows past 255 \
+             at the top with no clamp to catch it"
+        ),
+    );
+
+    let survival = selected_item_name_pos(427, 240, 41, true);
+    let creative = selected_item_name_pos(427, 240, 41, false);
+    c.record(
+        "hh3.the_label_is_centred_and_drops_fourteen_rows_with_no_health_bar",
+        survival == ((427 - 41) / 2, 240 - 59) && creative == (survival.0, 240 - 59 + 14),
+        format!(
+            "on a 427x240 GUI a 41 px label lands at {survival:?} in survival and \
+             {creative:?} in creative. MUTATION — a fixed `y = guiHeight() - 59` \
+             puts the label on top of the hotbar in creative, where there are no \
+             hearts and vanilla moves it down by \
+             {}. `canHurtPlayer()` is `localPlayerMode.isSurvival()`, and that \
+             is SURVIVAL **or ADVENTURE**",
+            rewo_gpu::hud::SELECTED_ITEM_NAME_NO_HEALTH_SHIFT
+        ),
+    );
+
+    c.record(
+        "hh4.the_text_backdrop_is_absent_at_vanillas_defaults",
+        text_backdrop_rect(10, 20, 40, 0).is_none()
+            && text_backdrop_rect(10, 20, 40, 0x8000_0000) == Some((8, 18, 52, 31)),
+        format!(
+            "a zero background colour draws no fill; a non-zero one draws \
+             {:?} — 2 px around a **9** px text row, not the tooltip's 10. \
+             `getBackgroundColor(0.0F)` returns zero while `backgroundForChatOnly` \
+             is set, which it is by default, so vanilla draws no fill here \
+             either. MUTATION — filling unconditionally puts a black bar under \
+             the label of every item you pick up",
+            text_backdrop_rect(10, 20, 40, 0x8000_0000)
+        ),
+    );
+
+    Ok(())
 }
 
 fn check_tooltip_image(c: &mut Checker, baked: &assets::BakedAssets) {

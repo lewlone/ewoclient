@@ -6519,6 +6519,169 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M66 — the remaining tooltip stages: advanced, container, held-item (2026-07-29)
+
+The three stages M54 (the language layer), M56 (the image pass) and M58 (the
+bundle chrome) left. `inventoryshot` grew from 131 witnesses to **143**.
+
+**It was written as M62 and rebased.** Two agents ran in parallel and both
+decoded `minecraft:container` — this one and M63's. Main carries M63's, this
+one dropped its copy rather than being hand-merged, which is the right way
+round: an independent second protocol decoder is exactly where a silent desync
+gets introduced. What survived the drop is recorded under stage 4 below. The
+number moved because M60–M65 were all taken by the time it landed.
+
+**Stage 3 — the advanced block (F3+H).** `ItemStack.addDetailsToTooltip` ends
+with three lines whose *order* is the transcription and whose arguments are the
+trap. `item.durability` takes **remaining then max**
+(`getMaxDamage() - getDamageValue()`, `getMaxDamage()`), and swapping them
+still renders a well-formed `Durability: 1561 / 1500`. The registry key is a
+`Component.literal` in DARK_GRAY, not a translation key — running it through
+the language file finds nothing and `TranslatableContents`' fallback then
+prints the key anyway, so the mistake is invisible until a datapack defines
+that key. The old `item.nbt_tags` line is gone from 26.x entirely.
+
+**The count is the merged map's, not the patch's.** `int count =
+this.components.size()` reads a `PatchedDataComponentMap`, whose `size()` is
+
+```java
+int size = this.prototype.size();
+for (entry : this.patch) {
+   if (entry.getValue().isPresent() != this.prototype.has(entry.getKey()))
+      size += entry.getValue().isPresent() ? 1 : -1;
+}
+```
+
+The prototype dominates it. An unpatched dirt reads **12 component(s)** and a
+diamond sword **18** — reading the patch's own entry count would print `0` for
+nearly every stack in the game, and `count > 0`'s suppression branch would then
+fire constantly instead of never. This needed data the wire does not carry, so
+**`tools/gen_item_components.py`** extracts it: twelve components are on all
+1,537 items and only 47 more exist at all, so the table is those twelve once
+plus a 64-bit mask per item — 912 non-universal entries instead of 19,356
+strings. Every item is listed, including the 1,091 with an empty mask, because
+*membership is an answer*: an item the table does not know drops the line
+rather than guessing the base count.
+
+**Stage 4 — the container's lines.** `ItemContainerContents.addToTooltip`'s
+guard is `lineCount <= 4` **with the increment inside it**, so five stacks fit
+and the sixth becomes `and 1 more...`; `lineCount < 4` loses a line *and*
+invents a remainder under the four it kept. Both keys resolve **only** through
+M54's `deprecated.json` rename — `en_us.json` still spells them
+`container.shulkerBox.itemCount`/`.more`, so a raw read produces no container
+block at all (witness `l1` pins the rename, `cn3` pins that the lines come out).
+
+The decode is M63's, and its positional shape is the right one: the gaps stay
+as `None` because `ItemContainerContents.items` is indexed by slot number, and
+the tooltip filters them at the point of use (`nonEmptyItemsStream`).
+
+**One capability was kept from the dropped copy.** M63's `ContainerSlot`
+captured `custom_name` alone, on the stated reasoning that `ITEM_NAME` is
+"answered by the item table on the rendering side". Verified rather than
+assumed, and it is half right: the item table answers `item.getName()`, which
+*is* the prototype's `item_name`, but a **patched** `item_name` is a different
+value that nothing else carries. `getHoverName` is two levels of override, not
+a name and a fallback:
+
+```java
+getHoverName() = getOrDefault(CUSTOM_NAME, getItemName())
+getItemName()  = getOrDefault(ITEM_NAME, item.getName())
+```
+
+so `ContainerSlot` gained an `item_name` and a `hover_name` helper, and
+`read_container_slot` takes a `NameIds` pair rather than one id — a pair
+because two loose `i32`s in a call is exactly where they get swapped, and a
+swap would render every renamed stack under its default name and look like a
+missing feature rather than a bug. `walk_patch_with` needed no change: both
+components are `fromCodecWithRegistries` chat components, i.e. one
+`Shape::NbtTag` each, so the capture reads exactly what the walk would.
+
+**The carrier.** M61 recorded that its blocker had *moved* from the decode to
+the carrier, and that is still true: `ItemSlot` is `Copy` and `SlotText` would
+need its `is_empty` taught a new field. This milestone does not touch
+`rewo-world` at all, so the container slots and the raw patch ids ride a
+**third** carrier — `rewo_net::item_stack::StackDetails`, keyed by the same
+component fingerprint, owned by whoever routes the packets. Same shape, same
+lifetime, one more table; `route_inventory` takes it as an `Option` so a caller
+that draws no tooltips passes `None` and the decode is unchanged either way.
+M63 was decode-only, so nothing else was competing for the wiring.
+
+**Stage 5 — the held-item label.** Two clocks and a placement rule.
+`Hud.tick`'s re-trigger is three-part —
+`last.isEmpty() || !selected.is(last.getItem()) || !selected.getHoverName().equals(last.getHoverName())`
+— and it is the **third** clause that matters: comparing item identity alone is
+the obvious reading, and an anvil rename hands back the same item, so the new
+name would never appear. The fade is `min(255, timer * 256 / 10)`, i.e. opaque
+for thirty of the default forty ticks and linear over the last ten; spreading
+it over the whole timer makes the label translucent the moment it appears *and*
+overflows 255 with no clamp to catch it. The row is `guiHeight() - 59`, **plus
+14 when `!canHurtPlayer()`** — and `canHurtPlayer()` is
+`localPlayerMode.isSurvival()`, which is SURVIVAL **or ADVENTURE**.
+
+F3 became a **modifier**: `keyDebugModifier` and `keyDebugOverlay` are the same
+key, so vanilla toggles the overlay on *release* and skips it when a chord
+already fired. Toggling on press, which is what Rewo did, would flip the
+overlay every time you pressed F3+H.
+
+**A bug the transcription found.** `isDamageableItem()` is
+`has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE)`, and `isBarVisible()` is
+`isDamaged()` — so an **Unbreakable** tool draws no durability bar however much
+damage it carries. M41's `item_bars` read the damage alone and drew one. Fixed,
+along with `getDamageValue()`'s clamp to the maximum.
+
+**Gates.** `inventoryshot --check` 131 → **143**, every new witness naming a
+mutation partner that is *actually executed*: the durability args swapped
+(renders `Durability: 61 / 1561`), the `count > 0` guard dropped (renders
+`0 component(s)`), the id run through the language file (finds `None`), the
+count read as the patch size (`(0, 1, 1)` against `(12, 13, 18)`), the hover
+name resolved from `custom_name` alone (loses the middle stack's patched
+`item_name`), `lineCount < 4` (`(4, 1)` for five stacks), the remainder as the
+total, the raw `en_us.json` (0 lines), the identity-only timer comparison (38
+where vanilla resets to 40), and a fade over all 40 ticks (`256` at the top).
+The container *wire* decode is not re-graded here — M63's `ct1`–`ct4` already
+pin the optional list, the gaps and the alignment to the byte, and a second
+copy of those witnesses would be the same duplication the decoder itself was.
+
+**1037 tests** (from 1019); all 21 other gates green with validation ON and 0
+VUIDs — capeshot 64, itemshot 62, healthbarshot 33, attributeshot 43,
+captureshot 17, blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35,
+handshot 34, particleshot 34, eventshot 28, danceshot 24, portalshot 12,
+hudshot 41, mobshot 243/243 + emissive 5 + etf 8 + tint 4, plus skyshot,
+lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG SHA-256
+`2cc56b4a…` byte-identical to M15 onward.
+
+**Two hand-counted numbers were wrong and a machine caught both.** The
+generator's emitted test first claimed 13 components for dirt and the gate's
+`ad5` first claimed 19 for a sword; both are off by one from the report. Fixed
+by deriving them — the generator reads the two counts out of the report, and
+`ad5` asserts **deltas from the table** rather than absolutes. Hand-counting a
+JSON object is exactly the operation a gate exists to remove.
+
+**Open.**
+
+- **No live sighting.** Nobody has pressed F3+H in a running client, hovered a
+  shulker box, or watched the label fade. The gate is authoritative for the
+  properties it names and for nothing else.
+- **`minecraft:tooltip_display` is decoded-and-discarded**, so
+  `display.shows(DataComponents.DAMAGE)` is hard-coded true. A server hiding
+  the durability line would still see it. This predates the milestone — every
+  component line M40 onward ships ignores the same gate.
+- **ITALIC does not reach the HUD.** The tooltip's span model carries it (the
+  container's `and N more...` really does slant through the Velvet pass), but
+  `text.rs` has one colour per line and no italic face, so a `CUSTOM_NAME`
+  stack's held-item label stands upright. Colour and fade do carry. Same gap
+  M42 records for the bitmap tooltip fallback.
+- **`textWithBackdrop`'s fill is never drawn.** That is not a divergence at
+  defaults — `getBackgroundColor(0.0F)` is zero while `backgroundForChatOnly`
+  is set, which it is — but Rewo has no options file, so a player who set "Text
+  Background: Everywhere" would get nothing. The rule is transcribed and both
+  arms are graded; only the input is pinned.
+- **`advancedItemTooltips` does not persist.** Vanilla writes it to
+  `options.txt`; Rewo resets it each session.
+- A container slot's *other* components are still reduced to one bit, so a line
+  cannot show an enchanted sword's colour — M63's exclusion, unchanged by the
+  `item_name` addition.
+
 ### M63 — the container's contents, and a flake that was hiding real failures (2026-07-29)
 
 Three jobs in `rewo-net` + `rewo-data`. The first turned out to be already
