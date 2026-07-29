@@ -26,6 +26,7 @@ pub mod metadata;
 pub mod play;
 pub mod record;
 pub mod skins;
+pub mod sounds;
 pub mod spawn_info;
 
 use std::borrow::Cow;
@@ -1971,6 +1972,39 @@ pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleE
         z,
         block_state: data.max(0) as u32,
     })
+}
+
+/// Which of the three sound packets a body is, for [`route_sound`].
+///
+/// The dispatcher already knows the packet id; passing the kind in rather
+/// than re-deriving it keeps the id table the single place a name maps to a
+/// meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundPacketKind {
+    /// `ClientboundSoundPacket`.
+    Positioned,
+    /// `ClientboundSoundEntityPacket`.
+    OnEntity,
+    /// `ClientboundStopSoundPacket`.
+    Stop,
+}
+
+/// Decode a sound packet body into a [`sounds::SoundEvent`] (M63).
+///
+/// Returns `None` on a malformed body. That is safe rather than a desync
+/// risk for the same reason `route_level_particles` gives: packets are
+/// length-framed, so abandoning a body part-way never disturbs the stream.
+/// Unlike the particle path there is no "kind we do not simulate" case —
+/// every sound packet decodes in full, because none of the three has an
+/// open-ended payload.
+pub fn route_sound(kind: SoundPacketKind, body: &[u8]) -> Option<sounds::SoundEvent> {
+    use sounds::SoundEvent;
+    let mut r = PacketReader::new(body);
+    match kind {
+        SoundPacketKind::Positioned => sounds::PositionedSound::read(&mut r).ok().map(SoundEvent::At),
+        SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).ok().map(SoundEvent::OnEntity),
+        SoundPacketKind::Stop => sounds::StopSound::read(&mut r).ok().map(SoundEvent::Stop),
+    }
 }
 
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):

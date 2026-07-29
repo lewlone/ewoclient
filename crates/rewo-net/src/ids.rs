@@ -161,6 +161,17 @@ pub struct Ids {
     // still a correct server, and the client must not fail to connect to one.
     pub cb_play_level_particles: Option<i32>,
     pub cb_play_level_event: Option<i32>,
+    /// `ClientboundSoundPacket` — a sound at a world position (M63).
+    /// Required, like every other core play packet here: `require` grades the
+    /// *report*, not the server, so this fails loud when a version bump
+    /// renames or drops the packet rather than silently decoding nothing.
+    /// (There is no `custom_sound` in 26.2 — it has not existed since the
+    /// sound-event registry replaced it.)
+    pub cb_play_sound: i32,
+    /// `ClientboundSoundEntityPacket` — a sound that follows an entity.
+    pub cb_play_sound_entity: i32,
+    /// `ClientboundStopSoundPacket` — the bitmask-driven cancel.
+    pub cb_play_stop_sound: i32,
 }
 
 impl Ids {
@@ -264,6 +275,9 @@ impl Ids {
             cb_play_block_ack: opt!(p, P, C, "block_changed_ack"),
             cb_play_level_particles: opt!(p, P, C, "level_particles"),
             cb_play_level_event: opt!(p, P, C, "level_event"),
+            cb_play_sound: req!(p, P, C, "sound"),
+            cb_play_sound_entity: req!(p, P, C, "sound_entity"),
+            cb_play_stop_sound: req!(p, P, C, "stop_sound"),
         })
     }
 }

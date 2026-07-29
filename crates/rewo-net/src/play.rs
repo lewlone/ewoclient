@@ -251,6 +251,14 @@ pub struct PlaySession {
     /// that renumbers the registry fails loud rather than spawning the wrong
     /// effect.
     particle_types: rewo_data::particle_types::ParticleTypes,
+    /// Sound requests decoded from `sound` / `sound_entity` / `stop_sound`
+    /// (M63). **Nothing drains this yet** — Rewo has no audio device, and
+    /// this milestone is the decode half only. One queue for all three so the
+    /// server's ordering survives: a `stop_sound` that overtook the sound it
+    /// cancels would leave that sound playing forever. It is capped rather
+    /// than unbounded precisely because no consumer exists; see
+    /// [`Self::MAX_PENDING_SOUNDS`].
+    pub sound_events: Vec<crate::sounds::SoundEvent>,
     pub chat_log: Vec<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
@@ -882,6 +890,7 @@ impl<'a> Connection<'a> {
             removed: Vec::new(),
             particle_events: Vec::new(),
             particle_types: self.data.particle_types.clone(),
+            sound_events: Vec::new(),
             chat_log: Vec::new(),
             health: 20.0,
             food: 20,
@@ -985,6 +994,31 @@ impl PlaySession {
 
     pub fn take_dirty(&mut self) -> Vec<(i32, i32)> {
         self.dirty.drain().collect()
+    }
+
+    /// Cap on [`Self::sound_events`].
+    ///
+    /// `particle_events` needs no cap because the renderer drains it every
+    /// frame. This queue has **no consumer at all** until playback ships, so
+    /// an uncapped push would grow for the whole session — a busy server
+    /// sends a few sounds per tick, which is megabytes an hour of strings
+    /// nobody reads. Dropping the oldest keeps the recent ordering (the part
+    /// a `stop_sound` depends on) and bounds the memory. Sized to a few
+    /// seconds of a loud scene, so a real consumer draining per frame never
+    /// reaches it.
+    pub const MAX_PENDING_SOUNDS: usize = 256;
+
+    fn push_sound_event(&mut self, ev: crate::sounds::SoundEvent) {
+        if self.sound_events.len() >= Self::MAX_PENDING_SOUNDS {
+            self.sound_events.remove(0);
+        }
+        self.sound_events.push(ev);
+    }
+
+    /// Drain the decoded sound queue. The seam a playback layer reads;
+    /// unused today, which is why the queue is capped above.
+    pub fn take_sound_events(&mut self) -> Vec<crate::sounds::SoundEvent> {
+        std::mem::take(&mut self.sound_events)
     }
 
     /// Drain newly-announced player skins (UUID → skin) for the app to
@@ -1437,6 +1471,24 @@ impl PlaySession {
             if let Some(ev) = ev {
                 log::debug!("net: particle event {ev:?}");
                 self.particle_events.push(ev);
+            }
+        } else if id == ids.cb_play_sound
+            || id == ids.cb_play_sound_entity
+            || id == ids.cb_play_stop_sound
+        {
+            // M63 — decode only. The three bodies differ enough that the kind
+            // has to come from the id; deriving it from the body would mean
+            // guessing between a var-int entity id and a fixed i32 position.
+            let kind = if id == ids.cb_play_sound {
+                crate::SoundPacketKind::Positioned
+            } else if id == ids.cb_play_sound_entity {
+                crate::SoundPacketKind::OnEntity
+            } else {
+                crate::SoundPacketKind::Stop
+            };
+            if let Some(ev) = crate::route_sound(kind, body) {
+                log::debug!("net: sound event {ev:?}");
+                self.push_sound_event(ev);
             }
         } else if Some(id) == ids.cb_play_block_ack {
             // Sequence ack — server confirms our predicted change. We don't
