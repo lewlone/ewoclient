@@ -4163,6 +4163,92 @@ pub fn cape_faces() -> [(Facing, [[f32; 3]; 4], [[f32; 2]; 4]); 6] {
     )
 }
 
+/// One face of one slab of the wavy cape (M61), addressed by joint rather
+/// than by position.
+///
+/// The simulation hands the renderer a spine — a polyline of joints — and
+/// nothing else. Each corner of each face is then "joint `j`, offset `off`
+/// in that joint's own frame", so the geometry follows whatever shape the
+/// chain has taken without the generator knowing anything about it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapeSlabQuad {
+    /// Which spine joint each corner hangs from.
+    pub joint: [usize; 4],
+    /// Each corner's offset from the spine, `[along the width, along the
+    /// thickness]`, in model units. The cube is x −5..5 and z −1..0, so the
+    /// spine is at z −0.5 and the thickness offsets are ±0.5.
+    pub off: [[f32; 2]; 4],
+    /// Sheet UVs in the cape's own 64×32 space, ready for
+    /// `entities::cape_face_uv`.
+    pub uv: [[f32; 2]; 4],
+}
+
+/// The wavy cape's geometry: `n` stacked slabs of `10 × 16/n × 1` model
+/// units, with the box UV subdivided straight down the same 64×32 sheet the
+/// single cube uses (M61).
+///
+/// # Why the internal caps are not emitted
+///
+/// Consecutive slabs share their boundary quad exactly — corner positions
+/// are derived from the shared **joint's** frame, not from each slab's own —
+/// so the surface is already watertight when the chain bends. Emitting the
+/// caps as well would put two coincident quads at every interior joint,
+/// which under reversed-Z depth is a z-fight, for geometry that can never be
+/// seen. Only the cape's two real ends get one.
+///
+/// # It reduces
+///
+/// At `n == 1` this is `cape_faces()` exactly: one slab spanning y 0..16,
+/// all six faces, and a UV shift of zero. That is a *structural* property
+/// and not the spec's reduction rule — the rule is about bypassing the
+/// simulation, and the renderer does that with its own branch, because the
+/// two paths reach world space through different arithmetic and only the
+/// bypass can be bit-for-bit.
+pub fn cape_slab_quads(n: usize) -> Vec<CapeSlabQuad> {
+    let n = n.max(1);
+    let h = 16.0 / n as f32;
+    let mut out = Vec::with_capacity(n * 4 + 2);
+    for i in 0..n {
+        let ya = i as f32 * h;
+        for (facing, pos, uv) in cube_faces((0.0, 0.0), [-5.0, ya, -1.0], [10.0, h, 1.0], 0.0, false)
+        {
+            let cap = matches!(facing, Facing::Down | Facing::Up);
+            if cap
+                && !((facing == Facing::Down && i == 0) || (facing == Facing::Up && i + 1 == n))
+            {
+                continue;
+            }
+            let mut q = CapeSlabQuad {
+                joint: [0; 4],
+                off: [[0.0; 2]; 4],
+                uv: [[0.0; 2]; 4],
+            };
+            for k in 0..4 {
+                let p = pos[k];
+                // `cube_faces` places every corner at exactly one of the two
+                // slab boundaries, so this is a selection and not a rounding.
+                q.joint[k] = if (p[1] - ya).abs() <= (p[1] - (ya + h)).abs() {
+                    i
+                } else {
+                    i + 1
+                };
+                q.off[k] = [p[0], p[2] + 0.5];
+                // The caps keep the sheet's own 1-pixel strip (v 0..1); only
+                // the four side faces subdivide, and they do it by sliding
+                // down the sheet exactly as far as the slab sits down the
+                // cape.
+                q.uv[k] = if cap {
+                    uv[k]
+                } else {
+                    [uv[k][0], uv[k][1] + ya]
+                };
+            }
+            out.push(q);
+        }
+    }
+    out
+}
+
 /// Which humanoid parts a slot's armour covers, and how far the mesh is grown.
 ///
 /// The names are the *body* model's part names: the armour is posed by the
