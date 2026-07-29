@@ -44,8 +44,9 @@ use rewo_world::entities::EntityTable;
 
 use crate::stats::OverlayRing;
 
-/// 38 for the vanilla cape (M60), 26 for the wavy one (M61).
-const EXPECTED_WITNESSES: usize = 64;
+/// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
+/// re-projected collision + the inventory preview's cape).
+const EXPECTED_WITNESSES: usize = 69;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -54,6 +55,11 @@ const H: u32 = 256;
 /// The pre-M60 atlas height. `CAPE_POOL_Y` must land exactly here: the band
 /// was added below everything, so every address under it is unmoved.
 const ATLAS_H_BEFORE_M60: u32 = 1408;
+
+/// The rows M64 added to the **mob shelf region** for vanilla's 42 metadata
+/// variant sheets. Unlike M22/M48/M60's bands this one is not at the bottom,
+/// so it slid every dynamic pool — including the cape's — down with it.
+const M64_SHELF_GROWTH: u32 = 128;
 
 #[derive(ClapArgs)]
 pub struct CapeshotArgs {
@@ -531,7 +537,10 @@ fn player_table(chest: Option<i32>) -> EntityTable {
 }
 
 fn check_suppression(c: &mut Checker, f: &Fixture) {
-    let origin = Some((0u32, 1408u32));
+    // The first cape slot, wherever the pool currently starts. Hard-coding it
+    // would have made this fixture silently wrong the moment M64 moved the
+    // pool, which is exactly what happened to `f2` below.
+    let origin = Some(rewo_gpu::entities::cape_slot_origin(0));
     let resolve = |t: &EntityTable, kind| {
         crate::live_cmd::resolve_cape(t, 1, kind, 1.0, origin, &f.items, &f.equipment)
     };
@@ -719,12 +728,20 @@ fn check_pool(c: &mut Checker) {
         format!("{slots} slots of {sw}x{sh} at y={pool_y}, atlas {aw}x{ah}"),
     );
     c.record(
-        "f2.the_atlas_grew_by_exactly_the_new_band_so_nothing_below_it_moved",
-        pool_y == ATLAS_H_BEFORE_M60 && ah == ATLAS_H_BEFORE_M60 + sh * 2,
+        "f2.the_cape_band_sits_exactly_where_the_shelf_growth_left_it",
+        pool_y == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH
+            && ah == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + sh * 2,
         format!(
-            "cape pool starts at {pool_y} = the pre-M60 ATLAS_H, so every mob, item, \
-             skin and trim texel address is unchanged — `mobshot --check` staying at \
-             243/243 is the empirical half of this claim"
+            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at \
+             the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it \
+             moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for \
+             vanilla's 42 metadata variant sheets, and the shelf ceiling is defined \
+             by subtraction from ATLAS_H — so the item, skin, trim and cape pools \
+             all slid down by exactly that. Nothing on disk depends on those \
+             origins, and the *mob* packing is still byte-for-byte what it was \
+             because the packer is sequential and the region only grew at its far \
+             end: `mobshot --check` staying at 243/243 is the empirical half of \
+             that claim"
         ),
     );
 }
@@ -970,11 +987,12 @@ fn check_wavy_dynamics(c: &mut Checker) {
         ),
     );
 
-    // The constraint residual, measured **after the relax passes and before
-    // the push-out** — which is where the spec puts it, and which matters:
-    // the push-out is a collision response that is not re-projected, so the
-    // post-tick number is a different and much larger one. Both are
-    // reported; only the spec's is asserted.
+    // The constraint residual, measured **after a whole tick** — which is
+    // where M64 moved it. Before M64 this had to be read between the relax
+    // passes and the push-out, because the collision response was the last
+    // thing to run and was never re-projected; the post-tick number was a
+    // different and much larger one. `solve` now interleaves the two
+    // projections, so the finished state satisfies both.
     let rest_err = worst_link(&s);
     let mut m = WavyCape::new(SEGMENTS, anchor);
     let mut relaxed_err = 0f64;
@@ -983,47 +1001,44 @@ fn check_wavy_dynamics(c: &mut Checker) {
         // A cloak gap swinging through a full circle at 1.5 blocks — the
         // largest vanilla's own `capeLean` clamp can represent.
         let f = [ph.sin() * 1.5, 0.0, ph.cos() * 1.5];
-        // The four stages `tick` runs, in `tick`'s order, opened up so the
+        // The three stages `tick` runs, in `tick`'s order, opened up so the
         // residual can be read at the named point. Not a reimplementation:
-        // these are the same four methods.
+        // these are the same three methods.
         m.integrate(anchor, f);
-        m.relax();
-        relaxed_err = relaxed_err.max(m.worst_link_error());
-        m.push_out();
+        m.solve();
         m.clamp(anchor);
+        relaxed_err = relaxed_err.max(m.worst_link_error());
     }
-    // The push-out is what perturbs the links after the relax, and a *turn*
+    // The push-out is what perturbs the links inside the solve, and a *turn*
     // is what fires it — the anchor swings to the far side of the body and
     // the chain has to cross the torso. Measured here rather than under the
-    // forcing above, which now blows the cape away from the body rather than
-    // across it.
+    // forcing above, which blows the cape away from the body rather than
+    // across it, so it never collides at all.
     let mut turning = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
     let mut post_tick_err = 0f64;
-    let mut relaxed_in_turn = 0f64;
     for step in 0..120 {
         let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
-        turning.integrate(a, [0.0; 3]);
-        turning.relax();
-        relaxed_in_turn = relaxed_in_turn.max(turning.worst_link_error());
-        turning.push_out();
-        turning.clamp(a);
+        turning.tick(a, [0.0; 3]);
         post_tick_err = post_tick_err.max(turning.worst_link_error());
     }
     c.record(
-        "w9.every_link_stays_within_1e_4_of_REST_LEN_after_the_relax_passes",
-        rest_err < 1e-4 && relaxed_err < 1e-4 && relaxed_in_turn < 1e-4,
+        "w9.every_link_is_within_1e_4_of_REST_LEN_at_the_end_of_the_tick",
+        rest_err < 1e-4 && relaxed_err < 1e-4 && post_tick_err < 1e-4,
         format!(
             "worst link error {rest_err:.2e} settled, {relaxed_err:.2e} under a \
-             1.5-block gap swinging through a full circle, {relaxed_in_turn:.2e} \
-             through a 30-degree-per-tick turn. FINDING: after the push-out that \
-             turn reaches {post_tick_err:.3} — the spec's stage order relaxes, \
-             *then* collides, and never re-projects, so a joint shoved off the \
-             torso leaves its links stretched until the next tick. Small (a \
-             fifth of a slab) and only on a turn, since a gap blows the cape \
-             away from the body rather than across it. MUTATION RELAX_PASSES = 0 \
-             leaves the chain stretched by whatever the integrator moved it. \
-             NOTE the mass weighting is what makes 1e-4 reachable at all: \
-             symmetric Gauss-Seidel measures 2.9e-2 here"
+             1.5-block gap swinging through a full circle, {post_tick_err:.2e} \
+             through a 30-degree-per-tick turn — the one motion that fires the \
+             push-out at all. That last number is M64's: the M61 order relaxed, \
+             *then* collided once, and never re-projected, so the same turn \
+             ended its tick 0.230 out — a fifth of a slab. `solve` now \
+             interleaves the two projections, which converges geometrically \
+             (2.30e-1 / 9.60e-3 / 4.27e-4 / 5.14e-5 at 1/2/3/4 passes), so the \
+             spec's RELAX_PASSES = 4 is the first count that clears its own \
+             1e-4. MUTATION RELAX_PASSES = 0 leaves the chain stretched by \
+             whatever the integrator moved it; reverting to the M61 order \
+             fails this row alone at 2.3e-1. NOTE the mass weighting is what \
+             makes 1e-4 reachable at all: symmetric Gauss-Seidel measures \
+             2.9e-2 here"
         ),
     );
 
@@ -1231,6 +1246,57 @@ fn check_wavy_pushout(c: &mut Checker) {
         "at least one joint sits exactly on the cylinder — the push-out's own \
          signature, and what stops w12 passing vacuously because nothing ever \
          came near the body",
+    );
+
+    // M64: the same turn, run twice — once through the production `tick`, and
+    // once through an explicitly reconstructed M61 stage order (all the relax
+    // passes, then one push-out). Both chains see identical anchors, so the
+    // only difference between them is where the collision sits in the solve.
+    //
+    // This is the one witness that can tell the two orders apart. w9 asserts
+    // the residual is small and w12 asserts the cylinder holds; neither says
+    // *which* order produced them, and the M61 build passed both — it read
+    // its residual at a point the finished state no longer occupied.
+    let seed = |c: &mut WavyCape| {
+        for _ in 0..200 {
+            c.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0), [0.0; 3]);
+        }
+    };
+    let mut shipped = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut m61 = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    seed(&mut shipped);
+    seed(&mut m61);
+    let (mut shipped_err, mut m61_err, mut m61_min_r) = (0f64, 0f64, f64::MAX);
+    for step in 0..120 {
+        let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
+        shipped.tick(a, [0.0; 3]);
+        shipped_err = shipped_err.max(shipped.worst_link_error());
+        // The M61 order, from the same public stages: relax, relax, relax,
+        // relax, collide once.
+        m61.integrate(a, [0.0; 3]);
+        for _ in 0..wavy_cape::RELAX_PASSES {
+            m61.relax_pass();
+        }
+        m61.push_out();
+        m61.clamp(a);
+        m61_err = m61_err.max(m61.worst_link_error());
+        for p in &m61.joints()[1..] {
+            m61_min_r = m61_min_r.min((p[0] * p[0] + p[2] * p[2]).sqrt());
+        }
+    }
+    c.record(
+        "w23.interleaving_the_collision_into_the_solve_re_projects_it",
+        shipped_err < 1e-4 && m61_err > 0.1 && m61_min_r >= TORSO_RADIUS - 1e-9,
+        format!(
+            "through the same 30-degree-per-tick turn the shipped solve ends \
+             each tick {shipped_err:.2e} out of REST_LEN and the reconstructed \
+             M61 order {m61_err:.3} — a fifth of a slab, left there because a \
+             joint the push-out shoved off the torso was never re-projected. \
+             Both orders end on the push-out, which is why the M61 chain still \
+             reaches {m61_min_r:.6}: the fix is where the collision sits, not \
+             whether it runs. MUTATION reverting `solve` to the M61 order makes \
+             the two numbers equal and fails this row (and w9) alone"
+        ),
     );
 }
 
@@ -1452,6 +1518,21 @@ fn magenta(img: &[u8]) -> u32 {
     for px in img.chunks_exact(4) {
         if px[0] > 150 && px[2] > 150 && px[1] < 90 {
             n += 1;
+        }
+    }
+    n
+}
+
+/// The marker pixels inside `(x, y, w, h)` of a `W`x`H` frame (M64).
+fn magenta_in(img: &[u8], (x, y, w, h): (u32, u32, u32, u32)) -> u32 {
+    let mut n = 0;
+    for row in y..(y + h).min(H) {
+        for col in x..(x + w).min(W) {
+            let i = (row * W + col) as usize * 4;
+            let px = &img[i..i + 4];
+            if px[0] > 150 && px[2] > 150 && px[1] < 90 {
+                n += 1;
+            }
         }
     }
     n
@@ -1738,6 +1819,164 @@ fn check_pixels(
              emitter reads the chain and never advances it, so a paused game \
              cannot drift",
         );
+
+        // ---- M64: the inventory preview's cape -------------------------
+        //
+        // The preview is a **second** `EntityPass` with its own atlas (M36:
+        // two `set_draws` into one vertex ring would cross the draws), and
+        // it draws only when the container screen is open — so this needs
+        // the screen too. Nothing is live and nothing mutates: the two
+        // frames below differ only in whether the preview draw carries a
+        // cape.
+        wr.set_entities(&[], cam_right, cam_up, 0.0);
+        let preview_ok = crate::live_cmd::container_sprites(baked)
+            .map(|s| wr.init_container(gpu, &s))
+            .transpose()?
+            .is_some()
+            && wr
+                .init_preview(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))
+                .map(|_| wr.preview_ready())
+                .unwrap_or(false);
+        if preview_ok {
+            wr.set_container(true, None);
+            // The preview's **own** upload. The world pass already holds this
+            // exact sheet at `origin`; the address is only meaningful in the
+            // atlas it came from.
+            let p_origin = wr
+                .upload_preview_cape(gpu, &sheet)
+                .ok_or("preview cape upload failed")?;
+            // A second slot in the *world* pass, claimed before the render
+            // closure borrows the renderer. It exists so p3 can move the two
+            // pools' cursors apart — see there.
+            let green: Vec<u8> = (0..CAPE_TEXELS).flat_map(|_| [0u8, 255, 0, 255]).collect();
+            let world_second = wr
+                .upload_player_cape(gpu, &green)
+                .ok_or("second world cape upload failed")?;
+            let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(W as f32, H as f32);
+            let window = (rx as u32, ry as u32, rw as u32, rh as u32);
+            let vp_prev = rewo_gpu::container::preview_view_proj(W as f32, H as f32, 1.8, 0.0);
+            let rect = ash::vk::Rect2D {
+                offset: ash::vk::Offset2D { x: rx as i32, y: ry as i32 },
+                extent: ash::vk::Extent2D { width: rw as u32, height: rh as u32 },
+            };
+            let mut prev = |cape: Option<CapeDraw>, yaw: f32| -> Result<Vec<u8>, String> {
+                let mut d = player_draw(cape);
+                d.yaw = yaw;
+                d.head_yaw = yaw;
+                wr.set_preview(Some((&d, vp_prev, rect)));
+                off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+                off.read_rgba(gpu)
+            };
+            // Built by the **production** resolver, so a client that stopped
+            // giving the preview a cape could not pass p1 with a draw this
+            // gate assembled for itself (M45's and M41's failure mode).
+            let marker = crate::live_cmd::preview_cape(Some(p_origin));
+            // Two poses. `bodyRot = 180 + xAngle` plus the camera's own half
+            // turn is what makes the shipped preview face you — and a cape
+            // seen from the front is nearly all body, so it would be graded
+            // by a handful of edge pixels. Turning the model the other way
+            // shows the whole sheet and makes the count unambiguous; the
+            // facing-you number is reported beside it because that is the
+            // pose a player actually sees.
+            let p_back = prev(marker, 0.0)?;
+            let p_front = prev(marker, 180.0)?;
+            let p_bare = prev(None, 0.0)?;
+            let inside = magenta_in(&p_back, window);
+            let outside = magenta(&p_back) - inside;
+            let front = magenta_in(&p_front, window);
+            // The cape's front face is 10x16 model units = 0.625 x 1.0 blocks,
+            // and the preview's scale is `guiScale * 30` px per block — so a
+            // fully visible one covers `0.625*s * 1.0*s` px. Half of that is
+            // the floor: the arms and legs eat into it from a straight-on
+            // view, and a threshold derived from the geometry beats a round
+            // number nobody can check.
+            let (_, _, gs) = rewo_gpu::container::gui_origin(W as f32, H as f32);
+            let full = (0.625 * gs * 30.0) * (gs * 30.0);
+            c.record(
+                "p1.the_inventory_preview_wears_its_cape",
+                inside as f32 > full * 0.5 && front > 0 && magenta(&p_bare) == 0,
+                format!(
+                    "{inside} marker px inside the preview's {}x{} window with \
+                     the model turned away — against {full:.0} for a wholly \
+                     unoccluded 10x16 sheet at this scale — {front} in the pose \
+                     a player actually sees (the body hides all but the edges), \
+                     and {} on a bare preview. The preview is a second \
+                     EntityPass with its own atlas, so before M64 there was no \
+                     cape pool in it to address and the draw carried \
+                     `cape: None`",
+                    window.2,
+                    window.3,
+                    magenta(&p_bare)
+                ),
+            );
+            c.record(
+                "p2.and_it_stays_inside_the_window_the_panel_paints",
+                outside == 0,
+                format!(
+                    "{outside} marker px outside it — the preview is scissored \
+                     to the black rectangle `inventory.png` paints, so a cape \
+                     hanging off the model cannot spill across the slots"
+                ),
+            );
+            // **Why the second upload exists.** The two passes hold separate
+            // atlases, so an origin is only meaningful in the one it came
+            // from — and because both pools fill from empty, the *first* cape
+            // in each lands at the same texel, which would let a borrowed
+            // address look correct forever. Claiming a second world slot
+            // moves the two apart and makes the mistake observable: the
+            // preview asked to draw from an address that is populated in the
+            // world's atlas and empty in its own must render no cape.
+            let borrowed = prev(
+                marker.map(|m| CapeDraw {
+                    origin: world_second,
+                    ..m
+                }),
+                0.0,
+            )?;
+            c.record(
+                "p3.a_cape_address_borrowed_from_the_world_pass_draws_nothing_here",
+                world_second != p_origin && magenta_in(&borrowed, window) == 0 && inside > 0,
+                format!(
+                    "the world pass's second cape slot is {world_second:?} where \
+                     the preview's first is {p_origin:?}; drawing the preview \
+                     from the world's address yields {} marker px against {inside} \
+                     from its own. Both pools start empty, so the *first* cape in \
+                     each lands on the same texel — which is exactly why reusing \
+                     an address would have looked right until a second player \
+                     joined. p1 renders magenta only because the sheet was \
+                     uploaded into this atlas too",
+                    magenta_in(&borrowed, window)
+                ),
+            );
+            let none = crate::live_cmd::preview_cape(None);
+            c.record(
+                "p4.the_preview_hangs_a_cape_exactly_when_it_has_a_slot_for_one",
+                none.is_none()
+                    && marker.is_some_and(|m| {
+                        m.origin == p_origin
+                            && m.flap == 0.0
+                            && m.lean == 0.0
+                            && m.lean2 == 0.0
+                            && !m.chest_humanoid
+                            && m.wavy.is_none()
+                    }),
+                format!(
+                    "no slot -> {none:?}; a slot -> {marker:?}. The three angles \
+                     are zero because they are driven entirely by the gap \
+                     between the player and their lagging cloak anchor, and a \
+                     player standing in an open inventory has let it close — \
+                     the *moving* preview is missing for the same reason its \
+                     legs are, not by a different simplification. \
+                     `chest_humanoid` is false because the preview draws no \
+                     armour at all, so neither of `CapeLayer`'s other two \
+                     gates has anything to act on"
+                ),
+            );
+            wr.set_preview(None);
+            wr.set_container(false, None);
+        } else {
+            return Err("preview/container passes unavailable".into());
+        }
         Ok(())
     })();
     wr.destroy(gpu);
@@ -1785,6 +2024,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         emissive: Default::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         anim_id: 0.0,
         cape,
     }

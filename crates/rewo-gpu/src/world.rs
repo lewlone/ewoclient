@@ -1969,6 +1969,25 @@ impl WorldRenderer {
         }
     }
 
+    /// The same, into the **preview** pass (M64).
+    ///
+    /// A separate call for the reason [`Self::upload_preview_skin`] is one:
+    /// the two passes hold separate atlases, so an origin from the world's is
+    /// a rectangle of some mob's texture in the preview's. This is stronger
+    /// than the skin case, not weaker — an origin is an absolute texel
+    /// address rather than a delta, so reusing one would sample a *fixed*
+    /// wrong place rather than merely a shifted one.
+    pub fn upload_preview_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
+        let pass = self.preview.as_mut()?;
+        match pass.upload_cape(gpu, rgba) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                log::warn!("preview: cape upload failed: {e}");
+                None
+            }
+        }
+    }
+
     /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).
     pub fn init_hud(&mut self, gpu: &mut Gpu, sprites: &HudSpritesData<'_>) -> Result<(), String> {
         self.hud = Some(HudPass::new(gpu, self.color_format, sprites)?);

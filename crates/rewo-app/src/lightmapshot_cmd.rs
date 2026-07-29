@@ -959,6 +959,7 @@ fn run_entity_case(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
         light,
     };

@@ -20,6 +20,7 @@ pub mod crypt;
 pub mod dimension_parse;
 pub mod enchantment_parse;
 pub mod trim_parse;
+pub mod variant_parse;
 pub mod effects;
 pub mod ids;
 pub mod item_stack;
@@ -224,6 +225,10 @@ pub struct Connection<'a> {
     enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
     trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
+    /// The three metadata-variant registries (M64), in raw wire order.
+    cat_variants: Vec<crate::variant_parse::MobVariantDef>,
+    wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
+    frog_variants: Vec<crate::variant_parse::MobVariantDef>,
 }
 
 impl<'a> Connection<'a> {
@@ -252,6 +257,9 @@ impl<'a> Connection<'a> {
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
             trim_materials: Vec::new(),
+            cat_variants: Vec::new(),
+            wolf_variants: Vec::new(),
+            frog_variants: Vec::new(),
             trim_patterns: Vec::new(),
         })
     }
@@ -501,6 +509,23 @@ impl<'a> Connection<'a> {
         if registry == crate::trim_parse::TRIM_PATTERN_REGISTRY {
             self.trim_patterns = crate::trim_parse::parse_trim_pattern_registry(&mut r, count);
             log::info!("net: {} trim pattern(s) synced", self.trim_patterns.len());
+            return Ok(());
+        }
+        // M64: the three mob-variant registries, datapack-driven for the
+        // same reason — the index is the raw holder id the metadata carries.
+        if registry == crate::variant_parse::CAT_VARIANT_REGISTRY {
+            self.cat_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            log::info!("net: {} cat variant(s) synced", self.cat_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::WOLF_VARIANT_REGISTRY {
+            self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
+            log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::FROG_VARIANT_REGISTRY {
+            self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
             return Ok(());
         }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
@@ -1429,6 +1454,15 @@ pub struct MetaKinds<'a> {
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
+    /// The six mobs whose texture is chosen by synched metadata (M64), in the
+    /// order `[cat, wolf, frog, axolotl, horse, llama]`.
+    ///
+    /// Three of them (cat, wolf, frog) carry a `Holder` whose serializer is
+    /// unique to them and would need no gate at all; the other three carry a
+    /// plain `int` at an index other classes also claim, and those genuinely
+    /// do. Both are gated, so the two read the same and a slot that moves
+    /// fails loudly rather than half-silently.
+    pub variant_kinds: VariantKinds,
     /// The machine-extracted ancestry sets — mob / raider / spellcaster.
     pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
     /// Data-component registry ids, needed to walk an ITEM_STACK metadata
@@ -1446,6 +1480,28 @@ impl<'a> From<Option<i32>> for MetaKinds<'a> {
             allay,
             ..Default::default()
         }
+    }
+}
+
+/// The entity-type ids of the six mobs whose texture a metadata field selects
+/// (M64). `None` for any the caller could not resolve, which leaves that mob
+/// on its baked texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VariantKinds {
+    pub cat: Option<i32>,
+    pub wolf: Option<i32>,
+    pub frog: Option<i32>,
+    pub axolotl: Option<i32>,
+    pub horse: Option<i32>,
+    pub llama: Option<i32>,
+}
+
+impl VariantKinds {
+    /// Whether this type is one of the two `TamableAnimal`s Rewo renders a
+    /// variant for — the gate on the index-18 BYTE, which the sheep's wool
+    /// byte shares slot *and* serializer with.
+    pub fn is_tamable(&self, type_id: i32) -> bool {
+        self.cat == Some(type_id) || self.wolf == Some(type_id)
     }
 }
 
@@ -1576,6 +1632,35 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(wool) = meta.byte18 {
         if kinds.sheep == Some(type_id) {
             entities.set_wool(eid, wool);
+        } else if kinds.variant_kinds.is_tamable(type_id) {
+            // Slot 18 BYTE again, and this time it is
+            // `TamableAnimal.DATA_FLAGS_ID` — bit 0x04 `isTame()`, which is
+            // what `Wolf.getTexture` branches on. Same index, same
+            // serializer, different class: `Sheep` and `TamableAnimal` both
+            // extend `Animal`, whose own accessor count is zero, so both
+            // land their first byte at 18 and only the kind separates them
+            // (M18's rule). Reading a wolf's flags as a wool byte would give
+            // it dye 4 — yellow — and a shorn fleece it does not have.
+            entities.set_tamable_flags(eid, wool);
+        }
+    }
+    // M64: the six metadata-driven texture variants. Three carry a `Holder`
+    // whose serializer is theirs alone; three carry an `int` at an index
+    // other classes claim. The value's *units* differ — a registry id for
+    // the first three, an enum ordinal for the rest — and only the kind
+    // says which, which is why they all funnel through one setter the
+    // renderer reads back with the kind in hand.
+    let vk = kinds.variant_kinds;
+    for (value, kind) in [
+        (meta.cat_variant, vk.cat),
+        (meta.wolf_variant, vk.wolf),
+        (meta.frog_variant, vk.frog),
+        (meta.int18, vk.axolotl),
+        (meta.int19, vk.horse),
+        (meta.int21, vk.llama),
+    ] {
+        if let (Some(v), true) = (value, kind == Some(type_id)) {
+            entities.set_variant(eid, v);
         }
     }
 }

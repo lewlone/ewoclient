@@ -290,6 +290,11 @@ pub struct PlaySession {
     /// also what an unsent mask means, so a harness that never resolves it
     /// behaves like one whose players never sent one.
     pub player_type_id: Option<i32>,
+    /// The six mobs whose texture a metadata field chooses (M64). Default-
+    /// empty routes every variant nowhere, which leaves those mobs on the
+    /// texture Rewo baked — the same "`None` means don't interpret" rule the
+    /// type ids above use.
+    pub variant_type_ids: crate::VariantKinds,
     /// The block-entity type ids whose `triggerEvent` this client implements
     /// (M26). Default-empty, which routes every `block_event` nowhere — the
     /// correct behaviour for a harness that never renders a chest, and the
@@ -335,6 +340,12 @@ pub struct PlaySession {
     /// The two trim registries, index = protocol id (M48).
     pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     pub trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
+    /// The three metadata-variant registries (M64), index = protocol id.
+    /// Empty on a server that syncs none, which leaves those mobs on their
+    /// base textures rather than guessing an order.
+    pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
+    pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
+    pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
@@ -993,6 +1004,9 @@ impl<'a> Connection<'a> {
         let enchantments = std::mem::take(&mut self.enchantments);
         let trim_materials = std::mem::take(&mut self.trim_materials);
         let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        let cat_variants = std::mem::take(&mut self.cat_variants);
+        let wolf_variants = std::mem::take(&mut self.wolf_variants);
+        let frog_variants = std::mem::take(&mut self.frog_variants);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -1028,6 +1042,9 @@ impl<'a> Connection<'a> {
             enchantments,
             trim_materials,
             trim_patterns,
+            cat_variants,
+            wolf_variants,
+            frog_variants,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
@@ -1039,6 +1056,7 @@ impl<'a> Connection<'a> {
             sheep_type_id: None,
             creaking_type_id: None,
             player_type_id: None,
+            variant_type_ids: crate::VariantKinds::default(),
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
@@ -1815,6 +1833,7 @@ impl PlaySession {
                 sheep: self.sheep_type_id,
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,
+                variant_kinds: self.variant_type_ids,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
             },

@@ -892,6 +892,25 @@ pub struct MobState {
     /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN) — the eyes' emissive layer
     /// alpha. `Creaking` declares `CAN_MOVE` (16) first, so `IS_ACTIVE` is 17.
     pub creaking_active: bool,
+    /// The mob's synched texture variant (M64), if it has one.
+    ///
+    /// **The units differ by mob and only the caller knows which**: for a cat,
+    /// wolf or frog this is a raw `minecraft:{cat,wolf,frog}_variant` registry
+    /// id (26.x moved them to datapack registries carrying a `Holder`); for a
+    /// horse, llama or axolotl it is the enum ordinal their `int` carries.
+    /// `None` means the server has not spoken, which is not the same as 0 —
+    /// a horse defaults to `DATA_ID_TYPE_VARIANT = 0`, i.e. WHITE, whereas an
+    /// unresolved one keeps whatever Rewo baked.
+    pub variant: Option<i32>,
+    /// `TamableAnimal.DATA_FLAGS_ID` — index **18**, BYTE, bit 0x04 is
+    /// `isTame()` and bit 0x01 `isInSittingPose()` (M64).
+    ///
+    /// The same slot *and the same serializer* as `Sheep.DATA_WOOL_ID`: both
+    /// classes extend `Animal`, whose accessor count is zero, so both put
+    /// their first byte at 18. Only the entity **kind** separates them — the
+    /// M18 rule again, and the reason `apply_set_entity_data` gates this on
+    /// the type being a cat or a wolf.
+    pub tamable_flags: u8,
 }
 
 impl MobState {
@@ -919,6 +938,11 @@ impl MobState {
     /// `Sheep.isSheared()` — `(DATA_WOOL_ID & 16) != 0`.
     pub fn is_sheared(self) -> bool {
         self.wool & 16 != 0
+    }
+
+    /// `TamableAnimal.isTame()` — `(DATA_FLAGS_ID & 4) != 0`.
+    pub fn is_tame(self) -> bool {
+        self.tamable_flags & 4 != 0
     }
 }
 
@@ -1505,6 +1529,37 @@ impl EntityTable {
     /// whether the server has spoken.
     pub fn wool_color(&self, id: i32) -> Option<u8> {
         self.mob_state.get(&id).map(|s| s.wool_color())
+    }
+
+    /// `Sheep.isSheared()` — bit 0x10 of the same wool byte (M64).
+    ///
+    /// Defaults to false for an entity that has sent none, which is vanilla's
+    /// `define(DATA_WOOL_ID, (byte)0)`: white and woolly.
+    pub fn is_sheared(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.is_sheared())
+    }
+
+    /// The mob's synched texture variant (M64) — see [`MobState::variant`]
+    /// for why the units depend on the kind. Kind-gated by the caller.
+    pub fn set_variant(&mut self, id: i32, variant: i32) {
+        self.mob_state.entry(id).or_default().variant = Some(variant);
+    }
+
+    /// `None` when the server has not sent one, which leaves the mob on the
+    /// texture Rewo baked rather than on some default it invented.
+    pub fn variant(&self, id: i32) -> Option<i32> {
+        self.mob_state.get(&id).and_then(|s| s.variant)
+    }
+
+    /// `TamableAnimal.DATA_FLAGS_ID` (index 18, BYTE). Kind-gated by the
+    /// caller — the sheep's wool byte is the same slot *and* serializer.
+    pub fn set_tamable_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().tamable_flags = flags;
+    }
+
+    /// `TamableAnimal.isTame()`, which is what `Wolf.getTexture` branches on.
+    pub fn is_tame(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.is_tame())
     }
 
     /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN). Kind-gated by the caller.

@@ -176,16 +176,15 @@ impl WavyCape {
     ///   and in world axes. [`ANCHOR_ACCEL`] converts it to an acceleration.
     ///
     /// The order is the spec's and is fixed: Verlet, then `RELAX_PASSES`
-    /// relaxation passes, then the torso push-out, then the radius clamp.
+    /// iterations of (distance projection, torso push-out), then the radius
+    /// clamp.
     ///
-    /// The four stages are public individually **only** so `capeshot` can
-    /// observe the constraint residual where the spec names it — after the
-    /// relax passes and before the push-out perturbs them again. This is the
-    /// only correct order and is what everything in production calls.
+    /// The three stages are public individually **only** so `capeshot` can
+    /// observe the constraint residual between them. This is the only correct
+    /// order and is what everything in production calls.
     pub fn tick(&mut self, anchor: [f64; 3], delta: [f64; 3]) {
         self.integrate(anchor, delta);
-        self.relax();
-        self.push_out();
+        self.solve();
         self.clamp(anchor);
     }
 
@@ -219,10 +218,10 @@ impl WavyCape {
 
     /// The worst `|link - REST_LEN|` in the chain right now.
     ///
-    /// Read between [`Self::relax`] and [`Self::push_out`] this is the
-    /// spec's constraint residual; read after a whole [`Self::tick`] it also
-    /// carries whatever the push-out just did, which is a different and
-    /// larger number — the collision response is not re-projected.
+    /// After a whole [`Self::tick`] this *is* the spec's constraint residual:
+    /// [`Self::solve`] re-projects the distance constraints after every
+    /// push-out, so the collision response no longer leaves the number it
+    /// perturbed sitting in the finished state (M64).
     pub fn worst_link_error(&self) -> f64 {
         (0..self.segments())
             .map(|i| {
@@ -233,7 +232,47 @@ impl WavyCape {
             .fold(0.0, f64::max)
     }
 
-    /// Sequential (Gauss–Seidel) distance-constraint projection, from the
+    /// Stage 2: `RELAX_PASSES` iterations of **(distance projection, then
+    /// torso push-out)**.
+    ///
+    /// # The interleave is the M64 fix, and it costs nothing
+    ///
+    /// M61 ran every distance pass first and collided once at the end, so
+    /// whatever the push-out moved was never re-projected: a 30°/tick turn
+    /// finished its tick with a link stretched **0.230** model units, a fifth
+    /// of a slab. Alternating the two projections lets each pass answer the
+    /// other's last displacement, and because the push-out's own correction
+    /// shrinks with it the sequence converges geometrically — measured over
+    /// that same turn, worst post-tick link error against pass count:
+    ///
+    /// ```text
+    /// 1 -> 2.30e-1   2 -> 9.60e-3   3 -> 4.27e-4   4 -> 5.14e-5
+    /// ```
+    ///
+    /// So the spec's `RELAX_PASSES = 4` and its 1e-4 link tolerance turn out
+    /// to be exactly matched under this order — four is the first pass count
+    /// that clears it. Both numbers were fixed before the interleave existed,
+    /// so that is a coincidence worth recording rather than a derivation.
+    ///
+    /// **The push-out stays last**, which is why the collision guarantee is
+    /// unchanged and still exact: the closest approach through that turn is
+    /// `TORSO_RADIUS` to the bit. Ending on a relax instead would satisfy the
+    /// links exactly and let the final sweep pull a joint back inside the
+    /// cylinder — trading an assertable guarantee for a tolerance, in the one
+    /// place a naive chain visibly fails.
+    ///
+    /// Passes 2..`RELAX_PASSES` were exact no-ops before M64 and are not any
+    /// more: each has a fresh push-out displacement to answer. `RELAX_PASSES
+    /// = 0` remains the mutation partner, and now removes the collision along
+    /// with the constraints.
+    pub fn solve(&mut self) {
+        for _ in 0..RELAX_PASSES {
+            self.relax_pass();
+            self.push_out();
+        }
+    }
+
+    /// One sequential (Gauss–Seidel) distance-constraint sweep, from the
     /// pinned end outward.
     ///
     /// # Why only the lower joint moves
@@ -242,34 +281,28 @@ impl WavyCape {
     /// from the pin, each link's upper joint has already been placed by the
     /// link above it and is treated as fixed. For a chain pinned at one end
     /// this makes the projection **exact** — every link lands at `REST_LEN`
-    /// to float precision, in one pass — which is the only way to meet the
-    /// spec's "every link within 1e-4 of `REST_LEN` after the relax passes".
+    /// to float precision, in one sweep — which is the only way to meet the
+    /// spec's "every link within 1e-4 of `REST_LEN`".
     /// The symmetric weighting a cloth sheet needs leaves ≈3e-2 of residual
     /// after four passes on this chain (measured), because gravity's uniform
     /// per-tick shift breaks link 0 against the pin every tick and four
     /// Gauss–Seidel sweeps only halve that error four times.
     ///
-    /// Passes 2..`RELAX_PASSES` are therefore exact no-ops. They are still
-    /// run: `RELAX_PASSES` is a spec constant, and a future weighting change
-    /// would silently lose them.
-    ///
     /// A link whose length is not finite and positive is **left alone**
     /// rather than given an invented direction. That is the solver failing,
     /// and failing loudly enough for [`Self::clamp`] to see it — see
     /// [`MAX_JOINT_RADIUS`].
-    pub fn relax(&mut self) {
-        for _ in 0..RELAX_PASSES {
-            for i in 0..self.cur.len() - 1 {
-                let p = self.cur[i];
-                let q = self.cur[i + 1];
-                let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
-                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                if !len.is_finite() || len <= 0.0 {
-                    continue;
-                }
-                let s = REST_LEN / len;
-                self.cur[i + 1] = [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
+    pub fn relax_pass(&mut self) {
+        for i in 0..self.cur.len() - 1 {
+            let p = self.cur[i];
+            let q = self.cur[i + 1];
+            let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if !len.is_finite() || len <= 0.0 {
+                continue;
             }
+            let s = REST_LEN / len;
+            self.cur[i + 1] = [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
         }
     }
 
@@ -588,6 +621,35 @@ mod tests {
             worst >= TORSO_RADIUS - 1e-9,
             "a joint reached radius {worst}"
         );
+    }
+
+    /// M64: the collision response *is* re-projected, and the push-out is
+    /// still the last thing that runs.
+    ///
+    /// Both halves matter and they pull against each other. The turn is the
+    /// only motion that fires the push-out at all (a cloak gap blows the cape
+    /// away from the body, not across it), so it is where the un-re-projected
+    /// order left 0.230 of stretch — a fifth of a slab. Interleaving pulls
+    /// that under the spec's own 1e-4, while the closest approach stays
+    /// exactly `TORSO_RADIUS` because the push-out still ends the solve.
+    #[test]
+    fn a_turn_ends_its_tick_with_the_links_and_the_cylinder_both_satisfied() {
+        let a0 = anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+        let mut c = WavyCape::new(SEGMENTS, a0);
+        for _ in 0..200 {
+            c.tick(a0, [0.0; 3]);
+        }
+        let (mut post, mut min_r) = (0f64, f64::MAX);
+        for t in 0..120 {
+            let yaw = (t as f32 * 30.0).min(180.0);
+            c.tick(anchor_in_cape_space(0.0, 0.0, 0.0, yaw), [0.0; 3]);
+            post = post.max(worst_link(&c));
+            for p in &c.joints()[1..] {
+                min_r = min_r.min((p[0] * p[0] + p[2] * p[2]).sqrt());
+            }
+        }
+        assert!(post < 1e-4, "post-tick link error {post:e} (M61 measured 0.230)");
+        assert!(min_r >= TORSO_RADIUS - 1e-9, "a joint reached radius {min_r}");
     }
 
     #[test]
