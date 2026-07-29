@@ -801,7 +801,7 @@ pub fn walk(r: &mut PacketReader, shape: &Shape, depth: u32) -> Result<bool, ()>
 /// projectiles); this uses one conservative ceiling, because the point is to
 /// refuse a length that would make the walk allocate or spin, not to reproduce
 /// each limit.
-fn bounded_count(r: &mut PacketReader) -> Result<i32, ()> {
+pub(crate) fn bounded_count(r: &mut PacketReader) -> Result<i32, ()> {
     let n = r.varint().map_err(|_| ())?;
     if !(0..=65536).contains(&n) {
         return Err(());
@@ -809,11 +809,89 @@ fn bounded_count(r: &mut PacketReader) -> Result<i32, ()> {
     Ok(n)
 }
 
+/// One element of an `ItemStackTemplate` list, kept instead of walked past
+/// (M61).
+///
+/// This is the *whole* of what the wire says about a nested stack that is not
+/// itself another patch: `ItemStackTemplate` is `(Holder<Item>, int count,
+/// DataComponentPatch)` and nothing else. The patch is reduced to
+/// [`Self::patched`] rather than kept, because keeping it would mean deciding
+/// how deep to keep it, and the caller that needs a bundle's grid needs the
+/// count and nothing below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemTemplate {
+    /// `Item.STREAM_CODEC` is `holderRegistry(ITEM)` — a **raw** registry id,
+    /// not `holder`'s `id + 1`.
+    pub item_id: i32,
+    /// `ByteBufCodecs.VAR_INT`. A template's count is constructor-checked to
+    /// be non-zero on the *encoding* side, but nothing on the wire enforces
+    /// that, so this is reported exactly as sent.
+    pub count: i32,
+    /// Whether the element's own `DataComponentPatch` carried any entry,
+    /// added or removed.
+    ///
+    /// The same one bit [`crate::item_stack::WireStack::patched`] is, and for
+    /// the same reason: knowing *which* components a nested stack carries
+    /// means interpreting them, and this reader deliberately walks them
+    /// opaquely. It is enough to answer "does this element have components at
+    /// all", which is what an exact-equality test needs — and it is **not**
+    /// enough for `BundleContents.getWeight`, which asks whether the element
+    /// is itself a bundle or holds bees. That answer needs the nested patch's
+    /// contents and is not available here.
+    pub patched: bool,
+}
+
 /// `ItemStackTemplate.STREAM_CODEC` — item, count, and a nested patch.
+///
+/// The capturing half of [`walk_item_template`]. Both go through this one
+/// body, so a captured element and a walked one consume **the same bytes by
+/// construction** rather than by two implementations agreeing. That matters
+/// more here than anywhere else in this module: the patch has no length
+/// prefix, so a capture path that read one byte differently would leave the
+/// reader parked and garbage every stack after it in the packet.
+///
+/// `Ok(None)` is [`WalkOutcome::Stuck`] — the element's patch named a
+/// component with no transcribed codec, or the depth limit was hit. The reader
+/// is then parked mid-value and the enclosing packet is finished, exactly as
+/// it would be for the walk.
+#[allow(clippy::result_unit_err)]
+pub fn read_item_template(r: &mut PacketReader, depth: u32) -> Result<Option<ItemTemplate>, ()> {
+    let item_id = r.varint().map_err(|_| ())?;
+    let count = r.varint().map_err(|_| ())?;
+    Ok(
+        walk_patch_counted(r, depth + 1)?.map(|(added, removed)| ItemTemplate {
+            item_id,
+            count,
+            patched: added > 0 || removed > 0,
+        }),
+    )
+}
+
+/// `ByteBufCodecs.list()` of [`Shape::ItemStackTemplate`] — the shape of
+/// `BundleContents.STREAM_CODEC` and of `container` minus its optionals.
+///
+/// Bounded by [`bounded_count`], which is the same ceiling [`Shape::List`]
+/// applies, so a list this captures is exactly a list the generic walk would
+/// have accepted. Vanilla's `list()` with no argument caps at `Integer.MAX_VALUE`;
+/// trusting that would let one var-int ask for a two-billion-element `Vec`.
+#[allow(clippy::result_unit_err)]
+pub fn read_item_template_list(
+    r: &mut PacketReader,
+    depth: u32,
+) -> Result<Option<Vec<ItemTemplate>>, ()> {
+    let n = bounded_count(r)?;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        match read_item_template(r, depth)? {
+            Some(item) => out.push(item),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
 fn walk_item_template(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
-    r.varint().map_err(|_| ())?; // item id
-    r.varint().map_err(|_| ())?; // count
-    walk_patch_opaque(r, depth + 1)
+    Ok(read_item_template(r, depth)?.is_some())
 }
 
 /// Walk a nested `DataComponentPatch` without interpreting it.
@@ -822,8 +900,33 @@ fn walk_item_template(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
 /// a patch inside a shulker box inside a stack does not, so it shares this
 /// simpler path.
 pub fn walk_patch_opaque(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
+    Ok(walk_patch_counted(r, depth)?.is_some())
+}
+
+/// [`walk_patch_opaque`], reporting the `(added, removed)` entry counts.
+///
+/// Split out so [`read_item_template`] can say whether an element carried
+/// components without walking the patch a second time — the two counts are the
+/// patch's first two var-ints and are read on the way past regardless, so the
+/// only thing that was ever missing was returning them.
+///
+/// `Ok(None)` is [`WalkOutcome::Stuck`]; it covers both the depth limit and an
+/// entry with no transcribed codec, because a caller can do nothing different
+/// about either.
+///
+/// **The guard below is belt-and-braces, not the bound.** Mutation-testing M61
+/// found that deleting it changes no observable behaviour: every path out of a
+/// patch entry goes through [`walk`], which applies the same limit one level
+/// down, so `walk`'s guard alone bounds the recursion. It is kept because this
+/// function is `pub` and a future direct caller would otherwise be relying on
+/// a bound it cannot see — but a witness that only kills *this* copy is
+/// testing nothing, which is why
+/// `a_bundle_chain_captures_while_shallow_and_stops_once_past_the_limit` is
+/// graded against [`MAX_DEPTH`]'s value rather than against the guard.
+#[allow(clippy::result_unit_err)]
+pub fn walk_patch_counted(r: &mut PacketReader, depth: u32) -> Result<Option<(i32, i32)>, ()> {
     if depth > MAX_DEPTH {
-        return Ok(false);
+        return Ok(None);
     }
     let added = bounded_count(r)?;
     let removed = bounded_count(r)?;
@@ -832,16 +935,16 @@ pub fn walk_patch_opaque(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
         match shape_for_id(ty) {
             Some(shape) => {
                 if !walk(r, shape, depth + 1)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
-            None => return Ok(false),
+            None => return Ok(None),
         }
     }
     for _ in 0..removed {
         r.varint().map_err(|_| ())?;
     }
-    Ok(true)
+    Ok(Some((added, removed)))
 }
 
 // The id → shape mapping is installed once, from the registry, because the
@@ -1015,6 +1118,7 @@ mod tests {
     const DAMAGE_ID: i32 = 3;
     const PROFILE_ID: i32 = 71;
     const CAN_PLACE_ON_ID: i32 = 13;
+    const BUNDLE_ID: i32 = 50;
     /// An id no registry can hold, so nothing can ever give it a shape. A real
     /// but merely-uncovered id would silently stop testing this property the
     /// day its codec landed — which is how three `item_stack` fixtures rotted
@@ -1026,6 +1130,7 @@ mod tests {
             ("minecraft:damage", DAMAGE_ID),
             ("minecraft:profile", PROFILE_ID),
             ("minecraft:can_place_on", CAN_PLACE_ON_ID),
+            ("minecraft:bundle_contents", BUNDLE_ID),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1394,5 +1499,241 @@ mod tests {
         varint(0, &mut b);
         varint(600, &mut b);
         assert_eq!(walked(shape("minecraft:bees"), &b), Some(b.len()));
+    }
+
+    // ---- bundle_contents (M61) --------------------------------------------
+    //
+    // `BundleContents.STREAM_CODEC` is
+    // `ItemStackTemplate.STREAM_CODEC.apply(ByteBufCodecs.list())`, and
+    // `ItemStackTemplate.STREAM_CODEC` is
+    // `composite(Item.STREAM_CODEC, VAR_INT count, DataComponentPatch.STREAM_CODEC)`.
+    // So: a var-int count, then per element a raw item id, a var-int count and
+    // a patch. Nothing else — `selectedItem` is not on the wire.
+
+    /// One `ItemStackTemplate`, with a patch of `added` entries written as
+    /// `(type id, value bytes)` and no removals.
+    fn template(item: i32, count: i32, added: &[(i32, Vec<u8>)], out: &mut Vec<u8>) {
+        varint(item, out); // Item.STREAM_CODEC — a RAW registry id
+        varint(count, out);
+        varint(added.len() as i32, out);
+        varint(0, out); // removed
+        for (ty, value) in added {
+            varint(*ty, out);
+            out.extend_from_slice(value);
+        }
+    }
+
+    /// Capture `bytes` as a template list, reporting what it read and how far
+    /// it got — the capturing counterpart of [`walked`].
+    fn captured(bytes: &[u8]) -> Option<(Vec<ItemTemplate>, usize)> {
+        let mut r = PacketReader::new(bytes);
+        match read_item_template_list(&mut r, 0) {
+            Ok(Some(items)) => Some((items, r.offset())),
+            _ => None,
+        }
+    }
+
+    /// The one property everything else in this module depends on: capturing a
+    /// bundle must move the reader **exactly** as far as walking past it did.
+    ///
+    /// The sentinel makes both directions fail. Over-consumption reads past
+    /// `n` and the offset no longer matches; under-consumption stops short and
+    /// leaves the sentinel to be parsed as the next component's type id, which
+    /// is precisely the desynchronisation the whole shape table exists to
+    /// prevent.
+    #[test]
+    fn capturing_a_bundle_consumes_exactly_the_bytes_walking_it_does() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(3, &mut b);
+        template(1, 64, &[], &mut b);
+        template(2, 1, &[(DAMAGE_ID, vec![7])], &mut b);
+        template(999, 16, &[], &mut b);
+        let n = b.len();
+        b.push(0xEE); // a sentinel neither path may reach
+
+        let (items, read) = captured(&b).expect("captures");
+        assert_eq!(read, n, "capture consumed the wrong number of bytes");
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &b), Some(n));
+        assert_eq!(
+            items,
+            vec![
+                ItemTemplate { item_id: 1, count: 64, patched: false },
+                ItemTemplate { item_id: 2, count: 1, patched: true },
+                ItemTemplate { item_id: 999, count: 16, patched: false },
+            ]
+        );
+    }
+
+    /// An empty bundle is one zero byte, and the reader must stop on it.
+    ///
+    /// `Some(vec![])` rather than `None`: a list the server explicitly sent as
+    /// empty is a different statement from a component it never mentioned, and
+    /// vanilla draws the two differently (the empty-bundle blurb against no
+    /// tooltip image at all).
+    #[test]
+    fn an_empty_bundle_is_a_zero_count_and_nothing_else() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(0, &mut b);
+        let n = b.len();
+        b.push(0xEE);
+        assert_eq!(captured(&b), Some((Vec::new(), n)));
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &b), Some(n));
+    }
+
+    /// An element's patch is a real `DataComponentPatch`, so its entries have
+    /// to be walked by their own codecs. A reader that assumed elements were
+    /// bare `(id, count)` pairs would stop three bytes early here and read the
+    /// damage value as the next element's item id.
+    #[test]
+    fn a_bundle_element_carries_its_own_component_patch() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(2, &mut b);
+        // A sword with damage 300 — two var-int bytes, so a length this test
+        // would notice being mistaken for one.
+        template(2, 1, &[(DAMAGE_ID, vec![0xAC, 0x02])], &mut b);
+        template(3, 5, &[], &mut b);
+        let n = b.len();
+        b.push(0xEE);
+        let (items, read) = captured(&b).expect("captures");
+        assert_eq!(read, n);
+        assert!(items[0].patched, "the first element's patch was not seen");
+        assert!(!items[1].patched);
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &b), Some(n));
+    }
+
+    /// A *removal*-only patch still counts as components. `getOrDefault` then
+    /// answers with the type's default rather than the item's prototype value,
+    /// so an element that removes a component is not the same stack as one
+    /// that never had it — the same reason `read_patch_at` folds removals into
+    /// its fingerprint.
+    #[test]
+    fn an_element_that_only_removes_a_component_is_still_patched() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        varint(2, &mut b); // item
+        varint(1, &mut b); // count
+        varint(0, &mut b); // added
+        varint(1, &mut b); // removed
+        varint(DAMAGE_ID, &mut b);
+        let n = b.len();
+        b.push(0xEE);
+        let (items, read) = captured(&b).expect("captures");
+        assert_eq!(read, n);
+        assert!(items[0].patched);
+    }
+
+    /// A bundle can hold a bundle — `BundleContents.getWeight` has a
+    /// `BUNDLE_IN_BUNDLE_WEIGHT` case precisely because it can.
+    ///
+    /// The inner one is **walked, not captured**: the outer bundle's grid
+    /// shows one slot for it, and what is inside that slot is the inner
+    /// bundle's own tooltip. So the capture is one level deep by design, and
+    /// the inner list still has to be consumed byte-exactly by the generic
+    /// walk or the outer capture would end in the wrong place.
+    #[test]
+    fn a_bundle_inside_a_bundle_is_walked_rather_than_captured() {
+        install_test_shapes();
+        let mut inner = Vec::new();
+        varint(2, &mut inner);
+        template(1, 32, &[], &mut inner);
+        template(4, 8, &[], &mut inner);
+
+        let mut b = Vec::new();
+        varint(2, &mut b);
+        template(7, 1, &[(BUNDLE_ID, inner)], &mut b);
+        template(9, 3, &[], &mut b);
+        let n = b.len();
+        b.push(0xEE);
+
+        let (items, read) = captured(&b).expect("captures");
+        assert_eq!(read, n, "the nested list was not consumed exactly");
+        assert_eq!(
+            items,
+            vec![
+                ItemTemplate { item_id: 7, count: 1, patched: true },
+                ItemTemplate { item_id: 9, count: 3, patched: false },
+            ],
+            "only the outer bundle's own stacks are captured"
+        );
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &b), Some(n));
+    }
+
+    /// A bundle chain `levels` deep, innermost first: each level is a one-item
+    /// bundle whose single stack carries a `bundle_contents` of the level
+    /// below.
+    fn nested_bundles(levels: usize) -> Vec<u8> {
+        let mut payload = Vec::new();
+        varint(0, &mut payload); // the innermost bundle, empty
+        for _ in 0..levels {
+            let mut next = Vec::new();
+            varint(1, &mut next);
+            template(1, 1, &[(BUNDLE_ID, payload)], &mut next);
+            payload = next;
+        }
+        payload
+    }
+
+    /// The bound is on **recursion**, and a bundle chain is the cheapest way
+    /// to spend it: each level costs one `ItemStackTemplate` and one patch.
+    ///
+    /// A chain past the limit reports [`WalkOutcome::Stuck`] rather than
+    /// overflowing the stack — the same fail-closed answer an unknown
+    /// component gets, and the reason a hostile server cannot crash the client
+    /// with one well-formed component.
+    ///
+    /// **Both ends are asserted, and the deep one's `20` is a literal on
+    /// purpose.** An earlier version sized the chain as `MAX_DEPTH + 2`, which
+    /// made it self-calibrating: raising the bound raised the payload with it,
+    /// so the test passed for a bound of 8 and of 64 alike and only ever
+    /// witnessed "recursion terminates", not "recursion is bounded where this
+    /// module says". A legitimate change to [`MAX_DEPTH`] should have to come
+    /// back here.
+    #[test]
+    fn a_bundle_chain_captures_while_shallow_and_stops_once_past_the_limit() {
+        install_test_shapes();
+        let shallow = nested_bundles(2);
+        assert!(
+            captured(&shallow).is_some(),
+            "an ordinary bundle-in-a-bundle must not hit the recursion bound"
+        );
+        let deep = nested_bundles(20);
+        assert_eq!(captured(&deep), None);
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &deep), None);
+    }
+
+    /// An element's patch inherits the patch's own fail-closed rule: a
+    /// component with no transcribed codec has no length either, so the reader
+    /// stops there rather than guessing past it.
+    #[test]
+    fn an_unwalkable_component_inside_a_bundle_element_stops_the_capture() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        template(2, 1, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB])], &mut b);
+        assert_eq!(captured(&b), None);
+        assert_eq!(walked(shape("minecraft:bundle_contents"), &b), None);
+    }
+
+    /// A truncated body is a different failure from a missing codec, and it
+    /// must not be reported as a short bundle. Every prefix of a valid bundle
+    /// either fails or reads fewer items — never the full list.
+    #[test]
+    fn a_truncated_bundle_never_reports_the_whole_list() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(2, &mut b);
+        template(1, 64, &[], &mut b);
+        template(2, 1, &[], &mut b);
+        for cut in 1..b.len() {
+            let got = captured(&b[..cut]);
+            assert!(
+                got.is_none_or(|(items, _)| items.len() < 2),
+                "a {cut}-byte prefix claimed the whole two-item bundle"
+            );
+        }
     }
 }

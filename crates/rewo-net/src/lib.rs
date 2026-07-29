@@ -2446,6 +2446,7 @@ mod animate_tests {
             swing_animation: 40,
             damage: 3,
             charged_projectiles: 7,
+            bundle_contents: 16,
         };
         let data = super::item_stack::SwingWireData {
             prototypes: unreachable_prototypes(),

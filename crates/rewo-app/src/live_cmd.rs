@@ -7436,17 +7436,28 @@ fn screen_tooltip(
         rewo_gpu::container::TooltipDraw {
             pos: (tx, ty),
             size: (tw, th),
-            // **The grid has no contents to draw from.** `BundleItem`'s
-            // `getTooltipImage` reads `minecraft:bundle_contents`, and
-            // `rewo-net`'s patch reader walks that component past without
-            // keeping it: its `Shape` is `List(ItemStackTemplate)` and
-            // `walk_item_template` discards the id, the count and the nested
-            // patch it reads. So a bundle here would be a bundle of nothing —
-            // `bundle_image` would report an empty grid whatever the stack
-            // holds, which is worse than reporting no grid at all. The whole
-            // of `container::bundle_chrome` and `tooltip::bundle_image` is
-            // driven and graded by `inventoryshot`; wiring it to a live stack
-            // waits on a `BUNDLE_CONTENTS` decoder (M58 gap).
+            // **The decode exists; the carrier does not.** M61 made the patch
+            // reader *keep* `minecraft:bundle_contents` — see
+            // `rewo_net::item_stack::StackComponents::bundle_contents`, which
+            // returns the stacks as `ItemTemplate`s. What is still missing is
+            // a way to get them from there to here.
+            //
+            // The tooltip reads its stack out of `rewo_world`'s `Inventory`,
+            // and neither of that crate's two carriers takes a `Vec` today:
+            // `ItemSlot` is `Copy` on purpose (the click arithmetic moves it
+            // through a dozen struct-update expressions, and growing it would
+            // make every one of those a clone), and `SlotText` — the non-`Copy`
+            // side-channel keyed by the component fingerprint — is the natural
+            // home but would need its `is_empty` taught the new field, or a
+            // bundle carrying *only* `bundle_contents` would be recorded as
+            // having no text and dropped. That is the exact bug M42's
+            // enchantments hit.
+            //
+            // Left `None` rather than guessed: `container::bundle_chrome` and
+            // `tooltip::bundle_image` are both graded by `inventoryshot`
+            // against synthetic bundles, so an empty grid drawn from a full
+            // bundle would be a confident wrong answer with a green gate
+            // behind it.
             bundle: None,
         },
         out,

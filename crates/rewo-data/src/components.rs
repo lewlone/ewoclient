@@ -61,6 +61,18 @@ pub struct DataComponentIds {
     /// `minecraft:trim` (M48) — `ArmorTrim.STREAM_CODEC`, a pair of
     /// `ByteBufCodecs.holder`s (material then pattern).
     pub trim: i32,
+    /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
+    /// under `ByteBufCodecs.list()`.
+    ///
+    /// Read for its contents rather than merely walked, because a bundle's
+    /// tooltip grid is drawn from them and *nothing else carries them*: a
+    /// bundle is only ever filled by a patch, so the item prototype answers
+    /// `BundleContents.EMPTY` for every bundle a server ever sends.
+    ///
+    /// Note the wire form has no `selectedItem`: `STREAM_CODEC` maps through
+    /// the one-argument constructor, which fixes it at `-1`. A selection is
+    /// client-side state on the open screen, not a synchronised value.
+    pub bundle_contents: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -144,6 +156,7 @@ impl DataComponentIds {
             enchantment_glint_override: id("minecraft:enchantment_glint_override")?,
             dyed_color: id("minecraft:dyed_color")?,
             trim: id("minecraft:trim")?,
+            bundle_contents: id("minecraft:bundle_contents")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

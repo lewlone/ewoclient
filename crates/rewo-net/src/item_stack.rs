@@ -42,6 +42,7 @@
 //! not license returning early, because the entries after it still have to be
 //! consumed for the reader to be aligned for the next slot.
 
+pub use crate::component_wire::ItemTemplate;
 use rewo_data::components::DataComponentIds;
 use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType, SwingAnimations};
 use rewo_data::use_item::{UseProfile, UseProfiles};
@@ -263,6 +264,22 @@ pub struct StackComponents {
     /// An inline one leaves this `None` and falls through to the generic walk,
     /// which consumes it correctly.
     pub trim: Option<(i32, i32)>,
+    /// `minecraft:bundle_contents`' stacks (M61), in wire order.
+    ///
+    /// **`None` and `Some(vec![])` are different answers.** `None` is a patch
+    /// that did not mention the component, so `getOrDefault` hands back
+    /// `BundleContents.EMPTY` — which for a bundle means an empty grid and for
+    /// anything else means it is not a bundle at all, and only the item id
+    /// distinguishes those. `Some(vec![])` is a patch that set the component
+    /// to an empty list, which vanilla renders as the empty-bundle blurb
+    /// rather than as no tooltip image. A removal is in
+    /// [`Self::removed`] and resolves through the default, like `None`.
+    ///
+    /// Every element is a whole `ItemStackTemplate`, so the grid's counts and
+    /// the icons' item ids both come from here. What is *not* here is each
+    /// element's own components: see [`ItemTemplate::patched`] for why, and
+    /// for which vanilla behaviour that leaves out of reach.
+    pub bundle: Option<Vec<ItemTemplate>>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -299,6 +316,24 @@ impl StackComponents {
     pub fn has_foil(&self) -> bool {
         self.glint_override
             .unwrap_or(!self.enchantments.is_empty())
+    }
+
+    /// The stacks `BundleContents` would resolve to for this patch (M61) —
+    /// what `BundleItem.getTooltipImage` reads to build its grid.
+    ///
+    /// `None` is `BundleContents.EMPTY`, which the wire never distinguishes
+    /// from "this item is not a bundle": both a diamond and an empty bundle
+    /// arrive with no `bundle_contents` entry, and it is the *item id* that
+    /// tells them apart. So a caller drawing a grid must gate on the item
+    /// being a bundle first and read this second — reading this alone would
+    /// draw no grid for an empty bundle and be right by accident, then draw
+    /// none for a full one the day the component moved.
+    ///
+    /// A removal (`!bundle_contents`) resolves through the default here, the
+    /// same as an absence, because `getOrDefault` answers a removed component
+    /// with the type's default rather than the item's prototype value.
+    pub fn bundle_contents(&self) -> Option<&[ItemTemplate]> {
+        self.bundle.as_deref()
     }
 
     /// The name a tooltip shows, given the item's translated display name.
@@ -454,7 +489,7 @@ fn read_interpreted(
     shape: &crate::component_wire::Shape,
     out: &mut StackComponents,
 ) -> Result<bool, ()> {
-    use crate::component_wire::{nbt_text, walk};
+    use crate::component_wire::{nbt_text, read_item_template_list, walk};
     if ty == ids.damage {
         out.damage = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
@@ -516,6 +551,33 @@ fn read_interpreted(
         }
         r.rewind_to(save);
         return walk(r, shape, 0);
+    }
+    if ty == ids.bundle_contents {
+        // `BundleContents.STREAM_CODEC` is `ItemStackTemplate.STREAM_CODEC
+        // .apply(ByteBufCodecs.list())` — a var-int count then that many
+        // templates, and nothing more. `selectedItem` is not on the wire.
+        //
+        // `read_item_template_list` shares its body with the generic walk's
+        // `Shape::List(&Shape::ItemStackTemplate)`, so capturing here consumes
+        // byte-for-byte what walking past here consumed before. That identity
+        // is the point: the patch has no length prefix, so a capture that
+        // read one byte differently would park the reader mid-value and turn
+        // every later slot in the packet into garbage.
+        //
+        // Depth 0 to match the generic fall-through's `walk(r, shape, 0)`
+        // below — the outer patch's entries are the top of a fresh recursion
+        // budget, and a bundle nested inside one of these elements is walked
+        // (not captured) under that budget like any other component.
+        return Ok(match read_item_template_list(r, 0)? {
+            Some(items) => {
+                out.bundle = Some(items);
+                true
+            }
+            // A nested patch named a component with no codec, or the depth
+            // limit stopped it. The reader is parked mid-value, so this is the
+            // same fail-closed answer an unknown top-level component gets.
+            None => false,
+        });
     }
     if ty == ids.enchantments || ty == ids.stored_enchantments {
         let n = r.varint().map_err(|_| ())?;
@@ -629,6 +691,7 @@ mod tests {
         enchantment_glint_override: 13,
         dyed_color: 14,
         trim: 15,
+        bundle_contents: 16,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -648,6 +711,7 @@ mod tests {
             ("minecraft:enchantments", 11),
             ("minecraft:enchantment_glint_override", 13),
             ("minecraft:dyed_color", 14),
+            ("minecraft:bundle_contents", 16),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -903,4 +967,156 @@ mod tests {
     // (a spear whose prototype differs from the default, and an id outside the
     // registry) to be worth asserting, so they are witnessed in
     // `rewo swingshot --check` rather than against a stand-in table here.
+
+    // ---- bundle_contents (M61) --------------------------------------------
+
+    /// A `minecraft:bundle_contents` value: a var-int count then that many
+    /// `ItemStackTemplate`s, each `(raw item id, count, patch)`.
+    fn bundle_value(items: &[(i32, i32)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        varint(items.len() as i32, &mut v);
+        for (item, count) in items {
+            varint(*item, &mut v);
+            varint(*count, &mut v);
+            varint(0, &mut v); // added
+            varint(0, &mut v); // removed
+        }
+        v
+    }
+
+    fn components_of(raw: &[u8]) -> StackComponents {
+        let mut r = PacketReader::new(raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(r.remaining(), 0, "the patch was not consumed exactly");
+        s.components
+    }
+
+    /// The whole point of M61: the stacks survive the walk instead of being
+    /// counted and thrown away.
+    #[test]
+    fn a_bundle_patch_keeps_the_stacks_it_holds() {
+        install_test_shapes();
+        let raw = stack(1, 800, &[(16, bundle_value(&[(1, 64), (2, 1), (3, 12)]))], &[]);
+        let c = components_of(&raw);
+        let items = c.bundle_contents().expect("the bundle was captured");
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            vec![(1, 64), (2, 1), (3, 12)]
+        );
+    }
+
+    /// **The alignment witness.** A bundle sized wrong leaves the reader
+    /// parked mid-value, and the patch has no length prefix to recover from —
+    /// so the entry *after* it is the thing that notices.
+    ///
+    /// Reading the damage back is a stronger claim than "the patch walked":
+    /// an off-by-one that happened to land on a valid var-int would still
+    /// report `Walked`, and would report the wrong durability.
+    #[test]
+    fn a_bundle_entry_leaves_the_reader_aligned_for_the_component_after_it() {
+        install_test_shapes();
+        let raw = stack(
+            1,
+            800,
+            &[
+                (16, bundle_value(&[(1, 64), (2, 1)])),
+                // 300 — two var-int bytes, so a one-byte slip is visible in
+                // the value rather than only in the alignment.
+                (3, vec![0xAC, 0x02]),
+            ],
+            &[],
+        );
+        let c = components_of(&raw);
+        assert_eq!(c.bundle_contents().map(<[_]>::len), Some(2));
+        assert_eq!(c.damage, Some(300));
+    }
+
+    /// …and the same in the other order, because a bundle read short and a
+    /// bundle read long fail differently: this one puts the slip *before* the
+    /// component the assertion reads.
+    #[test]
+    fn a_component_before_a_bundle_does_not_disturb_it() {
+        install_test_shapes();
+        let raw = stack(
+            1,
+            800,
+            &[
+                (3, vec![0xAC, 0x02]),
+                (16, bundle_value(&[(1, 64), (2, 1)])),
+            ],
+            &[],
+        );
+        let c = components_of(&raw);
+        assert_eq!(c.damage, Some(300));
+        assert_eq!(c.bundle_contents().map(<[_]>::len), Some(2));
+    }
+
+    /// Three states, not two. Absence resolves through `BundleContents.EMPTY`
+    /// and so does a removal; an explicitly empty list is the server saying
+    /// the bundle *is* empty, which vanilla draws as the empty-bundle blurb
+    /// rather than as no tooltip image.
+    #[test]
+    fn an_absent_bundle_is_not_the_same_as_an_empty_one() {
+        install_test_shapes();
+        assert_eq!(components_of(&stack(1, 800, &[], &[])).bundle, None);
+        assert_eq!(
+            components_of(&stack(1, 800, &[(16, bundle_value(&[]))], &[])).bundle,
+            Some(Vec::new())
+        );
+        // A removal leaves `bundle` at `None` and records the id, so a caller
+        // can tell "removed" from "never mentioned" if it ever needs to.
+        let removed = components_of(&stack(1, 800, &[], &[16]));
+        assert_eq!(removed.bundle, None);
+        assert_eq!(removed.removed, vec![16]);
+    }
+
+    /// Two bundles differing only in their contents are different components,
+    /// and `isSameItemSameComponents` has to say so or they would merge into
+    /// one slot in a click prediction.
+    ///
+    /// This holds because the fingerprint spans the value's *bytes*, which is
+    /// only true while the capture consumes exactly the value — so it is a
+    /// second, independent reading of the alignment property above.
+    #[test]
+    fn two_bundles_holding_different_stacks_fingerprint_differently() {
+        install_test_shapes();
+        let a = components_of(&stack(1, 800, &[(16, bundle_value(&[(1, 64)]))], &[]));
+        let b = components_of(&stack(1, 800, &[(16, bundle_value(&[(1, 63)]))], &[]));
+        let same = components_of(&stack(1, 800, &[(16, bundle_value(&[(1, 64)]))], &[]));
+        assert_ne!(a.fingerprint, b.fingerprint);
+        assert_eq!(a.fingerprint, same.fingerprint);
+    }
+
+    /// An element whose patch names a component with no codec stops the whole
+    /// stack, exactly as one at the top level does. The bundle is *not*
+    /// reported as the stacks read so far: a partial bundle presented as a
+    /// whole one would be a confident wrong answer, which is the failure mode
+    /// this decoder is built to refuse.
+    #[test]
+    fn an_unwalkable_component_inside_a_bundle_makes_the_stack_unwalkable() {
+        install_test_shapes();
+        let mut value = Vec::new();
+        varint(2, &mut value);
+        varint(1, &mut value); // first element: item
+        varint(64, &mut value); // count
+        varint(0, &mut value);
+        varint(0, &mut value);
+        varint(2, &mut value); // second element: item
+        varint(1, &mut value); // count
+        varint(1, &mut value); // added
+        varint(0, &mut value); // removed
+        varint(999, &mut value); // a component no test registry installs
+        value.extend_from_slice(&[0xAA, 0xBB]);
+        let raw = stack(1, 800, &[(16, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.patch, PatchOutcome::Unwalkable);
+        assert!(!s.aligned_stack());
+        assert_eq!(s.components.bundle, None);
+    }
 }
