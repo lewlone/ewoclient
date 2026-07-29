@@ -1988,6 +1988,272 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M78 — session, server metadata and chat: the eight class-A packets (2026-07-29)
+
+Eight packets picked as one layer rather than eight rows: everything the
+connection itself knows about the session it is in. Seven are a reader plus a
+field (`crates/rewo-net/src/session.rs`); the eighth changes how packets are
+*applied* and gets its own module (`crates/rewo-net/src/bundle.rs`), the split
+`client_state.rs` states.
+
+| id | packet | body |
+|---:|---|---|
+| 0 | `bundle_delimiter` | empty |
+| 24 | `custom_payload` | `Identifier` + a payload chosen by it |
+| 33 | `disguised_chat` | `Component` + `ChatType.Bound` |
+| 39 | `game_rule_values` | counted map, `Identifier` → string |
+| 66 | `player_combat_end` | one VarInt |
+| 67 | `player_combat_enter` | **empty** |
+| 86 | `server_data` | `Component` + `Optional<byte[]>` |
+| 120 | `store_cookie` | `Identifier` + `byteArray(5120)` |
+
+#### The bundle: an empty body that is not an inert packet
+
+`ClientboundBundlePacket` never serialises. `PacketBundleUnpacker` expands it on
+the sending side into `delimiter, sub-packets…, delimiter` and
+`PacketBundlePacker` reassembles it on the receiving one, so the delimiter is a
+**pipeline instruction** — `BundleDelimiterPacket.handle` throws
+`AssertionError("This packet should be handled by pipeline")` if it ever reaches
+a listener. Decoding it as a no-op is the one way of being wrong that leaves no
+trace at all.
+
+Four rules, from `PacketBundlePacker.decode` and `BundlerInfo`:
+
+1. **Applied all at once, and only on close.** `handleBundlePacket` is a plain
+   `for` loop calling `subPacket.handle` directly, on one scheduled task whose
+   `ensureRunningOnSameThread` the sub-handlers then satisfy for free.
+   **`REWO_PACKET_COVERAGE.md` §3 said "in one tick" and that was wrong** — the
+   guarantee is that no *frame* renders part-way through; nothing defers a
+   bundle to a tick boundary. The distinction matters because the tick reading
+   suggests an implementation vanilla does not have.
+2. **An unterminated bundle is withheld, not dropped and not applied.**
+   `currentBundler` stays non-null across `decode` calls. This is the property
+   that makes bundling worth having in Rewo: `drain_inbound` is `try_recv` until
+   `Empty`, so a socket that hands over a bundle in two reads would otherwise
+   apply the first half a frame early — the `add_entity` without its
+   `set_entity_data`, i.e. a mob drawn for a frame as a nameless, unequipped,
+   default-metadata version of itself.
+3. **There is no nesting.** `Bundler.addPacket` opens with
+   `if (packet == delimiterPacket) return constructor.apply(bundlePackets)`, so
+   a second delimiter *always* closes and a third opens a fresh run. A depth
+   counter — the natural implementation — never closes the outer bundle and
+   withholds every packet after it for the rest of the session.
+4. **The size limit is an error, not a cap.** `BUNDLE_SIZE_LIMIT` is 4096 and
+   the check runs *before* the add (`if (size() >= 4096) throw`), so 4096
+   sub-packets fit and the 4097th kills the connection; neither delimiter
+   counts. Moving that check above the delimiter test — which reads like a
+   tidy-up — makes a legitimately full bundle fatal **at the moment it correctly
+   closed**, i.e. only on the servers that send large bundles.
+
+Plus `verifyNonTerminalPacket`: a terminal packet inside a bundle is a
+`DecoderException`, and in clientbound-play there is exactly one
+(`start_configuration`). Rewo's `PlaySession` does not dispatch that packet, so
+the other half of vanilla's terminal handling — removing the bundling stage from
+the pipeline once one passes through *outside* a bundle — has nothing to model.
+
+Wired around the existing dispatch rather than into it: `feed` sits between the
+frame decoder and `handle_packet`, exactly where `PacketBundlePacker` sits in
+vanilla's pipeline, and the `else if` ladder never learns bundles exist.
+
+#### What `store_cookie` changes about the `cookie_request` reply
+
+`handleRequestCookie` is
+`send(new ServerboundCookieResponsePacket(key, serverCookies.get(key)))` — a
+straight jar lookup where `null` is the miss. Rewo already answered
+`cookie_request`; it answered **`false` unconditionally**, because
+`store_cookie` is the only thing that ever calls `put` and it was not resolved.
+After M78 the reply carries the stored payload for a key the server has set and
+is byte-identical for one it has not. On a network that uses `transfer` between
+backends that is the difference between a session that survives a hop and one
+that forgets itself on every one.
+
+The 5120-byte limit is an **error**, not a truncation:
+`FriendlyByteBuf.readByteArray(input, maxSize)` throws before copying a byte. A
+client that clamped would store a cookie it would later hand back to a server
+that never issued it.
+
+**"Rewo already answered `cookie_request`" was half true, and closing that is
+part of M78.** Only `Connection::run_play` — the M1-era harness behind `rewo
+net` / `rewo view` — had an arm for the *play-state* request; `PlaySession`,
+the loop `rewo play` and `rewo live` actually run, had none, so the client that
+matters never replied at all. The jar is observable **only** through that reply,
+so shipping `store_cookie` without it would have been a jar nothing reads.
+`PlaySession` gained the arm and both loops now write through the same
+`session::write_cookie_response`.
+
+That is a new *shape* of §4 partial, and the coverage document now says so: the
+machine check asks whether *anything* in `rewo-net` dispatches a field, and a
+packet handled in **one of the two play loops** reads as fully handled. Nothing
+mechanical distinguishes them.
+
+#### Two ids, not one — M69's finding, one packet over
+
+`custom_payload` and `store_cookie` are `common` packets and exist in
+**configuration** as well (ids 1 and 10). For the payload that is not a nicety:
+`ServerConfigurationPacketListenerImpl` sends
+`new BrandPayload(getServerModName())` from its opening burst and a vanilla
+server **never sends a second one in play**, while `serverBrand` lives on the
+common listener both states extend. A play-only implementation would read no
+brand from any server that exists. Both configuration ids are resolved, and both
+states route through the same `session::apply`; `Connection::into_play` moves
+the jar and the brand across exactly as it moves M69's tags.
+
+This is the second time a play-scoped survey has named the id a vanilla server
+does *not* send. `REWO_PACKET_COVERAGE.md` §6 already records the scope limit;
+M78 is the second instance of it biting.
+
+#### Three more things that read backwards
+
+- **`custom_payload`'s unknown identifier is discarded, not rejected**, and the
+  fallback **consumes the remainder** (`buf.readableBytes()`, throwing only
+  above 1 048 576). The instinct is M41's — an untranscribed member of a
+  discriminated union is fatal because the reader cannot skip it — and it is
+  wrong here precisely because this union *has* a fallback codec. Rejecting
+  would kill the connection to any modded server. (Vanilla goes further:
+  `handleCustomPayload` returns for a `DiscardedPayload` before
+  `ensureRunningOnSameThread` and does not even log. The
+  `handleUnknownCustomPayload` warn one layer down is dead code on this path,
+  because the only registered type is the one that is handled.)
+- **`disguised_chat`'s chat type is `ByteBufCodecs.holder`, not
+  `holderRegistry`.** `0` means an inline `ChatType` follows — two whole
+  `ChatTypeDecoration`s, each a string, a counted list of VarInt parameters and
+  an NBT `Style` — rather than chat type 0. A raw reading takes the first
+  decoration's translation key as the sender's name and every field after it
+  with it. M16 records the *opposite* convention for the dimension holder and
+  M65 found two enum conventions one field apart; this is the same hazard inside
+  one three-field record.
+- **The two vestigial packets are not the same shape.** Both handlers are `{}`,
+  but `player_combat_enter` is `StreamCodec.unit` (zero bytes) while
+  `player_combat_end` carries a VarInt `duration`. **Nothing is stored for
+  either**, because vanilla stores nothing and inventing a field would be a
+  divergence dressed as decode-and-state — which leaves **reader position as the
+  only gradeable property**, and is why both readers return the bytes they
+  consumed. With no observable state, a reader one byte off is indistinguishable
+  from a correct one right up until it desynchronises whatever follows.
+
+#### What is decoded and deliberately not rendered
+
+`disguised_chat`'s visible line in vanilla is `boundChatType.decorate(message)`,
+a `Component.translatable` over the chat type's `ChatTypeDecoration` — so `/msg`
+should read "X whispers to you: …". Decorating needs the
+`minecraft:chat_type` registry (which `parse_registry_data` does not capture)
+and a language table `rewo-net` cannot see, so Rewo appends the raw message.
+That is **exactly the fidelity `player_chat` has had since M7**, and the two now
+match rather than one being silently better. `server_data`'s icon is bytes:
+vanilla's `validateIcon` is a PNG parse capped at 1024², and there is no PNG
+decoder in `rewo-net`. `game_rule_values` is kept wholesale — vanilla has **no
+store at all** (the map goes to a screen if one is open and nowhere otherwise,
+and the screen ignores every packet after its first), so replacement is the
+reading rather than merge.
+
+#### The gate
+
+`rewo abilityshot --check` grew two sections (47 → **67** witnesses) rather than
+M78 minting a 26th `*shot` command. It is the right host by construction: it is
+already the serverless CPU-only oracle that resolves **real packet ids through
+`Ids::resolve` on the pinned version's datagen report**, which is what these
+eight need on top of pure decode, and M75's subject is the adjacent one. The
+seven session decodes are driven through the production `rewo_net::route_session`
+seam with a real `Ids` — the M45/M47 rule that a gate reimplementing a slice of
+the app's setup misses whatever the app adds to it — and the bundle machine is
+driven with the **resolved** delimiter and `start_configuration` ids.
+
+**27 mutations run, 27 caught.** Four things the battery turned up:
+
+- **A gate witness that did not sit where its mutation bites.**
+  `w9.a_malformed_session_body_changes_nothing` started from a
+  `SessionState::default()`, so an `apply` mutated to clear `game_rules`
+  *before* decoding left an already-empty map empty and the gate stayed green —
+  the unit test, which seeds a rule first, was the only thing that caught it.
+  Fixed by pre-populating the state through the real router before the malformed
+  bodies. The strengthened witness then caught a **further** mutation the unit
+  tests cannot (clearing `server_brand` before its decode), because the unit
+  test's fixture has no brand set either. Same lesson twice in one witness:
+  *"changed nothing" is only assertable about state that was something.*
+- **Two properties are unit-test-only, structurally.** `unwrap_or` on the
+  terminal id (which makes every packet terminal when `start_configuration` does
+  not resolve) and a `take` that panics outside a flush are invisible to the
+  gate, because the gate always has a resolved terminal id and never
+  mis-sequences `take`. So is `apply` returning `true` on a decode error —
+  `route_session` discards that return by design, so no caller can observe it.
+  Recorded rather than papered over: those three live in `rewo-net`'s tests by
+  necessity, not preference.
+- **Three properties are gate-only.** Resolving the configuration
+  `custom_payload` to the play id, the pre-M78 unconditional-`false` cookie
+  reply, and a `route_session` that claims every id are all invisible to the
+  unit tests and caught only by the gate, which is what earns it its place next
+  to them.
+- **The mutation partner originally written for
+  `w8.only_the_resolved_delimiter_opens_a_bundle` was unreachable**, because
+  `bundle_delimiter` *is* 0 in 26.2 — so "hard-code `0` instead of taking the id
+  from `Ids`" is a no-op. That is the self-calibrating-witness failure mode
+  §0.0 warns about, one step removed: the property was real and the named
+  partner could not fail. Replaced with two that can (shifting the comparison by
+  one, and opening on every packet), and the witness feeds a non-delimiter id so
+  the second is visible.
+
+One more thing the gate caught on its own: `EXPECTED_WITNESSES` was set to 66 by
+hand and the run observed 67, so the fail-closed count rejected it. The
+mechanism works on the person adding witnesses, which is the case it exists for.
+
+#### The live run, and the two things only it could say
+
+`bundle_delimiter` changes packet *application*, so this milestone owes a live
+session. `rewo play --host 127.0.0.1 --port 25610 --username RewoOp --seconds 40
+--setup "summon minecraft:cow …;summon minecraft:pig …"` against the bundled
+26.2 server: **`CORRECTIONS: 0`** over 800 ticks, 329 columns, place and dig both
+server-observed (`ACCEPT place … minecraft:dirt`, `ACCEPT dig … air`).
+
+**`CORRECTIONS 0` on its own would have proved nothing about bundling** — it is
+equally true of a bundle machine that never fired, and the first run had no way
+to tell the two apart. So `BundleAssembler` counts closed runs and `rewo play`
+prints them:
+
+```
+[rewo-m3] bundles applied: 177  (largest run: 3 sub-packets)
+```
+
+177 bundles in 40 seconds against a stock vanilla server, largest run 3 — which
+is the entity-spawn shape §3 describes (`add_entity` + `set_entity_data` +
+`update_attributes`). The path is exercised, not merely unbroken.
+
+The second live finding is the one the whole two-ids argument rests on. With
+`RUST_LOG=rewo_net=debug`:
+
+```
+DEBUG rewo_net::session] net: server brand "vanilla"
+```
+
+That line comes from the **configuration** arm. A vanilla server sends no
+`custom_payload` in play at all, so a play-only implementation would have logged
+nothing here and looked exactly like a server that declines to identify itself.
+The argument was read out of `ServerConfigurationPacketListenerImpl` before the
+code was written; this is it observed.
+
+#### Measured
+
+**1344 tests** (was 1323: +21 in `rewo-net` — 11 in `bundle`, 10 in `session`;
+proto 11, world 340, data 175, net **495**, mesh 38, gpu 205, app 80). All
+**29** serverless gates green with Vulkan validation ON and **0 VUIDs**:
+abilityshot **67** (was 47), labelshot 47, rideshot 24, capeshot 69, itemshot
+62, inventoryshot 152, healthbarshot 33, attributeshot 43, captureshot 17,
+blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35, handshot 34,
+particleshot 34, eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot
+**246/246** (+ emissive 5, etf 8, tint 11, variant 13), skyshot, lightmapshot,
+tintshot, meshshot, dimensioncheck. Release `demo` PNG SHA-256 byte-identical to
+M15 onward (`2cc56b4a…`). Live `rewo play`: **CORRECTIONS 0** over 800 ticks,
+329 columns, place + dig server-observed, **177 bundles applied**. `git diff
+--check` clean; every file touched was already pure LF and stayed that way.
+
+**Not verified:** nothing here is eyeballed, and two things are worth naming as
+unobserved rather than green. The **rendering** consequence bundling exists for
+— a mob no longer drawn for a frame with default metadata — is an argument from
+the decompile plus a counter that says the path fires; nobody watched a spawn.
+And no server was made to send a `store_cookie`, so the *filled* reply is graded
+by the gate's byte comparison and by the unit tests, not by a live round trip;
+what the live run proves about cookies is only that the empty-jar path is
+unchanged.
+
 ### M75 — `player_abilities`, flight, and the gamemode binding (2026-07-29)
 
 M71 modelled the local player's **gamemode** from `game_event`'s

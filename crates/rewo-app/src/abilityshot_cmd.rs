@@ -60,15 +60,29 @@ use rewo_data::{packets::Packets, DataPaths};
 use rewo_net::abilities::{
     serverbound, PlayerAbilities, FLAG_CAN_FLY, FLAG_FLYING, FLAG_INSTABUILD, FLAG_INVULNERABLE,
 };
+use rewo_net::bundle::{BundleAssembler, BundleIds, Feed, BUNDLE_SIZE_LIMIT};
 use rewo_net::game_event::ClientGameState;
 use rewo_net::ids::Ids;
 use rewo_net::play::{apply_spawn_game_mode, GameMode};
+use rewo_net::route_session;
+use rewo_net::session::{
+    read_chat_type_bound, read_custom_payload, read_player_combat_end, read_player_combat_enter,
+    read_server_data, read_store_cookie, write_cookie_response, CustomPayload, SessionState,
+    BRAND_PAYLOAD_ID, MAX_COOKIE_PAYLOAD_SIZE,
+};
+use rewo_proto::reader::PacketReader;
 use rewo_world::abilities::{Abilities, FlightControl};
 use rewo_world::physics::{tick_with, PlayerState, TickInput};
 
 /// Total number of named properties this gate asserts. Locked so a skipped
 /// property (fewer observations) fails the run even if nothing mismatched.
-const EXPECTED_WITNESSES: usize = 47;
+///
+/// **47 through M75, then +20 for M78's session / metadata / chat layer**
+/// (7 for the bundle machine, 13 for the seven decodes). M78 extended this gate
+/// rather than minting a 26th `*shot` command: it is already the serverless
+/// CPU-only oracle that resolves real packet ids through `Ids::resolve`, which
+/// is exactly what those eight packets need on top of pure decode.
+const EXPECTED_WITNESSES: usize = 67;
 
 #[derive(ClapArgs, Debug)]
 pub struct AbilityshotArgs {
@@ -120,6 +134,37 @@ fn body(bits: u8, flying_speed: f32, walking_speed: f32) -> Vec<u8> {
 
 fn near(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
+}
+
+/// A VarInt, built here rather than through `PacketWriter` so the byte-level
+/// witnesses below are not graded against the writer they are grading.
+fn wire_varint(mut v: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v = ((v as u32) >> 7) as i32;
+        if v == 0 {
+            out.push(byte);
+            return out;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// A VarInt-length-prefixed UTF-8 string — a wire `Identifier` or `String`.
+fn wire_string(s: &str) -> Vec<u8> {
+    let mut out = wire_varint(s.len() as i32);
+    out.extend_from_slice(s.as_bytes());
+    out
+}
+
+/// A network-NBT string tag: the shape `ComponentSerialization`'s
+/// `fromCodecTrusted` produces for a plain-text `Component`.
+fn wire_component(text: &str) -> Vec<u8> {
+    let mut out = vec![0x08]; // TAG_String, unnamed root
+    out.extend_from_slice(&(text.len() as u16).to_be_bytes());
+    out.extend_from_slice(text.as_bytes());
+    out
 }
 
 /// Empty world — flight and no-clip both need somewhere with nothing in it.
@@ -1041,6 +1086,477 @@ fn check_packet_to_flight(c: &mut Checker) {
     );
 }
 
+// ------------------------------- 8. M78: the bundle reassembler (packet 0)
+
+/// `bundle_delimiter` is the one M78 packet that changes how packets are
+/// *applied*, so its properties are about the state machine rather than a body.
+///
+/// Driven through the production [`BundleAssembler`] with the **real** resolved
+/// delimiter and terminal ids, so a renumber or a mis-resolved name shows up
+/// here rather than as a silent no-op.
+fn check_bundle(c: &mut Checker, delimiter: i32, terminal: Option<i32>) {
+    let fresh = || BundleAssembler::new(BundleIds {
+        delimiter,
+        terminal,
+    });
+
+    // w8.only_the_resolved_delimiter_opens_a_bundle.
+    // MUTATION: hard-code `0` as the delimiter instead of taking it from `Ids`.
+    // It happens to *be* 0 in 26.2, which is why the witness feeds a
+    // non-delimiter id too: a machine that opened on everything would pass a
+    // delimiter-only check.
+    let mut a = fresh();
+    let opened = a.feed(delimiter, &[]) == Feed::Buffered && a.is_bundling();
+    let mut b = fresh();
+    let ignored = b.feed(delimiter + 1, &[1]) == Feed::Apply && !b.is_bundling();
+    c.record(
+        "w8.only_the_resolved_delimiter_opens_a_bundle",
+        opened && ignored,
+        format!("delimiter={delimiter} opens={opened}, id {} passes through={ignored}", delimiter + 1),
+    );
+
+    // w8.a_bundle_is_withheld_until_it_closes.
+    // MUTATION: returning `Apply` for a packet inside a bundle — which is
+    // exactly the pre-M78 behaviour, and whose failure mode is a mob rendered
+    // for one frame with default metadata rather than a protocol error.
+    let mut a = fresh();
+    a.feed(delimiter, &[]);
+    let held = a.feed(11, &[0xaa]) == Feed::Buffered && a.feed(22, &[0xbb]) == Feed::Buffered;
+    let flushed = a.feed(delimiter, &[]) == Feed::Flush;
+    let run = a.take();
+    c.record(
+        "w8.a_bundle_is_withheld_until_it_closes_then_released_in_order",
+        held && flushed && run == vec![(11, vec![0xaa]), (22, vec![0xbb])],
+        format!("held={held} flushed={flushed} run={run:?} (neither delimiter is in it)"),
+    );
+
+    // w8.an_unterminated_bundle_survives_a_drained_queue.
+    // MUTATION: clearing the buffer when the caller's `try_recv` runs dry, or
+    // applying the partial run. This is the case bundling exists for in Rewo —
+    // a socket that hands over a bundle in two reads — and the sample re-enters
+    // the machine after a simulated gap and asserts the earlier packet is
+    // *still* buffered.
+    let mut a = fresh();
+    a.feed(delimiter, &[]);
+    a.feed(11, &[0x01]);
+    let survived = a.is_bundling() && a.buffered() == 1;
+    a.feed(22, &[0x02]);
+    let closed = a.feed(delimiter, &[]) == Feed::Flush;
+    let run = a.take();
+    c.record(
+        "w8.an_unterminated_bundle_survives_a_drained_queue",
+        survived && closed && run.len() == 2,
+        format!("still buffering across the gap={survived}, resumed run={} packets", run.len()),
+    );
+
+    // w8.a_second_delimiter_closes_rather_than_nesting.
+    // MUTATION: a depth counter. That reading never closes the outer bundle, so
+    // everything after the first "nested" delimiter is withheld for the rest of
+    // the session. Three delimiters, because with two the two readings agree on
+    // everything but the final state.
+    let mut a = fresh();
+    a.feed(delimiter, &[]);
+    a.feed(11, &[]);
+    a.feed(delimiter, &[]);
+    a.take();
+    let reopened = a.feed(delimiter, &[]) == Feed::Buffered && a.buffered() == 0;
+    a.feed(22, &[]);
+    let second_run = a.feed(delimiter, &[]) == Feed::Flush && a.take() == vec![(22, vec![])];
+    c.record(
+        "w8.a_second_delimiter_closes_rather_than_nesting",
+        reopened && second_run,
+        format!("third delimiter opens a fresh empty run={reopened}, and it closes={second_run}"),
+    );
+
+    // w8.the_size_limit_admits_exactly_4096_and_no_more.
+    // MUTATION: `>` instead of `>=`, or checking after the push — both admit
+    // 4097. The sample sits exactly on the bound in both directions, because a
+    // ten-packet bundle leaves every off-by-one reading green.
+    let mut a = fresh();
+    a.feed(delimiter, &[]);
+    let mut all_buffered = true;
+    for _ in 0..BUNDLE_SIZE_LIMIT {
+        all_buffered &= a.feed(11, &[]) == Feed::Buffered;
+    }
+    let at_limit = all_buffered && a.buffered() == BUNDLE_SIZE_LIMIT;
+    let over = matches!(a.feed(11, &[]), Feed::Fatal(_));
+    c.record(
+        "w8.the_size_limit_admits_exactly_4096_and_no_more",
+        at_limit && over && BUNDLE_SIZE_LIMIT == 4096,
+        format!("{BUNDLE_SIZE_LIMIT} buffered ok={at_limit}, the next is fatal={over}"),
+    );
+
+    // w8.a_full_bundle_still_closes.
+    // MUTATION: moving the size check above the delimiter test. A full bundle
+    // would then be fatal at the moment it correctly closed — the worst
+    // possible reading, because it fires only on servers that legitimately send
+    // large bundles. The witness above cannot see it.
+    let mut a = fresh();
+    a.feed(delimiter, &[]);
+    for _ in 0..BUNDLE_SIZE_LIMIT {
+        a.feed(11, &[]);
+    }
+    let closed = a.feed(delimiter, &[]) == Feed::Flush;
+    let n = a.take().len();
+    c.record(
+        "w8.a_full_bundle_still_closes",
+        closed && n == BUNDLE_SIZE_LIMIT,
+        format!("closed={closed} with {n} sub-packets"),
+    );
+
+    // w8.a_terminal_packet_is_fatal_only_inside_a_bundle.
+    // MUTATION: dropping `verifyNonTerminalPacket`, or applying it
+    // unconditionally. The outside-a-bundle half is what makes this sharp: an
+    // unconditional rejection would break `start_configuration` on every server
+    // that reloads a datapack, and an inside-only check would not see it.
+    let Some(term) = terminal else {
+        c.record(
+            "w8.a_terminal_packet_is_fatal_only_inside_a_bundle",
+            false,
+            "start_configuration did not resolve, so the rule cannot be graded",
+        );
+        return;
+    };
+    let mut a = fresh();
+    let outside = a.feed(term, &[]) == Feed::Apply;
+    a.feed(delimiter, &[]);
+    a.feed(11, &[]);
+    let inside = matches!(a.feed(term, &[]), Feed::Fatal(_));
+    c.record(
+        "w8.a_terminal_packet_is_fatal_only_inside_a_bundle",
+        outside && inside && !a.is_bundling(),
+        format!("start_configuration id={term}: outside is ordinary={outside}, inside is fatal={inside}"),
+    );
+}
+
+// ---------------------- 9. M78: session, server metadata and chat (7 packets)
+
+/// Everything but the delimiter, driven through the **production
+/// `rewo_net::route_session` seam** with a real [`Ids`] rather than a
+/// reimplemented id table — the M45/M47 rule that a gate reimplementing a slice
+/// of the app's setup misses whatever the app adds to it.
+fn check_session(c: &mut Checker, ids: &Ids) {
+    // w9.every_session_id_routes_to_its_own_effect.
+    // MUTATION: swapping any two arms of `session::kind_for_id`. Several of
+    // these bodies are mutually decodable — `player_combat_enter` accepts any
+    // body at all and `custom_payload`/`store_cookie` both open with an
+    // identifier — so a swap is silent rather than an error. Each id is fed a
+    // body that only *its* packet turns into an observable, and the whole thing
+    // runs through the real router, so a broken `SessionIds` table fails here.
+    let mut s = SessionState::default();
+    let mut brand = wire_string(BRAND_PAYLOAD_ID);
+    brand.extend(wire_string("Paper"));
+    let routed_brand = route_session(ids.cb_play_custom_payload, &brand, ids, &mut s);
+
+    let mut cookie = wire_string("mynet:session");
+    cookie.push(0x02);
+    cookie.extend_from_slice(&[0xde, 0xad]);
+    let routed_cookie = route_session(ids.cb_play_store_cookie, &cookie, ids, &mut s);
+
+    let mut rules = vec![0x01];
+    rules.extend(wire_string("minecraft:keep_inventory"));
+    rules.extend(wire_string("true"));
+    let routed_rules = route_session(ids.cb_play_game_rule_values, &rules, ids, &mut s);
+
+    let mut data = wire_component("A Minecraft Server");
+    data.push(0x00);
+    let routed_data = route_session(ids.cb_play_server_data, &data, ids, &mut s);
+
+    let routed_end = route_session(ids.cb_play_player_combat_end, &[0x05], ids, &mut s);
+    let routed_enter = route_session(ids.cb_play_player_combat_enter, &[], ids, &mut s);
+
+    let mut chat = wire_component("psst");
+    chat.push(0x02);
+    chat.extend(wire_component("Notch"));
+    chat.push(0x00);
+    let routed_chat = route_session(ids.cb_play_disguised_chat, &chat, ids, &mut s);
+
+    let all_routed = routed_brand
+        && routed_cookie
+        && routed_rules
+        && routed_data
+        && routed_end
+        && routed_enter
+        && routed_chat;
+    let landed = s.server_brand.as_deref() == Some("Paper")
+        && s.cookie("mynet:session") == Some(&[0xdeu8, 0xad][..])
+        && s.game_rules.get("minecraft:keep_inventory").map(String::as_str) == Some("true")
+        && s.server_data.as_ref().map(|d| d.motd.as_str()) == Some("A Minecraft Server")
+        && s.take_chat() == vec!["psst".to_string()];
+    c.record(
+        "w9.every_session_id_routes_to_its_own_effect",
+        all_routed && landed,
+        format!(
+            "routed={all_routed} brand={:?} cookies={} rules={} motd={:?}",
+            s.server_brand,
+            s.cookie_count(),
+            s.game_rules.len(),
+            s.server_data.as_ref().map(|d| d.motd.clone())
+        ),
+    );
+
+    // w9.an_unrelated_id_is_not_claimed.
+    // MUTATION: `route_session` returning `true` unconditionally. It sits in
+    // an `else if` ladder and, in `Connection::run_play`, in the fallthrough
+    // arm — a router that claimed every id would swallow every packet after it.
+    let mut s2 = SessionState::default();
+    let claimed = route_session(ids.cb_play_keep_alive, &[0; 8], ids, &mut s2);
+    c.record(
+        "w9.an_unrelated_id_is_not_claimed",
+        !claimed && s2 == SessionState::default(),
+        format!("keep_alive (id {}) claimed={claimed}", ids.cb_play_keep_alive),
+    );
+
+    // w9.the_brand_identifier_is_namespaced.
+    // MUTATION: comparing against the bare `"brand"`. `createType` runs the
+    // name through `Identifier.withDefaultNamespace`, so a bare comparison
+    // sends every real brand down the discard path and leaves `server_brand`
+    // permanently `None` — with no error anywhere.
+    let mut bare = wire_string("brand");
+    bare.extend(wire_string("Paper"));
+    let bare_is_discarded = matches!(
+        read_custom_payload(&bare),
+        Ok(CustomPayload::Discarded { .. })
+    );
+    let namespaced =
+        read_custom_payload(&brand).is_ok_and(|p| p == CustomPayload::Brand("Paper".into()));
+    c.record(
+        "w9.the_brand_identifier_is_namespaced",
+        namespaced && bare_is_discarded && BRAND_PAYLOAD_ID == "minecraft:brand",
+        format!("{BRAND_PAYLOAD_ID:?} is the brand={namespaced}, bare \"brand\" is not={bare_is_discarded}"),
+    );
+
+    // w9.an_unknown_payload_is_discarded_and_fully_consumed.
+    // MUTATION: erroring on an unrecognised identifier. That is M41's rule for
+    // a `DataComponentPatch` member and it is wrong here, because this union
+    // *has* a fallback codec — rejecting would kill the connection to any
+    // modded server. The tail is five bytes that decode as nothing else, so a
+    // reader that stopped at the identifier leaves them unread.
+    let mut unknown = wire_string("mymod:hello");
+    unknown.extend_from_slice(&[0xff, 0x00, 0x13, 0x37, 0x42]);
+    let discarded = read_custom_payload(&unknown);
+    c.record(
+        "w9.an_unknown_payload_is_discarded_and_fully_consumed",
+        discarded.as_ref().is_ok_and(|p| {
+            *p == CustomPayload::Discarded {
+                id: "mymod:hello".into(),
+                len: 5,
+            }
+        }),
+        format!("{discarded:?}"),
+    );
+
+    // w9.the_brand_is_also_resolved_in_configuration.
+    // MUTATION: resolving only the play id. The vanilla server sends
+    // `minecraft:brand` from `ServerConfigurationPacketListenerImpl`'s opening
+    // burst and never repeats it in play, so a play-only client reads no brand
+    // from any server that exists — M69's `update_tags` finding one packet
+    // over. The two ids are *different numbers*, which is the whole point.
+    let cfg = ids.cb_config_custom_payload;
+    let play = ids.cb_play_custom_payload;
+    c.record(
+        "w9.the_brand_is_also_resolved_in_configuration",
+        cfg != play && cfg >= 0 && play >= 0,
+        format!("configuration custom_payload={cfg}, play custom_payload={play} (both resolved, and distinct)"),
+    );
+
+    // w9.a_stored_cookie_changes_what_the_request_is_answered_with.
+    // MUTATION: the pre-M78 `resp.string(&key).bool(false)` — an
+    // unconditional miss. This is the *headline* property of `store_cookie`:
+    // the jar is only observable through the reply, so a jar that filled
+    // correctly behind a reply that still wrote `false` would be
+    // indistinguishable from the old client. Graded on the produced bytes,
+    // through the same writer `Connection::answer_cookie_request` calls.
+    let mut jar = SessionState::default();
+    let empty = write_cookie_response(7, "mynet:session", jar.cookie("mynet:session"));
+    jar.store_cookie("mynet:session".into(), vec![0xde, 0xad, 0xbe]);
+    let filled = write_cookie_response(7, "mynet:session", jar.cookie("mynet:session"));
+    // packet id 7, the key, then the nullable payload.
+    let mut want_empty = vec![0x07];
+    want_empty.extend(wire_string("mynet:session"));
+    want_empty.push(0x00);
+    let mut want_filled = vec![0x07];
+    want_filled.extend(wire_string("mynet:session"));
+    want_filled.extend_from_slice(&[0x01, 0x03, 0xde, 0xad, 0xbe]);
+    c.record(
+        "w9.a_stored_cookie_changes_what_the_request_is_answered_with",
+        empty.buf == want_empty && filled.buf == want_filled && empty.buf != filled.buf,
+        format!(
+            "empty jar -> {:02x?}, after store_cookie -> {:02x?}",
+            empty.buf, filled.buf
+        ),
+    );
+
+    // w9.a_cookie_for_another_key_is_still_a_miss.
+    // MUTATION: a store that ignores its key (a single `Option<Vec<u8>>`
+    // instead of a map). Handing back one backend's session token under
+    // another's key is worse than handing back nothing.
+    let other = write_cookie_response(7, "mynet:other", jar.cookie("mynet:other"));
+    c.record(
+        "w9.a_cookie_for_another_key_is_still_a_miss",
+        other.buf == {
+            let mut w = vec![0x07];
+            w.extend(wire_string("mynet:other"));
+            w.push(0x00);
+            w
+        },
+        format!("{:02x?}", other.buf),
+    );
+
+    // w9.the_cookie_payload_limit_is_an_error_on_the_bound.
+    // MUTATION: `>=` instead of `>` (rejecting a legal 5120-byte cookie), or
+    // clamping instead of erroring (storing a truncated cookie to hand back to
+    // a server that never issued it). The samples sit exactly on 5120 and 5121.
+    let cookie_body = |len: usize| {
+        let mut b = wire_string("mynet:session");
+        b.extend(wire_varint(len as i32));
+        b.extend(std::iter::repeat_n(0xabu8, len));
+        b
+    };
+    let at = read_store_cookie(&cookie_body(MAX_COOKIE_PAYLOAD_SIZE));
+    let over = read_store_cookie(&cookie_body(MAX_COOKIE_PAYLOAD_SIZE + 1));
+    c.record(
+        "w9.the_cookie_payload_limit_is_an_error_on_the_bound",
+        at.as_ref().is_ok_and(|(_, p)| p.len() == MAX_COOKIE_PAYLOAD_SIZE)
+            && over.is_err()
+            && MAX_COOKIE_PAYLOAD_SIZE == 5120,
+        format!(
+            "{MAX_COOKIE_PAYLOAD_SIZE} bytes ok={}, {} bytes errors={}",
+            at.is_ok(),
+            MAX_COOKIE_PAYLOAD_SIZE + 1,
+            over.is_err()
+        ),
+    );
+
+    // w9.the_chat_type_holder_is_id_plus_one_with_zero_meaning_inline.
+    // MUTATION: reading the VarInt as a raw registry id, the convention the
+    // *dimension* holder uses one packet over. The inline case is what bites: a
+    // raw reading takes 0 as chat type 0 and then reads the first decoration's
+    // translation key as the sender's name, so the sender comes out as
+    // "chat.type.text" and every field after it is garbage.
+    let mut referenced = vec![0x04];
+    referenced.extend(wire_component("Notch"));
+    referenced.push(0x00);
+    let mut r = PacketReader::new(&referenced);
+    let ref_bound = read_chat_type_bound(&mut r);
+    let ref_ok = ref_bound.as_ref().is_ok_and(|b| {
+        b.chat_type == Some(3) && b.name == "Notch" && b.target_name.is_none()
+    }) && r.remaining() == 0;
+
+    let decoration = |key: &str| {
+        let mut d = wire_string(key);
+        d.push(0x02); // two parameters
+        d.extend_from_slice(&[0x00, 0x02]);
+        d.extend_from_slice(&[0x0a, 0x00]); // an empty NBT compound Style
+        d
+    };
+    let mut inline = vec![0x00];
+    inline.extend(decoration("chat.type.text"));
+    inline.extend(decoration("chat.type.text.narrate"));
+    inline.extend(wire_component("Notch"));
+    inline.push(0x01);
+    inline.extend(wire_component("Herobrine"));
+    let mut r = PacketReader::new(&inline);
+    let inline_bound = read_chat_type_bound(&mut r);
+    let inline_ok = inline_bound.as_ref().is_ok_and(|b| {
+        b.chat_type.is_none()
+            && b.name == "Notch"
+            && b.target_name.as_deref() == Some("Herobrine")
+    }) && r.remaining() == 0;
+    c.record(
+        "w9.the_chat_type_holder_is_id_plus_one_with_zero_meaning_inline",
+        ref_ok && inline_ok,
+        format!("wire 4 -> {ref_bound:?}; wire 0 (inline) -> {inline_bound:?}"),
+    );
+
+    // w9.the_vestigial_packets_consume_exactly_their_bodies.
+    // MUTATION: reading one byte too many or too few. Both handlers are empty
+    // methods in vanilla, so nothing is stored and consumption is the *only*
+    // property either packet has. The duration is written as a two-byte VarInt
+    // precisely so a one-byte reader and a fixed-i32 reader both disagree with
+    // it; `player_combat_enter` reads nothing, so any read is one too many.
+    let end = read_player_combat_end(&[0xac, 0x02]);
+    let enter = read_player_combat_enter(&[]);
+    c.record(
+        "w9.the_vestigial_packets_consume_exactly_their_bodies",
+        end.as_ref().is_ok_and(|&(d, n)| d == 300 && n == 2)
+            && enter == 0
+            && read_player_combat_end(&[]).is_err(),
+        format!("player_combat_end -> {end:?} (2 bytes), player_combat_enter -> {enter} bytes"),
+    );
+
+    // w9.game_rules_replace_rather_than_merge.
+    // MUTATION: `extend` instead of assignment. A merge passes every "did the
+    // new rule arrive" check and leaves a rule the server stopped sending
+    // permanently visible. The second packet drops the first's only key, which
+    // is where the two readings differ.
+    let mut s3 = SessionState::default();
+    route_session(ids.cb_play_game_rule_values, &rules, ids, &mut s3);
+    let mut second = vec![0x01];
+    second.extend(wire_string("minecraft:do_fire_tick"));
+    second.extend(wire_string("false"));
+    route_session(ids.cb_play_game_rule_values, &second, ids, &mut s3);
+    c.record(
+        "w9.game_rules_replace_rather_than_merge",
+        s3.game_rules.len() == 1 && !s3.game_rules.contains_key("minecraft:keep_inventory"),
+        format!("after two packets: {:?}", s3.game_rules),
+    );
+
+    // w9.server_data_reads_an_optional_icon_not_an_unconditional_one.
+    // MUTATION: dropping the present-flag and reading the byte array always.
+    // The absent case here is followed by nothing, so an unconditional read
+    // errors; the present case's icon is a PNG magic prefix so a flag consumed
+    // as part of the length gives a visibly different array.
+    let mut with_icon = wire_component("hi");
+    with_icon.extend_from_slice(&[0x01, 0x03, 0x89, 0x50, 0x4e]);
+    let a = read_server_data(&data);
+    let b = read_server_data(&with_icon);
+    c.record(
+        "w9.server_data_reads_an_optional_icon_not_an_unconditional_one",
+        a.as_ref().is_ok_and(|d| d.icon.is_none())
+            && b.as_ref().is_ok_and(|d| d.icon.as_deref() == Some(&[0x89, 0x50, 0x4e][..]))
+            && read_server_data(&wire_component("hi")).is_err(),
+        format!("absent -> {:?}, present -> {:?}", a.map(|d| d.icon), b.map(|d| d.icon)),
+    );
+
+    // w9.a_malformed_session_body_changes_nothing.
+    // MUTATION: `apply` assigning as it reads — e.g. clearing `game_rules`
+    // before the decode instead of after it. Every reader builds its value
+    // before anything is written, which is what makes "changed nothing"
+    // assertable at all.
+    //
+    // The state is **pre-populated on purpose**: the first version of this
+    // witness started from `SessionState::default()`, and an `apply` that wiped
+    // the game rules before decoding left an already-empty map empty, so the
+    // mutation passed the gate (the unit test, which seeds a rule, caught it).
+    // A sample has to sit where the mutation bites.
+    let mut s4 = SessionState::default();
+    s4.store_cookie("mynet:session".into(), vec![1]);
+    route_session(ids.cb_play_game_rule_values, &rules, ids, &mut s4);
+    route_session(ids.cb_play_custom_payload, &brand, ids, &mut s4);
+    route_session(ids.cb_play_server_data, &data, ids, &mut s4);
+    let before = s4.clone();
+    for (id, body) in [
+        (ids.cb_play_custom_payload, &[0x7f][..]),
+        (ids.cb_play_disguised_chat, &[][..]),
+        (ids.cb_play_game_rule_values, &[0x7f, 0x00][..]),
+        (ids.cb_play_server_data, &[][..]),
+        (ids.cb_play_store_cookie, &[][..]),
+    ] {
+        route_session(id, body, ids, &mut s4);
+    }
+    c.record(
+        "w9.a_malformed_session_body_changes_nothing",
+        s4 == before && !before.game_rules.is_empty() && before.server_brand.is_some(),
+        format!(
+            "five malformed bodies later: brand={:?} cookies={} rules={} (all pre-populated)",
+            s4.server_brand,
+            s4.cookie_count(),
+            s4.game_rules.len()
+        ),
+    );
+}
+
 pub fn run(args: AbilityshotArgs) -> Result<(), String> {
     let mode = if args.check { "check" } else { "report" };
     println!(
@@ -1060,6 +1576,24 @@ pub fn run(args: AbilityshotArgs) -> Result<(), String> {
         "[abilityshot] player_abilities: clientbound={} serverbound={}",
         ids.cb_play_player_abilities, ids.sb_play_player_abilities
     );
+    // M78's eight, through the same production resolver. Printed because two
+    // of them are the whole point of a *pair* of ids: `custom_payload` and
+    // `store_cookie` are `common` packets and exist in configuration as well.
+    println!(
+        "[abilityshot] M78 session ids: bundle_delimiter={} custom_payload={}/{} \
+         disguised_chat={} game_rule_values={} player_combat_end={} \
+         player_combat_enter={} server_data={} store_cookie={}/{}",
+        ids.cb_play_bundle_delimiter,
+        ids.cb_config_custom_payload,
+        ids.cb_play_custom_payload,
+        ids.cb_play_disguised_chat,
+        ids.cb_play_game_rule_values,
+        ids.cb_play_player_combat_end,
+        ids.cb_play_player_combat_enter,
+        ids.cb_play_server_data,
+        ids.cb_config_store_cookie,
+        ids.cb_play_store_cookie,
+    );
 
     let mut c = Checker::new();
     check_clientbound_wire(&mut c);
@@ -1073,6 +1607,12 @@ pub fn run(args: AbilityshotArgs) -> Result<(), String> {
     check_flight_physics(&mut c);
     check_toggle(&mut c);
     check_packet_to_flight(&mut c);
+    check_bundle(
+        &mut c,
+        ids.cb_play_bundle_delimiter,
+        ids.cb_play_start_configuration,
+    );
+    check_session(&mut c, &ids);
 
     println!(
         "[abilityshot] {}/{} witnesses",

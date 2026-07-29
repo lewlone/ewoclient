@@ -453,6 +453,21 @@ pub struct PlaySession {
     /// respawn packet carries no difficulty, so clearing here would silently
     /// report NORMAL for the rest of the session after one Nether portal.
     pub client_state: crate::client_state::ClientState,
+    /// Session, server metadata and chat (M78): the server brand, the MOTD and
+    /// icon, the game-rule map, and the cookie jar `cookie_request` answers
+    /// from. See [`crate::session`].
+    ///
+    /// Deliberately **not** reset by [`Self::apply_respawn`], for the reason
+    /// the view area and `client_state` are not: every field here belongs to
+    /// vanilla's `ClientCommonPacketListenerImpl`, which outlives a dimension
+    /// change entirely — a `WorldTransition` rebuilds the level, not the
+    /// connection.
+    pub session: crate::session::SessionState,
+    /// The bundle reassembler (M78). Sits between the socket and
+    /// [`Self::handle_packet`], so everything between two `bundle_delimiter`s
+    /// is applied in one drain and no frame is rendered part-way through a
+    /// spawn. See [`crate::bundle`].
+    bundle: crate::bundle::BundleAssembler,
     /// Monotonic epoch for [`Self::now_nanos`], which stands in for vanilla's
     /// `Util.getNanos()`. Only the *interval* between two reads matters to
     /// [`crate::chunk_batch`], so an arbitrary epoch is fine — and a
@@ -1259,6 +1274,18 @@ impl<'a> Connection<'a> {
         // than cloned for the same reason the registries above are: this
         // connection object is finished with them.
         let tags = std::mem::take(&mut self.tags);
+        // The brand and the cookie jar (M78). Both arrive during
+        // *configuration* — the vanilla server sends `minecraft:brand` from its
+        // configuration listener and never repeats it in play — and both are
+        // fields of the common listener that outlives the state switch, so they
+        // move across exactly as the tags above do.
+        let session_state = std::mem::take(&mut self.session);
+        // The bundle reassembler (M78). Built here rather than inside the
+        // struct literal below because `ids: self.ids` moves the id table.
+        let bundle = crate::bundle::BundleAssembler::new(crate::bundle::BundleIds {
+            delimiter: self.ids.cb_play_bundle_delimiter,
+            terminal: self.ids.cb_play_start_configuration,
+        });
         let cat_variants = std::mem::take(&mut self.cat_variants);
         let wolf_variants = std::mem::take(&mut self.wolf_variants);
         let frog_variants = std::mem::take(&mut self.frog_variants);
@@ -1295,6 +1322,8 @@ impl<'a> Connection<'a> {
             chunk_batch: crate::chunk_batch::ChunkBatchSizeCalculator::new(0),
             ticking: crate::ticking::TickRateManager::default(),
             client_state: crate::client_state::ClientState::default(),
+            session: session_state,
+            bundle,
             clock_epoch: std::time::Instant::now(),
             number_formats: self.data.number_formats,
             // Filled from the authenticated profile when there is one. Offline
@@ -1532,6 +1561,14 @@ impl PlaySession {
     /// How many columns are currently queued for re-mesh (cheap peek).
     pub fn dirty_len(&self) -> usize {
         self.dirty.len()
+    }
+
+    /// `(bundles closed, largest run)` — M78's live witness that the bundle
+    /// path fired at all. A run that reports `0` proves nothing about bundling
+    /// beyond "it did not break the session", which is equally true of a
+    /// machine that never ran.
+    pub fn bundle_stats(&self) -> (u64, usize) {
+        self.bundle.stats()
     }
 
     /// The world clock's `gameTime`, or 0 before the server has sent one.
@@ -1799,7 +1836,41 @@ impl PlaySession {
             let Ok(id) = rewo_proto::varint::read_varint(&packet, &mut pos) else {
                 continue;
             };
-            self.handle_packet(id, &packet[pos..])?;
+            // M78 — bundling, wrapped *around* the dispatch chain rather than
+            // folded into it. `PacketBundlePacker` sits between the frame
+            // decoder and the listener in vanilla's pipeline, and it sits in
+            // the same place here: the `else if` ladder in `handle_packet`
+            // stays a plain list of ids and never learns that bundles exist.
+            match self.bundle.feed(id, &packet[pos..]) {
+                crate::bundle::Feed::Apply => self.handle_packet(id, &packet[pos..])?,
+                // The opening delimiter, or a sub-packet buffered inside an
+                // open bundle. An unterminated bundle is *withheld* — the
+                // buffer survives this function returning, which is the whole
+                // reason bundling is worth having: a socket that hands over a
+                // bundle in two reads must not apply the first half.
+                crate::bundle::Feed::Buffered => {}
+                crate::bundle::Feed::Flush => {
+                    // `handleBundlePacket` is a plain `for` loop over the
+                    // sub-packets on one scheduled task, so nothing renders
+                    // between them. Here that falls out of applying the run
+                    // inside a single drain.
+                    for (sub_id, sub_body) in self.bundle.take() {
+                        self.handle_packet(sub_id, &sub_body)?;
+                    }
+                }
+                // Vanilla throws on the Netty pipeline and the connection dies.
+                // Rewo ends the session the same way it ends one for a closed
+                // socket rather than recovering: a client that carried on past
+                // a malformed bundle would be applying a run the server never
+                // meant to send as one.
+                crate::bundle::Feed::Fatal(reason) => {
+                    log::warn!("net: bundle: {reason}");
+                    if self.disconnect.is_none() {
+                        self.disconnect = Some(format!("bundle: {reason}"));
+                    }
+                    return Ok(());
+                }
+            }
         }
     }
 
@@ -2297,6 +2368,37 @@ impl PlaySession {
         } else if crate::route_ticking(id, body, ids, &mut self.ticking) {
             // M74 — `/tick rate`, `/tick freeze`, `/tick step`. Decode and
             // state only; the 20 Hz loop does not consult it yet.
+        } else if crate::route_session(id, body, ids, &mut self.session) {
+            // M78 — the brand, the MOTD, the game rules, the cookie jar, the
+            // two vestigial combat packets, and disguised chat.
+            //
+            // The chat lines are drained here rather than written by the router
+            // so `crate::session` needs no reference to this type. They join
+            // the same log `system_chat` and `player_chat` push to, and at the
+            // same fidelity: the *raw* message, not the decoration, because
+            // decorating needs the `minecraft:chat_type` registry Rewo does not
+            // parse.
+            let lines = self.session.take_chat();
+            self.chat_log.extend(lines);
+        } else if Some(id) == ids.cb_play_cookie_request {
+            // M78 closes a hole it would otherwise have shipped around: the
+            // *play-state* `cookie_request` was answered only by the M1-era
+            // `Connection::run_play` harness, never by this session, so the
+            // real client left it unanswered entirely. `store_cookie` fills a
+            // jar whose only observable consequence is this reply, and a jar
+            // nothing reads is not a feature.
+            //
+            // `handleRequestCookie` — `send(new ServerboundCookieResponsePacket(
+            // key, serverCookies.get(key)))`. A key we hold answers with its
+            // payload; one we do not answers with nothing, which is the
+            // behaviour the whole client had before M78.
+            let key = PacketReader::new(body).identifier().unwrap_or_default();
+            if let Some(resp_id) = ids.sb_play_cookie_response {
+                let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
+                let resp =
+                    crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
+                self.send(resp)?;
+            }
         } else if crate::route_client_state(
             id,
             body,

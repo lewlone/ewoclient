@@ -1767,6 +1767,14 @@ fn report(
         "[rewo-m3] block_updates received: {}",
         session.block_updates
     );
+    // M78. `CORRECTIONS 0` says bundling did not break the session, which is
+    // equally true of a bundle machine that never fired — so the run reports
+    // whether it fired. A vanilla server bundles every entity spawn, so a
+    // session that saw a mob and reports `0` here is the interesting failure.
+    let (bundles, largest) = session.bundle_stats();
+    println!(
+        "[rewo-m3] bundles applied: {bundles}  (largest run: {largest} sub-packets)"
+    );
     // World-clock progress: an advance of ~1 per game tick elapsed proves the
     // day/night clock is running; a frozen clock reads `advance 0` here.
     match (clock_start, session.day_ticks) {

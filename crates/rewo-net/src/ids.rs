@@ -46,6 +46,21 @@ pub struct Ids {
     pub cb_config_update_tags: i32,
     pub cb_config_finish: i32,
     pub cb_config_cookie_request: Option<i32>,
+    /// `ClientboundCustomPayloadPacket` in the **configuration** state (M78).
+    ///
+    /// This is the copy that actually fires: a vanilla server sends
+    /// `new BrandPayload(getServerModName())` from
+    /// `ServerConfigurationPacketListenerImpl`'s opening burst, and never sends
+    /// a second one in play. `serverBrand` lives on the *common* listener both
+    /// states extend, so handling only the play id would look like it worked
+    /// against every server there is — M69's `update_tags` lesson, one packet
+    /// over.
+    pub cb_config_custom_payload: i32,
+    /// `ClientboundStoreCookiePacket` in the **configuration** state (M78).
+    /// A `common` packet like the payload above; a transfer-driven network
+    /// stores its cookies on whichever side of the state boundary it happens to
+    /// be, and the jar is one store.
+    pub cb_config_store_cookie: i32,
     pub cb_config_disconnect: i32,
     // play
     pub sb_play_keep_alive: i32,
@@ -295,6 +310,46 @@ pub struct Ids {
     pub cb_play_ticking_state: i32,
     /// `ClientboundTickingStepPacket` — one VarInt `tickSteps`. `/tick step`.
     pub cb_play_ticking_step: i32,
+    // ── M78: session, server metadata and chat ────────────────────────────
+    // All eight `req!` for the reason M62/M63/M65/M67/M68/M74 give: `require`
+    // grades the *report*, not the server. A server that never sets a cookie
+    // simply never sends `store_cookie` — a runtime state. A report with no
+    // `store_cookie` in it is a version mismatch.
+    /// `ClientboundBundleDelimiterPacket` — **empty body, and not an inert
+    /// packet**: `BundleDelimiterPacket.handle` throws outright, because it is
+    /// a pipeline instruction rather than a message. Everything between two of
+    /// them is applied in one go; see [`crate::bundle`].
+    pub cb_play_bundle_delimiter: i32,
+    /// `ClientboundCustomPayloadPacket` in the **play** state — an `Identifier`
+    /// then a payload chosen by it. 26.2 registers one known type,
+    /// `minecraft:brand`; anything else is a `DiscardedPayload` whose reader
+    /// consumes the remainder. The copy a vanilla server actually sends is the
+    /// configuration one above.
+    pub cb_play_custom_payload: i32,
+    /// `ClientboundDisguisedChatPacket` — a `Component` plus a
+    /// `ChatType.Bound`, the chat line a server sends when a message should
+    /// render as chat without carrying a player signature (`/msg`, plugin
+    /// routing). Its `Bound` opens with `ByteBufCodecs.**holder**` — `id + 1`,
+    /// `0` = inline — not `holderRegistry`.
+    pub cb_play_disguised_chat: i32,
+    /// `ClientboundGameRuleValuesPacket` — a counted map of
+    /// `ResourceKey<GameRule>` → string.
+    pub cb_play_game_rule_values: i32,
+    /// `ClientboundPlayerCombatEndPacket` — a VarInt `duration`, and a vanilla
+    /// handler that is an **empty method**. Decoded so the reader position is
+    /// right; nothing is stored, because vanilla stores nothing.
+    pub cb_play_player_combat_end: i32,
+    /// `ClientboundPlayerCombatEnterPacket` — `StreamCodec.unit`, i.e. **zero
+    /// bytes**, and an empty handler. Its sibling above is *not* empty on the
+    /// wire; the two are vestigial in the same way and shaped differently.
+    pub cb_play_player_combat_enter: i32,
+    /// `ClientboundServerDataPacket` — the MOTD `Component` and an
+    /// `Optional<byte[]>` icon.
+    pub cb_play_server_data: i32,
+    /// `ClientboundStoreCookiePacket` in the **play** state — the other half of
+    /// the loop `cookie_request` already answers. Before M78 the reply was
+    /// always "no payload", because nothing ever stored one.
+    pub cb_play_store_cookie: i32,
 }
 
 impl Ids {
@@ -325,6 +380,8 @@ impl Ids {
             cb_config_update_tags: req!(p, Cfg, C, "update_tags"),
             cb_config_finish: req!(p, Cfg, C, "finish_configuration"),
             cb_config_cookie_request: opt!(p, Cfg, C, "cookie_request"),
+            cb_config_custom_payload: req!(p, Cfg, C, "custom_payload"),
+            cb_config_store_cookie: req!(p, Cfg, C, "store_cookie"),
             cb_config_disconnect: req!(p, Cfg, C, "disconnect"),
 
             sb_play_keep_alive: req!(p, P, S, "keep_alive"),
@@ -427,6 +484,14 @@ impl Ids {
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),
+            cb_play_bundle_delimiter: req!(p, P, C, "bundle_delimiter"),
+            cb_play_custom_payload: req!(p, P, C, "custom_payload"),
+            cb_play_disguised_chat: req!(p, P, C, "disguised_chat"),
+            cb_play_game_rule_values: req!(p, P, C, "game_rule_values"),
+            cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
+            cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),
+            cb_play_server_data: req!(p, P, C, "server_data"),
+            cb_play_store_cookie: req!(p, P, C, "store_cookie"),
         })
     }
 }
