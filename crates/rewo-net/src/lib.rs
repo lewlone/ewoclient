@@ -1938,6 +1938,272 @@ pub fn route_set_passengers(
 }
 
 // ---------------------------------------------------------------------------
+// M77 — three packets that write entity state
+// ---------------------------------------------------------------------------
+
+/// Decode a `move_minecart_along_track` body — `(entity id, steps)` (M77).
+///
+/// Wire form, from `ClientboundMoveMinecartPacket.STREAM_CODEC` composed with
+/// `NewMinecartBehavior.MinecartStep.STREAM_CODEC`:
+///
+/// ```text
+/// VarInt entityId
+/// VarInt count                       (ByteBufCodecs.list(), maxSize = MAX_VALUE)
+/// count × {
+///   f64 f64 f64                      position — Vec3.STREAM_CODEC
+///   f64 f64 f64                      movement — Vec3.STREAM_CODEC
+///   i8                               yRot — ROTATION_BYTE
+///   i8                               xRot — ROTATION_BYTE
+///   f32                              weight
+/// }
+/// ```
+///
+/// **Two traps this codebase has paid for already, both live here.** The
+/// vectors are `Vec3.STREAM_CODEC` — plain doubles, 24 bytes each — and *not*
+/// the `LP_STREAM_CODEC` bit-packing `set_entity_motion` uses (M68); the two
+/// codecs sit on the same `Vec3` class. And a rotation is one **signed byte**
+/// through `Mth.unpackDegrees` (`rot * 360 / 256f`), not a float.
+///
+/// One deliberate divergence: vanilla's `readCount` accepts a **negative**
+/// count and its `for` loop then produces an empty list, where
+/// [`PacketReader::count`] rejects it. Both outcomes mutate nothing — an empty
+/// `addAll` and a dropped packet are the same non-event — and the hardened
+/// reader is what keeps a hostile count from reserving unbounded memory.
+pub fn parse_move_minecart(
+    body: &[u8],
+) -> rewo_proto::Result<(i32, Vec<rewo_world::minecart::MinecartStep>)> {
+    use rewo_world::minecart::MinecartStep;
+    let mut r = PacketReader::new(body);
+    let eid = r.varint()?;
+    // 24 + 24 + 1 + 1 + 4 — the exact minimum, so the count bound is tight.
+    let n = r.count("minecart lerp steps", 54)?;
+    let mut steps = Vec::with_capacity(n);
+    for _ in 0..n {
+        let position = [r.f64()?, r.f64()?, r.f64()?];
+        let movement = [r.f64()?, r.f64()?, r.f64()?];
+        let y_rot = unpack_degrees(r.i8()?);
+        let x_rot = unpack_degrees(r.i8()?);
+        let weight = r.f32()?;
+        steps.push(MinecartStep {
+            position,
+            movement,
+            y_rot,
+            x_rot,
+            weight,
+        });
+    }
+    Ok((eid, steps))
+}
+
+/// `Mth.unpackDegrees(byte)` = `rot * 360 / 256.0F`. The numerator is **int**
+/// arithmetic (`rot * 360`) and only the divide is float, which is exact for
+/// every one of the 256 inputs either way — transcribed in that order anyway.
+fn unpack_degrees(rot: i8) -> f32 {
+    (rot as i32 * 360) as f32 / 256.0
+}
+
+/// Apply a `move_minecart_along_track` body (M77).
+///
+/// `handleMinecartAlongTrack` is two nested `instanceof`s and one `addAll`:
+///
+/// ```text
+/// if (packet.getEntity(level) instanceof AbstractMinecart minecart)
+///   if (minecart.getBehavior() instanceof NewMinecartBehavior behavior)
+///     behavior.lerpSteps.addAll(packet.lerpSteps());
+/// ```
+///
+/// The first guard is a class fact and is enforced here through
+/// [`rewo_data::entity_types::EntityClasses::is_minecart`], for the reason
+/// [`apply_animate`]'s living gate exists: a packet naming a cow must mutate
+/// nothing, and an untracked id must mutate nothing at all.
+///
+/// **The second guard is not enforced, deliberately.** Which behaviour a cart
+/// has is not a class fact: `AbstractMinecart`'s constructor picks
+/// `NewMinecartBehavior` iff `level.enabledFeatures().contains(
+/// MINECART_IMPROVEMENTS)`, and Rewo does not decode the feature-flag set
+/// (`update_enabled_features` is not in `ids.rs`). It is also structurally
+/// unreachable: `ServerEntity.sendChanges` only reaches `handleMinecartPosRot`
+/// — the sole sender of this packet — down the same `instanceof
+/// NewMinecartBehavior` branch, so a server with the flag off never sends one.
+/// Guessing the flag would be worse than omitting it; decoding it is the
+/// follow-up, recorded in `REWO_PACKET_COVERAGE.md`.
+///
+/// `classes` is `None` in the headless protocol harnesses, which interpret
+/// nothing — the same convention [`apply_animate`] uses.
+pub(crate) fn apply_move_minecart(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    // Decoded whole before anything is applied: the step list is positional,
+    // so a short read means the steps we did get are not the steps the server
+    // sent, and half a schedule would drag the cart to a place it never was.
+    let (eid, steps) = match parse_move_minecart(body) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("play: move_minecart_along_track parse: {e}");
+            return;
+        }
+    };
+    // `packet.getEntity(level)` — an untracked id is inert.
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    // `instanceof AbstractMinecart`.
+    if !classes.is_some_and(|c| c.is_minecart(type_id)) {
+        return;
+    }
+    entities.push_minecart_steps(eid, &steps);
+}
+
+/// The narrowest clientbound-play dispatch seam for the minecart schedule.
+/// Mirrors [`route_set_passengers`] / [`route_animate`] so
+/// [`play::PlaySession`] and the `rideshot` oracle drive packet-id → decoder
+/// through the same production code.
+pub fn route_move_minecart_along_track(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_move_minecart_along_track {
+        apply_move_minecart(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
+/// Decode a `set_entity_link` body — `(sourceId, destId)` (M77).
+///
+/// **Both are fixed big-endian `i32`s**, not var-ints: the packet's private
+/// constructor is `input.readInt()` twice. That is the same shape
+/// `ClientboundEntityEventPacket`'s id has (M17) and the opposite of nearly
+/// every other entity-addressed packet, and reading it as a var-int decodes a
+/// small id into a plausible wrong one rather than failing.
+///
+/// `destId == 0` is the wire's null: the sending constructor writes
+/// `destEntity != null ? destEntity.getId() : 0`.
+pub fn parse_set_entity_link(body: &[u8]) -> rewo_proto::Result<(i32, i32)> {
+    let mut r = PacketReader::new(body);
+    let source = r.i32()?;
+    let dest = r.i32()?;
+    Ok((source, dest))
+}
+
+/// Apply a `set_entity_link` body (M77).
+///
+/// ```text
+/// if (level.getEntity(packet.getSourceId()) instanceof Leashable leashable)
+///   leashable.setDelayedLeashHolderId(packet.getDestId());
+/// ```
+///
+/// `Leashable` is an **interface**, so the gate is the union of `Mob`'s and
+/// `AbstractBoat`'s subtrees — see
+/// [`rewo_data::entity_types::EntityClasses::is_leashable`]. A `set_entity_link`
+/// naming an armour stand, a minecart or an item entity mutates nothing.
+///
+/// **Rendering the rope is out of scope.** This decodes and stores the holder
+/// id and nothing else.
+pub(crate) fn apply_set_entity_link(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    let (source, dest) = match parse_set_entity_link(body) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("play: set_entity_link parse: {e}");
+            return;
+        }
+    };
+    let Some(type_id) = entities.get(source).map(|e| e.type_id) else {
+        return;
+    };
+    if !classes.is_some_and(|c| c.is_leashable(type_id)) {
+        return;
+    }
+    entities.set_leash_holder(source, dest);
+}
+
+/// The narrowest clientbound-play dispatch seam for the leash holder.
+pub fn route_set_entity_link(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_set_entity_link {
+        apply_set_entity_link(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
+/// Decode a `projectile_power` body — `(entity id, accelerationPower)` (M77).
+///
+/// A **VarInt** id (unlike `set_entity_link`'s fixed i32, one packet away)
+/// then a big-endian `f64`.
+pub fn parse_projectile_power(body: &[u8]) -> rewo_proto::Result<(i32, f64)> {
+    let mut r = PacketReader::new(body);
+    let eid = r.varint()?;
+    let power = r.f64()?;
+    Ok((eid, power))
+}
+
+/// Apply a `projectile_power` body (M77).
+///
+/// ```text
+/// if (level.getEntity(packet.getId()) instanceof AbstractHurtingProjectile p)
+///   p.accelerationPower = packet.getAccelerationPower();
+/// ```
+///
+/// The cast is narrow and worth naming: an **arrow is not one of these**. It
+/// is an `AbstractArrow`, a sibling branch, so a `projectile_power` naming one
+/// mutates nothing. The six types that pass are the fireball family, the
+/// wither skull and the two wind charges.
+pub(crate) fn apply_projectile_power(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) {
+    let (eid, power) = match parse_projectile_power(body) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("play: projectile_power parse: {e}");
+            return;
+        }
+    };
+    let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+        return;
+    };
+    if !classes.is_some_and(|c| c.is_hurting_projectile(type_id)) {
+        return;
+    }
+    entities.set_projectile_power(eid, power);
+}
+
+/// The narrowest clientbound-play dispatch seam for a projectile's
+/// acceleration power.
+pub fn route_projectile_power(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+) -> bool {
+    if id == ids.cb_play_projectile_power {
+        apply_projectile_power(body, entities, classes);
+        true
+    } else {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
 // M19 — combat arm swings (`ClientboundAnimatePacket`) and their inputs
 // ---------------------------------------------------------------------------
 
@@ -2616,6 +2882,78 @@ mod tests {
         let d = login_dimension_type(holder, &defs);
         assert_eq!(d.shape, DimensionShape::NETHER);
         assert_ne!(d.shape, DimensionShape::OVERWORLD);
+    }
+}
+
+/// M77's three decoders, at the level `rideshot` cannot reach: the byte
+/// arithmetic and the malformed-body outcomes.
+///
+/// `rideshot` drives these through the router against a real `EntityTable`,
+/// which is the right seam for everything it asserts — but it cannot ask for
+/// a *negative* element count (no encoder produces one) and it samples two
+/// rotation bytes, not all 256. These do.
+#[cfg(test)]
+mod m77_wire_tests {
+    use super::{parse_move_minecart, parse_projectile_power, parse_set_entity_link, unpack_degrees};
+
+    #[test]
+    fn unpack_degrees_spans_the_whole_signed_byte() {
+        // `rot * 360 / 256.0F`, exactly — 360/256 is 1.40625, a binary
+        // fraction, so every one of the 256 answers is exact in f32.
+        for (byte, want) in [
+            (0i8, 0.0f32),
+            (1, 1.406_25),
+            (-1, -1.406_25),
+            (64, 90.0),
+            (-64, -90.0),
+            (127, 178.593_75),
+            (-128, -180.0),
+        ] {
+            assert_eq!(unpack_degrees(byte), want, "byte {byte}");
+        }
+        // The signed and unsigned readings differ by exactly 360 for every
+        // negative byte — which is why nothing downstream of `Mth.rotLerp`
+        // can tell them apart, and why the gate's witness reads the decode.
+        for byte in i8::MIN..0 {
+            let unsigned = ((byte as u8) as i32 * 360) as f32 / 256.0;
+            assert_eq!(unsigned - unpack_degrees(byte), 360.0, "byte {byte}");
+        }
+    }
+
+    #[test]
+    fn an_empty_step_list_is_legal_and_a_negative_count_is_not() {
+        // Count 0: a well-formed packet carrying no steps. Vanilla's
+        // `addAll(emptyList())` is a no-op, and so is this.
+        assert_eq!(parse_move_minecart(&[7, 0]).unwrap(), (7, Vec::new()));
+        // Count -1 as a var-int (five bytes, all high bits set but the last).
+        // Vanilla's `readCount` returns it and the `for` loop then yields an
+        // empty list; `PacketReader::count` rejects it. Both mutate nothing —
+        // the divergence is recorded here rather than papered over.
+        let neg = [7u8, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F];
+        assert!(parse_move_minecart(&neg).is_err());
+    }
+
+    #[test]
+    fn a_step_count_cannot_outrun_the_body() {
+        // 54 bytes an element, so a two-byte body claiming 100 steps is
+        // rejected before anything is allocated.
+        assert!(parse_move_minecart(&[7, 100]).is_err());
+    }
+
+    #[test]
+    fn the_two_small_packets_need_their_whole_body() {
+        // `set_entity_link` is 8 bytes of fixed i32s — seven is not enough,
+        // and the eighth byte is part of `destId`, not padding.
+        assert_eq!(
+            parse_set_entity_link(&[0, 0, 1, 44, 0, 0, 0, 7]).unwrap(),
+            (300, 7)
+        );
+        assert!(parse_set_entity_link(&[0, 0, 1, 44, 0, 0, 0]).is_err());
+        // `projectile_power` is a VarInt then eight bytes of f64.
+        let mut body = vec![5u8];
+        body.extend_from_slice(&0.5f64.to_be_bytes());
+        assert_eq!(parse_projectile_power(&body).unwrap(), (5, 0.5));
+        assert!(parse_projectile_power(&body[..body.len() - 1]).is_err());
     }
 }
 

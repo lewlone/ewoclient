@@ -27,14 +27,14 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 72 of them. 69
+1. **141 clientbound-play packets. Rewo resolves and consumes 76 of them. 65
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **The 69 gaps split 15 / 20 / 23 / 11** across pure state, needs-rendering,
-   needs-a-missing-subsystem, and not-applicable. The 15 pure-state ones are
+2. **The 65 gaps split 11 / 20 / 23 / 11** across pure state, needs-rendering,
+   needs-a-missing-subsystem, and not-applicable. The 11 pure-state ones are
    decodable and headlessly gateable *today*, with no renderer and no design
-   decision — the same test the M52–M74 batches were chosen by.
+   decision — the same test the M52–M77 batches were chosen by.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -157,25 +157,25 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **73** |
+| Resolved **and** consumed | **76** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **68** |
+| Not resolved at all | **65** |
 | **Total clientbound-play** | **141** |
 
-The 68 gaps, by class:
+The 65 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
-| **A** pure state, no rendering | **14** | 21% |
-| **B** needs rendering | **20** | 29% |
-| **C** needs a subsystem Rewo lacks | **23** | 34% |
-| **D** not applicable | **11** | 16% |
+| **A** pure state, no rendering | **11** | 17% |
+| **B** needs rendering | **20** | 31% |
+| **C** needs a subsystem Rewo lacks | **23** | 35% |
+| **D** not applicable | **11** | 17% |
 
-M67 audited 56 / 0 / 85 with class A at 31. Sixteen packets separate that
-published 56 from this 72, and **ten of them had already landed when M67
+M67 audited 56 / 0 / 85 with class A at 31. Twenty packets separate that
+published 56 from this 76, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
-from M69, and `set_passengers` from the M68/M70/M72 trio. The other six are
-M74's.
+from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one
+is M75's, and three are M77's.
 
 ---
 
@@ -262,6 +262,8 @@ column is what turned each of them into a milestone.
 | `block_changed_ack` (4) | The id. The arm is a `log::debug!`. | The sequence number and the block-prediction rollback it acknowledges — Rewo does not predict block changes, so there is nothing to roll back yet. |
 | `container_set_content` / `container_set_slot` (18 / 20) | Container id **0** — the player's own inventory. `apply_container_set_content` returns early on any other id. | Every other container id, dropped whole (M34's documented choice: there is no screen to put them in). `set_player_inventory` (108) and `set_cursor_item` (96) share the rule. |
 | `player_info_update` (70) | `ADD_PLAYER`, `UPDATE_GAME_MODE`, `UPDATE_LISTED`, `UPDATE_LATENCY`, `UPDATE_LIST_ORDER`, `UPDATE_HAT`, and the walk past the rest. | `UPDATE_DISPLAY_NAME` and `INITIALIZE_CHAT` are walked and discarded rather than stored. The walk is correct — M62 unified it into one function after finding a drifted copy — but the values do not survive it. |
+| `move_minecart_along_track` (55) — M77 | The whole body, and the whole client-side `NewMinecartBehavior` schedule it feeds. The first handler guard, `instanceof AbstractMinecart`, is enforced. | The **second** handler guard, `getBehavior() instanceof NewMinecartBehavior`. It is not a class fact — the constructor picks the behaviour from `level.enabledFeatures().contains(MINECART_IMPROVEMENTS)` — and `update_enabled_features` is a **configuration** packet, outside this survey's scope and not in `ids.rs`. It is also structurally unreachable: the only sender of this packet is `handleMinecartPosRot`, which `ServerEntity` reaches down the same `instanceof` branch. Decoding the flag set is the follow-up. |
+| `set_entity_link` (100) — M77 | Both i32s, and the holder id onto the leashed entity. | **The rope.** Class B, and unstarted. Also `getLeashHolder`'s *cache*: vanilla promotes the delayed id to an `Entity` reference once and keeps it, so a holder that leaves the tracking range stays attached until the server re-sends; Rewo resolves on demand and reports none. Nothing reads it yet. |
 
 ### §4.1 What wiring the gamemode to physics would actually take
 
@@ -357,7 +359,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 52 | `merchant_offers` | absent | **C** | Villager trade screen. |
 | 53 | `move_entity_pos` | handled | `req!` → `cb_play_move_entity_pos` | |
 | 54 | `move_entity_pos_rot` | handled | `req!` → `cb_play_move_entity_pos_rot` | |
-| 55 | `move_minecart_along_track` | absent | **A** | A list of interpolation steps for one minecart — entity movement state. |
+| 55 | `move_minecart_along_track` | handled | `req!` → `cb_play_move_minecart_along_track` | **M77.** The **only** movement channel an experimental-movement cart has: `ServerEntity.sendChanges` routes such a cart down `handleMinecartPosRot` instead of the generic position branch entirely, so it is never sent `move_entity_pos` / `teleport_entity` / `entity_position_sync`. The steps are two **full-double** `Vec3`s each (`Vec3.STREAM_CODEC`, not `LP_STREAM_CODEC`), two rotation bytes and an f32 weight. The second client guard (`getBehavior() instanceof NewMinecartBehavior`) is **not** enforced — it depends on the `minecart_improvements` feature flag, which needs `update_enabled_features` (configuration; out of this survey's scope). |
 | 56 | `move_entity_rot` | handled | `req!` → `cb_play_move_entity_rot` | |
 | 57 | `move_vehicle` | handled | `req!` → `cb_play_move_vehicle` | **M68.** Carries **no entity id** — the client resolves `getRootVehicle()`. Sent only as a rejection of a serverbound vehicle move, so a passenger-only client never receives one. |
 | 58 | `open_book` | absent | **C** | Book screen. |
@@ -402,7 +404,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 97 | `set_default_spawn_position` | absent | **A** | `LevelData.RespawnData` — the compass target and respawn point. |
 | 98 | `set_display_objective` | handled | `req!` → `cb_play_set_display_objective` | M65. |
 | 99 | `set_entity_data` | handled | `req!` → `cb_play_set_entity_data` | |
-| 100 | `set_entity_link` | absent | **A** | Leash holder id. Rendering the rope is separate (B). |
+| 100 | `set_entity_link` | handled | `req!` → `cb_play_set_entity_link` | **M77.** Leash holder id, stored and **not drawn** — rendering the rope is still separate (B). Both fields are fixed big-endian **i32**s, not var-ints, and `destId == 0` is the wire's null. The cast is `instanceof Leashable`, an *interface*, so the gate is the union of `Mob`'s and `AbstractBoat`'s subtrees. |
 | 101 | `set_entity_motion` | handled | `req!` → `cb_play_set_entity_motion` | **M68.** The body is `Vec3.LP_STREAM_CODEC` (`LpVec3`), **not** the legacy `short / 8000.0` fixed point, which no longer exists in 26.2. |
 | 102 | `set_equipment` | handled | `req!` → `cb_play_set_equipment` | |
 | 103 | `set_experience` | absent | **B** | XP bar and level number. |
@@ -437,7 +439,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 132 | `update_mob_effect` | handled | `req!` → `cb_play_update_mob_effect` | M13. |
 | 133 | `update_recipes` | absent | **C** | Recipe property sets + stonecutter recipes; recipe book / crafting. |
 | 134 | `update_tags` | handled | `req!` → `cb_play_update_tags` | **M69.** The play copy is the `/reload` case; the join-time copy is **configuration 13**, and resolving only this one would have looked like it worked until someone reloaded. |
-| 135 | `projectile_power` | absent | **A** | A projectile entity's `accelerationPower`. |
+| 135 | `projectile_power` | handled | `req!` → `cb_play_projectile_power` | **M77.** A VarInt id (unlike `set_entity_link`'s fixed i32, one packet away) then an f64. Written onto `AbstractHurtingProjectile` only — an **arrow is not one**, it is an `AbstractArrow` on a sibling branch, so a `projectile_power` naming one mutates nothing. |
 | 136 | `custom_report_details` | absent | **D** | Key/value metadata to attach to a crash report. |
 | 137 | `server_links` | absent | **B** | Links rendered on the pause and disconnect screens. |
 | 138 | `waypoint` | absent | **B** | The locator bar. |
@@ -469,8 +471,8 @@ Stated explicitly, because the counts above are easy to over-read.
   resolvability is asserted rather than checked — see §1.
 - **The classes are a judgement.** The A/B boundary in particular is a call
   about what a decode buys on its own; `set_experience` (B) and
-  `projectile_power` (A) are the same shape on the wire and differ only in
-  whether anything but a renderer would consume them.
+  `projectile_power` (A, handled since M77) are the same shape on the wire and
+  differ only in whether anything but a renderer would consume them.
 - **Serverbound is out of scope.** The report lists 69 serverbound-play
   packets and this audit says nothing about them. Several class-A gaps above
   have serverbound halves that would also be needed to *act* on them

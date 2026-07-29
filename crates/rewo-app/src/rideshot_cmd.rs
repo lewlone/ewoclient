@@ -1,10 +1,20 @@
-//! `rewo rideshot --check` — the M72 passenger-positioning oracle.
+//! `rewo rideshot --check` — the derived-position and entity-link oracle
+//! (M72 passenger positioning, M77 minecart schedule / leash / projectile
+//! power).
 //!
 //! Serverless and GPU-less: no socket and no Vulkan device. It builds raw
 //! `set_passengers` bodies, pushes them through the production router into a
 //! real [`EntityTable`], ticks that table, and reads positions back out of
 //! [`EntityState::render_pos`] — the one function every rendered world
 //! position in this client comes from.
+//!
+//! **M77 extends it rather than adding a command** because its three packets
+//! land in the same place: two of them write a *derived* position or an
+//! entity→entity relation, and the minecart schedule is the second thing in
+//! this client (after `positionRider`) that overrides `render_pos`. The `m*`
+//! witnesses below share this file's fixture, its router-driven shape and its
+//! rule that a positional assertion measures a *relationship* between two
+//! positions rather than "something moved".
 //!
 //! ```text
 //! raw set_passengers body (VarInt vehicle + VarInt array of riders)
@@ -47,7 +57,7 @@
 
 use clap::Args as ClapArgs;
 use rewo_data::entity_attachments::Attachments;
-use rewo_data::entity_types::EntityTypes;
+use rewo_data::entity_types::{EntityClasses, EntityTypes};
 use rewo_data::packets::Packets;
 use rewo_data::DataPaths;
 use rewo_net::ids::Ids;
@@ -55,7 +65,7 @@ use rewo_world::entities::{EntityState, EntityTable};
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 24;
+const EXPECTED_WITNESSES: usize = 45;
 
 /// Positions are exact `f64` arithmetic on both sides, but the seat rotation
 /// runs through `Mth`'s float sine table, so anything rotated carries float
@@ -127,6 +137,70 @@ fn passengers_body(vehicle: i32, riders: &[i32]) -> Vec<u8> {
     b
 }
 
+/// One `NewMinecartBehavior.MinecartStep` as the gate authors it — rotations
+/// stay **raw bytes**, so `Mth.unpackDegrees` is under test rather than
+/// re-implemented on the encoding side.
+#[derive(Clone, Copy)]
+struct WireStep {
+    position: [f64; 3],
+    movement: [f64; 3],
+    y_rot: i8,
+    x_rot: i8,
+    weight: f32,
+}
+
+impl WireStep {
+    /// A step at `(x, y, z)` with no movement and no rotation.
+    fn at(position: [f64; 3], weight: f32) -> Self {
+        Self {
+            position,
+            movement: [0.0; 3],
+            y_rot: 0,
+            x_rot: 0,
+            weight,
+        }
+    }
+}
+
+/// `ClientboundMoveMinecartPacket` — `VAR_INT` then
+/// `MinecartStep.STREAM_CODEC.apply(list())`: a var-int count, then per step
+/// two `Vec3.STREAM_CODEC` (three big-endian **f64** each), two
+/// `ROTATION_BYTE`, one big-endian f32. 54 bytes an element.
+fn minecart_body(eid: i32, steps: &[WireStep]) -> Vec<u8> {
+    let mut b = Vec::new();
+    varint(eid, &mut b);
+    varint(steps.len() as i32, &mut b);
+    for s in steps {
+        for v in s.position {
+            b.extend_from_slice(&v.to_be_bytes());
+        }
+        for v in s.movement {
+            b.extend_from_slice(&v.to_be_bytes());
+        }
+        b.push(s.y_rot as u8);
+        b.push(s.x_rot as u8);
+        b.extend_from_slice(&s.weight.to_be_bytes());
+    }
+    b
+}
+
+/// `ClientboundSetEntityLinkPacket` — `readInt()` twice, so **two fixed
+/// big-endian i32s** among a protocol that is otherwise var-ints.
+fn entity_link_body(source: i32, dest: i32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&source.to_be_bytes());
+    b.extend_from_slice(&dest.to_be_bytes());
+    b
+}
+
+/// `ClientboundProjectilePowerPacket` — `readVarInt()` then `readDouble()`.
+fn projectile_power_body(eid: i32, power: f64) -> Vec<u8> {
+    let mut b = Vec::new();
+    varint(eid, &mut b);
+    b.extend_from_slice(&power.to_be_bytes());
+    b
+}
+
 // ---------------------------------------------------------------- the fixture
 
 /// Every type id the gate needs, resolved through the production
@@ -145,11 +219,18 @@ struct Types {
     polar_bear: i32,
     horse: i32,
     zombie: i32,
+    // M77.
+    armor_stand: i32,
+    fireball: i32,
+    arrow: i32,
 }
 
 struct Fixture {
     ids: Ids,
     att: std::sync::Arc<Attachments>,
+    /// M77's three packets all gate on a Java class the wire cannot carry, so
+    /// the gate resolves the same machine-extracted table the client does.
+    classes: EntityClasses,
     t: Types,
 }
 
@@ -186,6 +267,45 @@ impl Fixture {
         t.tick_lerp();
         t
     }
+
+    /// Push a step list through the real router. Returns whether the router
+    /// claimed the id — which is a different question from whether it applied
+    /// anything, and the two witnesses below separate them.
+    fn send_steps(&self, t: &mut EntityTable, eid: i32, steps: &[WireStep]) -> bool {
+        rewo_net::route_move_minecart_along_track(
+            self.ids.cb_play_move_minecart_along_track,
+            &minecart_body(eid, steps),
+            &self.ids,
+            t,
+            Some(&self.classes),
+        )
+    }
+
+    fn send_link(&self, t: &mut EntityTable, source: i32, dest: i32) -> bool {
+        rewo_net::route_set_entity_link(
+            self.ids.cb_play_set_entity_link,
+            &entity_link_body(source, dest),
+            &self.ids,
+            t,
+            Some(&self.classes),
+        )
+    }
+
+    fn send_power(&self, t: &mut EntityTable, eid: i32, power: f64) -> bool {
+        rewo_net::route_projectile_power(
+            self.ids.cb_play_projectile_power,
+            &projectile_power_body(eid, power),
+            &self.ids,
+            t,
+            Some(&self.classes),
+        )
+    }
+}
+
+/// How many steps are queued for this cart's next segment — `0` for a cart
+/// with no schedule at all, which is what "the packet was inert" looks like.
+fn inbox(t: &EntityTable, id: i32) -> usize {
+    t.minecart_lerp(id).map_or(0, |l| l.inbox_len())
 }
 
 fn pos(t: &EntityTable, id: i32, alpha: f32) -> [f64; 3] {
@@ -219,6 +339,11 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
     let ids = Ids::resolve(&packets)?;
     let entity_types = EntityTypes::load(&paths.registries_json())?;
     let att = std::sync::Arc::new(Attachments::resolve(&entity_types)?);
+    // M77. Resolving this is itself an assertion: `EntityClasses::resolve`
+    // hard-fails on a generated name the registry does not hold, on a mob that
+    // is not leashable, on a leashable set no larger than the mob set, and on
+    // a hurting projectile that is also living.
+    let classes = EntityClasses::resolve(&entity_types)?;
 
     let mut c = Checker::new();
 
@@ -237,6 +362,13 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
         "minecraft:polar_bear",
         "minecraft:horse",
         "minecraft:zombie",
+        // M77's three class boundaries: an armour stand is living but not a
+        // `Mob` (so not `Leashable`), a fireball is an
+        // `AbstractHurtingProjectile`, and an arrow is an `AbstractArrow` —
+        // the sibling branch that looks like a projectile and is not one.
+        "minecraft:armor_stand",
+        "minecraft:fireball",
+        "minecraft:arrow",
     ];
     let resolved: Vec<Option<i32>> = want.iter().map(|n| id_of(n)).collect();
     let all = resolved.iter().all(|r| r.is_some());
@@ -268,6 +400,9 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
         polar_bear: resolved[10].unwrap(),
         horse: resolved[11].unwrap(),
         zombie: resolved[12].unwrap(),
+        armor_stand: resolved[13].unwrap(),
+        fireball: resolved[14].unwrap(),
+        arrow: resolved[15].unwrap(),
     };
 
     // The class dispatch must actually separate the branches, or every
@@ -313,11 +448,20 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
         t.horse
     );
 
-    let f = Fixture { ids, att, t };
+    let f = Fixture {
+        ids,
+        att,
+        classes,
+        t,
+    };
     check_seat(&f, &mut c);
     check_interpolation(&f, &mut c);
     check_overrides(&f, &mut c);
     check_graph(&f, &mut c);
+    check_minecart_wire(&f, &mut c);
+    check_minecart_schedule(&f, &mut c);
+    check_leash(&f, &mut c);
+    check_projectile_power(&f, &mut c);
 
     println!(
         "[rideshot] witnesses observed: {} / {}",
@@ -876,6 +1020,602 @@ fn check_graph(f: &Fixture, c: &mut Checker) {
              second the `passenger instanceof LivingEntity` cast — a boat is an `Entity` \
              and not a `LivingEntity`, so the assignment never runs. MUTATION PARTNER: \
              r4.a_horse_forces..., where both gates pass and the yaw does change"
+        ),
+    );
+}
+
+// =========================================================================
+// M77 — `move_minecart_along_track`, `set_entity_link`, `projectile_power`
+// =========================================================================
+
+/// A table with the attachment data installed and entities at **explicit**
+/// ids, which the M77 witnesses need: one of them turns on an id being large
+/// enough that a var-int reading of a fixed big-endian i32 lands somewhere
+/// else, and [`Fixture::table`] only ever spawns `1..=n`.
+fn table_at(f: &Fixture, spec: &[(i32, i32, [f64; 3])]) -> EntityTable {
+    let mut t = EntityTable::default();
+    t.set_attachments(f.att.clone());
+    for (id, type_id, p) in spec {
+        t.add(*id, EntityState::new(0, *type_id, p[0], p[1], p[2], 0.0, 0.0));
+    }
+    t
+}
+
+/// The L-shaped two-step segment every composition witness rides.
+///
+/// **A sample must sit where the mutation bites**, and this is the shape that
+/// puts it there. Within one step index the schedule's `indexedPartialTick` is
+/// affine in the partial tick, so a single-step segment makes the schedule and
+/// the generic `xOld -> getX()` chord *identical at every alpha* and would
+/// witness nothing at all. They separate only across a step boundary — hence
+/// weights `3` and `1`, which put the boundary two thirds of the way through
+/// the third tick, and a right-angle turn, which makes the disagreement a
+/// whole 1.76 blocks rather than a rounding difference.
+fn l_segment() -> [WireStep; 2] {
+    [
+        WireStep::at([10.0, 0.0, 0.0], 3.0),
+        WireStep::at([10.0, 0.0, 10.0], 1.0),
+    ]
+}
+
+fn check_minecart_wire(f: &Fixture, c: &mut Checker) {
+    // ---- m1: `lerpSteps.addAll(...)` is an append. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &[WireStep::at([1.0, 0.0, 0.0], 1.0)]);
+    let after_one = inbox(&t, 1);
+    f.send_steps(
+        &mut t,
+        1,
+        &[
+            WireStep::at([2.0, 0.0, 0.0], 1.0),
+            WireStep::at([3.0, 0.0, 0.0], 1.0),
+        ],
+    );
+    let after_three = inbox(&t, 1);
+    c.record(
+        "m1.a_step_list_is_appended_not_replaced",
+        after_one == 1 && after_three == 3,
+        format!(
+            "inbox {after_one} then {after_three} (want 1 then 3). \
+             `handleMinecartAlongTrack` is `lerpSteps.addAll(packet.lerpSteps())` — two \
+             packets between two client ticks are ONE segment, which is what lets the \
+             client miss a tick without losing a step. MUTATION PARTNER: \
+             m2.a_truncated_body_applies_nothing, where the count is the same and the \
+             inbox must NOT grow"
+        ),
+    );
+
+    // ---- m2: a body one byte short applies nothing at all. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    let mut body = minecart_body(1, &l_segment());
+    let full_len = body.len();
+    body.pop();
+    let claimed = rewo_net::route_move_minecart_along_track(
+        f.ids.cb_play_move_minecart_along_track,
+        &body,
+        &f.ids,
+        &mut t,
+        Some(&f.classes),
+    );
+    c.record(
+        "m2.a_truncated_body_applies_nothing",
+        claimed && inbox(&t, 1) == 0,
+        format!(
+            "claimed={claimed} inbox={} after a {}-byte body (the whole one is {full_len}). \
+             The step list is positional, so a short read means the steps we DID get are \
+             not the steps the server sent — half a schedule would drag the cart to a \
+             place it never was. The router still claims the id: matching and applying \
+             are different questions. MUTATION PARTNER: m1, where the same encoder \
+             produces a whole body and the inbox does grow",
+            inbox(&t, 1),
+            body.len()
+        ),
+    );
+
+    // ---- m3: the element stride is exactly 54 bytes of full doubles. ----
+    let two = [
+        WireStep::at([1.0, 2.0, 3.0], 1.0),
+        WireStep::at([-4.5, 5.25, 6.125], 2.0),
+    ];
+    let whole = minecart_body(9, &two);
+    let parsed = rewo_net::parse_move_minecart(&whole);
+    let short = rewo_net::parse_move_minecart(&whole[..whole.len() - 1]);
+    let exact = match &parsed {
+        Ok((eid, steps)) => {
+            *eid == 9
+                && steps.len() == 2
+                && steps[0].position == [1.0, 2.0, 3.0]
+                && steps[1].position == [-4.5, 5.25, 6.125]
+                && steps[1].weight == 2.0
+        }
+        Err(_) => false,
+    };
+    c.record(
+        "m3.a_step_is_exactly_54_bytes_of_full_doubles",
+        whole.len() == 2 + 2 * 54 && exact && short.is_err(),
+        format!(
+            "body={} bytes for 2 steps (want 2 header + 2x54), second step decoded \
+             exactly={exact}, one byte short rejects={}. The vectors are \
+             `Vec3.STREAM_CODEC` — three plain f64s, 24 bytes — and NOT the \
+             `LP_STREAM_CODEC` bit-packing `set_entity_motion` uses (M68); the two \
+             codecs live on the same `Vec3` class. The SECOND step is what pins it: at \
+             any other element width it decodes out of the first one's tail. MUTATION \
+             PARTNER: narrow the position to f32 (24 -> 12 bytes) and step[1] reads \
+             garbage while step[0] still looks fine",
+            whole.len(),
+            short.is_err()
+        ),
+    );
+
+    // ---- m4: a rotation is one SIGNED byte through `Mth.unpackDegrees`. ----
+    //
+    // **The sign is only observable at the DECODE.** The first version of this
+    // witness read the entity's yaw after three ticks and an unsigned-read
+    // mutation left it green: `Mth.rotLerp` is
+    // `from + a * wrapDegrees(to - from)`, and `wrapDegrees` normalises into
+    // (-180, 180], so an off-by-360 in `unpackDegrees` is *erased* by the very
+    // next operation. The decoded step is where the mutation bites; the
+    // entity's yaw is the second, separately-mutated clause.
+    let rot_step = [WireStep {
+        position: [0.0; 3],
+        movement: [0.0; 3],
+        y_rot: -1,
+        x_rot: 64,
+        weight: 1.0,
+    }];
+    let decoded = rewo_net::parse_move_minecart(&minecart_body(1, &rot_step))
+        .ok()
+        .and_then(|(_, s)| s.first().map(|s| (s.y_rot, s.x_rot)));
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &rot_step);
+    for _ in 0..3 {
+        t.tick_lerp();
+    }
+    let (yaw, pitch) = t.get(1).map(|e| (e.yaw, e.pitch)).unwrap_or((999.0, 999.0));
+    c.record(
+        "m4.a_rotation_is_one_signed_byte_written_onto_the_entity",
+        decoded == Some((-1.406_25, 90.0))
+            && (yaw + 1.406_25).abs() < 1e-6
+            && (pitch - 90.0).abs() < 1e-6,
+        format!(
+            "decoded={decoded:?} then entity yaw={yaw} pitch={pitch}, from bytes \
+             (-1, 64) — want -1.40625 and 90.0 throughout, i.e. `rot * 360 / 256f`. The \
+             yaw sample is deliberately NEGATIVE: read unsigned, -1 is 358.59375. \
+             MUTATION PARTNERS, both run: (1) read the byte unsigned — this reddens ONLY \
+             through the decoded clause, because `Mth.rotLerp`'s `wrapDegrees` erases the \
+             360 before it ever reaches the entity, which is why this witness had to be \
+             moved to the decode; (2) drop the `e.yaw = sample.y_rot` write in \
+             `tick_minecarts` and the entity clause reddens instead"
+        ),
+    );
+
+    // ---- m5: the router claims its own id and no other. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    let wrong = rewo_net::route_move_minecart_along_track(
+        f.ids.cb_play_set_entity_link,
+        &minecart_body(1, &l_segment()),
+        &f.ids,
+        &mut t,
+        Some(&f.classes),
+    );
+    let stored_after_wrong = inbox(&t, 1);
+    let right = f.send_steps(&mut t, 1, &l_segment());
+    c.record(
+        "m5.the_router_claims_only_its_own_id",
+        !wrong && stored_after_wrong == 0 && right && inbox(&t, 1) == 2,
+        format!(
+            "under set_entity_link's id: claimed={wrong} inbox={stored_after_wrong}; \
+             under its own: claimed={right} inbox={}. The three M77 ids sit in one \
+             `else if` ladder, so a router that claimed a neighbour's body would silently \
+             swallow it. MUTATION PARTNER: m6.an_untracked_id_is_inert, where the id \
+             matches and the body is well-formed and STILL nothing is stored",
+            inbox(&t, 1)
+        ),
+    );
+
+    // ---- m6: `packet.getEntity(level)` — an untracked id is inert. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    let claimed = f.send_steps(&mut t, 4242, &l_segment());
+    c.record(
+        "m6.an_untracked_id_is_inert",
+        claimed && t.minecart_lerp(4242).is_none() && inbox(&t, 1) == 0,
+        format!(
+            "claimed={claimed}, schedule for the absent id 4242 = {:?}, and the tracked \
+             cart is untouched (inbox {}). `getEntity(id) == null` ends the handler, and \
+             a schedule must never be created for an id the table does not hold — it \
+             would be ticked against a position that does not exist. MUTATION PARTNER: \
+             the net-side lookup is the load-bearing one, because it is also where the \
+             type id for the class gate comes from, so the mutation has to push the \
+             steps from its `else` arm AND drop `push_minecart_steps`' own \
+             `contains_key` — run, and this goes red. Dropping that world-side guard \
+             ALONE leaves the gate green: it is a belt, exactly like \
+             `position_riders`' per-rider `vehicle_of` re-check above",
+            t.minecart_lerp(4242).map(|l| l.inbox_len()),
+            inbox(&t, 1)
+        ),
+    );
+
+    // ---- m7: `instanceof AbstractMinecart`. ----
+    let mut t = table_at(
+        f,
+        &[
+            (1, f.t.minecart, [0.0; 3]),
+            (2, f.t.pig, [0.0; 3]),
+            (3, f.t.oak_boat, [0.0; 3]),
+        ],
+    );
+    f.send_steps(&mut t, 1, &l_segment());
+    f.send_steps(&mut t, 2, &l_segment());
+    f.send_steps(&mut t, 3, &l_segment());
+    c.record(
+        "m7.only_a_minecart_takes_a_step_list",
+        inbox(&t, 1) == 2 && inbox(&t, 2) == 0 && inbox(&t, 3) == 0,
+        format!(
+            "minecart inbox={}, pig={}, boat={} (want 2, 0, 0). The handler's first guard \
+             is `instanceof AbstractMinecart`; a boat is the interesting negative because \
+             it is the OTHER rideable vehicle and shares the leash gate below, so a class \
+             table that collapsed 'vehicle' into one set would pass every other witness \
+             here and fail this. MUTATION PARTNER: m6, where the class is right and the \
+             ENTITY is missing",
+            inbox(&t, 1),
+            inbox(&t, 2),
+            inbox(&t, 3)
+        ),
+    );
+}
+
+fn check_minecart_schedule(f: &Fixture, c: &mut Checker) {
+    // ---- m8: one segment, three ticks, converging exactly. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &[WireStep::at([30.0, 0.0, 0.0], 1.0)]);
+    let mut walk = Vec::new();
+    for _ in 0..3 {
+        t.tick_lerp();
+        walk.push(pos(&t, 1, 1.0)[0]);
+    }
+    let thirds = walk
+        .iter()
+        .zip([10.0, 20.0, 30.0])
+        .all(|(got, want)| (got - want).abs() < EPS);
+    c.record(
+        "m8.one_segment_is_traversed_over_exactly_three_ticks",
+        thirds,
+        format!(
+            "x per tick = {walk:?} (want 10, 20, 30). `lerpDelay` is set to \
+             `POS_ROT_LERP_TICKS` = 3 at ingest and pre-decremented each tick, so \
+             `alpha = (3 - lerpDelay + 1) / 3` walks 1/3, 2/3, 1 — the segment is \
+             consumed in exactly three ticks and lands ON the last step, not near it. \
+             MUTATION PARTNER: m9.the_segment_expires..., which proves a FOURTH tick \
+             stops writing rather than overshooting"
+        ),
+    );
+
+    // ---- m9: the segment expires; the generic position stands. ----
+    t.tick_lerp();
+    let after = pos(&t, 1, 1.0);
+    c.record(
+        "m9.the_segment_expires_and_the_generic_position_stands",
+        (after[0] - 30.0).abs() < EPS && t.minecart_render(1, 1.0).is_none(),
+        format!(
+            "after a fourth tick x={} and minecart_render={:?} (want 30 and None). \
+             `lerpClientPositionAndRotation` clears `currentLerpSteps` when the countdown \
+             expires with an empty inbox, and `newExtractState`'s \
+             `if (behavior.cartHasPosRotLerp())` then falls through to the entity's own \
+             position. MUTATION PARTNER: m8, where the segment is live and every tick \
+             writes",
+            after[0],
+            t.minecart_render(1, 1.0).map(|s| s.position)
+        ),
+    );
+
+    // ---- m10: a zero-weight segment snaps rather than traversing. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &[WireStep::at([7.0, 0.0, 0.0], 0.0)]);
+    t.tick_lerp();
+    let snapped = pos(&t, 1, 1.0)[0];
+    c.record(
+        "m10.a_zero_weight_segment_snaps_on_the_first_tick",
+        (snapped - 7.0).abs() < EPS,
+        format!(
+            "x={snapped} after ONE tick (want 7, not 7/3). A weight of 0 is not 'no \
+             movement': `adjustToRails(..., instant = true)` emits one, every weighted \
+             step is skipped by the index search, and the `!foundIndex` fallback selects \
+             the LAST step at `indexedPartialTick = 1.0`. MUTATION PARTNER: m8, whose \
+             identical shape at weight 1 lands a third of the way instead"
+        ),
+    );
+
+    // ---- m11 + m12: THE composition pair. ----
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &l_segment());
+    for _ in 0..3 {
+        t.tick_lerp();
+    }
+    let generic_1 = pos(&t, 1, 1.0);
+    let schedule_1 = t.minecart_render(1, 1.0).map(|s| s.position);
+    c.record(
+        "m11.the_schedule_and_the_generic_lerp_coincide_at_alpha_1",
+        schedule_1.is_some_and(|s| dist(s, generic_1) < 1e-12),
+        format!(
+            "generic render_pos(1.0)={generic_1:?} schedule sample(1.0)={schedule_1:?} — \
+             the SAME point, to 1e-12. This is what 'the schedule does not replace the \
+             generic lerp' means concretely: the tick writes `sample(1.0)` into the \
+             entity through `set_derived_pos`, so `prev -> cur` is the tick-quantised \
+             chord between two consecutive schedule samples and its endpoint IS a \
+             schedule sample. MUTATION PARTNER: \
+             m12.and_diverge_inside_a_tick..., the same pair sampled mid-tick"
+        ),
+    );
+
+    let generic_half = pos(&t, 1, 0.5);
+    let schedule_half = t.minecart_render(1, 0.5).map(|s| s.position);
+    // Vanilla's `state.passengerOffset` is exactly this subtraction.
+    let offset = schedule_half.map(|s| dist(s, generic_half)).unwrap_or(0.0);
+    let want_schedule = [10.0, 0.0, 10.0 / 3.0];
+    let want_generic = [(8.888_888_888_888_89 + 10.0) / 2.0, 0.0, 5.0];
+    c.record(
+        "m12.and_diverge_inside_a_tick_that_crosses_a_step_boundary",
+        schedule_half.is_some_and(|s| dist(s, want_schedule) < EPS)
+            && dist(generic_half, want_generic) < EPS
+            && offset > 1.7,
+        format!(
+            "at alpha 0.5: schedule={schedule_half:?} (want {want_schedule:?}), generic \
+             render_pos={generic_half:?} (want {want_generic:?}), |difference|={offset:.4} \
+             blocks. That difference IS vanilla's `state.passengerOffset`, which \
+             `EntityRenderer.extractRenderState` computes as \
+             `getCartLerpPosition(partialTicks) - lerp(partialTicks, xOld, getX())` — so \
+             vanilla itself measures one against the other and both must be live. They \
+             separate only where the segment crosses a step boundary mid-tick, which is \
+             why the fixture is L-shaped with weights 3 and 1. MUTATION PARTNER: m11, \
+             the same pair at alpha 1 where they must agree exactly"
+        ),
+    );
+
+    // ---- m13: the schedule never arms the generic 3-tick lerp. ----
+    let synced = t.get(1).map(|e| [e.x, e.y, e.z]).unwrap_or([9.0; 3]);
+    c.record(
+        "m13.the_schedule_never_arms_the_generic_3_tick_lerp",
+        dist(synced, [0.0; 3]) < 1e-12 && dist(generic_1, [10.0, 0.0, 10.0]) < EPS,
+        format!(
+            "synced target={synced:?} (want the spawn point, untouched) while the \
+             rendered position reached {generic_1:?}. `setPos` writes the position, not a \
+             lerp target — which is why a `NewMinecartBehavior` cart needs no \
+             `InterpolationHandler` (`getInterpolation()` returns null for it; \
+             `OldMinecartBehavior` is the half that owns one) and why the server sends it \
+             no `move_entity_pos` / `teleport_entity` at all. MUTATION PARTNER: route the \
+             sample through `set_target` instead of `set_derived_pos` — the target moves, \
+             and the cart then converges on each sample three ticks late"
+        ),
+    );
+
+    // ---- m14: a cart is positioned before its passengers. ----
+    let mut t = table_at(
+        f,
+        &[(1, f.t.minecart, [0.0; 3]), (2, f.t.player, [0.0; 3])],
+    );
+    f.mount(&mut t, 1, &[2]);
+    f.send_steps(&mut t, 1, &l_segment());
+    for _ in 0..3 {
+        t.tick_lerp();
+    }
+    let cart = pos(&t, 1, 1.0);
+    let s = seat(&t, 1, 2, 1.0);
+    let seat_len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+    c.record(
+        "m14.a_cart_is_positioned_before_its_passengers",
+        dist(cart, [10.0, 0.0, 10.0]) < EPS && seat_len < 1.0,
+        format!(
+            "cart at {cart:?}, rider seat offset {s:?} (|{seat_len:.4}| — a seat, not a \
+             lag). `ClientLevel.tickNonPassenger` runs `entity.tick()` — which is where \
+             the schedule writes — and only then loops into `tickPassenger`, so \
+             `tick_minecarts` must run BEFORE `position_riders`. MUTATION PARTNER: swap \
+             the two calls in `tick_lerp` and the rider is placed off the PREVIOUS tick's \
+             cart position, which on this segment is a whole 10 blocks away"
+        ),
+    );
+
+    // ---- m15: a recycled entity id inherits no schedule. ----
+    //
+    // **Three clauses, because TWO writers clear the schedule and each needs a
+    // sample where the other cannot cover for it.** The first version tested
+    // only `remove` followed by `add`, and a mutation dropping either clear
+    // left the gate green — the other one still ran. So: `remove` alone,
+    // `remove` then `add`, and `add` on top of a LIVE schedule with no
+    // `remove` at all (which is the dropped-`remove_entities` case the `add`
+    // clear exists for).
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t, 1, &l_segment());
+    t.tick_lerp();
+    let moved = pos(&t, 1, 1.0)[0] > 1.0;
+    t.remove(1);
+    let cleared_by_remove = t.minecart_lerp(1).is_none();
+    t.add(
+        1,
+        EntityState::new(0, f.t.minecart, 50.0, 0.0, 0.0, 0.0, 0.0),
+    );
+    t.tick_lerp();
+    let after_remove = pos(&t, 1, 1.0);
+
+    let mut t2 = table_at(f, &[(1, f.t.minecart, [0.0; 3])]);
+    f.send_steps(&mut t2, 1, &l_segment());
+    t2.tick_lerp();
+    t2.add(
+        1,
+        EntityState::new(0, f.t.minecart, 50.0, 0.0, 0.0, 0.0, 0.0),
+    );
+    let cleared_by_add = t2.minecart_lerp(1).is_none();
+    t2.tick_lerp();
+    let after_add = pos(&t2, 1, 1.0);
+    c.record(
+        "m15.a_recycled_entity_id_inherits_no_schedule",
+        moved
+            && cleared_by_remove
+            && dist(after_remove, [50.0, 0.0, 0.0]) < EPS
+            && cleared_by_add
+            && dist(after_add, [50.0, 0.0, 0.0]) < EPS,
+        format!(
+            "the first cart moved={moved}; `remove` alone cleared={cleared_by_remove}; \
+             after remove + re-add the cart sits at {after_remove:?}; a bare `add` over a \
+             live schedule cleared={cleared_by_add} and leaves it at {after_add:?} (want \
+             [50,0,0] both). A schedule is a clock, and every clock in this table dies \
+             with its entity — otherwise a replacement is dragged toward the previous \
+             occupant's rail. MUTATION PARTNERS, both run and each caught by exactly one \
+             clause: drop `minecarts.remove` from `EntityTable::remove` (only the \
+             `remove`-alone clause reddens — the later `add` would otherwise cover for \
+             it), and drop it from `EntityTable::add` (only the bare-`add` clause does)"
+        ),
+    );
+}
+
+fn check_leash(f: &Fixture, c: &mut Checker) {
+    // ---- m16: two fixed big-endian i32s, not var-ints. ----
+    // 300 is the sample: its big-endian encoding starts `00`, which a var-int
+    // reader consumes as the whole id 0 — an untracked entity, hence inert.
+    let mut t = table_at(f, &[(300, f.t.pig, [0.0; 3]), (7, f.t.player, [0.0; 3])]);
+    let claimed = f.send_link(&mut t, 300, 7);
+    c.record(
+        "m16.the_link_ids_are_fixed_big_endian_i32s",
+        claimed && t.leash_data(300) == Some(7) && t.leash_holder(300) == Some(7),
+        format!(
+            "claimed={claimed} leash_data(300)={:?} leash_holder(300)={:?} (want Some(7) \
+             both). `ClientboundSetEntityLinkPacket`'s reader is `readInt()` twice — the \
+             same fixed-width shape `entity_event`'s id has (M17) and the opposite of \
+             nearly every other entity-addressed packet. The id 300 is chosen because its \
+             BE encoding leads with `00`: a var-int reading decodes entity 0, which is \
+             untracked, so the whole packet goes silently inert instead of failing. \
+             MUTATION PARTNER: m19.only_a_leashable_entity_takes_a_link, where the ids \
+             decode correctly and the CLASS refuses",
+            t.leash_data(300),
+            t.leash_holder(300)
+        ),
+    );
+
+    // ---- m17: dest 0 is a leash record holding nothing. ----
+    // **The sample must sit where the mutation bites.** `getLeashHolder`'s
+    // `delayedLeashHolderId != 0` test is only load-bearing when an entity
+    // ACTUALLY EXISTS at id 0 — otherwise the lookup fails anyway and dropping
+    // the zero test changes nothing. So the fixture spawns one.
+    let mut t = table_at(f, &[(0, f.t.player, [0.0; 3]), (1, f.t.pig, [0.0; 3])]);
+    f.send_link(&mut t, 1, 0);
+    c.record(
+        "m17.dest_zero_is_a_record_with_no_holder",
+        t.leash_data(1) == Some(0) && t.leash_holder(1).is_none(),
+        format!(
+            "leash_data={:?} leash_holder={:?} (want Some(0) and None) — with a real \
+             entity present at id 0, so the zero test is the only thing refusing it. \
+             `setDelayedLeashHolderId(0)` still installs a `LeashData`: the sending \
+             constructor writes `destEntity != null ? getId() : 0`, so 0 is the wire's \
+             null and `getLeashHolder`'s `delayedLeashHolderId != 0` is what turns it \
+             into no holder. Two distinct states — 'never linked' is `None` from \
+             `leash_data`. MUTATION PARTNER: drop the `dest == 0` test and the holder \
+             resolves to the entity at id 0; without an entity there the mutation would \
+             leave this green",
+            t.leash_data(1),
+            t.leash_holder(1)
+        ),
+    );
+
+    // ---- m18: an unresolved holder resolves when it arrives. ----
+    let mut t = table_at(f, &[(1, f.t.pig, [0.0; 3])]);
+    f.send_link(&mut t, 1, 55);
+    let before = (t.leash_data(1), t.leash_holder(1));
+    t.add(55, EntityState::new(0, f.t.player, 0.0, 0.0, 0.0, 0.0, 0.0));
+    let after = (t.leash_data(1), t.leash_holder(1));
+    c.record(
+        "m18.an_unresolved_holder_resolves_when_it_arrives",
+        before == (Some(55), None) && after == (Some(55), Some(55)),
+        format!(
+            "before the holder spawns {before:?}, after {after:?}. `getLeashHolder` is a \
+             LAZY two-step: the packet stores a delayed id and only a later \
+             `level.getEntity(id) != null` promotes it, which is exactly what makes a \
+             leash survive its holder arriving in a later chunk batch. MUTATION PARTNER: \
+             m17, where the stored id is 0 and no arrival can ever resolve it"
+        ),
+    );
+
+    // ---- m19: `instanceof Leashable` — an interface, so a UNION. ----
+    let mut t = table_at(
+        f,
+        &[
+            (1, f.t.pig, [0.0; 3]),
+            (2, f.t.oak_boat, [0.0; 3]),
+            (3, f.t.armor_stand, [0.0; 3]),
+            (4, f.t.minecart, [0.0; 3]),
+            (9, f.t.player, [0.0; 3]),
+        ],
+    );
+    for src in [1, 2, 3, 4] {
+        f.send_link(&mut t, src, 9);
+    }
+    let got = [
+        t.leash_data(1).is_some(),
+        t.leash_data(2).is_some(),
+        t.leash_data(3).is_some(),
+        t.leash_data(4).is_some(),
+    ];
+    c.record(
+        "m19.only_a_leashable_entity_takes_a_link",
+        got == [true, true, false, false],
+        format!(
+            "pig={} boat={} armour stand={} minecart={} (want true, true, false, false). \
+             `Leashable` is an INTERFACE, declared by exactly `Mob` and `AbstractBoat`, \
+             so the gate is the union of two subtrees rather than one ancestry walk. \
+             Both negatives sit on a real boundary: an armour stand is a `LivingEntity` \
+             that is not a `Mob`, and a minecart is the other rideable vehicle. MUTATION \
+             PARTNERS, both run: swap the gate for `is_living` and the armour stand takes \
+             a leash; swap it for `is_mob` and the boat stops taking one",
+            got[0], got[1], got[2], got[3]
+        ),
+    );
+}
+
+fn check_projectile_power(f: &Fixture, c: &mut Checker) {
+    // ---- m20: the power is an f64, bit-exact. ----
+    let mut t = table_at(f, &[(1, f.t.fireball, [0.0; 3])]);
+    let power = 1.0f64 / 3.0;
+    let claimed = f.send_power(&mut t, 1, power);
+    let got = t.projectile_power(1);
+    c.record(
+        "m20.the_power_is_an_f64_not_a_narrowed_f32",
+        claimed && got.is_some_and(|g| g.to_bits() == power.to_bits()),
+        format!(
+            "claimed={claimed} stored={got:?} want {power} — compared on the BITS, not \
+             within a tolerance. `readDouble()` is the whole tail of the packet, and 1/3 \
+             is chosen because it is the cheapest value no f32 can hold: a narrowed read \
+             would land within any sane epsilon and fail here. MUTATION PARTNER: \
+             m21.an_arrow_is_not_a_hurting_projectile, where the value is fine and the \
+             CLASS refuses"
+        ),
+    );
+
+    // ---- m21: an arrow is not an `AbstractHurtingProjectile`. ----
+    let mut t = table_at(
+        f,
+        &[
+            (1, f.t.fireball, [0.0; 3]),
+            (2, f.t.arrow, [0.0; 3]),
+            (3, f.t.pig, [0.0; 3]),
+        ],
+    );
+    for id in [1, 2, 3] {
+        f.send_power(&mut t, id, 5.0);
+    }
+    let got = [
+        t.projectile_power(1),
+        t.projectile_power(2),
+        t.projectile_power(3),
+    ];
+    c.record(
+        "m21.an_arrow_is_not_a_hurting_projectile",
+        got == [Some(5.0), None, None],
+        format!(
+            "fireball={:?} arrow={:?} pig={:?} (want Some(5), None, None). \
+             `handleProjectilePowerPacket` casts to `AbstractHurtingProjectile`, and an \
+             arrow is an `AbstractArrow` — a SIBLING branch that is a projectile in every \
+             English sense and fails the cast. Only six types pass: the fireball family, \
+             the wither skull and the two wind charges. MUTATION PARTNER: m20, where the \
+             class is right and the assertion is about the value's width",
+            got[0], got[1], got[2]
         ),
     );
 }

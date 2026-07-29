@@ -295,6 +295,27 @@ pub struct Ids {
     pub cb_play_ticking_state: i32,
     /// `ClientboundTickingStepPacket` — one VarInt `tickSteps`. `/tick step`.
     pub cb_play_ticking_step: i32,
+    // ── M77: three packets that write entity state ────────────────────────
+    // All three `req!` for the reason M62/M63/M65/M67/M68/M74 give: `require`
+    // grades the *report*, not the server. A server with no minecart, no leash
+    // and no fireball on it simply never sends any of these — a runtime state.
+    // A report missing one of these names is a version mismatch.
+    /// `ClientboundMoveMinecartPacket` — a VarInt entity id then a var-int
+    /// counted list of `MinecartStep`s, each two **full-double** `Vec3`s (not
+    /// the `LP_STREAM_CODEC` packing), two rotation bytes and an f32 weight.
+    /// It is the *only* movement channel an experimental-movement cart has:
+    /// `ServerEntity.sendChanges` routes such a cart down `handleMinecartPosRot`
+    /// instead of the generic position branch entirely.
+    pub cb_play_move_minecart_along_track: i32,
+    /// `ClientboundSetEntityLinkPacket` — **two fixed big-endian i32s**, the
+    /// leashed entity and its holder, with `0` meaning no holder. Consumed for
+    /// the holder id only; drawing the rope is a separate, unstarted piece of
+    /// work.
+    pub cb_play_set_entity_link: i32,
+    /// `ClientboundProjectilePowerPacket` — a VarInt id then an f64
+    /// `accelerationPower`, written onto `AbstractHurtingProjectile` and
+    /// nothing else (an arrow is an `AbstractArrow` and is not one).
+    pub cb_play_projectile_power: i32,
 }
 
 impl Ids {
@@ -427,6 +448,9 @@ impl Ids {
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),
+            cb_play_move_minecart_along_track: req!(p, P, C, "move_minecart_along_track"),
+            cb_play_set_entity_link: req!(p, P, C, "set_entity_link"),
+            cb_play_projectile_power: req!(p, P, C, "projectile_power"),
         })
     }
 }
