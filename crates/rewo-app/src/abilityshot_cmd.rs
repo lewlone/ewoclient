@@ -54,6 +54,14 @@
 //! - **`w5.flight_has_no_gravity`** — mutation: keep `travelInAir`'s gravity
 //!   and 0.98 drag instead of overwriting Y.
 //! - **`w2.serverbound_is_one_byte`** — mutation: write the clientbound body.
+//! - **`w8.rotation_is_float_bool_float_bool_not_a_mask`** — mutation: read the
+//!   body as `Relative.SET_STREAM_CODEC`'s packed int, the shape its positional
+//!   twin uses and the shape `REWO_PACKET_COVERAGE.md` §3 described.
+//! - **`w9.look_at_evaluates_vanillas_atan2_not_the_platforms`** — mutation:
+//!   `y.atan2(x)`. Two-sided, because the failure is *agreement*.
+//! - **`w10.entering_a_level_discards_the_previous_spawn`** — mutation: carry
+//!   the world spawn across a dimension change, as the difficulty beside it is
+//!   carried. They behave oppositely and share one vanilla object.
 
 use clap::Args as ClapArgs;
 use rewo_data::{packets::Packets, DataPaths};
@@ -70,6 +78,10 @@ use rewo_net::session::{
     read_server_data, read_store_cookie, write_cookie_response, CustomPayload, SessionState,
     BRAND_PAYLOAD_ID, MAX_COOKIE_PAYLOAD_SIZE,
 };
+use rewo_net::client_state::{read_set_default_spawn_position, ClientState, Difficulty};
+use rewo_net::player_rotation::{
+    route_player_rotation, Anchor, LocalRotation, PlayerLookAt, PlayerRotation, RotationRoute,
+};
 use rewo_proto::reader::PacketReader;
 use rewo_world::abilities::{Abilities, FlightControl};
 use rewo_world::physics::{tick_with, PlayerState, TickInput};
@@ -77,12 +89,16 @@ use rewo_world::physics::{tick_with, PlayerState, TickInput};
 /// Total number of named properties this gate asserts. Locked so a skipped
 /// property (fewer observations) fails the run even if nothing mismatched.
 ///
-/// **47 through M75, then +20 for M78's session / metadata / chat layer**
-/// (7 for the bundle machine, 13 for the seven decodes). M78 extended this gate
-/// rather than minting a 26th `*shot` command: it is already the serverless
-/// CPU-only oracle that resolves real packet ids through `Ids::resolve`, which
-/// is exactly what those eight packets need on top of pure decode.
-const EXPECTED_WITNESSES: usize = 67;
+/// Total number of named properties this gate asserts. Locked so a skipped
+/// property (fewer observations) fails the run even if nothing mismatched.
+///
+/// **47 through M75**, then **+20 for M78's** session / metadata / chat layer
+/// (7 for the bundle machine, 13 for the seven decodes), then **+29 for M76's**
+/// rotation and world spawn. Both extended this gate rather than minting a new
+/// `*shot` command: it is already the serverless CPU-only oracle that resolves
+/// real packet ids through `Ids::resolve`, which is what all eleven need on top
+/// of pure decode.
+const EXPECTED_WITNESSES: usize = 96;
 
 #[derive(ClapArgs, Debug)]
 pub struct AbilityshotArgs {
@@ -1557,6 +1573,652 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     );
 }
 
+// ═══════════════════════════════════════════ M76: the rotation the server writes
+//
+// `player_rotation` (73), `player_look_at` (71) and `set_default_spawn_position`
+// (97) join this gate rather than getting their own because they are the same
+// subject it already owns: the local player's state as the server writes it.
+// M75's `player_abilities` decides how the player *moves*; these decide where
+// it *looks* and where it respawns.
+//
+// Everything below drives the production seams — `route_player_rotation` and
+// `route_client_state` with a real resolved `Ids` — rather than the readers
+// underneath them. M45 records why: a gate that reimplements a slice of the
+// app's dispatch misses whatever the app adds to it, and both seams have a
+// behaviour (`RotationRoute`'s send asymmetry, `client_state::apply`'s
+// decode-failure answer) that only exists at that layer.
+
+/// A `ClientboundPlayerRotationPacket` body — `FLOAT, BOOL, FLOAT, BOOL`,
+/// written here from the decompiled `StreamCodec.composite`, **not** from
+/// `PlayerRotation`'s own reader.
+fn rot_body(y_rot: f32, rel_y: bool, x_rot: f32, rel_x: bool) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&y_rot.to_be_bytes());
+    b.push(rel_y as u8);
+    b.extend_from_slice(&x_rot.to_be_bytes());
+    b.push(rel_x as u8);
+    b
+}
+
+/// A `ClientboundPlayerLookAtPacket` body. `at` is `Some((entity, to_anchor))`
+/// for the `facing entity` form and `None` for the point form.
+fn look_body(from_anchor: u8, pos: [f64; 3], at: Option<(i32, u8)>) -> Vec<u8> {
+    let mut b = vec![from_anchor];
+    for v in pos {
+        b.extend_from_slice(&v.to_be_bytes());
+    }
+    b.push(at.is_some() as u8);
+    if let Some((entity, to)) = at {
+        rewo_proto::varint::write_varint(&mut b, entity);
+        b.push(to);
+    }
+    b
+}
+
+/// A `ClientboundSetDefaultSpawnPositionPacket` body — `LevelData.RespawnData`
+/// = an `Identifier` string, a packed `BlockPos` long, then two floats.
+///
+/// The pack is written out here (`x << 38 | z << 12 | y`) rather than taken
+/// from a helper so the gate's expectation of the layout is independent of the
+/// reader's.
+fn world_spawn_body(dimension: &str, pos: (i32, i32, i32), yaw: f32, pitch: f32) -> Vec<u8> {
+    let mut b = Vec::new();
+    rewo_proto::varint::write_varint(&mut b, dimension.len() as i32);
+    b.extend_from_slice(dimension.as_bytes());
+    let packed = (((pos.0 as i64) & 0x3FF_FFFF) << 38)
+        | (((pos.2 as i64) & 0x3FF_FFFF) << 12)
+        | ((pos.1 as i64) & 0xFFF);
+    b.extend_from_slice(&packed.to_be_bytes());
+    b.extend_from_slice(&yaw.to_be_bytes());
+    b.extend_from_slice(&pitch.to_be_bytes());
+    b
+}
+
+/// Drive one rotation packet through the production seam and report the
+/// resulting `(yaw, pitch)` plus which packet the seam said it was.
+fn route_rot(
+    ids: &Ids,
+    id: i32,
+    body: &[u8],
+    start: (f32, f32),
+) -> ((f32, f32), RotationRoute) {
+    route_rot_from(ids, id, body, start, [0.0, 0.0, 0.0], |_, _| None)
+}
+
+/// As [`route_rot`], with the player's feet and a look-at entity resolver.
+fn route_rot_from(
+    ids: &Ids,
+    id: i32,
+    body: &[u8],
+    start: (f32, f32),
+    player_pos: [f64; 3],
+    resolve: impl FnOnce(i32, Anchor) -> Option<[f64; 3]>,
+) -> ((f32, f32), RotationRoute) {
+    let (mut yaw, mut pitch) = start;
+    let route = route_player_rotation(
+        id,
+        body,
+        ids,
+        LocalRotation {
+            pos: player_pos,
+            eye_height: rewo_world::physics::EYE_HEIGHT,
+            yaw: &mut yaw,
+            pitch: &mut pitch,
+        },
+        resolve,
+    );
+    ((yaw, pitch), route)
+}
+
+// ------------------------------------------------ 8. the two rotation wires
+
+fn check_rotation_wire(c: &mut Checker, ids: &Ids) {
+    // w8.rotation_is_float_bool_float_bool_not_a_mask.
+    // MUTATION: read the body as `f32, f32, bool, bool` (the "it is like its
+    // positional twin" shape), or as `f32, i32-mask`. The two flags below
+    // differ, so any reordering reports at least one of them wrong.
+    let p = PlayerRotation::parse(&rot_body(90.0, true, -30.0, false)).expect("parse");
+    let layout = p.y_rot == 90.0 && p.relative_y && p.x_rot == -30.0 && !p.relative_x;
+    let q = PlayerRotation::parse(&rot_body(1.5, false, 2.5, true)).expect("parse");
+    let layout = layout && q.y_rot == 1.5 && !q.relative_y && q.x_rot == 2.5 && q.relative_x;
+    c.record(
+        "w8.rotation_is_float_bool_float_bool_not_a_mask",
+        layout,
+        format!(
+            "({}, {}, {}, {}) then ({}, {}, {}, {})",
+            p.y_rot, p.relative_y, p.x_rot, p.relative_x, q.y_rot, q.relative_y, q.x_rot,
+            q.relative_x
+        ),
+    );
+
+    // w8.rotation_body_is_exactly_ten_bytes.
+    // MUTATION: a `Relative.SET_STREAM_CODEC` reading needs 4 (yaw) + 4 (mask)
+    // and would accept eight; a nine-byte body must be rejected, which pins the
+    // arity rather than just the field order. (M67's mutation survivor was
+    // exactly an arity witness that only measured the happy case.)
+    let ten = rot_body(0.0, false, 0.0, false).len() == 10;
+    let mut short = rot_body(0.0, false, 0.0, false);
+    short.pop();
+    let rejects_short = PlayerRotation::parse(&short).is_err();
+    c.record(
+        "w8.rotation_body_is_exactly_ten_bytes",
+        ten && rejects_short,
+        format!("len==10: {ten}, a 9-byte body is rejected: {rejects_short}"),
+    );
+
+    // w8.look_at_point_form_has_no_trailing_pair.
+    // MUTATION: read `entity` and `to_anchor` unconditionally. The point form
+    // is the common one (`/teleport … facing <x y z>`) and ends after the flag.
+    let body = look_body(1, [1.0, 2.0, 3.0], None);
+    let p = PlayerLookAt::parse(&body).expect("parse");
+    let point_form = body.len() == 26
+        && p.from_anchor == Anchor::Eyes
+        && p.pos == [1.0, 2.0, 3.0]
+        && !p.at_entity
+        && p.entity == 0
+        && p.to_anchor.is_none();
+    c.record(
+        "w8.look_at_point_form_has_no_trailing_pair",
+        point_form,
+        format!(
+            "len={} from={:?} at_entity={} entity={} to={:?}",
+            body.len(),
+            p.from_anchor,
+            p.at_entity,
+            p.entity,
+            p.to_anchor
+        ),
+    );
+
+    // w8.look_at_entity_form_carries_entity_then_anchor.
+    // MUTATION: swap the trailing VarInt and enum, or read the anchor first.
+    // Entity 77 and anchor 1 cannot be confused for one another.
+    let p = PlayerLookAt::parse(&look_body(0, [4.0, 5.0, 6.0], Some((77, 1)))).expect("parse");
+    c.record(
+        "w8.look_at_entity_form_carries_entity_then_anchor",
+        p.from_anchor == Anchor::Feet
+            && p.at_entity
+            && p.entity == 77
+            && p.to_anchor == Some(Anchor::Eyes),
+        format!(
+            "from={:?} entity={} to={:?}",
+            p.from_anchor, p.entity, p.to_anchor
+        ),
+    );
+
+    // w8.an_out_of_range_anchor_is_an_error.
+    // MUTATION: give `read_anchor` a `ByIdMap.continuous(…, ZERO)` default
+    // (→ FEET) or a WRAP one (→ ordinal 2 becomes FEET as well). `readEnum` is
+    // `values()[readVarInt()]` and throws, so both plausible alternatives are
+    // wrong and both are silent. Checked on *both* anchor fields, since they go
+    // through the same reader and a fix applied to one would not show here
+    // otherwise.
+    let mut leading = look_body(0, [0.0; 3], None);
+    leading[0] = 2;
+    let mut trailing = look_body(0, [0.0; 3], Some((1, 0)));
+    let last = trailing.len() - 1;
+    trailing[last] = 7;
+    c.record(
+        "w8.an_out_of_range_anchor_is_an_error",
+        PlayerLookAt::parse(&leading).is_err() && PlayerLookAt::parse(&trailing).is_err(),
+        "ordinal 2 (leading) and 7 (trailing) both rejected".to_string(),
+    );
+
+    // w8.at_entity_and_to_anchor_agree_after_parse.
+    //
+    // This is the invariant, and it is here because of a mutation that
+    // *survived*: dropping `getPosition`'s `if (this.atEntity)` test changes
+    // nothing, since `to_anchor` is `None` for the point form and the
+    // `and_then` short-circuits to the same fallback. The two guards are
+    // interchangeable **exactly while this holds**, so the honest thing to pin
+    // is the invariant rather than either guard. `PlayerLookAt`'s fields are
+    // public, so a hand-built value can violate it; nothing on the wire can.
+    //
+    // MUTATION: `PlayerLookAt::parse` writing `to_anchor: Some(..)` on the
+    // point form (which is what reading the trailing pair unconditionally
+    // does — see the `w8.look_at_point_form…` witness above, which catches
+    // that one from the other side).
+    let point = PlayerLookAt::parse(&look_body(0, [0.0; 3], None)).expect("parse");
+    let ent = PlayerLookAt::parse(&look_body(0, [0.0; 3], Some((3, 1)))).expect("parse");
+    c.record(
+        "w8.at_entity_and_to_anchor_agree_after_parse",
+        point.at_entity == point.to_anchor.is_some()
+            && ent.at_entity == ent.to_anchor.is_some(),
+        format!(
+            "point: {}=={}, entity: {}=={}",
+            point.at_entity,
+            point.to_anchor.is_some(),
+            ent.at_entity,
+            ent.to_anchor.is_some()
+        ),
+    );
+
+    // w8.the_two_ids_resolve_distinctly.
+    // MUTATION: resolve either name to the other's, or to `player_position`.
+    // The seam is keyed on them, so a collision would route one packet's body
+    // into the other's reader.
+    let distinct = ids.cb_play_player_rotation != ids.cb_play_player_look_at
+        && ids.cb_play_player_rotation != ids.cb_play_position
+        && ids.cb_play_player_look_at != ids.cb_play_position;
+    c.record(
+        "w8.the_two_ids_resolve_distinctly",
+        distinct,
+        format!(
+            "rotation={} look_at={} position={}",
+            ids.cb_play_player_rotation, ids.cb_play_player_look_at, ids.cb_play_position
+        ),
+    );
+
+    // w8.an_unrelated_id_is_no_match.
+    // MUTATION: make the seam's final `else` return `Rotation`. Without this
+    // the seam could claim every packet and the dispatch ladder would stop.
+    let (_, route) = route_rot(ids, ids.cb_play_position, &[], (0.0, 0.0));
+    c.record(
+        "w8.an_unrelated_id_is_no_match",
+        route == RotationRoute::NoMatch,
+        format!("player_position routed as {route:?}"),
+    );
+}
+
+// ------------------------------------------- 9. what the rotation packets do
+
+fn check_rotation_semantics(c: &mut Checker, ids: &Ids) {
+    let rot_id = ids.cb_play_player_rotation;
+    let look_id = ids.cb_play_player_look_at;
+
+    // w9.each_flag_composes_its_own_axis.
+    // MUTATION: compose against a stored "last sent" rotation, or let one flag
+    // drive both axes. The two calls below use the same numbers with the flags
+    // swapped, so a single-flag implementation gives the same answer twice.
+    let ((y1, p1), _) = route_rot(ids, rot_id, &rot_body(30.0, true, -5.0, false), (100.0, 20.0));
+    let ((y2, p2), _) = route_rot(ids, rot_id, &rot_body(30.0, false, -5.0, true), (100.0, 20.0));
+    c.record(
+        "w9.each_flag_composes_its_own_axis",
+        (y1, p1) == (130.0, -5.0) && (y2, p2) == (30.0, 15.0),
+        format!("relY: ({y1}, {p1}) want (130, -5); relX: ({y2}, {p2}) want (30, 15)"),
+    );
+
+    // w9.the_pitch_clamps_to_ninety.
+    // MUTATION: drop `Mth.clamp(…, -90, 90)` from `calculateAbsolute`. 80 + 30
+    // overshoots, so the clamp is the only thing between the player and 110.
+    let ((_, pitch), _) = route_rot(ids, rot_id, &rot_body(0.0, false, 30.0, true), (0.0, 80.0));
+    let ((_, low), _) = route_rot(ids, rot_id, &rot_body(0.0, false, -30.0, true), (0.0, -80.0));
+    c.record(
+        "w9.the_pitch_clamps_to_ninety",
+        pitch == 90.0 && low == -90.0,
+        format!("80+30 -> {pitch} (want 90), -80-30 -> {low} (want -90)"),
+    );
+
+    // w9.the_pitch_clamp_is_on_the_sum_not_the_step.
+    // MUTATION: `offset + clamp(x_rot)` instead of `clamp(offset + x_rot)`.
+    //
+    // This witness exists because the battery caught the previous one being
+    // blind to it. Neither sample above can see the reordering: any step under
+    // 90° leaves `clamp(x_rot)` an identity, and for a step *over* 90° with a
+    // positive base both orders saturate to 90 anyway. Separating them needs a
+    // base of the opposite sign to the step — base -80, step +400 gives
+    // `clamp(320) = 90` the right way round and `-80 + 90 = 10` the wrong one.
+    let ((_, sum), _) = route_rot(ids, rot_id, &rot_body(0.0, false, 400.0, true), (0.0, -80.0));
+    c.record(
+        "w9.the_pitch_clamp_is_on_the_sum_not_the_step",
+        sum == 90.0,
+        format!("-80 + 400 -> {sum} (want 90; clamping the step first gives 10)"),
+    );
+
+    // w9.yaw_is_neither_clamped_nor_wrapped.
+    // MUTATION: wrap the yaw to [-180, 180) — which looks like tidying and is a
+    // divergence: `setYRot` is a bare assignment, and the raw value is what
+    // goes back out on the wire.
+    let ((yaw, _), _) = route_rot(ids, rot_id, &rot_body(30.0, true, 0.0, true), (350.0, 0.0));
+    c.record(
+        "w9.yaw_is_neither_clamped_nor_wrapped",
+        yaw == 380.0,
+        format!("350 + 30 -> {yaw} (want 380, not 20)"),
+    );
+
+    // w9.a_nan_pitch_is_discarded_not_clamped.
+    // MUTATION: make `Mth.clamp` collapse NaN to a bound, or replace the
+    // setters' `Float.isFinite` guard with a default. Vanilla logs and returns
+    // *without writing*, so the previous pitch stands — and the yaw half of the
+    // same packet still applies, which a whole-packet reject would lose.
+    let ((yaw, pitch), _) = route_rot(
+        ids,
+        rot_id,
+        &rot_body(5.0, true, f32::NAN, false),
+        (10.0, 25.0),
+    );
+    c.record(
+        "w9.a_nan_pitch_is_discarded_not_clamped",
+        yaw == 15.0 && pitch == 25.0,
+        format!("({yaw}, {pitch}) want (15, 25) — not (15, ±90) and not (10, 25)"),
+    );
+
+    // w9.look_at_uses_the_minecraft_yaw_convention.
+    // MUTATION: `atan2(xd, zd)` instead of `atan2(zd, xd)`, or drop the
+    // `- 90.0F`. All four cardinals are checked because a single sample is
+    // satisfied by several wrong conventions.
+    let near_deg = |a: f32, b: f32| (a - b).abs() < 1.0e-3;
+    let cardinal = |x: f64, z: f64| {
+        route_rot_from(
+            ids,
+            look_id,
+            &look_body(0, [x, 0.0, z], None),
+            (0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            |_, _| None,
+        )
+        .0
+         .0
+    };
+    let (s, w, n, e) = (
+        cardinal(0.0, 1.0),
+        cardinal(-1.0, 0.0),
+        cardinal(0.0, -1.0),
+        cardinal(1.0, 0.0),
+    );
+    c.record(
+        "w9.look_at_uses_the_minecraft_yaw_convention",
+        near_deg(s, 0.0) && near_deg(w, 90.0) && near_deg(n, -180.0) && near_deg(e, -90.0),
+        format!("south={s:.3} west={w:.3} north={n:.3} east={e:.3} (want 0, 90, ±180, -90)"),
+    );
+
+    // w9.look_at_pitch_is_negative_upward.
+    // MUTATION: drop the leading unary minus in
+    // `-(Mth.atan2(yd, sd) * 180.0F / (float)Math.PI)`. A level target cannot
+    // see it, so both signs are sampled.
+    let pitch_at = |y: f64, z: f64| {
+        route_rot_from(
+            ids,
+            look_id,
+            &look_body(0, [0.0, y, z], None),
+            (0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            |_, _| None,
+        )
+        .0
+         .1
+    };
+    let (up, down) = (pitch_at(1.0, 1.0), pitch_at(-1.0, 1.0));
+    c.record(
+        "w9.look_at_pitch_is_negative_upward",
+        near_deg(up, -45.0) && near_deg(down, 45.0),
+        format!("up={up:.3} (want -45), down={down:.3} (want 45)"),
+    );
+
+    // w9.the_from_anchor_is_the_viewers_own.
+    // MUTATION: apply `fromAnchor` to the target, or ignore it. `Entity.lookAt`
+    // starts the ray at `anchor.apply(this)`, so the eye ray to a target 10
+    // blocks up is 1.62 blocks less steep.
+    let from_anchor = |anchor: u8| {
+        route_rot_from(
+            ids,
+            look_id,
+            &look_body(anchor, [0.0, 10.0, 10.0], None),
+            (0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            |_, _| None,
+        )
+        .0
+    };
+    let ((feet_yaw, feet_pitch), (eye_yaw, eye_pitch)) = (from_anchor(0), from_anchor(1));
+    c.record(
+        "w9.the_from_anchor_is_the_viewers_own",
+        near_deg(feet_pitch, -45.0) && eye_pitch > feet_pitch && feet_yaw == eye_yaw,
+        format!(
+            "feet pitch={feet_pitch:.3} (want -45), eyes pitch={eye_pitch:.3} (want > feet), \
+             yaw unchanged: {}",
+            feet_yaw == eye_yaw
+        ),
+    );
+
+    // w9.an_unknown_target_entity_uses_the_carried_coordinates.
+    // MUTATION: treat an unresolvable entity as "do nothing". `getPosition`
+    // falls back to the packet's own x/y/z, and those are the *sender's*
+    // snapshot of `toAnchor.apply(entity)` — a correct point, stale by however
+    // far the entity moved. Dropping the rotation loses one vanilla performs.
+    let ((unknown_yaw, _), _) = route_rot_from(
+        ids,
+        look_id,
+        &look_body(0, [0.0, 0.0, 1.0], Some((5, 0))),
+        (123.0, 45.0),
+        [0.0, 0.0, 0.0],
+        |_, _| None,
+    );
+    // w9.a_resolvable_target_entity_overrides_them.
+    // MUTATION: ignore the resolver. The resolved point is due *west* and the
+    // carried one due south, so the two answers cannot be confused.
+    let ((known_yaw, _), _) = route_rot_from(
+        ids,
+        look_id,
+        &look_body(0, [0.0, 0.0, 1.0], Some((5, 0))),
+        (123.0, 45.0),
+        [0.0, 0.0, 0.0],
+        |id, _| (id == 5).then_some([-1.0, 0.0, 0.0]),
+    );
+    c.record(
+        "w9.an_unknown_target_entity_uses_the_carried_coordinates",
+        near_deg(unknown_yaw, 0.0),
+        format!("yaw={unknown_yaw:.3} (want 0 = the carried point, not 123 = untouched)"),
+    );
+    c.record(
+        "w9.a_resolvable_target_entity_overrides_them",
+        near_deg(known_yaw, 90.0),
+        format!("yaw={known_yaw:.3} (want 90 = the resolved point, not 0 = the carried one)"),
+    );
+
+    // w9.the_point_form_never_consults_the_resolver.
+    // MUTATION: drop the `at_entity` test in `getPosition`. A resolver that
+    // answers would then redirect a packet that names no entity at all.
+    let mut consulted = false;
+    let ((point_yaw, _), _) = route_rot_from(
+        ids,
+        look_id,
+        &look_body(0, [0.0, 0.0, 1.0], None),
+        (0.0, 0.0),
+        [0.0, 0.0, 0.0],
+        |_, _| {
+            consulted = true;
+            Some([-1.0, 0.0, 0.0])
+        },
+    );
+    c.record(
+        "w9.the_point_form_never_consults_the_resolver",
+        !consulted && near_deg(point_yaw, 0.0),
+        format!("resolver consulted={consulted}, yaw={point_yaw:.3} (want 0)"),
+    );
+
+    // w9.look_at_evaluates_vanillas_atan2_not_the_platforms.
+    // MUTATION: `rewo_world::rotation::atan2` -> `y.atan2(x)`. Two-sided on
+    // purpose: `Mth.atan2` is a 257-entry table plus a Quake `fastInvSqrt`, so
+    // it must stay *close* to the platform (or it is simply broken) and must
+    // *not* equal it (or someone substituted the platform function, which is
+    // the M12 `Mth.sin` mistake one function over). The bound is measured over
+    // a sweep rather than at one point, because the two agree exactly at the
+    // cardinals where a spot check would look.
+    let mut worst: f64 = 0.0;
+    let mut agreed_everywhere = true;
+    for i in -30..=30 {
+        for j in -30..=30 {
+            let (y, x) = (f64::from(i) * 0.31, f64::from(j) * 0.47);
+            if x == 0.0 && y == 0.0 {
+                continue;
+            }
+            let d = (rewo_world::rotation::atan2(y, x) - y.atan2(x)).abs();
+            worst = worst.max(d);
+            if d != 0.0 {
+                agreed_everywhere = false;
+            }
+        }
+    }
+    c.record(
+        "w9.look_at_evaluates_vanillas_atan2_not_the_platforms",
+        worst < 1.0e-5 && !agreed_everywhere,
+        format!(
+            "worst |Mth.atan2 - f64::atan2| = {worst:.3e} (want < 1e-5 and > 0; \
+             identical everywhere: {agreed_everywhere})"
+        ),
+    );
+
+    // w9.only_player_rotation_answers_the_server.
+    // MUTATION: return `Rotation` for both, or `LookAt` for both.
+    // `handleRotatePlayer` ends with an immediate
+    // `ServerboundMovePlayerPacket.Rot`; `handleLookAt` sends nothing and lets
+    // the next tick's movement report carry the angles. The seam's answer is
+    // the only thing that carries that distinction to the session.
+    let (_, r1) = route_rot(ids, rot_id, &rot_body(0.0, true, 0.0, true), (0.0, 0.0));
+    let (_, r2) = route_rot_from(
+        ids,
+        look_id,
+        &look_body(0, [0.0, 0.0, 1.0], None),
+        (0.0, 0.0),
+        [0.0, 0.0, 0.0],
+        |_, _| None,
+    );
+    c.record(
+        "w9.only_player_rotation_answers_the_server",
+        r1 == RotationRoute::Rotation && r2 == RotationRoute::LookAt,
+        format!("rotation -> {r1:?}, look_at -> {r2:?}"),
+    );
+
+    // w9.a_malformed_body_still_claims_its_id.
+    // MUTATION: return `NoMatch` when the body fails to decode. The id *did*
+    // match, and falling through would let the dispatch ladder test the same
+    // packet against every arm below it.
+    let (_, r) = route_rot(ids, rot_id, &[], (0.0, 0.0));
+    c.record(
+        "w9.a_malformed_body_still_claims_its_id",
+        r == RotationRoute::Rotation,
+        format!("an empty player_rotation body routed as {r:?}"),
+    );
+}
+
+// ------------------------------------------------- 10. the world spawn (97)
+
+fn check_respawn_data(c: &mut Checker, ids: &Ids) {
+    let entities = rewo_world::entities::EntityTable::default();
+
+    // w10.the_dimension_is_an_identifier_string.
+    // MUTATION: read the dimension as a VarInt registry id (the
+    // `holderRegistry` shape M16 records for the *dimension type*). `GlobalPos`
+    // uses `ResourceKey.streamCodec`, which is `Identifier.STREAM_CODEC` — a
+    // length-prefixed string. A VarInt reading would eat the length prefix and
+    // misread everything after it, which the position below would then show.
+    let body = world_spawn_body("minecraft:the_nether", (100, 64, -200), 45.0, -12.5);
+    let d = read_set_default_spawn_position(&body).expect("decode");
+    c.record(
+        "w10.the_dimension_is_an_identifier_string",
+        d.dimension == "minecraft:the_nether",
+        format!("{:?}", d.dimension),
+    );
+
+    // w10.the_block_pos_is_the_packed_26_26_12_long.
+    // MUTATION: read three VarInts, or unpack in x/y/z order. The sample uses a
+    // negative Z so the sign extension is exercised — a mask-without-sext
+    // reading gives a large positive.
+    c.record(
+        "w10.the_block_pos_is_the_packed_26_26_12_long",
+        d.pos == (100, 64, -200),
+        format!("{:?} (want (100, 64, -200))", d.pos),
+    );
+
+    // w10.yaw_and_pitch_are_stored_verbatim.
+    // MUTATION: apply `RespawnData.of`'s `Mth.wrapDegrees(yaw)` /
+    // `Mth.clamp(pitch, -90, 90)`, or `MAP_CODEC`'s `floatRange` bounds. The
+    // STREAM_CODEC is a bare `composite` over the record's accessors and does
+    // neither. Both sample values are outside the range those would impose, so
+    // either mutation moves them.
+    let wild = world_spawn_body("minecraft:overworld", (0, 0, 0), 540.0, 130.0);
+    let w = read_set_default_spawn_position(&wild).expect("decode");
+    c.record(
+        "w10.yaw_and_pitch_are_stored_verbatim",
+        w.yaw == 540.0 && w.pitch == 130.0,
+        format!("yaw={} pitch={} (want 540 / 130, not 180 / 90)", w.yaw, w.pitch),
+    );
+
+    // w10.the_packet_lands_through_the_client_state_seam.
+    // MUTATION: leave the id out of `ClientStateIds` / `kind_for_id`, which is
+    // the failure the coverage table's machine check cannot see (it proves the
+    // *field* is dispatched, not that the seam's table carries it). Driven
+    // through `route_client_state` with the real `Ids` for M45's reason.
+    let mut state = ClientState::default();
+    let matched = rewo_net::route_client_state(
+        ids.cb_play_set_default_spawn_position,
+        &body,
+        ids,
+        &mut state,
+        &entities,
+        Some(1),
+    );
+    let stored = state.respawn_data().cloned();
+    c.record(
+        "w10.the_packet_lands_through_the_client_state_seam",
+        matched && stored.as_ref().map(|r| r.pos) == Some((100, 64, -200)),
+        format!("matched={matched} stored={stored:?}"),
+    );
+
+    // w10.a_level_default_is_8_64_8_of_that_level.
+    // MUTATION: seed with `LevelData.RespawnData.DEFAULT` — overworld,
+    // `BlockPos.ZERO`. That constant exists but **no client ever holds it**:
+    // `ClientLevelData.respawnData` has no initialiser and the `ClientLevel`
+    // constructor immediately writes `RespawnData.of(dimension,
+    // BlockPos(8, 64, 8), 0, 0)`. The dimension is the level being entered, so
+    // the default follows you into the Nether.
+    let mut fresh = ClientState::default();
+    let before = fresh.respawn_data().is_none();
+    fresh.enter_level("minecraft:the_end");
+    let seeded = fresh.respawn_data().cloned();
+    c.record(
+        "w10.a_level_default_is_8_64_8_of_that_level",
+        before
+            && seeded.as_ref().map(|r| (r.pos, r.dimension.as_str()))
+                == Some(((8, 64, 8), "minecraft:the_end")),
+        format!("was None: {before}, seeded {seeded:?}"),
+    );
+
+    // w10.entering_a_level_discards_the_previous_spawn.
+    // MUTATION: make `enter_level` fill only when the slot is empty. Vanilla
+    // builds a *new* `ClientLevelData` on a dimension change and the field is
+    // not among the three the constructor carries over, so travel resets the
+    // world spawn — the opposite of the difficulty sitting beside it, which
+    // `handleRespawn` copies across explicitly. (The same-dimension respawn
+    // path keeps it; that clause lives in `play::apply_respawn` and is gated on
+    // the transition, not here.)
+    let mut travelled = ClientState::default();
+    travelled.enter_level("minecraft:overworld");
+    rewo_net::route_client_state(
+        ids.cb_play_set_default_spawn_position,
+        &body,
+        ids,
+        &mut travelled,
+        &entities,
+        Some(1),
+    );
+    let carried = travelled.respawn_data().cloned();
+    travelled.enter_level("minecraft:the_nether");
+    let after = travelled.respawn_data().cloned();
+    c.record(
+        "w10.entering_a_level_discards_the_previous_spawn",
+        carried.as_ref().map(|r| r.pos) == Some((100, 64, -200))
+            && after.as_ref().map(|r| (r.pos, r.dimension.as_str()))
+                == Some(((8, 64, 8), "minecraft:the_nether")),
+        format!("held {:?}, after travel {after:?}", carried.map(|r| r.pos)),
+    );
+
+    // w10.the_difficulty_beside_it_is_untouched.
+    // MUTATION: reset the whole `ClientState` on `enter_level`. The two fields
+    // live on the same vanilla object and behave oppositely across a dimension
+    // change; conflating them is the natural simplification and is wrong in one
+    // direction or the other whichever way it is done.
+    let mut both = ClientState::default();
+    both.apply_change_difficulty(Difficulty::Hard, true);
+    both.enter_level("minecraft:the_nether");
+    c.record(
+        "w10.the_difficulty_beside_it_is_untouched",
+        both.difficulty == Difficulty::Hard && both.difficulty_locked,
+        format!("{:?} locked={}", both.difficulty, both.difficulty_locked),
+    );
+}
+
 pub fn run(args: AbilityshotArgs) -> Result<(), String> {
     let mode = if args.check { "check" } else { "report" };
     println!(
@@ -1613,6 +2275,16 @@ pub fn run(args: AbilityshotArgs) -> Result<(), String> {
         ids.cb_play_start_configuration,
     );
     check_session(&mut c, &ids);
+    // M76 — the rotation the server writes, and the world spawn.
+    println!(
+        "[abilityshot] player_rotation={} player_look_at={} set_default_spawn_position={}",
+        ids.cb_play_player_rotation,
+        ids.cb_play_player_look_at,
+        ids.cb_play_set_default_spawn_position
+    );
+    check_rotation_wire(&mut c, &ids);
+    check_rotation_semantics(&mut c, &ids);
+    check_respawn_data(&mut c, &ids);
 
     println!(
         "[abilityshot] {}/{} witnesses",

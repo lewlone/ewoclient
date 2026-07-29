@@ -1,16 +1,59 @@
-//! Three one-field client switches (M74): `change_difficulty` (10),
-//! `set_camera` (93) and `container_close` (17).
+//! Four client switches: `change_difficulty` (10), `set_camera` (93) and
+//! `container_close` (17) from M74, plus `set_default_spawn_position` (97)
+//! from M76.
 //!
-//! They share a module because none of them has any machinery — each is a
-//! single authoritative fact with a reader and a field, and three files of ten
-//! lines would obscure rather than separate. Where a packet *does* have
-//! machinery behind it, it gets its own module: see [`crate::chunk_batch`] and
-//! [`crate::ticking`]. In vanilla these live on three different objects
-//! (`ClientLevelData`, `Minecraft`, `LocalPlayer`), which is worth knowing
-//! precisely because it means nothing links them.
+//! They share a module because none of them has much machinery — each is one
+//! authoritative fact with a reader and a field, and four files of ten lines
+//! would obscure rather than separate. Where a packet *does* have machinery
+//! behind it, it gets its own module: see [`crate::chunk_batch`],
+//! [`crate::ticking`] and [`crate::player_rotation`]. In vanilla these live on
+//! three different objects (`ClientLevelData`, `Minecraft`, `LocalPlayer`),
+//! which is worth knowing precisely because it means nothing links them.
 //!
-//! All three are `REWO_PACKET_COVERAGE.md` class **A**: the decode changes a
+//! All four are `REWO_PACKET_COVERAGE.md` class **A**: the decode changes a
 //! value Rewo can act on, and a witness can prove it without drawing anything.
+//!
+//! ## `set_default_spawn_position` — the compass target, and the one field
+//! ## here that a dimension change **resets**
+//!
+//! `handleSetSpawn` is `minecraft.level.setRespawnData(packet.respawnData())`,
+//! so the value lands on `ClientLevelData` beside the difficulty. The two then
+//! behave oppositely across a dimension change, and both behaviours fall out of
+//! `handleRespawn` building a replacement level data:
+//!
+//! ```java
+//! ClientLevelData levelData = new ClientLevel.ClientLevelData(
+//!     this.levelData.getDifficulty(), this.levelData.isHardcore(), isFlat);
+//! ```
+//!
+//! The difficulty is **carried across explicitly**; the respawn data is not in
+//! the constructor at all. `ClientLevelData.respawnData` is a bare reference
+//! field with no initialiser — so it is momentarily null, and what fills it is
+//! the `ClientLevel` constructor, one line later:
+//!
+//! ```java
+//! this.setRespawnData(LevelData.RespawnData.of(dimension, new BlockPos(8, 64, 8), 0.0F, 0.0F));
+//! ```
+//!
+//! Two consequences worth stating, because both invert the obvious guess.
+//! **`LevelData.RespawnData.DEFAULT` — overworld, `BlockPos.ZERO` — never
+//! appears on a client**; the constructor's `(8, 64, 8)` *of the level being
+//! entered* is the real default, and it follows you into the Nether. And a
+//! same-dimension respawn (dying) keeps the level data entirely, so the spawn
+//! point survives death and is discarded by travel — the reverse of the
+//! intuition that a respawn packet resets respawn state. [`ClientState::
+//! enter_level`] is that constructor line; nothing calls it on the
+//! same-dimension path.
+//!
+//! **One scoped exclusion.** `setRespawnData` actually stores
+//! `getWorldBorderAdjustedRespawnData(…)`, which relocates a spawn outside the
+//! world border onto the border's centre column via a `MOTION_BLOCKING`
+//! heightmap lookup. Rewo has no world border — `initialize_border` and the
+//! five `set_border_*` packets are all class **B** in the coverage table — and
+//! the default border is ±29,999,984, which contains every position a world
+//! generates. The adjustment is therefore unreachable here and the value is
+//! stored verbatim; landing it needs the border packets first, not a guess at
+//! its bounds.
 //!
 //! ## `change_difficulty` — a **third** enum convention
 //!
@@ -71,6 +114,14 @@
 //!   `handleChangeDifficulty`, `handleSetCamera`, `handleContainerClose`
 //! - `net/minecraft/client/player/LocalPlayer.java` — `clientSideCloseContainer`
 //! - `net/minecraft/world/entity/player/Player.java` — `closeContainer`
+//! - `net/minecraft/network/protocol/game/ClientboundSetDefaultSpawnPositionPacket.java`
+//! - `net/minecraft/world/level/storage/LevelData.java` — `RespawnData`
+//! - `net/minecraft/core/GlobalPos.java` — `STREAM_CODEC`
+//! - `net/minecraft/core/BlockPos.java` + `net/minecraft/network/FriendlyByteBuf.java`
+//!   — `readBlockPos` is `BlockPos.of(readLong())`
+//! - `net/minecraft/client/multiplayer/ClientLevel.java` — the constructor's
+//!   `(8, 64, 8)` seed, `setRespawnData`, `ClientLevelData`
+//! - `net/minecraft/world/level/Level.java` — `getWorldBorderAdjustedRespawnData`
 
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
@@ -114,8 +165,60 @@ impl Difficulty {
     }
 }
 
-/// The three switches, plus the container-close latch.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// `LevelData.RespawnData` — the world spawn, which is both the compass target
+/// and where a respawn without a bed puts you.
+///
+/// `GlobalPos` then two floats:
+///
+/// ```text
+/// ResourceKey<Level>   Identifier.STREAM_CODEC  — a namespaced string
+/// BlockPos             one packed big-endian i64
+/// float yaw
+/// float pitch
+/// ```
+///
+/// The dimension is `Registries.DIMENSION` — the **level** key
+/// (`minecraft:the_nether`), not `minecraft:dimension_type`. The two registries
+/// share their vanilla names and are different things; M16 records the same
+/// distinction from the other side.
+///
+/// **The stream codec does not normalise.** `RespawnData.of` applies
+/// `Mth.wrapDegrees(yaw)` and `Mth.clamp(pitch, -90, 90)`, and `MAP_CODEC`
+/// declares `floatRange` bounds — but neither is on this path:
+/// `STREAM_CODEC` is a bare `composite` over the record's three accessors. So
+/// the decode stores what the wire said. A reader that "helpfully" wrapped
+/// would disagree with the value vanilla holds whenever a server built its
+/// `RespawnData` by any route but `of`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RespawnData {
+    /// The `ResourceKey<Level>` identifier, e.g. `minecraft:overworld`.
+    pub dimension: String,
+    /// `BlockPos`, unpacked.
+    pub pos: (i32, i32, i32),
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl RespawnData {
+    /// `ClientLevel`'s constructor seed: `RespawnData.of(dimension,
+    /// BlockPos(8, 64, 8), 0, 0)`. **Not** `RespawnData.DEFAULT`, which is
+    /// overworld/`BlockPos.ZERO` and is unreachable from a client.
+    ///
+    /// This goes through `of`, so the wrap and clamp *do* apply here — they are
+    /// no-ops on `0.0`, and writing them out would imply the decode path shares
+    /// them. It does not.
+    pub fn level_default(dimension: &str) -> RespawnData {
+        RespawnData {
+            dimension: dimension.to_string(),
+            pos: (8, 64, 8),
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+}
+
+/// The four switches, plus the container-close latch.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClientState {
     /// `ClientLevelData.difficulty`.
     ///
@@ -142,6 +245,13 @@ pub struct ClientState {
     /// a flag so a witness can tell "closed twice" from "closed once", and so
     /// a consumer that misses an edge can still notice.
     close_container_requests: u64,
+    /// `ClientLevelData.respawnData` (M76).
+    ///
+    /// `None` models vanilla's brief null window: the field has no initialiser
+    /// and is filled by the `ClientLevel` constructor. A live client can never
+    /// observe it — `getRespawnData()` would NPE — and neither can Rewo, since
+    /// [`ClientState::enter_level`] runs on the login packet.
+    respawn_data: Option<RespawnData>,
 }
 
 impl Default for ClientState {
@@ -151,6 +261,7 @@ impl Default for ClientState {
             difficulty_locked: false,
             camera_entity: None,
             close_container_requests: 0,
+            respawn_data: None,
         }
     }
 }
@@ -198,6 +309,27 @@ impl ClientState {
     pub fn close_container_requests(&self) -> u64 {
         self.close_container_requests
     }
+
+    /// `handleSetSpawn` — `level.setRespawnData(packet.respawnData())`.
+    pub fn set_respawn_data(&mut self, data: RespawnData) {
+        self.respawn_data = Some(data);
+    }
+
+    /// `level.getRespawnData()`. `None` only before the first level exists.
+    pub fn respawn_data(&self) -> Option<&RespawnData> {
+        self.respawn_data.as_ref()
+    }
+
+    /// `new ClientLevel(…)`'s final line, for the level now being entered.
+    ///
+    /// Called on the login packet and on a **dimension-changing** respawn, and
+    /// deliberately not on a same-dimension one: vanilla builds no new
+    /// `ClientLevel` there, so the spawn point survives a death and is reset by
+    /// travel. That asymmetry is the opposite way round from the difficulty
+    /// sitting beside it, which `handleRespawn` copies across explicitly.
+    pub fn enter_level(&mut self, dimension: &str) {
+        self.respawn_data = Some(RespawnData::level_default(dimension));
+    }
 }
 
 /// `level.getEntity(id) != null`, for Rewo's split world model.
@@ -222,17 +354,19 @@ pub fn camera_target_resolvable(
     entities.get(target).is_some() || local_player == Some(target)
 }
 
-/// Which of the three packets a body is. Nothing in any of the bodies says —
-/// they are a VarInt-plus-bool and two bare VarInts — so the id is the only
-/// discriminator that exists, exactly as with the view area's radius pair.
+/// Which of the four packets a body is. Nothing in any of the bodies says —
+/// they are a VarInt-plus-bool, two bare VarInts and a `RespawnData` — so the
+/// id is the only discriminator that exists, exactly as with the view area's
+/// radius pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientStatePacket {
     ChangeDifficulty,
     SetCamera,
     ContainerClose,
+    SetDefaultSpawnPosition,
 }
 
-/// The three resolved ids, lifted out of [`crate::ids::Ids`] so
+/// The four resolved ids, lifted out of [`crate::ids::Ids`] so
 /// [`kind_for_id`] and [`apply`] can be driven by a witness that has no
 /// datagen report to build a full `Ids` from.
 #[derive(Clone, Copy, Debug)]
@@ -240,6 +374,7 @@ pub struct ClientStateIds {
     pub change_difficulty: i32,
     pub set_camera: i32,
     pub container_close: i32,
+    pub set_default_spawn_position: i32,
 }
 
 /// Map an incoming packet id onto a kind, or `None` if it is none of the three.
@@ -250,6 +385,8 @@ pub fn kind_for_id(id: i32, ids: ClientStateIds) -> Option<ClientStatePacket> {
         Some(ClientStatePacket::SetCamera)
     } else if id == ids.container_close {
         Some(ClientStatePacket::ContainerClose)
+    } else if id == ids.set_default_spawn_position {
+        Some(ClientStatePacket::SetDefaultSpawnPosition)
     } else {
         None
     }
@@ -309,6 +446,25 @@ pub fn apply(
                 false
             }
         },
+        ClientStatePacket::SetDefaultSpawnPosition => {
+            match read_set_default_spawn_position(body) {
+                Ok(data) => {
+                    log::debug!(
+                        "net: default spawn {:?} in {} yaw={} pitch={}",
+                        data.pos,
+                        data.dimension,
+                        data.yaw,
+                        data.pitch
+                    );
+                    state.set_respawn_data(data);
+                    true
+                }
+                Err(err) => {
+                    log::debug!("net: set_default_spawn_position decode: {err}");
+                    false
+                }
+            }
+        }
     }
 }
 
@@ -334,6 +490,30 @@ pub fn read_set_camera(body: &[u8]) -> Result<i32> {
 pub fn read_container_close(body: &[u8]) -> Result<i32> {
     let mut r = PacketReader::new(body);
     r.varint()
+}
+
+/// `ClientboundSetDefaultSpawnPositionPacket` — one
+/// `LevelData.RespawnData.STREAM_CODEC`, which is
+/// `GlobalPos.STREAM_CODEC` + `FLOAT` + `FLOAT`.
+///
+/// `GlobalPos` is `ResourceKey.streamCodec(Registries.DIMENSION)` — an
+/// `Identifier`, i.e. a **length-prefixed string**, not a registry id — then
+/// `BlockPos.STREAM_CODEC`, which is `BlockPos.of(readLong())`, one packed
+/// big-endian i64 among the string and the floats. Reading the dimension as a
+/// VarInt id would consume the string's length prefix and misread everything
+/// after it.
+pub fn read_set_default_spawn_position(body: &[u8]) -> Result<RespawnData> {
+    let mut r = PacketReader::new(body);
+    let dimension = r.identifier()?;
+    let pos = r.position()?;
+    let yaw = r.f32()?;
+    let pitch = r.f32()?;
+    Ok(RespawnData {
+        dimension,
+        pos,
+        yaw,
+        pitch,
+    })
 }
 
 #[cfg(test)]
@@ -586,6 +766,7 @@ mod tests {
             change_difficulty: 10,
             set_camera: 93,
             container_close: 17,
+            set_default_spawn_position: 97,
         }
     }
 
@@ -679,11 +860,14 @@ mod tests {
     #[test]
     fn a_malformed_body_reports_false_and_changes_nothing() {
         let (t, mut s) = (table(), ClientState::default());
-        let before = s;
+        // `ClientState` stopped being `Copy` when M76 gave it a `RespawnData`
+        // with a `String` dimension in it.
+        let before = s.clone();
         for kind in [
             ClientStatePacket::ChangeDifficulty,
             ClientStatePacket::SetCamera,
             ClientStatePacket::ContainerClose,
+            ClientStatePacket::SetDefaultSpawnPosition,
         ] {
             assert!(!apply(kind, &[], &mut s, &t, Some(7)), "{kind:?}");
         }

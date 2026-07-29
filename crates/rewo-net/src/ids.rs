@@ -74,6 +74,27 @@ pub struct Ids {
     pub cb_play_ping: i32,
     pub cb_play_login: i32,
     pub cb_play_position: i32,
+    /// `ClientboundPlayerRotationPacket` — the *rotational* teleport (M76).
+    ///
+    /// Required, and the reason is the asymmetry it closes: `player_position`
+    /// above has been handled since M3, so a version that renamed only this one
+    /// would leave a client that accepts a body teleport and silently ignores a
+    /// head turn — which is exactly the failure
+    /// `REWO_PACKET_COVERAGE.md` §3 ranks second, because the working half
+    /// misdirects the diagnosis.
+    ///
+    /// Ten fixed bytes, `FLOAT yRot, BOOL relativeY, FLOAT xRot, BOOL relativeX`
+    /// — **not** the packed `Relative` mask its positional twin carries. See
+    /// [`crate::player_rotation`].
+    pub cb_play_player_rotation: i32,
+    /// `ClientboundPlayerLookAtPacket` — `/teleport … facing` (M76). Required
+    /// for the same reason as its sibling above.
+    pub cb_play_player_look_at: i32,
+    /// `ClientboundSetDefaultSpawnPositionPacket` — `LevelData.RespawnData`,
+    /// the compass target and the bedless respawn point (M76). Required: a
+    /// vanilla server sends it on every join, so a missing *name* is a version
+    /// mismatch rather than a quiet runtime state.
+    pub cb_play_set_default_spawn_position: i32,
     /// Dimension change / death respawn (`ClientboundRespawnPacket`), carrying
     /// the same `CommonPlayerSpawnInfo` the login packet does. Required: it is
     /// the only announcement that the world's vertical shape and lighting
@@ -516,6 +537,9 @@ impl Ids {
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),
             cb_play_server_data: req!(p, P, C, "server_data"),
             cb_play_store_cookie: req!(p, P, C, "store_cookie"),
+            cb_play_player_rotation: req!(p, P, C, "player_rotation"),
+            cb_play_player_look_at: req!(p, P, C, "player_look_at"),
+            cb_play_set_default_spawn_position: req!(p, P, C, "set_default_spawn_position"),
         })
     }
 }
