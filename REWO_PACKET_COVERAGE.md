@@ -157,18 +157,18 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **72** |
+| Resolved **and** consumed | **73** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **69** |
+| Not resolved at all | **68** |
 | **Total clientbound-play** | **141** |
 
-The 69 gaps, by class:
+The 68 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
-| **A** pure state, no rendering | **15** | 22% |
+| **A** pure state, no rendering | **14** | 21% |
 | **B** needs rendering | **20** | 29% |
-| **C** needs a subsystem Rewo lacks | **23** | 33% |
+| **C** needs a subsystem Rewo lacks | **23** | 34% |
 | **D** not applicable | **11** | 16% |
 
 M67 audited 56 / 0 / 85 with class A at 31. Sixteen packets separate that
@@ -366,7 +366,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |
 | 62 | `pong_response` | absent | **D** | The reply to a serverbound `ping_request` Rewo never sends (`pingDebugMonitor`). |
 | 63 | `place_ghost_recipe` | absent | **C** | Recipe book. |
-| 64 | `player_abilities` | absent | **A** | Flags byte + `flyingSpeed` + `walkingSpeed`. **Claimed by a concurrent milestone** landing it with the flight / no-clip physics it feeds — §4.1. |
+| 64 | `player_abilities` | handled | — | Flags byte + `flyingSpeed` + `walkingSpeed`, nine fixed bytes. Landed by **M75** with the flight / no-clip physics it feeds and the `GameType` binding M71 left unstarted. The **serverbound** twin is one byte carrying only `FLAG_FLYING` — writing the clientbound body there desyncs the stream by eight. |
 | 65 | `player_chat` | handled | `opt!` → `cb_play_player_chat` | |
 | 66 | `player_combat_end` | absent | **A** | Vestigial — vanilla's handler is an empty method. |
 | 67 | `player_combat_enter` | absent | **A** | Vestigial, empty body, empty handler. |
