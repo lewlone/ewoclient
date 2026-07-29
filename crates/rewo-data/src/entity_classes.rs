@@ -302,3 +302,186 @@ pub const ILLAGER: &[&str] = &[
 pub const PLAYER: &[&str] = &[
     "minecraft:player",
 ];
+
+/// Registry names whose class descends from `Animal`. Both `AbstractBoat`
+/// and `Camel` bump a *second* passenger's seat offset by `+0.2` when
+/// `passenger instanceof Animal`, so this set is read of the **rider**,
+/// not the vehicle.
+pub const ANIMAL: &[&str] = &[
+    "minecraft:armadillo",
+    "minecraft:axolotl",
+    "minecraft:bee",
+    "minecraft:camel",
+    "minecraft:camel_husk",
+    "minecraft:cat",
+    "minecraft:chicken",
+    "minecraft:cow",
+    "minecraft:donkey",
+    "minecraft:fox",
+    "minecraft:frog",
+    "minecraft:goat",
+    "minecraft:happy_ghast",
+    "minecraft:hoglin",
+    "minecraft:horse",
+    "minecraft:llama",
+    "minecraft:mooshroom",
+    "minecraft:mule",
+    "minecraft:nautilus",
+    "minecraft:ocelot",
+    "minecraft:panda",
+    "minecraft:parrot",
+    "minecraft:pig",
+    "minecraft:polar_bear",
+    "minecraft:rabbit",
+    "minecraft:sheep",
+    "minecraft:skeleton_horse",
+    "minecraft:sniffer",
+    "minecraft:strider",
+    "minecraft:trader_llama",
+    "minecraft:turtle",
+    "minecraft:wolf",
+    "minecraft:zombie_horse",
+    "minecraft:zombie_nautilus",
+];
+
+/// Registry names whose class descends from `AbstractBoat`, which
+/// **fully replaces** `getPassengerAttachmentPoint` — a boat ignores its
+/// own declared PASSENGER points entirely and computes
+/// `(0, rideHeight(dimensions), xOffset)`.
+pub const ABSTRACT_BOAT: &[&str] = &[
+    "minecraft:acacia_boat",
+    "minecraft:acacia_chest_boat",
+    "minecraft:bamboo_chest_raft",
+    "minecraft:bamboo_raft",
+    "minecraft:birch_boat",
+    "minecraft:birch_chest_boat",
+    "minecraft:cherry_boat",
+    "minecraft:cherry_chest_boat",
+    "minecraft:dark_oak_boat",
+    "minecraft:dark_oak_chest_boat",
+    "minecraft:jungle_boat",
+    "minecraft:jungle_chest_boat",
+    "minecraft:mangrove_boat",
+    "minecraft:mangrove_chest_boat",
+    "minecraft:oak_boat",
+    "minecraft:oak_chest_boat",
+    "minecraft:pale_oak_boat",
+    "minecraft:pale_oak_chest_boat",
+    "minecraft:spruce_boat",
+    "minecraft:spruce_chest_boat",
+];
+
+/// Registry names whose class descends from `AbstractChestBoat`, which
+/// overrides `getSinglePassengerXOffset()` to **0.15** against
+/// `AbstractBoat`'s 0.0 — the chest takes the stern, so the lone
+/// passenger shifts forward.
+pub const ABSTRACT_CHEST_BOAT: &[&str] = &[
+    "minecraft:acacia_chest_boat",
+    "minecraft:bamboo_chest_raft",
+    "minecraft:birch_chest_boat",
+    "minecraft:cherry_chest_boat",
+    "minecraft:dark_oak_chest_boat",
+    "minecraft:jungle_chest_boat",
+    "minecraft:mangrove_chest_boat",
+    "minecraft:oak_chest_boat",
+    "minecraft:pale_oak_chest_boat",
+    "minecraft:spruce_chest_boat",
+];
+
+/// Registry names whose class is `Raft`. `rideHeight` is
+/// `height * 0.8888889` here against `Boat`/`ChestBoat`'s `height / 3`,
+/// and the split does **not** follow the chest/non-chest one: `Raft`
+/// extends `AbstractBoat` while `ChestRaft` extends `AbstractChestBoat`,
+/// so the two raft leaves must be named separately.
+pub const RAFT: &[&str] = &[
+    "minecraft:bamboo_raft",
+];
+
+/// Registry names whose class is `ChestRaft` — the other half of the
+/// raft `rideHeight`, see `RAFT`.
+pub const CHEST_RAFT: &[&str] = &[
+    "minecraft:bamboo_chest_raft",
+];
+
+/// Registry names whose class descends from `AbstractMinecart`, which
+/// lowers the attachment to `Vec3.ZERO` for a `Villager` or
+/// `WanderingTrader` passenger and otherwise defers to the default.
+pub const ABSTRACT_MINECART: &[&str] = &[
+    "minecraft:chest_minecart",
+    "minecraft:command_block_minecart",
+    "minecraft:furnace_minecart",
+    "minecraft:hopper_minecart",
+    "minecraft:minecart",
+    "minecraft:spawner_minecart",
+    "minecraft:tnt_minecart",
+];
+
+/// Registry names whose class descends from `Villager` — half of the
+/// `AbstractMinecart` lowered-attachment test, read of the **rider**.
+pub const VILLAGER: &[&str] = &[
+    "minecraft:villager",
+];
+
+/// Registry names whose class descends from `WanderingTrader` — the other
+/// half of the `AbstractMinecart` lowered-attachment test. It is a
+/// sibling of `Villager` under `AbstractVillager`, not a subclass, so
+/// testing one does not cover the other.
+pub const WANDERING_TRADER: &[&str] = &[
+    "minecraft:wandering_trader",
+];
+
+/// Registry names whose class descends from `AbstractCubeMob` (slime,
+/// magma cube), which replaces the attachment with
+/// `height - 0.015625 * size * scale` — the only override that reads the
+/// synced size.
+pub const ABSTRACT_CUBE_MOB: &[&str] = &[
+    "minecraft:magma_cube",
+    "minecraft:slime",
+    "minecraft:sulfur_cube",
+];
+
+/// Registry names whose class descends from `Spider`, the only type that
+/// overrides `getVehicleAttachmentPoint` — read of the **rider**, and
+/// conditional on the vehicle being no wider than the spider.
+pub const SPIDER: &[&str] = &[
+    "minecraft:cave_spider",
+    "minecraft:spider",
+];
+
+/// Registry names whose class is `Strider`, whose attachment adds a
+/// **client-only** walk-animation bob on top of the default.
+pub const STRIDER: &[&str] = &[
+    "minecraft:strider",
+];
+
+/// Registry names whose class descends from `AbstractHorse`. Its
+/// `positionRider` copies `yBodyRot` onto a living passenger, and its
+/// `getPassengerAttachmentPoint` adds a rearing offset scaled by
+/// `standAnimO` (zero at rest).
+pub const ABSTRACT_HORSE: &[&str] = &[
+    "minecraft:camel",
+    "minecraft:camel_husk",
+    "minecraft:donkey",
+    "minecraft:horse",
+    "minecraft:llama",
+    "minecraft:mule",
+    "minecraft:skeleton_horse",
+    "minecraft:trader_llama",
+    "minecraft:zombie_horse",
+];
+
+/// Registry names whose class descends from `Chicken`, the other type
+/// whose `positionRider` copies `yBodyRot` onto a living passenger — the
+/// chicken jockey.
+pub const CHICKEN: &[&str] = &[
+    "minecraft:chicken",
+];
+
+/// Registry names whose class descends from `Camel`, which replaces the
+/// attachment with a two-seat body anchor. The camel declares **no**
+/// `passengerAttachments`, so falling back to the default would put a
+/// rider at the top of its bounding box rather than on its back.
+pub const CAMEL: &[&str] = &[
+    "minecraft:camel",
+    "minecraft:camel_husk",
+];

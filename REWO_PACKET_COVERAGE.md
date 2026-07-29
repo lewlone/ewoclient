@@ -162,6 +162,11 @@ Concretely, from `ClientPacketListener`:
   label predicate. The positional half is untouched: Rewo still renders a
   mounted mob at its own last-reported position, which for a boat passenger is
   *approximately* right and for a horse rider is a floating body.
+  **Closed by M72** — and the "approximately right for a boat" guess above was
+  wrong in both directions: a boat's seat comes from an override that ignores
+  the attachment table entirely, and the error a rider actually shows is not a
+  constant offset but a **lag**, because its own three-tick lerp is still
+  chasing a position the server stopped updating.
 - `move_vehicle` is the position half of the same contract, and has a
   serverbound echo.
 
@@ -406,7 +411,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 104 | `set_health` | handled | `opt!` → `cb_play_set_health` | |
 | 105 | `set_held_slot` | handled | `req!` → `cb_play_set_held_slot` | |
 | 106 | `set_objective` | handled | `req!` → `cb_play_set_objective` | |
-| 107 | `set_passengers` | **M68 + M70** | — | Two milestones landed disjoint halves of the same packet. M70 consumes it for `Entity.isVehicle()`, which suppresses a ridden entity's floating label; M68 applies the local player's own mount state to its physics. Still absent: remote passengers render at their own stale positions rather than on their vehicle — a renderer concern, class **B**. |
+| 107 | `set_passengers` | **M68 + M70 + M72** | — | Three milestones landed disjoint halves of the same packet, and the packet is now **fully consumed**. M70 decoded the riding graph for `Entity.isVehicle()`, which suppresses a ridden entity's floating label; M68 applied the local player's own mount state to its physics; **M72** added the positional half — every rider is derived from its vehicle's PASSENGER attachment point once per tick (`tickPassenger` → `rideTick` → `positionRider`), including the multi-seat clamp, the per-vehicle overrides, and the body yaw a horse or chicken forces onto a living rider. Remaining, and neither is about this packet: a mounted humanoid's **seated leg pose** (`HumanoidModel.setupAnim`'s `isPassenger` block) and the camel's / horse's animation-driven seat offsets, which need metadata Rewo does not decode. |
 | 108 | `set_player_inventory` | **M69** | — | An authoritative inventory write addressed by **inventory index**, not menu slot — the third coordinate system M34 names. M34 handled `container_set_slot` and not this. |
 | 109 | `set_player_team` | handled | `req!` → `cb_play_set_player_team` | |
 | 110 | `set_score` | handled | `req!` → `cb_play_set_score` | |

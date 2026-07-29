@@ -508,6 +508,19 @@ impl EntityState {
         self.limb_swing += self.limb_amount;
     }
 
+    /// Overwrite **this tick's** position without touching `prev` or the
+    /// synced target — `Entity.setPos` as `positionRider` calls it (M72).
+    ///
+    /// `prev` is deliberately left alone: `tickPassenger` runs
+    /// `setOldPosAndRot()` (Rewo's `prev = cur`, already done by
+    /// [`Self::tick`]) *before* `rideTick()` reaches `positionRider`, so the
+    /// render lerp blends the last tick's derived position into this one. The
+    /// synced target is left alone too, because it stays authoritative for the
+    /// moment the rider dismounts.
+    fn set_derived_pos(&mut self, p: [f64; 3]) {
+        self.cur = p;
+    }
+
     /// Frame position: last tick's `prev` blended toward `cur` by the
     /// partial-tick alpha (0..1).
     pub fn render_pos(&self, alpha: f32) -> [f64; 3] {
@@ -680,6 +693,16 @@ pub struct EntityTable {
     /// between vehicles would leave the old one reading as still ridden, and
     /// that vehicle's label would stay suppressed forever.
     vehicle_of: HashMap<i32, i32>,
+    /// Per-entity-type attachment points, when the caller has supplied them
+    /// (M72). `None` keeps [`Self::tick_lerp`] at its pre-M72 behaviour, which
+    /// is what every gate that builds a bare `EntityTable` relies on; the live
+    /// client sets it once at session start.
+    ///
+    /// It lives here rather than being passed per tick so that a caller cannot
+    /// tick the table and forget to reposition the riders — that would leave
+    /// every passenger one tick stale, which is exactly the kind of drift that
+    /// only shows up as jitter under motion.
+    attachments: Option<std::sync::Arc<rewo_data::entity_attachments::Attachments>>,
     /// `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE) — the
     /// skin-part toggle mask, players only (M60). Absent means the byte has
     /// never been sent; vanilla seeds it at `(byte) 0`, so an absent entry
@@ -1870,6 +1893,132 @@ impl EntityTable {
             }
             h.hurt_time > 0
         });
+        // Last, and only after every entity's own lerp step has moved
+        // `prev = cur`: vanilla's `tickPassenger` → `rideTick` →
+        // `positionRider` overwrites a rider's position at the end of the
+        // tick it was ticked in. See [`crate::riding`] for why a passenger
+        // does not interpolate.
+        self.position_riders();
+    }
+
+    /// Supply the attachment table, enabling per-tick passenger positioning
+    /// (M72). Without it [`Self::tick_lerp`] leaves riders at their own synced
+    /// positions, which is the pre-M72 behaviour.
+    pub fn set_attachments(
+        &mut self,
+        attachments: std::sync::Arc<rewo_data::entity_attachments::Attachments>,
+    ) {
+        self.attachments = Some(attachments);
+    }
+
+    /// `ClientLevel.tickNonPassenger` → `tickPassenger` → `Entity.rideTick`.
+    ///
+    /// Walks vehicle-first from every **root** — an entity that carries
+    /// passengers and is not itself a passenger — so a rider of a rider is
+    /// positioned after the vehicle it hangs off has already been positioned.
+    /// Vanilla gets that ordering from the recursion in `tickPassenger`; here
+    /// it is explicit, with a visited set because a malformed roster could
+    /// otherwise describe a cycle and the recursion would not terminate.
+    fn position_riders(&mut self) {
+        let Some(att) = self.attachments.clone() else {
+            return;
+        };
+        if self.passengers.is_empty() {
+            return;
+        }
+        let roots: Vec<i32> = self
+            .passengers
+            .iter()
+            .filter(|(id, riders)| !riders.is_empty() && !self.vehicle_of.contains_key(id))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut visited: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let mut stack = roots;
+        while let Some(vehicle_id) = stack.pop() {
+            if !visited.insert(vehicle_id) {
+                continue;
+            }
+            let Some(v) = self.vehicle_inputs(vehicle_id) else {
+                continue;
+            };
+            let riders = match self.passengers.get(&vehicle_id) {
+                Some(r) if !r.is_empty() => r.clone(),
+                _ => continue,
+            };
+            for (index, rider_id) in riders.iter().copied().enumerate() {
+                // `tickPassenger` starts with `entity.getVehicle() != vehicle
+                // -> stopRiding()`. Kept for the same reason vanilla keeps it,
+                // and honestly labelled: with `set_passengers` maintaining both
+                // maps together (it detaches a rider from its previous vehicle
+                // before adding it here) an inconsistent pair is unreachable,
+                // so this is a belt and not a load-bearing guard. `rideshot`'s
+                // `r4.a_rider_that_moved_on` says so explicitly — removing this
+                // line leaves the gate green.
+                if self.vehicle_of.get(&rider_id) != Some(&vehicle_id) {
+                    continue;
+                }
+                let Some(state) = self.map.get(&rider_id) else {
+                    continue;
+                };
+                let r = crate::riding::RiderInputs {
+                    type_id: state.type_id,
+                    yaw: state.yaw,
+                    scale: Self::age_scale(&att, state.type_id, self.babies.contains(&rider_id)),
+                    index,
+                };
+                if let Some(pos) = crate::riding::rider_position(&att, &v, &r) {
+                    if let Some(state) = self.map.get_mut(&rider_id) {
+                        state.set_derived_pos(pos);
+                    }
+                }
+                // `AbstractHorse`/`Chicken.positionRider`'s trailing
+                // `livingEntity.yBodyRot = this.yBodyRot`. The head is a
+                // separate field and is deliberately untouched.
+                if let Some(yaw) = crate::riding::forced_body_yaw(&att, &v, r.type_id) {
+                    if let Some(state) = self.map.get_mut(&rider_id) {
+                        state.yaw = yaw;
+                    }
+                }
+                stack.push(rider_id);
+            }
+        }
+    }
+
+    /// `LivingEntity.getAgeScale()` — `isBaby() ? 0.5F : 1.0F`, and 1.0 for
+    /// anything that is not a `LivingEntity` at all (an `Entity` has no age
+    /// scale, and its `getPassengerRidingPosition` passes a literal 1.0).
+    ///
+    /// The `minecraft:scale` attribute is the other half of vanilla's factor
+    /// and is **not** applied: Rewo's renderer does not scale a model by it
+    /// either, so honouring it here alone would place a rider off the mount it
+    /// is drawn on.
+    fn age_scale(
+        att: &rewo_data::entity_attachments::Attachments,
+        type_id: i32,
+        baby: bool,
+    ) -> f32 {
+        if baby && att.is_living(type_id) {
+            0.5
+        } else {
+            1.0
+        }
+    }
+
+    fn vehicle_inputs(&self, id: i32) -> Option<crate::riding::VehicleInputs> {
+        let att = self.attachments.as_ref()?;
+        let e = self.map.get(&id)?;
+        let baby = self.babies.contains(&id);
+        Some(crate::riding::VehicleInputs {
+            type_id: e.type_id,
+            pos: e.cur,
+            yaw: e.yaw,
+            scale: Self::age_scale(att, e.type_id, baby),
+            passenger_count: self.passengers.get(&id).map_or(0, |p| p.len()),
+            // Only `AbstractCubeMob` reads it; vanilla's own default is 1.
+            cube_size: self.sizes.get(&id).copied().unwrap_or(1),
+            limb: e.limb(),
+            baby,
+        })
     }
 
     /// Switch the wavy cape (M61) on or off. Off is the default and is what

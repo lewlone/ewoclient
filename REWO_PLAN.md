@@ -10836,3 +10836,154 @@ including it would draw the layer in a colour the fleece beside it is not
 wearing. The fish's `Base` also drives nothing else Rewo models (both plans
 share the tail animation verbatim), and the twenty-two `COMMON_VARIANTS` and
 their predefined names are a tooltip concern, not a rendering one.
+
+### M72 — passenger positioning: where a rider actually sits (2026-07-29)
+
+M70 decoded `ClientboundSetPassengersPacket` into a riding graph and consumed
+it for `Entity.isVehicle()` alone. The positional half was missing, so a player
+on a horse kept rendering at its own last-reported position. M72 is that half.
+
+**The seat is entity-type data, not a constant.** 26.x has no
+`getPassengersRidingOffset()`. `Entity.getPassengerRidingPosition` is
+`position().add(attachments.getClamped(PASSENGER, indexOf(passenger), yRot))`,
+and `attachments` comes from `EntityDimensions`, which the **`EntityType`
+builder** declares:
+
+```java
+EntityType.Builder.of(Pig::new, …).sized(0.9F, 0.9F).passengerAttachments(0.86875F)
+```
+
+So it is a table, extracted by **`tools/gen_entity_attachments.py`** into
+`crates/rewo-data/src/entity_attachments_table.rs` — 158 types, **57 declaring
+seats, 24 declaring a vehicle point**. Three conventions in that builder invert
+if you assume them:
+
+- **`passengerAttachments(float…)` takes Y offsets**, and a type may declare
+  several (the happy ghast declares four full `Vec3` seats).
+- **`ridingOffset(r)` is negated** into `attach(VEHICLE, 0, -r, 0)`. A zombie's
+  `ridingOffset(-0.7F)` is a VEHICLE point of `(0, +0.7, 0)`.
+- **PASSENGER's fallback is `AT_HEIGHT`, not `AT_FEET`** — `(0, height, 0)`,
+  the *top* of the bounding box, which is why `sized(…)` has to be captured
+  too. VEHICLE's fallback is the zero vector.
+
+**There are two tables, keyed by two different types.** `positionRider` is
+
+```java
+Vec3 position = this.getPassengerRidingPosition(passenger);  // vehicle's PASSENGER point
+Vec3 offset   = passenger.getVehicleAttachmentPoint(this);   // rider's own VEHICLE point
+moveFunction.accept(passenger, position.x - offset.x, …);
+```
+
+The second is the rider's, rotated by the **rider's** yaw. A player's is
+`(0, 0.6, 0)` — `Avatar.DEFAULT_VEHICLE_ATTACHMENT` — and it is the whole
+reason a mounted player sits in a saddle instead of standing on the horse's
+head. Dropping it raises every rider by 0.6 blocks, silently and constantly.
+
+**A passenger does not interpolate, and vanilla is unambiguous about it.**
+`ClientLevel.tickEntities` skips passengers outright
+(`… && !entity.isPassenger() && …`); a rider is reached only through its
+vehicle, by `tickNonPassenger` → `tickPassenger` → `rideTick()`, which ticks it
+and *then* calls `getVehicle().positionRider(this)` — an unconditional
+`setPos`. Its own synced position and its own three-step lerp are computed and
+overwritten every tick and never reach the screen. Nor does the renderer
+re-derive per frame: `EntityRenderer.extractRenderState` is
+`Mth.lerp(partialTicks, entity.xOld, entity.getX())` for every entity alike,
+which for a rider blends two *derived* positions because `tickPassenger` calls
+`setOldPosAndRot()` first. Rewo therefore derives into `cur` at the end of
+`tick_lerp`, after every entity's own step has moved `prev = cur` — one line of
+ordering that makes `render_pos` correct at every sub-tick fraction for free.
+**That equality is checkable**, and it is what "follows without jitter" means:
+with the yaw constant, the rider's offset from its vehicle is identical at
+every fraction, measured at 4.8e-8 blocks over a three-tick lerp across 37
+blocks. The pre-M72 error was never a constant offset — it was a **lag**.
+
+**The overrides are a virtual-dispatch problem, so the selector is the class.**
+`tools/gen_entity_classes.py` gained fourteen ancestry sets (a pure addition —
+the existing tables came back byte-identical), and `VehicleClass` resolves
+most-derived-first because that is what `super` does: a camel **is** an
+`AbstractHorse`, and its own override replaces the horse's rather than
+composing with it. Shipped exactly: the boat (which **replaces** the lookup —
+it declares no seats at all, and its `rideHeight` splits by *leaf* class, so
+`Raft` and `ChestRaft` share `height × 0.8888889` **across** the chest
+boundary while `Boat` and `ChestBoat` share `height / 3`), the chest boat's
+0.15 forward shift, the two-seat fore/aft split and its `+0.2`
+`instanceof Animal` bump, the minecart's `Vec3.ZERO` for a villager or
+wandering trader, the cube mob's size term, the strider's walk bob, the
+spider's rider-side width test, and the camel's body anchor. `Llama`'s
+override is a no-op that restores the plain default, which is why it and a
+resting horse coincide here.
+
+**Every VEHICLE point in 26.2 lies on the y axis**, so the rider-side rotation
+is *unobservable* in vanilla data — every one comes from `ridingOffset(float)`
+or `Avatar.DEFAULT_VEHICLE_ATTACHMENT`, both of which build `(0, y, 0)`, and a
+pure-y vector is invariant under `yRot`. Rather than fake a discriminating
+sample, `r1` asserts the invariant over the whole generated table: if a future
+version declares an off-axis point the witness fails and says to go build the
+case, which is exactly when it starts to matter.
+
+**Two rotation facts.** `EntityAttachments.transformPoint` rotates by
+**negated** degrees, which is what puts a `+z` seat behind a vehicle facing
+`+z`; and `AbstractHorse`/`Chicken.positionRider` end with
+`if (passenger instanceof LivingEntity l) l.yBodyRot = this.yBodyRot`, which
+assigns the **body** yaw and nothing else — that is why a player on a horse can
+look sideways, and why a boat riding a chicken is not turned at all.
+
+**Gate: `rewo rideshot --check`, 24 witnesses**, serverless and GPU-less,
+fail-closed. Raw `set_passengers` bodies → `route_set_passengers` →
+`EntityTable::tick_lerp` → `render_pos`. Every witness measures the rider's
+position **relative to its vehicle**, never "the rider moved" — a rider moving
+for its own reasons is precisely the bug. **All eighteen mutations were run and
+seventeen bit on the first attempt.**
+
+**The eighteenth did not, and it repeated M70's `b4` in a new shape.**
+`r4.a_rider_that_moved_on` named `position_riders`' per-rider `vehicle_of`
+re-check as its partner. Running that mutation left the gate green: with
+`set_passengers` maintaining both maps together — it *detaches* a rider from
+its previous vehicle before adding it here — an inconsistent pair is
+**unreachable by construction**, so the re-check is a belt, exactly like the
+cycle walk's visited set. The witness now names the detach that is actually
+load-bearing (and asserts the old vehicle reads un-ridden, which that mutation
+does flip), and both the code and the gate say plainly that the re-check is not
+what makes it work. *A named mutation partner that cannot be reached is not a
+partner.*
+
+Two other samples were placed for the same reason and both bit: the spider's
+`<=` width bound is exercised from a **polar bear**, whose 1.4 width is exactly
+the spider's, and `getClamped` is sampled at index 3 **and** 4 on a four-seat
+vehicle.
+
+**Measured.** **1193 tests** (was 1180: +4 in `rewo-data`'s
+`entity_attachments`, +9 in `rewo-world`'s `riding`). Every gate green with
+validation ON and **0 VUIDs**: rideshot 24, labelshot 32, capeshot 69, itemshot
+62, inventoryshot 152, healthbarshot 33, attributeshot 43, captureshot 17,
+blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35, handshot 34,
+particleshot 34, eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot
+**246/246** (+ emissive 5, etf 8, tint 11, variant 13), skyshot, lightmapshot,
+tintshot, meshshot, dimensioncheck. Release `demo` PNG SHA-256 byte-identical
+to M15 onward (`2cc56b4a…`).
+
+**Not verified:** no live sighting. Nobody has watched a player ride a horse or
+a boat on a real server; everything here is headless.
+
+**Open, and each is blocked on something real rather than skipped.**
+
+- **The seated pose.** `HumanoidModel.setupAnim`'s `if (state.isPassenger)`
+  block **assigns** `rightLeg.xRot = -1.4137167F` (plus yRot/zRot) and *adds*
+  `-π/5` to both arms. It is not a positioning problem but a model-selection
+  one: Rewo's `Anim::LegRight` is shared by body plans that do not run
+  `HumanoidModel`, and the undead/skeleton/illager arm overrides run **after**
+  the passenger block, so their arms must not be lifted. Until that selection
+  exists, a mounted rider sits in the right place with straight legs.
+- **The animation-driven seat offsets.** The horse's rearing lift is
+  `standAnimO`-scaled and reduces to zero at rest, so it costs nothing; the
+  camel's sit and pose-transition arms need `LAST_POSE_CHANGE_TICK`, a synced
+  LONG this client does not decode. The camel's *standing* anchor is
+  implemented, because its fallback would be 0.375 blocks above its own back.
+- **`Minecart.positionRider`'s player rotation** and `EntityRenderer`'s
+  `passengerOffset` both need `NewMinecartBehavior`, an unmodelled client
+  simulation.
+- **The `minecraft:scale` attribute** is half of vanilla's scale factor and is
+  deliberately not applied: Rewo's renderer does not scale a model by it
+  either, so honouring it on the seat alone would place a rider off the mount
+  it is drawn on. `getAgeScale()` — exactly `isBaby() ? 0.5F : 1.0F` — is
+  applied, and it matches Rewo's existing baby model scaling exactly.
