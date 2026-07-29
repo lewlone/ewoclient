@@ -93,6 +93,12 @@ pub struct Ids {
     /// (A server that never forms a team simply never sends one — that is a
     /// quiet runtime state, not a missing name.)
     pub cb_play_set_player_team: i32,
+    /// `ClientboundSetPassengersPacket` — a var-int vehicle id then a var-int
+    /// array of passenger ids (M70). Required: it is a core vanilla packet, so
+    /// a missing *name* is a version mismatch and should fail loud rather than
+    /// leave every ridden entity reading as un-ridden. It is what answers
+    /// `Entity.isVehicle()`, which suppresses a ridden entity's label.
+    pub cb_play_set_passengers: i32,
     pub cb_play_rotate_head: i32,
     /// `ClientboundEntityEventPacket` — a signed BE i32 entity id + a signed
     /// byte event. Required: the model-visible events (warden attack/sonic
@@ -276,6 +282,7 @@ impl Ids {
             cb_play_player_info_remove: req!(p, P, C, "player_info_remove"),
             cb_play_set_entity_data: req!(p, P, C, "set_entity_data"),
             cb_play_set_player_team: req!(p, P, C, "set_player_team"),
+            cb_play_set_passengers: req!(p, P, C, "set_passengers"),
             cb_play_rotate_head: req!(p, P, C, "rotate_head"),
             cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_animate: req!(p, P, C, "animate"),

@@ -74,6 +74,21 @@ impl GameMode {
     }
 }
 
+/// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
+/// `Entity.stringUUID` holds and therefore what a non-player entity's
+/// scoreboard membership is keyed by (M70).
+pub fn uuid_to_dashed(uuid: u128) -> String {
+    let h = format!("{uuid:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
 /// One entry of a `player_info_update` body.
 ///
 /// Every field but the uuid is `Option`, and that is the whole point: the
@@ -1928,6 +1943,13 @@ impl PlaySession {
             // peek) were stamped with the current tick — the renderer measures
             // the rig's elapsed time from it. `self.ticks` is the in-progress
             // tick (it increments at the end of `tick()`, after this drain).
+        } else if id == ids.cb_play_set_passengers {
+            // Riding (M70). Consumed for `Entity.isVehicle()`, which
+            // suppresses a ridden entity's floating label. It does **not** yet
+            // move a passenger onto its vehicle's position — that is the
+            // separate gap `REWO_PACKET_COVERAGE.md` records against this
+            // packet, and this milestone does not close it.
+            crate::route_set_passengers(id, body, ids, &mut self.world.entities);
         } else if id == ids.cb_play_set_player_team {
             // Scoreboard teams (M62). A body we cannot decode is dropped
             // whole rather than half-applied: the packet's three sections are
@@ -2238,6 +2260,39 @@ impl PlaySession {
     /// score holder, whose scoreboard name is not a profile name at all).
     pub fn team_of_name(&self, name: &str) -> Option<&str> {
         self.scoreboard.teams.team_of_member(name)
+    }
+
+    /// `Entity.getScoreboardName()` — the key `Scoreboard` files an entity's
+    /// team membership under (M70).
+    ///
+    /// **Two different strings, chosen by type.** `Player` overrides it to the
+    /// profile name; every other entity inherits `Entity`'s, which is
+    /// `this.stringUUID` — the dashed lowercase form of the entity's UUID.
+    /// Using one for the other is silent: `/team join red @e[type=zombie]`
+    /// would simply never match.
+    pub fn scoreboard_name_of(&self, id: i32) -> Option<String> {
+        let e = self.world.entities.get(id)?;
+        if self.player_type_id == Some(e.type_id) {
+            self.world.entities.name_of(e.uuid).map(str::to_string)
+        } else {
+            Some(uuid_to_dashed(e.uuid))
+        }
+    }
+
+    /// `Entity.getTeam()`, reduced to what the label predicate reads (M70).
+    ///
+    /// The mapping itself lives in [`crate::teams::label_team`] so a gate can
+    /// drive it without a live session; this only resolves the scoreboard name
+    /// to look it up by.
+    pub fn label_team_of(&self, id: i32) -> Option<rewo_world::label::TeamView<'_>> {
+        let member = self.scoreboard_name_of(id)?;
+        crate::teams::label_team(&self.scoreboard.teams, &member)
+    }
+
+    /// The viewer's own team name — `minecraft.player.getTeam()` (M70).
+    pub fn own_team(&self) -> Option<&str> {
+        let uuid = self.own_uuid?;
+        self.team_of(uuid)
     }
 
     /// `ClientboundLoginPacket`: establish the active dimension.

@@ -1988,6 +1988,181 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M70 — the entity-label visibility rules (2026-07-29)
+
+Three features float a label over an entity — the nametag (M2-era), the health
+bar (M59), and whatever comes next — and each had implemented its own slice of
+the same predicate. The nametag's slice was **nothing**: it drew whenever a
+string existed. The bar's was three gates (living, name-tag distance,
+invisible), which M59 itself recorded as a strict subset, listing what was
+ungated. This is the whole predicate, once, in `rewo_world::label`, consumed by
+both.
+
+**`shouldShowName` is overridden four times and they do not compose the way
+the class names suggest.** With `nameSource` for `EntityRenderer`'s own body
+(`entity.shouldShowName() || (hasCustomName() && entity ==
+crosshairPickEntity)`) and `living` for `LivingEntityRenderer`'s:
+
+| renderer | rule |
+|---|---|
+| `EntityRenderer` (boat, minecart, item entity, …) | `nameSource` |
+| `LivingEntityRenderer` | `living` |
+| `MobRenderer` (every `Mob`) | `living && nameSource` |
+| `AvatarRenderer` (players) | `living && nameSource` |
+| `ArmorStandRenderer` | `isCustomNameVisible()`, and nothing else |
+
+**`LivingEntityRenderer` does not consult `nameSource` itself**, and reading it
+alone puts a type name over every mob in the world — because `extractNameTags`
+then assigns `getNameTag(entity)` = `entity.getDisplayName()`, which is never
+null. `MobRenderer` and `AvatarRenderer` re-add the clause, spelled out rather
+than shared, and they are what make an un-named mob silent. `ArmorStandRenderer`
+is a *full* override: an armour stand's name ignores the sneak cut-off, every
+team rule, invisibility, the camera entity and `isVehicle` alike.
+
+**The load-bearing shape is an early return inside the team branch.** The
+`switch` on `Team.Visibility` *returns*, so `hud.isHidden()`,
+`getCameraEntity()` and `isVehicle()` are only ever reached by an entity with
+**no** team. A player on a team keeps their nametag with F1 pressed, and a
+teamed horse keeps its while ridden. That is not an artifact of this
+transcription; it is what the source does, and `e7` is the witness.
+
+**Three things the brief got wrong, all found by reading rather than assuming.**
+
+- **The sneak cut-off is not 32.** It is `distanceToCameraSq >= 1024.0`, a
+  **hard-coded, folded** literal — the `float maxDist = 32.0F` beside it is a
+  dead local the decompiler kept. The distinction is observable: the bound is
+  **not** `Mth.square(nameTagDistance)`, so a server that raises
+  `NAME_TAG_DISTANCE` to 128 reaches further with a standing entity and leaves
+  a sneaking one capped at 32. `b3` is that witness. The comparison is `>=`
+  (returning false), so the bound itself is excluded.
+- **`isDiscrete` in `EntityRenderer` is not a distance rule at all** — there it
+  is `!state.isDiscrete`, passed to `submitNameTag` as the see-through flag.
+  The cut-off lives only in `LivingEntityRenderer`.
+- **Rewo already decodes teams.** `ClientboundSetPlayerTeamPacket` shipped with
+  the tab list (`rewo-net/src/teams.rs`, "nothing here is wired to a
+  renderer"), so M70 wired it rather than decoding it. Its discriminator is the
+  **`method` byte** — `input.readByte()`, signed and widened to int, compared
+  against five literals — with `shouldHaveParameters` = {0, 2} and
+  `shouldHavePlayerList` = {0, 3, 4}; note **Add carries both**, so reading the
+  parameters one field short eats the founding roster. Verified against the
+  decompile; the existing decode was already exact.
+
+**`NAME_TAG_DISTANCE` is an attribute, and `EntityRenderer`'s default is not.**
+`extractNameTags`'s no-argument form passes a literal `64.0`
+(`Entity.DEFAULT_NAME_TAG_DISTANCE`); `LivingEntityRenderer` overrides it to
+read `Attributes.NAME_TAG_DISTANCE`, a `RangedAttribute(64.0, [0, 512])`. So
+the attribute governs living entities only — which is every entity Rewo can
+resolve one for, since `DefaultAttributes.SUPPLIERS` is keyed by
+`EntityType<? extends LivingEntity>`. That equivalence is how the renderer
+ladder is selected without a renderer registry.
+
+**Two genuinely new wire inputs, one genuinely new key.**
+
+- **`set_passengers` (id 107)** — `readVarInt()` then `readVarIntArray()`,
+  which `REWO_PACKET_COVERAGE.md` had listed as absent at priority A. It exists
+  here for `Entity.isVehicle()`, which is `!passengers.isEmpty()` — **something
+  is riding this entity**, not the reverse. The table keeps the inverse index
+  too, because `handleSetEntityPassengers` calls `startRiding`, which detaches
+  a passenger from its previous vehicle first; without it a rider moving
+  between mounts leaves the old one reading as ridden forever, and that
+  vehicle silently loses its label for the rest of the session. The same
+  applies on despawn, from both directions. **An empty roster is meaningful**
+  and is the only thing that brings a label back, so decoding it as a
+  truncation would be silent.
+- **`DATA_CUSTOM_NAME_VISIBLE` — metadata index 3, BOOLEAN.** `Entity` owns
+  0..7 (shared flags, air supply, custom name, this, silent, no-gravity, pose,
+  ticks frozen), the same counting argument that pins `DATA_POSE` to 6. It is
+  `entity.shouldShowName()` for everything except a player, which overrides it
+  to a literal `true`. Applied on `false` as eagerly as on `true`: a latch
+  would leave a nametag up after the flag was cleared.
+- **`Entity.getScoreboardName()` is two different strings.** A player's is the
+  profile name; everything else's is `this.stringUUID`, the dashed lowercase
+  form. Using one for the other is silent — the team simply never matches.
+- **`isDiscrete()` is shared flag 1**, and three `Entity` methods share that
+  bit verbatim. It is *not* `isCrouching()`, which reads the pose.
+
+**Team identity is by name, and that is exact rather than an approximation.**
+Vanilla compares `PlayerTeam` object references — `Team.isAlliedTo` is
+`other == null ? false : this == other`, and `isInvisibleTo` uses
+`player.getTeam() == team` — but `Scoreboard` holds exactly one object per
+name, so reference and name equality coincide. It is *identity*: two different
+teams are never allied. And `PlayerTeam`'s constructor defaults
+`seeFriendlyInvisibles` to **`true`**, not false, which is the fallback for a
+team whose parameters never arrived.
+
+**`canSeeFriendlyInvisibles` is read by two different paths and the arms are
+not symmetric.** `isInvisibleTo` consults it (so an `ALWAYS` team shows an
+invisible team-mate), and `HIDE_FOR_OTHER_TEAMS` consults it again in
+`team.canSeeFriendlyInvisibles() || isVisibleToPlayer`. `HIDE_FOR_OWN_TEAM` has
+no such escape.
+
+**What Rewo still cannot answer, and answers by suppressing.**
+`crosshairPickEntity` needs an entity raycast — `LocalPlayer.raycastHitResult`
+→ `ProjectileUtil.getEntityHitResult`, plus two interaction-range attributes
+and the `AttackRange` item component — and Rewo's raycast is voxel-only. The
+clause is transcribed, driven both ways by the gate, and fed `false` live.
+**This narrows what the client draws**: a name-tagged mob whose
+`CustomNameVisible` is unset now shows nothing where it used to show a name
+unconditionally. That is closer to vanilla, not further — the old behaviour was
+wrong for such a mob at all times, this is wrong only while it is under the
+crosshair — but it is a visible change and the entity pick is the named
+follow-up.
+
+**Two mutations found real gaps in my own witnesses**, and both were the same
+shape: a property that looked tested but had no sample where the mutation could
+bite.
+
+- **`b4` straddled the name-tag distance without ever sitting on it.** With
+  samples at 63.99 and 64.01, flipping the source's `<` to `<=` left the entire
+  gate green. Fixed by sampling the bound exactly. (`b1`, the sneak cut-off,
+  had had an exact-bound sample from the start, which is why the equivalent
+  mutation there failed immediately.)
+- **`e6` tested `HIDE_FOR_OWN_TEAM` only from a same-team viewer.** Bolting a
+  `canSeeFriendlyInvisibles ||` escape onto that arm is then invisible, because
+  `team.name != mine` is already false and `&&` short-circuits past it. The
+  discriminating viewer is on the **other** team. Fixed by adding that sample.
+
+**Gate: `rewo labelshot --check`, 32 witnesses**, serverless, fail-closed,
+validation ON, 0 VUIDs. It drives raw `set_entity_data` / `update_attributes` /
+`set_passengers` / `set_player_team` bodies through the production routers into
+`EntityTable` + `Teams`, then through the same `label_inputs_from_table` +
+`teams::label_team` + `resolve_labels` the collector uses, and finally counts
+vertices in `EntityPass`'s text range — so a suppression is measured as *zero
+label vertices*, not as a boolean the gate computed itself. Every witness names
+its mutation partner and **all fourteen were run**; the two above failed, were
+fixed, and the mutations were re-run.
+
+`f6` is the property the milestone exists for: over six scenarios the nametag
+and the health bar never disagree, with a non-vacuity check on the count —
+M59's `e3`/`e4` passed on two empty vectors for exactly that reason, and before
+M70 the "invisible" scenario genuinely disagreed (a name and no bar).
+
+**Measured.** **1136 tests** (was 1098: +24 in `rewo-world`'s `label`, +14 in
+`rewo-net` for the two new decodes and the UUID form). Twenty-three gates green
+with validation ON and **0 VUIDs**: labelshot 32, capeshot 69, itemshot 62,
+inventoryshot 143, healthbarshot 33, attributeshot 43, captureshot 17,
+blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35, handshot 34,
+particleshot 34, eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot
+243/243 + emissive 5 + etf 8 + tint 6 + variant 8, plus skyshot, lightmapshot,
+tintshot, meshshot and dimensioncheck. Demo PNG SHA-256 byte-identical to M15
+onward. `healthbarshot`'s 33 witnesses were re-pointed at the unified predicate
+and still pass unchanged.
+
+**Open.** No live in-world sighting — the gate is authoritative for the
+properties it names, and nobody has watched a nametag disappear behind a team
+rule on a real server. `crosshairPickEntity` (above) is the one input still fed
+a constant. `ArmorStandRenderer`'s arm of the ladder is transcribed and
+unit-tested but unreachable live, because Rewo models no armour stand.
+`ItemFrameRenderer.shouldShowName` — its own third rule, `!hud.isHidden() &&
+crosshairPick == entity && item.getCustomName() != null` — is deliberately not
+implemented, since Rewo renders neither item frames nor their held item's name.
+`hud.isHidden()` suppresses labels but not Rewo's own hotbar, hearts or F3
+block, where vanilla hides the whole GUI layer through
+`guiRenderState.isHudHidden`. And `set_passengers` is consumed for `isVehicle`
+only: a passenger still renders at its own last-reported position rather than
+on its vehicle, which is the gap `REWO_PACKET_COVERAGE.md` records against that
+packet and which this milestone does not close.
+
 ### M64 — closing M57, M60 and M61's open entity-rendering items (2026-07-29)
 
 Four jobs, no new subsystems: the texture variants M57b said were "one decode

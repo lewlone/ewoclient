@@ -27,6 +27,18 @@ pub struct EntityMeta {
     /// Shared flags byte (index 0): 0x01 on-fire, 0x02 crouching, 0x08
     /// sprinting, 0x10 swimming, 0x20 invisible, 0x40 glowing, 0x80 elytra.
     pub flags: Option<u8>,
+    /// `Entity.DATA_CUSTOM_NAME_VISIBLE` — index **3**, BOOLEAN (M70).
+    ///
+    /// This is `Entity.shouldShowName()` for everything except a player
+    /// (`Player` overrides it to a literal `true`), so it is the whole of
+    /// whether a named mob wears its nametag without being looked at.
+    ///
+    /// Index 3 is pinned by counting `Entity`'s `defineId` calls in
+    /// declaration order: 0 shared flags, 1 air supply, 2 custom name, 3 this,
+    /// 4 silent, 5 no-gravity, 6 pose, 7 ticks frozen. The same argument pins
+    /// `DATA_POSE` to 6, which the working pose decode confirms independently.
+    /// No kind gate is possible or needed — `Entity` owns 0..7.
+    pub custom_name_visible: Option<bool>,
     /// Entity pose ordinal (index 6, POSE serializer): STANDING=0,
     /// FALL_FLYING, SLEEPING, SWIMMING, SPIN_ATTACK, CROUCHING,
     /// LONG_JUMPING, DYING, CROAKING, USING_TONGUE, SITTING, ROARING,
@@ -204,6 +216,9 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
                     }
                 }
             }
+            // BOOLEAN at 3 = `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). Serializer
+            // 8 is BOOLEAN, the same id the index-16 dancing/baby flag uses.
+            (3, 8) => meta.custom_name_visible = r.bool().ok(),
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
             // BYTE at 8 = `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, the first
             // LivingEntity-owned slot. Unambiguous: Entity owns 0..7.

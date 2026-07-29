@@ -764,27 +764,189 @@ fn resolve_wavy_cape(
     rewo_gpu::entities::CapeJoints::from_slice(&buf[..n])
 }
 
+/// Everything the label predicate reads about the **viewer**, gathered once
+/// per frame rather than once per entity (M70).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LabelViewer<'a> {
+    /// `minecraft.getCameraEntity()`. Rewo never detaches the camera, so this
+    /// is the local player, but the two are kept apart because vanilla reads
+    /// them in different clauses and they diverge while spectating.
+    pub camera_entity: Option<i32>,
+    /// `minecraft.player`.
+    pub local_player: Option<i32>,
+    /// `gui.hud.isHidden()` — F1.
+    pub hud_hidden: bool,
+    /// `player.isSpectator()`.
+    pub spectator: bool,
+    /// `minecraft.player.getTeam()`.
+    pub team: Option<&'a str>,
+}
+
+impl<'a> LabelViewer<'a> {
+    /// Read the viewer half out of the session once.
+    pub(crate) fn from_session(session: &'a PlaySession, hud_hidden: bool) -> LabelViewer<'a> {
+        LabelViewer {
+            camera_entity: session.player_id,
+            local_player: session.player_id,
+            hud_hidden,
+            spectator: session.own_game_mode().is_some_and(|g| g.is_spectator()),
+            team: session.own_team(),
+        }
+    }
+}
+
+/// Build one entity's [`rewo_world::label::LabelInputs`] — the production seam
+/// shared by the live collector and the `labelshot` oracle (M70).
+///
+/// Shared for the same reason as [`resolve_attack_anim`]: the gate has to prove
+/// the mapping the client actually renders through. M45 and M41 both shipped
+/// gates that quietly stopped testing their subject by reimplementing a slice
+/// of the app's setup.
+///
+/// **Renderer selection.** Vanilla picks the `shouldShowName` override by
+/// renderer class. Rewo has no renderer registry, so: the player type maps to
+/// `Avatar`, anything `rewo_world::attributes::resolve` can answer
+/// `name_tag_distance` for maps to `Mob`, and everything else to `Other`. That
+/// middle equivalence is `DefaultAttributes.SUPPLIERS`, which is keyed by
+/// `EntityType<? extends LivingEntity>` — so having a supplier is having a
+/// `LivingEntity` renderer. `LabelRenderer::ArmorStand` is transcribed and
+/// unit-tested but **never selected here**, because Rewo models no armour
+/// stand (`mobs.rs` renders it as a capsule); it exists so the ladder is
+/// complete when one lands.
+pub(crate) fn resolve_label_inputs<'a>(
+    session: &'a PlaySession,
+    id: i32,
+    entity_name: Option<&str>,
+    attr_reg: Option<&rewo_data::attributes::AttributeRegistry>,
+    is_player: bool,
+    distance_sq: f64,
+    viewer: &LabelViewer<'a>,
+) -> rewo_world::label::LabelInputs<'a> {
+    label_inputs_from_table(
+        &session.world.entities,
+        id,
+        entity_name,
+        attr_reg,
+        is_player,
+        distance_sq,
+        viewer,
+        session.label_team_of(id),
+    )
+}
+
+/// The table-level half of [`resolve_label_inputs`], split out so a gate can
+/// drive the real input resolution without a live session (M70).
+///
+/// The caller supplies the entity's team, because that is the one input that
+/// needs the scoreboard rather than the entity table.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn label_inputs_from_table<'a>(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    entity_name: Option<&str>,
+    attr_reg: Option<&rewo_data::attributes::AttributeRegistry>,
+    is_player: bool,
+    distance_sq: f64,
+    viewer: &LabelViewer<'a>,
+    team: Option<rewo_world::label::TeamView<'a>>,
+) -> rewo_world::label::LabelInputs<'a> {
+    use rewo_world::label::{LabelInputs, LabelRenderer, DEFAULT_NAME_TAG_DISTANCE};
+    // `LivingEntityRenderer.extractNameTags` reads
+    // `Attributes.NAME_TAG_DISTANCE`; the base passes a literal 64.0. Resolving
+    // it is also the living test, so the two answers come from one lookup.
+    let resolved = attr_reg.and_then(|reg| {
+        rewo_world::attributes::resolve(ents.attributes(id), entity_name, "name_tag_distance", reg)
+    });
+    let renderer = if is_player {
+        LabelRenderer::Avatar
+    } else if resolved.is_some() {
+        LabelRenderer::Mob
+    } else {
+        LabelRenderer::Other
+    };
+    LabelInputs {
+        renderer,
+        distance_sq,
+        name_tag_distance: resolved.map_or(DEFAULT_NAME_TAG_DISTANCE, |(d, _)| d),
+        is_discrete: ents.is_discrete(id),
+        is_invisible: ents.is_invisible(id),
+        is_vehicle: ents.is_vehicle(id),
+        is_camera_entity: viewer.camera_entity == Some(id),
+        is_local_player: viewer.local_player == Some(id),
+        hud_hidden: viewer.hud_hidden,
+        viewer_spectator: viewer.spectator,
+        team,
+        viewer_team: viewer.team,
+        // `entity.shouldShowName()` — `Player` overrides it to a literal
+        // `true`; everything else inherits `isCustomNameVisible()`.
+        entity_should_show_name: is_player || ents.is_custom_name_visible(id),
+        has_custom_name: ents.custom_name(id).is_some(),
+        // Rewo has no entity raycast, so it cannot answer
+        // `entityRenderDispatcher.crosshairPickEntity`. Suppressing rather than
+        // guessing is the house rule (M19, M22); see `rewo_world::label`'s
+        // module docs for why that is still closer to vanilla than the
+        // pre-M70 behaviour of showing every custom name unconditionally.
+        is_crosshair_pick: false,
+    }
+}
+
+/// Both of an `EntityDraw`'s label fields, resolved together from one
+/// predicate — the production seam shared by the live collector and the
+/// `labelshot` oracle (M70).
+///
+/// This exists so "the nametag and the health bar agree" is a property of one
+/// function rather than of two call sites that happen to line up. Before M70
+/// they did not: the bar had a three-gate subset of `shouldShowName` and the
+/// tag had none at all, so an invisible named mob showed a name and no bar.
+///
+/// `name` is the candidate string the caller already chose — a player's
+/// profile name or anything else's metadata custom name. Whether it is *drawn*
+/// is the predicate's answer, not the mere existence of the string.
+pub(crate) fn resolve_labels<'a>(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    entity_name: Option<&str>,
+    attr_reg: Option<&rewo_data::attributes::AttributeRegistry>,
+    label: &rewo_world::label::LabelInputs<'_>,
+    name: Option<&'a str>,
+) -> (Option<&'a str>, Option<rewo_gpu::entities::HealthBar>) {
+    let shown = rewo_world::label::should_show_name(label).then_some(name).flatten();
+    // `None` without an attribute registry, which is the same fail-closed
+    // answer the resolver gives for an unsynced max — a bar is never drawn on
+    // a guess.
+    let bar = attr_reg.and_then(|reg| resolve_health_bar(ents, id, entity_name, reg, label));
+    (shown, bar)
+}
+
+/// `REWO_HEALTH_BAR_SPEC.md` rules 4 and 5 — whether this entity gets a bar.
+///
+/// **M70 moved rule 5 out of here.** It used to be three hand-rolled gates
+/// (living, name-tag distance, invisible) that were a strict subset of what
+/// suppresses a nametag, and the nametag path had a *different* subset — namely
+/// none. Both now go through [`rewo_world::label`], so "suppressed by
+/// everything that suppresses a nametag" is true by construction rather than by
+/// two lists happening to agree.
+///
+/// What stays here is rule 4, which is not a visibility question: a bar needs a
+/// max health an `update_attributes` actually established. `Source::Default` is
+/// rejected even though the supplier's 20.0 is a real number for every living
+/// entity, because Rewo cannot tell "the server never sent health" from "this
+/// mob has 1 HP" — `DATA_HEALTH_ID` is seeded at `1.0F` — so a bar with an
+/// unverified denominator would be a confident lie in both directions.
 pub(crate) fn resolve_health_bar(
     ents: &rewo_world::entities::EntityTable,
     id: i32,
     entity_name: Option<&str>,
     reg: &rewo_data::attributes::AttributeRegistry,
-    distance_sq: f64,
+    label: &rewo_world::label::LabelInputs<'_>,
 ) -> Option<rewo_gpu::entities::HealthBar> {
     use rewo_world::attributes::{resolve, Source};
-    let stored = ents.attributes(id);
-    // Steps 1 + 2 at once: a non-living entity has no `name_tag_distance`
-    // either, so this `?` is the living gate as much as the distance one.
-    let (name_tag_distance, _) = resolve(stored, entity_name, "name_tag_distance", reg)?;
-    if distance_sq >= name_tag_distance * name_tag_distance {
+    // Rule 5, in one call, shared with the nametag.
+    if !rewo_world::label::should_show_health_bar(label) {
         return None;
     }
-    // Step 3.
-    if ents.is_invisible(id) {
-        return None;
-    }
-    // Step 4.
-    let (max, source) = resolve(stored, entity_name, "max_health", reg)?;
+    // Rule 4.
+    let (max, source) = resolve(ents.attributes(id), entity_name, "max_health", reg)?;
     if source != Source::Synced {
         return None;
     }
@@ -1583,6 +1745,10 @@ fn collect_entities<'a>(
     // The resource pack's ETF random-entity rules (M52). Empty without a pack,
     // in which case every entity keeps its vanilla texture.
     etf: &rewo_data::etf::EtfPack,
+    // `Minecraft.getInstance().gui.hud.isHidden()` — F1 (M70). Suppresses
+    // every floating label on an un-teamed entity, and nothing on a teamed
+    // one, because the team switch returns first.
+    hud_hidden: bool,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -1592,6 +1758,9 @@ fn collect_entities<'a>(
                                                   // the *eye*, not the feet.
     let attr_reg = session.attribute_registry.as_deref();
     let eye = player_eye(session);
+    // M70: the viewer half of the label predicate — camera entity, F1, game
+    // mode and the viewer's own team. Read once per frame, not per entity.
+    let viewer = LabelViewer::from_session(session, hud_hidden);
                                                   // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
                                                   // pins every player's walk pose so a still-target PNG can prove the
                                                   // limb-swing mechanism deterministically (a live walker's phase at
@@ -1717,33 +1886,47 @@ fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M70: the label-visibility predicate, resolved once and consumed by
+        // both the nametag and the health bar so the two cannot disagree.
+        // `EntityRenderDispatcher.distanceToSqr` measures from the camera,
+        // which is the *eye*, not the feet.
+        let dx = p[0] - eye.x as f64;
+        let dy = p[1] - eye.y as f64;
+        let dz = p[2] - eye.z as f64;
+        let label = resolve_label_inputs(
+            session,
+            id,
+            etypes.name(e.type_id),
+            attr_reg,
+            is_player,
+            dx * dx + dy * dy + dz * dz,
+            &viewer,
+        );
+        let (label_name, label_health) = resolve_labels(
+            &session.world.entities,
+            id,
+            etypes.name(e.type_id),
+            attr_reg,
+            &label,
+            // A player shows their profile name; anything else its metadata
+            // custom name.
+            if is_player {
+                session.world.entities.name_of(e.uuid)
+            } else {
+                session.world.entities.custom_name(id)
+            },
+        );
         out.push(EntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             width: w,
             height: h,
             color: if is_player { player_color } else { mob_color },
-            // Players show their profile name; any entity with a metadata
-            // custom name shows that (named mobs).
-            name: if is_player {
-                session.world.entities.name_of(e.uuid)
-            } else {
-                session.world.entities.custom_name(id)
-            },
-            // M59: the floating health bar. `None` without an attribute
-            // registry, which is the same fail-closed answer the resolver gives
-            // for an unsynced max — a bar is never drawn on a guess.
-            health: attr_reg.and_then(|reg| {
-                let dx = p[0] - eye.x as f64;
-                let dy = p[1] - eye.y as f64;
-                let dz = p[2] - eye.z as f64;
-                resolve_health_bar(
-                    &session.world.entities,
-                    id,
-                    etypes.name(e.type_id),
-                    reg,
-                    dx * dx + dy * dy + dz * dz,
-                )
-            }),
+            // M70: both floating labels now hang off one predicate, resolved
+            // together by `resolve_labels` so they cannot disagree. *Whether*
+            // either is drawn is `shouldShowName`, not the mere existence of a
+            // string — which is all it used to be.
+            name: label_name,
+            health: label_health,
             kind,
             yaw: e.yaw,
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
@@ -2539,6 +2722,10 @@ fn run_headless(
         &baked.equipment,
         &trim_slots,
         &etf,
+        // The headless one-shot has no key handling, so the HUD is never
+        // hidden. `REWO_HUD_HIDDEN=1` is the knob that lets a gate or a
+        // scripted shot exercise F1's suppression without a keyboard.
+        std::env::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -3000,6 +3187,15 @@ struct LiveApp {
     /// to see whether F3 was used as a chord modifier before treating it as a
     /// toggle (`if (this.usedDebugKeyAsModifier) { clear it } else { toggle }`).
     debug: bool,
+    /// `Hud.isHidden()` — F1 (M70). Vanilla's is a plain `toggle()` on press,
+    /// with none of F3's modifier dance, and it starts `false`.
+    ///
+    /// Rewo consumes it only where vanilla's *label* path does: it suppresses
+    /// floating nametags and health bars on un-teamed entities. Vanilla also
+    /// hides the whole GUI layer from it (`guiRenderState.isHudHidden`);
+    /// hiding Rewo's hotbar/hearts/F3 block is a separate concern this
+    /// milestone deliberately leaves alone, and is recorded as open.
+    hud_hidden: bool,
     /// F3 is held — the `keyDebugModifier` half (M66).
     f3_down: bool,
     /// `usedDebugKeyAsModifier` — a chord fired while F3 was down, so its
@@ -3242,6 +3438,18 @@ impl ApplicationHandler for LiveApp {
                     //
                     // Toggling on press instead would flip the overlay every
                     // time you pressed F3+H.
+                    // F1 — `Hud.toggle()` (M70). On **press**, and with no
+                    // modifier dance: F1 is not also a chord prefix, so unlike
+                    // F3 there is nothing to disambiguate. `!event.repeat`
+                    // guards the OS auto-repeat, which would otherwise flip it
+                    // dozens of times a second while held.
+                    PhysicalKey::Code(KeyCode::F1) if p && !event.repeat => {
+                        self.hud_hidden = !self.hud_hidden;
+                        log::info!(
+                            "hud.{}",
+                            if self.hud_hidden { "hidden" } else { "shown" }
+                        );
+                    }
                     PhysicalKey::Code(KeyCode::F3) => {
                         self.f3_down = p;
                         if !p {
@@ -3625,6 +3833,7 @@ impl LiveApp {
             &self.equipment,
             &trim_slots,
             &self.etf,
+            self.hud_hidden,
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
@@ -3995,6 +4204,8 @@ fn run_windowed(
         hotbar_slot: 0,
         dirt_item,
         debug: true,
+        // `Hud.isHidden` starts false — the HUD is showing (M70).
+        hud_hidden: false,
         f3_down: false,
         f3_used_as_modifier: false,
         advanced_tooltips: false,

@@ -157,9 +157,11 @@ Concretely, from `ClientPacketListener`:
   local player's own id this is knockback from a hit, from water, from a
   wind charge.
 - `handleSetEntityPassengersPacket` calls `vehicle.ejectPassengers()` then
-  `passenger.startRiding(vehicle, …)`. Today Rewo renders a mounted mob at its
-  own last-reported position, which for a boat passenger is *approximately*
-  right and for a horse rider is a floating body.
+  `passenger.startRiding(vehicle, …)`. **M70 decodes this packet** and keeps
+  the riding graph both ways, but only to answer `Entity.isVehicle()` for the
+  label predicate. The positional half is untouched: Rewo still renders a
+  mounted mob at its own last-reported position, which for a boat passenger is
+  *approximately* right and for a horse rider is a floating body.
 - `move_vehicle` is the position half of the same contract, and has a
   serverbound echo.
 
@@ -336,7 +338,7 @@ same two greps will call every one of them handled.
 | 104 | `set_health` | handled | `opt!` → `cb_play_set_health` | |
 | 105 | `set_held_slot` | handled | `req!` → `cb_play_set_held_slot` | |
 | 106 | `set_objective` | handled | `req!` → `cb_play_set_objective` | |
-| 107 | `set_passengers` | absent | **A** | Riding. Passengers currently render at their own stale positions rather than on their vehicle. |
+| 107 | `set_passengers` | **partial** (M70) | `req!` → `cb_play_set_passengers` | Decoded and applied to a riding graph, but consumed for `Entity.isVehicle()` only — a ridden entity's floating label is suppressed. The *positional* half is still absent at **A**: passengers render at their own stale positions rather than on their vehicle, and `ejectPassengers` has no effect on physics. |
 | 108 | `set_player_inventory` | absent | **A** | An authoritative inventory write addressed by **inventory index**, not menu slot — the third coordinate system M34 names. M34 handled `container_set_slot` and not this. |
 | 109 | `set_player_team` | handled | `req!` → `cb_play_set_player_team` | |
 | 110 | `set_score` | handled | `req!` → `cb_play_set_score` | |

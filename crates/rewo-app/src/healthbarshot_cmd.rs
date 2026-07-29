@@ -278,8 +278,28 @@ fn check_resolver(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         t.add(1, EntityState::new(0, type_id, 0.0, 0.0, 0.0, 0.0, 0.0));
         t
     };
+    // M70 moved rule 5's gating into `rewo_world::label`, so the bar's
+    // visibility now runs through the same predicate the nametag does. This
+    // closure keeps its old shape — `(table, type name, distance²)` — but the
+    // gates behind it (living, distance, invisible) are resolved by the
+    // production `label_inputs_from_table`, not by hand here.
+    //
+    // The viewer is the default one: no camera entity, no team, HUD showing,
+    // not spectating. Those axes belong to `labelshot`, which grades the
+    // predicate itself; what these witnesses grade is the *bar*.
+    let viewer = crate::live_cmd::LabelViewer::default();
     let resolve = |t: &EntityTable, type_name: &str, dist_sq: f64| {
-        crate::live_cmd::resolve_health_bar(t, 1, Some(type_name), &reg, dist_sq)
+        let label = crate::live_cmd::label_inputs_from_table(
+            t,
+            1,
+            Some(type_name),
+            Some(&reg),
+            false,
+            dist_sq,
+            &viewer,
+            None,
+        );
+        crate::live_cmd::resolve_health_bar(t, 1, Some(type_name), &reg, &label)
     };
 
     // -- f1 / f2 / f3: spec rule 4, the fail-closed denominator ---------------
@@ -338,13 +358,7 @@ fn check_resolver(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     let mut boat_t = spawn(boat);
     send_attrs(&mut boat_t, &attrs_body(1, &[(max_health, 20.0)]));
-    let boat_bar = crate::live_cmd::resolve_health_bar(
-        &boat_t,
-        1,
-        Some("minecraft:oak_boat"),
-        &reg,
-        4.0,
-    );
+    let boat_bar = resolve(&boat_t, "minecraft:oak_boat", 4.0);
     c.record(
         "f4.a_non_living_entity_gets_no_bar",
         boat_bar.is_none(),
@@ -442,7 +456,7 @@ fn check_resolver(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 // The emitter's harness.
 // ---------------------------------------------------------------------------
 
-fn neutral_draw() -> EntityDraw<'static> {
+pub(crate) fn neutral_draw() -> EntityDraw<'static> {
     EntityDraw {
         pos: [0.0, 0.0, 0.0],
         width: 0.6,

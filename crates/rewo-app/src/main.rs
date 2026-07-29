@@ -14,6 +14,7 @@ mod attributeshot_cmd;
 mod danceshot_cmd;
 mod healthbarshot_cmd;
 mod hurtshot_cmd;
+mod labelshot_cmd;
 mod itemshot_cmd;
 mod demo_cmd;
 mod dimension_check;
@@ -219,6 +220,11 @@ enum Command {
     /// grades the render against `REWO_HEALTH_BAR_SPEC.md`, a written design
     /// decision, rather than against a decompile reading.
     Healthbarshot(healthbarshot_cmd::HealthbarshotArgs),
+    /// M70: entity-label visibility — the one predicate that decides whether a
+    /// nametag or a health bar is drawn at all. The renderer ladder, the sneak
+    /// cut-off, invisibility, the camera entity, `isVehicle`, F1 and the four
+    /// `Team.Visibility` arms, plus the property that both labels agree.
+    Labelshot(labelshot_cmd::LabelshotArgs),
     /// M21: the combat damage response — hurt clock + the red flash.
     Hurtshot(hurtshot_cmd::HurtshotArgs),
     /// M22: held items — both geometry paths, placement and suppression.
@@ -275,6 +281,7 @@ fn main() {
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
         Some(Command::Healthbarshot(hb_args)) => healthbarshot_cmd::run(hb_args),
+        Some(Command::Labelshot(label_args)) => labelshot_cmd::run(label_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
