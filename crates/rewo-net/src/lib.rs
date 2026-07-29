@@ -14,6 +14,7 @@ pub mod abilities;
 pub mod attributes;
 pub mod biome_parse;
 pub mod boss_bar;
+pub mod bundle;
 pub mod chat_sign;
 pub mod chat_style;
 pub mod chunk_batch;
@@ -33,6 +34,7 @@ pub mod motion;
 pub mod play;
 pub mod record;
 pub mod scoreboard;
+pub mod session;
 pub mod skins;
 pub mod sounds;
 pub mod spawn_info;
@@ -241,6 +243,13 @@ pub struct Connection<'a> {
     /// handed to the play session. Decode and state only — nothing reads them
     /// yet; `crate::tags` says what wiring them would take.
     tags: crate::tags::TagOverrides,
+    /// The session facts that arrive in **configuration** and belong to the
+    /// whole connection (M78): the server brand, and the cookie jar
+    /// `cookie_request` answers from. Both are fields of vanilla's *common*
+    /// listener, which is precisely the object that outlives the
+    /// configuration → play switch, so this is moved into the play session by
+    /// [`Connection::into_play`] exactly as `tags` is.
+    session: crate::session::SessionState,
 }
 
 impl<'a> Connection<'a> {
@@ -274,6 +283,7 @@ impl<'a> Connection<'a> {
             frog_variants: Vec::new(),
             trim_patterns: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
+            session: crate::session::SessionState::default(),
         })
     }
 
@@ -486,6 +496,29 @@ impl<'a> Connection<'a> {
                 x if Some(x) == self.ids.cb_config_cookie_request => {
                     self.answer_cookie_request(body, self.ids.sb_config_cookie_response)?;
                 }
+                x if x == self.ids.cb_config_custom_payload => {
+                    // M78 — and this is the copy that actually fires: the
+                    // vanilla server sends `minecraft:brand` from its
+                    // configuration listener's opening burst and never sends
+                    // another. `serverBrand` is a field of the *common*
+                    // listener both states extend, so the two ids are one
+                    // store; see `crate::session`.
+                    crate::session::apply(
+                        crate::session::SessionPacket::CustomPayload,
+                        &self.packet[body..],
+                        &mut self.session,
+                    );
+                }
+                x if x == self.ids.cb_config_store_cookie => {
+                    // M78 — the other `common` packet. A transfer-driven
+                    // network sets cookies on whichever side of the state
+                    // boundary it happens to be on, and the jar is one store.
+                    crate::session::apply(
+                        crate::session::SessionPacket::StoreCookie,
+                        &self.packet[body..],
+                        &mut self.session,
+                    );
+                }
                 x if x == self.ids.cb_config_disconnect => {
                     let mut r = PacketReader::new(&self.packet[body..]);
                     let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
@@ -612,11 +645,20 @@ impl<'a> Connection<'a> {
         Ok(())
     }
 
+    /// `handleRequestCookie` — `send(new ServerboundCookieResponsePacket(
+    /// packet.key(), this.serverCookies.get(packet.key())))`.
+    ///
+    /// The reply is **whatever the jar holds**, and `Map.get` returning `null`
+    /// is what makes it a `writeNullable` of nothing. Before M78 nothing ever
+    /// called `store_cookie`, so this always wrote `false` and a
+    /// transfer-driven network watched its session forget itself on every hop.
+    /// The empty-jar path is unchanged; what changed is that the jar can now be
+    /// non-empty.
     fn answer_cookie_request(&mut self, body: usize, resp_id: i32) -> Result<(), String> {
         let mut r = PacketReader::new(&self.packet[body..]);
         let key = r.identifier().unwrap_or_default();
-        let mut resp = PacketWriter::packet(resp_id);
-        resp.string(&key).bool(false); // no payload
+        let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
+        let resp = crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
         self.send(resp)
     }
 
@@ -713,7 +755,19 @@ impl<'a> Connection<'a> {
                     log::warn!("net: play disconnect: {reason}");
                     return Ok(());
                 }
-                _ => {}
+                _ => {
+                    // M78. The M1 soak/replay harness sees the same seven
+                    // session packets the play session does, and routing them
+                    // here keeps the brand and the cookie jar true on this path
+                    // too. `route_session` returns `false` for every other id,
+                    // which is what makes it safe as the fallthrough.
+                    //
+                    // The eighth, `bundle_delimiter`, is deliberately *not*
+                    // handled here: this loop renders no frames, so
+                    // reassembling a bundle would change nothing measurable.
+                    // See [`bundle`].
+                    route_session(id, &self.packet[body..], &self.ids, &mut self.session);
+                }
             }
         }
         Ok(())
@@ -2714,6 +2768,35 @@ pub fn route_ticking(
         return false;
     };
     ticking::apply(kind, body, manager);
+    true
+}
+
+/// The clientbound-**play** dispatch seam for M78's seven session / metadata /
+/// chat packets. Returns whether the id matched — **not** whether the body
+/// decoded.
+///
+/// `bundle_delimiter`, M78's eighth, is deliberately absent: it changes how
+/// packets are *applied* rather than what one means, so it is consumed by
+/// [`bundle::BundleAssembler`] before dispatch ever runs. See [`session`].
+pub fn route_session(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    state: &mut session::SessionState,
+) -> bool {
+    let table = session::SessionIds {
+        custom_payload: ids.cb_play_custom_payload,
+        disguised_chat: ids.cb_play_disguised_chat,
+        game_rule_values: ids.cb_play_game_rule_values,
+        player_combat_end: ids.cb_play_player_combat_end,
+        player_combat_enter: ids.cb_play_player_combat_enter,
+        server_data: ids.cb_play_server_data,
+        store_cookie: ids.cb_play_store_cookie,
+    };
+    let Some(kind) = session::kind_for_id(id, table) else {
+        return false;
+    };
+    session::apply(kind, body, state);
     true
 }
 

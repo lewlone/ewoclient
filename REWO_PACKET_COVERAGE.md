@@ -27,29 +27,34 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 76 of them. 65
+1. **141 clientbound-play packets. Rewo resolves and consumes 84 of them. 57
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **The 65 gaps split 11 / 20 / 23 / 11** across pure state, needs-rendering,
-   needs-a-missing-subsystem, and not-applicable. The 11 pure-state ones are
+2. **The 57 gaps split 3 / 20 / 23 / 11** across pure state, needs-rendering,
+   needs-a-missing-subsystem, and not-applicable. The pure-state ones are
    decodable and headlessly gateable *today*, with no renderer and no design
-   decision — the same test the M52–M77 batches were chosen by.
+   decision — the test the M52–M78 batches were chosen by — and **there are
+   only three left**, all of them the local player's rotation and spawn point.
+   §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
    it, **ten of the 141 rows were wrong** — all in the same direction, all
    saying `absent` about code that was present. §8 has the mechanism and the
    fix, and the fix is the machine check above, not vigilance.
-4. **`bundle_delimiter` (0) is the sharpest remaining gap**, because its
-   failure mode is a rendering glitch rather than a protocol error. Vanilla
-   applies everything between two delimiters in **one** tick; Rewo applies each
-   packet as it drains, so an `add_entity` and its `set_entity_data` can land
-   a frame apart and a mob renders for one frame with default metadata. §3.
+4. **`bundle_delimiter` (0) closed in M78** — it was ranked the sharpest gap
+   here because its failure mode is a rendering glitch rather than a protocol
+   error. The correction M78 made to the ranking's own wording is worth
+   keeping: vanilla applies a bundle in one **scheduled task**, not one *tick*,
+   and the observable guarantee is that no frame is rendered part-way through.
+   §9.
 5. **Rewo honours a positional teleport and silently ignores a rotational
    one.** `player_position` (72) is handled; `player_rotation` (73) and
    `player_look_at` (71) are not. That asymmetry is the giveaway — a server
-   turning your head with `/teleport … facing` does nothing at all. §3.
+   turning your head with `/teleport … facing` does nothing at all. It is now
+   the **only** ranked gap left in §3, and two of the six remaining class-A
+   packets. §3.
 6. **`hurt_animation` (42) is the input `M52a`'s vacuous `no_damage_tilt`
    module has nothing to disable.** The Velvet-batch note "to port the disable
    you must first build the thing being disabled" has a packet behind it.
@@ -57,10 +62,10 @@ impossible to repeat: every clientbound-play packet in the report appears in
    the part a milestone needed — §4 names them, because a partially-consumed
    packet looks identical to a fully-consumed one from `ids.rs`, and the
    machine check in §1 cannot see the difference either.
-8. **`player_abilities` (64) is claimed.** A concurrent milestone is landing
-   it together with the flight / no-clip physics it feeds (§4.1). It is listed
-   `absent` here because it was absent when this was re-derived; whoever lands
-   it flips the row.
+8. **`player_abilities` (64) landed in M75**, together with the flight /
+   no-clip physics it feeds (§4.1). It was listed `absent` when M74 re-derived
+   this document; the machine check in §1 is what made flipping the row
+   non-optional.
 
 ---
 
@@ -157,25 +162,30 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **76** |
+| Resolved **and** consumed | **84** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **65** |
+| Not resolved at all | **57** |
 | **Total clientbound-play** | **141** |
 
-The 65 gaps, by class:
+The 57 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
-| **A** pure state, no rendering | **11** | 17% |
-| **B** needs rendering | **20** | 31% |
-| **C** needs a subsystem Rewo lacks | **23** | 35% |
-| **D** not applicable | **11** | 17% |
+| **A** pure state, no rendering | **3** | 5% |
+| **B** needs rendering | **20** | 35% |
+| **C** needs a subsystem Rewo lacks | **23** | 40% |
+| **D** not applicable | **11** | 19% |
 
-M67 audited 56 / 0 / 85 with class A at 31. Twenty packets separate that
-published 56 from this 76, and **ten of them had already landed when M67
+M67 audited 56 / 0 / 85 with class A at 31. **Twenty-eight** packets separate
+that published 56 from this 84, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
-from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one
-is M75's, and three are M77's.
+from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
+M75's, three are M77's, and eight are M78's.
+
+**Class A is nearly exhausted.** Three pure-state gaps remain — `player_rotation`,
+`player_look_at` and `set_default_spawn_position`, all of which write the local
+player's own state (§3). The next-largest tranche of decodable-today work is
+class **B**, where the decode is possible and the *feature* wants an eyeball.
 
 ---
 
@@ -184,24 +194,34 @@ is M75's, and three are M77's.
 Ranked by *how badly the failure hides*, not by how visible the feature is.
 M67's original top three — the velocity/mount cluster, the inventory's
 authoritative writes, and `update_tags` — are all closed, by M68, M69 and M69
-respectively. These are what replaced them.
+respectively. **M78 closed two of the three that replaced them**
+(`bundle_delimiter` and `disguised_chat`, kept below as worked examples,
+because what each was ranked *for* is what the milestone had to get right).
+One live entry remains.
 
-### 1. `bundle_delimiter` (0) — the one whose failure looks like a render bug
+### 1. `bundle_delimiter` (0) — closed, M78
 
 Empty body, and the cheapest row in the table. `ClientboundBundlePacket` wraps
-a run of packets between two delimiters and vanilla applies **the whole run in
-one tick**; the delimiter is how the client knows where the run ends.
+a run of packets between two delimiters, and the delimiter is how the client
+knows where the run ends.
 
-Rewo applies each packet as it drains the socket. The server bundles precisely
+Rewo applied each packet as it drained the socket. The server bundles precisely
 the things that are wrong apart: an `add_entity` with its `set_entity_data`,
 its `set_equipment` and its `update_attributes`. Split across frames, a mob
 renders for a frame or two as an un-named, un-equipped, default-metadata
 version of itself — a slime at size 1, an armour stand with no armour, a
 zombie with no held item — and then pops into correctness.
 
-That is indistinguishable from a renderer bug, which is what makes it worth
+That is indistinguishable from a renderer bug, which is what made it worth
 ranking first: every other gap in this section announces itself as *nothing
 happening*, and this one announces itself as the wrong subsystem.
+
+**One phrase above was wrong and M78 corrected it**: the entry used to say
+vanilla applies the run "in one tick". It does not — `handleBundlePacket` is a
+plain `for` loop on one **scheduled task**, and the guarantee that falls out is
+that no *frame* is rendered part-way through. The distinction matters because
+the tick reading suggests a client should defer a bundle to its next tick
+boundary, which vanilla never does. §9.
 
 ### 2. `player_rotation` (73) and `player_look_at` (71) — the asymmetry
 
@@ -219,26 +239,35 @@ pointing you at something just doesn't. And because the positional half works,
 the natural diagnosis is "teleports work, so it isn't the teleport path".
 
 Both are class A — they write two floats onto the local player. Neither was
-implemented in M74 deliberately: they write `rewo_world::physics::PlayerState`,
-which a concurrent milestone owns while it lands flight and no-clip (§4.1).
+implemented in M74 deliberately: they wrote `rewo_world::physics::PlayerState`,
+which a concurrent milestone owned while it landed flight and no-clip (§4.1).
+**M75 has since landed**, so the reason to hold off is gone and this is now the
+only ranked gap left here.
 
-### 3. `disguised_chat` (33) — chat that is simply never shown
+### 3. `disguised_chat` (33) — closed, M78
 
 `Component` plus a `ChatType.Bound`, and Rewo already renders chat lines, so
-this is decode-and-append with no new subsystem. What sends it is
+this was decode-and-append with no new subsystem. What sends it is
 `/msg`-style and plugin-routed chat — `disguised_chat` is what a server uses
 when a message should render as chat without carrying a player signature.
 
-So on a plugin-driven server an entire category of message never appears, with
-no error, no log line and nothing missing from the screen to point at. It ranks
-here for the same reason M67 ranked `update_tags` first: the client is not
-broken in any way an observer can name.
+So on a plugin-driven server an entire category of message never appeared, with
+no error, no log line and nothing missing from the screen to point at. It
+ranked here for the same reason M67 ranked `update_tags` first: the client is
+not broken in any way an observer can name.
 
-**Honourable mention, for a different reason:** `store_cookie` (120) is the
-other half of a loop Rewo already answers. `cookie_request` is resolved and
-replied to — with nothing, because nothing ever stores a cookie. On a network
-that uses `transfer` between backends that is a session that silently forgets
-itself on every hop.
+"Decode-and-append with no new subsystem" turned out to understate the decode
+by one field: the `ChatType.Bound` opens with `ByteBufCodecs.**holder**`, whose
+`0` means *an inline `ChatType` follows* — two whole `ChatTypeDecoration`s —
+rather than chat type 0. A `holderRegistry` reading, which is the convention
+the adjacent dimension holder uses, would have read the first decoration's
+translation key as the sender's name. §9.
+
+**Honourable mention, also closed by M78:** `store_cookie` (120) was the other
+half of a loop Rewo already answered. `cookie_request` was resolved and replied
+to — with nothing, because nothing ever stored a cookie. On a network that uses
+`transfer` between backends that is a session that silently forgets itself on
+every hop.
 
 ---
 
@@ -249,9 +278,18 @@ it proves a dispatch arm exists, not that the arm reads the whole body. These
 are the known partials, found by reading the arms. Listed because a future
 audit run by the same instruments will call every one of them handled.
 
-**`game_event` closed in M71** and **`chunk_batch_finished` closed in M74**;
-both are kept below as worked examples of the class, because the "what is not"
-column is what turned each of them into a milestone.
+**`game_event` closed in M71**, **`chunk_batch_finished` closed in M74** and
+**`cookie_request` closed in M78**; all three are kept below as worked examples
+of the class, because the "what is not" column is what turned each of them into
+a milestone.
+
+**`cookie_request` is also a new *shape* of partial, and worth stating
+separately: the two play loops disagreed.** `Connection::run_play` (the M1-era
+`rewo net` / `rewo view` harness) answered it; `PlaySession` — the loop `rewo
+play` and `rewo live` actually run — had no arm for it at all. The machine
+check in §1 cannot see that, because it asks whether *anything* in `rewo-net`
+dispatches the field, and one of the two loops did. Any packet handled in only
+one of the two reads as fully handled.
 
 | Packet | What is consumed | What is not |
 |---|---|---|
@@ -264,6 +302,9 @@ column is what turned each of them into a milestone.
 | `player_info_update` (70) | `ADD_PLAYER`, `UPDATE_GAME_MODE`, `UPDATE_LISTED`, `UPDATE_LATENCY`, `UPDATE_LIST_ORDER`, `UPDATE_HAT`, and the walk past the rest. | `UPDATE_DISPLAY_NAME` and `INITIALIZE_CHAT` are walked and discarded rather than stored. The walk is correct — M62 unified it into one function after finding a drifted copy — but the values do not survive it. |
 | `move_minecart_along_track` (55) — M77 | The whole body, and the whole client-side `NewMinecartBehavior` schedule it feeds. The first handler guard, `instanceof AbstractMinecart`, is enforced. | The **second** handler guard, `getBehavior() instanceof NewMinecartBehavior`. It is not a class fact — the constructor picks the behaviour from `level.enabledFeatures().contains(MINECART_IMPROVEMENTS)` — and `update_enabled_features` is a **configuration** packet, outside this survey's scope and not in `ids.rs`. It is also structurally unreachable: the only sender of this packet is `handleMinecartPosRot`, which `ServerEntity` reaches down the same `instanceof` branch. Decoding the flag set is the follow-up. |
 | `set_entity_link` (100) — M77 | Both i32s, and the holder id onto the leashed entity. | **The rope.** Class B, and unstarted. Also `getLeashHolder`'s *cache*: vanilla promotes the delayed id to an `Entity` reference once and keeps it, so a holder that leaves the tracking range stays attached until the server re-sends; Rewo resolves on demand and reports none. Nothing reads it yet. |
+| `disguised_chat` (33) | The whole body: the message, and all three fields of the `ChatType.Bound` including the inline-`ChatType` branch. The message text reaches the chat log. | The **decoration**. `ChatListener` renders `boundChatType.decorate(message)`, a `Component.translatable` over the chat type's `ChatTypeDecoration` — so `/msg` should read "X whispers to you: …" and reads "…" instead. It needs the `minecraft:chat_type` registry, which `parse_registry_data` does not capture, plus a language table `rewo-net` cannot see. `player_chat` (65) has had exactly this partial since M7, and now they match. |
+| `server_data` (86) | Both fields — the MOTD flattened, the icon as bytes. | `ServerData.validateIcon` (a PNG parse capped at 1024×1024, where an invalid icon leaves the previous one alone), and vanilla's `serverData != null` guard, which records only for a session started from the multiplayer server list. Rewo has no server list and no PNG decoder in `rewo-net`. |
+| `cookie_request` (21) — **closed, M78** | The key, and a reply carrying the jar's payload for it. Answered by **both** play loops now. | Nothing. Recorded because of *how* it was partial: `Connection::run_play` answered it and `PlaySession` had no arm, so the client that matters left it unanswered while the table said `handled`. See the note above this one. |
 
 ### §4.1 What wiring the gamemode to physics would actually take
 
@@ -304,7 +345,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 
 | id | packet | status | resolution / class | note |
 |---:|---|---|---|---|
-| 0 | `bundle_delimiter` | absent | **A** | Empty body. Delimits a `ClientboundBundlePacket` — vanilla applies everything between two delimiters in one tick. Rewo applies each packet as it drains, so a spawn and its metadata can land a frame apart. §3. |
+| 0 | `bundle_delimiter` | handled | `req!` → `cb_play_bundle_delimiter` | **M78.** Empty body, and **not an inert packet** — `BundleDelimiterPacket.handle` throws. Consumed by `crate::bundle` *before* dispatch, so the `else if` ladder never learns bundles exist. §9. |
 | 1 | `add_entity` | handled | `req!` → `cb_play_add_entity` | |
 | 2 | `animate` | handled | `req!` → `cb_play_animate` | M19/M20 — combat swings. |
 | 3 | `award_stats` | absent | **B** | Statistics screen. `Stat.STREAM_CODEC` dispatches on `minecraft:stat_type` (9) then the per-type value registry — both in `registries.json`. |
@@ -325,10 +366,10 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | §4 partial — container id 0 only. |
 | 19 | `container_set_data` | absent | **C** | Furnace/brewing/enchanting progress — needs the non-player menus M34 excluded. |
 | 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | §4 partial — container id 0 only. |
-| 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered with nothing; see `store_cookie` (120). |
+| 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered from the jar `store_cookie` (120) fills, since **M78**. Before it, "handled" was true only of the M1-era `Connection::run_play` harness — `PlaySession` had no arm at all, so the real client left a play-state request unanswered. §4, §9. |
 | 22 | `cooldown` | absent | **B** | The hotbar cooldown sweep. |
 | 23 | `custom_chat_completions` | absent | **C** | Chat input autocomplete. |
-| 24 | `custom_payload` | absent | **A** | `Identifier` + the rest of the body. `minecraft:brand` is the one every server sends. |
+| 24 | `custom_payload` | handled | `req!` → `cb_play_custom_payload` | **M78.** An unknown identifier is **discarded, not rejected**, and the fallback consumes the remainder. The copy a vanilla server actually sends is **configuration 1** — see §9. |
 | 25 | `damage_event` | handled | `req!` → `cb_play_damage_event` | |
 | 26 | `debug/block_value` | absent | **D** | Debug subscription — sent only to a client that subscribed via `debug_subscription`, which Rewo never will. |
 | 27 | `debug/chunk_value` | absent | **D** | As above. |
@@ -337,13 +378,13 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 30 | `debug_sample` | absent | **D** | Remote tick/ping profiler samples for vanilla's F3 chart; requires a serverbound subscription first. |
 | 31 | `delete_chat` | absent | **C** | Needs the signature-keyed chat history. Rewo renders chat lines and keeps no message store to delete from. |
 | 32 | `disconnect` | handled | `req!` → `cb_play_disconnect` | |
-| 33 | `disguised_chat` | absent | **A** | `Component` + `ChatType.Bound`. The chat overlay already exists, so this is decode-and-append. §3. |
+| 33 | `disguised_chat` | handled | `req!` → `cb_play_disguised_chat` | **M78.** Decoded whole and appended to the chat log. Its `ChatType.Bound` opens with `ByteBufCodecs.**holder**` (`id + 1`, `0` = inline), not `holderRegistry`. §4 partial — the line is the *raw* message, not the decoration. |
 | 34 | `entity_event` | handled | `req!` → `cb_play_entity_event` | M17. |
 | 35 | `entity_position_sync` | handled | `req!` → `cb_play_entity_position_sync` | |
 | 36 | `explode` | handled | `req!` → `cb_play_explode` | **M68.** §4 partial — the physics prefix only; the particle/sound/weighted-list tail is deliberately unconsumed. |
 | 37 | `forget_level_chunk` | handled | `req!` → `cb_play_forget_chunk` | |
 | 38 | `game_event` | handled | `req!` → `cb_play_game_event` | All 14 types since M71. Was 4 of 14 — the §4 worked example. |
-| 39 | `game_rule_values` | absent | **A** | `Map<ResourceKey<GameRule>, String>`. |
+| 39 | `game_rule_values` | handled | `req!` → `cb_play_game_rule_values` | **M78.** A counted map of `Identifier` → string, kept wholesale. Vanilla has **no store** — the map goes to a screen if one is open and nowhere otherwise — so replacement is the reading, not merge. |
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
 | 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |
 | 42 | `hurt_animation` | absent | **B** | The damage camera yaw-tilt. **This is the input `M52a`'s vacuous `no_damage_tilt` module has nothing to disable.** |
@@ -370,8 +411,8 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 63 | `place_ghost_recipe` | absent | **C** | Recipe book. |
 | 64 | `player_abilities` | handled | — | Flags byte + `flyingSpeed` + `walkingSpeed`, nine fixed bytes. Landed by **M75** with the flight / no-clip physics it feeds and the `GameType` binding M71 left unstarted. The **serverbound** twin is one byte carrying only `FLAG_FLYING` — writing the clientbound body there desyncs the stream by eight. |
 | 65 | `player_chat` | handled | `opt!` → `cb_play_player_chat` | |
-| 66 | `player_combat_end` | absent | **A** | Vestigial — vanilla's handler is an empty method. |
-| 67 | `player_combat_enter` | absent | **A** | Vestigial, empty body, empty handler. |
+| 66 | `player_combat_end` | handled | `req!` → `cb_play_player_combat_end` | **M78.** Vestigial: the handler is an **empty method**, so nothing is stored — inventing a field would be a divergence dressed as decode-and-state. The body is **not** empty (a VarInt `duration`), and the only gradeable property is that the reader consumes exactly it. §9. |
+| 67 | `player_combat_enter` | handled | `req!` → `cb_play_player_combat_enter` | **M78.** Vestigial, empty handler, and `StreamCodec.unit` — **zero** bytes. Graded the same way as its sibling: reader position, which here means reading nothing at all. §9. |
 | 68 | `player_combat_kill` | absent | **B** | The death screen. |
 | 69 | `player_info_remove` | handled | `req!` → `cb_play_player_info_remove` | |
 | 70 | `player_info_update` | handled | `req!` → `cb_play_player_info_update` | §4 partial — display name and chat session are walked and discarded. |
@@ -390,7 +431,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 83 | `rotate_head` | handled | `req!` → `cb_play_rotate_head` | |
 | 84 | `section_blocks_update` | handled | `req!` → `cb_play_section_blocks_update` | |
 | 85 | `select_advancements_tab` | absent | **C** | Advancements screen. |
-| 86 | `server_data` | absent | **A** | MOTD `Component` + `Optional<byte[]>` icon. |
+| 86 | `server_data` | handled | `req!` → `cb_play_server_data` | **M78.** MOTD flattened, icon kept as bytes. §4 partial — vanilla runs the icon through `ServerData.validateIcon` (a PNG parse capped at 1024²) and records only when the session came from the server list; Rewo does neither. |
 | 87 | `set_action_bar_text` | absent | **B** | Action-bar overlay. |
 | 88 | `set_border_center` | absent | **B** | World border. |
 | 89 | `set_border_lerp_size` | absent | **B** | World border. |
@@ -424,7 +465,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 117 | `sound` | handled | `req!` → `cb_play_sound` | M63 — decode only, no playback. |
 | 118 | `start_configuration` | handled | `opt!` → `cb_play_start_configuration` | |
 | 119 | `stop_sound` | handled | `req!` → `cb_play_stop_sound` | M63. |
-| 120 | `store_cookie` | absent | **A** | The cookie store Rewo already answers `cookie_request` from — with nothing, because nothing ever stores one. §3. |
+| 120 | `store_cookie` | handled | `req!` → `cb_play_store_cookie` | **M78.** The jar `cookie_request` answers from is now fillable, so the reply carries a payload instead of always writing `false`. The 5120-byte limit is an **error**, not a truncation. The **configuration** copy (id 10) is resolved too. §9. |
 | 121 | `system_chat` | handled | `opt!` → `cb_play_system_chat` | |
 | 122 | `tab_list` | handled | `req!` → `cb_play_tab_list` | M65. |
 | 123 | `tag_query` | absent | **D** | The reply to a serverbound `/data get` query Rewo never sends. |
@@ -658,3 +699,168 @@ replacement level data from `this.levelData.getDifficulty()`, carrying the
 value across a dimension change. `ClientState` therefore lives on
 `PlaySession` and is deliberately untouched by `apply_respawn` — the same rule
 `ViewArea` follows, and for the same reason.
+
+---
+
+## §9 What M78 did — session, server metadata and chat
+
+Eight packets, chosen as one coherent layer rather than eight unrelated rows:
+everything the connection itself knows about the session it is in. Seven are a
+reader plus a field and live in `crates/rewo-net/src/session.rs`; the eighth
+changes how packets are *applied* and lives in `crates/rewo-net/src/bundle.rs`.
+
+| id | packet | body | where |
+|---:|---|---|---|
+| 0 | `bundle_delimiter` | empty | `bundle.rs` |
+| 24 | `custom_payload` | `Identifier` + a payload chosen by it | `session.rs` |
+| 33 | `disguised_chat` | `Component` + `ChatType.Bound` | `session.rs` |
+| 39 | `game_rule_values` | counted map, `Identifier` → string | `session.rs` |
+| 66 | `player_combat_end` | one VarInt | `session.rs` |
+| 67 | `player_combat_enter` | **empty** | `session.rs` |
+| 86 | `server_data` | `Component` + `Optional<byte[]>` | `session.rs` |
+| 120 | `store_cookie` | `Identifier` + `byteArray(5120)` | `session.rs` |
+
+### The bundle semantics, exactly
+
+`ClientboundBundlePacket` never appears on the wire. `PacketBundleUnpacker`
+expands it on the sending side into `delimiter, sub-packets…, delimiter`, and
+`PacketBundlePacker` reassembles it on the receiving one. The delimiter's body
+is empty, and **that is not the same as an inert packet**:
+`BundleDelimiterPacket.handle` throws `AssertionError("This packet should be
+handled by pipeline")`, because it is a pipeline instruction rather than a
+message. A client that decodes it as a no-op has decoded it wrong in the one
+way that leaves no trace.
+
+Four rules, all from `PacketBundlePacker.decode` and `BundlerInfo`:
+
+1. **A bundle is applied all at once, and only when it closes.** The run is
+   handed on as one `ClientboundBundlePacket`, and `handleBundlePacket` is a
+   plain `for` loop calling `subPacket.handle` directly — one scheduled task on
+   the main thread, with the sub-handlers' own `ensureRunningOnSameThread`
+   already satisfied. **§3's original wording — "in one tick" — was wrong**;
+   the guarantee is that no *frame* is rendered part-way through, and nothing
+   defers a bundle to a tick boundary.
+2. **An unterminated bundle is withheld, not dropped and not applied.**
+   `currentBundler` stays non-null across `decode` calls, so everything after
+   an unclosed opening delimiter accumulates and nothing downstream sees any of
+   it. This is the case that makes bundling worth having in Rewo at all: the
+   drain is `try_recv` until `Empty`, so a socket that hands over a bundle in
+   two reads would otherwise apply the first half a frame early — exactly the
+   glitch §3 ranks first.
+3. **There is no nesting.** `Bundler.addPacket` opens with
+   `if (packet == delimiterPacket) return constructor.apply(bundlePackets)`, so
+   a second delimiter *always* terminates and a third opens a fresh run. A
+   depth counter — the natural implementation — never closes the outer bundle
+   and withholds every subsequent packet for the rest of the session.
+4. **The size limit is an error, not a cap.** `BUNDLE_SIZE_LIMIT` is 4096 and
+   the check runs *before* the add (`if (size() >= 4096) throw`), so exactly
+   4096 sub-packets fit and the 4097th kills the connection. Neither delimiter
+   counts. Moving the check above the delimiter test — which reads like a
+   tidy-up — would make a legitimately full bundle fatal at the moment it
+   correctly closed, i.e. only on the servers that send large bundles.
+
+Plus `verifyNonTerminalPacket`: a packet inside a bundle whose `isTerminal()`
+is true is a `DecoderException`. In clientbound-play there is exactly one,
+`start_configuration`. Rewo's `PlaySession` does not dispatch that packet, so
+the other half of vanilla's terminal handling — removing the bundling stage
+from the pipeline once one passes through *outside* a bundle — has nothing to
+model here.
+
+Rewo has no exceptions, so both fatal cases end the session the way a closed
+socket does. What is deliberately not done is to recover: a client that carried
+on past a malformed bundle would be applying a run the server never meant to
+send as one.
+
+**Wired into `PlaySession::drain_inbound` only.** The M1-era
+`Connection::run_play` harness behind `rewo net` / `rewo view` renders no
+frames, so bundling there would change nothing measurable.
+
+**Live, against the bundled 26.2 server**: `CORRECTIONS: 0` over 800 ticks with
+place and dig both server-observed — and, because that number is equally true of
+a bundle machine that never fired, `rewo play` now reports the machine's own
+counter: **`bundles applied: 177 (largest run: 3 sub-packets)`** in 40 seconds
+against a stock vanilla server. Three is the entity-spawn shape above.
+
+### What `store_cookie` changes about the `cookie_request` reply
+
+`handleRequestCookie` is one line —
+`send(new ServerboundCookieResponsePacket(packet.key(), serverCookies.get(key)))`
+— so the reply is a straight jar lookup and `null` is the miss, written as a
+`writeNullable` present-flag of `false`.
+
+Rewo already answered `cookie_request`. It answered `false` **unconditionally**,
+because `serverCookies` had no writer: `store_cookie` is the only thing that
+ever calls `put`, and it was not resolved. After M78 the reply carries the
+stored payload for a key the server has set, and is byte-identical to the old
+behaviour for one it has not. On a network that uses `transfer` between
+backends, that is the difference between a session that survives a hop and one
+that silently forgets itself on every one.
+
+**"Already answered" turned out to be half true, and closing that is part of
+M78.** Only `Connection::run_play` — the M1-era harness behind `rewo net` and
+`rewo view` — had an arm for the play-state `cookie_request`. `PlaySession`,
+the loop `rewo play` and `rewo live` run, had none, so the client that matters
+never replied at all. `store_cookie`'s jar is observable *only* through that
+reply, and a jar nothing reads is not a feature, so `PlaySession` gained the
+arm. Both loops now write through the same `session::write_cookie_response`.
+The §1 machine check is structurally blind to this: it asks whether *anything*
+in `rewo-net` dispatches the field, and one of the two loops did — see §4.
+
+Two details that read backwards:
+
+- **The 5120-byte limit is an error, not a truncation.**
+  `FriendlyByteBuf.readByteArray(input, maxSize)` throws before copying a
+  single byte. A client that clamped would store a cookie it would later hand
+  back to a server that never issued it.
+- **`store_cookie` and `custom_payload` are `common` packets and exist in
+  configuration too** (ids 10 and 1). Both configuration ids are resolved, and
+  for `custom_payload` that is not a nicety: `ServerConfigurationPacket-
+  ListenerImpl` sends `minecraft:brand` from its opening burst and a vanilla
+  server never sends a second one in play. Resolving only the play copy would
+  have looked like it worked against every server there is. **This is M69's
+  `update_tags` finding, one packet over**, and it is the second time a
+  play-only survey has named the id a vanilla server does *not* send — see §6's
+  scope note. Observed live against the bundled 26.2 server: with
+  `RUST_LOG=rewo_net=debug`, `net: server brand "vanilla"` is logged from the
+  **configuration** arm and the play arm never fires.
+
+### Four more things that read backwards
+
+- **`custom_payload`'s unknown identifier is discarded, not rejected**, and the
+  fallback **consumes the remainder**. `DiscardedPayload`'s reader takes
+  `buf.readableBytes()` and skips exactly that; it throws only above 1 048 576.
+  The instinct on a discriminated union is M41's — an untranscribed member is
+  fatal because the reader cannot skip it — and it is wrong here precisely
+  because this union *has* a fallback codec. Rejecting would kill the
+  connection to any modded server.
+- **`disguised_chat`'s chat-type is `ByteBufCodecs.holder`, not
+  `holderRegistry`.** `0` means an inline `ChatType` follows — two whole
+  `ChatTypeDecoration`s, each a string, a counted list of VarInt parameters and
+  an NBT `Style` — rather than chat type 0. A raw reading would take the first
+  decoration's translation key as the sender's name and every field after it
+  with it. M16 records the opposite convention for the dimension holder and M65
+  found two enum conventions one field apart; this is the same hazard inside a
+  single three-field record.
+- **The two vestigial packets are not the same shape.** Both handlers are `{}`,
+  but `player_combat_enter` is `StreamCodec.unit` — zero bytes — while
+  `player_combat_end` carries a VarInt `duration`. Nothing is stored for either,
+  because vanilla stores nothing and inventing a field would be a divergence
+  dressed as decode-and-state. **The only gradeable property is the reader
+  position**, which is why both readers return the bytes they consumed: with no
+  observable state, a reader one byte off is otherwise indistinguishable from a
+  correct one right up until it desynchronises whatever follows.
+- **`game_rule_values` has no vanilla store at all.** The map goes to an
+  `InWorldGameRulesScreen` if one is open, and the screen ignores every packet
+  after its first. Rewo keeps the last map wholesale — replacement, not merge —
+  because the packet is a full snapshot and merging would strand a rule the
+  server stopped sending.
+
+### Where the gate lives, and why it is not a new command
+
+`rewo abilityshot --check` grew a session section rather than M78 minting a
+26th `*shot` command. It is the right host by construction: it is already the
+serverless CPU-only oracle that resolves **real packet ids through
+`Ids::resolve` on the pinned version's datagen report**, which is exactly what
+these eight need on top of pure decode, and M75's subject (the session's
+authoritative local-player state) is the adjacent one. Every witness names a
+mutation partner in its detail string.
