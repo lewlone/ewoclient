@@ -110,6 +110,16 @@ impl SoundSource {
         }
     }
 
+    /// The inverse of [`Self::name`].
+    ///
+    /// `rewo_data::level_event_sounds` carries its category as one of these
+    /// strings rather than as this enum, because that table lives in
+    /// `rewo-data` and the dependency runs `rewo-net` → `rewo-data`. This is
+    /// the join, so the two never drift into two spellings of "blocks".
+    pub fn from_name(name: &str) -> Option<SoundSource> {
+        SoundSource::ALL.into_iter().find(|s| s.name() == name)
+    }
+
     fn read(r: &mut PacketReader<'_>) -> Result<SoundSource> {
         let ordinal = r.varint()?;
         SoundSource::from_ordinal(ordinal).ok_or(ProtoError::LengthOutOfRange {
@@ -692,6 +702,60 @@ mod tests {
         };
         assert_eq!(s.resolve(&reg), Some("rewo:custom.event"));
         assert_eq!(reg.id_of("rewo:custom.event"), None);
+    }
+
+    /// `from_name` is the exact inverse of `name` — the property, not a
+    /// spot-check, because the pair exists so two crates cannot disagree.
+    #[test]
+    fn from_name_is_the_exact_inverse_of_name() {
+        for s in SoundSource::ALL {
+            assert_eq!(SoundSource::from_name(s.name()), Some(s));
+        }
+        // The two spellings a plausible implementation would accept and
+        // vanilla does not: `getName()` is singular for these, even though
+        // the constants are `BLOCKS` and `PLAYERS`.
+        assert_eq!(SoundSource::from_name("blocks"), None);
+        assert_eq!(SoundSource::from_name("players"), None);
+        assert_eq!(SoundSource::from_name(""), None);
+        // And the match is **case-sensitive**. Nothing above forces that —
+        // a case-insensitive lookup passes every other assertion here — but
+        // both places vanilla turns a name back into a category are exact:
+        // `options.txt` keys are `"soundCategory_" + getName()` compared as
+        // strings, and `/stopsound`'s categories are Brigadier literals.
+        // Accepting `"BLOCK"` would read an options file real Minecraft
+        // rejects.
+        assert_eq!(SoundSource::from_name("BLOCK"), None);
+        assert_eq!(SoundSource::from_name("Block"), None);
+        assert_eq!(SoundSource::from_name("Master"), None);
+    }
+
+    /// Every category `rewo_data::level_event_sounds` names resolves here.
+    /// The table stores a string because it cannot see this enum; this is the
+    /// witness that the string is nonetheless a real `SoundSource`.
+    #[test]
+    fn every_level_event_sound_category_resolves_to_a_source() {
+        use rewo_data::level_event_sounds::{DERIVED, SOUNDS};
+        for s in SOUNDS {
+            assert!(
+                SoundSource::from_name(s.source).is_some(),
+                "level event {}: {} is not a SoundSource",
+                s.id,
+                s.source
+            );
+        }
+        for d in DERIVED {
+            assert!(
+                SoundSource::from_name(d.source).is_some(),
+                "level event {}: {} is not a SoundSource",
+                d.id,
+                d.source
+            );
+        }
+        // Non-vacuous: the table really does use more than one category.
+        let mut seen: Vec<&str> = SOUNDS.iter().map(|s| s.source).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert!(seen.len() >= 4, "only {seen:?} appear");
     }
 
     #[test]
