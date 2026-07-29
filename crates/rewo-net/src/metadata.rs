@@ -71,6 +71,21 @@ pub struct EntityMeta {
     /// `set_dancing`. This is not a claim that slot 16 is baby-or-dancing for
     /// every entity — only for the kinds the client renders.
     pub bool16: Option<bool>,
+    /// Raw index-16 BYTE value — `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` on
+    /// a player (M60), the skin-part toggle mask whose **bit 0 is
+    /// `PlayerModelPart.CAPE`**.
+    ///
+    /// The index is a 26.2 fact and differs from 1.21's: `Avatar` was
+    /// inserted between `LivingEntity` and `Player`, and it defines
+    /// `DATA_PLAYER_MAIN_HAND` then `DATA_PLAYER_MODE_CUSTOMISATION` — so
+    /// they are 15 and 16, where 1.21's `Player extends LivingEntity`
+    /// defined absorption and score first and put customisation at 17.
+    ///
+    /// Like [`Self::bool16`] this is raw: the BYTE separates it from the
+    /// INT-size and BOOLEAN-baby readings of the same slot, but not from
+    /// any other class that might claim a BYTE there, so the caller gates
+    /// on the entity kind.
+    pub byte16: Option<u8>,
     /// `Avatar.DATA_PLAYER_MAIN_HAND` — index 15, **HUMANOID_ARM** serializer
     /// (id 42), value `0 = LEFT`, `1 = RIGHT` (M19 combat swings).
     ///
@@ -183,6 +198,11 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             (15, 0) => meta.mob_flags = r.u8().ok(),
             (16, 1) => meta.size = r.varint().ok(), // AbstractCubeMob.ID_SIZE (INT)
             (16, 8) => meta.bool16 = r.u8().ok().map(|b| b != 0), // baby (ageable/zombie) or dancing (allay)
+            // BYTE at 16 = `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` on a
+            // player (M60). A third serializer in the same slot, so the
+            // parser can keep them apart; which *kind* owns the BYTE is
+            // still the caller's call.
+            (16, 0) => meta.byte16 = r.u8().ok(),
             // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
             // at their shared first-own-field index.
             (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),

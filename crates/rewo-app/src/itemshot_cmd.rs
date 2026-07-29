@@ -476,6 +476,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -531,6 +532,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -597,6 +599,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;

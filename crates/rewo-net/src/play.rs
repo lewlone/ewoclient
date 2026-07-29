@@ -57,6 +57,11 @@ pub struct PlaySession {
     pub sheep_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
+    /// `minecraft:player` — gates the index-16 skin-customisation byte whose
+    /// bit 0 shows the cape (M60). `None` leaves every cape hidden, which is
+    /// also what an unsent mask means, so a harness that never resolves it
+    /// behaves like one whose players never sent one.
+    pub player_type_id: Option<i32>,
     /// The block-entity type ids whose `triggerEvent` this client implements
     /// (M26). Default-empty, which routes every `block_event` nowhere — the
     /// correct behaviour for a harness that never renders a chest, and the
@@ -770,6 +775,7 @@ impl<'a> Connection<'a> {
             pillager_type_id: None,
             sheep_type_id: None,
             creaking_type_id: None,
+            player_type_id: None,
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
@@ -1499,6 +1505,7 @@ impl PlaySession {
                 pillager: self.pillager_type_id,
                 sheep: self.sheep_type_id,
                 creaking: self.creaking_type_id,
+                player: self.player_type_id,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
             },

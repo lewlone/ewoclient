@@ -481,6 +481,7 @@ fn neutral_draw() -> EntityDraw<'static> {
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        cape: None,
     }
 }
 

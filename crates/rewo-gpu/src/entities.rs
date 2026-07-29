@@ -314,6 +314,29 @@ pub struct EntityDraw<'a> {
     /// sheep has its wool multiplied by 0xE6E6E6 rather than left at full
     /// brightness.
     pub dye: Option<u8>,
+    /// The worn cape (M60), or `None` when any of `CapeLayer`'s four gates
+    /// suppresses it. The gates are resolved upstream, where the equipment
+    /// and metadata live; by the time a draw is built the answer is already
+    /// yes-or-no.
+    pub cape: Option<CapeDraw>,
+}
+
+/// One player's cape, resolved for one frame (M60).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapeDraw {
+    /// Atlas origin, in texels, of this player's uploaded cape slot.
+    pub origin: (u32, u32),
+    /// `AvatarRenderState.capeFlap`, degrees.
+    pub flap: f32,
+    /// `AvatarRenderState.capeLean`, degrees.
+    pub lean: f32,
+    /// `AvatarRenderState.capeLean2`, degrees.
+    pub lean2: f32,
+    /// `hasLayer(chestEquipment, HUMANOID)` — whether the chest item has a
+    /// humanoid armour layer, which pushes the cape clear of it. This is
+    /// **not** "the chest slot is occupied": an elytra suppresses the cape
+    /// entirely and a carved pumpkin shifts it not at all.
+    pub chest_humanoid: bool,
 }
 
 #[repr(C)]
@@ -337,11 +360,11 @@ pub(crate) struct Vertex {
 /// (16² tadpole up to 192² sniffer-class skins) shelf-pack around it. One
 /// texture, one pipeline family.
 const ATLAS_W: u32 = 1024;
-/// M22 grew this by the held-item band. The **mob shelf region is unchanged**
-/// (still `y < ITEM_POOL_Y` = 896) so mob packing is byte-for-byte what it was;
-/// only the V denominator moves, which maps the same texels to the same
-/// samples.
-const ATLAS_H: u32 = 1408;
+/// M22 grew this by the held-item band, M48 by the trim band, M60 by the cape
+/// band. The **mob shelf region is unchanged** (still `y < ITEM_POOL_Y` = 896)
+/// so mob packing is byte-for-byte what it was; only the V denominator moves,
+/// which maps the same texels to the same samples.
+const ATLAS_H: u32 = 1472;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -373,12 +396,55 @@ const TRIM_SLOT_H: u32 = 32;
 const TRIM_POOL_COLS: u32 = ATLAS_W / TRIM_SLOT_W; // 16
 const TRIM_POOL_ROWS: u32 = 4;
 const TRIM_SLOTS: u32 = TRIM_POOL_COLS * TRIM_POOL_ROWS; // 64
-const TRIM_POOL_Y: u32 = ATLAS_H - TRIM_POOL_ROWS * TRIM_SLOT_H; // 1280
+const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 1280
 
 fn trim_slot_origin(slot: u32) -> (u32, u32) {
     (
         (slot % TRIM_POOL_COLS) * TRIM_SLOT_W,
         TRIM_POOL_Y + (slot / TRIM_POOL_COLS) * TRIM_SLOT_H,
+    )
+}
+
+// -- the cape pool (M60) ------------------------------------------------------
+//
+// Demand-filled like the pools before it. A cape has no reference sheet in the
+// jar at all — it is fetched per player from the profile's texture URL — so it
+// cannot ride the static shelf packer the way an armour sheet does.
+//
+// The slot is **64x32**, the cape model's own UV space: `createCapeLayer`
+// builds against a 64x64 `LayerDefinition` but the box carries
+// `xTexScale 1.0, yTexScale 0.5`, and `CubeDefinition.bake` multiplies those
+// in, so the cube's UVs normalize against 64x32. A 64x64 slot would halve
+// every V.
+//
+// Placed at the **bottom** of the atlas with `TRIM_POOL_Y` re-anchored to it,
+// which is M48's recipe: growing `ATLAS_H` by exactly the new band's height
+// leaves every mob, item, skin and trim address numerically unchanged.
+const CAPE_SLOT_W: u32 = 64;
+const CAPE_SLOT_H: u32 = 32;
+const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
+const CAPE_POOL_ROWS: u32 = 2;
+const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
+const CAPE_POOL_Y: u32 = ATLAS_H - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1408
+
+/// Atlas origin of dynamic cape slot `i` (0..CAPE_SLOTS).
+fn cape_slot_origin(i: u32) -> (u32, u32) {
+    (
+        (i % CAPE_POOL_COLS) * CAPE_SLOT_W,
+        CAPE_POOL_Y + (i / CAPE_POOL_COLS) * CAPE_SLOT_H,
+    )
+}
+
+/// The cape pool's geometry, for the oracle. Returned rather than made `pub`
+/// so the constants stay private and there is one place to read them from.
+pub fn cape_pool_geometry() -> (u32, u32, u32, u32, u32, u32) {
+    (
+        ATLAS_W,
+        ATLAS_H,
+        CAPE_SLOT_W,
+        CAPE_SLOT_H,
+        CAPE_SLOTS,
+        CAPE_POOL_Y,
     )
 }
 
@@ -702,6 +768,8 @@ pub struct EntityPass {
     /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
     /// never fills 32, and wrap-around just recycles the oldest slot).
     skin_next: u32,
+    /// Round-robin cursor into the cape pool (M60), like `skin_next`.
+    cape_next: u32,
     /// Per-entity CEM variable state, persisted across frames (see [`CemVars`]).
     cem_state: std::collections::HashMap<u64, CemVars>,
     /// Frame generation, bumped once per `set_draws`; entities not drawn for
@@ -1189,6 +1257,7 @@ impl EntityPass {
                     .map(|(k, v)| ((*k).to_string(), *v))
                     .collect(),
                 skin_next: 0,
+                cape_next: 0,
                 held_items: None,
                 item_slots: std::collections::HashMap::new(),
                 item_next: 0,
@@ -1322,6 +1391,31 @@ impl EntityPass {
             (sx as f32 - px as f32) / ATLAS_W as f32,
             (sy as f32 - py as f32) / ATLAS_H as f32,
         ])
+    }
+
+    /// Claim a cape slot and upload one player's cape sheet into it (M60).
+    ///
+    /// Returns the slot's **atlas origin in texels**, not a UV delta. A skin
+    /// relocates the player model's baked quads, so it answers with an offset
+    /// to add to them; the cape has no baked quads to relocate — its emitter
+    /// builds UVs from this origin directly, the way `emit_armor` does with a
+    /// trim's.
+    ///
+    /// Round-robin with no eviction bookkeeping, as the pools before it: past
+    /// 32 resident capes the oldest slot is overwritten.
+    pub fn upload_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<(u32, u32), String> {
+        let want = (CAPE_SLOT_W * CAPE_SLOT_H * 4) as usize;
+        if rgba.len() != want {
+            return Err(format!(
+                "cape must be {CAPE_SLOT_W}x{CAPE_SLOT_H} RGBA ({want} bytes), got {}",
+                rgba.len()
+            ));
+        }
+        let slot = self.cape_next % CAPE_SLOTS;
+        self.cape_next += 1;
+        let (sx, sy) = cape_slot_origin(slot);
+        upload_region(gpu, self.image, rgba, sx, sy, CAPE_SLOT_W, CAPE_SLOT_H)?;
+        Ok((sx, sy))
     }
 
     /// Facelabel mode only: kinds whose textures paint conflicting face
@@ -1723,6 +1817,97 @@ impl EntityPass {
         }
     }
 
+    /// The worn cape, hanging off the body (M60).
+    ///
+    /// `CapeLayer` is a render layer over the same `body` the torso used, so
+    /// like [`Self::emit_armor`] this takes the `xf` that was just built
+    /// rather than deriving the pose again — and the body is *animated*
+    /// (`HumanoidModel` sets `body.xRot = 0.5` crouching and `body.yRot`
+    /// during an attack swing), so a second derivation would visibly drift.
+    ///
+    /// # The cape is not a `Part`
+    ///
+    /// It could not be. Rewo's [`Part`](mobs::Part) stores a Euler triple and
+    /// composes `Rz·Ry·Rx`; the cape needs `Rx·Rz·Ry`
+    /// ([`cape_rotation`]), which that composition cannot express — and
+    /// teaching `part_transforms` a matrix override would put a new branch in
+    /// the path every mob's geometry runs through, for one quad that vanilla
+    /// itself keeps in a separate model (`PlayerCapeModel`, whose
+    /// `createCapeLayer` calls `clearRecursively()` precisely so the humanoid
+    /// mesh does not come along). Emitting it here instead means
+    /// `part_transforms`, `neutral_quads` and `oracle_part_deltas` are all
+    /// untouched, so `mobshot`'s geometric prediction still grades the same
+    /// code it did before.
+    ///
+    /// The child transform is the one `part_transforms` would have applied:
+    /// `m = m_body · R`, `o = m_body · pivot + o_body`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_cape(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        xf: &[([[f32; 3]; 3], [f32; 3])],
+        scale: f32,
+        st: f32,
+        ct: f32,
+        sr: f32,
+        cr: f32,
+    ) {
+        let Some(cape) = d.cape else { return };
+        if !mobs::wears_cape(d.kind) {
+            return;
+        }
+        let Some(bi) = mobs::armor_part(&model.parts, "body") else {
+            return;
+        };
+        let (m, o) = cape_transform(&xf[bi], &cape);
+        let shift = cape_clearance_shift(cape.chest_humanoid);
+        let [light_r, light_g, light_b] = d.light;
+        for (_facing, pos, uvs) in mobs::cape_faces() {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let mut p4 = [[0f32; 3]; 4];
+            for (i, corner) in pos.iter().enumerate() {
+                let rr = mat_apply(&m, *corner);
+                let v = [
+                    rr[0] + o[0] + shift[0],
+                    rr[1] + o[1] + shift[1],
+                    rr[2] + o[2] + shift[2],
+                ];
+                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+                let x = e[0] * ct + e[2] * st;
+                let z = -e[0] * st + e[2] * ct;
+                let mut l = [x * scale, e[1] * scale, z * scale];
+                if let Some(mm) = &d.mount {
+                    l = [
+                        mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
+                        mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
+                        mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
+                    ];
+                }
+                p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+            }
+            let n = face_normal(&p4);
+            let shade = mobs::shade_for(n);
+            let uv4 = cape_face_uv(cape.origin, &uvs);
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: p4[i],
+                    uv: uv4[i],
+                    color: [shade, shade, shade, 1.0],
+                    // `CapeLayer` submits with `OverlayTexture.NO_OVERLAY`, so
+                    // the cape does **not** take the red damage flash even
+                    // while the wearer does. Hard-zeroed rather than read off
+                    // `d.hurt` for that reason.
+                    light_hurt: [light_r, light_g, light_b, 0.0],
+                });
+            }
+        }
+    }
+
     /// Worn armour, over the body it sits on (M46).
     ///
     /// `HumanoidArmorLayer` is a render *layer*: it re-poses the humanoid mesh
@@ -2076,6 +2261,13 @@ impl EntityPass {
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
         self.emit_armor(verts, trim_verts, armor_glint, d, model, &xf, s, st, ct, sr, cr);
+        // M60: the cape, hanging off the same body. `AvatarRenderer` adds
+        // `HumanoidArmorLayer` first and `CapeLayer` eleven layers later, so
+        // this is vanilla's order — though nothing rests on it here, since
+        // both are opaque `entitySolid` draws in one range and the depth test
+        // settles them. What keeps the cape off a chestplate is the clearance
+        // shift, not the sequence.
+        self.emit_cape(verts, d, model, &xf, s, st, ct, sr, cr);
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.
@@ -4485,6 +4677,95 @@ fn mat_zyx(e: [f32; 3]) -> [[f32; 3]; 3] {
         return IDENTITY3;
     }
     mat_mul(mat_mul(rot_z(e[2]), rot_y(e[1])), rot_x(e[0]))
+}
+
+/// `PlayerCapeModel.setupAnim`'s **net** cape rotation, from the three
+/// `AvatarRenderState` angles in degrees (M60).
+///
+/// # Why this is not `mat_zyx`, and why that matters
+///
+/// Every other part in this renderer composes `Rz·Ry·Rx` from a Euler triple,
+/// because that is what vanilla's `ModelPart` does. The cape is the one part
+/// that does not go through `ModelPart`'s angles at all. `setupAnim` builds
+///
+/// ```text
+/// Quaternionf().rotateY(-PI).rotateX(a).rotateZ(b).rotateY(c)
+/// ```
+///
+/// — JOML's `rotate*` post-multiply, so that quaternion is
+/// `Ry(-π)·Rx(a)·Rz(b)·Ry(c)` — and hands it to `ModelPart.rotateBy`, which
+/// post-multiplies it onto the part's existing `rotationZYX`. The part's
+/// existing rotation is its `PartPose`, `Ry(π)`. So the product is
+///
+/// ```text
+/// Ry(π) · Ry(-π) · Rx(a) · Rz(b) · Ry(c)  =  Rx(a) · Rz(b) · Ry(c)
+/// ```
+///
+/// The leading `rotateY(-PI)` exists **to cancel the pose**, which is why
+/// [`mobs::CAPE_PIVOT`] carries the pose's offset and not its rotation.
+///
+/// `rotateBy` then decomposes the product back to ZYX Euler and stores it —
+/// an exact round-trip on the matrix, so nothing is lost by staying in matrix
+/// form and skipping Euler entirely. It is *not* the same as feeding
+/// `(a, c, b)` to [`mat_zyx`]: that would build `Rz(b)·Ry(c)·Rx(a)`, a
+/// different rotation whenever two of the three are non-zero — which is
+/// exactly the case a cape sways in.
+pub fn cape_rotation(flap_deg: f32, lean_deg: f32, lean2_deg: f32) -> [[f32; 3]; 3] {
+    let a = (6.0 + lean_deg / 2.0 + flap_deg).to_radians();
+    let b = (lean2_deg / 2.0).to_radians();
+    let c = (180.0 - lean2_deg / 2.0).to_radians();
+    mat_mul(mat_mul(rot_x(a), rot_z(b)), rot_y(c))
+}
+
+/// The cape's model-space transform: the `(matrix, offset)` pair
+/// `part_transforms` would have produced for it as a child of `body` (M60).
+///
+/// Exactly the child branch of that function — `m = m_parent · r`,
+/// `o = m_parent · pivot + o_parent` — with [`cape_rotation`] standing in for
+/// the Euler composition it cannot express. Shared with `capeshot` so the
+/// oracle grades this arithmetic rather than a second copy of it.
+pub fn cape_transform(
+    body: &([[f32; 3]; 3], [f32; 3]),
+    cape: &CapeDraw,
+) -> ([[f32; 3]; 3], [f32; 3]) {
+    let (mb, ob) = body;
+    let r = cape_rotation(cape.flap, cape.lean, cape.lean2);
+    let pivot = mat_apply(mb, mobs::CAPE_PIVOT);
+    (
+        mat_mul(*mb, r),
+        [pivot[0] + ob[0], pivot[1] + ob[1], pivot[2] + ob[2]],
+    )
+}
+
+/// `CapeLayer`'s `poseStack.translate(0, -0.053125, 0.06875)`, in **model
+/// pixels** (M60).
+///
+/// Vanilla's translate is in blocks and sits outside the model but inside the
+/// render flip, so scaling it by 16 and adding it to the model-space position
+/// puts it at exactly the same point in the chain. It moves the cape up and
+/// back — away from a chestplate's inflated shell.
+pub fn cape_clearance_shift(chest_humanoid: bool) -> [f32; 3] {
+    if chest_humanoid {
+        [0.0, -0.053125 * 16.0, 0.06875 * 16.0]
+    } else {
+        [0.0; 3]
+    }
+}
+
+/// Atlas UVs for one cape face, from the slot origin and the box UVs
+/// [`mobs::cape_faces`] produced (M60).
+///
+/// The V divisor is `ATLAS_H`, and the slot is `CAPE_SLOT_H` = **32** tall,
+/// so a box V of 17 lands 17/32 of the way down the cape's own sheet — the
+/// `yTexScale 0.5` the cube was authored with. A 64-tall slot would halve it.
+pub fn cape_face_uv(origin: (u32, u32), uvs: &[[f32; 2]; 4]) -> [[f32; 2]; 4] {
+    let (ax, ay) = origin;
+    std::array::from_fn(|i| {
+        [
+            (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
+            (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
+        ]
+    })
 }
 
 /// Rotation about Z.

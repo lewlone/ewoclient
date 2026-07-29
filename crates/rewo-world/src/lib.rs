@@ -9,6 +9,7 @@ pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
 pub mod block_entities;
+pub mod cape;
 pub mod celestial;
 pub mod chunk;
 pub mod conduit;

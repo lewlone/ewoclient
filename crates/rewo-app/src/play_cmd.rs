@@ -298,6 +298,8 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
     session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
+    // M60: the player, for the index-16 skin-customisation byte (cape bit).
+    session.player_type_id = Some(data.entity_types.player_id);
     // M19 combat swings — every production `PlaySession` consumer interprets
     // them, not just `live_cmd`: the player type id gates the swing clock and
     // the equipment tables supply each swing's duration + animation type.

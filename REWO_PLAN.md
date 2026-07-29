@@ -6761,6 +6761,199 @@ eye→feet distance in one expression that no witness covers — the comparison 
 graded, the sourcing is not. And the spec's own exclusions stand: no numeric
 text, no local player, no boss bars, no armour/absorption.
 
+### M60 — the vanilla player cape (2026-07-29)
+
+Shipped and gated. One 10×16×1 slab hanging off the player's `body`, chasing a
+lagging anchor. The wavy/cloth extension is a separate milestone with its own
+spec ([`REWO_WAVY_CAPE_SPEC.md`](REWO_WAVY_CAPE_SPEC.md)) and none of it is
+here; that spec's own §"the split" puts everything below this line — geometry,
+`moveCloak`, the three angles, the `Rx·Rz·Ry` composition, the four gates,
+metadata index 16 — under `capeshot`, which is where it now is.
+
+**The rotation is the milestone.** Every other part in the entity renderer is
+a [`Part`](../crates/rewo-gpu/src/mobs.rs): a Euler triple, composed
+`Rz·Ry·Rx`, with animation deltas *summed* onto the base pose. The cape needs
+`Rx·Rz·Ry`, which that composition cannot produce — and the scoping pass called
+this "the milestone's one structural change".
+
+**It needed no structural change at all, and the reason is worth keeping.**
+`PlayerCapeModel.setupAnim` builds a quaternion and hands it to
+`ModelPart.rotateBy`, which post-multiplies onto the `PartPose`'s
+`rotationZYX`:
+
+```java
+// PartPose is offsetAndRotation(0, 0, 2,  0, PI, 0)
+cape.rotateBy(new Quaternionf().rotateY(-PI).rotateX(a).rotateZ(b).rotateY(c));
+// rotateBy: oldRotation.rotate(rotation), then getEulerAnglesZYX + setRotation
+```
+
+JOML's `rotate*` post-multiply, so the quaternion is
+`Ry(-π)·Rx(a)·Rz(b)·Ry(c)`, and the product with the pose's `Ry(π)` is
+
+```text
+Ry(π) · Ry(-π) · Rx(a) · Rz(b) · Ry(c)  =  Rx(a) · Rz(b) · Ry(c)
+```
+
+**The leading `rotateY(-PI)` exists to cancel the pose.** So the net rotation
+replaces the `PartPose` rotation rather than composing with it — but the pose's
+*translation* `(0, 0, 2)` still applies, which is the asymmetry that makes this
+easy to get wrong in either direction. The ZYX decompose/recompose `rotateBy`
+ends with is an exact round-trip on the matrix, so Euler can be skipped
+entirely.
+
+And then the cape does not need to be a `Part`, because **vanilla does not make
+it one either**: `createCapeLayer` calls `clearRecursively()` precisely so the
+humanoid mesh does not come along, and `CapeLayer` is a render layer. Rewo
+emits it through `emit_cape`, the seam `emit_armor` already established —
+taking the `xf` the body just used (the body is *animated*: `body.xRot = 0.5`
+crouching, `body.yRot` during an attack swing) and applying the child transform
+`m = m_body·R`, `o = m_body·pivot + o_body` that `part_transforms` would have.
+`part_transforms`, `neutral_quads` and `oracle_part_deltas` are untouched, so
+`mobshot`'s geometric prediction still grades exactly the code it did before.
+Teaching `part_transforms` a matrix override would have put a branch in the
+path every mob's geometry runs through, for one quad.
+
+**Two more things the scoping pass expected turned out not to be needed.** A
+per-texture-index UV array (because `upload_skin` returns one delta for the
+whole draw) is unnecessary — a render-layer emitter resolves its own atlas
+origin per frame from raw pixel UVs, as `emit_armor` does with a trim's, so
+`upload_cape` returns an **origin**, not a delta. And the cape's slot is
+64×32 rather than a skin's 64×64: `createCapeLayer` builds against a 64×64
+`LayerDefinition`, but the box carries `xTexScale 1.0, yTexScale 0.5` and
+`CubeDefinition.bake` multiplies them in, so the UVs normalize against 64×32.
+A 64-tall slot halves every V — `a3`, and the mutation run measures exactly the
+0.26562 it predicts.
+
+**Wire and state.**
+
+- `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` is **index 16, BYTE**, and bit 0 is
+  `PlayerModelPart.CAPE`. **This is a 26.2 layout and the 1.21 answer was 17**:
+  `Avatar` was inserted between `LivingEntity` and `Player` and defines
+  `DATA_PLAYER_MAIN_HAND` then `DATA_PLAYER_MODE_CUSTOMISATION`, where 1.21's
+  `Player extends LivingEntity` put absorption and score first. Index 16 is the
+  same slot Rewo already reads as slime size (INT), baby/dancing/celebrating
+  (BOOLEAN) — the serializer separates the BYTE, but only the **kind** says it
+  is a player's, so routing is kind-gated on `minecraft:player` exactly as M18
+  gates the Allay's.
+- `ClientAvatarState.moveCloak` is per-axis and its threshold is **exclusive on
+  both sides** (`if (!(d > 10.0) && !(d < -10.0))`), so a gap of exactly ±10
+  eases and only a larger one snaps — and the snap rewrites `O` as well, so no
+  partial tick draws the cape streaking across the gap.
+- The anchor starts at **0,0,0**, as vanilla's fields do. That is not neutral —
+  a player spawning within 10 blocks of the world origin on an axis has their
+  cloak converge onto it over several ticks instead of snapping — but it is
+  what vanilla does. An earlier draft seeded the anchor on the first tick to
+  "fix" this and was reverted: the milestone is a transcription.
+- `LivingEntity.fallFlyTicks` is client-simulated (`if (isFallFlying()) ++
+  else = 0`, off shared flag 7), and `fallFlyingScale` squares it, so ten ticks
+  of gliding suppress `capeLean` completely.
+- `walkDist` and `bob` are both zero for every entity Rewo draws, **for
+  different reasons**. `walkDist`'s only writer chain ends at
+  `LocalPlayer.move`, and the local player is not in the entity table. `bob` is
+  *not* zero for remotes — `RemotePlayer.tick` calls `updateBob()` — so gating
+  the walk term on `bob != 0` looks equivalent and is wrong. `c4` is the
+  witness, and it passes `bob = 1.0` to make the point.
+- `capeFlap`'s clamp lands **before** the walk-bob add, so a local player
+  walking legitimately exceeds 32°; `capeLean`'s lower clamp is **0**, not
+  −150, so the cape never leans forward however far a player walks backwards.
+
+**`ArmorLayer::Wings` had to exist, and its textures deliberately do not.**
+`CapeLayer` has four gates, and two of them ask different questions about the
+same chest item: `hasLayer(WINGS)` suppresses the cape outright, and
+`hasLayer(HUMANOID)` shifts it clear by `(0, -0.053125, 0.06875)` blocks.
+Before M60 the layer table held only the two humanoid entries, so **an elytra
+and a carved pumpkin were indistinguishable** — neither has a humanoid layer.
+A carved pumpkin is `Equippable.builder(HEAD)` with no `setAsset`, so it names
+no equipment asset at all and both questions answer no. `d5` is the only
+witness where "has a humanoid layer" and "chest slot is occupied" disagree, and
+the mutation run confirms it: keying the shift on `chest.is_some()` **passes
+`d3` and `d4`** and fails only there. The wings *sheet* is not decoded, because
+`equipment.textures` is shelf-packed into the entity atlas in order and adding
+an entry would move every texture after it — `mobshot` staying at 243/243 is
+the empirical half of that claim.
+
+**The atlas grew by exactly the new band.** `ATLAS_H` 1408 → 1472, with the
+cape pool at `y = 1408` and `TRIM_POOL_Y` re-anchored to it — M48's recipe, and
+the reason every mob, item, skin and trim texel address is numerically
+unchanged. Only the V *denominator* moves, which maps the same texels to the
+same samples.
+
+**Wire decode: a cape-only profile now resolves.** `skins.rs` reached
+`["textures"]["SKIN"]` and returned `None` otherwise, **with a test asserting
+it** — so a profile carrying only a cape was invisible to the whole client.
+`CapeLayer`'s gate is `skin.cape() != null` alone, so every field is now
+independently optional and the decoder succeeds on any of them. `skin_fetch`'s
+decode is size-preserving; a cape is 64×32 in vanilla and third-party ones are
+power-of-two multiples, which box-downsample into the slot (a non-multiple is
+rejected rather than stretched).
+
+**Gate: `rewo capeshot --check` — 38 witnesses**, serverless, validation ON, 0
+VUIDs, fail-closed. It drives the shipped `cape_transform` / `cape_face_uv` /
+`cape_clearance_shift`, the production `EntityTable` tick, the real
+`route_set_entity_data`, and `live_cmd::resolve_cape` — no second copy of any
+rule. Every expectation is independently transcribed: the rotation witnesses
+build their own `Rz·Ry·Rx` and their own 3×3 apply, because reading the
+comparison out of the code under test would assert nothing. The pixel half uses
+a **marker-magenta** cape with an empty frame *and a bare player* both asserted
+to contain none of it — M38's rule, and `g2` exists because a default-Steve
+skin would defeat any "non-background" detector.
+
+**Four mutations were run — source broken, rebuilt, gate re-run, reverted:**
+
+| mutation | caught by |
+|---|---|
+| `cape_rotation` composed `Rz·Ry·Rx` | `b1` (cape spans the torso, 0.328..2.995), `b2`, `b3`, and `b4` measuring **0.000 px** apart — the shipped code *is* the wrong ordering |
+| the flap clamp moved after the walk-bob add | `c3` (48.00 → 32.00), plus the `rewo-world` unit test |
+| `chest_humanoid = chest.is_some()` | `d5` only — `d3` and `d4` still pass |
+| the cape slot baked 64 tall | `a3`, measuring exactly the 0.26562 it predicts; `f1`/`f2` still pass, correctly |
+
+`b1`'s own mutation partner is computed inline, and `b2` asserts that partner
+is genuinely wrong rather than a near-miss: applying the `PartPose`'s `Ry(π)`
+as well does not mirror the cape to the front (which is what the scoping pass
+predicted) — it conjugates the 6° rest tilt into `Rx(-6°)` and drops the
+nearest corner to z = −0.667, **inside** the torso. `b5` is the control: with
+only one non-zero angle the two orderings agree exactly, so `b4`'s 3.406 px gap
+is the ordering and not the angles.
+
+**Process traps hit.** (1) A `Copy-Item` revert restored the source with the
+backup's *older* mtime, so cargo skipped the rebuild and the next mutation run
+showed the previous mutation's failures — M59's "rebuild before believing a
+sweep", in a new disguise. Touch the file after restoring. (2)
+`mobshot_cmd.rs` is **mixed CRLF/LF**, and one `Edit` normalised it into an
+899-line spurious diff; restoring from HEAD and re-applying byte-wise brought
+it back to 3/1. Its line 241 ends LF and its line 518 ends CRLF, in the same
+file. Note that `git diff --check` treats a CR on an **added** line as trailing
+whitespace, so new lines in such a file must be LF even where their neighbours
+are not.
+
+**Measured.** `capeshot --check` 38/38. **755 tests** (was 744; +11: cape
+angles 5, cloak anchor + fall-fly 3, cape PNG decode 4, minus 1 replaced skins
+test). All 21 gates green, 0 VUIDs, on a freshly rebuilt binary: capeshot 38,
+itemshot 62, inventoryshot 127, healthbarshot 33, attributeshot 43,
+captureshot 17, blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35,
+handshot 34, particleshot 34, eventshot 28, danceshot 24, portalshot 12,
+hudshot 36, mobshot 243/243 + emissive 5 + etf 8 + tint 4, plus skyshot,
+lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG SHA-256
+`2cc56b4a…` byte-identical to M15 onward. `git diff --check` exits 0.
+
+**Open.**
+
+- **No live sighting.** The gate is authoritative for the properties it names;
+  nobody has watched a cape on a real server. It needs an online-mode session
+  with a profile that actually owns one.
+- **The inventory preview wears no cape.** M36's preview owns a *second*
+  `EntityPass` with its own atlas, so it needs its own cape pool and upload;
+  vanilla's does show one. The most visible remaining gap.
+- **`use_player_texture`** (elytra.json sets it) is read as data and still
+  never honoured — an elytra would wear the player's cape texture. Nothing
+  renders an elytra yet, so it is unreachable rather than wrong.
+- The cape does not take the hurt flash, which is correct
+  (`OverlayTexture.NO_OVERLAY`) and is hard-zeroed rather than read off
+  `d.hurt` — but no witness distinguishes "zeroed" from "the flash never
+  reaches this vertex range".
+- A >32-resident-cape network recycles slots round-robin with no eviction
+  bookkeeping, as every pool before it.
+
 ### M56 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
 
 Shipped. M40 built the tooltip's first pass — measure, position, nine-slice
