@@ -1625,7 +1625,8 @@ work from `main` and keep it that way.
 > **⚠ The M-numbers are not a contiguous index — use commit subjects.**
 > Several sessions have run concurrently with parallel agents, so numbers were
 > assigned independently and reconciled on merge: `M52` appears on more than
-> one piece of work, `M53` is a *specification* rather than code, and the
+> one piece of work (as does `M61` — the wavy cape and the bundle decoder),
+> `M53` is a *specification* rather than code, and the
 > ladder jumps to M58/M59. **`REWO_PLAN.md` §0.0 carries the authoritative
 > numbering note** — read it rather than inferring order from the numbers.
 > When you need to know what actually shipped, read `git log --oneline`
@@ -3229,6 +3230,99 @@ anything; `ChunkCache` is not thread-safe and nothing decides when a cached
 column is stale; `TabEntry::team` is always `None` because Rewo does not decode
 the scoreboard-team packet; and `TOOLTIP_TEXT_GUI_PX = 9.0` is an unverified
 calibration guess awaiting one eyeball.
+
+### Three headless wire subsystems (2026-07-28, second batch)
+
+All three chosen by one test — **no eyeball, no design decision** — and each
+completes something already built. Nothing is wired to a renderer.
+
+**`bundle_contents` (committed as M61 — see the numbering caveat above; the
+same number also names the wavy cape).** `container::bundle_chrome` and
+`tooltip::bundle_image` were built and graded by `inventoryshot` but wired to
+nothing, because `walk_item_template` discarded the id, count and nested patch
+it read.
+
+The design choice that matters: **capture and walk consume the same bytes by
+construction, not by two implementations agreeing.** `walk_item_template` is
+now `Ok(read_item_template(..)?.is_some())`. The patch has no length prefix,
+so a capturing reader that drifted from the walking one would corrupt every
+packet carrying a bundle.
+
+Three states, not two: `None` is absence (resolves through
+`BundleContents.EMPTY`), `Some(vec![])` is an *explicitly empty* bundle
+(vanilla draws the empty-bundle blurb, not "no image"), and a removal resolves
+like `None`. `selectedItem` is **not on the wire** — the codec maps through the
+one-arg constructor, so a selection is client-side screen state.
+
+**The blocker moved rather than closed.** It is no longer the decode, it is the
+carrier: `ItemSlot` is `Copy` on purpose (the click arithmetic moves it through
+a dozen struct-update expressions) and `SlotText` would need its `is_empty`
+taught the new field, or a bundle carrying *only* `bundle_contents` is recorded
+as textless and dropped — exactly the bug M42's enchantments hit. Also,
+`getWeight` needs to know whether an element is itself a bundle or holds bees,
+which needs the nested patch's *contents*; `patched` is one bit and cannot
+answer it, so the grid and counts are drawable and the weight bar is not.
+
+**M62 — the tab list's wire inputs.** `tab_list.rs` transcribed vanilla's
+four-key comparator and three keys were inert. Now decoded: `tab_list_order`
+(action 6), `gamemode` (action 2), and `set_player_team` (new
+`rewo-net/src/teams.rs`, plus the `Scoreboard` state machine).
+
+**It found a drift M52c introduced.** Extracting a pure parser so tests could
+drive the real walk had created *two* copies of the entry walk, and they had
+already diverged: the test copy capped a profile signature at 32767 where
+`GAME_PROFILE_PROPERTIES` says **1024**, which the production copy had right —
+so the tests were validating a walk the client does not use. They are now one
+function that `apply_player_info` also runs.
+
+Facts worth keeping: `GameType.byId` is `ByIdMap.continuous(ZERO)`, so an
+**out-of-range mode is Survival, not an error** (same for visibility, collision
+rule, team colour); every field is `Option` because the packet is a **delta**
+and an unset action bit means *unchanged*, so defaulting would report a
+spectator returning to survival on every latency-only update; a team packet
+naming an **unknown team returns early and discards its roster**; and
+`shouldHavePlayerList` includes method 0, so an ADD carries parameters *and* a
+roster — mis-reading the parameters by one byte silently eats the roster.
+Team-by-name → uuid is a **lazy two-step** lookup, which is what vanilla's
+`PlayerInfo.getTeam` does and matters because the two packets have no ordering
+guarantee.
+
+**M63 — the sound packets, decode only.** Rewo has no audio at all, and the
+survey puts ~117M downloads of demand behind that one prerequisite. Decoding a
+packet needs no listening; making a noise does — that split is the task.
+**No audio crate, no device, no mixer.** `sound`, `sound_entity`, `stop_sound`,
+ids resolved by name and all `req!`. `custom_sound` does not exist in 26.2.
+
+Four details where the wrong answer is plausible, all mutation-tested:
+
+- Position is `(int)(coord * 8.0)` on the wire and the accessor is
+  `this.x / 8.0F` — an **int/float** divide, so Java rounds to `f32` *before*
+  widening to `double`. An `f64` divide agrees near spawn and drifts past
+  ~2²¹ blocks; dividing by 16 puts every sound at half its true distance,
+  audible as wrong attenuation and never as an error.
+- The sound event is `ByteBufCodecs.holder` — `id + 1`, `0` meaning an inline
+  definition follows. Reading it raw shifts every sound by one *and* then reads
+  the inline body as the next field.
+- `stop_sound` reads source **first**, then name, and only when its flag is
+  set. Name-first works for flags 1 and 2 and corrupts flags 3.
+- `sound_entity`'s id is a var-int where `sound`'s coordinates are fixed i32s.
+
+The model lives in `rewo-net`, not `rewo-world`: `ParticleEvent` is in
+`rewo-world` because `rewo-world` *simulates* particles, whereas a sound has no
+client-side state, so filing it there adds a hop through a crate that only
+forwards it.
+
+**Integration hazard, recorded because it nearly bit twice.** These agents
+branched from the same base and shared `play.rs`, `ids.rs` and `lib.rs`, so
+each was applied as a **3-way patch, not a file copy** — a copy would have
+compiled cleanly and silently deleted the previous one's work. Verify the
+earlier symbols are still present afterwards rather than trusting the build.
+
+**Mutation-testing found three decorative tests across the batch**, none of
+them findable by reading. The sharpest: a depth witness sized as
+`MAX_DEPTH + 2` is *self-calibrating* — raising the bound raises the payload,
+so it passes at 8 and at 64 alike and only ever witnesses "recursion
+terminates".
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

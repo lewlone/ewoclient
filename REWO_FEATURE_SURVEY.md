@@ -320,6 +320,14 @@ large.
 
 ### Status, 2026-07-28
 
+**The audio cluster's decode half now exists.** M63 decoded `sound`,
+`sound_entity` and `stop_sound` — so the three audio features are no longer
+blocked on *nothing*, they are blocked on a device and a mixer, which is the
+part that needs a human to listen. What a playback layer still needs is
+recorded in that commit: a `sound_event` registry table, `sounds.json` + the
+OGG assets (that indirection is where the packet's `seed` is spent), and the
+`level_event` id→sound mapping.
+
 **M52a shipped four of the port bundle** — Zoom, Fullbright, FOV Control and
 Toggle Sprint/Sneak are in `crates/rewo-app/src/modules.rs`, reading the same
 `modules.toml` the launcher writes. **M52c shipped ping's data half**
