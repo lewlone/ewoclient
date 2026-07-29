@@ -4579,6 +4579,21 @@ pub(crate) fn create_texture(
     create_texture_fmt(gpu, rgba, width, height, vk::Format::R8G8B8A8_SRGB)
 }
 
+/// Single-channel coverage texture — the Velvet glyph atlas (M52b).
+///
+/// `create_texture_fmt` sizes its staging buffer from `data.len()` rather than
+/// assuming four bytes per pixel, so it is already format-agnostic. UNORM, not
+/// SRGB: this is a mask, and pushing coverage through an sRGB decode would
+/// make every glyph edge wrong.
+pub(crate) fn create_texture_r8(
+    gpu: &mut Gpu,
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
+    create_texture_fmt(gpu, data, width, height, vk::Format::R8_UNORM)
+}
+
 /// A glint sheet, uploaded **UNORM** (M50).
 ///
 /// Vanilla binds no sRGB texture views, so its `texture(Sampler0, ...)` hands

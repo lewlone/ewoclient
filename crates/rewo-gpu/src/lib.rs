@@ -33,6 +33,7 @@ pub mod held;
 pub mod hud;
 pub mod offscreen;
 pub mod velvet_glyph;
+pub mod velvet_text;
 pub mod text;
 pub mod tooltip;
 pub mod overlay;
