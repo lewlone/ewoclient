@@ -132,10 +132,39 @@ impl ItemTag {
 mod tests {
     use super::*;
 
-    /// A two-item registry written through the real `Items::load`, so these
-    /// tests exercise the production name→id resolution too.
-    fn items() -> Items {
-        let dir = std::env::temp_dir().join("rewo-item-tags-test");
+    /// A directory no other fixture can be using.
+    ///
+    /// This was one fixed path, and that was a race with two independent
+    /// reaches. `std::env::temp_dir()` is **machine-wide**, and every caller
+    /// writes the fixture and then reads it back, so:
+    ///
+    /// * within one binary, the tests below run on separate threads, and
+    /// * across binaries, every concurrent sweep on the machine — a second
+    ///   worktree's `cargo test`, a re-run overlapping the last — landed on the
+    ///   identical file.
+    ///
+    /// `fs::write` opens with `O_TRUNC`, so a reader arriving between the
+    /// truncate and the bytes sees a **zero-byte file** and `Items::load` fails
+    /// with `EOF while parsing a value at line 1 column 0`. Intermittent by
+    /// nature: it needs a reader inside a window a few microseconds wide, which
+    /// is why it surfaced as "roughly one sweep in four" rather than as a
+    /// reproducible failure, and why it masked real failures instead of
+    /// reporting itself.
+    ///
+    /// The process id makes it safe across binaries and the counter across
+    /// threads; both are needed, and neither alone closes it.
+    fn fixture_dir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "rewo-item-tags-test-{}-{n}",
+            std::process::id()
+        ))
+    }
+
+    /// Write the two-item registry fixture, returning its directory and path.
+    fn write_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = fixture_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("registries.json");
         std::fs::write(
@@ -145,7 +174,70 @@ mod tests {
                  "minecraft:stone_sword":{"protocol_id":9}}}}"#,
         )
         .unwrap();
-        Items::load(&p).unwrap()
+        (dir, p)
+    }
+
+    /// A two-item registry written through the real `Items::load`, so these
+    /// tests exercise the production name→id resolution too.
+    fn items() -> Items {
+        let (dir, p) = write_fixture();
+        let loaded = Items::load(&p);
+        let _ = std::fs::remove_dir_all(&dir);
+        loaded.unwrap()
+    }
+
+    /// **The race witness.** Every caller of [`items`] writes a fixture and
+    /// then reads it back, so two callers sharing one path interleave as
+    /// truncate / read / write: `fs::write` opens with `O_TRUNC`, and a reader
+    /// landing in the gap before the bytes arrive sees a **zero-byte file**.
+    ///
+    /// Mutation partner: put the fixture back on one fixed path
+    /// (`temp_dir().join("rewo-item-tags-test")`) and this fails with
+    /// `EOF while parsing a value at line 1 column 0` — which is exactly how it
+    /// failed in the wild, intermittently, masking real failures in every sweep.
+    #[test]
+    fn concurrent_fixtures_never_observe_a_half_written_file() {
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::scope(|s| {
+            for _ in 0..16 {
+                let failures = std::sync::Arc::clone(&failures);
+                s.spawn(move || {
+                    for _ in 0..8 {
+                        // Not `items()` — that unwraps, and a panic in a scoped
+                        // thread would abort the run rather than count.
+                        let (dir, p) = write_fixture();
+                        let loaded = Items::load(&p);
+                        let _ = std::fs::remove_dir_all(&dir);
+                        if loaded.is_err() {
+                            failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            failures.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a fixture was read while another writer had it truncated"
+        );
+    }
+
+    /// The property the fix turns on, asserted directly rather than through the
+    /// probabilistic race above: no two fixtures share a path, and the path is
+    /// process-scoped so a second test binary on the same machine — another
+    /// worktree's sweep, `temp_dir()` being machine-wide — cannot collide with
+    /// this one either.
+    #[test]
+    fn each_fixture_gets_its_own_process_scoped_directory() {
+        let a = fixture_dir();
+        let b = fixture_dir();
+        assert_ne!(a, b, "two fixtures shared a directory");
+        let pid = std::process::id().to_string();
+        assert!(
+            a.to_string_lossy().contains(&pid),
+            "{} is not process-scoped",
+            a.display()
+        );
     }
 
     #[test]

@@ -6519,6 +6519,103 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M63 — the container's contents, and a flake that was hiding real failures (2026-07-29)
+
+Three jobs in `rewo-net` + `rewo-data`. The first turned out to be already
+done, and saying so is the finding.
+
+**The codec table is complete, and that is now measured rather than counted.**
+M41 shipped 97 of 111 components and recorded 14 missing, 7 of them
+"never network-synchronised"; M52e then closed the other 7. Both halves of
+that claim were **inherited**, so M63 re-derived them from scratch: every
+`= register(...)` in `DataComponents.java` parsed with its balanced-paren body,
+each classified by whether that body contains `.networkSynchronized(`. The
+answer is **111 registrations, 104 synchronised, 7 not** — and the 104 names
+match `CODECS` exactly, name for name, with **0 missing and 0 extra**. A third,
+independent reading agrees: the datagen `registries.json` report lists 111
+entries, and `synchronised ∪ never == registry` with the two sets disjoint.
+The seven that a server can never send are `custom_data`,
+`intangible_projectile`, `map_decorations`, `debug_stick_state`, `recipes`,
+`lock` and `container_loot` — each verified individually as `b.persistent(…)`
+with no `.networkSynchronized(…)` anywhere in its registration. **The real
+missing-codec count is zero**; nothing was transcribed because nothing was
+missing.
+
+**`minecraft:container` now keeps what it walked past.** The shape was already
+there, so a shulker box parsed without desynchronising — but
+`walk_item_template` discarded the id, the count and the nested patch, and
+`ItemContainerContents.addToTooltip` needs all three: it counts the occupied
+slots, renders `item.container.item_count` from `itemStack.getHoverName()` for
+the first **five**, and adds one italic `item.container.more_items` for the
+rest. A hover name can only come from the *nested* patch, so this is the first
+capture that reads a component **inside** another component's value.
+
+**Two ways it differs from M61's bundle, both invertible.** A container slot is
+an `Optional<ItemStackTemplate>` where a bundle's is a bare one — one presence
+byte per slot — and the empty ones are **kept as `None` rather than dropped**,
+because `ItemContainerContents.items` is indexed by slot number and `copyInto`
+reads it positionally. The tooltip is the one consumer that does not care, and
+it filters (`nonEmptyItemsStream`), which is why the filter lives in the
+accessor and not in the walk.
+
+**The capture shares the patch loop rather than repeating it.**
+`walk_patch_counted` became a thin call on a new `walk_patch_with`, which
+offers each added entry's type id to a closure before `shape_for_id` sees it.
+One body, so a capturing walk and a plain one consume identical bytes **by
+construction** — the same reason M61 gives for `read_item_template`, and it
+matters more here than anywhere else: the patch has no length prefix, so a
+capture that read one byte differently would park the reader mid-value and turn
+every stack after it in the packet into garbage. The one span the capture reads
+itself is the `custom_name` tag, and it reads exactly what `Shape::NbtTag`
+would.
+
+Only `custom_name` is captured. `getHoverName` is
+`getOrDefault(CUSTOM_NAME, getItemName())` over
+`getOrDefault(ITEM_NAME, item.getName())` — a two-level override, and the lower
+two levels are answered by the item table on the rendering side. A patch that
+*removes* `custom_name` leaves it `None`, which is the same answer as an absent
+one and correct for the same reason: both send `getHoverName` to the next
+fallback.
+
+Gate: `inventoryshot --check` 127 → **131** (`ct1` alignment-and-content,
+`ct2` gaps kept while the tooltip view skips them, `ct3` absent ≠ empty ≠
+removed, `ct4` fail-closed on an unwalkable nested component), plus 10 unit
+tests. **Three mutations were run, not just named**: reading the name as a
+`Str` instead of a tag kills 5 witnesses, dropping the empty slots kills 5, and
+omitting the `Optional` presence byte kills 7; the gate itself was
+mutation-checked separately and drops to 129/131 with a non-zero exit.
+
+**The flaky test: a machine-wide path, not a timing bug.** `item_tags`'s
+fixture helper wrote `std::env::temp_dir().join("rewo-item-tags-test")` — one
+**fixed, absolute** path — and every caller writes the fixture then reads it
+back. `fs::write` opens with `O_TRUNC`, so a reader arriving between the
+truncate and the bytes sees a **zero-byte file**, and `Items::load` fails with
+`EOF while parsing a value at line 1 column 0`. That is the exact panic the
+wild failures carried. It has two independent reaches: the two tests in the
+binary run on separate threads, and `temp_dir()` is machine-wide, so every
+concurrent sweep on the box — another worktree's `cargo test`, a re-run
+overlapping the last — landed on the identical file. That is why it presented
+as "roughly one run in four" rather than as anything reproducible, and why it
+masked real failures instead of reporting itself.
+
+It would not reproduce at 1 or 4 processes on an idle machine (40/40 and 60/60
+green); it took **10 concurrent processes** to catch it once in 100 — which is
+itself the evidence for the diagnosis, since the window is a few microseconds
+wide. The fix is a per-call directory keyed by **process id *and* an atomic
+counter**; both are needed and neither alone closes it. Measured on a stress
+witness that makes the latent race deterministic: **before 0/20, after 30/30**
+sequentially and **100/100** at the 10-process contention that originally
+reproduced it.
+
+**956 tests** (944 + 12); every gate green with validation ON and 0 VUIDs;
+demo PNG byte-identical to M15 onward.
+
+**Open:** the tooltip *lines* themselves — `item.container.item_count` and
+`item.container.more_items` are decoded but not rendered, which is the tooltip
+milestone this was groundwork for. A nested slot's own components beyond
+`custom_name` are still walked and discarded, so a container holding an
+enchanted or renamed-and-damaged stack shows the name and nothing else.
+
 ### M58 — the bundle tooltip's cell chrome (2026-07-29)
 
 Shipped. M56 computed every rectangle of `ClientBundleTooltip`'s grid and

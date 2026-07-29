@@ -925,6 +925,29 @@ pub fn walk_patch_opaque(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
 /// graded against [`MAX_DEPTH`]'s value rather than against the guard.
 #[allow(clippy::result_unit_err)]
 pub fn walk_patch_counted(r: &mut PacketReader, depth: u32) -> Result<Option<(i32, i32)>, ()> {
+    walk_patch_with(r, depth, &mut |_, _| None)
+}
+
+/// The shared body of every patch walk, capturing or not (M63).
+///
+/// `capture` is offered each **added** entry's type id before `shape_for_id`
+/// sees it. Returning `Some(result)` means the closure consumed that entry's
+/// value itself; returning `None` leaves it to the generic walk.
+///
+/// One body rather than two, for the reason [`read_item_template`] gives: the
+/// patch has no length prefix, so a capturing reader that consumed one byte
+/// differently from the walking one would park the reader mid-value and turn
+/// everything after it in the packet into garbage. Sharing the loop makes the
+/// two agree **by construction** instead of by two implementations happening to
+/// match — and a capture is then only correct if it reads exactly what that
+/// component's [`Shape`] would, which is what
+/// `a_named_container_slot_consumes_exactly_what_walking_it_does` grades.
+#[allow(clippy::result_unit_err)]
+pub fn walk_patch_with(
+    r: &mut PacketReader,
+    depth: u32,
+    capture: &mut dyn FnMut(i32, &mut PacketReader) -> Option<Result<bool, ()>>,
+) -> Result<Option<(i32, i32)>, ()> {
     if depth > MAX_DEPTH {
         return Ok(None);
     }
@@ -932,6 +955,12 @@ pub fn walk_patch_counted(r: &mut PacketReader, depth: u32) -> Result<Option<(i3
     let removed = bounded_count(r)?;
     for _ in 0..added {
         let ty = r.varint().map_err(|_| ())?;
+        if let Some(taken) = capture(ty, r) {
+            if !taken? {
+                return Ok(None);
+            }
+            continue;
+        }
         match shape_for_id(ty) {
             Some(shape) => {
                 if !walk(r, shape, depth + 1)? {
@@ -945,6 +974,98 @@ pub fn walk_patch_counted(r: &mut PacketReader, depth: u32) -> Result<Option<(i3
         r.varint().map_err(|_| ())?;
     }
     Ok(Some((added, removed)))
+}
+
+/// One slot of `minecraft:container`, kept rather than walked past (M63).
+///
+/// `ItemContainerContents.STREAM_CODEC` is
+/// `ItemStackTemplate.STREAM_CODEC.apply(ByteBufCodecs::optional).apply(list(256))`
+/// — so a slot is an `Optional<ItemStackTemplate>`, and this is the present
+/// case. It carries one field more than [`ItemTemplate`] because the tooltip
+/// needs one thing a bundle's grid does not: `addToTooltip` renders
+/// `item.container.item_count` from `itemStack.getHoverName()`, and a hover
+/// name can only come from the *nested* patch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerSlot {
+    /// `Item.STREAM_CODEC` is `holderRegistry(ITEM)` — a **raw** registry id.
+    pub item_id: i32,
+    pub count: i32,
+    /// The nested `minecraft:custom_name`, reduced to plain text.
+    ///
+    /// **Only `custom_name`.** `getHoverName` reads `CUSTOM_NAME`, then
+    /// `ITEM_NAME`, then the item's description id; the first is the only one
+    /// a server ever patches onto a stack inside a container, and the other two
+    /// are answered by the item table on the rendering side. A patch that
+    /// *removes* `custom_name` leaves this `None`, which is the same answer as
+    /// an absent one — and correct, because both send `getHoverName` on to the
+    /// next fallback.
+    pub custom_name: Option<String>,
+}
+
+/// One `Optional<ItemStackTemplate>`, keeping what a container tooltip needs.
+///
+/// The capturing counterpart of walking
+/// `Shape::List(&Shape::Optional(&Shape::ItemStackTemplate))`, sharing its
+/// patch loop through [`walk_patch_with`]. `Ok(None)` is
+/// [`WalkOutcome::Stuck`], exactly as it is for [`read_item_template`].
+#[allow(clippy::result_unit_err)]
+pub fn read_container_slot(
+    r: &mut PacketReader,
+    depth: u32,
+    custom_name_id: i32,
+) -> Result<Option<ContainerSlot>, ()> {
+    let item_id = r.varint().map_err(|_| ())?;
+    let count = r.varint().map_err(|_| ())?;
+    let mut custom_name = None;
+    let walked = walk_patch_with(r, depth + 1, &mut |ty, r| {
+        if ty != custom_name_id {
+            return None;
+        }
+        // Exactly what `Shape::NbtTag` reads, which is what the generic walk
+        // would have read for this entry. Anything else here desynchronises.
+        Some(match Nbt::read_network(r) {
+            Ok(tag) => {
+                custom_name = Some(nbt_text(&tag));
+                Ok(true)
+            }
+            Err(_) => Err(()),
+        })
+    })?;
+    Ok(walked.map(|_| ContainerSlot {
+        item_id,
+        count,
+        custom_name,
+    }))
+}
+
+/// `ItemContainerContents.STREAM_CODEC` — a list of optional templates.
+///
+/// **Empty slots are kept as `None` rather than dropped.** Vanilla's own
+/// `items` is a `List<Optional<…>>` whose indices are slot numbers, and
+/// `copyInto` reads them positionally; the tooltip is the one consumer that
+/// does not care, and it filters (`nonEmptyItemsStream`). Dropping them here
+/// would throw away information the wire carried and cannot be recovered.
+#[allow(clippy::result_unit_err)]
+pub fn read_container_slot_list(
+    r: &mut PacketReader,
+    depth: u32,
+    custom_name_id: i32,
+) -> Result<Option<Vec<Option<ContainerSlot>>>, ()> {
+    let n = bounded_count(r)?;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        // `ByteBufCodecs.optional` — a bool, then the value if true. The same
+        // byte `Shape::Optional` reads.
+        if r.u8().map_err(|_| ())? == 0 {
+            out.push(None);
+            continue;
+        }
+        match read_container_slot(r, depth, custom_name_id)? {
+            Some(slot) => out.push(Some(slot)),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
 }
 
 // The id → shape mapping is installed once, from the registry, because the
@@ -1119,6 +1240,8 @@ mod tests {
     const PROFILE_ID: i32 = 71;
     const CAN_PLACE_ON_ID: i32 = 13;
     const BUNDLE_ID: i32 = 50;
+    const CUSTOM_NAME_ID: i32 = 9;
+    const CONTAINER_ID: i32 = 51;
     /// An id no registry can hold, so nothing can ever give it a shape. A real
     /// but merely-uncovered id would silently stop testing this property the
     /// day its codec landed — which is how three `item_stack` fixtures rotted
@@ -1131,6 +1254,8 @@ mod tests {
             ("minecraft:profile", PROFILE_ID),
             ("minecraft:can_place_on", CAN_PLACE_ON_ID),
             ("minecraft:bundle_contents", BUNDLE_ID),
+            ("minecraft:custom_name", CUSTOM_NAME_ID),
+            ("minecraft:container", CONTAINER_ID),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1716,6 +1841,138 @@ mod tests {
         template(2, 1, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB])], &mut b);
         assert_eq!(captured(&b), None);
         assert_eq!(walked(shape("minecraft:bundle_contents"), &b), None);
+    }
+
+    // ---- container (M63) ---------------------------------------------------
+    //
+    // `ItemContainerContents.STREAM_CODEC` is `ItemStackTemplate.STREAM_CODEC
+    // .apply(ByteBufCodecs::optional).apply(ByteBufCodecs.list(256))` — so it
+    // differs from a bundle by exactly one presence byte per slot, and by
+    // keeping the one nested component `getHoverName` needs.
+
+    /// A chat component in its network-NBT form: `{"text": s}`. The root is a
+    /// bare type byte with **no name**, which is what `read_network` reads.
+    fn text_tag(s: &str, out: &mut Vec<u8>) {
+        out.push(0x0A); // TAG_Compound
+        out.push(0x08); // TAG_String
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.extend_from_slice(b"text");
+        out.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+        out.push(0x00); // TAG_End
+    }
+
+    /// One slot: a presence bool, then a template when present.
+    fn slot(item: Option<(i32, i32, &[(i32, Vec<u8>)])>, out: &mut Vec<u8>) {
+        match item {
+            None => none(out),
+            Some((id, count, added)) => {
+                some(out);
+                template(id, count, added, out);
+            }
+        }
+    }
+
+    /// Capture `bytes` as a container list — the capturing counterpart of
+    /// [`walked`], as [`captured`] is for bundles.
+    fn captured_container(bytes: &[u8]) -> Option<(Vec<Option<ContainerSlot>>, usize)> {
+        let mut r = PacketReader::new(bytes);
+        match read_container_slot_list(&mut r, 0, CUSTOM_NAME_ID) {
+            Ok(Some(slots)) => Some((slots, r.offset())),
+            _ => None,
+        }
+    }
+
+    /// **The alignment witness, and the only one that really matters here.**
+    ///
+    /// Capturing a container must move the reader *exactly* as far as walking
+    /// past it did — including through a slot whose nested patch carries a
+    /// `custom_name`, which is the one entry the capture reads itself instead
+    /// of handing to `Shape::NbtTag`.
+    ///
+    /// Mutation partner: have the capture consume anything other than one
+    /// network tag (a `Str`, say, or nothing at all) and the two offsets
+    /// diverge — the sentinel is then either reached or left to be parsed as
+    /// the next component's type id, which is the desynchronisation the whole
+    /// shape table exists to prevent.
+    #[test]
+    fn a_named_container_slot_consumes_exactly_what_walking_it_does() {
+        install_test_shapes();
+        let mut name = Vec::new();
+        text_tag("Bag of Holding", &mut name);
+
+        let mut b = Vec::new();
+        varint(3, &mut b);
+        slot(Some((1, 64, &[])), &mut b);
+        slot(Some((2, 1, &[(CUSTOM_NAME_ID, name)])), &mut b);
+        slot(None, &mut b);
+        let n = b.len();
+        b.push(0xEE); // a sentinel neither path may reach
+
+        let (slots, read) = captured_container(&b).expect("captures");
+        assert_eq!(read, n, "capture consumed the wrong number of bytes");
+        assert_eq!(
+            walked(shape("minecraft:container"), &b),
+            Some(n),
+            "the generic walk disagrees with the capture"
+        );
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots[1].as_ref().unwrap().custom_name.as_deref(), Some("Bag of Holding"));
+    }
+
+    /// An empty slot is one zero byte and **is kept**. Dropping it would
+    /// renumber every slot after it, and `ItemContainerContents.items` is
+    /// indexed by slot number.
+    #[test]
+    fn an_empty_container_slot_is_kept_rather_than_dropped() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(4, &mut b);
+        slot(None, &mut b);
+        slot(Some((7, 3, &[])), &mut b);
+        slot(None, &mut b);
+        slot(Some((8, 1, &[])), &mut b);
+        let n = b.len();
+        b.push(0xEE);
+
+        let (slots, read) = captured_container(&b).expect("captures");
+        assert_eq!(read, n);
+        assert_eq!(walked(shape("minecraft:container"), &b), Some(n));
+        assert_eq!(slots.len(), 4, "the gaps were dropped");
+        assert!(slots[0].is_none() && slots[2].is_none());
+        assert_eq!(slots[1].as_ref().unwrap().item_id, 7);
+        assert_eq!(slots[1].as_ref().unwrap().count, 3);
+        // …and the tooltip's own view skips them, per `nonEmptyItemsStream`.
+        assert_eq!(slots.iter().flatten().count(), 2);
+    }
+
+    /// A slot with no `custom_name` reports `None` rather than an empty string
+    /// — `getHoverName` then falls through to `item_name` and the item's own
+    /// description id, which an empty string would suppress.
+    #[test]
+    fn an_unnamed_container_slot_has_no_custom_name() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        slot(Some((5, 2, &[(DAMAGE_ID, vec![9])])), &mut b);
+        let (slots, read) = captured_container(&b).expect("captures");
+        assert_eq!(read, b.len());
+        let s = slots[0].as_ref().unwrap();
+        assert_eq!(s.custom_name, None);
+        assert_eq!((s.item_id, s.count), (5, 2));
+    }
+
+    /// The nested patch inherits the patch's fail-closed rule: a component
+    /// with no transcribed codec has no length either, so the capture stops
+    /// rather than guessing past it — and the generic walk agrees.
+    #[test]
+    fn an_unwalkable_component_inside_a_container_slot_stops_the_capture() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        slot(Some((2, 1, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB])])), &mut b);
+        assert_eq!(captured_container(&b), None);
+        assert_eq!(walked(shape("minecraft:container"), &b), None);
     }
 
     /// A truncated body is a different failure from a missing codec, and it
