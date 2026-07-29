@@ -1760,6 +1760,36 @@ impl WorldRenderer {
         }
     }
 
+    /// Run `f` inside the gamma-space scope — the public door onto
+    /// [`Self::in_gamma_space`], for the Velvet UI passes (M52b).
+    ///
+    /// The Velvet HUD has the same requirement the glint does and for the same
+    /// reason: EwoClient's `rgba()` is a plain `/255` with no transfer
+    /// function, so Skia composites `WINE 0.50` in **gamma** space, while an
+    /// sRGB attachment blends in **linear** — and `dst*(1-a) + src*a` is not
+    /// invariant under the sRGB transfer.
+    ///
+    /// **A pass called in here must have been built with the UNORM format**
+    /// (`unorm_of(color_format)`), not the sRGB one. Vulkan requires a
+    /// pipeline's rendering formats to match the attachment, so a pass
+    /// constructed against the sRGB format and drawn in this scope is a
+    /// validation error rather than a subtle colour shift. That is the trap:
+    /// the colour-space part is easy to reason about, and the *pipeline
+    /// format* part is the one that actually bites.
+    ///
+    /// Skipped entirely when the target has no mutable-format twin — the same
+    /// stance M50 takes, because a Velvet plate blended in linear light is
+    /// wrong rather than merely dimmer.
+    pub fn with_gamma_space(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        f: impl FnOnce(),
+    ) {
+        self.in_gamma_space(gpu, cb, extent, f);
+    }
+
     /// This frame's attachment views, for the glint's gamma-space scope (M50).
     ///
     /// `None` — no mutable-format target — draws no glint at all. Set by

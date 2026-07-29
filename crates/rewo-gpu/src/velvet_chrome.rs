@@ -31,6 +31,13 @@
 //!
 //! Recorded rather than silently worked around, because a wrong blend space
 //! looks like "the colours are a bit off" rather than like a bug.
+//!
+//! **Construct this pass with `world::unorm_of(target_format)`**, not the
+//! sRGB format. It draws inside `WorldRenderer::with_gamma_space`, and
+//! Vulkan requires a pipeline's rendering formats to match the attachment.
+//! Building against sRGB and drawing in that scope is a validation error --
+//! which is the useful half of this trap, because the colour-space part is
+//! easy to reason about and the pipeline-format part is what actually bites.
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};

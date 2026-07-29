@@ -37,6 +37,7 @@ mod skyshot_cmd;
 mod stats;
 mod swingshot_cmd;
 mod view_cmd;
+mod hudshot_cmd;
 mod weathershot_cmd;
 
 use std::path::PathBuf;
@@ -178,6 +179,10 @@ enum Command {
     /// precipitation rule and the cloud mesh on the CPU, then render both
     /// production passes offscreen and assert their pixels with `--check`.
     Weathershot(weathershot_cmd::WeathershotArgs),
+    /// M52b Velvet UI oracle: grade the HUD layout chain, anchors, glyph
+    /// metrics and the in-world shadow stack against the transcribed
+    /// `ewo-jni/src/hud.rs` constants. CPU-only, serverless.
+    Hudshot(hudshot_cmd::HudshotArgs),
     /// M34 inventory + hotbar-icon oracle: drive the three inventory packets
     /// through the real router, grade the `display.gui` placement and the GUI
     /// diffuse on the CPU, then render real baked items into real hotbar slots
@@ -252,6 +257,7 @@ fn main() {
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
         Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
+        Some(Command::Hudshot(hs_args)) => hudshot_cmd::run(hs_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),

@@ -27,6 +27,14 @@
 //! sub-pixel of sharpness, because tracked labels are a Velvet signature.
 //! Recorded as a known deviation for the §6 gate to measure rather than
 //! discover.
+//!
+//! ## Colour space
+//!
+//! Same requirement as the chrome pass: the Velvet UI blends in gamma space,
+//! so this draws inside `WorldRenderer::with_gamma_space` and must be built
+//! with `world::unorm_of(target_format)`. If the plate blends in gamma and
+//! the type on top of it blends in linear they disagree worst exactly where
+//! they overlap, which is the whole widget.
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
