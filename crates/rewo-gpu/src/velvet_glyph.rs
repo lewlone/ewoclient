@@ -556,6 +556,25 @@ impl GlyphCache {
         origin: (f32, f32),
         out: &mut Vec<PositionedGlyph>,
     ) -> f32 {
+        self.layout_run_blurred(key, text, tracking_em, origin, 0.0, out)
+    }
+
+    /// `layout_run` with every glyph fetched at a blur sigma -- the shadow
+    /// stack's copies.
+    ///
+    /// The pen still advances by the **sharp** advance, because
+    /// `glyph_blurred` preserves it. Advancing by the blurred box width
+    /// instead would spread the shadow wider than the text it belongs to,
+    /// which is subtle enough to accept by eye and wrong.
+    pub fn layout_run_blurred(
+        &mut self,
+        key: ScalerKey,
+        text: &str,
+        tracking_em: f32,
+        origin: (f32, f32),
+        sigma: f32,
+        out: &mut Vec<PositionedGlyph>,
+    ) -> f32 {
         let spacing = tracking_em * key.size_px();
         let inv = 1.0 / self.edge as f32;
         let (mut pen_x, baseline_y) = origin;
@@ -565,7 +584,7 @@ impl GlyphCache {
                 pen_x += spacing;
                 continue;
             };
-            let Some(g) = self.glyph(key, id) else {
+            let Some(g) = self.glyph_blurred(key, id, sigma) else {
                 pen_x += spacing;
                 continue;
             };
