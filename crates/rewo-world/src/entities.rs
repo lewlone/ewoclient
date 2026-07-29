@@ -697,6 +697,21 @@ pub struct EntityTable {
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID` (17 BYTE) and
     /// `Pillager.IS_CHARGING_CROSSBOW` (17 BOOLEAN). Absent = every default.
     mob_state: HashMap<i32, MobState>,
+    /// Simulated cape spines (M61), one per player currently showing a cape.
+    ///
+    /// A side map rather than a field on [`EntityState`] because that struct
+    /// is `Copy` and is copied whole on every read: seventeen joints in two
+    /// Verlet buffers is 816 bytes, which is exactly the coupling cost the
+    /// cloak anchor's comment weighed six doubles against and found
+    /// acceptable. Entries appear when the entity's cape becomes visible and
+    /// are dropped the tick it stops being, so a recycled id can never
+    /// inherit a chain.
+    wavy_capes: HashMap<i32, crate::wavy_cape::WavyCape>,
+    /// Whether the wavy cape is switched on at all (M61) — the feature is
+    /// opt-in and vanilla is the default. While this is false nothing above
+    /// is allocated, ticked, or read, so the vanilla cape's behaviour is
+    /// unreachable from the flag.
+    wavy_capes_enabled: bool,
 }
 
 /// `LivingEntity`'s damage-response fields, set by
@@ -960,6 +975,7 @@ impl EntityTable {
         // its replacement. The Allay dance clock dies with the entity too.
         self.events.remove(&id);
         self.dances.remove(&id);
+        self.wavy_capes.remove(&id);
         self.clear_swing(id);
         self.map.insert(id, state);
     }
@@ -981,6 +997,7 @@ impl EntityTable {
         self.attributes.remove(&id);
         self.shared_flags.remove(&id);
         self.model_customisation.remove(&id);
+        self.wavy_capes.remove(&id);
         self.clear_swing(id);
     }
 
@@ -1662,6 +1679,7 @@ impl EntityTable {
         for d in self.dances.values_mut() {
             d.tick();
         }
+        self.tick_wavy_capes();
         self.tick_uses();
         self.tick_deaths();
         self.tick_swings();
@@ -1674,6 +1692,81 @@ impl EntityTable {
             }
             h.hurt_time > 0
         });
+    }
+
+    /// Switch the wavy cape (M61) on or off. Off is the default and is what
+    /// the vanilla cape milestone's 38 witnesses grade; turning it off also
+    /// drops every simulated chain, so a toggle mid-session cannot leave one
+    /// player waving and another not.
+    pub fn set_wavy_capes(&mut self, on: bool) {
+        self.wavy_capes_enabled = on;
+        if !on {
+            self.wavy_capes.clear();
+        }
+    }
+
+    pub fn wavy_capes_enabled(&self) -> bool {
+        self.wavy_capes_enabled
+    }
+
+    /// This entity's simulated cape spine, if it has one this tick.
+    pub fn wavy_cape(&self, id: i32) -> Option<&crate::wavy_cape::WavyCape> {
+        self.wavy_capes.get(&id)
+    }
+
+    /// Advance every visible cape's cloth simulation one tick (M61).
+    ///
+    /// Runs from [`Self::tick_lerp`] **after** every entity's own tick, so
+    /// the anchor and the cloak gap are both read at their end-of-tick
+    /// values — the same pair the renderer would resolve at `alpha == 1`.
+    ///
+    /// Membership is `shows_cape`, the metadata bit alone. That is a
+    /// deliberate superset of "a cape is actually drawn": the remaining
+    /// gates (an uploaded cape sheet, an elytra in the chest slot, the
+    /// invisibility flag) need the skin cache and the equipment table, and
+    /// neither belongs in a world tick. Simulating a chain nobody renders
+    /// costs one entry and a few hundred flops; asking the renderer for the
+    /// answer would make the simulation frame-driven, which rule 4 forbids.
+    fn tick_wavy_capes(&mut self) {
+        if !self.wavy_capes_enabled {
+            return;
+        }
+        // Disjoint field borrows: the entity map and the customisation mask
+        // are read while the chain map is written.
+        let map = &self.map;
+        let masks = &self.model_customisation;
+        let capes = &mut self.wavy_capes;
+        let shows = |id: &i32| masks.get(id).copied().unwrap_or(0) & 1 != 0;
+        capes.retain(|id, _| map.contains_key(id) && shows(id));
+        for (id, e) in map.iter() {
+            if !shows(id) {
+                continue;
+            }
+            let cloak = e.cloak_pos(1.0);
+            let pos = e.render_pos(1.0);
+            let a = crate::cape::cape_angles(
+                cloak,
+                pos,
+                e.yaw,
+                e.fall_fly_ticks() as f32 + 1.0,
+                0.0,
+                0.0,
+            );
+            let anchor = crate::wavy_cape::anchor_in_cape_space(a.flap, a.lean, a.lean2, e.yaw);
+            // The forcing is vanilla's own lagging-cloak gap, verbatim — see
+            // `wavy_cape`'s header for why it is not rescaled.
+            let delta = [
+                cloak[0] - pos[0],
+                cloak[1] - pos[1],
+                cloak[2] - pos[2],
+            ];
+            capes
+                .entry(*id)
+                .or_insert_with(|| {
+                    crate::wavy_cape::WavyCape::new(crate::wavy_cape::SEGMENTS, anchor)
+                })
+                .tick(anchor, delta);
+        }
     }
 
     /// `LivingEntity.handleDamageEvent` — the client half of

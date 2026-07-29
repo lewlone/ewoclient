@@ -93,8 +93,21 @@ pub struct LiveArgs {
     /// — scales the Darkness pulse in the camera lightmap (M13). `[0, 1]`.
     #[arg(long = "darkness-effect-scale", default_value_t = 1.0)]
     darkness_effect_scale: f32,
+    /// Simulate players' capes as cloth instead of vanilla's rigid slab
+    /// (M61). Off by default — vanilla is the default cape. Also read from
+    /// `REWO_WAVY_CAPE=1`.
+    #[arg(long = "wavy-cape", default_value_t = false)]
+    wavy_cape: bool,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
+}
+
+/// Whether the wavy cape is switched on for this run (M61).
+pub(crate) fn wavy_cape_requested(flag: bool) -> bool {
+    flag || matches!(
+        std::env::var("REWO_WAVY_CAPE").as_deref(),
+        Ok("1") | Ok("true")
+    )
 }
 
 /// Reject a `[0, 1]` option before any I/O so a bad `--gamma` /
@@ -178,6 +191,12 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    // M61: opt-in cloth capes. Off leaves `EntityTable` allocating and
+    // ticking nothing, so the vanilla cape path is exactly M60's.
+    if wavy_cape_requested(args.wavy_cape) {
+        log::info!("live: wavy capes on ({} segments)", rewo_world::wavy_cape::SEGMENTS);
+        session.world.entities.set_wavy_capes(true);
+    }
     // M26: `block_event`'s `b0 == 1` means a different thing to each block
     // entity, so the type is what selects the body. Resolving through the
     // classification table rather than looking three names up directly is what
@@ -692,7 +711,24 @@ pub(crate) fn resolve_cape(
         lean: a.lean,
         lean2: a.lean2,
         chest_humanoid,
+        // M61. `None` whenever the wavy cape is switched off — the table
+        // holds no chain at all then — and the renderer falls through to the
+        // vanilla rigid slab. The simulation is *read* here, never advanced:
+        // this runs once per frame and `interpolated` takes `&self`.
+        wavy: resolve_wavy_cape(ents, id, alpha),
     })
+}
+
+/// The frame's interpolated cape spine, or `None` for the vanilla cape.
+fn resolve_wavy_cape(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    alpha: f32,
+) -> Option<rewo_gpu::entities::CapeJoints> {
+    let sim = ents.wavy_cape(id)?;
+    let mut buf = [[0.0f32; 3]; rewo_gpu::entities::CAPE_MAX_JOINTS];
+    let n = sim.interpolated(alpha, &mut buf);
+    rewo_gpu::entities::CapeJoints::from_slice(&buf[..n])
 }
 
 pub(crate) fn resolve_health_bar(

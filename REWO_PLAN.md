@@ -6761,6 +6761,140 @@ eye→feet distance in one expression that no witness covers — the comparison 
 graded, the sourcing is not. And the spec's own exclusions stand: no numeric
 text, no local player, no boss bars, no armour/absorption.
 
+### M61 — the wavy cape (2026-07-29)
+
+Shipped and gated, **opt-in** (`rewo live --wavy-cape`, or `REWO_WAVY_CAPE=1`).
+Vanilla's rigid slab is still the default and is still what M60's 38 witnesses
+grade; the flag cannot reach them, because with it off `EntityTable` allocates,
+ticks and returns nothing and `resolve_cape` hands the renderer `wavy: None`.
+
+Second Rewo feature with **no vanilla oracle**, after the health bar.
+[`REWO_WAVY_CAPE_SPEC.md`](REWO_WAVY_CAPE_SPEC.md) is the source of truth and
+was written first; the mod that popularised the behaviour is
+reference-unsafe under `REWO_FEATURE_SURVEY.md` §2 and none of it was read.
+The design is textbook constrained-particle cloth — Verlet 1967, Provot 1995,
+Jakobsen 2001 — over vanilla's own already-gated cape state.
+
+**The reduction rule is the whole safety net, and it is a *bypass*.** At one
+segment `emit_cape` returns to the M60 code unchanged, so the vertices are the
+vanilla cape's bit-for-bit rather than within a tolerance of it. The spec's
+first draft said the reduction would hold "with infinite stiffness"; it would
+not, and `w18` measures why — a settled one-segment chain hangs **5.843°** off
+the vanilla spine (6° of rest tilt, less the 0.157° the push-out lifts the free
+end by), putting the hem 1.63 model units away. Stiffness fixes a link's
+*length*, never its orientation.
+
+**Cape space is the load-bearing choice.** The chain lives in a frame that is
+world-axis-aligned, measured in model units, and **translates with the player
+without rotating**. In a body-attached frame a pure yaw rotates the whole chain
+rigidly and there is no wave at all; here the anchor orbits the body axis
+(`w4`: radius 2.4973 moves axis for axis on a quarter turn) and the chain has to
+catch up. The frame's absolute Y is deliberately unobservable — gravity is
+uniform, the torso cylinder infinite, the clamp anchor-relative — so the
+renderer re-pins joint 0 onto the true attachment point (which carries the
+animated body transform, the clearance shift and the death roll, none of which
+a world tick can see) and translates the rest rigidly.
+
+**`TORSO_RADIUS = 2.5` is not an arbitrary number.** The vanilla spine leaves
+its pivot at radius **2.49726**, so the push-out cylinder grazes the rest pose
+by three thousandths of a pixel and bites only when the chain swings inward
+(`w5`). A 180° turn takes a joint to radius **0.458** with the push-out
+disabled — clean through the player's chest.
+
+**Two spec readings had to be chosen, and both are recorded in
+`wavy_cape.rs`'s header.** (1) `GRAVITY` acts along **world** down. Reading
+"downward" as the *cape's* local down would make the rest state exactly the
+vanilla drape — and would cost the reduction rule its mutation partner, since a
+single simulated segment would then settle onto the vanilla angle instead of
+hanging straight down. The strong witness wins over the weak one; the price is
+`y2`, where the rest silhouettes are IoU **0.9750** rather than 1.000, the
+residue being 6° of tilt lying nearly along the camera's view axis. (2) The
+anchor delta is used **verbatim, in blocks**. See "Open" below.
+
+**Gauss–Seidel with the upper joint held is what makes 1e-4 reachable.** The
+spec asks for four passes *and* every link within 1e-4 of `REST_LEN` after
+them. Symmetric mass weighting cannot do that: gravity's uniform per-tick shift
+breaks link 0 against the pin every tick and four sweeps only halve that error
+four times — **measured 2.9e-2**. Walking the links from the pin with
+`w_upper = 0` is exact in one pass (measured **1.1e-15**), which is the only
+reading that satisfies both rows. Passes 2..4 are then exact no-ops and are
+still run.
+
+**The backstop had to be reachable to be tested.** `MAX_JOINT_RADIUS` is
+unreachable while the constraints hold — the chain is 16 units of link — so "no
+joint beyond 24" passes whether or not the clamp exists, which is the vacuity
+the health-bar spec's upper clamp turned out to have. The one thing the
+constraints *cannot* absorb is a link whose squared length overflows: `relax`
+declines it by design rather than inventing a direction, and `clamp`
+deliberately normalizes differently (largest component first) so it can still
+recover. `w15` injects 1e200 and measures the worst joint at exactly
+**24.000000** — the clamp fired — and `w16` shows the chain back within 6.7e-16
+of `REST_LEN` one tick later.
+
+**Geometry.** `mobs::cape_slab_quads(n)` subdivides the same 64×32 box UV; the
+frames are **per joint**, not per slab, so consecutive slabs share their
+boundary quad exactly and the surface is watertight with no internal caps (which
+would be coincident z-fighting quads at every joint). At `n == 1` it is
+`cape_faces()` face for face — a structural check, and *not* the reduction rule.
+`part_transforms` / `neutral_quads` / `oracle_part_deltas` stay untouched, as
+M60 left them.
+
+**Gate: `rewo capeshot --check` — 38 → 61 witnesses**, serverless, validation
+ON, 0 VUIDs, fail-closed. It drives the production `EntityTable::tick_lerp`,
+`WavyCape::tick` and `live_cmd::resolve_cape` — no parallel copy. `w3` is the
+guard on the one duplication the crate graph forces: rewo-gpu depends on no
+other rewo crate, so the simulation derives the cape rotation itself in f64 and
+the gate grades it against the shipped `cape_transform` (worst disagreement
+1.0e-7). `y2`/`y3` compare two offscreen renders of the *same* scene differing
+only in cape mode, with the marker colour isolating the cape — not the frame
+diff §0.0 forbids, whose failures came from live runs and world-mutating
+triggers.
+
+**Four mutations were run — source broken, rebuilt, gate re-run, reverted:**
+
+| mutation | caught by |
+|---|---|
+| the reduction bypass removed (`segments() >= 1`, so one segment simulates) | `y1` **alone**, and everything else still passes — which is the point: without that witness the safety net is gone silently |
+| symmetric Gauss–Seidel (both endpoints share the correction) | `w9` (2.85e-2 settled, 9.6e-1 moving), `w8`, `w16`, and `w14` — the chain stops staying within its own 16-unit reach and hits the clamp |
+| `clamp` removed from `tick` | `w15` and `w16` only |
+| `push_out` removed from `tick` | `w12` (closest approach **0.458**, matching the prototype exactly), `w13`, and `w18` — which reads 6.000° instead of 5.843° once the 0.157° nudge is gone |
+
+**Measured.** capeshot 61/61. **890 tests** (was 883; +7 in `wavy_cape`). All
+21 gates green, 0 VUIDs: capeshot 61, itemshot 62, inventoryshot 127,
+healthbarshot 33, attributeshot 43, captureshot 17, blockentityshot 172,
+swingshot 97, hurtshot 38, weathershot 35, handshot 34, particleshot 34,
+eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot 243/243 +
+emissive 5 + etf 8 + tint 4, plus skyshot, lightmapshot, tintshot, meshshot,
+dimensioncheck. Demo PNG SHA-256 `2cc56b4a…` byte-identical to M15 onward.
+`git diff --check` exits 0.
+
+**Open.**
+
+- **The delta's scale is the number most likely to be wrong.** The spec gives
+  no conversion, and the equilibrium tilt is `atan(|delta| / GRAVITY)`:
+  **80.9°** for a drift the vanilla cape renders as 5°, 88.9° for a walk vanilla
+  renders as 40°. Only at a sprint (86.4° vanilla, 89.5° here) do they agree.
+  Converting to model units (×16) is dimensionally coherent and *worse* — 14
+  link-lengths per tick, so the chain snaps rigidly onto the acceleration in one
+  tick and never waves. A coefficient near `GRAVITY · 180/π / 100` ≈ **0.014**
+  would match vanilla's own 100°/block response for small gaps. Implemented as
+  written; flagged rather than changed.
+- **The collision response is not re-projected.** The spec's order is relax,
+  *then* push-out, so a joint shoved off the torso leaves its links stretched
+  until the next tick. Harmless in practice — a steady walk never fires the
+  push-out at all and a 30°/tick turn stretches by 0.23 model units — but an
+  adversarial rotating forcing reaches **3.44**. One relax pass after the
+  push-out, or collision inside the relax loop, would close it.
+- **The push-out builds a cylinder, and the spec's witness says "torso AABB".**
+  The torso box is 8 wide; a joint at x 3.5, z 0 is outside a 2.5 cylinder and
+  inside the box. `w12` asserts what the rule actually creates.
+- **No live sighting**, as M60. Nobody has watched a cape wave on a real server.
+- A dying player's chain does not topple with the body's death roll — the roll
+  is applied to the finished chain about its anchor, which is a rotation of the
+  cape and not of the cloth's own history. The vanilla path is unaffected.
+- Wind, per-player configuration and self-collision are the spec's own
+  exclusions and remain out.
+
 ### M60 — the vanilla player cape (2026-07-29)
 
 Shipped and gated. One 10×16×1 slab hanging off the player's `body`, chasing a

@@ -24,6 +24,7 @@ pub mod palette;
 pub mod particles;
 pub mod physics;
 pub mod raycast;
+pub mod wavy_cape;
 pub mod weather;
 
 use std::collections::HashMap;

@@ -44,7 +44,8 @@ use rewo_world::entities::EntityTable;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 38;
+/// 38 for the vanilla cape (M60), 23 for the wavy one (M61).
+const EXPECTED_WITNESSES: usize = 61;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -165,6 +166,7 @@ const ZERO_CAPE: CapeDraw = CapeDraw {
     lean: 0.0,
     lean2: 0.0,
     chest_humanoid: false,
+    wavy: None,
 };
 
 // ---- 1. geometry + rotation ----------------------------------------------
@@ -727,7 +729,597 @@ fn check_pool(c: &mut Checker) {
     );
 }
 
-// ---- 6. the pixels -------------------------------------------------------
+// ---- 6. the wavy cape, on the CPU (M61) ----------------------------------
+//
+// `REWO_WAVY_CAPE_SPEC.md` is the source of truth for everything in this
+// section: there is no vanilla behaviour to predict from, so every
+// expectation is that file's table read back, and the strongest witness
+// available is the reduction — which grades the new code against the *old,
+// already-gated* code rather than against a restatement of itself.
+
+use rewo_world::wavy_cape::{
+    self, WavyCape, DAMPING, GRAVITY, MAX_JOINT_RADIUS, RELAX_PASSES, REST_LEN, SEGMENTS,
+    TORSO_RADIUS,
+};
+
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+fn worst_link(c: &WavyCape) -> f64 {
+    (0..c.segments())
+        .map(|i| (dist(c.joints()[i], c.joints()[i + 1]) - REST_LEN).abs())
+        .fold(0.0, f64::max)
+}
+
+/// A table with one caped player and the wavy cape switched on, driven
+/// entirely through the production API.
+fn wavy_table() -> EntityTable {
+    let mut t = player_table(None);
+    t.set_wavy_capes(true);
+    t
+}
+
+fn check_wavy_constants(c: &mut Checker) {
+    c.record(
+        "w1.every_simulation_constant_is_the_specs_table",
+        SEGMENTS == 16
+            && GRAVITY == 0.008
+            && DAMPING == 0.92
+            && RELAX_PASSES == 4
+            && REST_LEN == 1.0
+            && TORSO_RADIUS == 2.5
+            && MAX_JOINT_RADIUS == 24.0,
+        format!(
+            "SEGMENTS {SEGMENTS}, GRAVITY {GRAVITY}, DAMPING {DAMPING}, \
+             RELAX_PASSES {RELAX_PASSES}, REST_LEN {REST_LEN}, TORSO_RADIUS \
+             {TORSO_RADIUS}, MAX_JOINT_RADIUS {MAX_JOINT_RADIUS} — the spec's \
+             values; MUTATION changing one in code only fails here"
+        ),
+    );
+    // REST_LEN is exactly 1.0 rather than 4/3, which is what SEGMENTS = 12
+    // would have given — the bit-determinism witness wants an exactly
+    // representable link length.
+    c.record(
+        "w2.the_renderers_joint_capacity_matches_the_simulations_length",
+        rewo_gpu::entities::CAPE_MAX_JOINTS == SEGMENTS + 1 && REST_LEN.to_bits() == 1.0f64.to_bits(),
+        format!(
+            "CAPE_MAX_JOINTS {} == SEGMENTS+1 {}, and REST_LEN is exactly 1.0 \
+             (16/16, a representable binary fraction); the renderer keeps its own \
+             constant because rewo-gpu depends on no other rewo crate, so a \
+             SEGMENTS bump that outgrew the array would silently truncate the \
+             chain without this",
+            rewo_gpu::entities::CAPE_MAX_JOINTS,
+            SEGMENTS + 1
+        ),
+    );
+}
+
+/// The simulation derives the cape's attachment point itself (rewo-gpu is a
+/// leaf crate and cannot be called from rewo-world). This is that
+/// duplication's guard: the two derivations must agree, over angles that
+/// exercise all three.
+fn check_wavy_anchor(c: &mut Checker) {
+    let mut worst = 0f64;
+    for &(flap, lean, lean2) in &[
+        (0.0f32, 0.0f32, 0.0f32),
+        (32.0, 0.0, 0.0),
+        (-6.0, 150.0, 0.0),
+        (0.0, 0.0, 20.0),
+        (12.0, 70.0, -20.0),
+        (48.0, 33.0, 7.5),
+    ] {
+        let cape = CapeDraw {
+            flap,
+            lean,
+            lean2,
+            ..ZERO_CAPE
+        };
+        let (m, o) = cape_transform(&IDENT, &cape);
+        // The spine's top corner: the cube spans z −1..0, so its centre line
+        // is at local z −0.5.
+        let r = ind_apply(&m, [0.0, 0.0, -0.5]);
+        let want = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
+        let got = wavy_cape::anchor_model(flap, lean, lean2);
+        for k in 0..3 {
+            worst = worst.max((got[k] - want[k] as f64).abs());
+        }
+    }
+    c.record(
+        "w3.the_simulations_anchor_is_the_renderers_attachment_point",
+        worst < 1e-5,
+        format!(
+            "worst axis disagreement {worst:.2e} model units over six angle \
+             triples, against the shipped `cape_transform`; MUTATION any drift \
+             in the f64 copy of `cape_rotation` shows here"
+        ),
+    );
+
+    // And the yaw: at 90° the attachment point has swung a quarter turn about
+    // the body axis, so the radius is preserved and the axes have swapped.
+    let a0 = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+    let a90 = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 90.0);
+    let r0 = (a0[0] * a0[0] + a0[2] * a0[2]).sqrt();
+    let r90 = (a90[0] * a90[0] + a90[2] * a90[2]).sqrt();
+    // At yaw 0 the cape hangs at world −Z (the model faces +Z), so the whole
+    // radius is on Z; a quarter turn moves all of it onto +X.
+    c.record(
+        "w4.a_turn_swings_the_anchor_around_the_body_axis",
+        (r0 - r90).abs() < 1e-9
+            && (r0 - 2.4973).abs() < 1e-3
+            && (a0[2] + r0).abs() < 1e-6
+            && a0[0].abs() < 1e-6
+            && (a90[0] - r0).abs() < 1e-6
+            && a90[2].abs() < 1e-6
+            && (a0[1] - a90[1]).abs() < 1e-12,
+        format!(
+            "radius {r0:.4} preserved and moved axis for axis — ({:.4}, {:.4}) \
+             at yaw 0 becomes ({:.4}, {:.4}) at yaw 90, at unchanged height. \
+             The anchor moving is what makes a *pure* turn wave the cape at \
+             all, and it is why the simulation cannot live in a body-attached \
+             frame: there, a turn would rotate the entire chain rigidly and \
+             produce nothing",
+            a0[0], a0[2], a90[0], a90[2]
+        ),
+    );
+    // 2.4973 < TORSO_RADIUS: the push-out cylinder grazes the rest pose.
+    c.record(
+        "w5.the_torso_cylinder_grazes_the_rest_pose",
+        r0 < TORSO_RADIUS && r0 > TORSO_RADIUS - 0.01,
+        format!(
+            "the vanilla spine leaves its pivot at radius {r0:.5}, {:.5} inside \
+             TORSO_RADIUS {TORSO_RADIUS} — so 2.5 is not an arbitrary number, and \
+             a rest chain is pushed out by three thousandths of a pixel and no more",
+            TORSO_RADIUS - r0
+        ),
+    );
+}
+
+fn check_wavy_geometry(c: &mut Checker) {
+    // The slab generator, at one slab, is the vanilla cube. This is a
+    // structural check and NOT the reduction rule — that one is about
+    // bypassing the simulation and is graded in pixels (see `y1`).
+    let quads = rewo_gpu::mobs::cape_slab_quads(1);
+    let faces = rewo_gpu::mobs::cape_faces();
+    let mut ok = quads.len() == 6;
+    if ok {
+        for (q, (_f, pos, uv)) in quads.iter().zip(faces.iter()) {
+            for k in 0..4 {
+                // joint 0 is the cube's y = 0 edge, joint 1 its y = 16 edge.
+                let want_y = if q.joint[k] == 0 { 0.0 } else { 16.0 };
+                ok &= pos[k][1] == want_y;
+                ok &= q.off[k][0] == pos[k][0];
+                ok &= q.off[k][1] == pos[k][2] + 0.5;
+                ok &= q.uv[k] == uv[k];
+            }
+        }
+    }
+    c.record(
+        "w6.one_slab_is_the_vanilla_cube_face_for_face",
+        ok,
+        format!(
+            "{} quads, every corner's offset and UV identical to \
+             `cape_faces()`; MUTATION a UV shift applied to the caps, or an \
+             off-by-one in the spine offset, breaks this before any pixel is drawn",
+            quads.len()
+        ),
+    );
+
+    // N slabs: the caps appear exactly once each, the sides tile the sheet's
+    // full v 1..17 without gap or overlap, and every interior joint is shared
+    // by the slabs above and below it — which is what makes the surface
+    // watertight with no internal caps.
+    let n = SEGMENTS;
+    let q = rewo_gpu::mobs::cape_slab_quads(n);
+    let caps = q.iter().filter(|q| q.joint[0] == q.joint[1] && q.joint[1] == q.joint[2]).count();
+    let sides = q.len() - caps;
+    let mut vmin = f32::MAX;
+    let mut vmax = f32::MIN;
+    let mut used = vec![0usize; n + 1];
+    for quad in &q {
+        for k in 0..4 {
+            used[quad.joint[k]] += 1;
+            if !(quad.joint[0] == quad.joint[1] && quad.joint[1] == quad.joint[2]) {
+                vmin = vmin.min(quad.uv[k][1]);
+                vmax = vmax.max(quad.uv[k][1]);
+            }
+        }
+    }
+    let interior_shared = (1..n).all(|j| used[j] >= 8);
+    c.record(
+        "w7.n_slabs_subdivide_the_same_sheet_and_share_their_boundaries",
+        caps == 2
+            && sides == 4 * n
+            && (vmin - 1.0).abs() < 1e-4
+            && (vmax - 17.0).abs() < 1e-4
+            && interior_shared,
+        format!(
+            "{caps} caps + {sides} side faces for {n} slabs, side v spans \
+             {vmin}..{vmax} = the single cube's own 1..17, and every interior \
+             joint carries corners from both neighbours; MUTATION per-slab \
+             frames or per-slab caps would show as a slit or as coincident \
+             z-fighting quads at every joint"
+        ),
+    );
+}
+
+fn check_wavy_dynamics(c: &mut Checker) {
+    let anchor = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+
+    // Settling + constraints, on a chain driven by the production `tick`.
+    let mut s = WavyCape::new(SEGMENTS, anchor);
+    for _ in 0..600 {
+        s.tick(anchor, [0.0; 3]);
+    }
+    let before = s.joints().to_vec();
+    s.tick(anchor, [0.0; 3]);
+    let drift = (0..before.len())
+        .map(|j| dist(before[j], s.joints()[j]))
+        .fold(0.0, f64::max);
+    c.record(
+        "w8.zero_motion_settles_to_an_idempotent_state",
+        drift < 1e-6,
+        format!(
+            "after 600 still ticks one more moves every joint by {drift:.2e} \
+             (< 1e-6); MUTATION DAMPING = 1.0 never sheds the energy gravity \
+             puts in and this oscillates forever"
+        ),
+    );
+
+    // The constraint residual, measured **after the relax passes and before
+    // the push-out** — which is where the spec puts it, and which matters:
+    // the push-out is a collision response that is not re-projected, so the
+    // post-tick number is a different and much larger one. Both are
+    // reported; only the spec's is asserted.
+    let rest_err = worst_link(&s);
+    let mut m = WavyCape::new(SEGMENTS, anchor);
+    let mut relaxed_err = 0f64;
+    let mut post_tick_err = 0f64;
+    for t in 0..200 {
+        let ph = t as f64 * 0.31;
+        let f = [ph.sin() * 0.4, 0.0, ph.cos() * 0.4];
+        // The four stages `tick` runs, in `tick`'s order, opened up so the
+        // residual can be read at the named point. Not a reimplementation:
+        // these are the same four methods.
+        m.integrate(anchor, f);
+        m.relax();
+        relaxed_err = relaxed_err.max(m.worst_link_error());
+        m.push_out();
+        m.clamp(anchor);
+        post_tick_err = post_tick_err.max(m.worst_link_error());
+    }
+    c.record(
+        "w9.every_link_stays_within_1e_4_of_REST_LEN_after_the_relax_passes",
+        rest_err < 1e-4 && relaxed_err < 1e-4,
+        format!(
+            "worst link error {rest_err:.2e} settled and {relaxed_err:.2e} under \
+             a swinging 0.4-block forcing. FINDING: after the push-out the same \
+             chain reaches {post_tick_err:.2} — the spec's stage order relaxes, \
+             *then* collides, and never re-projects, so a joint shoved off the \
+             torso leaves its links stretched until the next tick. That forcing \
+             is adversarial (an acceleration that rotates 18 degrees a tick, \
+             whipping the chain across the body); a steady walk never fires the \
+             push-out at all and a 30-degree-per-tick turn stretches by 0.23. \
+             MUTATION \
+             RELAX_PASSES = 0 leaves the chain stretched by whatever the \
+             integrator moved it. NOTE the mass weighting is what makes 1e-4 \
+             reachable at all: symmetric Gauss-Seidel measures 2.9e-2 here"
+        ),
+    );
+
+    // Determinism, to the bit.
+    let run = |seed: u64| -> Vec<[f64; 3]> {
+        let mut w = WavyCape::new(SEGMENTS, anchor);
+        let mut r = seed;
+        for t in 0..300 {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let f = |sh: u32| ((r >> sh) & 0xFFFF) as f64 / 65535.0 - 0.5;
+            let a = wavy_cape::anchor_in_cape_space(
+                (t % 39) as f32 - 6.0,
+                (t % 151) as f32,
+                (t % 41) as f32 - 20.0,
+                (t * 7) as f32,
+            );
+            w.tick(a, [f(0) * 0.6, f(16) * 0.2, f(32) * 0.6]);
+        }
+        w.joints().to_vec()
+    };
+    let a = run(0x5EED);
+    let b = run(0x5EED);
+    c.record(
+        "w10.two_runs_with_identical_inputs_are_bit_identical",
+        a.iter()
+            .zip(&b)
+            .all(|(p, q)| (0..3).all(|k| p[k].to_bits() == q[k].to_bits())),
+        "300 scripted ticks, compared as raw bits — no RNG, no wall clock, no \
+         frame rate anywhere in the tick; MUTATION seeding anything from the \
+         clock fails here immediately",
+    );
+
+    // Pinning, through the production table tick.
+    let mut t = wavy_table();
+    let mut pin_worst = 0f64;
+    let mut seen = 0;
+    for step in 0..120 {
+        // Walk the player in a circle so the anchor moves every tick and the
+        // cloak gap never closes.
+        let ang = step as f64 * 0.11;
+        let e = t.get_mut(1).unwrap();
+        e.set_target(ang.cos() * 6.0, 0.0, ang.sin() * 6.0);
+        e.set_rot((step * 13) as f32, 0.0);
+        t.tick_lerp();
+        let e = t.get(1).unwrap();
+        let cloak = e.cloak_pos(1.0);
+        let pos = e.render_pos(1.0);
+        let a = rewo_world::cape::cape_angles(cloak, pos, e.yaw, e.fall_fly_ticks() as f32 + 1.0, 0.0, 0.0);
+        let want = wavy_cape::anchor_in_cape_space(a.flap, a.lean, a.lean2, e.yaw);
+        let sim = t.wavy_cape(1).expect("a caped player simulates");
+        pin_worst = pin_worst.max(dist(sim.joints()[0], want));
+        seen += 1;
+    }
+    c.record(
+        "w11.joint_zero_is_the_vanilla_attachment_point_every_tick",
+        pin_worst == 0.0 && seen == 120,
+        format!(
+            "{seen} ticks of a player walking a circle while turning, worst \
+             deviation {pin_worst:e} — the pin is an assignment, not a very \
+             stiff spring; MUTATION letting joint 0 simulate makes it lag by \
+             whatever the anchor just moved"
+        ),
+    );
+}
+
+fn check_wavy_pushout(c: &mut Checker) {
+    // A scripted 180° turn: the anchor swings to the far side of the body and
+    // the chain has to cross the torso to follow it.
+    let mut c0 = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    for _ in 0..200 {
+        c0.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0), [0.0; 3]);
+    }
+    let mut min_r = f64::MAX;
+    let mut grazed = false;
+    for step in 0..80 {
+        let yaw = (step as f32 * 30.0).min(180.0);
+        c0.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, yaw), [0.0; 3]);
+        for p in &c0.joints()[1..] {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            min_r = min_r.min(r);
+            // A joint sitting on the cylinder to within float noise is the
+            // push-out's own fingerprint: a free chain lands there with
+            // probability zero.
+            grazed |= (r - TORSO_RADIUS).abs() < 1e-9;
+        }
+    }
+    c.record(
+        "w12.a_180_degree_turn_leaves_no_joint_inside_the_torso_cylinder",
+        min_r >= TORSO_RADIUS - 1e-9,
+        format!(
+            "closest approach {min_r:.6} vs TORSO_RADIUS {TORSO_RADIUS}; the \
+             prototype measured 0.458 with the push-out disabled, i.e. the cape \
+             swinging clean through the player's chest. NOTE the rule builds a \
+             *cylinder*, and the torso AABB is 8 wide, so a joint at x 3.5, z 0 \
+             is outside the cylinder and inside the box — this asserts what the \
+             rule actually creates"
+        ),
+    );
+    c.record(
+        "w13.the_push_out_demonstrably_engages_during_that_turn",
+        grazed,
+        "at least one joint sits exactly on the cylinder — the push-out's own \
+         signature, and what stops w12 passing vacuously because nothing ever \
+         came near the body",
+    );
+}
+
+fn check_wavy_stability(c: &mut Checker) {
+    // 600 adversarial ticks: teleports, the >10-block cloak snap, and a fixed
+    // pseudo-random shove, all through the production table so the cloak
+    // anchor's own snap branch is what produces the >10-block jumps.
+    let mut t = wavy_table();
+    let mut r = 0xC0FFEEu64;
+    let mut worst_reach = 0f64;
+    let mut nan = false;
+    for step in 0..600 {
+        r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let f = |sh: u32| ((r >> sh) & 0xFFFF) as f64 / 65535.0 - 0.5;
+        let e = t.get_mut(1).unwrap();
+        if step % 97 == 0 {
+            // Well past `moveCloak`'s 10-block threshold, so the anchor
+            // teleports and rewrites its own previous slot.
+            e.set_target(f(0) * 4000.0, f(16) * 4000.0, f(32) * 4000.0);
+        } else {
+            e.nudge(f(0) * 0.6, f(16) * 0.2, f(32) * 0.6);
+        }
+        e.set_rot(f(48) as f32 * 720.0, 0.0);
+        t.tick_lerp();
+        let sim = t.wavy_cape(1).unwrap();
+        let anchor = sim.joints()[0];
+        for p in sim.joints() {
+            nan |= p.iter().any(|v| !v.is_finite());
+            worst_reach = worst_reach.max(dist(*p, anchor));
+        }
+    }
+    let reach = REST_LEN * SEGMENTS as f64;
+    c.record(
+        "w14.600_adversarial_ticks_stay_finite_and_within_the_chains_own_reach",
+        !nan && worst_reach <= reach + 1e-6,
+        format!(
+            "teleports every 97th tick past the 10-block cloak snap, pseudo-random \
+             shoves between, yaw sweeping 720 degrees: worst joint {worst_reach:.6} \
+             from its anchor against the chain's own {reach} of link length, no \
+             NaN; MUTATION dropping the snap handling feeds the chain a \
+             thousand-block anchor step every tick"
+        ),
+    );
+}
+
+fn check_wavy_backstop(c: &mut Checker) {
+    let anchor = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+    let mut s = WavyCape::new(SEGMENTS, anchor);
+    for _ in 0..100 {
+        s.tick(anchor, [0.0; 3]);
+    }
+    // **The divergence has to be constructed.** `MAX_JOINT_RADIUS` is
+    // unreachable while the constraints hold — the chain is 16 units of link
+    // and the relax satisfies every link exactly — so "no joint beyond 24"
+    // passes whether or not the clamp exists. What the constraints cannot
+    // absorb is a link whose squared length overflows: `relax` declines it
+    // by design rather than inventing a direction, and the clamp is what
+    // catches the result.
+    s.tick(anchor, [1e200, 0.0, 0.0]);
+    let finite = s.joints().iter().all(|p| p.iter().all(|v| v.is_finite()));
+    let worst = s
+        .joints()
+        .iter()
+        .map(|p| dist(*p, anchor))
+        .fold(0.0, f64::max);
+    let clamped = s
+        .joints()
+        .iter()
+        .any(|p| (dist(*p, anchor) - MAX_JOINT_RADIUS).abs() < 1e-9);
+    c.record(
+        "w15.the_backstop_engages_on_a_divergence_the_constraints_decline",
+        finite && worst <= MAX_JOINT_RADIUS + 1e-9 && clamped,
+        format!(
+            "a 1e200 impulse leaves the chain finite with its worst joint at \
+             {worst:.6} — exactly MAX_JOINT_RADIUS, so the clamp *fired* rather \
+             than the constraints having quietly absorbed it; MUTATION removing \
+             the clamp leaves that joint at 1e200 and every later tick keeps it \
+             there"
+        ),
+    );
+    s.tick(anchor, [0.0; 3]);
+    c.record(
+        "w16.and_the_chain_recovers_to_within_REST_LEN_tolerance",
+        worst_link(&s) < 1e-4,
+        format!(
+            "one tick later the worst link is {:.2e} off REST_LEN — the clamp \
+             hands the solver a finite state it can fix, which is the whole \
+             point of clamping rather than tolerating",
+            worst_link(&s)
+        ),
+    );
+}
+
+fn check_wavy_interpolation(c: &mut Checker) {
+    let anchor = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+    let mut s = WavyCape::new(SEGMENTS, anchor);
+    for t in 0..30 {
+        s.tick(anchor, [(t as f64 * 0.2).sin() * 0.5, 0.0, 0.0]);
+    }
+    let snapshot = s.clone();
+    let mut out = [[0.0f32; 3]; rewo_gpu::entities::CAPE_MAX_JOINTS];
+    for a in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        s.interpolated(a, &mut out);
+    }
+    let unchanged = s == snapshot;
+    s.interpolated(0.0, &mut out);
+    let at0 = out[SEGMENTS][0] == s.prev_joints()[SEGMENTS][0] as f32;
+    s.interpolated(1.0, &mut out);
+    let at1 = out[SEGMENTS][0] == s.joints()[SEGMENTS][0] as f32;
+    s.interpolated(0.5, &mut out);
+    let mid = (s.prev_joints()[SEGMENTS][0] + s.joints()[SEGMENTS][0]) * 0.5;
+    let at_half = (out[SEGMENTS][0] - mid as f32).abs() < 1e-6;
+    // And the two ends must actually differ, or "interpolates" is vacuous.
+    let moving = (s.prev_joints()[SEGMENTS][0] - s.joints()[SEGMENTS][0]).abs() > 1e-3;
+    c.record(
+        "w17.a_frame_interpolates_and_never_advances_the_simulation",
+        unchanged && at0 && at1 && at_half && moving,
+        format!(
+            "five interpolations leave the state bit-identical; alpha 0 is the \
+             previous tick, 1 is this one, 0.5 the midpoint, and the two ends are \
+             {:.4} apart so the test is not reading a static chain",
+            (s.prev_joints()[SEGMENTS][0] - s.joints()[SEGMENTS][0]).abs()
+        ),
+    );
+}
+
+fn check_wavy_lifecycle(c: &mut Checker) {
+    let mut t = wavy_table();
+    t.tick_lerp();
+    let on = t.wavy_cape(1).is_some();
+    // The metadata bit going out takes the chain with it.
+    t.set_model_customisation(1, 0x00);
+    t.tick_lerp();
+    let bit_off = t.wavy_cape(1).is_none();
+    t.set_model_customisation(1, 0x01);
+    t.tick_lerp();
+    let back = t.wavy_cape(1).is_some();
+    t.remove(1);
+    let removed = t.wavy_cape(1).is_none();
+
+    // And the flag itself: default-off means no chain is ever built, which is
+    // what keeps M60's 38 witnesses out of reach of this feature.
+    let mut plain = player_table(None);
+    plain.tick_lerp();
+    let default_off = !plain.wavy_capes_enabled() && plain.wavy_cape(1).is_none();
+    let mut off_again = wavy_table();
+    off_again.tick_lerp();
+    off_again.set_wavy_capes(false);
+    let cleared = off_again.wavy_cape(1).is_none();
+
+    // **The reduction rule's mutation, proven numerically.** The spec's first
+    // draft said the reduction would hold "with infinite stiffness"; it would
+    // not. Stiffness fixes a link's *length*, not its orientation, so a rigid
+    // two-joint chain is a pendulum and hangs straight down — while the
+    // vanilla cape sits at `Rx(6 + capeLean/2 + capeFlap)`. Here is that gap,
+    // measured, which is what makes the bypass load-bearing rather than a
+    // coincidence the code could be allowed to lose.
+    let anchor = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0);
+    let mut one = WavyCape::new(1, anchor);
+    for _ in 0..600 {
+        one.tick(anchor, [0.0; 3]);
+    }
+    let hem = one.joints()[1];
+    let swing = [
+        hem[0] - anchor[0],
+        hem[1] - anchor[1],
+        hem[2] - anchor[2],
+    ];
+    // The vanilla spine direction in the same space: the cape rotation's
+    // second column (model +y, down the cape), through the model→cape map at
+    // yaw 0.
+    let m = cape_rotation(0.0, 0.0, 0.0);
+    let theta = 180f32.to_radians();
+    let (st, ct) = theta.sin_cos();
+    let spine = rewo_gpu::entities::model_dir_to_cape([m[0][1], m[1][1], m[2][1]], st, ct, 0.0, 1.0);
+    let ln = (swing[0].powi(2) + swing[1].powi(2) + swing[2].powi(2)).sqrt();
+    let dot = (0..3)
+        .map(|k| swing[k] / ln * spine[k] as f64)
+        .sum::<f64>()
+        .clamp(-1.0, 1.0);
+    let angle = dot.acos().to_degrees();
+    let hem_gap = 16.0 * (angle.to_radians() / 2.0).sin() * 2.0;
+    // 6° of vanilla rest tilt, less the 0.157° the push-out adds by nudging
+    // the free end from the anchor's radius 2.4973 out to TORSO_RADIUS —
+    // `asin(0.00274 / REST_LEN)`, in the same direction, so it subtracts.
+    let nudge = ((TORSO_RADIUS - 2.49726) / REST_LEN).asin().to_degrees();
+    c.record(
+        "w18.a_simulated_single_segment_is_a_pendulum_not_the_vanilla_cape",
+        (angle - (6.0 - nudge)).abs() < 0.02 && hem_gap > 1.5,
+        format!(
+            "a settled one-segment chain hangs {angle:.3} degrees off the \
+             vanilla spine — the 6-degree rest tilt of `Rx(6 + capeLean/2 + \
+             capeFlap)` less the {nudge:.3} degrees the push-out lifts the free \
+             end by — putting the hem {hem_gap:.3} model units away. No amount \
+             of stiffness could have produced that angle: stiffness fixes a \
+             link's *length*, not its orientation. So `y1`'s bit-identity is \
+             the *bypass*, and MUTATION letting the single segment simulate is \
+             a real, visible difference"
+        ),
+    );
+
+    c.record(
+        "w19.a_chain_exists_exactly_while_the_flag_and_the_cape_bit_do",
+        on && bit_off && back && removed && default_off && cleared,
+        "on with the bit, gone without it, gone on entity removal, never built \
+         with the feature off, and dropped the moment it is switched off — so a \
+         recycled entity id cannot inherit a chain and the vanilla path cannot \
+         be reached through a stale one",
+    );
+}
+
+// ---- 7. the pixels -------------------------------------------------------
 
 /// Count marker-magenta pixels. Nothing else in the frame can be magenta: the
 /// clear is black, the world is empty, and the player wears the jar's default
@@ -740,6 +1332,36 @@ fn magenta(img: &[u8]) -> u32 {
         }
     }
     n
+}
+
+/// The marker pixels as a mask, for comparing two silhouettes (M61).
+fn magenta_mask(img: &[u8]) -> Vec<bool> {
+    img.chunks_exact(4)
+        .map(|px| px[0] > 150 && px[2] > 150 && px[1] < 90)
+        .collect()
+}
+
+/// Intersection over union of two silhouettes, 0..1.
+///
+/// This compares two **offscreen renders of the same scene that differ only
+/// in the cape mode** — same camera, same skin, same angles, same draw list
+/// otherwise — with a colour the rest of the frame cannot produce. It is not
+/// the frame-diff §0.0 forbids: M50's control differed in 41,284 pixels
+/// because its two frames came from two *live* runs whose worlds had drifted,
+/// and M37's because the trigger mutated the world it was measured against.
+/// Nothing here is live and nothing mutates.
+fn silhouette_iou(a: &[u8], b: &[u8]) -> f64 {
+    let (ma, mb) = (magenta_mask(a), magenta_mask(b));
+    let mut inter = 0u32;
+    let mut union = 0u32;
+    for (x, y) in ma.iter().zip(&mb) {
+        inter += u32::from(*x && *y);
+        union += u32::from(*x || *y);
+    }
+    if union == 0 {
+        return 0.0;
+    }
+    inter as f64 / union as f64
 }
 
 fn check_pixels(
@@ -817,6 +1439,7 @@ fn check_pixels(
             lean: 0.0,
             lean2: 0.0,
             chest_humanoid: false,
+            wavy: None,
         };
         let empty = shot(gpu, &mut off, &mut wr, &[])?;
         let bare = shot(gpu, &mut off, &mut wr, &[player_draw(None)])?;
@@ -871,6 +1494,126 @@ fn check_pixels(
             magenta(&elytra_frame) == 0 && elytra_frame == bare,
             "and the frame is byte-identical to the bare player — the suppression \
              removes the geometry rather than hiding it",
+        );
+
+        // ---- M61: the reduction, and the wave --------------------------
+        //
+        // Both cape modes are resolved through the production
+        // `resolve_cape`, so the chain reaching the renderer is the one the
+        // real table simulated and interpolated — not a fixture posing as
+        // one (M45's and M41's gates both quietly stopped testing their
+        // subject by reimplementing a slice of the app).
+        let resolve_wavy = |t: &EntityTable| {
+            crate::live_cmd::resolve_cape(
+                t,
+                1,
+                EntityModelKind::Player,
+                1.0,
+                Some(origin),
+                &f.items,
+                &f.equipment,
+            )
+            .expect("a caped player resolves")
+        };
+
+        // A still player, settled.
+        let mut rest_t = wavy_table();
+        for _ in 0..600 {
+            rest_t.tick_lerp();
+        }
+        let rest_w = resolve_wavy(&rest_t);
+        let rest_v = CapeDraw {
+            wavy: None,
+            ..rest_w
+        };
+
+        // **The reduction.** One segment, taken from the same simulation,
+        // must render the vanilla cape *bit for bit* — because the emitter
+        // bypasses the simulation entirely at that length rather than
+        // trusting it to converge.
+        let sim1 = {
+            let anchor = wavy_cape::anchor_in_cape_space(rest_w.flap, rest_w.lean, rest_w.lean2, 0.0);
+            let mut s = WavyCape::new(1, anchor);
+            for _ in 0..600 {
+                s.tick(anchor, [0.0; 3]);
+            }
+            let mut buf = [[0.0f32; 3]; rewo_gpu::entities::CAPE_MAX_JOINTS];
+            let n = s.interpolated(1.0, &mut buf);
+            rewo_gpu::entities::CapeJoints::from_slice(&buf[..n]).unwrap()
+        };
+        let one_seg = CapeDraw {
+            wavy: Some(sim1),
+            ..rest_v
+        };
+        let f_rest_v = shot(gpu, &mut off, &mut wr, &[player_draw(Some(rest_v))])?;
+        let f_one = shot(gpu, &mut off, &mut wr, &[player_draw(Some(one_seg))])?;
+        c.record(
+            "y1.at_one_segment_the_wavy_cape_is_the_vanilla_cape_bit_for_bit",
+            f_one == f_rest_v && magenta(&f_rest_v) > 500,
+            format!(
+                "{} marker px, and the two frames compare equal as raw bytes. \
+                 The chain handed in is a *settled pendulum* hanging {} — see \
+                 w18 — so this is the bypass and not a convergence coincidence; \
+                 MUTATION letting the single segment simulate moves the hem 1.7 \
+                 model units and the frames stop matching",
+                magenta(&f_rest_v),
+                "straight down"
+            ),
+        );
+
+        // A player sprinting sideways: the cloak lags, which is the only
+        // thing that lifts the vanilla cape and the only forcing the
+        // simulation gets besides gravity.
+        let mut mot_t = wavy_table();
+        for _ in 0..60 {
+            mot_t.get_mut(1).unwrap().nudge(0.30, 0.0, 0.0);
+            mot_t.tick_lerp();
+        }
+        let mot_w = resolve_wavy(&mot_t);
+        let mot_v = CapeDraw {
+            wavy: None,
+            ..mot_w
+        };
+        let f_rest_w = shot(gpu, &mut off, &mut wr, &[player_draw(Some(rest_w))])?;
+        let f_mot_v = shot(gpu, &mut off, &mut wr, &[player_draw(Some(mot_v))])?;
+        let f_mot_w = shot(gpu, &mut off, &mut wr, &[player_draw(Some(mot_w))])?;
+        if let Some(dir) = &args.out_dir {
+            std::fs::write(dir.join("wavy_rest.rgba"), &f_rest_w).ok();
+            std::fs::write(dir.join("wavy_motion.rgba"), &f_mot_w).ok();
+        }
+        let iou_rest = silhouette_iou(&f_rest_v, &f_rest_w);
+        let iou_mot = silhouette_iou(&f_mot_v, &f_mot_w);
+        c.record(
+            "y2.at_rest_the_wave_barely_moves_the_silhouette",
+            iou_rest > 0.90,
+            format!(
+                "IoU {iou_rest:.4} against the vanilla cape from directly \
+                 behind. NOT 1.000, and the residue is exactly identifiable: \
+                 gravity is world-down, so a settled chain hangs vertically \
+                 while vanilla's rest pose is `Rx(6°)` — 6 degrees of tilt \
+                 that is nearly along this camera's view axis and moves the \
+                 hem 1.7 units in depth. Reading 'downward' as the *cape's* \
+                 local down would make this exactly 1.0 and would cost the \
+                 reduction its mutation partner; see the milestone report"
+            ),
+        );
+        c.record(
+            "y3.under_motion_the_two_capes_are_grossly_different",
+            iou_mot < 0.65 && iou_mot < iou_rest - 0.25 && magenta(&f_mot_w) > 500,
+            format!(
+                "IoU {iou_mot:.4} sprinting sideways, against {iou_rest:.4} at \
+                 rest — the cloth swings where the rigid slab tilts by \
+                 capeLean2/2. {} marker px, so this is a moved cape and not a \
+                 vanished one",
+                magenta(&f_mot_w)
+            ),
+        );
+        c.record(
+            "y4.the_wave_is_reproducible_frame_to_frame",
+            shot(gpu, &mut off, &mut wr, &[player_draw(Some(mot_w))])? == f_mot_w,
+            "re-rendering the same draw gives a byte-identical frame — the \
+             emitter reads the chain and never advances it, so a paused game \
+             cannot drift",
         );
         Ok(())
     })();
@@ -963,6 +1706,15 @@ pub fn run(args: CapeshotArgs) -> Result<(), String> {
     check_suppression(&mut c, &f);
     check_wire(&mut c, &paths)?;
     check_pool(&mut c);
+    check_wavy_constants(&mut c);
+    check_wavy_anchor(&mut c);
+    check_wavy_geometry(&mut c);
+    check_wavy_dynamics(&mut c);
+    check_wavy_pushout(&mut c);
+    check_wavy_stability(&mut c);
+    check_wavy_backstop(&mut c);
+    check_wavy_interpolation(&mut c);
+    check_wavy_lifecycle(&mut c);
     check_pixels(&mut c, &mut gpu, &baked, &f, &args)?;
 
     println!(

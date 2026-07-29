@@ -337,6 +337,49 @@ pub struct CapeDraw {
     /// **not** "the chest slot is occupied": an elytra suppresses the cape
     /// entirely and a carved pumpkin shifts it not at all.
     pub chest_humanoid: bool,
+    /// The simulated spine (M61), or `None` for the vanilla rigid slab —
+    /// which is the default, and which every one of M60's witnesses grades.
+    pub wavy: Option<CapeJoints>,
+}
+
+/// Joints the wavy cape's geometry hangs from, in **cape space**: world-axis
+/// aligned, model units, origin on the entity (M61).
+///
+/// A fixed array rather than a borrow, so [`CapeDraw`] stays `Copy` and
+/// lifetime-free and no caller has to find somewhere to keep a slice alive
+/// for the length of a draw list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapeJoints {
+    /// Joints in use, `2..=CAPE_MAX_JOINTS`.
+    pub n: u8,
+    pub p: [[f32; 3]; CAPE_MAX_JOINTS],
+}
+
+/// `rewo_world::wavy_cape::SEGMENTS + 1`. Not imported: rewo-gpu depends on
+/// no other rewo crate and is kept that way. `capeshot` asserts the two
+/// agree.
+pub const CAPE_MAX_JOINTS: usize = 17;
+
+impl CapeJoints {
+    pub fn from_slice(p: &[[f32; 3]]) -> Option<Self> {
+        if p.len() < 2 || p.len() > CAPE_MAX_JOINTS {
+            return None;
+        }
+        let mut out = [[0.0f32; 3]; CAPE_MAX_JOINTS];
+        out[..p.len()].copy_from_slice(p);
+        Some(Self {
+            n: p.len() as u8,
+            p: out,
+        })
+    }
+
+    pub fn joints(&self) -> &[[f32; 3]] {
+        &self.p[..self.n as usize]
+    }
+
+    pub fn segments(&self) -> usize {
+        self.n as usize - 1
+    }
 }
 
 #[repr(C)]
@@ -1863,6 +1906,17 @@ impl EntityPass {
         };
         let (m, o) = cape_transform(&xf[bi], &cape);
         let shift = cape_clearance_shift(cape.chest_humanoid);
+        // M61. The reduction rule is *this branch*: at one segment the
+        // simulation contributes nothing and the code below runs unchanged,
+        // so the vertices are the vanilla cape's bit-for-bit rather than
+        // within a tolerance of them. Stiffening a one-link chain could not
+        // have produced that — a rigid two-joint chain is a pendulum and
+        // hangs straight down, where the vanilla cape sits at
+        // `Rx(6 + capeLean/2 + capeFlap)`.
+        if let Some(w) = cape.wavy.filter(|w| w.segments() >= 2) {
+            self.emit_wavy_cape(verts, d, &cape, &w, m, o, shift, scale, st, ct, sr, cr);
+            return;
+        }
         let [light_r, light_g, light_b] = d.light;
         for (_facing, pos, uvs) in mobs::cape_faces() {
             if verts.len() + 6 > MAX_VERTS {
@@ -1902,6 +1956,143 @@ impl EntityPass {
                     // the cape does **not** take the red damage flash even
                     // while the wearer does. Hard-zeroed rather than read off
                     // `d.hurt` for that reason.
+                    light_hurt: [light_r, light_g, light_b, 0.0],
+                });
+            }
+        }
+    }
+
+    /// The wavy cape's `N` slabs, hung off the simulated spine (M61).
+    ///
+    /// Everything vanilla about the cape has already happened by the time
+    /// this runs: `m` and `o` are the rotation and offset
+    /// [`cape_transform`] produced from the three already-gated angles, and
+    /// `shift` is `CapeLayer`'s clearance translate. This routine only
+    /// replaces the rigid slab's *shape*.
+    ///
+    /// # Re-pinning
+    ///
+    /// The simulation runs in cape space with an anchor it derives from
+    /// entity state alone — it cannot see the animated body transform, the
+    /// clearance shift or the death roll. So joint 0 is moved onto the true
+    /// attachment point here and the rest of the chain is translated
+    /// rigidly with it. A rigid translation cannot distort cloth, and it
+    /// makes "joint 0 is the vanilla attachment point" true of the rendered
+    /// geometry and not only of the simulation.
+    ///
+    /// # Frames are per joint, not per slab
+    ///
+    /// Each joint carries one width/thickness frame, built by rotating the
+    /// cape's rest frame the shortest way onto the joint's own tangent.
+    /// Consecutive slabs therefore share their boundary quad *exactly*,
+    /// which is what makes the surface watertight without internal caps —
+    /// see [`mobs::cape_slab_quads`]. Per-slab frames would open a slit at
+    /// every joint the moment the chain bent.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_wavy_cape(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        cape: &CapeDraw,
+        w: &CapeJoints,
+        m: [[f32; 3]; 3],
+        o: [f32; 3],
+        shift: [f32; 3],
+        scale: f32,
+        st: f32,
+        ct: f32,
+        sr: f32,
+        cr: f32,
+    ) {
+        let n = w.segments();
+        // The cape's own axes, in cape space. `m`'s columns are the images
+        // of the model basis, so column 1 is the cape's local "down the
+        // spine" — the direction the rest chain lies along.
+        let axis = |k: usize| model_dir_to_cape([m[0][k], m[1][k], m[2][k]], st, ct, sr, cr);
+        let x0 = axis(0);
+        let y0 = axis(1);
+        let z0 = axis(2);
+
+        // The true attachment point: the spine's top, in cape space.
+        let spine_top = mat_apply(&m, [0.0, 0.0, -0.5]);
+        let anchor = model_pos_to_cape(
+            [
+                spine_top[0] + o[0] + shift[0],
+                spine_top[1] + o[1] + shift[1],
+                spine_top[2] + o[2] + shift[2],
+            ],
+            st,
+            ct,
+            sr,
+            cr,
+        );
+
+        let src = w.joints();
+        let fix = [
+            anchor[0] - src[0][0],
+            anchor[1] - src[0][1],
+            anchor[2] - src[0][2],
+        ];
+        let mut joint = [[0f32; 3]; CAPE_MAX_JOINTS];
+        for (j, p) in src.iter().enumerate() {
+            joint[j] = [p[0] + fix[0], p[1] + fix[1], p[2] + fix[2]];
+        }
+
+        // Per-joint tangents: the centred difference inside the chain, the
+        // one adjacent link at each end.
+        let mut right = [[0f32; 3]; CAPE_MAX_JOINTS];
+        let mut norm = [[0f32; 3]; CAPE_MAX_JOINTS];
+        for j in 0..=n {
+            let a = joint[j.saturating_sub(1)];
+            let b = joint[(j + 1).min(n)];
+            let t = normalize_or([b[0] - a[0], b[1] - a[1], b[2] - a[2]], y0);
+            let r = min_rotation(y0, t);
+            right[j] = mat_apply(&r, x0);
+            norm[j] = mat_apply(&r, z0);
+        }
+
+        let [light_r, light_g, light_b] = d.light;
+        for q in mobs::cape_slab_quads(n) {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let mut p4 = [[0f32; 3]; 4];
+            for i in 0..4 {
+                let j = q.joint[i];
+                let (dw, dt) = (q.off[i][0], q.off[i][1]);
+                // Cape space -> world: the chain is already world-aligned,
+                // so only the death roll (about the anchor) and the px->
+                // block scale are left.
+                let v = [
+                    joint[j][0] + right[j][0] * dw + norm[j][0] * dt - anchor[0],
+                    joint[j][1] + right[j][1] * dw + norm[j][1] * dt - anchor[1],
+                    joint[j][2] + right[j][2] * dw + norm[j][2] * dt - anchor[2],
+                ];
+                let v = roll_in_cape_space(v, st, ct, sr, cr);
+                let mut l = [
+                    (anchor[0] + v[0]) * scale,
+                    (anchor[1] + v[1]) * scale,
+                    (anchor[2] + v[2]) * scale,
+                ];
+                if let Some(mm) = &d.mount {
+                    l = [
+                        mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
+                        mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
+                        mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
+                    ];
+                }
+                p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+            }
+            let fnorm = face_normal(&p4);
+            let shade = mobs::shade_for(fnorm);
+            let uv4 = cape_face_uv(cape.origin, &q.uv);
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: p4[i],
+                    uv: uv4[i],
+                    color: [shade, shade, shade, 1.0],
+                    // As the rigid path: `CapeLayer` submits with
+                    // `NO_OVERLAY`, so a hurt wearer's cape does not flash.
                     light_hurt: [light_r, light_g, light_b, 0.0],
                 });
             }
@@ -4750,6 +4941,118 @@ pub fn cape_clearance_shift(chest_humanoid: bool) -> [f32; 3] {
     } else {
         [0.0; 3]
     }
+}
+
+/// Model space → **cape space** for a point (M61): world-axis aligned, model
+/// units, origin on the entity.
+///
+/// The three steps are the ones `emit_model` runs inline on every quad — the
+/// model flip (`-x`, and `MODEL_EYE_Y - y` because model +y is world down),
+/// the death roll, then the body yaw. What is left afterwards is only the
+/// px→block scale and the entity's own position, which is exactly why the
+/// wavy cape's simulation can live in this space and still land in the right
+/// place.
+pub fn model_pos_to_cape(v: [f32; 3], st: f32, ct: f32, sr: f32, cr: f32) -> [f32; 3] {
+    let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+    let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+    [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct]
+}
+
+/// [`model_pos_to_cape`] for a direction — the same map without its
+/// translation, so the `MODEL_EYE_Y` offset drops out and the y flip is a
+/// bare negation.
+pub fn model_dir_to_cape(v: [f32; 3], st: f32, ct: f32, sr: f32, cr: f32) -> [f32; 3] {
+    let e = [-v[0], -v[1], v[2]];
+    let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+    [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct]
+}
+
+/// Apply the death roll to a cape-space vector (M61).
+///
+/// The roll is a rotation in the *pre-yaw* frame, and the wavy cape's chain
+/// is simulated in the post-yaw world frame, so it has to be un-yawed,
+/// rolled, and yawed back. For every living entity `(sr, cr)` is `(0, 1)`
+/// and this is the identity.
+pub fn roll_in_cape_space(v: [f32; 3], st: f32, ct: f32, sr: f32, cr: f32) -> [f32; 3] {
+    let e = [v[0] * ct - v[2] * st, v[1], v[0] * st + v[2] * ct];
+    let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+    [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct]
+}
+
+fn normalize_or(v: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
+    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if !l.is_finite() || l <= 1e-9 {
+        return fallback;
+    }
+    [v[0] / l, v[1] / l, v[2] / l]
+}
+
+/// The shortest rotation taking unit `a` onto unit `b` (Rodrigues).
+///
+/// Used to carry the cape's rest frame onto each joint's tangent, so the
+/// width and thickness axes twist as little as possible along the chain.
+/// Deriving each joint's frame from the rest frame rather than from its
+/// predecessor keeps it deterministic and free of accumulated drift.
+fn min_rotation(a: [f32; 3], b: [f32; 3]) -> [[f32; 3]; 3] {
+    let v = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let s2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if s2 < 1e-12 {
+        if c >= 0.0 {
+            return IDENTITY3;
+        }
+        // Antiparallel: a half turn about any axis perpendicular to `a`.
+        // Picking the world axis `a` leans on least keeps the cross product
+        // well conditioned.
+        let seed = if a[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let k = normalize_or(
+            [
+                a[1] * seed[2] - a[2] * seed[1],
+                a[2] * seed[0] - a[0] * seed[2],
+                a[0] * seed[1] - a[1] * seed[0],
+            ],
+            [1.0, 0.0, 0.0],
+        );
+        return [
+            [
+                2.0 * k[0] * k[0] - 1.0,
+                2.0 * k[0] * k[1],
+                2.0 * k[0] * k[2],
+            ],
+            [
+                2.0 * k[1] * k[0],
+                2.0 * k[1] * k[1] - 1.0,
+                2.0 * k[1] * k[2],
+            ],
+            [
+                2.0 * k[2] * k[0],
+                2.0 * k[2] * k[1],
+                2.0 * k[2] * k[2] - 1.0,
+            ],
+        ];
+    }
+    let f = 1.0 / (1.0 + c);
+    let vx = [
+        [0.0, -v[2], v[1]],
+        [v[2], 0.0, -v[0]],
+        [-v[1], v[0], 0.0],
+    ];
+    let vx2 = mat_mul(vx, vx);
+    let mut out = IDENTITY3;
+    for r in 0..3 {
+        for k in 0..3 {
+            out[r][k] += vx[r][k] + vx2[r][k] * f;
+        }
+    }
+    out
 }
 
 /// Atlas UVs for one cape face, from the slot origin and the box UVs
