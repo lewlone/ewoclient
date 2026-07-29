@@ -176,6 +176,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
     session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
+    // M60: the player, for the index-16 skin-customisation byte (cape bit).
+    session.player_type_id = Some(data.entity_types.player_id);
     // M26: `block_event`'s `b0 == 1` means a different thing to each block
     // entity, so the type is what selects the body. Resolving through the
     // classification table rather than looking three names up directly is what
@@ -307,38 +309,56 @@ pub(crate) fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3])
     (right.to_array(), up.to_array())
 }
 
-/// One resolved player skin: the atlas UV offset relocating the default
-/// player quads onto the uploaded slot, plus the arm model.
-#[derive(Clone, Copy)]
+/// Which of a profile's textures a fetch job is for (M60).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum TexKind {
+    Skin,
+    Cape,
+}
+
+/// One resolved player's textures: the atlas UV offset relocating the
+/// default player quads onto the uploaded skin slot, the arm model, and the
+/// cape slot's atlas origin.
+///
+/// The two arrive independently — a profile may carry a cape and no skin —
+/// so an entry exists as soon as *either* lands, with the other's field at
+/// its no-texture default.
+#[derive(Clone, Copy, Default)]
 pub(crate) struct PlayerSkin {
     uv: [f32; 2],
     slim: bool,
+    /// Atlas origin of this player's cape slot, if one was uploaded.
+    cape: Option<(u32, u32)>,
 }
 
 pub(crate) type SkinRegistry = std::collections::HashMap<u128, PlayerSkin>;
 
-/// Async player-skin loader: a worker thread fetches + decodes skin PNGs
-/// off the render/tick path; the main loop uploads each result into the
-/// entity atlas and records its UV offset. Skins arrive rarely (once per
-/// player at join), so the per-skin `wait_idle` in the upload is cheap.
+/// Async player-texture loader: a worker thread fetches + decodes skin and
+/// cape PNGs off the render/tick path; the main loop uploads each result
+/// into the entity atlas and records its slot. They arrive rarely (once per
+/// player at join), so the per-texture `wait_idle` in the upload is cheap.
 pub(crate) struct SkinLoader {
-    req_tx: std::sync::mpsc::Sender<(u128, String, bool)>,
-    res_rx: std::sync::mpsc::Receiver<(u128, bool, Vec<u8>)>,
-    requested: std::collections::HashSet<u128>,
+    req_tx: std::sync::mpsc::Sender<(u128, TexKind, String, bool)>,
+    res_rx: std::sync::mpsc::Receiver<(u128, TexKind, bool, Vec<u8>)>,
+    requested: std::collections::HashSet<(u128, TexKind)>,
     registry: SkinRegistry,
 }
 
 impl SkinLoader {
     fn new() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<(u128, String, bool)>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<(u128, bool, Vec<u8>)>();
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<(u128, TexKind, String, bool)>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(u128, TexKind, bool, Vec<u8>)>();
         std::thread::Builder::new()
             .name("rewo-skin-fetch".into())
             .spawn(move || {
-                while let Ok((uuid, url, slim)) = req_rx.recv() {
-                    match crate::skin_fetch::fetch_rgba64(&url) {
+                while let Ok((uuid, kind, url, slim)) = req_rx.recv() {
+                    let got = match kind {
+                        TexKind::Skin => crate::skin_fetch::fetch_rgba64(&url),
+                        TexKind::Cape => crate::skin_fetch::fetch_cape_rgba(&url),
+                    };
+                    match got {
                         Ok(rgba) => {
-                            if res_tx.send((uuid, slim, rgba)).is_err() {
+                            if res_tx.send((uuid, kind, slim, rgba)).is_err() {
                                 return;
                             }
                         }
@@ -355,22 +375,40 @@ impl SkinLoader {
         }
     }
 
-    /// Queue a skin fetch (once per UUID).
+    /// Queue this profile's texture fetches (once per UUID per kind).
     fn request(&mut self, uuid: u128, info: &rewo_net::skins::SkinInfo) {
-        if self.requested.insert(uuid) {
-            let _ = self.req_tx.send((uuid, info.url.clone(), info.slim));
+        for (kind, url) in [
+            (TexKind::Skin, info.url.as_ref()),
+            (TexKind::Cape, info.cape.as_ref()),
+        ] {
+            let Some(url) = url else { continue };
+            if self.requested.insert((uuid, kind)) {
+                let _ = self.req_tx.send((uuid, kind, url.clone(), info.slim));
+            }
         }
     }
 
-    /// Upload any fetched skins into the atlas + record their UV offsets.
+    /// Upload any fetched textures into the atlas + record their slots.
     fn poll_uploads(&mut self, gpu: &mut Gpu, wr: &mut WorldRenderer) {
-        while let Ok((uuid, slim, rgba)) = self.res_rx.try_recv() {
-            if let Some(uv) = wr.upload_player_skin(gpu, &rgba) {
-                self.registry.insert(uuid, PlayerSkin { uv, slim });
-                log::info!(
-                    "skin: uploaded for {uuid:032x} ({} model)",
-                    if slim { "slim" } else { "wide" }
-                );
+        while let Ok((uuid, kind, slim, rgba)) = self.res_rx.try_recv() {
+            match kind {
+                TexKind::Skin => {
+                    if let Some(uv) = wr.upload_player_skin(gpu, &rgba) {
+                        let e = self.registry.entry(uuid).or_default();
+                        e.uv = uv;
+                        e.slim = slim;
+                        log::info!(
+                            "skin: uploaded for {uuid:032x} ({} model)",
+                            if slim { "slim" } else { "wide" }
+                        );
+                    }
+                }
+                TexKind::Cape => {
+                    if let Some(o) = wr.upload_player_cape(gpu, &rgba) {
+                        self.registry.entry(uuid).or_default().cape = Some(o);
+                        log::info!("cape: uploaded for {uuid:032x} at {o:?}");
+                    }
+                }
             }
         }
     }
@@ -582,6 +620,81 @@ fn wanted_gesture(kind: EntityModelKind, pose: u8, state: u8) -> Option<rewo_gpu
 /// decodes no teams), `isDiscrete()`'s 32-block sneak cut-off, `isVehicle()`,
 /// and `hud.isHidden()`. The local player never reaches here — it is not in
 /// the entity table — which is also the spec's exclusion.
+/// `CapeLayer.submit`'s four gates and `AvatarRenderer.extractCapeState`'s
+/// three angles, resolved for one entity on one frame (M60).
+///
+/// Shared by the renderer and `capeshot` so the oracle cannot grade a second
+/// copy of these rules — M41 and M45 both shipped gates that had quietly
+/// stopped testing their subject exactly that way.
+///
+/// The gates, in vanilla's order:
+///
+/// 1. `!state.isInvisible && state.showCape` — shared flag 5, and bit 0 of
+///    the index-16 customisation mask.
+/// 2. `skin.cape() != null` — here, whether a cape sheet was uploaded for
+///    this profile.
+/// 3. `!hasLayer(chestEquipment, WINGS)` — an equipped **elytra** replaces
+///    the cape outright.
+/// 4. not a gate but the same block: `hasLayer(chestEquipment, HUMANOID)`
+///    shifts the cape clear of a chestplate.
+///
+/// Gates 3 and 4 are separate questions about the same slot, which is why
+/// [`rewo_data::equipment::ArmorLayer::Wings`] had to exist: a **carved
+/// pumpkin** occupies the chest slot in neither sense — it names no
+/// equipment asset at all — so it suppresses nothing and shifts nothing,
+/// and before M60 it was indistinguishable from an elytra.
+pub(crate) fn resolve_cape(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    kind: EntityModelKind,
+    alpha: f32,
+    cape_origin: Option<(u32, u32)>,
+    items: &rewo_data::items::Items,
+    equipment: &rewo_data::equipment::EquipmentAssets,
+) -> Option<rewo_gpu::entities::CapeDraw> {
+    use rewo_data::equipment::ArmorLayer;
+    // `CapeLayer` is added by `AvatarRenderer` alone — a zombie has a torso
+    // and no cape layer.
+    if !rewo_gpu::mobs::wears_cape(kind) {
+        return None;
+    }
+    // Gate 1.
+    if ents.is_invisible(id) || !ents.shows_cape(id) {
+        return None;
+    }
+    // Gate 2.
+    let origin = cape_origin?;
+    // Gates 3 + 4 — one lookup of the chest item, two different questions.
+    let chest = ents.armor(id)[1].and_then(|p| items.name(p.item));
+    if chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Wings)) {
+        return None;
+    }
+    let chest_humanoid = chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Humanoid));
+
+    let e = ents.get(id)?;
+    let a = rewo_world::cape::cape_angles(
+        e.cloak_pos(alpha),
+        e.render_pos(alpha),
+        e.yaw,
+        e.fall_fly_ticks() as f32 + alpha,
+        // `bob` and `walkDistance` are structurally zero for every entity
+        // Rewo renders: only `LocalPlayer.move` ever advances `walkDist`,
+        // and the local player is not in this table. Passing literal zeros
+        // rather than modelling them is exact, not an approximation — see
+        // `rewo_world::cape::cape_angles`, which explains why `bob` alone
+        // would have been the wrong thing to key off.
+        0.0,
+        0.0,
+    );
+    Some(rewo_gpu::entities::CapeDraw {
+        origin,
+        flap: a.flap,
+        lean: a.lean,
+        lean2: a.lean2,
+        chest_humanoid,
+    })
+}
+
 pub(crate) fn resolve_health_bar(
     ents: &rewo_world::entities::EntityTable,
     id: i32,
@@ -1565,6 +1678,19 @@ fn collect_entities<'a>(
             // The sheep's wool colour (`Sheep.DATA_WOOL_ID`). `None` is
             // vanilla's `DyeColor.WHITE` default, which still tints.
             dye: session.world.entities.wool_color(id),
+            // M60. `player_skin` is this profile's uploaded textures; its
+            // `cape` is `None` both when the profile carries no cape and
+            // when one is still in flight, and either way vanilla's second
+            // gate says draw nothing.
+            cape: resolve_cape(
+                &session.world.entities,
+                id,
+                kind,
+                alpha,
+                player_skin.and_then(|ps| ps.cape),
+                item_names,
+                equipment,
+            ),
         });
     }
     // Drop tracker entries for despawned entities (recycled server ids
@@ -2409,7 +2535,10 @@ fn run_headless(
         // way to photograph the preview wearing a real skin.
         let mut skin = std::env::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
             match crate::skin_fetch::resolve(&spec)
-                .and_then(|info| crate::skin_fetch::fetch_rgba64(&info.url).map(|r| (r, info.slim)))
+                .and_then(|info| {
+                    let url = info.url.clone().ok_or("profile carries no skin")?;
+                    crate::skin_fetch::fetch_rgba64(&url).map(|r| (r, info.slim))
+                })
             {
                 Ok((rgba, slim)) => {
                     log::info!("preview: skin {spec} ({} model)", if slim { "slim" } else { "wide" });
@@ -4494,6 +4623,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        cape: None,
     }
 }
 
@@ -6343,6 +6473,7 @@ fn preview_draw<'a>(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        cape: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);

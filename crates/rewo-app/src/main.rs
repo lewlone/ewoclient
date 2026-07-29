@@ -29,6 +29,7 @@ mod modules;
 mod live_cmd;
 mod net_cmd;
 mod play_cmd;
+mod capeshot_cmd;
 mod handshot_cmd;
 mod inventoryshot_cmd;
 mod particleshot_cmd;
@@ -194,6 +195,12 @@ enum Command {
     /// decompile, and the pass's pixels — with a synthetic magenta texture, so
     /// the detector cannot match anything but the hand.
     Handshot(handshot_cmd::HandshotArgs),
+    /// M60 vanilla-cape oracle: the cube and its 64x32 UV space, the
+    /// `Rx·Rz·Ry` composition the `PartPose` cancels into, the lagging cloak
+    /// anchor and the three angles, `CapeLayer`'s four gates against real jar
+    /// equipment, and the pass's pixels — with a marker-coloured cape, so the
+    /// detector cannot match the player it hangs on.
+    Capeshot(capeshot_cmd::CapeshotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
@@ -262,6 +269,7 @@ fn main() {
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
         Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
+        Some(Command::Capeshot(cape_args)) => capeshot_cmd::run(cape_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Hudshot(hs_args)) => hudshot_cmd::run(hs_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),

@@ -239,6 +239,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        cape: None,
     }
 }
 
@@ -515,7 +516,8 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let player_skin: Option<([f32; 2], bool)> = match &args.skin {
         Some(name) => {
             let info = crate::skin_fetch::resolve(name)?;
-            let rgba = crate::skin_fetch::fetch_rgba64(&info.url)?;
+            let url = info.url.as_deref().ok_or("profile carries no skin")?;
+            let rgba = crate::skin_fetch::fetch_rgba64(url)?;
             let uv = wr.upload_player_skin(gpu, &rgba).ok_or("skin upload failed")?;
             println!("[mobshot] skin: {name} → {} model, uploaded", if info.slim { "slim" } else { "wide" });
             Some((uv, info.slim))

@@ -1386,7 +1386,8 @@ pub fn route_inventory(
 /// `DATA_SPELL_CASTING_ID` on a spellcaster illager but a gesture-state enum on
 /// a sniffer/armadillo; index 17 BOOLEAN is `IS_CHARGING_CROSSBOW` on a
 /// Pillager. Index 15 BYTE is `DATA_MOB_FLAGS_ID` on a `Mob` and unrelated
-/// client flags on an `ArmorStand`.
+/// client flags on an `ArmorStand`. Index 16 BYTE is
+/// `DATA_PLAYER_MODE_CUSTOMISATION` on a player (M60).
 ///
 /// Every field is optional: absent means "this client could not resolve that
 /// kind", and the corresponding slot is then left alone rather than guessed.
@@ -1401,6 +1402,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
+    /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
+    /// skin-part customisation mask whose bit 0 shows the cape.
+    pub player: Option<i32>,
     /// The machine-extracted ancestry sets — mob / raider / spellcaster.
     pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
     /// Data-component registry ids, needed to walk an ITEM_STACK metadata
@@ -1471,6 +1475,17 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_celebrating(eid, b);
         } else {
             entities.set_baby(eid, b);
+        }
+    }
+    // Slot 16 BYTE → `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (M60), the mask
+    // whose bit 0 is `PlayerModelPart.CAPE`. A third reading of slot 16, and
+    // the only one gated on a *single* type rather than an ancestry set:
+    // `Avatar`'s only rendered subclass here is the player, and a wrong
+    // reading would toggle some mob's cape off a byte that means something
+    // else entirely. An unresolved player id leaves the slot alone.
+    if let Some(b) = meta.byte16 {
+        if kinds.player == Some(type_id) {
+            entities.set_model_customisation(eid, b);
         }
     }
     // Slot 0 BYTE → `Entity.DATA_SHARED_FLAGS_ID` (M59). **No kind gate**, and

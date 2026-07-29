@@ -1955,6 +1955,20 @@ impl WorldRenderer {
         }
     }
 
+    /// Claim a cape slot and upload one player's cape sheet (M60). Returns
+    /// the slot's atlas origin in texels — see `EntityPass::upload_cape` for
+    /// why this is an origin and not a UV delta.
+    pub fn upload_player_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
+        let pass = self.entities.as_mut()?;
+        match pass.upload_cape(gpu, rgba) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                log::warn!("entities: cape upload failed: {e}");
+                None
+            }
+        }
+    }
+
     /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).
     pub fn init_hud(&mut self, gpu: &mut Gpu, sprites: &HudSpritesData<'_>) -> Result<(), String> {
         self.hud = Some(HudPass::new(gpu, self.color_format, sprites)?);

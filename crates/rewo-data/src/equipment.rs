@@ -35,20 +35,35 @@
 //! chestplate — a thinner inflation on its own sheet — and not because there
 //! is a texture per slot.
 //!
-//! Only these two are read. `horse_body`, `happy_ghast_body`, `llama_body`
-//! and the saddles describe geometry Rewo does not render, and reading them
-//! would build a table nothing could draw.
+//! Only these two describe *drawn* humanoid geometry. `horse_body`,
+//! `happy_ghast_body`, `llama_body` and the saddles describe geometry Rewo
+//! does not render, and reading them would build a table nothing could draw.
+//!
+//! # `Wings` is read but never drawn (M60)
+//!
+//! [`ArmorLayer::Wings`] is the third entry, and it is there for a
+//! *suppression* rather than a render. `CapeLayer` draws nothing when the
+//! chest item `hasLayer(WINGS)`, which is how an equipped elytra replaces the
+//! cape; before M60 the layer table held only the two humanoid entries, so an
+//! elytra and a carved pumpkin were indistinguishable — both simply had no
+//! humanoid layer — and the rule could not be written at all. Its textures
+//! are loaded like any other so the presence test reads real jar data, but
+//! nothing emits elytra geometry yet.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Which of the two humanoid layer sets a slot draws from.
+/// Which layer set a slot draws from — `EquipmentClientInfo.LayerType`,
+/// restricted to the entries Rewo has a use for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ArmorLayer {
     /// `humanoid` — helmet, chestplate, boots.
     Humanoid,
     /// `humanoid_leggings` — leggings only.
     Leggings,
+    /// `wings` — the elytra. Read for `CapeLayer`'s suppression test, never
+    /// drawn (see the module header).
+    Wings,
 }
 
 impl ArmorLayer {
@@ -56,8 +71,18 @@ impl ArmorLayer {
         match self {
             ArmorLayer::Humanoid => "humanoid",
             ArmorLayer::Leggings => "humanoid_leggings",
+            ArmorLayer::Wings => "wings",
         }
     }
+
+    /// The layers a full load reads. `Wings` is last so the two humanoid
+    /// entries keep the order they had, which keeps `textures` — a `Vec`
+    /// the atlas packs in order — byte-for-byte what it was.
+    pub const ALL: [ArmorLayer; 3] = [
+        ArmorLayer::Humanoid,
+        ArmorLayer::Leggings,
+        ArmorLayer::Wings,
+    ];
 }
 
 /// `DyedItemColor.LEATHER_COLOR` — the `color_when_undyed` every leather layer
@@ -180,7 +205,7 @@ impl EquipmentAssets {
             let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
                 continue;
             };
-            for layer in [ArmorLayer::Humanoid, ArmorLayer::Leggings] {
+            for layer in ArmorLayer::ALL {
                 let Some(list) = json
                     .get("layers")
                     .and_then(|l| l.get(layer.dir()))
@@ -211,6 +236,17 @@ impl EquipmentAssets {
             // same sheet share one atlas entry, and one asset's two layers name
             // two different sheets.
             let key = format!("{}/{tex}", layer.dir());
+            // `Wings` is a presence test, not a render (M60): recording the
+            // layer answers `hasLayer(WINGS)`, and *not* decoding its sheet
+            // keeps `textures` — which the entity atlas shelf-packs in order
+            // — byte-for-byte what it was, so no mob's texels move.
+            if layer == ArmorLayer::Wings {
+                out.by_asset
+                    .entry((asset, layer))
+                    .or_default()
+                    .push(ArmorLayerDef { key, dyeable });
+                continue;
+            }
             let path = format!(
                 "assets/minecraft/textures/entity/equipment/{}/{tex}.png",
                 layer.dir()
@@ -239,6 +275,24 @@ impl EquipmentAssets {
             out.by_asset.values().map(Vec::len).sum::<usize>(),
         );
         out
+    }
+
+    /// `CapeLayer.hasLayer(ItemStack, LayerType)` — whether the item worn in
+    /// a slot describes this layer at all.
+    ///
+    /// Vanilla's two early-outs collapse into one here: `equip_asset` returns
+    /// `None` both for an item that is not equippable and for one that is
+    /// worn but names no asset (a **carved pumpkin** — `Equippable.builder`
+    /// with no `setAsset`). Vanilla treats them alike too — `equippable ==
+    /// null || assetId().isEmpty()` is a single `else return false` — so the
+    /// shared return is exact rather than a simplification.
+    ///
+    /// This is the whole reason the cape's two chest-item rules can differ:
+    /// an elytra has `wings`, a chestplate has `humanoid`, and a carved
+    /// pumpkin has neither, so it suppresses nothing and shifts nothing.
+    pub fn has_layer(&self, item_name: &str, layer: ArmorLayer) -> bool {
+        crate::item_props_table::equip_asset(item_name)
+            .is_some_and(|asset| !self.layers(asset, layer).is_empty())
     }
 
     /// An asset's layer list, in draw order. Empty for anything the jar does

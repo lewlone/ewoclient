@@ -4123,6 +4123,46 @@ pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
     )
 }
 
+/// Whether a model kind wears a cape — `CapeLayer` is added by
+/// `AvatarRenderer` alone (M60).
+///
+/// The same rule as [`wears_humanoid_armor`] and for the same reason: the
+/// *renderer* decides, not the mesh. Every humanoid here has a torso to hang
+/// a cape from, and vanilla gives one to none of them.
+pub fn wears_cape(kind: EntityModelKind) -> bool {
+    matches!(
+        kind,
+        EntityModelKind::Player | EntityModelKind::PlayerSlim
+    )
+}
+
+/// `PlayerCapeModel.createCapeLayer`'s `PartPose` **offset** — the cape hangs
+/// two pixels behind the body's origin.
+///
+/// The pose's *rotation* is deliberately absent: it is `Ry(π)`, and
+/// `setupAnim`'s quaternion opens with `rotateY(-PI)`, which
+/// `ModelPart.rotateBy` post-multiplies onto it — so the two cancel exactly
+/// and the net rotation is [`crate::entities::cape_rotation`] alone. Applying
+/// both would rotate the cape twice.
+pub const CAPE_PIVOT: [f32; 3] = [0.0, 0.0, 2.0];
+
+/// `PlayerCapeModel.createCapeLayer`'s single cube:
+/// `texOffs(0, 0).addBox(-5, 0, -1, 10, 16, 1, CubeDeformation.NONE, 1.0F, 0.5F)`.
+///
+/// The trailing `1.0F, 0.5F` are `xTexScale`/`yTexScale`, not a deformation —
+/// `CubeDefinition.bake` multiplies them into the 64x64 `LayerDefinition`
+/// size, so the UVs this returns normalize against **64x32**. They reach
+/// `u 22, v 17`, which fits either sheet; only the divisor tells them apart.
+pub fn cape_faces() -> [(Facing, [[f32; 3]; 4], [[f32; 2]; 4]); 6] {
+    cube_faces(
+        (0.0, 0.0),
+        [-5.0, 0.0, -1.0],
+        [10.0, 16.0, 1.0],
+        0.0,
+        false,
+    )
+}
+
 /// Which humanoid parts a slot's armour covers, and how far the mesh is grown.
 ///
 /// The names are the *body* model's part names: the armour is posed by the

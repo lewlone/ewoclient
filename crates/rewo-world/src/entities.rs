@@ -397,6 +397,40 @@ pub struct EntityState {
     /// swing amplitude. The server never sends limb angles; both are
     /// derived here from the entity's own motion, exactly as vanilla does.
     limb_amount: f32,
+    /// The cape's lagging anchor (M60) — vanilla `ClientAvatarState`'s
+    /// cloak position. Carried by every entity rather than only players
+    /// because [`EntityState`] is one `Copy` struct and a side map keyed by
+    /// id would have to be ticked in lockstep with this one anyway; six
+    /// doubles is cheaper than that coupling. Only the cape reads it.
+    cloak: CloakAnchor,
+    /// `LivingEntity.fallFlyTicks` — `if (isFallFlying()) ++ else = 0`, once
+    /// per tick, off shared flag 7. The client simulates it (the server
+    /// sends only the flag), and the cape's `fallFlyingScale` is its only
+    /// consumer.
+    fall_fly_ticks: i32,
+}
+
+/// Vanilla `ClientAvatarState`'s cloak position — the lagging anchor the
+/// cape's angles are measured against.
+///
+/// It is *not* the entity's position: it chases it at a quarter of the
+/// remaining distance per tick, so a player who starts running leaves their
+/// cloak behind and the gap is what lifts the cape. `O` is the previous
+/// tick's value, for render interpolation.
+///
+/// All six start at **zero**, exactly as vanilla's fields do. That is not a
+/// neutral choice — it means a player spawning within 10 blocks of the world
+/// origin on an axis has their cloak converge onto it from 0 over several
+/// ticks instead of snapping — but it is what vanilla does, and the snap
+/// branch is written against the *position*, not against a first-tick flag.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CloakAnchor {
+    x: f64,
+    y: f64,
+    z: f64,
+    xo: f64,
+    yo: f64,
+    zo: f64,
 }
 
 impl EntityState {
@@ -415,6 +449,8 @@ impl EntityState {
             prev: [x, y, z],
             limb_swing: 0.0,
             limb_amount: 0.0,
+            cloak: CloakAnchor::default(),
+            fall_fly_ticks: 0,
         }
     }
 
@@ -441,8 +477,19 @@ impl EntityState {
         self.pitch = pitch;
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, fall_flying: bool) {
         let before = self.cur;
+        // `AbstractClientPlayer.tick` runs `clientAvatarState.tick(position(),
+        // …)` **before** `super.tick()`, so the cloak chases the position the
+        // entity had entering this tick — the same value that becomes `xo`,
+        // which is what the render then lerps `xo → getX()` against.
+        self.cloak.move_cloak(before);
+        // `LivingEntity.aiStep`'s tail.
+        if fall_flying {
+            self.fall_fly_ticks += 1;
+        } else {
+            self.fall_fly_ticks = 0;
+        }
         self.prev = self.cur;
         if self.lerp_steps > 0 {
             let n = self.lerp_steps as f64;
@@ -490,6 +537,53 @@ impl EntityState {
     /// [`Self::set_limb_speed`] pushes it to 1.5.
     pub fn limb(&self) -> (f32, f32) {
         (self.limb_swing, self.limb_amount.min(1.0))
+    }
+
+    /// `ClientAvatarState.getInterpolatedCloak{X,Y,Z}(partialTicks)`.
+    pub fn cloak_pos(&self, alpha: f32) -> [f64; 3] {
+        self.cloak.interpolated(alpha)
+    }
+
+    /// `LivingEntity.getFallFlyingTicks()`.
+    pub fn fall_fly_ticks(&self) -> i32 {
+        self.fall_fly_ticks
+    }
+}
+
+impl CloakAnchor {
+    /// `ClientAvatarState.moveCloak`, transcribed per-axis.
+    ///
+    /// Each axis independently either eases a quarter of the way toward the
+    /// position, or — past a 10-block gap — teleports, **rewriting `O` too**
+    /// so the render interpolation does not draw the cape streaking across
+    /// the intervening ground on the frame a player teleports.
+    ///
+    /// The threshold is exclusive on both sides: vanilla writes
+    /// `if (!(d > 10.0) && !(d < -10.0))`, so a gap of exactly ±10 eases.
+    fn move_cloak(&mut self, pos: [f64; 3]) {
+        self.xo = self.x;
+        self.yo = self.y;
+        self.zo = self.z;
+        let d = [pos[0] - self.x, pos[1] - self.y, pos[2] - self.z];
+        let cur = [&mut self.x, &mut self.y, &mut self.z];
+        let old = [&mut self.xo, &mut self.yo, &mut self.zo];
+        for (i, (c, o)) in cur.into_iter().zip(old).enumerate() {
+            if !(d[i] > 10.0) && !(d[i] < -10.0) {
+                *c += d[i] * 0.25;
+            } else {
+                *c = pos[i];
+                *o = *c;
+            }
+        }
+    }
+
+    fn interpolated(&self, alpha: f32) -> [f64; 3] {
+        let a = alpha.clamp(0.0, 1.0) as f64;
+        [
+            self.xo + (self.x - self.xo) * a,
+            self.yo + (self.y - self.yo) * a,
+            self.zo + (self.z - self.zo) * a,
+        ]
     }
 }
 
@@ -557,6 +651,13 @@ pub struct EntityTable {
     /// gate on the way in — index 0 is `Entity`'s own first slot, so every
     /// entity that exists owns it. Cleared on removal.
     shared_flags: HashMap<i32, u8>,
+    /// `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE) — the
+    /// skin-part toggle mask, players only (M60). Absent means the byte has
+    /// never been sent; vanilla seeds it at `(byte) 0`, so an absent entry
+    /// reads as **every part hidden**, cape included. That is the exact
+    /// default and not a fallback: a real client always sends its mask.
+    /// Cleared on removal.
+    model_customisation: HashMap<i32, u8>,
     /// `ItemEntity.DATA_ITEM` (index 8, ITEM_STACK) → `(item protocol id,
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
@@ -879,6 +980,7 @@ impl EntityTable {
         self.item_stacks.remove(&id);
         self.attributes.remove(&id);
         self.shared_flags.remove(&id);
+        self.model_customisation.remove(&id);
         self.clear_swing(id);
     }
 
@@ -1044,6 +1146,19 @@ impl EntityTable {
     /// `FLAG_INVISIBLE` is **5**.
     pub fn is_invisible(&self, id: i32) -> bool {
         self.shared_flag(id, 5)
+    }
+
+    /// Apply `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE).
+    /// Only the kind-aware router calls this, and only for a player.
+    pub fn set_model_customisation(&mut self, id: i32, mask: u8) {
+        self.model_customisation.insert(id, mask);
+    }
+
+    /// `Avatar.isModelPartShown(PlayerModelPart.CAPE)` — the mask's **bit 0**
+    /// (`PlayerModelPart.CAPE(0, "cape")`, `mask = 1 << bit`), which becomes
+    /// `AvatarRenderState.showCape` and is `CapeLayer`'s first gate.
+    pub fn shows_cape(&self, id: i32) -> bool {
+        self.model_customisation.get(&id).copied().unwrap_or(0) & 1 != 0
     }
 
     /// `LivingEntity.handleEntityEvent(3)` — the death event.
@@ -1538,8 +1653,11 @@ impl EntityTable {
     /// and the combat-swing clock.
     /// The `dances` map holds only Allays, so advancing all of them is exact.
     pub fn tick_lerp(&mut self) {
-        for e in self.map.values_mut() {
-            e.tick();
+        for (id, e) in self.map.iter_mut() {
+            // `LivingEntity.isFallFlying()` is `getSharedFlag(7)` — the cape's
+            // `fallFlyingScale` needs the *count*, which only the client keeps.
+            let fall_flying = self.shared_flags.get(id).copied().unwrap_or(0) & (1 << 7) != 0;
+            e.tick(fall_flying);
         }
         for d in self.dances.values_mut() {
             d.tick();
@@ -1651,14 +1769,64 @@ mod tests {
     fn three_step_lerp_converges_exactly() {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         e.set_target(3.0, 0.0, 0.0);
-        e.tick(); // (3-0)/3 → 1
+        e.tick(false); // (3-0)/3 → 1
         assert_eq!(e.render_pos(1.0)[0], 1.0);
         assert_eq!(e.render_pos(0.5)[0], 0.5, "partial tick blends prev→cur");
-        e.tick(); // (3-1)/2 → 2
-        e.tick(); // (3-2)/1 → 3 exact
+        e.tick(false); // (3-1)/2 → 2
+        e.tick(false); // (3-2)/1 → 3 exact
         assert_eq!(e.render_pos(1.0)[0], 3.0);
-        e.tick(); // no steps left — stays put
+        e.tick(false); // no steps left — stays put
         assert_eq!(e.render_pos(0.0)[0], 3.0);
+    }
+
+    /// `moveCloak`'s easing branch: each tick closes a quarter of the gap,
+    /// so the remaining distance is `0.75ⁿ` of the original — a geometric
+    /// series that never quite arrives.
+    #[test]
+    fn the_cloak_anchor_closes_a_quarter_of_the_gap_per_tick() {
+        let mut a = CloakAnchor::default();
+        for n in 1..=8u32 {
+            a.move_cloak([8.0, 0.0, 0.0]);
+            let remaining = 8.0 - a.x;
+            let want = 8.0 * 0.75f64.powi(n as i32);
+            assert!(
+                (remaining - want).abs() < 1e-12,
+                "tick {n}: remaining {remaining} != {want}"
+            );
+        }
+        // And `O` trails by exactly one tick, which is what the render lerps.
+        assert!(a.xo < a.x);
+    }
+
+    /// Past ±10 blocks the axis teleports **and rewrites `O`**, so the
+    /// interpolated anchor does not sweep across the gap on the next frame.
+    /// A gap of exactly 10 still eases — vanilla's test is strict.
+    #[test]
+    fn a_gap_over_ten_blocks_snaps_and_rewrites_the_previous_slot() {
+        let mut a = CloakAnchor::default();
+        a.move_cloak([11.0, 10.0, -11.0]);
+        assert_eq!(a.x, 11.0, "snapped");
+        assert_eq!(a.xo, 11.0, "and O with it");
+        assert_eq!(a.z, -11.0, "negative side snaps too");
+        assert_eq!(a.zo, -11.0);
+        assert_eq!(a.y, 2.5, "exactly 10 is not over — it eases");
+        assert_eq!(a.yo, 0.0);
+        // The whole point: with O rewritten, every partial tick reads the
+        // destination rather than a streak from the old position.
+        assert_eq!(a.interpolated(0.0)[0], 11.0);
+        assert_eq!(a.interpolated(0.5)[0], 11.0);
+    }
+
+    /// Shared flag 7 is `isFallFlying()`; the counter is the client's.
+    #[test]
+    fn fall_fly_ticks_count_up_while_flying_and_reset_at_once() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for _ in 0..3 {
+            e.tick(true);
+        }
+        assert_eq!(e.fall_fly_ticks(), 3);
+        e.tick(false);
+        assert_eq!(e.fall_fly_ticks(), 0, "reset, not decayed");
     }
 
     #[test]
@@ -1668,7 +1836,7 @@ mod tests {
         e.nudge(0.5, 0.0, 0.0); // mid-lerp — target must not lose the first
         assert_eq!(e.x, 11.0);
         for _ in 0..3 {
-            e.tick();
+            e.tick(false);
         }
         assert_eq!(e.render_pos(1.0)[0], 11.0);
     }
@@ -1677,14 +1845,14 @@ mod tests {
     fn still_entity_has_no_limb_swing_but_walking_builds_it_up() {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for _ in 0..10 {
-            e.tick(); // no target set → cur never moves
+            e.tick(false); // no target set → cur never moves
         }
         let (_, amt_still) = e.limb();
         assert!(amt_still < 1e-6, "still entity: amount {amt_still}");
         // Now walk ~0.2 blk/tick and let the smoother ramp.
         for _ in 0..20 {
             e.nudge(0.2, 0.0, 0.0);
-            e.tick();
+            e.tick(false);
         }
         let (swing, amt) = e.limb();
         assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
@@ -2360,7 +2528,7 @@ mod m21_hurt_tests {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for i in 0..200 {
             e.set_target(i as f64 * 0.5, 0.0, 0.0);
-            e.tick();
+            e.tick(false);
             assert!(e.limb().1 <= 1.0);
         }
     }

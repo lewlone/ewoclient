@@ -1364,6 +1364,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        cape: None,
     }
 }
 
@@ -2528,6 +2529,8 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             // them. `None` means the kind gate can never match.
             sheep: None,
             creaking: None,
+            // M60: likewise not exercised — no cape reaches an arm rig.
+            player: None,
             classes: Some(&ctx.classes),
             components: Some(ctx.wire.components),
         },
