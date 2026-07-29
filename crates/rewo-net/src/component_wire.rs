@@ -95,6 +95,16 @@ pub enum Shape {
     /// `ItemStackTemplate.STREAM_CODEC` — item id, count, and a nested patch.
     /// Recursive, and bounded by the walk's depth limit.
     ItemStackTemplate,
+    /// `TypedDataComponent.STREAM_CODEC` — a component type id, then that
+    /// component's value under **its own** codec.
+    ///
+    /// This is the patch's own rule appearing a second time, in a place that is
+    /// easy to miss: a `BlockPredicate` inside `can_place_on` carries a
+    /// `DataComponentExactPredicate`, which is a list of these, so an adventure
+    /// predicate can name *any* component at all. The consequence is the
+    /// patch's too — an untranscribed component here has no length, so the walk
+    /// stops rather than skipping. Recursive, and bounded by the depth limit.
+    TypedComponent,
 }
 
 /// Shorthand for the shapes that appear inside others.
@@ -213,6 +223,122 @@ const ATTRIBUTE_ENTRY: Shape = Shape::Tuple(&[
     Shape::Tuple(&[S_STR, Shape::Double, S_VARINT]),
     S_VARINT, // EquipmentSlotGroup
     Shape::Dispatch(&[Shape::Unit, Shape::Unit, S_NBT]),
+]);
+
+/// `TypedEntityData.streamCodec(typeCodec)` — a registry id then a compound
+/// tag. `ByteBufCodecs.COMPOUND_TAG` is `tagCodec` with a cast, so it is the
+/// ordinary network tag [`Shape::NbtTag`] already reads.
+const TYPED_ENTITY_DATA: Shape = Shape::Tuple(&[S_HOLDER_REG, S_NBT]);
+
+/// `StatePropertiesPredicate.ValueMatcher.STREAM_CODEC` — `either(Exact,
+/// Ranged)`, so **true is the plain string** and false is the min/max pair.
+/// The two branches differ in length, which is the whole reason the flag has to
+/// be read the right way round here.
+const VALUE_MATCHER: Shape = Shape::Either(
+    &S_STR,
+    &Shape::Tuple(&[Shape::Optional(&S_STR), Shape::Optional(&S_STR)]),
+);
+/// `StatePropertiesPredicate.STREAM_CODEC` — a list of (name, matcher).
+const STATE_PROPERTIES_PREDICATE: Shape = Shape::List(&Shape::Tuple(&[S_STR, VALUE_MATCHER]));
+
+/// `DataComponentMatchers.STREAM_CODEC` — an exact half and a partial half.
+///
+/// The partial half looks like it needs the `data_component_predicate_type`
+/// registry's dispatch table and does not: every `Type` builds its
+/// `singleStreamCodec` as `ByteBufCodecs.fromCodecWithRegistries(codec)`, which
+/// serialises through NBT — so whichever predicate type is selected, the
+/// payload on the wire is **one tag**. The selector itself is
+/// `either(registry(DATA_COMPONENT_PREDICATE_TYPE), registry(DATA_COMPONENT_TYPE))`,
+/// two branches that are both a raw registry var-int, so this walks correctly
+/// whichever way the flag reads.
+const DATA_COMPONENT_MATCHERS: Shape = Shape::Tuple(&[
+    // `DataComponentExactPredicate` — `TypedDataComponent.list()`.
+    Shape::List(&Shape::TypedComponent),
+    // `DataComponentPredicate` — `SINGLE_STREAM_CODEC.list(64)`.
+    Shape::List(&Shape::Tuple(&[Shape::Either(&S_VARINT, &S_VARINT), S_NBT])),
+]);
+
+/// `BlockPredicate.STREAM_CODEC` (the *advancements* one — there are three
+/// classes with this name in 26.2, and only `advancements.predicates` has a
+/// stream codec).
+const BLOCK_PREDICATE: Shape = Shape::Tuple(&[
+    Shape::Optional(&Shape::HolderSet),           // blocks
+    Shape::Optional(&STATE_PROPERTIES_PREDICATE), // properties
+    Shape::Optional(&S_NBT),                      // nbt
+    DATA_COMPONENT_MATCHERS,                      // components
+]);
+
+/// `Equippable.STREAM_CODEC`.
+///
+/// Eleven fields, five of them bare bools in a row — a miscount inside that run
+/// is invisible in the shape and desynchronises by exactly as many bytes as it
+/// is wrong by, so the order below is the record's, verbatim.
+const EQUIPPABLE: Shape = Shape::Tuple(&[
+    S_VARINT,                           // slot — `EquipmentSlot`, an idMapper
+    SOUND,                              // equipSound
+    Shape::Optional(&S_STR),            // assetId — a ResourceKey, i.e. an Identifier
+    Shape::Optional(&S_STR),            // cameraOverlay
+    Shape::Optional(&Shape::HolderSet), // allowedEntities
+    S_BOOL,                             // dispensable
+    S_BOOL,                             // swappable
+    S_BOOL,                             // damageOnHurt
+    S_BOOL,                             // equipOnInteract
+    S_BOOL,                             // canBeSheared
+    SOUND,                              // shearingSound
+]);
+
+/// `BlocksAttacks.DamageReduction.STREAM_CODEC`.
+const DAMAGE_REDUCTION: Shape = Shape::Tuple(&[
+    S_FLOAT,                            // horizontalBlockingAngle
+    Shape::Optional(&Shape::HolderSet), // type
+    S_FLOAT,                            // base
+    S_FLOAT,                            // factor
+]);
+/// `BlocksAttacks.STREAM_CODEC`. `ItemDamageFunction` is inlined as its three
+/// floats — it has a codec of its own but no optionality, so it adds no bytes
+/// of its own to mark.
+const BLOCKS_ATTACKS: Shape = Shape::Tuple(&[
+    S_FLOAT,                                    // blockDelaySeconds
+    S_FLOAT,                                    // disableCooldownScale
+    Shape::List(&DAMAGE_REDUCTION),             // damageReductions
+    Shape::Tuple(&[S_FLOAT, S_FLOAT, S_FLOAT]), // itemDamage
+    Shape::Optional(&Shape::HolderSet),         // bypassedBy
+    OPT_SOUND,                                  // blockSound
+    OPT_SOUND,                                  // disableSound
+]);
+
+/// `KineticWeapon.Condition.STREAM_CODEC` — ticks then two speeds.
+const KINETIC_CONDITION: Shape = Shape::Tuple(&[S_VARINT, S_FLOAT, S_FLOAT]);
+/// `KineticWeapon.STREAM_CODEC` — three optional conditions in a row, each of
+/// which is a bool that may or may not be followed by nine bytes.
+const KINETIC_WEAPON: Shape = Shape::Tuple(&[
+    S_VARINT,                            // contactCooldownTicks
+    S_VARINT,                            // delayTicks
+    Shape::Optional(&KINETIC_CONDITION), // dismountConditions
+    Shape::Optional(&KINETIC_CONDITION), // knockbackConditions
+    Shape::Optional(&KINETIC_CONDITION), // damageConditions
+    S_FLOAT,                             // forwardMovement
+    S_FLOAT,                             // damageMultiplier
+    OPT_SOUND,                           // sound
+    OPT_SOUND,                           // hitSound
+]);
+
+/// `JukeboxPlayable.STREAM_CODEC` is `JukeboxSong.STREAM_CODEC` with no wrapper
+/// of its own, and that is `ByteBufCodecs.holder` — so a datapack song arrives
+/// inline rather than as an id, and the description inside it is a chat
+/// component, i.e. one tag.
+const JUKEBOX_SONG: Shape = Shape::Holder(&Shape::Tuple(&[
+    SOUND,    // soundEvent
+    S_NBT,    // description
+    S_FLOAT,  // lengthInSeconds
+    S_VARINT, // comparatorOutput
+]));
+
+/// `BeehiveBlockEntity.Occupant.STREAM_CODEC`.
+const BEE_OCCUPANT: Shape = Shape::Tuple(&[
+    TYPED_ENTITY_DATA, // entityData
+    S_VARINT,          // ticksInHive
+    S_VARINT,          // minTicksInHive
 ]);
 
 /// One row of the table: a component's registry name and the shape of its
@@ -395,11 +521,8 @@ pub static CODECS: &[ComponentCodec] = &[
         Shape::Tuple(&[Shape::List(&TOOL_RULE), S_FLOAT, S_VARINT, S_BOOL]),
     ),
     // `TypedEntityData.streamCodec(...)` — a type id then a compound tag.
-    c("minecraft:entity_data", Shape::Tuple(&[S_HOLDER_REG, S_NBT])),
-    c(
-        "minecraft:block_entity_data",
-        Shape::Tuple(&[S_HOLDER_REG, S_NBT]),
-    ),
+    c("minecraft:entity_data", TYPED_ENTITY_DATA),
+    c("minecraft:block_entity_data", TYPED_ENTITY_DATA),
     // `CustomData.STREAM_CODEC` is a bare compound tag.
     c("minecraft:bucket_entity_data", Shape::NbtTag),
     c(
@@ -433,6 +556,25 @@ pub static CODECS: &[ComponentCodec] = &[
         "minecraft:attribute_modifiers",
         Shape::List(&ATTRIBUTE_ENTRY),
     ),
+    // -- M52e: the last seven network-synchronised codecs --------------------
+    //
+    // With these the table covers **every** component 26.2 registers with a
+    // `.networkSynchronized(...)`. The fourteen names that were missing after
+    // M41 split exactly in half: these seven, and seven that a server can never
+    // send because they are `persistent`-only. That is a property the tests
+    // below assert against the decompiled register list rather than a count
+    // anyone has to keep in their head.
+    //
+    // `AdventureModePredicate.STREAM_CODEC` is `BlockPredicate.list()`, and the
+    // predicate reaches back into this table through `Shape::TypedComponent` —
+    // the only component whose codec is not a closed tree.
+    c("minecraft:can_place_on", Shape::List(&BLOCK_PREDICATE)),
+    c("minecraft:can_break", Shape::List(&BLOCK_PREDICATE)),
+    c("minecraft:equippable", EQUIPPABLE),
+    c("minecraft:blocks_attacks", BLOCKS_ATTACKS),
+    c("minecraft:kinetic_weapon", KINETIC_WEAPON),
+    c("minecraft:jukebox_playable", JUKEBOX_SONG),
+    c("minecraft:bees", Shape::List(&BEE_OCCUPANT)),
 ];
 
 /// A value the client actually reads out of a patch.
@@ -502,12 +644,29 @@ pub enum WalkOutcome {
     Stuck,
 }
 
-/// How deep nested item templates may go before the walk gives up.
+/// How many levels of **recursion** a walk may take before it gives up.
 ///
-/// A shulker box holds stacks that hold shulker boxes. Vanilla bounds this by
-/// its own rules; the wire does not, so a hostile server could nest until the
-/// stack overflowed. The limit reports [`WalkOutcome::Stuck`], which is the
-/// same fail-closed answer an unknown component gets.
+/// A shulker box holds stacks that hold shulker boxes, and a `can_place_on`
+/// predicate can match a block entity whose components include another
+/// `can_place_on`. Vanilla bounds neither by its own rules; the wire does not
+/// either, so a hostile server could nest until the stack overflowed. The limit
+/// reports [`WalkOutcome::Stuck`], which is the same fail-closed answer an
+/// unknown component gets.
+///
+/// **Only the recursive shapes count against it** — [`Shape::ItemStackTemplate`],
+/// [`Shape::TypedComponent`] and [`walk_patch_opaque`]. The static combinators
+/// deliberately pass `depth` through unchanged, because a [`Shape`] tree is a
+/// `const` and so cannot be self-referential: its depth is fixed at compile
+/// time and needs no runtime bound.
+///
+/// M41 charged every combinator, which was free only because nothing then was
+/// deep enough to notice. `can_place_on` is: five combinators get you to the
+/// [`Shape::TypedComponent`] inside its `DataComponentExactPredicate`, leaving
+/// three for whatever component that names — and `profile`, `potion_contents`,
+/// `written_book_content` and anything holding an `ItemStackTemplate` all need
+/// more. Under the old accounting a **legitimate** adventure predicate reported
+/// `Stuck`, which is not a safe default here: it is fail-*closed*, so it costs
+/// the rest of the packet rather than one field.
 pub const MAX_DEPTH: u32 = 8;
 
 /// Walk one value of the given shape, interpreting nothing.
@@ -563,7 +722,7 @@ pub fn walk(r: &mut PacketReader, shape: &Shape, depth: u32) -> Result<bool, ()>
                 // rather than skipping: the payload's length is unknown.
                 return Ok(false);
             };
-            return walk(r, v, depth + 1);
+            return walk(r, v, depth);
         }
         Shape::HolderSet => {
             // `VarInt.read(input) - 1`, and **zero is not an empty set** — it
@@ -583,18 +742,18 @@ pub fn walk(r: &mut PacketReader, shape: &Shape, depth: u32) -> Result<bool, ()>
         Shape::Holder(inline) => {
             // `id + 1`, and **0 means the value follows inline**.
             if r.varint().map_err(|_| ())? == 0 {
-                return walk(r, inline, depth + 1);
+                return walk(r, inline, depth);
             }
         }
         Shape::Optional(inner) => {
             if r.u8().map_err(|_| ())? != 0 {
-                return walk(r, inner, depth + 1);
+                return walk(r, inner, depth);
             }
         }
         Shape::List(inner) => {
             let n = bounded_count(r)?;
             for _ in 0..n {
-                if !walk(r, inner, depth + 1)? {
+                if !walk(r, inner, depth)? {
                     return Ok(false);
                 }
             }
@@ -602,14 +761,14 @@ pub fn walk(r: &mut PacketReader, shape: &Shape, depth: u32) -> Result<bool, ()>
         Shape::Map(k, v) => {
             let n = bounded_count(r)?;
             for _ in 0..n {
-                if !walk(r, k, depth + 1)? || !walk(r, v, depth + 1)? {
+                if !walk(r, k, depth)? || !walk(r, v, depth)? {
                     return Ok(false);
                 }
             }
         }
         Shape::Tuple(fields) => {
             for f in *fields {
-                if !walk(r, f, depth + 1)? {
+                if !walk(r, f, depth)? {
                     return Ok(false);
                 }
             }
@@ -617,7 +776,18 @@ pub fn walk(r: &mut PacketReader, shape: &Shape, depth: u32) -> Result<bool, ()>
         Shape::Either(left, right) => {
             // `ByteBufCodecs.either` writes **true for the left** alternative.
             let is_left = r.u8().map_err(|_| ())? != 0;
-            return walk(r, if is_left { left } else { right }, depth + 1);
+            return walk(r, if is_left { left } else { right }, depth);
+        }
+        Shape::TypedComponent => {
+            // The patch's own rule: a type id, then that component's value
+            // under its own codec. An id with no shape has no length either, so
+            // this is the same fail-closed stop `walk_patch_opaque` takes.
+            let ty = r.varint().map_err(|_| ())?;
+            let Some(inner) = shape_for_id(ty) else {
+                report_unwalkable(ty);
+                return Ok(false);
+            };
+            return walk(r, inner, depth + 1);
         }
         Shape::ItemStackTemplate => return walk_item_template(r, depth),
     }
@@ -743,4 +913,486 @@ pub fn report_unwalkable(id: i32) {
 /// configuration bug rather than a hostile server, so callers can check.
 pub fn shapes_installed() -> usize {
     SHAPES.with(|s| s.borrow().iter().filter(|v| v.is_some()).count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- wire writers -----------------------------------------------------
+    //
+    // Written here rather than reused from a producer, so a test asserts the
+    // shape against bytes laid out from the decompiled codec by hand. A round
+    // trip through a writer that shared this table's assumptions would agree
+    // with it however wrong both were.
+
+    fn varint(v: i32, out: &mut Vec<u8>) {
+        let mut n = v as u32;
+        loop {
+            let b = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(b);
+                return;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn string(s: &str, out: &mut Vec<u8>) {
+        varint(s.len() as i32, out);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    fn float(v: f32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    fn bool(v: bool, out: &mut Vec<u8>) {
+        out.push(v as u8);
+    }
+
+    /// The shortest valid network tag: an empty compound, `TAG_Compound` then
+    /// the `TAG_End` that closes it. `tagCodec` rejects a bare `TAG_End`, so
+    /// this is the floor rather than zero bytes.
+    fn tag(out: &mut Vec<u8>) {
+        out.extend_from_slice(&[0x0A, 0x00]);
+    }
+
+    fn none(out: &mut Vec<u8>) {
+        out.push(0);
+    }
+
+    /// `Optional` present — the caller writes the value after it.
+    fn some(out: &mut Vec<u8>) {
+        out.push(1);
+    }
+
+    /// `holderSet` in its id-list form: **`count + 1`**, then the raw ids. A
+    /// literal 0 would mean a tag name follows instead.
+    fn holder_set(ids: &[i32], out: &mut Vec<u8>) {
+        varint(ids.len() as i32 + 1, out);
+        for id in ids {
+            varint(*id, out);
+        }
+    }
+
+    /// A registry holder by id — `id + 1`, so never 0.
+    fn holder_id(id: i32, out: &mut Vec<u8>) {
+        varint(id + 1, out);
+    }
+
+    /// A `SoundEvent` holder by id.
+    fn sound_id(out: &mut Vec<u8>) {
+        holder_id(12, out);
+    }
+
+    /// Walk `bytes` as `shape`, reporting how many bytes were consumed.
+    ///
+    /// `None` covers both failure modes on purpose: a truncated body and a
+    /// [`WalkOutcome::Stuck`] are the same answer to the only question a caller
+    /// has, which is whether the reader may keep going.
+    fn walked(shape: &Shape, bytes: &[u8]) -> Option<usize> {
+        let mut r = PacketReader::new(bytes);
+        match walk(&mut r, shape, 0) {
+            Ok(true) => Some(r.offset()),
+            _ => None,
+        }
+    }
+
+    /// The shape a component name maps to, straight out of [`CODECS`].
+    fn shape(name: &str) -> &'static Shape {
+        &CODECS
+            .iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| panic!("no codec row for {name}"))
+            .shape
+    }
+
+    /// Ids for the handful of components the nesting tests reach through
+    /// [`Shape::TypedComponent`]. Arbitrary, because the wire's numbers are the
+    /// server's — what matters is that the table is keyed by them.
+    const DAMAGE_ID: i32 = 3;
+    const PROFILE_ID: i32 = 71;
+    const CAN_PLACE_ON_ID: i32 = 13;
+    /// An id no registry can hold, so nothing can ever give it a shape. A real
+    /// but merely-uncovered id would silently stop testing this property the
+    /// day its codec landed — which is how three `item_stack` fixtures rotted
+    /// in M41 and M43.
+    const NO_SUCH_COMPONENT: i32 = i32::MAX;
+
+    fn install_test_shapes() {
+        let ids: std::collections::HashMap<String, i32> = [
+            ("minecraft:damage", DAMAGE_ID),
+            ("minecraft:profile", PROFILE_ID),
+            ("minecraft:can_place_on", CAN_PLACE_ON_ID),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        install_shapes(&ids);
+    }
+
+    // ---- coverage ---------------------------------------------------------
+
+    /// The seven components `DataComponents` registers with **no**
+    /// `.networkSynchronized(...)` at all: `persistent`-only, so a server has
+    /// no way to put one in a patch and the walk can never meet one.
+    ///
+    /// They are listed rather than counted so that a version which starts
+    /// syncing one of them fails here — as a missing codec, which is the
+    /// diagnosable failure — instead of at a stack that quietly vanishes.
+    const NEVER_SYNCHRONISED: &[&str] = &[
+        "minecraft:custom_data",
+        "minecraft:intangible_projectile",
+        "minecraft:map_decorations",
+        "minecraft:debug_stick_state",
+        "minecraft:recipes",
+        "minecraft:lock",
+        "minecraft:container_loot",
+    ];
+
+    /// 26.2 registers 111 components; 104 of them carry a stream codec.
+    #[test]
+    fn the_table_covers_every_network_synchronised_component() {
+        assert_eq!(CODECS.len(), 104);
+        for name in NEVER_SYNCHRONISED {
+            assert!(
+                !CODECS.iter().any(|row| row.name == *name),
+                "{name} has no stream codec — a shape for it could never be reached"
+            );
+        }
+        assert_eq!(CODECS.len() + NEVER_SYNCHRONISED.len(), 111);
+    }
+
+    /// Two rows with the same name would let `install_shapes` pick either, and
+    /// the loser would be a codec nobody could tell was dead.
+    #[test]
+    fn no_component_appears_in_the_table_twice() {
+        let mut names: Vec<&str> = CODECS.iter().map(|row| row.name).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before);
+    }
+
+    // ---- can_place_on / can_break -----------------------------------------
+
+    /// blocks / properties / nbt absent, both component halves empty.
+    fn empty_block_predicate(out: &mut Vec<u8>) {
+        none(out); // blocks
+        none(out); // properties
+        none(out); // nbt
+        varint(0, out); // components.exact
+        varint(0, out); // components.partial
+    }
+
+    #[test]
+    fn an_adventure_predicate_walks_its_whole_body_and_no_more() {
+        let mut b = Vec::new();
+        varint(2, &mut b); // two predicates
+        empty_block_predicate(&mut b);
+        empty_block_predicate(&mut b);
+        let n = b.len();
+        b.push(0xEE); // a sentinel the walk must not reach
+        assert_eq!(walked(shape("minecraft:can_place_on"), &b), Some(n));
+        // `can_break` is the same codec, and shares the shape rather than
+        // repeating it — so a fix to one cannot miss the other.
+        assert_eq!(walked(shape("minecraft:can_break"), &b), Some(n));
+    }
+
+    #[test]
+    fn a_fully_populated_block_predicate_walks_every_field() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        some(&mut b);
+        holder_set(&[5, 9], &mut b); // blocks
+        some(&mut b);
+        varint(1, &mut b); // one property matcher
+        string("facing", &mut b);
+        bool(true, &mut b); // ExactMatcher — the LEFT branch
+        string("north", &mut b);
+        some(&mut b);
+        tag(&mut b); // nbt
+        varint(1, &mut b); // components.exact
+        varint(DAMAGE_ID, &mut b);
+        varint(7, &mut b); // damage, a bare var-int
+        varint(1, &mut b); // components.partial
+        bool(false, &mut b); // the DATA_COMPONENT_TYPE branch
+        varint(DAMAGE_ID, &mut b);
+        tag(&mut b);
+        let n = b.len();
+        b.push(0xEE);
+        assert_eq!(walked(shape("minecraft:can_place_on"), &b), Some(n));
+    }
+
+    /// The two `ValueMatcher` branches are different lengths, so reading the
+    /// flag backwards does not fail — it desynchronises. This pins the
+    /// orientation by showing the same bytes consume differently each way.
+    #[test]
+    fn a_ranged_property_matcher_is_the_false_branch_of_the_either() {
+        let ranged = |flag: bool| {
+            let mut b = Vec::new();
+            varint(1, &mut b);
+            none(&mut b); // blocks
+            some(&mut b);
+            varint(1, &mut b);
+            string("age", &mut b);
+            bool(flag, &mut b);
+            some(&mut b);
+            string("2", &mut b); // min
+            none(&mut b); // max
+            none(&mut b); // nbt
+            varint(0, &mut b);
+            varint(0, &mut b);
+            b
+        };
+        let right = ranged(false);
+        assert_eq!(
+            walked(shape("minecraft:can_place_on"), &right),
+            Some(right.len())
+        );
+        // Flag flipped: the min/max pair is now read as one string, which stops
+        // four bytes short and leaves the rest to be parsed as garbage.
+        let wrong = ranged(true);
+        let consumed = walked(shape("minecraft:can_place_on"), &wrong);
+        assert_ne!(consumed, Some(wrong.len()));
+    }
+
+    /// A `DataComponentExactPredicate` can name any component, so it inherits
+    /// the patch's fail-closed rule rather than skipping past an unknown one.
+    #[test]
+    fn an_unwalkable_component_inside_a_block_predicate_stops_the_walk() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        none(&mut b);
+        none(&mut b);
+        none(&mut b);
+        varint(1, &mut b); // components.exact
+        varint(NO_SUCH_COMPONENT, &mut b);
+        b.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        varint(0, &mut b);
+        assert_eq!(walked(shape("minecraft:can_place_on"), &b), None);
+    }
+
+    /// The reason [`MAX_DEPTH`] had to stop counting static shape nesting.
+    ///
+    /// The profile's **property list is deliberately non-empty**: an empty one
+    /// never enters its element shape, so it stops one level short of the limit
+    /// and this test passed under the old accounting too — which is how the
+    /// first version of it failed to test anything at all.
+    #[test]
+    fn a_deeply_nested_component_inside_a_predicate_still_walks() {
+        install_test_shapes();
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        none(&mut b);
+        none(&mut b);
+        none(&mut b);
+        varint(1, &mut b); // components.exact
+        varint(PROFILE_ID, &mut b);
+        bool(true, &mut b); // either → the full GameProfile
+        b.extend_from_slice(&[0u8; 16]); // uuid
+        string("lewlone", &mut b);
+        varint(1, &mut b); // properties
+        string("textures", &mut b);
+        string("eyJ0", &mut b);
+        none(&mut b); // signature
+        none(&mut b); // the four skin-patch optionals
+        none(&mut b);
+        none(&mut b);
+        none(&mut b);
+        varint(0, &mut b); // components.partial
+        assert_eq!(walked(shape("minecraft:can_place_on"), &b), Some(b.len()));
+    }
+
+    /// ...and the budget still bites where it is meant to. `can_place_on` can
+    /// name itself, which is unbounded recursion the wire does not limit.
+    #[test]
+    fn the_recursion_limit_still_stops_a_self_nesting_predicate() {
+        install_test_shapes();
+        fn nest(levels: u32) -> Vec<u8> {
+            let mut b = Vec::new();
+            varint(1, &mut b); // one predicate
+            none(&mut b);
+            none(&mut b);
+            none(&mut b);
+            if levels == 0 {
+                varint(0, &mut b); // exact: stop here
+            } else {
+                varint(1, &mut b);
+                varint(CAN_PLACE_ON_ID, &mut b);
+                b.extend_from_slice(&nest(levels - 1));
+            }
+            varint(0, &mut b); // partial
+            b
+        }
+        let shallow = nest(7);
+        assert_eq!(
+            walked(shape("minecraft:can_place_on"), &shallow),
+            Some(shallow.len())
+        );
+        assert_eq!(walked(shape("minecraft:can_place_on"), &nest(40)), None);
+    }
+
+    // ---- the six flat records ---------------------------------------------
+
+    #[test]
+    fn equippable_walks_all_eleven_fields() {
+        let mut b = Vec::new();
+        varint(2, &mut b); // slot
+        sound_id(&mut b); // equipSound
+        some(&mut b);
+        string("minecraft:iron", &mut b); // assetId
+        none(&mut b); // cameraOverlay
+        some(&mut b);
+        holder_set(&[1, 2, 3], &mut b); // allowedEntities
+        bool(true, &mut b); // dispensable
+        bool(true, &mut b); // swappable
+        bool(false, &mut b); // damageOnHurt
+        bool(false, &mut b); // equipOnInteract
+        bool(true, &mut b); // canBeSheared
+        sound_id(&mut b); // shearingSound
+        let n = b.len();
+        b.push(0xEE);
+        assert_eq!(walked(shape("minecraft:equippable"), &b), Some(n));
+    }
+
+    /// A sound holder with id 0 means the `SoundEvent` follows inline, and an
+    /// armour piece whose equip sound is a datapack entry sends exactly that.
+    #[test]
+    fn an_inline_sound_holder_is_read_rather_than_treated_as_an_id() {
+        let mut b = Vec::new();
+        varint(0, &mut b); // slot
+        varint(0, &mut b); // equipSound — 0 = inline
+        string("ewo:velvet", &mut b);
+        some(&mut b);
+        float(16.0, &mut b); // fixedRange
+        none(&mut b); // assetId
+        none(&mut b); // cameraOverlay
+        none(&mut b); // allowedEntities
+        for _ in 0..5 {
+            bool(true, &mut b);
+        }
+        sound_id(&mut b);
+        assert_eq!(walked(shape("minecraft:equippable"), &b), Some(b.len()));
+    }
+
+    #[test]
+    fn blocks_attacks_walks_its_reductions_and_both_optional_sounds() {
+        let mut b = Vec::new();
+        float(0.25, &mut b); // blockDelaySeconds
+        float(1.0, &mut b); // disableCooldownScale
+        varint(2, &mut b); // damageReductions
+        float(90.0, &mut b);
+        none(&mut b); // type
+        float(0.0, &mut b);
+        float(1.0, &mut b);
+        float(45.0, &mut b);
+        some(&mut b);
+        holder_set(&[4], &mut b); // type
+        float(2.0, &mut b);
+        float(0.5, &mut b);
+        float(1.0, &mut b); // itemDamage.threshold
+        float(0.0, &mut b); // itemDamage.base
+        float(1.0, &mut b); // itemDamage.factor
+        some(&mut b);
+        holder_set(&[7, 8], &mut b); // bypassedBy
+        some(&mut b);
+        sound_id(&mut b); // blockSound
+        none(&mut b); // disableSound
+        let n = b.len();
+        b.push(0xEE);
+        assert_eq!(walked(shape("minecraft:blocks_attacks"), &b), Some(n));
+    }
+
+    /// The three conditions are consecutive optionals over the same nine-byte
+    /// body, so a miscount inside the run reads one condition's floats as the
+    /// next one's presence flag.
+    #[test]
+    fn kinetic_weapon_walks_each_of_its_three_optional_conditions() {
+        let condition = |out: &mut Vec<u8>| {
+            some(out);
+            varint(20, out);
+            float(1.5, out);
+            float(0.5, out);
+        };
+        for present in [[true, true, true], [false, true, false], [false; 3]] {
+            let mut b = Vec::new();
+            varint(10, &mut b); // contactCooldownTicks
+            varint(0, &mut b); // delayTicks
+            for p in present {
+                if p {
+                    condition(&mut b);
+                } else {
+                    none(&mut b);
+                }
+            }
+            float(0.0, &mut b); // forwardMovement
+            float(1.0, &mut b); // damageMultiplier
+            none(&mut b); // sound
+            some(&mut b);
+            sound_id(&mut b); // hitSound
+            let n = b.len();
+            b.push(0xEE);
+            assert_eq!(
+                walked(shape("minecraft:kinetic_weapon"), &b),
+                Some(n),
+                "conditions {present:?}"
+            );
+        }
+    }
+
+    /// `JukeboxPlayable` has no wrapper of its own — it *is* the song holder —
+    /// so a datapack song arrives inline, description tag and all.
+    #[test]
+    fn jukebox_playable_reads_an_inline_song_as_well_as_a_registry_id() {
+        let mut by_id = Vec::new();
+        holder_id(31, &mut by_id);
+        assert_eq!(
+            walked(shape("minecraft:jukebox_playable"), &by_id),
+            Some(by_id.len())
+        );
+
+        let mut inline = Vec::new();
+        varint(0, &mut inline); // 0 = the song follows
+        sound_id(&mut inline); // soundEvent
+        tag(&mut inline); // description, a chat component
+        float(180.0, &mut inline); // lengthInSeconds
+        varint(15, &mut inline); // comparatorOutput
+        let n = inline.len();
+        inline.push(0xEE);
+        assert_eq!(walked(shape("minecraft:jukebox_playable"), &inline), Some(n));
+    }
+
+    #[test]
+    fn bees_walks_one_occupant_per_entry() {
+        let mut b = Vec::new();
+        varint(3, &mut b);
+        for ticks in [0, 40, 600] {
+            holder_id(5, &mut b); // entityData.type — a raw registry id
+            tag(&mut b); // entityData.tag
+            varint(ticks, &mut b); // ticksInHive
+            varint(600, &mut b); // minTicksInHive
+        }
+        let n = b.len();
+        b.push(0xEE);
+        assert_eq!(walked(shape("minecraft:bees"), &b), Some(n));
+    }
+
+    /// `TypedEntityData`'s type is `ByteBufCodecs.registry` — a **raw** id, not
+    /// `holder`'s `id + 1`. Written raw, a bee's entity type of 0 is one byte
+    /// and everything after it still lines up.
+    #[test]
+    fn a_bee_entity_type_is_a_raw_registry_id_not_an_offset_holder() {
+        let mut b = Vec::new();
+        varint(1, &mut b);
+        varint(0, &mut b); // type id 0, written raw
+        tag(&mut b);
+        varint(0, &mut b);
+        varint(600, &mut b);
+        assert_eq!(walked(shape("minecraft:bees"), &b), Some(b.len()));
+    }
 }
