@@ -31,6 +31,7 @@ pub mod item_stack;
 pub mod metadata;
 pub mod motion;
 pub mod play;
+pub mod player_rotation;
 pub mod record;
 pub mod scoreboard;
 pub mod skins;
@@ -2396,9 +2397,10 @@ pub fn route_view_area(
     true
 }
 
-/// The clientbound-play dispatch seam for M74's three client switches:
-/// `change_difficulty`, `set_camera` and `container_close`. Returns whether
-/// the id matched — **not** whether the body decoded.
+/// The clientbound-play dispatch seam for the four client switches: M74's
+/// `change_difficulty`, `set_camera` and `container_close`, plus M76's
+/// `set_default_spawn_position`. Returns whether the id matched — **not**
+/// whether the body decoded.
 ///
 /// `set_camera`'s target is resolved against `entities` **or** `local_player`.
 /// Both are needed: vanilla resolves with `level.getEntity(id)` and its level
@@ -2419,6 +2421,7 @@ pub fn route_client_state(
         change_difficulty: ids.cb_play_change_difficulty,
         set_camera: ids.cb_play_set_camera,
         container_close: ids.cb_play_container_close,
+        set_default_spawn_position: ids.cb_play_set_default_spawn_position,
     };
     let Some(kind) = client_state::kind_for_id(id, table) else {
         return false;

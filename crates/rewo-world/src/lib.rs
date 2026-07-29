@@ -28,6 +28,7 @@ pub mod particles;
 pub mod physics;
 pub mod raycast;
 pub mod riding;
+pub mod rotation;
 pub mod wavy_cape;
 pub mod weather;
 

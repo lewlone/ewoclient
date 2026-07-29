@@ -27,14 +27,16 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 72 of them. 69
-   are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
-   `cb_play_*` field set and the dispatch chain agree exactly, which is a real
-   (and slightly surprising) property of this codebase — see §1.
-2. **The 69 gaps split 15 / 20 / 23 / 11** across pure state, needs-rendering,
-   needs-a-missing-subsystem, and not-applicable. The 15 pure-state ones are
-   decodable and headlessly gateable *today*, with no renderer and no design
-   decision — the same test the M52–M74 batches were chosen by.
+1. **141 clientbound-play packets. §2 has the live counts** — the machine check
+   recomputes them, so a number quoted in prose here goes stale and a number in
+   §2 cannot. No packet is resolved-but-ignored: the `cb_play_*` field set and
+   the dispatch chain agree exactly, which is a real (and slightly surprising)
+   property of this codebase — see §1.
+2. **The gaps carry one class each** — pure state, needs-rendering,
+   needs-a-missing-subsystem, not-applicable — and §2 counts them. The
+   pure-state ones are decodable and headlessly gateable *today*, with no
+   renderer and no design decision: the same test the M52–M76 batches were
+   chosen by.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -46,10 +48,12 @@ impossible to repeat: every clientbound-play packet in the report appears in
    applies everything between two delimiters in **one** tick; Rewo applies each
    packet as it drains, so an `add_entity` and its `set_entity_data` can land
    a frame apart and a mob renders for one frame with default metadata. §3.
-5. **Rewo honours a positional teleport and silently ignores a rotational
-   one.** `player_position` (72) is handled; `player_rotation` (73) and
-   `player_look_at` (71) are not. That asymmetry is the giveaway — a server
-   turning your head with `/teleport … facing` does nothing at all. §3.
+5. **The positional / rotational teleport asymmetry is closed (M76).**
+   `player_position` (72) had worked since M3 while `player_rotation` (73) and
+   `player_look_at` (71) were never resolved, so a server turning your head did
+   nothing at all — and the working half misdirected the diagnosis. All three
+   are handled; §3 keeps the entry as the worked example of a gap whose failure
+   mode is *silence in one direction only*.
 6. **`hurt_animation` (42) is the input `M52a`'s vacuous `no_damage_tilt`
    module has nothing to disable.** The Velvet-batch note "to port the disable
    you must first build the thing being disabled" has a packet behind it.
@@ -157,19 +161,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **73** |
+| Resolved **and** consumed | **76** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **68** |
+| Not resolved at all | **65** |
 | **Total clientbound-play** | **141** |
 
-The 68 gaps, by class:
+The 65 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
-| **A** pure state, no rendering | **14** | 21% |
-| **B** needs rendering | **20** | 29% |
-| **C** needs a subsystem Rewo lacks | **23** | 34% |
-| **D** not applicable | **11** | 16% |
+| **A** pure state, no rendering | **11** | 17% |
+| **B** needs rendering | **20** | 31% |
+| **C** needs a subsystem Rewo lacks | **23** | 35% |
+| **D** not applicable | **11** | 17% |
 
 M67 audited 56 / 0 / 85 with class A at 31. Sixteen packets separate that
 published 56 from this 72, and **ten of them had already landed when M67
@@ -203,24 +207,29 @@ That is indistinguishable from a renderer bug, which is what makes it worth
 ranking first: every other gap in this section announces itself as *nothing
 happening*, and this one announces itself as the wrong subsystem.
 
-### 2. `player_rotation` (73) and `player_look_at` (71) — the asymmetry
+### 2. `player_rotation` (73) and `player_look_at` (71) — **closed, M76**
 
-`player_position` (72) is handled: Rewo accepts a server teleport, applies it,
-and acknowledges it. Its rotational twin is not resolved at all.
+Kept because the *shape* of the failure is the lesson, and because two of the
+three things this section said about them were wrong.
 
-- `handleRotatePlayer` sets yaw and pitch with per-axis **relative** flags, the
-  same `RelativeMovement` set the positional teleport uses.
-- `handlePlayerLookAt` computes a rotation from a target point — `/teleport …
-  facing <x y z>` and `facing entity <e>`.
+`player_position` (72) was handled and its rotational twin was not, so a server
+that moved your body worked and one that turned your head did nothing. The
+failure was silent and one-sided, and the working half is what made it hard to
+find: the natural diagnosis is "teleports work, so it isn't the teleport path".
 
-The failure is silent and one-sided: a server that turns your head does
-nothing, while one that moves your body works. A map or minigame that opens by
-pointing you at something just doesn't. And because the positional half works,
-the natural diagnosis is "teleports work, so it isn't the teleport path".
+**What this section got wrong.** It said `handleRotatePlayer` sets yaw and pitch
+"with per-axis relative flags, the same `RelativeMovement` set the positional
+teleport uses". The *semantics* are shared — `handleRotatePlayer` builds a
+`Set<Relative>` and calls the same `calculateAbsolute` — but the **wire layout
+is not**: `ClientboundPlayerRotationPacket` is `FLOAT, BOOL, FLOAT, BOOL`,
+ten fixed bytes with each flag *after* the float it qualifies, and carries no
+packed mask at all. A reader written from this paragraph would have consumed
+the yaw's four bytes as the mask. The handler is also named `handleLookAt`, not
+`handlePlayerLookAt`.
 
-Both are class A — they write two floats onto the local player. Neither was
-implemented in M74 deliberately: they write `rewo_world::physics::PlayerState`,
-which a concurrent milestone owns while it lands flight and no-clip (§4.1).
+Both were class A and both were left alone by M74 because they write
+`rewo_world::physics::PlayerState`, which M75 owned while it landed flight and
+no-clip (§4.1). M75 landed; M76 took them.
 
 ### 3. `disguised_chat` (33) — chat that is simply never shown
 
@@ -281,9 +290,9 @@ not start you flying). Rewo has **none of those concepts**. The work is:
    `ids.rs`. The server is authoritative about `mayfly`, and the client must
    send its flying state back or the server rubber-bands it.
 
-**This is the work a concurrent milestone is doing** (§0.8), which is why M74
-left `player_rotation` and `player_look_at` alone despite ranking them second
-in §3: they write the same `PlayerState`.
+**All four shipped in M75**, which is why M74 left `player_rotation` and
+`player_look_at` alone despite ranking them second in §3: they write the same
+`PlayerState`. **M76 took them once M75 landed.**
 
 Two other authoritative sources also feed this state and are not wired: the
 **login packet** carries `showDeathScreen` and `doLimitedCrafting` (the
@@ -373,9 +382,9 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 68 | `player_combat_kill` | absent | **B** | The death screen. |
 | 69 | `player_info_remove` | handled | `req!` → `cb_play_player_info_remove` | |
 | 70 | `player_info_update` | handled | `req!` → `cb_play_player_info_update` | §4 partial — display name and chat session are walked and discarded. |
-| 71 | `player_look_at` | absent | **A** | Forces the local player's rotation to face a point (`/teleport … facing`). §3, and it writes the `PlayerState` §4.1 owns. |
-| 72 | `player_position` | handled | `req!` → `cb_play_position` | The positional teleport. Its rotational twin (73) is not handled — §3. |
-| 73 | `player_rotation` | absent | **A** | Sets the local player's yaw/pitch with per-axis relative flags. §3, and it writes the `PlayerState` §4.1 owns. |
+| 71 | `player_look_at` | handled | `req!` → `cb_play_player_look_at` | **M76.** `/teleport … facing`. An anchor `readEnum`, three doubles, a flag, and **only then** a conditional entity + anchor pair. An unresolvable entity falls back to the packet's own coordinates, which are the sender's snapshot of `toAnchor.apply(entity)` — not a placeholder. |
+| 72 | `player_position` | handled | `req!` → `cb_play_position` | The positional teleport. Its rotational twin (73) landed in **M76**, closing §3's asymmetry. |
+| 73 | `player_rotation` | handled | `req!` → `cb_play_player_rotation` | **M76.** Ten fixed bytes: `FLOAT yRot, BOOL relativeY, FLOAT xRot, BOOL relativeX` — **two interleaved booleans, not** the packed `Relative` mask 72 carries. It is the only one of the two that answers the server. |
 | 74 | `recipe_book_add` | absent | **C** | Recipe book. |
 | 75 | `recipe_book_remove` | absent | **C** | Recipe book. |
 | 76 | `recipe_book_settings` | absent | **C** | Recipe book. |
@@ -399,7 +408,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 94 | `set_chunk_cache_center` | handled | `req!` → `cb_play_set_chunk_cache_center` | M67. |
 | 95 | `set_chunk_cache_radius` | handled | `req!` → `cb_play_set_chunk_cache_radius` | M67. |
 | 96 | `set_cursor_item` | handled | `req!` → `cb_play_set_cursor_item` | **M69.** The server's authoritative carried stack — M35's predicted cursor had no other correction path short of a full resync. |
-| 97 | `set_default_spawn_position` | absent | **A** | `LevelData.RespawnData` — the compass target and respawn point. |
+| 97 | `set_default_spawn_position` | handled | `req!` → `cb_play_set_default_spawn_position` | **M76.** `LevelData.RespawnData` = a dimension **identifier string** + a packed `BlockPos` long + two floats. Stored verbatim: `STREAM_CODEC` does not apply `RespawnData.of`'s wrap/clamp. A dimension change **resets** it to `(8, 64, 8)` of the new level — the opposite of the difficulty beside it, which `handleRespawn` copies across. |
 | 98 | `set_display_objective` | handled | `req!` → `cb_play_set_display_objective` | M65. |
 | 99 | `set_entity_data` | handled | `req!` → `cb_play_set_entity_data` | |
 | 100 | `set_entity_link` | absent | **A** | Leash holder id. Rendering the rope is separate (B). |
@@ -634,7 +643,8 @@ back at the end of a spectate.
 
 **Excluded on purpose:** `player_rotation` (73) and `player_look_at` (71),
 despite ranking second in §3 — they write `rewo_world::physics::PlayerState`,
-which the concurrent §4.1 milestone owns. `TickRateManager` is transcribed in
+which the concurrent §4.1 milestone owns. (Both landed in **M76**, after M75
+finished with that state.) `TickRateManager` is transcribed in
 full, including `tick()`, but the session's 20 Hz loop does **not** consult it:
 gating the loop would retime every existing harness and wants its own live
 gate.

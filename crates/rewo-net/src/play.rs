@@ -1821,6 +1821,11 @@ impl PlaySession {
             }
         } else if id == ids.cb_play_position {
             self.apply_teleport(body)?;
+        } else if id == ids.cb_play_player_rotation || id == ids.cb_play_player_look_at {
+            // M76. An arm of its own rather than a `route_*` tail call because
+            // one of the two answers the server immediately and the other does
+            // not — see `apply_player_rotation`.
+            self.apply_player_rotation(id, body)?;
         } else if id == ids.cb_play_chunk_batch_start {
             // M74. Empty body — `handleChunkBatchStart` is one call, and it is
             // the half that makes the reply below adaptive instead of a
@@ -2585,6 +2590,64 @@ impl PlaySession {
         Ok(())
     }
 
+    /// `handleRotatePlayer` (73) and `handleLookAt` (71) — M76.
+    ///
+    /// The two write the same two floats through the same setters and differ in
+    /// exactly one observable way: `handleRotatePlayer` ends with
+    /// `send(new ServerboundMovePlayerPacket.Rot(getYRot(), getXRot(), false,
+    /// false))` and `handleLookAt` sends nothing, leaving the next tick's
+    /// ordinary movement report to carry the new angles. That is why this is a
+    /// dispatch arm rather than a `route_*` tail call: the seam owns the state
+    /// change so a gate can drive it, and the socket half lives here.
+    ///
+    /// Unlike `handleMovePlayer`, **neither has a passenger guard**. The
+    /// positional teleport skips its whole body for a rider (`if
+    /// (!player.isPassenger())`); a rotational one applies while mounted.
+    fn apply_player_rotation(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
+        // `Anchor::Eyes.apply(entity)` needs that entity's `getEyeHeight()`,
+        // which is `EntityDimensions.eyeHeight` — a per-type field Rewo does
+        // not model. Resolving only the `Feet` anchor is not a shortcut: an
+        // unresolved target falls back to the packet's own coordinates, and
+        // those are the server's snapshot of `toAnchor.apply(entity)` for this
+        // very entity, so the eye case degrades to *staleness* rather than to a
+        // wrong point. See `PlayerLookAt::position`.
+        let entities = &self.world.entities;
+        let resolve = |target: i32, anchor: crate::player_rotation::Anchor| match anchor {
+            crate::player_rotation::Anchor::Feet => {
+                entities.get(target).map(|e| [e.x, e.y, e.z])
+            }
+            crate::player_rotation::Anchor::Eyes => None,
+        };
+        let route = crate::player_rotation::route_player_rotation(
+            id,
+            body,
+            &self.ids,
+            crate::player_rotation::LocalRotation {
+                pos: [self.player.x, self.player.y, self.player.z],
+                eye_height: rewo_world::physics::EYE_HEIGHT,
+                yaw: &mut self.player.yaw,
+                pitch: &mut self.player.pitch,
+            },
+            resolve,
+        );
+        if route == crate::player_rotation::RotationRoute::Rotation {
+            // Unconditional in vanilla — it is not gated on the rotation having
+            // changed, and it does not wait for the tick.
+            let mut p = PacketWriter::packet(self.ids.sb_play_move_rot);
+            p.f32(self.player.yaw)
+                .f32(self.player.pitch)
+                // `Rot(yRot, xRot, onGround, horizontalCollision)` — the two
+                // literal `false`s in `handleRotatePlayer`'s call, not the
+                // player's live flags.
+                .u8(0);
+            self.send(p)?;
+            // The report just went out, so the tick loop must not send a
+            // second one for the same change.
+            self.last_rot = (self.player.yaw, self.player.pitch);
+        }
+        Ok(())
+    }
+
     /// The vehicle the local player is directly riding, if any (M68).
     pub fn local_vehicle(&self) -> Option<i32> {
         self.player_id.and_then(|id| self.mounts.vehicle_of(id))
@@ -2922,6 +2985,12 @@ impl PlaySession {
         // only the *mid-session* change. This is the join-time truth.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
+        // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
+        // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
+        // `RespawnData.DEFAULT`, which no client ever holds. The server's
+        // `set_default_spawn_position` normally overwrites it moments later;
+        // this is what a client believes until it arrives.
+        self.client_state.enter_level(&spawn.dimension);
         self.biome_zoom_seed = Some(spawn.seed);
         self.sea_level = Some(spawn.sea_level);
         self.build_biome_context(&active.def, spawn.seed);
@@ -2983,6 +3052,17 @@ impl PlaySession {
             transitions: &mut self.dimension_transitions,
         }
         .apply_respawn(&self.dim_types, spawn);
+
+        // M76. `handleRespawn` only builds a replacement `ClientLevelData` /
+        // `ClientLevel` when the dimension actually changed, so this is the
+        // dimension-changing path *only* — a death in place keeps the level
+        // data and with it the world spawn. The difficulty sitting on the same
+        // struct behaves the opposite way round: `handleRespawn` copies it
+        // across explicitly, precisely because a fresh `ClientLevelData` would
+        // otherwise lose it. See `client_state`.
+        if changed {
+            self.client_state.enter_level(&spawn.dimension);
+        }
 
         // The local player is recreated on both paths — vanilla's `newPlayer`
         // is built before the `dimensionChanged` branch is over with.

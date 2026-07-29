@@ -11456,3 +11456,208 @@ arithmetic is pinned against the decompile under a synthetic clock; the effect
 on a real connection is unobserved. The same applies to the two things wired
 into the app — `set_camera` reaching `LabelViewer` and `container_close`
 closing the inventory screen are unit-true and un-eyeballed.
+
+### M76 — the rotation the server writes, and the world spawn (2026-07-29)
+
+Three class-A packets that write local player and level state:
+`player_rotation` (73), `player_look_at` (71), `set_default_spawn_position`
+(97). M74 ranked the first two second in `REWO_PACKET_COVERAGE.md` §3 and
+deliberately did not take them, because they write the `PlayerState` that M75
+owned while it landed flight; M75 landed, so they were free.
+
+**The brief for this milestone was wrong about the headline fact, and so was
+the coverage document.** Both said `player_rotation` "carries per-axis relative
+bits" and pointed at `ClientboundPlayerPositionPacket`'s `RelativeMovement` set
+as the pattern to follow. It does not. The packet is
+
+```java
+record ClientboundPlayerRotationPacket(float yRot, boolean relativeY,
+                                       float xRot, boolean relativeX)
+```
+
+a four-field `StreamCodec.composite`: ten fixed bytes with each flag as a plain
+`ByteBufCodecs.BOOL` sitting **after** the float it qualifies. There is no
+`Relative.SET_STREAM_CODEC` in the packet at all. A reader written from the
+description would have consumed the yaw's four bytes as the mask and then read
+float payload as booleans — and it would have *decoded every packet without
+error*, because the arity happens to work out.
+
+The `Set<Relative>` is real, one layer up: `handleRotatePlayer` calls
+`Relative.rotation(relativeY, relativeX)` to build it and hands it to
+`PositionMoveRotation.calculateAbsolute`, the same function the positional
+teleport uses. **So the two packets share their semantics and not their
+layout**, which is the specific way the guess was wrong — checking that the
+*meaning* matched would have confirmed it.
+
+#### What the rotation packets actually do
+
+`handleRotatePlayer` reduces, once the position and delta clauses of
+`calculateAbsolute` are recognised as identities on its own call, to:
+
+```
+yaw   = (relativeY ? yaw : 0) + yRot                       -> setYRot
+pitch = clamp((relativeX ? pitch : 0) + xRot, -90, 90)     -> setXRot
+```
+
+Four things there invert the obvious guess.
+
+**The clamp is on the sum, not the step**, and it is applied twice — once in
+`calculateAbsolute` and again inside `Entity.setXRot`, whose form is
+`Math.clamp(xRot % 360.0F, -90, 90)`. The second is idempotent for this packet.
+
+**The yaw gets neither a clamp nor a wrap.** `setYRot` is a bare assignment
+behind a finiteness guard, so a server sending 720 leaves the player at 720 and
+that value goes back out on the wire unwrapped. Wrapping it looks like tidying
+and is a divergence.
+
+**A non-finite rotation is discarded, not clamped.** Both setters test
+`Float.isFinite` and, when it fails, log and return *without writing*. That is
+reachable, because `Mth.clamp(NaN, -90, 90)` is NaN — its first test is
+`value < min`, false for NaN, so it falls through to `Math.min`. A NaN pitch
+therefore survives `calculateAbsolute` and leaves the previous pitch standing,
+while the yaw half of the same packet still applies.
+
+**Only one of the two answers the server.** `handleRotatePlayer` ends with an
+unconditional `ServerboundMovePlayerPacket.Rot(yRot, xRot, false, false)`,
+before any tick and whether or not the rotation changed; `handleLookAt` sends
+nothing and lets the next movement report carry it. `RotationRoute` exists to
+carry that distinction from the seam to the session. Neither has
+`handleMovePlayer`'s `if (!player.isPassenger())` guard, so a rotational
+teleport applies while mounted where a positional one does not.
+
+#### `Mth.atan2`, not `Math.atan2`
+
+`Entity.lookAt` calls vanilla's own `atan2` — a 257-entry `asin`/`cos` table
+plus a Quake-style `fastInvSqrt` and a cubic correction, built at class-init
+from `Math.asin`/`Math.cos`. It is transcribed rather than substituted, for
+the reason M12 recorded for `Mth.sin`: the platform function agrees to eyeball
+precision everywhere and is not what vanilla evaluated. Measured divergence
+over a 3,600-point sweep: **7.0e-6 rad**, which is 4e-4 degrees — invisible in
+a render and not zero, so the gate's witness is **two-sided**. It asserts the
+transcription stays close to the platform (or it is simply broken) *and* that
+it does not equal it (or someone quietly swapped the platform function back
+in). A one-sided witness here would have passed on the substitution.
+
+`libm` supplies the table's `asin`/`cos` because HotSpot does **not**
+intrinsify `asin` — `Math.asin` delegates to `StrictMath.asin`, which is
+fdlibm, so that column is exact. `Math.cos` *is* intrinsified and may differ by
+up to 1 ULP; that is stated at the site rather than papered over, because it
+means this reproduces `Mth.atan2`'s algorithm to the operation and not its
+result to the bit.
+
+Three Java details in `lookAt` are load-bearing and asymmetric: the pitch's
+`(float)` cast encloses the **negation** while the yaw's encloses only the
+division (`- 90.0F` is then a float subtraction); `(float)Math.PI` is π rounded
+to `f32` and widened back, so the divide is by a slightly-wrong π *by
+specification*; and the yaw's arguments are `(zd, xd)`, which with the `- 90.0F`
+is what produces Minecraft's south-zero convention. Aiming at exactly your own
+anchor is not special-cased and is not a NaN: `atan2(0, 0)` is 0, so the yaw
+becomes -90 and the pitch 0.
+
+The anchor is `EntityAnchorArgument.Anchor`, read by `readEnum` — an array
+index, so ordinal 2 is a decode **error**. That is the third enum convention
+this codebase has met, and all three are now reachable with a two-value enum:
+`readEnum` errors, `ByIdMap.continuous(…, ZERO)` returns the zero value (M65),
+`…, WRAP)` takes `Math.floorMod` (M74).
+
+**An unknown target entity is not a no-op.** `getPosition` falls back to the
+packet's own `x/y/z`, and those are not filler — the sending constructor sets
+them to `toAnchor.apply(entity)` at send time. So the fallback is the correct
+anchored point, stale only by the target's motion since. That is what makes
+Rewo's scoping defensible rather than lazy: `Anchor::Eyes` on a *remote* entity
+needs `EntityDimensions.eyeHeight`, a per-type field Rewo does not model, so
+the production resolver declines and lands on the carried coordinates —
+vanilla's own unknown-entity branch, and an error purely of staleness. `Feet`
+resolves exactly, from `EntityTable`.
+
+#### `set_default_spawn_position`, and the field that a dimension change resets
+
+`LevelData.RespawnData` is a `GlobalPos` (a dimension **identifier string** —
+`ResourceKey.streamCodec`, not a registry id — plus a packed `BlockPos` long)
+and two floats. Stored verbatim: `RespawnData.of`'s `wrapDegrees`/`clamp` and
+`MAP_CODEC`'s `floatRange` are both off this path, and `STREAM_CODEC` is a bare
+composite over the record's accessors.
+
+It lands on `ClientLevelData` beside the difficulty, and **the two behave
+oppositely across a dimension change**, which is the finding worth keeping.
+`handleRespawn` builds a replacement `ClientLevelData(getDifficulty(),
+isHardcore(), isFlat)` — the difficulty is carried across *explicitly*, and the
+respawn data is not a constructor parameter at all. What fills it is the
+`ClientLevel` constructor one line later:
+`setRespawnData(RespawnData.of(dimension, new BlockPos(8, 64, 8), 0, 0))`.
+
+Two consequences, both inverting the guess. **`RespawnData.DEFAULT` — overworld,
+`BlockPos.ZERO` — never appears on a client**; the constructor's `(8, 64, 8)`
+*of the level being entered* is the real default, and it follows you into the
+Nether. And a same-dimension respawn keeps the level data entirely, so **the
+world spawn survives death and is discarded by travel** — the reverse of the
+intuition that a respawn packet resets respawn state.
+
+`ClientLevelData.respawnData` has no initialiser, so it is briefly null;
+`Option<RespawnData>` models that window exactly, and it is unobservable in a
+live session because `enter_level` runs on the login packet.
+
+**One scoped exclusion, stated rather than silently skipped.** `setRespawnData`
+actually stores `getWorldBorderAdjustedRespawnData(…)`, which relocates a spawn
+outside the border onto its centre column via a `MOTION_BLOCKING` heightmap
+lookup. Rewo has no world border — `initialize_border` and the five
+`set_border_*` packets are all class B — and the default border is ±29,999,984,
+which contains every position a world generates. The adjustment is unreachable
+here; landing it needs the border packets first, not a guess at its bounds.
+
+#### Verification
+
+`rewo abilityshot --check` grows **47 → 76** witnesses (M75's 47 plus 29), each
+naming a mutation partner, driving the production seams `route_player_rotation`
+and `route_client_state` with a real resolved `Ids` rather than the readers
+underneath — M45's rule, that a gate reimplementing a slice of the app's
+dispatch misses whatever the app adds to it. The rotation packets share
+`abilityshot` rather than getting a command because they are the subject it
+already owns: M75 decided how the local player *moves*, and these decide where
+it *looks*.
+
+**32 mutations run, 31 caught, 1 equivalent.** Two did not fail on the first
+pass and both were worth the run.
+
+**The sample that did not sit where the mutation bites.** Reordering the pitch
+clamp to `offset + clamp(x_rot)` instead of `clamp(offset + x_rot)` survived
+every witness. The reason is that any step under 90° leaves `clamp(x_rot)` an
+identity, and for an over-range step with a *positive* base both orders
+saturate to 90 anyway — so separating them needs a base of the **opposite
+sign** to the step. Base -80, step +400: `clamp(320) = 90` the right way round,
+`-80 + 90 = 10` the wrong one. This is M75's recorded lesson repeating exactly
+one milestone later, and the fix is a witness sitting on the case rather than
+straddling it.
+
+**One genuinely equivalent mutant.** Deleting `getPosition`'s `if
+(this.atEntity)` test changes nothing, because `parse` sets `at_entity` and
+`to_anchor` together and the `and_then` short-circuits to the same fallback for
+the point form. The two guards are interchangeable *while that invariant
+holds*, so the honest thing to pin is the invariant, not either guard — the
+gate now witnesses `at_entity == to_anchor.is_some()` after `parse`, which a
+mutation of `parse` does break. The redundant test is kept because it is what
+`getPosition` is.
+
+**One property is unreachable from these two packets, and the row says so.**
+`setXRot`'s `% 360` before the clamp cannot fire from either: `player_rotation`
+arrives already clamped to ±90 by `calculateAbsolute`, and `look_at`'s pitch is
+bounded by construction. Dropping it is caught by the `rewo-world` unit test
+and **not** by the gate, which is the correct division rather than a gap — the
+modulo is a property of `Entity.setXRot`, whose other callers are out of scope
+here.
+
+**A witness caught an arithmetic error in my own module docs** on its first
+run: the point-form `player_look_at` body is 26 bytes (a one-byte anchor
+VarInt, three doubles, the flag), and the docs said 25.
+
+Gates: `abilityshot` 76/76, and the coverage table's machine check
+(`ids::coverage_table_tests`) flipped all three rows and both count tables —
+it named them precisely, which is what it exists for.
+
+**Not verified.** No live server was run against these three: `rewo play`'s
+harness has no `/teleport … facing` step and no `/setworldspawn`, so the
+`ServerboundMovePlayerPacket.Rot` reply and the `enter_level` reset on a real
+dimension change are unit-true and unobserved on a connection. `CORRECTIONS 0`
+is unchanged and says nothing about them — the server does not correct
+rotation, so that meter is structurally blind to this milestone in the same way
+§6 records it being blind to a dropped knockback.
