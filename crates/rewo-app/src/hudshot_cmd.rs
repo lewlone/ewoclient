@@ -302,6 +302,54 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
         );
     }
 
+    // ── i: the tooltip span model (M52b). Drives the production types, not a
+    //    local copy -- the `itemshot` lesson: a gate that reimplements a slice
+    //    of the app's setup misses whatever the app adds to it.
+    {
+        use rewo_gpu::tooltip::{line_text, to_velvet_spans, Line, Span};
+
+        let line: Line = vec![
+            Span::new("Sharpness ", [0.66, 0.66, 0.66]),
+            Span::new("V", [1.0, 1.0, 1.0]),
+        ];
+        g.check(
+            "i1:per_run_colour",
+            line[0].color != line[1].color,
+            "a line must be able to change colour mid-way".into(),
+        );
+        g.check(
+            "i2:line_text_is_the_concatenation",
+            line_text(&line) == "Sharpness V",
+            line_text(&line),
+        );
+
+        // Lore is the fidelity gain: vanilla's ItemLore.LORE_STYLE is
+        // withColor(DARK_PURPLE).withItalic(true), and the italic had nowhere
+        // to live in the old (String, colour) model.
+        let lore: Line = vec![Span::new("a memory of stone", [0.666, 0.0, 0.666]).italic()];
+        g.check(
+            "i3:lore_is_italic",
+            lore[0].italic,
+            "vanilla styles lore italic; Rewo used to drop it".into(),
+        );
+        let spans = to_velvet_spans(&lore, 12.0);
+        let upright = to_velvet_spans(
+            &vec![Span::new("a memory of stone", [0.666, 0.0, 0.666])],
+            12.0,
+        );
+        g.check(
+            "i4:italic_reaches_a_different_face",
+            spans[0].key != upright[0].key,
+            "the italic flag must select the italic face, not a skew".into(),
+        );
+        // Sensitivity: the colour must survive the conversion untouched.
+        g.check(
+            "i5:colour_survives_conversion",
+            spans[0].color == lore[0].color,
+            format!("{:?} vs {:?}", spans[0].color, lore[0].color),
+        );
+    }
+
     println!("[hudshot] {} passed, {} failed", g.pass, g.fail);
     if g.fail > 0 {
         return Err(format!("hudshot: {} witnesses failed", g.fail));
@@ -309,9 +357,9 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
     // Fail closed on a suspiciously small witness count -- the same guard the
     // other gates carry, so a refactor that silently drops witnesses is loud
     // rather than a quieter green.
-    if g.pass < 30 {
+    if g.pass < 40 {
         return Err(format!(
-            "hudshot: only {} witnesses ran, expected >= 30",
+            "hudshot: only {} witnesses ran, expected >= 40",
             g.pass
         ));
     }

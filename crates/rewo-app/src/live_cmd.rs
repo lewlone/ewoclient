@@ -6979,7 +6979,7 @@ pub(crate) fn enchantment_lines(
     enchantments: &[(i32, i32)],
     registry: &[rewo_net::enchantment_parse::EnchantmentDef],
     text: &rewo_data::enchantments::EnchantmentText,
-) -> Vec<(String, [f32; 3])> {
+) -> Vec<rewo_gpu::tooltip::Line> {
     let mut rows: Vec<(Option<usize>, usize, String, [f32; 3])> = Vec::new();
     for (order, &(id, level)) in enchantments.iter().enumerate() {
         let Some(def) = usize::try_from(id).ok().and_then(|i| registry.get(i)) else {
@@ -7009,7 +7009,12 @@ pub(crate) fn enchantment_lines(
     // behaviour wanted here: the tag's members first, in tag order, then the
     // rest in the order the stack listed them.
     rows.sort_by_key(|(rank, order, _, _)| (rank.is_none(), *rank, *order));
-    rows.into_iter().map(|(_, _, l, c)| (l, c)).collect()
+    // One span per line here -- an enchantment name is uniformly coloured. The
+    // span model earns its keep on lore (italic) and leaves room for the
+    // mid-line colour changes vanilla does elsewhere.
+    rows.into_iter()
+        .map(|(_, _, l, c)| vec![rewo_gpu::tooltip::Span::new(l, c)])
+        .collect()
 }
 
 fn screen_tooltip(
@@ -7042,8 +7047,13 @@ fn screen_tooltip(
     // exactly — the name, the lore, and the `Unbreakable` marker.
     //
     let text = inv.text_of(stack);
-    let mut lines: Vec<(String, [f32; 3])> = Vec::new();
-    lines.push((
+    // A line is a sequence of styled spans (M52b), not a string and a colour.
+    // Vanilla styles per run, and the old model was strictly less: it could
+    // not say "italic", so `ItemLore.LORE_STYLE`'s italic was silently
+    // dropped. Geometry is unchanged -- the box is still measured from the
+    // plain text with the vanilla advances.
+    let mut lines: Vec<rewo_gpu::tooltip::Line> = Vec::new();
+    lines.push(vec![rewo_gpu::tooltip::Span::new(
         text.and_then(|t| t.name.as_deref())
             .unwrap_or(translated)
             .to_string(),
@@ -7052,7 +7062,7 @@ fn screen_tooltip(
             text.and_then(|t| t.rarity),
             text.is_some_and(|t| t.is_enchanted),
         )),
-    ));
+    )]);
     if let Some(t) = text {
         // Vanilla's order: the enchantments come before the lore.
         lines.extend(enchantment_lines(
@@ -7061,16 +7071,27 @@ fn screen_tooltip(
             enchant_text,
         ));
         for line in &t.lore {
-            lines.push((line.clone(), LORE_COLOR));
+            // `ItemLore.LORE_STYLE` is
+            // `Style.EMPTY.withColor(DARK_PURPLE).withItalic(true)`. The
+            // colour was already right; the italic had nowhere to live until
+            // the span model, so Rewo rendered lore upright.
+            lines.push(vec![
+                rewo_gpu::tooltip::Span::new(line.clone(), LORE_COLOR).italic(),
+            ]);
         }
         if t.unbreakable {
-            lines.push(("Unbreakable".to_string(), UNBREAKABLE_COLOR));
+            lines.push(vec![rewo_gpu::tooltip::Span::new(
+                "Unbreakable".to_string(),
+                UNBREAKABLE_COLOR,
+            )]);
         }
     }
 
     let widths: Vec<i32> = lines
         .iter()
-        .map(|(t, _)| rewo_data::sign_text::width(t, advance).round() as i32)
+        .map(|l| {
+            rewo_data::sign_text::width(&rewo_gpu::tooltip::line_text(l), advance).round() as i32
+        })
         .collect();
     let (tw, th) = rewo_gpu::container::tooltip_size(&widths);
     // The positioner works in GUI pixels, and so does the screen size it
@@ -7088,14 +7109,22 @@ fn screen_tooltip(
     let out = lines
         .into_iter()
         .enumerate()
-        .map(|(i, (text, color))| {
+        .map(|(i, spans)| {
+            // The bitmap pass takes one colour per line, so the vanilla-font
+            // path still draws the first span's. That is a property of THAT
+            // pass, not of the model: the styled line already carries every
+            // span, and `tooltip::to_velvet_spans` renders it in full through
+            // the Velvet type stack. Switching which pass a tooltip uses is a
+            // rendering decision, deliberately left open while the HUD's
+            // visual direction settles.
+            let color = spans.first().map(|s| s.color).unwrap_or([1.0; 3]);
             let line = rewo_gpu::world::OwnedTextLine {
                 x: tx as f32 * scale,
                 y: y as f32 * scale,
                 px: scale,
                 color,
                 alpha: 1.0,
-                text,
+                text: rewo_gpu::tooltip::line_text(&spans),
             };
             y += rewo_gpu::container::TOOLTIP_LINE_HEIGHT + if i == 0 { 2 } else { 0 };
             line

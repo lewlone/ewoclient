@@ -290,6 +290,75 @@ impl Component {
     }
 }
 
+// ── Styled tooltip lines (M52b) ───────────────────────────────────────────
+//
+// A tooltip line was `(String, [f32; 3])` -- one string, one colour, no
+// italic. That is strictly *less* than vanilla, which styles per run: a line
+// can change colour mid-way, and `ItemLore.LORE_STYLE` is
+// `withColor(DARK_PURPLE).withItalic(true)`. Rewo carried the colour and
+// silently dropped the italic, because it had nowhere to put it.
+//
+// So a line is a sequence of [`Span`]s. This type is deliberately
+// **font-agnostic**: it says *what* is styled, not which typeface renders it,
+// so the same line can go to the vanilla bitmap pass or through
+// `velvet_glyph::StyledSpan` to the Velvet type stack. Changing which one a
+// tooltip uses is then a rendering decision rather than a model change --
+// which matters, because the HUD's visual direction is not settled and this
+// model should outlive it.
+
+/// One styled fragment of a tooltip line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    pub text: String,
+    /// Linear-ish sRGB triple, as the rest of the tooltip path uses.
+    pub color: [f32; 3],
+    /// Vanilla styles lore italic. Previously unrepresentable.
+    pub italic: bool,
+}
+
+impl Span {
+    pub fn new(text: impl Into<String>, color: [f32; 3]) -> Self {
+        Self { text: text.into(), color, italic: false }
+    }
+
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+}
+
+/// One tooltip line: spans laid end to end on a shared baseline.
+pub type Line = Vec<Span>;
+
+/// The plain text of a line, spans concatenated.
+///
+/// The width path still measures this with the vanilla font's advances, so
+/// tooltip *geometry* is unchanged by the span model -- the box is sized
+/// exactly as it was. Only the styling is richer.
+pub fn line_text(line: &Line) -> String {
+    line.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// Convert a styled line into Velvet [`StyledSpan`]s on one baseline.
+///
+/// Italic selects the **italic face**, not a skew: Velvet ships
+/// `Newsreader-Italic.ttf` as its own file, and faking the slant would look
+/// like a different typeface next to the real one.
+///
+/// [`StyledSpan`]: crate::velvet_glyph::StyledSpan
+pub fn to_velvet_spans(
+    line: &Line,
+    size_px: f32,
+) -> Vec<crate::velvet_glyph::StyledSpan> {
+    use crate::velvet_glyph::{Axes, Family, ScalerKey, StyledSpan};
+    line.iter()
+        .map(|s| {
+            let key = ScalerKey::new(Family::Newsreader, s.italic, size_px, Axes::DEFAULT);
+            StyledSpan::new(s.text.clone(), key, s.color)
+        })
+        .collect()
+}
+
 /// `optionalImage.ifPresent(image -> components.add(components.isEmpty() ? 0 : 1, …))`
 ///
 /// **Index 1** — immediately after the name, before the enchantments and the
@@ -664,5 +733,49 @@ mod tests {
         assert!(img.cells.is_empty() && img.bar.is_none());
         // …but it still measures, so the box keeps the hole.
         assert_eq!(Component::Bundle(b).height(), 24 + 13 + 8);
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    #[test]
+    fn a_line_can_change_colour_and_slant_mid_way() {
+        // The three things the old (String, [f32;3]) model could not say.
+        let line: Line = vec![
+            Span::new("Sharpness ", [0.66, 0.66, 0.66]),
+            Span::new("V", [1.0, 1.0, 1.0]),
+            Span::new(" cursed", [1.0, 0.33, 0.33]).italic(),
+        ];
+        assert_eq!(line.len(), 3);
+        assert_ne!(line[0].color, line[1].color, "per-run colour");
+        assert!(line[2].italic, "per-run italic");
+        assert!(!line[0].italic);
+    }
+
+    #[test]
+    fn line_text_concatenates_for_the_unchanged_width_path() {
+        // Geometry must not move: the box is still measured from the plain
+        // text with the vanilla advances, so adding spans cannot resize a
+        // tooltip that used to fit.
+        let line: Line = vec![
+            Span::new("Unbreak", [0.0; 3]),
+            Span::new("able", [0.0; 3]).italic(),
+        ];
+        assert_eq!(line_text(&line), "Unbreakable");
+    }
+
+    #[test]
+    fn italic_selects_the_italic_face_not_a_skew() {
+        let line: Line = vec![
+            Span::new("a", [1.0; 3]),
+            Span::new("b", [1.0; 3]).italic(),
+        ];
+        let spans = to_velvet_spans(&line, 12.0);
+        assert_eq!(spans.len(), 2);
+        // The two must reach the cache under different keys, or the italic
+        // silently renders upright.
+        assert_ne!(spans[0].key, spans[1].key);
     }
 }

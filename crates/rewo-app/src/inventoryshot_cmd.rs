@@ -1917,7 +1917,8 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
         &registry,
         text,
     );
-    let names: Vec<&str> = lines.iter().map(|(t, _)| t.as_str()).collect();
+    let names: Vec<String> = lines.iter().map(rewo_gpu::tooltip::line_text).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     c.record(
         "e4.the_level_numeral_is_suppressed_only_when_the_maximum_is_also_one",
         names.contains(&"Sharpness V") && names.contains(&"Mending"),
@@ -1931,7 +1932,7 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
     let curse_first = names.first() == Some(&"Curse of Vanishing");
     let curse_red = lines
         .first()
-        .is_some_and(|(_, col)| col[0] > 0.9 && col[1] < 0.5);
+        .is_some_and(|l| l[0].color[0] > 0.9 && l[0].color[1] < 0.5);
     c.record(
         "e5.a_curse_is_red_and_the_tooltip_order_tag_leads",
         curse_first && curse_red,
@@ -1940,7 +1941,7 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
              `minecraft:tooltip_order` tag, not the ids and not the stack's own \
              order — the curses sit at the top of that tag",
             names.first(),
-            lines.first().map(|(_, c)| *c)
+            lines.first().map(|l| l[0].color)
         ),
     );
     // An id the registry never synced yields no line at all.
