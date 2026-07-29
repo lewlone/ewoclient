@@ -36,6 +36,7 @@ pub mod velvet_chrome;
 pub mod velvet_glyph;
 pub mod velvet_text;
 pub mod velvet_widgets;
+pub mod tab_list;
 pub mod text;
 pub mod tooltip;
 pub mod overlay;
