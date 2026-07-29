@@ -54,7 +54,7 @@ use rewo_world::label::{
 
 use crate::live_cmd::{label_inputs_from_table, resolve_labels, LabelViewer};
 
-const EXPECTED_WITNESSES: usize = 32;
+const EXPECTED_WITNESSES: usize = 47;
 
 const W: u32 = 256;
 const H: u32 = 256;
@@ -117,7 +117,8 @@ pub fn run(args: LabelshotArgs) -> Result<(), String> {
     };
     check_predicate(&mut c, &paths)?;
     check_teams(&mut c, &paths)?;
-    check_wiring(&mut c, &paths, &baked)?;
+    check_pick(&mut c, &paths, &jar)?;
+    check_wiring(&mut c, &paths, &baked, &jar)?;
 
     println!(
         "[labelshot] witnesses observed: {} / {}",
@@ -1054,6 +1055,511 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// g — the crosshair entity pick (M73), through the production seam.
+// ---------------------------------------------------------------------------
+
+/// The pick fixture: the real version tables plus a scratch entity table.
+///
+/// Everything downstream of [`Self::pick`] is production code —
+/// `live_cmd::crosshair_pick_from_table` is the same function
+/// `resolve_crosshair_pick` calls on every frame.
+struct PickFixture {
+    f: Fixture,
+    shapes: rewo_data::entity_pick::EntityPickTable,
+    redirectable: rewo_data::entity_pick::EntityTypeTag,
+    /// The camera entity's id. Never in the table — the server sends no
+    /// `add_entity` for your own player, which is the whole reason
+    /// `local_attributes` exists.
+    camera: i32,
+    local: rewo_world::attributes::EntityAttributes,
+}
+
+/// The eye, and a unit view vector pointing east (+X). Every distance below is
+/// therefore just a difference in `x`, which is what makes an exact-bound
+/// sample writable by hand.
+const EYE: [f64; 3] = [0.0, 0.0, 0.0];
+const EAST: [f64; 3] = [1.0, 0.0, 0.0];
+
+impl PickFixture {
+    fn load(paths: &DataPaths, jar: &std::path::Path) -> Result<PickFixture, String> {
+        let f = Fixture::load(paths)?;
+        let shapes = rewo_data::entity_pick::EntityPickTable::resolve(&f.types)?;
+        let redirectable =
+            rewo_data::entity_pick::EntityTypeTag::load_redirectable_projectile(jar, &f.types)?;
+        Ok(PickFixture {
+            f,
+            shapes,
+            redirectable,
+            camera: 99,
+            local: rewo_world::attributes::EntityAttributes::default(),
+        })
+    }
+
+    fn tables(&self) -> crate::live_cmd::PickTables<'_> {
+        crate::live_cmd::PickTables {
+            types: &self.f.types,
+            classes: &self.f.classes,
+            shapes: &self.shapes,
+            redirectable: &self.redirectable,
+            attributes: &self.f.reg,
+        }
+    }
+
+    /// Spawn one entity of `type_name` standing with its **feet** at
+    /// `(x, foot_y, 0)`, so a box of height `h` spans `foot_y .. foot_y + h`.
+    fn table_with(&self, type_name: &str, id: i32, x: f64, foot_y: f64) -> EntityTable {
+        let mut t = EntityTable::default();
+        let type_id = self
+            .f
+            .types
+            .id_of(type_name)
+            .unwrap_or_else(|| panic!("{type_name} is not registered"));
+        t.add(id, EntityState::new(0, type_id, x, foot_y, 0.0, 0.0, 0.0));
+        t
+    }
+
+    /// The production pick. `block` is the distance to the block hit, or
+    /// `None` for a block miss.
+    fn pick(&self, t: &EntityTable, block: Option<f64>) -> Option<i32> {
+        crate::live_cmd::crosshair_pick_from_table(
+            t,
+            self.camera,
+            [0.0, -1.62, 0.0], // feet, so the eye lands at the origin
+            &self.local,
+            self.tables(),
+            EYE,
+            EAST,
+            1.0,
+            &|_, _, reach| block.filter(|d| *d <= reach),
+        )
+        .map(|h| h.id)
+    }
+}
+
+fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Result<(), String> {
+    use rewo_data::entity_pick::PickRule;
+    use rewo_world::entity_pick::{entity_hit_result, Aabb, Candidate};
+
+    let mut p = PickFixture::load(paths, jar)?;
+    println!(
+        "[labelshot] pick tables: {} shapes, redirectable_projectile = {} types",
+        p.shapes.len(),
+        p.redirectable.len()
+    );
+
+    // -- g1: the basic sweep, both directions ---------------------------------
+
+    let ahead = p.table_with("minecraft:zombie", 1, 2.0, -1.0);
+    let behind = p.table_with("minecraft:zombie", 1, -2.0, -1.0);
+    let (hit_ahead, hit_behind) = (p.pick(&ahead, None), p.pick(&behind, None));
+    c.record(
+        "g1.a_mob_ahead_is_picked_and_one_behind_is_not",
+        hit_ahead == Some(1) && hit_behind.is_none(),
+        format!(
+            "ahead -> {hit_ahead:?}, behind -> {hit_behind:?} (want Some(1)/None \
+             — the baseline every witness below turns one thing off from. \
+             MUTATION PARTNER: the two runs are each other's, differing only in \
+             the sign of x)"
+        ),
+    );
+
+    // -- g2: the entity range, sampled EXACTLY on the bound -------------------
+    //
+    // A zombie's box is `sized(0.6, 1.95)`, so its near face is `x - w/2`. The
+    // half-width is **not** 0.3: vanilla halves the width as a `float` and
+    // widens it only inside the `AABB` constructor, so it is 0.30000001192…
+    // Placing the mob at `3.0 + that` is what puts the clip point on the bound
+    // exactly; a hand-written 3.3 lands a hundred-millionth *inside* it, and
+    // the `<` -> `<=` mutation below then passes.
+    //
+    // M70's own b4 straddled a bound at 63.99/64.01 without ever sitting on
+    // it, and that mutation left the whole gate green. This sits on it, and
+    // the placement is asserted rather than assumed.
+    let half_width = (0.6f32 / 2.0) as f64;
+    let on_bound = p.table_with("minecraft:zombie", 1, 3.0 + half_width, -1.0);
+    let near_face = rewo_world::entity_pick::bounding_box(
+        [3.0 + half_width, -1.0, 0.0],
+        &rewo_world::entity_pick::DimensionInputs {
+            width: 0.6,
+            height: 1.95,
+            living: true,
+            avatar: false,
+            pose: 0,
+            baby: false,
+            scale: 1.0,
+        },
+    )
+    .min[0];
+    let inside = p.table_with("minecraft:zombie", 1, 3.0 + half_width - 1e-9, -1.0);
+    let (at, just_in) = (p.pick(&on_bound, None), p.pick(&inside, None));
+    c.record(
+        "g2.the_entity_range_bound_is_strict_and_sampled_on_it",
+        near_face == 3.0 && at.is_none() && just_in == Some(1),
+        format!(
+            "near face at {near_face} (want exactly 3.0): on the bound -> {at:?}, \
+             a nanometre nearer -> {just_in:?} (want None/Some(1) — \
+             filterHitResult's closerThan is `<`. MUTATION PARTNER: `<` -> `<=` \
+             in crosshair_pick's final filter, which makes the first run \
+             Some(1). A sample at 2.99/3.01 would not catch it, and neither \
+             would one placed with a hand-computed 0.3 half-width)"
+        ),
+    );
+
+    // -- g3: the range is the ATTRIBUTE, not a hard-coded 3.0 -----------------
+    //
+    // Driven through the production `apply_local_attributes` with a raw body,
+    // so what is graded is the packet the server actually sends. Creative mode
+    // is itself a `+2.0` modifier on this attribute, not a special case.
+    let far = p.table_with("minecraft:zombie", 1, 4.0, -1.0);
+    let before = p.pick(&far, None);
+    let entity_range = p
+        .f
+        .reg
+        .id_of("entity_interaction_range")
+        .ok_or("no entity_interaction_range attribute")?;
+    let stored = rewo_net::attributes::apply_local_attributes(
+        &attrs_body(p.camera, &[(entity_range, 5.0)]),
+        Some(p.camera),
+        &mut p.local,
+    );
+    let after = p.pick(&far, None);
+    c.record(
+        "g3.the_reach_comes_from_the_attribute_not_a_constant",
+        !before.is_some() && stored && after == Some(1),
+        format!(
+            "at 4 blocks: default -> {before:?}, after update_attributes raised \
+             entity_interaction_range to 5.0 -> {after:?} (stored={stored}; want \
+             None then Some(1) — MUTATION PARTNER: hard-code \
+             DEFAULT_ENTITY_INTERACTION_RANGE in InteractionRanges::resolve, \
+             after which the scaled server behaves identically to the default \
+             one and this witness reads None/None)"
+        ),
+    );
+    // A body naming anyone else must not touch the local player's ranges.
+    let other = rewo_net::attributes::apply_local_attributes(
+        &attrs_body(p.camera + 1, &[(entity_range, 64.0)]),
+        Some(p.camera),
+        &mut p.local,
+    );
+    let unchanged = p.pick(&far, None);
+    c.record(
+        "g4.another_entitys_attributes_are_not_the_local_players",
+        !other && unchanged == Some(1),
+        format!(
+            "stored={other}, pick still {unchanged:?} (want false/Some(1) — the \
+             5.0 from g3 survives and the 64.0 addressed to entity {} does not \
+             land. MUTATION PARTNER: drop the `packet.entity_id != player` \
+             check, after which a distant mob's ranges become the camera's)",
+            p.camera + 1
+        ),
+    );
+    // Put the reach back so the witnesses below run at vanilla defaults.
+    rewo_net::attributes::apply_local_attributes(
+        &attrs_body(p.camera, &[(entity_range, 3.0)]),
+        Some(p.camera),
+        &mut p.local,
+    );
+
+    // -- g5: a block in front wins, and a dead heat goes to the block ---------
+
+    let mob = p.table_with("minecraft:zombie", 1, 2.0, -1.0);
+    // The tie sample has to be the mob's own clip point to the bit — see g2.
+    let clip = 2.0 - half_width;
+    let (nearer, further, level) = (
+        p.pick(&mob, Some(1.5)),
+        p.pick(&mob, Some(2.5)),
+        p.pick(&mob, Some(clip)),
+    );
+    c.record(
+        "g5.a_block_in_front_of_the_mob_wins_and_a_tie_goes_to_the_block",
+        nearer.is_none() && further == Some(1) && level.is_none(),
+        format!(
+            "block at 1.5 -> {nearer:?}, at 2.5 -> {further:?}, at exactly the \
+             mob's clip point {clip} -> {level:?} (want None/Some(1)/None. \
+             MUTATION PARTNER: replace block_distance_sq with infinity, \
+             removing the truncation and the comparison together, after which \
+             the first and third runs both read Some(1). It has to be both, \
+             and that is a finding rather than a convenience: vanilla enforces \
+             this precedence TWICE — the sweep is truncated at the block hit \
+             *and* the surviving hit is compared against it — so neither half \
+             alone is observable here. The tie in particular is decided by the \
+             truncated sweep bound, whose `dd < nearest` is strict; the final \
+             `entityHit.distSq < blockDistSq` is then unreachable except \
+             through the same-root-vehicle arm that runs after an inside-pick)"
+        ),
+    );
+
+    let zombie_id = p.f.types.id_of("minecraft:zombie").ok_or("no zombie")?;
+
+    // -- g6: the broad-phase search box is a real filter ---------------------
+    //
+    // `getEntityHitResult`'s candidates come from `level.getEntities(except,
+    // box, matching)`, where `box` is the camera's own bounding box swept along
+    // the ray and inflated by 1.0. It can only *remove* candidates, so it is
+    // easy to leave out and never notice — this drives it directly, at the
+    // `entity_hit_result` level, with a box that excludes an otherwise
+    // perfectly hittable candidate.
+    //
+    // The block-hit **truncation** has no witness of its own, for the reason
+    // g5 records: it and the final block comparison are mutually redundant, so
+    // removing either alone changes no answer. g5's mutation removes both.
+    let reachable = Aabb::new([1.7, -1.0, -0.3], [2.3, 0.95, 0.3]);
+    let cand6 = [Candidate {
+        id: 1,
+        bb: reachable,
+        pickable: true,
+        pick_radius: 0.0,
+        can_be_picked_from_inside: true,
+        shares_root_vehicle: false,
+    }];
+    let wide = Aabb::new([-2.0, -2.0, -2.0], [6.0, 2.0, 2.0]);
+    let narrow = Aabb::new([-2.0, -2.0, -2.0], [1.0, 2.0, 2.0]);
+    let (in_box, out_box) = (
+        entity_hit_result(EYE, [4.5, 0.0, 0.0], &wide, &cand6, 100.0),
+        entity_hit_result(EYE, [4.5, 0.0, 0.0], &narrow, &cand6, 100.0),
+    );
+    c.record(
+        "g6.the_broad_phase_search_box_filters_candidates",
+        in_box.is_some() && out_box.is_none(),
+        format!(
+            "search box reaching x=6 -> {:?}; the same ray and candidate with a \
+             box stopping at x=1 -> {:?} (want Some/None — `level.getEntities` \
+             takes the swept box as its query volume. MUTATION PARTNER: drop \
+             the `bb.intersects(search)` filter, after which the second run is \
+             Some(1) too)",
+            in_box.map(|h| h.id),
+            out_box.map(|h| h.id)
+        ),
+    );
+
+    // -- g7: the inflation is getPickRadius(), which is 0 for a mob -----------
+    //
+    // A ray 0.5 to the side of a 0.6-wide box misses it outright. The 0.3 in
+    // `DEFAULT_ENTITY_HIT_RESULT_MARGIN` — right next to getEntityHitResult in
+    // the same file — belongs to the projectile overload, not to this one.
+    let mut grazed = EntityTable::default();
+    grazed.add(1, EntityState::new(0, zombie_id, 2.0, -1.0, 0.5, 0.0, 0.0));
+    let graze = p.pick(&grazed, None);
+    // The same geometry with a redirectable projectile, whose pick radius is
+    // 1.0, is caught.
+    let fireball = p.table_with("minecraft:fireball", 1, 2.0, -0.5);
+    let mut fireball_side = EntityTable::default();
+    let fb = p.f.types.id_of("minecraft:fireball").ok_or("no fireball")?;
+    fireball_side.add(1, EntityState::new(0, fb, 2.0, -0.5, 0.9, 0.0, 0.0));
+    let (fb_ahead, fb_side) = (p.pick(&fireball, None), p.pick(&fireball_side, None));
+    c.record(
+        "g7.the_inflation_is_the_pick_radius_zero_for_a_mob_one_for_a_projectile",
+        graze.is_none() && fb_ahead == Some(1) && fb_side == Some(1),
+        format!(
+            "zombie 0.5 to the side -> {graze:?}; fireball ahead -> {fb_ahead:?}, \
+             0.9 to the side -> {fb_side:?} (want None/Some(1)/Some(1) — \
+             Entity.getPickRadius() is 0.0F and Projectile's is 1.0F. MUTATION \
+             PARTNER: inflate every candidate by DEFAULT_ENTITY_HIT_RESULT_MARGIN \
+             (0.3), the constant sitting beside it in ProjectileUtil, after which \
+             the grazed zombie becomes Some(1))"
+        ),
+    );
+
+    // -- g8: nearest wins, and the two runs SWAP which id is nearer ----------
+    //
+    // Both tables hold ids {1, 2}, so a `HashMap` yields them in the same
+    // order for both. That is the point: with `nearest = dd` removed the loop
+    // degenerates to last-wins, which returns *the same id* in both runs —
+    // and because the near mob is id 2 in one and id 1 in the other, at least
+    // one assertion must break. A pair where the near mob had the same id in
+    // both would have survived that mutation.
+    let mut near_is_2 = p.table_with("minecraft:zombie", 1, 2.5, -1.0);
+    near_is_2.add(2, EntityState::new(0, zombie_id, 1.5, -1.0, 0.0, 0.0, 0.0));
+    let mut near_is_1 = p.table_with("minecraft:zombie", 1, 1.5, -1.0);
+    near_is_1.add(2, EntityState::new(0, zombie_id, 2.5, -1.0, 0.0, 0.0, 0.0));
+    let (a, b) = (p.pick(&near_is_2, None), p.pick(&near_is_1, None));
+    c.record(
+        "g8.the_nearest_of_two_candidates_wins_whichever_id_it_has",
+        a == Some(2) && b == Some(1),
+        format!(
+            "near mob is id 2 -> {a:?}; the same geometry with the ids swapped \
+             -> {b:?} (want Some(2)/Some(1) — `dd < nearest` with `nearest` \
+             updated on every accepted hit. MUTATION PARTNER: drop the \
+             `nearest = dd` update, which degenerates to last-wins and returns \
+             one id for both runs)"
+        ),
+    );
+
+    // -- g9: the sweep bound is strict too, sampled exactly on it ------------
+    //
+    // `maxValue` seeds `nearest`, so the range bound and the tie-break are the
+    // same `<`. Driven at the `entity_hit_result` level because the outer pick
+    // filters at the entity range first and would mask it.
+    let far_box = Aabb::new([4.5, -1.0, -0.3], [5.1, 0.8, 0.3]);
+    let cand = [Candidate {
+        id: 1,
+        bb: far_box,
+        pickable: true,
+        pick_radius: 0.0,
+        can_be_picked_from_inside: true,
+        shares_root_vehicle: false,
+    }];
+    let search = Aabb::new([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]);
+    let on = entity_hit_result(EYE, [10.0, 0.0, 0.0], &search, &cand, 4.5 * 4.5);
+    let over = entity_hit_result(EYE, [10.0, 0.0, 0.0], &search, &cand, 4.6 * 4.6);
+    c.record(
+        "g9.the_sweep_bound_is_strict_and_sampled_on_it",
+        on.is_none() && over.is_some(),
+        format!(
+            "clip point at exactly 4.5 with maxValue 4.5² -> {:?}; with 4.6² -> \
+             {:?} (want None/Some — `dd < nearest` seeded at maxValue, strict. \
+             MUTATION PARTNER: `<` -> `<=`, which makes the first run Some. The \
+             same comparison is the nearest-wins tie-break, which is why g8 and \
+             this witness are the same line of source)",
+            on.map(|h| h.id),
+            over.map(|h| h.id)
+        ),
+    );
+
+    // -- g10: the eye inside a box, and canBePickedFromInside ----------------
+
+    let big = Aabb::new([-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]);
+    let mut inside_c = Candidate {
+        id: 1,
+        bb: big,
+        pickable: true,
+        pick_radius: 0.0,
+        can_be_picked_from_inside: true,
+        shares_root_vehicle: false,
+    };
+    let from_inside = entity_hit_result(EYE, [10.0, 0.0, 0.0], &search, &[inside_c], 100.0);
+    inside_c.can_be_picked_from_inside = false;
+    let refused = entity_hit_result(EYE, [10.0, 0.0, 0.0], &search, &[inside_c], 100.0);
+    c.record(
+        "g10.an_entity_containing_the_eye_is_picked_from_inside_at_distance_zero",
+        from_inside.is_some_and(|h| h.location == EYE && h.distance_sq == 0.0)
+            && refused.is_none(),
+        format!(
+            "{:?} then {:?} (want a hit at the eye itself with distance 0, then \
+             None — AABB.clip only tests near faces, so a segment starting \
+             inside clips nothing and `clipPoint.orElse(from)` is the live \
+             branch. MUTATION PARTNER: canBePickedFromInside flipped, which is \
+             the second run)",
+            from_inside.map(|h| (h.id, h.distance_sq)),
+            refused.map(|h| h.id)
+        ),
+    );
+
+    // -- g11: isPickable() — the default is FALSE ----------------------------
+    //
+    // A dropped item entity sits exactly where the zombie of g1 was picked.
+    // `Entity.isPickable()` returns false and `minecraft:item` never overrode
+    // it, so it is invisible to the crosshair.
+    let item = p.table_with("minecraft:item", 1, 2.0, -0.1);
+    let dragon = p.table_with("minecraft:ender_dragon", 1, 2.0, -1.0);
+    let (item_hit, dragon_hit) = (p.pick(&item, None), p.pick(&dragon, None));
+    c.record(
+        "g11.an_unpickable_entity_is_never_returned",
+        item_hit.is_none() && dragon_hit.is_none() && hit_ahead == Some(1),
+        format!(
+            "item -> {item_hit:?}, ender_dragon -> {dragon_hit:?}, zombie in the \
+             same place -> {hit_ahead:?} (want None/None/Some(1). The dragon is \
+             the sharp one: it is a LivingEntity and would inherit `true`, but \
+             overrides isPickable() back to false and delegates to its \
+             unregistered EnderDragonPart hitboxes. MUTATION PARTNER: treat \
+             every PickRule as pickable, after which both become Some(1))"
+        ),
+    );
+
+    // The rules that produced those answers, asserted directly so a table
+    // regenerated from a later version cannot quietly re-classify them.
+    let rules = [
+        ("minecraft:item", PickRule::Never),
+        ("minecraft:ender_dragon", PickRule::Never),
+        ("minecraft:zombie", PickRule::Alive),
+        ("minecraft:player", PickRule::AliveUnlessSpectator),
+        ("minecraft:fireball", PickRule::RedirectableProjectile),
+    ];
+    let wrong: Vec<String> = rules
+        .iter()
+        .filter_map(|(name, want)| {
+            let got = p.f.types.id_of(name).and_then(|id| p.shapes.get(id));
+            (got.map(|s| s.rule) != Some(*want)).then(|| format!("{name}: {got:?}"))
+        })
+        .collect();
+    c.record(
+        "g12.the_generated_pick_rules_are_the_decompiled_ones",
+        wrong.is_empty(),
+        format!(
+            "{} mismatch(es): {wrong:?} (want none — machine-extracted by \
+             tools/gen_entity_pick.py from every isPickable() declaration under \
+             net/, walked against the class graph. MUTATION PARTNER: g11, which \
+             is the same five facts observed through the sweep rather than read \
+             out of the table)",
+            wrong.len()
+        ),
+    );
+
+    // -- g13: the box is the type's sized(w, h), not a humanoid default ------
+    //
+    // A zombie is 1.95 tall and a player 1.8. A ray at y = 1.9 above the feet
+    // hits one and misses the other — which the pre-M73 hand-written table,
+    // whose default was (0.6, 1.8) for everything it did not name, could not
+    // have told apart.
+    let zombie_tall = p.table_with("minecraft:zombie", 1, 2.0, -1.9);
+    let player_short = p.table_with("minecraft:player", 1, 2.0, -1.9);
+    let (z_tall, pl_short) = (p.pick(&zombie_tall, None), p.pick(&player_short, None));
+    c.record(
+        "g13.the_swept_box_is_the_types_own_dimensions",
+        z_tall == Some(1) && pl_short.is_none(),
+        format!(
+            "a ray 1.9 above the feet: zombie (1.95 tall) -> {z_tall:?}, player \
+             (1.8 tall) -> {pl_short:?} (want Some(1)/None. MUTATION PARTNER: \
+             give every type the builder default 0.6×1.8 — the shape of the \
+             hand-written table this replaced — after which the zombie also \
+             reads None)"
+        ),
+    );
+
+    // -- g14: a candidate sharing the camera's root vehicle is skipped -------
+    //
+    // Through the real `set_passengers` route: the camera and the mob both
+    // ride vehicle 50, so `getRootVehicle()` agrees and the mob is not a
+    // target. That is how you cannot click the horse you are sitting on.
+    let mut shared = p.table_with("minecraft:zombie", 1, 2.0, -1.0);
+    // Behind the eye, so the vehicle itself is never the answer — placed at
+    // the origin it would *contain* the camera and be picked from inside,
+    // which is a real rule (g10) and would mask this one.
+    shared.add(50, EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0));
+    rewo_net::route_set_passengers(
+        p.f.ids.cb_play_set_passengers,
+        &passengers_body(50, &[1, p.camera]),
+        &p.f.ids,
+        &mut shared,
+    );
+    let shared_hit = p.pick(&shared, None);
+    // The same roster with only the mob aboard: the camera's root is itself,
+    // so the two differ and the mob is picked again.
+    let mut alone = p.table_with("minecraft:zombie", 1, 2.0, -1.0);
+    alone.add(50, EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0));
+    rewo_net::route_set_passengers(
+        p.f.ids.cb_play_set_passengers,
+        &passengers_body(50, &[1]),
+        &p.f.ids,
+        &mut alone,
+    );
+    let alone_hit = p.pick(&alone, None);
+    c.record(
+        "g14.a_candidate_sharing_the_cameras_root_vehicle_is_skipped",
+        shared_hit.is_none() && alone_hit == Some(1),
+        format!(
+            "both aboard vehicle 50 -> {shared_hit:?}, mob aboard alone -> \
+             {alone_hit:?} (want None/Some(1) — the two runs are each other's \
+             MUTATION PARTNER, differing only in whether the camera is in the \
+             roster. Dropping the shares_root_vehicle arm makes the first \
+             Some(1))"
+        ),
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // f — the wiring: a suppressed label emits zero vertices, and both agree.
 // ---------------------------------------------------------------------------
 
@@ -1105,6 +1611,7 @@ fn check_wiring(
     c: &mut Checker,
     paths: &DataPaths,
     baked: &assets::BakedAssets,
+    jar: &std::path::Path,
 ) -> Result<(), String> {
     let f = Fixture::load(paths)?;
     let mut gpu = Gpu::new(None, true)?;
@@ -1269,6 +1776,54 @@ fn check_wiring(
              feature its own gate list again)",
             agree_failures.len(),
             agree_failures
+        ),
+    );
+
+    // -- f7: the clause M70 had to stub, end to end (M73) ---------------------
+    //
+    // A name-tagged mob whose `CustomNameVisible` is unset shows its tag only
+    // while it is under the crosshair. This is the property M73 exists for, and
+    // it is measured as a *vertex count* — the crosshair pick's answer really
+    // does reach the buffer — rather than as a boolean the gate computed.
+    //
+    // Nothing about the pick is stubbed here: `crosshair_pick_from_table` is
+    // the production seam, and the only difference between the two runs is
+    // where the mob is standing.
+    let p = PickFixture::load(paths, jar)?;
+    // A named mob whose index-3 CUSTOM_NAME_VISIBLE was never sent, standing
+    // at `(2, -1, z)`. Only `z` differs between the two runs.
+    //
+    // No `max_health` is synced, deliberately: rule 4 then refuses the health
+    // bar, so the text range holds the **nametag alone** and the count is a
+    // measurement of this clause rather than of the bar riding alongside it.
+    let named_hidden_at = |z: f64| -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, f.zombie, 2.0, -1.0, z, 0.0, 0.0));
+        t.set_custom_name(1, Some("Bob".into()));
+        t
+    };
+    let mut run = |z: f64| {
+        let t = named_hidden_at(z);
+        let pick = p.pick(&t, None);
+        let viewer = LabelViewer {
+            crosshair_pick: pick,
+            ..Default::default()
+        };
+        let (verts, name, _) = label_verts(&mut wr, &f, &t, &viewer, None, 4.0);
+        (verts, name, pick)
+    };
+    let (on_verts, on_name, on_pick) = run(0.0);
+    let (off_verts, off_name, off_pick) = run(4.0);
+    c.record(
+        "f7.a_name_tagged_mob_shows_its_tag_only_under_the_crosshair",
+        on_pick == Some(1) && on_name && on_verts > 0 && off_pick.is_none() && !off_name && off_verts == 0,
+        format!(
+            "on the ray: pick={on_pick:?} name={on_name} verts={on_verts}; four \
+             blocks to the side: pick={off_pick:?} name={off_name} \
+             verts={off_verts} (want a pick and vertices, then neither. This is \
+             the clause M70 transcribed and fed a hard `false` — the two runs \
+             are each other's MUTATION PARTNER, differing only in the mob's z. \
+             Feeding `false` again, as M70 did, makes the first run zero)"
         ),
     );
 

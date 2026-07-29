@@ -55,17 +55,22 @@
 //! nametag while ridden. That is not a quirk of this transcription; it is what
 //! the source does.
 //!
-//! # What Rewo cannot answer, and answers by suppressing
+//! # The crosshair clause (M70 stubbed it, M73 answers it)
 //!
-//! `crosshairPickEntity` needs an entity raycast (`LocalPlayer.raycastHitResult`
-//! → `ProjectileUtil.getEntityHitResult`, plus the two interaction-range
-//! attributes and the `AttackRange` item component). Rewo's raycast is
-//! voxel-only, so [`LabelInputs::is_crosshair_pick`] is a real input the gate
-//! drives both ways while the live client feeds it `false`. That is the house
-//! rule — an unknowable input suppresses rather than guesses (M19, M22) — and
-//! it is strictly closer to vanilla than the pre-M70 behaviour: showing a
-//! custom name unconditionally is wrong for every non-visible named mob at all
-//! times, whereas this is wrong only while one is under the crosshair.
+//! `crosshairPickEntity` needs an entity raycast, and M70 shipped while Rewo's
+//! raycast was still voxel-only, so [`LabelInputs::is_crosshair_pick`] was a
+//! real input the gate drove both ways while the live client fed it `false`.
+//! [`crate::entity_pick`] now answers it — `Minecraft.pick` →
+//! `LocalPlayer.raycastHitResult` → `ProjectileUtil.getEntityHitResult`, with
+//! both interaction ranges resolved from their attributes rather than
+//! hard-coded. The one piece still unimplemented is the `AttackRange` branch,
+//! which is a different algorithm entirely and inert unless a spear is held;
+//! that module's docs record it.
+//!
+//! It stays a plain field rather than a callback for the same reason every
+//! other input here is one: the gate drives both branches directly, and
+//! exactly one place — `live_cmd::resolve_crosshair_pick` — knows where the
+//! value comes from.
 
 /// `Team.Visibility`.
 ///

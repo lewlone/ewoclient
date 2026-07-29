@@ -143,6 +143,18 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // Shared with the entity collector for held-item id → name (M22).
     let items = std::sync::Arc::new(data.items.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
+    // M73: the crosshair entity pick's two version tables. Both fail loud
+    // here rather than at the first frame — a drifted table would otherwise
+    // show up as "nothing is ever under the crosshair".
+    let _ = PICK_SHAPES.set(rewo_data::entity_pick::EntityPickTable::resolve(
+        &data.entity_types,
+    )?);
+    let _ = REDIRECTABLE.set(
+        rewo_data::entity_pick::EntityTypeTag::load_redirectable_projectile(
+            &jar,
+            &data.entity_types,
+        )?,
+    );
     // Per-state collision shapes (slabs/stairs/fences, not just full cubes).
     let collide: Vec<Vec<[f32; 6]>> = baked.collide.clone();
     let global_bits = data.blocks.global_palette_bits;
@@ -785,10 +797,22 @@ pub(crate) struct LabelViewer<'a> {
     pub spectator: bool,
     /// `minecraft.player.getTeam()`.
     pub team: Option<&'a str>,
+    /// `entityRenderDispatcher.crosshairPickEntity` (M73) — the id
+    /// [`resolve_crosshair_pick`] returned for this frame, or `None`.
+    ///
+    /// One value per frame rather than a per-entity question, because vanilla
+    /// resolves it exactly once: `Minecraft.pick` runs one raycast and
+    /// `EntityRenderDispatcher.prepare` hands the single result to every
+    /// renderer. M70 fed this a hard `false`.
+    pub crosshair_pick: Option<i32>,
 }
 
 impl<'a> LabelViewer<'a> {
     /// Read the viewer half out of the session once.
+    ///
+    /// `crosshair_pick` is left `None` here and filled by the caller, because
+    /// it needs the frame's interpolation factor and the pick tables — see
+    /// [`resolve_crosshair_pick`].
     pub(crate) fn from_session(session: &'a PlaySession, hud_hidden: bool) -> LabelViewer<'a> {
         LabelViewer {
             camera_entity: session.player_id,
@@ -796,8 +820,216 @@ impl<'a> LabelViewer<'a> {
             hud_hidden,
             spectator: session.own_game_mode().is_some_and(|g| g.is_spectator()),
             team: session.own_team(),
+            crosshair_pick: None,
         }
     }
+}
+
+/// Everything [`resolve_crosshair_pick`] needs that is not the entity table —
+/// the version's static tables, gathered once so the seam takes one argument
+/// rather than five.
+#[derive(Clone, Copy)]
+pub(crate) struct PickTables<'a> {
+    pub types: &'a EntityTypes,
+    pub classes: &'a rewo_data::entity_types::EntityClasses,
+    pub shapes: &'a rewo_data::entity_pick::EntityPickTable,
+    /// `EntityTypeTags.REDIRECTABLE_PROJECTILE`, the tag
+    /// `Projectile.isPickable()` reads.
+    pub redirectable: &'a rewo_data::entity_pick::EntityTypeTag,
+    pub attributes: &'a rewo_data::attributes::AttributeRegistry,
+}
+
+/// `Minecraft.pick` → `crosshairPickEntity` (M73) — the production seam shared
+/// by the live collector and the `labelshot` oracle.
+///
+/// Shared for the same reason as [`label_inputs_from_table`]: the gate has to
+/// grade the resolution the client actually renders through. M41 and M45 both
+/// shipped gates that quietly stopped testing their subject by reimplementing
+/// a slice of the app's setup, and M73's whole output is one entity id — the
+/// easiest possible thing for a parallel derivation to get subtly wrong.
+///
+/// The four per-entity predicates, and where each comes from:
+///
+/// * **`isPickable()`** — the type's [`rewo_data::entity_pick::PickRule`],
+///   evaluated against the one live input each rule needs. `Alive` is
+///   unconditionally true here because Rewo's table *deletes* a removed
+///   entity, so `!isRemoved()` holds for every row by construction.
+/// * **`getPickRadius()`** — `1.0` for a pickable `Projectile`, else `0.0`.
+///   The rule already carries which is which.
+/// * **`canBePickedFromInside()`** — `true` for everything Rewo models; the
+///   only override is `SulfurCube` carrying a body item, whose flag Rewo does
+///   not decode. A wrong answer there costs an inside-pick on one mob.
+/// * **`getRootVehicle() == except.getRootVehicle()`** — walked through the
+///   riding graph from both ends.
+///
+/// Two inputs Rewo cannot evaluate and answers the *permissive* way, which is
+/// the opposite of the usual house rule and is deliberate:
+/// `Player.isSpectator()` for a **remote** player and `ArmorStand.isMarker()`.
+/// Both are metadata Rewo does not decode; suppressing on them would make
+/// every player and every armour stand unpickable, which is a far larger error
+/// than the one it avoids. The local player's own spectator state *is* known
+/// and is not the question — you are never your own crosshair target, because
+/// `getEntities(except, …)` excludes the camera entity.
+pub(crate) fn resolve_crosshair_pick(
+    session: &PlaySession,
+    tables: PickTables<'_>,
+    eye: [f64; 3],
+    dir: [f64; 3],
+    alpha: f32,
+) -> Option<rewo_world::entity_pick::EntityHit> {
+    crosshair_pick_from_table(
+        &session.world.entities,
+        session.player_id?,
+        [session.player.x, session.player.y, session.player.z],
+        session.local_attributes(),
+        tables,
+        eye,
+        dir,
+        alpha,
+        // `cameraEntity.pick(maxDistance, partialTicks, false)`.
+        &|from, d, reach| session.target_block(from, d, reach).map(|h| h.distance),
+    )
+}
+
+/// `Entity.getRootVehicle()` — walk up `set_passengers`'s riding graph.
+///
+/// Read-only. The loop is bounded by a visit set because a malformed roster
+/// could name a cycle, which vanilla's `while (result.isPassenger())` would
+/// spin on forever.
+fn root_vehicle_of(ents: &rewo_world::entities::EntityTable, id: i32) -> i32 {
+    let mut cur = id;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(cur) {
+        match ents.vehicle_of(cur) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// The table-level half of [`resolve_crosshair_pick`], split out so a gate can
+/// drive the real candidate construction without a live session (M73) — the
+/// same split [`label_inputs_from_table`] has.
+///
+/// `block_ray` is `cameraEntity.pick(maxDistance, partialTicks, false)`: it
+/// takes `(from, dir, reach)` and returns the distance to the block hit, or
+/// `None` for a miss. A closure rather than a world reference so the oracle
+/// can place a block at an exact distance and grade the reconciliation
+/// directly.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn crosshair_pick_from_table(
+    ents: &rewo_world::entities::EntityTable,
+    camera: i32,
+    camera_feet: [f64; 3],
+    local_attributes: &rewo_world::attributes::EntityAttributes,
+    tables: PickTables<'_>,
+    eye: [f64; 3],
+    dir: [f64; 3],
+    alpha: f32,
+    block_ray: &dyn Fn([f64; 3], [f64; 3], f64) -> Option<f64>,
+) -> Option<rewo_world::entity_pick::EntityHit> {
+    use rewo_data::entity_pick::PickRule;
+    use rewo_world::entity_pick::{
+        bounding_box, crosshair_pick, Candidate, DimensionInputs, InteractionRanges, PickInputs,
+    };
+
+    // Both ranges come from the camera entity's attributes. The local player
+    // is not in the entity table (the server sends no `add_entity` for you),
+    // so its snapshots are kept beside it — see `PlaySession::local_attributes`.
+    let ranges = InteractionRanges::resolve(
+        Some(local_attributes),
+        Some("minecraft:player"),
+        tables.attributes,
+    );
+    let camera_root = root_vehicle_of(ents, camera);
+    let player_type = tables.types.id_of("minecraft:player");
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for (id, e) in ents.iter() {
+        if id == camera {
+            continue; // `level.getEntities(except, …)`
+        }
+        let Some(shape) = tables.shapes.get(e.type_id) else {
+            continue;
+        };
+        let projectile_pickable = tables.redirectable.contains(e.type_id);
+        let pickable = match shape.rule {
+            PickRule::Never => false,
+            PickRule::Always => true,
+            // `!isRemoved()`; a removed entity is not in this table.
+            PickRule::Alive | PickRule::AliveUnlessSpectator | PickRule::AliveUnlessMarker => true,
+            PickRule::RedirectableProjectile => projectile_pickable,
+            // `super.isPickable() && !isInGround()`; the ground flag is not
+            // decoded, so a landed arrow stays pickable.
+            PickRule::RedirectableProjectileNotInGround => projectile_pickable,
+        };
+        let living = tables.classes.is_living(e.type_id);
+        let scale = if living {
+            rewo_world::attributes::resolve(
+                ents.attributes(id),
+                tables.types.name(e.type_id),
+                "scale",
+                tables.attributes,
+            )
+            .map_or(1.0, |(v, _)| v as f32)
+        } else {
+            1.0
+        };
+        let dims = DimensionInputs {
+            width: shape.width,
+            height: shape.height,
+            living,
+            avatar: Some(e.type_id) == player_type,
+            pose: ents.pose(id),
+            baby: ents.is_baby(id),
+            scale,
+        };
+        candidates.push(Candidate {
+            id,
+            bb: bounding_box(e.render_pos(alpha), &dims),
+            pickable,
+            pick_radius: if matches!(
+                shape.rule,
+                PickRule::RedirectableProjectile | PickRule::RedirectableProjectileNotInGround
+            ) && projectile_pickable
+            {
+                1.0
+            } else {
+                0.0
+            },
+            can_be_picked_from_inside: true,
+            shares_root_vehicle: root_vehicle_of(ents, id) == camera_root,
+        });
+    }
+
+    // The block half. `LocalPlayer.pick` casts the block ray to
+    // `max(block, entity)`, **not** to the block range — a nearer mob has to
+    // be able to shadow a block that is itself out of block reach.
+    let block_hit = block_ray(eye, dir, ranges.max());
+    // The camera entity's own box seeds the broad-phase search volume. The
+    // local player is not in the table, so it is built from the player type's
+    // own dimensions at the feet the physics tracks.
+    let camera_bb = bounding_box(
+        camera_feet,
+        &DimensionInputs {
+            width: 0.6,
+            height: 1.8,
+            living: true,
+            avatar: true,
+            pose: 0,
+            baby: false,
+            scale: 1.0,
+        },
+    );
+    crosshair_pick(&PickInputs {
+        eye,
+        dir,
+        camera_bb,
+        ranges,
+        block_hit_distance: block_hit,
+        candidates: &candidates,
+    })
 }
 
 /// Build one entity's [`rewo_world::label::LabelInputs`] — the production seam
@@ -886,12 +1118,10 @@ pub(crate) fn label_inputs_from_table<'a>(
         // `true`; everything else inherits `isCustomNameVisible()`.
         entity_should_show_name: is_player || ents.is_custom_name_visible(id),
         has_custom_name: ents.custom_name(id).is_some(),
-        // Rewo has no entity raycast, so it cannot answer
-        // `entityRenderDispatcher.crosshairPickEntity`. Suppressing rather than
-        // guessing is the house rule (M19, M22); see `rewo_world::label`'s
-        // module docs for why that is still closer to vanilla than the
-        // pre-M70 behaviour of showing every custom name unconditionally.
-        is_crosshair_pick: false,
+        // `entity == entityRenderDispatcher.crosshairPickEntity` (M73). M70
+        // fed this a hard `false` because Rewo's raycast was voxel-only; the
+        // frame's single pick now answers it — see `resolve_crosshair_pick`.
+        is_crosshair_pick: viewer.crosshair_pick == Some(id),
     }
 }
 
@@ -1310,6 +1540,41 @@ fn crossbow_item_id() -> Option<i32> {
 /// resolve the item), which makes the CROSSBOW_HOLD arm unreachable rather
 /// than guessed.
 pub(crate) static CROSSBOW_ITEM: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+
+/// The crosshair pick's two version tables (M73), resolved once at session
+/// setup — per-type bounding-box dimensions with `isPickable()`, and the
+/// `redirectable_projectile` tag that rule reads.
+///
+/// Statics for the same reason [`CROSSBOW_ITEM`] is one: both `collect_entities`
+/// call sites need them and neither owns the loader. `None` until set, which
+/// makes the pick return `None` rather than pick with a guessed hitbox.
+pub(crate) static PICK_SHAPES: std::sync::OnceLock<rewo_data::entity_pick::EntityPickTable> =
+    std::sync::OnceLock::new();
+pub(crate) static REDIRECTABLE: std::sync::OnceLock<rewo_data::entity_pick::EntityTypeTag> =
+    std::sync::OnceLock::new();
+
+/// The frame's `crosshairPickEntity`, resolved from the session and the two
+/// statics above — the one call the render path makes.
+///
+/// `None` whenever any input is missing (no attribute registry, no entity
+/// classes, tables unset), which is the same fail-closed answer M70 shipped:
+/// a name-tagged mob whose `CustomNameVisible` is unset simply stays silent.
+pub(crate) fn frame_crosshair_pick(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+) -> Option<i32> {
+    let tables = PickTables {
+        types: etypes,
+        classes: session.entity_classes.as_deref()?,
+        shapes: PICK_SHAPES.get()?,
+        redirectable: REDIRECTABLE.get()?,
+        attributes: session.attribute_registry.as_deref()?,
+    };
+    let eye = eye_f64(session);
+    let dir = look_dir(session.player.yaw, session.player.pitch);
+    resolve_crosshair_pick(session, tables, eye, dir, alpha).map(|h| h.id)
+}
 
 /// Convert the baked held-item models across the `rewo-data` → `rewo-gpu`
 /// seam (M22). The two shapes are deliberately identical so this stays
@@ -1800,6 +2065,11 @@ fn collect_entities<'a>(
     // every floating label on an un-teamed entity, and nothing on a teamed
     // one, because the team switch returns first.
     hud_hidden: bool,
+    // `entityRenderDispatcher.crosshairPickEntity` (M73) — resolved once by
+    // the caller, because vanilla resolves it once: `Minecraft.pick` runs one
+    // raycast and `EntityRenderDispatcher.prepare` hands the single result to
+    // every renderer.
+    crosshair_pick: Option<i32>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -1811,7 +2081,8 @@ fn collect_entities<'a>(
     let eye = player_eye(session);
     // M70: the viewer half of the label predicate — camera entity, F1, game
     // mode and the viewer's own team. Read once per frame, not per entity.
-    let viewer = LabelViewer::from_session(session, hud_hidden);
+    let mut viewer = LabelViewer::from_session(session, hud_hidden);
+    viewer.crosshair_pick = crosshair_pick;
                                                   // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
                                                   // pins every player's walk pose so a still-target PNG can prove the
                                                   // limb-swing mechanism deterministically (a live walker's phase at
@@ -2792,6 +3063,7 @@ fn run_headless(
         // hidden. `REWO_HUD_HIDDEN=1` is the knob that lets a gate or a
         // scripted shot exercise F1's suppression without a keyboard.
         std::env::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
+        frame_crosshair_pick(&session, &etypes, 1.0),
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -3900,6 +4172,7 @@ impl LiveApp {
             &trim_slots,
             &self.etf,
             self.hud_hidden,
+            frame_crosshair_pick(session, &self.etypes, alpha),
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);

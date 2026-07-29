@@ -12,6 +12,19 @@ pub struct RayHit {
     pub block: [i32; 3],
     /// Unit normal of the face the ray entered through (placement side).
     pub face: [i32; 3],
+    /// Distance from `origin` to the entered face, in blocks (the direction is
+    /// normalized first, so this is a true distance and not a parameter).
+    ///
+    /// Added for M73's crosshair pick, which has to reconcile this against an
+    /// entity hit: `LocalPlayer.pick` truncates the entity ray at the block
+    /// hit and then compares the two distances, so "which block" is not enough
+    /// — it needs "how far". **This is the distance to the block's entered
+    /// face, not to its collision shape**: the traversal treats a cell as
+    /// wholly solid, so a ray meeting a slab or a stair reports the face of the
+    /// cell rather than the surface inside it. That approximation predates M73
+    /// (it is how `target_block` has always chosen a block) and it can only
+    /// make a block win a tie it would have lost, never the reverse.
+    pub distance: f64,
 }
 
 /// Cast a ray from `origin` along `dir` (need not be normalized) up to
@@ -33,7 +46,11 @@ where
     ];
     // Origin block first — you can target the block your eye sits in.
     if solid(block[0], block[1], block[2]) {
-        return Some(RayHit { block, face: [0, 0, 0] });
+        return Some(RayHit {
+            block,
+            face: [0, 0, 0],
+            distance: 0.0,
+        });
     }
 
     let mut step = [0i32; 3];
@@ -70,7 +87,11 @@ where
         let mut face = [0, 0, 0];
         face[axis] = -step[axis]; // we entered from the opposite side
         if solid(block[0], block[1], block[2]) {
-            return Some(RayHit { block, face });
+            return Some(RayHit {
+                block,
+                face,
+                distance: t,
+            });
         }
     }
     None
@@ -107,6 +128,21 @@ mod tests {
     fn respects_max_distance() {
         // Wall is 5 away but reach is 3 → miss.
         assert!(cast([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 3.0, |x, _, _| x >= 5).is_none());
+    }
+
+    #[test]
+    fn the_hit_distance_is_measured_along_the_normalized_direction() {
+        // A wall three blocks east of an eye at x=0.5: the entered face is the
+        // plane x=3, so the distance is 2.5 — and it must not depend on the
+        // length of the direction vector the caller passed.
+        for scale in [1.0, 7.0] {
+            let h = cast([0.5, 0.5, 0.5], [scale, 0.0, 0.0], 10.0, |x, _, _| x >= 3).unwrap();
+            assert!((h.distance - 2.5).abs() < 1e-9, "scale {scale}: {}", h.distance);
+        }
+        // Standing inside a solid cell is distance zero, not the first
+        // boundary crossing.
+        let inside = cast([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 10.0, |_, _, _| true).unwrap();
+        assert_eq!(inside.distance, 0.0);
     }
 
     #[test]

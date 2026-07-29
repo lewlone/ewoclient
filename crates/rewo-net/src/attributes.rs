@@ -104,6 +104,44 @@ pub fn parse(body: &[u8]) -> Option<UpdateAttributes> {
     })
 }
 
+/// Store an `update_attributes` body **only** if it names `player_id` (M73).
+///
+/// The local player's attributes cannot go through
+/// [`crate::apply_update_attributes`], whose first act is
+/// `handleUpdateAttributes`'s own `getEntity(id) == null` gate: the server
+/// sends no `add_entity` for your own player, so its `EntityTable` row does
+/// not exist and every snapshot addressed to it is dropped. The crosshair pick
+/// needs `block_interaction_range` and `entity_interaction_range` from exactly
+/// those snapshots.
+///
+/// Returns whether anything was stored. A body that does not parse, a `None`
+/// player id, or an id belonging to any other entity all change nothing —
+/// storing another entity's ranges here would silently give the local player
+/// a mob's reach.
+///
+/// The type filter `apply_update_attributes` applies (`AttributeSupplier`
+/// membership) is deliberately **not** repeated: the entity is known to be the
+/// player, whose supplier declares both ranges, and `attributes::resolve`
+/// consults the supplier again on every read.
+pub fn apply_local_attributes(
+    body: &[u8],
+    player_id: Option<i32>,
+    out: &mut rewo_world::attributes::EntityAttributes,
+) -> bool {
+    let Some(player) = player_id else { return false };
+    let Some(packet) = parse(body) else {
+        return false;
+    };
+    if packet.entity_id != player {
+        return false;
+    }
+    let stored = !packet.snapshots.is_empty();
+    for snap in packet.snapshots {
+        out.apply(snap.attribute, snap.base, snap.modifiers);
+    }
+    stored
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +176,37 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn the_local_player_store_takes_only_its_own_snapshots() {
+        // M73. The gate drives this end to end; these pin the routing decision
+        // without a GPU or a client jar.
+        let mut store = rewo_world::attributes::EntityAttributes::default();
+        assert!(apply_local_attributes(
+            &body(7, &[(23, 5.0, &[])]),
+            Some(7),
+            &mut store
+        ));
+        assert_eq!(store.get(23).map(|i| i.base), Some(5.0));
+        // Another entity's snapshot must not land here — it would silently
+        // give the local player a mob's interaction ranges.
+        assert!(!apply_local_attributes(
+            &body(8, &[(23, 64.0, &[])]),
+            Some(7),
+            &mut store
+        ));
+        assert_eq!(store.get(23).map(|i| i.base), Some(5.0));
+    }
+
+    #[test]
+    fn the_local_player_store_is_inert_before_login_and_on_a_bad_body() {
+        let mut store = rewo_world::attributes::EntityAttributes::default();
+        // No `player_id` yet: the login packet has not arrived.
+        assert!(!apply_local_attributes(&body(7, &[(23, 5.0, &[])]), None, &mut store));
+        // A body that does not parse.
+        assert!(!apply_local_attributes(&[0xFF], Some(7), &mut store));
+        assert!(store.is_empty());
     }
 
     #[test]

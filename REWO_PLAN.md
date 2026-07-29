@@ -1988,6 +1988,155 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M73 — the entity raycast (2026-07-29)
+
+M70 shipped the label ladder with one clause it could not evaluate:
+`EntityRenderer.shouldShowName` is `entity.shouldShowName() || (hasCustomName()
+&& entity == crosshairPickEntity)`, and Rewo's raycast was voxel-only, so the
+second disjunct was transcribed, graded both ways by the gate and fed a hard
+`false` live. This is the pick that answers it, in
+`rewo-world/src/entity_pick.rs`.
+
+**It is not a second, label-only raycast.** `Minecraft.pick` assigns
+`crosshairPickEntity` from `player.raycastHitResult(partial, cameraEntity)` —
+*the* `hitResult`, the same one that decides which block you are mining. The
+brief looked for it in `GameRenderer`; in 26.2 it is a **private static
+`LocalPlayer.pick`**, called from `LocalPlayer.raycastHitResult`, called from
+`Minecraft.pick`. `GameRenderer` has no pick at all.
+
+**The inflation is `entity.getPickRadius()`, and it is `0.0F` for every entity
+but a `Projectile`** (which returns `isPickable() ? 1.0F : 0.0F`). It is
+emphatically *not* the `DEFAULT_ENTITY_HIT_RESULT_MARGIN = 0.3F` declared at
+the top of the same file — that feeds `computeMargin`, which belongs to the
+**projectile** overload of `getEntityHitResult` (a flying arrow's forgiveness
+ramp, `max(0, min(0.3, (tickCount - 2) / 20))`). A mob is swept at its exact
+hitbox with no forgiveness whatsoever. `labelshot` g7's mutation partner is
+literally "inflate by 0.3", because that is the wrong answer a reader is most
+likely to reach for.
+
+**The tie-break is nearest-first on `from.distanceToSqr(clipPoint)`, strict,
+seeded at `maxValue`** — so the range bound and the tie-break are the same
+comparison. Two arms of that loop read strangely and are transcribed as
+written: an entity *containing* the eye short-circuits to `nearest = 0.0` if it
+`canBePickedFromInside()` (and `AABB.clip` tests only near faces, so a segment
+starting inside clips nothing and `clipPoint.orElse(from)` is the live branch);
+and a candidate sharing the source's root vehicle is skipped only *because*
+`nearest != 0.0` in the ordinary case — the guard is `dd < nearest || nearest
+== 0.0`, and after an inside-pick that arm assigns `hovered` without updating
+`nearest`.
+
+**The range that bounds the sweep is `max(block, entity)`, not the entity
+range.** The entity range is applied afterwards by `filterHitResult`, which
+rewrites an over-range entity hit into a `BlockHitResult.miss` — and a miss
+carries no entity, so `crosshairPickEntity` becomes null. With
+`blockInteractionRange` 4.5 above `entityInteractionRange` 3.0, a mob at 4
+blocks is found, measured, and *then* discarded.
+
+**A mutation that survived, and what it found.** g5 asserted that a dead heat
+between a block and a mob goes to the block, naming `>=` → `>` as its partner.
+Running it left the gate green. The reason is that vanilla enforces this
+precedence **twice**: the entity ray is truncated at the block hit *and* the
+surviving hit is compared against it — and because the truncation feeds
+`getEntityHitResult`'s `maxValue`, whose `dd < nearest` is itself strict, the
+tie is already excluded by the sweep bound. `entityHit.distSq < blockDistSq`
+is therefore unreachable for an ordinary candidate; the only path that can
+reach it is the same-root-vehicle arm above, which runs after an inside-pick
+without consulting `maxValue`. Neither half alone is observable, so g5's
+mutation now removes both. This is the kind of claim that only a mutation can
+falsify — the witness was passing, and passing for the wrong reason.
+
+**Do not hard-code 3.0 / 4.5.** Both are `RangedAttribute`s
+(`entity_interaction_range` 3.0 in [0, 64], `block_interaction_range` 4.5 in
+[0, 64]) and resolve through M55's machinery, so a server's modifiers and the
+clamp both apply — **creative mode is itself a `+2.0 ADD_VALUE` modifier on the
+entity range**, not a special case in the pick. That exposed a real gap:
+`apply_update_attributes` opens with `handleUpdateAttributes`'s own
+`getEntity(id) == null` gate, and the local player **is not in Rewo's
+`EntityTable`** (the server sends no `add_entity` for your own player), so every
+snapshot addressed to it was being dropped. `PlaySession` now keeps
+`local_attributes` beside the table, filled by
+`rewo_net::attributes::apply_local_attributes` — which stores only for the
+camera entity, because another entity's ranges landing there would silently
+give the player a mob's reach (g4).
+
+**Two machine-extracted tables** (`tools/gen_entity_pick.py` →
+`rewo-data/src/entity_pick_table.rs`, 158 types), because neither is in any
+datagen report:
+
+- **`isPickable()` defaults to `false`.** That inverts the intuition: the pick
+  does not look for reasons to exclude an entity, it is that only the thirteen
+  classes overriding the method are pickable at all. A dropped **item**, an
+  experience orb, a `text_display`, a `marker` and a `lightning_bolt` are
+  invisible to the crosshair — and so is the **ender dragon**, which is a
+  `LivingEntity` that would inherit `true` and overrides it back to `false`,
+  delegating to `EnderDragonPart` hitboxes that are not registered entity
+  types. Census: 119 `Alive`, 15 `RedirectableProjectile`, 12 `Never`, 7
+  `Always`, 3 `RedirectableProjectileNotInGround`, 1 each for the player's
+  spectator test and the armour stand's marker test. The generator asserts each
+  override's **body text** verbatim, so a rule changing meaning under the same
+  class name is a hard error.
+- **Base dimensions** — `EntityType.Builder.sized(w, h)`, all 158 parsed with
+  zero falling back to the builder default. This replaced a hand-written
+  14-entry table whose default was `(0.6, 1.8)` for everything it did not name;
+  g13 is the consequence made observable, a ray 1.9 above the feet hitting a
+  zombie (1.95) and missing a player (1.8).
+
+`Projectile.isPickable()` is a **tag**, `EntityTypeTags.REDIRECTABLE_PROJECTILE`
+(3 entries: fireball, wind_charge, breeze_wind_charge), read from the client
+jar's data pack rather than baked into the generator — the same rule M19
+records for `ItemTags.SPEARS`.
+
+**The half-width is `0.6F / 2.0F` widened, not `0.6 / 2.0`.** Vanilla halves
+the width as a `float` and lets the `AABB` constructor widen it, so a mob's
+near face sits at `x - 0.30000001192…`. Two witnesses were written with a
+hand-computed `0.3` and both landed a hundred-millionth off the bound they
+claimed to sample — exactly M70's `b4` failure again, and the reason g2 now
+asserts the placement (`near face == 3.0`) before asserting the answer.
+
+**Scoped exclusions, recorded rather than hidden.** The `AttackRange` branch of
+`raycastHitResult` (a wholly different algorithm — `getHitEntitiesAlong` +
+`getManyEntityHitResult`, with a minimum reach, a motion-dependent maximum and
+a two-stage re-clip) is not implemented; in vanilla 26.2 only the spear builder
+carries that component, so it is inert unless a spear is held or in use, and
+while one is this falls back to the ordinary pick. The 47 per-class
+`getDefaultDimensions` overrides are not modelled either — the base chain
+(`sized`, the `SLEEPING` substitution, `Avatar`'s pose map, `getAgeScale()`, the
+`SCALE` attribute) is exact, but 30 of those overrides substitute an explicit
+`BABY_DIMENSIONS` that is only sometimes the adult box halved (a baby cow's
+0.45×0.7 is; a baby chicken's 0.3×0.4 is not half of 0.4×0.7). Two inputs Rewo
+cannot decode — a *remote* player's spectator flag and an armour stand's marker
+flag — are answered **permissively**, against the usual house rule, because
+suppressing on them would make every player and every armour stand unpickable.
+
+**Gate: `rewo labelshot --check`, 32 → 47 witnesses**, serverless, validation
+ON, 0 VUIDs. The new g-section drives `live_cmd::crosshair_pick_from_table` —
+the same function `resolve_crosshair_pick` calls every frame — and `f7` is the
+property the milestone exists for, measured end to end as a **vertex count**: a
+name-tagged mob whose `CustomNameVisible` is unset emits 24 label vertices
+standing on the ray and 0 standing four blocks to the side, the two runs
+differing only in the mob's `z`. No `max_health` is synced for it, deliberately,
+so the text range holds the nametag alone. **All 13 named mutations were run**;
+twelve were caught first time, g5 was not and is described above.
+
+**Measured.** **1206 tests** (was 1180 at this branch point: +18 `rewo-world`,
++6 `rewo-data`, +2 `rewo-net`). All 27 gate invocations exit 0 with **0 VUIDs**:
+labelshot 47, capeshot 69, itemshot 62, inventoryshot 152, healthbarshot 33,
+attributeshot 43, captureshot 17, blockentityshot 172, swingshot 97, hurtshot 38,
+weathershot 35, handshot 34, particleshot 34, eventshot 28, danceshot 24,
+portalshot 12, hudshot 41, mobshot 246/246 + emissive 5 + etf 8 + tint 11 +
+variant 13, skyshot, lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG
+SHA-256 `2cc56b4a…46635`, byte-identical to M15 onward. `gen_entity_pick.py`
+reproduces its output byte-for-byte on a re-run.
+
+**Open.** No live server session was run, so the live glue
+(`frame_crosshair_pick` → `resolve_crosshair_pick`, ten lines over the gated
+seam) is compiled and unexercised — nobody has watched a nametag appear as the
+crosshair crosses a mob. The `AttackRange` branch and the 47
+`getDefaultDimensions` overrides are the scoped exclusions above. And the
+numbering: this shipped as **M73** because the parallel session took M71 and M72
+out from under it mid-flight; the code was written against a base where M71 was
+free.
+
 ### M70 — the entity-label visibility rules (2026-07-29)
 
 Three features float a label over an entity — the nametag (M2-era), the health
@@ -2108,6 +2257,13 @@ wrong for such a mob at all times, this is wrong only while it is under the
 crosshair — but it is a visible change and the entity pick is the named
 follow-up.
 
+> **Closed by M73** (entry above). The pick ships in
+> `rewo-world/src/entity_pick.rs`, both interaction ranges resolve through the
+> attribute machinery, and `labelshot`'s `f7` measures the clause end to end as
+> a vertex count. The `AttackRange` branch named here is the one part that
+> remains unimplemented, and is recorded as a scoped exclusion in M73's entry.
+> The witness counts below are M70's measurement; `labelshot` is now 47.
+
 **Two mutations found real gaps in my own witnesses**, and both were the same
 shape: a property that looked tested but had no sample where the mutation could
 bite.
@@ -2151,7 +2307,8 @@ and still pass unchanged.
 **Open.** No live in-world sighting — the gate is authoritative for the
 properties it names, and nobody has watched a nametag disappear behind a team
 rule on a real server. `crosshairPickEntity` (above) is the one input still fed
-a constant. `ArmorStandRenderer`'s arm of the ladder is transcribed and
+a constant — **closed by M73**, which resolves it from a real entity raycast.
+`ArmorStandRenderer`'s arm of the ladder is transcribed and
 unit-tested but unreachable live, because Rewo models no armour stand.
 `ItemFrameRenderer.shouldShowName` — its own third rule, `!hud.isHidden() &&
 crosshairPick == entity && item.getCustomName() != null` — is deliberately not
