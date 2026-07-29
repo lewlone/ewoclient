@@ -13,6 +13,7 @@
 pub mod attributes;
 pub mod biome_parse;
 pub mod chat_sign;
+pub mod chat_style;
 pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
