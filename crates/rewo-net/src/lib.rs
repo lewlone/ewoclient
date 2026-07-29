@@ -32,6 +32,7 @@ pub mod skins;
 pub mod sounds;
 pub mod spawn_info;
 pub mod tab_list_text;
+pub mod tags;
 pub mod teams;
 pub mod view_area;
 
@@ -230,6 +231,10 @@ pub struct Connection<'a> {
     cat_variants: Vec<crate::variant_parse::MobVariantDef>,
     wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
     frog_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// The server's datapack tags (M69), applied during configuration and
+    /// handed to the play session. Decode and state only — nothing reads them
+    /// yet; `crate::tags` says what wiring them would take.
+    tags: crate::tags::TagOverrides,
 }
 
 impl<'a> Connection<'a> {
@@ -262,6 +267,7 @@ impl<'a> Connection<'a> {
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
             trim_patterns: Vec::new(),
+            tags: crate::tags::TagOverrides::default(),
         })
     }
 
@@ -456,6 +462,13 @@ impl<'a> Connection<'a> {
                 }
                 x if x == self.ids.cb_config_registry_data => {
                     self.parse_registry_data(body)?;
+                }
+                x if x == self.ids.cb_config_update_tags => {
+                    // M69 — the server's datapack tags. This is where a
+                    // vanilla server sends them on a normal join; the play
+                    // copy (`route_tags`) is the datapack-reload case. Both
+                    // reach the same walk.
+                    apply_update_tags(&self.packet[body..], &mut self.tags);
                 }
                 x if x == self.ids.cb_config_finish => {
                     let ack = PacketWriter::packet(self.ids.sb_config_finish);
@@ -1371,6 +1384,85 @@ pub fn apply_container_set_slot(
     inventory.set_slot(state_id, slot as i32, item)
 }
 
+/// `ClientboundSetPlayerInventoryPacket` (M69) — the authoritative write
+/// `container_set_slot` is not.
+///
+/// Body: `VarInt slot`, optional `ItemStack`. **Two differences from its
+/// sibling, both of which a copy of `apply_container_set_slot` would get
+/// wrong:**
+///
+/// 1. **The slot is a `VarInt`, not an `i16`.** `container_set_slot` writes
+///    its index as a short among var-ints (M34's recorded trap); this one is
+///    `ByteBufCodecs.VAR_INT` in the record's `STREAM_CODEC`. Reading a short
+///    here consumes two bytes of a one-byte field and every stack after it is
+///    garbage — and for slot values under 128 the *first* byte alone is a
+///    plausible-looking index, so the failure starts one field late.
+/// 2. **There is no container id and no state id.** `handleSetPlayerInventory`
+///    is `player.getInventory().setItem(slot, contents)` and nothing else — it
+///    does not go through the menu, so there is no state to advance and no
+///    container to filter on. It always applies to the player.
+///
+/// And the slot is an **inventory index**, which is the whole reason this is a
+/// separate function rather than a parameter: the conversion lives in
+/// `rewo_world::inventory::menu_slot_of_inventory_index`.
+pub fn apply_set_player_inventory(
+    body: &[u8],
+    components: rewo_data::components::DataComponentIds,
+    inventory: &mut rewo_world::inventory::Inventory,
+    details: Option<&mut crate::item_stack::StackDetails>,
+) -> rewo_world::inventory::IndexWrite {
+    use rewo_world::inventory::IndexWrite;
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let Ok(index) = r.varint() else {
+        return IndexWrite::OutOfRange;
+    };
+    // The stack is read before the index is judged, deliberately: a body whose
+    // index is out of range is still a *well-formed* body, and its tooltip
+    // text is worth recording. Judging first would also mean the two failure
+    // modes ("bad index" and "bad stack") could not be told apart.
+    let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        return IndexWrite::OutOfRange;
+    };
+    if let Some((fingerprint, text)) = text {
+        inventory.record_text(fingerprint, text);
+    }
+    if let (Some(sink), Some((fingerprint, detail))) = (details, detail) {
+        sink.record(fingerprint, detail);
+    }
+    inventory.set_inventory_index(index, item)
+}
+
+/// `ClientboundSetCursorItemPacket` (M69) — one optional `ItemStack` and
+/// nothing else.
+///
+/// The shortest body in the inventory family: no container id, no state id, no
+/// slot. `handleSetCursorItem` is `containerMenu.setCarried(contents)`, guarded
+/// only against the creative inventory screen — which Rewo has no notion of, so
+/// the guard has nothing to express here.
+///
+/// This is what M35's predicted cursor has been missing. Its only correction
+/// path was a whole `container_set_content` triggered by a state-id mismatch;
+/// this is the server fixing one value without one.
+pub fn apply_set_cursor_item(
+    body: &[u8],
+    components: rewo_data::components::DataComponentIds,
+    inventory: &mut rewo_world::inventory::Inventory,
+    details: Option<&mut crate::item_stack::StackDetails>,
+) -> bool {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        return false;
+    };
+    if let Some((fingerprint, text)) = text {
+        inventory.record_text(fingerprint, text);
+    }
+    if let (Some(sink), Some((fingerprint, detail))) = (details, detail) {
+        sink.record(fingerprint, detail);
+    }
+    inventory.set_carried(item);
+    true
+}
+
 /// `ClientboundSetHeldSlotPacket` (M34) — one VarInt.
 ///
 /// An out-of-range slot is **ignored**, matching
@@ -1425,7 +1517,70 @@ pub fn route_inventory(
         apply_set_held_slot(body, inventory);
         return true;
     }
+    // M69 — the two authoritative writes. Both carry an `ItemStack`, so both
+    // are matched and dropped without the component ids, exactly as the two
+    // container packets above are: inventing ids would misparse the patch
+    // rather than fail, which for the cursor would put a confidently wrong
+    // stack on the pointer.
+    if id == ids.cb_play_set_player_inventory {
+        if let Some(c) = components {
+            apply_set_player_inventory(body, c, inventory, details);
+        }
+        return true;
+    }
+    if id == ids.cb_play_set_cursor_item {
+        if let Some(c) = components {
+            apply_set_cursor_item(body, c, inventory, details);
+        }
+        return true;
+    }
     false
+}
+
+/// The `update_tags` dispatch seam (M69) — the play-state half.
+///
+/// Mirrors [`route_inventory`] so `play::PlaySession` and any oracle drive the
+/// same production code. The **configuration**-state copy of this packet is
+/// dispatched by `NetSession::run_configuration` against
+/// `ids.cb_config_update_tags`; both call [`apply_update_tags`], which is why
+/// there is one walk rather than two.
+///
+/// Returns whether the id matched — **not** whether the update applied. A body
+/// that fails to decode is logged and dropped whole; see
+/// [`crate::tags::read_update_tags`] for why a partial apply would be worse
+/// than none.
+pub fn route_tags(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    overrides: &mut crate::tags::TagOverrides,
+) -> bool {
+    if id == ids.cb_play_update_tags {
+        apply_update_tags(body, overrides);
+        return true;
+    }
+    false
+}
+
+/// Decode one `update_tags` body and apply it. Shared by both states.
+///
+/// Returns whether it applied.
+pub fn apply_update_tags(body: &[u8], overrides: &mut crate::tags::TagOverrides) -> bool {
+    match crate::tags::read_update_tags(body) {
+        Ok(update) => {
+            log::info!(
+                "net: update_tags — {} registr(ies), {} tag(s)",
+                update.registries.len(),
+                update.tag_count()
+            );
+            overrides.apply(&update);
+            true
+        }
+        Err(e) => {
+            log::debug!("net: update_tags decode: {e}");
+            false
+        }
+    }
 }
 
 /// The kind information metadata routing needs, because several slots are

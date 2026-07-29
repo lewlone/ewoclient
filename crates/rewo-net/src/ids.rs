@@ -37,6 +37,13 @@ pub struct Ids {
     pub cb_config_ping: i32,
     pub cb_config_select_known_packs: i32,
     pub cb_config_registry_data: i32,
+    /// `ClientboundUpdateTagsPacket` in the **configuration** state (M69).
+    ///
+    /// This is the one that actually fires on a normal join: a vanilla server
+    /// sends the whole tag set here, right after `registry_data`, and the play
+    /// copy is only used for a datapack reload. Handling one and not the other
+    /// would have looked like it worked for exactly as long as nobody reloaded.
+    pub cb_config_update_tags: i32,
     pub cb_config_finish: i32,
     pub cb_config_cookie_request: Option<i32>,
     pub cb_config_disconnect: i32,
@@ -122,6 +129,20 @@ pub struct Ids {
     pub cb_play_container_set_slot: i32,
     /// `ClientboundSetHeldSlotPacket` — the server moving the selection.
     pub cb_play_set_held_slot: i32,
+    /// `ClientboundSetPlayerInventoryPacket` (M69) — one authoritative slot
+    /// write, addressed by **inventory index** rather than menu slot.
+    /// `container_set_slot`'s index-addressed twin; see
+    /// `rewo_world::inventory::menu_slot_of_inventory_index`.
+    pub cb_play_set_player_inventory: i32,
+    /// `ClientboundSetCursorItemPacket` (M69) — the server's authoritative
+    /// carried stack, and the only correction path M35's predicted cursor has
+    /// short of a whole `container_set_content`.
+    pub cb_play_set_cursor_item: i32,
+    /// `ClientboundUpdateTagsPacket` in the **play** state (M69) — a datapack
+    /// reload mid-session. The same packet also exists in configuration, which
+    /// is where a vanilla server sends it on join; both are resolved because
+    /// they are two different ids for one body.
+    pub cb_play_update_tags: i32,
     /// `ClientboundSetEquipmentPacket` — the held items that decide a swing's
     /// duration and animation type. Required for the same reason: without it
     /// every entity would silently swing with the bare-hand default.
@@ -239,6 +260,7 @@ impl Ids {
             cb_config_ping: req!(p, Cfg, C, "ping"),
             cb_config_select_known_packs: req!(p, Cfg, C, "select_known_packs"),
             cb_config_registry_data: req!(p, Cfg, C, "registry_data"),
+            cb_config_update_tags: req!(p, Cfg, C, "update_tags"),
             cb_config_finish: req!(p, Cfg, C, "finish_configuration"),
             cb_config_cookie_request: opt!(p, Cfg, C, "cookie_request"),
             cb_config_disconnect: req!(p, Cfg, C, "disconnect"),
@@ -284,6 +306,9 @@ impl Ids {
             cb_play_container_set_content: req!(p, P, C, "container_set_content"),
             cb_play_container_set_slot: req!(p, P, C, "container_set_slot"),
             cb_play_set_held_slot: req!(p, P, C, "set_held_slot"),
+            cb_play_set_player_inventory: req!(p, P, C, "set_player_inventory"),
+            cb_play_set_cursor_item: req!(p, P, C, "set_cursor_item"),
+            cb_play_update_tags: req!(p, P, C, "update_tags"),
             cb_play_set_equipment: req!(p, P, C, "set_equipment"),
             cb_play_update_attributes: req!(p, P, C, "update_attributes"),
             cb_play_update_mob_effect: req!(p, P, C, "update_mob_effect"),

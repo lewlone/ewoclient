@@ -26,7 +26,7 @@ report appears in §5 with a status.
    needs-a-missing-subsystem, and not-applicable. The 31 pure-state ones are
    decodable and headlessly gateable *today*, with no renderer and no design
    decision — the same test the M52–M65 batches were chosen by.
-3. **`update_tags` (134) is the sharpest gap in the list**, because its failure
+3. **`update_tags` is the sharpest gap in the list**, because its failure
    mode is silence. Rewo reads `ItemTags.SPEARS` (M19) and the enchantment
    `curse` / `tooltip_order` tags (M42) *from the jar*. A server whose datapack
    changes those tags diverges from Rewo with no error, no warning, and nothing
@@ -184,7 +184,15 @@ precisely to correct the prediction without a resync, and Rewo has neither:
 `container_close` is in the same cluster and is one byte: nothing currently
 tells Rewo's inventory screen to close.
 
-### 3. `update_tags` (134) — the divergence with no symptom
+### 3. `update_tags` (config **13** *and* play **134**) — the divergence with no symptom
+
+> **Correction (M69).** This audit surveyed clientbound-**play** only, so it
+> listed `update_tags` at play 134 alone. The packet is also sent in
+> **configuration** (id 13), and *that* is the copy a vanilla server sends on
+> join, right after `registry_data`; the play copy is the datapack-reload case.
+> Resolving only the play id would have looked like it worked until someone ran
+> `/reload`. A whole-protocol sweep would have caught this; the play-only scope
+> is a limit of the audit, not of the packet.
 
 Rewo reads vanilla's datapack tags out of the **client jar**: `ItemTags.SPEARS`
 for M19's swing durations, `enchantment/curse` and `enchantment/tooltip_order`
@@ -325,7 +333,7 @@ same two greps will call every one of them handled.
 | 93 | `set_camera` | absent | **A** | The spectator camera's target entity — pure state that redirects the eye. |
 | 94 | `set_chunk_cache_center` | absent | **A** | **Decoded by this task.** Two VarInts. |
 | 95 | `set_chunk_cache_radius` | absent | **A** | **Decoded by this task.** One VarInt. |
-| 96 | `set_cursor_item` | absent | **A** | The server's authoritative carried stack. M35 *predicts* the cursor and its only correction path is a full `container_set_content` resync. |
+| 96 | `set_cursor_item` | **M69** | — | The server's authoritative carried stack. M35 *predicts* the cursor and its only correction path is a full `container_set_content` resync. |
 | 97 | `set_default_spawn_position` | absent | **A** | `LevelData.RespawnData` — the compass target and respawn point. |
 | 98 | `set_display_objective` | handled | `req!` → `cb_play_set_display_objective` | |
 | 99 | `set_entity_data` | handled | `req!` → `cb_play_set_entity_data` | |
@@ -337,7 +345,7 @@ same two greps will call every one of them handled.
 | 105 | `set_held_slot` | handled | `req!` → `cb_play_set_held_slot` | |
 | 106 | `set_objective` | handled | `req!` → `cb_play_set_objective` | |
 | 107 | `set_passengers` | absent | **A** | Riding. Passengers currently render at their own stale positions rather than on their vehicle. |
-| 108 | `set_player_inventory` | absent | **A** | An authoritative inventory write addressed by **inventory index**, not menu slot — the third coordinate system M34 names. M34 handled `container_set_slot` and not this. |
+| 108 | `set_player_inventory` | **M69** | — | An authoritative inventory write addressed by **inventory index**, not menu slot — the third coordinate system M34 names. M34 handled `container_set_slot` and not this. |
 | 109 | `set_player_team` | handled | `req!` → `cb_play_set_player_team` | |
 | 110 | `set_score` | handled | `req!` → `cb_play_set_score` | |
 | 111 | `set_simulation_distance` | absent | **A** | **Decoded by this task.** One VarInt. |
@@ -363,7 +371,7 @@ same two greps will call every one of them handled.
 | 131 | `update_attributes` | handled | `req!` → `cb_play_update_attributes` | |
 | 132 | `update_mob_effect` | handled | `req!` → `cb_play_update_mob_effect` | |
 | 133 | `update_recipes` | absent | **C** | Recipe property sets + stonecutter recipes; recipe book / crafting. |
-| 134 | `update_tags` | absent | **A** | **The server's datapack tags.** Rewo reads `ItemTags.SPEARS` (M19) and the enchantment tags (M42) from the *jar*; a server that changes them diverges with no error anywhere. |
+| 134 | `update_tags` | **M69** | — | **The server's datapack tags.** Rewo reads `ItemTags.SPEARS` (M19) and the enchantment tags (M42) from the *jar*; a server that changes them diverges with no error anywhere. |
 | 135 | `projectile_power` | absent | **A** | A projectile entity's `accelerationPower`. |
 | 136 | `custom_report_details` | absent | **D** | Key/value metadata to attach to a crash report. |
 | 137 | `server_links` | absent | **B** | Links rendered on the pause and disconnect screens. |

@@ -17,8 +17,30 @@
 //!   `9..36` main, with the off-hand off at index 40.
 //!
 //! So the hotbar is `36 + i` as a menu slot and `i` as an inventory index, and
-//! `set_held_slot` speaks the *second* one. [`Inventory::hotbar`] is the only
-//! place that conversion happens.
+//! `set_held_slot` speaks the *second* one.
+//! [`menu_slot_of_inventory_index`] is the only place that conversion happens,
+//! and [`Inventory::hotbar`] is one caller of it.
+//!
+//! ## The armour ranges run in opposite directions (M69)
+//!
+//! Both coordinate systems have four contiguous armour slots, and **they are
+//! ordered against each other**. `InventoryMenu`'s constructor is
+//!
+//! ```text
+//! SLOT_IDS = { HEAD, CHEST, LEGS, FEET };
+//! for (i = 0; i < 4; i++) addSlot(new ArmorSlot(inventory, owner, SLOT_IDS[i], 39 - i, …));
+//! ```
+//!
+//! so menu slot `5 + i` is backed by inventory index `39 - i`: helmet is menu
+//! `5` / index `39`, boots are menu `8` / index `36`. Arithmetic that reads
+//! "armour starts at 36 in one and at 5 in the other" and subtracts 31 puts
+//! **boots on the head**, and the resulting render is a plausible-looking
+//! wrong answer rather than an error. See [`menu_slot_of_inventory_index`].
+//!
+//! Two inventory indices have no menu slot at all: `41` `SLOT_BODY_ARMOR` and
+//! `42` `SLOT_SADDLE` live only in `EntityEquipment`, and `InventoryMenu` has
+//! 46 slots with no room for either. They are a third state, not an error —
+//! [`IndexWrite::NoMenuSlot`].
 //!
 //! # Why a bad packet drops whole
 //!
@@ -82,6 +104,91 @@ pub const ARMOR_MENU_START: usize = 5;
 /// `InventoryMenu.CONTAINER_ID`. Every other container id belongs to an open
 /// screen, which Rewo has none of.
 pub const PLAYER_CONTAINER_ID: i32 = 0;
+
+// ---------------------------------------------------------------------------
+// The inventory-index coordinate system (M69).
+//
+// Everything below is the *other* address space — the one
+// `set_player_inventory` and `Inventory.setItem` speak. It is kept in this one
+// place so no caller is tempted to do the arithmetic itself.
+// ---------------------------------------------------------------------------
+
+/// `Inventory.INVENTORY_SIZE` — the backing `NonNullList` is 36 long, and
+/// `Inventory.setItem`'s first branch is `if (slot < this.items.size())`.
+/// Indices at or past this are equipment, not storage.
+pub const INVENTORY_ITEMS_SIZE: i32 = 36;
+/// `EquipmentSlot.FEET.getIndex(36)` — the first of the four humanoid armour
+/// indices, and the one holding **boots**. See the module header.
+pub const ARMOR_INDEX_START: i32 = 36;
+/// `Inventory.SLOT_OFFHAND`.
+pub const OFFHAND_INDEX: i32 = 40;
+/// `Inventory.SLOT_BODY_ARMOR` — an `EntityEquipment` slot with no
+/// `InventoryMenu` counterpart.
+pub const BODY_ARMOR_INDEX: i32 = 41;
+/// `Inventory.SLOT_SADDLE` — likewise.
+pub const SADDLE_INDEX: i32 = 42;
+
+/// What an inventory index addresses in Rewo's 46-slot menu array.
+///
+/// Three outcomes rather than two, because "vanilla writes this somewhere Rewo
+/// has no room for" and "vanilla writes this nowhere" are different facts and
+/// collapsing them would make the first look like a decode failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexWrite {
+    /// Lands in this menu slot.
+    Applied(usize),
+    /// A real `EntityEquipment` slot — `SLOT_BODY_ARMOR` (41) or
+    /// `SLOT_SADDLE` (42). `Inventory.setItem` stores both; `InventoryMenu`
+    /// exposes neither, so Rewo's 46-slot array has nowhere to put it.
+    NoMenuSlot,
+    /// Outside every index `Inventory.setItem` maps.
+    ///
+    /// Vanilla is not merely quiet here: `setItem(-1, …)` passes the
+    /// `slot < items.size()` guard and then throws `IndexOutOfBoundsException`
+    /// out of `NonNullList.set`, which drops the connection. Rewo reports the
+    /// index instead — a deliberate deviation, because a hostile VarInt should
+    /// not be able to end the session.
+    OutOfRange,
+}
+
+/// One inventory index → the menu slot backing it, or why there isn't one.
+///
+/// The whole table, from `InventoryMenu`'s constructor and
+/// `Inventory.EQUIPMENT_SLOT_MAPPING`:
+///
+/// | inventory index | menu slot | what |
+/// |---|---|---|
+/// | `0..9` | `36..45` | hotbar |
+/// | `9..36` | `9..36` | main inventory (**identity**) |
+/// | `36` | `8` | feet |
+/// | `37` | `7` | legs |
+/// | `38` | `6` | chest |
+/// | `39` | `5` | head |
+/// | `40` | `45` | off-hand |
+/// | `41`, `42` | — | body armour, saddle |
+///
+/// Menu slots `0..5` — the crafting result and the 2×2 grid — are backed by
+/// the menu's own `CraftingContainer`, not by `Inventory` at all, so **no**
+/// inventory index maps to them. A server cannot reach your crafting grid with
+/// this packet.
+pub fn menu_slot_of_inventory_index(index: i32) -> IndexWrite {
+    match index {
+        // `addInventoryHotbarSlots` adds `Slot(inventory, x, …)` for x in 0..9
+        // *after* the extended slots, so they occupy menu 36..45.
+        0..=8 => IndexWrite::Applied(HOTBAR_MENU_START + index as usize),
+        // `addInventoryExtendedSlots` adds `Slot(inventory, x + (y+1)*9, …)`
+        // in the same order, so index and menu slot coincide over 9..36.
+        9..=35 => IndexWrite::Applied(index as usize),
+        // `39 - i` for menu slot `5 + i`: the two ranges run opposite ways.
+        // Written as the arithmetic vanilla's loop performs, inverted, rather
+        // than as four literals — a literal table is right until someone
+        // "simplifies" it back into a subtraction.
+        36..=39 => IndexWrite::Applied(ARMOR_MENU_START + (39 - index) as usize),
+        OFFHAND_INDEX => IndexWrite::Applied(OFFHAND_MENU_SLOT),
+        BODY_ARMOR_INDEX | SADDLE_INDEX => IndexWrite::NoMenuSlot,
+        _ => IndexWrite::OutOfRange,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Inventory {
@@ -164,6 +271,41 @@ impl Inventory {
         true
     }
 
+    /// `handleSetPlayerInventory` (M69) — an authoritative write addressed by
+    /// **inventory index**, not menu slot.
+    ///
+    /// `ClientPacketListener.handleSetPlayerInventory` is
+    /// `player.getInventory().setItem(packet.slot(), packet.contents())`, and
+    /// that is the whole handler. Two consequences the sibling
+    /// [`Inventory::set_slot`] does not share:
+    ///
+    /// * **There is no state id on this packet**, so this must not touch
+    ///   [`Inventory::state_id`]. The state id is the container menu's
+    ///   click-prediction sequence; `Inventory.setItem` bypasses the menu
+    ///   entirely. Advancing it from here would make the next click echo a
+    ///   number the server never issued, and the server answers a stale state
+    ///   id with the full resync this packet exists to avoid.
+    /// * **The index is not a menu slot**, so it goes through
+    ///   [`menu_slot_of_inventory_index`] and nothing else.
+    pub fn set_inventory_index(&mut self, index: i32, item: Option<ItemSlot>) -> IndexWrite {
+        let write = menu_slot_of_inventory_index(index);
+        if let IndexWrite::Applied(slot) = write {
+            self.slots[slot] = item;
+        }
+        write
+    }
+
+    /// `handleSetCursorItem` (M69) — `containerMenu.setCarried(contents)`.
+    ///
+    /// The server's authoritative answer for the carried stack, and the only
+    /// correction path M35's predicted cursor has short of a whole
+    /// `container_set_content`. Carries **no state id and no container id**:
+    /// vanilla's only guard is that the open screen is not the creative
+    /// inventory, which Rewo has no notion of.
+    pub fn set_carried(&mut self, item: Option<ItemSlot>) {
+        self.carried = item;
+    }
+
     /// `handleSetHeldSlot`. **An out-of-range slot is ignored**, exactly as
     /// vanilla's `if (Inventory.isHotbarSlot(...))` guard does — it does not
     /// clamp, and it does not reset to zero.
@@ -194,13 +336,25 @@ impl Inventory {
         self.carried
     }
 
-    /// One hotbar slot by **inventory index** (`0..9`) — the conversion to a
-    /// menu slot happens here and nowhere else.
+    /// One hotbar slot by **inventory index** (`0..9`).
+    ///
+    /// Goes through [`menu_slot_of_inventory_index`] rather than adding
+    /// `HOTBAR_MENU_START` itself: this was the original conversion site, and
+    /// M69's `set_player_inventory` needed the same table over a wider range.
+    /// Two copies of an index→slot map is exactly the drift M62 recorded, so
+    /// there is one, and the narrow caller reads it.
     pub fn hotbar(&self, index: usize) -> Option<ItemSlot> {
-        if index >= HOTBAR_SIZE {
+        let Ok(index) = i32::try_from(index) else {
+            return None;
+        };
+        if !Self::is_hotbar_index(index) {
             return None;
         }
-        self.slots[HOTBAR_MENU_START + index]
+        match menu_slot_of_inventory_index(index) {
+            IndexWrite::Applied(slot) => self.slots[slot],
+            // Unreachable: `is_hotbar_index` already bounded it to `0..9`.
+            _ => None,
+        }
     }
 
     /// What the player is holding in the main hand.
@@ -893,6 +1047,147 @@ mod tests {
             99,
             "menu slot 0 is the crafting result and must not read as hotbar 0"
         );
+    }
+
+    // -- the inventory-index coordinate system (M69) ---------------------
+
+    /// **The reversal witness.** The two armour ranges run against each other:
+    /// inventory `36..40` is FEET, LEGS, CHEST, HEAD, while menu `5..9` is
+    /// HEAD, CHEST, LEGS, FEET. Transcribed here as four literals from
+    /// `InventoryMenu`'s `SLOT_IDS` + `39 - i`, so this fails if the
+    /// production arithmetic is ever "simplified" into the plausible
+    /// `index - 31`.
+    ///
+    /// Mutation partner: change the `36..=39` arm to
+    /// `Applied(ARMOR_MENU_START + (index - ARMOR_INDEX_START) as usize)` —
+    /// every index still maps into the armour range, every write still lands
+    /// in a real slot, and boots render on the head.
+    #[test]
+    fn the_two_armour_ranges_run_in_opposite_directions() {
+        // (inventory index, menu slot, piece) — from InventoryMenu's ctor.
+        for (index, menu, piece) in [(36, 8, "feet"), (37, 7, "legs"), (38, 6, "chest"), (39, 5, "head")]
+        {
+            assert_eq!(
+                menu_slot_of_inventory_index(index),
+                IndexWrite::Applied(menu),
+                "inventory index {index} is the {piece} slot, menu slot {menu}"
+            );
+        }
+        // Stated as the property rather than only as the table: the mapping is
+        // order-reversing over the armour range.
+        let a = menu_slot_of_inventory_index(ARMOR_INDEX_START);
+        let b = menu_slot_of_inventory_index(ARMOR_INDEX_START + 3);
+        assert!(
+            matches!((a, b), (IndexWrite::Applied(x), IndexWrite::Applied(y)) if x > y),
+            "the lowest inventory index must map to the HIGHEST menu slot"
+        );
+        // And `armor(0)` is the helmet in menu space, which is index 39.
+        let mut inv = Inventory::default();
+        assert_eq!(inv.set_inventory_index(39, stack(7, 1)), IndexWrite::Applied(5));
+        assert_eq!(inv.armor(0).unwrap().item_id, 7, "armor(0) is the helmet");
+        assert_eq!(inv.armor(3), None, "the boots slot must still be empty");
+    }
+
+    /// The whole table, every index vanilla maps, in one place. A range that
+    /// silently shifts by one shows up here and nowhere else.
+    #[test]
+    fn every_mapped_inventory_index_lands_where_vanilla_puts_it() {
+        for i in 0..9 {
+            assert_eq!(
+                menu_slot_of_inventory_index(i),
+                IndexWrite::Applied(HOTBAR_MENU_START + i as usize),
+                "hotbar index {i}"
+            );
+        }
+        // The main inventory is the identity — both `addInventoryExtendedSlots`
+        // and `Inventory.items` number it `x + (y+1)*9`.
+        for i in 9..INVENTORY_ITEMS_SIZE {
+            assert_eq!(
+                menu_slot_of_inventory_index(i),
+                IndexWrite::Applied(i as usize),
+                "main inventory index {i} must be its own menu slot"
+            );
+        }
+        assert_eq!(
+            menu_slot_of_inventory_index(OFFHAND_INDEX),
+            IndexWrite::Applied(OFFHAND_MENU_SLOT)
+        );
+        // Every mapped index lands somewhere distinct, and never on the
+        // crafting slots — `InventoryMenu` backs menu 0..5 with its own
+        // `CraftingContainer`, so no inventory index reaches them.
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..=OFFHAND_INDEX {
+            if let IndexWrite::Applied(slot) = menu_slot_of_inventory_index(i) {
+                assert!(slot >= ARMOR_MENU_START, "index {i} reached crafting slot {slot}");
+                assert!(seen.insert(slot), "menu slot {slot} claimed twice");
+            }
+        }
+        assert_eq!(seen.len(), 41, "9 hotbar + 27 main + 4 armour + 1 off-hand");
+    }
+
+    /// Body armour and the saddle are real `EntityEquipment` slots with no
+    /// `InventoryMenu` counterpart, and that is a **third** state — not the
+    /// same as an index vanilla does not map at all. Collapsing the two would
+    /// make "Rewo has nowhere to put this" indistinguishable from "the server
+    /// sent nonsense".
+    #[test]
+    fn body_armour_and_saddle_have_no_menu_slot_and_that_is_not_out_of_range() {
+        for i in [BODY_ARMOR_INDEX, SADDLE_INDEX] {
+            assert_eq!(menu_slot_of_inventory_index(i), IndexWrite::NoMenuSlot);
+        }
+        for i in [-1, 43, 45, 46, 100, i32::MIN, i32::MAX] {
+            assert_eq!(
+                menu_slot_of_inventory_index(i),
+                IndexWrite::OutOfRange,
+                "{i} is outside every index Inventory.setItem maps"
+            );
+        }
+        // Neither writes anything.
+        let mut inv = Inventory::default();
+        assert_eq!(inv.set_inventory_index(BODY_ARMOR_INDEX, stack(1, 1)), IndexWrite::NoMenuSlot);
+        assert_eq!(inv.set_inventory_index(-1, stack(1, 1)), IndexWrite::OutOfRange);
+        assert!(inv.is_empty(), "neither may touch a menu slot");
+    }
+
+    /// **The state-id witness.** `set_player_inventory` carries no state id;
+    /// `Inventory.setItem` never touches the container menu. Advancing it here
+    /// would make the next click echo a number the server never issued, and a
+    /// stale state id is exactly what triggers the full resync this packet
+    /// exists to avoid.
+    ///
+    /// Mutation partner: have `set_inventory_index` call `set_slot` instead —
+    /// the item lands in the same place and this fails.
+    #[test]
+    fn an_index_write_leaves_the_state_id_and_the_update_count_alone() {
+        let mut inv = Inventory::default();
+        assert!(inv.set_content(77, &[None; MENU_SLOTS], None));
+        assert_eq!(inv.state_id(), 77);
+        assert_eq!(inv.content_updates(), 1);
+
+        assert_eq!(inv.set_inventory_index(0, stack(5, 3)), IndexWrite::Applied(36));
+        assert_eq!(inv.held().unwrap().item_id, 5, "hotbar index 0 is the held slot");
+        assert_eq!(inv.state_id(), 77, "an index write is not a menu update");
+        assert_eq!(inv.content_updates(), 1, "and it is not a resync either");
+
+        // Its sibling, by contrast, does carry one.
+        assert!(inv.set_slot(78, 36, stack(6, 1)));
+        assert_eq!(inv.state_id(), 78);
+    }
+
+    /// The cursor's authoritative write. `set_carried` replaces it outright,
+    /// including with nothing — a server clearing the cursor sends an empty
+    /// stack, and treating that as "no change" would leave a phantom stack on
+    /// the pointer.
+    #[test]
+    fn the_carried_stack_can_be_set_and_cleared() {
+        let mut inv = Inventory::default();
+        assert_eq!(inv.carried(), None);
+        inv.set_carried(stack(4, 12));
+        assert_eq!(inv.carried().unwrap().count, 12);
+        assert!(!inv.is_empty(), "a carried stack alone is not an empty inventory");
+        inv.set_carried(None);
+        assert_eq!(inv.carried(), None);
+        assert!(inv.is_empty());
     }
 
     /// `set_held_slot` speaks inventory indices, and an out-of-range one is

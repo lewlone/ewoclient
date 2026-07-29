@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 143;
+const EXPECTED_WITNESSES: usize = 152;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -280,7 +280,242 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
             inv.hotbar(2)
         ),
     );
+
+    check_authoritative_writes(c, &ids, components)?;
     Ok(())
+}
+
+/// M69 — the server's authoritative writes, and the tag override beside them.
+///
+/// M34/M35 built a *predicting* inventory whose only correction path is a full
+/// state-id resync. These are the two packets that correct it without one, and
+/// they were simply not in `ids.rs`.
+fn check_authoritative_writes(
+    c: &mut Checker,
+    ids: &rewo_net::ids::Ids,
+    components: rewo_data::components::DataComponentIds,
+) -> Result<(), String> {
+    let route = |id: i32, body: &[u8], inv: &mut Inventory| -> bool {
+        rewo_net::route_inventory(id, body, ids, Some(components), inv, None)
+    };
+
+    c.record(
+        "sw1.the_two_authoritative_writes_resolve_by_name_and_are_distinct",
+        ids.cb_play_set_player_inventory != ids.cb_play_set_cursor_item
+            && ids.cb_play_set_player_inventory != ids.cb_play_container_set_slot
+            && ids.cb_play_set_cursor_item != ids.cb_play_container_set_content,
+        format!(
+            "set_player_inventory {}, set_cursor_item {} — resolved from the report by \
+             name, distinct from each other and from the three M34 ids they sit beside",
+            ids.cb_play_set_player_inventory, ids.cb_play_set_cursor_item
+        ),
+    );
+
+    // -- the third coordinate system ------------------------------------
+
+    // Inventory index 40 is the off-hand, and lands in menu slot 45.
+    let mut inv = Inventory::default();
+    let mut body = Vec::new();
+    push_varint(&mut body, 40);
+    body.extend_from_slice(&stack_bytes(731, 1));
+    let matched = route(ids.cb_play_set_player_inventory, &body, &mut inv);
+    c.record(
+        "sw2.the_slot_is_a_var_int_not_a_short",
+        matched && inv.offhand() == plain(731, 1),
+        format!(
+            "index 40 → off-hand {:?}. The neighbouring `container_set_slot` writes its \
+             index as an i16 among var-ints (M34's recorded trap) and this record's \
+             STREAM_CODEC is `ByteBufCodecs.VAR_INT`. A short reader here swallows the \
+             first byte of the stack that follows, and the resulting index — 0x28 << 8 \
+             — is out of range, so the write silently lands nowhere",
+            inv.offhand()
+        ),
+    );
+
+    // The armour ranges run against each other: inventory 36 is FEET.
+    let mut inv = Inventory::default();
+    let mut feet = Vec::new();
+    push_varint(&mut feet, 36);
+    feet.extend_from_slice(&stack_bytes(800, 1));
+    route(ids.cb_play_set_player_inventory, &feet, &mut inv);
+    c.record(
+        "sw3.inventory_index_36_is_the_boots_not_the_helmet",
+        inv.armor(ArmorPiece::Feet as usize) == plain(800, 1) && inv.armor(0).is_none(),
+        format!(
+            "boots {:?}, helmet {:?}. `InventoryMenu`'s ctor is \
+             `SLOT_IDS = {{HEAD, CHEST, LEGS, FEET}}` with backing index `39 - i`, so \
+             the two armour ranges are ORDERED AGAINST EACH OTHER. Subtracting a \
+             constant offset — the obvious reading of \"36 here, 5 there\" — puts \
+             boots on the head, and renders as a plausible wrong answer rather than \
+             an error",
+            inv.armor(ArmorPiece::Feet as usize),
+            inv.armor(0)
+        ),
+    );
+
+    // 41 and 42 are real EntityEquipment slots with no InventoryMenu counterpart.
+    let mut inv = Inventory::default();
+    let mut body_armor = Vec::new();
+    push_varint(&mut body_armor, 41);
+    body_armor.extend_from_slice(&stack_bytes(900, 1));
+    let matched = route(ids.cb_play_set_player_inventory, &body_armor, &mut inv);
+    c.record(
+        "sw4.body_armour_matches_the_packet_but_reaches_no_menu_slot",
+        matched && inv.is_empty(),
+        "`Inventory.SLOT_BODY_ARMOR` (41) and `SLOT_SADDLE` (42) are stored in \
+         `EntityEquipment`, which `InventoryMenu`'s 46 slots do not expose. The id \
+         still matched — the packet was understood — but there is nowhere in this \
+         client to put it, which is a different fact from a malformed index and is \
+         kept as one (`IndexWrite::NoMenuSlot`)",
+    );
+
+    // -- the state id, which this packet does not carry ------------------
+
+    let mut inv = Inventory::default();
+    let mut content = Vec::new();
+    push_varint(&mut content, 0);
+    push_varint(&mut content, 55); // stateId
+    push_varint(&mut content, MENU_SLOTS as i32);
+    for _ in 0..MENU_SLOTS {
+        content.extend_from_slice(&stack_bytes(0, 0));
+    }
+    content.extend_from_slice(&stack_bytes(0, 0));
+    route(ids.cb_play_container_set_content, &content, &mut inv);
+    let before = (inv.state_id(), inv.content_updates());
+    let mut write = Vec::new();
+    push_varint(&mut write, 0); // hotbar index 0
+    write.extend_from_slice(&stack_bytes(64, 3));
+    route(ids.cb_play_set_player_inventory, &write, &mut inv);
+    c.record(
+        "sw5.an_authoritative_write_does_not_disturb_the_click_prediction_state",
+        inv.hotbar(0) == plain(64, 3)
+            && (inv.state_id(), inv.content_updates()) == before,
+        format!(
+            "state id still {}, resync count still {}. `handleSetPlayerInventory` is \
+             `getInventory().setItem(...)` — it bypasses the container menu entirely, \
+             so there is no state id ON this packet to apply. Advancing one would make \
+             the next click echo a number the server never issued, and a stale state \
+             id is exactly what triggers the full resync this packet exists to avoid",
+            inv.state_id(),
+            inv.content_updates()
+        ),
+    );
+
+    // -- the cursor ------------------------------------------------------
+
+    let mut inv = Inventory::default();
+    let cursor = stack_bytes(276, 12);
+    let matched = route(ids.cb_play_set_cursor_item, &cursor, &mut inv);
+    let set = inv.carried();
+    let cleared = route(ids.cb_play_set_cursor_item, &stack_bytes(0, 0), &mut inv);
+    c.record(
+        "sw6.the_cursor_is_one_stack_and_an_empty_one_clears_it",
+        matched && set == plain(276, 12) && cleared && inv.carried().is_none(),
+        format!(
+            "carried became {set:?}, then an empty stack left {:?}. The whole body is \
+             one `ItemStack` — no container id, no state id, no slot — and this is the \
+             only correction M35's PREDICTED cursor has short of a whole \
+             `container_set_content`. Treating the empty stack as \"no change\" would \
+             leave a phantom stack on the pointer",
+            inv.carried()
+        ),
+    );
+
+    // A short body of either leaves the previous value standing, as the M34
+    // arms do — and for the cursor it matters more, because there is no
+    // container id to reject on and no length to run short of but the stack's.
+    let mut inv = Inventory::default();
+    route(ids.cb_play_set_cursor_item, &stack_bytes(276, 12), &mut inv);
+    let held = inv.carried();
+    let truncated = &stack_bytes(276, 12)[..1];
+    route(ids.cb_play_set_cursor_item, truncated, &mut inv);
+    let mut short_index = Vec::new();
+    push_varint(&mut short_index, 5); // an index, then no stack at all
+    route(ids.cb_play_set_player_inventory, &short_index, &mut inv);
+    c.record(
+        "sw7.a_truncated_authoritative_write_changes_nothing",
+        inv.carried() == held && inv.menu_slot(41).is_none(),
+        format!(
+            "the cursor is still {:?} and menu slot 41 is still empty. A stack that \
+             cannot be walked leaves the reader parked mid-value, so anything derived \
+             from it is garbage — the same stance every other arm here takes",
+            inv.carried()
+        ),
+    );
+
+    // -- update_tags, the third M69 packet -------------------------------
+
+    // Both were resolved by `req!` before this function ran — a missing name
+    // fails `Ids::resolve` and the gate never starts. What is still worth
+    // asserting is that they came from DIFFERENT STATE TABLES, and the
+    // observable consequence of that is that they differ (13 / 134 in 26.2).
+    //
+    // Mutation partner: resolve the configuration id out of the play table
+    // (`req!(p, P, C, "update_tags")` for both) and this fails. A future
+    // version in which the two genuinely coincide would fail it too, and that
+    // is the right outcome — it should be looked at, not waved through.
+    c.record(
+        "sw8.update_tags_is_resolved_separately_in_each_state",
+        ids.cb_config_update_tags != ids.cb_play_update_tags,
+        format!(
+            "configuration {} / play {}. One packet, two states, two ids. The \
+             CONFIGURATION one is the one a vanilla server actually sends on join \
+             (right after `registry_data`); the play one is the datapack-reload case. \
+             Resolving only the play id would have looked like it worked until \
+             somebody ran `/reload`",
+            ids.cb_config_update_tags, ids.cb_play_update_tags
+        ),
+    );
+
+    // Drive a real body through the production router, not just the module.
+    let mut overrides = rewo_net::tags::TagOverrides::default();
+    let mut tag_body = Vec::new();
+    push_varint(&mut tag_body, 1); // one registry
+    push_str(&mut tag_body, rewo_net::tags::ITEM_REGISTRY);
+    push_varint(&mut tag_body, 2); // two tags
+    push_str(&mut tag_body, rewo_net::tags::SPEARS_TAG);
+    push_varint(&mut tag_body, 2);
+    push_varint(&mut tag_body, 731);
+    push_varint(&mut tag_body, 300);
+    push_str(&mut tag_body, "minecraft:swords");
+    push_varint(&mut tag_body, 0); // declared, and empty
+    let matched = rewo_net::route_tags(
+        ids.cb_play_update_tags,
+        &tag_body,
+        ids,
+        &mut overrides,
+    );
+    c.record(
+        "sw9.the_server_can_retag_an_item_and_rewo_now_hears_it",
+        matched
+            && overrides.contains(
+                rewo_net::tags::ITEM_REGISTRY,
+                rewo_net::tags::SPEARS_TAG,
+                731,
+            ) == Some(true)
+            && overrides.contains(
+                rewo_net::tags::ITEM_REGISTRY,
+                rewo_net::tags::SPEARS_TAG,
+                64,
+            ) == Some(false)
+            && overrides.tag(rewo_net::tags::ITEM_REGISTRY, "minecraft:swords") == Some(&[][..])
+            && overrides
+                .contains(rewo_net::tags::ENCHANTMENT_REGISTRY, "minecraft:curse", 0)
+                .is_none(),
+        "item 731 is now in `minecraft:spears` and 64 is not — M19's SPEAR arm pose \
+         reads that tag FROM THE JAR, so a server that retags it diverges with no \
+         error anywhere. This decodes and models the override; it is deliberately \
+         NOT wired into the pose lookup yet (see `rewo_net::tags`), because half of \
+         it wired is worse than none. An unmentioned registry answers `None` — \
+         silence, not a no",
+    );
+    Ok(())
+}
+
+/// A length-prefixed UTF-8 string, the `Identifier` encoding.
+fn push_str(v: &mut Vec<u8>, s: &str) {
+    push_varint(v, s.len() as i32);
+    v.extend_from_slice(s.as_bytes());
 }
 
 // -- 2. the placement ----------------------------------------------------------

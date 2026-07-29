@@ -363,6 +363,16 @@ pub struct PlaySession {
     pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// The server's datapack tags (M69).
+    ///
+    /// Carried over from configuration, where a vanilla server sends them, and
+    /// replaced per-registry by any `update_tags` that arrives in play (a
+    /// datapack reload). **Read by nothing yet** — M19's `ItemTags.SPEARS` and
+    /// M42's enchantment tags still come from the client jar, which is the
+    /// divergence `REWO_PACKET_COVERAGE.md` §3 ranks first. `crate::tags` says
+    /// what closing it takes and why it was not done in the same change that
+    /// first decoded the packet.
+    pub tags: crate::tags::TagOverrides,
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
@@ -1021,6 +1031,10 @@ impl<'a> Connection<'a> {
         let enchantments = std::mem::take(&mut self.enchantments);
         let trim_materials = std::mem::take(&mut self.trim_materials);
         let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        // The tags the server sent during configuration (M69). Moved rather
+        // than cloned for the same reason the registries above are: this
+        // connection object is finished with them.
+        let tags = std::mem::take(&mut self.tags);
         let cat_variants = std::mem::take(&mut self.cat_variants);
         let wolf_variants = std::mem::take(&mut self.wolf_variants);
         let frog_variants = std::mem::take(&mut self.frog_variants);
@@ -1063,6 +1077,7 @@ impl<'a> Connection<'a> {
             cat_variants,
             wolf_variants,
             frog_variants,
+            tags,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
@@ -1890,6 +1905,12 @@ impl PlaySession {
         ) {
             // M34: the player's own inventory — contents, one slot, or the
             // server moving the selection.
+        } else if crate::route_tags(id, body, ids, &mut self.tags) {
+            // M69 — a datapack reload's `update_tags`. The join-time copy
+            // arrives during configuration and is applied there; this arm is
+            // the mid-session one. Per-registry wholesale replacement, so a
+            // body that fails to decode is dropped whole rather than
+            // half-applied.
         } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
             // M67 — the server's view area. Decode and state only; nothing
             // evicts a column or gates a tick on it yet.
