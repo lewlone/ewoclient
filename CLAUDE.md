@@ -3579,6 +3579,79 @@ the agent found in its own witness before the battery ran, and M68's was a test
 asserting only `is_err()` where both the intended and the mutated path error and
 only the error's *shape* distinguishes them.
 
+### M71 — the ten `game_event` types, and what "handled" was hiding
+
+The audit's §4 claim — **"handled" is not "complete"** — worked as a closed
+example. `game_event` passed every grep as handled and consumed **4 of 14**
+types: M33 took the four weather ids and the other ten were matched and thrown
+away, `CHANGE_GAME_MODE` among them.
+
+**There are two params, not one.** Vanilla computes
+`int param = Mth.floor(paramFloat + 0.5F)` at the top of `handleGameEvent`, and
+**only** `CHANGE_GAME_MODE` and `GUARDIAN_ELDER_EFFECT` use it. Every other
+branch reads the **raw float** — `DEMO_EVENT` compares exact literals
+(`101.0F`, `102.0F`…), `IMMEDIATE_RESPAWN` is `p == 0.0F`, `LIMITED_CRAFTING`
+is `p == 1.0F`. Using one where the other belongs is invisible for every
+integral param a server actually sends.
+
+**`IMMEDIATE_RESPAWN` is inverted, and the name is what inverts it:**
+`setShowDeathScreen(paramFloat == 0.0F)`, so param **0 shows** the death screen.
+Transcribe from the event name rather than the setter and you get a client that
+shows the screen exactly when it should not.
+
+**An unknown type id is a silent no-op, not an error.** `Type.TYPES.get(id)`
+returns null and every `==` against it is false. The instinct on a decode task
+is to make an unrecognised discriminant an error; here that would disconnect a
+client from a server sending a type it merely does not care about.
+
+**`ClientLevel.playSeededSound` reads backwards from the server.** Its body is
+`if (except == this.minecraft.player)` — the client plays the sound **only**
+when the "except" argument *is* the local player, which is the opposite of what
+the parameter means server-side. `handleGameEvent` passes the local player, so
+all three of its sounds are audible; any other reading is silence.
+
+Three more, each verified: the join-time values of `IMMEDIATE_RESPAWN` /
+`LIMITED_CRAFTING` ride the **login packet**, so ids 11/12 are only the
+mid-session gamerule change; `setLocalMode` guards the previous-mode write on
+the mode actually changing, so a repeat must not clobber it; and `handleRespawn`
+copies `showDeathScreen` to the new player but **not** `doLimitedCrafting` —
+that asymmetry is vanilla's, and is why nothing is cleared on a dimension
+change.
+
+**Applied 7, modelled 3, one deliberately left homeless.** Applied:
+`CHANGE_GAME_MODE` (reusing M62's `GameMode::by_id` — `ByIdMap.continuous(ZERO)`,
+so out-of-range is Survival), `IMMEDIATE_RESPAWN`, `LIMITED_CRAFTING`,
+`NO_RESPAWN_BLOCK_AVAILABLE` (queued as a **translation key** and resolved
+against `baked.lang` at the edge, which is what `Component.translatable` does),
+and the three sounds into M63's queue. Modelled only: `WIN_GAME`, `DEMO_EVENT`,
+`LEVEL_CHUNKS_LOAD_START` — screens and a load tracker Rewo has no equivalent
+of, and Demo's hints need keybind names Rewo cannot supply, so the hint is
+recorded rather than fabricated. **Homeless on purpose:**
+`GUARDIAN_ELDER_EFFECT`'s particle, because `ELDER_GUARDIAN` is not one of M37's
+six transcribed kinds and M37's own rule is that an unknown kind is dropped
+rather than rendered as something else.
+
+**Gamemode is modelled, not acted on.** `rewo-world::physics` has no flight,
+no-clip or invulnerability concept and neither `player_abilities` packet is in
+`ids.rs`; the four-step job is written into the coverage doc's new §4.1 rather
+than half-started.
+
+**Two structural findings, both from mutation testing, and both bigger than the
+milestone.** `PlaySession`'s fan-out was **entirely unwitnessed** — it owns a
+socket and there is no test module for it anywhere in the repo, so dropping the
+weather branch, the state branch or the eye-height all survived the whole suite.
+The logic moved into a tested `game_event::apply` behind a 6-line adapter, with
+a signature taking `&PlayerState` rather than loose coordinates so a transposed
+axis or an `eye_y`-for-`feet_y` swap is *unrepresentable*. And the first
+refactor left `weathershot` grading a path the client no longer took — **M45's
+`install_shapes` failure exactly**: a gate that reimplements a slice of the
+app's setup misses whatever moves out from under it. Caught by mutating the
+weather branch and watching the gate drop 35 → 32.
+
+**Gates:** rewo-net 418, rewo-world 291, rewo-app 80; `weathershot` 35/35,
+`inventoryshot` 152, `particleshot` 34; demo PNG `2cc56b4acbfb92cb`
+byte-identical.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
