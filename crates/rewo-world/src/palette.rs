@@ -59,16 +59,21 @@ impl ContainerKind {
 }
 
 /// A decoded container: a global-id lookup indexed by cell position.
+///
+/// The fields are `pub(crate)` **only** so [`crate::chunk_cache`] can
+/// destructure them exhaustively. That destructuring is the guard: add a field
+/// here and the cache's encoder stops compiling, rather than quietly writing a
+/// cache entry that decodes into a *plausible* container missing the new state.
 #[derive(Clone)]
 pub struct Container {
     /// `None` = single value fills the whole container.
-    single: Option<u32>,
+    pub(crate) single: Option<u32>,
     /// Palette (indirect) or empty (direct — storage holds global ids).
-    palette: Vec<u32>,
+    pub(crate) palette: Vec<u32>,
     /// Unpacked per-cell values: either palette indices (indirect) or global
     /// ids (direct/single). Length is `entry_count`.
-    cells: Vec<u32>,
-    direct: bool,
+    pub(crate) cells: Vec<u32>,
+    pub(crate) direct: bool,
 }
 
 impl Container {

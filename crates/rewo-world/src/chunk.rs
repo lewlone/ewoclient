@@ -23,20 +23,24 @@ use crate::block_entities::{BlockEntity, BlockEntityPos};
 use crate::dimension::DimensionShape;
 use crate::palette::{Container, ContainerKind};
 
+/// One 16³ section.
+///
+/// The non-`pub` fields are `pub(crate)` **only** so [`crate::chunk_cache`] can
+/// destructure them exhaustively — see the note on [`Container`].
 #[derive(Clone)]
 pub struct Section {
     pub non_empty: i16,
-    states: Container,
+    pub(crate) states: Container,
     /// 4×4×4 biome cells (`PalettedContainer` biome strategy). Cell index is
     /// `(y<<2 | z)<<2 | x` with x/y/z ∈ 0..3 (`QuartPos` local). The palette
     /// values are global biome-registry indices.
-    biomes: Container,
+    pub(crate) biomes: Container,
     /// 2048-byte nibble arrays (4096 cells), if present for this section.
-    block_light: Option<Vec<u8>>,
-    sky_light: Option<Vec<u8>>,
+    pub(crate) block_light: Option<Vec<u8>>,
+    pub(crate) sky_light: Option<Vec<u8>>,
     /// Post-decode block edits (Block Update packets) keyed by packed
     /// section-local index `(y<<8)|(z<<4)|x`. See `Column::set_block`.
-    overrides: std::collections::HashMap<u16, u32>,
+    pub(crate) overrides: std::collections::HashMap<u16, u32>,
 }
 
 impl Section {
@@ -103,7 +107,7 @@ impl Section {
 pub struct Column {
     pub cx: i32,
     pub cz: i32,
-    sections: Vec<Section>,
+    pub(crate) sections: Vec<Section>,
     /// Section index at/above which a *missing* sky array means full-bright.
     ///
     /// The server sends sky arrays only for sections near terrain: bits set in
@@ -112,7 +116,7 @@ pub struct Column {
     /// Vanilla's `SkyLightSectionStorage` reads those as 15, so a client that
     /// defaults them to 0 renders the whole sky-lit volume above the terrain as
     /// pitch black. Set from the masks in `read_light_into`.
-    sky_full_above: usize,
+    pub(crate) sky_full_above: usize,
     /// The `MOTION_BLOCKING` heightmap, as sent — one absolute Y per (x, z),
     /// where the value is the first **free** cell above the terrain
     /// (`Heightmap.getFirstAvailable`, not the topmost solid block).

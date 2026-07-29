@@ -10,6 +10,9 @@ rust-version.workspace = true
 rewo-proto = { workspace = true }
 rewo-data = { workspace = true }
 log = { workspace = true }
+# `chunk_cache` resolves `<config>/EwoClient/rewo/chunks` the same way
+# `rewo_data::DataPaths` resolves its sibling `<config>/EwoClient/rewo`.
+dirs = { workspace = true }
 # fdlibm-derived scalar math: `libm::sin` matches Java's `(float)Math.sin`
 # bit-for-bit for the `Mth` sine table (`lightmap`), the same discipline the
 # M12 celestial star geometry relies on. The platform libm on Windows drifts a

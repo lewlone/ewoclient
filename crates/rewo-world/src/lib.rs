@@ -11,6 +11,7 @@ pub mod biome_noise;
 pub mod block_entities;
 pub mod celestial;
 pub mod chunk;
+pub mod chunk_cache;
 pub mod conduit;
 pub mod daylight;
 pub mod dimension;
