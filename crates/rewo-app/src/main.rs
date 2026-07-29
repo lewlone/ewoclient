@@ -7,6 +7,7 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+mod abilityshot_cmd;
 mod capture;
 mod captureshot_cmd;
 mod bench_cmd;
@@ -168,6 +169,13 @@ enum Command {
     /// path and assert the warden attack/sonic and armadillo peek animations
     /// against independent decompiled literals with `--check` (no server, no GPU).
     Eventshot(eventshot_cmd::EventshotArgs),
+    /// M75 abilities oracle: drive raw `ClientboundPlayerAbilitiesPacket` bodies
+    /// and `CommonPlayerSpawnInfo` gamemode fields through the real decoders,
+    /// the real `GameType.updatePlayerAbilities` binding, the real
+    /// `LocalPlayer.aiStep` flight controller and the real `physics::tick_with`,
+    /// and assert the flags byte, the flight constants, the double-tap window
+    /// and the mode transitions with `--check` (no server, no GPU).
+    Abilityshot(abilityshot_cmd::AbilityshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -278,6 +286,7 @@ fn main() {
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
+        Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),

@@ -121,6 +121,26 @@ pub struct PlayArgs {
     /// `motion_acceptance`.
     #[arg(long, default_value_t = false)]
     motion_check: bool,
+    /// M75's live gate for creative flight and the gamemode → abilities binding.
+    ///
+    /// **Read the caveat in `fly_acceptance` before citing this run's
+    /// `CORRECTIONS 0`.** The server's "moved wrongly!" check is explicitly
+    /// skipped for a creative or spectator player
+    /// (`ServerGamePacketListenerImpl`: `&& !this.player.isCreative() &&
+    /// !this.player.isSpectator()`), and vanilla grants `mayfly` in no other
+    /// mode — so the server's move validator is *structurally unable* to grade
+    /// flight, the way M68 found the correction meter structurally unable to
+    /// see a dropped knockback. The flight phase is therefore graded by
+    /// measured kinematics against closed forms, and the **survival walk after
+    /// it** is the server-graded half: if `GameType.updatePlayerAbilities`
+    /// failed to drop `flying` on the way out of creative, the client would
+    /// still be applying flight physics in survival and the server would say so.
+    ///
+    /// Fail-closed on observation: if the creative command never landed, or
+    /// flight never engaged, or no altitude was gained, the gate is red rather
+    /// than passing a run that tested nothing. Needs the op account.
+    #[arg(long, default_value_t = false)]
+    fly_check: bool,
 }
 
 /// The scoreboard tag scoping every fixture `--motion-check` creates, so a
@@ -285,6 +305,97 @@ fn motion_check_cleanup() -> Vec<String> {
 /// broadcasts and a settle window inside the run.
 const MOTION_CHECK_MIN_SECONDS: f32 = 24.0;
 
+// ------------------------------------------------------- M75: --fly-check
+
+/// Spawn-relative seconds for the flight gate's phases. Everything downstream
+/// keys off these rather than repeating literals, so shifting a phase moves its
+/// sampling window with it.
+/// Clear leftover entities before anything else.
+///
+/// The test world is shared with the other live gates, and `--motion-check`
+/// spawns a zombie as its damage source. A run of this gate found its bot
+/// killed mid-flight by one such leftover — `spawn-monsters=false`, so nothing
+/// new spawns, but nothing removes the old ones either. The respawn teleport
+/// then landed inside a measurement window and skewed it. Removing entities is
+/// world state this gate is entitled to reset; changing `difficulty` would be
+/// persistent server config and is deliberately left alone.
+const FLY_CLEAR_AT: f32 = 0.3;
+const FLY_GRANT_AT: f32 = 1.0;
+/// The two jump presses of the double-tap. They are ~0.15 s apart, which is
+/// three ticks — comfortably inside the five-tick window the toggle allows and
+/// far enough apart to guarantee the key is seen released in between.
+const FLY_TAP_A: f32 = 3.0;
+const FLY_TAP_B: f32 = 3.15;
+/// Ascend (hold jump). The **sample** window starts later than the phase does,
+/// because the first ticks are still spinning up: `v ← (v + I)·0.6` approaches
+/// its fixed point geometrically, so an average taken from t=0 of the phase
+/// reads a few percent low and would force a band loose enough to hide a real
+/// error.
+const FLY_ASCEND: std::ops::Range<f32> = 4.0..8.0;
+const FLY_ASCEND_SAMPLE: std::ops::Range<f32> = 6.0..8.0;
+/// Cruise (hold forward, no vertical input), same spin-up treatment.
+const FLY_CRUISE: std::ops::Range<f32> = 8.0..12.0;
+const FLY_CRUISE_SAMPLE: std::ops::Range<f32> = 10.0..12.0;
+/// Descend (hold sneak) back to the ground.
+///
+/// **Not cosmetic.** The first version of this gate revoked creative at
+/// altitude; the bot fell ~60 blocks, died, and respawned — so the
+/// "survival walk" it then graded was a post-respawn walk, and the session
+/// carried a death's worth of teleports and a correction. Landing first also
+/// buys a witness: flight must end *here*, by `LocalPlayer.aiStep`'s landing
+/// clause, before any command revokes it.
+const FLY_DESCEND: std::ops::Range<f32> = 12.0..17.0;
+/// Drop back to survival. The walk after this is the server-graded half.
+const FLY_REVOKE_AT: f32 = 18.0;
+/// Walk on the ground in survival, with the server's move validator live.
+const FLY_WALK: std::ops::Range<f32> = 20.0..26.0;
+const FLY_CHECK_MIN_SECONDS: f32 = 30.0;
+
+/// The flight gate issues its two `/gamemode` commands as **scheduled
+/// one-shots**, not through the shared `--setup` stream: that stream paces one
+/// command per 250 ms from t=1 s, which would land the revoke fourteen seconds
+/// early. Everything else this gate does is client-side input, which is the
+/// point — the flight *toggle* has no packet from the server, so a gate that
+/// only sent commands would prove nothing about it.
+///
+/// Samples gathered over the run, all read from the live `PlaySession`.
+#[derive(Default)]
+struct FlyCheck {
+    cleared: bool,
+    granted: bool,
+    revoked: bool,
+    /// The bot died at some point. Fail-closed: a respawn teleports it, and a
+    /// teleport inside a measurement window silently inflates that window's
+    /// displacement. This gate measures distance over time, so it cannot
+    /// tolerate one.
+    saw_dead: bool,
+    /// `abilities.flying_speed` as the server actually sent it, so the closed
+    /// forms are graded against the value in force rather than the default.
+    observed_flying_speed: Option<f32>,
+    /// `abilities.mayfly` was seen true — the clientbound packet arrived and
+    /// decoded. Fail-closed: without it the run tested nothing.
+    saw_mayfly: bool,
+    /// `abilities.flying` was seen true — the client-side toggle engaged.
+    saw_flying: bool,
+    spawn_y: Option<f64>,
+    max_y: f64,
+    /// (y at window start, y at window end, ticks) for the ascend phase.
+    ascend: Option<(f64, f64, u32)>,
+    /// Horizontal distance and tick count over the cruise phase.
+    cruise: Option<(f64, f64, f64, f64, u32)>,
+    /// `(flying, on_ground)` sampled at the end of the descend phase — i.e.
+    /// **before** any command revokes creative. Flight must already be off,
+    /// which is the landing clause firing live.
+    after_landing: Option<(bool, bool)>,
+    /// Abilities right after the revoke command has had time to land.
+    after_revoke: Option<(bool, bool)>,
+    /// `session.corrections` at the start of the survival-walk window, so the
+    /// server-graded phase can be told apart from the ungraded creative one.
+    corrections_before_walk: Option<u32>,
+    /// …and at the end of it.
+    corrections_after_walk: Option<u32>,
+}
+
 /// The mob the swing gate arms, and what it arms it with. The two items are
 /// chosen so the *prototype* table is load-bearing: the spear is one of the
 /// seven non-default `minecraft:swing_animation` items (STAB / 19 ticks) and
@@ -394,6 +505,33 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         // turns it off — there is nothing to prove here and the crater would
         // make the targets unreliable.
         args.still = true;
+        args.no_build = true;
+    }
+    if args.fly_check {
+        // Same reasoning as every other live gate here: two command streams
+        // share one rate limiter and the loser's tail vanishes silently.
+        if args.setup.is_some()
+            || args.dimension_check
+            || args.swing_check
+            || args.motion_check
+        {
+            return Err(
+                "--fly-check cannot be combined with --setup or another live gate: they \
+                 would share the server's chat rate limiter, and this gate's /gamemode \
+                 commands are the whole precondition for it."
+                    .into(),
+            );
+        }
+        if args.seconds < FLY_CHECK_MIN_SECONDS {
+            return Err(format!(
+                "--fly-check needs --seconds >= {FLY_CHECK_MIN_SECONDS:.0} (given {:.0}): \
+                 the grant, the double-tap, the ascend and cruise windows, the revoke and \
+                 the survival walk do not fit in a shorter session, and a truncated run \
+                 would grade a phase that never happened.",
+                args.seconds
+            ));
+        }
+        // This gate drives its own input and its own two commands.
         args.no_build = true;
     }
     if args.dimension_check {
@@ -605,9 +743,21 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             .unwrap_or_default()
     };
 
+    if args.fly_check && username != OP_USERNAME {
+        // Same reason the motion gate refuses: every observation here starts
+        // with a `/gamemode` a non-op cannot issue, so the run would fail as
+        // "flight never engaged" and misreport its own cause.
+        return Err(format!(
+            "--fly-check joined as {username:?}, not the op account {OP_USERNAME:?}. A \
+             non-op's commands are silently rejected by the server, so the creative grant \
+             would never land and the failure would misreport itself as a flight bug."
+        ));
+    }
+
     let start = Instant::now();
     let total_ticks = (args.seconds / 0.05) as u64;
     let mut acted = Actions::default();
+    let mut fly = args.fly_check.then(FlyCheck::default);
     // Tick index at which the server first spawned us — the action clock is
     // relative to spawn, not connect (chunk streaming can take a second).
     let mut spawn_tick: Option<u64> = None;
@@ -632,7 +782,12 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             (Some(_), _) => TickInput::default(),
             (None, Some(st)) => {
                 let secs = (tick_n - st) as f32 * 0.05;
-                drive(&mut session, &args, secs, dirt_item, &mut acted, &scripted)?
+                match fly.as_mut() {
+                    // M75's gate owns the whole timeline, like the dimension
+                    // one: its own two commands and its own input.
+                    Some(f) => fly_drive(&mut session, secs, f, &username)?,
+                    None => drive(&mut session, &args, secs, dirt_item, &mut acted, &scripted)?,
+                }
             }
             (None, None) => TickInput::default(),
         };
@@ -683,6 +838,16 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     // attempted there and there is nothing to prove.
     if !args.no_build && !args.dimension_check {
         build_acceptance(&session, &acted, &data)?;
+    }
+    if let Some(f) = fly.as_ref() {
+        // Grade first, then restore creative — the test world is a creative
+        // one, and a red run should not leave the next gate's bot in survival.
+        let verdict = fly_acceptance(&session, f);
+        match session.send_command(&format!("gamemode creative {username}")) {
+            Ok(()) => println!("[fly-check] restored /gamemode creative {username}"),
+            Err(e) => log::warn!("play --fly-check: cleanup failed: {e}"),
+        }
+        verdict?;
     }
     if args.motion_check {
         // Same shape as the swing gate: grade first, then tidy up whatever the
@@ -1047,6 +1212,238 @@ fn swing_acceptance(session: &PlaySession, data: &GameData) -> Result<(), String
     Ok(())
 }
 
+/// Grade `--fly-check`. Fail-closed on observation; returns `Err` on any
+/// unproven property.
+///
+/// # What this run's `CORRECTIONS` does and does not prove
+///
+/// `rewo play`'s correction meter is the physics-parity oracle, and for flight
+/// it is **structurally blind**. `ServerGamePacketListenerImpl`'s move check
+/// reads:
+///
+/// ```text
+/// if (!isChangingDimension && movedDist > 0.0625 && !isSleeping
+///     && !this.player.isCreative() && !this.player.isSpectator() && …)
+/// ```
+///
+/// — so a creative or spectator player is never speed-checked, and vanilla
+/// grants `mayfly` in no other mode. The server simply `absSnapTo`s to whatever
+/// position a creative client claims. A flying run reaching `CORRECTIONS 0` is
+/// therefore necessary but weak evidence: it rules out teleports and the
+/// entity-collision correction branch, and nothing about kinematics. Same shape
+/// as M68's finding that the meter cannot see a dropped knockback.
+///
+/// So the flight phase is graded by **measured kinematics against closed
+/// forms** computed here, and the two server-graded properties are:
+///
+/// 1. the mode transitions actually arrived (the creative grant is what makes
+///    flight possible at all, and the run is red without it), and
+/// 2. the **survival walk after the revoke** has zero corrections — which is a
+///    real test of the binding, because a `GameType.updatePlayerAbilities` that
+///    failed to clear `flying` would leave the client applying flight physics
+///    while the server checked it as a walker.
+fn fly_acceptance(session: &PlaySession, fly: &FlyCheck) -> Result<(), String> {
+    let mut fail = Vec::new();
+    let mut ok = |name: &str, pass: bool, detail: String, fail: &mut Vec<String>| {
+        println!(
+            "[fly-check] {}  {name}: {detail}",
+            if pass { " ok " } else { "FAIL" }
+        );
+        if !pass {
+            fail.push(name.to_string());
+        }
+    };
+
+    // --- observation (fail-closed: a silently-ignored command must be red) ---
+    ok(
+        "creative_grant_arrived",
+        fly.saw_mayfly,
+        format!("mayfly observed true at some point: {}", fly.saw_mayfly),
+        &mut fail,
+    );
+    ok(
+        "flight_engaged",
+        fly.saw_flying,
+        format!("the double-tap toggled flying: {}", fly.saw_flying),
+        &mut fail,
+    );
+    let climbed = fly.max_y - fly.spawn_y.unwrap_or(fly.max_y);
+    ok(
+        "altitude_gained",
+        climbed > 5.0,
+        format!("max y − spawn y = {climbed:.2} blocks (want > 5)"),
+        &mut fail,
+    );
+
+    ok(
+        "no_death_during_the_run",
+        !fly.saw_dead,
+        format!(
+            "died at some point: {} — a respawn teleports the bot, and a teleport inside a \
+             measurement window inflates it",
+            fly.saw_dead
+        ),
+        &mut fail,
+    );
+
+    // --- kinematics, against closed forms computed here ---
+    //
+    // Both closed forms use the flying speed **the server actually sent**, not
+    // the 0.05 default: the packet carries it, a server may change it, and
+    // grading against a constant would make this gate wrong exactly when the
+    // decode of that float mattered most.
+    let fly_speed = f64::from(fly.observed_flying_speed.unwrap_or(0.05));
+    // Ascent: v ← (v + I)·0.6 has fixed point 1.5·I, and the distance moved in
+    // a tick is v + I = 2.5·I, with I computed in f32 as vanilla does.
+    let impulse = f64::from(fly.observed_flying_speed.unwrap_or(0.05) * 3.0f32);
+    let want_ascent = 2.5 * impulse;
+    match fly.ascend {
+        // `ticks` counts *samples*; N samples bracket N−1 intervals, and
+        // dividing by N instead read 39/40 = 97.5% of the true rate — which
+        // looked exactly like a 2.5% physics error until the arithmetic was
+        // checked. The band is 4%, so it would have been absorbed rather than
+        // caught: a wrong divisor hiding inside a tolerance.
+        Some((y0, y1, ticks)) if ticks > 21 => {
+            let rate = (y1 - y0) / (ticks - 1) as f64;
+            // 4% band. The sample window starts two seconds into the phase, by
+            // which point the geometric approach to the fixed point has long
+            // since converged, so this is a tight bound rather than a shrug.
+            ok(
+                "ascent_rate_matches_the_closed_form",
+                (rate - want_ascent).abs() < want_ascent * 0.04,
+                format!(
+                    "{rate:.4} blocks/tick over {ticks} ticks = {:.2} blocks/s \
+                     (want {want_ascent:.4} = {:.2} b/s)",
+                    rate * 20.0,
+                    want_ascent * 20.0
+                ),
+                &mut fail,
+            );
+        }
+        other => ok(
+            "ascent_rate_matches_the_closed_form",
+            false,
+            format!("no usable ascend sample: {other:?}"),
+            &mut fail,
+        ),
+    }
+    // Cruise. **This measures displacement, not carried velocity, and the two
+    // have different closed forms** — the same distinction the ascent's
+    // `2.5·I = 1.5·I + I` already encodes, and getting it wrong here cost a
+    // red run that looked like a 9% physics error.
+    //
+    // Per tick: `v_move = v_carried + a`, the move happens, then
+    // `v_carried' = v_move·0.91`. So the carried fixed point is
+    // `0.91a/(1 − 0.91)` = 0.4954 — which is what a test reading `p.vz` sees,
+    // and what the serverless gate asserts — while the *distance covered* in a
+    // tick is `v_carried + a = a/(1 − 0.91)` = 0.5444. The ratio between them
+    // is exactly 1/0.91, which is what the failing run reported.
+    let accel = fly_speed * 0.98;
+    let want_cruise = accel / (1.0 - 0.91);
+    match fly.cruise {
+        Some((x0, z0, x1, z1, ticks)) if ticks > 21 => {
+            let d = ((x1 - x0).powi(2) + (z1 - z0).powi(2)).sqrt();
+            let rate = d / (ticks - 1) as f64;
+            ok(
+                "cruise_speed_matches_the_closed_form",
+                (rate - want_cruise).abs() < want_cruise * 0.04,
+                format!(
+                    "{rate:.4} blocks/tick over {ticks} ticks = {:.2} blocks/s \
+                     (want {want_cruise:.4} = {:.2} b/s)",
+                    rate * 20.0,
+                    want_cruise * 20.0
+                ),
+                &mut fail,
+            );
+        }
+        other => ok(
+            "cruise_speed_matches_the_closed_form",
+            false,
+            format!("no usable cruise sample: {other:?}"),
+            &mut fail,
+        ),
+    }
+
+    // --- the landing clause, observed live and before any command ---
+    match fly.after_landing {
+        Some((flying, on_ground)) => ok(
+            "flight_ended_on_landing",
+            !flying && on_ground,
+            format!(
+                "at the end of the descent, before /gamemode survival: flying={flying} \
+                 on_ground={on_ground} — `LocalPlayer.aiStep`'s landing clause"
+            ),
+            &mut fail,
+        ),
+        None => ok(
+            "flight_ended_on_landing",
+            false,
+            "the landing sample was never taken".into(),
+            &mut fail,
+        ),
+    }
+
+    // --- the binding: leaving creative must actively drop flight ---
+    match fly.after_revoke {
+        Some((flying, mayfly)) => ok(
+            "leaving_creative_cleared_the_abilities",
+            !flying && !mayfly,
+            format!("after /gamemode survival: flying={flying} mayfly={mayfly} (want false/false)"),
+            &mut fail,
+        ),
+        None => ok(
+            "leaving_creative_cleared_the_abilities",
+            false,
+            "the revoke sample was never taken".into(),
+            &mut fail,
+        ),
+    }
+
+    // --- the one server-graded window ---
+    match (fly.corrections_before_walk, fly.corrections_after_walk) {
+        (Some(before), Some(after)) => {
+            let during = after.saturating_sub(before);
+            ok(
+                "survival_walk_corrections_zero",
+                during == 0,
+                format!(
+                    "{during} correction(s) over the survival walk — the server's move \
+                     validator IS live in survival, so leaked flight state shows up here"
+                ),
+                &mut fail,
+            );
+        }
+        other => ok(
+            "survival_walk_corrections_zero",
+            false,
+            format!("the walk window never opened or never closed: {other:?}"),
+            &mut fail,
+        ),
+    }
+
+    println!(
+        "[fly-check] server-sent flying speed: {:?} (default 0.05); corrections — whole \
+         session {} (of which the creative/flight phase is NOT server-graded: \
+         `isCreative()` short-circuits the move check, so that part of this number is not \
+         evidence of flight parity)",
+        fly.observed_flying_speed, session.corrections
+    );
+
+    if !fail.is_empty() {
+        return Err(format!(
+            "FLY-CHECK: FAILED — {} unproven propert(y/ies): {}",
+            fail.len(),
+            fail.join(", ")
+        ));
+    }
+    println!(
+        "FLY-CHECK: OK — creative granted, the double-tap engaged flight, the ascent and \
+         cruise rates match their closed forms, leaving creative cleared the abilities, and \
+         the survival walk that follows took zero server corrections"
+    );
+    Ok(())
+}
+
 #[derive(Default)]
 struct Actions {
     /// How many `--setup` commands have gone out (they are paced).
@@ -1077,6 +1474,95 @@ struct Actions {
 /// actions on their scheduled tick. Timeline:
 ///   0-2s settle · 2-6s walk · 6-9s sprint · 9-12s jump · 12s look ·
 ///   14s give+place · 18s dig · 22s chat · rest settle.
+/// The flight gate's own timeline, replacing `drive`'s entirely.
+///
+/// Phases, spawn-relative: grant creative at 1 s · double-tap at 3.0/3.15 ·
+/// ascend 4-9 · cruise 10-14 · revoke creative at 15 · walk 18-24. The samples
+/// it takes are what `fly_acceptance` grades; the session state it reads is the
+/// live one, so nothing here is a reimplementation of the client.
+fn fly_drive(
+    session: &mut PlaySession,
+    secs: f32,
+    fly: &mut FlyCheck,
+    username: &str,
+) -> Result<TickInput, String> {
+    if fly.spawn_y.is_none() {
+        fly.spawn_y = Some(session.player.y);
+    }
+    fly.max_y = fly.max_y.max(session.player.y);
+    // Observations, every tick — these are the fail-closed inputs.
+    fly.saw_mayfly |= session.abilities.mayfly;
+    fly.saw_flying |= session.abilities.flying;
+    fly.saw_dead |= session.dead;
+    if session.abilities.flying {
+        fly.observed_flying_speed = Some(session.abilities.flying_speed());
+    }
+
+    if secs >= FLY_CLEAR_AT && !fly.cleared {
+        session.send_command("kill @e[type=!player]")?;
+        fly.cleared = true;
+    }
+    if secs >= FLY_GRANT_AT && !fly.granted {
+        session.send_command(&format!("gamemode creative {username}"))?;
+        fly.granted = true;
+    }
+    if secs >= FLY_REVOKE_AT && !fly.revoked {
+        session.send_command(&format!("gamemode survival {username}"))?;
+        fly.revoked = true;
+    }
+    // A full second after the revoke command, so the game_event and the
+    // abilities packet have both had time to arrive and be applied.
+    if secs >= FLY_REVOKE_AT + 1.0 && fly.after_revoke.is_none() {
+        fly.after_revoke = Some((session.abilities.flying, session.abilities.mayfly));
+    }
+
+    // Phase sampling. The windows are sampled at their bounds and counted in
+    // ticks, so each rate is a measured average rather than a single-frame
+    // reading — over the *sample* sub-window, which excludes the spin-up.
+    if FLY_ASCEND_SAMPLE.contains(&secs) {
+        let e = fly.ascend.get_or_insert((session.player.y, session.player.y, 0));
+        e.1 = session.player.y;
+        e.2 += 1;
+    }
+    if FLY_CRUISE_SAMPLE.contains(&secs) {
+        let p = &session.player;
+        let e = fly.cruise.get_or_insert((p.x, p.z, p.x, p.z, 0));
+        e.2 = p.x;
+        e.3 = p.z;
+        e.4 += 1;
+    }
+    // Sampled at the end of the descend phase, before the revoke command: at
+    // this point the only thing that can have ended flight is the landing.
+    if secs >= FLY_DESCEND.end && fly.after_landing.is_none() {
+        fly.after_landing = Some((session.abilities.flying, session.player.on_ground));
+    }
+    if secs >= FLY_WALK.start && fly.corrections_before_walk.is_none() {
+        fly.corrections_before_walk = Some(session.corrections);
+    }
+    if secs >= FLY_WALK.end && fly.corrections_after_walk.is_none() {
+        fly.corrections_after_walk = Some(session.corrections);
+    }
+
+    let mut input = TickInput::default();
+    // The double-tap. Two rising edges ~3 ticks apart: `drive` is called once
+    // per tick, so a 0.05-wide window is exactly one tick of "pressed".
+    if (FLY_TAP_A..FLY_TAP_A + 0.05).contains(&secs)
+        || (FLY_TAP_B..FLY_TAP_B + 0.05).contains(&secs)
+    {
+        input.jump = true;
+    }
+    if FLY_ASCEND.contains(&secs) {
+        input.jump = true;
+    } else if FLY_CRUISE.contains(&secs) {
+        input.forward = 1.0;
+    } else if FLY_DESCEND.contains(&secs) {
+        input.sneak = true;
+    } else if FLY_WALK.contains(&secs) {
+        input.forward = 1.0;
+    }
+    Ok(input)
+}
+
 fn drive(
     session: &mut PlaySession,
     args: &PlayArgs,
