@@ -1329,6 +1329,8 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         height: 1.8,
         color: [1.0; 3],
         name: None,
+        // M59: no health bar in a still — the gate renders its own.
+        health: None,
         kind,
         yaw: 0.0,
         death_time: 0.0,

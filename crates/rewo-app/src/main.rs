@@ -12,6 +12,7 @@ mod captureshot_cmd;
 mod bench_cmd;
 mod attributeshot_cmd;
 mod danceshot_cmd;
+mod healthbarshot_cmd;
 mod hurtshot_cmd;
 mod itemshot_cmd;
 mod demo_cmd;
@@ -201,6 +202,11 @@ enum Command {
     /// fail-closed default resolution against independent decompiled literals
     /// with `--check` (no server, no GPU).
     Attributeshot(attributeshot_cmd::AttributeshotArgs),
+    /// M59: the floating health bar. The first Rewo feature with **no vanilla
+    /// oracle** — vanilla renders no health bar over any entity — so this gate
+    /// grades the render against `REWO_HEALTH_BAR_SPEC.md`, a written design
+    /// decision, rather than against a decompile reading.
+    Healthbarshot(healthbarshot_cmd::HealthbarshotArgs),
     /// M21: the combat damage response — hurt clock + the red flash.
     Hurtshot(hurtshot_cmd::HurtshotArgs),
     /// M22: held items — both geometry paths, placement and suppression.
@@ -254,6 +260,7 @@ fn main() {
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
         Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
+        Some(Command::Healthbarshot(hb_args)) => healthbarshot_cmd::run(hb_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),

@@ -6636,6 +6636,130 @@ Vulkan validation ON and **0 VUIDs** — `itemshot` 62, `inventoryshot` **127**,
 + tint 4, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
 `dimensioncheck`. Demo PNG SHA-256 byte-identical to M15 onward
 (`2cc56b4a…`).
+### M59 — the health bar's render half, and a gate with no oracle (2026-07-29)
+
+M55 shipped the data (`update_attributes`, `AttributeModifier.Operation`, the
+`RangedAttribute` clamp) and called itself "the data half of a health bar".
+This is the other half: the drawing, the resolver that decides whether to draw
+at all, and `rewo healthbarshot --check`.
+
+**It is the first Rewo feature with no vanilla behaviour to transcribe.**
+Every gate before it predicts an answer from an independent reading of the 26.2
+decompile and asserts the render matches; that method has nothing to bite on
+here, because **vanilla renders no health bar over any entity** — hearts, a
+server-driven boss bar, a horse's inventory screen, and nothing else. So the
+numbers were written down first, as a decision, in
+[`REWO_HEALTH_BAR_SPEC.md`](REWO_HEALTH_BAR_SPEC.md), and the gate grades the
+render against *that*. The gate re-declares the spec's constants rather than
+importing `entities.rs`'s: a gate that imports the implementation's constants
+asserts only that the implementation equals itself, which is M41's `t4` failure
+mode exactly.
+
+**Every spec number was used verbatim**: `BAR_W` 40, `BAR_H` 3, `BAR_PAD` 1,
+`BAR_GAP` 2, `CRITICAL_FRAC` 0.25, plate `[0,0,0,0.25]`, healthy
+`[0.85,0.20,0.20,1]`, critical `[0.95,0.55,0.15,1]`, anchor
+`pos.y + height + TAG_LIFT`. Nothing was adjusted.
+
+**The render is `push_tag` twice over** — the spec's own framing, and it held:
+no new geometry type, texture, pipeline or blend state. `push_health_bar` is a
+literal sibling of `push_tag`, emitting into the same alpha-blended
+**text range** (not the solid range world-space sign text takes), on the same
+camera basis, in the same font-pixel units, sampling the same
+guaranteed-opaque white texel. The whole emitter is layout and arithmetic.
+
+**Two spec witnesses are unobservable, and the reason is the spec's own rule
+3.** Both are recorded in the gate's detail strings rather than quietly
+dropped:
+
+- *"exactly `BAR_W` at max"* (the monotonicity row). Rule 3 hides the bar at
+  `fraction >= 1`, so `BAR_W` is the fill's **supremum** and never an emitted
+  value. `b3` asserts the strongest observable statement instead: the last
+  visible sample (19/20) is exactly `0.95 * BAR_W = 38.0` px, and 20/20 emits
+  nothing.
+- *the **upper** clamp* (the clamping row). `clamp(_, 0, 1)`'s ceiling and rule
+  3's `>= 1.0` hide the same set, so an unclamped division is indistinguishable
+  from a clamped one from outside. `b5` grades rules 1 and 3 composed and says
+  so; the clamp stays as the spec writes it, defensively. The **lower** clamp
+  *is* observable and is a real witness (`b4`): unclamped, health −5/20 gives a
+  −10 px fill escaping the plate to the left.
+
+**One spec ambiguity, resolved toward the operative sentence.** The anchor row
+says the bar sits `BAR_GAP` "below **it**" with a tag, "at the anchor itself"
+when not — so *it* is the anchor, and the implementation drops the plate's top
+edge to `-BAR_GAP`. The name column's gloss calls `BAR_GAP` "the vertical gap
+between the bar and the nametag above it", and by that reading the gap would be
+measured from the tag plate's bottom edge at `-1`, putting the bar one pixel
+lower. The two readings differ by exactly `BAR_PAD`. The contrast with "at the
+anchor itself" only parses under the first, so that is what shipped.
+
+**The gating fell out of two things already built.** Spec rule 5 suppresses a
+bar wherever a nametag is suppressed, and in 26.x that needs almost no new
+machinery:
+
+- **Living-only is free.** `rewo_world::attributes::resolve` answers `None`
+  when `DefaultAttributes.SUPPLIERS` has no entry for the type, so a boat has
+  no max health and therefore no bar — with no `matches!` list to keep in sync.
+- **The name-tag distance is itself an attribute.**
+  `EntityRenderer.extractNameTags` gates on
+  `distanceToCameraSq < Mth.square(nameTagDistance)` where `nameTagDistance =
+  entity.getAttribute(Attributes.NAME_TAG_DISTANCE).getValue()` — a
+  `RangedAttribute` defaulting to **64.0** over `[0, 512]`, already in the
+  generated supplier table. So it resolves through M55's machinery, modifiers
+  and clamp included. `f9` is the witness that matters: syncing
+  `name_tag_distance = 128` must make a mob at 100 blocks show, which a
+  hard-coded 64 fails while still passing the 63.99/64.01 pair.
+- **One genuinely new wire input**, and it was already on the floor:
+  `Entity.DATA_SHARED_FLAGS_ID`, metadata **index 0, BYTE**, `FLAG_INVISIBLE =
+  5`. `metadata::parse` has decoded it since M1 into `EntityMeta::flags` and
+  `apply_set_entity_data` **discarded it**. No kind gate on the way in — index
+  0 is `Entity`'s own first `defineId`, so every entity claims it and nothing
+  else can.
+
+**Spec rule 4 is the load-bearing one and it is a refusal, not a fallback.**
+Only a max health an `update_attributes` actually established draws a bar:
+`Source::Default` is rejected even though the supplier's 20.0 is a real number
+for every living entity. Rewo cannot distinguish "the server never sent health"
+from "this mob has 1 HP" either — `DATA_HEALTH_ID` is seeded at `1.0F` — so a
+bar with an unverified denominator would be a confident lie in both directions.
+`f1`/`f2`/`f3` pin it: the same entity, before and after one packet, plus the
+explicit health-1.0 case the spec names.
+
+**The mutation runs found a bug in two of my own witnesses.** All thirteen
+named partners were actually run — source broken, rebuilt, gate re-run,
+reverted — and each fails its partner. The `swapped_division` run
+(`max/current`) hid the bar entirely, and `e3`/`e4` **passed anyway**: they were
+`base.iter().zip(&moved).all(...)`, and `zip` over two empty vectors makes
+`all` vacuously true. A witness that is vacuous when its subject disappears is
+the M45/M41 failure in miniature — the length check is now load-bearing, not
+defensive.
+
+**Process trap worth recording: a mutation script that restores source but not
+the build.** After the last mutation run the tree was clean and
+`target/debug/rewo.exe` still carried `swapped_division`. A full 23-gate sweep
+then ran on that binary; every other gate passed (none touch health bars) and
+`healthbarshot` reported 12/33 while a direct run minutes earlier had reported
+33/33. The tell was a gate that passes standalone and fails in a batch with an
+unchanged tree — **rebuild before believing a sweep**. The sweep was redone
+clean.
+
+**Measured.** `healthbarshot --check` **33/33** (Vulkan validation ON, 0 VUIDs),
+two consecutive clean runs. **705 tests** unchanged (the gate covers the new
+world state through the production path, so no duplicate unit tests were
+added). All 23 gate runs green with 0 VUIDs: itemshot 62, inventoryshot 118,
+blockentityshot 172, swingshot 97, attributeshot 43, hurtshot 38, weathershot
+35, handshot 34, particleshot 34, eventshot 28, danceshot 24, captureshot 17,
+portalshot 12, mobshot 243/243 + emissive 5 + etf 8 + tint 4, plus skyshot,
+lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG SHA-256
+byte-identical to M15 onward.
+
+**Open.** No live in-world sighting — the gate is authoritative for the
+properties it names, and nobody has yet watched a bar over a real mob on a real
+server. Not gated: scoreboard team name-tag visibility and
+`canSeeFriendlyInvisibles` (Rewo decodes no teams), `isDiscrete()`'s 32-block
+sneak cut-off, `isVehicle()`, `hud.isHidden()`. The live call site passes the
+eye→feet distance in one expression that no witness covers — the comparison is
+graded, the sourcing is not. And the spec's own exclusions stand: no numeric
+text, no local player, no boss bars, no armour/absorption.
 
 ### M56 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
 
