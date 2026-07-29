@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 127;
+const EXPECTED_WITNESSES: usize = 131;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -1810,6 +1810,177 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
             hues[0], hues[1], hues[2]
         ),
     );
+
+    // ---- minecraft:container (M63) ----------------------------------------
+    //
+    // The codec table is complete — every one of the 104 components 26.2
+    // registers with a `.networkSynchronized(...)` has a shape — so a
+    // container already *walked*. M63 keeps what it walked past, which
+    // `ItemContainerContents.addToTooltip` needs and nothing else carries.
+    //
+    // Every witness below is graded on **alignment as well as content**: the
+    // patch has no length prefix, so a capture that consumed one byte
+    // differently would leave the reader parked mid-value and turn every stack
+    // after it in the packet into garbage. That is the property, and the
+    // content is only the cheaper half of it.
+    let text_tag = |s: &str| {
+        let mut v = vec![0x0A, 0x08];
+        v.extend_from_slice(&4u16.to_be_bytes());
+        v.extend_from_slice(b"text");
+        v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        v.extend_from_slice(s.as_bytes());
+        v.push(0x00);
+        v
+    };
+    // `ItemStackTemplate.STREAM_CODEC.apply(optional).apply(list(256))`.
+    let container_value = |slots: &[Option<(i32, i32, Option<&str>)>]| {
+        let mut v = Vec::new();
+        push_varint(&mut v, slots.len() as i32);
+        for s in slots {
+            match s {
+                None => v.push(0),
+                Some((item, count, name)) => {
+                    v.push(1);
+                    push_varint(&mut v, *item);
+                    push_varint(&mut v, *count);
+                    push_varint(&mut v, name.is_some() as i32);
+                    push_varint(&mut v, 0);
+                    if let Some(n) = name {
+                        push_varint(&mut v, ids.custom_name);
+                        v.extend_from_slice(&text_tag(n));
+                    }
+                }
+            }
+        }
+        v
+    };
+    let components_of = |bytes: &[u8]| match read(bytes) {
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => {
+            let aligned = s.aligned_stack();
+            Some((s.components, aligned, rest))
+        }
+        _ => None,
+    };
+
+    // A shulker box with a gap in the middle and a renamed sword after it,
+    // then a `damage` entry that only reads back correctly if the container
+    // was consumed to the byte.
+    let boxed = stack(
+        &[
+            (
+                ids.container,
+                container_value(&[
+                    Some((1, 64, None)),
+                    None,
+                    Some((276, 1, Some("Excalibur"))),
+                ]),
+            ),
+            // 300 — two var-int bytes, so a one-byte slip shows in the value
+            // and not only in the alignment.
+            (ids.damage, vec![0xAC, 0x02]),
+        ],
+        &[],
+    );
+    let got = components_of(&boxed);
+    let ok = got.as_ref().is_some_and(|(comps, aligned, rest)| {
+        let slots = comps.container_contents().unwrap_or(&[]);
+        *aligned
+            && *rest == 0
+            && slots.len() == 3
+            && slots[1].is_none()
+            && slots[0].as_ref().is_some_and(|s| (s.item_id, s.count) == (1, 64))
+            && slots[2]
+                .as_ref()
+                .is_some_and(|s| s.custom_name.as_deref() == Some("Excalibur"))
+            && comps.damage == Some(300)
+    });
+    c.record(
+        "ct1.a_container_patch_keeps_its_slots_and_stays_byte_aligned",
+        ok,
+        format!(
+            "{:?} slot(s), damage {:?}, aligned {:?}, {:?} byte(s) over. The nested \
+             `custom_name` is the one span the capture reads itself rather than \
+             through `Shape::NbtTag` — reading it as anything else (a `Str`, say) \
+             desynchronises, and the trailing damage is what notices",
+            got.as_ref().map(|(c, _, _)| c.container_contents().map(<[_]>::len)),
+            got.as_ref().and_then(|(c, _, _)| c.damage),
+            got.as_ref().map(|(_, a, _)| *a),
+            got.as_ref().map(|(_, _, r)| *r),
+        ),
+    );
+
+    // The gaps are positions, not absences: `ItemContainerContents.items` is
+    // indexed by slot number and `copyInto` reads it positionally.
+    let gappy = stack(
+        &[(
+            ids.container,
+            container_value(&[None, Some((1, 5, None)), None, Some((2, 7, None))]),
+        )],
+        &[],
+    );
+    let g = components_of(&gappy);
+    let kept = g
+        .as_ref()
+        .and_then(|(c, _, _)| c.container_contents().map(<[_]>::len));
+    let occupied = g.as_ref().map(|(c, _, _)| c.container_items().count());
+    c.record(
+        "ct2.empty_container_slots_are_kept_while_the_tooltip_view_skips_them",
+        kept == Some(4) && occupied == Some(2),
+        format!(
+            "{kept:?} slot(s) kept, {occupied:?} occupied. Dropping the gaps at \
+             decode would renumber every slot after them; `addToTooltip` filters \
+             instead (`nonEmptyItemsStream`), which is why the filter belongs in \
+             the accessor and not in the walk"
+        ),
+    );
+
+    // Absent, removed and explicitly-empty are three states, not two — the
+    // same distinction a bundle draws, and for the same `getOrDefault` reason.
+    let absent = components_of(&stack(&[], &[])).map(|(c, _, _)| c.container);
+    let empty = components_of(&stack(&[(ids.container, container_value(&[]))], &[]))
+        .map(|(c, _, _)| c.container);
+    let removed = components_of(&stack(&[], &[ids.container])).map(|(c, _, _)| c.container);
+    c.record(
+        "ct3.an_absent_container_is_not_an_empty_one",
+        absent == Some(None) && empty == Some(Some(Vec::new())) && removed == Some(None),
+        format!(
+            "absent {:?}, explicitly empty {:?}, removed {:?}. A patch that never \
+             mentioned the component resolves through \
+             `ItemContainerContents.EMPTY`, and so does a removal — only the item \
+             id says whether that means an empty shulker box or a stone block",
+            absent.as_ref().map(Option::is_some),
+            empty.as_ref().map(|v| v.as_ref().map(Vec::len)),
+            removed.as_ref().map(Option::is_some),
+        ),
+    );
+
+    // A slot whose own patch names a component with no codec inherits the
+    // patch's fail-closed rule rather than reporting a partial container.
+    let mut bad = Vec::new();
+    push_varint(&mut bad, 1);
+    bad.push(1); // present
+    push_varint(&mut bad, 276);
+    push_varint(&mut bad, 1);
+    push_varint(&mut bad, 1); // added
+    push_varint(&mut bad, 0);
+    push_varint(&mut bad, i32::MAX); // an id no registry can hold
+    bad.extend_from_slice(&[0xAA, 0xBB]);
+    let stuck = components_of(&stack(&[(ids.container, bad)], &[]));
+    c.record(
+        "ct4.an_unwalkable_component_inside_a_slot_stops_the_stack",
+        stuck
+            .as_ref()
+            .is_some_and(|(comps, aligned, _)| !aligned && comps.container.is_none()),
+        format!(
+            "aligned {:?}, container {:?}. The slots read so far are discarded \
+             rather than reported — a partial container presented as a whole one \
+             is a confident wrong answer, which is the failure this decoder \
+             refuses",
+            stuck.as_ref().map(|(_, a, _)| *a),
+            stuck.as_ref().map(|(c, _, _)| c.container.is_some()),
+        ),
+    );
+
     Ok(())
 }
 

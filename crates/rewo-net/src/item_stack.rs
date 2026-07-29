@@ -42,7 +42,7 @@
 //! not license returning early, because the entries after it still have to be
 //! consumed for the reader to be aligned for the next slot.
 
-pub use crate::component_wire::ItemTemplate;
+pub use crate::component_wire::{ContainerSlot, ItemTemplate};
 use rewo_data::components::DataComponentIds;
 use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType, SwingAnimations};
 use rewo_data::use_item::{UseProfile, UseProfiles};
@@ -280,6 +280,19 @@ pub struct StackComponents {
     /// element's own components: see [`ItemTemplate::patched`] for why, and
     /// for which vanilla behaviour that leaves out of reach.
     pub bundle: Option<Vec<ItemTemplate>>,
+    /// `minecraft:container`'s slots (M63), in wire order, `None` where the
+    /// slot is empty.
+    ///
+    /// `None` and `Some(vec![])` differ here exactly as they do for
+    /// [`Self::bundle`]: a patch that never mentioned the component resolves
+    /// through `ItemContainerContents.EMPTY`, and only the item id says
+    /// whether that means "an empty shulker box" or "not a container at all".
+    ///
+    /// The **outer** option is the slot's — `ItemContainerContents.items` is a
+    /// `List<Optional<ItemStackTemplate>>` indexed by slot number, so a gap is
+    /// a real position and not a shorter list. `addToTooltip` skips the gaps
+    /// (`nonEmptyItemsStream`); anything drawing a grid needs them.
+    pub container: Option<Vec<Option<ContainerSlot>>>,
     /// Component ids the patch **removed**. A removal is not the same as an
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
@@ -334,6 +347,31 @@ impl StackComponents {
     /// with the type's default rather than the item's prototype value.
     pub fn bundle_contents(&self) -> Option<&[ItemTemplate]> {
         self.bundle.as_deref()
+    }
+
+    /// The slots `ItemContainerContents` would resolve to for this patch (M63),
+    /// gaps included.
+    ///
+    /// Carries the same "absent is indistinguishable from empty" caveat
+    /// [`Self::bundle_contents`] documents, and for the same reason: a
+    /// shulker box and a stone block both arrive with no `container` entry.
+    pub fn container_contents(&self) -> Option<&[Option<ContainerSlot>]> {
+        self.container.as_deref()
+    }
+
+    /// The occupied slots, in order — `ItemContainerContents.nonEmptyItems()`.
+    ///
+    /// What `addToTooltip` walks: it counts these, renders
+    /// `item.container.item_count` for the first **five**, and if any remain
+    /// adds one italic `item.container.more_items` for the rest. Empty slots
+    /// never reach either line, which is why the filter belongs here rather
+    /// than in the decode.
+    pub fn container_items(&self) -> impl Iterator<Item = &ContainerSlot> {
+        self.container
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Option::as_ref)
     }
 
     /// The name a tooltip shows, given the item's translated display name.
@@ -489,7 +527,9 @@ fn read_interpreted(
     shape: &crate::component_wire::Shape,
     out: &mut StackComponents,
 ) -> Result<bool, ()> {
-    use crate::component_wire::{nbt_text, read_item_template_list, walk};
+    use crate::component_wire::{
+        nbt_text, read_container_slot_list, read_item_template_list, walk,
+    };
     if ty == ids.damage {
         out.damage = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
@@ -576,6 +616,31 @@ fn read_interpreted(
             // A nested patch named a component with no codec, or the depth
             // limit stopped it. The reader is parked mid-value, so this is the
             // same fail-closed answer an unknown top-level component gets.
+            None => false,
+        });
+    }
+    if ty == ids.container {
+        // `ItemContainerContents.STREAM_CODEC` is `ItemStackTemplate
+        // .STREAM_CODEC.apply(ByteBufCodecs::optional).apply(list(256))` — a
+        // var-int count, then per slot a presence bool and, if set, a template.
+        //
+        // `read_container_slot_list` shares its patch loop with the generic
+        // walk through `walk_patch_with`, so capturing here consumes
+        // byte-for-byte what `Shape::List(&Shape::Optional(&ItemStackTemplate))`
+        // consumed before — the same identity `bundle_contents` relies on, and
+        // for the same reason: the patch has no length prefix, so a capture
+        // that read one byte differently would park the reader mid-value and
+        // turn every later slot in the packet into garbage.
+        //
+        // Depth 0 to match the generic fall-through's `walk(r, shape, 0)`.
+        return Ok(match read_container_slot_list(r, 0, ids.custom_name)? {
+            Some(slots) => {
+                out.container = Some(slots);
+                true
+            }
+            // A nested patch named a component with no codec, or the depth
+            // limit stopped it — the same fail-closed answer an unknown
+            // top-level component gets.
             None => false,
         });
     }
@@ -692,6 +757,7 @@ mod tests {
         dyed_color: 14,
         trim: 15,
         bundle_contents: 16,
+        container: 17,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -712,6 +778,7 @@ mod tests {
             ("minecraft:enchantment_glint_override", 13),
             ("minecraft:dyed_color", 14),
             ("minecraft:bundle_contents", 16),
+            ("minecraft:container", 17),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1118,5 +1185,194 @@ mod tests {
         assert_eq!(s.patch, PatchOutcome::Unwalkable);
         assert!(!s.aligned_stack());
         assert_eq!(s.components.bundle, None);
+    }
+
+    // ---- container (M63) --------------------------------------------------
+
+    /// A `{"text": s}` chat component in network-NBT form.
+    fn text_tag(s: &str) -> Vec<u8> {
+        let mut v = vec![0x0A, 0x08];
+        v.extend_from_slice(&4u16.to_be_bytes());
+        v.extend_from_slice(b"text");
+        v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        v.extend_from_slice(s.as_bytes());
+        v.push(0x00);
+        v
+    }
+
+    /// A `minecraft:container` value: a var-int count, then per slot a
+    /// presence bool and — when present — an `ItemStackTemplate` whose patch
+    /// optionally carries a `custom_name`.
+    fn container_value(slots: &[Option<(i32, i32, Option<&str>)>]) -> Vec<u8> {
+        let mut v = Vec::new();
+        varint(slots.len() as i32, &mut v);
+        for s in slots {
+            match s {
+                None => v.push(0),
+                Some((item, count, name)) => {
+                    v.push(1);
+                    varint(*item, &mut v);
+                    varint(*count, &mut v);
+                    varint(name.is_some() as i32, &mut v); // added
+                    varint(0, &mut v); // removed
+                    if let Some(n) = name {
+                        varint(IDS.custom_name, &mut v);
+                        v.extend_from_slice(&text_tag(n));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    /// The whole point of M63: a shulker box's slots survive the walk instead
+    /// of being counted and thrown away, hover names included.
+    #[test]
+    fn a_container_patch_keeps_the_slots_it_holds() {
+        install_test_shapes();
+        let raw = stack(
+            1,
+            600,
+            &[(
+                17,
+                container_value(&[
+                    Some((1, 64, None)),
+                    None,
+                    Some((2, 1, Some("Excalibur"))),
+                ]),
+            )],
+            &[],
+        );
+        let c = components_of(&raw);
+        let slots = c.container_contents().expect("the container was captured");
+        assert_eq!(slots.len(), 3, "the empty slot was dropped");
+        assert!(slots[1].is_none());
+        assert_eq!(slots[0].as_ref().unwrap().item_id, 1);
+        assert_eq!(slots[0].as_ref().unwrap().count, 64);
+        assert_eq!(
+            slots[2].as_ref().unwrap().custom_name.as_deref(),
+            Some("Excalibur")
+        );
+        // `addToTooltip` walks only the occupied ones.
+        assert_eq!(c.container_items().count(), 2);
+    }
+
+    /// **The alignment witness**, and the property that matters most: the
+    /// patch has no length prefix, so a container sized wrong parks the
+    /// reader and the entry *after* it is what notices.
+    ///
+    /// Reading the damage back is the stronger claim — an off-by-one landing
+    /// on a valid var-int would still report `Walked`, with the wrong value.
+    /// The named slot is deliberately in the middle, because the nested tag is
+    /// the one span the capture reads itself rather than through `Shape`.
+    #[test]
+    fn a_container_entry_leaves_the_reader_aligned_for_the_component_after_it() {
+        install_test_shapes();
+        let raw = stack(
+            1,
+            600,
+            &[
+                (
+                    17,
+                    container_value(&[
+                        Some((1, 64, None)),
+                        Some((2, 1, Some("Bag of Holding"))),
+                        None,
+                        Some((3, 12, None)),
+                    ]),
+                ),
+                // 300 — two var-int bytes, so a one-byte slip shows up in the
+                // value and not only in the alignment.
+                (3, vec![0xAC, 0x02]),
+            ],
+            &[],
+        );
+        let c = components_of(&raw);
+        assert_eq!(c.container_contents().map(<[_]>::len), Some(4));
+        assert_eq!(c.container_items().count(), 3);
+        assert_eq!(c.damage, Some(300));
+    }
+
+    /// …and the same with the slip placed *before* the assertion's component,
+    /// because a container read short and one read long fail differently.
+    #[test]
+    fn a_component_before_a_container_does_not_disturb_it() {
+        install_test_shapes();
+        let raw = stack(
+            1,
+            600,
+            &[
+                (3, vec![0xAC, 0x02]),
+                (17, container_value(&[Some((1, 64, Some("Tools"))), None])),
+            ],
+            &[],
+        );
+        let c = components_of(&raw);
+        assert_eq!(c.damage, Some(300));
+        assert_eq!(c.container_contents().map(<[_]>::len), Some(2));
+        assert_eq!(
+            c.container_items().next().unwrap().custom_name.as_deref(),
+            Some("Tools")
+        );
+    }
+
+    /// Three states, exactly as for a bundle: absence and a removal both
+    /// resolve through `ItemContainerContents.EMPTY`, while an explicitly
+    /// empty list is the server saying the container *is* empty.
+    #[test]
+    fn an_absent_container_is_not_the_same_as_an_empty_one() {
+        install_test_shapes();
+        assert_eq!(components_of(&stack(1, 600, &[], &[])).container, None);
+        assert_eq!(
+            components_of(&stack(1, 600, &[(17, container_value(&[]))], &[])).container,
+            Some(Vec::new())
+        );
+        let removed = components_of(&stack(1, 600, &[], &[17]));
+        assert_eq!(removed.container, None);
+        assert_eq!(removed.removed, vec![17]);
+    }
+
+    /// Two containers differing only in a slot's name are different
+    /// components. This holds because the fingerprint spans the value's
+    /// *bytes*, which is only true while the capture consumes exactly the
+    /// value — so it reads the alignment property a second, independent way.
+    #[test]
+    fn two_containers_differing_only_in_a_slot_name_fingerprint_differently() {
+        install_test_shapes();
+        let named = |n: &str| {
+            components_of(&stack(
+                1,
+                600,
+                &[(17, container_value(&[Some((1, 1, Some(n)))]))],
+                &[],
+            ))
+        };
+        assert_ne!(named("Alpha").fingerprint, named("Beta").fingerprint);
+        assert_eq!(named("Alpha").fingerprint, named("Alpha").fingerprint);
+    }
+
+    /// A slot whose patch names a component with no codec stops the whole
+    /// stack. The container is *not* reported as the slots read so far — a
+    /// partial container presented as a whole one is a confident wrong answer.
+    #[test]
+    fn an_unwalkable_component_inside_a_container_slot_makes_the_stack_unwalkable() {
+        install_test_shapes();
+        let mut value = Vec::new();
+        varint(1, &mut value); // one slot
+        value.push(1); // present
+        varint(2, &mut value); // item
+        varint(1, &mut value); // count
+        varint(1, &mut value); // added
+        varint(0, &mut value); // removed
+        varint(999, &mut value); // a component no test registry installs
+        value.extend_from_slice(&[0xAA, 0xBB]);
+        let raw = stack(1, 600, &[(17, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.patch, PatchOutcome::Unwalkable);
+        assert!(!s.aligned_stack());
+        assert_eq!(s.components.container, None);
     }
 }

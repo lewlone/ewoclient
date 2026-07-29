@@ -73,6 +73,19 @@ pub struct DataComponentIds {
     /// the one-argument constructor, which fixes it at `-1`. A selection is
     /// client-side state on the open screen, not a synchronised value.
     pub bundle_contents: i32,
+    /// `minecraft:container` (M63) — `ItemContainerContents.STREAM_CODEC`,
+    /// which is `ItemStackTemplate.STREAM_CODEC.apply(ByteBufCodecs::optional)
+    /// .apply(ByteBufCodecs.list(256))`.
+    ///
+    /// Read for its contents for the same reason `bundle_contents` is: a
+    /// shulker box is only ever filled by a patch, so the item prototype
+    /// answers `ItemContainerContents.EMPTY` for every one a server sends, and
+    /// `addToTooltip`'s five `item.container.item_count` lines have nowhere
+    /// else to come from.
+    ///
+    /// Note the slot is an **`Optional`** template, unlike a bundle's plain
+    /// one — the list is indexed by slot number and gaps are real.
+    pub container: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -157,6 +170,7 @@ impl DataComponentIds {
             dyed_color: id("minecraft:dyed_color")?,
             trim: id("minecraft:trim")?,
             bundle_contents: id("minecraft:bundle_contents")?,
+            container: id("minecraft:container")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",
