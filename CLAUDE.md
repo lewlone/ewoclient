@@ -3394,6 +3394,79 @@ editing tool normalised its 95 CRLF / 58 LF into a 60–123-line diff for a
 retire this class of problem, but it touches line endings repo-wide and is a
 decision, not a cleanup.
 
+### The audio asset layer and the packet coverage audit (M66, M67)
+
+Same test as the batches before — no eyeball, no design decision.
+**`REWO_PACKET_COVERAGE.md` is the important artefact here**; read it before
+planning any protocol work.
+
+**The audit measured something nobody had.** Rewo's packet handling grew
+milestone by milestone, so what it decodes was a *historical accident, not a
+decision* — twice recently a whole family turned out to be simply absent
+(M63's sounds, M65's scoreboard set), each found by noticing it was not in
+`ids.rs`.
+
+**141 clientbound-play packets: 56 consumed, 0 resolved-but-ignored, 85 never
+resolved.** The zero is a real negative finding — the `cb_play_*` fields and
+the dispatch chain agree exactly, so the whole gap is *names never resolved*.
+The 85 split 31 pure-state / 20 needs-rendering / 23 needs-a-subsystem /
+11 not-applicable.
+
+**It also undermined a claim this file and REWO_PLAN both lean on.**
+`rewo play`'s **`CORRECTIONS 0` proves less than it has been cited as
+proving**: the harness walks on flat ground and is never knocked back,
+exploded at, or mounted, so `explode` (whose `playerKnockback` is
+`addDeltaMovement` on the local player), `set_entity_motion`, `move_vehicle`
+and `set_passengers` are **structurally outside what it can test**. The number
+is real and the physics port may well be right; the evidence is narrower than
+the phrasing suggests. Treat it as "no correction *on the paths the harness
+exercises*".
+
+Two more gaps worth knowing: **`set_player_inventory`** is
+`container_set_slot`'s index-addressed twin and only one of the pair was ever
+handled — M34/M35 built a *predicting* inventory whose sole correction path is
+a full state-id resync, and these exist to correct it without one. And
+**`update_tags`**: Rewo reads `ItemTags.SPEARS` (M19) and the enchantment tags
+(M42) from the **jar**, so a datapack that retags an item yields a wrong swing
+duration or a missing tooltip line **with no error anywhere** — M64's
+alphabetisation trap one layer up.
+
+**"Handled" is not "complete"** (audit §4): six consumed packets decode less
+than their body carries, and the greps the audit uses would call every one of
+them handled. Sharpest — `game_event` consumes 4 of 14 types, so
+`CHANGE_GAME_MODE`, the local player's own gamemode change, is matched and
+dropped.
+
+**M66 — the audio asset layer.** `sounds.json`'s weighted-variant index and
+`level_event`'s id→sound table. **The data is not in the client jar** — it
+arrives through the *asset index*, and so does every `.ogg`, which makes
+`validateSoundResource` real rather than assumed: a variant whose file is
+absent is dropped and the event's weights move with it. 1,968 events, 8,024
+variants, 61 of them `type: "event"` **redirects** — and a redirect contributes
+the **target's** total weight, not its own declared `weight`.
+
+`forLocalAmbience(sound, **pitch**, volume)` takes pitch *second* — reading the
+argument list left to right makes 1032's portal three times too loud at a fixed
+pitch. `globalLevelEvent` and `levelEvent` are **disjoint switches**, so a
+mismatched global flag is silence in vanilla too. Three ids are deliberately
+unresolved rather than guessed, each with its derivation recorded: 1010
+(jukebox song), 2001 (per block-state `SoundType`), 3008 (`BrushableBlock`).
+
+**Still no audio.** No crate, no device, no mixer — that is the part needing a
+human to listen.
+
+**Two process facts from this batch.**
+
+*A build passing proves the working tree is good, not the commit.* A disk-full
+error during `git add` produced a commit that declared two modules whose files
+were not staged — `cargo build` passed locally because the files were on disk.
+Only `git show --stat` showed 2 files instead of 4. After any git operation
+that errors, re-check what actually landed.
+
+*The M-number ladder is now unusable as an index.* M52, M61, M64 and M66 each
+name two unrelated pieces of work, because concurrent sessions numbered
+independently. Read `git log --oneline` subjects.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every

@@ -470,7 +470,10 @@ list that follows is the 2026-07-27 snapshot and is left as written.
   count).
 - **Live gates**: `play --light-check --no-relight` 884,736 cells / 0
   mismatches both channels; `play --dimension-check` 4/4 checkpoints + 3/3
-  transitions; physics **CORRECTIONS 0** over 600 ticks; build actions prove
+  transitions; physics **CORRECTIONS 0** over 600 ticks *on the paths the
+  harness exercises* (M67's audit: it is never knocked back, exploded at or
+  mounted, so `explode`/`set_entity_motion`/`move_vehicle`/`set_passengers`
+  are outside what that number can test); build actions prove
   place == dirt and dig == air.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
