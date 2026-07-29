@@ -500,6 +500,8 @@ fn render_capsule(
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);
@@ -861,6 +863,8 @@ fn silhouette(
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
     };
     d.kind = EntityModelKind::Zombie;

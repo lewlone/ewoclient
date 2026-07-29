@@ -485,6 +485,27 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("warden_pulsating_1", "entity/warden/warden_pulsating_spots_1.png", 128, 128),
     ("warden_pulsating_2", "entity/warden/warden_pulsating_spots_2.png", 128, 128),
     ("warden_heart", "entity/warden/warden_heart.png", 128, 128),
+    // M68 — the two render layers whose sheet is a *second* texture on a mesh
+    // Rewo already builds.
+    //
+    // `SheepWoolUndercoatLayer`: 26.x's second fleece. Its model layer is
+    // `SHEEP_WOOL_UNDERCOAT` -> **`sheepBodyLayer`**, i.e.
+    // `SheepModel.createBodyLayer()` — the *body* mesh at deformation NONE,
+    // not `SheepFurModel.createFurLayer()`'s inflated one, even though the
+    // class wrapping it is `SheepFurModel`. The sheet's own layout settles it:
+    // its head block is 12 px wide over 8 rows (w=6, d=8), which is the body
+    // head's box unwrap, where the fur sheet's is 12 px over 6 (d=6).
+    ("sheep_wool_undercoat", "entity/sheep/sheep_wool_undercoat.png", 64, 32),
+    // `TropicalFishRenderer` swaps `this.model` between two meshes and the
+    // texture with it, so `tropical_b.png` is not an alternate skin for one
+    // fish — it is the sheet belonging to the *large* body plan.
+    ("tropical_fish_large", "entity/fish/tropical_b.png", 32, 32),
+    // `TropicalFishPatternLayer`'s twelve sheets, six per body plan. Entry 1
+    // of each six is the baked base (KOB / FLOPPER); the other five ride the
+    // variant band (`crate::mob_variants`), which is what lets one pattern
+    // slot address all six.
+    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_1.png", 32, 32),
+    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_1.png", 32, 32),
 ];
 
 /// A decoded GUI sprite: RGBA8 + pixel dimensions.

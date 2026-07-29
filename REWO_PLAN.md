@@ -10476,3 +10476,185 @@ ordering that happens not to matter, a witness whose subject moved. None of
 them produce anything that *looks* broken. Only asserting the property directly
 makes them falsifiable, which is the argument for witnesses that pin values
 rather than shapes.
+
+### M68 — the sheep's undercoat, and the tropical fish properly (2026-07-29)
+
+Two mob-rendering items M64 left open. Both turned out to be a layer or a mesh
+that the *class name* mis-describes, and in both cases the decompile's
+registration table settled it where the class did not.
+
+#### The sheep's undercoat
+
+26.x added `SheepWoolUndercoatLayer` beside the fleece, and M64 recorded it as a
+gap with two facts: it draws `sheep_wool_undercoat.png` over the body mesh, and
+it is **not gated on `isSheared`**. Both hold. What M64 could not have known
+without reading `LayerDefinitions` is the third:
+
+> `SheepWoolUndercoatLayer` wraps its model in **`SheepFurModel`** — and
+> `ModelLayers.SHEEP_WOOL_UNDERCOAT` maps to **`sheepBodyLayer`**, i.e.
+> `SheepModel.createBodyLayer()` at `CubeDeformation.NONE`.
+
+The class supplies only `setupAnim`; the geometry comes from the baked layer.
+So the undercoat is not a third fleece at all — it is the **sheep's own body
+mesh, repeated**, exactly coplanar with it. The sheet's layout confirms it
+independently: its head block is 12 px wide over 8 rows (w=6, d=8), the *body*
+head's box unwrap, where the fur sheet's is 12 px over 6.
+
+And it is more literal than that. All **467** of the sheet's opaque texels are
+byte-identical to `sheep.png` at the same UV — the undercoat sheet is the wool
+region of the base sheep sheet, cut out. That is what makes `u4` an *absolute*
+witness rather than a ratio one: the pixel behind every undercoat pixel is the
+same texel at the same face shade, so their quotient **is** the tint.
+
+**It takes the same dye.** `getWoolColor()`, the identical call
+`SheepWoolLayer` makes — `ColorLerper.Type.SHEEP`, which is
+`floor(getTextureDiffuseColor() * 0.75)` with WHITE overridden outright to
+`0xE6E6E6`. Not the raw diffuse table. Worth stating because a *ratio* witness
+cannot tell the two apart between two coloured dyes (a uniform scale cancels);
+only measuring against the untinted body underneath separates them, and the
+mutation reads ≈1.95× too bright in linear.
+
+**Coplanar geometry needed a pipeline, not a fudge.** Rewo's solid entity pass
+depth-tests strict `GREATER` (reversed-Z), so a layer at exactly the base's
+depth is rejected fragment for fragment and draws *nothing*. Every other layer
+Rewo bakes as a texture slot is inflated over the body — the fleece
+0.6/1.75/0.5, the fish pattern 0.008 — and wins on its own. The undercoat's
+quads therefore leave the solid range for M48's armour-trim range:
+`CompareOp::EQUAL`, no depth write, drawn after it. That is the reversed-Z
+reading of vanilla's `entityCutout` (`LEQUAL` + write) for geometry coplanar by
+construction — at equal depth both pass, and the write is a no-op because the
+value already there is the one it would write. Nudging the layer outward
+instead would have been a guess, and a visible one.
+
+The ordering is what makes the fleece still occlude it: an unshorn sheep's
+depth buffer holds the *inflated* wool's nearer depth, which the undercoat then
+fails. Not everywhere, though — the fur boxes are shorter than the body's (a
+6×6×6 head against 6×6×8, 4×6×4 legs against 4×12×4) and the sheet is
+alpha-cutout, so a woolly sheep's snout and lower legs still show undercoat, as
+they do in vanilla. Measured: **6,966 px shorn, 1,634 woolly, none outside the
+shorn set.**
+
+**M64's `t6` was stating something false**, and this is the honest part of the
+milestone. It read "a shorn sheep is inert to the dye that moved a woolly one —
+the only tinted texture is the one the layer stopped submitting." Vanilla's
+shorn dyed sheep answers the dye; that is the undercoat's entire visible point.
+`t6` now renders with the second fleece suppressed and says so, keeping the
+tint-versus-geometry discrimination it was written for, and `u1` carries the
+corrected claim. The row had gone on passing after the layer shipped only
+because the gate never enabled it.
+
+#### The tropical fish
+
+M64 excluded it and was right to: the packed int does not select a texture. It
+selects a **mesh**, a **pattern layer** and **two dye colours**.
+
+`TropicalFish.packVariant` is
+`pattern.getPackedId() & 65535 | (baseColor.getId() & 0xFF) << 16 |
+(patternColor.getId() & 0xFF) << 24`, and `Pattern`'s own packed id is
+`base.id | index << 8`. Four fields, low to high:
+
+```text
+  bit  0      Base       0 SMALL (tropical_a) / 1 LARGE (tropical_b)
+  bits 8..15  pattern    the index 0..5 *within* that Base
+  bits 16..23 body dye   DyeColor id  (getModelTint -> state.baseColor)
+  bits 24..31 pattern dye DyeColor id (TropicalFishPatternLayer)
+```
+
+**Bits 1..7 belong to no field**, which is why `Pattern.byId` is
+`ByIdMap.**sparse**`: the id space is not dense, so an unrecognised packed id
+falls back to a *named default, KOB*, rather than clamping or wrapping into a
+neighbour. `FishVariant::unpack` reproduces that by reconstructing
+`base | index << 8` and comparing — a mask over "the bits the fields use" would
+accept the seven stray ones and read a valid pattern out of a bogus id.
+
+The **shape** is one wire name with two `EntityModelKind`s, chosen by the
+caller from bit 0 — the `PlayerSlim` shape, because
+`TropicalFishRenderer.submit` assigns `this.model` from `state.pattern.base()`
+before every submission. `TropicalFishLargeModel` is its own mesh, not a
+rescale: a 2×6×6 body against 2×3×6, a 5-deep tail against 6, fins a block
+higher, and a **bottom fin** the small plan has no part for.
+
+The **pattern** is a second texture slot on the same mesh at
+`CubeDeformation(0.008)`, and which of its six sheets it samples is an ordinary
+per-draw variant id — so it lands in `mob_variants` beside M64's forty-two and
+inherits that whole machinery (`n1`, `n5`, `n6` grade it for free once they
+walk every texture key rather than only a mob's first).
+
+The **two dyes** come from `getTextureDiffuseColor()` with no `ColorLerper` in
+sight — the undimmed table, *not* the sheep's. The two agree closely as ratios
+between two coloured dyes and disagree sharply against WHITE (44 of 45
+channel-entries by more than 8%), which is why `f4` references dye 0.
+
+#### Two gate findings
+
+**`n5` was a false positive waiting for a second mob to vary the same slot.**
+It kept one global set of per-slot UV offsets, which worked while each of
+M64's six varied its only texture. The two fish plans' pattern bases are
+adjacent 32×32 sheets and their alternates pack consecutively, so
+`tropical_a_pattern_6` and `tropical_b_pattern_2` land on the *same relative
+offset* while addressing different atlas slots. The offset is relative to a
+mob's own base, so the set is now keyed by kind.
+
+**Framing a fish head-on measures almost nothing.** `frame_kind` looks along
+−Z and a tropical fish is **2 model-px wide**: the only body face in view is a
+2×3 rect. `tropical_a_pattern_3` has no marks in that one rect, and an early
+build of this gate read its 0 px as a broken bake — the atlas offsets, the
+packing order and the decoded sheet were all checked before the render was
+looked at. Yawed 90° every pattern renders thousands of pixels. The general
+lesson is the M37 one from the other direction: a detector that measures
+almost nothing will report a real feature as absent.
+
+#### The atlas
+
+Four sheets added to `MOB_TEXTURE_SPECS` and ten to `VARIANT_TEXTURES`; total
+new area 16 KB of texels against ~900 KB of shelf. **`ATLAS_H` is unchanged at
+1600** — M64's growth left room, and its note that the shelf ceiling is defined
+by subtraction (so a grow-at-the-top slides every pool below) did not need
+re-testing. The base table's sort is `(h desc, w desc, key)`, so the new keys
+*do* reorder the shelf packing; that is safe because every consumer computes
+its origins from the pack and the atlas is rebuilt at startup, and it is
+covered by `mobshot --check`, which recomputes UVs from the same origins.
+
+`mobshot --check` goes **243 → 246 mob-views, zero failures** — three views for
+the new `TropicalFishLarge` kind, which is a real model and belongs in the
+gate. The count is descriptive; the gate has no hard-coded expectation.
+
+#### Measured
+
+**1,104 tests** (was 1,098: +3 `mob_variants`, +3 `mobs`), zero failures. Every
+gate green with Vulkan validation ON and **0 VUIDs**: `capeshot` 69, `itemshot`
+62, `inventoryshot` 143, `healthbarshot` 33, `attributeshot` 43, `captureshot`
+17, `blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
+12, `hudshot` 41, `mobshot` **246/246** + emissive 5 + etf 8 + **tint 11** +
+**variant 13**, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
+`dimensioncheck`. Demo PNG SHA-256
+`2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
+byte-identical since M15. `git diff --check` exits 0.
+
+**Every mutation partner was run.** U1 (`&& !isSheared` on the gate) fails
+`u1`; U3a (drop `woolColor != WHITE`) fails `u3`; U3b (drop `!isBaby`) fails
+`u3`; U4 (`DYE_DIFFUSE_COLORS` for the undercoat) fails `u4`; U5 (the coplanar
+range depth-tests `ALWAYS`) fails `u5`; F1 (base/index sub-fields swapped)
+fails `f1`; F2 (both plans from the small mesh) fails `f2`; F3 (both fish
+layers from one dye field) fails `f3`; F3b (the two colour bytes transposed)
+fails `f3b`; F4 (the wool lerper for the fish) fails `f4`.
+
+**One mutation did not flip its row, and the row's text was corrected rather
+than the row.** `u2`'s partner was "build the undercoat from
+`SheepFurModel.createFurLayer()`" — inflating it, run alone, makes the layer
+*vanish* (it no longer sits at the body's depth, so `EQUAL` rejects it) instead
+of growing the silhouette; `u5` caught it and `u2` did not. The mutation that
+shows what `u2` claims is the pair — fur inflation **and** leaving the layer in
+the solid range — which takes the shorn silhouette 21,290 → 23,522. `u2` now
+says so, including why the second half is load-bearing.
+
+**Not verified:** no live sighting. Nobody has watched a shorn dyed sheep or a
+school of tropical fish on a real server; everything here is headless.
+
+**Open.** The undercoat's `isJebSheep` disjunct is deliberately absent — it
+selects `ColorLerper.getLerpedColor`'s rainbow, which Rewo does not render, so
+including it would draw the layer in a colour the fleece beside it is not
+wearing. The fish's `Base` also drives nothing else Rewo models (both plans
+share the tail animation verbatim), and the twenty-two `COMMON_VARIANTS` and
+their predefined names are a tooltip concern, not a rendering one.

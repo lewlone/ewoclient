@@ -960,6 +960,8 @@ fn run_entity_case(
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
         light,
     };

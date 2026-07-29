@@ -246,6 +246,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
     }
 }
@@ -1230,20 +1232,35 @@ fn run_etf_check(
     );
 
     // ---- a rule on one texture moves only that texture --------------------
-    // The sheep has two (body, wool); a pack varying the wool must leave the
-    // body's UVs at zero offset. A per-slot table indexed by the wrong axis
-    // passes every property above and fails here.
+    // The sheep has three (body, wool, undercoat since M68); a pack varying
+    // the *wool* must leave both others at zero offset. A per-slot table
+    // indexed by the wrong axis passes every property above and fails here —
+    // and the third slot strengthens it, because the undercoat's quads are
+    // geometric twins of the body's and would follow any offset keyed off
+    // position rather than off the texture slot.
+    let wool_slot = rewo_gpu::mobs::MOBS
+        .iter()
+        .find(|d| d.kind == EntityModelKind::Sheep)
+        .and_then(|d| d.textures.iter().position(|t| *t == "sheep_wool"))
+        .expect("the sheep lists a wool texture");
     let offsets = wr
         .entity_pass()
         .expect("entity pass")
         .variant_offsets(EntityModelKind::Sheep, 2)
         .map(|o| o.to_vec());
+    let only_wool = offsets.as_ref().is_some_and(|o| {
+        o.len() >= 2
+            && o.iter()
+                .enumerate()
+                .all(|(i, v)| (*v != [0.0, 0.0]) == (i == wool_slot))
+    });
     c.record(
         "f5.a_rule_on_one_texture_shifts_only_that_texture",
-        offsets
-            .as_ref()
-            .is_some_and(|o| o.len() == 2 && o[0] == [0.0, 0.0] && o[1] != [0.0, 0.0]),
-        format!("sheep per-slot offsets (body, wool) = {offsets:?}"),
+        only_wool,
+        format!(
+            "sheep per-slot offsets = {offsets:?}; the wool is slot {wool_slot} \
+             and is the only one that moved"
+        ),
     );
 
     wr.destroy(gpu);
@@ -1353,18 +1370,34 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // --variant-check: vanilla's metadata-driven texture variants (M64)
 // ---------------------------------------------------------------------------
 
-const VARIANT_WITNESSES: usize = 8;
+const VARIANT_WITNESSES: usize = 13;
 
-/// The six mobs whose texture a synched metadata field chooses, and the
-/// registry name each carries in the `entity_types` table.
-const VARIANT_MOBS: [(EntityModelKind, &str); 6] = [
+/// The mobs whose texture a synched metadata field chooses, and the registry
+/// name each carries in the `entity_types` table.
+///
+/// The last two are M68's: a tropical fish's packed variant picks the pattern
+/// **layer**'s sheet, which is the same "one per-draw variant id addresses N
+/// sheets" mechanism, applied to a mob's *second* texture slot rather than its
+/// first. Two entries because one wire name has two meshes.
+const VARIANT_MOBS: [(EntityModelKind, &str); 8] = [
     (EntityModelKind::Cat, "minecraft:cat"),
     (EntityModelKind::Wolf, "minecraft:wolf"),
     (EntityModelKind::Frog, "minecraft:frog"),
     (EntityModelKind::Axolotl, "minecraft:axolotl"),
     (EntityModelKind::Horse, "minecraft:horse"),
     (EntityModelKind::Llama, "minecraft:llama"),
+    (EntityModelKind::TropicalFish, "minecraft:tropical_fish"),
+    (EntityModelKind::TropicalFishLarge, "minecraft:tropical_fish"),
 ];
+
+/// Every texture key a kind lists — M64's mobs vary their *first* slot, M68's
+/// fish its second, so the atlas and render rows walk all of them.
+fn kind_texture_keys(kind: EntityModelKind) -> &'static [&'static str] {
+    rewo_gpu::mobs::MOBS
+        .iter()
+        .find(|d| d.kind == kind)
+        .map_or(&[][..], |d| d.textures)
+}
 
 /// The variant gate: **the sheet the server names is the sheet that renders,
 /// and nothing else on the mob moves.**
@@ -1409,7 +1442,7 @@ fn run_variant_check(
         .collect();
     c.record(
         "n1.every_declared_variant_sheet_baked_at_its_bases_size",
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 42,
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 52,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \
@@ -1558,25 +1591,32 @@ fn run_variant_check(
         // Every declared variant reached the atlas with an offset, and every
         // offset is distinct — two variants sharing a slot would render as one.
         let mut no_slot = Vec::new();
-        let mut offsets = std::collections::HashSet::new();
+        let mut offsets: std::collections::HashSet<(EntityModelKind, Vec<[u32; 2]>)> =
+            std::collections::HashSet::new();
         let mut collided = Vec::new();
         for (kind, _) in VARIANT_MOBS {
-            let key = rewo_gpu::mobs::MOBS
-                .iter()
-                .find(|d| d.kind == kind)
-                .and_then(|d| d.textures.first())
-                .copied()
-                .unwrap_or("");
-            for (k, id, path) in mv::specs().filter(|(k, _, _)| *k == key) {
-                match pass.variant_offsets(kind, id) {
-                    Some(o) => {
-                        let bits: Vec<[u32; 2]> =
-                            o.iter().map(|v| [v[0].to_bits(), v[1].to_bits()]).collect();
-                        if !offsets.insert(bits) {
-                            collided.push(path);
+            for key in kind_texture_keys(kind) {
+                for (k, id, path) in mv::specs().filter(|(k, _, _)| k == key) {
+                    match pass.variant_offsets(kind, id) {
+                        Some(o) => {
+                            // Keyed by KIND: the offset is relative to that
+                            // mob's own base slot, so two mobs can share one
+                            // and mean different texels. M64 could use a
+                            // global set because each of its six varied its
+                            // only texture and no two bases sat 32 px apart;
+                            // M68's two fish plans do (their pattern bases are
+                            // adjacent 32x32 sheets and their alternates pack
+                            // consecutively), so `tropical_a_pattern_6` and
+                            // `tropical_b_pattern_2` land on the same relative
+                            // offset while addressing different atlas slots.
+                            let bits: Vec<[u32; 2]> =
+                                o.iter().map(|v| [v[0].to_bits(), v[1].to_bits()]).collect();
+                            if !offsets.insert((kind, bits)) {
+                                collided.push(path);
+                            }
                         }
+                        None => no_slot.push((k, path)),
                     }
-                    None => no_slot.push((k, path)),
                 }
             }
         }
@@ -1584,8 +1624,9 @@ fn run_variant_check(
             "n5.every_variant_has_its_own_atlas_slot",
             no_slot.is_empty() && collided.is_empty(),
             format!(
-                "{} of {} declared variants reached the atlas with a distinct \
-                 per-slot UV offset; unpacked {no_slot:?}, collided {collided:?}. \
+                "{} of {} declared variants reached the atlas with a per-slot UV \
+                 offset distinct within their own mob; unpacked {no_slot:?}, \
+                 collided {collided:?}. \
                  M64 grew the shelf region by 128 rows to fit them — before \
                  that, seven failed to pack and silently fell back to the base \
                  texture, which is a bug a render alone would not show",
@@ -1602,12 +1643,6 @@ fn run_variant_check(
         for (kind, _) in VARIANT_MOBS {
             let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else { continue };
             wr.set_camera(eye.to_array());
-            let key = rewo_gpu::mobs::MOBS
-                .iter()
-                .find(|d| d.kind == kind)
-                .and_then(|d| d.textures.first())
-                .copied()
-                .unwrap_or("");
             let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, v: u16| {
                 let d = EntityDraw {
                     variant: v,
@@ -1619,7 +1654,9 @@ fn run_variant_check(
             };
             let base = shot(&mut wr, gpu, &mut off, 0)?;
             let mut seen: Vec<(u16, Vec<u8>)> = Vec::new();
-            for (_, id, path) in mv::specs().filter(|(k, _, _)| *k == key) {
+            for (_, id, path) in
+                mv::specs().filter(|(k, _, _)| kind_texture_keys(kind).contains(k))
+            {
                 let img = shot(&mut wr, gpu, &mut off, id)?;
                 if img == base {
                     same_as_base.push(path);
@@ -1645,6 +1682,7 @@ fn run_variant_check(
                 dupes.len()
             ),
         );
+        check_fish(&mut c, &mut wr, gpu, &mut off, &draw)?;
         Ok(())
     })();
     wr.destroy(gpu);
@@ -1657,6 +1695,248 @@ fn run_variant_check(
     // a kind gate that stops matching fails here rather than in a screenshot.
     check_variant_routing(&mut c)?;
     c.finish("VARIANT", VARIANT_WITNESSES)
+}
+
+/// M68's tropical fish: the three things a *variant id* cannot express.
+///
+/// n1/n5/n6 above already grade the pattern layer's twelve sheets, because a
+/// pattern is an ordinary alternate on the fish's second texture slot. What is
+/// left is what the packed int does *besides* naming a sheet: it picks the
+/// mesh, and it carries two dye colours for two different layers.
+fn check_fish(
+    c: &mut Checker,
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    off: &mut Offscreen,
+    draw: &OverlayDraw<'_>,
+) -> Result<(), String> {
+    use rewo_data::mob_variants as mv;
+    // `TropicalFish.packVariant`, rebuilt from the decompiled formula so the
+    // gate's input is not the unpacker's inverse.
+    let pack = |base: i32, index: i32, body: i32, pattern: i32| -> i32 {
+        ((base | (index << 8)) & 0xFFFF) | ((body & 0xFF) << 16) | ((pattern & 0xFF) << 24)
+    };
+
+    // ---- the shape is the LOW BIT -----------------------------------------
+    //
+    // Driven through `live_cmd::fish_kind`, the client's own resolver.
+    let kind_of = |p: i32| crate::live_cmd::fish_kind(mv::FishVariant::unpack(p));
+    let small = EntityModelKind::TropicalFish;
+    let large = EntityModelKind::TropicalFishLarge;
+    let shape_ok = kind_of(pack(0, 0, 0, 0)) == small
+        && kind_of(pack(1, 0, 0, 0)) == large
+        && kind_of(pack(0, 5, 15, 15)) == small
+        && kind_of(pack(1, 5, 15, 15)) == large
+        // KOB's whole packed id is 0, so a fish that has never synced is SMALL.
+        && kind_of(0) == small
+        // An undeclared pattern id is KOB — SMALL — not "whatever bit 0 says".
+        && kind_of(pack(1, 6, 0, 0)) == small;
+    c.record(
+        "f1.the_fish_shape_is_the_packed_variants_low_bit",
+        shape_ok,
+        format!(
+            "`Pattern.packedId` is `base.id | index << 8`, so SMALL/LARGE is \
+             bit 0 and the pattern index is byte 1. MUTATION reading the shape \
+             as a byte (`packed & 0xFF`) puts SUNSTREAK (0x100) on the large \
+             mesh and STRIPEY (0x101) on it too, collapsing the distinction. \
+             An undeclared id is KOB and therefore SMALL — {:?} — because \
+             `Pattern.byId` is `ByIdMap.**sparse**`, not a clamp",
+            kind_of(pack(1, 6, 0, 0))
+        ),
+    );
+
+    // ---- the two meshes are different meshes -------------------------------
+    let Some((vp_s, right_s, up_s, eye_s)) = frame_kind(wr, small) else {
+        return Err("the small tropical fish model is unavailable".into());
+    };
+    let Some((vp_l, right_l, up_l, eye_l)) = frame_kind(wr, large) else {
+        return Err("the large tropical fish model is unavailable".into());
+    };
+    let mut shot = |wr: &mut WorldRenderer,
+                    gpu: &mut Gpu,
+                    off: &mut Offscreen,
+                    kind: EntityModelKind,
+                    variant: u16,
+                    dye: Option<[u8; 2]>| {
+        let (vp, right, up, eye) = if kind == small {
+            (vp_s, right_s, up_s, eye_s)
+        } else {
+            (vp_l, right_l, up_l, eye_l)
+        };
+        wr.set_camera(eye.to_array());
+        let d = EntityDraw {
+            variant,
+            fish_dye: dye,
+            // Broadside. `frame_kind` looks along -Z, and a tropical fish is
+            // **2 model-px wide**: head-on, the only body face in view is a
+            // 2x3 rect, and a pattern with no marks in that one rect measures
+            // as *nothing at all* (`tropical_a_pattern_3` is exactly such a
+            // sheet — an early build of this gate read it as a broken bake).
+            // Yawed 90 degrees the flank faces the camera, which is where a
+            // fish's pattern lives.
+            yaw: 90.0,
+            ..neutral_draw(kind)
+        };
+        wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
+        off.render(gpu, Some((wr, vp)), draw, BG)?;
+        off.read_rgba(gpu)
+    };
+    // Same camera framing for both would beg the question — `frame_kind` sizes
+    // the camera to each model's own bbox — so compare the *meshes* instead.
+    let quads = |k: EntityModelKind| {
+        wr.entity_pass()
+            .and_then(|p| p.neutral_quads(k))
+            .map_or(0, |q| q.len())
+    };
+    let (qs, ql) = (quads(small), quads(large));
+    let bottom_fin = ql > qs;
+    c.record(
+        "f2.the_large_plan_is_its_own_mesh_not_a_rescaled_small_one",
+        qs > 0 && bottom_fin,
+        format!(
+            "small {qs} quads, large {ql}. `TropicalFishLargeModel` is a 2x6x6 \
+             body against 2x3x6, a 5-deep tail against 6, fins a block higher, \
+             and a **bottom_fin** the small plan has no part for at all — so \
+             the counts must differ. MUTATION rendering both from one mesh \
+             (the pre-M68 behaviour, which drew every fish as shape A) makes \
+             them equal"
+        ),
+    );
+
+    // ---- the two dyes land on two different layers -------------------------
+    let px = |img: &[u8], i: usize| -> [u8; 3] { [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]] };
+    let set = |a: &[u8], b: &[u8]| -> Vec<usize> {
+        (0..a.len() / 4).filter(|&i| px(a, i) != px(b, i)).collect()
+    };
+    let inter = |a: &[usize], b: &[usize]| -> Vec<usize> {
+        a.iter().copied().filter(|i| b.binary_search(i).is_ok()).collect()
+    };
+    let pat = mv::fish_pattern_variant(mv::FishBase::Small, 3);
+    let white = shot(wr, gpu, off, small, pat, Some([0, 0]))?;
+    let body_set = set(&shot(wr, gpu, off, small, pat, Some([14, 0]))?, &white);
+    let patt_set = set(&shot(wr, gpu, off, small, pat, Some([0, 14]))?, &white);
+    let overlap = inter(&body_set, &patt_set).len();
+    // The fish's own `neutral_draw` default: `None` is `DEFAULT_VARIANT`'s
+    // WHITE/WHITE, not "untinted" — the sheep's t1, for the other table.
+    let default_dye = shot(wr, gpu, off, small, pat, None)?;
+    c.record(
+        "f3.the_body_dye_and_the_pattern_dye_move_disjoint_layers",
+        overlap == 0
+            && !body_set.is_empty()
+            && !patt_set.is_empty()
+            && default_dye == white,
+        format!(
+            "colouring the body alone moves {} px, the pattern alone {} px, and \
+             {overlap} px answer to both — `getModelTint` returns \
+             `state.baseColor` while `TropicalFishPatternLayer` passes \
+             `state.patternColor`, two layers and two fields. An unsynced fish \
+             renders as `DEFAULT_VARIANT`'s WHITE/WHITE rather than untinted \
+             ({}). MUTATION tinting both layers from one field makes the \
+             overlap the whole set; MUTATION tinting only one leaves a set \
+             empty. Which field is which is f3b's job, not this row's",
+            body_set.len(),
+            patt_set.len(),
+            if default_dye == white { "byte-identical to dye [0,0]" } else { "DIFFERS" }
+        ),
+    );
+
+    // ---- …and which of the two is the pattern -----------------------------
+    //
+    // A transposition of the two colour bytes would keep f3 green: the sets
+    // just swap names. What labels them is the **variant**, which changes the
+    // pattern layer's sheet and nothing else — so the pixels that move when
+    // only the sheet changes must be pixels the *pattern* dye owns, and never
+    // pixels the *body* dye owns under both sheets.
+    //
+    // Measured on the LARGE plan at GLITTER against BLOCKFISH: the two share
+    // 40 differing opaque texels, where the small plan's most-overlapping pair
+    // shares 14 and the pair f3 uses shares one. That difference is the whole
+    // margin of the `bad == 0` half — a pair that barely overlaps would make
+    // the transposed reading fail by a pixel or two rather than by a layer.
+    let (p_a, p_b) = (
+        mv::fish_pattern_variant(mv::FishBase::Large, 2),
+        mv::fish_pattern_variant(mv::FishBase::Large, 3),
+    );
+    let l_white_a = shot(wr, gpu, off, large, p_a, Some([0, 0]))?;
+    let l_white_b = shot(wr, gpu, off, large, p_b, Some([0, 0]))?;
+    let sheet_change = set(&l_white_a, &l_white_b);
+    let body_a = set(&shot(wr, gpu, off, large, p_a, Some([14, 0]))?, &l_white_a);
+    let body_b = set(&shot(wr, gpu, off, large, p_b, Some([14, 0]))?, &l_white_b);
+    let patt_a = set(&shot(wr, gpu, off, large, p_a, Some([0, 14]))?, &l_white_a);
+    let patt_b = set(&shot(wr, gpu, off, large, p_b, Some([0, 14]))?, &l_white_b);
+    let bad = inter(&sheet_change, &inter(&body_a, &body_b)).len();
+    let good = inter(&sheet_change, &inter(&patt_a, &patt_b)).len();
+    c.record(
+        "f3b.the_pattern_dye_owns_the_pixels_the_pattern_sheet_owns",
+        bad == 0 && good > 100,
+        format!(
+            "swapping only the pattern sheet moves {} px; {bad} of them are \
+             pixels the *body* dye moves under both sheets, and {good} are \
+             pixels the *pattern* dye moves under both. A pixel no pattern \
+             covers renders identically either way, so the first number is \
+             zero by construction — and MUTATION transposing bits 16..23 with \
+             24..31 swaps the two roles, turning {bad} into {good}. This is \
+             what pins body-against-pattern from pixels rather than from the \
+             unpacker's own arithmetic, which f3 cannot do because a \
+             transposition merely renames its two sets",
+            sheet_change.len()
+        ),
+    );
+
+    // ---- and the colour is the DIFFUSE table, not the sheep's --------------
+    let lin = |v: u8| rewo_gpu::entities::srgb_to_linear(v as f32 / 255.0);
+    let diffuse = rewo_gpu::mobs::DYE_DIFFUSE_COLORS;
+    let wool = rewo_gpu::mobs::SHEEP_WOOL_COLORS;
+    let mut fail = Vec::new();
+    let mut wool_would_fail = 0usize;
+    for dye in 1..16u8 {
+        let img = shot(wr, gpu, off, small, pat, Some([dye, 0]))?;
+        let want: [f32; 3] =
+            std::array::from_fn(|c| lin(diffuse[dye as usize][c]) / lin(diffuse[0][c]));
+        let alt: [f32; 3] =
+            std::array::from_fn(|c| lin(wool[dye as usize][c]) / lin(wool[0][c]));
+        let (mut sum, mut n) = ([0.0f64; 3], [0u32; 3]);
+        for &i in &body_set {
+            for c in 0..3 {
+                let (a, b) = (white[i * 4 + c], img[i * 4 + c]);
+                if a < 24 {
+                    continue;
+                }
+                sum[c] += (lin(b) / lin(a)) as f64;
+                n[c] += 1;
+            }
+        }
+        for c in 0..3 {
+            if n[c] == 0 {
+                continue;
+            }
+            let got = (sum[c] / n[c] as f64) as f32;
+            if (got - want[c]).abs() > want[c].max(0.02) * 0.08 {
+                fail.push(format!("dye {dye} ch{c}: {got:.3} vs {:.3}", want[c]));
+            }
+            if (got - alt[c]).abs() > alt[c].max(0.02) * 0.08 {
+                wool_would_fail += 1;
+            }
+        }
+    }
+    c.record(
+        "f4.the_fish_dyes_are_getTextureDiffuseColor_not_the_sheeps_lerper",
+        fail.is_empty() && wool_would_fail >= 40,
+        format!(
+            "15 dyes x 3 channels against `linear(diffuse[k])/linear(diffuse[0])`, \
+             {} outside 8%{}. `TropicalFishRenderer.extractRenderState` calls \
+             `getTextureDiffuseColor()` on both dyes with no `ColorLerper` in \
+             sight, where the sheep's wool goes through \
+             `ColorLerper.Type.SHEEP` — floor(x * 0.75) with WHITE overridden \
+             to 0xE6E6E6. MUTATION using the wool table instead would put \
+             {wool_would_fail} of 45 outside the same tolerance: the two \
+             disagree sharply *against WHITE* even though a ratio between two \
+             coloured dyes barely separates them at all",
+            fail.len(),
+            if fail.is_empty() { String::new() } else { format!(" ({})", fail.join(", ")) }
+        ),
+    );
+    Ok(())
 }
 
 /// The metadata half of M64, through the production dispatcher.
@@ -1680,6 +1960,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         axolotl: etypes.id_of("minecraft:axolotl"),
         horse: etypes.id_of("minecraft:horse"),
         llama: etypes.id_of("minecraft:llama"),
+        tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
 
@@ -1774,7 +2055,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     Ok(())
 }
 
-const TINT_WITNESSES: usize = 6;
+const TINT_WITNESSES: usize = 11;
 
 /// The dye gate: **a dyed texture renders vanilla's colour, and nothing else on
 /// the mob moves.**
@@ -1816,6 +2097,36 @@ fn run_tint_check(
     let draw = overlay_offscreen(&ring);
     let mut c = Checker::new();
 
+    // M68. Two knobs beyond M64's: whether the sheep is a baby, and an
+    // override for the undercoat layer. Everything else resolves the layer
+    // through the **client's own** `undercoat_visible`, so a rule graded here
+    // is a rule `collect_entities` applies — a gate that set the flag by hand
+    // would grade itself (M18's lesson, and M45's).
+    let mut shot_ext = |wr: &mut WorldRenderer,
+                        gpu: &mut Gpu,
+                        off: &mut Offscreen,
+                        dye: Option<u8>,
+                        sheared: bool,
+                        baby: bool,
+                        force: Option<bool>| {
+        let d = EntityDraw {
+            dye,
+            sheared,
+            undercoat: force
+                .unwrap_or_else(|| crate::live_cmd::undercoat_visible(kind, dye, baby)),
+            mob: rewo_gpu::mobs::MobCombat {
+                is_baby: baby,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        };
+        wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
+        off.render(gpu, Some((wr, vp)), &draw, BG)?;
+        off.read_rgba(gpu)
+    };
+    // M64's rows measure the *fleece*, so they render with the second fleece
+    // suppressed — see t6 for why that is now a necessary qualification and
+    // not a convenience.
     let mut shot_of = |wr: &mut WorldRenderer,
                        gpu: &mut Gpu,
                        off: &mut Offscreen,
@@ -1824,6 +2135,7 @@ fn run_tint_check(
         let d = EntityDraw {
             dye,
             sheared,
+            undercoat: false,
             ..neutral_draw(kind)
         };
         wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
@@ -1972,19 +2284,179 @@ fn run_tint_check(
         ),
     );
 
-    // And the other side of the same statement: with the tinted layer gone
-    // there is nothing left for the dye to reach.
+    // And the other side of the same statement: with the fleece gone there is
+    // nothing left *of it* for the dye to reach.
+    //
+    // M64 stated this without the qualification, because it believed the
+    // fleece was the sheep's only tinted layer. It is not: `SheepWool-
+    // UndercoatLayer` carries no `isSheared` test, so a real shorn dyed sheep
+    // still answers the dye — which is u1 below. Both rows render with the
+    // undercoat suppressed so this one keeps measuring what it always meant
+    // to, the fleece.
     let shorn_black = shot_of(&mut wr, gpu, &mut off, Some(15), true)?;
     c.record(
-        "t6.a_shorn_sheep_is_inert_to_the_dye_that_moved_a_woolly_one",
+        "t6.a_shorn_sheep_is_inert_to_the_dye_once_the_undercoat_is_suppressed",
         shorn == shorn_black && white != black,
         format!(
-            "dyes 0 and 15 render byte-identically once the sheep is shorn, \
-             where on a woolly one they differ over {} px — the only tinted \
-             texture is the one the layer stopped submitting. MUTATION \
-             dropping the *tint* instead of the *geometry* passes this row and \
-             fails t5; the two together pin which one happened",
+            "dyes 0 and 15 render byte-identically once the sheep is shorn and \
+             the second fleece is held off, where on a woolly one they differ \
+             over {} px — `SheepWoolLayer` is the only layer shearing stops. \
+             MUTATION dropping the *tint* instead of the *geometry* passes \
+             this row and fails t5; the two together pin which one happened",
             wool.len()
+        ),
+    );
+
+    // --- M68: `SheepWoolUndercoatLayer` ----------------------------------
+    //
+    // A second fleece, drawn over the *body* mesh at `CubeDeformation.NONE`
+    // and gated on `(isJebSheep || woolColor != WHITE) && !isBaby` — with no
+    // `isSheared` test at all.
+    let px = |img: &[u8], i: usize| -> [u8; 3] {
+        [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]]
+    };
+    let diff = |a: &[u8], b: &[u8]| -> Vec<usize> {
+        (0..a.len() / 4).filter(|&i| px(a, i) != px(b, i)).collect()
+    };
+    // The reference every row below measures against: the same shorn sheep,
+    // same dye, with the layer held off.
+    let u_off = shot_ext(&mut wr, gpu, &mut off, Some(15), true, false, Some(false))?;
+    let u_on = shot_ext(&mut wr, gpu, &mut off, Some(15), true, false, None)?;
+    let coat = diff(&u_on, &u_off);
+    let u_white = shot_ext(&mut wr, gpu, &mut off, Some(0), true, false, None)?;
+    let u_white_off = shot_ext(&mut wr, gpu, &mut off, Some(0), true, false, Some(false))?;
+
+    c.record(
+        "u1.a_shorn_sheep_is_not_inert_to_the_dye_after_all",
+        !coat.is_empty() && u_white == u_white_off,
+        format!(
+            "{} px of a shorn BLACK sheep are the undercoat, and a shorn WHITE \
+             one is byte-identical to the same sheep with the layer held off. \
+             This is the row that corrects t6's premise: `SheepWoolUndercoat- \
+             Layer.submit` has no `isSheared` in it. MUTATION adding one — the \
+             natural reading, and M64's — restores t6's original wording and \
+             empties this set",
+            coat.len()
+        ),
+    );
+
+    let sil = |img: &[u8]| (0..img.len() / 4).filter(|&i| px(img, i) != px(&bg, i)).count();
+    let (sil_off, sil_on) = (sil(&u_off), sil(&u_on));
+    c.record(
+        "u2.the_undercoat_is_the_body_mesh_so_the_silhouette_does_not_move",
+        sil_on == sil_off && !coat.is_empty(),
+        format!(
+            "the shorn silhouette is {sil_off} px with the layer off and \
+             {sil_on} with it on. `LayerDefinitions` maps SHEEP_WOOL_UNDERCOAT \
+             to **sheepBodyLayer**, not the fur one, so its boxes are the \
+             body's at deformation NONE — every one of them a texture-0 box \
+             repeated. MUTATION building it from `SheepFurModel \
+             .createFurLayer()` **and** leaving it in the solid range takes \
+             the silhouette to 23522, out past the {} px the fleece adds in \
+             t5. The second half of that mutation is not decoration: an \
+             inflated layer in the *coplanar* range no longer sits at the \
+             body's depth, so `EQUAL` rejects it and it vanishes instead of \
+             growing — which u1 catches, not this row",
+            silhouette - shorn_sil
+        ),
+    );
+
+    // The gate's two suppressing terms, one at a time.
+    let u_baby = shot_ext(&mut wr, gpu, &mut off, Some(15), true, true, None)?;
+    let u_baby_off = shot_ext(&mut wr, gpu, &mut off, Some(15), true, true, Some(false))?;
+    c.record(
+        "u3.white_and_baby_each_suppress_the_layer_on_their_own",
+        u_white == u_white_off && u_baby == u_baby_off && !coat.is_empty(),
+        format!(
+            "`(isJebSheep || woolColor != WHITE) && !isBaby`: a WHITE adult and \
+             a BLACK baby both render byte-identically to themselves with the \
+             layer held off, where a BLACK adult differs over {} px. MUTATION \
+             dropping either term lights up the mob it must not — and the \
+             third row is what stops both passing vacuously",
+            coat.len()
+        ),
+    );
+
+    // The absolute tint. The undercoat sheet is the wool region of `sheep.png`
+    // cut out — all 467 of its opaque texels are byte-identical to the base
+    // sheet at the same UV — and it sits on the base's own mesh, so the pixel
+    // *behind* every undercoat pixel is the same texel at the same face shade.
+    // Their quotient is therefore the tint itself, with no unknown constant:
+    // this pins the table absolutely, where a ratio between two dyes could
+    // not (the wool table is floor(diffuse * 0.75), and a uniform scale
+    // cancels out of any such ratio).
+    let mut abs_fail = Vec::new();
+    for dye in 1..16u8 {
+        let on = shot_ext(&mut wr, gpu, &mut off, Some(dye), true, false, None)?;
+        let off_ref = shot_ext(&mut wr, gpu, &mut off, Some(dye), true, false, Some(false))?;
+        // linear(SHEEP_WOOL_COLORS[k]) — the layer colour itself, which is
+        // what the quotient below must equal.
+        let want: [f32; 3] = std::array::from_fn(|c| lin(table[dye as usize][c]));
+        let (mut sum, mut n) = ([0.0f64; 3], [0u32; 3]);
+        for &i in &coat {
+            for c in 0..3 {
+                let (a, b) = (off_ref[i * 4 + c], on[i * 4 + c]);
+                if a < 24 {
+                    continue;
+                }
+                sum[c] += (lin(b) / lin(a)) as f64;
+                n[c] += 1;
+            }
+        }
+        for c in 0..3 {
+            if n[c] == 0 {
+                continue;
+            }
+            let got = (sum[c] / n[c] as f64) as f32;
+            if (got - want[c]).abs() > want[c].max(0.02) * 0.08 {
+                abs_fail.push(format!("dye {dye} ch{c}: {got:.3} vs {:.3}", want[c]));
+            }
+        }
+    }
+    c.record(
+        "u4.the_undercoat_takes_the_fleeces_own_dye_table_absolutely",
+        abs_fail.is_empty(),
+        format!(
+            "`SheepWoolUndercoatLayer` passes `state.getWoolColor()`, the same \
+             call `SheepWoolLayer` makes, so the quotient of the layer against \
+             the untinted body beneath it must be `linear(SHEEP_WOOL_COLORS[k])` \
+             itself; {} of 15 dyes x 3 channels outside 8%{}. MUTATION tinting \
+             it from `DYE_DIFFUSE_COLORS` (the tropical fish's table, and the \
+             one the wool table is floor(x * 0.75) of) reads ~1.95x too bright \
+             in linear — a difference no *ratio* between two dyes could see, \
+             which is why this row is absolute",
+            abs_fail.len(),
+            if abs_fail.is_empty() { String::new() } else { format!(" ({})", abs_fail.join(", ")) }
+        ),
+    );
+
+    // …and the fleece occludes it wherever the fleece actually covers it.
+    //
+    // Not *everywhere*: the fur boxes are shorter than the body's (a 6x6x6
+    // head against 6x6x8, 4x6x4 legs against 4x12x4) and the sheet is
+    // alpha-cutout, so a woolly sheep's snout and lower legs still show their
+    // undercoat — as they do in vanilla. What must hold is that adding the
+    // fleece can only ever *remove* undercoat pixels.
+    let woolly_on = shot_ext(&mut wr, gpu, &mut off, Some(15), false, false, None)?;
+    let woolly_off = shot_ext(&mut wr, gpu, &mut off, Some(15), false, false, Some(false))?;
+    let woolly_coat = diff(&woolly_on, &woolly_off);
+    let outside = woolly_coat.iter().filter(|i| coat.binary_search(i).is_err()).count();
+    c.record(
+        "u5.the_fleece_occludes_the_undercoat_wherever_it_covers_it",
+        outside == 0 && woolly_coat.len() < coat.len() && !woolly_coat.is_empty(),
+        format!(
+            "the undercoat reaches {} px of a shorn sheep and only {} of a \
+             woolly one, every one of them inside the shorn set ({outside} \
+             outside). The layer leaves the solid range for a \
+             `CompareOp::EQUAL`, no-write range drawn *after* it, so where the \
+             inflated fleece has written a nearer depth the undercoat fails \
+             the test, and where the fleece's cutout discarded it the body's \
+             own depth stands and the undercoat passes — vanilla's `LEQUAL` \
+             ordering read in reversed-Z. MUTATION giving that range `ALWAYS`, \
+             or drawing it before the solid range, paints the undercoat over \
+             the fleece and pushes pixels outside the shorn set",
+            coat.len(),
+            woolly_coat.len()
         ),
     );
 

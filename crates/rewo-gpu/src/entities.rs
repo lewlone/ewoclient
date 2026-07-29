@@ -322,6 +322,25 @@ pub struct EntityDraw<'a> {
     /// 0.5 over the body, so a shorn sheep is visibly thinner, not just
     /// differently coloured. Inert on a mob with no shearable layer.
     pub sheared: bool,
+    /// Whether this mob's **coplanar** layer draws at all — vanilla
+    /// `SheepWoolUndercoatLayer.submit`'s gate (M68).
+    ///
+    /// The gate is `(state.isJebSheep || state.woolColor != DyeColor.WHITE)
+    /// && !state.isBaby`, and it is resolved upstream where the metadata
+    /// lives, exactly as `EntityDraw::cape`'s four gates are. Note what it
+    /// does *not* contain: any test of `isSheared`. Shearing takes the fleece
+    /// and leaves this, which is the whole observable point of the layer —
+    /// a shorn dyed sheep keeps its colour, a shorn white one does not.
+    ///
+    /// `false` on every mob without such a layer, where it is inert.
+    pub undercoat: bool,
+    /// A tropical fish's two dyes as `DyeColor` ids, `[body, pattern]` (M68) —
+    /// `TropicalFishRenderState`'s `baseColor` and `patternColor`, which the
+    /// renderer feeds to `getModelTint` and to `TropicalFishPatternLayer`
+    /// respectively. `None` for every other mob **and** for a fish whose
+    /// variant has not arrived, which vanilla renders as `DEFAULT_VARIANT`'s
+    /// WHITE/WHITE — so `None` means that, not "untinted".
+    pub fish_dye: Option<[u8; 2]>,
     /// The worn cape (M60), or `None` when any of `CapeLayer`'s four gates
     /// suppresses it. The gates are resolved upstream, where the equipment
     /// and metadata live; by the time a draw is built the answer is already
@@ -430,6 +449,12 @@ const ATLAS_H: u32 = 1600;
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
 /// above the dynamic bands so it never collides.
+/// The most textures any one `mobs::MobDef` lists — the sheep's base + fleece
+/// + undercoat (M68). Only sizes the per-slot tint scratch in `emit_model`; a
+/// mob with more slots than this simply leaves the extra ones untinted, which
+/// is why the bound is asserted in a test rather than enforced at runtime.
+const MAX_MOB_TEXTURES: usize = 4;
+
 /// The variant id a pack's emissive overlay arrives under — mirrors
 /// `rewo_data::etf::EMISSIVE_INDEX`. Kept as a plain constant so this crate
 /// stays free of a rewo-data dependency (the same reason `FontData` and the
@@ -862,6 +887,14 @@ pub struct MobModel {
     /// The texture slot belonging to a render layer a shorn mob skips
     /// (`mobs::shearable_texture`) — `EntityDraw::sheared` drops it (M64).
     shearable_slot: Option<u8>,
+    /// The texture slot of a **coplanar** render layer
+    /// (`mobs::coplanar_layer_texture`) — the sheep's undercoat (M68). Its
+    /// quads leave the solid range for the `EQUAL`, no-write trim range,
+    /// because they land at exactly the base model's depth.
+    coplanar_slot: Option<u8>,
+    /// A tropical fish's `(body, pattern)` texture slots — the two vanilla
+    /// tints from its packed variant (M68).
+    fish_slots: Option<(u8, u8)>,
     /// ETF alternates: variant id → per-texture-slot UV offset, added to the
     /// quad's UVs to move it onto the alternate's atlas slot. A variant with
     /// no entry for a slot leaves that slot on the vanilla texture, which is
@@ -1134,6 +1167,13 @@ impl EntityPass {
                 shearable_slot: mobs::shearable_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
+                coplanar_slot: mobs::coplanar_layer_texture(def.kind)
+                    .and_then(|k| def.textures.iter().position(|t| *t == k))
+                    .map(|s| s as u8),
+                fish_slots: mobs::fish_tint_textures(def.kind).and_then(|(b, p)| {
+                    let f = |k: &str| def.textures.iter().position(|t| *t == k).map(|s| s as u8);
+                    Some((f(b)?, f(p)?))
+                }),
                 variants,
                 emissive,
                 parts: m.parts,
@@ -2440,6 +2480,40 @@ impl EntityPass {
         // is inflated over the body, so a shorn sheep is thinner, not
         // recoloured.
         let shorn_slot = d.sheared.then_some(model.shearable_slot).flatten();
+        // M68: the coplanar layer's slot, if it is drawn at all this frame.
+        // `None` here means "there is no such layer, or its gate said no", and
+        // in the second case its quads are skipped outright rather than moved.
+        let coplanar_slot = model.coplanar_slot;
+        // M68: per-texture-slot layer colour, linearized once. Vanilla tints a
+        // *layer*; Rewo bakes a layer as a texture slot, so one entry per
+        // slot is the same statement. `1.0` is untinted, and `shade * 1.0` is
+        // exact in IEEE — every mob that has no tinted layer renders the
+        // bytes it did before this existed.
+        let mut slot_tint = [[1.0f32; 3]; MAX_MOB_TEXTURES];
+        let lin3 = |rgb: [u8; 3]| {
+            [
+                srgb_to_linear(rgb[0] as f32 / 255.0),
+                srgb_to_linear(rgb[1] as f32 / 255.0),
+                srgb_to_linear(rgb[2] as f32 / 255.0),
+            ]
+        };
+        // `SheepWoolLayer` and `SheepWoolUndercoatLayer` both pass
+        // `state.getWoolColor()`, so the two slots take the *same* colour —
+        // that is why the undercoat needs no dye field of its own.
+        let wool = mobs::SHEEP_WOOL_COLORS[(d.dye.unwrap_or(0) & 15) as usize];
+        for s in [model.tinted_slot, model.coplanar_slot].into_iter().flatten() {
+            if let Some(t) = slot_tint.get_mut(s as usize) {
+                *t = lin3(wool);
+            }
+        }
+        if let Some((body, pattern)) = model.fish_slots {
+            let [b, p] = d.fish_dye.unwrap_or([0, 0]);
+            for (s, dye) in [(body, b), (pattern, p)] {
+                if let Some(t) = slot_tint.get_mut(s as usize) {
+                    *t = lin3(mobs::DYE_DIFFUSE_COLORS[(dye & 15) as usize]);
+                }
+            }
+        }
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
@@ -2450,32 +2524,33 @@ impl EntityPass {
             if shorn_slot == Some(q.tex) {
                 continue;
             }
+            // The coplanar layer leaves the solid range: at the base model's
+            // exact depth the solid pass's strict `GREATER` rejects every one
+            // of its fragments. `trim_verts` is `CompareOp::EQUAL` with no
+            // depth write, drawn after the solid range — the reversed-Z
+            // reading of vanilla's `entityCutout` for coplanar geometry.
+            let coplanar = coplanar_slot == Some(q.tex);
+            if coplanar && !d.undercoat {
+                continue;
+            }
             let p4 = place(q);
             // Shade only -- the light rides its own attribute so the hurt
             // overlay can be mixed in before it (vanilla's `entity.fsh` order)
-            // -- and, on the one texture vanilla dyes, the wool colour, which
-            // `SheepWoolLayer` multiplies into the vertex colour the same way.
-            // Linearized first: the table is sRGB and the attachment encodes on
-            // store (render discipline #1).
-            let c = match (model.tinted_slot, d.dye.unwrap_or(0)) {
-                (Some(slot), dye) if slot == q.tex => {
-                    let rgb = mobs::SHEEP_WOOL_COLORS[(dye & 15) as usize];
-                    [
-                        q.shade * srgb_to_linear(rgb[0] as f32 / 255.0),
-                        q.shade * srgb_to_linear(rgb[1] as f32 / 255.0),
-                        q.shade * srgb_to_linear(rgb[2] as f32 / 255.0),
-                    ]
-                }
-                _ => [q.shade, q.shade, q.shade],
-            };
+            // -- and, on the textures vanilla dyes, the layer colour, which
+            // every one of those layers multiplies into the vertex colour the
+            // same way. Linearized above: the tables are sRGB and the
+            // attachment encodes on store (render discipline #1).
+            let t = slot_tint[q.tex as usize];
+            let c = [q.shade * t[0], q.shade * t[1], q.shade * t[2]];
             // Two things can move a quad's UVs onto a different texture of the
             // same size: a player's uploaded skin, and a pack's ETF variant.
             // They never apply to the same mob (skins are the player model's),
             // so the variant wins where it exists.
             let du = variant_uv
                 .map_or_else(|| d.skin_uv.unwrap_or([0.0, 0.0]), |v| v[q.tex as usize]);
+            let out: &mut Vec<Vertex> = if coplanar { trim_verts } else { verts };
             for &i in &[0usize, 1, 2, 0, 2, 3] {
-                verts.push(Vertex {
+                out.push(Vertex {
                     pos: p4[i],
                     uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
                     color: [c[0], c[1], c[2], 1.0],
@@ -6013,8 +6088,8 @@ mod tests {
     }
 
     /// A pack's `<texture>_e.png` (ETF) becomes an always-on fullbright layer
-    /// over exactly the quads that sample that texture — so on a two-texture
-    /// mob it covers one and leaves the other alone.
+    /// over exactly the quads that sample that texture — so on a multi-texture
+    /// mob it covers one and leaves the others alone.
     #[test]
     fn a_pack_emissive_overlay_covers_only_its_own_texture() {
         let def = mobs::MOBS
@@ -6022,11 +6097,19 @@ mod tests {
             .find(|d| d.kind == EntityModelKind::Sheep)
             .expect("sheep is in the registry");
         let m = (def.build)();
-        assert_eq!(def.textures, &["sheep", "sheep_wool"]);
-        let slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> =
-            [("sheep", (0u32, 0u32, 64u32, 32u32)), ("sheep_wool", (64, 0, 64, 32))]
-                .into_iter()
-                .collect();
+        // Three since M68 — base, fleece, undercoat. The third makes the
+        // containment claim stronger, not weaker: the overlay must now skip
+        // *two* other slots, and the undercoat's quads are geometric twins of
+        // the base's, so a filter keying off position rather than slot would
+        // pick them up.
+        assert_eq!(def.textures, &["sheep", "sheep_wool", "sheep_wool_undercoat"]);
+        let slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> = [
+            ("sheep", (0u32, 0u32, 64u32, 32u32)),
+            ("sheep_wool", (64, 0, 64, 32)),
+            ("sheep_wool_undercoat", (128, 0, 64, 32)),
+        ]
+        .into_iter()
+        .collect();
         // An overlay on the wool only.
         let pack: std::collections::HashMap<&'static str, (u32, u32)> =
             [("sheep_wool", (256u32, 128u32))].into_iter().collect();

@@ -200,6 +200,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         axolotl: data.entity_types.id_of("minecraft:axolotl"),
         horse: data.entity_types.id_of("minecraft:horse"),
         llama: data.entity_types.id_of("minecraft:llama"),
+        // M68: the index-17 INT. Not a texture id — the packed
+        // (shape, pattern, body colour, pattern colour) — but it rides the
+        // same setter, and the gate matters because index 17 already carries
+        // a spellcaster BYTE and a pillager/creaking BOOLEAN.
+        tropical_fish: data.entity_types.id_of("minecraft:tropical_fish"),
     };
     // M61: opt-in cloth capes. Off leaves `EntityTable` allocating and
     // ticking nothing, so the vanilla cape path is exactly M60's.
@@ -1526,6 +1531,43 @@ fn etf_variant(
 /// `assets.tame` over `assets.wild` on `isTame()`, which is bit 0x04 of the
 /// index-18 byte. Its third sheet, `angry`, is not chosen here — see
 /// `rewo_data::mob_variants`.
+/// `SheepWoolUndercoatLayer.submit`'s gate (M68), transcribed:
+///
+/// ```java
+/// if (!state.isInvisible && (state.isJebSheep || state.woolColor != DyeColor.WHITE) && !state.isBaby)
+/// ```
+///
+/// Two things to read off it. **There is no `isSheared` test** — shearing
+/// takes `SheepWoolLayer` and leaves this one, which is why a shorn dyed sheep
+/// keeps colour where a shorn white one is bare. And `woolColor` defaults to
+/// `WHITE`, so an un-synced sheep gets nothing.
+///
+/// `isJebSheep` is deliberately absent here: it selects `ColorLerper
+/// .getLerpedColor`'s rainbow, which Rewo does not render at all, so
+/// including the disjunct would draw the layer in a colour the fleece beside
+/// it is not wearing. Left out rather than approximated.
+///
+/// Shared with the `--tint-check` gate so the gate cannot grade a rule the
+/// client does not actually apply (M18's lesson).
+pub(crate) fn undercoat_visible(kind: EntityModelKind, dye: Option<u8>, is_baby: bool) -> bool {
+    kind == EntityModelKind::Sheep && dye.unwrap_or(0) != 0 && !is_baby
+}
+
+/// Which of the two tropical-fish meshes a packed variant selects (M68).
+///
+/// `TropicalFishRenderer.submit` assigns `this.model` from
+/// `state.pattern.base()` before *every* submission, so the shape is not a
+/// property of the entity type — it is a field of the synched int, and the
+/// low bit at that (`Pattern.packedId` is `base.id | index << 8`). One wire
+/// name, two `EntityModelKind`s, chosen by the caller: the `PlayerSlim`
+/// shape. Shared with `--variant-check` so the gate grades the client's own
+/// mapping.
+pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelKind {
+    match v.base {
+        rewo_data::mob_variants::FishBase::Small => EntityModelKind::TropicalFish,
+        rewo_data::mob_variants::FishBase::Large => EntityModelKind::TropicalFishLarge,
+    }
+}
 pub(crate) fn vanilla_variant(
     kind: EntityModelKind,
     id: i32,
@@ -1559,6 +1601,15 @@ pub(crate) fn vanilla_variant(
         EntityModelKind::Horse => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::horse_texture(v))
                 .unwrap_or(0)
+        }
+        // M68. The one variant here that is not a *base* texture swap: it
+        // moves the fish's **pattern layer** onto one of its shape's six
+        // sheets, leaving the body slot alone. The shape itself is already
+        // decided (it chose this `kind`), so unpacking again is just reading
+        // the other field of the same int.
+        EntityModelKind::TropicalFish | EntityModelKind::TropicalFishLarge => {
+            let f = rewo_data::mob_variants::FishVariant::unpack(v);
+            rewo_data::mob_variants::fish_pattern_variant(f.base, f.pattern)
         }
         _ => 0,
     }
@@ -1635,6 +1686,13 @@ fn collect_entities<'a>(
         } else {
             rewo_gpu::mobs::kind_for_entity_name(name)
         };
+        // M68: one wire name, two meshes.
+        let fish = (kind == EntityModelKind::TropicalFish).then(|| {
+            rewo_data::mob_variants::FishVariant::unpack(
+                session.world.entities.variant(id).unwrap_or(0),
+            )
+        });
+        let kind = fish.map_or(kind, |f| fish_kind(f));
         // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata
         // index 8 with the ITEM_STACK serializer; an entity with one renders
         // as the item and nothing else, so the model kind is never consulted.
@@ -1808,6 +1866,14 @@ fn collect_entities<'a>(
             // …and bit 0x10 of the same byte (M64), which drops the fleece
             // rather than recolouring it.
             sheared: session.world.entities.is_sheared(id),
+            // M68: `SheepWoolUndercoatLayer.submit`'s gate.
+            undercoat: undercoat_visible(
+                kind,
+                session.world.entities.wool_color(id),
+                session.world.entities.is_baby(id),
+            ),
+            // M68: the fish's two dyes, `[body, pattern]`.
+            fish_dye: fish.map(|f| [f.body_color, f.pattern_color]),
             // M60. `player_skin` is this profile's uploaded textures; its
             // `cape` is `None` both when the profile carries no cape and
             // when one is still in flight, and either way vanilla's second
@@ -4975,6 +5041,8 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
     }
 }
@@ -6860,6 +6928,8 @@ fn preview_draw<'a>(
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: preview_cape(cape_origin),
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);

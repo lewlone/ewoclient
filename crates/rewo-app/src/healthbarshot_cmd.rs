@@ -482,6 +482,8 @@ fn neutral_draw() -> EntityDraw<'static> {
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         cape: None,
     }
 }
