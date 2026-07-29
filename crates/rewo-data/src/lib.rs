@@ -37,6 +37,7 @@ pub mod particle_types;
 pub mod server_jar;
 pub mod sign_states;
 pub mod sign_text;
+pub mod sound_events;
 pub mod swing_anim;
 pub mod swing_anim_table;
 pub mod use_item;
@@ -104,6 +105,10 @@ pub struct GameData {
     pub entity_classes: entity_types::EntityClasses,
     /// Particle-type registry ids → names (M37 particles).
     pub particle_types: particle_types::ParticleTypes,
+    /// Sound-event registry ids → names (M64). Resolves the id a decoded
+    /// `SoundRef::Registry` carries; a built-in registry, so the report is the
+    /// authority and the server never sends this table.
+    pub sound_events: sound_events::SoundEvents,
     /// The `minecraft:attribute` id table joined with the extracted
     /// per-attribute clamps and per-entity-type suppliers (M52).
     pub attributes: std::sync::Arc<attributes::AttributeRegistry>,
@@ -122,6 +127,7 @@ impl GameData {
             components::DataComponentRegistry::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
+        let sound_events = sound_events::SoundEvents::load(&paths.registries_json())?;
         let attributes =
             std::sync::Arc::new(attributes::AttributeRegistry::load(&paths.registries_json())?);
         Ok(Self {
@@ -135,6 +141,7 @@ impl GameData {
             component_registry,
             entity_classes,
             particle_types,
+            sound_events,
             attributes,
         })
     }

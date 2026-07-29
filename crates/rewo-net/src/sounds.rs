@@ -133,9 +133,9 @@ impl SoundSource {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SoundRef {
     /// A 0-based `minecraft:sound_event` registry id (the wire value minus
-    /// one). Left unresolved on purpose: `sound_event` is a built-in
-    /// registry, so turning this into a name is a jar/report lookup a
-    /// playback layer does once, not something the wire decode needs.
+    /// one). Left unresolved by the decode on purpose: `sound_event` is a
+    /// built-in registry, so turning this into a name is a report lookup, not
+    /// something reading the packet needs. [`SoundRef::resolve`] does it.
     Registry(i32),
     /// `SoundEvent.DIRECT_STREAM_CODEC` — a datapack sound the server defines
     /// inline, e.g. a custom `/playsound` on a resource-pack event.
@@ -158,6 +158,30 @@ impl SoundRef {
             Ok(SoundRef::Inline { name, fixed_range })
         } else {
             Ok(SoundRef::Registry(raw - 1))
+        }
+    }
+
+    /// The sound's registry name — `"minecraft:block.stone.break"` — for
+    /// either variant (M64).
+    ///
+    /// The two variants reach a name by different routes and that asymmetry is
+    /// the point: a registry id is only meaningful against the built-in table
+    /// this jar was generated from, while an inline definition **carries** its
+    /// own identifier and needs no table at all. An inline sound may well name
+    /// a resource-pack event that has no registry id anywhere, so resolving it
+    /// through the table would lose it.
+    ///
+    /// `None` means a registry id this jar does not have — a newer server
+    /// naming a newer sound. That is a real state, not a decode failure, and
+    /// substituting anything for it would produce a *wrong* sound rather than
+    /// a missing one.
+    pub fn resolve<'a>(
+        &'a self,
+        registry: &'a rewo_data::sound_events::SoundEvents,
+    ) -> Option<&'a str> {
+        match self {
+            SoundRef::Registry(id) => registry.name(*id),
+            SoundRef::Inline { name, .. } => Some(name.as_str()),
         }
     }
 }
@@ -611,6 +635,63 @@ mod tests {
         assert_eq!(s.source, Some(SoundSource::Ui));
         assert_eq!(s.name, None);
         assert_consumed_exactly(&mut r);
+    }
+
+    /// A two-entry `minecraft:sound_event` registry, written to disk and read
+    /// back through the production `SoundEvents::load`, so the resolve tests
+    /// exercise the real table rather than a hand-built map. Ids 0 and 1 are
+    /// the real 26.2 pair, so the fixture also stands as a reminder that
+    /// registry id 0 is a *real* sound and not an "absent" sentinel.
+    fn sound_registry() -> rewo_data::sound_events::SoundEvents {
+        let dir = std::env::temp_dir().join("rewo-net-sound-resolve");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("registries.json");
+        std::fs::write(
+            &p,
+            r#"{"minecraft:sound_event":{"entries":{
+                 "minecraft:entity.allay.ambient_with_item":{"protocol_id":0},
+                 "minecraft:block.stone.break":{"protocol_id":1596}}}}"#,
+        )
+        .unwrap();
+        rewo_data::sound_events::SoundEvents::load(&p).unwrap()
+    }
+
+    #[test]
+    fn a_registry_sound_ref_resolves_through_the_report_table() {
+        let reg = sound_registry();
+        // Wire value 1597 → `Registry(1596)` → the name. Getting the holder's
+        // `id + 1` wrong here would resolve a neighbouring sound, which is why
+        // the assertion starts from the wire bytes rather than the variant.
+        let bytes = body(|w| {
+            w.varint(1597);
+        });
+        let mut r = PacketReader::new(&bytes);
+        let s = SoundRef::read(&mut r).unwrap();
+        assert_eq!(s, SoundRef::Registry(1596));
+        assert_eq!(s.resolve(&reg), Some("minecraft:block.stone.break"));
+        assert_eq!(
+            SoundRef::Registry(0).resolve(&reg),
+            Some("minecraft:entity.allay.ambient_with_item")
+        );
+    }
+
+    #[test]
+    fn an_unknown_registry_id_resolves_to_none_not_a_substitute_sound() {
+        let reg = sound_registry();
+        assert_eq!(SoundRef::Registry(9999).resolve(&reg), None);
+    }
+
+    #[test]
+    fn an_inline_sound_resolves_to_its_own_identifier_without_the_table() {
+        // A resource-pack event has no registry id at all, so consulting the
+        // table for it would lose the name entirely.
+        let reg = sound_registry();
+        let s = SoundRef::Inline {
+            name: "rewo:custom.event".into(),
+            fixed_range: Some(8.0),
+        };
+        assert_eq!(s.resolve(&reg), Some("rewo:custom.event"));
+        assert_eq!(reg.id_of("rewo:custom.event"), None);
     }
 
     #[test]
