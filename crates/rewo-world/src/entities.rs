@@ -1507,6 +1507,14 @@ impl EntityTable {
         self.mob_state.get(&id).map(|s| s.wool_color())
     }
 
+    /// `Sheep.isSheared()` — bit 0x10 of the same wool byte (M64).
+    ///
+    /// Defaults to false for an entity that has sent none, which is vanilla's
+    /// `define(DATA_WOOL_ID, (byte)0)`: white and woolly.
+    pub fn is_sheared(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.is_sheared())
+    }
+
     /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN). Kind-gated by the caller.
     pub fn set_creaking_active(&mut self, id: i32, active: bool) {
         self.mob_state.entry(id).or_default().creaking_active = active;

@@ -239,6 +239,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     }
 }
@@ -1342,7 +1343,7 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // --tint-check: the dye gate
 // ---------------------------------------------------------------------------
 
-const TINT_WITNESSES: usize = 4;
+const TINT_WITNESSES: usize = 6;
 
 /// The dye gate: **a dyed texture renders vanilla's colour, and nothing else on
 /// the mob moves.**
@@ -1384,14 +1385,22 @@ fn run_tint_check(
     let draw = overlay_offscreen(&ring);
     let mut c = Checker::new();
 
-    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+    let mut shot_of = |wr: &mut WorldRenderer,
+                       gpu: &mut Gpu,
+                       off: &mut Offscreen,
+                       dye: Option<u8>,
+                       sheared: bool| {
         let d = EntityDraw {
             dye,
+            sheared,
             ..neutral_draw(kind)
         };
         wr.set_entities(std::slice::from_ref(&d), right, up, 0.0);
         off.render(gpu, Some((wr, vp)), &draw, BG)?;
         off.read_rgba(gpu)
+    };
+    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+        shot_of(wr, gpu, off, dye, false)
     };
     // Vanilla's default wool colour is WHITE, not "untinted" — the layer tints
     // unconditionally, so a plain sheep's wool is 0xE6E6E6. An undyed draw must
@@ -1496,6 +1505,55 @@ fn run_tint_check(
              byte-identical across every dye; {} dye(s) moved them{}",
             stray_fail.len(),
             if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+        ),
+    );
+
+    // --- M64: shearing ---------------------------------------------------
+    //
+    // `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so shearing does
+    // not recolour the fleece — the fur model is never submitted. The wool
+    // pixel set computed above is independent of this (it is where two dyes
+    // disagree), so it can grade the removal without being defined by it.
+    let shorn = shot_of(&mut wr, gpu, &mut off, Some(0), true)?;
+    fn px(img: &[u8], i: usize) -> &[u8] {
+        &img[i * 4..i * 4 + 3]
+    }
+    let changed: Vec<usize> = (0..white.len() / 4)
+        .filter(|&i| px(&shorn, i) != px(&white, i))
+        .collect();
+    let strayed = changed.iter().filter(|i| wool.binary_search(i).is_err()).count();
+    let shorn_sil = (0..white.len() / 4)
+        .filter(|&i| px(&shorn, i) != px(&bg, i))
+        .count();
+    c.record(
+        "t5.shearing_removes_the_fleece_geometry_and_nothing_else",
+        strayed == 0 && !changed.is_empty() && shorn_sil * 20 < silhouette * 19,
+        format!(
+            "{} px change, all inside the independently-derived wool set ({} \
+             strayed), and the silhouette drops {silhouette} -> {shorn_sil}. \
+             Both halves are needed: MUTATION ignoring the sheared bit changes \
+             0 px, and MUTATION implementing it as \"skip the tint\" rather \
+             than \"skip the layer\" leaves the silhouette exactly where it \
+             was — the fleece is inflated 0.6/1.75/0.5 over the body, so a \
+             shorn sheep is thinner, not merely a different colour",
+            changed.len(),
+            strayed
+        ),
+    );
+
+    // And the other side of the same statement: with the tinted layer gone
+    // there is nothing left for the dye to reach.
+    let shorn_black = shot_of(&mut wr, gpu, &mut off, Some(15), true)?;
+    c.record(
+        "t6.a_shorn_sheep_is_inert_to_the_dye_that_moved_a_woolly_one",
+        shorn == shorn_black && white != black,
+        format!(
+            "dyes 0 and 15 render byte-identically once the sheep is shorn, \
+             where on a woolly one they differ over {} px — the only tinted \
+             texture is the one the layer stopped submitting. MUTATION \
+             dropping the *tint* instead of the *geometry* passes this row and \
+             fails t5; the two together pin which one happened",
+            wool.len()
         ),
     );
 

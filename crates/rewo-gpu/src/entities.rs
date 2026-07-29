@@ -314,6 +314,14 @@ pub struct EntityDraw<'a> {
     /// sheep has its wool multiplied by 0xE6E6E6 rather than left at full
     /// brightness.
     pub dye: Option<u8>,
+    /// `Sheep.isSheared()` — bit 0x10 of the wool byte (M64).
+    ///
+    /// Drops the quads of `mobs::shearable_texture(kind)`, because
+    /// `SheepWoolLayer.submit` returns before submitting the fur model at all.
+    /// Removing the *geometry* is the point: the fleece is inflated 0.6/1.75/
+    /// 0.5 over the body, so a shorn sheep is visibly thinner, not just
+    /// differently coloured. Inert on a mob with no shearable layer.
+    pub sheared: bool,
     /// The worn cape (M60), or `None` when any of `CapeLayer`'s four gates
     /// suppresses it. The gates are resolved upstream, where the equipment
     /// and metadata live; by the time a draw is built the answer is already
@@ -841,6 +849,9 @@ pub struct MobModel {
     /// The texture slot vanilla renders through a dye tint (the sheep's
     /// wool), if any — `EntityDraw::dye` multiplies only that slot.
     tinted_slot: Option<u8>,
+    /// The texture slot belonging to a render layer a shorn mob skips
+    /// (`mobs::shearable_texture`) — `EntityDraw::sheared` drops it (M64).
+    shearable_slot: Option<u8>,
     /// ETF alternates: variant id → per-texture-slot UV offset, added to the
     /// quad's UVs to move it onto the alternate's atlas slot. A variant with
     /// no entry for a slot leaves that slot on the vanilla texture, which is
@@ -1108,6 +1119,9 @@ impl EntityPass {
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 tinted_slot: mobs::tinted_texture(def.kind)
+                    .and_then(|k| def.textures.iter().position(|t| *t == k))
+                    .map(|s| s as u8),
+                shearable_slot: mobs::shearable_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
                 variants,
@@ -2409,11 +2423,21 @@ impl EntityPass {
         // Directional face shade x the entity's per-channel world light.
         let [light_r, light_g, light_b] = d.light;
         let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        // M64: `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so a
+        // shorn mob's fleece is not submitted at all. Rewo bakes that layer as
+        // a texture slot of the one model, so the layer's absence is the
+        // absence of its quads — and *removing* them is the point: the fleece
+        // is inflated over the body, so a shorn sheep is thinner, not
+        // recoloured.
+        let shorn_slot = d.sheared.then_some(model.shearable_slot).flatten();
         for q in &model.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
             }
             if !visible(q.part as usize) {
+                continue;
+            }
+            if shorn_slot == Some(q.tex) {
                 continue;
             }
             let p4 = place(q);

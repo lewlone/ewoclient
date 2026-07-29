@@ -476,6 +476,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            sheared: false,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
@@ -532,6 +533,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            sheared: false,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
@@ -599,6 +601,7 @@ fn check_render(
             emissive: rewo_gpu::entities::EmissiveState::default(),
             variant: 0,
             dye: None,
+            sheared: false,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);

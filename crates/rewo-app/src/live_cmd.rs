@@ -1714,6 +1714,9 @@ fn collect_entities<'a>(
             // The sheep's wool colour (`Sheep.DATA_WOOL_ID`). `None` is
             // vanilla's `DyeColor.WHITE` default, which still tints.
             dye: session.world.entities.wool_color(id),
+            // …and bit 0x10 of the same byte (M64), which drops the fleece
+            // rather than recolouring it.
+            sheared: session.world.entities.is_sheared(id),
             // M60. `player_skin` is this profile's uploaded textures; its
             // `cape` is `None` both when the profile carries no cape and
             // when one is still in flight, and either way vanilla's second
@@ -4659,6 +4662,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     }
 }
@@ -6509,6 +6513,7 @@ fn preview_draw<'a>(
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);

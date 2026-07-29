@@ -1364,6 +1364,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         emissive: rewo_gpu::entities::EmissiveState::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         cape: None,
     }
 }

@@ -1835,6 +1835,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         emissive: Default::default(),
         variant: 0,
         dye: None,
+        sheared: false,
         anim_id: 0.0,
         cape,
     }
