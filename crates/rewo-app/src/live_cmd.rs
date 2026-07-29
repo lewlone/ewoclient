@@ -352,6 +352,25 @@ pub(crate) struct PlayerSkin {
 
 pub(crate) type SkinRegistry = std::collections::HashMap<u128, PlayerSkin>;
 
+/// The local player's own textures, staged for the inventory preview's
+/// **second** entity pass (M36 skin, M64 cape).
+///
+/// The raw pixels are kept alongside the addresses because the preview pass
+/// is built lazily — the first time the screen opens — so a texture can
+/// arrive before there is anywhere to put it. Each address is filled in on
+/// the first frame the pass exists and never recomputed.
+#[derive(Default)]
+pub(crate) struct PreviewTextures {
+    /// 64x64 RGBA skin, and whether the profile names the slim model.
+    pub skin: Option<(Vec<u8>, bool)>,
+    /// 64x32 RGBA cape sheet.
+    pub cape: Option<Vec<u8>>,
+    /// `EntityDraw::skin_uv` once uploaded into the preview's atlas.
+    pub skin_uv: Option<[f32; 2]>,
+    /// `CapeDraw::origin` once uploaded into the preview's atlas.
+    pub cape_origin: Option<(u32, u32)>,
+}
+
 /// Async player-texture loader: a worker thread fetches + decodes skin and
 /// cape PNGs off the render/tick path; the main loop uploads each result
 /// into the entity atlas and records its slot. They arrive rarely (once per
@@ -2569,25 +2588,43 @@ fn run_headless(
                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
             })
             .unwrap_or((sw as f64 / 2.0, sh as f64 / 2.0));
-        // `REWO_PREVIEW_SKIN=<username|url>` fetches one skin for the shot.
-        // Offline test servers carry no textures property, so this is the only
-        // way to photograph the preview wearing a real skin.
+        // `REWO_PREVIEW_SKIN=<username|url>` fetches one profile's textures
+        // for the shot. Offline test servers carry no textures property, so
+        // this is the only way to photograph the preview wearing a real skin
+        // — or, since M64, a real cape.
         let mut skin = std::env::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
-            match crate::skin_fetch::resolve(&spec)
-                .and_then(|info| {
-                    let url = info.url.clone().ok_or("profile carries no skin")?;
-                    crate::skin_fetch::fetch_rgba64(&url).map(|r| (r, info.slim))
-                })
-            {
-                Ok((rgba, slim)) => {
-                    log::info!("preview: skin {spec} ({} model)", if slim { "slim" } else { "wide" });
-                    Some((rgba, slim, None))
-                }
+            let info = match crate::skin_fetch::resolve(&spec) {
+                Ok(i) => i,
                 Err(e) => {
-                    log::warn!("preview: skin {spec}: {e}");
-                    None
+                    log::warn!("preview: {spec}: {e}");
+                    return None;
+                }
+            };
+            // The two are independent: a profile may carry a cape and no
+            // skin, exactly as `SkinLoader::request` treats them.
+            let mut t = PreviewTextures::default();
+            if let Some(url) = info.url.as_ref() {
+                match crate::skin_fetch::fetch_rgba64(url) {
+                    Ok(rgba) => {
+                        log::info!(
+                            "preview: skin {spec} ({} model)",
+                            if info.slim { "slim" } else { "wide" }
+                        );
+                        t.skin = Some((rgba, info.slim));
+                    }
+                    Err(e) => log::warn!("preview: skin {spec}: {e}"),
                 }
             }
+            if let Some(url) = info.cape.as_ref() {
+                match crate::skin_fetch::fetch_cape_rgba(url) {
+                    Ok(rgba) => {
+                        log::info!("preview: cape {spec}");
+                        t.cape = Some(rgba);
+                    }
+                    Err(e) => log::warn!("preview: cape {spec}: {e}"),
+                }
+            }
+            (t.skin.is_some() || t.cape.is_some()).then_some(t)
         });
         // The headless path takes no glyph cache: the gates' golden images
         // are graded against the bitmap tooltip, and swapping the typeface
@@ -2827,11 +2864,11 @@ struct LiveApp {
     /// Whether either shift is held — a shift-click in the inventory is a
     /// quick-move rather than a pickup.
     shift: bool,
-    /// The local player's skin as it sits in the **preview** pass's atlas
-    /// (M36): the raw pixels, whether the model is slim, and the UV once
-    /// uploaded. Held separately from `skins` because the two passes have
-    /// separate atlases and a UV from one is meaningless in the other.
-    preview_skin: Option<(Vec<u8>, bool, Option<[f32; 2]>)>,
+    /// The local player's textures as they sit in the **preview** pass's
+    /// atlas (M36 skin, M64 cape). Held separately from `skins` because the
+    /// two passes have separate atlases and an address from one is
+    /// meaningless in the other.
+    preview_skin: Option<PreviewTextures>,
     /// This frame's stack-count labels. Built with the icons, consumed by the
     /// text pass a few lines later — the two are separated only because the
     /// icons need `&mut gpu` and the text does not.
@@ -6440,6 +6477,36 @@ pub fn hotbar_models(
     })
 }
 
+/// The inventory preview's cape, from its slot in the **preview** pass's own
+/// atlas (M64).
+///
+/// Extracted so `capeshot` grades the decision the client actually makes
+/// rather than a restatement of it — M45's and M41's gates both quietly
+/// stopped testing their subject by reimplementing a slice of the app.
+///
+/// All three angles are zero, which is not a simplification of vanilla so
+/// much as the same consequence as the preview's still legs:
+/// `capeFlap`/`capeLean`/`capeLean2` are driven entirely by the gap between
+/// the player and their lagging cloak anchor, and a player standing in an
+/// open inventory has let that gap close. What is genuinely missing is the
+/// *moving* case, for the reason the limbs are missing — nothing in Rewo
+/// consumes the local player's animation state.
+///
+/// `chest_humanoid` is false because the preview draws no armour at all
+/// (`armor: [None; 4]`): nothing there can be wearing a chestplate to shift
+/// the cape clear, and by the same token nothing can be wearing an elytra to
+/// suppress it — so `CapeLayer`'s other two gates have nothing to act on.
+pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entities::CapeDraw> {
+    origin.map(|origin| rewo_gpu::entities::CapeDraw {
+        origin,
+        flap: 0.0,
+        lean: 0.0,
+        lean2: 0.0,
+        chest_humanoid: false,
+        wavy: None,
+    })
+}
+
 /// The player model shown in the inventory screen's window (M36).
 ///
 /// `extractEntityInInventoryFollowsMouse` poses it from the cursor: the body
@@ -6451,10 +6518,14 @@ pub fn hotbar_models(
 /// from the live player's render state, so a walking player's legs move in the
 /// preview too; that would need the local player's animation state, which
 /// nothing else in Rewo consumes yet.
+///
+/// **The cape (M64)** hangs from `cape_origin`, an address in the preview
+/// pass's own atlas — see [`preview_cape`] for why its three angles are zero.
 fn preview_draw<'a>(
     session: &PlaySession,
     skin: Option<[f32; 2]>,
     slim: bool,
+    cape_origin: Option<(u32, u32)>,
     held: [Option<&'a str>; 2],
     w: f32,
     h: f32,
@@ -6514,7 +6585,7 @@ fn preview_draw<'a>(
         variant: 0,
         dye: None,
         sheared: false,
-        cape: None,
+        cape: preview_cape(cape_origin),
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
@@ -6926,7 +6997,7 @@ fn apply_screen(
     items: &rewo_data::items::Items,
     gui: &mut GuiItemState,
     baked: &assets::BakedAssets,
-    skin: Option<&mut (Vec<u8>, bool, Option<[f32; 2]>)>,
+    skin: Option<&mut PreviewTextures>,
     mut glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
     mouse: (f64, f64),
     (w, h): (f32, f32),
@@ -6998,18 +7069,33 @@ fn apply_screen(
                 .offhand()
                 .and_then(|s| items.name(s.item_id)),
         ];
-        // The skin goes into the preview's own atlas the first time the
-        // screen opens, and stays there.
-        let (skin_uv, slim) = match skin {
-            Some(entry) => {
-                if entry.2.is_none() {
-                    entry.2 = wr.upload_preview_skin(gpu, &entry.0);
+        // The skin and the cape go into the preview's *own* atlas the first
+        // time the screen opens, and stay there. Both have to be uploaded
+        // again here rather than reusing the world pass's addresses: the two
+        // passes hold separate atlases, and a cape address is an absolute
+        // texel origin, so a borrowed one samples a fixed wrong rectangle.
+        let (skin_uv, slim, cape_origin) = match skin {
+            Some(t) => {
+                if t.skin_uv.is_none() {
+                    if let Some((rgba, _)) = t.skin.as_ref() {
+                        t.skin_uv = wr.upload_preview_skin(gpu, rgba);
+                    }
                 }
-                (entry.2, entry.1)
+                if t.cape_origin.is_none() {
+                    if let Some(rgba) = t.cape.as_ref() {
+                        t.cape_origin = wr.upload_preview_cape(gpu, rgba);
+                    }
+                }
+                (
+                    t.skin_uv,
+                    t.skin.as_ref().is_some_and(|(_, slim)| *slim),
+                    t.cape_origin,
+                )
             }
-            None => (None, false),
+            None => (None, false, None),
         };
-        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse);
+        let (draw, vp, rect) =
+            preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
         if let Err(e) = wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>()) {
             log::warn!("live: preview held items: {e}");
         }
