@@ -54,8 +54,24 @@ gates, metadata index 16 bit 0. All transcribed, all gated normally by
 
 ### The reduction rule, which is the whole safety net
 
-**At `SEGMENTS = 1` with infinite stiffness, the wavy cape must reproduce the
-vanilla cape exactly.** Vanilla stays the default; wavy is opt-in.
+**At `SEGMENTS = 1` the wavy cape must reproduce the vanilla cape exactly** —
+by *bypassing* the simulation, not by stiffening it. Vanilla stays the default;
+wavy is opt-in.
+
+**Correction, before implementation.** The first draft of this rule said "with
+infinite stiffness", which is **false**. Infinite stiffness fixes a link's
+*length*, not its *orientation*: a two-joint chain with a rigid rod is a
+pendulum, and under gravity it hangs straight down, where the vanilla cape sits
+at `Rx(6 + capeLean/2 + capeFlap)`. Stiffness alone can never produce that
+angle, so the reduction would have failed for a correct implementation — the
+worst kind of specification bug, because the obvious fix is to break the code
+until the spec passes.
+
+The rule that is actually true, and is what the gate asserts: **at
+`SEGMENTS = 1` the single segment takes its orientation from the vanilla
+rotation and the simulation contributes nothing.** That makes the reduction an
+identity by construction rather than an emergent coincidence, which is what a
+safety net needs to be.
 
 This is the strongest witness available for a feature with no oracle, because
 it grades the new code against the **already-gated old code** rather than
@@ -78,13 +94,13 @@ simulates.
 
 | name | value | note |
 |---|---:|---|
-| `SEGMENTS` | `12` | enough to read as cloth; `16/12` keeps slab height rational |
+| `SEGMENTS` | `16` | enough to read as cloth, and `16/16` makes `REST_LEN` exactly `1.0` — an exactly-representable binary fraction, which the bit-determinism witness wants and `16/12 = 4/3` would not have given |
 | `GRAVITY` | `0.008` | model units per tick², downward |
 | `DAMPING` | `0.92` | velocity retained per tick |
 | `RELAX_PASSES` | `4` | Gauss–Seidel distance-constraint iterations |
 | `REST_LEN` | `16.0 / SEGMENTS` | equal to the slab height, so rest state is straight |
 | `TORSO_RADIUS` | `2.5` | push-out cylinder about the body's vertical axis |
-| `MAX_JOINT_RADIUS` | `24.0` | divergence backstop; a joint beyond this is clamped |
+| `MAX_JOINT_RADIUS` | `24.0` | divergence backstop; a joint beyond this is clamped. **Unreachable while the constraints hold** — the chain's total length is `REST_LEN * SEGMENTS = 16`, so no joint can exceed 16 from the anchor unless the solver has already failed. See the stability witness: it must *construct* a divergence rather than assert an absence |
 | tick rate | **20 Hz**, fixed | the session tick, never the frame rate |
 
 ### The rules
@@ -127,7 +143,8 @@ a mutation partner.
 | pinning | joint 0 equals the vanilla attachment point every tick | let joint 0 simulate |
 | push-out | after a scripted 180° turn, no joint inside the torso AABB | disable the push-out |
 | the constants | every simulation constant equals **this table's** value | change one in code only |
-| stability | 600 adversarial ticks — teleports, the >10-block snap, fixed pseudo-random motion — no NaN, no joint beyond `MAX_JOINT_RADIUS` | drop the snap handling → the chain explodes |
+| stability | 600 adversarial ticks — teleports, the >10-block snap, fixed pseudo-random motion — no NaN, and every joint within the chain's own 16-unit reach | drop the snap handling → the chain explodes |
+| backstop **engages** | inject a divergence the constraints cannot absorb (a single huge impulse), and assert the clamp catches it and the chain recovers to within `REST_LEN` tolerance | remove the clamp → the joint escapes and never returns. **Without this row the backstop is untestable**: `MAX_JOINT_RADIUS` is unreachable in normal operation, so "no joint beyond it" passes whether or not the clamp exists — the same vacuity the health-bar spec's upper clamp turned out to have |
 | visual | silhouette differs from vanilla under motion, identical at rest | — (marker texture; the empty frame asserted to contain none of it) |
 
 The marker-texture discipline is M38's: a detector must not be able to count
