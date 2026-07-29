@@ -695,6 +695,117 @@ fn gaussian_kernel(sigma: f32) -> Vec<f32> {
     k
 }
 
+// ── Styled lines ──────────────────────────────────────────────────────────
+//
+// The HUD widgets were the reason this subsystem got built, but they are not
+// the reason it is worth keeping. Rewo needs real text for **tooltips, chat
+// and F3** regardless of what the HUD ends up looking like, and the tooltip
+// work (M54/M56) is limited by exactly the three things a bitmap-font pass
+// cannot do: one colour per line, no italic, no per-run styling.
+//
+// So the unit here is a *line made of runs*, not a string. A tooltip line like
+//
+//     Sharpness V          (grey)      +7 attack damage   (blue)
+//     Unbreakable          (blue italic)
+//
+// is one `StyledLine` of two or three `StyledSpan`s sharing a baseline, each
+// with its own family, italic flag, size, axes and colour.
+
+/// One styled fragment of a line.
+#[derive(Debug, Clone)]
+pub struct StyledSpan {
+    pub text: String,
+    pub key: ScalerKey,
+    /// CSS `letter-spacing`, in em. Zero for ordinary prose.
+    pub tracking_em: f32,
+    /// sRGB, matching the rest of the Velvet stack (see the colour-space note
+    /// in `REWO_VELVET_UI_PLAN.md` §3).
+    pub color: [f32; 3],
+    pub alpha: f32,
+}
+
+impl StyledSpan {
+    pub fn new(text: impl Into<String>, key: ScalerKey, color: [f32; 3]) -> Self {
+        Self {
+            text: text.into(),
+            key,
+            tracking_em: 0.0,
+            color,
+            alpha: 1.0,
+        }
+    }
+
+    pub fn tracked(mut self, em: f32) -> Self {
+        self.tracking_em = em;
+        self
+    }
+
+    pub fn alpha(mut self, a: f32) -> Self {
+        self.alpha = a;
+        self
+    }
+}
+
+/// One laid-out span: the glyphs plus the tint they carry.
+#[derive(Debug, Clone)]
+pub struct LaidSpan {
+    pub glyphs: Vec<PositionedGlyph>,
+    pub color: [f32; 3],
+    pub alpha: f32,
+}
+
+impl GlyphCache {
+    /// Lay a sequence of spans out along one baseline, left to right.
+    ///
+    /// **The baseline is shared and the pen is continuous**, which is the
+    /// whole point: spans of different sizes and families sit on the same
+    /// line rather than each starting a new one. A 9px mono label and an 18px
+    /// Fraunces value align on their baselines, not their tops — the same rule
+    /// the widget layout uses, and the reason `Metrics::cap_height` exists.
+    ///
+    /// Returns the laid spans and the total advance.
+    pub fn layout_line(&mut self, spans: &[StyledSpan], origin: (f32, f32)) -> (Vec<LaidSpan>, f32) {
+        let (mut pen, baseline) = origin;
+        let mut out = Vec::with_capacity(spans.len());
+        for span in spans {
+            let mut glyphs = Vec::new();
+            let adv = self.layout_run(span.key, &span.text, span.tracking_em, (pen, baseline), &mut glyphs);
+            pen += adv;
+            out.push(LaidSpan {
+                glyphs,
+                color: span.color,
+                alpha: span.alpha,
+            });
+        }
+        (out, pen - origin.0)
+    }
+
+    /// Total width of a line without laying it out.
+    ///
+    /// Agrees with `layout_line` by construction -- both sum `measure_tracked`
+    /// per span -- so a box cannot be sized by one rule and filled by another.
+    pub fn measure_line(&mut self, spans: &[StyledSpan]) -> f32 {
+        spans
+            .iter()
+            .map(|s| self.measure_tracked(s.key, &s.text, s.tracking_em))
+            .sum()
+    }
+
+    /// The tallest ascent and deepest descent across a line's spans — what a
+    /// tooltip needs to size a row that mixes sizes.
+    pub fn line_extents(&mut self, spans: &[StyledSpan]) -> (f32, f32) {
+        let mut ascent: f32 = 0.0;
+        let mut descent: f32 = 0.0;
+        for s in spans {
+            if let Some(m) = self.metrics(s.key) {
+                ascent = ascent.max(m.ascent);
+                descent = descent.max(m.descent);
+            }
+        }
+        (ascent, descent)
+    }
+}
+
 impl Default for GlyphCache {
     fn default() -> Self {
         Self::new()
@@ -717,6 +828,7 @@ mod tests {
         for (fam, ital) in [
             (Family::Fraunces, false),
             (Family::Newsreader, false),
+            (Family::Newsreader, true),
             (Family::JetBrainsMono, false),
         ] {
             let data = font_bytes(fam.file_stem(ital))?;
@@ -1031,5 +1143,62 @@ mod tests {
         let b = c.glyph_blurred(k, id, 2.51).unwrap();
         assert_eq!(a, b);
         assert!(!c.dirty(), "a quantized-equal sigma re-rasterized");
+    }
+
+    #[test]
+    fn a_line_of_spans_shares_one_baseline_and_a_continuous_pen() {
+        // The three things the bitmap pass cannot do, in one line: two
+        // colours, an italic, and two sizes.
+        let Some(mut c) = loaded() else { return };
+        let mono = ScalerKey::new(Family::JetBrainsMono, false, 9.0, Axes::DEFAULT);
+        let serif = ScalerKey::new(Family::Fraunces, false, 18.0, Axes::DEFAULT);
+        let spans = vec![
+            StyledSpan::new("DMG", mono, [1.0, 0.0, 0.0]).tracked(0.18),
+            StyledSpan::new("7", serif, [0.0, 0.0, 1.0]),
+        ];
+        let (laid, width) = c.layout_line(&spans, (10.0, 40.0));
+        assert_eq!(laid.len(), 2);
+        assert_eq!(laid[0].color, [1.0, 0.0, 0.0]);
+        assert_eq!(laid[1].color, [0.0, 0.0, 1.0]);
+        // Continuous pen: the second span starts where the first ended.
+        let first_end = laid[0].glyphs.last().unwrap().dst_x;
+        assert!(laid[1].glyphs[0].dst_x > first_end, "spans overlap");
+        // measure agrees with layout, so a box cannot be sized by one rule and
+        // filled by another.
+        let measured = c.measure_line(&spans);
+        assert!((measured - width).abs() < 0.01, "{measured} vs {width}");
+    }
+
+    #[test]
+    fn italic_is_a_different_face_not_a_skew() {
+        // Velvet ships italic as its own file. If the flag were ignored the
+        // text would render upright and look merely "not very italic".
+        let Some(mut c) = loaded() else { return };
+        let upright = ScalerKey::new(Family::Newsreader, false, 32.0, Axes::DEFAULT);
+        let italic = ScalerKey::new(Family::Newsreader, true, 32.0, Axes::DEFAULT);
+        assert_ne!(upright, italic, "the italic flag must reach the key");
+        let Some(id_u) = c.glyph_id(Family::Newsreader, false, 'a') else { return };
+        let Some(id_i) = c.glyph_id(Family::Newsreader, true, 'a') else { return };
+        let gu = c.glyph(upright, id_u).unwrap();
+        let gi = c.glyph(italic, id_i).unwrap();
+        // Different faces rasterize to different boxes; identical boxes would
+        // mean the italic file never loaded.
+        assert!(
+            gu.w != gi.w || gu.h != gi.h || gu.left != gi.left,
+            "upright {gu:?} and italic {gi:?} are identical"
+        );
+    }
+
+    #[test]
+    fn line_extents_take_the_tallest_span() {
+        let Some(mut c) = loaded() else { return };
+        let small = ScalerKey::new(Family::Newsreader, false, 10.0, Axes::DEFAULT);
+        let big = ScalerKey::new(Family::Newsreader, false, 30.0, Axes::DEFAULT);
+        let (a_small, _) = c.line_extents(&[StyledSpan::new("x", small, [1.0; 3])]);
+        let (a_both, _) = c.line_extents(&[
+            StyledSpan::new("x", small, [1.0; 3]),
+            StyledSpan::new("X", big, [1.0; 3]),
+        ]);
+        assert!(a_both > a_small, "a mixed row must size to its tallest span");
     }
 }

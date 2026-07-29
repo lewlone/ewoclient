@@ -1,15 +1,67 @@
-# Rewo Velvet UI — the spec, written before it is built
+# Rewo Velvet UI — the spec, and the re-scope that stopped it at one widget
 
-**Status: spec, nothing implemented.** Written in the pattern `M53 spec` set —
-the appearance is settled on paper first. M52a (the module port) shipped; this
-is the machinery M52b needs before a single HUD widget can be ported.
+**Status (2026-07-28): the type stack landed; the widget transcription is
+paused at one.**
 
-**Scope (resolved §8):** all 17 widgets, the in-game editor, and Rewo
-measuring its own ping. **Mandate (user, 2026-07-28):** *"this is something that must not be rushed and
-is definitely fine to build machinery for. We want it to be performant and run
-at high fps like 120 which is why we don't use something like web overlays. And
-also since we want it to look beautiful and have real effects it's bound to be
-more complicated."* Fidelity target: **pixel-faithful, gated.**
+## The re-scope, and why
+
+Written before building, in the pattern the `M53 spec` set. Then, four steps
+in, the scope was cut back by the user — and the reasoning is worth keeping at
+the top because it is the kind that is easy to lose:
+
+> *"EwoClient's HUD is not quite where I'd want it to be yet and will have a
+> visual overhaul soon, so we shouldn't lock in the visuals since they would be
+> redone anyway."*
+>
+> *"Let the glyph and text subsystem land. It's ~60% of the work done, it's the
+> genuinely hard part, and it is overhaul-proof — Rewo needs real text for
+> tooltips, chat and F3 regardless of what the HUD looks like. My own M54/M56
+> tooltip work is currently limited by exactly this: one colour per line, no
+> italic, no per-run styling."*
+
+So the line is drawn between **the type stack**, which survives any redesign,
+and **the widget transcription**, which does not:
+
+| | disposition |
+|---|---|
+| Glyph cache, text pass, styled lines | **landed — keep** |
+| SDF chrome pass | **landed**, palette de-baked so a redesign is a table edit |
+| Coords | **one widget, as a proof. Stop here.** |
+| The other sixteen widgets | **not started.** Each would be redone. |
+| The in-game editor | **not started.** The most design-coupled piece in the plan. |
+
+**This is a pause and a re-scope, not a revert.** Nothing is undone; ~1,900
+lines are keepers.
+
+### What "de-bake the palette" bought
+
+Done while it was still one shader and one widget, which was the point of doing
+it then. `velvet_chrome.frag` no longer contains a Velvet colour: it takes a
+`ShellStyle` UBO of seven `vec4`s and keeps only the *structure* — six SDF
+layers in Skia's draw order. `ShellStyle::VELVET` is one table among possible
+others, and `set_style` swaps it live with no pipeline rebuild.
+
+A palette change is now a table edit. Only a change to the layer structure
+itself is a shader edit.
+
+### What the type stack is actually for
+
+Not the HUD. The HUD was the occasion. The reason it is worth keeping is
+tooltips, chat and F3 — and `StyledSpan` / `layout_line` exist specifically to
+lift the three limits the M54/M56 tooltip work is hitting:
+
+* **one colour per line** → a line is a sequence of spans, each with its own
+  tint;
+* **no italic** → italic is a separate face in `assets/fonts/` and reaches the
+  cache key, with a test asserting it rasterizes differently rather than
+  silently falling back to upright;
+* **no per-run styling** → each span carries its own family, size, variable
+  axes and tracking, all sharing one baseline and a continuous pen.
+
+`measure_line` and `layout_line` agree by construction, and `line_extents`
+gives a mixed-size row its height.
+
+---
 
 ---
 
@@ -352,24 +404,36 @@ from M41 applies to every new action arm.
 
 ---
 
-## §9 Revised sequence
+## §9 Sequence — where it stopped
 
-Machinery first, one proof, then volume — unchanged in shape, longer in tail.
+Steps 1–4 shipped. Everything after is deliberately not started.
 
-1. **Glyph atlas + `swash` scaler + quantized cache.** Gate: metrics oracle.
-2. **Text pass** — tracked advances, cap-height baselines, shadow stacks.
-3. **Chrome pass** — SDF rrect fill/ring/shadow/highlight.
-4. **Coords** — the proof that all three compose.
-5. **Liquid glass** — GLSL port + the two slow-clock backdrops.
-6. **`hud.toml` read** — layout + enablement from the shared per-profile file.
-7. **The remaining legit widgets** — Fps, Keystrokes, Armor, Potions, Target,
-   Items. Each a transcription plus a witness.
-8. **Ping** (§8.3) — the two sources and their gate. Unblocks the Ping widget.
-9. **The editor** (§8.1) — screen, drag, snap, resize, toggles; `hud.toml`
-   write. This is where Rewo stops importing the layout and starts owning it.
-10. **The pvp widget set** behind `--features pvp` (§8.2), plus the feature
-    plumbing through `rewo-app`/`rewo-gpu`.
+| # | | status |
+|---|---|---|
+| 1 | Glyph atlas + `swash` scaler + quantized cache | **shipped** |
+| 2 | Text pass — tracked advances, cap-height baselines, shadow stacks | **shipped** |
+| 3 | Chrome pass — SDF rrect fill/ring/shadow/highlight | **shipped**, palette de-baked |
+| 4 | Coords — the proof all three compose | **shipped** |
+| — | `hudshot --check` — 36 witnesses, mutation-verified | **shipped** |
+| — | Styled lines for tooltips/chat/F3 | **shipped** |
+| 5 | Liquid glass — GLSL port + slow-clock backdrops | paused |
+| 6 | `hud.toml` read | paused |
+| 7 | The remaining legit widgets | **paused — would be redone** |
+| 8 | Ping measurement | paused |
+| 9 | The in-game editor | **paused — most design-coupled** |
+| 10 | The pvp widget set behind `--features pvp` | paused |
 
-Steps 1–3 are the machinery, 4 is the proof, 5–8 volume, 9–10 the second
-milestone's worth. Nothing after step 4 is blocked on anything before it
-except the machinery, so 7/8/10 can interleave.
+### What is safe to resume, and when
+
+**Now, independent of any redesign:** the styled-line API is ready for the
+tooltip work. Ping (step 8) is a protocol feature with no visual coupling at
+all and could land any time.
+
+**After the HUD redesign settles:** steps 5–7, 9, 10. Resuming them needs the
+new design, not this document — the machinery underneath them does not change.
+
+The one thing to re-read before resuming is §3's colour-space note: the Velvet
+passes must be constructed with `world::unorm_of(target_format)` and drawn
+inside `WorldRenderer::with_gamma_space`, or the pipeline format mismatches the
+attachment. That is a property of the renderer, not of the visuals, so it
+survives the overhaul.

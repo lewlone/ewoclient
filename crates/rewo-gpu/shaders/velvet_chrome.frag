@@ -26,9 +26,20 @@ layout(location = 2) in vec4 v_params;  // (radius, level, pulse, alpha)
 
 layout(location = 0) out vec4 out_color;
 
-const vec3 WINE  = vec3(0x12, 0x00, 0x10) / 255.0;
-const vec3 PEARL = vec3(0xF4, 0xE8, 0xEA) / 255.0;
-const vec3 ROSE  = vec3(0xE5, 0xB8, 0xC5) / 255.0;
+// The palette is DATA, not a constant. EwoClient's HUD is getting a visual
+// overhaul, so baking Velvet's specific colours into a shader would guarantee
+// a shader edit for what should be a table edit. What stays in here is the
+// STRUCTURE -- six SDF layers in Skia's draw order -- because that is what a
+// palette change does not touch.
+layout(set = 0, binding = 0) uniform Style {
+    vec4 bloom;      // rgb + alpha scale
+    vec4 shadow;
+    vec4 outer_ring;
+    vec4 fill;
+    vec4 inset_ring;
+    vec4 top_highlight;
+    vec4 border;
+} style;
 
 float sdRoundBox(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + vec2(r);
@@ -76,33 +87,38 @@ void main() {
     if (energy > 0.01) {
         float grow = 2.0 + 6.0 * pulse;
         float db = sdRoundBox(p, half_ + vec2(grow), radius + grow);
-        acc = over(acc, ROSE, blurred(db, 10.0 + 16.0 * energy) * 0.42 * energy);
+        acc = over(acc, style.bloom.rgb, blurred(db, 10.0 + 16.0 * energy) * style.bloom.a * energy);
     }
 
     // 1. Drop shadow: the same rrect, dropped 6px, sigma 8.
     float ds = sdRoundBox(p - vec2(0.0, 6.0), half_, radius);
-    acc = over(acc, vec3(0.0), blurred(ds, 8.0) * 0.55);
+    acc = over(acc, style.shadow.rgb, blurred(ds, 8.0) * style.shadow.a);
 
     // 2. Outer wine ring, 1px outside.
-    acc = over(acc, WINE, stroke(sdRoundBox(p, half_ + vec2(1.0), radius + 1.0), 1.0) * 0.55);
+    acc = over(acc, style.outer_ring.rgb,
+        stroke(sdRoundBox(p, half_ + vec2(1.0), radius + 1.0), 1.0) * style.outer_ring.a);
 
     // 3. Fill.
-    acc = over(acc, WINE, cov(d) * 0.50);
+    acc = over(acc, style.fill.rgb, cov(d) * style.fill.a);
 
     // 4. Inset wine ring, 1px inside.
-    acc = over(acc, WINE,
-        stroke(sdRoundBox(p, half_ - vec2(1.0), max(radius - 1.0, 0.0)), 1.0) * 0.25);
+    acc = over(acc, style.inset_ring.rgb,
+        stroke(sdRoundBox(p, half_ - vec2(1.0), max(radius - 1.0, 0.0)), 1.0)
+        * style.inset_ring.a);
 
     // 5. Top pearl highlight — clipped to the top 2px. The clip is why this
     //    reads as a lip catching light rather than as a second full ring.
     float top_clip = step(p.y, -half_.y + 2.0);
-    acc = over(acc, PEARL,
+    acc = over(acc, style.top_highlight.rgb,
         stroke(sdRoundBox(p, half_ - vec2(0.5), max(radius - 0.5, 0.0)), 1.0)
-        * 0.10 * top_clip);
+        * style.top_highlight.a * top_clip);
 
     // 6. Pearl border, outermost, music-reactive.
-    acc = over(acc, PEARL,
-        stroke(d, 1.0 + pulse * 0.8) * (0.18 + level * 0.32 + pulse * 0.28));
+    // The music terms stay structural: `border.a` is the RESTING alpha and the
+    // two drive gains scale from it, so a palette change moves the resting
+    // value without flattening the reaction.
+    acc = over(acc, style.border.rgb,
+        stroke(d, 1.0 + pulse * 0.8) * (style.border.a + level * 0.32 + pulse * 0.28));
 
     float a = acc.a * v_params.w;
     if (a < 0.002) {
