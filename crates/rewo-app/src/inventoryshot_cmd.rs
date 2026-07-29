@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 118;
+const EXPECTED_WITNESSES: usize = 127;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -2112,6 +2112,88 @@ fn test_bundle(n: usize) -> rewo_gpu::tooltip::Bundle {
     }
 }
 
+// -- the cell chrome (M58) -----------------------------------------------------
+
+/// A plain text tooltip — the M40 shape, now that the pass takes a struct.
+fn text_tip(pos: (i32, i32), size: (i32, i32)) -> rewo_gpu::container::TooltipDraw {
+    rewo_gpu::container::TooltipDraw {
+        pos,
+        size,
+        bundle: None,
+    }
+}
+
+/// Where the chrome witnesses put the tooltip's text block, chosen so a
+/// three-row grid and its progress bar both land inside the 256 px frame.
+const TIP_POS: (i32, i32) = (60, 40);
+
+/// A name line plus a bundle, measured and placed by the production walk.
+///
+/// The grid's `y` is read off [`image_pass_offsets`] at the index
+/// [`insert_image`] actually chose, rather than restated as 1 — so a witness
+/// built on this cannot agree with an insertion that has moved.
+fn bundle_tip(bundle: &rewo_gpu::tooltip::Bundle) -> rewo_gpu::container::TooltipDraw {
+    use rewo_gpu::tooltip::{
+        bundle_image, image_pass_offsets, insert_image, measure, Component,
+    };
+    let mut list = vec![Component::text(40)];
+    insert_image(&mut list, Component::Bundle(bundle.clone()));
+    let at = list
+        .iter()
+        .position(|c| matches!(c, Component::Bundle(_)))
+        .expect("the image component is in the list it was inserted into");
+    let size = measure(&list);
+    let y = image_pass_offsets(&list, TIP_POS.1)[at];
+    rewo_gpu::container::TooltipDraw {
+        pos: TIP_POS,
+        size,
+        bundle: Some(bundle_image(bundle, TIP_POS.0, y, size.0)),
+    }
+}
+
+/// Whether every inner slice of a nine-slice sprite is constant along the axis
+/// `blitTiledSprite` repeats it on.
+///
+/// Vanilla tiles those five pieces unless the `.mcmeta` sets `stretch_inner`;
+/// Rewo stretches them. The two answers agree exactly when this holds, so it is
+/// the precondition the container pass's one-quad-per-piece decomposition rests
+/// on — a property of 26.2's art rather than a theorem, which is why it is
+/// measured against the real jar instead of asserted in a comment.
+fn inner_slices_uniform(rgba: &[u8], w: u32, h: u32, b: u32) -> bool {
+    if b == 0 || 2 * b >= w || 2 * b >= h {
+        return false;
+    }
+    let px = |x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * w + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+    };
+    // The centre repeats both ways, so it has to be one colour.
+    let centre = px(b, b);
+    for y in b..(h - b) {
+        for x in b..(w - b) {
+            if px(x, y) != centre {
+                return false;
+            }
+        }
+    }
+    // The top and bottom edges repeat horizontally: each of their rows must be
+    // constant across the inner columns.
+    for y in (0..b).chain((h - b)..h) {
+        let first = px(b, y);
+        if (b..(w - b)).any(|x| px(x, y) != first) {
+            return false;
+        }
+    }
+    // The left and right edges repeat vertically.
+    for x in (0..b).chain((w - b)..w) {
+        let first = px(x, b);
+        if (b..(h - b)).any(|y| px(x, y) != first) {
+            return false;
+        }
+    }
+    true
+}
+
 fn check_tooltip_image(c: &mut Checker, baked: &assets::BakedAssets) {
     use rewo_gpu::tooltip::{
         bundle_image, content_x_offset, continuous_cursor_end, image_pass_offsets, insert_image,
@@ -2769,7 +2851,7 @@ fn pixels_inner(
         Ok(f)
     };
     let no_tip = tip_at(wr, gpu, off, None)?;
-    let with_tip = tip_at(wr, gpu, off, Some(((60, 40), (40, 8))))?;
+    let with_tip = tip_at(wr, gpu, off, Some(text_tip((60, 40), (40, 8))))?;
     let tip_box = changed_bounds(&no_tip, &with_tip);
     // The sprite is blitted `TOOLTIP_INSET` outside the text on every side.
     let inset = rewo_gpu::container::TOOLTIP_INSET;
@@ -2815,7 +2897,7 @@ fn pixels_inner(
     );
     // Two boxes at different places must not land in the same pixels: a pass
     // that ignored the origin would pass t4 by accident.
-    let moved = tip_at(wr, gpu, off, Some(((100, 90), (40, 8))))?;
+    let moved = tip_at(wr, gpu, off, Some(text_tip((100, 90), (40, 8))))?;
     c.record(
         "t6.the_tooltip_follows_its_origin",
         changed_bounds(&no_tip, &moved) != tip_box,
@@ -2839,8 +2921,8 @@ fn pixels_inner(
     );
     let text_box = rewo_gpu::tooltip::measure(&name_only);
     let grid_box = rewo_gpu::tooltip::measure(&with_grid);
-    let narrow = tip_at(wr, gpu, off, Some(((40, 30), text_box)))?;
-    let widened = tip_at(wr, gpu, off, Some(((40, 30), grid_box)))?;
+    let narrow = tip_at(wr, gpu, off, Some(text_tip((40, 30), text_box)))?;
+    let widened = tip_at(wr, gpu, off, Some(text_tip((40, 30), grid_box)))?;
     let narrow_box = changed_bounds(&no_tip, &narrow);
     let wide_box = changed_bounds(&no_tip, &widened);
     let span = |b: Option<(u32, u32, u32, u32)>| b.map(|(x0, _, x1, _)| x1 - x0);
@@ -2890,6 +2972,357 @@ fn pixels_inner(
              blank instead",
             ink(first),
             ink(unused)
+        ),
+    );
+
+    // -- the cell chrome, in pixels (M58) ------------------------------------
+    //
+    // M52 computed where every cell goes and blitted none of them. These grade
+    // the six `blitSprite` calls `extractSlot` and `extractProgressbar` make:
+    // which sprite lands on which cell, which cell gets none, and the order the
+    // bar's two go down in.
+    //
+    // Every rectangle below is read off the production walk through
+    // `bundle_tip`, so a witness cannot agree with a grid that has moved.
+    use rewo_gpu::tooltip::CellKind;
+    let sz = rewo_gpu::tooltip::SLOT_SIZE;
+    let m = rewo_gpu::tooltip::SLOT_MARGIN;
+    // Ink inside a GUI-space rect, and one GUI pixel's colour. The tooltip is
+    // placed in screen space, so neither is offset by the panel's origin.
+    let gink = |a: &[u8], b: &[u8], gx: i32, gy: i32, gw: i32, gh: i32| -> i64 {
+        changed(
+            a,
+            b,
+            (gx as f32 * scale) as u32,
+            (gy as f32 * scale) as u32,
+            (gw as f32 * scale) as u32,
+            (gh as f32 * scale) as u32,
+        )
+    };
+    let gpx = |img: &[u8], gx: i32, gy: i32| -> [u8; 3] {
+        let x = ((gx as f32 + 0.5) * scale) as u32;
+        let y = ((gy as f32 + 0.5) * scale) as u32;
+        let i = ((y.min(H - 1) * W + x.min(W - 1)) * 4) as usize;
+        [img[i], img[i + 1], img[i + 2]]
+    };
+    let bare = |t: &rewo_gpu::container::TooltipDraw| rewo_gpu::container::TooltipDraw {
+        bundle: None,
+        ..t.clone()
+    };
+    let cells_of = |t: &rewo_gpu::container::TooltipDraw| {
+        t.bundle.as_ref().map(|i| i.cells.clone()).unwrap_or_default()
+    };
+    let bar_of = |t: &rewo_gpu::container::TooltipDraw| t.bundle.as_ref().and_then(|i| i.bar);
+
+    // 1. The slot background, on every occupied cell and nowhere else.
+    let tip3 = bundle_tip(&test_bundle(3));
+    let cells3 = cells_of(&tip3);
+    let box3 = tip_at(wr, gpu, off, Some(bare(&tip3)))?;
+    let grid3 = tip_at(wr, gpu, off, Some(tip3.clone()))?;
+    let occupied: Vec<i64> = cells3
+        .iter()
+        .map(|c| gink(&box3, &grid3, c.x, c.y, sz, sz))
+        .collect();
+    // The fourth column, which three stacks leave empty — placed by the same
+    // `getContentXOffset` the walk used, not by counting back from a cell.
+    let left_col = TIP_POS.0 + rewo_gpu::tooltip::content_x_offset(tip3.size.0);
+    let blank = gink(&box3, &grid3, left_col, cells3[0].y, sz, sz);
+    c.record(
+        "bc1.a_slot_background_lands_on_every_occupied_cell_and_nowhere_else",
+        cells3.len() == 3 && occupied.iter().all(|&n| n > 0) && blank == 0,
+        format!(
+            "the three cells the walk reports changed {occupied:?} pixels against \
+             the same box with no grid; the empty fourth column at x {left_col} \
+             changed {blank}. `extractSlot` blits `container/bundle/slot_background` \
+             at the cell's own `drawX`/`drawY` and 24x24 — M52 computed all of \
+             this and blitted none of it, which is a grid of nothing. Filling the \
+             columns left to right instead swaps these two numbers exactly"
+        ),
+    );
+
+    // 2. …and the badge cell is not one of them.
+    let tip13 = bundle_tip(&test_bundle(13));
+    let cells13 = cells_of(&tip13);
+    let box13 = tip_at(wr, gpu, off, Some(bare(&tip13)))?;
+    let grid13 = tip_at(wr, gpu, off, Some(tip13.clone()))?;
+    let badge = cells13
+        .iter()
+        .find(|c| matches!(c.kind, CellKind::Badge { .. }))
+        .copied();
+    // A slot in the badge's own row, so the two are compared like for like.
+    let neighbour = badge.and_then(|b| {
+        cells13
+            .iter()
+            .find(|c| c.y == b.y && matches!(c.kind, CellKind::Slot { .. }))
+            .copied()
+    });
+    let (badge_ink, slot_ink) = match (badge, neighbour) {
+        (Some(b), Some(s)) => (
+            gink(&box13, &grid13, b.x, b.y, sz, sz),
+            gink(&box13, &grid13, s.x, s.y, sz, sz),
+        ),
+        _ => (-1, -1),
+    };
+    c.record(
+        "bc2.the_badge_cell_gets_no_slot_background",
+        badge_ink == 0 && slot_ink > 0,
+        format!(
+            "the `+N` cell at {:?} changed {badge_ink} pixels; the slot beside it at \
+             {:?} changed {slot_ink}. `shouldRenderSurplusText` routes that cell to \
+             `extractCount`, whose entire body is one `centeredText` — only \
+             `extractSlot` blits, so the badge sits on the tooltip's own background \
+             with no cell art under it. Blitting a background for every visited \
+             cell, which is the obvious reading of a grid, lights the first number up",
+            badge.map(|b| (b.x, b.y)),
+            neighbour.map(|s| (s.x, s.y))
+        ),
+    );
+
+    // 3. Which cell the highlight lands on, through the visual-order mapping.
+    let selected_tip = |item: i32| {
+        let mut b = test_bundle(3);
+        b.selected = item;
+        bundle_tip(&b)
+    };
+    let tip_sel = selected_tip(2);
+    let sel_last = tip_at(wr, gpu, off, Some(tip_sel.clone()))?;
+    let sel_first = tip_at(wr, gpu, off, Some(selected_tip(0)))?;
+    let sel_none = tip_at(wr, gpu, off, Some(selected_tip(99)))?;
+    let moved = |img: &[u8]| -> Vec<i32> {
+        cells3
+            .iter()
+            .filter(|c| gink(&grid3, img, c.x, c.y, sz, sz) > 0)
+            .map(|c| c.x)
+            .collect()
+    };
+    let (m_last, m_first, m_none) = (moved(&sel_last), moved(&sel_first), moved(&sel_none));
+    c.record(
+        "bc3.the_highlight_follows_the_selected_index_through_the_visual_order",
+        m_last == vec![cells3[0].x] && m_first == vec![cells3[2].x] && m_none.is_empty(),
+        format!(
+            "selecting the last stack moves the cells at {m_last:?}, the first moves \
+             {m_first:?}, and an index no stack has moves {m_none:?}. \
+             `hasHighlight` is `shownItems.size() - slotNumber == \
+             getSelectedItemIndex()`, so the index runs *backwards* along the \
+             visit order — keying it off the visit order instead highlights the \
+             mirrored cell, which is these two answers swapped. An out-of-range \
+             index highlights nothing rather than clamping onto an end cell"
+        ),
+    );
+
+    // 4. And which sprite it is: the highlight **replaces** the background, so
+    //    the selected cell is translucent where every other cell is opaque.
+    //    Moving the box out from under the grid is what makes that observable
+    //    without predicting a blend — an opaque cell cannot notice.
+    let uncovered = rewo_gpu::container::TooltipDraw {
+        pos: (200, 200),
+        size: (8, 8),
+        bundle: tip_sel.bundle.clone(),
+    };
+    let no_box = tip_at(wr, gpu, off, Some(uncovered))?;
+    // The 16 px interior, because the cell art's outer three pixels are
+    // transparent on every one of these sprites.
+    let sel_moved = gink(&sel_last, &no_box, cells3[0].x + m, cells3[0].y + m, 16, 16);
+    let plain_moved = gink(&sel_last, &no_box, cells3[1].x + m, cells3[1].y + m, 16, 16);
+    c.record(
+        "bc4.the_highlight_replaces_the_background_rather_than_covering_it",
+        sel_moved > 0 && plain_moved == 0,
+        format!(
+            "taking the tooltip's box out from behind the grid changes {sel_moved} \
+             pixels of the selected cell's interior and {plain_moved} of an \
+             unselected one. `extractSlot`'s `if (hasHighlight) … else …` picks one \
+             sprite, and `slot_highlight_back` is white at alpha 96 where \
+             `slot_background` is opaque — so a selected cell shows whatever is \
+             behind it and an unselected cell cannot. Drawing the background *and* \
+             the highlight, which reads as the safer order, makes the first number \
+             zero too"
+        ),
+    );
+
+    // 5. The progress bar's fill, and where it starts.
+    let weighted = |num: i32, den: i32| {
+        let mut b = test_bundle(3);
+        b.weight = rewo_gpu::tooltip::Fraction::new(num, den);
+        bundle_tip(&b)
+    };
+    // The fill's own colour, read out of the sprite the pass samples.
+    let texel = |s: &rewo_gpu::hud::HudSpriteData<'_>, x: u32, y: u32| -> [u8; 3] {
+        let i = ((y * s.w + x) * 4) as usize;
+        [s.rgba[i], s.rgba[i + 1], s.rgba[i + 2]]
+    };
+    let fill_rgb = texel(&sprites.bundle_bar_fill, 2, 2);
+    let full_rgb = texel(&sprites.bundle_bar_full, 2, 2);
+    // The bar's middle row is the one whose every column is the fill's colour:
+    // the nine-slice's centre band, clear of the rounded corners.
+    let run = |img: &[u8], t: &rewo_gpu::container::TooltipDraw, want: [u8; 3]| -> (i32, i32) {
+        let Some(b) = bar_of(t) else { return (-1, -1) };
+        let hit: Vec<i32> = (0..rewo_gpu::tooltip::GRID_WIDTH)
+            .filter(|dx| gpx(img, b.x + dx, b.y + 6) == want)
+            .collect();
+        (
+            hit.len() as i32,
+            hit.first().map(|dx| b.x + dx).unwrap_or(-1),
+        )
+    };
+    let states: Vec<(i32, i32, (i32, i32))> = [(0, 1), (1, 4), (1, 2), (1, 1)]
+        .iter()
+        .map(|&(n, d)| {
+            let t = weighted(n, d);
+            let img = tip_at(wr, gpu, off, Some(t.clone())).unwrap_or_default();
+            let want = if bar_of(&t).is_some_and(|b| b.full) {
+                full_rgb
+            } else {
+                fill_rgb
+            };
+            (n, d, run(&img, &t, want))
+        })
+        .collect();
+    let widths: Vec<i32> = states.iter().map(|(_, _, (w, _))| *w).collect();
+    let bar3 = bar_of(&tip3).map(|b| b.x);
+    let starts_right = states
+        .iter()
+        .filter(|(_, _, (w, _))| *w > 0)
+        .all(|(_, _, (_, x0))| Some(*x0 - rewo_gpu::tooltip::PROGRESSBAR_BORDER) == bar3);
+    c.record(
+        "bc5.the_fill_width_tracks_the_weight_and_starts_one_pixel_in",
+        widths == vec![0, 23, 47, 94] && starts_right,
+        format!(
+            "weights 0, 1/4, 1/2 and 1 fill {widths:?} pixels of the bar's centre \
+             row, each beginning at {:?} against a bar at {bar3:?}. \
+             `getProgressBarFill` is `clamp(mulAndTruncate(weight, 94), 0, 94)` — \
+             **94**, not the bar's 96, and truncating rather than rounding, so a \
+             quarter is 23 and not 24. The blit is at `x + 1` \
+             (`PROGRESSBAR_BORDER`), which is what leaves the border's frame a \
+             pixel to sit in; drawing it at `x` runs the fill under the left edge",
+            states
+                .iter()
+                .map(|(_, _, (_, x0))| *x0)
+                .collect::<Vec<_>>()
+        ),
+    );
+
+    // 6. Which fill sprite, which is not a shade of one colour.
+    let half_img = tip_at(wr, gpu, off, Some(weighted(1, 2)))?;
+    let full_img = tip_at(wr, gpu, off, Some(weighted(1, 1)))?;
+    let half_px = bar_of(&tip3).map(|b| gpx(&half_img, b.x + 20, b.y + 6));
+    let full_px = bar_of(&tip3).map(|b| gpx(&full_img, b.x + 20, b.y + 6));
+    c.record(
+        "bc6.a_full_bundle_swaps_the_fill_sprite_for_the_full_one",
+        half_px == Some(fill_rgb) && full_px == Some(full_rgb) && fill_rgb != full_rgb,
+        format!(
+            "half full the bar reads {half_px:?} against the fill sprite's \
+             {fill_rgb:?}; completely full it reads {full_px:?} against the full \
+             sprite's {full_rgb:?}. `getProgressBarTexture` swaps the whole sprite \
+             at `weight.compareTo(ONE) >= 0`, and the two are the chat palette's \
+             blue and red rather than two shades of one bar — so a single sprite \
+             tinted by the weight would land on neither"
+        ),
+    );
+
+    // 7. …and the border goes down over the fill, not under it.
+    let frame_rgb = texel(&sprites.bundle_bar_border, 1, 0);
+    let over = bar_of(&tip3).map(|b| gpx(&full_img, b.x + 48, b.y));
+    c.record(
+        "bc7.the_border_is_blitted_over_the_fill",
+        over == Some(frame_rgb) && frame_rgb != full_rgb,
+        format!(
+            "with the bar completely full its top row at the centre reads {over:?} — \
+             the border's frame {frame_rgb:?}, not the fill's {full_rgb:?}. \
+             `extractProgressbar` blits `getProgressBarTexture` first and \
+             `PROGRESSBAR_BORDER_SPRITE` second, and both cover that row; reversing \
+             the two paints the fill's own top edge across the frame"
+        ),
+    );
+
+    // 8. The precondition under all of the above: Rewo stretches a nine-slice's
+    //    inner pieces where vanilla tiles them, and the two agree only because
+    //    every one of these sprites is uniform along the axis it repeats on.
+    let nine = [
+        ("slot_background", &sprites.bundle_slot, 4u32),
+        ("slot_highlight_back", &sprites.bundle_highlight_back, 4),
+        ("slot_highlight_front", &sprites.bundle_highlight_front, 4),
+        ("progressbar_border", &sprites.bundle_bar_border, 2),
+        ("progressbar_fill", &sprites.bundle_bar_fill, 2),
+        ("progressbar_full", &sprites.bundle_bar_full, 2),
+    ];
+    let patterned: Vec<&str> = nine
+        .iter()
+        .filter(|(_, s, b)| !inner_slices_uniform(s.rgba, s.w, s.h, *b))
+        .map(|(n, _, _)| *n)
+        .collect();
+    // The same check on a sprite whose centre is deliberately not uniform, so
+    // the pass above is a measurement rather than a function that says yes.
+    let mut striped = sprites.bundle_bar_fill.rgba.to_vec();
+    striped[(3 * 6 + 3) * 4] ^= 0xFF;
+    let catches = !inner_slices_uniform(
+        &striped,
+        sprites.bundle_bar_fill.w,
+        sprites.bundle_bar_fill.h,
+        2,
+    );
+    c.record(
+        "bc8.every_inner_slice_is_uniform_along_the_axis_it_tiles_on",
+        patterned.is_empty() && catches,
+        format!(
+            "{} of the six sprites carry a patterned inner slice ({patterned:?}), and \
+             flipping one texel of the fill's centre is caught: {catches}. None of \
+             the six sets `stretch_inner`, so vanilla **tiles** those five pieces \
+             while this pass emits one stretched quad each — the two answers are \
+             the same picture exactly while this holds, and this is a fact about \
+             26.2's art rather than a theorem, so it is measured. The three 24x24 \
+             cell sprites never reach the slicing at all: they are blitted at \
+             their authored size, which is `blitNineSlicedSprite`'s first branch",
+            patterned.len()
+        ),
+    );
+
+    // 9. The empty bundle takes the other arm entirely.
+    let empty_tip = bundle_tip(&test_bundle(0));
+    let empty_box = tip_at(wr, gpu, off, Some(bare(&empty_tip)))?;
+    let empty_img = tip_at(wr, gpu, off, Some(empty_tip.clone()))?;
+    let empty_bar = bar_of(&empty_tip);
+    let bar_ink = empty_bar
+        .map(|b| {
+            gink(
+                &empty_box,
+                &empty_img,
+                b.x,
+                b.y,
+                rewo_gpu::tooltip::GRID_WIDTH,
+                rewo_gpu::tooltip::PROGRESSBAR_HEIGHT,
+            )
+        })
+        .unwrap_or(-1);
+    // Everything above the bar, where a grid would have been.
+    let above_ink = empty_bar
+        .map(|b| {
+            gink(
+                &empty_box,
+                &empty_img,
+                TIP_POS.0,
+                b.y - sz,
+                rewo_gpu::tooltip::GRID_WIDTH,
+                sz,
+            )
+        })
+        .unwrap_or(-1);
+    let empty_fill = empty_tip
+        .bundle
+        .as_ref()
+        .map(|i| i.cells.len())
+        .zip(empty_bar.map(|b| (b.fill, b.label)));
+    c.record(
+        "bc9.an_empty_bundle_draws_its_bar_and_no_cells",
+        bar_ink > 0
+            && above_ink == 0
+            && empty_fill == Some((0, (0, Some(rewo_gpu::tooltip::BarLabel::Empty)))),
+        format!(
+            "the bar's rect changed {bar_ink} pixels and the 24 px band above it \
+             {above_ink}; the walk reports {empty_fill:?} as (cells, (fill, label)). \
+             `extractEmptyBundleTooltip` is a different method with no cell loop, \
+             and it hands `extractProgressbar` a literal `Fraction.ZERO` rather than \
+             the bundle's own weight — this bundle's weight is 1/2, so passing the \
+             weight through would have filled 47 pixels of an empty bundle's bar"
         ),
     );
 

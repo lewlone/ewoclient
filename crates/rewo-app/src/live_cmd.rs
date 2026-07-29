@@ -1629,6 +1629,12 @@ pub(crate) fn container_sprites(
         highlight_front: s(&c.highlight_front),
         tooltip_background: s(&c.tooltip_background),
         tooltip_frame: s(&c.tooltip_frame),
+        bundle_slot: s(&c.bundle_slot),
+        bundle_highlight_back: s(&c.bundle_highlight_back),
+        bundle_highlight_front: s(&c.bundle_highlight_front),
+        bundle_bar_border: s(&c.bundle_bar_border),
+        bundle_bar_fill: s(&c.bundle_bar_fill),
+        bundle_bar_full: s(&c.bundle_bar_full),
     })
 }
 
@@ -6664,7 +6670,7 @@ fn apply_screen(
             (w, h),
         )
     });
-    wr.set_container_tooltip(tooltip.as_ref().map(|(box_, _)| *box_));
+    wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _)| draw.clone()));
 
     // The preview's pass is built the first time the screen opens, so a
     // session that never opens it never pays for the second entity atlas.
@@ -6920,7 +6926,10 @@ fn screen_tooltip(
     advance: &[u8; 256],
     mouse: (f64, f64),
     (w, h): (f32, f32),
-) -> Option<(((i32, i32), (i32, i32)), Vec<rewo_gpu::world::OwnedTextLine>)> {
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+)> {
     // A stack on the cursor suppresses the tooltip: vanilla's guard is
     // `hoveredSlot.hasItem() && getCarried().isEmpty()`, so picking something
     // up hides the label of whatever you drag it over.
@@ -6997,7 +7006,25 @@ fn screen_tooltip(
             line
         })
         .collect();
-    Some((((tx, ty), (tw, th)), out))
+    Some((
+        rewo_gpu::container::TooltipDraw {
+            pos: (tx, ty),
+            size: (tw, th),
+            // **The grid has no contents to draw from.** `BundleItem`'s
+            // `getTooltipImage` reads `minecraft:bundle_contents`, and
+            // `rewo-net`'s patch reader walks that component past without
+            // keeping it: its `Shape` is `List(ItemStackTemplate)` and
+            // `walk_item_template` discards the id, the count and the nested
+            // patch it reads. So a bundle here would be a bundle of nothing —
+            // `bundle_image` would report an empty grid whatever the stack
+            // holds, which is worse than reporting no grid at all. The whole
+            // of `container::bundle_chrome` and `tooltip::bundle_image` is
+            // driven and graded by `inventoryshot`; wiring it to a live stack
+            // waits on a `BUNDLE_CONTENTS` decoder (M58 gap).
+            bundle: None,
+        },
+        out,
+    ))
 }
 
 fn screen_icons(

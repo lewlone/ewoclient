@@ -34,7 +34,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
-const MAX_VERTS: usize = 1024;
+/// Headroom for the worst frame this pass can build: 46 durability bars (two
+/// quads each), the panel and its two highlights, the tooltip's two nine-slices,
+/// and a full bundle grid's twelve cells plus its progress bar (M58).
+const MAX_VERTS: usize = 2048;
 const RING: usize = 2;
 const ATLAS_W: u32 = 512;
 const ATLAS_H: u32 = 288;
@@ -60,6 +63,14 @@ pub struct ContainerSpriteData<'a> {
     /// The two 100x100 nine-slice tooltip sprites (M40).
     pub tooltip_background: crate::hud::HudSpriteData<'a>,
     pub tooltip_frame: crate::hud::HudSpriteData<'a>,
+    /// `ClientBundleTooltip`'s six (M58). The three 24x24 cell sprites, then
+    /// the progress bar's 12x12 border and its two 6x6 fills.
+    pub bundle_slot: crate::hud::HudSpriteData<'a>,
+    pub bundle_highlight_back: crate::hud::HudSpriteData<'a>,
+    pub bundle_highlight_front: crate::hud::HudSpriteData<'a>,
+    pub bundle_bar_border: crate::hud::HudSpriteData<'a>,
+    pub bundle_bar_fill: crate::hud::HudSpriteData<'a>,
+    pub bundle_bar_full: crate::hud::HudSpriteData<'a>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -253,6 +264,40 @@ const TOOLTIP_FRAME_BORDER: i32 = 10;
 /// Both sprites are authored at this size.
 const TOOLTIP_SPRITE: i32 = 100;
 
+// -- the bundle grid's chrome (M58) -------------------------------------------
+//
+// `ClientBundleTooltip.extractSlot` and `extractProgressbar` — the six
+// `blitSprite` calls M52 left out. Every authored size and border below is the
+// sprite's own `.mcmeta`, not a guess: all six declare `nine_slice`, and none
+// of them sets `stretch_inner`.
+
+/// `container/bundle/{slot_background, slot_highlight_back, slot_highlight_front}`
+/// are all 24x24 with `border: 4` — and all three are blitted at exactly 24x24,
+/// so they take `blitNineSlicedSprite`'s identity branch every time.
+const BUNDLE_CELL_SPRITE: i32 = 24;
+const BUNDLE_CELL_BORDER: i32 = 4;
+/// `bundle_progressbar_border` is 12x12 `border: 2`, blitted at 96x13.
+const BAR_BORDER_SPRITE: i32 = 12;
+const BAR_BORDER_BORDER: i32 = 2;
+/// The two fills are 6x6 `border: 2`, blitted at `getProgressBarFill`x13.
+const BAR_FILL_SPRITE: i32 = 6;
+const BAR_FILL_BORDER: i32 = 2;
+
+/// What `draw_tooltip` paints.
+///
+/// The box is M40's; `bundle` is `ClientBundleTooltip.extractImage`, already
+/// resolved to GUI-space geometry by [`crate::tooltip::bundle_image`] — which
+/// is handed the box's own `x`, the `localY` the **image** pass reached, and
+/// the tooltip's measured `w`. One struct rather than two setters, so the box
+/// and the grid inside it cannot be set out of step.
+#[derive(Clone, Debug, Default)]
+pub struct TooltipDraw {
+    /// The text block's top-left in GUI pixels, and its measured size.
+    pub pos: (i32, i32),
+    pub size: (i32, i32),
+    pub bundle: Option<crate::tooltip::BundleImage>,
+}
+
 /// Where the text block's top-left corner goes, in GUI pixels.
 ///
 /// `DefaultTooltipPositioner`: start at the cursor plus `(12, -12)`, then pull
@@ -302,20 +347,29 @@ pub fn tooltip_size(line_widths: &[i32]) -> (i32, i32) {
     crate::tooltip::measure(&components)
 }
 
-/// `blitNineSlicedSprite` — nine pieces of a `TOOLTIP_SPRITE`-sized source
-/// into an arbitrary destination rect.
+/// `blitNineSlicedSprite` — nine pieces of a `sw`x`sh` source into an
+/// arbitrary destination rect.
 ///
 /// The corners keep their natural size; the four edges and the middle fill
 /// whatever is left. Vanilla either **stretches** those five
-/// (`stretch_inner`) or **tiles** them, and the two tooltip sprites disagree —
-/// background `border: 9` tiles, frame `border: 10` stretches. Both of their
-/// middles are a single flat colour, so a stretch reproduces a tile exactly
-/// here; `stretch` is still threaded through so a sprite with a patterned
-/// middle fails visibly rather than silently smearing.
+/// (`stretch_inner`) or **tiles** them, and the sprites in play disagree —
+/// tooltip background `border: 9` tiles, tooltip frame `border: 10` stretches,
+/// and all six of the bundle's tile. Every one of their inner slices is
+/// uniform along the axis it repeats on, so a stretch reproduces a tile
+/// texel-for-texel; that is a property of this version's art rather than a
+/// theorem, so the gate measures it (`bc7`) instead of this comment asserting
+/// it.
+///
+/// Vanilla's first branch is transcribed because it is the *usual* case for
+/// three of these sprites: `width == nineSlice.width() && height ==
+/// nineSlice.height()` blits the whole sprite once and does not slice at all,
+/// which is what the bundle's three 24x24 cell sprites always hit.
 #[allow(clippy::too_many_arguments)]
 fn nine_slice(
     v: &mut Vec<Vertex>,
     r: Rect,
+    sw: i32,
+    sh: i32,
     border: i32,
     x: i32,
     y: i32,
@@ -325,21 +379,40 @@ fn nine_slice(
     top: f32,
     scale: f32,
 ) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let blit = |v: &mut Vec<Vertex>, r: Rect, dx: i32, dy: i32, dw: i32, dh: i32| {
+        push_quad(
+            v,
+            left + dx as f32 * scale,
+            top + dy as f32 * scale,
+            dw as f32 * scale,
+            dh as f32 * scale,
+            r,
+            WHITE,
+            WHITE,
+        );
+    };
+    if w == sw && h == sh {
+        blit(v, r, x, y, w, h);
+        return;
+    }
     // `Math.min(border, width / 2)` — a destination narrower than two borders
     // shrinks them rather than overlapping the corners.
     let bl = border.min(w / 2).max(0);
     let bt = border.min(h / 2).max(0);
-    let s = TOOLTIP_SPRITE as f32;
     let (du, dv) = (r.u1 - r.u0, r.v1 - r.v0);
+    let (fw, fh) = (sw as f32, sh as f32);
     let cols = [
         (0.0, bl as f32, x, bl),
-        (bl as f32, s - 2.0 * bl as f32, x + bl, w - 2 * bl),
-        (s - bl as f32, bl as f32, x + w - bl, bl),
+        (bl as f32, fw - 2.0 * bl as f32, x + bl, w - 2 * bl),
+        (fw - bl as f32, bl as f32, x + w - bl, bl),
     ];
     let rows = [
         (0.0, bt as f32, y, bt),
-        (bt as f32, s - 2.0 * bt as f32, y + bt, h - 2 * bt),
-        (s - bt as f32, bt as f32, y + h - bt, bt),
+        (bt as f32, fh - 2.0 * bt as f32, y + bt, h - 2 * bt),
+        (fh - bt as f32, bt as f32, y + h - bt, bt),
     ];
     for &(su, suw, dx, dw) in &cols {
         for &(sv, svh, dy, dh) in &rows {
@@ -347,21 +420,12 @@ fn nine_slice(
                 continue;
             }
             let piece = Rect {
-                u0: r.u0 + du * (su / s),
-                v0: r.v0 + dv * (sv / s),
-                u1: r.u0 + du * ((su + suw) / s),
-                v1: r.v0 + dv * ((sv + svh) / s),
+                u0: r.u0 + du * (su / fw),
+                v0: r.v0 + dv * (sv / fh),
+                u1: r.u0 + du * ((su + suw) / fw),
+                v1: r.v0 + dv * ((sv + svh) / fh),
             };
-            push_quad(
-                v,
-                left + dx as f32 * scale,
-                top + dy as f32 * scale,
-                dw as f32 * scale,
-                dh as f32 * scale,
-                piece,
-                WHITE,
-                WHITE,
-            );
+            blit(v, piece, dx, dy, dw, dh);
         }
     }
 }
@@ -386,10 +450,13 @@ fn push_quad(
         ([x + qw, y + qh], [r.u1, r.v1], c1),
         ([x, y + qh], [r.u0, r.v1], c1),
     ];
+    // All six or none: dropping a corner past the cap would leave a torn
+    // triangle in the buffer rather than one fewer quad.
+    if v.len() + corners.len() > MAX_VERTS {
+        return;
+    }
     for (pos, uv, color) in corners {
-        if v.len() < MAX_VERTS {
-            v.push(Vertex { pos, uv, color });
-        }
+        v.push(Vertex { pos, uv, color });
     }
 }
 
@@ -487,6 +554,13 @@ pub struct ContainerPass {
     highlight_back: Rect,
     highlight_front: Rect,
     white: Rect,
+    /// `ClientBundleTooltip`'s six (M58).
+    bundle_slot: Rect,
+    bundle_hl_back: Rect,
+    bundle_hl_front: Rect,
+    bar_border: Rect,
+    bar_fill: Rect,
+    bar_full: Rect,
 }
 
 impl ContainerPass {
@@ -512,6 +586,14 @@ impl ContainerPass {
         // The two 100x100 tooltip sprites, below the 176x166 panel.
         place(&mut atlas, &sprites.tooltip_background, 0, 166);
         place(&mut atlas, &sprites.tooltip_frame, 100, 166);
+        // The bundle's six (M58), on a row of their own to the right of the
+        // 256x256 background sheet, so nothing above moves.
+        place(&mut atlas, &sprites.bundle_slot, 256, 32);
+        place(&mut atlas, &sprites.bundle_highlight_back, 280, 32);
+        place(&mut atlas, &sprites.bundle_highlight_front, 304, 32);
+        place(&mut atlas, &sprites.bundle_bar_border, 328, 32);
+        place(&mut atlas, &sprites.bundle_bar_fill, 340, 32);
+        place(&mut atlas, &sprites.bundle_bar_full, 346, 32);
         // One opaque texel, so the untextured backdrop can share this pipeline.
         let w = (304 * 4) as usize;
         atlas[w..w + 4].copy_from_slice(&[255, 255, 255, 255]);
@@ -529,6 +611,12 @@ impl ContainerPass {
         let white = uv(304.5, 0.5, 0.0, 0.0);
         let tooltip_bg = uv(0.0, 166.0, 100.0, 100.0);
         let tooltip_frame = uv(100.0, 166.0, 100.0, 100.0);
+        let bundle_slot = uv(256.0, 32.0, 24.0, 24.0);
+        let bundle_hl_back = uv(280.0, 32.0, 24.0, 24.0);
+        let bundle_hl_front = uv(304.0, 32.0, 24.0, 24.0);
+        let bar_border = uv(328.0, 32.0, 12.0, 12.0);
+        let bar_fill = uv(340.0, 32.0, 6.0, 6.0);
+        let bar_full = uv(346.0, 32.0, 6.0, 6.0);
 
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let device = gpu.device.clone();
@@ -639,6 +727,12 @@ impl ContainerPass {
             white,
             tooltip_bg,
             tooltip_frame,
+            bundle_slot,
+            bundle_hl_back,
+            bundle_hl_front,
+            bar_border,
+            bar_fill,
+            bar_full,
             tooltip_verts: 0,
             bar_range: (0, 0),
         })
@@ -653,7 +747,7 @@ impl ContainerPass {
         extent: vk::Extent2D,
         open: bool,
         hovered: Option<(i32, i32)>,
-        tooltip: Option<((i32, i32), (i32, i32))>,
+        tooltip: Option<&TooltipDraw>,
         bars: &[ItemBar],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
@@ -727,7 +821,8 @@ impl ContainerPass {
         // 5. The tooltip, last of all — `extractTooltipBackground` blits the
         //    two sprites at the same rect, the background painting the fill
         //    and the frame the edge over it.
-        if let Some(((tx, ty), (tw, th))) = tooltip {
+        if let Some(tip) = tooltip {
+            let ((tx, ty), (tw, th)) = (tip.pos, tip.size);
             let (bx, by) = (tx - TOOLTIP_INSET, ty - TOOLTIP_INSET);
             let (bw, bh) = (tw + TOOLTIP_INSET * 2, th + TOOLTIP_INSET * 2);
             for (rect, border) in [
@@ -740,11 +835,122 @@ impl ContainerPass {
                 // panel's — so its result must not be offset by the panel's
                 // origin the way a slot's is. Adding `left`/`top` here puts
                 // the box a panel's width away from its own text.
-                nine_slice(&mut v, rect, border, bx, by, bw, bh, 0.0, 0.0, scale);
+                nine_slice(
+                    &mut v,
+                    rect,
+                    TOOLTIP_SPRITE,
+                    TOOLTIP_SPRITE,
+                    border,
+                    bx,
+                    by,
+                    bw,
+                    bh,
+                    0.0,
+                    0.0,
+                    scale,
+                );
+            }
+            // 6. …and the image pass's own blits, over the box and in the same
+            //    screen space.
+            if let Some(image) = tip.bundle.as_ref() {
+                self.bundle_chrome(&mut v, image, scale);
             }
         }
         self.tooltip_verts = v.len() as u32 - self.total_verts;
         self.upload(&v);
+    }
+
+    /// `ClientBundleTooltip.extractImage`'s six sprites, in its order.
+    ///
+    /// ```java
+    /// if (hasHighlight) blitSprite(SLOT_HIGHLIGHT_BACK_SPRITE, drawX, drawY, 24, 24);
+    /// else              blitSprite(SLOT_BACKGROUND_SPRITE,     drawX, drawY, 24, 24);
+    /// graphics.item(item, drawX + 4, drawY + 4, slotIndex);
+    /// graphics.itemDecorations(font, item, drawX + 4, drawY + 4);
+    /// if (hasHighlight) blitSprite(SLOT_HIGHLIGHT_FRONT_SPRITE, drawX, drawY, 24, 24);
+    /// ```
+    ///
+    /// Three things in there read as choices and are not:
+    ///
+    /// - the selected cell's background is **replaced** by
+    ///   `slot_highlight_back`, not covered by it. Drawing both would put the
+    ///   ordinary slot art under the highlight, which is a different picture.
+    /// - only `extractSlot` blits anything. `extractCount`, the `+N` badge, is
+    ///   a bare `centeredText` — the badge cell has **no** background, and the
+    ///   grid's art stops at the last occupied slot.
+    /// - the progress bar blits its **fill first and its border over it**, so
+    ///   the border's 1 px frame wins wherever the two meet. Reversing them
+    ///   paints the fill's top row across the frame.
+    ///
+    /// The gap between the two highlight blits is where `graphics.item` and
+    /// `itemDecorations` go. Rewo draws nothing there yet: the grid's contents
+    /// come from the `minecraft:bundle_contents` component, which
+    /// `rewo-net`'s patch reader walks past without keeping (M58 gap).
+    fn bundle_chrome(&self, v: &mut Vec<Vertex>, image: &crate::tooltip::BundleImage, scale: f32) {
+        use crate::tooltip::{CellKind, GRID_WIDTH, PROGRESSBAR_BORDER, PROGRESSBAR_HEIGHT};
+        let cell = |v: &mut Vec<Vertex>, r: Rect, x: i32, y: i32| {
+            nine_slice(
+                v,
+                r,
+                BUNDLE_CELL_SPRITE,
+                BUNDLE_CELL_SPRITE,
+                BUNDLE_CELL_BORDER,
+                x,
+                y,
+                crate::tooltip::SLOT_SIZE,
+                crate::tooltip::SLOT_SIZE,
+                0.0,
+                0.0,
+                scale,
+            );
+        };
+        for c in &image.cells {
+            let CellKind::Slot { selected, .. } = c.kind else {
+                continue;
+            };
+            if selected {
+                cell(v, self.bundle_hl_back, c.x, c.y);
+                // (the item and its decorations)
+                cell(v, self.bundle_hl_front, c.x, c.y);
+            } else {
+                cell(v, self.bundle_slot, c.x, c.y);
+            }
+        }
+        if let Some(bar) = image.bar {
+            let fill = if bar.full {
+                self.bar_full
+            } else {
+                self.bar_fill
+            };
+            nine_slice(
+                v,
+                fill,
+                BAR_FILL_SPRITE,
+                BAR_FILL_SPRITE,
+                BAR_FILL_BORDER,
+                bar.x + PROGRESSBAR_BORDER,
+                bar.y,
+                bar.fill,
+                PROGRESSBAR_HEIGHT,
+                0.0,
+                0.0,
+                scale,
+            );
+            nine_slice(
+                v,
+                self.bar_border,
+                BAR_BORDER_SPRITE,
+                BAR_BORDER_SPRITE,
+                BAR_BORDER_BORDER,
+                bar.x,
+                bar.y,
+                GRID_WIDTH,
+                PROGRESSBAR_HEIGHT,
+                0.0,
+                0.0,
+                scale,
+            );
+        }
     }
 
     fn upload(&mut self, v: &[Vertex]) {
@@ -1023,6 +1229,82 @@ mod tests {
         // And one GUI pixel across is `scale` screen pixels across.
         let g = screen_to_gui(((left + scale) as f64, top as f64), w, h);
         assert!((g.0 - 1.0).abs() < 1e-9, "{g:?}");
+    }
+
+    /// The whole source rect, as the atlas would hand it over.
+    const FULL: Rect = Rect {
+        u0: 0.0,
+        v0: 0.0,
+        u1: 1.0,
+        v1: 1.0,
+    };
+
+    /// The destination rect of each quad in a vertex list, as
+    /// `(x, y, w, h)` — `push_quad` writes its top-left first and its
+    /// bottom-right third.
+    fn quads(v: &[Vertex]) -> Vec<(f32, f32, f32, f32)> {
+        v.chunks(6)
+            .map(|q| {
+                let (x, y) = (q[0].pos[0], q[0].pos[1]);
+                (x, y, q[2].pos[0] - x, q[2].pos[1] - y)
+            })
+            .collect()
+    }
+
+    /// `blitNineSlicedSprite`'s first branch: at the sprite's authored size it
+    /// blits the whole thing once and does not slice at all.
+    ///
+    /// This is the branch all three of the bundle's 24x24 cell sprites take,
+    /// every time — which is why their `.mcmeta` borders never affect
+    /// anything, and why a cell reproduces its texture exactly.
+    #[test]
+    fn a_native_size_blit_is_one_quad_of_the_whole_sprite() {
+        let mut v = Vec::new();
+        nine_slice(&mut v, FULL, 24, 24, 4, 10, 20, 24, 24, 0.0, 0.0, 1.0);
+        assert_eq!(quads(&v), vec![(10.0, 20.0, 24.0, 24.0)]);
+        // …and it samples the sprite's own corners, not an interior slice.
+        assert_eq!((v[0].uv, v[2].uv), ([0.0, 0.0], [1.0, 1.0]));
+    }
+
+    /// However the borders shrink against a small destination, the pieces
+    /// still tile it exactly — no gap along a seam, no doubled band.
+    ///
+    /// The third case is the one that really happens: `getProgressBarFill` is
+    /// a pixel count, so a nearly-empty bundle asks for a bar three pixels
+    /// wide out of a sprite whose two borders are four.
+    #[test]
+    fn the_sliced_pieces_tile_the_destination_exactly() {
+        for (sw, sh, b, w, h) in [
+            (12, 12, 2, 96, 13), // the progress bar's border
+            (6, 6, 2, 94, 13),   // a full fill
+            (6, 6, 2, 3, 13),    // a fill narrower than its own two borders
+            (100, 100, 9, 64, 32), // the tooltip's background
+        ] {
+            let mut v = Vec::new();
+            nine_slice(&mut v, FULL, sw, sh, b, 0, 0, w, h, 0.0, 0.0, 1.0);
+            let qs = quads(&v);
+            let area: f32 = qs.iter().map(|q| q.2 * q.3).sum();
+            assert_eq!(
+                area,
+                (w * h) as f32,
+                "{sw}x{sh} border {b} into {w}x{h} covered {area} of {}",
+                w * h
+            );
+            assert!(qs.iter().all(|q| q.2 > 0.0 && q.3 > 0.0));
+            let right = qs.iter().map(|q| q.0 + q.2).fold(0.0f32, f32::max);
+            let bottom = qs.iter().map(|q| q.1 + q.3).fold(0.0f32, f32::max);
+            assert_eq!((right, bottom), (w as f32, h as f32));
+        }
+    }
+
+    /// A zero-width blit draws nothing rather than a degenerate quad —
+    /// `getProgressBarFill` really returns 0 for an empty bundle, and vanilla
+    /// calls `blitSprite` with it anyway.
+    #[test]
+    fn an_empty_fill_emits_no_geometry() {
+        let mut v = Vec::new();
+        nine_slice(&mut v, FULL, 6, 6, 2, 0, 0, 0, 13, 0.0, 0.0, 1.0);
+        assert!(v.is_empty());
     }
 
     /// The backdrop's bottom is darker than its top — `0xD0` against `0xC0`.
