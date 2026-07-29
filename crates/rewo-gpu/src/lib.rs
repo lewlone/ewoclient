@@ -32,6 +32,7 @@ pub mod mobs;
 pub mod held;
 pub mod hud;
 pub mod offscreen;
+pub mod velvet_chrome;
 pub mod velvet_glyph;
 pub mod velvet_text;
 pub mod text;

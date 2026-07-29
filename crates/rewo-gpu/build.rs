@@ -49,6 +49,8 @@ fn main() {
         ("shaders/text.vert", "text.vert.spv"),
         ("shaders/velvet_text.vert", "velvet_text.vert.spv"),
         ("shaders/velvet_text.frag", "velvet_text.frag.spv"),
+        ("shaders/velvet_chrome.vert", "velvet_chrome.vert.spv"),
+        ("shaders/velvet_chrome.frag", "velvet_chrome.frag.spv"),
         ("shaders/text.frag", "text.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {

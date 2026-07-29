@@ -160,6 +160,24 @@ Everything `draw_iw_shell` does in its non-glass path is analytic from the same
 | top pearl highlight, clipped to 2px | band ∩ `p.y < top + 2` |
 | music bloom, blur 10–26 | large-radius smoothstep, additive |
 
+### The colour-space trap — M50, repeating
+
+**The Velvet UI must render through a gamma-space (UNORM) view, not the SRGB
+attachment.** EwoClient's `rgba()` is a plain `/255` with no transfer
+function, so Skia composites `WINE 0.50` over the backdrop in *gamma* space.
+Rewo's swapchain is `B8G8R8A8_SRGB`, where fixed-function blending happens in
+*linear* — and `dst*(1-a) + src*a` is not invariant under the sRGB transfer, so
+the same constants produce a visibly different plate.
+
+M50 hit this exactly: the enchantment glint went in structurally correct and
+rendered a byte-delta of **zero**, because the blend space was wrong. The fix
+already exists — `SwapchainTargets` carries a UNORM twin view of every image
+for precisely this reason.
+
+**Both Velvet passes need it**, not just chrome. If the plate blends in gamma
+and the type on top of it blends in linear, they disagree with each other and
+the disagreement is worst exactly where they overlap.
+
 **A Gaussian mask blur is a smoothstep over the SDF, not a blur pass.** For a
 rounded rect the exact analytic result is available, so the shadow costs one
 extra fragment evaluation rather than a ping-pong blur — which is most of why
