@@ -569,6 +569,11 @@ pub struct WorldRenderer {
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
     hud_state: Option<(f32, i32, u8)>,
     text: Option<TextPass>,
+    /// The Velvet type stack (M52b) — real variable-font text, for the pieces
+    /// that need per-run styling the bitmap pass cannot express (tooltips
+    /// first; chat and F3 next).
+    velvet_text: Option<crate::velvet_text::VelvetTextPass>,
+    velvet_runs: Vec<crate::velvet_text::OwnedRun>,
     /// Screen-space text lines to draw this frame (chat, coords); empty →
     /// nothing (view/demo/bench never set them).
     text_lines: Vec<OwnedTextLine>,
@@ -1013,6 +1018,8 @@ impl WorldRenderer {
             )?;
 
             Ok(Self {
+                velvet_text: None,
+                velvet_runs: Vec::new(),
                 tex_set_layout,
                 graphics_layout,
                 pipeline,
@@ -1967,6 +1974,41 @@ impl WorldRenderer {
     }
 
     /// Replace this frame's screen-space text lines (chat, coords).
+    /// Build the Velvet text pass against this target's **UNORM twin**.
+    ///
+    /// Not the sRGB format: the pass draws inside [`Self::with_gamma_space`],
+    /// and Vulkan requires a pipeline's rendering formats to match the
+    /// attachment. A target with no mutable-format twin gets no Velvet text at
+    /// all rather than text blended in the wrong space.
+    pub fn init_velvet_text(
+        &mut self,
+        gpu: &mut Gpu,
+        cache: &crate::velvet_glyph::GlyphCache,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            return Err("velvet text: target has no UNORM twin".into());
+        };
+        self.velvet_text = Some(crate::velvet_text::VelvetTextPass::new(gpu, format, cache)?);
+        Ok(())
+    }
+
+    /// Re-upload the glyph atlas if the cache has grown or been written to.
+    /// Must run outside a rendering scope — it records a transfer.
+    pub fn sync_velvet_atlas(
+        &mut self,
+        gpu: &mut Gpu,
+        cache: &mut crate::velvet_glyph::GlyphCache,
+    ) -> Result<(), String> {
+        match self.velvet_text.as_mut() {
+            Some(p) => p.sync_atlas(gpu, cache),
+            None => Ok(()),
+        }
+    }
+
+    pub fn set_velvet_runs(&mut self, runs: Vec<crate::velvet_text::OwnedRun>) {
+        self.velvet_runs = runs;
+    }
+
     pub fn set_text(&mut self, lines: Vec<OwnedTextLine>) {
         self.text_lines = lines;
     }
@@ -2562,6 +2604,24 @@ impl WorldRenderer {
                 text.draw(gpu, cb, extent, &lines);
             }
         }
+        // Velvet text last, and in gamma space. `take` because
+        // `in_gamma_space` borrows `&self` while the pass needs `&mut` — the
+        // same dance `self.text.take()` does at teardown.
+        if !self.velvet_runs.is_empty() {
+            if let Some(mut vt) = self.velvet_text.take() {
+                let runs: Vec<crate::velvet_text::Run> = self
+                    .velvet_runs
+                    .iter()
+                    .map(|r| crate::velvet_text::Run {
+                        glyphs: &r.glyphs,
+                        color: r.color,
+                        alpha: r.alpha,
+                    })
+                    .collect();
+                self.in_gamma_space(gpu, cb, extent, || vt.draw(gpu, cb, extent, &runs));
+                self.velvet_text = Some(vt);
+            }
+        }
     }
 
     /// The block-selection wireframe: the 12 edges of the targeted block,
@@ -2889,6 +2949,9 @@ impl WorldRenderer {
         }
         if let Some(mut hud) = self.hud.take() {
             hud.destroy(gpu);
+        }
+        if let Some(mut vt) = self.velvet_text.take() {
+            vt.destroy(gpu);
         }
         if let Some(mut text) = self.text.take() {
             text.destroy(gpu);

@@ -56,6 +56,15 @@ struct Vertex {
     color: [f32; 4],
 }
 
+/// An owned run, for handing a frame's worth of text to the renderer across
+/// a `set_*` call the way `OwnedTextLine` already does.
+#[derive(Debug, Clone)]
+pub struct OwnedRun {
+    pub glyphs: Vec<PositionedGlyph>,
+    pub color: [f32; 3],
+    pub alpha: f32,
+}
+
 /// One drawable run: glyphs already positioned by
 /// [`GlyphCache::layout_run`], plus the colour to tint them.
 pub struct Run<'a> {

@@ -2421,7 +2421,11 @@ fn run_headless(
                 }
             }
         });
-        headless_screen_labels = apply_screen(
+        // The headless path takes no glyph cache: the gates' golden images
+        // are graded against the bitmap tooltip, and swapping the typeface
+        // under them would move every one of those pixels for a reason that
+        // has nothing to do with what they test.
+        let (labels, _velvet) = apply_screen(
             &mut world_renderer,
             &mut gpu,
             &session,
@@ -2429,9 +2433,11 @@ fn run_headless(
             &mut gui_items,
             &baked,
             skin.as_mut(),
+            None,
             mouse,
             (sw, sh),
         );
+        headless_screen_labels = labels;
     } else {
         apply_hotbar_icons(
             &mut world_renderer,
@@ -2688,6 +2694,12 @@ struct LiveApp {
     /// profile's `modules.toml` -- the same file the launcher's Settings →
     /// Modules tab writes, so a Native instance needs no new config contract.
     modules: crate::modules::Modules,
+    /// M52b Velvet type stack: the glyph cache behind tooltip text. `None`
+    /// when `assets/fonts` is missing -- the tooltip then falls back to the
+    /// vanilla bitmap pass rather than drawing nothing, because a client that
+    /// loses its tooltips over a missing font file is worse than one that
+    /// draws them plainly.
+    glyphs: Option<rewo_gpu::velvet_glyph::GlyphCache>,
     /// F2 was pressed and a capture is owed (M51). Serviced after the frame
     /// rather than inside the key handler, because a capture needs the same
     /// `gpu`/`world_renderer` the render loop owns.
@@ -2762,6 +2774,16 @@ impl ApplicationHandler for LiveApp {
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
+                // M52b: the Velvet type stack, windowed only. A build with no
+                // fonts on disk gets `None` and the tooltip falls back to the
+                // bitmap pass -- losing tooltips over a missing font file
+                // would be worse than drawing them plainly.
+                if let Some(cache) = self.glyphs.as_ref() {
+                    if let Err(e) = world_renderer.init_velvet_text(&mut gpu, cache) {
+                        log::warn!("velvet text unavailable: {e}");
+                        self.glyphs = None;
+                    }
+                }
             }
             Ok(LiveState {
                 window: window.clone(),
@@ -3360,7 +3382,7 @@ impl LiveApp {
             let items = self.items.clone();
             let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.open {
-                self.screen_labels = apply_screen(
+                let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
                     session,
@@ -3368,11 +3390,24 @@ impl LiveApp {
                     gi,
                     baked,
                     self.preview_skin.as_mut(),
+                    self.glyphs.as_mut(),
                     self.screen.mouse,
                     (sw, sh),
                 );
+                self.screen_labels = labels;
+                // Any glyph laid out above may be new to the atlas. Sync
+                // BEFORE the runs are drawn and outside the rendering scope --
+                // it records a transfer, and a run referencing a rect that has
+                // not reached the GPU samples whatever was there before.
+                if let Some(cache) = self.glyphs.as_mut() {
+                    if let Err(e) = state.world_renderer.sync_velvet_atlas(&mut state.gpu, cache) {
+                        log::warn!("velvet atlas sync: {e}");
+                    }
+                }
+                state.world_renderer.set_velvet_runs(velvet);
             } else {
                 self.screen_labels.clear();
+                state.world_renderer.set_velvet_runs(Vec::new());
                 state.world_renderer.set_preview(None);
                 apply_hotbar_icons(
                     &mut state.world_renderer,
@@ -3589,6 +3624,7 @@ fn run_windowed(
         dirt_item,
         debug: true,
         modules: crate::modules::Modules::load(),
+        glyphs: load_velvet_fonts(),
         gestures: GestureTracker::default(),
         flicker: BlockLightFlicker::random(),
         gamma: args.gamma,
@@ -6719,9 +6755,13 @@ fn apply_screen(
     gui: &mut GuiItemState,
     baked: &assets::BakedAssets,
     skin: Option<&mut (Vec<u8>, bool, Option<[f32; 2]>)>,
+    mut glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
     mouse: (f64, f64),
     (w, h): (f32, f32),
-) -> Vec<rewo_gpu::world::OwnedTextLine> {
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+) {
     let (mut icons, mut labels) =
         screen_icons(&session.inventory, items, &session.trim_materials, w, h);
     if let Some((icon, label)) = carried_icon(&session.inventory, items, &session.trim_materials, mouse, w, h) {
@@ -6761,11 +6801,12 @@ fn apply_screen(
             &session.enchantments,
             &baked.enchantment_text,
             &advance,
+            glyphs.as_deref_mut(),
             mouse,
             (w, h),
         )
     });
-    wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _)| draw.clone()));
+    wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
 
     // The preview's pass is built the first time the screen opens, so a
     // session that never opens it never pays for the second entity atlas.
@@ -6804,8 +6845,12 @@ fn apply_screen(
     }
     // The tooltip's text goes last so it draws over the icons and the count
     // labels, matching the order the box is drawn in.
-    labels.extend(tooltip.into_iter().flat_map(|(_, l)| l));
-    labels
+        let velvet_runs: Vec<rewo_gpu::velvet_text::OwnedRun> = tooltip
+        .as_ref()
+        .map(|(_, _, r)| r.clone())
+        .unwrap_or_default();
+    labels.extend(tooltip.into_iter().flat_map(|(_, l, _)| l));
+    (labels, velvet_runs)
 }
 
 /// The 46 slot rects the screen draws icons into, in screen pixels.
@@ -6830,6 +6875,76 @@ fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory:
 /// Returns the draw list plus the count labels, which go through the text pass
 /// — vanilla's `itemCount` draws them at `x + 19 - 2 - width` and `y + 6 + 3`,
 /// right-aligned inside the slot, and **only when the count is not one**.
+/// Load the Velvet families into a glyph cache (M52b).
+///
+/// Returns `None` if any face is missing, and the caller falls back to the
+/// bitmap pass. Partial loading is deliberately not a state: a tooltip that
+/// renders its upright spans and drops its italic ones would look like a
+/// styling bug rather than a missing file.
+fn load_velvet_fonts() -> Option<rewo_gpu::velvet_glyph::GlyphCache> {
+    use rewo_gpu::velvet_glyph::{Family, GlyphCache};
+    // Next to the executable first (a packaged build), then the workspace
+    // path (cargo run) -- the same order the launcher's font resolution uses.
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("assets/fonts")));
+    let dir = match beside_exe {
+        Some(d) if d.is_dir() => d,
+        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts"),
+    };
+    let mut c = GlyphCache::new();
+    for (fam, italic) in [
+        (Family::Newsreader, false),
+        (Family::Newsreader, true),
+        (Family::Fraunces, false),
+        (Family::JetBrainsMono, false),
+    ] {
+        let p = dir.join(format!("{}.ttf", fam.file_stem(italic)));
+        let data = std::fs::read(&p).ok()?;
+        if !c.load(fam, italic, data) {
+            log::warn!("velvet: {} failed to parse", p.display());
+            return None;
+        }
+    }
+    log::info!("velvet: fonts loaded from {}", dir.display());
+    Some(c)
+}
+
+/// The tooltip's Velvet body size, in **GUI pixels**.
+///
+/// Vanilla's tooltip text is the 8px bitmap font on a 10px line. Newsreader at
+/// the same nominal size reads smaller, because a bitmap glyph fills its cell
+/// and a proportional one does not -- so this is calibrated to the *cap
+/// height* rather than the em, which is what makes the two look like the same
+/// size next to each other.
+pub const TOOLTIP_TEXT_GUI_PX: f32 = 9.0;
+
+/// A tooltip line's Velvet key.
+fn tooltip_key(italic: bool, scale: f32) -> rewo_gpu::velvet_glyph::ScalerKey {
+    rewo_gpu::velvet_glyph::ScalerKey::new(
+        rewo_gpu::velvet_glyph::Family::Newsreader,
+        italic,
+        TOOLTIP_TEXT_GUI_PX * scale,
+        rewo_gpu::velvet_glyph::Axes::DEFAULT,
+    )
+}
+
+/// Width of a styled tooltip line in **GUI pixels**, measured with the same
+/// font that will draw it.
+///
+/// This is the half of the flip that is easy to skip and would have shown up
+/// as text spilling out of its box: once the tooltip renders in Newsreader,
+/// sizing it with the bitmap advances measures a font it no longer uses.
+fn velvet_line_width(
+    cache: &mut rewo_gpu::velvet_glyph::GlyphCache,
+    line: &rewo_gpu::tooltip::Line,
+    scale: f32,
+) -> f32 {
+    line.iter()
+        .map(|sp| cache.measure_tracked(tooltip_key(sp.italic, scale), &sp.text, 0.0))
+        .sum::<f32>()
+        / scale.max(0.001)
+}
 /// The hovered slot's tooltip: the box to draw, and the text line inside it
 /// (M40).
 ///
@@ -7024,11 +7139,13 @@ fn screen_tooltip(
     enchant_registry: &[rewo_net::enchantment_parse::EnchantmentDef],
     enchant_text: &rewo_data::enchantments::EnchantmentText,
     advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
     mouse: (f64, f64),
     (w, h): (f32, f32),
 ) -> Option<(
     rewo_gpu::container::TooltipDraw,
     Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
 )> {
     // A stack on the cursor suppresses the tooltip: vanilla's guard is
     // `hoveredSlot.hasItem() && getCarried().isEmpty()`, so picking something
@@ -7087,12 +7204,25 @@ fn screen_tooltip(
         }
     }
 
-    let widths: Vec<i32> = lines
-        .iter()
-        .map(|l| {
-            rewo_data::sign_text::width(&rewo_gpu::tooltip::line_text(l), advance).round() as i32
-        })
-        .collect();
+    // Measure with the font that will DRAW. Once the tooltip renders in
+    // Newsreader, sizing it with the bitmap advances measures a font it no
+    // longer uses -- which shows up as text spilling out of its box, and is
+    // the half of this flip that is easiest to skip.
+    let scale = rewo_gpu::hud::gui_scale(w, h);
+    let mut glyphs = glyphs;
+    let widths: Vec<i32> = match glyphs.as_deref_mut() {
+        Some(cache) => lines
+            .iter()
+            .map(|l| velvet_line_width(cache, l, scale).ceil() as i32)
+            .collect(),
+        None => lines
+            .iter()
+            .map(|l| {
+                rewo_data::sign_text::width(&rewo_gpu::tooltip::line_text(l), advance).round()
+                    as i32
+            })
+            .collect(),
+    };
     let (tw, th) = rewo_gpu::container::tooltip_size(&widths);
     // The positioner works in GUI pixels, and so does the screen size it
     // clamps against — `guiWidth()`/`guiHeight()` are the *scaled* dimensions,
@@ -7106,6 +7236,47 @@ fn screen_tooltip(
     // the **first** line only, which is what separates the name from the
     // details without spacing the details apart.
     let mut y = ty;
+    // With the cache present the text goes through the Velvet pass, which is
+    // what makes italic lore actually slant. The bitmap path stays as the
+    // fallback for a build with no fonts on disk.
+    if let Some(cache) = glyphs.as_deref_mut() {
+        let mut runs: Vec<rewo_gpu::velvet_text::OwnedRun> = Vec::new();
+        let mut ly = ty;
+        for (i, spans) in lines.iter().enumerate() {
+            // Vanilla's `y` is the line's TOP; Velvet lays out from the
+            // BASELINE. Dropping the ascent would raise every tooltip line by
+            // most of its own height.
+            let ascent = cache
+                .metrics(tooltip_key(false, scale))
+                .map(|m| m.ascent)
+                .unwrap_or(TOOLTIP_TEXT_GUI_PX * scale * 0.75);
+            let baseline = ly as f32 * scale + ascent;
+            let mut pen = tx as f32 * scale;
+            for sp in spans {
+                let key = tooltip_key(sp.italic, scale);
+                let mut g = Vec::new();
+                let adv = cache.layout_run(key, &sp.text, 0.0, (pen, baseline), &mut g);
+                pen += adv;
+                if !g.is_empty() {
+                    runs.push(rewo_gpu::velvet_text::OwnedRun {
+                        glyphs: g,
+                        color: sp.color,
+                        alpha: 1.0,
+                    });
+                }
+            }
+            ly += rewo_gpu::container::TOOLTIP_LINE_HEIGHT + if i == 0 { 2 } else { 0 };
+        }
+        return Some((
+            rewo_gpu::container::TooltipDraw {
+                pos: (tx, ty),
+                size: (tw, th),
+                bundle: None,
+            },
+            Vec::new(),
+            runs,
+        ));
+    }
     let out = lines
         .into_iter()
         .enumerate()
@@ -7148,6 +7319,7 @@ fn screen_tooltip(
             bundle: None,
         },
         out,
+        Vec::new(),
     ))
 }
 
