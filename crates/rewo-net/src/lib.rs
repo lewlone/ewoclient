@@ -15,6 +15,8 @@ pub mod biome_parse;
 pub mod boss_bar;
 pub mod chat_sign;
 pub mod chat_style;
+pub mod chunk_batch;
+pub mod client_state;
 pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
@@ -36,6 +38,7 @@ pub mod spawn_info;
 pub mod tab_list_text;
 pub mod tags;
 pub mod teams;
+pub mod ticking;
 pub mod view_area;
 
 use std::borrow::Cow;
@@ -2386,6 +2389,61 @@ pub fn route_view_area(
         return false;
     };
     view_area::apply(kind, body, area);
+    true
+}
+
+/// The clientbound-play dispatch seam for M74's three client switches:
+/// `change_difficulty`, `set_camera` and `container_close`. Returns whether
+/// the id matched — **not** whether the body decoded.
+///
+/// `set_camera`'s target is resolved against `entities` **or** `local_player`.
+/// Both are needed: vanilla resolves with `level.getEntity(id)` and its level
+/// contains the local player, while Rewo's
+/// [`rewo_world::entities::EntityTable`] never does — the server sends no
+/// `add_entity` for you. Consulting only the table would make the packet that
+/// hands the camera back at the end of a spectate a no-op, stranding the view
+/// on the spectated entity for the rest of the session. See [`client_state`].
+pub fn route_client_state(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    state: &mut client_state::ClientState,
+    entities: &rewo_world::entities::EntityTable,
+    local_player: Option<i32>,
+) -> bool {
+    let table = client_state::ClientStateIds {
+        change_difficulty: ids.cb_play_change_difficulty,
+        set_camera: ids.cb_play_set_camera,
+        container_close: ids.cb_play_container_close,
+    };
+    let Some(kind) = client_state::kind_for_id(id, table) else {
+        return false;
+    };
+    client_state::apply(kind, body, state, entities, local_player);
+    true
+}
+
+/// The clientbound-play dispatch seam for M74's tick clock: `ticking_state`
+/// and `ticking_step`. Returns whether the id matched — **not** whether the
+/// body decoded.
+///
+/// The two ids are the only discriminator, exactly as with the view area's
+/// radius pair: `ticking_step`'s body is a bare VarInt and says nothing about
+/// which packet it belongs to.
+pub fn route_ticking(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    manager: &mut ticking::TickRateManager,
+) -> bool {
+    let table = ticking::TickingIds {
+        state: ids.cb_play_ticking_state,
+        step: ids.cb_play_ticking_step,
+    };
+    let Some(kind) = ticking::kind_for_id(id, table) else {
+        return false;
+    };
+    ticking::apply(kind, body, manager);
     true
 }
 

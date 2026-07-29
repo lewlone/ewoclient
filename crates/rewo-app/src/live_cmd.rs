@@ -794,9 +794,11 @@ fn resolve_wavy_cape(
 /// per frame rather than once per entity (M70).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LabelViewer<'a> {
-    /// `minecraft.getCameraEntity()`. Rewo never detaches the camera, so this
-    /// is the local player, but the two are kept apart because vanilla reads
-    /// them in different clauses and they diverge while spectating.
+    /// `minecraft.getCameraEntity()`. Fed by `set_camera` since M74, so it
+    /// really does diverge from `local_player` while spectating — before that
+    /// it was hard-wired to the player with a note saying Rewo never detaches
+    /// the camera. Vanilla reads the two in different clauses, which is why
+    /// they were kept apart even while they could not differ.
     pub camera_entity: Option<i32>,
     /// `minecraft.player`.
     pub local_player: Option<i32>,
@@ -824,7 +826,11 @@ impl<'a> LabelViewer<'a> {
     /// [`resolve_crosshair_pick`].
     pub(crate) fn from_session(session: &'a PlaySession, hud_hidden: bool) -> LabelViewer<'a> {
         LabelViewer {
-            camera_entity: session.player_id,
+            // M74: the server's `set_camera`, falling back to the local
+            // player when it has never sent one — which is exactly
+            // `Minecraft.cameraEntity`, a field initialised to the player and
+            // only ever reassigned.
+            camera_entity: session.client_state.camera_entity_or(session.player_id),
             local_player: session.player_id,
             hud_hidden,
             spectator: session.own_game_mode().is_some_and(|g| g.is_spectator()),
@@ -4027,6 +4033,26 @@ impl LiveApp {
         if dt > 0.0 {
             self.cpu.push(dt * 1000.0);
             self.ring.push(dt * 1000.0);
+        }
+
+        // M74: `container_close` — the server closing whatever screen is
+        // open. Drained before the session borrow below, because acting on it
+        // calls `set_screen_open`, which needs all of `self`.
+        //
+        // Compared as a watermark, not consumed as a flag: the session owns
+        // the counter and this is the only reader, so two closes in one frame
+        // collapse to one screen close without either being lost.
+        let close_requested = match self.session.as_ref() {
+            Some(s) => {
+                let n = s.client_state.close_container_requests();
+                let changed = n != self.screen.close_requests_seen;
+                self.screen.close_requests_seen = n;
+                changed
+            }
+            None => false,
+        };
+        if close_requested && self.screen.open {
+            self.set_screen_open(false);
         }
 
         // Fixed 20 Hz tick on an accumulator.
@@ -7827,6 +7853,11 @@ pub struct ScreenState {
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
     pub mouse: (f64, f64),
+    /// How many `container_close` packets had arrived last time the frame
+    /// looked (M74). A watermark rather than a flag so a close that lands in
+    /// the same frame as another cannot be swallowed, and so nothing has to
+    /// reach into the session to clear state it does not own.
+    pub close_requests_seen: u64,
 }
 
 impl ScreenState {

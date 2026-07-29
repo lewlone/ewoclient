@@ -257,6 +257,31 @@ pub struct Ids {
     /// the local player rides. Carries no entity id: the client resolves
     /// `player.getRootVehicle()` itself.
     pub cb_play_move_vehicle: i32,
+    // ── M74: the chunk-batch loop, the tick clock, three client switches ──
+    // All six `req!` for the reason M62/M63/M65/M67/M68 give: `require` grades
+    // the *report*, not the server. A server that never freezes its tick loop
+    // simply never sends `ticking_state` — a runtime state. A report with no
+    // `ticking_state` in it is a version mismatch.
+    /// `ClientboundChunkBatchStartPacket` — **empty body**. Stamps the clock
+    /// the batch-size calculator measures against. Without it the calculator
+    /// has no interval and would reply a different constant rather than an
+    /// adaptive number; see [`crate::chunk_batch`].
+    pub cb_play_chunk_batch_start: i32,
+    /// `ClientboundChangeDifficultyPacket` — a VarInt `Difficulty` id through
+    /// a **WRAP** out-of-bounds map, then a bool `locked`.
+    pub cb_play_change_difficulty: i32,
+    /// `ClientboundContainerClosePacket` — one VarInt container id, which
+    /// vanilla reads and then **ignores**: `handleContainerClose` closes
+    /// whatever is open without comparing ids.
+    pub cb_play_container_close: i32,
+    /// `ClientboundSetCameraPacket` — one VarInt entity id. An id the client
+    /// cannot resolve leaves the camera where it is.
+    pub cb_play_set_camera: i32,
+    /// `ClientboundTickingStatePacket` — an f32 `tickRate` then a bool
+    /// `isFrozen`. `/tick rate` and `/tick freeze`.
+    pub cb_play_ticking_state: i32,
+    /// `ClientboundTickingStepPacket` — one VarInt `tickSteps`. `/tick step`.
+    pub cb_play_ticking_step: i32,
 }
 
 impl Ids {
@@ -381,6 +406,329 @@ impl Ids {
             cb_play_explode: req!(p, P, C, "explode"),
             cb_play_set_entity_motion: req!(p, P, C, "set_entity_motion"),
             cb_play_move_vehicle: req!(p, P, C, "move_vehicle"),
+            cb_play_chunk_batch_start: req!(p, P, C, "chunk_batch_start"),
+            cb_play_change_difficulty: req!(p, P, C, "change_difficulty"),
+            cb_play_container_close: req!(p, P, C, "container_close"),
+            cb_play_set_camera: req!(p, P, C, "set_camera"),
+            cb_play_ticking_state: req!(p, P, C, "ticking_state"),
+            cb_play_ticking_step: req!(p, P, C, "ticking_step"),
         })
+    }
+}
+
+/// The machine check that keeps `REWO_PACKET_COVERAGE.md` honest (M74).
+///
+/// ## Why this is here and not in a `*shot` gate
+///
+/// The document is an inventory of a live codebase, and M67's hand-maintained
+/// version **went stale within hours of being written** — four packets landed
+/// in this very file the day it was published, and by the time M74 re-derived
+/// it ten of its 141 rows were wrong, all in the same direction. The lesson
+/// recorded there is that annotating the decay does not fix it; the document
+/// has to derive from the code or fail when it disagrees.
+///
+/// So the check fires on **the event that causes the drift** — someone editing
+/// `ids.rs` — and `cargo test -p rewo-net` is what runs then. A `*shot --check`
+/// command would only fire when someone remembered to run it, which is the
+/// same failure mode as the grep it replaces.
+///
+/// ## Why `include_str!`
+///
+/// All three inputs are read at **compile time**, so the check has no runtime
+/// dependency on the datagen report, the network, or the working directory,
+/// and there is no "skip if the file is missing" branch for it to fall
+/// through. A missing file is a build error.
+///
+/// ## What it deliberately does not check
+///
+/// **Correctness and completeness.** A packet that is dispatched and
+/// half-decoded is `handled` to this test — that is precisely the gap §4 of
+/// the document is maintained by hand to cover, and no mechanical instrument
+/// distinguishes "consumed the body" from "read the first field".
+#[cfg(test)]
+mod coverage_table_tests {
+    /// The document itself. `crates/rewo-net/src/` → three levels to the root.
+    const DOC: &str = include_str!("../../../REWO_PACKET_COVERAGE.md");
+    /// This file, read as text: the check parses the `resolve` block above
+    /// rather than calling it, because calling it needs a `Packets` and
+    /// therefore the datagen report.
+    const IDS_SRC: &str = include_str!("ids.rs");
+    /// The dispatch chain. `play.rs` holds `PlaySession::handle`'s `else if`
+    /// ladder; `lib.rs` holds the `route_*` seams.
+    const PLAY_SRC: &str = include_str!("play.rs");
+    const LIB_SRC: &str = include_str!("lib.rs");
+
+    /// Whether `hay` contains `needle` delimited by non-identifier characters.
+    ///
+    /// A plain `contains` is wrong here: `cb_play_sound` is a prefix of
+    /// `cb_play_sound_entity`, so a substring test would report the shorter
+    /// field as dispatched on a line that only mentions the longer one.
+    fn contains_word(hay: &str, needle: &str) -> bool {
+        let mut from = 0;
+        while let Some(i) = hay[from..].find(needle) {
+            let s = from + i;
+            let e = s + needle.len();
+            let before_ok = s == 0
+                || !hay[..s]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let after_ok = hay[e..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            if before_ok && after_ok {
+                return true;
+            }
+            from = e;
+        }
+        false
+    }
+
+    /// `(field, packet name)` for every clientbound-**play** id the `resolve`
+    /// block above names, whether `req!` or `opt!`.
+    fn resolved_play_clientbound() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for line in IDS_SRC.lines() {
+            let t = line.trim();
+            if t.starts_with("//") {
+                continue;
+            }
+            for mac in ["req!(p, P, C, \"", "opt!(p, P, C, \""] {
+                let Some(i) = t.find(mac) else { continue };
+                let field = t[..i].trim_end().trim_end_matches(':').trim().to_string();
+                let rest = &t[i + mac.len()..];
+                let Some(q) = rest.find('"') else { continue };
+                out.push((field, rest[..q].to_string()));
+            }
+        }
+        out
+    }
+
+    /// Whether an incoming packet id is ever tested against this field inside
+    /// `rewo-net` — an `==` / `!=` comparison, or a dispatch-table struct
+    /// field (`center: ids.cb_play_set_chunk_cache_center`).
+    ///
+    /// Stricter than M67's "does the name appear anywhere under `crates/`",
+    /// which counted a field a gate merely mentions. Both instruments agree
+    /// that the resolved-but-ignored set is empty; this one says something
+    /// closer to what the word "handled" claims.
+    fn is_dispatched(field: &str) -> bool {
+        let by_table_a = format!(": ids.{field}");
+        let by_table_b = format!(": self.ids.{field}");
+        [PLAY_SRC, LIB_SRC].iter().any(|src| {
+            src.lines().any(|line| {
+                let t = line.trim();
+                !t.starts_with("//")
+                    && contains_word(t, field)
+                    && (t.contains("==")
+                        || t.contains("!=")
+                        || t.contains(&by_table_a)
+                        || t.contains(&by_table_b))
+            })
+        })
+    }
+
+    /// `(id, packet, status, resolution-or-class)` for every §5 row.
+    fn doc_rows() -> Vec<(i32, String, String, String)> {
+        let start = DOC.find("## §5").expect("the document has no §5");
+        let rest = &DOC[start..];
+        let end = rest.find("## §6").expect("§5 is not terminated by §6");
+        let mut out = Vec::new();
+        for line in rest[..end].lines() {
+            let t = line.trim();
+            if !t.starts_with('|') {
+                continue;
+            }
+            let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+            if cells.len() < 4 {
+                continue;
+            }
+            // The header and the `|---|` separator fail this parse, which is
+            // how they are skipped.
+            let Ok(id) = cells[0].parse::<i32>() else {
+                continue;
+            };
+            out.push((
+                id,
+                cells[1].trim_matches('`').to_string(),
+                cells[2].to_string(),
+                cells[3].to_string(),
+            ));
+        }
+        out
+    }
+
+    /// The first `**<integer>**` on the line beginning with `label`.
+    fn doc_count(label: &str) -> i64 {
+        let line = DOC
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with(label))
+            .unwrap_or_else(|| panic!("no §2 row labelled {label:?}"));
+        let mut rest = &line[label.len()..];
+        while let Some(i) = rest.find("**") {
+            let after = &rest[i + 2..];
+            let Some(j) = after.find("**") else { break };
+            if let Ok(n) = after[..j].trim().parse::<i64>() {
+                return n;
+            }
+            rest = &after[j + 2..];
+        }
+        panic!("no bold integer on the §2 row labelled {label:?}");
+    }
+
+    /// The whole check. One test rather than several so a single failure
+    /// message can show every disagreeing row at once — the useful output is
+    /// the list, not the first item in it.
+    #[test]
+    fn the_coverage_table_matches_the_code() {
+        let rows = doc_rows();
+
+        // ── Structure: 141 rows, ids 0..=140, contiguous and unique. ───────
+        let mut ids: Vec<i32> = rows.iter().map(|r| r.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            rows.len(),
+            "§5 has duplicate protocol ids — {} rows, {} distinct",
+            rows.len(),
+            ids.len()
+        );
+        assert_eq!(
+            rows.len(),
+            141,
+            "§5 must list all 141 clientbound-play packets, found {}",
+            rows.len()
+        );
+        for (want, got) in (0..141).zip(ids.iter().copied()) {
+            assert_eq!(got, want, "§5's ids are not contiguous from 0");
+        }
+
+        // ── Status: `handled` iff resolved AND dispatched. ─────────────────
+        let resolved = resolved_play_clientbound();
+        let mut wrong = Vec::new();
+        let mut handled = 0usize;
+        let mut ignored = 0usize;
+        let mut absent = 0usize;
+        for (id, packet, status, resolution) in &rows {
+            let field = resolved
+                .iter()
+                .find(|(_, name)| name == packet)
+                .map(|(f, _)| f.as_str());
+            let truth = match field {
+                None => "absent",
+                Some(f) if is_dispatched(f) => "handled",
+                // The negative finding §1 records. If this ever fires, the
+                // document's "resolved but ignored: 0" is no longer true and
+                // §1 needs rewriting, not just the count.
+                Some(_) => "resolved-but-ignored",
+            };
+            match truth {
+                "handled" => handled += 1,
+                "absent" => absent += 1,
+                _ => ignored += 1,
+            }
+            if status != truth {
+                wrong.push(format!(
+                    "  {id:>3} {packet:<30} table says {status:?}, code says {truth:?}"
+                ));
+            }
+            // Every gap carries a class letter, so §2's class table has
+            // something to count.
+            if truth == "absent" {
+                assert!(
+                    ["**A**", "**B**", "**C**", "**D**"]
+                        .iter()
+                        .any(|c| resolution.starts_with(c)),
+                    "§5 row {id} ({packet}) is absent but carries no class letter: {resolution:?}"
+                );
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "REWO_PACKET_COVERAGE.md §5 disagrees with the code on {} row(s).\n\
+             Flip these rows and update §2's counts:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+
+        // ── Every resolved packet has a row. This is the case that actually
+        // happened: M68 added three ids and nothing added three rows. ──────
+        let listed: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+        for (field, packet) in &resolved {
+            assert!(
+                listed.contains(&packet.as_str()),
+                "`{field}` resolves \"{packet}\" but §5 has no row for it — \
+                 either the packet was renamed or the table was not updated"
+            );
+        }
+
+        // ── §2's counts. ───────────────────────────────────────────────────
+        assert_eq!(
+            doc_count("| Resolved **and** consumed |"),
+            handled as i64,
+            "§2's handled count is stale"
+        );
+        assert_eq!(
+            doc_count("| Resolved but ignored |"),
+            ignored as i64,
+            "§2's resolved-but-ignored count is stale"
+        );
+        assert_eq!(
+            doc_count("| Not resolved at all |"),
+            absent as i64,
+            "§2's absent count is stale"
+        );
+        assert_eq!(doc_count("| **Total clientbound-play** |"), 141);
+
+        // ── §2's class table. ──────────────────────────────────────────────
+        for (letter, label) in [
+            ("**A**", "| **A** pure state, no rendering |"),
+            ("**B**", "| **B** needs rendering |"),
+            ("**C**", "| **C** needs a subsystem Rewo lacks |"),
+            ("**D**", "| **D** not applicable |"),
+        ] {
+            let want = rows
+                .iter()
+                .filter(|(_, _, status, res)| status == "absent" && res.starts_with(letter))
+                .count();
+            assert_eq!(
+                doc_count(label),
+                want as i64,
+                "§2's class-{} count is stale",
+                &letter[2..3]
+            );
+        }
+    }
+
+    /// The parser is not vacuous: it really does find 141 rows and a
+    /// three-figure resolved set, so a regex that silently matched nothing
+    /// would fail here rather than passing the check above by counting zero
+    /// of everything.
+    ///
+    /// MUTATION: breaking either parser — changing the `req!(p, P, C, "`
+    /// needle, or the §5 section bounds — drops one of these to 0. Without
+    /// this witness, `doc_rows()` returning an empty vec would make the
+    /// contiguity loop, the status loop and the class loop all trivially
+    /// true, and only the hard-coded `141` assertion would catch it.
+    #[test]
+    fn the_coverage_parsers_actually_parse_something() {
+        assert_eq!(doc_rows().len(), 141);
+        let resolved = resolved_play_clientbound();
+        assert!(
+            resolved.len() > 60,
+            "the ids.rs parser found only {} play-clientbound entries",
+            resolved.len()
+        );
+        // And the dispatch probe distinguishes: a resolved field is
+        // dispatched, and an invented one is not.
+        assert!(is_dispatched("cb_play_set_camera"));
+        assert!(!is_dispatched("cb_play_not_a_real_field"));
+        // `contains_word` must not match a prefix of a longer identifier —
+        // the `cb_play_sound` / `cb_play_sound_entity` hazard.
+        assert!(!contains_word("x == ids.cb_play_sound_entity", "cb_play_sound"));
+        assert!(contains_word("x == ids.cb_play_sound;", "cb_play_sound"));
     }
 }

@@ -11144,3 +11144,159 @@ a boat on a real server; everything here is headless.
   either, so honouring it on the seat alone would place a rider off the mount
   it is drawn on. `getAgeScale()` — exactly `isBaby() ? 0.5F : 1.0F` — is
   applied, and it matches Rewo's existing baby model scaling exactly.
+
+### M74 — the coverage re-audit, and six packets it turned up (2026-07-29)
+
+Two jobs. Re-derive `REWO_PACKET_COVERAGE.md` from the code, because it had
+drifted; then implement the class-A gaps the re-derivation turned up.
+
+**Ten of the 141 rows were wrong, all in one direction** — `absent` about code
+that was present: `explode`, `move_vehicle`, `set_entity_motion` (M68),
+`set_chunk_cache_center` / `_radius`, `set_simulation_distance` (M67's own),
+and `set_cursor_item`, `set_passengers`, `set_player_inventory`, `update_tags`
+(M69/M70/M72). The headline counts were wrong by the same ten: **56 / 85
+published against 66 / 75 true**, class A 31 against 21.
+
+**The mechanism is not neglect.** M67 wrote the table by grepping, and four
+packets landed in `ids.rs` *the same day* — three from its own sibling M68. It
+was a snapshot of a moving tree and began going stale within hours. M67 saw it
+happening and worked around it twice, both of which made it worse: an "After
+§7" column predicting where the counts would land (so the published table
+described a moment that never existed), and milestone markers like `**M69**`
+written into the **status** column, which put four rows outside any grammar a
+future check could read. *Annotating decay is not fixing it.*
+
+**The fix is `ids::coverage_table_tests::the_coverage_table_matches_the_code`**
+— a unit test, deliberately not a `*shot` gate, because it should fire on the
+event that *causes* the drift (someone editing `ids.rs`) and `cargo test -p
+rewo-net` is what runs then. It `include_str!`s three files at compile time —
+the document, `ids.rs`, and the dispatch chain — so it has no runtime
+dependency on the datagen report, the network or the cwd, and there is no
+"skip if missing" branch to fall through. It recomputes all 141 statuses, both
+count tables and the class distribution; it is not a spot-check, because a
+spot-check has the same failure mode as the grep it replaces.
+
+Its limit is stated in the document: it verifies **status**, not correctness
+and not completeness. A dispatched-but-half-decoded packet is `handled` to it,
+which is exactly the gap §4 is maintained by hand to cover.
+
+**M74's own instrument was stricter than M67's** and reached the same negative
+finding: asking "does an incoming id get *compared* against this field inside
+`rewo-net`" rather than "does the name appear anywhere under `crates/`" still
+yields **zero** resolved-but-ignored packets.
+
+#### The six packets
+
+Final tally **72 handled / 0 ignored / 69 absent**; class A 21 → **15**.
+
+**The chunk-batch pair is a live divergence, not a missing decode.** Rewo
+replied `p.f32(64.0)` to every `chunk_batch_finished`. Vanilla replies
+`ChunkBatchSizeCalculator.getDesiredChunksPerTick()`, which is `7e6 / agg` over
+a seeded `agg = 2e6` — an opening bid of **3.5**. Rewo therefore over-bid the
+server ~**18×** on the first batch of every session and never adapted, and the
+server sizes its chunk batches to that number. Both halves were needed:
+`chunk_batch_start` (12) is the clock stamp, and a calculator with no interval
+to measure would only have produced a *differently* wrong constant. Four rules
+each have a witness: the `batchSize > 0` guard covers the weight bump too
+(dropping it divides by zero, and Java's `double / 0` is `Infinity`, so the
+estimate is poisoned silently); the clamp window is `agg/3 ..= agg*3`,
+recomputed per sample rather than fixed; the weight is used **before** it is
+bumped; and the bid is a `double` divide narrowed to `f32`.
+
+**`Difficulty` is a third enum convention.** The project's notes record two —
+`readEnum` (out-of-range is an *error*) and `ByIdMap.continuous(…, ZERO)`
+(out-of-range is the zero value). `Difficulty.STREAM_CODEC` is
+`ByteBufCodecs.idMapper` over `ByIdMap.continuous` with **WRAP**. The three
+readings disagree on real input: id `5` is `EASY` under WRAP, `PEACEFUL` under
+ZERO, and a rejected packet under `readEnum`. And WRAP is `Math.floorMod`, not
+`%` — a negative id is legal and indexes from the far end, where Rust's `%`
+would panic. The id-4 sample is *not* discriminating (WRAP and ZERO agree
+there); the witness samples **5**.
+
+**`container_close`'s id is read and then ignored.** `handleContainerClose` is
+one line with no comparison against `containerMenu.containerId`. Gating on it —
+which is exactly what M34/M35 correctly do for `container_set_slot` — drops the
+packet whose only job is to close the screen. Wired through to
+`ScreenState::close_requests_seen`, a watermark rather than a consumed flag so
+the session keeps owning the counter.
+
+**`set_camera` closes a stub M70 left.** `LabelViewer::camera_entity` was
+hard-wired to `session.player_id` under a comment reading "Rewo never detaches
+the camera"; this is the packet that detaches it. An unresolvable entity leaves
+the camera **where it was** rather than resetting to the player, and the
+resolution must count the local player's own id as valid — vanilla's
+`level.getEntity` finds the player and Rewo's `EntityTable` never contains it.
+
+**`ticking_state` / `ticking_step`** are decode-and-state in M67's sense:
+`TickRateManager` is transcribed in full, including `tick()`, but the 20 Hz
+loop does not consult it — gating the loop would retime every existing harness
+and wants its own live gate. Two edges are witnessed anyway because they are
+free: `setTickRate`'s clamp is Java's `Math.max`, which **propagates NaN**
+where Rust's `f32::max` swallows it (and the wire carries an unvalidated f32);
+and `tick()` reads `frozenTicksToRun` *before* decrementing, so `/tick step 1`
+on a frozen world runs exactly one tick — the witness uses a step count of
+**1**, because 2 lets both readings run at least one tick and hides it.
+
+**Excluded on purpose:** `player_rotation` (73) and `player_look_at` (71),
+which rank second in the document's §3 — they write
+`rewo_world::physics::PlayerState`, which a concurrent milestone owns while it
+lands `player_abilities` and the flight / no-clip physics behind it.
+
+#### A doc claim the decompile contradicted, and a witness that did not bite
+
+I wrote in a doc comment that the login packet carries the difficulty. **It
+does not** — `ClientboundLoginPacket` has no such field, and `handleLogin`
+writes `new ClientLevelData(Difficulty.NORMAL, …)` with the constant in the
+source. So `change_difficulty` is the only source and Rewo's default is
+vanilla's literal. Checking it also turned up the reason not to reset it:
+`handleRespawn` rebuilds from `this.levelData.getDifficulty()`, carrying the
+value across a dimension change, so `ClientState` lives on `PlaySession` and is
+untouched by `apply_respawn` — the rule `ViewArea` already follows.
+
+**The first battery ran 37 mutations; 36 bit and one survived — and the
+survivor exposed that the whole routing layer was unwitnessed.** Dropping
+`|| local_player == Some(target)` from `set_camera`'s resolvability left the
+suite green, because every witness tested a *reader* or a *state method* while
+the rule that computes resolvability lived in a closure inside
+`route_client_state`, which no test could reach without building a whole `Ids`.
+A second mutation in the same layer (gating `container_close` on id 0) could
+not even be *expressed* as a compiling change for the same reason.
+
+The fix follows `view_area`'s existing precedent rather than inventing one:
+both modules now expose `Ids` / `kind_for_id` / `apply`, so the routing
+decisions are ordinary functions a witness can drive, and `route_*` in `lib.rs`
+is four lines of wiring. That turned two unreachable mutations into seven
+reachable ones — which then caught a third thing nobody had asked about,
+`apply` reporting success on a malformed body. **Re-run: 42 mutations, 42
+caught, every one by a named witness.**
+
+*If a mutation cannot be reached from where the witness sits, the witness is
+measuring something else — and the fix is to move the rule, not the witness.*
+
+Four more mutations were run against the coverage check itself: flipping a
+`handled` row, staling a §2 count, resolving a packet with no table row (the
+case that actually happened), and resolving one nothing dispatches (which
+reports the third status). All four were caught. A fifth — making
+`is_dispatched` return `true` unconditionally — **passed the main check** and
+was caught only by the vacuity witness beside it, which is what earns that
+witness its place.
+
+**Measured.** **1291 tests** (was 1247: +44 in `rewo-net` — 22 in
+`chunk_batch`, 17 in `ticking`, 19 in `client_state`, 2 in the coverage check,
+against 16 that moved out of the old inline routing). Every gate green with
+validation ON and **0 VUIDs**: labelshot 47, rideshot 24, capeshot 69, itemshot
+62, inventoryshot 152, healthbarshot 33, attributeshot 43, captureshot 17,
+blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35, handshot 34,
+particleshot 34, eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot
+**246/246** (+ emissive 5, etf 8, tint 11, variant 13), skyshot, lightmapshot,
+tintshot, meshshot, dimensioncheck. Release `demo` PNG SHA-256 byte-identical
+to M15 onward (`2cc56b4a…`). `git diff --check` clean; every file touched was
+already pure LF and stayed that way.
+
+**Not verified:** no live server run. The chunk-batch reply is a behaviour
+change on the wire, and the argument for it is that it now matches vanilla
+exactly rather than that anyone watched a session stream chunks with it. Its
+arithmetic is pinned against the decompile under a synthetic clock; the effect
+on a real connection is unobserved. The same applies to the two things wired
+into the app — `set_camera` reaching `LabelViewer` and `container_close`
+closing the inventory screen are unit-true and un-eyeballed.

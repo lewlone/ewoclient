@@ -344,6 +344,34 @@ pub struct PlaySession {
     /// `WorldTransition` does to nearly everything else — would silently drop
     /// back to the pre-login defaults for the rest of the session.
     pub view_area: crate::view_area::ViewArea,
+    /// The chunk-batch flow-control loop (M74). Rewo used to answer
+    /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
+    /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
+    /// this is a behaviour fix, not a new decode.
+    pub chunk_batch: crate::chunk_batch::ChunkBatchSizeCalculator,
+    /// The server's tick clock (M74) — `/tick rate`, `/tick freeze`,
+    /// `/tick step`.
+    ///
+    /// **Read by nothing yet**, in M67's sense: the 20 Hz loop below does not
+    /// consult it. Gating the loop would retime every existing harness (the
+    /// correction meter measures movement against a 50 ms tick), so it wants
+    /// its own live gate rather than a free ride on this one.
+    pub ticking: crate::ticking::TickRateManager,
+    /// Difficulty, the camera's target entity, and the container-close latch
+    /// (M74). See [`crate::client_state`].
+    ///
+    /// Deliberately **not** reset by [`Self::apply_respawn`], for the same
+    /// reason the view area is not: `handleRespawn` builds its replacement
+    /// `ClientLevelData` from `this.levelData.getDifficulty()`, carrying the
+    /// old value across a dimension change rather than re-defaulting it. The
+    /// respawn packet carries no difficulty, so clearing here would silently
+    /// report NORMAL for the rest of the session after one Nether portal.
+    pub client_state: crate::client_state::ClientState,
+    /// Monotonic epoch for [`Self::now_nanos`], which stands in for vanilla's
+    /// `Util.getNanos()`. Only the *interval* between two reads matters to
+    /// [`crate::chunk_batch`], so an arbitrary epoch is fine — and a
+    /// session-local one keeps the numbers small enough to read in a log.
+    clock_epoch: std::time::Instant,
     /// The three `minecraft:number_format_type` ids a scoreboard objective or
     /// score dispatches on — resolved by name at load, carried here because
     /// the decode cannot proceed without them.
@@ -1167,6 +1195,13 @@ impl<'a> Connection<'a> {
             boss_bars: crate::boss_bar::BossBars::new(),
             tab_list_text: crate::tab_list_text::TabListText::new(),
             view_area: crate::view_area::ViewArea::default(),
+            // Vanilla seeds `chunkBatchStartTime` in the calculator's
+            // constructor, so a `chunk_batch_finished` that somehow arrives
+            // before any `chunk_batch_start` still measures a finite interval.
+            chunk_batch: crate::chunk_batch::ChunkBatchSizeCalculator::new(0),
+            ticking: crate::ticking::TickRateManager::default(),
+            client_state: crate::client_state::ClientState::default(),
+            clock_epoch: std::time::Instant::now(),
             number_formats: self.data.number_formats,
             // Filled from the authenticated profile when there is one. Offline
             // mode leaves it `None`, so `own_ping_ms` reports nothing rather
@@ -1648,9 +1683,25 @@ impl PlaySession {
             }
         } else if id == ids.cb_play_position {
             self.apply_teleport(body)?;
+        } else if id == ids.cb_play_chunk_batch_start {
+            // M74. Empty body — `handleChunkBatchStart` is one call, and it is
+            // the half that makes the reply below adaptive instead of a
+            // differently-wrong constant.
+            let now = self.now_nanos();
+            self.chunk_batch.on_batch_start(now);
         } else if id == ids.cb_play_chunk_batch_finished {
+            // M74. Was `p.f32(64.0)` — an ~18x over-bid against vanilla's
+            // seeded opening 3.5, on every batch of every session, never
+            // adapting. `batchSize` is a VarInt, and a body that fails to
+            // decode still gets a reply: vanilla always answers, and going
+            // silent here would stall the server's chunk pipeline outright.
+            let now = self.now_nanos();
+            match crate::chunk_batch::read_chunk_batch_finished(body) {
+                Ok(batch_size) => self.chunk_batch.on_batch_finished(batch_size, now),
+                Err(err) => log::debug!("net: chunk_batch_finished decode: {err}"),
+            }
             let mut p = PacketWriter::packet(self.ids.sb_play_chunk_batch_received);
-            p.f32(64.0);
+            p.f32(self.chunk_batch.desired_chunks_per_tick());
             self.send(p)?;
         } else if id == ids.cb_play_level_chunk {
             let shape = self.world.shape;
@@ -2105,6 +2156,19 @@ impl PlaySession {
         } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
             // M67 — the server's view area. Decode and state only; nothing
             // evicts a column or gates a tick on it yet.
+        } else if crate::route_ticking(id, body, ids, &mut self.ticking) {
+            // M74 — `/tick rate`, `/tick freeze`, `/tick step`. Decode and
+            // state only; the 20 Hz loop does not consult it yet.
+        } else if crate::route_client_state(
+            id,
+            body,
+            ids,
+            &mut self.client_state,
+            &self.world.entities,
+            self.player_id,
+        ) {
+            // M74 — difficulty, the camera's target, and the container-close
+            // latch. Decode and state; the app reads the camera and the latch.
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
             // decode feeds the weather levels, the client game state and the
@@ -2666,6 +2730,17 @@ impl PlaySession {
     /// cannot decode has exactly one safe outcome: fail, rather than leave the
     /// pre-login Overworld placeholder in place while the server starts sending
     /// chunks for something else. The caller propagates the error and the
+    /// `Util.getNanos()` — a monotonic reading in nanoseconds, measured from
+    /// this session's own epoch (M74).
+    ///
+    /// Only intervals are ever taken from it, so the epoch is arbitrary; the
+    /// session-local one just keeps the numbers legible in a log. `as i64`
+    /// saturates rather than wrapping, and a session would have to run for
+    /// 292 years to reach that.
+    fn now_nanos(&self) -> i64 {
+        self.clock_epoch.elapsed().as_nanos() as i64
+    }
+
     /// `player_loaded` reply is never sent.
     fn apply_login_shape(&mut self, body: &[u8]) -> Result<(), String> {
         let mut r = PacketReader::new(body);
