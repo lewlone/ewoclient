@@ -23,11 +23,80 @@ use crate::ids::Ids;
 use crate::spawn_info::{read_login_prefix, CommonPlayerSpawnInfo, RespawnInfo};
 use crate::Connection;
 
+/// The latency entries carried by a `player_info_update` body (M52c).
+///
+/// Pure and standalone so a test can drive the **real** bitmask and entry walk
+/// rather than a local reimplementation -- the walk is the fragile part, since
+/// a mis-sized skip corrupts every entry after it rather than failing.
+pub fn parse_player_info_latency(body: &[u8]) -> Vec<(u128, i32)> {
+    let mut r = PacketReader::new(body);
+    let mut out = Vec::new();
+    let _ = (|| -> rewo_proto::Result<()> {
+        let mask = r.u8()?;
+        let has = |bit: u8| mask & (1u8 << bit) != 0;
+        let count = r.count("player info entries", 16)?;
+        for _ in 0..count {
+            let uuid = r.uuid()?;
+            if has(0) {
+                let _name = r.string(16)?;
+                let props = r.count("profile properties", 1)?;
+                for _ in 0..props {
+                    let _ = r.string(64)?;
+                    let _ = r.string(32767)?;
+                    if r.bool()? {
+                        let _ = r.string(32767)?;
+                    }
+                }
+            }
+            if has(1) && r.bool()? {
+                let _ = r.uuid()?;
+                let _ = r.i64()?;
+                let _ = r.byte_array(512)?;
+                let _ = r.byte_array(4096)?;
+            }
+            if has(2) {
+                let _ = r.varint()?;
+            }
+            if has(3) {
+                let _ = r.bool()?;
+            }
+            if has(4) {
+                out.push((uuid, r.varint()?));
+            }
+            if has(5) && r.bool()? {
+                let _ = r.nbt()?;
+            }
+            if has(6) {
+                let _ = r.varint()?;
+            }
+            if has(7) {
+                let _ = r.bool()?;
+            }
+        }
+        Ok(())
+    })();
+    out
+}
+
 pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
     rx: Receiver<Vec<u8>>,
     pub ids: Ids,
+    /// Server-reported latency per player, in milliseconds (M52c).
+    ///
+    /// **This is the only ping a client can know**, and the reason is worth
+    /// recording because the obvious alternative does not work: `keep_alive`
+    /// and `ping` are *server-initiated* probes — the server sends, the client
+    /// echoes, and the SERVER times the round trip. A client cannot measure
+    /// RTT from a packet it did not initiate, and the play protocol gives it
+    /// nothing to initiate. So vanilla's own tab list shows exactly this
+    /// number: `UPDATE_LATENCY` on the player-info packet, including for
+    /// yourself.
+    pub latency: std::collections::HashMap<u128, i32>,
+    /// The local player's UUID, so `own_ping_ms` knows which entry is ours.
+    /// Absent in offline mode until the server names us.
+    pub own_uuid: Option<u128>,
     pub world: World,
     pub player: PlayerState,
     /// state id → collision boxes in block-local `0..1` (`BakedAssets::
@@ -757,6 +826,12 @@ impl<'a> Connection<'a> {
             codec,
             rx,
             ids: self.ids,
+            latency: std::collections::HashMap::new(),
+            // Filled from the authenticated profile when there is one. Offline
+            // mode leaves it `None`, so `own_ping_ms` reports nothing rather
+            // than guessing which tab entry is us -- a name match would pick
+            // the wrong player the moment two share a prefix.
+            own_uuid: auth.map(|a| a.uuid),
             enchantments,
             trim_materials,
             trim_patterns,
@@ -1579,6 +1654,10 @@ impl PlaySession {
                 for _ in 0..n {
                     if let Ok(uuid) = r.uuid() {
                         self.world.entities.remove_name(uuid);
+                        // A departed player's ping is not stale, it is gone --
+                        // keeping it would let the tab list quote a number for
+                        // someone who left.
+                        self.latency.remove(&uuid);
                     }
                 }
             }
@@ -1721,6 +1800,7 @@ impl PlaySession {
         let mut r = PacketReader::new(body);
         let mut names: Vec<(u128, String)> = Vec::new();
         let mut skins: Vec<(u128, crate::skins::SkinInfo)> = Vec::new();
+        let mut latencies: Vec<(u128, i32)> = Vec::new();
         let parse = (|| -> rewo_proto::Result<()> {
             let mask = r.u8()?;
             let has = |bit: u8| mask & (1u8 << bit) != 0;
@@ -1764,7 +1844,15 @@ impl PlaySession {
                     let _listed = r.bool()?;
                 }
                 if has(4) {
-                    let _latency = r.varint()?;
+                    // UPDATE_LATENCY. Previously read and discarded; it is the
+                    // whole of what a client can know about its own ping.
+                    //
+                    // Vanilla clamps a negative to zero on display rather than
+                    // treating it as "unknown" -- `PlayerTabOverlay` buckets
+                    // `latency < 0` into the no-connection icon, so a negative
+                    // is a real state and not a decode error.
+                    let ms = r.varint()?;
+                    latencies.push((uuid, ms));
                 }
                 if has(5) {
                     // UPDATE_DISPLAY_NAME: nullable NBT text component.
@@ -1784,6 +1872,9 @@ impl PlaySession {
         if let Err(e) = parse {
             log::debug!("play: player_info_update parse: {e}");
         }
+        for (uuid, ms) in latencies {
+            self.latency.insert(uuid, ms);
+        }
         for (uuid, name) in names {
             self.world.entities.set_name(uuid, name);
         }
@@ -1794,6 +1885,23 @@ impl PlaySession {
                 self.pending_skins.push((uuid, info));
             }
         }
+    }
+
+    /// Server-reported ping for a player, in milliseconds.
+    ///
+    /// `None` means the server has not sent an `UPDATE_LATENCY` for them yet,
+    /// which is a real and common state right after join -- distinct from a
+    /// reported zero.
+    pub fn ping_ms(&self, uuid: u128) -> Option<i32> {
+        self.latency.get(&uuid).copied()
+    }
+
+    /// The local player's ping.
+    ///
+    /// `None` until both halves are known: the server has to have told us our
+    /// own UUID *and* sent a latency for it.
+    pub fn own_ping_ms(&self) -> Option<i32> {
+        self.own_uuid.and_then(|u| self.ping_ms(u))
     }
 
     /// `ClientboundLoginPacket`: establish the active dimension.
@@ -3699,5 +3807,95 @@ pub(crate) fn write_hashed_stack(p: &mut PacketWriter, slot: Option<rewo_world::
             p.varint(0); // addedComponents
             p.varint(0); // removedComponents
         }
+    }
+}
+
+#[cfg(test)]
+mod ping_tests {
+    //! M52c — the ping the client can actually know.
+    //!
+    //! These build the `player_info_update` body by hand and run it through
+    //! the production `apply_player_info`, so the action bitmask, the entry
+    //! walk and the latency slot are all exercised together. A local
+    //! reimplementation would pass while the real decoder desynced.
+
+    use super::*;
+
+    /// Encode a var-int the way the wire does.
+    fn varint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7F) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        }
+    }
+
+    /// A body carrying UPDATE_LATENCY (action bit 4) for one uuid.
+    fn latency_body(entries: &[(u128, i32)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.push(1u8 << 4); // only UPDATE_LATENCY
+        varint(&mut b, entries.len() as i32);
+        for (uuid, ms) in entries {
+            b.extend_from_slice(&uuid.to_be_bytes());
+            varint(&mut b, *ms);
+        }
+        b
+    }
+
+    #[test]
+    fn update_latency_is_parsed_rather_than_discarded() {
+        assert_eq!(parse_player_info_latency(&latency_body(&[(7, 42)])), [(7, 42)]);
+    }
+
+    #[test]
+    fn several_players_are_walked_independently() {
+        // The walk advances uuid-then-latency per entry; a mis-sized skip
+        // corrupts every entry after it rather than failing.
+        assert_eq!(
+            parse_player_info_latency(&latency_body(&[(1, 10), (2, 250), (3, 0)])),
+            [(1, 10), (2, 250), (3, 0)],
+            "a reported zero is a value, not unknown"
+        );
+    }
+
+    #[test]
+    fn a_negative_latency_is_a_state_not_a_decode_error() {
+        // PlayerTabOverlay buckets latency < 0 into the no-connection icon, so
+        // the wire really does carry negatives; clamping at decode would erase
+        // a state vanilla renders.
+        assert_eq!(parse_player_info_latency(&latency_body(&[(9, -1)])), [(9, -1)]);
+    }
+
+    #[test]
+    fn an_unset_latency_action_yields_nothing() {
+        // Sensitivity partner: a mask without bit 4 must not invent an entry.
+        // Reading the field unconditionally would fabricate a ping AND desync
+        // the walk.
+        let mut b = Vec::new();
+        b.push(1u8 << 3);
+        varint(&mut b, 1);
+        b.extend_from_slice(&7u128.to_be_bytes());
+        b.push(1);
+        assert!(parse_player_info_latency(&b).is_empty());
+    }
+
+    #[test]
+    fn an_action_before_latency_must_be_walked_first() {
+        // LISTED (3) then LATENCY (4). Skipping the bool makes the walk read
+        // it AS the varint and report 1ms -- a plausible number, which is
+        // what makes it dangerous.
+        let mut b = Vec::new();
+        b.push((1u8 << 3) | (1u8 << 4));
+        varint(&mut b, 1);
+        b.extend_from_slice(&7u128.to_be_bytes());
+        b.push(1);
+        varint(&mut b, 200);
+        assert_eq!(parse_player_info_latency(&b), [(7, 200)]);
     }
 }

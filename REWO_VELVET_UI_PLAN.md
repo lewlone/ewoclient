@@ -380,27 +380,43 @@ way `ewo-core`/`ewo-jni`/`ewo-launcher` already do it. The widget id table is a
 `Media` reads Windows SMTC (`crates/ewo-jni/src/media.rs`) and is
 platform-gated rather than feature-gated.
 
-### 3. Ping — Rewo will measure it
+### 3. Ping — CORRECTED, and shipped (M52c)
 
-The other sixteen widgets have their data natively; ping is the one gap, and it
-is a protocol feature rather than a rendering one. Two sources, and the widget
-should prefer the first:
+The original text here was **wrong**, and the correction is the interesting
+part. It said:
 
-- **Server-reported latency.** `ClientboundPlayerInfoUpdate` carries an
-  `UPDATE_LATENCY` action with a per-player ping in ms. This is what vanilla's
-  tab list shows, it covers *other* players (which `Target` and a future tab
-  list also want), and `rewo-net` already decodes the player-info packet for
-  M7c skins — so this is a new action arm, not a new packet.
-- **Client-measured keep-alive RTT.** `ClientboundKeepAlive` → the matching
-  `ServerboundKeepAlive` is a round trip the client can time itself. Truer to
-  what the player experiences than the server's own figure, and it works
-  before the player list is populated.
+> *Client-measured keep-alive RTT. `ClientboundKeepAlive` → the matching
+> `ServerboundKeepAlive` is a round trip the client can time itself.*
 
-Ship both, display the keep-alive RTT, and keep the server figure for other
-players. Gate: a witness that a synthetic keep-alive pair at a known interval
-produces the expected millisecond value, plus one that an `UPDATE_LATENCY`
-arm decodes without desyncing the packet — the `DataComponentPatch` lesson
-from M41 applies to every new action arm.
+It is not. `keep_alive` and `ping` are **server-initiated** probes: the server
+sends, the client echoes, and the *server* times the round trip. A client
+cannot measure RTT from a packet it did not initiate, and the play protocol
+gives it nothing to initiate. Vanilla's own tab list does not compute a ping —
+it displays one the server told it.
+
+So there is exactly one source, and Rewo was already decoding and discarding
+it: `UPDATE_LATENCY` (action bit 4) on `player_info_update`, which carries a
+per-player figure **including your own**. `let _latency = r.varint()?;` was
+the whole gap.
+
+Shipped: `PlaySession::latency` keyed by UUID, `ping_ms(uuid)` and
+`own_ping_ms()`, entries dropped on `player_info_remove` so a departed
+player's number cannot be quoted. `own_uuid` comes from the authenticated
+profile — offline mode reports `None` rather than guessing which tab entry is
+us, because a name match picks the wrong player the moment two share a prefix.
+
+Facts worth keeping:
+
+* **A negative latency is a state, not a decode error.** `PlayerTabOverlay`
+  buckets `latency < 0` into the no-connection icon, so clamping at decode
+  would erase something vanilla renders.
+* **`None` and `Some(0)` are different.** No entry yet is the common state
+  right after join; a reported zero is a measurement.
+* The parse is a standalone `parse_player_info_latency` so tests drive the
+  real bitmask and entry walk. That walk is the fragile part — a mis-sized
+  skip corrupts every entry after it rather than failing, and one test pins
+  that an action *before* latency must be walked or the bool is read as the
+  varint and reports a plausible 1 ms.
 
 ---
 
@@ -419,15 +435,15 @@ Steps 1–4 shipped. Everything after is deliberately not started.
 | 5 | Liquid glass — GLSL port + slow-clock backdrops | paused |
 | 6 | `hud.toml` read | paused |
 | 7 | The remaining legit widgets | **paused — would be redone** |
-| 8 | Ping measurement | paused |
+| 8 | Ping measurement | **shipped (M52c)** |
 | 9 | The in-game editor | **paused — most design-coupled** |
 | 10 | The pvp widget set behind `--features pvp` | paused |
 
 ### What is safe to resume, and when
 
 **Now, independent of any redesign:** the styled-line API is ready for the
-tooltip work. Ping (step 8) is a protocol feature with no visual coupling at
-all and could land any time.
+tooltip work, and ping (step 8) has landed — it had no visual coupling at all,
+which is exactly why it was safe to do during a visual freeze.
 
 **After the HUD redesign settles:** steps 5–7, 9, 10. Resuming them needs the
 new design, not this document — the machinery underneath them does not change.
