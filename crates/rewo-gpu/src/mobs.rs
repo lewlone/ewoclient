@@ -1328,6 +1328,12 @@ pub enum EntityModelKind {
     Salmon,
     Pufferfish,
     TropicalFish,
+    /// The tropical fish's *other* body plan (M68). One entity type, two
+    /// meshes — `TropicalFishRenderer.submit` assigns `this.model` from
+    /// `state.pattern.base()` before every submission — so it is two kinds
+    /// here, chosen by the caller from the packed variant's low bit exactly as
+    /// [`EntityModelKind::PlayerSlim`] is chosen from a profile's model.
+    TropicalFishLarge,
     Panda,
     PolarBear,
     Camel,
@@ -1361,7 +1367,7 @@ pub enum EntityModelKind {
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 90;
+    pub const COUNT: usize = 91;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1426,6 +1432,7 @@ impl EntityModelKind {
         EntityModelKind::Salmon,
         EntityModelKind::Pufferfish,
         EntityModelKind::TropicalFish,
+        EntityModelKind::TropicalFishLarge,
         EntityModelKind::Panda,
         EntityModelKind::PolarBear,
         EntityModelKind::Camel,
@@ -1524,6 +1531,7 @@ impl EntityModelKind {
             EntityModelKind::Salmon => "salmon",
             EntityModelKind::Pufferfish => "pufferfish",
             EntityModelKind::TropicalFish => "tropical_fish",
+            EntityModelKind::TropicalFishLarge => "tropical_fish_large",
             EntityModelKind::Panda => "panda",
             EntityModelKind::PolarBear => "polar_bear",
             EntityModelKind::Camel => "camel",
@@ -1565,9 +1573,16 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
     };
     for k in EntityModelKind::ALL {
         // Player variants are chosen by the caller (type id + skin model),
-        // never by the wire name; capsule is the fallback, not a match.
-        let picked_elsewhere =
-            matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim | EntityModelKind::Capsule);
+        // never by the wire name; capsule is the fallback, not a match. The
+        // tropical fish's large body plan is the same shape of exception —
+        // one wire name, two meshes, selected from the packed variant (M68).
+        let picked_elsewhere = matches!(
+            k,
+            EntityModelKind::Player
+                | EntityModelKind::PlayerSlim
+                | EntityModelKind::TropicalFishLarge
+                | EntityModelKind::Capsule
+        );
         if !picked_elsewhere && k.name() == short {
             return k;
         }
@@ -1619,12 +1634,85 @@ pub const SHEEP_WOOL_COLORS: [[u8; 3]; 16] = [
     [21, 21, 24],    // 15 black
 ];
 
+/// `DyeColor.getTextureDiffuseColor()`, sRGB — the **undimmed** dye table.
+///
+/// Not [`SHEEP_WOOL_COLORS`]: that one is `ColorLerper.Type.SHEEP`, which
+/// scales this to 0.75 and overrides white. Several entries differ sharply
+/// (red is `0xB02E26` here against the wool's `0x84221C`), so tinting a
+/// tropical fish from the wool table would be plausibly, visibly wrong — the
+/// same trap `rewo_data::block_entity_models::DYE_DIFFUSE_COLORS` records for
+/// banners against the sign table. `TropicalFishRenderer.extractRenderState`
+/// calls `getTextureDiffuseColor()` on both dyes directly, with no lerper.
+pub const DYE_DIFFUSE_COLORS: [[u8; 3]; 16] = [
+    [0xF9, 0xFF, 0xFE], //  0 white
+    [0xF9, 0x80, 0x1D], //  1 orange
+    [0xC7, 0x4E, 0xBD], //  2 magenta
+    [0x3A, 0xB3, 0xDA], //  3 light_blue
+    [0xFE, 0xD8, 0x3D], //  4 yellow
+    [0x80, 0xC7, 0x1F], //  5 lime
+    [0xF3, 0x8B, 0xAA], //  6 pink
+    [0x47, 0x4F, 0x52], //  7 gray
+    [0x9D, 0x9D, 0x97], //  8 light_gray
+    [0x16, 0x9C, 0x9C], //  9 cyan
+    [0x89, 0x32, 0xB8], // 10 purple
+    [0x3C, 0x44, 0xAA], // 11 blue
+    [0x83, 0x54, 0x32], // 12 brown
+    [0x5E, 0x7C, 0x16], // 13 green
+    [0xB0, 0x2E, 0x26], // 14 red
+    [0x1D, 0x1D, 0x21], // 15 black
+];
+
 /// Which of a mob's textures vanilla renders through a dye tint. Only the
 /// sheep's wool today; wolf and cat collars and llama carpets are the same
 /// shape at other metadata indices.
 pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool"),
+        _ => None,
+    }
+}
+
+/// Which of a mob's textures is a **coplanar** render layer — one whose mesh
+/// is the base model's own, so its quads land at exactly the base's depth
+/// (M68).
+///
+/// Only `SheepWoolUndercoatLayer`. It is the reason this is a table at all:
+/// every other layer Rewo bakes as a texture slot is *inflated* over the body
+/// (the fleece 0.6/1.75/0.5, the fish pattern 0.008) and so wins the solid
+/// pass's strict `GREATER` depth test on its own. The undercoat's model layer
+/// is `SheepModel.createBodyLayer()` at `CubeDeformation.NONE`, so under
+/// `GREATER` it would be rejected fragment-for-fragment and draw *nothing*.
+/// The entity pass routes these quads into the same `CompareOp::EQUAL`,
+/// no-depth-write range M48's armour trim uses, which is the reversed-Z
+/// reading of vanilla's `entityCutout` (`LEQUAL` + write) for geometry that is
+/// coplanar by construction: at equal depth both pass, and the write is a
+/// no-op because the value already there is the one it would write.
+///
+/// That the range is drawn *after* the solid one is what makes the fleece
+/// still occlude it: an unshorn sheep's depth buffer holds the *inflated*
+/// wool's nearer depth, which the undercoat then fails.
+pub fn coplanar_layer_texture(kind: EntityModelKind) -> Option<&'static str> {
+    match kind {
+        EntityModelKind::Sheep => Some("sheep_wool_undercoat"),
+        _ => None,
+    }
+}
+
+/// The two texture slots a tropical fish's packed variant tints (M68):
+/// `(body, pattern)`.
+///
+/// A separate table from [`tinted_texture`] for the reason that one already
+/// gives for [`shearable_texture`] — these are independent facts about
+/// different lines of different renderers, and they do not even share a colour
+/// table: the body is `MobRenderer.getModelTint` overridden to `state
+/// .baseColor` and the pattern is `TropicalFishPatternLayer`'s own colour
+/// argument, both [`DYE_DIFFUSE_COLORS`], where the sheep's is the lerper's.
+pub fn fish_tint_textures(kind: EntityModelKind) -> Option<(&'static str, &'static str)> {
+    match kind {
+        EntityModelKind::TropicalFish => Some(("tropical_fish", "tropical_fish_pattern_a")),
+        EntityModelKind::TropicalFishLarge => {
+            Some(("tropical_fish_large", "tropical_fish_pattern_b"))
+        }
         _ => None,
     }
 }
@@ -1643,13 +1731,10 @@ pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
 /// of `SheepWoolLayer`, and a wolf's dyed collar will be tinted-but-not-
 /// shearable the moment it exists.
 ///
-/// **Not modelled: `SheepWoolUndercoatLayer`.** 26.x added a second fleece
-/// layer that draws `sheep_wool_undercoat.png` over the *body* mesh
-/// (`SHEEP_WOOL_UNDERCOAT` maps to `sheepBodyLayer`, not the fur one) for any
-/// non-white, non-baby sheep — and it is **not** gated on `isSheared`, so a
-/// shorn coloured sheep keeps a dyed undercoat where a shorn white one is
-/// bare. Rewo bakes no such texture, so a shorn coloured sheep here shows the
-/// plain body. That is a missing layer, recorded, not a wrong one.
+/// It is also **not** [`coplanar_layer_texture`]: `SheepWoolUndercoatLayer`
+/// carries no `isSheared` test at all (M68), so shearing takes this layer and
+/// leaves that one — which is the whole reason a shorn dyed sheep still shows
+/// colour where a shorn white one is bare.
 pub fn shearable_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool"),
@@ -1844,7 +1929,11 @@ pub static MOBS: &[MobDef] = &[
     MobDef { kind: EntityModelKind::Cow, textures: &["cow"], build: cow },
     MobDef { kind: EntityModelKind::Mooshroom, textures: &["mooshroom"], build: cow },
     MobDef { kind: EntityModelKind::Pig, textures: &["pig"], build: pig },
-    MobDef { kind: EntityModelKind::Sheep, textures: &["sheep", "sheep_wool"], build: sheep },
+    MobDef {
+        kind: EntityModelKind::Sheep,
+        textures: &["sheep", "sheep_wool", "sheep_wool_undercoat"],
+        build: sheep,
+    },
     MobDef { kind: EntityModelKind::Chicken, textures: &["chicken"], build: chicken },
     MobDef { kind: EntityModelKind::Wolf, textures: &["wolf"], build: wolf },
     MobDef { kind: EntityModelKind::Squid, textures: &["squid"], build: squid },
@@ -1887,7 +1976,16 @@ pub static MOBS: &[MobDef] = &[
     MobDef { kind: EntityModelKind::Cod, textures: &["cod"], build: cod },
     MobDef { kind: EntityModelKind::Salmon, textures: &["salmon"], build: salmon },
     MobDef { kind: EntityModelKind::Pufferfish, textures: &["pufferfish"], build: pufferfish },
-    MobDef { kind: EntityModelKind::TropicalFish, textures: &["tropical_fish"], build: tropical_fish },
+    MobDef {
+        kind: EntityModelKind::TropicalFish,
+        textures: &["tropical_fish", "tropical_fish_pattern_a"],
+        build: tropical_fish,
+    },
+    MobDef {
+        kind: EntityModelKind::TropicalFishLarge,
+        textures: &["tropical_fish_large", "tropical_fish_pattern_b"],
+        build: tropical_fish_large,
+    },
     MobDef { kind: EntityModelKind::Panda, textures: &["panda"], build: panda },
     MobDef { kind: EntityModelKind::PolarBear, textures: &["polar_bear"], build: polar_bear },
     MobDef { kind: EntityModelKind::Camel, textures: &["camel"], build: camel },
@@ -2255,7 +2353,15 @@ fn pig() -> Model {
 /// `SheepModel` + `SheepFurModel`: quadruped (legSize 12, right legs
 /// mirrored) with the sheep head/body, plus the inflated wool overlay on
 /// texture 1 (head +0.6 follows the head-look; body +1.75; upper legs +0.5
-/// ride the leg swing).
+/// ride the leg swing), plus 26.x's undercoat on texture 2.
+///
+/// **The undercoat is not a third fleece mesh — it is the body mesh again.**
+/// `SheepWoolUndercoatLayer` wraps its model in `SheepFurModel`, but the class
+/// only supplies `setupAnim`; the geometry comes from the baked layer, and
+/// `LayerDefinitions` maps `SHEEP_WOOL_UNDERCOAT` to **`sheepBodyLayer`** —
+/// `SheepModel.createBodyLayer()`, `CubeDeformation.NONE`. So every box below
+/// is the texture-0 box repeated, and the layer is coplanar with the sheep
+/// itself (see [`coplanar_layer_texture`] for how it is drawn).
 fn sheep() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 6.0, -8.0], Anim::Head, 1.0);
@@ -2268,6 +2374,18 @@ fn sheep() -> Model {
     b.cube_f(STATIC_PART, 1, (28.0, 8.0), [-4.0, -10.0, -7.0], [8.0, 16.0, 6.0], 1.75, false, &[body]);
     for leg_part in 2..6 {
         b.cube_g(leg_part, 1, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 6.0, 4.0], 0.5, NONE);
+    }
+    // Undercoat (SheepModel.createBodyLayer again, on texture 2). The legs
+    // keep `createBodyMesh(12, false, true, NONE)`'s asymmetric mirror — the
+    // *right* pair only — where the fur layer above mirrors neither, so this
+    // cannot reuse that loop.
+    b.cube(head, 2, (0.0, 0.0), [-3.0, -4.0, -6.0], [6.0, 6.0, 8.0], NONE);
+    b.cube_f(STATIC_PART, 2, (28.0, 8.0), [-4.0, -10.0, -7.0], [8.0, 16.0, 6.0], 0.0, false, &[body]);
+    for leg_part in 2..6 {
+        // `quadruped_legs` registers hind-right, hind-left, front-right,
+        // front-left, so the even parts are the mirrored right pair.
+        let mirror = leg_part % 2 == 0;
+        b.cube_f(leg_part, 2, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 12.0, 4.0], 0.0, mirror, NONE);
     }
     b.finish(1.0)
 }
@@ -3182,15 +3300,51 @@ fn pufferfish() -> Model {
     b.finish(1.0)
 }
 
-/// `TropicalFishSmallModel` (shape A).
+/// `CubeDeformation FISH_PATTERN_DEFORMATION` — the inflation
+/// `LayerDefinitions` bakes `TROPICAL_FISH_{SMALL,LARGE}_PATTERN` with, and
+/// the only difference between the pattern mesh and the body mesh.
+const FISH_PATTERN_GROW: f32 = 0.008;
+
+/// `TropicalFishSmallModel` (shape A) + `TropicalFishPatternLayer`'s copy of
+/// it on texture 1, inflated by [`FISH_PATTERN_GROW`] (M68).
+///
+/// Which of the six `tropical_a_pattern_*` sheets that slot samples is a
+/// per-draw variant id, not a second model — see
+/// `rewo_data::mob_variants::fish_pattern_variant`.
 fn tropical_fish() -> Model {
     let mut b = ModelBuilder::new();
-    b.cube_f(STATIC_PART, 0, (0.0, 0.0), [-1.0, -1.5, -3.0], [2.0, 3.0, 6.0], 0.0, false, &[Fold::at([0.0, 22.0, 0.0])]);
+    let fin_r = Fold::rot([0.0, PI / 4.0, 0.0], [-1.0, 22.5, 0.0]);
+    let fin_l = Fold::rot([0.0, -PI / 4.0, 0.0], [1.0, 22.5, 0.0]);
     let tail = b.part([0.0, 22.0, 3.0], Anim::FishTail { amp: 0.45, speed: 0.6 }, 1.0);
-    b.cube(tail, 0, (22.0, -6.0), [0.0, -1.5, 0.0], [0.0, 3.0, 6.0], NONE);
-    b.cube_f(STATIC_PART, 0, (2.0, 16.0), [-2.0, -1.0, 0.0], [2.0, 2.0, 0.0], 0.0, false, &[Fold::rot([0.0, PI / 4.0, 0.0], [-1.0, 22.5, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (2.0, 12.0), [0.0, -1.0, 0.0], [2.0, 2.0, 0.0], 0.0, false, &[Fold::rot([0.0, -PI / 4.0, 0.0], [1.0, 22.5, 0.0])]);
-    b.cube_f(STATIC_PART, 0, (10.0, -5.0), [0.0, -3.0, 0.0], [0.0, 3.0, 6.0], 0.0, false, &[Fold::at([0.0, 20.5, -3.0])]);
+    for (tex, g) in [(0usize, 0.0f32), (1, FISH_PATTERN_GROW)] {
+        b.cube_f(STATIC_PART, tex, (0.0, 0.0), [-1.0, -1.5, -3.0], [2.0, 3.0, 6.0], g, false, &[Fold::at([0.0, 22.0, 0.0])]);
+        b.cube_f(tail, tex, (22.0, -6.0), [0.0, -1.5, 0.0], [0.0, 3.0, 6.0], g, false, NONE);
+        b.cube_f(STATIC_PART, tex, (2.0, 16.0), [-2.0, -1.0, 0.0], [2.0, 2.0, 0.0], g, false, &[fin_r]);
+        b.cube_f(STATIC_PART, tex, (2.0, 12.0), [0.0, -1.0, 0.0], [2.0, 2.0, 0.0], g, false, &[fin_l]);
+        b.cube_f(STATIC_PART, tex, (10.0, -5.0), [0.0, -3.0, 0.0], [0.0, 3.0, 6.0], g, false, &[Fold::at([0.0, 20.5, -3.0])]);
+    }
+    b.finish(1.0)
+}
+
+/// `TropicalFishLargeModel` (shape B) — the *other* body plan, and the one
+/// `tropical_b.png` belongs to (M68).
+///
+/// Not a rescale of the small one: a 2x6x6 body against 2x3x6, a 5-deep tail
+/// against 6, fins pivoted a block higher, and a **bottom fin** the small
+/// plan has no part for at all.
+fn tropical_fish_large() -> Model {
+    let mut b = ModelBuilder::new();
+    let fin_r = Fold::rot([0.0, PI / 4.0, 0.0], [-1.0, 20.0, 0.0]);
+    let fin_l = Fold::rot([0.0, -PI / 4.0, 0.0], [1.0, 20.0, 0.0]);
+    let tail = b.part([0.0, 19.0, 3.0], Anim::FishTail { amp: 0.45, speed: 0.6 }, 1.0);
+    for (tex, g) in [(0usize, 0.0f32), (1, FISH_PATTERN_GROW)] {
+        b.cube_f(STATIC_PART, tex, (0.0, 20.0), [-1.0, -3.0, -3.0], [2.0, 6.0, 6.0], g, false, &[Fold::at([0.0, 19.0, 0.0])]);
+        b.cube_f(tail, tex, (21.0, 16.0), [0.0, -3.0, 0.0], [0.0, 6.0, 5.0], g, false, NONE);
+        b.cube_f(STATIC_PART, tex, (2.0, 16.0), [-2.0, 0.0, 0.0], [2.0, 2.0, 0.0], g, false, &[fin_r]);
+        b.cube_f(STATIC_PART, tex, (2.0, 12.0), [0.0, 0.0, 0.0], [2.0, 2.0, 0.0], g, false, &[fin_l]);
+        b.cube_f(STATIC_PART, tex, (20.0, 11.0), [0.0, -4.0, 0.0], [0.0, 4.0, 6.0], g, false, &[Fold::at([0.0, 16.0, -3.0])]);
+        b.cube_f(STATIC_PART, tex, (20.0, 21.0), [0.0, 0.0, 0.0], [0.0, 4.0, 6.0], g, false, &[Fold::at([0.0, 22.0, -3.0])]);
+    }
     b.finish(1.0)
 }
 
@@ -4015,11 +4169,29 @@ mod tests {
         assert_eq!(kind_for_entity_name("minecraft:wither_skeleton"), EntityModelKind::WitherSkeleton);
         assert_eq!(kind_for_entity_name("minecraft:warden"), EntityModelKind::Warden);
         assert_eq!(kind_for_entity_name("minecraft:armor_stand"), EntityModelKind::Capsule);
+        // M68: the wire name resolves to the *small* plan, and the large one
+        // is unreachable by name — its own `name()` included, which is not a
+        // registered entity type and must not become a back door to it.
+        assert_eq!(
+            kind_for_entity_name("minecraft:tropical_fish"),
+            EntityModelKind::TropicalFish
+        );
+        assert_eq!(
+            kind_for_entity_name("minecraft:tropical_fish_large"),
+            EntityModelKind::Capsule
+        );
         // Every registry def's kind is reachable from its own wire name —
-        // except the player variants, which the caller picks by type id +
-        // skin model, never by wire name.
+        // except the ones the caller picks from something the name cannot
+        // carry: the player variants (type id + skin model) and the tropical
+        // fish's large body plan (the packed variant's low bit, M68). Both
+        // share a wire name with their sibling kind.
         for def in MOBS {
-            if matches!(def.kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+            if matches!(
+                def.kind,
+                EntityModelKind::Player
+                    | EntityModelKind::PlayerSlim
+                    | EntityModelKind::TropicalFishLarge
+            ) {
                 continue;
             }
             assert_eq!(
@@ -4029,6 +4201,83 @@ mod tests {
                 def.kind
             );
         }
+    }
+
+    /// Every layer table names a texture the mob actually lists, and no mob
+    /// lists more slots than the per-slot tint scratch in `entities` sizes
+    /// for. A table naming a key its `MobDef` does not carry would silently
+    /// resolve to `None` and the layer would simply never draw.
+    #[test]
+    fn every_layer_table_names_a_texture_its_mob_carries() {
+        const MAX_SCRATCH: usize = 4; // `entities::MAX_MOB_TEXTURES`
+        for def in MOBS {
+            assert!(
+                def.textures.len() <= MAX_SCRATCH,
+                "{:?} lists {} textures, past the tint scratch",
+                def.kind,
+                def.textures.len()
+            );
+            let has = |k: &str| def.textures.contains(&k);
+            for (what, key) in [
+                ("tinted", tinted_texture(def.kind)),
+                ("shearable", shearable_texture(def.kind)),
+                ("coplanar", coplanar_layer_texture(def.kind)),
+            ] {
+                if let Some(k) = key {
+                    assert!(has(k), "{:?}'s {what} texture {k} is not in its MobDef", def.kind);
+                }
+            }
+            if let Some((b, p)) = fish_tint_textures(def.kind) {
+                assert!(has(b) && has(p), "{:?}'s fish tint slots are not in its MobDef", def.kind);
+                assert_ne!(b, p, "the body and the pattern are different slots");
+            }
+        }
+    }
+
+    /// The undercoat is the **body** mesh, not the fleece: every quad it adds
+    /// has a texture-0 twin at the same position, and none has a texture-1
+    /// one. That is the whole `sheepBodyLayer`-not-`sheepWoolLayer` finding,
+    /// stated as a property of the built mesh — a mesh copied from the fur
+    /// layer would be inflated and share no position with the body at all.
+    #[test]
+    fn the_sheep_undercoat_is_the_body_mesh_repeated() {
+        let m = sheep();
+        let at = |tex: usize| {
+            m.quads
+                .iter()
+                .filter(|q| q.tex == tex)
+                .map(|q| format!("{:?}{:?}", q.facing, q.pos))
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let (base, fleece, under) = (at(0), at(1), at(2));
+        assert!(!under.is_empty(), "the undercoat contributes quads");
+        assert_eq!(under, base, "every undercoat quad is a body quad, and vice versa");
+        assert!(
+            fleece.is_disjoint(&under),
+            "the fleece is inflated 0.6/1.75/0.5, so it shares no position with either"
+        );
+    }
+
+    /// The two fish plans are different meshes, and each carries its pattern
+    /// layer as a second slot inflated by exactly `FISH_PATTERN_GROW`.
+    #[test]
+    fn each_fish_plan_carries_its_own_pattern_layer() {
+        for (name, m) in [("small", tropical_fish()), ("large", tropical_fish_large())] {
+            let body: Vec<_> = m.quads.iter().filter(|q| q.tex == 0).collect();
+            let pattern: Vec<_> = m.quads.iter().filter(|q| q.tex == 1).collect();
+            assert!(!body.is_empty(), "{name} has a body");
+            assert_eq!(body.len(), pattern.len(), "{name}: the pattern is the same mesh");
+            // Same faces, strictly outside — an un-inflated pattern would be
+            // coplanar and rejected by the solid pass's `GREATER` test.
+            for (b, p) in body.iter().zip(pattern.iter()) {
+                assert_eq!(b.facing, p.facing, "{name}");
+                let d: f32 = (0..3).map(|i| (p.pos[0][i] - b.pos[0][i]).abs()).sum();
+                assert!(d > 0.0, "{name}: the pattern layer is not coplanar with the body");
+            }
+        }
+        // …and the plans are not the same mesh at a different scale: the large
+        // one has a bottom fin the small one has no part for.
+        assert_ne!(tropical_fish().quads.len(), tropical_fish_large().quads.len());
     }
 }
 

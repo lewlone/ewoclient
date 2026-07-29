@@ -2025,6 +2025,8 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         variant: 0,
         dye: None,
         sheared: false,
+        undercoat: false,
+        fish_dye: None,
         anim_id: 0.0,
         cape,
     }

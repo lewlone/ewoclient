@@ -477,6 +477,8 @@ fn check_render(
             variant: 0,
             dye: None,
             sheared: false,
+            undercoat: false,
+            fish_dye: None,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
@@ -534,6 +536,8 @@ fn check_render(
             variant: 0,
             dye: None,
             sheared: false,
+            undercoat: false,
+            fish_dye: None,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
@@ -602,6 +606,8 @@ fn check_render(
             variant: 0,
             dye: None,
             sheared: false,
+            undercoat: false,
+            fish_dye: None,
             cape: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);

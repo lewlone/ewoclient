@@ -128,6 +128,16 @@ pub struct EntityMeta {
     pub byte17: Option<u8>,
     /// Raw index-17 BOOLEAN — `Pillager.IS_CHARGING_CROSSBOW`.
     pub bool17: Option<bool>,
+    /// Index 17 **INT** — `TropicalFish.DATA_ID_TYPE_VARIANT` (M68), the
+    /// packed `(shape, pattern, body colour, pattern colour)`.
+    ///
+    /// `TropicalFish extends AbstractSchoolingFish extends AbstractFish
+    /// extends WaterAnimal extends PathfinderMob`: Entity 0..7, LivingEntity
+    /// 8..14, Mob 15, PathfinderMob and WaterAnimal none, `AbstractFish`
+    /// `FROM_BUCKET` 16, `AbstractSchoolingFish` none — so the fish's own is
+    /// 17. A third reading of index 17, separated from the BYTE and BOOLEAN
+    /// above by serializer; the caller still gates on kind (the M18 rule).
+    pub int17: Option<i32>,
     /// Index 18 BYTE. `Sheep.DATA_WOOL_ID` (M52) — `AgeableMob` claims 16
     /// (`DATA_BABY_ID`) *and* 17 (`AGE_LOCKED`), so a `Sheep`'s own first
     /// accessor is 18. The kind gate lives in `apply_set_entity_data`;
@@ -259,6 +269,9 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             // `Pillager.IS_CHARGING_CROSSBOW` (BOOLEAN) both sit at 17.
             (17, 0) => meta.byte17 = r.u8().ok(),
             (17, 8) => meta.bool17 = r.u8().ok().map(|b| b != 0),
+            // M68: `TropicalFish.DATA_ID_TYPE_VARIANT` — the third serializer
+            // at index 17.
+            (17, 1) => meta.int17 = r.varint().ok(),
             (18, 0) => meta.byte18 = r.u8().ok(),
             // M64's variant slots. Index 18 now has three readings — BYTE
             // (sheep wool / tamable flags), INT (axolotl) and FROG_VARIANT —
