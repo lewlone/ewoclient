@@ -468,6 +468,14 @@ pub struct PlaySession {
     pub block_updates: u32,
     /// Who is riding what (M68), from `set_passengers`.
     pub mounts: crate::motion::Mounts,
+    /// The **local player's** `update_attributes` snapshots (M73).
+    ///
+    /// Kept beside the entity table rather than in it: the server sends no
+    /// `add_entity` for your own player, so `apply_update_attributes`'s
+    /// `getEntity(id) == null` gate drops every snapshot addressed to it. The
+    /// crosshair pick reads `block_interaction_range` and
+    /// `entity_interaction_range` from here.
+    local_attributes: rewo_world::attributes::EntityAttributes,
     /// The pose of the vehicle the local player rides, from `move_vehicle`.
     ///
     /// `None` in every ordinary session: that packet is only ever the server
@@ -1202,6 +1210,7 @@ impl<'a> Connection<'a> {
             teleports: 0,
             block_updates: 0,
             mounts: crate::motion::Mounts::new(),
+            local_attributes: rewo_world::attributes::EntityAttributes::default(),
             vehicle_pose: None,
             motion_stats: MotionStats::default(),
             day_ticks: None,
@@ -2066,6 +2075,17 @@ impl PlaySession {
             // M52: entity attribute snapshots — max health and the rest. Each
             // snapshot replaces one attribute's base + modifiers, filtered by
             // the entity type's `AttributeSupplier`.
+            //
+            // M73: and the local player's own, which the line above cannot
+            // store. `handleUpdateAttributes` looks the entity up in the level
+            // and the local player is in it; Rewo's `EntityTable` holds only
+            // entities the server sent an `add_entity` for, and it never sends
+            // one for you. So the same body is decoded a second time and kept
+            // beside the table when it names the camera entity — without it
+            // `entity_interaction_range` would be permanently the registered
+            // default and a creative player's crosshair would stop two blocks
+            // short.
+            self.capture_local_attributes(body);
         } else if crate::route_inventory(
             id,
             body,
@@ -2547,6 +2567,28 @@ impl PlaySession {
     pub fn own_game_mode(&self) -> Option<GameMode> {
         self.own_uuid.and_then(|u| self.game_mode(u))
     }
+
+    /// The local player's own attribute snapshots (M73).
+    pub fn local_attributes(&self) -> &rewo_world::attributes::EntityAttributes {
+        &self.local_attributes
+    }
+
+    /// Store an `update_attributes` body that names the local player.
+    ///
+    /// Deliberately a second decode of the same bytes rather than a hook
+    /// inside `apply_update_attributes`: that function's entity lookup is
+    /// `handleUpdateAttributes`'s own gate and every other caller — the
+    /// `attributeshot` oracle included — depends on it staying exactly that.
+    /// A body that does not parse, or that names anything but the camera
+    /// entity, changes nothing.
+    fn capture_local_attributes(&mut self, body: &[u8]) {
+        crate::attributes::apply_local_attributes(
+            body,
+            self.player_id,
+            &mut self.local_attributes,
+        );
+    }
+
 
     /// `PlayerInfo.getTabListOrder()` — the tab list's first sort key (M62).
     ///

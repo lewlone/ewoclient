@@ -25,6 +25,8 @@ pub mod entity_attachments;
 pub mod entity_attachments_table;
 pub mod entity_attributes;
 pub mod entity_classes;
+pub mod entity_pick;
+pub mod entity_pick_table;
 pub mod entity_types;
 pub mod etf;
 pub mod items;
