@@ -241,6 +241,23 @@ pub struct PlaySession {
     pub boss_bars: crate::boss_bar::BossBars,
     /// The tab list's header and footer (`tab_list`, M65).
     pub tab_list_text: crate::tab_list_text::TabListText,
+    /// The server's view area (M67) — the chunk the view is centred on, the
+    /// server's render distance, and its simulation distance. Seeded by the
+    /// login packet's prefix and updated by `set_chunk_cache_center` /
+    /// `set_chunk_cache_radius` / `set_simulation_distance`.
+    ///
+    /// **Read by nothing yet.** Decoding it and acting on it are separate
+    /// pieces of work: eviction policy, mesh budgeting and entity-tick gating
+    /// each need a renderer and a tuning pass to grade, and none of them is
+    /// improved by being written blind. See [`crate::view_area`].
+    ///
+    /// Deliberately *not* reset by `apply_respawn`: vanilla's `handleRespawn`
+    /// rebuilds its `ClientLevel` from the existing `serverChunkRadius` /
+    /// `serverSimulationDistance` fields, because the respawn packet carries
+    /// neither. Clearing it on a dimension change — which is what
+    /// `WorldTransition` does to nearly everything else — would silently drop
+    /// back to the pre-login defaults for the rest of the session.
+    pub view_area: crate::view_area::ViewArea,
     /// The three `minecraft:number_format_type` ids a scoreboard objective or
     /// score dispatches on — resolved by name at load, carried here because
     /// the decode cannot proceed without them.
@@ -996,6 +1013,7 @@ impl<'a> Connection<'a> {
             scoreboard: crate::scoreboard::Scoreboard::new(),
             boss_bars: crate::boss_bar::BossBars::new(),
             tab_list_text: crate::tab_list_text::TabListText::new(),
+            view_area: crate::view_area::ViewArea::default(),
             number_formats: self.data.number_formats,
             // Filled from the authenticated profile when there is one. Offline
             // mode leaves it `None`, so `own_ping_ms` reports nothing rather
@@ -1827,6 +1845,9 @@ impl PlaySession {
         ) {
             // M34: the player's own inventory — contents, one slot, or the
             // server moving the selection.
+        } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
+            // M67 — the server's view area. Decode and state only; nothing
+            // evicts a column or gates a tick on it yet.
         } else if crate::route_game_event(id, body, ids, &mut self.weather) {
             // M33: rain and thunder levels. The packet also carries a dozen
             // non-weather events; those match the id and change nothing.
@@ -2188,8 +2209,14 @@ impl PlaySession {
         // The prefix ends on the first byte of the embedded
         // `CommonPlayerSpawnInfo` and yields the local player's entity id (only
         // effects targeting it drive the camera lightmap).
-        let player_id =
-            read_login_prefix(&mut r).map_err(|e| format!("play login: prefix: {e}"))?;
+        let prefix = read_login_prefix(&mut r).map_err(|e| format!("play login: prefix: {e}"))?;
+        let player_id = prefix.player_id;
+        // The login packet is where the view area starts (M67) —
+        // `handleLogin` assigns both distances *and* feeds the radius to
+        // `options.setServerRenderDistance`, so a server that never resends
+        // either is still fully described.
+        self.view_area
+            .apply_login(prefix.chunk_radius, prefix.simulation_distance);
         // One shared spawn-info decoder for login and respawn — no second,
         // partial decoder anywhere: the dimension holder is
         // `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry` =

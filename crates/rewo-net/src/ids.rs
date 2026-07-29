@@ -198,6 +198,20 @@ pub struct Ids {
     pub cb_play_boss_event: i32,
     /// `ClientboundTabListPacket` — the tab list's header and footer.
     pub cb_play_tab_list: i32,
+    // ── M67: the server's view area ───────────────────────────────────────
+    // All three `req!` for the reason M62/M63/M65 give: `require` grades the
+    // *report*, not the server. A server that never resends its radius is a
+    // runtime state (login already carried it); a report with no
+    // `set_chunk_cache_radius` in it is a version mismatch.
+    /// `ClientboundSetChunkCacheCenterPacket` — the chunk the view area is
+    /// measured from. Two VarInts.
+    pub cb_play_set_chunk_cache_center: i32,
+    /// `ClientboundSetChunkCacheRadiusPacket` — the server's render distance.
+    pub cb_play_set_chunk_cache_radius: i32,
+    /// `ClientboundSetSimulationDistancePacket` — how far entities tick.
+    /// A different quantity from the radius above and a byte-identical body,
+    /// so the id is the only thing that tells them apart.
+    pub cb_play_set_simulation_distance: i32,
 }
 
 impl Ids {
@@ -311,6 +325,9 @@ impl Ids {
             cb_play_set_display_objective: req!(p, P, C, "set_display_objective"),
             cb_play_boss_event: req!(p, P, C, "boss_event"),
             cb_play_tab_list: req!(p, P, C, "tab_list"),
+            cb_play_set_chunk_cache_center: req!(p, P, C, "set_chunk_cache_center"),
+            cb_play_set_chunk_cache_radius: req!(p, P, C, "set_chunk_cache_radius"),
+            cb_play_set_simulation_distance: req!(p, P, C, "set_simulation_distance"),
         })
     }
 }

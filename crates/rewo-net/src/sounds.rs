@@ -652,10 +652,24 @@ mod tests {
     /// exercise the real table rather than a hand-built map. Ids 0 and 1 are
     /// the real 26.2 pair, so the fixture also stands as a reminder that
     /// registry id 0 is a *real* sound and not an "absent" sentinel.
+    ///
+    /// **The path has to be unique per call.** Three tests call this, cargo
+    /// runs them on separate threads, and a shared filename means one test's
+    /// `fs::write` truncates the file another is part-way through reading —
+    /// observed as `EOF while parsing a value at line 1 column 0` in roughly
+    /// one run in six. The counter is what makes `cargo test -p rewo-net`
+    /// deterministic; the process id keeps two concurrent cargo invocations
+    /// (a mutation harness, say) from colliding with each other.
     fn sound_registry() -> rewo_data::sound_events::SoundEvents {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join("rewo-net-sound-resolve");
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("registries.json");
+        let p = dir.join(format!(
+            "registries-{}-{}.json",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::write(
             &p,
             r#"{"minecraft:sound_event":{"entries":{

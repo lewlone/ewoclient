@@ -151,13 +151,33 @@ impl RespawnInfo {
     }
 }
 
+/// What [`read_login_prefix`] recovers from the login packet's prefix.
+///
+/// The two distances used to be read into a discard (`r.varint()?;`), which is
+/// the same shape as the latency M52c found. They are the server's initial
+/// view area — `handleLogin` assigns both to `ClientPacketListener` *and*
+/// feeds the radius to `options.setServerRenderDistance` — so they are
+/// returned from the one existing walk rather than read by a second one. That
+/// distinction is not stylistic: M62's report records a real drift caused by
+/// exactly that mistake, where a test copy of the player-info walk capped a
+/// profile signature at 32767 while production correctly had 1024, so the
+/// tests were grading a walk the client does not run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoginPrefix {
+    /// The local player's entity id — a big-endian `int`, not a VarInt.
+    pub player_id: i32,
+    /// `ClientboundLoginPacket.chunkRadius`.
+    pub chunk_radius: i32,
+    /// `ClientboundLoginPacket.simulationDistance`.
+    pub simulation_distance: i32,
+}
+
 /// Read the `ClientboundLoginPacket` fields that come *before* its embedded
 /// `CommonPlayerSpawnInfo`, leaving the reader on the spawn info's first byte.
-/// Returns the local player's entity id (a big-endian `int`, not a VarInt).
 ///
 /// Shared by the live `Connection`, the play session and the replay path, so
 /// "where does the spawn info start" is answered in exactly one place.
-pub(crate) fn read_login_prefix(r: &mut PacketReader<'_>) -> Result<i32> {
+pub(crate) fn read_login_prefix(r: &mut PacketReader<'_>) -> Result<LoginPrefix> {
     let player_id = r.i32()?;
     r.bool()?; // hardcore
     let levels = r.count("dimensions", 1)?;
@@ -165,12 +185,16 @@ pub(crate) fn read_login_prefix(r: &mut PacketReader<'_>) -> Result<i32> {
         r.identifier()?; // ResourceKey<Level>
     }
     r.varint()?; // max players
-    r.varint()?; // chunk radius (view distance)
-    r.varint()?; // simulation distance
+    let chunk_radius = r.varint()?; // view distance (M67)
+    let simulation_distance = r.varint()?; // M67
     r.bool()?; // reduced debug info
     r.bool()?; // show death screen
     r.bool()?; // do limited crafting
-    Ok(player_id)
+    Ok(LoginPrefix {
+        player_id,
+        chunk_radius,
+        simulation_distance,
+    })
 }
 
 #[cfg(test)]
@@ -429,7 +453,19 @@ mod tests {
         let bytes = w.buf;
 
         let mut r = PacketReader::new(&bytes);
-        assert_eq!(read_login_prefix(&mut r).unwrap(), 42);
+        // The two distances (M67) are recovered from this same walk rather
+        // than by a second reader, so this witness pins their *position* in
+        // the prefix as well as their values: swapping them, or reading them
+        // either side of `maxPlayers`, still lands on the spawn info and is
+        // caught only here.
+        assert_eq!(
+            read_login_prefix(&mut r).unwrap(),
+            LoginPrefix {
+                player_id: 42,
+                chunk_radius: 12,
+                simulation_distance: 10,
+            }
+        );
         assert_eq!(r.remaining(), bytes.len() - prefix_len);
         let got = CommonPlayerSpawnInfo::read(&mut r).unwrap();
         assert_eq!(got, info);

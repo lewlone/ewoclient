@@ -32,6 +32,7 @@ pub mod sounds;
 pub mod spawn_info;
 pub mod tab_list_text;
 pub mod teams;
+pub mod view_area;
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
@@ -2009,6 +2010,35 @@ pub fn route_sound(kind: SoundPacketKind, body: &[u8]) -> Option<sounds::SoundEv
         SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).ok().map(SoundEvent::OnEntity),
         SoundPacketKind::Stop => sounds::StopSound::read(&mut r).ok().map(SoundEvent::Stop),
     }
+}
+
+/// The narrowest clientbound-play dispatch seam for the view area (M67):
+/// routes a `(packet id, body)` to [`view_area::apply`] iff `id` is one of the
+/// three resolved view-area ids, returning whether the id matched — **not**
+/// whether the body decoded.
+///
+/// The three ids map to three [`view_area::ViewAreaPacket`] kinds here and
+/// nowhere else. That matters because `set_chunk_cache_radius` and
+/// `set_simulation_distance` have *byte-identical* bodies — one VarInt each —
+/// and name different quantities, so the id is the only discriminator that
+/// exists. Deriving the kind from the body is not merely unreliable, it is
+/// impossible.
+pub fn route_view_area(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    area: &mut view_area::ViewArea,
+) -> bool {
+    let table = view_area::ViewAreaIds {
+        center: ids.cb_play_set_chunk_cache_center,
+        chunk_radius: ids.cb_play_set_chunk_cache_radius,
+        simulation_distance: ids.cb_play_set_simulation_distance,
+    };
+    let Some(kind) = view_area::kind_for_id(id, table) else {
+        return false;
+    };
+    view_area::apply(kind, body, area);
+    true
 }
 
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
