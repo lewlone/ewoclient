@@ -3467,6 +3467,118 @@ that errors, re-check what actually landed.
 name two unrelated pieces of work, because concurrent sessions numbered
 independently. Read `git log --oneline` subjects.
 
+### The three gaps the coverage audit ranked first (M68, M69)
+
+The first work chosen *by the audit* rather than by what was next in a plan —
+all three from `REWO_PACKET_COVERAGE.md`'s "pure state, no rendering" class,
+all headlessly verifiable.
+
+**M69 — the server's authoritative writes.** `set_player_inventory`,
+`set_cursor_item`, `update_tags`. M34/M35 built a *predicting* inventory whose
+only correction path is a full state-id resync; these are how the server fixes
+it without one.
+
+**`update_tags` exists in BOTH states — configuration 13 and play 134 — and the
+audit listed only the play one, because the audit surveyed clientbound-play
+only.** The *configuration* copy is what a vanilla server sends on join, right
+after `registry_data`; the play copy is the `/reload` case. Resolving only play
+134 would have looked like it worked until someone reloaded. That is a limit of
+the audit's scope, not of the packet, and it is the first thing a whole-protocol
+sweep would catch.
+
+**The two inventory coordinate systems are worse than a different origin.**
+`InventoryMenu`'s `SLOT_IDS` is `{HEAD, CHEST, LEGS, FEET}` at backing index
+`39 - i`, so **the armour ranges run in opposite directions**: inventory 36 is
+FEET / menu 8, inventory 39 is HEAD / menu 5. Subtracting a constant — the
+obvious reading of "36 here, 5 there" — puts boots on the head, and produces
+output of the right type, in the right range, for the right item category. No
+decode gate can see it. There is now one conversion
+(`menu_slot_of_inventory_index`) and `Inventory::hotbar` routes through it.
+
+It returns **three** outcomes, not two: `Applied`, `NoMenuSlot` (indices 41/42 —
+`SLOT_BODY_ARMOR` and `SLOT_SADDLE` are real `EntityEquipment` slots the 46-slot
+menu does not expose), and `OutOfRange`. Collapsing the middle makes "Rewo has
+nowhere to put this" look like a decode failure. Same instinct one layer up:
+`TagOverrides::contains` returns `Option<bool>` so silence is distinguishable
+from a negative — a bare `bool` reads every unsent tag as "not a member", which
+poses every spear as `ArmPose::Item` against a server that omits the item
+registry.
+
+`set_player_inventory` carries **no state id** and bypasses the container menu,
+so the write must not touch `state_id` — advancing it would make the next click
+echo a number the server never issued, which is the exact resync the packet
+exists to avoid. Its slot is a **VarInt**, not the `i16` its sibling
+`container_set_slot` uses: M34's recorded trap does not generalise.
+
+The tag override is modelled and **deliberately not wired**. M19's `SPEARS` is
+one `ItemTag::from_ids` away but needs ~8 call sites plumbed and no gate would
+grade it. M42's enchantment tags are **blocked, not unplumbed** — `rewo_data`
+stores names where the packet carries ids, and bridging needs the wire-order
+registry read at a moment the two packets have no ordering guarantee about.
+
+**M68 — the four packets that move the local player.** `explode`,
+`set_entity_motion`, `move_vehicle`, `set_passengers`.
+
+**My brief for this one was wrong, and verifying it was the most valuable thing
+the agent did.** I said velocity was fixed point, thousandths of a block per
+tick, as a short. **That encoding does not exist in 26.2.**
+`ClientboundSetEntityMotionPacket` composes `Vec3.LP_STREAM_CODEC` →
+`net/minecraft/network/LpVec3.java`: three 15-bit mantissas against **one shared
+integer scale**, a **one-byte zero sentinel**, and an optional continuation
+VarInt. No `8000.0` exists anywhere in the protocol tree. Implementing the brief
+as written reads 6 bytes of a body that can be 2.
+
+Two more, both verified: `move_vehicle` carries **no entity id** (the client
+resolves `getRootVehicle()`), and `explode`'s `blockCount` is a **fixed
+big-endian i32 between `radius` and the knockback**, so a VarInt reading
+silently reports "no knockback" from a packet carrying one. And `explode`'s
+knockback is `Vec3.STREAM_CODEC` (full doubles) where `set_entity_motion` is
+`LP_STREAM_CODEC` — **two different `Vec3` encodings in adjacent packets**.
+
+**The gate is the point, not the decode.** `rewo play --motion-check` drives a
+paced command stream (boat → `ride mount` → `ride dismount`; then resistance →
+TNT → `/damage … by <zombie>`), fail-closed on **observation** — a command the
+server ignored leaves a counter at zero and turns it red.
+
+**A live mutation found a bug in the gate itself**, and the important half is
+not the timing slip: **the correction meter structurally cannot catch a dropped
+knockback.** Vanilla's move check flags a client that moves too *much*; one
+ignoring a shove moves too *little*. The witness is now the measured change in
+the client's own velocity. So, precisely — `CORRECTIONS 0` over a flat walk is
+unchanged and still true; the knockback path is now exercised; but *correct
+handling* rests on the |Δv| witness, not the meter. **Riding accuracy is
+unprovable by any correction count** — `ServerGamePacketListenerImpl` skips move
+validation entirely for a passenger — so mount-phase corrections are reported
+and explicitly not graded.
+
+`move_vehicle` is **structurally unreachable** and the gate says so rather than
+passing quietly: both send sites are inside `handleMoveVehicle`, the server
+*rejecting* a serverbound vehicle move, which a passenger-only client never
+provokes.
+
+**The collision that the build would not have caught.** A concurrent session
+landed **M70** (entity-label visibility) between M68's base and `main`, and it
+decodes `set_passengers` too. The 3-way patch applied **cleanly** and left a
+duplicate struct field *plus a silently unreachable second dispatch arm* — the
+field fails the build, the arm does not. The two effects are disjoint (M70
+builds the riding graph that suppresses a ridden entity's floating label; M68
+applies the local player's mount state to physics), so the resolution is one
+field and one arm doing **both**, not a winner. `body` is a `&[u8]`, so the
+second read is safe and deliberate — folding either decode into the other would
+couple two milestones with no reason to share a walk. **The general lesson: a
+clean 3-way apply is not evidence of no collision.** Grep for the symbol.
+
+`motion.rs` also arrived 991/991 CRLF while every other file in its crate is LF;
+normalised rather than left to become the fourth file in the mixed-endings trap.
+
+**Gates:** rewo-net 390, rewo-world 291, rewo-app 80; `inventoryshot` 143 →
+**152**, `mobshot` 243/243, `swingshot` 97, `eventshot` 28; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **27 mutations across the two milestones, 26
+caught**; both survivors were real — M69's was a `a != b || { true }` tautology
+the agent found in its own witness before the battery ran, and M68's was a test
+asserting only `is_err()` where both the intended and the mutated path error and
+only the error's *shape* distinguishes them.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
