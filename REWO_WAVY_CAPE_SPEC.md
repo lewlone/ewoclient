@@ -95,7 +95,8 @@ simulates.
 | name | value | note |
 |---|---:|---|
 | `SEGMENTS` | `16` | enough to read as cloth, and `16/16` makes `REST_LEN` exactly `1.0` — an exactly-representable binary fraction, which the bit-determinism witness wants and `16/12 = 4/3` would not have given |
-| `GRAVITY` | `0.008` | model units per tick², downward |
+| `GRAVITY` | `0.008` | model units per tick², **world** down — see rule 7 |
+| `ANCHOR_ACCEL` | `GRAVITY * 100 * PI/180` ≈ `0.013963` | **the anchor delta's scale, added M61.** Not a free parameter: it is what makes the chain's equilibrium tilt match vanilla's own `capeLean` response of 100°/block in the small-angle regime |
 | `DAMPING` | `0.92` | velocity retained per tick |
 | `RELAX_PASSES` | `4` | Gauss–Seidel distance-constraint iterations |
 | `REST_LEN` | `16.0 / SEGMENTS` | equal to the slab height, so rest state is straight |
@@ -109,9 +110,25 @@ simulates.
    `RELAX_PASSES` of distance-constraint relaxation, then the torso push-out,
    then the radius clamp. Same order every tick.
 2. **Forcing reuses vanilla's already-gated inputs.** The acceleration is
-   gravity plus the lagging-anchor delta vector `(deltaX, deltaY, deltaZ)` the
-   vanilla cape already computes. **Nothing new is invented to make it move** —
-   which keeps the wave anchored to behaviour that is separately verified.
+   gravity plus `ANCHOR_ACCEL ×` the lagging-anchor delta vector
+   `(deltaX, deltaY, deltaZ)` the vanilla cape already computes. **Nothing new
+   is invented to make it move** — which keeps the wave anchored to behaviour
+   that is separately verified.
+
+   **Correction (M61): the scale factor was missing, and its absence was not
+   cosmetic.** The chain's equilibrium tilt is `atan(|a_horizontal| / GRAVITY)`,
+   so feeding the raw delta gives **80.9°** at a walking drift of 0.05 where
+   vanilla's own `capeLean` gives **5°** — any motion at all pinned the cape
+   near horizontal. The dimensionally-coherent alternative (×16, blocks →
+   model units) is strictly worse: 14 link-lengths per tick snaps the chain
+   rigidly onto the acceleration in one tick and it never waves.
+
+   `ANCHOR_ACCEL` is derived, not tuned. Vanilla maps one block of lag to 100°
+   of lean; in the small-angle regime `θ ≈ a_h / GRAVITY`, so
+   `a_h = GRAVITY · 100 · π/180 · delta`. Checked: 4.99° against vanilla's 5.00
+   at drift. At larger deltas the `atan` compresses where vanilla's linear
+   clamp does not (34.9° vs 40° at a walk) — that divergence is the physics
+   being right and vanilla being a linear approximation, and it is intended.
 3. **Fixed step, fixed iteration count, no RNG.** The simulation must be
    assertable to the bit. M37 established that the same is true of vanilla's
    particles — `Particle.tick()` contains no randomness at all — and it is what
@@ -125,6 +142,37 @@ simulates.
 6. **Divergence is clamped, not tolerated.** A joint beyond `MAX_JOINT_RADIUS`
    of the anchor is clamped back. A teleport or a >10-block anchor snap must not
    be able to explode the chain.
+
+7. **`GRAVITY` is world-down, and that choice is load-bearing (M61).** Reading
+   it as the cape's *local* down would make the rest state exactly the vanilla
+   drape and would be robust to the scale question above — but it destroys the
+   reduction rule's mutation, because a single simulated segment would then
+   settle onto the vanilla angle instead of hanging straight down, and the
+   witness would pass for a bypassed *and* a simulated implementation alike. The
+   strong witness wins. The price is a rest-state IoU of ~0.975 rather than
+   1.000, the residue being 6° of tilt lying nearly along the view axis.
+
+8. **Constraint solving walks from the pin, holding the upper joint (M61).**
+   Symmetric Gauss–Seidel does **not** meet the 1e-4 link tolerance in
+   `RELAX_PASSES` — it measures 2.9e-2, because gravity's uniform per-tick shift
+   breaks link 0 against the pin every tick and four sweeps only halve the error
+   four times. Holding the upper joint is exact in **one** pass (1.1e-15);
+   passes 2–4 are then no-ops and are still run. Stated because a reasonable
+   implementer writes the symmetric solver first and then cannot satisfy the
+   tolerance.
+
+9. **The push-out is a cylinder, so it cannot exclude the torso *box*.** The
+   spec's earlier "no joint inside the torso AABB" was unachievable: the torso is
+   8 wide and `TORSO_RADIUS` is 2.5, so a joint at x 3.5, z 0 is outside the
+   cylinder and inside the box. The gate asserts what the rule actually creates —
+   a minimum radial distance — not the stronger claim.
+
+10. **The collision response is not re-projected.** Rule 1's order relaxes and
+    *then* collides, so a joint shoved off the torso leaves its links stretched
+    until the next tick. A steady walk never fires the push-out and a 30°/tick
+    turn stretches 0.23 model units, but an adversarial rotating forcing reaches
+    3.44. Recorded as a known consequence of the stated order rather than
+    discovered later.
 
 ---
 
