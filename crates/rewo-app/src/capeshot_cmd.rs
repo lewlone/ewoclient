@@ -44,8 +44,9 @@ use rewo_world::entities::EntityTable;
 
 use crate::stats::OverlayRing;
 
-/// 38 for the vanilla cape (M60), 26 for the wavy one (M61).
-const EXPECTED_WITNESSES: usize = 64;
+/// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 1 for the
+/// re-projected collision (M64).
+const EXPECTED_WITNESSES: usize = 65;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -970,11 +971,12 @@ fn check_wavy_dynamics(c: &mut Checker) {
         ),
     );
 
-    // The constraint residual, measured **after the relax passes and before
-    // the push-out** — which is where the spec puts it, and which matters:
-    // the push-out is a collision response that is not re-projected, so the
-    // post-tick number is a different and much larger one. Both are
-    // reported; only the spec's is asserted.
+    // The constraint residual, measured **after a whole tick** — which is
+    // where M64 moved it. Before M64 this had to be read between the relax
+    // passes and the push-out, because the collision response was the last
+    // thing to run and was never re-projected; the post-tick number was a
+    // different and much larger one. `solve` now interleaves the two
+    // projections, so the finished state satisfies both.
     let rest_err = worst_link(&s);
     let mut m = WavyCape::new(SEGMENTS, anchor);
     let mut relaxed_err = 0f64;
@@ -983,47 +985,44 @@ fn check_wavy_dynamics(c: &mut Checker) {
         // A cloak gap swinging through a full circle at 1.5 blocks — the
         // largest vanilla's own `capeLean` clamp can represent.
         let f = [ph.sin() * 1.5, 0.0, ph.cos() * 1.5];
-        // The four stages `tick` runs, in `tick`'s order, opened up so the
+        // The three stages `tick` runs, in `tick`'s order, opened up so the
         // residual can be read at the named point. Not a reimplementation:
-        // these are the same four methods.
+        // these are the same three methods.
         m.integrate(anchor, f);
-        m.relax();
-        relaxed_err = relaxed_err.max(m.worst_link_error());
-        m.push_out();
+        m.solve();
         m.clamp(anchor);
+        relaxed_err = relaxed_err.max(m.worst_link_error());
     }
-    // The push-out is what perturbs the links after the relax, and a *turn*
+    // The push-out is what perturbs the links inside the solve, and a *turn*
     // is what fires it — the anchor swings to the far side of the body and
     // the chain has to cross the torso. Measured here rather than under the
-    // forcing above, which now blows the cape away from the body rather than
-    // across it.
+    // forcing above, which blows the cape away from the body rather than
+    // across it, so it never collides at all.
     let mut turning = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
     let mut post_tick_err = 0f64;
-    let mut relaxed_in_turn = 0f64;
     for step in 0..120 {
         let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
-        turning.integrate(a, [0.0; 3]);
-        turning.relax();
-        relaxed_in_turn = relaxed_in_turn.max(turning.worst_link_error());
-        turning.push_out();
-        turning.clamp(a);
+        turning.tick(a, [0.0; 3]);
         post_tick_err = post_tick_err.max(turning.worst_link_error());
     }
     c.record(
-        "w9.every_link_stays_within_1e_4_of_REST_LEN_after_the_relax_passes",
-        rest_err < 1e-4 && relaxed_err < 1e-4 && relaxed_in_turn < 1e-4,
+        "w9.every_link_is_within_1e_4_of_REST_LEN_at_the_end_of_the_tick",
+        rest_err < 1e-4 && relaxed_err < 1e-4 && post_tick_err < 1e-4,
         format!(
             "worst link error {rest_err:.2e} settled, {relaxed_err:.2e} under a \
-             1.5-block gap swinging through a full circle, {relaxed_in_turn:.2e} \
-             through a 30-degree-per-tick turn. FINDING: after the push-out that \
-             turn reaches {post_tick_err:.3} — the spec's stage order relaxes, \
-             *then* collides, and never re-projects, so a joint shoved off the \
-             torso leaves its links stretched until the next tick. Small (a \
-             fifth of a slab) and only on a turn, since a gap blows the cape \
-             away from the body rather than across it. MUTATION RELAX_PASSES = 0 \
-             leaves the chain stretched by whatever the integrator moved it. \
-             NOTE the mass weighting is what makes 1e-4 reachable at all: \
-             symmetric Gauss-Seidel measures 2.9e-2 here"
+             1.5-block gap swinging through a full circle, {post_tick_err:.2e} \
+             through a 30-degree-per-tick turn — the one motion that fires the \
+             push-out at all. That last number is M64's: the M61 order relaxed, \
+             *then* collided once, and never re-projected, so the same turn \
+             ended its tick 0.230 out — a fifth of a slab. `solve` now \
+             interleaves the two projections, which converges geometrically \
+             (2.30e-1 / 9.60e-3 / 4.27e-4 / 5.14e-5 at 1/2/3/4 passes), so the \
+             spec's RELAX_PASSES = 4 is the first count that clears its own \
+             1e-4. MUTATION RELAX_PASSES = 0 leaves the chain stretched by \
+             whatever the integrator moved it; reverting to the M61 order \
+             fails this row alone at 2.3e-1. NOTE the mass weighting is what \
+             makes 1e-4 reachable at all: symmetric Gauss-Seidel measures \
+             2.9e-2 here"
         ),
     );
 
@@ -1231,6 +1230,57 @@ fn check_wavy_pushout(c: &mut Checker) {
         "at least one joint sits exactly on the cylinder — the push-out's own \
          signature, and what stops w12 passing vacuously because nothing ever \
          came near the body",
+    );
+
+    // M64: the same turn, run twice — once through the production `tick`, and
+    // once through an explicitly reconstructed M61 stage order (all the relax
+    // passes, then one push-out). Both chains see identical anchors, so the
+    // only difference between them is where the collision sits in the solve.
+    //
+    // This is the one witness that can tell the two orders apart. w9 asserts
+    // the residual is small and w12 asserts the cylinder holds; neither says
+    // *which* order produced them, and the M61 build passed both — it read
+    // its residual at a point the finished state no longer occupied.
+    let seed = |c: &mut WavyCape| {
+        for _ in 0..200 {
+            c.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0), [0.0; 3]);
+        }
+    };
+    let mut shipped = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut m61 = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    seed(&mut shipped);
+    seed(&mut m61);
+    let (mut shipped_err, mut m61_err, mut m61_min_r) = (0f64, 0f64, f64::MAX);
+    for step in 0..120 {
+        let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
+        shipped.tick(a, [0.0; 3]);
+        shipped_err = shipped_err.max(shipped.worst_link_error());
+        // The M61 order, from the same public stages: relax, relax, relax,
+        // relax, collide once.
+        m61.integrate(a, [0.0; 3]);
+        for _ in 0..wavy_cape::RELAX_PASSES {
+            m61.relax_pass();
+        }
+        m61.push_out();
+        m61.clamp(a);
+        m61_err = m61_err.max(m61.worst_link_error());
+        for p in &m61.joints()[1..] {
+            m61_min_r = m61_min_r.min((p[0] * p[0] + p[2] * p[2]).sqrt());
+        }
+    }
+    c.record(
+        "w23.interleaving_the_collision_into_the_solve_re_projects_it",
+        shipped_err < 1e-4 && m61_err > 0.1 && m61_min_r >= TORSO_RADIUS - 1e-9,
+        format!(
+            "through the same 30-degree-per-tick turn the shipped solve ends \
+             each tick {shipped_err:.2e} out of REST_LEN and the reconstructed \
+             M61 order {m61_err:.3} — a fifth of a slab, left there because a \
+             joint the push-out shoved off the torso was never re-projected. \
+             Both orders end on the push-out, which is why the M61 chain still \
+             reaches {m61_min_r:.6}: the fix is where the collision sits, not \
+             whether it runs. MUTATION reverting `solve` to the M61 order makes \
+             the two numbers equal and fails this row (and w9) alone"
+        ),
     );
 }
 

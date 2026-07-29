@@ -107,8 +107,14 @@ simulates.
 ### The rules
 
 1. **Verlet, fixed step.** `x' = x + (x − x_prev) · DAMPING + a · dt²`, then
-   `RELAX_PASSES` of distance-constraint relaxation, then the torso push-out,
-   then the radius clamp. Same order every tick.
+   `RELAX_PASSES` iterations of **(distance-constraint relaxation, then the
+   torso push-out)**, then the radius clamp. Same order every tick.
+
+   **Correction (M64): the collision moved inside the loop.** M61 ran all the
+   relax passes first and collided once at the end, which is what rule 10
+   below recorded as a known consequence. Interleaving costs nothing and
+   closes it; the push-out stays *last within the loop*, so the collision
+   guarantee remains exact rather than becoming a tolerance. See rule 10.
 2. **Forcing reuses vanilla's already-gated inputs.** The acceleration is
    gravity plus `ANCHOR_ACCEL ×` the lagging-anchor delta vector
    `(deltaX, deltaY, deltaZ)` the vanilla cape already computes. **Nothing new
@@ -156,10 +162,16 @@ simulates.
    Symmetric Gauss–Seidel does **not** meet the 1e-4 link tolerance in
    `RELAX_PASSES` — it measures 2.9e-2, because gravity's uniform per-tick shift
    breaks link 0 against the pin every tick and four sweeps only halve the error
-   four times. Holding the upper joint is exact in **one** pass (1.1e-15);
-   passes 2–4 are then no-ops and are still run. Stated because a reasonable
-   implementer writes the symmetric solver first and then cannot satisfy the
-   tolerance.
+   four times. Holding the upper joint is exact in **one** pass (1.1e-15).
+   Stated because a reasonable implementer writes the symmetric solver first
+   and then cannot satisfy the tolerance.
+
+   **Correction (M64): passes 2–4 are no longer no-ops.** M61 recorded them as
+   exact no-ops "still run because `RELAX_PASSES` is a spec constant". With
+   the collision interleaved (rule 1) each pass has a fresh push-out
+   displacement to answer, so all four do real work — and four is exactly the
+   count this tolerance needs. Do **not** reduce `RELAX_PASSES` to 1: it was
+   never safe (it removed the mutation partner) and it is now wrong as well.
 
 9. **The push-out is a cylinder, so it cannot exclude the torso *box*.** The
    spec's earlier "no joint inside the torso AABB" was unachievable: the torso is
@@ -167,16 +179,42 @@ simulates.
    cylinder and inside the box. The gate asserts what the rule actually creates —
    a minimum radial distance — not the stronger claim.
 
-10. **The collision response is not re-projected.** Rule 1's order relaxes and
-    *then* collides, so a joint shoved off the torso leaves its links stretched
-    until the next tick. A steady walk never fires the push-out and a 30°/tick
-    turn stretches **0.230** model units — a fifth of a slab — and that is the
-    figure to quote. An earlier draft cited 3.44; that number was an artefact of
-    the missing `ANCHOR_ACCEL` (the unscaled acceleration whipped the chain
-    across the torso). With the scale correct, a cloak gap blows the cape *away*
-    from the body and never fires the push-out at all — only a turn does.
-    Recorded as a known consequence of the stated order rather than discovered
-    later.
+10. **The collision response is re-projected (M64).** Rule 1's order is now
+    `RELAX_PASSES` × (relax, push-out), so every push-out but the last is
+    answered by the sweep after it. A 30°/tick turn — the motion that fires
+    the collision hardest — ends its tick **5.14e-5** out of `REST_LEN`,
+    inside the rule-1 tolerance and three and a half orders of magnitude
+    better than the number this rule used to quote.
+
+    **What it replaced.** M61 relaxed and *then* collided once, so a joint
+    shoved off the torso left its links stretched until the next tick: the
+    same turn measured **0.230** model units, a fifth of a slab. (An earlier
+    draft cited 3.44, an artefact of the missing `ANCHOR_ACCEL`, whose
+    unscaled acceleration whipped the chain across the torso.) That was
+    recorded as a known consequence of the stated order rather than
+    discovered later, and this closes it.
+
+    **The alternation converges geometrically** — measured over that turn at
+    1/2/3/4 passes: `2.30e-1 / 9.60e-3 / 4.27e-4 / 5.14e-5`. So `RELAX_PASSES
+    = 4` is the *first* count that clears this rule's own 1e-4, and the two
+    numbers turn out to be exactly matched. Both were fixed before the
+    interleave existed, so that is a coincidence being recorded, not a
+    derivation.
+
+    **The push-out remains the last stage inside the loop**, and that is the
+    load-bearing half. Ending the solve on a relax would satisfy the links
+    exactly and let the final sweep pull a joint back inside the cylinder —
+    trading rule 5's assertable guarantee for a tolerance, in the one place a
+    naive chain visibly fails. The closest approach through the turn is still
+    `TORSO_RADIUS` to the bit under both orders.
+
+    **One M61 claim in this rule was too strong and is withdrawn.** It said a
+    cloak gap "blows the cape *away* from the body and never fires the
+    push-out at all — only a turn does". Running the M61 order as a mutation
+    shows the 1.5-block gap swinging through a full circle (the largest
+    `capeLean` can represent) leaving **2.4e-2** of un-re-projected stretch,
+    which it could only have got from the push-out. A gap that *rotates*
+    sweeps the cape across the body; a gap held in one direction does not.
 
 ---
 
@@ -190,7 +228,8 @@ a mutation partner.
 |---|---|---|
 | **reduction** | `SEGMENTS = 1` → vertices equal the vanilla cape's **bit-for-bit**, because the segment takes the vanilla rotation and the simulation is bypassed | let the single segment simulate — it becomes a pendulum and hangs straight down instead of at `Rx(6 + capeLean/2 + capeFlap)` |
 | settling | zero motion settles, and the settled state is idempotent to 1e-6 | `DAMPING = 1.0` → perpetual oscillation |
-| constraints | every link within 1e-4 of `REST_LEN` after the relax passes | `RELAX_PASSES = 0` |
+| constraints | every link within 1e-4 of `REST_LEN` **at the end of the tick** (M64; before the interleave this could only be asserted mid-solve) | `RELAX_PASSES = 0` |
+| re-projection (M64) | the shipped solve and a reconstructed M61 order, over the same turn, disagree by orders of magnitude — and both still end at `TORSO_RADIUS` exactly, so the difference is *where* the collision sits, not whether it runs | revert `solve` to the M61 order: the two become equal |
 | determinism | two runs, identical inputs → bit-identical joint positions | seed anything from the wall clock |
 | pinning | joint 0 equals the vanilla attachment point every tick | let joint 0 simulate |
 | push-out | after a scripted 180° turn, no joint inside the torso AABB | disable the push-out |
