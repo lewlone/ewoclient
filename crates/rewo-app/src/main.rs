@@ -12,6 +12,7 @@ mod captureshot_cmd;
 mod bench_cmd;
 mod attributeshot_cmd;
 mod danceshot_cmd;
+mod rideshot_cmd;
 mod healthbarshot_cmd;
 mod hurtshot_cmd;
 mod labelshot_cmd;
@@ -208,6 +209,12 @@ enum Command {
     /// dance transforms against independent decompiled formulas with `--check`
     /// (no server, no GPU).
     Danceshot(danceshot_cmd::DanceshotArgs),
+    /// M72 passenger-positioning oracle: drive raw `set_passengers` bodies
+    /// through the real router → the riding graph → `tick_lerp`'s
+    /// `positionRider` derivation, asserting every rider's position **relative
+    /// to its vehicle** across sub-tick fractions and through every
+    /// per-vehicle override, with `--check` (no server, no GPU).
+    Rideshot(rideshot_cmd::RideshotArgs),
     /// M52 entity-attribute oracle: drive raw `update_attributes` bodies
     /// through the real packet routing → `handleUpdateAttributes` receipt gates
     /// → `AttributeInstance.calculateValue` → `RangedAttribute.sanitizeValue`,
@@ -279,6 +286,7 @@ fn main() {
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
         Some(Command::Hudshot(hs_args)) => hudshot_cmd::run(hs_args),
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
+        Some(Command::Rideshot(ride_args)) => rideshot_cmd::run(ride_args),
         Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
         Some(Command::Healthbarshot(hb_args)) => healthbarshot_cmd::run(hb_args),
         Some(Command::Labelshot(label_args)) => labelshot_cmd::run(label_args),

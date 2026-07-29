@@ -25,6 +25,7 @@ pub mod palette;
 pub mod particles;
 pub mod physics;
 pub mod raycast;
+pub mod riding;
 pub mod wavy_cape;
 pub mod weather;
 

@@ -21,6 +21,8 @@ pub mod copper_golem_poses;
 pub mod components;
 pub mod enchantments;
 pub mod equipment;
+pub mod entity_attachments;
+pub mod entity_attachments_table;
 pub mod entity_attributes;
 pub mod entity_classes;
 pub mod entity_types;
@@ -108,6 +110,9 @@ pub struct GameData {
     pub component_registry: components::DataComponentRegistry,
     /// Which entity types are living, and which tick a combat swing (M19).
     pub entity_classes: entity_types::EntityClasses,
+    /// Per-entity-type PASSENGER / VEHICLE attachment points (M72). The
+    /// seat a rider sits on is entity-type *data* in 26.x, not a constant.
+    pub entity_attachments: entity_attachments::Attachments,
     /// Particle-type registry ids → names (M37 particles).
     pub particle_types: particle_types::ParticleTypes,
     /// Sound-event registry ids → names (M64). Resolves the id a decoded
@@ -134,6 +139,8 @@ impl GameData {
         let component_registry =
             components::DataComponentRegistry::load(&paths.registries_json())?;
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
+        let entity_attachments =
+            entity_attachments::Attachments::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
         let sound_events = sound_events::SoundEvents::load(&paths.registries_json())?;
         let number_formats =
@@ -150,6 +157,7 @@ impl GameData {
             components,
             component_registry,
             entity_classes,
+            entity_attachments,
             particle_types,
             sound_events,
             number_formats,

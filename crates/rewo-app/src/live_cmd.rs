@@ -244,6 +244,15 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // universal), and the equipment tables decide how long each swing lasts and
     // which arm animation it plays.
     session.entity_classes = Some(std::sync::Arc::new(data.entity_classes));
+    // M72 passenger positioning: with the attachment table installed,
+    // `EntityTable::tick_lerp` re-derives every rider's position from its
+    // vehicle at the end of each tick, exactly as `tickPassenger` →
+    // `rideTick` → `positionRider` does. Without it a rider renders at its own
+    // stale synced position and floats beside the mount.
+    session
+        .world
+        .entities
+        .set_attachments(std::sync::Arc::new(data.entity_attachments));
     // The component walker is keyed by name and the wire by id, so the table
     // is installed once the registry is known. Without this every component is
     // unwalkable and the first enchanted sword in a packet costs every stack
