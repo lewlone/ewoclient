@@ -24,3 +24,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # Order-preserving deserialize for the _animations.jpm assignment maps.
 indexmap = { workspace = true }
+# M52b Velvet text: variable-font rasterization. `render` is what provides
+# `scale::Render` + `zeno::Format` (it pulls zeno/eval); `scale` alone gives
+# only the outline sink. Kept explicit rather than defaulted so a future
+# default-feature change cannot silently drop the rasterizer.
+swash = { version = "0.2.10", default-features = false, features = ["scale", "render", "std"] }

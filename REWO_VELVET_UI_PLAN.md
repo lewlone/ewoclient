@@ -4,7 +4,8 @@
 the appearance is settled on paper first. M52a (the module port) shipped; this
 is the machinery M52b needs before a single HUD widget can be ported.
 
-**Mandate (user, 2026-07-28):** *"this is something that must not be rushed and
+**Scope (resolved §8):** all 17 widgets, the in-game editor, and Rewo
+measuring its own ping. **Mandate (user, 2026-07-28):** *"this is something that must not be rushed and
 is definitely fine to build machinery for. We want it to be performant and run
 at high fps like 120 which is why we don't use something like web overlays. And
 also since we want it to look beautiful and have real effects it's bound to be
@@ -266,15 +267,91 @@ Steps 1–3 are the machinery. Step 4 is the proof. Steps 5–7 are volume.
 
 ---
 
-## §8 Open questions
+## §8 Scope, resolved (user, 2026-07-28)
 
-- **Does the in-game editor come too?** The drag/snap/anchor editor is a
-  further chunk. Reading `hud.toml` (step 7) gets the layout without it, and
-  EwoClient's editor can keep being where you arrange things. Deferred unless
-  you want Rewo to own it.
-- **Which widgets are in scope.** Of the 17, seven are PvP (`JumpReset*`,
-  `HitRange`, `Cps`, `ShieldCooldown`, `Reach`, `AttackCharge`, `Combo`) and
-  fall under the legit/pvp split; `Media` is Windows SMTC and launcher-side.
-  That leaves **Fps, Coords, Ping, Keystrokes, Armor, Potions, Target, Items**.
-- **`Ping` needs a source.** Rewo does not currently measure round-trip time;
-  the other seven have their data natively.
+All three open questions were answered "yes, do the whole thing". Recorded
+with what each one adds.
+
+### 1. The in-game editor comes too
+
+Rewo owns HUD editing, not just HUD reading. `hud.toml` stops being an import
+and becomes a file Rewo **writes**, which makes the two clients symmetric —
+arrange the HUD in either, and the other picks it up.
+
+What it needs beyond §1–§4: an overlay screen with pointer capture, per-widget
+hit rects, drag with anchor re-binding, snap-to-align guides, a resize handle
+for the `scale` multiplier, and a side panel of toggles. Rewo is not starting
+from zero — M35's inventory screen already established screen open/close,
+cursor capture release, mouse-position mapping and click dispatch
+(`set_screen_open`, `click_screen`, `screen_key_action`). The editor is a
+second screen on that machinery.
+
+**The snap rule is not cosmetic and must be transcribed, not invented.**
+EwoClient's editor snaps a dragged widget to the other widgets' edges and to
+the anchor grid; two clients that disagree about where a widget lands will
+produce `hud.toml` files that visibly fight each other.
+
+### 2. All widgets — with the legit/pvp split intact
+
+All 17: Fps, Coords, Ping, Keystrokes, Armor, Potions, Target, JumpResetText,
+JumpResetBar, HitRange, Cps, Items, ShieldCooldown, Reach, AttackCharge,
+Combo, Media.
+
+**Seven are PvP and must be `#[cfg(feature = "pvp")]`.** The post-ban refactor
+(CLAUDE.md, 2026-05-26) is explicit that the packet-touching set must not exist
+in the legit build *at all* — the ban landed with the macros switched off,
+pointing at class-name fingerprinting as the surface. That reasoning applies to
+Rewo unchanged: a legit `rewo.exe` must not contain a `HitRange` symbol.
+`rewo-app` and `rewo-gpu` therefore each need a `pvp` feature, propagated the
+way `ewo-core`/`ewo-jni`/`ewo-launcher` already do it. The widget id table is a
+12-entry prefix in the legit build and 17 with `--features pvp`, mirroring how
+`ewo_core::modules::REGISTRY` is a 12-entry prefix of 26.
+
+`Media` reads Windows SMTC (`crates/ewo-jni/src/media.rs`) and is
+platform-gated rather than feature-gated.
+
+### 3. Ping — Rewo will measure it
+
+The other sixteen widgets have their data natively; ping is the one gap, and it
+is a protocol feature rather than a rendering one. Two sources, and the widget
+should prefer the first:
+
+- **Server-reported latency.** `ClientboundPlayerInfoUpdate` carries an
+  `UPDATE_LATENCY` action with a per-player ping in ms. This is what vanilla's
+  tab list shows, it covers *other* players (which `Target` and a future tab
+  list also want), and `rewo-net` already decodes the player-info packet for
+  M7c skins — so this is a new action arm, not a new packet.
+- **Client-measured keep-alive RTT.** `ClientboundKeepAlive` → the matching
+  `ServerboundKeepAlive` is a round trip the client can time itself. Truer to
+  what the player experiences than the server's own figure, and it works
+  before the player list is populated.
+
+Ship both, display the keep-alive RTT, and keep the server figure for other
+players. Gate: a witness that a synthetic keep-alive pair at a known interval
+produces the expected millisecond value, plus one that an `UPDATE_LATENCY`
+arm decodes without desyncing the packet — the `DataComponentPatch` lesson
+from M41 applies to every new action arm.
+
+---
+
+## §9 Revised sequence
+
+Machinery first, one proof, then volume — unchanged in shape, longer in tail.
+
+1. **Glyph atlas + `swash` scaler + quantized cache.** Gate: metrics oracle.
+2. **Text pass** — tracked advances, cap-height baselines, shadow stacks.
+3. **Chrome pass** — SDF rrect fill/ring/shadow/highlight.
+4. **Coords** — the proof that all three compose.
+5. **Liquid glass** — GLSL port + the two slow-clock backdrops.
+6. **`hud.toml` read** — layout + enablement from the shared per-profile file.
+7. **The remaining legit widgets** — Fps, Keystrokes, Armor, Potions, Target,
+   Items. Each a transcription plus a witness.
+8. **Ping** (§8.3) — the two sources and their gate. Unblocks the Ping widget.
+9. **The editor** (§8.1) — screen, drag, snap, resize, toggles; `hud.toml`
+   write. This is where Rewo stops importing the layout and starts owning it.
+10. **The pvp widget set** behind `--features pvp` (§8.2), plus the feature
+    plumbing through `rewo-app`/`rewo-gpu`.
+
+Steps 1–3 are the machinery, 4 is the proof, 5–8 volume, 9–10 the second
+milestone's worth. Nothing after step 4 is blocked on anything before it
+except the machinery, so 7/8/10 can interleave.
