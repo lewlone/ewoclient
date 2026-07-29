@@ -245,7 +245,7 @@ pub const ATLAS_MAX: u32 = 4096;
 pub struct GlyphCache {
     faces: HashMap<(Family, bool), Face>,
     ctx: ScaleContext,
-    glyphs: HashMap<(ScalerKey, u16), Glyph>,
+    glyphs: HashMap<(ScalerKey, u16, u16), Glyph>,
     metrics: HashMap<ScalerKey, Metrics>,
     /// R8 coverage. Colour is a vertex attribute, so one atlas serves every
     /// tint and the shadow copies cost nothing extra.
@@ -373,8 +373,29 @@ impl GlyphCache {
     /// real advance. That is deliberate: it keeps the advance path uniform, so
     /// layout never special-cases whitespace.
     pub fn glyph(&mut self, key: ScalerKey, glyph_id: u16) -> Option<Glyph> {
-        if let Some(g) = self.glyphs.get(&(key, glyph_id)) {
+        self.glyph_blurred(key, glyph_id, 0.0)
+    }
+
+    /// A glyph, optionally Gaussian-blurred by `sigma` pixels.
+    ///
+    /// The Velvet in-world text shadow is three copies -- WINE at blur 5,
+    /// WINE at blur 3, and a hard copy offset +1y. A blurred glyph is still a
+    /// glyph, so it belongs in the same cache under the same discipline: blur
+    /// the coverage **once**, at rasterization time, keyed by a quantized
+    /// sigma. Blurring per frame in a shader would need a multi-tap kernel per
+    /// glyph quad and would redo identical work forever.
+    ///
+    /// Skia's `MaskFilter::blur(BlurStyle::Normal, r)` takes a *radius*; the
+    /// conversion the launcher settled on, and CLAUDE.md records, is
+    /// `sigma = radius / 2`. Take sigma here and convert at the call site, so
+    /// a widget transcription can keep quoting Skia's radius verbatim.
+    pub fn glyph_blurred(&mut self, key: ScalerKey, glyph_id: u16, sigma: f32) -> Option<Glyph> {
+        let blur_q = (sigma / BLUR_QUANTUM).round().max(0.0) as u16;
+        if let Some(g) = self.glyphs.get(&(key, glyph_id, blur_q)) {
             return Some(*g);
+        }
+        if blur_q > 0 {
+            return self.rasterize_blurred(key, glyph_id, blur_q);
         }
         let coords = self.coords_of(key);
         let settings = self.axes_of(key);
@@ -430,7 +451,7 @@ impl GlyphCache {
         };
 
         let g = Glyph { x, y, w, h, left, top, advance };
-        self.glyphs.insert((key, glyph_id), g);
+        self.glyphs.insert((key, glyph_id, 0), g);
         Some(g)
     }
 
@@ -488,6 +509,171 @@ impl GlyphCache {
         }
         w
     }
+}
+
+/// One glyph placed on screen: a destination rect in pixels and its atlas UVs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PositionedGlyph {
+    pub dst_x: f32,
+    pub dst_y: f32,
+    pub dst_w: f32,
+    pub dst_h: f32,
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
+impl GlyphCache {
+    /// Lay out a run at a **baseline** origin, mirroring
+    /// `ewo_render::text::draw_tracked_em` exactly:
+    ///
+    /// ```text
+    /// spacing = letter_spacing_em * font.size()
+    /// for ch: draw at (cur_x, baseline_y); cur_x += advance + spacing
+    /// ```
+    ///
+    /// Two conventions that are easy to get backwards and produce plausible
+    /// but wrong output:
+    ///
+    /// * `origin.1` is the **baseline**, not the top of the text. Every widget
+    ///   computes it as `top + pad_y + cap_height`, so treating it as a top
+    ///   edge shifts the run down by a cap height.
+    /// * `Glyph::top` is positive **up** from the baseline (the rasterizer's
+    ///   placement convention), so the destination top is
+    ///   `baseline - top`, a subtraction. Adding it flips every glyph across
+    ///   the baseline, which looks like a font-loading bug rather than a sign
+    ///   error.
+    ///
+    /// Returns the total advance, which equals `measure_tracked` for the same
+    /// arguments — the two are tested against each other so layout and
+    /// measurement cannot drift.
+    pub fn layout_run(
+        &mut self,
+        key: ScalerKey,
+        text: &str,
+        tracking_em: f32,
+        origin: (f32, f32),
+        out: &mut Vec<PositionedGlyph>,
+    ) -> f32 {
+        let spacing = tracking_em * key.size_px();
+        let inv = 1.0 / self.edge as f32;
+        let (mut pen_x, baseline_y) = origin;
+        let start = pen_x;
+        for ch in text.chars() {
+            let Some(id) = self.glyph_id(key.family, key.italic, ch) else {
+                pen_x += spacing;
+                continue;
+            };
+            let Some(g) = self.glyph(key, id) else {
+                pen_x += spacing;
+                continue;
+            };
+            if g.w > 0 && g.h > 0 {
+                out.push(PositionedGlyph {
+                    dst_x: pen_x + g.left as f32,
+                    dst_y: baseline_y - g.top as f32,
+                    dst_w: g.w as f32,
+                    dst_h: g.h as f32,
+                    u0: g.x as f32 * inv,
+                    v0: g.y as f32 * inv,
+                    u1: (g.x + g.w) as f32 * inv,
+                    v1: (g.y + g.h) as f32 * inv,
+                });
+            }
+            pen_x += g.advance + spacing;
+        }
+        pen_x - start
+    }
+}
+
+/// Quantization step for a blur sigma, in pixels. Coarser than the size step:
+/// a shadow is diffuse by construction, so an eighth-pixel sigma difference is
+/// not merely invisible, it is meaningless.
+pub const BLUR_QUANTUM: f32 = 0.25;
+
+impl GlyphCache {
+    /// Rasterize the sharp glyph, grow its box by the blur support, convolve,
+    /// and pack the result as its own atlas entry.
+    fn rasterize_blurred(&mut self, key: ScalerKey, glyph_id: u16, blur_q: u16) -> Option<Glyph> {
+        let sigma = blur_q as f32 * BLUR_QUANTUM;
+        let sharp = self.glyph(key, glyph_id)?;
+        if sharp.w == 0 || sharp.h == 0 {
+            // Nothing to blur, but the advance must survive.
+            self.glyphs.insert((key, glyph_id, blur_q), sharp);
+            return Some(sharp);
+        }
+        // 3 sigma captures >99% of a Gaussian; past that the tail is below one
+        // 8-bit step and only costs atlas area.
+        let pad = (sigma * 3.0).ceil() as u32;
+        let (bw, bh) = (sharp.w + pad * 2, sharp.h + pad * 2);
+
+        let mut src = vec![0f32; (bw * bh) as usize];
+        for r in 0..sharp.h {
+            for c in 0..sharp.w {
+                let a = self.pixels[((sharp.y + r) * self.edge + sharp.x + c) as usize];
+                src[((r + pad) * bw + c + pad) as usize] = a as f32;
+            }
+        }
+        let kernel = gaussian_kernel(sigma);
+        let half = (kernel.len() / 2) as i32;
+        let (iw, ih) = (bw as i32, bh as i32);
+        // Separable: horizontal into `tmp`, then vertical back into `src`.
+        let mut tmp = vec![0f32; src.len()];
+        for r in 0..ih {
+            for c in 0..iw {
+                let mut acc = 0.0;
+                for (i, k) in kernel.iter().enumerate() {
+                    let x = (c + i as i32 - half).clamp(0, iw - 1);
+                    acc += src[(r * iw + x) as usize] * k;
+                }
+                tmp[(r * iw + c) as usize] = acc;
+            }
+        }
+        for c in 0..iw {
+            for r in 0..ih {
+                let mut acc = 0.0;
+                for (i, k) in kernel.iter().enumerate() {
+                    let y = (r + i as i32 - half).clamp(0, ih - 1);
+                    acc += tmp[(y * iw + c) as usize] * k;
+                }
+                src[(r * iw + c) as usize] = acc;
+            }
+        }
+        let bytes: Vec<u8> = src.iter().map(|v| v.clamp(0.0, 255.0) as u8).collect();
+
+        let (x, y) = self.alloc_or_grow(bw + 1, bh + 1)?;
+        self.blit(x, y, bw, bh, &bytes);
+        let g = Glyph {
+            x,
+            y,
+            w: bw,
+            h: bh,
+            // The box grew by `pad` on every side, so the placement shifts by
+            // the same amount: left back, top up. Without this the shadow sits
+            // down-right of its glyph by the blur support, which reads as a
+            // deliberate offset shadow and is very easy to accept by eye.
+            left: sharp.left - pad as i32,
+            top: sharp.top + pad as i32,
+            advance: sharp.advance,
+        };
+        self.glyphs.insert((key, glyph_id, blur_q), g);
+        Some(g)
+    }
+}
+
+/// A normalized 1D Gaussian, truncated at 3 sigma.
+fn gaussian_kernel(sigma: f32) -> Vec<f32> {
+    let radius = (sigma * 3.0).ceil().max(1.0) as i32;
+    let two_s2 = 2.0 * sigma * sigma;
+    let mut k: Vec<f32> = (-radius..=radius)
+        .map(|i| (-((i * i) as f32) / two_s2).exp())
+        .collect();
+    let sum: f32 = k.iter().sum();
+    for v in &mut k {
+        *v /= sum;
+    }
+    k
 }
 
 impl Default for GlyphCache {
@@ -683,5 +869,148 @@ mod tests {
         let second = c.glyph(k, id).unwrap();
         assert_eq!(first, second);
         assert!(!c.dirty(), "a cache hit must not touch the atlas");
+    }
+
+    #[test]
+    fn layout_and_measure_cannot_drift() {
+        // Same arguments must produce the same width through both paths, or a
+        // chip would be sized by one rule and filled by another.
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::JetBrainsMono, false, 12.0, Axes::DEFAULT);
+        let mut out = Vec::new();
+        let laid = c.layout_run(k, "XYZ", 0.22, (0.0, 20.0), &mut out);
+        let measured = c.measure_tracked(k, "XYZ", 0.22);
+        assert!((laid - measured).abs() < 0.001, "{laid} vs {measured}");
+    }
+
+    #[test]
+    fn the_origin_is_the_baseline_and_top_is_up() {
+        // A capital sits ABOVE the baseline, so its destination top must be
+        // less than the origin y. Adding `top` instead of subtracting would
+        // put it below and still look like "text, somewhere".
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Fraunces, false, 32.0, Axes::DEFAULT);
+        let mut out = Vec::new();
+        c.layout_run(k, "X", 0.0, (10.0, 100.0), &mut out);
+        let g = out[0];
+        assert!(g.dst_y < 100.0, "glyph top {} not above baseline", g.dst_y);
+        let bottom = g.dst_y + g.dst_h;
+        // An 'X' has no descender: its bottom sits on the baseline, within a
+        // pixel of rounding.
+        assert!(
+            (bottom - 100.0).abs() <= 1.5,
+            "'X' bottom {bottom} should rest on the baseline 100"
+        );
+    }
+
+    #[test]
+    fn tracking_moves_the_second_glyph_by_exactly_one_step() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::JetBrainsMono, false, 16.0, Axes::DEFAULT);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        c.layout_run(k, "AB", 0.0, (0.0, 40.0), &mut a);
+        c.layout_run(k, "AB", 0.25, (0.0, 40.0), &mut b);
+        let step = 0.25 * k.size_px();
+        assert!((a[0].dst_x - b[0].dst_x).abs() < 0.001, "first glyph moved");
+        assert!(
+            ((b[1].dst_x - a[1].dst_x) - step).abs() < 0.01,
+            "second glyph moved by {} not {step}",
+            b[1].dst_x - a[1].dst_x
+        );
+    }
+
+    #[test]
+    fn uvs_stay_inside_the_atlas() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Newsreader, false, 24.0, Axes::DEFAULT);
+        let mut out = Vec::new();
+        c.layout_run(k, "The quick brown fox", 0.0, (0.0, 40.0), &mut out);
+        assert!(!out.is_empty());
+        for g in &out {
+            assert!((0.0..=1.0).contains(&g.u0) && (0.0..=1.0).contains(&g.u1));
+            assert!((0.0..=1.0).contains(&g.v0) && (0.0..=1.0).contains(&g.v1));
+            assert!(g.u1 > g.u0 && g.v1 > g.v0, "degenerate uv {g:?}");
+        }
+    }
+
+    #[test]
+    fn a_space_emits_no_quad_but_still_advances() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Newsreader, false, 18.0, Axes::DEFAULT);
+        let mut out = Vec::new();
+        let w = c.layout_run(k, "A A", 0.0, (0.0, 30.0), &mut out);
+        assert_eq!(out.len(), 2, "the space must not emit a quad");
+        assert!(out[1].dst_x > out[0].dst_x + 1.0, "the space did not advance");
+        assert!(w > 0.0);
+    }
+
+    fn atlas_sum(g: Glyph, c: &GlyphCache) -> f64 {
+        (0..g.h)
+            .map(|r| {
+                (0..g.w)
+                    .map(|col| c.atlas()[((g.y + r) * c.atlas_edge() + g.x + col) as usize] as f64)
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    fn atlas_peak(g: Glyph, c: &GlyphCache) -> u8 {
+        (0..g.h)
+            .flat_map(|r| (0..g.w).map(move |col| (r, col)))
+            .map(|(r, col)| c.atlas()[((g.y + r) * c.atlas_edge() + g.x + col) as usize])
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_blurred_glyph_is_bigger_softer_and_conserves_energy() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Fraunces, false, 32.0, Axes::DEFAULT);
+        let id = c.glyph_id(Family::Fraunces, false, 'X').unwrap();
+        let sharp = c.glyph(k, id).unwrap();
+        let sharp_sum = atlas_sum(sharp, &c);
+        let sharp_peak = atlas_peak(sharp, &c);
+
+        let blurred = c.glyph_blurred(k, id, 2.5).unwrap();
+        assert!(blurred.w > sharp.w && blurred.h > sharp.h, "box did not grow");
+        assert!(atlas_peak(blurred, &c) < sharp_peak, "blur did not soften the peak");
+        // A normalized kernel conserves total coverage (edge clamping adds a
+        // little). A kernel that failed to normalize would show up here as a
+        // wildly wrong sum rather than as a subtly wrong-looking shadow.
+        let blur_sum = atlas_sum(blurred, &c);
+        assert!(
+            blur_sum > sharp_sum * 0.85 && blur_sum < sharp_sum * 1.30,
+            "energy {blur_sum} vs {sharp_sum}"
+        );
+        // A shadow copy has to sit exactly under its glyph, so the advance
+        // must not move.
+        assert_eq!(blurred.advance, sharp.advance);
+    }
+
+    #[test]
+    fn the_blur_offset_keeps_the_shadow_centred_on_its_glyph() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Fraunces, false, 32.0, Axes::DEFAULT);
+        let id = c.glyph_id(Family::Fraunces, false, 'O').unwrap();
+        let sharp = c.glyph(k, id).unwrap();
+        let blurred = c.glyph_blurred(k, id, 2.0).unwrap();
+        let sharp_cx = sharp.left as f32 + sharp.w as f32 / 2.0;
+        let blur_cx = blurred.left as f32 + blurred.w as f32 / 2.0;
+        let sharp_cy = -(sharp.top as f32) + sharp.h as f32 / 2.0;
+        let blur_cy = -(blurred.top as f32) + blurred.h as f32 / 2.0;
+        assert!((sharp_cx - blur_cx).abs() < 0.6, "x drift {sharp_cx} vs {blur_cx}");
+        assert!((sharp_cy - blur_cy).abs() < 0.6, "y drift {sharp_cy} vs {blur_cy}");
+    }
+
+    #[test]
+    fn blur_sigma_is_quantized_like_everything_else() {
+        let Some(mut c) = loaded() else { return };
+        let k = ScalerKey::new(Family::Newsreader, false, 16.0, Axes::DEFAULT);
+        let id = c.glyph_id(Family::Newsreader, false, 'm').unwrap();
+        let a = c.glyph_blurred(k, id, 2.50).unwrap();
+        c.clear_dirty();
+        let b = c.glyph_blurred(k, id, 2.51).unwrap();
+        assert_eq!(a, b);
+        assert!(!c.dirty(), "a quantized-equal sigma re-rasterized");
     }
 }

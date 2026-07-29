@@ -47,6 +47,8 @@ fn main() {
         ("shaders/end_sky.vert", "end_sky.vert.spv"),
         ("shaders/end_sky.frag", "end_sky.frag.spv"),
         ("shaders/text.vert", "text.vert.spv"),
+        ("shaders/velvet_text.vert", "velvet_text.vert.spv"),
+        ("shaders/velvet_text.frag", "velvet_text.frag.spv"),
         ("shaders/text.frag", "text.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
