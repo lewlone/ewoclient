@@ -170,9 +170,13 @@ simulates.
 10. **The collision response is not re-projected.** Rule 1's order relaxes and
     *then* collides, so a joint shoved off the torso leaves its links stretched
     until the next tick. A steady walk never fires the push-out and a 30°/tick
-    turn stretches 0.23 model units, but an adversarial rotating forcing reaches
-    3.44. Recorded as a known consequence of the stated order rather than
-    discovered later.
+    turn stretches **0.230** model units — a fifth of a slab — and that is the
+    figure to quote. An earlier draft cited 3.44; that number was an artefact of
+    the missing `ANCHOR_ACCEL` (the unscaled acceleration whipped the chain
+    across the torso). With the scale correct, a cloak gap blows the cape *away*
+    from the body and never fires the push-out at all — only a turn does.
+    Recorded as a known consequence of the stated order rather than discovered
+    later.
 
 ---
 
