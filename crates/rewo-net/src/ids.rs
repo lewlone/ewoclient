@@ -127,6 +127,19 @@ pub struct Ids {
     /// 7, `THUNDER_LEVEL_CHANGE` 8). Required: without it the sky never rains,
     /// and a missing name is a version mismatch rather than clear weather.
     pub cb_play_game_event: i32,
+    /// `ClientboundPlayerAbilitiesPacket` — a flags byte then flying speed then
+    /// walking speed (M75). Required: it is the *authoritative* announcement of
+    /// whether the local player may fly, is flying, and is invulnerable, and it
+    /// is sent on every join. A missing name is a version mismatch that should
+    /// fail loud rather than leave a creative player unable to leave the ground.
+    pub cb_play_player_abilities: i32,
+    /// `ServerboundPlayerAbilitiesPacket` — **one byte**, carrying only the
+    /// flying bit (M75). Required for the same reason in the other direction:
+    /// the client owns the flight toggle, so without this the server never
+    /// learns we are flying and its own `Abilities.flying` stays false. Note
+    /// this shares its *name* with the clientbound packet above; the direction
+    /// is what disambiguates them in the report.
+    pub sb_play_player_abilities: i32,
     /// `ClientboundContainerSetContentPacket` — a whole container's slots
     /// (M34). Required: without it the client never learns what is in the
     /// player's own inventory.
@@ -353,6 +366,8 @@ impl Ids {
             cb_play_animate: req!(p, P, C, "animate"),
             cb_play_damage_event: req!(p, P, C, "damage_event"),
             cb_play_game_event: req!(p, P, C, "game_event"),
+            cb_play_player_abilities: req!(p, P, C, "player_abilities"),
+            sb_play_player_abilities: req!(p, P, S, "player_abilities"),
             cb_play_container_set_content: req!(p, P, C, "container_set_content"),
             cb_play_container_set_slot: req!(p, P, C, "container_set_slot"),
             cb_play_set_held_slot: req!(p, P, C, "set_held_slot"),

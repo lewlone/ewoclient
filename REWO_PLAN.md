@@ -1988,6 +1988,162 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M75 — `player_abilities`, flight, and the gamemode binding (2026-07-29)
+
+M71 modelled the local player's **gamemode** from `game_event`'s
+`CHANGE_GAME_MODE` and explicitly did not act on it, recording why: `physics`
+had no concept of flight, no-clip or invulnerability, and neither
+`player_abilities` packet was in `ids.rs`. It wrote the four-step job into
+`REWO_PACKET_COVERAGE.md` §4.1 rather than half-starting it. All four steps
+shipped here.
+
+**The flags byte, first, because it is the thing most likely to be guessed:**
+`INVULNERABLE = 1, FLYING = 2, CAN_FLY = 4, INSTABUILD = 8`, then `readFloat`
+**flyingSpeed**, then `readFloat` walkingSpeed. Nine fixed bytes, no var-ints,
+no length prefix. The **serverbound twin is one byte** and declares only
+`FLAG_FLYING` — writing the clientbound body there desyncs the stream by eight.
+The server does not take our word for even that one bit:
+`handlePlayerAbilities` server-side is `flying = packet.isFlying() &&
+player.getAbilities().mayfly`, so an unauthorised claim is **ignored, not
+kicked**.
+
+**Flight does not go through `travelFlying`.** That was the milestone's central
+misdirection — the method exists, it is named for this, and it is for mobs and
+swimming. `Player.travel`'s flying arm captures `originalMovementY`, delegates
+to the *ordinary* `LivingEntity.travelInAir`, and then **overwrites** the Y it
+just computed with `originalMovementY * 0.6`. `travelInAir`'s gravity
+subtraction and its 0.98 vertical drag both still run and are then discarded
+whole; the move has already happened, using the pre-gravity velocity. So
+**flight has no gravity term at all**, its vertical drag is **0.6**, and — a
+consequence worth knowing — flying into a ceiling does not zero your upward
+velocity, because the capture precedes the `move` that clipped it.
+
+**Three more that read backwards, each mutation-tested:**
+
+- **`walkingSpeed` is not the client's walking speed.** Its only client
+  consumer is `AbstractClientPlayer.getFieldOfViewModifier`, where it is the
+  *divisor* for `Attributes.MOVEMENT_SPEED`. Its one movement role
+  (`Player.readAdditionalSaveData` seeding that attribute) is server-side NBT
+  load. At the defaults the two agree (`0.1 == 0.1`), so wiring it into the
+  walk path looks correct until a server changes one without the other.
+- **Sneaking does not slow a flying player.** The 0.3 `SNEAKING_SPEED` factor
+  is gated on `isMovingSlowly()` → `isCrouching()` → the `crouching` field,
+  and `aiStep` assigns `crouching = !abilities.flying && …`.
+- **The vertical impulse is an f32 product.** `inputYa * getFlyingSpeed() *
+  3.0F` is `int * float * float`, widened only on assignment. Widening first
+  gives 0.15000000223…; the faithful path gives 0.15000000596…. M12's
+  `Mth.floor`-returns-an-`int` rule again.
+
+**`GameType.updatePlayerAbilities` is asymmetric in exactly one direction, and
+it is step 4.** CREATIVE grants `mayfly`/`instabuild`/`invulnerable` and says
+**nothing** about `flying`; SPECTATOR additionally sets `flying = true`; the
+`else` arm clears all four. So **entering creative does not start you flying** —
+deriving `flying` from `mayfly` is right for three modes and wrong for the one
+a tester is most likely to be in, and it would look like it worked. And
+**leaving creative actively drops flight** rather than merely ceasing to permit
+it. `ModeAbilities.flying` is therefore an `Option<bool>`, so the CREATIVE case
+is unrepresentable as a boolean.
+
+**Three gamemode sources, not one.** `spawn_info.rs` has decoded `gameType` and
+`previousGameType` since M16 and nothing read either. Vanilla routes all three
+— login, respawn, `game_event` — into `MultiPlayerGameMode.setLocalMode`, whose
+two overloads differ in exactly one way: the one-argument form guards the
+previous-mode write on the mode actually changing, and the **two-argument form
+(login/respawn) assigns both directly with no guard at all**, including a
+`None`. Without the login path a client that joins in creative and never
+switches has no idea it is in creative.
+
+**Two pre-existing physics facts surfaced while placing the min-movement
+clamp**, both fixed:
+
+- Its position is load-bearing *only* for flight. Vanilla clamps as the **first
+  statement of `LivingEntity.aiStep`** — after `LocalPlayer`'s vertical impulse
+  and before `travel`. Between two walking ticks nothing happens, so end-of-tick
+  and start-of-next-tick are the same; a flying tick has the impulse in that gap.
+- **A player's horizontal clamp is a joint test on the pair**
+  (`horizontalDistanceSqr() < 9.0E-6`), not the per-axis `0.003` every other
+  entity gets. Rewo took the non-player arm. They disagree where each axis is
+  under 0.003 but the magnitude is not — `vx = vz = 0.0025` has magnitude
+  0.00354, which vanilla keeps. Below the server's 0.25-block correction
+  threshold by two orders of magnitude, which is why `CORRECTIONS 0` never saw
+  it.
+
+**Verification, and an honest limit on the headline number.** `rewo play`'s
+correction meter is **structurally unable to grade flight**: the server's
+"moved wrongly!" check is `… && !this.player.isCreative() &&
+!this.player.isSpectator()`, and vanilla grants `mayfly` in no other mode, so a
+creative client's claimed position is simply `absSnapTo`'d. Same shape as M68's
+finding that the meter cannot see a dropped knockback. So `rewo play
+--fly-check` grades the flight phase by **measured kinematics against closed
+forms**, and leans on the **survival walk after the revoke** for its one
+server-graded property — a binding that failed to clear `flying` would leave
+the client applying flight physics while the server checked it as a walker.
+Live: **8/8, CORRECTIONS 0**, ascent **0.3750 blocks/tick** against a predicted
+0.3750, cruise 0.5413 against 0.5444.
+
+Three of that gate's own errors are worth recording, because two were mine and
+all three were caught by measuring rather than reading:
+
+1. It revoked creative at altitude; the bot fell 60 blocks, **died**, and the
+   respawn teleport landed inside a measurement window. It now descends and
+   lands first — which bought a witness, since flight must end there by the
+   landing clause before any command revokes it.
+2. The sampler divided displacement by the **sample count** rather than the
+   interval count, reading 39/40 = 97.5% of the true rate. That looked exactly
+   like a 2.5% physics error, and the 4% band would have absorbed it: a wrong
+   divisor hiding inside a tolerance. Fixed, the ascent matches to four
+   decimals.
+3. The cruise closed form was the one for **carried velocity** applied to a
+   **displacement** measurement. Per tick the distance covered is
+   `v_carried + a = a/(1 − 0.91)`, while the carried fixed point is
+   `0.91a/(1 − 0.91)` — a ratio of exactly 1/0.91, which is what the failing
+   run reported. The ascent's `2.5·I = 1.5·I + I` already encoded the same
+   distinction; the cruise did not.
+
+**Gate: `rewo abilityshot --check` — serverless, CPU-only, fail-closed,
+47/47.** It drives the real path end to end: nine raw bytes →
+`PlayerAbilities::parse` → `apply_to` → `FlightControl::before_travel` →
+`physics::tick_with` → `after_travel`; and for the gamemode half, a
+`CommonPlayerSpawnInfo` body → the M16 decoder → `play::apply_spawn_game_mode`,
+which was made a **free function** precisely so the gate runs what the session
+runs rather than a copy of it (M45's `install_shapes` lesson).
+
+**A 30-mutation battery was run against it; 29 were caught and the one survivor
+was real.** The per-axis clamp reversion left the gate green because that
+property lived only in a `rewo-world` unit test — so the gate gained a witness
+for it and the mutation is now caught (47 witnesses, not 46). The battery also
+caught a witness that **passed by coincidence**: `holding_jump_never_toggles`
+sampled only the final tick, and dropping the rising-edge test makes a held key
+toggle on a repeating cycle, so the end state was a coin flip. It now asserts
+every tick. Both re-run and confirmed: **30/30**.
+
+**Measured:** 1279 unit tests (world 340, net 430, data 205, mesh 38, gpu 175,
+proto 11, app 80 — from 1247). All 25 serverless gates green with Vulkan
+validation ON and **0 VUIDs**, including `mobshot` 246/246 and its four
+sub-checks. Demo PNG SHA-256 **byte-identical** to M15 onward
+(`2cc56b4a…46635`). Live: `--fly-check` 8/8 CORRECTIONS 0; ordinary `rewo play`
+**CORRECTIONS 0** with place and dig both server-observed ACCEPT.
+
+**Scoped exclusions, recorded rather than guessed:** a mounted player cannot
+toggle flight (vanilla's guard is `getVehicle() == null || jumpableVehicle() !=
+null`, and Rewo models no rideable-jumping, so it takes the boat arm for every
+vehicle); fluids are outside this milestone, so `travelInFluid` and
+`Player.travel`'s swimming pre-step are not modelled; and `instabuild`,
+`invulnerable` and `may_build` are stored and **not acted on**, because nothing
+in Rewo does client-side block-break timing or damage application and acting on
+them would be inventing behaviour. `crates/rewo-world/src/physics.rs` was
+uniformly CRLF and is **normalised to LF**, as M68 did for `motion.rs` — `git
+diff --check` cannot pass on added CRLF lines.
+
+**Coverage rows this milestone would have written** (the doc is owned by a
+concurrent agent, so they are recorded here for reconciliation rather than
+edited in): clientbound-play `player_abilities` (id 64) moves from *never
+resolved* to **consumed**; serverbound `player_abilities` (id 40) is now sent;
+and `game_event`'s `CHANGE_GAME_MODE`, which M71 listed as applied-but-inert,
+now drives `Abilities` — as do the login and respawn `gameType` /
+`previousGameType` fields, which the audit did not cover because it surveyed
+clientbound-play only.
+
 ### M73 — the entity raycast (2026-07-29)
 
 M70 shipped the label ladder with one clause it could not evaluate:

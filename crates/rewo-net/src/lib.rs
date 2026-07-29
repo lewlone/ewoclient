@@ -10,6 +10,7 @@
 //! real client this runs on the net thread (REWO_PLAN.md §4); for the M1
 //! soak/replay tools it runs on its own driver.
 
+pub mod abilities;
 pub mod attributes;
 pub mod biome_parse;
 pub mod boss_bar;
@@ -1239,6 +1240,9 @@ pub fn apply_game_event(body: &[u8], weather: &mut rewo_world::weather::WeatherS
         weather,
         &mut game_event::ClientGameState::default(),
         &rewo_world::physics::PlayerState::at(0.0, 0.0, 0.0),
+        // Weather has no ability consequences; the discarded abilities are the
+        // same kind of "part weather does not depend on" as the state above.
+        &mut rewo_world::abilities::Abilities::default(),
     )
     .was_weather()
 }

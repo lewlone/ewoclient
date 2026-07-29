@@ -72,6 +72,92 @@ impl GameMode {
     pub fn is_survival(self) -> bool {
         self == GameMode::Survival || self == GameMode::Adventure
     }
+
+    /// `GameType.isCreative()`.
+    pub fn is_creative(self) -> bool {
+        self == GameMode::Creative
+    }
+
+    /// `GameType.isBlockPlacingRestricted()` — adventure **and** spectator.
+    pub fn is_block_placing_restricted(self) -> bool {
+        self == GameMode::Adventure || self == GameMode::Spectator
+    }
+
+    /// `GameType.updatePlayerAbilities(Abilities)` (M75), as data.
+    ///
+    /// **The asymmetry is the whole point, and it runs one way only.** Creative
+    /// grants `mayfly`/`instabuild`/`invulnerable` and says *nothing* about
+    /// `flying`; spectator grants `mayfly`/`invulnerable` and additionally sets
+    /// `flying = true`; every other mode clears all four. So:
+    ///
+    /// - **entering creative does not start you flying** — deriving `flying`
+    ///   from `mayfly` is right for three of the four modes and wrong for
+    ///   exactly the one a tester is most likely to be in. It would look like it
+    ///   worked: you switch to creative, press the fly key, and never notice the
+    ///   initial state was wrong.
+    /// - **leaving creative actively drops flight** rather than merely ceasing
+    ///   to permit it, because the `else` arm assigns `flying = false`. That
+    ///   assignment is what the live gate leans on: a survival walk is
+    ///   speed-checked by the server, so leaked flight state shows up as
+    ///   corrections.
+    ///
+    /// `may_build` is assigned on every arm — it is outside the if/else.
+    pub fn update_player_abilities(self) -> rewo_world::abilities::ModeAbilities {
+        use rewo_world::abilities::ModeAbilities;
+        let mut m = match self {
+            GameMode::Creative => ModeAbilities {
+                mayfly: true,
+                instabuild: true,
+                invulnerable: true,
+                flying: None,
+                may_build: true,
+            },
+            GameMode::Spectator => ModeAbilities {
+                mayfly: true,
+                instabuild: false,
+                invulnerable: true,
+                flying: Some(true),
+                may_build: true,
+            },
+            GameMode::Survival | GameMode::Adventure => ModeAbilities {
+                mayfly: false,
+                instabuild: false,
+                invulnerable: false,
+                flying: Some(false),
+                may_build: true,
+            },
+        };
+        m.may_build = !self.is_block_placing_restricted();
+        m
+    }
+}
+
+/// The gamemode half of `handleLogin` / `handleRespawn` (M75): both end in the
+/// **two-argument** `setLocalMode(gameType, previousGameType)`, which assigns
+/// both fields directly and then re-derives the ability flags.
+///
+/// `previousGameType` is a real field with its own meaning, not a spare copy:
+/// vanilla passes it straight through so `MultiPlayerGameMode` can answer "what
+/// was I before" across a respawn, where the one-argument form's change-guard
+/// would have derived it from the client's own history instead. `-1` on the
+/// wire means absent, which [`crate::spawn_info::CommonPlayerSpawnInfo`] already
+/// resolves to `None`.
+///
+/// A **free function** rather than a `PlaySession` method so the `abilityshot`
+/// gate can drive the same code the session runs. A gate that reimplemented
+/// this two-line mapping would be grading its own copy — the failure M45
+/// recorded when `itemshot` called `init_entities` directly and so never
+/// installed the glint.
+pub fn apply_spawn_game_mode(
+    state: &mut crate::game_event::ClientGameState,
+    abilities: &mut rewo_world::abilities::Abilities,
+    spawn: &CommonPlayerSpawnInfo,
+) {
+    state.set_local_mode_with_previous(
+        GameMode::by_id(spawn.game_type as i32),
+        spawn.previous_game_type.map(|p| GameMode::by_id(p as i32)),
+        abilities,
+    );
 }
 
 /// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
@@ -601,6 +687,14 @@ pub struct PlaySession {
     /// The four weather ids go to [`Self::weather`] instead; one packet feeds
     /// both, decoded once.
     pub game_state: crate::game_event::ClientGameState,
+    /// The local player's `Abilities` (M75) — what the `player_abilities`
+    /// packet writes and what `GameType.updatePlayerAbilities` re-derives on
+    /// every gamemode announcement. Read by `physics::tick_with` for the flight
+    /// path.
+    pub abilities: rewo_world::abilities::Abilities,
+    /// `LocalPlayer`'s client-side flight controller: the double-tap toggle and
+    /// its `jumpTriggerTime` window.
+    pub flight: rewo_world::abilities::FlightControl,
     pub chat_log: Vec<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
@@ -1266,6 +1360,8 @@ impl<'a> Connection<'a> {
             particle_types: self.data.particle_types.clone(),
             sound_events: Vec::new(),
             game_state: crate::game_event::ClientGameState::default(),
+            abilities: rewo_world::abilities::Abilities::default(),
+            flight: rewo_world::abilities::FlightControl::default(),
             chat_log: Vec::new(),
             health: 20.0,
             food: 20,
@@ -1415,6 +1511,7 @@ impl PlaySession {
             &mut self.weather,
             &mut self.game_state,
             &self.player,
+            &mut self.abilities,
         );
         for s in applied.sounds {
             self.push_sound_event(crate::sounds::SoundEvent::Local(s));
@@ -1560,8 +1657,37 @@ impl PlaySession {
                     None => &[],
                 }
             };
-            physics::tick(&mut self.player, input, &shapes);
+            // M75. `LocalPlayer.aiStep` runs its flight prologue *before*
+            // `super.aiStep()` reaches `travel`, so the toggle and the vertical
+            // impulse both land in this tick's movement. All three steps live
+            // in `rewo_world::abilities`, which is unit-tested; this is the
+            // adapter, deliberately with no logic of its own (M71's lesson —
+            // `PlaySession` owns a socket and has no tests, so a fan-out
+            // written here would be unwitnessed).
+            let spectator = self.game_state.game_mode().is_some_and(|m| m.is_spectator());
+            let step = self.flight.before_travel(
+                &mut self.abilities,
+                &mut self.player,
+                input,
+                spectator,
+                false,
+            );
+            if step.jump_from_ground {
+                // `jumpFromGround()` on a standing toggle. `physics::tick_with`
+                // fires it too when the jump key is held on the ground, so this
+                // only covers the toggle's own call.
+                self.player.vy = self.player.vy.max(0.42);
+            }
+            let mut owes_packet = step.abilities_changed;
+            let abilities = self.abilities;
+            physics::tick_with(&mut self.player, input, &abilities, spectator, &shapes);
+            owes_packet |= self
+                .flight
+                .after_travel(&mut self.abilities, &self.player, spectator);
             self.collide = collide;
+            if owes_packet {
+                self.send_abilities()?;
+            }
             self.send_movement(input)?;
         }
         self.ticks += 1;
@@ -1578,6 +1704,18 @@ impl PlaySession {
     /// A read-only snapshot of the camera lightmap effects at `partial`.
     pub fn visual_effect_snapshot(&self, partial: f32) -> crate::effects::VisualEffectSnapshot {
         self.visual_effects.snapshot(partial)
+    }
+
+    /// `LocalPlayer.onUpdateAbilities()` — tell the server we changed `flying`.
+    ///
+    /// Sent only when the *client* made the change (a toggle, the spectator
+    /// force-on, or the landing clause); a change that arrived in a
+    /// `ClientboundPlayerAbilitiesPacket` is already the server's own view and
+    /// echoing it back would be noise.
+    fn send_abilities(&mut self) -> Result<(), String> {
+        let p =
+            crate::abilities::serverbound(self.ids.sb_play_player_abilities, self.abilities.flying);
+        self.send(p)
     }
 
     /// Decompiled `LocalPlayer.sendPosition` cadence + tick_end + input.
@@ -2174,6 +2312,18 @@ impl PlaySession {
             // decode feeds the weather levels, the client game state and the
             // local sound queue — see `apply_game_event`.
             self.apply_game_event(body);
+        } else if id == ids.cb_play_player_abilities {
+            // M75. `handlePlayerAbilities` is six assignments and nothing else —
+            // no derived state, no packet in reply. In particular it does NOT
+            // touch `may_build` (absent from the wire) and does NOT feed
+            // `walkingSpeed` into the movement speed.
+            match crate::abilities::PlayerAbilities::parse(body) {
+                Ok(p) => p.apply_to(&mut self.abilities),
+                // A short body is the one case vanilla's reader would throw on.
+                // Dropping it leaves the abilities we already had, which is
+                // closer to "the packet never arrived" than a partial apply.
+                Err(e) => log::warn!("net: player_abilities: {e}"),
+            }
         } else if crate::route_animate(
             id,
             body,
@@ -2765,6 +2915,12 @@ impl PlaySession {
             .map_err(|e| format!("play login: spawn info: {e}"))?;
         self.visual_effects.set_player_id(player_id);
         self.player_id = Some(player_id);
+        // M75. `handleLogin` ends with `setLocalMode(gameType, previousGameType)`.
+        // These two fields have been decoded since M16 and read by nothing:
+        // without them a client that joins in creative and never switches has no
+        // idea it is in creative, because `game_event`'s `CHANGE_GAME_MODE` is
+        // only the *mid-session* change. This is the join-time truth.
+        apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.biome_zoom_seed = Some(spawn.seed);
         self.sea_level = Some(spawn.sea_level);
@@ -2802,6 +2958,11 @@ impl PlaySession {
     fn apply_respawn(&mut self, body: &[u8]) -> Result<(), String> {
         let info = RespawnInfo::parse(body).map_err(|e| format!("play respawn: {e}"))?;
         let spawn = &info.spawn;
+        // M75. `handleRespawn` calls the same two-argument `setLocalMode` that
+        // `handleLogin` does — so a death or a dimension change re-announces
+        // the mode, and re-derives the abilities from it. Applied after the
+        // parse succeeds, alongside everything else this packet establishes.
+        apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,

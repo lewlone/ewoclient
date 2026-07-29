@@ -326,6 +326,7 @@ pub fn apply(
     weather: &mut rewo_world::weather::WeatherState,
     state: &mut ClientGameState,
     player: &PlayerState,
+    abilities: &mut rewo_world::abilities::Abilities,
 ) -> Applied {
     let Ok(Some(ev)) = decode(body) else {
         return Applied::default();
@@ -335,7 +336,7 @@ pub fn apply(
         // the weather rules rather than gaining a second copy here.
         weather.apply_game_event(ev.id, ev.param);
     }
-    state.apply(ev.kind);
+    state.apply(ev.kind, abilities);
     let sounds = ev
         .kind
         .sounds()
@@ -455,8 +456,50 @@ impl ClientGameState {
     /// guaranteed consumer is bounded, dropping the oldest.
     pub const MAX_PENDING_SYSTEM_MESSAGES: usize = 64;
 
+    /// `MultiPlayerGameMode.setLocalMode(GameType, @Nullable GameType)` — the
+    /// **two-argument** form, used by `handleLogin` and `handleRespawn` (M75).
+    ///
+    /// It assigns both fields directly, with **none** of the change-guard the
+    /// one-argument form has: a login that re-announces the current mode does
+    /// overwrite `previousLocalPlayerMode`, with whatever the server sent —
+    /// including `None`. That asymmetry is vanilla's, and it is the reason the
+    /// two forms are two methods here rather than one with an `Option`.
+    ///
+    /// Both forms end in `updatePlayerAbilities`, so the gamemode is what
+    /// actually grants flight; see [`crate::play::GameMode::update_player_abilities`].
+    pub fn set_local_mode_with_previous(
+        &mut self,
+        mode: GameMode,
+        previous: Option<GameMode>,
+        abilities: &mut rewo_world::abilities::Abilities,
+    ) {
+        self.game_mode = Some(mode);
+        self.previous_game_mode = previous;
+        abilities.apply_mode(mode.update_player_abilities());
+    }
+
+    /// `MultiPlayerGameMode.setLocalMode(GameType)` — the **one-argument**
+    /// form, used by `game_event`'s `CHANGE_GAME_MODE`.
+    pub fn set_local_mode(
+        &mut self,
+        mode: GameMode,
+        abilities: &mut rewo_world::abilities::Abilities,
+    ) {
+        // The guard is on the mode actually changing, so a server
+        // re-announcing the current mode does NOT clobber the previous one.
+        if self.game_mode != Some(mode) {
+            self.previous_game_mode = self.game_mode;
+        }
+        self.game_mode = Some(mode);
+        abilities.apply_mode(mode.update_player_abilities());
+    }
+
     /// Apply one decoded event. The four weather ids are no-ops here.
-    pub fn apply(&mut self, event: GameEvent) {
+    ///
+    /// Takes the player's `Abilities` because one of the ten *is* an abilities
+    /// change: `CHANGE_GAME_MODE` runs `setLocalMode`, whose second half is
+    /// `updatePlayerAbilities`. M71 modelled the mode and stopped there.
+    pub fn apply(&mut self, event: GameEvent, abilities: &mut rewo_world::abilities::Abilities) {
         match event {
             GameEvent::NoRespawnBlockAvailable => {
                 if self.pending_system_messages.len() >= Self::MAX_PENDING_SYSTEM_MESSAGES {
@@ -464,15 +507,7 @@ impl ClientGameState {
                 }
                 self.pending_system_messages.push(NO_RESPAWN_BLOCK_KEY);
             }
-            GameEvent::ChangeGameMode(mode) => {
-                // `setLocalMode(GameType)` guards the previous-mode write on
-                // the mode actually changing, so a server re-announcing the
-                // current mode does NOT clobber the previous one.
-                if self.game_mode != Some(mode) {
-                    self.previous_game_mode = self.game_mode;
-                }
-                self.game_mode = Some(mode);
-            }
+            GameEvent::ChangeGameMode(mode) => self.set_local_mode(mode, abilities),
             GameEvent::WinGame => self.won_game = true,
             GameEvent::DemoEvent(hint) => {
                 // A param matching no constant leaves vanilla's `message`
@@ -860,8 +895,81 @@ mod tests {
     }
 
     fn apply(state: &mut ClientGameState, id: u8, param: f32) {
+        apply_ab(state, id, param, &mut rewo_world::abilities::Abilities::default());
+    }
+
+    fn apply_ab(
+        state: &mut ClientGameState,
+        id: u8,
+        param: f32,
+        ab: &mut rewo_world::abilities::Abilities,
+    ) {
         let ev = decode(&body(id, param)).unwrap().unwrap();
-        state.apply(ev.kind);
+        state.apply(ev.kind, ab);
+    }
+
+    // ------------------------------------------- M75: the gamemode binding
+
+    /// `CHANGE_GAME_MODE` is not only a state write — it re-derives the four
+    /// ability flags, which is the step M71 modelled around.
+    #[test]
+    fn a_gamemode_change_updates_the_ability_flags() {
+        let mut s = ClientGameState::default();
+        let mut ab = rewo_world::abilities::Abilities::default();
+        assert!(!ab.mayfly);
+
+        apply_ab(&mut s, ids::CHANGE_GAME_MODE, 1.0, &mut ab); // creative
+        assert!(ab.mayfly && ab.instabuild && ab.invulnerable);
+        assert!(!ab.flying, "entering creative does NOT start you flying");
+
+        // Toggle flight on the way a client does, then drop to survival: the
+        // `else` arm must actively clear it, not merely stop permitting it.
+        ab.flying = true;
+        apply_ab(&mut s, ids::CHANGE_GAME_MODE, 0.0, &mut ab); // survival
+        assert!(!ab.flying && !ab.mayfly && !ab.instabuild && !ab.invulnerable);
+
+        // Spectator is the one mode that assigns `flying = true` itself.
+        apply_ab(&mut s, ids::CHANGE_GAME_MODE, 3.0, &mut ab);
+        assert!(ab.flying && ab.mayfly && ab.invulnerable);
+        assert!(!ab.instabuild, "spectator does not get instabuild");
+        assert!(!ab.may_build, "spectator is block-placing restricted");
+    }
+
+    /// The two `setLocalMode` overloads differ in exactly one way, and it is
+    /// the previous-mode guard.
+    #[test]
+    fn the_two_set_local_mode_forms_differ_on_a_repeat() {
+        let mut ab = rewo_world::abilities::Abilities::default();
+
+        // One-argument (game_event): a repeat leaves `previous` alone.
+        let mut a = ClientGameState::default();
+        a.set_local_mode(GameMode::Survival, &mut ab);
+        a.set_local_mode(GameMode::Creative, &mut ab);
+        a.set_local_mode(GameMode::Creative, &mut ab);
+        assert_eq!(a.previous_game_mode(), Some(GameMode::Survival));
+
+        // Two-argument (login/respawn): it assigns whatever it was handed,
+        // including `None`, with no guard at all.
+        let mut b = ClientGameState::default();
+        b.set_local_mode_with_previous(GameMode::Creative, Some(GameMode::Survival), &mut ab);
+        assert_eq!(b.previous_game_mode(), Some(GameMode::Survival));
+        b.set_local_mode_with_previous(GameMode::Creative, None, &mut ab);
+        assert_eq!(
+            b.previous_game_mode(),
+            None,
+            "the two-arg form overwrites even on a repeat"
+        );
+        assert_eq!(b.game_mode(), Some(GameMode::Creative));
+    }
+
+    /// A spectator login must arrive already flying — this is the join-time
+    /// truth M71 recorded as riding a packet Rewo did not read.
+    #[test]
+    fn a_spectator_login_arrives_flying() {
+        let mut s = ClientGameState::default();
+        let mut ab = rewo_world::abilities::Abilities::default();
+        s.set_local_mode_with_previous(GameMode::Spectator, None, &mut ab);
+        assert!(ab.flying && ab.mayfly);
     }
 
     #[test]
@@ -992,7 +1100,13 @@ mod tests {
         // A position with three distinct, non-zero coordinates, so a dropped
         // or transposed axis cannot coincide with a right answer.
         let player = PlayerState::at(10.0, 64.0, -30.0);
-        let applied = super::apply(&body(id, param), &mut weather, &mut state, &player);
+        let applied = super::apply(
+            &body(id, param),
+            &mut weather,
+            &mut state,
+            &player,
+            &mut rewo_world::abilities::Abilities::default(),
+        );
         (weather, state, applied.sounds)
     }
 
@@ -1060,8 +1174,13 @@ mod tests {
             body(ids::COUNT, 1.0),
             body(200, 1.0),
         ] {
-            let applied =
-                super::apply(&body, &mut weather, &mut state, &PlayerState::at(0.0, 0.0, 0.0));
+            let applied = super::apply(
+                &body,
+                &mut weather,
+                &mut state,
+                &PlayerState::at(0.0, 0.0, 0.0),
+                &mut rewo_world::abilities::Abilities::default(),
+            );
             assert!(applied.sounds.is_empty());
             assert_eq!(applied.event, None, "nothing was decoded");
             assert!(!applied.was_weather());
