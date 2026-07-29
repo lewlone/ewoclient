@@ -532,8 +532,9 @@ pub struct WorldRenderer {
     /// cursor is over.
     container_open: Option<Option<(i32, i32)>>,
     /// This frame's tooltip: the text block's GUI-space top-left and size,
-    /// both measured by the caller (M40). The pass owns no font.
-    container_tooltip: Option<((i32, i32), (i32, i32))>,
+    /// both measured by the caller (M40), plus the bundle grid inside it if the
+    /// hovered stack produced one (M58). The pass owns no font.
+    container_tooltip: Option<crate::container::TooltipDraw>,
     /// This frame's durability bars, in screen pixels (M41). Independent of
     /// the screen being open — a worn pickaxe shows one in the hotbar.
     item_bars: Vec<crate::container::ItemBar>,
@@ -1503,11 +1504,12 @@ impl WorldRenderer {
         self.container_open = open.then_some(hovered);
     }
 
-    /// This frame's tooltip box, or `None` for no tooltip. The caller measures
-    /// it with [`crate::container::tooltip_size`] and places it with
-    /// [`crate::container::tooltip_position`]; only the box lives here,
-    /// because the text goes through the ordinary text pass.
-    pub fn set_container_tooltip(&mut self, tooltip: Option<((i32, i32), (i32, i32))>) {
+    /// This frame's tooltip, or `None` for no tooltip. The caller measures it
+    /// with [`crate::container::tooltip_size`] and places it with
+    /// [`crate::container::tooltip_position`]; only the sprites live here,
+    /// because the text — the lines, the `+N` badge and the bar's label — goes
+    /// through the ordinary text pass.
+    pub fn set_container_tooltip(&mut self, tooltip: Option<crate::container::TooltipDraw>) {
         self.container_tooltip = tooltip;
     }
 
@@ -2507,7 +2509,7 @@ impl WorldRenderer {
                 extent,
                 screen.is_some(),
                 screen.flatten(),
-                self.container_tooltip,
+                self.container_tooltip.as_ref(),
                 &self.item_bars,
             );
         }

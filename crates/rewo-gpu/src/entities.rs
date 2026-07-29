@@ -56,6 +56,59 @@ const TAG_PX: f32 = 0.025;
 /// Tag anchor height above the entity's head.
 const TAG_LIFT: f32 = 0.4;
 
+// --- health bars (M59) ------------------------------------------------
+//
+// `REWO_HEALTH_BAR_SPEC.md` is the source of truth for every number below.
+// It is the one part of Rewo with **no vanilla oracle** — vanilla renders no
+// health bar over any entity — so these carry a spec citation where every
+// other constant in this file carries a decompile one. They are *chosen*,
+// and the spec exists so `healthbarshot` grades them against a written
+// decision rather than against a restatement of this code.
+//
+// Units are **font pixels**, the same unit `push_tag` lays a nametag out in,
+// so the bar rides `TAG_PX` and scales with distance exactly as a tag does.
+
+/// The fill's full width (spec `BAR_W`).
+const BAR_W: f32 = 40.0;
+/// The fill's height (spec `BAR_H`).
+const BAR_H: f32 = 3.0;
+/// The plate's margin around the fill on all four sides (spec `BAR_PAD`) —
+/// the same 1 px the nametag plate uses.
+const BAR_PAD: f32 = 1.0;
+/// How far below the tag anchor the bar hangs when a nametag is present
+/// (spec `BAR_GAP`).
+const BAR_GAP: f32 = 2.0;
+/// Below this fraction the fill takes its critical colour (spec
+/// `CRITICAL_FRAC`). Strictly below: at exactly the threshold the bar is
+/// still healthy.
+const CRITICAL_FRAC: f32 = 0.25;
+/// The backing plate — **identical to the nametag plate's** `[0, 0, 0, 0.25]`,
+/// which is the point: the two surfaces can never drift apart.
+const BAR_PLATE: [f32; 4] = [0.0, 0.0, 0.0, 0.25];
+/// The fill at or above [`CRITICAL_FRAC`].
+const BAR_FILL_HEALTHY: [f32; 4] = [0.85, 0.20, 0.20, 1.0];
+/// The fill below [`CRITICAL_FRAC`].
+const BAR_FILL_CRITICAL: [f32; 4] = [0.95, 0.55, 0.15, 1.0];
+
+/// One entity's health, as the two numbers the bar divides (M59).
+///
+/// A pair rather than a pre-divided fraction so the **emitter** owns the
+/// arithmetic — the clamps, the hide-at-full rule and the colour threshold
+/// are all properties of the render, and a caller that handed over a
+/// fraction would be the place they silently diverged.
+///
+/// `EntityDraw::health` is `None` for every entity that must not show a bar
+/// at all; the resolver upstream owns that decision (spec rules 4 and 5),
+/// because it is the only side that knows what an entity *is*.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HealthBar {
+    /// `LivingEntity.getHealth()` — metadata index 9, FLOAT.
+    pub current: f32,
+    /// `Attributes.MAX_HEALTH`, resolved from a **synced**
+    /// `update_attributes` snapshot. Never a fallback: see spec rule 4.
+    pub max: f32,
+}
+
 /// Borrowed view of `rewo_data::assets::BakedFont` — keeps this crate free
 /// of a rewo-data dependency (same pattern as the texture-layer slices).
 pub struct FontData<'a> {
@@ -128,6 +181,12 @@ pub struct EntityDraw<'a> {
     pub color: [f32; 3],
     /// Nametag text (players); `None` draws no tag.
     pub name: Option<&'a str>,
+    /// Health and max health, when a floating health bar should be drawn
+    /// (M59). `None` draws no bar — and `None` is load-bearing, not a
+    /// placeholder: spec rules 4 and 5 say a bar is suppressed outright for a
+    /// non-living entity, an invisible one, one beyond the name-tag distance,
+    /// and — above all — one whose max health the server has never synced.
+    pub health: Option<HealthBar>,
     /// Which model to draw (falls back to the capsule when the model's
     /// texture wasn't baked).
     pub kind: EntityModelKind,
@@ -1496,6 +1555,9 @@ impl EntityPass {
 
         if self.has_font {
             for d in draws {
+                // M59: the health bar first, so a tag and a bar submitted for
+                // the same entity land adjacently in the buffer.
+                self.push_health_bar(&mut verts, d, cam_right, cam_up);
                 let Some(name) = d.name else { continue };
                 self.push_tag(&mut verts, d, name, cam_right, cam_up);
             }
@@ -2161,6 +2223,133 @@ impl EntityPass {
             }
             pen += adv;
         }
+    }
+
+    /// The floating health bar — a backing plate and a fill, both
+    /// camera-billboarded (M59).
+    ///
+    /// A deliberate sibling of [`Self::push_tag`], and for a reason worth
+    /// stating: a bar needs no new geometry type, texture, pipeline or blend
+    /// state. It is the nametag's plate twice over — the same untextured quad
+    /// sampling the same guaranteed-opaque white texel, on the same camera
+    /// basis, in the same font-pixel units, emitted into the same alpha-blended
+    /// text range. Everything here is layout and arithmetic.
+    ///
+    /// Every rule below cites `REWO_HEALTH_BAR_SPEC.md`, which is the source of
+    /// truth; there is no vanilla behaviour to transcribe.
+    fn push_health_bar(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        right: [f32; 3],
+        up: [f32; 3],
+    ) {
+        // Spec rules 4 and 5: the resolver has already decided this entity may
+        // show a bar at all. There is no fallback here on purpose.
+        let Some(hb) = d.health else { return };
+        // Spec rule 1. Both clamps: absorption can push health past max, and a
+        // max lowered after the fact can leave a stale ratio above 1.
+        let fraction = (hb.current / hb.max).clamp(0.0, 1.0);
+        // A zero or NaN max divides to NaN, which `clamp` propagates. Hidden
+        // rather than drawn at some arbitrary width — the same instinct as rule
+        // 4, one level down.
+        if fraction.is_nan() {
+            return;
+        }
+        // Spec rule 3 — **hidden at full health**, and this is a choice, not an
+        // oversight. A peaceful scene stays uncluttered, and the damaged signal
+        // becomes the bar's *presence* rather than its width. Emitting a full
+        // bar here would be the natural-looking bug.
+        if fraction >= 1.0 {
+            return;
+        }
+
+        let cell = self.cell as f32;
+        let scale = TAG_PX * (8.0 / cell);
+        // The nametag's anchor, unchanged (spec: `pos.y + height + TAG_LIFT`).
+        let anchor = [d.pos[0], d.pos[1] + d.height + TAG_LIFT, d.pos[2]];
+        let world = |px: f32, py: f32| -> [f32; 3] {
+            [
+                anchor[0] + (right[0] * px + up[0] * py) * scale,
+                anchor[1] + (right[1] * px + up[1] * py) * scale,
+                anchor[2] + (right[2] * px + up[2] * py) * scale,
+            ]
+        };
+        let wu = self.white_uv;
+        let mut quad = |x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let (p00, p10, p11, p01) = (world(x0, y0), world(x1, y0), world(x1, y1), world(x0, y1));
+            for p in [p00, p10, p11, p00, p11, p01] {
+                verts.push(Vertex {
+                    pos: p,
+                    uv: wu,
+                    color,
+                    // Fullbright and never hurt-flashed, exactly as a tag is: the
+                    // bar is a label, not a surface of the mob.
+                    light_hurt: [1.0, 1.0, 1.0, 0.0],
+                });
+            }
+        };
+
+        // The tag renders *above* the anchor (its plate spans -1 .. cell+1), so
+        // the bar hangs *below* it. Spec: at the anchor with no tag, `BAR_GAP`
+        // below the anchor with one.
+        let top = if d.name.is_some() { -BAR_GAP } else { 0.0 };
+        let half = BAR_W / 2.0;
+
+        // Plate: the fill's box grown by `BAR_PAD` on all four sides.
+        quad(
+            -half - BAR_PAD,
+            top - BAR_H - 2.0 * BAR_PAD,
+            half + BAR_PAD,
+            top,
+            BAR_PLATE,
+        );
+
+        // Fill: spec rule 2 — `fraction * BAR_W` **exactly**, no rounding to
+        // whole pixels, growing rightward from the plate's inner left edge. It is
+        // emitted even at width zero, so a visible bar is always twelve vertices
+        // and the count alone says whether one is showing.
+        let color = if fraction < CRITICAL_FRAC {
+            BAR_FILL_CRITICAL
+        } else {
+            BAR_FILL_HEALTHY
+        };
+        quad(
+            -half,
+            top - BAR_PAD - BAR_H,
+            -half + fraction * BAR_W,
+            top - BAR_PAD,
+            color,
+        );
+    }
+
+    /// Exactly the vertices [`Self::set_draws`] emits for one entity's health
+    /// bar, as `(world position, linear colour)` pairs — the oracle hook
+    /// `healthbarshot` measures (M59).
+    ///
+    /// It calls [`Self::push_health_bar`] itself rather than describing it. M45
+    /// and M41 both shipped gates that had quietly stopped testing their subject
+    /// because they reimplemented a slice of the path they were grading; a hook
+    /// that *is* the emitter cannot drift from it.
+    pub fn oracle_health_bar(
+        &self,
+        d: &EntityDraw<'_>,
+        right: [f32; 3],
+        up: [f32; 3],
+    ) -> Vec<([f32; 3], [f32; 4])> {
+        let mut verts: Vec<Vertex> = Vec::new();
+        self.push_health_bar(&mut verts, d, right, up);
+        verts.iter().map(|v| (v.pos, v.color)).collect()
+    }
+
+    /// How many vertices the last [`Self::set_draws`] put in the blended text
+    /// range — nametags and health bars. Lets a gate prove the emitter is on the
+    /// real path and not merely callable.
+    pub fn text_vert_count(&self) -> u32 {
+        self.text_verts
     }
 
     /// Shared draw state (viewport, descriptor, push, vertex buffer).

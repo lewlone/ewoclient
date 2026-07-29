@@ -1472,6 +1472,13 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_baby(eid, b);
         }
     }
+    // Slot 0 BYTE → `Entity.DATA_SHARED_FLAGS_ID` (M59). **No kind gate**, and
+    // that is not an oversight: index 0 is `Entity`'s own first `defineId`, so
+    // every entity that exists claims it with this serializer and nothing else
+    // can. Parsed since M1 and discarded until now.
+    if let Some(flags) = meta.flags {
+        entities.set_shared_flags(eid, flags);
+    }
     // Slot 8 BYTE → `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (M23 item use).
     // Gated on the type actually being a `LivingEntity`: `Entity` owns 0..7, so
     // slot 8 is the *first* slot any direct subclass may claim — an

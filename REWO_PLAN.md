@@ -6486,6 +6486,281 @@ definitions are among M22's 147 suppressed). And in a live session the skin is
 uploaded only when one is available; an offline-mode server carries no textures
 property, so the preview wears the default there, as vanilla does.
 
+### M58 — the bundle tooltip's cell chrome (2026-07-29)
+
+Shipped. M56 computed every rectangle of `ClientBundleTooltip`'s grid and
+blitted none of them, because the six sprites it needs live behind
+`rewo-data`'s jar bake and that file was fenced off. This is the six blits, and
+what they turned out to be.
+
+#### The draw order, and the names
+
+`extractImage` splits on `contents.isEmpty()`, and neither arm is the other with
+a loop removed:
+
+```java
+// extractBundleWithItemsTooltip — per visited cell:
+if (hasHighlight) blitSprite(SLOT_HIGHLIGHT_BACK_SPRITE,  drawX, drawY, 24, 24);
+else              blitSprite(SLOT_BACKGROUND_SPRITE,      drawX, drawY, 24, 24);
+graphics.item(item, drawX + 4, drawY + 4, slotIndex);
+graphics.itemDecorations(font, item, drawX + 4, drawY + 4);
+if (hasHighlight) blitSprite(SLOT_HIGHLIGHT_FRONT_SPRITE, drawX, drawY, 24, 24);
+
+// extractProgressbar — the fill first, the border over it:
+blitSprite(getProgressBarTexture(weight), x + 1, y, getProgressBarFill(weight), 13);
+blitSprite(PROGRESSBAR_BORDER_SPRITE,     x,     y, 96, 13);
+centeredText(font, getProgressBarFillText(weight), x + 48, y + 3, -1);
+```
+
+All six identifiers carry a `bundle/` path segment, and for two of them **that
+segment is the whole difference between two different files**:
+`container/bundle/slot_highlight_back` and `..._front` are not the
+`container/slot_highlight_back` / `_front` pair M35 already loads for the
+inventory's hover box. Both pairs exist in the jar, both are 24x24, and reusing
+the inventory's would have rendered something that looks approximately right.
+The six are `container/bundle/{slot_background, slot_highlight_back,
+slot_highlight_front, bundle_progressbar_border, bundle_progressbar_fill,
+bundle_progressbar_full}`.
+
+**Four things in that order are not the obvious reading.**
+
+- **The badge cell gets no chrome at all.** The brief flagged this as an
+  assumption to check; the check comes out on the side of the brief's
+  suspicion, for a reason that reads clearly once found: `extractCount`'s entire
+  body is one `centeredText`. Only `extractSlot` blits, so the `+N` sits
+  directly on the tooltip's own background with no cell art under it, and the
+  grid's art stops at the last occupied slot rather than filling the frame.
+- **The highlight replaces the background; it does not cover it.** The `if
+  (hasHighlight) … else …` picks *one* sprite. That distinction is invisible in
+  a sprite sheet and loud in the render, because `slot_highlight_back` is white
+  at **alpha 96** and `slot_highlight_front` white at **alpha 32**, where
+  `slot_background` is opaque `(33,26,35)`. Drawing both would put the ordinary
+  dark slot art under the highlight — a different picture, and one that no
+  longer shows what is behind it.
+- **The bar's fill goes down first and the border over it.** The border art is a
+  hollow 1 px frame, so the two overlap along every edge and the second blit
+  wins. Reversing them paints the fill's own top row across the frame.
+- **`getProgressBarFill` scales by 94, not by the bar's 96**, and truncates —
+  `Mth.mulAndTruncate`. A quarter-full bundle is 23 pixels, not 24. The `x + 1`
+  is `PROGRESSBAR_BORDER`, which is what leaves the frame a pixel to sit in.
+
+And the two fills are **not two shades of one bar**: `bundle_progressbar_fill`
+is the chat palette's blue `5555FF` and `bundle_progressbar_full` its red
+`FF5555`. A single sprite tinted by the weight lands on neither.
+
+The empty arm is a separate method with no cell loop, and it hands
+`extractProgressbar` a literal **`Fraction.ZERO`** rather than the bundle's own
+weight — which for an empty bundle happens to be the same number, but is not
+written as one and is what the transcription copies.
+
+#### Nine-slice, and the branch three of the six always take
+
+All six declare `nine_slice` in their `.mcmeta` and **none sets
+`stretch_inner`**, so vanilla tiles their five inner pieces. Two consequences:
+
+- `blitNineSlicedSprite`'s first branch is `width == nineSlice.width() &&
+  height == nineSlice.height()` → blit the whole sprite once, no slicing. The
+  three 24x24 cell sprites are blitted at exactly 24x24, so they take it every
+  time and their declared `border: 4` never affects anything. Only the bar's
+  three are really sliced: a 12x12 border into 96x13 and a 6x6 fill into
+  `fill`x13.
+- Rewo emits one **stretched** quad per piece where vanilla tiles. The two are
+  the same picture exactly when each inner slice is uniform along the axis it
+  repeats on — which every one of these sprites is, but as a fact about 26.2's
+  art rather than a theorem. So the gate measures it against the real jar
+  (`bc8`) instead of a comment asserting it, and proves the measurement
+  discriminates by flipping one texel of the fill's centre and watching the same
+  check reject it.
+
+`container::nine_slice` was generalised from its hard-coded 100x100 to take the
+sprite's authored size, and gained the identity branch. `push_quad` became
+all-six-corners-or-none: it silently dropped vertices past `MAX_VERTS`, which
+would have left a torn triangle rather than one fewer quad, and M58 adds up to
+31 quads to the frame's worst case (the cap moved 1024 → 2048).
+
+#### What is wired, and the one thing that is not
+
+`ContainerPass::set_state` now takes a `TooltipDraw { pos, size, bundle }` — one
+struct rather than two setters, so a box and the grid inside it cannot be set
+out of step. The chrome is emitted into the tooltip's own vertex range, so it
+draws over the panel, the icons and the carried stack, as vanilla's tooltip
+stratum does.
+
+**The grid has no contents to draw from, and that is a `rewo-net` gap, not a
+render one.** `BundleItem.getTooltipImage` reads `minecraft:bundle_contents`;
+`component_wire` has a `Shape` for it (`List(ItemStackTemplate)`) so the patch
+parses without desyncing, but `walk_item_template` *discards* the id, the count
+and the nested patch it reads. So a live bundle would produce a grid of nothing
+— worse than no grid — and `screen_tooltip` passes `bundle: None` with the
+reason written at the call site. The gap between the two highlight blits, where
+`graphics.item` and `itemDecorations` go, is empty for the same reason. The
+whole of `bundle_image` + `bundle_chrome` is driven and graded by
+`inventoryshot`; wiring it to a live stack waits on a `BUNDLE_CONTENTS` decoder.
+
+Also not shipped: `extractSelectedItemTooltip`, which nests a *whole second
+tooltip* at `y - 15` carrying the selected item's name — it needs the same
+contents. The `+N` badge and the bar's "Empty"/"Full" labels are text, so they
+belong to the text pass and have the same blocker.
+
+#### Verification
+
+Nine new witnesses in `inventoryshot`, **118 → 127**, all pixels against the
+production walk. Every mutation each one names was **run**, not asserted:
+
+| mutation | witnesses it fails |
+|---|---|
+| blit nothing (the pre-M58 state) | bc1, bc2, bc4 |
+| fill the columns left to right | ti5, ti6, ti8, ti9, ti12, **bc1** |
+| give the badge cell a background | bc2 |
+| key the highlight off the visit order | **bc3** (its two answers swap), bc4 |
+| draw the background *and* the highlight | bc4 |
+| blit the fill at `x` rather than `x + 1` | bc5 |
+| scale the fill by 96 rather than 94 | ti10, bc5 |
+| one fill sprite for every weight | bc5, bc6 |
+| border first, fill over it | bc7 |
+| pass the weight to an empty bundle's bar | bc9 |
+
+`bc8`'s mutation runs inside the witness. `bc4` is the one that needed a shape
+rather than a colour prediction: taking the tooltip's box out from behind an
+otherwise unchanged grid changes the selected cell's interior and cannot change
+an opaque one, so "replaced, not covered" is observable without reproducing an
+alpha blend in a gate.
+
+**708 tests** (705 + 3 new in `rewo-gpu`, pinning the identity branch, the
+exact tiling of the sliced pieces however the borders shrink against a small
+destination, and a zero-width fill emitting no geometry). All gates green with
+Vulkan validation ON and **0 VUIDs** — `itemshot` 62, `inventoryshot` **127**,
+`blockentityshot` 172, `swingshot` 97, `hurtshot` 38, `weathershot` 35,
+`handshot` 34, `particleshot` 34, `eventshot` 28, `danceshot` 24, `portalshot`
+12, `captureshot` 17, `attributeshot` 43, `mobshot` 243/243 + emissive 5 + ETF 8
++ tint 4, plus `skyshot`, `lightmapshot`, `tintshot`, `meshshot`,
+`dimensioncheck`. Demo PNG SHA-256 byte-identical to M15 onward
+(`2cc56b4a…`).
+### M59 — the health bar's render half, and a gate with no oracle (2026-07-29)
+
+M55 shipped the data (`update_attributes`, `AttributeModifier.Operation`, the
+`RangedAttribute` clamp) and called itself "the data half of a health bar".
+This is the other half: the drawing, the resolver that decides whether to draw
+at all, and `rewo healthbarshot --check`.
+
+**It is the first Rewo feature with no vanilla behaviour to transcribe.**
+Every gate before it predicts an answer from an independent reading of the 26.2
+decompile and asserts the render matches; that method has nothing to bite on
+here, because **vanilla renders no health bar over any entity** — hearts, a
+server-driven boss bar, a horse's inventory screen, and nothing else. So the
+numbers were written down first, as a decision, in
+[`REWO_HEALTH_BAR_SPEC.md`](REWO_HEALTH_BAR_SPEC.md), and the gate grades the
+render against *that*. The gate re-declares the spec's constants rather than
+importing `entities.rs`'s: a gate that imports the implementation's constants
+asserts only that the implementation equals itself, which is M41's `t4` failure
+mode exactly.
+
+**Every spec number was used verbatim**: `BAR_W` 40, `BAR_H` 3, `BAR_PAD` 1,
+`BAR_GAP` 2, `CRITICAL_FRAC` 0.25, plate `[0,0,0,0.25]`, healthy
+`[0.85,0.20,0.20,1]`, critical `[0.95,0.55,0.15,1]`, anchor
+`pos.y + height + TAG_LIFT`. Nothing was adjusted.
+
+**The render is `push_tag` twice over** — the spec's own framing, and it held:
+no new geometry type, texture, pipeline or blend state. `push_health_bar` is a
+literal sibling of `push_tag`, emitting into the same alpha-blended
+**text range** (not the solid range world-space sign text takes), on the same
+camera basis, in the same font-pixel units, sampling the same
+guaranteed-opaque white texel. The whole emitter is layout and arithmetic.
+
+**Two spec witnesses are unobservable, and the reason is the spec's own rule
+3.** Both are recorded in the gate's detail strings rather than quietly
+dropped:
+
+- *"exactly `BAR_W` at max"* (the monotonicity row). Rule 3 hides the bar at
+  `fraction >= 1`, so `BAR_W` is the fill's **supremum** and never an emitted
+  value. `b3` asserts the strongest observable statement instead: the last
+  visible sample (19/20) is exactly `0.95 * BAR_W = 38.0` px, and 20/20 emits
+  nothing.
+- *the **upper** clamp* (the clamping row). `clamp(_, 0, 1)`'s ceiling and rule
+  3's `>= 1.0` hide the same set, so an unclamped division is indistinguishable
+  from a clamped one from outside. `b5` grades rules 1 and 3 composed and says
+  so; the clamp stays as the spec writes it, defensively. The **lower** clamp
+  *is* observable and is a real witness (`b4`): unclamped, health −5/20 gives a
+  −10 px fill escaping the plate to the left.
+
+**One spec ambiguity, resolved toward the operative sentence.** The anchor row
+says the bar sits `BAR_GAP` "below **it**" with a tag, "at the anchor itself"
+when not — so *it* is the anchor, and the implementation drops the plate's top
+edge to `-BAR_GAP`. The name column's gloss calls `BAR_GAP` "the vertical gap
+between the bar and the nametag above it", and by that reading the gap would be
+measured from the tag plate's bottom edge at `-1`, putting the bar one pixel
+lower. The two readings differ by exactly `BAR_PAD`. The contrast with "at the
+anchor itself" only parses under the first, so that is what shipped.
+
+**The gating fell out of two things already built.** Spec rule 5 suppresses a
+bar wherever a nametag is suppressed, and in 26.x that needs almost no new
+machinery:
+
+- **Living-only is free.** `rewo_world::attributes::resolve` answers `None`
+  when `DefaultAttributes.SUPPLIERS` has no entry for the type, so a boat has
+  no max health and therefore no bar — with no `matches!` list to keep in sync.
+- **The name-tag distance is itself an attribute.**
+  `EntityRenderer.extractNameTags` gates on
+  `distanceToCameraSq < Mth.square(nameTagDistance)` where `nameTagDistance =
+  entity.getAttribute(Attributes.NAME_TAG_DISTANCE).getValue()` — a
+  `RangedAttribute` defaulting to **64.0** over `[0, 512]`, already in the
+  generated supplier table. So it resolves through M55's machinery, modifiers
+  and clamp included. `f9` is the witness that matters: syncing
+  `name_tag_distance = 128` must make a mob at 100 blocks show, which a
+  hard-coded 64 fails while still passing the 63.99/64.01 pair.
+- **One genuinely new wire input**, and it was already on the floor:
+  `Entity.DATA_SHARED_FLAGS_ID`, metadata **index 0, BYTE**, `FLAG_INVISIBLE =
+  5`. `metadata::parse` has decoded it since M1 into `EntityMeta::flags` and
+  `apply_set_entity_data` **discarded it**. No kind gate on the way in — index
+  0 is `Entity`'s own first `defineId`, so every entity claims it and nothing
+  else can.
+
+**Spec rule 4 is the load-bearing one and it is a refusal, not a fallback.**
+Only a max health an `update_attributes` actually established draws a bar:
+`Source::Default` is rejected even though the supplier's 20.0 is a real number
+for every living entity. Rewo cannot distinguish "the server never sent health"
+from "this mob has 1 HP" either — `DATA_HEALTH_ID` is seeded at `1.0F` — so a
+bar with an unverified denominator would be a confident lie in both directions.
+`f1`/`f2`/`f3` pin it: the same entity, before and after one packet, plus the
+explicit health-1.0 case the spec names.
+
+**The mutation runs found a bug in two of my own witnesses.** All thirteen
+named partners were actually run — source broken, rebuilt, gate re-run,
+reverted — and each fails its partner. The `swapped_division` run
+(`max/current`) hid the bar entirely, and `e3`/`e4` **passed anyway**: they were
+`base.iter().zip(&moved).all(...)`, and `zip` over two empty vectors makes
+`all` vacuously true. A witness that is vacuous when its subject disappears is
+the M45/M41 failure in miniature — the length check is now load-bearing, not
+defensive.
+
+**Process trap worth recording: a mutation script that restores source but not
+the build.** After the last mutation run the tree was clean and
+`target/debug/rewo.exe` still carried `swapped_division`. A full 23-gate sweep
+then ran on that binary; every other gate passed (none touch health bars) and
+`healthbarshot` reported 12/33 while a direct run minutes earlier had reported
+33/33. The tell was a gate that passes standalone and fails in a batch with an
+unchanged tree — **rebuild before believing a sweep**. The sweep was redone
+clean.
+
+**Measured.** `healthbarshot --check` **33/33** (Vulkan validation ON, 0 VUIDs),
+two consecutive clean runs. **705 tests** unchanged (the gate covers the new
+world state through the production path, so no duplicate unit tests were
+added). All 23 gate runs green with 0 VUIDs: itemshot 62, inventoryshot 118,
+blockentityshot 172, swingshot 97, attributeshot 43, hurtshot 38, weathershot
+35, handshot 34, particleshot 34, eventshot 28, danceshot 24, captureshot 17,
+portalshot 12, mobshot 243/243 + emissive 5 + etf 8 + tint 4, plus skyshot,
+lightmapshot, tintshot, meshshot, dimensioncheck. Demo PNG SHA-256
+byte-identical to M15 onward.
+
+**Open.** No live in-world sighting — the gate is authoritative for the
+properties it names, and nobody has yet watched a bar over a real mob on a real
+server. Not gated: scoreboard team name-tag visibility and
+`canSeeFriendlyInvisibles` (Rewo decodes no teams), `isDiscrete()`'s 32-block
+sneak cut-off, `isVehicle()`, `hud.isHidden()`. The live call site passes the
+eye→feet distance in one expression that no witness covers — the comparison is
+graded, the sourcing is not. And the spec's own exclusions stand: no numeric
+text, no local player, no boss bars, no armour/absorption.
+
 ### M56 — the tooltip's image pass, and vanilla's bundle grid (2026-07-28)
 
 Shipped. M40 built the tooltip's first pass — measure, position, nine-slice

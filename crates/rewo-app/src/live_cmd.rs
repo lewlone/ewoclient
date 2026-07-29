@@ -294,7 +294,7 @@ fn linear_rgb(r: u8, g: u8, b: u8) -> [f32; 3] {
 }
 
 /// Camera basis vectors for nametag billboards, from MC-convention angles.
-fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
+pub(crate) fn camera_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
     let yaw = yaw_deg.to_radians();
     let pitch = pitch_deg.to_radians();
     let dir = Vec3::new(
@@ -539,6 +539,76 @@ fn wanted_gesture(kind: EntityModelKind, pose: u8, state: u8) -> Option<rewo_gpu
             _ => return None,
         },
         _ => return None,
+    })
+}
+
+/// Resolve whether one entity shows a floating health bar, and with what
+/// numbers — the production seam shared by the live collector and the
+/// `healthbarshot` oracle (M59).
+///
+/// `REWO_HEALTH_BAR_SPEC.md` owns the bar's *appearance*; this owns the two
+/// questions below the line where a vanilla oracle exists — may a floating
+/// label appear at all, and is the denominator real?
+///
+/// The order is deliberate, and every step returns `None` rather than a
+/// number:
+///
+/// 1. **Living only.** [`rewo_world::attributes::resolve`] answers `None` when
+///    the entity type is unknown, is absent from `DefaultAttributes.SUPPLIERS`
+///    (it is not a `LivingEntity`), or has no such attribute. A boat has no
+///    max health, so a boat gets no bar — with no `matches!` list to keep in
+///    sync.
+/// 2. **Name-tag distance.** `EntityRenderer.extractNameTags` gates the whole
+///    label on `distanceToCameraSq < Mth.square(nameTagDistance)`, and in 26.x
+///    `nameTagDistance` is itself an attribute —
+///    `entity.getAttribute(Attributes.NAME_TAG_DISTANCE).getValue()`, a
+///    `RangedAttribute` defaulting to **64.0** over `[0, 512]`. So it resolves
+///    through exactly the machinery above, modifiers and clamp included.
+/// 3. **Invisible.** `LivingEntityRenderer.shouldShowName` ends in
+///    `... && isVisibleToPlayer && ...`, where `isVisibleToPlayer` is
+///    `!entity.isInvisibleTo(player)` and, with no teams and a non-spectating
+///    viewer, that is `!entity.isInvisible()` — shared-flag **5**.
+/// 4. **A synced max.** Spec rule 4: only a max health an `update_attributes`
+///    actually established draws a bar. [`rewo_world::attributes::Source`]
+///    exists precisely so this can be asked, and **there is no fallback to
+///    20.0**: the supplier's default is a real number for every living entity,
+///    which is what makes a wrong denominator so easy to draw confidently.
+///    Rewo cannot tell "the server never sent health" from "this mob has 1 HP"
+///    either — `DATA_HEALTH_ID` is seeded at `1.0F` — so a bar with an
+///    unverified denominator would be a confident lie in both directions.
+///
+/// Deliberately **not** gated on (each a documented gap, not an oversight):
+/// scoreboard team name-tag visibility and `canSeeFriendlyInvisibles` (Rewo
+/// decodes no teams), `isDiscrete()`'s 32-block sneak cut-off, `isVehicle()`,
+/// and `hud.isHidden()`. The local player never reaches here — it is not in
+/// the entity table — which is also the spec's exclusion.
+pub(crate) fn resolve_health_bar(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    entity_name: Option<&str>,
+    reg: &rewo_data::attributes::AttributeRegistry,
+    distance_sq: f64,
+) -> Option<rewo_gpu::entities::HealthBar> {
+    use rewo_world::attributes::{resolve, Source};
+    let stored = ents.attributes(id);
+    // Steps 1 + 2 at once: a non-living entity has no `name_tag_distance`
+    // either, so this `?` is the living gate as much as the distance one.
+    let (name_tag_distance, _) = resolve(stored, entity_name, "name_tag_distance", reg)?;
+    if distance_sq >= name_tag_distance * name_tag_distance {
+        return None;
+    }
+    // Step 3.
+    if ents.is_invisible(id) {
+        return None;
+    }
+    // Step 4.
+    let (max, source) = resolve(stored, entity_name, "max_health", reg)?;
+    if source != Source::Synced {
+        return None;
+    }
+    Some(rewo_gpu::entities::HealthBar {
+        current: ents.death_state(id).health,
+        max: max as f32,
     })
 }
 
@@ -1278,6 +1348,12 @@ fn collect_entities<'a>(
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
+                                                  // M59: the health bar's two gates that need session-wide state — the
+                                                  // attribute registry (max health, name-tag distance) and the camera
+                                                  // position `EntityRenderDispatcher.distanceToSqr` measures from, which is
+                                                  // the *eye*, not the feet.
+    let attr_reg = session.attribute_registry.as_deref();
+    let eye = player_eye(session);
                                                   // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
                                                   // pins every player's walk pose so a still-target PNG can prove the
                                                   // limb-swing mechanism deterministically (a live walker's phase at
@@ -1415,6 +1491,21 @@ fn collect_entities<'a>(
             } else {
                 session.world.entities.custom_name(id)
             },
+            // M59: the floating health bar. `None` without an attribute
+            // registry, which is the same fail-closed answer the resolver gives
+            // for an unsynced max — a bar is never drawn on a guess.
+            health: attr_reg.and_then(|reg| {
+                let dx = p[0] - eye.x as f64;
+                let dy = p[1] - eye.y as f64;
+                let dz = p[2] - eye.z as f64;
+                resolve_health_bar(
+                    &session.world.entities,
+                    id,
+                    etypes.name(e.type_id),
+                    reg,
+                    dx * dx + dy * dy + dz * dz,
+                )
+            }),
             kind,
             yaw: e.yaw,
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
@@ -1629,6 +1720,12 @@ pub(crate) fn container_sprites(
         highlight_front: s(&c.highlight_front),
         tooltip_background: s(&c.tooltip_background),
         tooltip_frame: s(&c.tooltip_frame),
+        bundle_slot: s(&c.bundle_slot),
+        bundle_highlight_back: s(&c.bundle_highlight_back),
+        bundle_highlight_front: s(&c.bundle_highlight_front),
+        bundle_bar_border: s(&c.bundle_bar_border),
+        bundle_bar_fill: s(&c.bundle_bar_fill),
+        bundle_bar_full: s(&c.bundle_bar_full),
     })
 }
 
@@ -4328,6 +4425,8 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         height: m.height,
         color: [1.0; 3],
         name: None,
+        // M59: no health bar in a still — the gate renders its own.
+        health: None,
         kind: m.kind,
         yaw: 0.0,
         death_time: 0.0,
@@ -6166,6 +6265,8 @@ fn preview_draw<'a>(
         height: PLAYER_HEIGHT,
         color: [1.0, 1.0, 1.0],
         name: None,
+        // M59: no health bar in a still — the gate renders its own.
+        health: None,
         kind: if slim {
             EntityModelKind::PlayerSlim
         } else {
@@ -6664,7 +6765,7 @@ fn apply_screen(
             (w, h),
         )
     });
-    wr.set_container_tooltip(tooltip.as_ref().map(|(box_, _)| *box_));
+    wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _)| draw.clone()));
 
     // The preview's pass is built the first time the screen opens, so a
     // session that never opens it never pays for the second entity atlas.
@@ -6920,7 +7021,10 @@ fn screen_tooltip(
     advance: &[u8; 256],
     mouse: (f64, f64),
     (w, h): (f32, f32),
-) -> Option<(((i32, i32), (i32, i32)), Vec<rewo_gpu::world::OwnedTextLine>)> {
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+)> {
     // A stack on the cursor suppresses the tooltip: vanilla's guard is
     // `hoveredSlot.hasItem() && getCarried().isEmpty()`, so picking something
     // up hides the label of whatever you drag it over.
@@ -6997,7 +7101,25 @@ fn screen_tooltip(
             line
         })
         .collect();
-    Some((((tx, ty), (tw, th)), out))
+    Some((
+        rewo_gpu::container::TooltipDraw {
+            pos: (tx, ty),
+            size: (tw, th),
+            // **The grid has no contents to draw from.** `BundleItem`'s
+            // `getTooltipImage` reads `minecraft:bundle_contents`, and
+            // `rewo-net`'s patch reader walks that component past without
+            // keeping it: its `Shape` is `List(ItemStackTemplate)` and
+            // `walk_item_template` discards the id, the count and the nested
+            // patch it reads. So a bundle here would be a bundle of nothing —
+            // `bundle_image` would report an empty grid whatever the stack
+            // holds, which is worse than reporting no grid at all. The whole
+            // of `container::bundle_chrome` and `tooltip::bundle_image` is
+            // driven and graded by `inventoryshot`; wiring it to a live stack
+            // waits on a `BUNDLE_CONTENTS` decoder (M58 gap).
+            bundle: None,
+        },
+        out,
+    ))
 }
 
 fn screen_icons(

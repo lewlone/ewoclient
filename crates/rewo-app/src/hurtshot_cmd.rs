@@ -466,6 +466,8 @@ fn render_capsule(
         height: 2.0,
         color: [1.0, 1.0, 1.0],
         name: None,
+        // M59: no health bar in a still — the gate renders its own.
+        health: None,
         kind: EntityModelKind::Capsule,
         yaw: 0.0,
         death_time: 0.0,
@@ -821,6 +823,8 @@ fn silhouette(
         height: 2.0,
         color: [1.0, 1.0, 1.0],
         name: None,
+        // M59: no health bar in a still — the gate renders its own.
+        health: None,
         kind: EntityModelKind::Capsule,
         yaw: 0.0,
         death_time,

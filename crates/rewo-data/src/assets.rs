@@ -1209,7 +1209,7 @@ fn bake_entity_tex(jar: Jar, rel: &str, w: u32, h: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// The three textures the container screen draws (M35).
+/// The textures the container screen and its tooltips draw (M35, M40, M58).
 pub struct ContainerSprites {
     /// `AbstractContainerScreen.INVENTORY_LOCATION` — a 256×256 sheet whose
     /// top-left 176×166 is the panel. Kept whole: vanilla blits a sub-rect out
@@ -1231,6 +1231,28 @@ pub struct ContainerSprites {
     /// middles, frame `border: 10` sets `stretch_inner`, so it stretches them.
     pub tooltip_background: HudSprite,
     pub tooltip_frame: HudSprite,
+    /// `ClientBundleTooltip`'s six sprites (M58) — the cell chrome of the grid
+    /// M52 computed the geometry of.
+    ///
+    /// `container/bundle/slot_background`, and the bundle's **own** pair of
+    /// highlights: `container/bundle/slot_highlight_back` and
+    /// `..._front` are *different files* from the two above, which live at
+    /// `container/slot_highlight_*` with no `bundle/` in the path. All three
+    /// are 24×24 and blitted at exactly 24×24, which is
+    /// `blitNineSlicedSprite`'s first branch — `width == nineSlice.width() &&
+    /// height == nineSlice.height()` blits the whole sprite once and never
+    /// slices at all.
+    pub bundle_slot: HudSprite,
+    pub bundle_highlight_back: HudSprite,
+    pub bundle_highlight_front: HudSprite,
+    /// The progress bar's three, which *are* sliced: a 12×12 border blitted at
+    /// 96×13, and two 6×6 fills blitted at `getProgressBarFill(weight)`×13.
+    /// `bundle_progressbar_fill` is the partial state and `_full` the complete
+    /// one — and they are not shades of one colour, they are the chat palette's
+    /// blue `5555FF` and red `FF5555`.
+    pub bundle_bar_border: HudSprite,
+    pub bundle_bar_fill: HudSprite,
+    pub bundle_bar_full: HudSprite,
 }
 
 /// Every item's English display name, keyed by full registry name (M40).
@@ -1298,6 +1320,30 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         highlight_front: get(jar, "gui/sprites/container/slot_highlight_front.png")?,
         tooltip_background: get(jar, "gui/sprites/tooltip/background.png")?,
         tooltip_frame: get(jar, "gui/sprites/tooltip/frame.png")?,
+        // The `bundle/` prefix is load-bearing: the two names above exist
+        // *twice* in the jar, once here and once a directory up, and the two
+        // copies are different art.
+        bundle_slot: get(jar, "gui/sprites/container/bundle/slot_background.png")?,
+        bundle_highlight_back: get(
+            jar,
+            "gui/sprites/container/bundle/slot_highlight_back.png",
+        )?,
+        bundle_highlight_front: get(
+            jar,
+            "gui/sprites/container/bundle/slot_highlight_front.png",
+        )?,
+        bundle_bar_border: get(
+            jar,
+            "gui/sprites/container/bundle/bundle_progressbar_border.png",
+        )?,
+        bundle_bar_fill: get(
+            jar,
+            "gui/sprites/container/bundle/bundle_progressbar_fill.png",
+        )?,
+        bundle_bar_full: get(
+            jar,
+            "gui/sprites/container/bundle/bundle_progressbar_full.png",
+        )?,
     })
 }
 

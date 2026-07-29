@@ -442,6 +442,8 @@ fn check_render(
             height: 1.8,
             color: [1.0, 1.0, 1.0],
             name: None,
+            // M59: no health bar in a still — the gate renders its own.
+            health: None,
             kind: EntityModelKind::Player,
             yaw: 0.0,
             death_time: 0.0,
@@ -495,6 +497,8 @@ fn check_render(
             height: 1.8,
             color: [1.0, 1.0, 1.0],
             name: None,
+            // M59: no health bar in a still — the gate renders its own.
+            health: None,
             kind: EntityModelKind::Player,
             yaw: 0.0,
             death_time: 0.0,
@@ -558,6 +562,8 @@ fn check_render(
             height: 0.25,
             color: [1.0, 1.0, 1.0],
             name: None,
+            // M59: no health bar in a still — the gate renders its own.
+            health: None,
             kind: EntityModelKind::Capsule,
             yaw: 0.0,
             death_time: 0.0,

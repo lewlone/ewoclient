@@ -94,7 +94,7 @@ bar scales with `TAG_PX` exactly as a nametag does.
 | fill colour, healthy | `[0.85, 0.20, 0.20, 1.0]` | |
 | fill colour, critical | `[0.95, 0.55, 0.15, 1.0]` | below `CRITICAL_FRAC` |
 | `CRITICAL_FRAC` | `0.25` | |
-| anchor | `pos.y + height + TAG_LIFT` | the nametag's anchor; the bar sits `BAR_GAP` **below** it when a tag is present, at the anchor itself when not |
+| anchor | `pos.y + height + TAG_LIFT` | the nametag's anchor. **Disambiguated (M59):** `BAR_GAP` is measured from the **anchor**, not from the tag plate's bottom edge at −1 — the two readings differ by exactly `BAR_PAD`, and only the anchor reading is consistent with "at the anchor itself when no tag is present" |
 
 ### Rules
 
@@ -102,8 +102,20 @@ bar scales with `TAG_PX` exactly as a nametag does.
    absorption can push health above max, and a server that lowers max after the
    fact can leave a stale ratio above 1.
 2. **The fill's width is `fraction * BAR_W`, exactly** — no rounding to whole
-   pixels. At `fraction == 0` the fill is emitted with zero width or not at all;
-   at `fraction == 1` it is exactly `BAR_W`.
+   pixels. At `fraction == 0` the fill is emitted with zero width or not at all.
+
+   **Correction (M59):** the original text finished "at `fraction == 1` it is
+   exactly `BAR_W`", which rule 3 makes **unreachable** — a bar at full health
+   emits nothing, so `BAR_W` is a supremum the fill never attains. The strongest
+   observable statement is the one the gate asserts instead: 19/20 is exactly
+   38.0 px, and 20/20 emits nothing.
+
+   The same applies to rule 1's **upper** clamp: `clamp(_, 0, 1)`'s ceiling and
+   rule 3's `>= 1.0` hide the same set, so clamped and unclamped are
+   indistinguishable from outside. It stays specified (defensive, and free), but
+   it is not independently gradeable and the gate does not pretend otherwise.
+   The **lower** clamp is observable and is a real witness — unclamped, −5/20
+   draws a −10 px fill escaping the plate to the left.
 3. **Hidden at full health.** `fraction >= 1.0` emits **no vertices at all** —
    not a full bar. This keeps a peaceful scene uncluttered and makes the
    "damaged" signal the presence of the bar rather than its width.
@@ -114,6 +126,17 @@ bar scales with `TAG_PX` exactly as a nametag does.
    either, since the metadata default is `1.0`.
 5. **Living entities only**, and suppressed by everything that suppresses a
    nametag: invisible, spectator, beyond the name-render distance.
+
+   Two corrections from M59, both from the decompile:
+
+   - **The name-render distance is an attribute, not a constant.**
+     `Attributes.NAME_TAG_DISTANCE` is a `RangedAttribute(64.0, [0, 512])`, so
+     M55's resolution machinery answers it — modifiers and clamp included. A
+     hard-coded 64 is wrong for any server that scales it.
+   - **"Spectator suppression" is backwards.** `isInvisibleTo` returns *false*
+     for a spectating viewer — a spectator **sees** invisible entities. The real
+     rule is `entity != getCameraEntity()`, which the local-player exclusion
+     already covers.
 
 ---
 
