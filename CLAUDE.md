@@ -1626,7 +1626,7 @@ work from `main` and keep it that way.
 > Several sessions have run concurrently with parallel agents, so numbers were
 > assigned independently and reconciled on merge: `M52` appears on more than
 > one piece of work (as does `M61` — the wavy cape and the bundle decoder),
-> `M53` is a *specification* rather than code, and the
+> `M68` also names two (the motion packets and the sheep's undercoat), `M53` is a *specification* rather than code, and the
 > ladder jumps to M58/M59. **`REWO_PLAN.md` §0.0 carries the authoritative
 > numbering note** — read it rather than inferring order from the numbers.
 > When you need to know what actually shipped, read `git log --oneline`
@@ -3651,6 +3651,81 @@ weather branch and watching the gate drop 35 → 32.
 **Gates:** rewo-net 418, rewo-world 291, rewo-app 80; `weathershot` 35/35,
 `inventoryshot` 152, `particleshot` 34; demo PNG `2cc56b4acbfb92cb`
 byte-identical.
+
+### M72 + M73 — the two halves other milestones had to stub
+
+Both landed from concurrent sessions and both close a gap an earlier milestone
+*recorded rather than faked*, which is the pattern working as intended: M70 and
+M68 each wrote down what they could not evaluate, and someone later read the
+note and evaluated it.
+
+**M72 — where a rider actually sits.** M70 decoded `set_passengers` into a
+riding graph and consumed it for `Entity.isVehicle()` alone, so a rider still
+rendered at its own stale synced position. **The seat is entity-type DATA in
+26.x, not a constant** — `getPassengerRidingPosition` reads
+`EntityDimensions.attachments()`, declared by the `EntityType` builder
+(`tools/gen_entity_attachments.py`, 158 types, 57 declaring seats, 24 a vehicle
+point). Three builder conventions invert if assumed: a bare float in
+`passengerAttachments` is a **Y offset**, `ridingOffset(r)` is **negated** into
+the VEHICLE point, and PASSENGER's fallback is **AT_HEIGHT** (the top of the
+bounding box), not AT_FEET.
+
+**There are two tables, keyed by two types.** `positionRider` subtracts the
+*rider's own* VEHICLE point, rotated by the *rider's* yaw — a player's is
+`(0, 0.6, 0)`, which is the whole reason a mounted player sits in a saddle
+rather than standing on the horse's head.
+
+**A passenger does not interpolate**, and the pre-M72 error was never a constant
+offset — **it was a lag**. `ClientLevel.tickEntities` skips passengers outright;
+a rider is reached only via `tickPassenger` → `rideTick`, which ticks it and
+*then* overwrites its position. So Rewo derives into `cur` at the end of
+`tick_lerp`, after every entity's own step has moved `prev = cur`.
+
+Overrides dispatch on the **Java class**, most-derived-first, because that is
+what `super` does. Gate: `rewo rideshot --check`, 24 witnesses. **18 mutations,
+17 bit first time**; the 18th repeated M70's `b4` in a new shape and its named
+partner was *unreachable by construction* — **a named mutation partner that
+cannot be reached is not a partner**, so the witness was rewritten to name the
+detach that is load-bearing.
+
+**M73 — the entity raycast, and the label clause M70 stubbed.** `shouldShowName`
+is `entity.shouldShowName() || (hasCustomName() && entity ==
+crosshairPickEntity)`, and Rewo's raycast was voxel-only, so M70 transcribed the
+second disjunct, graded it both ways, and fed it a hard `false` live.
+
+**It is not a second, label-only raycast.** `Minecraft.pick` assigns
+`crosshairPickEntity` from *the* hitResult — the same one that decides which
+block you are mining. In 26.2 that lives in a private static `LocalPlayer.pick`,
+not in `GameRenderer`.
+
+The inflation is `entity.getPickRadius()` — **0.0F for everything but a
+Projectile** — and **not** the `DEFAULT_ENTITY_HIT_RESULT_MARGIN = 0.3F`
+declared beside it, which belongs to the projectile overload. **`isPickable()`'s
+default is `false`**: a dropped item, an experience orb and a text_display are
+invisible to the crosshair, and so is the ender dragon, which overrides it back
+to false and delegates to unregistered `EnderDragonPart` hitboxes.
+
+**Neither range is hard-coded** — both are RangedAttributes, so creative mode's
+`+2.0` entity-range modifier applies by itself. That exposed a real gap:
+`apply_update_attributes` opens with `getEntity(id) == null` and **the local
+player is not in the EntityTable**, so every snapshot addressed to it was being
+dropped. `PlaySession` now keeps `local_attributes`.
+
+**A mutation survived and found something.** `g5` claimed a dead heat goes to
+the block via `>=`, and mutating it to `>` left the gate green — vanilla
+enforces that precedence **twice** (the sweep is truncated at the block hit
+*and* the survivor is compared against it), and because the truncation feeds
+`maxValue`, whose test is strict, the tie is already excluded by the sweep
+bound. **Neither half alone is observable.** Also: two witnesses hand-computed a
+`0.3` half-width and landed a hundred-millionth off the bound they claimed to
+sample, because **vanilla halves the width as a float** — a mob's near face sits
+at `x - 0.30000001192`.
+
+Both sessions updated `REWO_PLAN.md` and the coverage doc but **not `CLAUDE.md`**
+— these entries are that catch-up. **Merged state: 1247 tests** (net 420, world
+318, gpu 205, data 175, mesh 38, proto 11, app 80); `rideshot` 24, `labelshot`
+47, `weathershot` 35, `inventoryshot` 152, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
