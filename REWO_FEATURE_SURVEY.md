@@ -17,8 +17,8 @@ load-bearing rather than decorative — see §2.
 
 1. **9,291 mods collapse to 75 distinct features.** The unit that matters is
    "a problem someone solved", not "a mod". 54 zoom mods are one feature. Of
-   the 75: **50 QoL to build**, 11 one port milestone, **5 already at vanilla
-   parity**, 3 blocked on audio, 2 atmosphere, 1 done, 3 don't port (§4).
+   the 75: **49 QoL to build**, 8 still in the port milestone, **5 at vanilla
+   parity**, 3 blocked on audio, 2 atmosphere, **5 shipped**, 3 don't port (§4).
 2. **Five top-ranked features were already built** — M40 tooltips, M41
    durability bars, M51 screenshots, plus the vanilla crosshair and selection
    outline. They are `parity` now, ranked in their own table, because the mod
@@ -278,12 +278,12 @@ copy behind. Disposition:
 
 | disposition | count | |
 |---|---:|---|
-| **QoL — build these** | **50** | the roadmap |
+| **QoL — build these** | **49** | the roadmap |
 | **parity** — vanilla version already shipped | 5 | work is *beyond* vanilla; ranked separately |
-| **[port]** — in the Fabric client, not in Rewo | 11 | **one milestone** |
+| **[port]** — in the Fabric client, not in Rewo | 8 | **one milestone**; 4 of the original 12 shipped in M52a |
 | **audio** — blocked | 3 | Rewo has no audio subsystem at all |
 | **atmosphere** — cosmetic, ranked apart | 2 | ambient particles, motion blur |
-| already in the `rewo-*` crates | 1 | Debug / F3 overlay (`overlay.rs`) |
+| already in the `rewo-*` crates | 5 | F3 overlay, plus Zoom / Fullbright / FOV / Toggle sprint-sneak (M52a) |
 | does not port | 3 | see below |
 | **total distinct features** | **75** | from 9,291 mods (still a floor — see §1) |
 
@@ -317,6 +317,19 @@ large.
   vanilla's `options.txt`. Rewo owns its own config; nothing to preserve.
 
 ---
+
+### Status, 2026-07-28
+
+**M52a shipped four of the port bundle** — Zoom, Fullbright, FOV Control and
+Toggle Sprint/Sneak are in `crates/rewo-app/src/modules.rs`, reading the same
+`modules.toml` the launcher writes. **M52c shipped ping's data half**
+(`PlaySession::ping_ms`); the *widget* is frozen with the rest of the HUD.
+
+**Everything HUD-shaped is deliberately paused** — see
+`REWO_VELVET_UI_PLAN.md` §8/§9. EwoClient's HUD is getting a visual overhaul,
+so the widget transcription stopped at one. What is safe to pick up from this
+document during the freeze is anything with no visual coupling: the survey's
+own §5 sequence still holds for those.
 
 ## §5 Ranking and sequence
 

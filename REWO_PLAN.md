@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: M0–M50 shipped and headlessly verified (2026-07-28).**
+**Status: shipped and headlessly verified through `f7901f2` (2026-07-28).**
 `origin/main` carries all of it, and the long-standing branch risk (everything
 from M10 on living on one unmerged branch) is closed. See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log.
@@ -1412,17 +1412,49 @@ mid-session = reconnect concern; Rewo never refreshes.
 | `ewo-jni` HUD/mixins | does not transfer (no JVM); module *effects* become native code |
 | `skin.rs` cuboid geometry | reference for the player-model port |
 
-### 9.4 Velvet overlay track (deferred, not load-bearing)
+### 9.4 Velvet UI track — RESOLVED, and not the way this section planned
 
-Core-client HUD (hotbar/hearts/chat/nametags) uses **vanilla assets +
-bitmap font** — zero cross-tech risk, authentic look. The Velvet
-dashboard/menus (Skia on Vulkan: `skia-safe` with the `vulkan` feature
-wrapping Rewo's device/queue) is a separate later milestone. Check item
-before committing: today's workspace pins `skia-safe 0.78 = ["gl",
-"textlayout", "d3d"]` — confirm a prebuilt exists for the `vulkan` feature
-combo on `x86_64-pc-windows-msvc`, else that track eats an LLVM source
-build. Fallback if interop misbehaves: Skia renders UI to an image, Rewo
-samples it as a texture (one copy, still fine at UI resolutions).
+**Superseded 2026-07-28.** This section proposed Skia-on-Vulkan (`skia-safe`
+with the `vulkan` feature wrapping Rewo's device/queue), and flagged a check
+item about whether a prebuilt existed for that feature combo. **That question
+is moot: the Velvet UI shipped as raw Vulkan.** No Skia, no interop, no
+prebuilt risk, no LLVM source build. See `REWO_VELVET_UI_PLAN.md`.
+
+What landed instead, in `crates/rewo-gpu/`:
+
+- `velvet_glyph.rs` — variable-font rasterization via **`swash`** into a
+  shelf-packed R8 coverage atlas, keyed by a quantized (family, size, axes)
+  tuple. Blurred shadow glyphs live in the same cache under the same key.
+- `velvet_text.rs` — the glyph quads, ring-buffered like `TextPass`.
+- `velvet_chrome.rs` + `shaders/velvet_chrome.frag` — the glass plate as **one
+  instanced quad and one fragment shader over a rounded-box SDF**. Skia's six
+  `draw_rrect` calls collapse because a mask blur over a rounded rect is a
+  smoothstep over the distance field; no blur pass, no ping-pong target.
+- `velvet_widgets.rs` — one widget (Coords), as a proof the three compose.
+- `rewo hudshot --check` — 41 witnesses, mutation-verified.
+
+**Why raw Vulkan turned out to be the cheaper answer.** The thing that looked
+hardest — `ewo-render`'s `liquid_glass.rs` — is not Skia logic at all. It is an
+SDF fragment shader that already avoids `fwidth`/screen-space derivatives
+(SkSL runtime effects cannot rely on them), which is exactly the constraint
+that makes it drop into GLSL unchanged. The genuinely hard part was the *text*
+stack, and that would have been hard under either approach.
+
+**The one renderer-level constraint that outlives any redesign:** the Velvet
+passes must be constructed with `world::unorm_of(target_format)` and drawn
+inside `WorldRenderer::with_gamma_space`. EwoClient's `rgba()` is a plain
+`/255` with no transfer function, so Skia composites in **gamma** space while
+an sRGB attachment blends in **linear**. The half that actually bites is the
+pipeline format — Vulkan requires it to match the attachment, so a pass built
+against sRGB and drawn in that scope is a validation error rather than a
+subtle colour shift.
+
+**Scope is deliberately frozen past one widget.** EwoClient's HUD is getting a
+visual overhaul, so the widget transcription stopped at Coords and the in-game
+editor was not started; the chrome palette is de-baked into a `ShellStyle`
+table so a redesign is a data edit rather than a shader edit.
+`REWO_VELVET_UI_PLAN.md` §8/§9 records what is safe to resume during the
+freeze (anything with no visual coupling) and what waits for the new design.
 
 ---
 
@@ -1442,7 +1474,8 @@ Resolved:
 - **D9** Chat: receive always; send unsigned until M7 signing lands.
 - **D10** Sound post-v1. **D12** Same Cargo workspace, `crates/rewo-*`.
 - **D13** Env-var token handoff (§9.1), `REWO_*` names.
-- **D14** Vanilla-asset HUD first; Skia-Vulkan Velvet overlay later (§9.4).
+- **D14** Vanilla-asset HUD first — held. The Velvet layer that followed is
+  **raw Vulkan, not Skia-Vulkan**; see §9.4, which this decision predates.
 - **D11** ✅ **Name: Rewo** (user, 2026-07-21). Binary `rewo.exe`, crates
   `rewo-*`, env `REWO_*`.
 

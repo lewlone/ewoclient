@@ -472,9 +472,9 @@ DISPOSITION = {
     "Extended render distance":   (3, "qol"),    # Bobby (LGPL) -- rewo-world owns the column store
     "Loading / menu flow":        (4, "qol"),
     "Scoreboard / tab list":      (2, "qol"),
-    "Zoom":                       (1, "port"),
+    "Zoom":                       (1, "have"),   # M52a, rewo-app/src/modules.rs
     "Custom crosshair":           (2, "parity"),  # vanilla crosshair drawn, rewo-gpu/src/hud.rs:36
-    "Fullbright / gamma":         (1, "port"),
+    "Fullbright / gamma":         (1, "have"),   # M52a, via vanilla max gamma
     "Player / mob health bars":   (2, "qol"),
     "Chat QoL":                   (3, "qol"),
     "Capes / cosmetics":          (2, "qol"),
@@ -483,7 +483,7 @@ DISPOSITION = {
     "Ambient particles":          (2, "atmos"),  # M37 shipped the particle system
     "Shoulder / 3rd-person cam":  (2, "qol"),
     "Schematics":                 (5, "qol"),
-    "Toggle sprint / sneak":      (1, "port"),
+    "Toggle sprint / sneak":      (1, "have"),   # M52a, !event.repeat guarded
     "Inventory sorting":          (4, "qol"),
     "Block highlight / outline":  (1, "parity"),  # selection outline, rewo-gpu/src/world.rs:449
     "Block info under crosshair": (2, "qol"),   # Jade/WAILA class    # M-targeting draws the outline; config is the gap
@@ -497,7 +497,7 @@ DISPOSITION = {
     "Keybind search & manage":    (2, "qol"),
     "Replay / recording":         (5, "qol"),
     "Mount / boat HUD":           (2, "qol"),
-    "Ping display":               (1, "port"),
+    "Ping display":               (1, "port"),   # M52c shipped the DATA; the widget is frozen
     "Server list QoL":            (3, "na"),     # the server list lives in the launcher, not Rewo
     "Keystrokes display":         (1, "port"),
     "Overlay removal (fire/etc)": (1, "port"),
@@ -523,7 +523,7 @@ DISPOSITION = {
     "Dynamic lights":             (3, "qol"),
     "Auto-reconnect":             (1, "qol"),
     "Walk while in inventory":    (1, "qol"),
-    "FOV control":                (1, "qol"),
+    "FOV control":                (1, "have"),   # M52a, composes with Zoom
     "Death recap / waypoint":     (2, "qol"),
     "Inventory slot locking":     (2, "qol"),
     "Recipe book QoL":            (3, "qol"),

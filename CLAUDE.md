@@ -1612,15 +1612,24 @@ M15 onward. All of M10–M33b is now **pushed** to
 clean fast-forward, closing the long-standing unmerged-branch risk.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M50 shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, and the first-person hand)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, the first-person hand, and the Velvet type stack)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything through M37 is shipped, gated and merged** to `origin/main` as of
-2026-07-27, closing what had been the project's largest non-code risk — 78
-commits on one unmerged branch. Branch new work from `main`. Rewo (from
+**Everything is shipped, gated and pushed to `origin/main`** as of 2026-07-28
+(`f7901f2`). The long-unmerged-branch risk closed on 2026-07-27; branch new
+work from `main` and keep it that way.
+
+> **⚠ The M-numbers are not a contiguous index — use commit subjects.**
+> Several sessions have run concurrently with parallel agents, so numbers were
+> assigned independently and reconciled on merge: `M52` appears on more than
+> one piece of work, `M53` is a *specification* rather than code, and the
+> ladder jumps to M58/M59. **`REWO_PLAN.md` §0.0 carries the authoritative
+> numbering note** — read it rather than inferring order from the numbers.
+> When you need to know what actually shipped, read `git log --oneline`
+> subjects. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —
@@ -1651,6 +1660,19 @@ carry a measured **~22-25% error**, the list is a **floor**, and the error is
 (`Reach / hit indicators` 38% wrong) rank too high while distinctive ones
 (`Tooltip overhaul` 0%) are clean. Use it as a prioritisation, never as a
 citation.
+
+**[REWO_VELVET_UI_PLAN.md](REWO_VELVET_UI_PLAN.md) is the Velvet UI spec** —
+the type stack Rewo needs for tooltips, chat and F3, and the record of a
+deliberate **visual freeze**. Read its §8/§9 before touching HUD visuals. The
+short version: the glyph/text/chrome machinery landed and is keeper work; the
+widget transcription **stopped at one widget on purpose**, because EwoClient's
+HUD is getting a visual overhaul and anything transcribed now would be redone.
+The chrome palette is de-baked into a `ShellStyle` table so a redesign is a
+data edit, not a shader edit. §3's colour-space note is the one thing that
+survives the overhaul unchanged, because it is a property of the renderer:
+**the Velvet passes must be built with `world::unorm_of(target_format)` and
+drawn inside `WorldRenderer::with_gamma_space`**, or the pipeline format
+mismatches the attachment.
 
 - **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
   playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
@@ -3089,6 +3111,125 @@ citation.
   **harness**: the summon used the pre-1.21.5 `enchantments:{levels:{…}}`
   wrapper, so 26.2 silently produced an unenchanted piece — same shape as M35's
   stale state id and M20.1's build gate.
+### The Velvet type stack, the visual freeze, and four headless subsystems (2026-07-28)
+
+Pushed as `4c0fd6b..f7901f2`. Everything here is **headlessly verified** — the
+demo PNG stayed `2cc56b4acbfb92cb` through all of it, which is the check that
+none of it changes a rendered pixel.
+
+**The module port (`M52a`).** The survey's top-ranked item. Full Bright, FOV
+Control, Zoom, Toggle Sprint, Toggle Sneak, in `crates/rewo-app/src/modules.rs`.
+The catalog is **not** redefined — `ewo_core::modules::REGISTRY` already calls
+itself the single source of truth, so Rewo is its third reader; only `rewo-app`
+takes the dep and `rewo-gpu` keeps taking plain floats. Config reads the **same
+`profiles/<active>/modules.toml` the launcher writes**, so Settings → Modules
+applies to a Native instance with no new contract.
+
+Three invertible details: Full Bright pins vanilla's **maximum gamma** rather
+than bypassing the lightmap, so night vision and darkness keep composing (a
+bypass would silently defeat both); Zoom **divides** whatever FOV is in effect
+rather than setting one, so it composes with FOV Control; Toggle Sprint/Sneak
+guard on `!event.repeat`, or a held key flips the state dozens of times a
+second.
+
+**Two modules are vacuous in Rewo** — `no_view_bob` and `no_damage_tilt`
+disable behaviours Rewo never implemented. They are absent from `RenderModules`
+rather than wired to a no-op, with a test asserting toggling them changes
+nothing. To port the disable you must first build the thing being disabled.
+
+**The Velvet type stack (`M52b`).** See `REWO_VELVET_UI_PLAN.md`. Glyph cache
+(`swash`, quantized key, shelf atlas, variable axes, blurred shadow glyphs),
+text pass, SDF chrome pass, one widget (Coords), and `rewo hudshot --check`
+(41 witnesses, mutation-verified). Load-bearing facts:
+
+- **Rasterize-and-cache, not MSDF.** The fidelity target is pixel-faithful
+  against the Skia originals and SDF reconstruction approximates the outline.
+- **The key is quantized** (1/8 px, 1/2 axis unit) because an unquantized size
+  mints a scaler per frame of a scale drag — the shape of the 2026-05-31 leak.
+- **`swash`'s `linear_scale(s)` multiplies by a FACTOR; `scale(ppem)` divides
+  by units-per-em.** Using the former returns font units: Fraunces' cap height
+  read 25200 instead of 12.6 and every advance was ~1400× too wide. An
+  assertion of `> 0.0` accepted it; only a two-sided bound caught it.
+- **Six Skia `draw_rrect` calls collapse to one fragment shader**, because a
+  mask blur over a rounded rect is a smoothstep over the SDF — no blur pass.
+- **The Velvet passes must be built with `world::unorm_of(target_format)` and
+  drawn inside `with_gamma_space`.** EwoClient's `rgba()` has no transfer
+  function, so Skia composites in gamma space; an sRGB attachment blends in
+  linear. The half that actually bites is the **pipeline format**: a mismatch
+  is a validation error, not a subtle colour shift.
+
+**The visual freeze.** Four steps in, the scope was cut back: the type stack
+lands, the widget transcription **stops at one**, the editor is not started,
+and the palette is de-baked **now** while it is one shader and one widget.
+Reason: the HUD is getting a visual overhaul and anything transcribed now
+would be redone. The music terms deliberately stayed structural — `border.a`
+is the *resting* alpha and the drive gains scale from it, so a new palette
+recolours without flattening the reaction.
+
+**Tooltips through the Velvet pass (`M52b`).** The tooltip line went from
+`(String, [f32;3])` — one string, one colour, nowhere to put "italic" — to
+`tooltip::Line = Vec<Span>`. The fidelity gain is lore: `ItemLore.LORE_STYLE`
+is `withColor(DARK_PURPLE).withItalic(true)` and Rewo had the colour right and
+dropped the slant, because the type could not hold it. The `Span` type is
+**font-agnostic** on purpose, so it outlives the visual direction.
+
+The half that is easy to skip is **measurement**: once the tooltip draws in
+Newsreader, sizing its box with the bitmap advances measures a font it no
+longer uses. Also: vanilla's tooltip `y` is the line's **top** and Velvet lays
+out from the **baseline**, and the atlas sync must run *before* the draw and
+*outside* the rendering scope. The headless path deliberately passes `None`
+and keeps the bitmap tooltip, so the gates' golden images are not moved by a
+typeface change unrelated to what they test.
+
+**Ping (`M52c`), and a correction.** The spec claimed the client could time a
+keep-alive round trip. **It cannot** — `keep_alive` and `ping` are
+*server-initiated* probes; the server sends, the client echoes, and the
+**server** times it. A client cannot measure RTT from a packet it did not
+initiate, and the play protocol gives it nothing to initiate. Vanilla's tab
+list does not compute a ping, it displays one it was told. So the only source
+is `UPDATE_LATENCY` on `player_info_update` — which Rewo was already decoding
+and discarding as `let _latency = r.varint()?;`. One line was the whole gap.
+A **negative latency is a state**, not a decode error (`PlayerTabOverlay`
+buckets `< 0` into the no-connection icon), and `None` ≠ `Some(0)`.
+
+**Chat styling (`M52d`).** `crates/rewo-net/src/chat_style.rs` — legacy `§`
+codes and component trees into styled runs, renderer-agnostic. Six rules a
+plausible implementation gets silently wrong, each pinned: a **colour code
+clears the five format flags** (`§c§lX` is bold red, `§l§cX` is plain red);
+**`§r` resets to the enclosing style, not white**; an unrecognised code
+consumes **both** characters; an explicit `false` beats an inherited `true`;
+a `#` colour is `Integer.parseInt(_, 16)` **not CSS**, so `#f00` is `0x000F00`;
+and a top-level list makes element 0 the **parent** of the rest.
+
+**Component codecs + a latent bug (`M52e`).** The last 7 syncable
+`DataComponentPatch` codecs. The gaps were fatal rather than cosmetic because
+**the patch has no length prefix** — an untranscribed component cannot be
+skipped. `can_place_on` needed a new primitive: it reaches
+`TypedDataComponent`, which is the patch's own rule a second way.
+
+It exposed a **latent bug in M41**: `MAX_DEPTH` charged the budget for every
+combinator including static ones, free only because nothing was deep enough to
+notice. `can_place_on` is — a legitimate adventure predicate would have
+reported `Stuck` and cost the rest of its packet. Only recursive shapes charge
+depth now. The 7 non-syncable components are **named in a test, not counted**,
+so a version that starts syncing one fails as a missing codec.
+
+**Tab list (`M52f`) and chunk cache (`M52g`).** Both model-only, nothing wired.
+The tab list transcribes `PlayerTabOverlay` — cap 80, `MAX_ROWS_PER_COL` 20,
+the four-key comparator (with `wrapping_neg`, because `-Integer.MIN_VALUE`
+wraps in Java), the column-search loop, and the ping buckets. The chunk cache
+is a Bobby-style store with a **version check by equality, not `>=`**, so a
+downgrade cannot misread a newer file; `Container`/`Section`/`Column` fields
+went `pub(crate)` so the encoder **destructures** — adding a field breaks the
+build rather than silently writing an entry that decodes into a plausible
+column missing the new state.
+
+**Known limits, all recorded:** none of the four subsystems is wired to
+anything; `ChunkCache` is not thread-safe and nothing decides when a cached
+column is stale; `TabEntry::team` is always `None` because Rewo does not decode
+the scoreboard-team packet; and `TOOLTIP_TEXT_GUI_PX = 9.0` is an unverified
+calibration guess awaiting one eyeball.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
