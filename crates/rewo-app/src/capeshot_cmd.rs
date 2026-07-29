@@ -44,8 +44,8 @@ use rewo_world::entities::EntityTable;
 
 use crate::stats::OverlayRing;
 
-/// 38 for the vanilla cape (M60), 23 for the wavy one (M61).
-const EXPECTED_WITNESSES: usize = 61;
+/// 38 for the vanilla cape (M60), 26 for the wavy one (M61).
+const EXPECTED_WITNESSES: usize = 64;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -738,8 +738,8 @@ fn check_pool(c: &mut Checker) {
 // already-gated* code rather than against a restatement of itself.
 
 use rewo_world::wavy_cape::{
-    self, WavyCape, DAMPING, GRAVITY, MAX_JOINT_RADIUS, RELAX_PASSES, REST_LEN, SEGMENTS,
-    TORSO_RADIUS,
+    self, WavyCape, ANCHOR_ACCEL, DAMPING, GRAVITY, MAX_JOINT_RADIUS, RELAX_PASSES, REST_LEN,
+    SEGMENTS, TORSO_RADIUS,
 };
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -769,12 +769,16 @@ fn check_wavy_constants(c: &mut Checker) {
             && RELAX_PASSES == 4
             && REST_LEN == 1.0
             && TORSO_RADIUS == 2.5
-            && MAX_JOINT_RADIUS == 24.0,
+            && MAX_JOINT_RADIUS == 24.0
+            // The value, against a literal written out independently of the
+            // expression that produces it.
+            && (ANCHOR_ACCEL - 0.013962634015954637).abs() < 1e-17,
         format!(
             "SEGMENTS {SEGMENTS}, GRAVITY {GRAVITY}, DAMPING {DAMPING}, \
              RELAX_PASSES {RELAX_PASSES}, REST_LEN {REST_LEN}, TORSO_RADIUS \
-             {TORSO_RADIUS}, MAX_JOINT_RADIUS {MAX_JOINT_RADIUS} — the spec's \
-             values; MUTATION changing one in code only fails here"
+             {TORSO_RADIUS}, MAX_JOINT_RADIUS {MAX_JOINT_RADIUS}, ANCHOR_ACCEL \
+             {ANCHOR_ACCEL:.10} — the spec's values; MUTATION changing one in \
+             code only fails here"
         ),
     );
     // REST_LEN is exactly 1.0 rather than 4/3, which is what SEGMENTS = 12
@@ -974,10 +978,11 @@ fn check_wavy_dynamics(c: &mut Checker) {
     let rest_err = worst_link(&s);
     let mut m = WavyCape::new(SEGMENTS, anchor);
     let mut relaxed_err = 0f64;
-    let mut post_tick_err = 0f64;
     for t in 0..200 {
         let ph = t as f64 * 0.31;
-        let f = [ph.sin() * 0.4, 0.0, ph.cos() * 0.4];
+        // A cloak gap swinging through a full circle at 1.5 blocks — the
+        // largest vanilla's own `capeLean` clamp can represent.
+        let f = [ph.sin() * 1.5, 0.0, ph.cos() * 1.5];
         // The four stages `tick` runs, in `tick`'s order, opened up so the
         // residual can be read at the named point. Not a reimplementation:
         // these are the same four methods.
@@ -986,24 +991,39 @@ fn check_wavy_dynamics(c: &mut Checker) {
         relaxed_err = relaxed_err.max(m.worst_link_error());
         m.push_out();
         m.clamp(anchor);
-        post_tick_err = post_tick_err.max(m.worst_link_error());
+    }
+    // The push-out is what perturbs the links after the relax, and a *turn*
+    // is what fires it — the anchor swings to the far side of the body and
+    // the chain has to cross the torso. Measured here rather than under the
+    // forcing above, which now blows the cape away from the body rather than
+    // across it.
+    let mut turning = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut post_tick_err = 0f64;
+    let mut relaxed_in_turn = 0f64;
+    for step in 0..120 {
+        let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
+        turning.integrate(a, [0.0; 3]);
+        turning.relax();
+        relaxed_in_turn = relaxed_in_turn.max(turning.worst_link_error());
+        turning.push_out();
+        turning.clamp(a);
+        post_tick_err = post_tick_err.max(turning.worst_link_error());
     }
     c.record(
         "w9.every_link_stays_within_1e_4_of_REST_LEN_after_the_relax_passes",
-        rest_err < 1e-4 && relaxed_err < 1e-4,
+        rest_err < 1e-4 && relaxed_err < 1e-4 && relaxed_in_turn < 1e-4,
         format!(
-            "worst link error {rest_err:.2e} settled and {relaxed_err:.2e} under \
-             a swinging 0.4-block forcing. FINDING: after the push-out the same \
-             chain reaches {post_tick_err:.2} — the spec's stage order relaxes, \
+            "worst link error {rest_err:.2e} settled, {relaxed_err:.2e} under a \
+             1.5-block gap swinging through a full circle, {relaxed_in_turn:.2e} \
+             through a 30-degree-per-tick turn. FINDING: after the push-out that \
+             turn reaches {post_tick_err:.3} — the spec's stage order relaxes, \
              *then* collides, and never re-projects, so a joint shoved off the \
-             torso leaves its links stretched until the next tick. That forcing \
-             is adversarial (an acceleration that rotates 18 degrees a tick, \
-             whipping the chain across the body); a steady walk never fires the \
-             push-out at all and a 30-degree-per-tick turn stretches by 0.23. \
-             MUTATION \
-             RELAX_PASSES = 0 leaves the chain stretched by whatever the \
-             integrator moved it. NOTE the mass weighting is what makes 1e-4 \
-             reachable at all: symmetric Gauss-Seidel measures 2.9e-2 here"
+             torso leaves its links stretched until the next tick. Small (a \
+             fifth of a slab) and only on a turn, since a gap blows the cape \
+             away from the body rather than across it. MUTATION RELAX_PASSES = 0 \
+             leaves the chain stretched by whatever the integrator moved it. \
+             NOTE the mass weighting is what makes 1e-4 reachable at all: \
+             symmetric Gauss-Seidel measures 2.9e-2 here"
         ),
     );
 
@@ -1065,6 +1085,109 @@ fn check_wavy_dynamics(c: &mut Checker) {
              deviation {pin_worst:e} — the pin is an assignment, not a very \
              stiff spring; MUTATION letting joint 0 simulate makes it lag by \
              whatever the anchor just moved"
+        ),
+    );
+}
+
+/// **The property that was wrong, and that nothing caught.**
+///
+/// The first M61 build fed the anchor gap in as an acceleration with no
+/// coefficient. Every witness in this file passed — settling, constraints,
+/// determinism, pinning, push-out, stability, the backstop, the reduction —
+/// while the cape flew to 80.9° from vertical on a drift the vanilla cape
+/// renders as 5°, because a delta in *blocks* is a hundred times gravity.
+/// The gate could not see it because nothing here measured what the
+/// simulation settles *to*.
+///
+/// So: settle the chain under a constant horizontal gap and read the angle.
+/// The anchor sits far from the body axis on purpose — the torso push-out
+/// would otherwise nudge the top joint and contaminate a measurement that is
+/// about the integrator and the constraints, not the collision.
+fn check_wavy_equilibrium(c: &mut Checker) {
+    let anchor = [0.0, 0.0, -100.0];
+    let settled_tilt = |d: f64| -> f64 {
+        let mut w = WavyCape::new(SEGMENTS, anchor);
+        for _ in 0..4000 {
+            w.tick(anchor, [d, 0.0, 0.0]);
+        }
+        let tip = w.joints()[SEGMENTS];
+        let v = [
+            tip[0] - anchor[0],
+            tip[1] - anchor[1],
+            tip[2] - anchor[2],
+        ];
+        v[0].hypot(v[2]).atan2(-v[1]).to_degrees()
+    };
+    // Vanilla's own answer for the same gap, through the shipped
+    // `cape_angles`: a cloak `d` blocks behind at yaw 0 leans `100·d`.
+    let vanilla_lean =
+        |d: f64| rewo_world::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean as f64;
+
+    // The physics, first: the tilt is `atan(a_h / g)` across the whole range
+    // a real cloak gap can reach (vanilla clamps `capeLean` at 150, i.e. 1.5
+    // blocks), not only where it happens to look linear.
+    let mut worst = 0f64;
+    let mut rows = Vec::new();
+    for &d in &[0.0125f64, 0.05, 0.2, 0.4, 0.864, 1.5] {
+        let got = settled_tilt(d);
+        let want = (ANCHOR_ACCEL * d / GRAVITY).atan().to_degrees();
+        worst = worst.max((got - want).abs());
+        rows.push(format!("{d} -> {got:.2} deg (vanilla {:.1})", vanilla_lean(d)));
+    }
+    c.record(
+        "w20.the_settled_tilt_is_atan_of_the_anchor_acceleration_over_gravity",
+        worst < 1e-3,
+        format!(
+            "worst deviation {worst:.2e} degrees from atan(ANCHOR_ACCEL*delta/\
+             GRAVITY) over gaps [{}]. MUTATION dropping the coefficient — \
+             feeding the delta in raw, which is what the first M61 build did \
+             and what nothing here caught — reads 80.9 degrees at a 0.05 gap \
+             instead of 4.99",
+            rows.join(", ")
+        ),
+    );
+
+    // And the constant's own derivation: at small angles `atan(x) ≈ x`, so
+    // the cloth's tilt must be vanilla's `100·delta` degrees. This is where
+    // ANCHOR_ACCEL comes from, so it is the row that pins it.
+    let small: Vec<(f64, f64, f64)> = [0.0125f64, 0.025, 0.05]
+        .iter()
+        .map(|&d| (d, settled_tilt(d), vanilla_lean(d)))
+        .collect();
+    let worst_small = small
+        .iter()
+        .fold(0f64, |a, (_, got, van)| a.max((got - van).abs()));
+    c.record(
+        "w21.at_small_angles_the_cloth_settles_where_vanillas_capeLean_points",
+        worst_small < 0.05,
+        format!(
+            "{} — worst disagreement {worst_small:.3} degrees. This is the \
+             derivation: `ANCHOR_ACCEL = GRAVITY * 100 * pi/180` is exactly \
+             what makes `theta ≈ a_h/g` equal vanilla's 100 degrees per block \
+             in the small-angle limit, so it is derived and not tuned",
+            small
+                .iter()
+                .map(|(d, got, van)| format!("gap {d}: cloth {got:.2}, vanilla {van:.2}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    );
+
+    // The divergence at larger gaps is *intended* and is asserted rather than
+    // tolerated, so nobody later "fixes" it with a second factor.
+    let (walk, sprint) = (settled_tilt(0.4), settled_tilt(0.864));
+    c.record(
+        "w22.and_it_compresses_where_vanillas_linear_clamp_does_not",
+        walk < vanilla_lean(0.4) - 3.0 && sprint < vanilla_lean(0.864) - 20.0 && walk > 30.0,
+        format!(
+            "a walk-sized gap of 0.4 settles at {walk:.1} degrees against \
+             vanilla's {:.1}, a sprint's 0.864 at {sprint:.1} against {:.1}. \
+             INTENDED: `atan` is the angle a hanging cloth actually takes and \
+             vanilla's `100*delta` is its linear approximation, so they must \
+             part company away from zero. Asserted, not tolerated — a second \
+             coefficient chasing vanilla's number out here would fail this",
+            vanilla_lean(0.4),
+            vanilla_lean(0.864)
         ),
     );
 }
@@ -1710,6 +1833,7 @@ pub fn run(args: CapeshotArgs) -> Result<(), String> {
     check_wavy_anchor(&mut c);
     check_wavy_geometry(&mut c);
     check_wavy_dynamics(&mut c);
+    check_wavy_equilibrium(&mut c);
     check_wavy_pushout(&mut c);
     check_wavy_stability(&mut c);
     check_wavy_backstop(&mut c);

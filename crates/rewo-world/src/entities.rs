@@ -1753,8 +1753,9 @@ impl EntityTable {
                 0.0,
             );
             let anchor = crate::wavy_cape::anchor_in_cape_space(a.flap, a.lean, a.lean2, e.yaw);
-            // The forcing is vanilla's own lagging-cloak gap, verbatim — see
-            // `wavy_cape`'s header for why it is not rescaled.
+            // The forcing is vanilla's own lagging-cloak gap, in blocks;
+            // `wavy_cape::ANCHOR_ACCEL` is what turns it into an
+            // acceleration, and its comment carries the derivation.
             let delta = [
                 cloak[0] - pos[0],
                 cloak[1] - pos[1],
