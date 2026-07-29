@@ -168,6 +168,32 @@ Concretely, from `ClientPacketListener`:
 All four are class A. The first three would be graded by a knockback scenario
 the play harness does not yet have — which is itself the finding.
 
+> **Closed by M68 (2026-07-29), with three corrections to the paragraph above.**
+> All four are decoded, and `rewo play --motion-check` is the knockback/mount
+> scenario this section said the harness lacked.
+>
+> 1. **`set_entity_motion` is not a fixed-point short.** 26.2 replaced that
+>    encoding with `Vec3.LP_STREAM_CODEC` (`LpVec3`) — three 15-bit mantissas
+>    against one shared integer scale, with a **one-byte zero sentinel**. There
+>    is no `/ 8000.0` and no `Mth.clamp(±3.9)` anywhere in the decompile.
+> 2. **`move_vehicle` cannot be exercised by this client at all.** Both send
+>    sites are inside `ServerGamePacketListenerImpl.handleMoveVehicle` — the
+>    server *rejecting* a serverbound vehicle move. Rewo rides as a passenger
+>    and never claims to drive, so it never provokes one. It is decoded and
+>    unit-tested; the live gate reports its count and does not require it.
+> 3. **`CORRECTIONS` is weaker here than "structurally blind" suggests.** It is
+>    blind to these packets *and* it does not reliably catch mishandling them
+>    even once they arrive: vanilla's move check flags a client that moves too
+>    **much**, while one that ignores a shove moves too **little**. A mutation
+>    that decoded the knockback and dropped it produced **zero** corrections.
+>    The gate therefore grades a direct observation — the measured change in
+>    the client's own velocity — and treats the correction count as the
+>    secondary witness.
+>
+> A fourth, about riding: a mounted player's movement is **not validated at
+> all** (`if (this.player.isPassenger())` snaps and returns), so no correction
+> count can say anything about riding accuracy.
+
 ### 2. The inventory's authoritative writes — `set_player_inventory` (108),
 `set_cursor_item` (96), `container_close` (17)
 
@@ -275,7 +301,7 @@ same two greps will call every one of them handled.
 | 33 | `disguised_chat` | absent | **A** | `Component` + `ChatType.Bound`. The chat overlay already exists, so this is decode-and-append. |
 | 34 | `entity_event` | handled | `req!` → `cb_play_entity_event` | |
 | 35 | `entity_position_sync` | handled | `req!` → `cb_play_entity_position_sync` | |
-| 36 | `explode` | absent | **A** | `playerKnockback` is `addDeltaMovement` on the local player — **physics state**. The particle and sound halves are separate (B / audio). |
+| 36 | `explode` | absent | **A** | **Decoded by M68** (physics prefix only — the particle/sound/weighted-list tail is deliberately not consumed). `playerKnockback` is `addDeltaMovement` on the local player — **physics state**. The particle and sound halves are separate (B / audio). |
 | 37 | `forget_level_chunk` | handled | `req!` → `cb_play_forget_chunk` | |
 | 38 | `game_event` | handled | `req!` → `cb_play_game_event` | |
 | 39 | `game_rule_values` | absent | **A** | `Map<ResourceKey<GameRule>, String>`. |
@@ -296,7 +322,7 @@ same two greps will call every one of them handled.
 | 54 | `move_entity_pos_rot` | handled | `req!` → `cb_play_move_entity_pos_rot` | |
 | 55 | `move_minecart_along_track` | absent | **A** | A list of interpolation steps for one minecart — entity movement state. |
 | 56 | `move_entity_rot` | handled | `req!` → `cb_play_move_entity_rot` | |
-| 57 | `move_vehicle` | absent | **A** | The local player's vehicle position/rotation; the serverbound echo is part of the movement contract. |
+| 57 | `move_vehicle` | absent | **A** | **Decoded by M68.** The local player's vehicle position/rotation. Correction: it carries **no entity id** (the client resolves `getRootVehicle()`), and it is sent *only* as a rejection of a serverbound `ServerboundMoveVehiclePacket` — so a passenger-only client never receives one and the live gate cannot trigger it. |
 | 58 | `open_book` | absent | **C** | Book screen. |
 | 59 | `open_screen` | absent | **C** | The menu framework — `minecraft:menu` registry + a screen per type. |
 | 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
@@ -340,13 +366,13 @@ same two greps will call every one of them handled.
 | 98 | `set_display_objective` | handled | `req!` → `cb_play_set_display_objective` | |
 | 99 | `set_entity_data` | handled | `req!` → `cb_play_set_entity_data` | |
 | 100 | `set_entity_link` | absent | **A** | Leash holder id. Rendering the rope is separate (B). |
-| 101 | `set_entity_motion` | absent | **A** | `lerpMotion` on one entity — velocity, including the local player's knockback. |
+| 101 | `set_entity_motion` | absent | **A** | **Decoded by M68.** `lerpMotion` on one entity — velocity, including the local player's knockback. Correction: the body is `Vec3.LP_STREAM_CODEC` (`LpVec3`), **not** the legacy `short / 8000.0` fixed point, which no longer exists in 26.2. |
 | 102 | `set_equipment` | handled | `req!` → `cb_play_set_equipment` | |
 | 103 | `set_experience` | absent | **B** | XP bar and level number. |
 | 104 | `set_health` | handled | `opt!` → `cb_play_set_health` | |
 | 105 | `set_held_slot` | handled | `req!` → `cb_play_set_held_slot` | |
 | 106 | `set_objective` | handled | `req!` → `cb_play_set_objective` | |
-| 107 | `set_passengers` | **partial** (M70) | `req!` → `cb_play_set_passengers` | Decoded and applied to a riding graph, but consumed for `Entity.isVehicle()` only — a ridden entity's floating label is suppressed. The *positional* half is still absent at **A**: passengers render at their own stale positions rather than on their vehicle, and `ejectPassengers` has no effect on physics. |
+| 107 | `set_passengers` | **M68 + M70** | — | Two milestones landed disjoint halves of the same packet. M70 consumes it for `Entity.isVehicle()`, which suppresses a ridden entity's floating label; M68 applies the local player's own mount state to its physics. Still absent: remote passengers render at their own stale positions rather than on their vehicle — a renderer concern, class **B**. |
 | 108 | `set_player_inventory` | **M69** | — | An authoritative inventory write addressed by **inventory index**, not menu slot — the third coordinate system M34 names. M34 handled `container_set_slot` and not this. |
 | 109 | `set_player_team` | handled | `req!` → `cb_play_set_player_team` | |
 | 110 | `set_score` | handled | `req!` → `cb_play_set_score` | |

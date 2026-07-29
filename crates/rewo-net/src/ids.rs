@@ -239,6 +239,24 @@ pub struct Ids {
     /// A different quantity from the radius above and a byte-identical body,
     /// so the id is the only thing that tells them apart.
     pub cb_play_set_simulation_distance: i32,
+    // ── M68: the four packets that move the local player ──────────────────
+    // All four `req!`, for the reason M62/M63/M65/M67 give: `require` grades
+    // the *report*, not the server. A server whose players are never knocked
+    // back simply never sends `explode` — a runtime state. A report with no
+    // `explode` in it is a version mismatch, and a client whose knockback,
+    // velocity and mount handling silently vanished would look exactly like a
+    // physics bug rather than a protocol one.
+    /// `ClientboundExplodePacket` — whose `playerKnockback` is an
+    /// `addDeltaMovement` straight onto the local player.
+    pub cb_play_explode: i32,
+    /// `ClientboundSetEntityMotionPacket` — one entity's velocity, including
+    /// the local player's own knockback. The body is a VarInt id plus
+    /// `Vec3.LP_STREAM_CODEC`, **not** the legacy short fixed point.
+    pub cb_play_set_entity_motion: i32,
+    /// `ClientboundMoveVehiclePacket` — the server repositioning the vehicle
+    /// the local player rides. Carries no entity id: the client resolves
+    /// `player.getRootVehicle()` itself.
+    pub cb_play_move_vehicle: i32,
 }
 
 impl Ids {
@@ -360,6 +378,9 @@ impl Ids {
             cb_play_set_chunk_cache_center: req!(p, P, C, "set_chunk_cache_center"),
             cb_play_set_chunk_cache_radius: req!(p, P, C, "set_chunk_cache_radius"),
             cb_play_set_simulation_distance: req!(p, P, C, "set_simulation_distance"),
+            cb_play_explode: req!(p, P, C, "explode"),
+            cb_play_set_entity_motion: req!(p, P, C, "set_entity_motion"),
+            cb_play_move_vehicle: req!(p, P, C, "move_vehicle"),
         })
     }
 }

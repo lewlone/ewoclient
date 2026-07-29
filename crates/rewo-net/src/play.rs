@@ -226,6 +226,69 @@ pub fn parse_player_info_latency(body: &[u8]) -> Vec<(u128, i32)> {
         .collect()
 }
 
+/// What M68's four packets actually did to this session.
+///
+/// Counters rather than booleans because the gate has to distinguish "the
+/// server never sent one" from "it sent one that carried nothing" — an
+/// `explode` with no `playerKnockback` is the *common* case (only a
+/// non-spectator, non-flying player is recorded in `ServerExplosion.hitPlayers`),
+/// so a gate that only counted explosions would pass on a run where the bot
+/// was never actually pushed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MotionStats {
+    /// `explode` packets decoded.
+    pub explosions: u32,
+    /// …of which carried a `playerKnockback` for us.
+    pub explosion_knockbacks: u32,
+    /// …of which carried a knockback that was actually **non-zero**.
+    ///
+    /// The distinction is load-bearing for diagnosis, not decoration.
+    /// `ServerExplosion` records a player in `hitPlayers` whenever it is in
+    /// range and not a flying-creative spectator — *regardless of whether the
+    /// computed knockback came out zero* — and it comes out zero whenever
+    /// `getSeenPercent` finds no line of sight. So a shielded player receives
+    /// `Some((0,0,0))`, which is indistinguishable downstream from a knockback
+    /// the client decoded and threw away. Without this counter the gate blames
+    /// the decoder for what is really a fixture that blew a hole in its own
+    /// line of sight.
+    pub explosion_knockbacks_nonzero: u32,
+    /// `set_entity_motion` packets decoded, for any entity.
+    pub entity_motions: u32,
+    /// …of which addressed the local player's own entity id.
+    pub local_motions: u32,
+    /// …of which were the one-byte zero sentinel (an entity stopping).
+    pub local_motion_stops: u32,
+    /// `set_passengers` packets decoded.
+    pub passenger_updates: u32,
+    /// Transitions where the local player *became* a passenger.
+    pub local_mounts: u32,
+    /// Transitions where the local player *stopped* being a passenger.
+    pub local_dismounts: u32,
+    /// `move_vehicle` packets decoded. Expected to stay 0 — see
+    /// [`crate::motion::VehicleMove`].
+    pub vehicle_moves: u32,
+    /// Server position corrections received while the local player was a
+    /// passenger.
+    ///
+    /// Tracked apart from [`PlaySession::corrections`] because vanilla's
+    /// server does **not** validate a passenger's movement
+    /// (`ServerGamePacketListenerImpl`: `if (this.player.isPassenger())` snaps
+    /// and returns), so this number cannot rise from riding badly. It exists
+    /// to keep those teleports out of the walking meter, not to grade riding.
+    pub corrections_while_mounted: u32,
+    /// The largest per-component change an explosion knockback actually made
+    /// to the local player's velocity, **measured from the player state** —
+    /// before and after — rather than read off the packet.
+    ///
+    /// This exists because the correction-based check alone proved too weak.
+    /// A mutation that decoded the knockback and then dropped it passed a
+    /// green gate, so the gate needed a witness that observes the *effect* on
+    /// the client rather than a downstream consequence the server may or may
+    /// not choose to report. A decoded-but-unapplied knockback leaves this at
+    /// exactly 0.
+    pub knockback_velocity_delta: f64,
+}
+
 pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
@@ -403,6 +466,17 @@ pub struct PlaySession {
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
+    /// Who is riding what (M68), from `set_passengers`.
+    pub mounts: crate::motion::Mounts,
+    /// The pose of the vehicle the local player rides, from `move_vehicle`.
+    ///
+    /// `None` in every ordinary session: that packet is only ever the server
+    /// *rejecting* a serverbound vehicle move, and Rewo never claims to drive
+    /// a vehicle. Kept because the decode is real and a future controlling
+    /// client would read exactly this.
+    pub vehicle_pose: Option<crate::motion::VehicleMove>,
+    /// M68's observation counters — what `rewo play --motion-check` grades.
+    pub motion_stats: MotionStats,
     /// World-clock tick driving the day/night cycle (`rewo_world::daylight`).
     /// `None` until the first `set_time` arrives, which the renderer reads as
     /// full daylight. Refreshed from two places, exactly as vanilla runs them:
@@ -1122,6 +1196,9 @@ impl<'a> Connection<'a> {
             corrections: 0,
             teleports: 0,
             block_updates: 0,
+            mounts: crate::motion::Mounts::new(),
+            vehicle_pose: None,
+            motion_stats: MotionStats::default(),
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
             inventory: rewo_world::inventory::Inventory::default(),
@@ -1366,7 +1443,34 @@ impl PlaySession {
             &self.conduit_frame_states,
             gt,
         );
-        if self.spawned {
+        if self.spawned && self.is_mounted() {
+            // M68. A passenger does not travel under its own power: vanilla's
+            // `ClientLevel.tickNonPassenger` skips passengers entirely, and
+            // the vehicle places its riders through `positionRider`. Running
+            // gravity and walk input here would walk the player off the boat
+            // — and the server would never say so, because it does not
+            // validate a passenger's movement at all
+            // (`ServerGamePacketListenerImpl`: `if (this.player.isPassenger())`
+            // snaps rotation and returns). So this is a divergence `CORRECTIONS`
+            // is structurally unable to catch, which is exactly why it is
+            // handled here rather than left for the meter to find.
+            //
+            // **The ride offset is not modelled.** Vanilla seats a rider at
+            // the vehicle's `getPassengerAttachmentPoint`, which is per
+            // vehicle type (and per pose, for a boat with two seats). Rewo
+            // snaps to the vehicle's own position, so a mounted player sits
+            // roughly a third of a block low. Riding *visuals* are a feature;
+            // this is the minimum that keeps the player attached to its
+            // vehicle instead of falling through the world.
+            if let Some(vehicle) = self.local_vehicle() {
+                if let Some(e) = self.world.entities.get(vehicle) {
+                    self.player.x = e.x;
+                    self.player.y = e.y;
+                    self.player.z = e.z;
+                }
+            }
+            self.send_movement(input)?;
+        } else if self.spawned {
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.
             self.push_from_entities();
@@ -1705,6 +1809,22 @@ impl PlaySession {
                     self.day_ticks
                 );
             }
+        } else if id == ids.cb_play_explode {
+            // M68. Only the physics prefix is consumed — see `motion::Explosion`.
+            match crate::motion::read_explode(body) {
+                Ok((e, _used)) => self.apply_explode(&e),
+                Err(err) => log::debug!("net: explode decode: {err}"),
+            }
+        } else if id == ids.cb_play_set_entity_motion {
+            match crate::motion::read_set_entity_motion(body) {
+                Ok(m) => self.apply_set_entity_motion(&m),
+                Err(err) => log::debug!("net: set_entity_motion decode: {err}"),
+            }
+        } else if id == ids.cb_play_move_vehicle {
+            match crate::motion::read_move_vehicle(body) {
+                Ok(v) => self.apply_move_vehicle(&v),
+                Err(err) => log::debug!("net: move_vehicle decode: {err}"),
+            }
         } else if Some(id) == ids.cb_play_level_particles
             || Some(id) == ids.cb_play_level_event
         {
@@ -1778,6 +1898,11 @@ impl PlaySession {
                 for _ in 0..n {
                     if let Ok(eid) = r.varint() {
                         self.world.entities.remove(eid);
+                        // M68: a removed entity cannot still be riding or be
+                        // ridden. Leaving the seat behind would strand the
+                        // local player "mounted" on a vehicle that no longer
+                        // exists, which suppresses its physics forever.
+                        self.mounts.remove_entity(eid);
                     }
                 }
             }
@@ -1971,6 +2096,15 @@ impl PlaySession {
             // separate gap `REWO_PACKET_COVERAGE.md` records against this
             // packet, and this milestone does not close it.
             crate::route_set_passengers(id, body, ids, &mut self.world.entities);
+            // Riding, the physics half (M68). Disjoint from the label half
+            // above and deliberately a second read of the same slice: M70
+            // wants the riding graph, M68 wants the local player's own mount
+            // state, and folding either into the other's walk would couple two
+            // milestones that have no reason to share a decode.
+            match crate::motion::read_set_passengers(body) {
+                Ok(p) => self.apply_set_passengers(&p),
+                Err(err) => log::debug!("net: set_passengers decode: {err}"),
+            }
         } else if id == ids.cb_play_set_player_team {
             // Scoreboard teams (M62). A body we cannot decode is dropped
             // whole rather than half-applied: the packet's three sections are
@@ -2171,9 +2305,142 @@ impl PlaySession {
         self.teleports += 1;
         if self.spawned {
             self.corrections += 1;
+            // M68: keep riding out of the walking meter. `ServerPlayer.startRiding`
+            // *always* teleports the rider (`this.connection.teleport(...)`)
+            // as part of seating it, so mounting would otherwise register as a
+            // physics correction on every single mount — a false red that has
+            // nothing to do with the walk simulation.
+            if self.is_mounted() {
+                self.motion_stats.corrections_while_mounted += 1;
+            }
         }
         self.spawned = true;
         Ok(())
+    }
+
+    /// The vehicle the local player is directly riding, if any (M68).
+    pub fn local_vehicle(&self) -> Option<i32> {
+        self.player_id.and_then(|id| self.mounts.vehicle_of(id))
+    }
+
+    /// Whether the local player is a passenger. While this is true the client
+    /// does not run its own physics — see [`PlaySession::tick`].
+    pub fn is_mounted(&self) -> bool {
+        self.local_vehicle().is_some()
+    }
+
+    /// `handleExplosion`'s tail:
+    /// `packet.playerKnockback().ifPresent(this.minecraft.player::addDeltaMovement)`.
+    ///
+    /// Every player within 64 blocks of the blast receives this packet
+    /// (`ServerLevel`: `player.distanceToSqr(center) < 4096.0`), but the
+    /// knockback is `Optional.ofNullable(explosion.getHitPlayers().get(player))`
+    /// — per-recipient, and absent for anyone the explosion did not push. So
+    /// "present" already means "this is *your* shove"; there is no target id
+    /// to check.
+    fn apply_explode(&mut self, e: &crate::motion::Explosion) {
+        self.motion_stats.explosions += 1;
+        let Some(k) = e.player_knockback else { return };
+        self.motion_stats.explosion_knockbacks += 1;
+        if k != crate::motion::Vec3::ZERO {
+            self.motion_stats.explosion_knockbacks_nonzero += 1;
+        }
+        // `addDeltaMovement` — an ADD onto the existing velocity, and one that
+        // silently drops a non-finite vector rather than storing it (rule 4).
+        if !k.is_finite() {
+            return;
+        }
+        // Bracket the mutation and measure it, rather than assuming the write
+        // landed. See `MotionStats::knockback_velocity_delta`.
+        let before = (self.player.vx, self.player.vy, self.player.vz);
+        self.player.vx += k.x;
+        self.player.vy += k.y;
+        self.player.vz += k.z;
+        let delta = (self.player.vx - before.0)
+            .abs()
+            .max((self.player.vy - before.1).abs())
+            .max((self.player.vz - before.2).abs());
+        if delta > self.motion_stats.knockback_velocity_delta {
+            self.motion_stats.knockback_velocity_delta = delta;
+        }
+        log::debug!(
+            "net: explode knockback ({:.4}, {:.4}, {:.4}) → v=({:.4}, {:.4}, {:.4})",
+            k.x,
+            k.y,
+            k.z,
+            self.player.vx,
+            self.player.vy,
+            self.player.vz
+        );
+    }
+
+    /// `handleSetEntityMotion` → `entity.lerpMotion(packet.movement())`, which
+    /// in 26.2 is a bare `setDeltaMovement` — a **replace**, not a blend, and
+    /// not an add (rule 4).
+    ///
+    /// Only the local player's velocity is stored. Remote entities are
+    /// rendered from their server-sent positions with a 3-tick lerp and are
+    /// never integrated client-side, so there is nothing for their velocity to
+    /// drive; the count is still kept so the gate can see the traffic exists.
+    fn apply_set_entity_motion(&mut self, m: &crate::motion::EntityMotion) {
+        self.motion_stats.entity_motions += 1;
+        if Some(m.id) != self.player_id {
+            return;
+        }
+        self.motion_stats.local_motions += 1;
+        if m.movement == crate::motion::Vec3::ZERO {
+            self.motion_stats.local_motion_stops += 1;
+        }
+        if !m.movement.is_finite() {
+            return;
+        }
+        self.player.vx = m.movement.x;
+        self.player.vy = m.movement.y;
+        self.player.vz = m.movement.z;
+        log::debug!(
+            "net: set_entity_motion (local) v=({:.4}, {:.4}, {:.4})",
+            m.movement.x,
+            m.movement.y,
+            m.movement.z
+        );
+    }
+
+    /// `handleSetEntityPassengersPacket` — eject, then seat the new list.
+    ///
+    /// The mount/dismount *transitions* are derived by comparing before and
+    /// after rather than read off the packet, because the packet has no such
+    /// field: a dismount is an ordinary rider list that no longer names you.
+    fn apply_set_passengers(&mut self, p: &crate::motion::Passengers) {
+        self.motion_stats.passenger_updates += 1;
+        let was = self.is_mounted();
+        self.mounts.apply(p);
+        let now = self.is_mounted();
+        match (was, now) {
+            (false, true) => {
+                self.motion_stats.local_mounts += 1;
+                log::debug!("net: mounted vehicle {:?}", self.local_vehicle());
+            }
+            (true, false) => {
+                self.motion_stats.local_dismounts += 1;
+                // The pose belonged to a vehicle we are no longer on.
+                self.vehicle_pose = None;
+                log::debug!("net: dismounted");
+            }
+            _ => {}
+        }
+    }
+
+    /// `handleMoveVehicle`, minus the serverbound echo.
+    ///
+    /// Vanilla ends this handler by sending `ServerboundMoveVehiclePacket`
+    /// back — a *controlling* client asserting where it drove the vehicle.
+    /// Rewo implements no vehicle physics and never sends the serverbound
+    /// half, so it never provokes this packet either (both of vanilla's send
+    /// sites are inside the serverbound handler). Storing the pose is
+    /// therefore the whole of the client behaviour that is honest here.
+    fn apply_move_vehicle(&mut self, v: &crate::motion::VehicleMove) {
+        self.motion_stats.vehicle_moves += 1;
+        self.vehicle_pose = Some(*v);
     }
 
     /// Player Info Update — apply what [`parse_player_info`] read.
@@ -2422,6 +2689,14 @@ impl PlaySession {
             last_input_flags: &mut self.last_input_flags,
         }
         .apply(info.should_keep(RespawnInfo::KEEP_ENTITY_DATA));
+
+        // M68: every entity id belongs to the world that just went away, so a
+        // retained seat would name an entity from the old dimension — and, if
+        // the local player was riding, would freeze its physics in the new one.
+        // Vanilla dismounts across a dimension change for the same reason
+        // (`ServerPlayer.changeDimension` removes the vehicle).
+        self.mounts.clear();
+        self.vehicle_pose = None;
 
         // Same reason, same both-paths placement: the fresh `LocalPlayer` has
         // an empty `activeEffects` and a `tickCount` of 0. Neither is

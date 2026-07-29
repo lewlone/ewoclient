@@ -25,6 +25,7 @@ pub mod effects;
 pub mod ids;
 pub mod item_stack;
 pub mod metadata;
+pub mod motion;
 pub mod play;
 pub mod record;
 pub mod scoreboard;

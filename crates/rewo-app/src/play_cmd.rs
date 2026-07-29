@@ -99,7 +99,191 @@ pub struct PlayArgs {
     /// by design, not by omission.
     #[arg(long, default_value_t = false)]
     swing_check: bool,
+    /// M68's live gate for the four packets that move the local player from
+    /// outside its own input: `explode`, `set_entity_motion`, `move_vehicle`
+    /// and `set_passengers`.
+    ///
+    /// **This exists because `CORRECTIONS 0` was proving less than it was
+    /// being read as proving.** The ordinary run walks, sprints, jumps and
+    /// builds on flat ground — it is never knocked back and never mounted, so
+    /// all four of these packets are outside what it can exercise
+    /// (`REWO_PACKET_COVERAGE.md` §3.1). This gate drives its own paced
+    /// command stream to get the bot seated in a boat, dismounted, blown up
+    /// and hit, then grades what actually arrived and what the physics did
+    /// with it.
+    ///
+    /// Fail-closed on **observation**, not just on decode: a command that the
+    /// server silently ignored leaves its packet count at zero and turns the
+    /// gate red, rather than passing a run that tested nothing. Needs the op
+    /// account (`--username RewoOp`) and forces a still, no-build path.
+    ///
+    /// `move_vehicle` is deliberately **not** required — see
+    /// `motion_acceptance`.
+    #[arg(long, default_value_t = false)]
+    motion_check: bool,
 }
+
+/// The scoreboard tag scoping every fixture `--motion-check` creates, so a
+/// repeat run cannot mount a boat left by an earlier one and `kill` can never
+/// reach an unrelated entity.
+const MOTION_CHECK_TAG: &str = "rewo_motion_check";
+/// The vehicle the mount phase uses. A boat sits still on land, carries a
+/// player, and — unlike a minecart — needs no rail, so the fixture works on
+/// the flat test world with no world preparation.
+const MOTION_CHECK_VEHICLE: &str = "minecraft:oak_boat";
+/// The attacker the damage phase names. `dealDefaultKnockback` reads
+/// `source.getSourcePosition()`, so a damage source with no entity behind it
+/// produces a hit with **no** knockback — and a zero-velocity
+/// `set_entity_motion` would exercise only the one-byte sentinel path.
+const MOTION_CHECK_ATTACKER: &str = "minecraft:zombie";
+
+/// How many of `motion_check_commands`' entries belong to the mount phase.
+///
+/// **Derived, not guessed.** The first version of this gate hard-coded the
+/// phase split at a flat 9 s, which happened to be *after the whole knockback
+/// phase had already run* — so the "knockback phase corrections" window was
+/// empty and the assertion over it was vacuous. A deliberate mutation (decode
+/// the knockback, never apply it) sailed through a green gate; that is what
+/// found it. Keying the split to the command list means adding a mount command
+/// moves the boundary automatically instead of silently emptying the window
+/// again.
+const MOTION_MOUNT_PHASE_COMMANDS: usize = 12;
+
+/// Spawn-relative second at which the mount phase is over and the knockback
+/// phase begins. The two are graded separately because the server treats them
+/// completely differently — see `motion_acceptance`.
+///
+/// `drive` issues one command per 250 ms starting at t=1 s, so command `i`
+/// fires at `1.0 + 0.25 * i`. The split sits on the boundary command itself
+/// (`gamemode survival`), which is the first of the knockback phase: every
+/// mount-phase command has gone out by then, and nothing that shoves the
+/// player has.
+const MOTION_PHASE_SPLIT: f32 = 1.0 + 0.25 * MOTION_MOUNT_PHASE_COMMANDS as f32;
+
+/// The paced command stream `--motion-check` issues after spawn, one per
+/// 250 ms from t=1s (the same rate limiter budget every other gate here
+/// respects). `say` lines are deliberate no-ops that keep the pacing honest
+/// while the server applies the previous command and the tracker broadcasts.
+///
+/// Two phases, in this order for a reason: the mount phase runs first, while
+/// the ground under the bot is still undisturbed, because the knockback phase
+/// craters it.
+fn motion_check_commands() -> Vec<String> {
+    let boat = format!("@e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
+    let zombie =
+        format!("@e[type={MOTION_CHECK_ATTACKER},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
+    vec![
+        // ── phase 1: mount ──────────────────────────────────────────────
+        format!("kill @e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG}]"),
+        "say motion-check w1".into(),
+        format!("summon {MOTION_CHECK_VEHICLE} ~ ~ ~1 {{Tags:[\"{MOTION_CHECK_TAG}\"]}}"),
+        "say motion-check w2".into(),
+        // `/ride` is gamemode-independent and does not depend on damage rules,
+        // which is why the mount phase is the reliable half of this gate.
+        format!("ride @s mount {boat}"),
+        "say motion-check w3".into(),
+        "say motion-check w4".into(),
+        "say motion-check w5".into(),
+        // A dismount is not a removal on the wire: the server re-sends the
+        // boat's rider list without us. That asymmetry is rule 5 in
+        // `rewo_net::motion`, and this is where it is exercised live.
+        "ride @s dismount".into(),
+        "say motion-check w6".into(),
+        format!("kill @e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG}]"),
+        "say motion-check w7".into(),
+        // ── phase 2: knockback + damage ─────────────────────────────────
+        // Everything from here on must stay below the mount-phase count in
+        // `MOTION_MOUNT_PHASE_COMMANDS`, which is asserted against this list.
+        // Survival, because `ServerExplosion.hurtEntities` records a player in
+        // `hitPlayers` only when it is neither a spectator nor a *flying*
+        // creative player, and because `markHurt` — the thing that makes the
+        // server send us our own `set_entity_motion` — needs real damage.
+        "gamemode survival @s".into(),
+        // Resistance IV (amplifier 3) blunts 80% of the blast so the bot
+        // survives it, while leaving `damage > 0` so `markHurt` still fires.
+        // Amplifier 4 would zero the damage and silently remove the trigger.
+        "effect give @s minecraft:resistance 120 3 true".into(),
+        // **Rebuild the ground before using it.** `ServerExplosion` scales
+        // knockback by `getSeenPercent`, a line-of-sight sample — so a TNT
+        // that lands in a crater left by an *earlier run of this same gate*
+        // is shielded by the crater wall and delivers a knockback that is
+        // present-but-zero. That is not hypothetical: it happened, and the
+        // gate initially misreported it as "the knockback is being read and
+        // dropped" because a zero vector and a dropped vector look identical
+        // downstream. Same class as M20.1's build gate, which assumed
+        // undisturbed ground and went red one run in four.
+        //
+        // A flat floor and clear air make the geometry deterministic
+        // regardless of what previous runs blew up.
+        "fill ~-7 ~-1 ~-7 ~7 ~-1 ~7 minecraft:stone".into(),
+        "fill ~-7 ~ ~-7 ~7 ~3 ~7 minecraft:air".into(),
+        "say motion-check w8".into(),
+        // Four blocks out on that clean floor: far enough that the crater does
+        // not swallow the bot, close enough to be well inside the falloff.
+        "summon minecraft:tnt ~ ~ ~4 {fuse:20s}".into(),
+        "say motion-check w9".into(),
+        "say motion-check w10".into(),
+        "say motion-check w11".into(),
+        "say motion-check w12".into(),
+        // A second, independent trigger for `set_entity_motion`. The explosion
+        // above should already produce one (its damage sets `hurtMarked`, and
+        // `ServerEntity` then sends the motion to tracking players *and self*),
+        // but that path runs through the damage calculator and the resistance
+        // effect; a named attacker is the direct route and keeps the gate from
+        // depending on one server-side chain.
+        format!(
+            "summon {MOTION_CHECK_ATTACKER} ~ ~ ~5 {{Tags:[\"{MOTION_CHECK_TAG}\"],\
+             NoAI:1b,Silent:1b,Invulnerable:1b,PersistenceRequired:1b}}"
+        ),
+        "say motion-check w13".into(),
+        format!("damage @s 2 minecraft:mob_attack by {zombie}"),
+        "say motion-check w14".into(),
+        format!("damage @s 2 minecraft:mob_attack by {zombie}"),
+        "say motion-check w15".into(),
+    ]
+}
+
+/// Restore the world and the bot after grading, whatever the verdict.
+///
+/// **The crater repair is not tidiness, it is a correctness requirement for
+/// the *other* gates.** This gate detonates TNT, which blows a hole in the
+/// flat world. Left behind, that hole makes the bot spawn a block low on the
+/// next run, and the standard `rewo play` build gate then reports
+/// "no air-over-solid column … the bot is somewhere this gate cannot place"
+/// and exits 1 — a red gate caused entirely by this one's litter. That was
+/// observed, not predicted: the plain gate went red immediately after these
+/// runs.
+///
+/// The layers are `minecraft:flat`'s defaults (bedrock at y=-64, dirt at -63
+/// and -62, grass at -61), written at **absolute** y with `~` only on x/z, so
+/// the repair is correct wherever the bot happens to have ended up. The ±16
+/// extent covers both the stone platform the knockback phase lays down and the
+/// blast crater around it.
+fn motion_check_cleanup() -> Vec<String> {
+    vec![
+        format!("kill @e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG}]"),
+        format!("kill @e[type={MOTION_CHECK_ATTACKER},tag={MOTION_CHECK_TAG}]"),
+        "effect clear @s".into(),
+        "gamemode creative @s".into(),
+        "fill ~-16 -64 ~-16 ~16 -64 ~16 minecraft:bedrock".into(),
+        "fill ~-16 -63 ~-16 ~16 -62 ~16 minecraft:dirt".into(),
+        "fill ~-16 -61 ~-16 ~16 -61 ~16 minecraft:grass_block".into(),
+        "fill ~-16 -60 ~-16 ~16 -50 ~16 minecraft:air".into(),
+        // Stand the bot back on the restored surface. Without this the repair
+        // can *encase* it: a bot blown into its own crater sits at y=-63, and
+        // the dirt layer above fills straight over it — so the next run's
+        // stored spawn is inside solid ground, which is the same "bot is
+        // somewhere this gate cannot place" failure the repair exists to
+        // prevent, just moved one step later. Creative mode is set above, so
+        // the moment spent inside the fill cannot suffocate it.
+        "tp @s ~ -60 ~".into(),
+    ]
+}
+
+/// The shortest session that can issue the stream above (one command per
+/// 250 ms from t=1s) and still leave the TNT's one-second fuse, the damage
+/// broadcasts and a settle window inside the run.
+const MOTION_CHECK_MIN_SECONDS: f32 = 24.0;
 
 /// The mob the swing gate arms, and what it arms it with. The two items are
 /// chosen so the *prototype* table is load-bearing: the spear is one of the
@@ -177,6 +361,41 @@ const DIMENSION_CHECK_MIN_SECONDS: f32 = 90.0;
 const OP_USERNAME: &str = "RewoOp";
 
 pub fn run(mut args: PlayArgs) -> Result<(), String> {
+    if args.motion_check {
+        // Same reason `--dimension-check` and `--swing-check` refuse it: both
+        // pace server commands through one rate limiter, and the loser's tail
+        // is dropped silently.
+        if args.setup.is_some() {
+            return Err(
+                "--motion-check and --setup cannot be combined: both pace server \
+                 commands, and the loser's tail is silently dropped. Run them separately."
+                    .into(),
+            );
+        }
+        if args.dimension_check || args.swing_check {
+            return Err(
+                "--motion-check cannot be combined with another live gate: they would \
+                 share the server's chat rate limiter."
+                    .into(),
+            );
+        }
+        if args.seconds < MOTION_CHECK_MIN_SECONDS {
+            return Err(format!(
+                "--motion-check needs --seconds >= {MOTION_CHECK_MIN_SECONDS:.0} (given \
+                 {:.0}): the mount phase, the TNT fuse, the damage broadcasts and a \
+                 settle window do not fit in a shorter session, and a truncated run \
+                 would grade a stream that never finished sending.",
+                args.seconds
+            ));
+        }
+        // The bot must not walk: the knockback phase measures what the
+        // *server's* shove did to a stationary player, and a walk input would
+        // mask it. Building is off for the same reason the dimension gate
+        // turns it off — there is nothing to prove here and the crater would
+        // make the targets unreliable.
+        args.still = true;
+        args.no_build = true;
+    }
     if args.dimension_check {
         // Reject rather than reconcile: `--setup`'s paced stream and this
         // gate's commands would share the server's chat rate limiter, and a
@@ -355,10 +574,25 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         crate::dimension_check::DimensionCheck::new(&username)
     });
 
+    if args.motion_check && username != OP_USERNAME {
+        // Not a warning like the dimension gate's: every observation this gate
+        // grades comes from a command, so a non-op run cannot produce a single
+        // one and would fail with a confusing "no explosion arrived" instead of
+        // the real cause.
+        return Err(format!(
+            "--motion-check joined as {username:?}, not the op account {OP_USERNAME:?}. \
+             A non-op's commands are silently rejected by the server, so every \
+             observation this gate needs would be missing and the failure would \
+             misreport itself as a protocol bug."
+        ));
+    }
+
     // The paced command stream this run issues: the swing gate's own list, or
     // whatever `--setup` asked for. One source, so the two can never interleave.
     let scripted: Vec<String> = if args.swing_check {
         swing_check_commands()
+    } else if args.motion_check {
+        motion_check_commands()
     } else {
         args.setup
             .as_deref()
@@ -450,6 +684,22 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     if !args.no_build && !args.dimension_check {
         build_acceptance(&session, &acted, &data)?;
     }
+    if args.motion_check {
+        // Same shape as the swing gate: grade first, then tidy up whatever the
+        // verdict, because a red run should not leave a boat, a zombie, a
+        // resistance effect and a survival-mode bot behind for the next gate.
+        let verdict = motion_acceptance(&session, &acted);
+        for one in motion_check_cleanup() {
+            match session.send_command(&one) {
+                Ok(()) => println!("[motion-check] cleaned up /{one}"),
+                Err(e) => log::warn!("play --motion-check: cleanup `/{one}` failed: {e}"),
+            }
+            // The cleanup shares the rate limiter the command stream just
+            // used; pace it the same way rather than firing four at once.
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        verdict?;
+    }
     if args.swing_check {
         // Grade the client's snapshot first, then tidy up regardless of the
         // verdict: the fixture is tag-scoped, so removing it touches nothing
@@ -462,6 +712,200 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         verdict?;
     }
     Ok(())
+}
+
+/// M68's live gate for the four packets that move the local player.
+///
+/// Fail-closed on **observation**. Every requirement below is "the server
+/// actually sent this and we decoded it", because the failure this gate exists
+/// to prevent is not a wrong number — it is a run that exercised nothing and
+/// reported success. A `/ride` the server rejected, a TNT that fell outside
+/// the blast radius, a gamemode switch that did not take: each of those leaves
+/// a counter at zero, and each turns the gate red.
+///
+/// ## What the two phases prove, and why they are graded differently
+///
+/// **The knockback phase is the real physics claim.** The bot is stationary,
+/// the server shoves it, and the server *does* validate an unmounted player's
+/// movement — so if Rewo's `addDeltaMovement` / `lerpMotion` handling were
+/// wrong (dropped, added instead of replaced, or scaled by a wrong constant),
+/// the client's position would diverge from the server's simulation and the
+/// server would correct it. Zero corrections across this phase is therefore a
+/// statement about Rewo.
+///
+/// **The mount phase is not, and cannot be made into one.**
+/// `ServerGamePacketListenerImpl` has `if (this.player.isPassenger())` snap the
+/// rotation and return, skipping the whole move-check — so a mounted client
+/// could believe it was anywhere at all and the server would never object.
+/// This phase therefore grades *packet handling* (did the seat arrive, did the
+/// dismount arrive, did the client's mount state follow) and deliberately does
+/// **not** assert a correction count. At least one correction is expected here
+/// and is not a fault: `ServerPlayer.startRiding` teleports the rider as part
+/// of seating it, and that teleport arrives *before* the `set_passengers` that
+/// would have told us we were mounted.
+///
+/// ## Why `move_vehicle` is not required
+///
+/// Both of its send sites are inside `ServerGamePacketListenerImpl.handleMoveVehicle`
+/// — the server rejecting a *serverbound* `ServerboundMoveVehiclePacket`. A
+/// client that never claims to drive a vehicle never receives one, and Rewo
+/// rides as a passenger by design. Requiring it would make the gate
+/// permanently red for a reason that is not a bug; asserting it arrived when
+/// it structurally cannot would be worse. It is decoded and unit-tested in
+/// `rewo_net::motion` and its live count is reported, not required.
+fn motion_acceptance(session: &PlaySession, acted: &Actions) -> Result<(), String> {
+    let s = session.motion_stats;
+    let mut problems: Vec<String> = Vec::new();
+
+    // ── phase 1: mount ──────────────────────────────────────────────────
+    if s.passenger_updates == 0 {
+        problems.push(
+            "no `set_passengers` arrived at all — the `/ride mount` was rejected or the \
+             boat never spawned (is the account op'd?)"
+                .into(),
+        );
+    }
+    if s.local_mounts == 0 {
+        problems.push(
+            "the local player never became a passenger — a `set_passengers` arrived but \
+             never named us, so either the ride targeted another entity or the local \
+             entity id is wrong"
+                .into(),
+        );
+    }
+    if s.local_dismounts == 0 {
+        problems.push(
+            "the local player never stopped being a passenger — `/ride dismount` \
+             produces a rider list that no longer names us, so a missing dismount means \
+             the replace-not-merge rule is broken (rewo_net::motion rule 5)"
+                .into(),
+        );
+    }
+    if session.is_mounted() {
+        problems.push(
+            "still mounted at the end of the run — the dismount was not applied, which \
+             would leave the client's physics suppressed forever".into(),
+        );
+    }
+
+    // ── phase 2: knockback + damage ─────────────────────────────────────
+    if s.explosions == 0 {
+        problems.push(
+            "no `explode` arrived — the TNT never detonated within 64 blocks of the bot"
+                .into(),
+        );
+    } else if s.explosion_knockbacks == 0 {
+        // Distinguished from the above on purpose: an explosion that reached us
+        // but carried no knockback means the bot was not in `hitPlayers`
+        // (spectator, flying creative, or simply out of the blast), which is a
+        // *fixture* fault and not a decode fault.
+        problems.push(format!(
+            "{} `explode` packet(s) arrived but none carried a `playerKnockback` — the \
+             bot was outside the blast or still in creative-flying, so the physics half \
+             of this phase tested nothing",
+            s.explosions
+        ));
+    }
+    // The direct witness: did the knockback reach the player's velocity?
+    //
+    // Deliberately independent of the correction count below, because the
+    // correction count turned out to be the weaker of the two. The server's
+    // move check flags a client that moves *too much*; a client that ignores a
+    // shove moves too little, which vanilla does not report. This measures the
+    // client's own state instead, so it cannot be satisfied by a server that
+    // chose to say nothing.
+    //
+    // The two branches are separated because a zero knockback and a dropped
+    // knockback are indistinguishable in the velocity alone, and blaming the
+    // decoder for a shielded blast would send the next reader hunting a bug
+    // that is not there.
+    if s.explosion_knockbacks > 0 && s.explosion_knockbacks_nonzero == 0 {
+        problems.push(format!(
+            "{} `explode` packet(s) carried a `playerKnockback` but every one of them \
+             was the zero vector — `getSeenPercent` found no line of sight, so the blast \
+             was shielded (a crater wall, a block between). This is a FIXTURE fault, not \
+             a decode fault: the packet arrived and parsed, it simply carried no shove.",
+            s.explosion_knockbacks
+        ));
+    } else if s.explosion_knockbacks_nonzero > 0 && s.knockback_velocity_delta <= 0.0 {
+        problems.push(
+            "a non-zero `playerKnockback` was decoded but the local player's velocity \
+             never changed — the knockback is being read and dropped. This is the exact \
+             failure the pre-M68 client had, and the one a correction count alone does \
+             not catch."
+                .into(),
+        );
+    }
+    if s.local_motions == 0 {
+        problems.push(format!(
+            "no `set_entity_motion` addressed the local player ({} arrived for other \
+             entities) — `markHurt` never fired, so the damage was fully resisted or \
+             the bot was still invulnerable",
+            s.entity_motions
+        ));
+    }
+
+    // The correction split. Only the knockback phase is asserted; see above.
+    let split = acted.motion_corrections_at_split;
+    match split {
+        None => problems.push(format!(
+            "the run never reached the phase split at t={MOTION_PHASE_SPLIT:.0}s, so the \
+             knockback phase's corrections cannot be separated from the mount phase's"
+        )),
+        Some(at_split) => {
+            let knockback_corrections = session.corrections.saturating_sub(at_split);
+            if knockback_corrections > 0 {
+                problems.push(format!(
+                    "{knockback_corrections} server correction(s) during the knockback \
+                     phase — the client's velocity diverged from the server's after a \
+                     shove it was told about. THIS is the failure the ordinary \
+                     `CORRECTIONS 0` run is structurally unable to see."
+                ));
+            }
+        }
+    }
+
+    let mount_corrections = split.unwrap_or(session.corrections);
+    println!(
+        "[motion-check] knockback reached the player's velocity: max |Δv| = {:.4} \
+         blocks/tick (0 would mean decoded-and-dropped)",
+        s.knockback_velocity_delta
+    );
+    println!(
+        "[motion-check] explode {} ({} with knockback, {} of them non-zero) · \
+         set_entity_motion {} ({} local, {} stops) · set_passengers {} ({} mounts, \
+         {} dismounts) · move_vehicle {} (structurally unreachable — passenger-only \
+         client)",
+        s.explosions,
+        s.explosion_knockbacks,
+        s.explosion_knockbacks_nonzero,
+        s.entity_motions,
+        s.local_motions,
+        s.local_motion_stops,
+        s.passenger_updates,
+        s.local_mounts,
+        s.local_dismounts,
+        s.vehicle_moves,
+    );
+    println!(
+        "[motion-check] corrections — mount phase {mount_corrections} (not graded: the \
+         server does not validate a passenger's movement, and seating teleports the \
+         rider) · knockback phase {} (graded: must be 0) · while mounted {}",
+        split
+            .map(|at| session.corrections.saturating_sub(at))
+            .unwrap_or(0),
+        s.corrections_while_mounted,
+    );
+
+    if problems.is_empty() {
+        println!("[motion-check] PASS — all four packets accounted for");
+        return Ok(());
+    }
+    Err(format!(
+        "play --motion-check: {} problem(s):\n  - {}",
+        problems.len(),
+        problems.join("\n  - ")
+    ))
 }
 
 /// M19's live equipment gate, fail-closed.
@@ -622,6 +1066,11 @@ struct Actions {
     /// prove the actions mutated the server world end-to-end.
     placed_at: Option<(i32, i32, i32)>,
     dug_at: Option<(i32, i32, i32)>,
+    /// M68: `session.corrections` sampled at [`MOTION_PHASE_SPLIT`], so the
+    /// mount phase's corrections can be told apart from the knockback
+    /// phase's. They are graded differently and the reason is not cosmetic —
+    /// see `motion_acceptance`.
+    motion_corrections_at_split: Option<u32>,
 }
 
 /// Movement input for this spawn-relative second, firing one-shot gameplay
@@ -739,6 +1188,13 @@ fn drive(
             }
         }
     }
+    // M68: close the mount phase's correction window. Sampled here rather than
+    // derived at the end because the two phases must be attributed separately
+    // and there is no way to recover the split from a single total.
+    if args.motion_check && secs >= MOTION_PHASE_SPLIT && acted.motion_corrections_at_split.is_none()
+    {
+        acted.motion_corrections_at_split = Some(session.corrections);
+    }
     // Setup commands go out one per 250 ms. Firing them all in one tick trips
     // the server's chat rate limit and the tail is silently dropped — which
     // looks exactly like a light bug, because the structure never appears.
@@ -759,7 +1215,7 @@ fn drive(
     }
     // The swing gate's command budget is the whole rate-limit allowance; a
     // scripted chat line on top of it would push the tail out.
-    if secs >= 22.0 && !acted.chatted && !args.swing_check {
+    if secs >= 22.0 && !acted.chatted && !args.swing_check && !args.motion_check {
         let _ = session.send_chat(&args.chat);
         acted.chatted = true;
     }
@@ -767,7 +1223,16 @@ fn drive(
     // After the scripted phase, wander continuously so long runs keep
     // stressing physics + collision parity (the "survival session" proxy).
     // Walk forward, curving the yaw slowly, with a periodic sprint-jump.
-    if secs >= 24.0 {
+    //
+    // **`--still` must suppress this too.** It did not, which was a latent
+    // hole in the flag rather than a deliberate exception: a `--still` run
+    // longer than 24 s started walking here, contradicting the flag's whole
+    // purpose ("the light gate centres on the bot's final position, so it must
+    // stay inside whatever `--setup` built"). Nothing had noticed because the
+    // light runs are short. M68 needs it closed because its knockback phase
+    // measures what the server's shove did to a *stationary* player, and a
+    // walk input arriving mid-measurement would mask it.
+    if secs >= 24.0 && !args.still {
         let t = secs - 24.0;
         input.forward = 1.0;
         input.sprint = (t as u32 / 3) % 2 == 0;
@@ -1209,7 +1674,10 @@ fn evaluate_build_actions(
 
 #[cfg(test)]
 mod tests {
-    use super::{evaluate_build_actions, DigObservation, PlaceObservation};
+    use super::{
+        evaluate_build_actions, motion_check_commands, DigObservation, PlaceObservation,
+        MOTION_MOUNT_PHASE_COMMANDS,
+    };
 
     // Dirt's default state on 26.2 is 10 (observed live); the exact value does
     // not matter to the logic, only that observed == expected.
@@ -1282,5 +1750,49 @@ mod tests {
             observed_name: Some("minecraft:dirt".to_string()),
         };
         assert!(evaluate_build_actions(Some(p), Some(dig(0))).is_err());
+    }
+
+    /// M68: the phase split must actually separate the two phases.
+    ///
+    /// A regression guard with a real history. The split was first a flat 9 s,
+    /// which sat *after* every knockback command had already fired — so the
+    /// window the gate graded was empty, and a mutation that decoded the
+    /// explosion knockback and threw it away passed green. The constant is now
+    /// derived from this list, and this test is what stops the list and the
+    /// constant drifting apart again: adding a mount-phase command without
+    /// bumping the count makes the boundary land on the wrong command and
+    /// fails here, loudly, instead of silently emptying the window.
+    #[test]
+    fn the_motion_phase_split_lands_on_the_first_knockback_command() {
+        let cmds = motion_check_commands();
+        assert!(
+            MOTION_MOUNT_PHASE_COMMANDS < cmds.len(),
+            "the split index must be inside the command list"
+        );
+        assert!(
+            cmds[MOTION_MOUNT_PHASE_COMMANDS].starts_with("gamemode survival"),
+            "the boundary command should be the first of the knockback phase, got {:?}",
+            cmds[MOTION_MOUNT_PHASE_COMMANDS]
+        );
+        // Nothing before the boundary may shove the player: if it did, its
+        // effect would be attributed to the (ungraded) mount phase and the
+        // graded window would miss it.
+        for (i, c) in cmds.iter().take(MOTION_MOUNT_PHASE_COMMANDS).enumerate() {
+            assert!(
+                !c.contains("tnt") && !c.starts_with("damage"),
+                "command {i} ({c:?}) shoves the player but sits in the mount phase"
+            );
+        }
+        // And the knockback phase must contain both triggers, or the graded
+        // window would be empty for the opposite reason.
+        let tail = &cmds[MOTION_MOUNT_PHASE_COMMANDS..];
+        assert!(
+            tail.iter().any(|c| c.contains("tnt")),
+            "the knockback phase must summon the TNT"
+        );
+        assert!(
+            tail.iter().any(|c| c.starts_with("damage ")),
+            "the knockback phase must issue the damage trigger"
+        );
     }
 }
