@@ -136,7 +136,7 @@ a mutation partner.
 
 | witness | property | mutation that must fail it |
 |---|---|---|
-| **reduction** | `SEGMENTS = 1`, infinite stiffness → vertices equal the vanilla cape's to 1e-5 | any nonzero gravity |
+| **reduction** | `SEGMENTS = 1` → vertices equal the vanilla cape's **bit-for-bit**, because the segment takes the vanilla rotation and the simulation is bypassed | let the single segment simulate — it becomes a pendulum and hangs straight down instead of at `Rx(6 + capeLean/2 + capeFlap)` |
 | settling | zero motion settles, and the settled state is idempotent to 1e-6 | `DAMPING = 1.0` → perpetual oscillation |
 | constraints | every link within 1e-4 of `REST_LEN` after the relax passes | `RELAX_PASSES = 0` |
 | determinism | two runs, identical inputs → bit-identical joint positions | seed anything from the wall clock |
