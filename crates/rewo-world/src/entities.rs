@@ -550,6 +550,13 @@ pub struct EntityTable {
     /// untracked entity for a healthy one. Cleared on removal, so a reused id
     /// cannot inherit the previous occupant's max health.
     attributes: HashMap<i32, crate::attributes::EntityAttributes>,
+    /// `Entity.DATA_SHARED_FLAGS_ID` — metadata index **0**, BYTE (M59).
+    ///
+    /// Absent means the byte has never been sent, which is exact: `Entity`
+    /// seeds it at `(byte) 0`, so every flag reads false either way. No kind
+    /// gate on the way in — index 0 is `Entity`'s own first slot, so every
+    /// entity that exists owns it. Cleared on removal.
+    shared_flags: HashMap<i32, u8>,
     /// `ItemEntity.DATA_ITEM` (index 8, ITEM_STACK) → `(item protocol id,
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
@@ -871,6 +878,7 @@ impl EntityTable {
         self.deaths.remove(&id);
         self.item_stacks.remove(&id);
         self.attributes.remove(&id);
+        self.shared_flags.remove(&id);
         self.clear_swing(id);
     }
 
@@ -1016,6 +1024,26 @@ impl EntityTable {
 
     pub fn set_health(&mut self, id: i32, health: f32) {
         self.deaths.entry(id).or_default().health = health;
+    }
+
+    // -- shared flags (M59) ---------------------------------------------------
+
+    /// Apply `Entity.DATA_SHARED_FLAGS_ID` (metadata index 0, BYTE).
+    pub fn set_shared_flags(&mut self, id: i32, flags: u8) {
+        self.shared_flags.insert(id, flags);
+    }
+
+    /// `Entity.getSharedFlag(flag)` — `(flags & 1 << flag) != 0`, with the
+    /// never-sent case reading as the `(byte) 0` default `defineSynchedData`
+    /// seeds.
+    pub fn shared_flag(&self, id: i32, flag: u32) -> bool {
+        self.shared_flags.get(&id).copied().unwrap_or(0) & (1 << flag) != 0
+    }
+
+    /// `Entity.isInvisible()` — `getSharedFlag(FLAG_INVISIBLE)`, and
+    /// `FLAG_INVISIBLE` is **5**.
+    pub fn is_invisible(&self, id: i32) -> bool {
+        self.shared_flag(id, 5)
     }
 
     /// `LivingEntity.handleEntityEvent(3)` — the death event.
