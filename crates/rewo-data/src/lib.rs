@@ -32,6 +32,7 @@ pub mod item_models;
 pub mod item_props_table;
 pub mod item_tags;
 pub mod lang;
+pub mod number_formats;
 pub mod packets;
 pub mod particle_types;
 pub mod server_jar;
@@ -109,6 +110,9 @@ pub struct GameData {
     /// `SoundRef::Registry` carries; a built-in registry, so the report is the
     /// authority and the server never sends this table.
     pub sound_events: sound_events::SoundEvents,
+    /// The three `minecraft:number_format_type` ids a scoreboard objective or
+    /// score dispatches its optional number format on (M65).
+    pub number_formats: number_formats::NumberFormatTypeIds,
     /// The `minecraft:attribute` id table joined with the extracted
     /// per-attribute clamps and per-entity-type suppliers (M52).
     pub attributes: std::sync::Arc<attributes::AttributeRegistry>,
@@ -128,6 +132,8 @@ impl GameData {
         let entity_classes = entity_types::EntityClasses::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
         let sound_events = sound_events::SoundEvents::load(&paths.registries_json())?;
+        let number_formats =
+            number_formats::NumberFormatTypeIds::load(&paths.registries_json())?;
         let attributes =
             std::sync::Arc::new(attributes::AttributeRegistry::load(&paths.registries_json())?);
         Ok(Self {
@@ -142,6 +148,7 @@ impl GameData {
             entity_classes,
             particle_types,
             sound_events,
+            number_formats,
             attributes,
         })
     }

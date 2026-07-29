@@ -12,6 +12,7 @@
 
 pub mod attributes;
 pub mod biome_parse;
+pub mod boss_bar;
 pub mod chat_sign;
 pub mod chat_style;
 pub mod component_wire;
@@ -25,9 +26,11 @@ pub mod item_stack;
 pub mod metadata;
 pub mod play;
 pub mod record;
+pub mod scoreboard;
 pub mod skins;
 pub mod sounds;
 pub mod spawn_info;
+pub mod tab_list_text;
 pub mod teams;
 
 use std::borrow::Cow;

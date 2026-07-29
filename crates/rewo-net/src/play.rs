@@ -232,9 +232,19 @@ pub struct PlaySession {
     /// list's *first* sort key, negated so a higher value sorts first.
     /// Absent means the server never sent one, which vanilla renders as 0.
     pub tab_list_orders: std::collections::HashMap<u128, i32>,
-    /// The scoreboard teams (`set_player_team`, M62) — the tab list's third
-    /// sort key, and keyed by member **name** rather than uuid.
-    pub teams: crate::teams::Teams,
+    /// The client-side scoreboard: M62's teams (the tab list's third sort key,
+    /// keyed by member **name** rather than uuid) plus M65's objectives,
+    /// scores and display slots. One struct because vanilla's `Scoreboard` is
+    /// one object and the halves touch — see [`crate::scoreboard`].
+    pub scoreboard: crate::scoreboard::Scoreboard,
+    /// Boss bars (`boss_event`, M65), in display order.
+    pub boss_bars: crate::boss_bar::BossBars,
+    /// The tab list's header and footer (`tab_list`, M65).
+    pub tab_list_text: crate::tab_list_text::TabListText,
+    /// The three `minecraft:number_format_type` ids a scoreboard objective or
+    /// score dispatches on — resolved by name at load, carried here because
+    /// the decode cannot proceed without them.
+    number_formats: rewo_data::number_formats::NumberFormatTypeIds,
     /// The local player's UUID, so `own_ping_ms` knows which entry is ours.
     /// Absent in offline mode until the server names us.
     pub own_uuid: Option<u128>,
@@ -983,7 +993,10 @@ impl<'a> Connection<'a> {
             latency: std::collections::HashMap::new(),
             gamemodes: std::collections::HashMap::new(),
             tab_list_orders: std::collections::HashMap::new(),
-            teams: crate::teams::Teams::new(),
+            scoreboard: crate::scoreboard::Scoreboard::new(),
+            boss_bars: crate::boss_bar::BossBars::new(),
+            tab_list_text: crate::tab_list_text::TabListText::new(),
+            number_formats: self.data.number_formats,
             // Filled from the authenticated profile when there is one. Offline
             // mode leaves it `None`, so `own_ping_ms` reports nothing rather
             // than guessing which tab entry is us -- a name match would pick
@@ -1856,9 +1869,52 @@ impl PlaySession {
             // the roster the server sent.
             match crate::teams::parse_set_player_team(body) {
                 Ok(p) => {
-                    self.teams.apply(&p);
+                    self.scoreboard.teams.apply(&p);
                 }
                 Err(e) => log::debug!("play: set_player_team parse: {e}"),
+            }
+        } else if id == ids.cb_play_set_objective {
+            // M65 — the scoreboard's other half. Every arm below drops a body
+            // it cannot decode whole rather than half-applying it, for the
+            // same reason `set_player_team` does: these packets are
+            // positional, so a short read means the values we did get are not
+            // the values the server sent.
+            match crate::scoreboard::parse_set_objective(body, self.number_formats) {
+                Ok(p) => {
+                    self.scoreboard.apply_set_objective(&p);
+                }
+                Err(e) => log::debug!("play: set_objective parse: {e}"),
+            }
+        } else if id == ids.cb_play_set_score {
+            match crate::scoreboard::parse_set_score(body, self.number_formats) {
+                Ok(p) => {
+                    self.scoreboard.apply_set_score(&p);
+                }
+                Err(e) => log::debug!("play: set_score parse: {e}"),
+            }
+        } else if id == ids.cb_play_reset_score {
+            match crate::scoreboard::parse_reset_score(body) {
+                Ok(p) => {
+                    self.scoreboard.apply_reset_score(&p);
+                }
+                Err(e) => log::debug!("play: reset_score parse: {e}"),
+            }
+        } else if id == ids.cb_play_set_display_objective {
+            match crate::scoreboard::parse_set_display_objective(body) {
+                Ok(p) => self.scoreboard.apply_set_display_objective(&p),
+                Err(e) => log::debug!("play: set_display_objective parse: {e}"),
+            }
+        } else if id == ids.cb_play_boss_event {
+            match crate::boss_bar::parse_boss_event(body) {
+                Ok(p) => {
+                    self.boss_bars.apply(&p);
+                }
+                Err(e) => log::debug!("play: boss_event parse: {e}"),
+            }
+        } else if id == ids.cb_play_tab_list {
+            match crate::tab_list_text::parse_tab_list(body) {
+                Ok(p) => self.tab_list_text.apply(&p),
+                Err(e) => log::debug!("play: tab_list parse: {e}"),
             }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
@@ -2108,14 +2164,14 @@ impl PlaySession {
     /// a team whose membership names an entity that is not this player.
     pub fn team_of(&self, uuid: u128) -> Option<&str> {
         let name = self.world.entities.name_of(uuid)?;
-        self.teams.team_of_member(name)
+        self.scoreboard.teams.team_of_member(name)
     }
 
     /// The team a scoreboard name is on — the direct form, for callers that
     /// already hold a name (and the only form that works for a non-player
     /// score holder, whose scoreboard name is not a profile name at all).
     pub fn team_of_name(&self, name: &str) -> Option<&str> {
-        self.teams.team_of_member(name)
+        self.scoreboard.teams.team_of_member(name)
     }
 
     /// `ClientboundLoginPacket`: establish the active dimension.

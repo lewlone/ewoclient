@@ -179,6 +179,25 @@ pub struct Ids {
     pub cb_play_sound_entity: i32,
     /// `ClientboundStopSoundPacket` — the bitmask-driven cancel.
     pub cb_play_stop_sound: i32,
+    // ── M65: the server-driven display packets ────────────────────────────
+    // All `req!` for the reason the M62/M63 entries give: `require` grades
+    // the *report*, not the server. A vanilla server that never creates an
+    // objective simply never sends one — that is a runtime state. A report
+    // with no `set_objective` in it is a version mismatch, and should fail at
+    // connect rather than leave every sidebar permanently blank.
+    /// `ClientboundSetObjectivePacket` — objective create / remove / update.
+    pub cb_play_set_objective: i32,
+    /// `ClientboundSetScorePacket` — one score line's value.
+    pub cb_play_set_score: i32,
+    /// `ClientboundResetScorePacket` — drop one score, or all of a holder's.
+    pub cb_play_reset_score: i32,
+    /// `ClientboundSetDisplayObjectivePacket` — which objective shows in which
+    /// slot (sidebar / tab list / below name).
+    pub cb_play_set_display_objective: i32,
+    /// `ClientboundBossEventPacket` — the operation-tagged boss-bar union.
+    pub cb_play_boss_event: i32,
+    /// `ClientboundTabListPacket` — the tab list's header and footer.
+    pub cb_play_tab_list: i32,
 }
 
 impl Ids {
@@ -286,6 +305,12 @@ impl Ids {
             cb_play_sound: req!(p, P, C, "sound"),
             cb_play_sound_entity: req!(p, P, C, "sound_entity"),
             cb_play_stop_sound: req!(p, P, C, "stop_sound"),
+            cb_play_set_objective: req!(p, P, C, "set_objective"),
+            cb_play_set_score: req!(p, P, C, "set_score"),
+            cb_play_reset_score: req!(p, P, C, "reset_score"),
+            cb_play_set_display_objective: req!(p, P, C, "set_display_objective"),
+            cb_play_boss_event: req!(p, P, C, "boss_event"),
+            cb_play_tab_list: req!(p, P, C, "tab_list"),
         })
     }
 }
