@@ -166,19 +166,17 @@ pub fn ping_icon(latency: i32) -> PingIcon {
 /// One listed player.
 ///
 /// The four sort keys vanilla uses (`tab_list_order`, `spectator`, `team`,
-/// `name`) are all fields here even though Rewo does not populate the first
-/// three yet. Two of them **are** on the wire and are currently read into a
-/// discard: `player_info_update` action 2 is the game mode (which gives
-/// `spectator`) and action 6 is the tab-list order — see the `_gamemode` and
-/// `_list_order` bindings in `rewo-net`'s `player_info_update` decode. Team
-/// membership arrives separately, on the scoreboard-team packet Rewo does not
-/// decode at all.
+/// `name`) are all fields here. **All four are decoded as of M62** —
+/// `player_info_update` action 6 is the tab-list order and action 2 the game
+/// mode (`PlaySession::tab_list_order` / `game_mode`), and team membership
+/// arrives on the separate `set_player_team` packet
+/// (`PlaySession::team_of`). Nothing populates them here yet: this module is
+/// still model-only and no caller builds a `TabEntry` from a live session.
 ///
-/// They are modelled rather than dropped so the comparator is transcribed
-/// whole and wiring the decode later cannot change the sort's shape. Their
-/// "absent" values (`0`, `false`, `None`) collapse it to a case-insensitive
-/// name sort — which is exactly what vanilla does for a server that sets none
-/// of them, so the stub is a real vanilla case and not a simplification.
+/// Their "absent" values (`0`, `false`, `None`) collapse the sort to a
+/// case-insensitive name sort — which is exactly what vanilla does for a
+/// server that sets none of them, so the default is a real vanilla case and
+/// not a simplification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabEntry {
     pub uuid: u128,

@@ -23,59 +23,184 @@ use crate::ids::Ids;
 use crate::spawn_info::{read_login_prefix, CommonPlayerSpawnInfo, RespawnInfo};
 use crate::Connection;
 
-/// The latency entries carried by a `player_info_update` body (M52c).
+/// `GameType`, from `player_info_update`'s `UPDATE_GAME_MODE` (M62).
 ///
-/// Pure and standalone so a test can drive the **real** bitmask and entry walk
-/// rather than a local reimplementation -- the walk is the fragile part, since
-/// a mis-sized skip corrupts every entry after it rather than failing.
-pub fn parse_player_info_latency(body: &[u8]) -> Vec<(u128, i32)> {
+/// The tab list's second sort key is `getGameMode() == SPECTATOR`, and a
+/// spectator's row is also grey and italic, so this has to survive decode as
+/// something better than a raw int.
+///
+/// **An out-of-range id is `Survival`, not an error.** `GameType.byId` is
+/// `ByIdMap.continuous(..., OutOfBoundsStrategy.ZERO)`, which answers anything
+/// outside 0..=3 with `values[0]`. Rejecting it instead would desync nothing
+/// (the field is a fixed var-int) but would report a state vanilla never
+/// shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
+}
+
+impl GameMode {
+    pub fn by_id(id: i32) -> GameMode {
+        match id {
+            1 => GameMode::Creative,
+            2 => GameMode::Adventure,
+            3 => GameMode::Spectator,
+            _ => GameMode::Survival,
+        }
+    }
+
+    pub fn id(self) -> i32 {
+        match self {
+            GameMode::Survival => 0,
+            GameMode::Creative => 1,
+            GameMode::Adventure => 2,
+            GameMode::Spectator => 3,
+        }
+    }
+
+    pub fn is_spectator(self) -> bool {
+        self == GameMode::Spectator
+    }
+}
+
+/// One entry of a `player_info_update` body.
+///
+/// Every field but the uuid is `Option`, and that is the whole point: the
+/// packet is a *delta*. An action bit that is not set means "unchanged", which
+/// is a different thing from a value, so a decoder that filled in a default
+/// would tell the tab list a spectator went back to survival every time the
+/// server sent a latency-only update.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayerInfoEntry {
+    pub uuid: u128,
+    /// `ADD_PLAYER`'s profile name.
+    pub name: Option<String>,
+    /// The raw value of the profile's `textures` property, if it carried one.
+    /// Left undecoded here so the walk stays wire-only.
+    pub textures: Option<String>,
+    /// `UPDATE_GAME_MODE` (action 2).
+    pub gamemode: Option<GameMode>,
+    /// `UPDATE_LISTED` (action 3).
+    pub listed: Option<bool>,
+    /// `UPDATE_LATENCY` (action 4), in milliseconds. May be negative — see
+    /// `PlaySession::latency`.
+    pub latency: Option<i32>,
+    /// `UPDATE_LIST_ORDER` (action 6).
+    pub tab_list_order: Option<i32>,
+    /// `UPDATE_HAT` (action 7).
+    pub show_hat: Option<bool>,
+}
+
+/// Walk one entry's set fields, in **action-bit order**.
+///
+/// Takes the entry by `&mut` rather than returning it so that a body which
+/// runs out mid-entry still contributes the fields it did read — which is what
+/// the pre-M62 decoder did, since it pushed each field as it went.
+fn read_player_info_entry(
+    r: &mut PacketReader,
+    mask: u8,
+    e: &mut PlayerInfoEntry,
+) -> rewo_proto::Result<()> {
+    let has = |bit: u8| mask & (1u8 << bit) != 0;
+    if has(0) {
+        // ADD_PLAYER: `ByteBufCodecs.GAME_PROFILE` minus the uuid — a
+        // 16-char name, then the property map. The three string caps
+        // (64 / 32767 / 1024) are `GAME_PROFILE_PROPERTIES`'s own.
+        e.name = Some(r.string(16)?);
+        let props = r.count("profile properties", 1)?;
+        for _ in 0..props {
+            let prop = r.string(64)?;
+            let value = r.string(32767)?;
+            if prop == "textures" {
+                e.textures = Some(value);
+            }
+            if r.bool()? {
+                let _sig = r.string(1024)?;
+            }
+        }
+    }
+    if has(1) {
+        // INITIALIZE_CHAT: nullable {session uuid, expires i64,
+        // pubkey bytes ≤512, key sig bytes ≤4096}.
+        if r.bool()? {
+            let _ = r.uuid()?;
+            let _ = r.i64()?;
+            let _ = r.byte_array(512)?;
+            let _ = r.byte_array(4096)?;
+        }
+    }
+    if has(2) {
+        e.gamemode = Some(GameMode::by_id(r.varint()?));
+    }
+    if has(3) {
+        e.listed = Some(r.bool()?);
+    }
+    if has(4) {
+        e.latency = Some(r.varint()?);
+    }
+    if has(5) {
+        // UPDATE_DISPLAY_NAME: nullable NBT text component.
+        if r.bool()? {
+            let _ = r.nbt()?;
+        }
+    }
+    if has(6) {
+        e.tab_list_order = Some(r.varint()?);
+    }
+    if has(7) {
+        e.show_hat = Some(r.bool()?);
+    }
+    Ok(())
+}
+
+/// Decode a `player_info_update` body: a 1-byte fixed bitset over the 8
+/// actions (LSB-first, ordinal order), then a var-int list of entries.
+///
+/// **This is the production walk**, called by `apply_player_info` and by the
+/// tests both. Keeping one copy matters more than it looks: the pre-M62 tree
+/// had two, and they had already drifted — one capped a profile signature at
+/// 1024 (vanilla's `GAME_PROFILE_PROPERTIES` figure) and the other at 32767.
+///
+/// The walk is the fragile part. Fields are read in action-bit order and only
+/// when their bit is set, so a mis-sized skip does not fail: it shifts every
+/// subsequent entry and reports plausible numbers for the wrong players.
+///
+/// Returns the entries read so far alongside the error that stopped the walk,
+/// because a truncated body still tells the truth about the entries it
+/// completed.
+pub fn parse_player_info(body: &[u8]) -> (Vec<PlayerInfoEntry>, rewo_proto::Result<()>) {
     let mut r = PacketReader::new(body);
-    let mut out = Vec::new();
-    let _ = (|| -> rewo_proto::Result<()> {
+    let mut out: Vec<PlayerInfoEntry> = Vec::new();
+    let res = (|| -> rewo_proto::Result<()> {
         let mask = r.u8()?;
-        let has = |bit: u8| mask & (1u8 << bit) != 0;
         let count = r.count("player info entries", 16)?;
         for _ in 0..count {
-            let uuid = r.uuid()?;
-            if has(0) {
-                let _name = r.string(16)?;
-                let props = r.count("profile properties", 1)?;
-                for _ in 0..props {
-                    let _ = r.string(64)?;
-                    let _ = r.string(32767)?;
-                    if r.bool()? {
-                        let _ = r.string(32767)?;
-                    }
-                }
-            }
-            if has(1) && r.bool()? {
-                let _ = r.uuid()?;
-                let _ = r.i64()?;
-                let _ = r.byte_array(512)?;
-                let _ = r.byte_array(4096)?;
-            }
-            if has(2) {
-                let _ = r.varint()?;
-            }
-            if has(3) {
-                let _ = r.bool()?;
-            }
-            if has(4) {
-                out.push((uuid, r.varint()?));
-            }
-            if has(5) && r.bool()? {
-                let _ = r.nbt()?;
-            }
-            if has(6) {
-                let _ = r.varint()?;
-            }
-            if has(7) {
-                let _ = r.bool()?;
-            }
+            let mut e = PlayerInfoEntry {
+                uuid: r.uuid()?,
+                ..Default::default()
+            };
+            let res = read_player_info_entry(&mut r, mask, &mut e);
+            out.push(e);
+            res?;
         }
         Ok(())
     })();
-    out
+    (out, res)
+}
+
+/// The latency entries carried by a `player_info_update` body (M52c).
+///
+/// A thin view over `parse_player_info`; kept because it names the one field
+/// `ping_ms` is built on.
+pub fn parse_player_info_latency(body: &[u8]) -> Vec<(u128, i32)> {
+    parse_player_info(body)
+        .0
+        .into_iter()
+        .filter_map(|e| e.latency.map(|ms| (e.uuid, ms)))
+        .collect()
 }
 
 pub struct PlaySession {
@@ -94,6 +219,22 @@ pub struct PlaySession {
     /// number: `UPDATE_LATENCY` on the player-info packet, including for
     /// yourself.
     pub latency: std::collections::HashMap<u128, i32>,
+    /// Server-reported game mode per player (`UPDATE_GAME_MODE`, M62).
+    ///
+    /// Only *reported* modes live here. Vanilla's `PlayerInfo` defaults the
+    /// field to `SURVIVAL` at construction, but this map deliberately does
+    /// not, because "the server has not said" and "the server said survival"
+    /// are answers to different questions and only the map can tell them
+    /// apart. A caller that wants vanilla's rendering behaviour reads
+    /// `unwrap_or(GameMode::Survival)`.
+    pub gamemodes: std::collections::HashMap<u128, GameMode>,
+    /// Server-reported tab-list order (`UPDATE_LIST_ORDER`, M62) — the tab
+    /// list's *first* sort key, negated so a higher value sorts first.
+    /// Absent means the server never sent one, which vanilla renders as 0.
+    pub tab_list_orders: std::collections::HashMap<u128, i32>,
+    /// The scoreboard teams (`set_player_team`, M62) — the tab list's third
+    /// sort key, and keyed by member **name** rather than uuid.
+    pub teams: crate::teams::Teams,
     /// The local player's UUID, so `own_ping_ms` knows which entry is ours.
     /// Absent in offline mode until the server names us.
     pub own_uuid: Option<u128>,
@@ -840,6 +981,9 @@ impl<'a> Connection<'a> {
             rx,
             ids: self.ids,
             latency: std::collections::HashMap::new(),
+            gamemodes: std::collections::HashMap::new(),
+            tab_list_orders: std::collections::HashMap::new(),
+            teams: crate::teams::Teams::new(),
             // Filled from the authenticated profile when there is one. Offline
             // mode leaves it `None`, so `own_ping_ms` reports nothing rather
             // than guessing which tab entry is us -- a name match would pick
@@ -1705,6 +1849,17 @@ impl PlaySession {
             // peek) were stamped with the current tick — the renderer measures
             // the rig's elapsed time from it. `self.ticks` is the in-progress
             // tick (it increments at the end of `tick()`, after this drain).
+        } else if id == ids.cb_play_set_player_team {
+            // Scoreboard teams (M62). A body we cannot decode is dropped
+            // whole rather than half-applied: the packet's three sections are
+            // positional, so a short read means the roster we did get is not
+            // the roster the server sent.
+            match crate::teams::parse_set_player_team(body) {
+                Ok(p) => {
+                    self.teams.apply(&p);
+                }
+                Err(e) => log::debug!("play: set_player_team parse: {e}"),
+            }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
         } else if id == ids.cb_play_player_info_remove {
@@ -1715,8 +1870,14 @@ impl PlaySession {
                         self.world.entities.remove_name(uuid);
                         // A departed player's ping is not stale, it is gone --
                         // keeping it would let the tab list quote a number for
-                        // someone who left.
+                        // someone who left. Vanilla drops the whole
+                        // `PlayerInfo`, so the mode and the list order go with
+                        // it. The TEAM does not: `handlePlayerInfoRemove`
+                        // never touches the scoreboard, and a team outlives
+                        // its members leaving.
                         self.latency.remove(&uuid);
+                        self.gamemodes.remove(&uuid);
+                        self.tab_list_orders.remove(&uuid);
                     }
                 }
             }
@@ -1850,98 +2011,42 @@ impl PlaySession {
         Ok(())
     }
 
-    /// Player Info Update (decompiled `ClientboundPlayerInfoUpdatePacket`):
-    /// a 1-byte fixed bitset over the 8 actions (LSB-first, ordinal order),
-    /// then a VarInt list of entries [uuid + per-set-action fields]. We keep
-    /// ADD_PLAYER's name (nametags) and skip everything else byte-exactly —
-    /// a mis-skip here corrupts the rest of the packet's entries.
+    /// Player Info Update — apply what [`parse_player_info`] read.
+    ///
+    /// The walk itself lives in that free function so the tests drive exactly
+    /// the bytes production does; this half is only the state it lands in.
+    /// Each field writes only when its action bit was set, because the packet
+    /// is a delta and an absent action means "unchanged".
     fn apply_player_info(&mut self, body: &[u8]) {
-        let mut r = PacketReader::new(body);
-        let mut names: Vec<(u128, String)> = Vec::new();
-        let mut skins: Vec<(u128, crate::skins::SkinInfo)> = Vec::new();
-        let mut latencies: Vec<(u128, i32)> = Vec::new();
-        let parse = (|| -> rewo_proto::Result<()> {
-            let mask = r.u8()?;
-            let has = |bit: u8| mask & (1u8 << bit) != 0;
-            let count = r.count("player info entries", 16)?;
-            for _ in 0..count {
-                let uuid = r.uuid()?;
-                if has(0) {
-                    // ADD_PLAYER: name + profile properties (skin blobs).
-                    let name = r.string(16)?.to_string();
-                    let props = r.count("profile properties", 1)?;
-                    for _ in 0..props {
-                        let prop = r.string(64)?;
-                        let value = r.string(32767)?;
-                        // Decode the `textures` property → skin URL + model,
-                        // so a player renders with their real skin.
-                        if prop == "textures" {
-                            if let Some(info) = crate::skins::decode_textures_property(&value) {
-                                skins.push((uuid, info));
-                            }
-                        }
-                        if r.bool()? {
-                            let _sig = r.string(1024)?;
-                        }
-                    }
-                    names.push((uuid, name));
-                }
-                if has(1) {
-                    // INITIALIZE_CHAT: nullable {session uuid, expires i64,
-                    // pubkey bytes ≤512, key sig bytes ≤4096}.
-                    if r.bool()? {
-                        let _ = r.uuid()?;
-                        let _ = r.i64()?;
-                        let _ = r.byte_array(512)?;
-                        let _ = r.byte_array(4096)?;
-                    }
-                }
-                if has(2) {
-                    let _gamemode = r.varint()?;
-                }
-                if has(3) {
-                    let _listed = r.bool()?;
-                }
-                if has(4) {
-                    // UPDATE_LATENCY. Previously read and discarded; it is the
-                    // whole of what a client can know about its own ping.
-                    //
-                    // Vanilla clamps a negative to zero on display rather than
-                    // treating it as "unknown" -- `PlayerTabOverlay` buckets
-                    // `latency < 0` into the no-connection icon, so a negative
-                    // is a real state and not a decode error.
-                    let ms = r.varint()?;
-                    latencies.push((uuid, ms));
-                }
-                if has(5) {
-                    // UPDATE_DISPLAY_NAME: nullable NBT text component.
-                    if r.bool()? {
-                        let _ = r.nbt()?;
-                    }
-                }
-                if has(6) {
-                    let _list_order = r.varint()?;
-                }
-                if has(7) {
-                    let _show_hat = r.bool()?;
-                }
-            }
-            Ok(())
-        })();
+        let (entries, parse) = parse_player_info(body);
         if let Err(e) = parse {
             log::debug!("play: player_info_update parse: {e}");
         }
-        for (uuid, ms) in latencies {
-            self.latency.insert(uuid, ms);
-        }
-        for (uuid, name) in names {
-            self.world.entities.set_name(uuid, name);
-        }
-        for (uuid, info) in skins {
-            // Queue only genuinely-new skins so the app fetches each once.
-            if self.player_skins.get(&uuid) != Some(&info) {
-                self.player_skins.insert(uuid, info.clone());
-                self.pending_skins.push((uuid, info));
+        for e in entries {
+            if let Some(ms) = e.latency {
+                self.latency.insert(e.uuid, ms);
+            }
+            if let Some(gm) = e.gamemode {
+                self.gamemodes.insert(e.uuid, gm);
+            }
+            if let Some(order) = e.tab_list_order {
+                self.tab_list_orders.insert(e.uuid, order);
+            }
+            if let Some(name) = e.name {
+                self.world.entities.set_name(e.uuid, name);
+            }
+            // Decode the `textures` property → skin URL + model, so a player
+            // renders with their real skin. Queue only genuinely-new skins so
+            // the app fetches each once.
+            if let Some(info) = e
+                .textures
+                .as_deref()
+                .and_then(crate::skins::decode_textures_property)
+            {
+                if self.player_skins.get(&e.uuid) != Some(&info) {
+                    self.player_skins.insert(e.uuid, info.clone());
+                    self.pending_skins.push((e.uuid, info));
+                }
             }
         }
     }
@@ -1961,6 +2066,56 @@ impl PlaySession {
     /// own UUID *and* sent a latency for it.
     pub fn own_ping_ms(&self) -> Option<i32> {
         self.own_uuid.and_then(|u| self.ping_ms(u))
+    }
+
+    /// Server-reported game mode for a player (M62).
+    ///
+    /// `None` means no `UPDATE_GAME_MODE` has arrived for them. Vanilla's
+    /// `PlayerInfo` would read `SURVIVAL` there; keeping the distinction lets
+    /// a caller decide, and makes "spectators sort last" answerable without
+    /// inventing a mode for someone the server never described.
+    pub fn game_mode(&self, uuid: u128) -> Option<GameMode> {
+        self.gamemodes.get(&uuid).copied()
+    }
+
+    /// The local player's game mode.
+    pub fn own_game_mode(&self) -> Option<GameMode> {
+        self.own_uuid.and_then(|u| self.game_mode(u))
+    }
+
+    /// `PlayerInfo.getTabListOrder()` — the tab list's first sort key (M62).
+    ///
+    /// `None` means unsent, which vanilla treats as 0. Distinct from
+    /// `Some(0)` for the same reason as `ping_ms`.
+    pub fn tab_list_order(&self, uuid: u128) -> Option<i32> {
+        self.tab_list_orders.get(&uuid).copied()
+    }
+
+    /// The team a player is on, by uuid (M62).
+    ///
+    /// **This is a two-step lookup and cannot be anything else.** The team
+    /// packet keys its members by scoreboard name, and for a player that is
+    /// the profile name, which only `player_info_update`'s `ADD_PLAYER`
+    /// carries — so the answer is `name_of(uuid)` then `team_of_member`.
+    /// Resolving lazily on every call (rather than binding a uuid to a team
+    /// when either packet arrives) is deliberate and is what vanilla does in
+    /// `PlayerInfo.getTeam()`: the two packets have no ordering guarantee, so
+    /// a team formed before its members' profiles arrive still answers
+    /// correctly the moment the profile does.
+    ///
+    /// `None` covers three different situations that the caller cannot tell
+    /// apart, and none of them is an error: no profile name yet, no team, or
+    /// a team whose membership names an entity that is not this player.
+    pub fn team_of(&self, uuid: u128) -> Option<&str> {
+        let name = self.world.entities.name_of(uuid)?;
+        self.teams.team_of_member(name)
+    }
+
+    /// The team a scoreboard name is on — the direct form, for callers that
+    /// already hold a name (and the only form that works for a non-player
+    /// score holder, whose scoreboard name is not a profile name at all).
+    pub fn team_of_name(&self, name: &str) -> Option<&str> {
+        self.teams.team_of_member(name)
     }
 
     /// `ClientboundLoginPacket`: establish the active dimension.
@@ -3956,5 +4111,148 @@ mod ping_tests {
         b.push(1);
         varint(&mut b, 200);
         assert_eq!(parse_player_info_latency(&b), [(7, 200)]);
+    }
+}
+
+#[cfg(test)]
+mod player_info_field_tests {
+    //! M62 — the two `player_info_update` fields the tab list's first two
+    //! sort keys come from: `UPDATE_GAME_MODE` (action 2) and
+    //! `UPDATE_LIST_ORDER` (action 6). Both were read into a discard.
+    //!
+    //! Every body is built by hand and run through the production
+    //! `parse_player_info`, so the bitmask and the entry walk are what is
+    //! under test.
+
+    use super::*;
+
+    fn varint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7F) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        }
+    }
+
+    /// A one-entry body carrying exactly the actions in `mask`, with each
+    /// set action's payload appended by `fields` in bit order.
+    fn one_entry(mask: u8, uuid: u128, fields: &[u8]) -> Vec<u8> {
+        let mut b = vec![mask];
+        varint(&mut b, 1);
+        b.extend_from_slice(&uuid.to_be_bytes());
+        b.extend_from_slice(fields);
+        b
+    }
+
+    #[test]
+    fn the_game_mode_action_is_kept_rather_than_discarded() {
+        let (e, res) = parse_player_info(&one_entry(1 << 2, 7, &[3]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
+        assert!(e[0].gamemode.unwrap().is_spectator());
+    }
+
+    #[test]
+    fn the_tab_list_order_action_is_kept_rather_than_discarded() {
+        let mut f = Vec::new();
+        varint(&mut f, 42);
+        let (e, res) = parse_player_info(&one_entry(1 << 6, 7, &f));
+        assert!(res.is_ok());
+        assert_eq!(e[0].tab_list_order, Some(42));
+    }
+
+    #[test]
+    fn an_out_of_range_game_mode_id_is_survival_rather_than_an_error() {
+        // `GameType.byId` is ByIdMap.continuous(..., ZERO), so 9 -> values[0].
+        // An error here would drop a packet vanilla renders fine.
+        let (e, res) = parse_player_info(&one_entry(1 << 2, 7, &[9]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].gamemode, Some(GameMode::Survival));
+    }
+
+    #[test]
+    fn an_unset_action_leaves_the_field_absent_rather_than_defaulted() {
+        // The sensitivity partner for both. The packet is a DELTA: filling in
+        // `Survival` / `0` here would tell the tab list a spectator had
+        // switched to survival on every latency-only update, and the sort
+        // would visibly reshuffle.
+        let mut f = Vec::new();
+        varint(&mut f, 55);
+        let (e, _) = parse_player_info(&one_entry(1 << 4, 7, &f));
+        assert_eq!(e[0].latency, Some(55));
+        assert_eq!(e[0].gamemode, None);
+        assert_eq!(e[0].tab_list_order, None);
+    }
+
+    #[test]
+    fn a_mis_sized_earlier_action_would_report_a_plausible_wrong_order() {
+        // GAME_MODE (2) then LIST_ORDER (6), with a two-byte var-int mode so
+        // a one-byte skip is observable. Read correctly the order is 7; a
+        // walk that assumed a single byte reads the mode's continuation byte
+        // as the order and reports 1 -- a number nothing downstream can
+        // reject.
+        let mut f = Vec::new();
+        varint(&mut f, 129); // two bytes: 0x81 0x01 -> mode id 129, ZERO -> Survival
+        varint(&mut f, 7);
+        let body = one_entry((1 << 2) | (1 << 6), 7, &f);
+        let (e, res) = parse_player_info(&body);
+        assert!(res.is_ok());
+        assert_eq!(e[0].gamemode, Some(GameMode::Survival));
+        assert_eq!(e[0].tab_list_order, Some(7));
+
+        // The mis-sized walk, run over the same bytes.
+        let mut r = PacketReader::new(&body);
+        let _ = r.u8().unwrap();
+        let _ = r.count("player info entries", 16).unwrap();
+        let _ = r.uuid().unwrap();
+        let _ = r.u8().unwrap(); // one byte where the mode is two
+        assert_eq!(
+            r.varint().unwrap(),
+            1,
+            "the mis-sized walk must report a plausible wrong order, not fail"
+        );
+    }
+
+    #[test]
+    fn several_entries_carry_their_own_values() {
+        // Two entries under one mask, which is the shape a real join sends.
+        // A walk that lost a byte in the first entry would attribute the
+        // second's fields to the wrong uuid.
+        let mut b = vec![(1u8 << 2) | (1u8 << 6)];
+        varint(&mut b, 2);
+        b.extend_from_slice(&1u128.to_be_bytes());
+        b.push(3); // spectator
+        varint(&mut b, 10);
+        b.extend_from_slice(&2u128.to_be_bytes());
+        b.push(1); // creative
+        varint(&mut b, 20);
+
+        let (e, res) = parse_player_info(&b);
+        assert!(res.is_ok());
+        assert_eq!(e.len(), 2);
+        assert_eq!((e[0].uuid, e[0].gamemode, e[0].tab_list_order), (1, Some(GameMode::Spectator), Some(10)));
+        assert_eq!((e[1].uuid, e[1].gamemode, e[1].tab_list_order), (2, Some(GameMode::Creative), Some(20)));
+    }
+
+    #[test]
+    fn a_truncated_entry_keeps_the_fields_it_completed() {
+        // The body promises a mode and an order and stops after the mode.
+        // The completed field must survive, because that is what the
+        // pre-M62 field-at-a-time decoder did and losing it would silently
+        // discard a whole packet's worth of state on one short read.
+        let mut b = vec![(1u8 << 2) | (1u8 << 6)];
+        varint(&mut b, 1);
+        b.extend_from_slice(&7u128.to_be_bytes());
+        b.push(3);
+        let (e, res) = parse_player_info(&b);
+        assert!(res.is_err());
+        assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
+        assert_eq!(e[0].tab_list_order, None);
     }
 }

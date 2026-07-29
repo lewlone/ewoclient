@@ -86,6 +86,13 @@ pub struct Ids {
     pub cb_play_player_info_update: i32,
     pub cb_play_player_info_remove: i32,
     pub cb_play_set_entity_data: i32,
+    /// `ClientboundSetPlayerTeamPacket` — the scoreboard-team state (M62),
+    /// which is where the tab list's third sort key comes from. Required: it
+    /// is a core vanilla packet, so a missing *name* is a version mismatch
+    /// and should fail loud here rather than leave every player teamless.
+    /// (A server that never forms a team simply never sends one — that is a
+    /// quiet runtime state, not a missing name.)
+    pub cb_play_set_player_team: i32,
     pub cb_play_rotate_head: i32,
     /// `ClientboundEntityEventPacket` — a signed BE i32 entity id + a signed
     /// byte event. Required: the model-visible events (warden attack/sonic
@@ -235,6 +242,7 @@ impl Ids {
             cb_play_player_info_update: req!(p, P, C, "player_info_update"),
             cb_play_player_info_remove: req!(p, P, C, "player_info_remove"),
             cb_play_set_entity_data: req!(p, P, C, "set_entity_data"),
+            cb_play_set_player_team: req!(p, P, C, "set_player_team"),
             cb_play_rotate_head: req!(p, P, C, "rotate_head"),
             cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_animate: req!(p, P, C, "animate"),

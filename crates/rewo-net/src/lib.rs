@@ -28,6 +28,7 @@ pub mod record;
 pub mod skins;
 pub mod sounds;
 pub mod spawn_info;
+pub mod teams;
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
