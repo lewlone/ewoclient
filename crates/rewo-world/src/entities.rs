@@ -764,6 +764,29 @@ pub struct EntityTable {
     /// is allocated, ticked, or read, so the vanilla cape's behaviour is
     /// unreachable from the flag.
     wavy_capes_enabled: bool,
+    /// `NewMinecartBehavior`'s client interpolation schedule, one per minecart
+    /// the server has sent a `move_minecart_along_track` for (M77).
+    ///
+    /// Created on the first packet rather than at spawn. Vanilla runs
+    /// `lerpClientPositionAndRotation` every tick from the cart's construction,
+    /// but with an empty inbox that is a snapshot of the live position into
+    /// `oldLerp` and a clear of an already-empty list — no observable effect,
+    /// so the lazy entry is exact and costs nothing for a cart nobody moves.
+    /// Cleared on removal AND on (re-)add, for the reason every animation
+    /// clock here is: a recycled server id must not inherit a schedule.
+    minecarts: HashMap<i32, crate::minecart::MinecartLerp>,
+    /// `Leashable.LeashData.delayedLeashHolderId` (M77) — the raw `destId` a
+    /// `set_entity_link` carried, **including 0**.
+    ///
+    /// The presence of an entry is `getLeashData() != null`, which
+    /// `setDelayedLeashHolderId` establishes unconditionally; the stored `0`
+    /// is vanilla's "no holder" and is a different state from no entry at all.
+    /// Cleared on removal.
+    leash_data: HashMap<i32, i32>,
+    /// `AbstractHurtingProjectile.accelerationPower` (M77). Absent means the
+    /// server has sent none, which reads as the field's own default rather
+    /// than as an error. Cleared on removal.
+    projectile_power: HashMap<i32, f64>,
 }
 
 /// `LivingEntity`'s damage-response fields, set by
@@ -1052,6 +1075,9 @@ impl EntityTable {
         self.events.remove(&id);
         self.dances.remove(&id);
         self.wavy_capes.remove(&id);
+        // Same reason (M77): a schedule is a clock, and a fresh cart at a
+        // recycled id must not be dragged toward the previous one's rail.
+        self.minecarts.remove(&id);
         self.clear_swing(id);
         self.map.insert(id, state);
     }
@@ -1076,6 +1102,9 @@ impl EntityTable {
         self.clear_riding(id);
         self.model_customisation.remove(&id);
         self.wavy_capes.remove(&id);
+        self.minecarts.remove(&id);
+        self.leash_data.remove(&id);
+        self.projectile_power.remove(&id);
         self.clear_swing(id);
     }
 
@@ -1893,12 +1922,142 @@ impl EntityTable {
             }
             h.hurt_time > 0
         });
+        // After every entity's own lerp step (so `prev` already holds last
+        // tick's derived position) and **before** the riders are placed: a
+        // minecart is positioned by `AbstractMinecart.tick` inside
+        // `ClientLevel.tickNonPassenger`, and its passengers only afterwards,
+        // in the `tickPassenger` loop that follows. See [`crate::minecart`].
+        self.tick_minecarts();
         // Last, and only after every entity's own lerp step has moved
         // `prev = cur`: vanilla's `tickPassenger` → `rideTick` →
         // `positionRider` overwrites a rider's position at the end of the
         // tick it was ticked in. See [`crate::riding`] for why a passenger
         // does not interpolate.
         self.position_riders();
+    }
+
+    /// `AbstractMinecart.tick` → `NewMinecartBehavior.tick` →
+    /// `lerpClientPositionAndRotation`, for every cart carrying a schedule
+    /// (M77).
+    ///
+    /// The four assignments are vanilla's: `setPos`, `setDeltaMovement`,
+    /// `setXRot`, `setYRot`. `setPos` lands on
+    /// [`EntityState::set_derived_pos`] — the same writer `positionRider`
+    /// uses — because it must overwrite **this tick's** position without
+    /// touching `prev` (already advanced above) or the synced target. That is
+    /// what leaves the generic `render_pos` chord tracking the schedule one
+    /// tick behind, which is exactly the baseline vanilla measures
+    /// `passengerOffset` against.
+    ///
+    /// The rotations are written straight onto the entity: `MinecartBehavior`'s
+    /// `setXRot`/`setYRot` forward to `Entity` with no `% 360`, unlike
+    /// `moveOrInterpolateTo`'s branch.
+    fn tick_minecarts(&mut self) {
+        if self.minecarts.is_empty() {
+            return;
+        }
+        let Self { map, minecarts, .. } = self;
+        for (id, lerp) in minecarts.iter_mut() {
+            // A schedule whose entity has gone is left alone rather than
+            // ticked against a position that no longer exists. `remove` drops
+            // the entry, so this is only reachable if a schedule were pushed
+            // for an untracked id — which `push_minecart_steps` refuses.
+            let Some(e) = map.get(id) else { continue };
+            let (pos, yaw, pitch) = (e.cur, e.yaw, e.pitch);
+            let Some(sample) = lerp.tick(pos, yaw, pitch) else {
+                continue;
+            };
+            if let Some(e) = map.get_mut(id) {
+                e.set_derived_pos(sample.position);
+                e.yaw = sample.y_rot;
+                e.pitch = sample.x_rot;
+            }
+        }
+    }
+
+    /// `handleMinecartAlongTrack`'s `lerpSteps.addAll(packet.lerpSteps())`
+    /// (M77) — an append onto this cart's inbox, creating it on first use.
+    ///
+    /// A no-op for an untracked id. That mirrors the packet handler's
+    /// `packet.getEntity(level) instanceof AbstractMinecart` guard, and is a
+    /// belt as well: `rewo_net`'s router already refuses an id the table does
+    /// not hold, so reaching this with one would mean the two disagreed.
+    pub fn push_minecart_steps(&mut self, id: i32, steps: &[crate::minecart::MinecartStep]) {
+        if !self.map.contains_key(&id) {
+            return;
+        }
+        self.minecarts.entry(id).or_default().push_steps(steps);
+    }
+
+    /// `AbstractMinecartRenderer.newExtractState` — the schedule sampled at
+    /// the true partial tick, or `None` when `cartHasPosRotLerp()` is false
+    /// and the generic [`EntityState::render_pos`] stands unchallenged.
+    ///
+    /// This does **not** replace `render_pos`: both are live, and vanilla
+    /// carries their difference to a passenger as `state.passengerOffset`.
+    /// They coincide exactly at `alpha == 1.0`, which is the sample
+    /// [`Self::tick_minecarts`] wrote into the entity.
+    pub fn minecart_render(&self, id: i32, alpha: f32) -> Option<crate::minecart::MinecartSample> {
+        self.minecarts.get(&id)?.sample(alpha)
+    }
+
+    /// The raw schedule, for witnesses that need to see the countdown or the
+    /// segment rather than a sampled position.
+    pub fn minecart_lerp(&self, id: i32) -> Option<&crate::minecart::MinecartLerp> {
+        self.minecarts.get(&id)
+    }
+
+    /// `Leashable.setDelayedLeashHolderId(entityId)` (M77).
+    ///
+    /// Vanilla's body is `setLeashData(new LeashData(entityId))` then
+    /// `dropLeash(this, false, false)`. The drop is a **no-op here by
+    /// construction**: it is guarded on `leashData.leashHolder != null`, and
+    /// the leash data it reads is the one just installed, whose resolved
+    /// holder is null. So the whole handler is this one assignment — including
+    /// for `destId == 0`, which installs a leash record holding nothing rather
+    /// than clearing the record.
+    pub fn set_leash_holder(&mut self, id: i32, dest: i32) {
+        self.leash_data.insert(id, dest);
+    }
+
+    /// `getLeashData() != null` and, if so, its `delayedLeashHolderId` — the
+    /// raw wire value, `0` included.
+    pub fn leash_data(&self, id: i32) -> Option<i32> {
+        self.leash_data.get(&id).copied()
+    }
+
+    /// `Leashable.getLeashHolder()` — the resolved holder, or `None`.
+    ///
+    /// Vanilla: `delayedLeashHolderId != 0 && isClientSide && level.getEntity(
+    /// delayedLeashHolderId) != null` promotes the id to a cached `Entity`
+    /// reference and zeroes the delayed id; the method then returns that
+    /// reference. Rewo has no entity references, so it resolves on demand
+    /// instead of caching.
+    ///
+    /// **The one place that diverges**: after vanilla has promoted, the cached
+    /// reference survives the holder leaving the tracking range, so a leash
+    /// keeps pointing at a now-unloaded entity until the server re-sends.
+    /// Resolving on demand reports `None` there. Nothing in this client reads
+    /// it yet — the rope is not drawn — and the divergence is recorded rather
+    /// than modelled because reproducing it needs a `&mut` accessor whose only
+    /// consumer would be the cache itself.
+    pub fn leash_holder(&self, id: i32) -> Option<i32> {
+        let dest = self.leash_data.get(&id).copied()?;
+        if dest == 0 || !self.map.contains_key(&dest) {
+            return None;
+        }
+        Some(dest)
+    }
+
+    /// `AbstractHurtingProjectile.accelerationPower = packet.
+    /// getAccelerationPower()` (M77).
+    pub fn set_projectile_power(&mut self, id: i32, power: f64) {
+        self.projectile_power.insert(id, power);
+    }
+
+    /// The last `projectile_power` this entity was sent, if any.
+    pub fn projectile_power(&self, id: i32) -> Option<f64> {
+        self.projectile_power.get(&id).copied()
     }
 
     /// Supply the attachment table, enabling per-tick passenger positioning

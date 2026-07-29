@@ -23,6 +23,7 @@ pub mod inventory;
 pub mod label;
 pub mod light;
 pub mod lightmap;
+pub mod minecart;
 pub mod palette;
 pub mod particles;
 pub mod physics;

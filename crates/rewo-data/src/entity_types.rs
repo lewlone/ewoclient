@@ -147,6 +147,16 @@ pub struct EntityClasses {
     /// `Player` descendants — excluded from death entity-event 3's
     /// client-side `setHealth(0) + die()` (M24).
     player: std::collections::HashSet<i32>,
+    /// `AbstractMinecart` descendants — `handleMinecartAlongTrack`'s first
+    /// `instanceof` (M77).
+    minecart: std::collections::HashSet<i32>,
+    /// `AbstractHurtingProjectile` descendants —
+    /// `handleProjectilePowerPacket`'s only cast (M77).
+    hurting_projectile: std::collections::HashSet<i32>,
+    /// `Leashable` implementors — `handleEntityLinkPacket`'s only cast (M77).
+    /// The one set here derived from an `implements` edge rather than an
+    /// `extends` chain; see [`crate::entity_classes::LEASHABLE`].
+    leashable: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -188,6 +198,10 @@ impl EntityClasses {
         let spellcaster = resolve_set(table::SPELLCASTER_ILLAGER, "spellcaster")?;
         let illager = resolve_set(table::ILLAGER, "illager")?;
         let player = resolve_set(table::PLAYER, "player")?;
+        let minecart = resolve_set(table::ABSTRACT_MINECART, "minecart")?;
+        let hurting_projectile =
+            resolve_set(table::ABSTRACT_HURTING_PROJECTILE, "hurting-projectile")?;
+        let leashable = resolve_set(table::LEASHABLE, "leashable")?;
         // A swing-ticking type that is not living would mean the generator's
         // own invariant broke between generation and resolution.
         if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
@@ -233,6 +247,33 @@ impl EntityClasses {
                 "entity_classes: type {bad} is a player and a mob"
             ));
         }
+        // M77. `Mob implements Leashable`, so every mob is leashable and the
+        // set is a strict superset of `mob` — the boats are the difference.
+        // Asserting it is what catches an `implements` scan that silently
+        // matched nothing: an empty `leashable` would make every
+        // `set_entity_link` inert, which reads exactly like a server that
+        // never leashes anything.
+        if let Some(bad) = mob.iter().find(|id| !leashable.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a mob but not leashable"
+            ));
+        }
+        if leashable.len() <= mob.len() {
+            return Err(format!(
+                "entity_classes: {} leashable types against {} mobs — the boats \
+                 are missing, so the `implements` scan lost a subtree",
+                leashable.len(),
+                mob.len()
+            ));
+        }
+        // A hurting projectile is an `Entity`, never a `LivingEntity`: the
+        // packet's cast and the living gate must not overlap, or one of the
+        // two tables was built from a different hierarchy.
+        if let Some(bad) = hurting_projectile.iter().find(|id| living.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is a hurting projectile and living"
+            ));
+        }
         Ok(Self {
             living,
             swing_ticking,
@@ -241,6 +282,9 @@ impl EntityClasses {
             spellcaster,
             illager,
             player,
+            minecart,
+            hurting_projectile,
+            leashable,
         })
     }
 
@@ -260,6 +304,9 @@ impl EntityClasses {
             spellcaster: Default::default(),
             illager: Default::default(),
             player: Default::default(),
+            minecart: Default::default(),
+            hurting_projectile: Default::default(),
+            leashable: Default::default(),
         }
     }
 
@@ -280,6 +327,9 @@ impl EntityClasses {
             spellcaster: spellcaster.iter().copied().collect(),
             illager: illager.iter().copied().collect(),
             player: Default::default(),
+            minecart: Default::default(),
+            hurting_projectile: Default::default(),
+            leashable: Default::default(),
         }
     }
 
@@ -320,6 +370,30 @@ impl EntityClasses {
     /// `entity instanceof LivingEntity`.
     pub fn is_living(&self, type_id: i32) -> bool {
         self.living.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractMinecart` — `handleMinecartAlongTrack`'s
+    /// first guard (M77). The second, `getBehavior() instanceof
+    /// NewMinecartBehavior`, is a runtime state rather than a class fact and
+    /// cannot live here; see [`crate::entity_classes::ABSTRACT_MINECART`] and
+    /// the note on `rewo_net::route_move_minecart_along_track`.
+    pub fn is_minecart(&self, type_id: i32) -> bool {
+        self.minecart.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractHurtingProjectile` —
+    /// `handleProjectilePowerPacket`'s only cast (M77). An arrow is an
+    /// `AbstractArrow` and fails this, so a `projectile_power` naming one
+    /// mutates nothing.
+    pub fn is_hurting_projectile(&self, type_id: i32) -> bool {
+        self.hurting_projectile.contains(&type_id)
+    }
+
+    /// `entity instanceof Leashable` — `handleEntityLinkPacket`'s only cast
+    /// (M77). An interface, so this is the union of `Mob`'s and
+    /// `AbstractBoat`'s subtrees rather than one ancestry walk.
+    pub fn is_leashable(&self, type_id: i32) -> bool {
+        self.leashable.contains(&type_id)
     }
 
     /// Whether this type's client class advances `updateSwingTime` each tick.

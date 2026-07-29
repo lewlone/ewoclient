@@ -1988,6 +1988,198 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M77 — the minecart's own interpolation, the leash holder, the projectile's power (2026-07-29)
+
+Three class-A rows out of `REWO_PACKET_COVERAGE.md`: `move_minecart_along_track`
+(55), `set_entity_link` (100), `projectile_power` (135). Two are small. The
+first is a whole second interpolation model, and answering "how does it compose
+with the one Rewo already has" is what this milestone is actually about.
+
+#### The composition answer: it overrides the generic lerp at the render seam and leaves it running
+
+The question was framed as *replace or feed*. The decompile says **neither**,
+and it says so at four separate places that all have to agree:
+
+1. **`ServerEntity.sendChanges` has an `else if` for a minecart.** An
+   `AbstractMinecart` whose behaviour is `NewMinecartBehavior` goes to
+   `handleMinecartPosRot`, which **replaces the entire generic position
+   branch** — so such a cart is never sent `move_entity_pos`,
+   `teleport_entity` or `entity_position_sync` at all. `move_minecart_along_track`
+   is its only movement channel, and even a cart at rest gets one (a single
+   `weight 1.0` step at the current position).
+2. **`AbstractMinecart.getInterpolation()` returns null for it.** It forwards to
+   `behavior.getInterpolation()`, and `NewMinecartBehavior` does not override
+   `MinecartBehavior`'s `return null` — `OldMinecartBehavior` is the half that
+   owns a real `InterpolationHandler`. So a stray positional packet would take
+   `Entity.moveOrInterpolateTo`'s null branch and **snap**.
+3. **The schedule's per-tick write is an ordinary `setPos`.** So `xOld →
+   getX()` keeps tracking it and `EntityRenderer.extractRenderState` still
+   produces `Mth.lerp(partialTicks, xOld, getX())` — the tick-quantised chord
+   between two consecutive schedule samples.
+4. **`AbstractMinecartRenderer.newExtractState` then overrides that**, with
+   `getCartLerpPosition(partialTicks)` — the same schedule at the true partial
+   tick — but only `if (behavior.cartHasPosRotLerp())`.
+
+And vanilla **measures one against the other**: a passenger of a lerping cart
+gets `state.passengerOffset = getCartLerpPosition(partialTicks) -
+lerp(partialTicks, xOld, getX())`, which is literally the difference between
+the schedule and the generic lerp. Both are live by construction.
+
+This is the mirror image of M72's passenger finding. There a rider's own
+three-step lerp is computed and **thrown away** by `positionRider`. Here the
+generic lerp is computed, kept, and is the baseline the finer sample is
+measured against.
+
+In Rewo that lands as: `EntityTable::tick_minecarts` writes the schedule's
+`sample(1.0)` through `set_derived_pos` — the same writer `positionRider` uses,
+which moves *this* tick's position without touching `prev` or the synced target
+— and `EntityTable::minecart_render(id, alpha)` is `newExtractState`, `Some`
+only while `cartHasPosRotLerp()`. Two consequences the gate pins: the two agree
+**exactly at alpha 1.0** (that is the sample the tick wrote), and the synced
+target `x/y/z` never moves at all, so the generic three-step lerp is never armed.
+
+**They only disagree across a step boundary.** Within one step index the
+schedule's `indexedPartialTick` is affine in the partial tick, so a
+single-step segment makes the schedule and the chord *identical at every
+alpha* — a witness built on one would have witnessed nothing. `rideshot`'s
+fixture is therefore an L-shaped two-step segment with weights `3` and `1`,
+which puts the boundary two thirds of the way through the third tick and makes
+the disagreement 1.76 blocks.
+
+#### The rest of the schedule, transcribed
+
+`crates/rewo-world/src/minecart.rs` is the client half of
+`NewMinecartBehavior` and nothing else (the server half — `moveAlongTrack`,
+`adjustToRails`, the rail-shape speed maths — never runs on a client). Details
+that invert if assumed:
+
+- **The countdown is `3` and the alpha's divisor is a separate literal `3`.**
+  `alpha = (3 - lerpDelay + partialTick) / 3.0F` with `lerpDelay` set to
+  `POS_ROT_LERP_TICKS` at ingest, pre-decremented every tick — so a segment is
+  traversed in exactly three ticks and lands *on* its last step.
+- **A weight of 0 is not "no movement", it is a snap.**
+  `adjustToRails(…, instant = true)` emits one; the index search skips every
+  `weight <= 0` step and the `!foundIndex` fallback selects the **last** step at
+  `indexedPartialTick = 1.0`. A whole segment of zero weight also sets
+  `lerpDelay = 0`, so the next tick re-ingests immediately.
+- **The arithmetic mixes widths on purpose.** `alpha` and `countUp` are
+  `float`, `currentLerpStepsTotalWeight` is a `double`; the threshold
+  comparison and the in-step fraction both evaluate in `f64` with the floats
+  widened, and only the fraction narrows back. Doing it all in one width drifts.
+- **`currentLerpStepsTotalWeight` is reset inside the non-empty branch only.**
+  With an empty inbox the stale total survives — unread, because
+  `cartHasPosRotLerp()` is false the moment `currentLerpSteps` is empty.
+- The packet is an **append** (`lerpSteps.addAll`), so two packets between two
+  client ticks are one segment.
+
+**The wire has both of this project's paid-for traps in one packet.** The
+vectors are `Vec3.STREAM_CODEC` — three plain `f64`s, 24 bytes — and **not** the
+`LP_STREAM_CODEC` bit-packing `set_entity_motion` uses (M68); the two codecs sit
+on the same `Vec3` class. And a rotation is one **signed byte** through
+`Mth.unpackDegrees` (`rot * 360 / 256f`). One deliberate divergence: vanilla's
+`readCount` accepts a **negative** count and its loop then yields an empty list,
+where Rewo's hardened `PacketReader::count` rejects it — both mutate nothing.
+
+#### `set_entity_link` and `projectile_power`
+
+`set_entity_link` is **two fixed big-endian i32s** (`readInt()` twice) — the
+same shape `entity_event`'s id has (M17) and the opposite of nearly every other
+entity-addressed packet. `destId == 0` is the wire's null. The handler is
+`setDelayedLeashHolderId`, whose body is `setLeashData(new LeashData(entityId))`
+then `dropLeash(this, false, false)` — and **that drop is a no-op by
+construction**, because it is guarded on `leashData.leashHolder != null` and the
+data it reads is the one just installed, whose resolved holder is null. So the
+whole handler is one assignment, *including for 0*, which installs a leash
+record holding nothing rather than clearing the record. `getLeashHolder` is then
+a lazy two-step: `delayedLeashHolderId != 0 && level.getEntity(id) != null`.
+**The rope is not drawn** — that is class B and untouched.
+
+`projectile_power` is a VarInt id (unlike `set_entity_link`'s fixed i32, one
+packet away) then an `f64`, written onto `AbstractHurtingProjectile` and nothing
+else. The cast is worth naming: **an arrow is not one**. It is an
+`AbstractArrow` on a sibling branch, so a `projectile_power` naming one mutates
+nothing. Six types pass — the fireball family, the wither skull, the two wind
+charges.
+
+#### `Leashable` is an interface, so the class table grew a second kind of set
+
+All three packets gate on a Java class the wire cannot carry, which is
+`tools/gen_entity_classes.py`'s job. `ABSTRACT_MINECART` already existed (M72);
+`ABSTRACT_HURTING_PROJECTILE` is one more `ANCESTRY_SETS` row. `Leashable` is
+not a class, and the `extends` walker cannot see it — so the generator gained
+**`INTERFACE_SETS`**: it scans every `implements` clause, **asserts the set of
+declaring classes** (exactly `Mob` and `AbstractBoat` in 26.2), asserts that no
+interface *widens* `Leashable` (which would leave the union short), and then
+unions those classes' `extends` subtrees. Pinning the implementor set is the
+point: if 26.3 makes `AbstractMinecart` leashable, the generator stops instead
+of shipping a set that is one subtree short. `EntityClasses::resolve` adds two
+invariants on top — every mob must be leashable and the leashable set must be
+strictly larger (the boats are the difference), and a hurting projectile must
+never be living. All four fail-closed paths were mutation-run.
+
+#### One guard that is genuinely un-mutable alone, and said so
+
+`push_minecart_steps` refuses an untracked id, and so does the net-side
+`entities.get(eid)` lookup. Dropping either **alone** leaves the gate green.
+The net-side one is load-bearing (it is also where the type id for the class
+gate comes from, so it cannot be removed in isolation); the world-side
+`contains_key` is a belt, and `m6`'s detail string says exactly that — the same
+status `rideshot`'s `r4.a_rider_that_moved_on` gives `position_riders`' own
+`vehicle_of` re-check.
+
+#### Two witnesses were wrong first, and the mutations are what said so
+
+- **`m4` measured the rotation's sign through `rotLerp`, which erases it.**
+  `Mth.rotLerp` is `from + a * wrapDegrees(to - from)`, and `wrapDegrees`
+  normalises into (-180, 180] — so an off-by-360 from reading the byte
+  *unsigned* is destroyed by the very next operation, and the mutation left the
+  gate green. The witness now asserts the **decoded step**, where the mutation
+  bites, and separately asserts the entity write (which has its own mutation:
+  drop `e.yaw = sample.y_rot`).
+- **`m15` tested `remove` then `add`, and the two clears covered for each
+  other.** Dropping either one alone left the gate green, because the other
+  still ran. It now has three clauses — `remove` alone, `remove` then `add`, and
+  a bare `add` over a live schedule (the dropped-`remove_entities` case the
+  `add` clear exists for) — and each of the two mutations reddens exactly one.
+
+#### Gate and measurements
+
+`rewo rideshot --check` grew from **24 to 45 witnesses** — extended rather than
+given its own command, because its three existing concerns (a derived position,
+an entity→entity relation, and what wins over `render_pos`) are exactly these
+three packets'. Serverless, CPU-only, fail-closed on the count.
+
+**25 mutations run in total**: 20 against the Rust (19 predicted red and
+observed red, 1 predicted green and observed green — the belt above), 3 against
+the generator's fail-loud checks, 2 against `EntityClasses::resolve`'s
+invariants. Two of the original 20 came back green and were the two witness
+defects above; after the rework both, plus their two new partners, are red.
+
+**Measured.** **1333 tests** (was 1323: `rewo-world` +6 in the new `minecart`
+module, `rewo-net` +4 in `m77_wire_tests` — the two things `rideshot` cannot
+reach, because no encoder produces a **negative** element count and the gate
+samples two rotation bytes rather than all 256). Every gate green with
+validation ON and **0 VUIDs**: rideshot **45**, abilityshot 47, labelshot 47,
+capeshot 69, itemshot 62, inventoryshot 152, healthbarshot 33, attributeshot 43,
+captureshot 17, blockentityshot 172, swingshot 97, hurtshot 38, weathershot 35,
+handshot 34, particleshot 34, eventshot 28, danceshot 24, portalshot 12,
+hudshot, mobshot 246/246 + its four sub-checks, skyshot, lightmapshot, tintshot,
+meshshot, dimensioncheck. Release `demo` PNG SHA-256 byte-identical to M15
+onward (`2cc56b4a…`). `git diff --check` clean; every file touched was already
+pure LF and stayed that way.
+
+**Not verified:** no live server run, and nothing is drawn. `rewo live` never
+calls `minecart_render`, so a cart still renders at its generic position — the
+schedule is state, and wiring the render seam is one call site in
+`live_cmd.rs`'s entity loop (recorded here rather than half-started, because
+Rewo draws minecarts as capsules and the change is unverifiable headlessly).
+Three scoped exclusions, all in the coverage doc: the handler's second guard
+(`getBehavior() instanceof NewMinecartBehavior`) needs the
+`minecart_improvements` feature flag, which needs `update_enabled_features` — a
+**configuration** packet, outside that survey's scope; the leash rope is class
+B; and `getLeashHolder`'s *cache* is not modelled, so a holder that leaves the
+tracking range reads as no holder where vanilla keeps the stale reference.
+
 ### M75 — `player_abilities`, flight, and the gamemode binding (2026-07-29)
 
 M71 modelled the local player's **gamemode** from `game_event`'s

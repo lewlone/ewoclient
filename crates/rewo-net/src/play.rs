@@ -2356,6 +2356,36 @@ impl PlaySession {
             // peek) were stamped with the current tick — the renderer measures
             // the rig's elapsed time from it. `self.ticks` is the in-progress
             // tick (it increments at the end of `tick()`, after this drain).
+        } else if crate::route_move_minecart_along_track(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+        ) {
+            // M77. An experimental-movement minecart's ONLY movement channel —
+            // `ServerEntity.sendChanges` sends it instead of `move_entity_pos`
+            // / `teleport_entity` / `entity_position_sync`, so the generic
+            // 3-tick lerp is never armed for one of these carts. The schedule
+            // is traversed in `EntityTable::tick_lerp`, before the riders are
+            // placed; see `rewo_world::minecart` for why both interpolations
+            // stay live.
+        } else if crate::route_set_entity_link(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+        ) {
+            // M77. The leash holder id, stored and not drawn.
+        } else if crate::route_projectile_power(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+        ) {
+            // M77. `AbstractHurtingProjectile.accelerationPower`.
         } else if id == ids.cb_play_set_passengers {
             // Riding (M70). Consumed for `Entity.isVehicle()`, which
             // suppresses a ridden entity's floating label. It does **not** yet

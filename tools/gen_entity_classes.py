@@ -66,6 +66,24 @@ CLASS_DECL = re.compile(
     r'|sealed\s+|non-sealed\s+)*class\s+'
     r'([A-Za-z0-9_]+)(?:<[^{]*?>)?\s+extends\s+([A-Za-z0-9_.]+)',
     re.M)
+# M77: `public abstract class Mob extends LivingEntity implements …, Leashable {`
+# — the `implements` clause the `extends` walker above cannot see. A class
+# header runs to its `{`, and neither a generic argument list nor a supertype
+# list contains one, so `[^{]` is a safe span (it crosses newlines, which is
+# what a wrapped header needs).
+IMPLEMENTS_DECL = re.compile(
+    r'^[ \t]*(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+'
+    r'|sealed\s+|non-sealed\s+)*class\s+'
+    r'([A-Za-z0-9_]+)(?:<[^{]*?>)?[^{]*?\bimplements\b([^{]*)\{',
+    re.M)
+# `public interface Leashable extends … {` — an interface that widens another
+# one would make an implementor subtree incomplete, so it is asserted absent
+# rather than assumed absent.
+INTERFACE_DECL = re.compile(
+    r'^[ \t]*(?:public\s+|private\s+|protected\s+|static\s+'
+    r'|sealed\s+|non-sealed\s+)*interface\s+'
+    r'([A-Za-z0-9_]+)(?:<[^{]*?>)?[^{]*?\bextends\b([^{]*)\{',
+    re.M)
 
 # The client call sites this table is derived from. A change here changes the
 # answer, so the generator asserts the set rather than trusting it.
@@ -199,6 +217,34 @@ ANCESTRY_SETS = [
         "`passengerAttachments`, so falling back to the default would put a",
         "rider at the top of its bounding box rather than on its back.",
     ]),
+    # ---- M77: `handleProjectilePowerPacket` casts to this and nothing else.
+    ("ABSTRACT_HURTING_PROJECTILE", "AbstractHurtingProjectile", [
+        "Registry names whose class descends from `AbstractHurtingProjectile` —",
+        "the only entities `handleProjectilePowerPacket` writes",
+        "`accelerationPower` onto. An arrow is an `AbstractArrow` and NOT one of",
+        "these, so a `projectile_power` naming one must mutate nothing.",
+    ]),
+]
+
+# M77: sets derived from an `implements` edge rather than an `extends` one.
+#
+# `handleEntityLinkPacket` gates on `instanceof Leashable`, and `Leashable` is
+# an **interface** — the `extends` walker above cannot see it. Each entry is
+# (rust const, java interface, expected implementing classes, doc lines). The
+# generator finds the classes that name the interface itself, asserts they are
+# exactly the expected set, and then unions their `extends` subtrees. Pinning
+# the implementor set is the point: if 26.3 makes `AbstractMinecart` leashable,
+# this stops rather than silently shipping a set that is one subtree short.
+INTERFACE_SETS = [
+    ("LEASHABLE", "Leashable", ("Mob", "AbstractBoat"), [
+        "Registry names whose class implements `Leashable`, which is what",
+        "`handleEntityLinkPacket` casts to before calling",
+        "`setDelayedLeashHolderId`. `Leashable` is an **interface**, so this set",
+        "is the union of the `extends` subtrees of the classes that declare it —",
+        "`Mob` and `AbstractBoat` — rather than one ancestry walk. A",
+        "`set_entity_link` naming anything else (an armour stand, a minecart, an",
+        "item entity) mutates nothing.",
+    ]),
 ]
 
 
@@ -240,6 +286,46 @@ def scan_class_graph():
                 else:
                     nested.setdefault(cls, set()).add(sup)
     return top, nested
+
+
+def type_names(clause):
+    """The simple names in a `implements A, B<C>` / `extends A, B` clause."""
+    out, depth, cur = [], 0, ""
+    for ch in clause:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        if depth == 0 and ch not in "<>":
+            cur += ch
+    out.append(cur)
+    return [n.strip().split(".")[-1] for n in out if n.strip()]
+
+
+def scan_interface_edges():
+    """-> ({interface: {classes declaring it}}, {interface: {sub-interfaces}}).
+
+    Scans every `.java` under `net/` once for the two edges the `extends`-only
+    class graph cannot express: a class naming an interface, and an interface
+    widening another interface.
+    """
+    implementors, widened_by = {}, {}
+    for root, _dirs, files in os.walk(os.path.join(DECOMP, "net")):
+        for fname in files:
+            if not fname.endswith(".java"):
+                continue
+            src = read(os.path.join(root, fname))
+            for cls, clause in IMPLEMENTS_DECL.findall(src):
+                for iface in type_names(clause):
+                    implementors.setdefault(iface, set()).add(cls)
+            for iface, clause in INTERFACE_DECL.findall(src):
+                for base in type_names(clause):
+                    widened_by.setdefault(base, set()).add(iface)
+    return implementors, widened_by
 
 
 def chain(cls, top, nested):
@@ -302,10 +388,26 @@ def main():
             die(f"EntityTypeIds.{id_const} has no create(\"…\") literal")
         by_name["minecraft:" + name] = cls.split(".")[-1]
 
-    # 3. Walk each implementation class to the root.
+    # 3. The `implements` edges (M77), asserted before they are used.
+    implementors, widened_by = scan_interface_edges()
+    for key, iface, expected, _doc in INTERFACE_SETS:
+        found = implementors.get(iface, set())
+        if found != set(expected):
+            die(f"the classes implementing {iface} changed:\n"
+                f"  expected {sorted(expected)}\n"
+                f"  found    {sorted(found)}\n"
+                f"Update {key}'s expected set deliberately — a new implementor "
+                "is a whole subtree this table would otherwise omit.")
+        if iface in widened_by:
+            die(f"interface {sorted(widened_by[iface])} now extends {iface} — "
+                f"{key} is the union of implementor subtrees only, and a "
+                "widening interface's own implementors would be missed.")
+
+    # 4. Walk each implementation class to the root.
     top, nested = scan_class_graph()
     living, ticking = [], []
     ancestry = {key: [] for key, _root, _doc in ANCESTRY_SETS}
+    interfaces = {key: [] for key, _iface, _exp, _doc in INTERFACE_SETS}
     for name, cls in sorted(by_name.items()):
         path = chain(cls, top, nested)
         if path is None:
@@ -319,12 +421,19 @@ def main():
         for key, root, _doc in ANCESTRY_SETS:
             if root in path:
                 ancestry[key].append(name)
+        for key, _iface, expected, _doc in INTERFACE_SETS:
+            if any(r in path for r in expected):
+                interfaces[key].append(name)
     # M20's metadata routing keys on these, so an empty one means the class
     # was renamed and every pose derived from it would silently go neutral.
     for key, root, _doc in ANCESTRY_SETS:
         if not ancestry[key]:
             die(f"no registered type descends from {root} — {key} would be "
                 "empty and its metadata slot would route to nothing")
+    for key, iface, _exp, _doc in INTERFACE_SETS:
+        if not interfaces[key]:
+            die(f"no registered type implements {iface} — {key} would be "
+                "empty and every packet gated on it would be inert")
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as out:
         out.write("//! GENERATED by `tools/gen_entity_classes.py` — do not edit.\n//!\n")
@@ -366,6 +475,18 @@ def main():
                 out.write(f"/// {line}\n" if line else "///\n")
             out.write(f"pub const {key}: &[&str] = &[\n")
             for n in ancestry[key]:
+                out.write(f'    "{n}",\n')
+            out.write("];\n")
+        for key, iface, expected, doc in INTERFACE_SETS:
+            out.write("\n")
+            for line in doc:
+                out.write(f"/// {line}\n" if line else "///\n")
+            out.write("///\n")
+            out.write(f"/// Implementing classes at generation time: "
+                      f"{', '.join('`' + c + '`' for c in sorted(expected))}. The\n")
+            out.write("/// generator asserts that set rather than trusting it.\n")
+            out.write(f"pub const {key}: &[&str] = &[\n")
+            for n in interfaces[key]:
                 out.write(f'    "{n}",\n')
             out.write("];\n")
     print(f"gen_entity_classes: {len(by_name)} types, {len(living)} living, "
