@@ -10,7 +10,10 @@
 //! (Provot 1995), position-based distance constraints (Jakobsen 2001).
 //!
 //! **The numbers below are chosen, not derived**, and they are the spec's.
-//! Do not tune them here — change the spec first.
+//! Do not tune them here — change the spec first. The one exception is
+//! [`ANCHOR_ACCEL`], which *is* derived — from vanilla's own 100°/block
+//! response — and whose comment carries the derivation so it can be checked
+//! rather than trusted.
 //!
 //! # What is simulated, and in which space
 //!
@@ -51,18 +54,12 @@
 //!    mutation: a single simulated segment would then settle onto the
 //!    vanilla angle instead of hanging straight down, and the reduction
 //!    witness is the milestone's whole safety net.
-//! 2. **The anchor delta is used verbatim, in blocks.** The spec says the
-//!    acceleration is "gravity plus the lagging-anchor delta vector
-//!    `(deltaX, deltaY, deltaZ)` the vanilla cape already computes" and
-//!    gives no conversion. Converting it to model units (×16) is the
-//!    dimensionally coherent reading and is what a first pass would write —
-//!    it is also unusable: a sprinting player's delta is ≈0.9 blocks, so
-//!    ×16 is ≈14 model units per tick², fourteen link-lengths in one step.
-//!    The chain then snaps rigidly onto the acceleration direction in a
-//!    single tick and never waves. Verbatim blocks give ≈0.9, comparable to
-//!    `REST_LEN`, which is the regime a position-based solver produces
-//!    cloth in. See the milestone report: this is the number most likely to
-//!    want a coefficient.
+//! 2. **The anchor delta carries [`ANCHOR_ACCEL`]**, which the spec's first
+//!    two drafts left out. Without it the cape flies to 80.9° from vertical
+//!    on a drift the vanilla cape renders as 5°, because the delta — in
+//!    blocks — is a hundred times gravity. The constant is *derived* from
+//!    vanilla's own response and not tuned; its comment carries the
+//!    derivation.
 
 /// Slabs the cape is divided into.
 ///
@@ -74,6 +71,34 @@ pub const SEGMENTS: usize = 16;
 /// Model units per tick², downward. See the module header for what
 /// "downward" is read as.
 pub const GRAVITY: f64 = 0.008;
+
+/// What one block of lagging-anchor gap is worth as a horizontal
+/// acceleration, in model units per tick² per block.
+///
+/// # It is derived, not tuned
+///
+/// Vanilla maps the gap to an angle linearly: `capeLean = 100 · delta`
+/// degrees per block. A chain hanging under gravity `g` with a horizontal
+/// acceleration `a_h` settles at `theta = atan(a_h / g)`, which in the
+/// small-angle regime is `theta ≈ a_h / g` radians. Setting the two equal at
+/// small angles:
+///
+/// ```text
+/// a_h / GRAVITY  =  100 · delta · pi/180        (degrees -> radians)
+/// a_h            =  GRAVITY · 100 · pi/180 · delta
+/// ```
+///
+/// so the coefficient is `GRAVITY · 100 · pi/180` ≈ **0.0139626**, written
+/// below as that expression rather than as the number, so a reader can check
+/// it instead of trusting it. Measured: 4.99° against vanilla's 5.00° at a
+/// drift of 0.05 blocks.
+///
+/// **The two diverge at larger gaps, and that is correct.** `atan` compresses
+/// where vanilla's linear `100 · delta` does not — 34.9° against 40° at a
+/// walk — because vanilla's formula is a linear approximation of the angle a
+/// real hanging cloth takes and this is the angle itself. Do not add a second
+/// factor to chase vanilla's number out there.
+pub const ANCHOR_ACCEL: f64 = GRAVITY * 100.0 * std::f64::consts::PI / 180.0;
 
 /// Velocity retained per tick.
 pub const DAMPING: f64 = 0.92;
@@ -148,7 +173,7 @@ impl WavyCape {
     ///
     /// * `anchor` — where joint 0 is pinned this tick, in cape space.
     /// * `delta` — vanilla's lagging-cloak gap `cloak - pos`, in **blocks**
-    ///   and in world axes. See the module header for why it is not scaled.
+    ///   and in world axes. [`ANCHOR_ACCEL`] converts it to an acceleration.
     ///
     /// The order is the spec's and is fixed: Verlet, then `RELAX_PASSES`
     /// relaxation passes, then the torso push-out, then the radius clamp.
@@ -169,7 +194,11 @@ impl WavyCape {
         // `dt` is one tick, so `a·dt²` is `a` and GRAVITY is already
         // per-tick². Writing the multiply out would only invite someone to
         // "fix" it with a seconds-based dt.
-        let a = [delta[0], delta[1] - GRAVITY, delta[2]];
+        let a = [
+            delta[0] * ANCHOR_ACCEL,
+            delta[1] * ANCHOR_ACCEL - GRAVITY,
+            delta[2] * ANCHOR_ACCEL,
+        ];
         // Swap first, so no buffer is allocated and `prev` ends up holding
         // this tick's starting state without a copy: afterwards `self.prev`
         // is the old `cur` (what we must keep) and `self.cur` is the old
@@ -440,6 +469,38 @@ mod tests {
         assert_eq!(REST_LEN, 1.0);
         assert_eq!(TORSO_RADIUS, 2.5);
         assert_eq!(MAX_JOINT_RADIUS, 24.0);
+        // The value, against a literal written out independently of the
+        // expression that produces it — a tautological `GRAVITY * 100 * pi
+        // / 180` would assert nothing.
+        assert!((ANCHOR_ACCEL - 0.013962634015954637).abs() < 1e-17);
+    }
+
+    /// The equilibrium tilt is `atan(ANCHOR_ACCEL·delta / GRAVITY)`, and at
+    /// small angles that is vanilla's own `capeLean` of 100°/block.
+    ///
+    /// The anchor is placed far from the body axis so the torso push-out
+    /// cannot fire and contaminate the angle; the property being measured is
+    /// the integrator's and the constraints', not the collision's.
+    #[test]
+    fn the_settled_tilt_matches_vanillas_lean_at_small_angles() {
+        let anchor = [0.0, 0.0, -100.0];
+        for &d in &[0.0125f64, 0.025, 0.05] {
+            let mut c = WavyCape::new(SEGMENTS, anchor);
+            for _ in 0..4000 {
+                c.tick(anchor, [d, 0.0, 0.0]);
+            }
+            let tip = c.joints()[SEGMENTS];
+            let v = [tip[0] - anchor[0], tip[1] - anchor[1], tip[2] - anchor[2]];
+            let tilt = v[0].hypot(v[2]).atan2(-v[1]).to_degrees();
+            let want = (ANCHOR_ACCEL * d / GRAVITY).atan().to_degrees();
+            assert!((tilt - want).abs() < 1e-3, "delta {d}: {tilt} vs {want}");
+            // Vanilla's own answer for the same gap.
+            let vanilla = crate::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean;
+            assert!(
+                (tilt - vanilla as f64).abs() < 0.05,
+                "delta {d}: cloth {tilt}, vanilla {vanilla}"
+            );
+        }
     }
 
     #[test]

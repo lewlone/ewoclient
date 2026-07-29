@@ -6834,15 +6834,41 @@ by three thousandths of a pixel and bites only when the chain swings inward
 (`w5`). A 180° turn takes a joint to radius **0.458** with the push-out
 disabled — clean through the player's chest.
 
-**Two spec readings had to be chosen, and both are recorded in
-`wavy_cape.rs`'s header.** (1) `GRAVITY` acts along **world** down. Reading
-"downward" as the *cape's* local down would make the rest state exactly the
-vanilla drape — and would cost the reduction rule its mutation partner, since a
-single simulated segment would then settle onto the vanilla angle instead of
-hanging straight down. The strong witness wins over the weak one; the price is
-`y2`, where the rest silhouettes are IoU **0.9750** rather than 1.000, the
-residue being 6° of tilt lying nearly along the camera's view axis. (2) The
-anchor delta is used **verbatim, in blocks**. See "Open" below.
+**`GRAVITY` acts along world down.** Reading "downward" as the *cape's* local
+down would make the rest state exactly the vanilla drape — and would cost the
+reduction rule its mutation partner, since a single simulated segment would
+then settle onto the vanilla angle instead of hanging straight down. The
+strong witness wins over the weak one; the price is `y2`, where the rest
+silhouettes are IoU **0.9750** rather than 1.000, the residue being 6° of tilt
+lying nearly along the camera's view axis.
+
+**`ANCHOR_ACCEL` is the number the spec was missing, and it is derived.** The
+first two drafts said the acceleration was "gravity plus the delta", with no
+conversion — which flies the cape to **80.9°** from vertical on a drift the
+vanilla cape renders as 5°, because a gap in *blocks* is a hundred times
+gravity. Vanilla maps the gap linearly (`capeLean = 100 · delta` degrees); a
+chain under gravity `g` with horizontal acceleration `a_h` settles at
+`atan(a_h/g)`, which is `a_h/g` radians at small angles. Equating the two:
+
+```text
+a_h  =  GRAVITY · 100 · pi/180 · delta   ≈  0.0139626 · delta
+```
+
+Written in the source as that expression, not as the number, so a reader can
+check it. Measured before and after:
+
+| gap (blocks) | context | raw delta | with `ANCHOR_ACCEL` | vanilla's `capeLean` |
+|---:|---|---:|---:|---:|
+| 0.05 | drift | 80.9° | **4.99°** | 5.0° |
+| 0.20 | slow walk | 87.7° | **19.24°** | 20.0° |
+| 0.40 | walk | 88.9° | **34.92°** | 40.0° |
+| 0.864 | sprint | 89.5° | **56.45°** | 86.4° |
+
+**The divergence at larger gaps is intended and is asserted, not tolerated.**
+`atan` is the angle a hanging cloth actually takes; vanilla's `100 · delta` is
+its linear approximation, so they must part company away from zero. `w22`
+fails if a second coefficient is ever added to chase vanilla's number out
+there.
 
 **Gauss–Seidel with the upper joint held is what makes 1e-4 reachable.** The
 spec asks for four passes *and* every link within 1e-4 of `REST_LEN` after
@@ -6872,7 +6898,7 @@ would be coincident z-fighting quads at every joint). At `n == 1` it is
 `part_transforms` / `neutral_quads` / `oracle_part_deltas` stay untouched, as
 M60 left them.
 
-**Gate: `rewo capeshot --check` — 38 → 61 witnesses**, serverless, validation
+**Gate: `rewo capeshot --check` — 38 → 64 witnesses**, serverless, validation
 ON, 0 VUIDs, fail-closed. It drives the production `EntityTable::tick_lerp`,
 `WavyCape::tick` and `live_cmd::resolve_cape` — no parallel copy. `w3` is the
 guard on the one duplication the crate graph forces: rewo-gpu depends on no
@@ -6883,17 +6909,18 @@ only in cape mode, with the marker colour isolating the cape — not the frame
 diff §0.0 forbids, whose failures came from live runs and world-mutating
 triggers.
 
-**Four mutations were run — source broken, rebuilt, gate re-run, reverted:**
+**Five mutations were run — source broken, rebuilt, gate re-run, reverted:**
 
 | mutation | caught by |
 |---|---|
+| `ANCHOR_ACCEL` dropped (the raw delta, i.e. the first M61 build) | `w20`, `w21`, `w22` — **and nothing else**, which is precisely why they exist. Every other witness in the file passed while the cape flew to 80.9° at a 0.05 gap, because none of them measured what the simulation settles *to* |
 | the reduction bypass removed (`segments() >= 1`, so one segment simulates) | `y1` **alone**, and everything else still passes — which is the point: without that witness the safety net is gone silently |
 | symmetric Gauss–Seidel (both endpoints share the correction) | `w9` (2.85e-2 settled, 9.6e-1 moving), `w8`, `w16`, and `w14` — the chain stops staying within its own 16-unit reach and hits the clamp |
 | `clamp` removed from `tick` | `w15` and `w16` only |
 | `push_out` removed from `tick` | `w12` (closest approach **0.458**, matching the prototype exactly), `w13`, and `w18` — which reads 6.000° instead of 5.843° once the 0.157° nudge is gone |
 
-**Measured.** capeshot 61/61. **890 tests** (was 883; +7 in `wavy_cape`). All
-21 gates green, 0 VUIDs: capeshot 61, itemshot 62, inventoryshot 127,
+**Measured.** capeshot 64/64. **891 tests** (was 883; +8 in `wavy_cape`). All
+21 gates green, 0 VUIDs: capeshot 64, itemshot 62, inventoryshot 127,
 healthbarshot 33, attributeshot 43, captureshot 17, blockentityshot 172,
 swingshot 97, hurtshot 38, weathershot 35, handshot 34, particleshot 34,
 eventshot 28, danceshot 24, portalshot 12, hudshot 41, mobshot 243/243 +
@@ -6903,20 +6930,11 @@ dimensioncheck. Demo PNG SHA-256 `2cc56b4a…` byte-identical to M15 onward.
 
 **Open.**
 
-- **The delta's scale is the number most likely to be wrong.** The spec gives
-  no conversion, and the equilibrium tilt is `atan(|delta| / GRAVITY)`:
-  **80.9°** for a drift the vanilla cape renders as 5°, 88.9° for a walk vanilla
-  renders as 40°. Only at a sprint (86.4° vanilla, 89.5° here) do they agree.
-  Converting to model units (×16) is dimensionally coherent and *worse* — 14
-  link-lengths per tick, so the chain snaps rigidly onto the acceleration in one
-  tick and never waves. A coefficient near `GRAVITY · 180/π / 100` ≈ **0.014**
-  would match vanilla's own 100°/block response for small gaps. Implemented as
-  written; flagged rather than changed.
 - **The collision response is not re-projected.** The spec's order is relax,
   *then* push-out, so a joint shoved off the torso leaves its links stretched
-  until the next tick. Harmless in practice — a steady walk never fires the
-  push-out at all and a 30°/tick turn stretches by 0.23 model units — but an
-  adversarial rotating forcing reaches **3.44**. One relax pass after the
+  until the next tick. Small in practice — **0.230** model units, a fifth of a
+  slab, on a 30°/tick turn, and only on a turn, since a cloak gap blows the
+  cape away from the body rather than across it. One relax pass after the
   push-out, or collision inside the relax loop, would close it.
 - **The push-out builds a cylinder, and the spec's witness says "torso AABB".**
   The torso box is 8 wide; a joint at x 3.5, z 0 is outside a 2.5 cylinder and
