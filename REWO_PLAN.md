@@ -763,6 +763,18 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    screen and swims against the world. The first `v7` asserted the opposite
    and failed; the intuition to distrust is "moving something must change
    what it looks like."
+13. **A handler that opens by looking an entity up in `EntityTable` is wrong
+   for any packet the server addresses to *you* — and no gate can notice.**
+   Rewo's `EntityTable` never contains the local player (the server sends no
+   `add_entity` for your own player), so the obvious transcription of
+   `handleHurtAnimation`-shaped code silently does nothing in exactly the case
+   the packet exists for. It has bitten twice: M73's `apply_update_attributes`
+   dropped every snapshot addressed to the local player, and M81's first build
+   of `hurt_animation` did nothing **with all twenty witnesses passing**,
+   because a gate that constructs the table is testing a world the packet
+   never arrives in. Both were caught live, not headlessly. When a packet
+   carries an entity id that can be your own, the resolution needs a local
+   fallback *and* a witness that exercises the id the table does not hold.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
