@@ -346,6 +346,16 @@ pub struct EntityDraw<'a> {
     /// and metadata live; by the time a draw is built the answer is already
     /// yes-or-no.
     pub cape: Option<CapeDraw>,
+    /// `ageInTicks` for a dropped stack's bob and spin, overriding the pass's
+    /// shared clock (M81).
+    ///
+    /// `None` for a live item entity. `Some` for a **pickup animation**, whose
+    /// vanilla implementation carries an `EntityRenderState` snapshot taken at
+    /// the moment of collection — so the stack it draws is frozen mid-spin for
+    /// the three ticks of its flight, not still turning. The app reconstructs
+    /// the capture time from the animation's own life counter rather than
+    /// storing a second clock.
+    pub ground_age: Option<f32>,
 }
 
 /// One player's cape, resolved for one frame (M60).
@@ -4463,7 +4473,12 @@ impl EntityPass {
         // clock — the *phase* differs from vanilla's per-entity tickCount, but
         // `bobOffs` is itself a client-side roll, so items still bob out of
         // step with each other, which is the only visible property.
-        let age = time * 20.0;
+        //
+        // M81: a pickup animation overrides it with the age at *capture*,
+        // because vanilla's `ItemPickupParticle` carries a render-state
+        // snapshot rather than the live entity — the stack freezes mid-spin
+        // for the flight.
+        let age = d.ground_age.unwrap_or(time * 20.0);
         let bob = mth_sin((age / 10.0 + d.bob_offset) as f64) * 0.1 + 0.1;
         // `ItemEntity.getSpin(ageInTicks, bobOffset)` = `age / 20 + offset`.
         let spin = age / 20.0 + d.bob_offset;

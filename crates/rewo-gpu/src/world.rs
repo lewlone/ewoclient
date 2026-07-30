@@ -567,6 +567,9 @@ pub struct WorldRenderer {
     hand_vp: Option<[[f32; 4]; 4]>,
     /// Particles (M37). `None` until `init_particles` supplies the atlas.
     particles: Option<crate::particles::ParticlePass>,
+    /// The block-break crack overlay (M81). `None` until `init_crumbling`
+    /// supplies the ten stage textures.
+    crumbling: Option<crate::crumbling::CrumblingPass>,
     /// This frame's portal geometry, and the game time its shader scrolls on.
     end_portal_time: f32,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
@@ -1094,6 +1097,7 @@ impl WorldRenderer {
                 hand: None,
                 hand_vp: None,
                 particles: None,
+                crumbling: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 hud_state: None,
@@ -1677,6 +1681,50 @@ impl WorldRenderer {
     ) -> Result<(), String> {
         match self.particles.as_mut() {
             Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the block-break crumbling pass (M81) from the ten
+    /// `destroy_stage_N` textures.
+    ///
+    /// Built against **`unorm_of(self.color_format)`**, not the format
+    /// itself: the pass's `2·src·dst` blend has to run on gamma-encoded
+    /// numbers, so it is drawn inside [`Self::with_gamma_space`] and its
+    /// pipeline must declare the format that scope reopens with. A pass built
+    /// against the sRGB format and drawn there is a validation error, not a
+    /// colour shift — the same contract M50's glint records.
+    pub fn init_crumbling(
+        &mut self,
+        gpu: &mut Gpu,
+        stages: &[Vec<u8>],
+        size: u32,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            log::warn!(
+                "world: no UNORM counterpart for {:?} — no block-break overlay",
+                self.color_format
+            );
+            return Ok(());
+        };
+        self.crumbling = Some(crate::crumbling::CrumblingPass::new(
+            gpu, format, stages, size,
+        )?);
+        Ok(())
+    }
+
+    pub fn crumbling_ready(&self) -> bool {
+        self.crumbling.is_some()
+    }
+
+    /// This frame's block-break decal geometry.
+    pub fn set_crumbling(
+        &mut self,
+        gpu: &mut Gpu,
+        verts: &[crate::crumbling::CrumblingVertex],
+    ) -> Result<(), String> {
+        match self.crumbling.as_mut() {
+            Some(pass) => pass.set_verts(gpu, verts),
             None => Ok(()),
         }
     }
@@ -2533,6 +2581,16 @@ impl WorldRenderer {
         if self.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
+        // The block-break crack (M81), immediately after the terrain whose
+        // depth it re-tests against and whose colour it multiplies. Before the
+        // entities, so a mob standing in front of a cracked block covers the
+        // crack rather than being darkened by it. In gamma space, because
+        // `2·src·dst` is not invariant under the sRGB transfer function.
+        if let Some(pass) = &self.crumbling {
+            if !pass.is_empty() {
+                self.in_gamma_space(gpu, cb, extent, || pass.draw(gpu, cb, view_proj, extent));
+            }
+        }
         // Selection outline over the terrain (depth-tested against it).
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
@@ -3017,6 +3075,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.particles.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.crumbling.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.weather.take() {

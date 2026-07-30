@@ -744,6 +744,21 @@ pub struct EntityTable {
     /// `LivingEntity.hurtTime` / `hurtDuration` — the damage response (M21).
     /// Absent = never hurt, which renders identically to `hurtTime == 0`.
     hurts: HashMap<i32, HurtState>,
+    /// `Player.hurtDir` — the camera tilt's *direction* (M81), in degrees.
+    ///
+    /// **A separate map from [`Self::hurts`], and deliberately so.** The clock
+    /// above self-evicts at zero; `Player.hurtDir` is a plain field that
+    /// nothing ever resets, so it outlives the animation it steered. That is
+    /// observable: `dealDefaultKnockback` calls `indicateDamage` only when the
+    /// hit was *not* blocked, so a blocked hit re-arms the clock through
+    /// `damage_event` with no fresh `hurt_animation` — and vanilla then tilts
+    /// along the direction of the *previous* hit. Folding this into
+    /// `HurtState` would zero it instead.
+    ///
+    /// Keyed by entity id but written only for players: `animateHurt`'s
+    /// yaw-storing override is on `Player`, and `LivingEntity.getHurtDir()`
+    /// returns a flat `0.0F`.
+    hurt_dirs: HashMap<i32, f32>,
     /// Per-mob combat state the M20 rigs read: `Mob.DATA_MOB_FLAGS_ID` (index
     /// 15 BYTE), `Raider.IS_CELEBRATING` (16 BOOLEAN),
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID` (17 BYTE) and
@@ -1093,6 +1108,9 @@ impl EntityTable {
         self.dances.remove(&id);
         self.mob_state.remove(&id);
         self.hurts.remove(&id);
+        // The direction outlives the *clock*, not the *entity*: vanilla's
+        // `hurtDir` is a field on the Player object, and the object is gone.
+        self.hurt_dirs.remove(&id);
         self.uses.remove(&id);
         self.deaths.remove(&id);
         self.item_stacks.remove(&id);
@@ -2282,6 +2300,49 @@ impl EntityTable {
     /// entity that has never been hurt.
     pub fn hurt_state(&self, id: i32) -> HurtState {
         self.hurts.get(&id).copied().unwrap_or_default()
+    }
+
+    /// `Entity.animateHurt(yaw)` — the client half of
+    /// `ClientboundHurtAnimationPacket` (M81).
+    ///
+    /// Three overrides collapse into `is_player`:
+    ///
+    /// * `Entity.animateHurt` is **empty**, so a non-living entity does
+    ///   nothing at all. The caller applies that gate, because only it knows
+    ///   the class table.
+    /// * `LivingEntity.animateHurt` sets `hurtDuration = 10; hurtTime =
+    ///   hurtDuration` and **ignores the yaw entirely** — the parameter is
+    ///   dead in the base class, and `getHurtDir()` returns a flat `0.0F`.
+    /// * `Player.animateHurt` calls `super` and *then* stores
+    ///   `this.hurtDir = yaw`.
+    ///
+    /// So the yaw survives on a player and nowhere else. Note the clock half
+    /// is byte-identical to [`Self::hurt`]'s, minus the walk kick: vanilla's
+    /// `animateHurt` does not touch `walkAnimation`, which `handleDamageEvent`
+    /// does. Sharing the clock rather than duplicating it is the point — the
+    /// two packets arm one machine, and only this one steers it.
+    pub fn animate_hurt(&mut self, id: i32, yaw: f32, is_player: bool) {
+        self.hurts.insert(
+            id,
+            HurtState {
+                hurt_duration: 10,
+                hurt_time: 10,
+            },
+        );
+        if is_player {
+            self.hurt_dirs.insert(id, yaw);
+        }
+    }
+
+    /// `LivingEntity.getHurtDir()` — the direction the damage tilt leans away
+    /// from, in degrees, relative to the victim's own body yaw at the moment
+    /// of the hit (the server subtracts `getYRot()` before sending).
+    ///
+    /// `0.0` for an entity that is not a player and for a player that has
+    /// never taken a directed hit — which is exactly the base-class return,
+    /// not a placeholder.
+    pub fn hurt_dir(&self, id: i32) -> f32 {
+        self.hurt_dirs.get(&id).copied().unwrap_or(0.0)
     }
 
     /// `LivingEntity.baseTick` (`oAttackAnim = attackAnim`) followed by

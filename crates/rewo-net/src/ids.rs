@@ -157,6 +157,21 @@ pub struct Ids {
     /// Required: without it nothing an entity takes ever shows, and a missing
     /// name is a version mismatch rather than an absent feature.
     pub cb_play_damage_event: i32,
+    /// `ClientboundHurtAnimationPacket` (M81) — a VarInt entity id and a
+    /// **big-endian f32** yaw. Required: it is `damage_event`'s twin and the
+    /// only carrier of the camera tilt's *direction*, so a missing name is a
+    /// version mismatch rather than a flat camera.
+    pub cb_play_hurt_animation: i32,
+    /// `ClientboundBlockDestructionPacket` (M81) — a VarInt breaker id, a
+    /// packed `BlockPos` and an **unsigned byte** stage. Required: it is the
+    /// only announcement that somebody else is mining a block, and a missing
+    /// name is a version mismatch rather than an un-cracked world.
+    pub cb_play_block_destruction: i32,
+    /// `ClientboundTakeItemEntityPacket` (M81) — three VarInts: the collected
+    /// entity, the collector, and the count taken. Required: the client's own
+    /// copy of a dropped stack is shrunk *by this packet*, so a missing name
+    /// leaves picked-up items lying on the ground forever.
+    pub cb_play_take_item_entity: i32,
     /// `ClientboundGameEventPacket` — an unsigned-byte event id and a float
     /// param. It carries a dozen unrelated things; M33 consumes the four
     /// weather ones (`START_RAINING` 1, `STOP_RAINING` 2, `RAIN_LEVEL_CHANGE`
@@ -520,6 +535,9 @@ impl Ids {
             cb_play_entity_event: req!(p, P, C, "entity_event"),
             cb_play_animate: req!(p, P, C, "animate"),
             cb_play_damage_event: req!(p, P, C, "damage_event"),
+            cb_play_hurt_animation: req!(p, P, C, "hurt_animation"),
+            cb_play_block_destruction: req!(p, P, C, "block_destruction"),
+            cb_play_take_item_entity: req!(p, P, C, "take_item_entity"),
             cb_play_game_event: req!(p, P, C, "game_event"),
             cb_play_player_abilities: req!(p, P, C, "player_abilities"),
             sb_play_player_abilities: req!(p, P, S, "player_abilities"),

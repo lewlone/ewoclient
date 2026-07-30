@@ -27,20 +27,23 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 100 of them. 41
+1. **141 clientbound-play packets. Rewo resolves and consumes 103 of them. 38
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty, and class B is more than half taken.** The 41 gaps split
-   0 / 7 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
-   and not-applicable. What the first two B milestones established is worth
-   keeping: **the class letter changes the gate, not the standard.** M79's seven
-   (title overlay, XP gauge, cooldown sweep) and M80's six (the world border)
-   all have an exact vanilla oracle in `Gui` / `Hud` / `WorldBorder`, so the
-   decode *and* the render are transcribed line by line and graded against it,
-   with a pixel read-back half added on top of the model half. A class-B packet
-   is not a guess; it is a transcription that happens to need a renderer to
-   land. §2.
+2. **Class A is empty and class B is down to four.** The 38 gaps split
+   0 / 4 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
+   and not-applicable. What the three B milestones established is worth keeping:
+   **the class letter changes the gate, not the standard.** M79's seven (title
+   overlay, XP gauge, cooldown sweep), M80's six (the world border) and M81's
+   three (hurt tilt, block cracks, item pickup) all have an exact vanilla oracle,
+   so the decode *and* the render are transcribed line by line and graded against
+   it, with a pixel read-back half on top of the model half. A class-B packet is
+   not a guess; it is a transcription that happens to need a renderer to land.
+   The four left are `waypoint` (138) and three **screens** — `award_stats` (3),
+   `player_combat_kill` (68), `server_links` (137) — and those genuinely change
+   character, because a screen framework is a design decision rather than a
+   transcription. §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -62,9 +65,13 @@ impossible to repeat: every clientbound-play packet in the report appears in
    erroring. §3 keeps the entry as the worked example of both — a gap whose
    failure mode is silence in one direction only, and a wrong reading that
    never announces itself.
-6. **`hurt_animation` (42) is the input `M52a`'s vacuous `no_damage_tilt`
-   module has nothing to disable.** The Velvet-batch note "to port the disable
-   you must first build the thing being disabled" has a packet behind it.
+6. **`hurt_animation` (42) closed in M81, and closed `no_damage_tilt` with
+   it.** This entry used to read "the input `M52a`'s vacuous `no_damage_tilt`
+   module has nothing to disable"; the Velvet-batch note *"to port the disable
+   you must first build the thing being disabled"* named the condition, and
+   the packet was it. The tilt's direction exists nowhere else — `damage_event`
+   arms the same clock and carries no yaw — so the module could not be made
+   real without resolving this name. §3.
 7. **"Handled" is not "complete."** Six currently-handled packets decode only
    the part a milestone needed — §4 names them, because a partially-consumed
    packet looks identical to a fully-consumed one from `ids.rs`, and the
@@ -94,9 +101,9 @@ and M65 stayed hidden:
    incoming packet id is actually tested against.
 
 **Both instruments give the same answer, and it is a negative finding: the
-resolved-but-unreferenced set is empty.** Every one of the 100 resolved ids
+resolved-but-unreferenced set is empty.** Every one of the 103 resolved ids
 reaches a dispatch arm in `play.rs` or a `route_*` in `lib.rs`. So the gap is
-entirely in question (2) — 41 names that were never resolved.
+entirely in question (2) — 38 names that were never resolved.
 
 That is still a coarser instrument than it sounds, and §4 is the correction:
 a dispatch arm proves a field is *tested*, not that the body is fully consumed.
@@ -134,7 +141,7 @@ belongs in the note column; the status column has two values.
 
 ### Classification
 
-Each of the 41 gaps carries one class. The classes are about **what it would
+Each of the 38 gaps carries one class. The classes are about **what it would
 take**, not about how much anyone wants it:
 
 | Class | Meaning |
@@ -169,19 +176,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **100** |
+| Resolved **and** consumed | **103** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **41** |
+| Not resolved at all | **38** |
 | **Total clientbound-play** | **141** |
 
-The 41 gaps, by class:
+The 38 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **7** | 17% |
-| **C** needs a subsystem Rewo lacks | **23** | 56% |
-| **D** not applicable | **11** | 23% |
+| **B** needs rendering | **4** | 11% |
+| **C** needs a subsystem Rewo lacks | **23** | 60% |
+| **D** not applicable | **11** | 29% |
 
 M67 audited 56 / 0 / 85 with class A at 31. **Thirty-eight** packets separate
 that published 56 from this 94, and **ten of them had already landed when M67
@@ -374,7 +381,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 2 | `animate` | handled | `req!` → `cb_play_animate` | M19/M20 — combat swings. |
 | 3 | `award_stats` | absent | **B** | Statistics screen. `Stat.STREAM_CODEC` dispatches on `minecraft:stat_type` (9) then the per-type value registry — both in `registries.json`. |
 | 4 | `block_changed_ack` | handled | `opt!` → `cb_play_block_ack` | §4 partial — the arm is a log line. |
-| 5 | `block_destruction` | absent | **B** | The crack overlay for a block someone else is mining. |
+| 5 | `block_destruction` | handled | `req!` → `cb_play_block_destruction` | **M81.** The crack overlay. The stage byte is **unsigned**, so the server's `(byte) -1` arrives as 255 and the removal is the range test failing, not a sentinel. |
 | 6 | `block_entity_data` | handled | `req!` → `cb_play_block_entity_data` | |
 | 7 | `block_event` | handled | `req!` → `cb_play_block_event` | |
 | 8 | `block_update` | handled | `req!` → `cb_play_block_update` | |
@@ -411,7 +418,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 39 | `game_rule_values` | handled | `req!` → `cb_play_game_rule_values` | **M78.** A counted map of `Identifier` → string, kept wholesale. Vanilla has **no store** — the map goes to a screen if one is open and nowhere otherwise — so replacement is the reading, not merge. |
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
 | 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |
-| 42 | `hurt_animation` | absent | **B** | The damage camera yaw-tilt. **This is the input `M52a`'s vacuous `no_damage_tilt` module has nothing to disable.** |
+| 42 | `hurt_animation` | handled | `req!` → `cb_play_hurt_animation` | **M81.** The damage camera yaw-tilt — and with it, `M52a`'s vacuous `no_damage_tilt` module became real. §0 item 6. |
 | 43 | `initialize_border` | handled | `req!` → `cb_play_initialize_border` | **M80.** The whole border at once. Its `lerpTime > 0` guard picks `setSize(newSize)` over `lerpSizeBetween` — the guard `set_border_lerp_size` (89) does *not* have. |
 | 44 | `keep_alive` | handled | `req!` → `cb_play_keep_alive` | |
 | 45 | `level_chunk_with_light` | handled | `req!` → `cb_play_level_chunk` | |
@@ -493,7 +500,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 121 | `system_chat` | handled | `opt!` → `cb_play_system_chat` | |
 | 122 | `tab_list` | handled | `req!` → `cb_play_tab_list` | M65. |
 | 123 | `tag_query` | absent | **D** | The reply to a serverbound `/data get` query Rewo never sends. |
-| 124 | `take_item_entity` | absent | **B** | The pickup animation (the item flies to its collector). The removal itself already arrives via `remove_entities`. |
+| 124 | `take_item_entity` | handled | `req!` → `cb_play_take_item_entity` | **M81.** The pickup animation — and the **removal**, which this row previously said arrived separately via `remove_entities`. It does not: `handleTakeItemEntity` shrinks the client's own copy of the stack and removes the entity itself. |
 | 125 | `teleport_entity` | handled | `req!` → `cb_play_teleport_entity` | |
 | 126 | `test_instance_block_status` | absent | **D** | Game-test tooling. |
 | 127 | `ticking_state` | handled | `req!` → `cb_play_ticking_state` | **M74.** An f32 `tickRate` then a bool `isFrozen`. Decode and state only — the 20 Hz loop does not consult it yet. |
@@ -517,13 +524,13 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 
 Stated explicitly, because the counts above are easy to over-read.
 
-- **It does not verify that the 100 handled packets are decoded correctly.**
+- **It does not verify that the 103 handled packets are decoded correctly.**
   It verifies that the id is resolved and that a dispatch arm tests it.
   Correctness of those 72 is what the `*shot --check` gates and the unit tests
   cover, and they cover it unevenly: `inventoryshot` is exhaustive about the
   container packets, while `player_info_update`'s walk is graded only by unit
   tests inside `rewo-net`.
-- **It does not verify that the 100 are decoded *completely*.** §4 lists the
+- **It does not verify that the 103 are decoded *completely*.** §4 lists the
   known partials found by reading the arms; there may be more. Nothing
   mechanical distinguishes "consumed the body" from "read the first field" —
   and that includes the machine check in §1, which is why §4 exists.

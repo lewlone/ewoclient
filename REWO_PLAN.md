@@ -641,14 +641,23 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   state machine, item-driven swing duration, the `ArmPose` hold baseline, and
   the undead / skeleton / illager attack rigs, each against an independent
   transcription.
-- `rewo hurtshot --check` — **the damage-response gate** (M21, **38/38**,
-  validation required): the hurt clock, the limb kick, and the red flash —
-  verified by *predicting the hurt pixel from the unhurt one*, with sensitivity
-  partners for linear-space mixing and post-lightmap application.
-- `rewo itemshot --check` — **the held-item gate** (M22, **28/28**, validation
-  required): both geometry paths (the sprite extrusion and the block bake)
-  verified *against the hand* — a sprite centroid and a block centroid that land
-  together prove one transform chain serves both sources.
+- `rewo hurtshot --check` — **the damage-response gate** (M21 + M81,
+  **56/56**, validation required): the hurt clock, the limb kick, and the red
+  flash — verified by *predicting the hurt pixel from the unhurt one*, with
+  sensitivity partners for linear-space mixing and post-lightmap application —
+  plus `hurt_animation`'s receipt and the camera tilt it steers, measured as a
+  marker's **polar angle about the principal point** rather than as a pixel
+  count.
+- `rewo itemshot --check` — **the held-item gate** (M22 + M81, **75/75**,
+  validation required): both geometry paths (the sprite extrusion and the block
+  bake) verified *against the hand* — a sprite centroid and a block centroid
+  that land together prove one transform chain serves both sources — plus
+  `take_item_entity`'s three-way branch and the pickup animation's flight.
+- `rewo breakshot --check` — **the block-break gate** (M81, **22/22**,
+  validation required): `block_destruction`'s two indexes and its *unsigned*
+  stage byte, the decal geometry and its regenerated UVs, and the multiply
+  blend read back — including the witness that a decal texel above mid-grey
+  **brightens**, which is why `destroy_stage` is authored dark.
 - `rewo lightmapshot --check` — **the lightmap gate** (M13, validation
   required): a production Vulkan readback matrix over tint, block factor, gamma
   ramp, night vision, darkness, water parity and entity RGB. Extended by M33b
@@ -2280,6 +2289,343 @@ border" is not claimed. The red warning vignette is computed
 layer for it to tint, which is the same "to port the disable you must first
 build the thing" shape `REWO_PACKET_COVERAGE.md` §0 records for
 `hurt_animation`.
+### M81 — three world-space responses: the damage tilt, the crack overlay, the pickup (2026-07-30)
+
+Three class-**B** rows out of `REWO_PACKET_COVERAGE.md` — the first three taken
+from that class, since class A is empty. `hurt_animation` (42),
+`block_destruction` (5) and `take_item_entity` (124). Each needed a rendered
+frame as well as a decode, so each is gated on pixels as well as on state.
+
+#### `no_damage_tilt` is real now, and that is the point of packet 42
+
+`M52a` ported EwoClient's legit module set into Rewo and found two of the twelve
+vacuous: `no_view_bob` and `no_damage_tilt` disable behaviours Rewo never
+implemented. They were left **out** of `RenderModules` rather than wired to a
+no-op, with a test asserting that toggling them changes nothing, and the batch's
+recorded lesson was *"to port the disable you must first build the thing being
+disabled."*
+
+Packet 42 was the thing. `bobHurt` needs a **direction**, and nothing else on
+the wire carries one: `damage_event` (M21) arms the same hurt clock and has no
+yaw at all. So the module could not be made real without resolving a name Rewo
+had never resolved. It is now `RenderModules::damage_tilt_strength`, driving
+vanilla's own `Options.damageTiltStrength` accessibility slider — a `UnitDouble`
+defaulting to 1.0 — to its "off" end, rather than branching around the tilt.
+That distinction is load-bearing: every other term of `bobHurt` still evaluates,
+so toggling the module mid-animation cannot leave the camera stuck at an angle.
+The vacuity test is replaced by two witnesses that the toggle is observable, and
+`no_view_bob` keeps its vacuity test on the same terms.
+
+#### How the tilt's yaw relates to the camera: the server already subtracted it
+
+The brief's hypothesis was that the tilt is a function of the packet's yaw
+*relative to the camera's own*. The client does no such thing — **the server
+does the subtraction before sending**:
+
+```java
+// ServerPlayer.indicateDamage
+this.hurtDir = (float)(Mth.atan2(zd, xd) * 180.0F / (float)Math.PI - this.getYRot());
+this.connection.send(new ClientboundHurtAnimationPacket(this));
+```
+
+`(xd, zd)` is the vector from the victim *toward* the attacker, so the wire
+value is the attacker's compass bearing minus the victim's body yaw at the
+instant of the hit. The client stores it verbatim and reads it back for the
+whole ten-tick animation — which means the tilt direction is **frozen at the
+moment of the hit and does not track subsequent turning**. Spin on the spot
+while hurt and the lurch keeps leaning the same way relative to your body.
+
+Four more things read backwards:
+
+* **The yaw is dead for everything but a player.** `Entity.animateHurt` is
+  empty; `LivingEntity.animateHurt` sets `hurtDuration = 10; hurtTime =
+  hurtDuration` and **ignores the parameter**; only `Player.animateHurt` calls
+  `super` and then stores `this.hurtDir = yaw`. `LivingEntity.getHurtDir()`
+  returns a flat `0.0F`. So the packet arms M21's clock for any living entity
+  and steers the camera for exactly one class.
+* **It is not a lean, it is a conjugated roll.** `Ry(-rr) · Rz(θ) · Ry(rr)` is
+  a rotation about the axis `Ry(-rr)·ẑ`, so `hurtDir` selects the **plane**,
+  not the side: at 0° the camera rolls (the horizon tips), at 90° it pitches.
+  And the plane is a *camera-space* one, because vanilla post-multiplies the
+  bob onto the **projection** (`projectionMatrix.mul(bobStack)`) and leaves the
+  view matrix alone — `P · B · V`.
+* **The easing is `sin(x⁴·π)`**, with `x = hurtTime / hurtDuration` and
+  `hurtTime` counting *down* from 10. So it is zero at the moment of the hit,
+  peaks at `x = 0.5^(1/4) ≈ 0.841` — a fifth of a second later — and returns to
+  zero. A tilt that started at full strength and decayed is the obvious reading
+  and is wrong in both shape and timing.
+* **The direction outlives the clock.** `Player.hurtDir` is a plain field
+  nothing resets, while `hurtTime` counts itself out; Rewo therefore keeps
+  `hurt_dirs` as a **separate map** from the self-evicting `HurtState`. It is
+  observable: `dealDefaultKnockback` calls `indicateDamage` only when the hit
+  was *not* blocked, so a blocked hit re-arms the clock through `damage_event`
+  with no fresh `hurt_animation`, and vanilla tilts along the previous hit's
+  direction. Folding the two together would zero it.
+
+`bobHurt`'s death-spin clause, which vanilla applies *before* the
+`hurt < 0` guard, is deliberately omitted: Rewo has no first-person death
+camera, and reproducing half of the function in the wrong order would be worse
+than leaving the clause out and saying so.
+
+#### The bug the gate could not see, and a live run did
+
+**The first build of packet 42 did nothing at all, and every witness passed.**
+`handleHurtAnimation` is `getEntity(packet.id())` then `animateHurt`, so the
+obvious transcription looks the entity up in `EntityTable` — and **Rewo's
+`EntityTable` never contains the local player**, which is the *only* entity
+this packet is ever about. `ServerPlayer.indicateDamage` does
+`this.connection.send(...)`: to the victim, never to trackers. So the id is
+always your own, the lookup always failed, and the handler always returned
+early.
+
+Sixteen CPU witnesses and four pixel witnesses missed it, for one reason:
+**every one of them constructed a table containing the id.** That is a world
+this packet never arrives in. The gate was internally consistent and testing a
+scenario that does not occur.
+
+What caught it was a live server — a survival player, two zombies, and a grep
+for the handler's debug line. The server log said *"RewoOp was slain by
+Zombie"* and the client log said nothing. After the fix, the same scene logs
+`hurt_animation eid=660 yaw=44.999996 player=true` and then `55.80`, `75.11`,
+`-13.32` as the zombies circle — the bearing changing per hit, which is the
+`atan2(zd, xd) − getYRot()` the server computes.
+
+The fix is a `local_player: Option<i32>` door, exactly the shape M73 added
+`local_attributes` for and for exactly the same reason: `apply_update_attributes`
+opened with `getEntity(id) == null` and was dropping every snapshot addressed
+to the local player. **That is twice now.** The general rule worth carrying:
+*a handler that begins by looking an entity up in `EntityTable` is wrong for
+any packet the server addresses to you*, and the gate cannot notice because
+the gate builds the table.
+
+`e2` is now the first witness in the group, driving an **empty** table, and
+dropping the door fails it.
+
+#### `block_destruction`: there is no −1 on the wire, and 10 is out of range
+
+The brief's guess — "sending stage −1 (or out of range) is the removal" — is
+right about the effect and imprecise about the mechanism. The wire field is
+`readUnsignedByte`, so the server's `(byte) -1` arrives as **255**, and what
+retires the record is `ClientLevel`'s range test `progress >= 0 && progress <
+10` failing.
+
+**And the first version of this paragraph over-claimed**, in the way this
+project keeps catching: it said a signed read "quietly keeps a record for, say,
+200". It does not. Signed, 255 reads as −1 and 200 reads as −56, and the range
+test rejects both exactly as it rejects them unsigned — the signedness is
+**genuinely unobservable** through this test, and the mutation battery is what
+said so. What *is* observable is the shape of the test: an implementation that
+keys the removal on a **sentinel** (`progress == 255`, which is what a "−1 means
+stop" description invites) keeps a record for 200, whose texture does not exist.
+The witness now claims that and not the other.
+
+`DESTROY_STAGE_COUNT` is 10 and the stages are numbered 0..=9, so the exclusive
+bound is the stage count itself and **a stage of exactly 10 is a removal** — an
+inclusive bound would keep a record whose texture does not exist.
+
+The store is two indexes over the same records, both transcribed:
+`destroyingBlocks` keyed by the **breaker's entity id** (so one breaker cracks
+one block, and moving on retires the old crack), and `destructionProgress`
+keyed by position holding a `SortedSet`. That set is ordered by
+`(progress, id)` and the renderer takes `last()` — **the furthest-along breaker
+wins a shared block**, not the first to arrive and not the most recent. Java's
+`equals`/`hashCode` on these records are by id alone, which is the only reason
+a `TreeSet` can hold two records at equal progress at all. A breaker who walks
+away sends no "stop" packet: the record is retired by **silence**, a sweep on
+every 20th game tick dropping anything more than 400 ticks stale.
+
+Two things the server does that are worth knowing: it never sends this to the
+breaker (`player.getId() != id`), so your own crack is client-predicted, and it
+only sends within 32 blocks.
+
+#### The crack's geometry is the block's own, and its UVs are thrown away
+
+`submitBlockDestroyAnimation` re-collects the block's model parts and draws them
+again with a `destroy_stage_N` texture bound — so a slab's crack covers the
+slab. The trap is the UV: `SheetedDecalTextureGenerator` implements `setUv` as a
+**no-op** and regenerates the coordinate from the vertex *position*, projected
+into the plane of its own face (`rotateY(π)`, `rotateX(-π/2)`, the face's
+`Direction.getRotation()`, then `uv = (-p.x, -p.y)`). That is why a standalone
+16×16 texture tiles one-per-block-face instead of landing wherever the block's
+atlas coordinates point. Four of the six faces come out **negative**, which is
+why the sampler must REPEAT rather than clamp.
+
+It also cannot be asserted bit-exactly: `sin(π)` is not zero in f32 — nor in
+Java's `Math.sin`, which is what JOML feeds `rotateY` — so the half-turn leaks a
+~1e-7 cross-term from the normal axis into the tangent plane. Vanilla carries
+the identical leak, and a zero-tolerance witness would assert more than the
+original does.
+
+There is no face culling. Vanilla walks `part.getQuads(d)` for every direction
+plus the null list with no `cullface` test and lets the depth test hide the
+buried faces; reproducing the cull would be a plausible optimisation that
+changed what is drawn at an exposed corner.
+
+#### The blend is a multiply, in gamma space — M50's finding in a second place
+
+`RenderPipelines.CRUMBLING` is `BlendFunction(DST_COLOR, SRC_COLOR, ONE, ZERO)`,
+i.e. `2·src·dst`. **Squaring is not invariant under the sRGB transfer
+function**, which is exactly what M50 found for the enchantment glint: vanilla
+has no sRGB framebuffer, so it multiplies the gamma-encoded bytes. The pass is
+therefore built against `world::unorm_of(color_format)`, drawn inside
+`with_gamma_space`, and its texture array uploaded UNORM. In linear space a
+mid-grey crack over a mid-grey block comes out a third too dark — measured
+by the gate at 151 (gamma) against 102 (linear).
+
+Its depth state is `GREATER_THAN_OR_EQUAL` with no write plus a depth bias of
+`(1.0, 10.0)`. The `OR_EQUAL` is the third time in this project a depth
+*comparison* has been the whole story (M48's trim, M49's GUI item layers): the
+decal redraws geometry the terrain pass already wrote depth for, so a strict
+`GREATER` rejects every fragment. Incidentally, `DepthStencilState.DEFAULT` is
+also `GREATER_THAN_OR_EQUAL`, which confirms 26.2 is reversed-Z as Rewo is.
+
+**The two are individually redundant, and the battery is what showed it.**
+Against exactly-coplanar terrain, `GREATER_OR_EQUAL` alone passes and the bias
+alone passes (the bias pushes the decal toward the camera, which incidentally
+confirms the sign is right for reversed-Z). `breakshot` can only observe the
+*pair*: mutating either one leaves the gate green, mutating both makes the
+decal vanish and four witnesses fail. That is recorded rather than papered
+over, because a reader who deletes "the redundant one" will find the gate
+agrees with them.
+
+**A witness corrected me here.** The first version of `c4` asserted that "the
+blend is a multiply, so the decal cannot brighten a texel", used light greys and
+measured 255. `2·src·dst` **brightens** whenever `src > 0.5` — and that is the
+reason `destroy_stage` is authored as dark lines on transparency rather than as
+a pale overlay. It is now its own witness (`c8`), because the inversion is the
+useful output.
+
+**Scoped exclusion:** no fog. Vanilla's `apply_fog` runs on the crumbling
+fragment, but the extractor culls this geometry at 32 blocks
+(`distToCenterSqr > 1024.0`), which is inside the render-distance fade at any
+view distance Rewo runs. The environmental band (M33b) is where it could show;
+stated rather than half-reproduced.
+
+#### `take_item_entity`: the client removes the entity itself
+
+The brief said "the entity's actual removal arrives separately via
+`remove_entities`". **It does not, and the coverage table said the same thing
+and was also wrong** — that row is corrected. `handleTakeItemEntity` calls
+`this.level.removeEntity(itemId, DISCARDED)` *in the handler*, and for an
+`ItemEntity` it does so only after shrinking **the client's own copy** of the
+stack to empty. A partial pickup leaves the entity alive with a smaller stack
+and no further packet ever mentions it.
+
+The branch is three-way, and the three arms are not interchangeable:
+
+* `ItemEntity` — `itemStack.shrink(amount)`, then remove **iff** the stack is
+  now empty. An entity that never sent a stack is already empty and goes
+  outright.
+* `ExperienceOrb` — **never removed here**. The guard is
+  `else if (!(from instanceof ExperienceOrb))`, so an orb gets the sound and
+  the animation and keeps existing until the server says otherwise.
+* Anything else (an arrow) — removed immediately, with no stack arithmetic.
+
+And the two "missing entity" cases are **asymmetric**: the *collected* entity
+being untracked drops the whole handler (`if (from != null)`), while an unknown
+*collector* falls back to the local player (`if (to == null) to =
+this.minecraft.player`). Rewo does that substitution on the **id**, so the
+animation then follows the local player for the rest of its life rather than
+chasing an id that failed to resolve once.
+
+Vanilla casts the collector to `LivingEntity`, which would throw for a
+non-living one. Rewo has no cast and takes the entity's position, which is all
+the animation wants.
+
+#### The pickup animation is a captured render state, and that is the design
+
+`ItemPickupParticle` exists as a particle rather than as an entity **because
+the entity is already gone**. So Rewo's `pickup::Pickups` holds the appearance
+— the stack, the source position, the collected entity's id — past the removal,
+and the renderer feeds it through the existing `emit_ground_item` path: bob,
+spin, per-copy jitter and all. A second item emitter would have been the other
+option and it is the worse one, for the reason M45 records about the glint.
+
+Details, each an inversion:
+
+* **The velocity is dead.** The constructor passes the item's
+  `getDeltaMovement()` into `Particle`'s `xd/yd/zd`, and `ItemPickupParticle.tick`
+  overrides without calling `super.tick()`. Nothing integrates it, and the
+  particle's own position is never used either — the render lerps from the
+  *captured* position.
+* **The source is frozen and the target is not.** `itemRenderState.{x,y,z}` is
+  a snapshot at `partialTicks = 1.0`; `targetX/Y/Z` are re-read from the live
+  collector every tick with an `old` copy kept, so the item chases a moving
+  player.
+* **The easing is `((life + partial) / 3)²`** — quadratic in the whole life
+  fraction, starting slow and arriving fast. Not linear, and not eased at both
+  ends.
+* **The target is the collector's chest**: `(getY() + getEyeY()) / 2`, and
+  `getEyeY()` is **absolute** (`position.y + eyeHeight`). Reading it as a
+  relative height puts the target half an eye-height off the *world* floor.
+* The snapshot also freezes the stack's **spin and bob**, which Rewo
+  reproduces by reconstructing the capture time from the animation's own life
+  counter (`now·20 − (life + partial)`) rather than storing a second clock.
+
+Two approximations, both stated: a collector Rewo tracks as a table entry gets
+the standing-player eye height halved (it keeps no per-entity eye height — the
+local player, which is the collector for every pickup the viewer cares about,
+does not go through that path), and a record whose collected entity had no
+stack is **kept and draws nothing**, because vanilla adds the particle for an
+orb and an arrow too and Rewo has models for neither.
+
+#### Gates
+
+`hurtshot` 38 → **56** (`e1`-`e18`), `itemshot` 62 → **75** (`p1`-`p13`), and a
+new `rewo breakshot --check` at **22** (`a1`-`a6` receipt and store, `b1`-`b8`
+geometry, `c1`-`c8` pixels), serverless and validation-required.
+
+**27 mutations run, 24 caught.** The three that survived were all worth having
+run:
+
+* **The `hurt_time` guard's `<` versus `<=` is an equivalent mutant.** At
+  exactly zero, `sin(0⁴·π)` is zero and the tilt is the identity either way, so
+  the boundary cannot be witnessed and no witness claims it. Replacing it
+  revealed the guard's *other* half is load-bearing and was unwitnessed: an
+  entity that has never been hurt has clock 0 **and duration 0**, so on the one
+  frame where the partial tick is exactly zero the division is `0.0 / 0.0`,
+  `sin(NaN)` is NaN, and a NaN rotation makes the entire frame render nothing.
+  Vanilla cannot reach that (`hurtDuration` is only written with `hurtTime`), so
+  the guard is Rewo's rather than a transcription — and it is now `e12`.
+* **The signed/unsigned stage read**, above.
+* **The depth pair**, above.
+
+`breakshot`'s pixel fixture also had to be moved: its terrain quad sat a whole
+block *below* the decal, so the coplanar case — the entire reason the pipeline
+uses `GREATER_OR_EQUAL` — was never entered and a strict `GREATER` passed. The
+quad is now the block's own top face.
+
+**Live**: `rewo live` against a 26.2 server, `CORRECTIONS 0`, with
+`take_item_entity` and `hurt_animation` both observed arriving and applying —
+the second only after the local-player fix above. `block_destruction` is the
+one of the three with **no live check**: it is only sent by *other* players
+mining, and the test world is creative (blocks break instantly, so no progress
+packets are generated at all). Its decode, its store and its render are gated;
+its arrival on a real socket is not, and that is stated rather than implied.
+
+**Two detector errors, both mine, both the same shape the brief warned about.**
+The tilt's pixel witness first differenced a tilted frame against an *untilted*
+empty one — and a camera tilt turns the sky gradient with it, so the detector
+measured 13,119 pixels of sky as "the marker". Fixed by re-rendering the
+background at every tilt, so each frame is compared only with its own. Then
+`e15` asserted that a 90° pitch leaves the marker's x alone; it does not, because
+the pitch changes the marker's depth and the perspective divide scales x with it
+(0.437 → 0.474). The measurement was right and the expectation was wrong, and
+the property that actually separates the two is the **radius** from the
+principal point: a roll is a rotation of the NDC image about its origin and
+preserves it (0.6967 → 0.6973), a pitch does not (→ 1.0753).
+
+`p12` failed the same way in miniature: it sampled `partial 0.5` at `life 0`,
+which is a *sixth* of the way through a three-tick flight, against an
+expectation written for the halfway point. The unit test in `pickup.rs` had the
+identical error and it, too, had to be told to reach the halfway point first.
+
+The tilt is measured as the marker's **polar angle about the principal point**,
+not as a pixel count: a camera tilt moves the whole frame, so any count-based
+detector changes for reasons unrelated to the angle. Measured −13.805° against a
+transcribed −14.000°. The subject is a synthetic **magenta** capsule with the
+empty frame asserted to contain none of it — `handshot`'s shape, after three
+detector errors of exactly this class.
 
 ### M77 — the minecart's own interpolation, the leash holder, the projectile's power (2026-07-29)
 

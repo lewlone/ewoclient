@@ -36,6 +36,7 @@
 //! unit-face oracle: expanding the optimized output back into unit faces must
 //! reproduce it exactly.
 
+pub mod crumbling;
 pub mod pool;
 
 use std::collections::HashMap;

@@ -17,6 +17,7 @@ pub mod border;
 pub mod celestial;
 pub mod clouds;
 pub mod container;
+pub mod crumbling;
 pub mod gui_item;
 pub mod hand;
 pub mod hand_pass;

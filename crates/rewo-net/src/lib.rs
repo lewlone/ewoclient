@@ -1172,6 +1172,280 @@ pub fn route_damage_event(
     }
 }
 
+/// `ClientboundHurtAnimationPacket` → `handleHurtAnimation` (M81).
+///
+/// ```text
+/// VarInt id
+/// f32    yaw      // writeFloat — a fixed big-endian 4 bytes, not a VarInt
+/// ```
+///
+/// **Two fields, and one of them is dead for almost every entity.**
+/// `handleHurtAnimation` calls `entity.animateHurt(yaw)`, whose base
+/// `Entity` implementation is empty and whose `LivingEntity` override throws
+/// the yaw away — only `Player` stores it. So this packet arms the same hurt
+/// clock M21's `damage_event` does, and *additionally* steers the camera tilt,
+/// for a player only.
+///
+/// In practice the local player is the only recipient that matters: the sole
+/// send site is `ServerPlayer.indicateDamage`, which does
+/// `this.connection.send(...)` — to the victim alone, never to trackers. The
+/// entity id is therefore normally your own, and the yaw is already
+/// **relative to your body yaw**, because the server computed
+/// `atan2(zd, xd) * 180/π - getYRot()` before sending. The client subtracts
+/// nothing further.
+///
+/// An untracked entity is inert (`if (entity != null)`), not an error.
+///
+/// # The local player is not in the table, and it is the only recipient
+///
+/// `getEntity(id)` on vanilla's `ClientLevel` resolves the **local player** for
+/// its own id; Rewo's `EntityTable` holds only entities the server sent an
+/// `add_entity` for, and it never sends one for you. Since the sole send site
+/// is `ServerPlayer.indicateDamage` → `this.connection.send(...)`, the id on
+/// this packet is *always* your own — so a table-only lookup drops every
+/// packet this handler will ever see.
+///
+/// That is not hypothetical: it is what the first build did, and only a live
+/// run caught it. The gate had constructed a table containing the id, which is
+/// a world this packet never arrives in. `local_player` is the door the local
+/// id comes through, exactly as M73's `local_attributes` is for the same
+/// reason.
+pub(crate) fn apply_hurt_animation(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+    player_type_id: Option<i32>,
+    local_player: Option<i32>,
+) {
+    let mut r = PacketReader::new(body);
+    let (Ok(eid), Ok(yaw)) = (r.varint(), r.f32()) else {
+        return;
+    };
+    let is_player = if Some(eid) == local_player {
+        // `getEntity` finds you, and you are a `Player`, so `animateHurt`
+        // stores the direction.
+        true
+    } else {
+        let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
+            return; // getEntity(id) == null
+        };
+        if !classes.is_some_and(|c| c.is_living(type_id)) {
+            // `Entity.animateHurt` is an empty method: no clock, no direction.
+            return;
+        }
+        Some(type_id) == player_type_id
+    };
+    entities.animate_hurt(eid, yaw, is_player);
+    log::debug!("net: hurt_animation eid={eid} yaw={yaw} player={is_player}");
+}
+
+/// The dispatch seam for [`apply_hurt_animation`].
+pub fn route_hurt_animation(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+    player_type_id: Option<i32>,
+    local_player: Option<i32>,
+) -> bool {
+    if id == ids.cb_play_hurt_animation {
+        apply_hurt_animation(body, entities, classes, player_type_id, local_player);
+        true
+    } else {
+        false
+    }
+}
+
+/// `ClientboundBlockDestructionPacket` → `handleBlockDestruction` (M81).
+///
+/// ```text
+/// VarInt        breakerEntityId
+/// BlockPos      pos              // one packed big-endian i64
+/// unsigned byte progress
+/// ```
+///
+/// **`readUnsignedByte`, so there is no `-1` on the wire.** The server's
+/// "stop" is `(byte) -1`, which arrives as **255**, and what retires the
+/// record is `ClientLevel.destroyBlockProgress`'s range test failing — see
+/// [`rewo_world::destruction`], which owns every rule about what happens next.
+/// The breaker id is *not* validated against the entity table: vanilla does
+/// not look the entity up at all, and a crack from a breaker outside view
+/// distance is a real thing a server can send.
+pub(crate) fn apply_block_destruction(
+    body: &[u8],
+    destruction: &mut rewo_world::destruction::DestructionProgress,
+    game_time: i64,
+) {
+    let mut r = PacketReader::new(body);
+    let (Ok(id), Ok((x, y, z)), Ok(progress)) = (r.varint(), r.position(), r.u8()) else {
+        return;
+    };
+    destruction.set(id, [x, y, z], progress as i32, game_time);
+    log::debug!("net: block_destruction breaker={id} ({x},{y},{z}) stage={progress}");
+}
+
+/// The dispatch seam for [`apply_block_destruction`].
+pub fn route_block_destruction(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    destruction: &mut rewo_world::destruction::DestructionProgress,
+    game_time: i64,
+) -> bool {
+    if id == ids.cb_play_block_destruction {
+        apply_block_destruction(body, destruction, game_time);
+        true
+    } else {
+        false
+    }
+}
+
+/// What [`apply_take_item_entity`] needs to resolve a collection.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TakeItemKinds {
+    /// `minecraft:item`'s registry id — the only type whose stack is shrunk.
+    pub item: Option<i32>,
+    /// `minecraft:experience_orb`'s — the only type this handler does **not**
+    /// remove.
+    pub orb: Option<i32>,
+    /// The local player's entity id, and its chest position, for vanilla's
+    /// `if (to == null) to = this.minecraft.player` fallback. `None` before
+    /// login.
+    pub local_player: Option<(i32, [f64; 3])>,
+}
+
+/// `ClientboundTakeItemEntityPacket` → `handleTakeItemEntity` (M81).
+///
+/// ```text
+/// VarInt itemId      // the entity being collected
+/// VarInt playerId    // the collector
+/// VarInt amount
+/// ```
+///
+/// Four things here invert the obvious reading:
+///
+/// 1. **The client removes the entity itself.** This is not a notification
+///    that a `remove_entities` is coming — `handleTakeItemEntity` calls
+///    `this.level.removeEntity(itemId, DISCARDED)` directly, and for an
+///    `ItemEntity` it does so only once the *client's own copy* of the stack
+///    has been shrunk to empty. A partial pickup leaves the entity alive with
+///    a smaller stack and no further packet.
+/// 2. **An experience orb is never removed here.** The branch is
+///    `if (from instanceof ItemEntity) … else if (!(from instanceof
+///    ExperienceOrb)) removeEntity(…)`, so an orb gets the sound and the
+///    animation and keeps existing until the server says otherwise.
+/// 3. **An unknown collector falls back to the local player**, rather than
+///    making the packet inert: `if (to == null) to = this.minecraft.player`.
+///    Only the *collected* entity being unknown drops the whole thing.
+/// 4. **The animation is added unconditionally**, for an arrow and an orb as
+///    much as for an item. See [`rewo_world::pickup`] for why a record with
+///    nothing to draw is kept rather than skipped.
+///
+/// `to` is cast to `LivingEntity` in vanilla, which would throw for a
+/// non-living collector. Rewo has no cast: it takes the entity's position,
+/// which is all the animation wants.
+pub(crate) fn apply_take_item_entity(
+    body: &[u8],
+    world: &mut rewo_world::World,
+    kinds: TakeItemKinds,
+) {
+    let mut r = PacketReader::new(body);
+    let (Ok(item_id), Ok(player_id), Ok(amount)) = (r.varint(), r.varint(), r.varint()) else {
+        return;
+    };
+    let Some(from) = world.entities.get(item_id) else {
+        return; // `if (from != null)` — nothing else in the handler runs
+    };
+    let type_id = from.type_id;
+    let source = from.render_pos(1.0);
+    let stack = world.entities.item_stack(item_id);
+
+    // `LivingEntity to = (LivingEntity) getEntity(playerId); if (to == null)
+    // to = this.minecraft.player;` — the substitution is on the *entity*, so
+    // the animation then follows the local player for the rest of its life,
+    // not the id that failed to resolve. Doing it on the id here is what makes
+    // the per-tick re-resolution below agree with it.
+    let collector = if world.entities.get(player_id).is_some() {
+        player_id
+    } else {
+        kinds.local_player.map(|(id, _)| id).unwrap_or(player_id)
+    };
+    let target = collector_chest(&world.entities, collector, kinds.local_player).unwrap_or(source);
+
+    log::debug!(
+        "net: take_item_entity item={item_id} collector={player_id}->{collector} \
+         amount={amount} stack={stack:?}"
+    );
+    world
+        .pickups
+        .add(stack, source, collector, item_id, target);
+
+    if Some(type_id) == kinds.item {
+        // `itemStack.shrink(amount)` guarded by `if (!itemStack.isEmpty())`,
+        // then `if (itemStack.isEmpty()) removeEntity(...)`. An entity that
+        // never sent a stack is already empty and is removed outright.
+        match stack {
+            Some((item, count, foil)) if count - amount > 0 => {
+                world
+                    .entities
+                    .set_item_stack(item_id, Some((item, count - amount, foil)));
+            }
+            _ => world.entities.remove(item_id),
+        }
+    } else if Some(type_id) != kinds.orb {
+        world.entities.remove(item_id);
+    }
+}
+
+/// `(getY() + getEyeY()) / 2 - getY()`, i.e. **half the eye height**, for a
+/// collector Rewo tracks as a table entry.
+///
+/// `getEyeY()` is absolute (`position.y + eyeHeight`), so vanilla's midpoint is
+/// the collector's chest. Rewo keeps no per-entity eye height, so this is the
+/// standing-player 1.62 halved — exact for the overwhelmingly common case (a
+/// player collecting) and an approximation of a few tenths of a block for a
+/// mob that picks something up. Stated rather than hidden; the local player,
+/// which is the collector for every pickup the viewer cares about, does not go
+/// through here at all.
+pub(crate) const CHEST_OFFSET: f64 = 1.62 / 2.0;
+
+/// `ItemPickupParticle.updatePosition` — where the item is flying to.
+///
+/// One function so the target the animation *starts* with and the target it
+/// re-reads every tick cannot drift apart: vanilla holds one `Entity`
+/// reference and calls one method on it, and two call sites deriving the same
+/// point separately is exactly how they stop agreeing.
+pub(crate) fn collector_chest(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    local_player: Option<(i32, [f64; 3])>,
+) -> Option<[f64; 3]> {
+    if let Some(e) = entities.get(id) {
+        let p = e.render_pos(1.0);
+        return Some([p[0], p[1] + CHEST_OFFSET, p[2]]);
+    }
+    // The local player is never in the table; the app supplies its chest point
+    // from the real eye height rather than the standing constant above.
+    local_player.filter(|(pid, _)| *pid == id).map(|(_, p)| p)
+}
+
+/// The dispatch seam for [`apply_take_item_entity`].
+pub fn route_take_item_entity(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    world: &mut rewo_world::World,
+    kinds: TakeItemKinds,
+) -> bool {
+    if id == ids.cb_play_take_item_entity {
+        apply_take_item_entity(body, world, kinds);
+        true
+    } else {
+        false
+    }
+}
+
 /// `ClientboundUpdateAttributesPacket` → `handleUpdateAttributes` (M55).
 ///
 /// The handler is narrower than the packet: for each snapshot it calls
