@@ -8,6 +8,7 @@
 //! and writes a PNG — the self-check harness for machines/agents.
 
 mod abilityshot_cmd;
+mod bordershot_cmd;
 mod capture;
 mod captureshot_cmd;
 mod bench_cmd;
@@ -263,6 +264,15 @@ enum Command {
     /// production `capture::grab` end to end and pin vanilla's filename pattern
     /// and dedup ladder with `--check` (no server, no client jar).
     Captureshot(captureshot_cmd::CaptureshotArgs),
+    /// M80's world-border oracle: the lerp state machine, the six packets, the
+    /// collision push, and a pixel read-back of the wall.
+    ///
+    /// Four layers in one gate because the halves fail differently — the
+    /// arithmetic is graded against an independent transcription, the physics
+    /// as a measured displacement (a correction count cannot see a movement
+    /// the client fails to *stop*), and the wall against a CPU prediction over
+    /// a black clear.
+    Bordershot(bordershot_cmd::BordershotArgs),
 }
 
 fn main() {
@@ -304,6 +314,7 @@ fn main() {
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
         Some(Command::Captureshot(cap_args)) => captureshot_cmd::run(cap_args),
+        Some(Command::Bordershot(b_args)) => bordershot_cmd::run(b_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
             None => run_windowed(args, tracy),

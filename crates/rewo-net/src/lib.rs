@@ -13,6 +13,7 @@
 pub mod abilities;
 pub mod attributes;
 pub mod biome_parse;
+pub mod border;
 pub mod boss_bar;
 pub mod bundle;
 pub mod chat_sign;
@@ -2714,6 +2715,38 @@ pub fn route_view_area(
         return false;
     };
     view_area::apply(kind, body, area);
+    true
+}
+
+/// The clientbound-play dispatch seam for the six world-border packets (M80).
+/// Returns whether the id matched — **not** whether the body decoded.
+///
+/// The id table exists for the same reason `route_view_area`'s does, and the
+/// hazard here is sharper: `set_border_warning_delay` and
+/// `set_border_warning_distance` are *both* a single VarInt, and they write
+/// different fields. A dispatcher that inferred the kind from the body would
+/// swap the vignette's proximity threshold with its timing one and never
+/// report an error.
+pub fn route_border(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    border: &mut rewo_world::border::WorldBorder,
+) -> bool {
+    let table = border::BorderIds {
+        initialize: ids.cb_play_initialize_border,
+        center: ids.cb_play_set_border_center,
+        lerp_size: ids.cb_play_set_border_lerp_size,
+        size: ids.cb_play_set_border_size,
+        warning_delay: ids.cb_play_set_border_warning_delay,
+        warning_distance: ids.cb_play_set_border_warning_distance,
+    };
+    let Some(kind) = border::kind_for_id(id, table) else {
+        return false;
+    };
+    if !border::apply(kind, body, border) {
+        log::debug!("net: border {kind:?} decode failed ({} bytes)", body.len());
+    }
     true
 }
 

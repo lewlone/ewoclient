@@ -48,12 +48,12 @@
 //! **One scoped exclusion.** `setRespawnData` actually stores
 //! `getWorldBorderAdjustedRespawnData(…)`, which relocates a spawn outside the
 //! world border onto the border's centre column via a `MOTION_BLOCKING`
-//! heightmap lookup. Rewo has no world border — `initialize_border` and the
-//! five `set_border_*` packets are all class **B** in the coverage table — and
-//! the default border is ±29,999,984, which contains every position a world
-//! generates. The adjustment is therefore unreachable here and the value is
-//! stored verbatim; landing it needs the border packets first, not a guess at
-//! its bounds.
+//! heightmap lookup. M80 landed the border itself ([`rewo_world::border`]), so
+//! the bounds are now available and this is no longer blocked on them — but the
+//! *adjustment* still needs a `MOTION_BLOCKING` lookup at an arbitrary column,
+//! and the value is stored verbatim until something reads it. Reachability is
+//! narrow either way: an unadjusted spawn is only wrong for a player whose
+//! respawn point a server later fenced outside a shrunken border.
 //!
 //! ## `change_difficulty` — a **third** enum convention
 //!

@@ -1759,6 +1759,28 @@ fn report(
         px, py, pz, session.player.on_ground
     );
     println!("[rewo-m3] block below feet: state {ground}");
+    // M80. The border is the one collider the bot meets that the server never
+    // announces a correction for, so the summary reports the decoded box and
+    // where the bot finished relative to it — `CORRECTIONS` alone cannot say
+    // whether the wall was respected.
+    {
+        let b = &session.border;
+        println!(
+            "[rewo-m3] world border: {:?} size {:.1} centre ({:.1}, {:.1}) box \
+             x[{:.1}, {:.1}] z[{:.1}, {:.1}]  warn {}b/{}t  distance from bot {:.2}",
+            b.status(),
+            b.size(),
+            b.center_x(),
+            b.center_z(),
+            b.min_x(0.0),
+            b.max_x(0.0),
+            b.min_z(0.0),
+            b.max_z(0.0),
+            b.warning_blocks(),
+            b.warning_time(),
+            b.distance_to_border(px, pz)
+        );
+    }
     println!(
         "[rewo-m3] teleports: {}  CORRECTIONS: {}  (physics-parity meter — lower is better)",
         session.teleports, session.corrections

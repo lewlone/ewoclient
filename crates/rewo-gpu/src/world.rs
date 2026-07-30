@@ -523,6 +523,10 @@ pub struct WorldRenderer {
     clouds: Option<crate::clouds::CloudPass>,
     /// Rain and snow (M33). `None` until `init_weather` supplies both textures.
     weather: Option<crate::weather::WeatherPass>,
+    /// The world-border wall (M80). `None` until `init_border` supplies
+    /// `misc/forcefield.png`; `Some` with no `set_border` draws nothing, which
+    /// is what a session inside a 60-million-block default border wants.
+    border: Option<crate::border::BorderPass>,
     /// Item icons in hotbar slots (M34). `None` until `init_gui_items`.
     gui_items: Option<crate::gui_item::GuiItemPass>,
     /// The inventory screen (M35). `None` until `init_container`; `Some` but
@@ -1074,6 +1078,7 @@ impl WorldRenderer {
                 end_portal: None,
                 end_portal_time: 0.0,
                 clouds: None,
+                border: None,
                 weather: None,
                 gui_items: None,
                 container: None,
@@ -1332,6 +1337,34 @@ impl WorldRenderer {
         draw: &crate::clouds::CloudDraw,
     ) -> Result<(), String> {
         match self.clouds.as_mut() {
+            Some(pass) => pass.set_draw(gpu, draw),
+            None => Ok(()),
+        }
+    }
+
+    /// Build the world-border pass (M80) over `misc/forcefield.png`.
+    pub fn init_border(
+        &mut self,
+        gpu: &mut Gpu,
+        tex: &crate::border::BorderImage,
+    ) -> Result<(), String> {
+        self.border = Some(crate::border::BorderPass::new(gpu, self.color_format, tex)?);
+        Ok(())
+    }
+
+    pub fn border_ready(&self) -> bool {
+        self.border.is_some()
+    }
+
+    /// This frame's border wall. `None` clears it — a frame whose `extract`
+    /// decided the wall is invisible must draw nothing rather than the last
+    /// visible geometry.
+    pub fn set_border(
+        &mut self,
+        gpu: &mut Gpu,
+        draw: Option<&crate::border::BorderDraw>,
+    ) -> Result<(), String> {
+        match self.border.as_mut() {
             Some(pass) => pass.set_draw(gpu, draw),
             None => Ok(()),
         }
@@ -2551,6 +2584,12 @@ impl WorldRenderer {
             let (light, sky_col) = self.lightmap.push_words();
             pass.draw(gpu, cb, view_proj, (light, sky_col, self.lightmap.extra_words()), extent);
         }
+        // The world border (M80) draws in vanilla's `weather` frame-graph pass,
+        // immediately after the rain and snow — and unlike them it *writes*
+        // depth, so it must come after everything it should not be occluded by.
+        if let Some(pass) = &self.border {
+            pass.draw(gpu, cb, view_proj, extent);
+        }
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
@@ -2954,6 +2993,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.clouds.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.border.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.hand.take() {
