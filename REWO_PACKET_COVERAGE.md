@@ -27,16 +27,19 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 87 of them. 54
+1. **141 clientbound-play packets. Rewo resolves and consumes 90 of them. 51
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty.** The 54 gaps split 0 / 20 / 23 / 11 across pure state,
-   needs-rendering, needs-a-missing-subsystem and not-applicable. Every packet
-   that was decodable and headlessly gateable with no renderer and no design
-   decision — the test the M52–M78 batches were chosen by — has now been taken.
-   The next tranche is class **B**, where the decode is possible and the
-   *feature* wants an eyeball. §2.
+2. **Class A is empty, and class B is now being drawn from.** The 51 gaps
+   split 0 / 17 / 23 / 11 across pure state, needs-rendering,
+   needs-a-missing-subsystem and not-applicable. **M81 took the first three
+   class-B rows** — `hurt_animation` (42), `block_destruction` (5) and
+   `take_item_entity` (124) — each of which needed a rendered frame as well as
+   a decode, and each of which is gated on pixels as well as on state. Every
+   packet that was decodable and headlessly gateable with no renderer and no
+   design decision — the test the M52–M78 batches were chosen by — had already
+   been taken; class **B** is what remains. §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -58,9 +61,13 @@ impossible to repeat: every clientbound-play packet in the report appears in
    erroring. §3 keeps the entry as the worked example of both — a gap whose
    failure mode is silence in one direction only, and a wrong reading that
    never announces itself.
-6. **`hurt_animation` (42) is the input `M52a`'s vacuous `no_damage_tilt`
-   module has nothing to disable.** The Velvet-batch note "to port the disable
-   you must first build the thing being disabled" has a packet behind it.
+6. **`hurt_animation` (42) closed in M81, and closed `no_damage_tilt` with
+   it.** This entry used to read "the input `M52a`'s vacuous `no_damage_tilt`
+   module has nothing to disable"; the Velvet-batch note *"to port the disable
+   you must first build the thing being disabled"* named the condition, and
+   the packet was it. The tilt's direction exists nowhere else — `damage_event`
+   arms the same clock and carries no yaw — so the module could not be made
+   real without resolving this name. §3.
 7. **"Handled" is not "complete."** Six currently-handled packets decode only
    the part a milestone needed — §4 names them, because a partially-consumed
    packet looks identical to a fully-consumed one from `ids.rs`, and the
@@ -165,9 +172,9 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **87** |
+| Resolved **and** consumed | **90** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **54** |
+| Not resolved at all | **51** |
 | **Total clientbound-play** | **141** |
 
 The 54 gaps, by class:
@@ -175,9 +182,9 @@ The 54 gaps, by class:
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **20** | 37% |
-| **C** needs a subsystem Rewo lacks | **23** | 43% |
-| **D** not applicable | **11** | 20% |
+| **B** needs rendering | **17** | 33% |
+| **C** needs a subsystem Rewo lacks | **23** | 45% |
+| **D** not applicable | **11** | 22% |
 
 M67 audited 56 / 0 / 85 with class A at 31. **Twenty-eight** packets separate
 that published 56 from this 84, and **ten of them had already landed when M67
@@ -356,7 +363,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 2 | `animate` | handled | `req!` → `cb_play_animate` | M19/M20 — combat swings. |
 | 3 | `award_stats` | absent | **B** | Statistics screen. `Stat.STREAM_CODEC` dispatches on `minecraft:stat_type` (9) then the per-type value registry — both in `registries.json`. |
 | 4 | `block_changed_ack` | handled | `opt!` → `cb_play_block_ack` | §4 partial — the arm is a log line. |
-| 5 | `block_destruction` | absent | **B** | The crack overlay for a block someone else is mining. |
+| 5 | `block_destruction` | handled | `req!` → `cb_play_block_destruction` | **M81.** The crack overlay. The stage byte is **unsigned**, so the server's `(byte) -1` arrives as 255 and the removal is the range test failing, not a sentinel. |
 | 6 | `block_entity_data` | handled | `req!` → `cb_play_block_entity_data` | |
 | 7 | `block_event` | handled | `req!` → `cb_play_block_event` | |
 | 8 | `block_update` | handled | `req!` → `cb_play_block_update` | |
@@ -393,7 +400,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 39 | `game_rule_values` | handled | `req!` → `cb_play_game_rule_values` | **M78.** A counted map of `Identifier` → string, kept wholesale. Vanilla has **no store** — the map goes to a screen if one is open and nowhere otherwise — so replacement is the reading, not merge. |
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
 | 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |
-| 42 | `hurt_animation` | absent | **B** | The damage camera yaw-tilt. **This is the input `M52a`'s vacuous `no_damage_tilt` module has nothing to disable.** |
+| 42 | `hurt_animation` | handled | `req!` → `cb_play_hurt_animation` | **M81.** The damage camera yaw-tilt — and with it, `M52a`'s vacuous `no_damage_tilt` module became real. §0 item 6. |
 | 43 | `initialize_border` | absent | **B** | World border. |
 | 44 | `keep_alive` | handled | `req!` → `cb_play_keep_alive` | |
 | 45 | `level_chunk_with_light` | handled | `req!` → `cb_play_level_chunk` | |
@@ -475,7 +482,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 121 | `system_chat` | handled | `opt!` → `cb_play_system_chat` | |
 | 122 | `tab_list` | handled | `req!` → `cb_play_tab_list` | M65. |
 | 123 | `tag_query` | absent | **D** | The reply to a serverbound `/data get` query Rewo never sends. |
-| 124 | `take_item_entity` | absent | **B** | The pickup animation (the item flies to its collector). The removal itself already arrives via `remove_entities`. |
+| 124 | `take_item_entity` | handled | `req!` → `cb_play_take_item_entity` | **M81.** The pickup animation — and the **removal**, which this row previously said arrived separately via `remove_entities`. It does not: `handleTakeItemEntity` shrinks the client's own copy of the stack and removes the entity itself. |
 | 125 | `teleport_entity` | handled | `req!` → `cb_play_teleport_entity` | |
 | 126 | `test_instance_block_status` | absent | **D** | Game-test tooling. |
 | 127 | `ticking_state` | handled | `req!` → `cb_play_ticking_state` | **M74.** An f32 `tickRate` then a bool `isFrozen`. Decode and state only — the 20 Hz loop does not consult it yet. |

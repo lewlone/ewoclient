@@ -41,7 +41,11 @@ use rewo_world::entities::{EntityState, EntityTable};
 use crate::stats::OverlayRing;
 
 /// Total named properties this gate asserts.
-const EXPECTED_WITNESSES: usize = 38;
+///
+/// a1-a7 receipt, b1-b6 clock, c1-c5 flash, d1-d20 death/topple, and M81's
+/// e1-e18 — the `hurt_animation` receipt, the tilt's easing and conjugation,
+/// and the four that need a rendered frame.
+const EXPECTED_WITNESSES: usize = 56;
 
 /// `OverlayTexture`'s red row is 0xB3FF0000 — alpha 0xB3 = 179.
 const HURT_ALPHA: f32 = 179.0 / 255.0;
@@ -118,6 +122,7 @@ pub fn run(args: HurtshotArgs) -> Result<(), String> {
     check_receipt(&mut c, &ids, &classes, zombie, boat);
     check_clock(&mut c, &ids, &classes, zombie);
     check_death(&mut c, &ids, &classes, zombie, boat, player);
+    check_tilt(&mut c, &ids, &classes, zombie, player);
     if args.no_gpu {
         println!("[hurtshot] --no-gpu: the flash witnesses are SKIPPED (count fails closed)");
     } else {
@@ -189,6 +194,15 @@ fn table(id: i32, type_id: i32) -> EntityTable {
     let mut t = EntityTable::default();
     t.add(id, EntityState::new(0, type_id, 0.0, 0.0, 0.0, 0.0, 0.0));
     t
+}
+
+/// `ClientboundHurtAnimationPacket` — VarInt id then a **fixed big-endian f32**
+/// yaw (M81).
+fn hurt_animation_body(id: i32, yaw: f32) -> Vec<u8> {
+    let mut b = Vec::new();
+    varint(id, &mut b);
+    b.extend_from_slice(&yaw.to_be_bytes());
+    b
 }
 
 // ------------------------------------------------------------------ witnesses
@@ -478,6 +492,7 @@ fn render_capsule(
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,
+        ground_age: None,
         head_yaw: 0.0,
         pitch: 0.0,
         limb_swing: 0.0,
@@ -839,6 +854,7 @@ fn silhouette(
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,
+        ground_age: None,
         head_yaw: 0.0,
         pitch: 0.0,
         limb_swing: 0.0,
@@ -895,6 +911,337 @@ fn silhouette(
         return Err("silhouette: the mob rendered no pixels at all".into());
     }
     Ok((minx, maxx, miny, maxy, n))
+}
+
+// -------------------------------------------------- M81: the camera tilt (e)
+
+/// An independent transcription of `bobHurt`'s magnitude, in f64.
+///
+/// Deliberately **not** a call into `live_cmd::bob_hurt`: this is the number
+/// the witnesses compare against, and reading the implementation for its own
+/// expectation is how a gate stops testing anything.
+fn oracle_tilt_degrees(hurt_time: f64, hurt_duration: f64, strength: f64) -> f64 {
+    if hurt_time < 0.0 {
+        return 0.0;
+    }
+    let x = hurt_time / hurt_duration;
+    let hurt = (x * x * x * x * std::f64::consts::PI).sin();
+    -hurt * 14.0 * strength
+}
+
+fn check_tilt(c: &mut Checker, ids: &Ids, classes: &EntityClasses, zombie: i32, player: i32) {
+    use crate::live_cmd::{bob_hurt, HurtTilt};
+    use rewo_net::route_hurt_animation;
+
+    c.record(
+        "e1.the_hurt_animation_id_resolves_and_is_distinct",
+        ids.cb_play_hurt_animation != ids.cb_play_damage_event
+            && ids.cb_play_hurt_animation != ids.cb_play_animate,
+        format!(
+            "hurt_animation={} vs damage_event={} vs animate={} \
+             (two packets arm one clock; only one carries a direction)",
+            ids.cb_play_hurt_animation, ids.cb_play_damage_event, ids.cb_play_animate
+        ),
+    );
+
+    // **The local player is not in the entity table, and it is the only
+    // recipient this packet ever has.** `ServerPlayer.indicateDamage` sends to
+    // the victim alone, so the id is always your own — and Rewo's table holds
+    // only entities the server sent an `add_entity` for, which it never does
+    // for you.
+    //
+    // This witness exists because the first M81 build failed exactly here and
+    // **the gate did not catch it**: every other row constructs a table
+    // containing the id, which is a world this packet never arrives in. A live
+    // run did. Written first, because it is the case that matters.
+    //
+    // MUTATION: dropping the `local_player` door leaves an *empty* table's
+    // lookup to fail, and nothing at all happens — silently, which is how it
+    // shipped for an afternoon.
+    let mut t = EntityTable::default();
+    route_hurt_animation(
+        ids.cb_play_hurt_animation,
+        &hurt_animation_body(4242, -90.0),
+        ids,
+        &mut t,
+        Some(classes),
+        Some(player),
+        Some(4242),
+    );
+    c.record(
+        "e2.the_local_player_is_reached_though_it_is_not_in_the_table",
+        t.hurt_state(4242).hurt_time == 10 && (t.hurt_dir(4242) + 90.0).abs() < 1e-6,
+        format!(
+            "empty table, local id 4242: hurtTime={} hurtDir={} (want 10 / -90) — \
+             a table-only lookup drops every packet this handler will ever see",
+            t.hurt_state(4242).hurt_time,
+            t.hurt_dir(4242)
+        ),
+    );
+
+    // A *remote* player takes a directed hit: the clock arms AND the yaw is
+    // stored, through the table.
+    let mut t = table(1, player);
+    let routed = route_hurt_animation(
+        ids.cb_play_hurt_animation,
+        &hurt_animation_body(1, 37.5),
+        ids,
+        &mut t,
+        Some(classes),
+        Some(player),
+        None,
+    );
+    c.record(
+        "e3.a_player_stores_both_the_clock_and_the_direction",
+        routed && t.hurt_state(1).hurt_time == 10 && (t.hurt_dir(1) - 37.5).abs() < 1e-6,
+        format!(
+            "routed={routed} hurtTime={} hurtDir={} (want 10 / 37.5)",
+            t.hurt_state(1).hurt_time,
+            t.hurt_dir(1)
+        ),
+    );
+
+    // MUTATION: the same packet on a **non-player** living entity. Vanilla's
+    // `LivingEntity.animateHurt` takes the yaw and throws it away —
+    // `getHurtDir()` is a flat `0.0F` — and only `Player` overrides. An
+    // implementation that stored the yaw unconditionally passes e2 and fails
+    // here.
+    let mut t = table(1, zombie);
+    route_hurt_animation(
+        ids.cb_play_hurt_animation,
+        &hurt_animation_body(1, 37.5),
+        ids,
+        &mut t,
+        Some(classes),
+        Some(player),
+        None,
+    );
+    c.record(
+        "e4.a_non_player_arms_the_clock_and_discards_the_yaw",
+        t.hurt_state(1).hurt_time == 10 && t.hurt_dir(1) == 0.0,
+        format!(
+            "zombie: hurtTime={} hurtDir={} (want 10 / 0.0 — the override is on Player)",
+            t.hurt_state(1).hurt_time,
+            t.hurt_dir(1)
+        ),
+    );
+
+    // MUTATION: an untracked id. `if (entity != null)` — inert, not an error.
+    let mut t = table(1, player);
+    route_hurt_animation(
+        ids.cb_play_hurt_animation,
+        &hurt_animation_body(99, 37.5),
+        ids,
+        &mut t,
+        Some(classes),
+        Some(player),
+        None,
+    );
+    c.record(
+        "e5.an_untracked_entity_is_inert",
+        t.hurt_state(1).hurt_time == 0 && t.hurt_dir(1) == 0.0,
+        format!(
+            "hurtTime={} hurtDir={} for the tracked id after a packet for id 99",
+            t.hurt_state(1).hurt_time,
+            t.hurt_dir(1)
+        ),
+    );
+
+    // The direction **outlives the clock**. `Player.hurtDir` is a plain field
+    // that nothing resets, while `hurtTime` self-evicts at zero — so a hit
+    // that arms the clock without a fresh direction (a blocked one:
+    // `dealDefaultKnockback` calls `indicateDamage` only when `!blocked`)
+    // tilts along the previous hit's.
+    //
+    // MUTATION: folding `hurt_dir` into `HurtState`, which self-evicts, zeroes
+    // it here.
+    let mut t = table(1, player);
+    route_hurt_animation(
+        ids.cb_play_hurt_animation,
+        &hurt_animation_body(1, -120.0),
+        ids,
+        &mut t,
+        Some(classes),
+        Some(player),
+        None,
+    );
+    for _ in 0..12 {
+        t.tick_lerp();
+    }
+    let after = (t.hurt_state(1).hurt_time, t.hurt_dir(1));
+    c.record(
+        "e6.the_direction_outlives_the_clock",
+        after.0 == 0 && (after.1 + 120.0).abs() < 1e-6,
+        format!(
+            "after 12 ticks: hurtTime={} hurtDir={} (the clock is spent, the direction is not)",
+            after.0, after.1
+        ),
+    );
+
+    // …but it dies with the entity, because vanilla's field is on the object.
+    t.remove(1);
+    t.add(1, EntityState::new(0, player, 0.0, 0.0, 0.0, 0.0, 0.0));
+    c.record(
+        "e7.a_recycled_id_inherits_no_direction",
+        t.hurt_dir(1) == 0.0,
+        format!("hurtDir={} after remove + re-add", t.hurt_dir(1)),
+    );
+
+    // The easing. `sin(x⁴·π)` with x = hurtTime/hurtDuration, and hurtTime
+    // counts DOWN — so it is zero at the moment of the hit, peaks a fifth of a
+    // second later, and returns to zero.
+    //
+    // MUTATION: a linear ramp, or `sin(x·π)`, peaks at x = 0.5 and is
+    // symmetric; this asserts the peak is where the fourth power puts it.
+    let sample = |x: f64| oracle_tilt_degrees(x * 10.0, 10.0, 1.0).abs();
+    let peak_x = 0.5f64.powf(0.25);
+    let at_peak = sample(peak_x);
+    let (lo, hi) = (sample(0.5), sample(0.99));
+    c.record(
+        "e8.the_easing_peaks_at_the_fourth_root_of_a_half",
+        (at_peak - 14.0).abs() < 1e-9 && lo < at_peak && hi < at_peak,
+        format!(
+            "x={peak_x:.4} → {at_peak:.4}°, x=0.5 → {lo:.4}°, x=0.99 → {hi:.4}° \
+             (sin(x·π) would peak at x=0.5)"
+        ),
+    );
+
+    // The implementation agrees with the independent transcription, at a
+    // frame the tilt is actually moving.
+    let probe = glam::Vec3::new(0.0, 1.0, -4.0);
+    let tilt = HurtTilt {
+        hurt_time: 8.41,
+        hurt_duration: 10,
+        hurt_dir: 0.0,
+        strength: 1.0,
+    };
+    let want = oracle_tilt_degrees(8.41, 10.0, 1.0);
+    let got = bob_hurt(tilt).transform_point3(probe);
+    // A roll about +Z with `hurt_dir` 0: the probe swings in x by
+    // `|p| · sin(θ)` where |p| is its distance from the roll axis.
+    let want_x = (probe.y as f64) * -(want.to_radians()).sin();
+    c.record(
+        "e9.the_implementation_matches_the_independent_transcription",
+        ((got.x as f64) - want_x).abs() < 1e-4,
+        format!(
+            "probe.x {} vs predicted {want_x:.6} for a {want:.4}° roll \
+             (sampled off-axis: transform_point3(ZERO) would see nothing)",
+            got.x
+        ),
+    );
+
+    // MUTATION: `hurt_time` below zero must return the identity outright —
+    // the render state is `hurtTime - partialTicks`, so it goes negative on
+    // the frames after the clock expires.
+    let flat = bob_hurt(HurtTilt {
+        hurt_time: -0.25,
+        ..tilt
+    })
+    .transform_point3(probe);
+    c.record(
+        "e10.a_negative_hurt_time_is_the_guard_not_a_wrap",
+        (flat - probe).length() < 1e-6,
+        format!("probe {probe:?} → {flat:?} at hurtTime -0.25"),
+    );
+
+    // The conjugation. `Ry(-rr)·Rz(θ)·Ry(rr)` rotates about `Ry(-rr)·ẑ`, so
+    // `hurt_dir` selects the *plane*: 0° rolls the horizon, 90° pitches the
+    // camera. Measured on a probe directly above the axis — a roll moves it
+    // sideways, a pitch moves it forward/back and leaves x alone.
+    //
+    // MUTATION: dropping the two `Ry` factors (a plain roll regardless of
+    // direction) makes both rows measure the same displacement.
+    let roll = bob_hurt(HurtTilt {
+        hurt_dir: 0.0,
+        ..tilt
+    })
+    .transform_point3(probe);
+    let pitch = bob_hurt(HurtTilt {
+        hurt_dir: 90.0,
+        ..tilt
+    })
+    .transform_point3(probe);
+    let dx_roll = (roll.x - probe.x).abs();
+    let dx_pitch = (pitch.x - probe.x).abs();
+    let dz_pitch = (pitch.z - probe.z).abs();
+    c.record(
+        "e11.hurt_dir_selects_the_plane_rather_than_the_side",
+        dx_roll > 0.15 && dx_pitch < 1e-4 && dz_pitch > 0.15,
+        format!(
+            "rr=0 moves x by {dx_roll:.4}; rr=90 moves x by {dx_pitch:.6} and z by \
+             {dz_pitch:.4} — a conjugated roll, not a lean"
+        ),
+    );
+
+    // And the two are opposite ends of the same axis rather than the same
+    // rotation twice: 180° must mirror 0°.
+    let back = bob_hurt(HurtTilt {
+        hurt_dir: 180.0,
+        ..tilt
+    })
+    .transform_point3(probe);
+    c.record(
+        "e12.the_direction_is_signed",
+        ((back.x + roll.x) as f64).abs() < 1e-4 && (back.x - roll.x).abs() > 0.15,
+        format!("rr=0 → x {}, rr=180 → x {} (mirrored)", roll.x, back.x),
+    );
+
+    // The module. M52a recorded `no_damage_tilt` as vacuous "until Rewo
+    // ships the vanilla behaviour it suppresses" — this is the packet that
+    // shipped it.
+    //
+    // MUTATION: an implementation that branched around the tilt instead of
+    // driving `damageTiltStrength` to 0 would also pass the second half; the
+    // first half is what pins it to vanilla's own accessibility knob.
+    let mut m = crate::modules::Modules::from_defaults();
+    let before = m.render().damage_tilt_strength;
+    m.toggle("no_damage_tilt");
+    let after = m.render().damage_tilt_strength;
+    let off = bob_hurt(HurtTilt {
+        strength: after,
+        ..tilt
+    })
+    .transform_point3(probe);
+    // The **duration** half of the guard, which the `hurt_time < 0` half does
+    // not cover and which a mutation battery showed is load-bearing.
+    //
+    // An entity that has never been hurt has `HurtState::default()` — clock 0
+    // *and* duration 0 — and the render state is `hurtTime - partialTicks`, so
+    // on the one frame where the partial tick is exactly 0 the numerator is 0
+    // too. `0.0 / 0.0` is NaN, `sin(NaN)` is NaN, and a NaN rotation poisons
+    // the whole view-projection: every vertex in the frame vanishes.
+    //
+    // Vanilla cannot reach this — `hurtDuration` is only ever written together
+    // with `hurtTime` — so the guard is Rewo's, not a transcription, and it is
+    // recorded as such.
+    //
+    // MUTATION: dropping `|| t.hurt_duration == 0` makes every component NaN.
+    let unhurt = bob_hurt(HurtTilt {
+        hurt_time: 0.0,
+        hurt_duration: 0,
+        hurt_dir: 0.0,
+        strength: 1.0,
+    })
+    .transform_point3(probe);
+    c.record(
+        "e13.an_unhurt_entity_at_partial_zero_does_not_divide_by_zero",
+        unhurt.is_finite() && (unhurt - probe).length() < 1e-6,
+        format!(
+            "hurtTime 0 / hurtDuration 0 → probe {unhurt:?} (finite, unmoved); \
+             without the duration guard this is NaN and the frame renders nothing"
+        ),
+    );
+
+    c.record(
+        "e14.no_damage_tilt_is_a_real_module_now",
+        before == crate::modules::VANILLA_DAMAGE_TILT
+            && after == 0.0
+            && (off - probe).length() < 1e-6,
+        format!(
+            "damageTiltStrength {before} → {after}; probe unmoved at {off:?} \
+             (M52a's vacuity note is closed)"
+        ),
+    );
 }
 
 fn check_flash(c: &mut Checker) -> Result<(), String> {
@@ -1049,10 +1396,247 @@ fn check_flash(c: &mut Checker) -> Result<(), String> {
         ),
     );
 
+    // --- M81: the tilt has to reach the frame ----------------------------
+    let tilt = check_tilt_pixels(c, &mut gpu, &mut off, &mut wr, &draw);
+
     // Tear the GPU objects down explicitly: dropping the device with live
     // pipelines is a validation error, and this gate runs with layers on.
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);
 
+    tilt
+}
+
+/// The centroid of everything that differs from an empty frame, in **NDC**
+/// (x right, y up, origin at the principal point).
+///
+/// NDC rather than pixels because the viewport is y-flipped: measuring a
+/// rotation's sign in pixel space would measure the flip as well.
+fn marker_ndc(img: &[u8], empty: &[u8]) -> Option<(f64, f64, u32)> {
+    let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0u32);
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            if img[i..i + 3] != empty[i..i + 3] {
+                sx += x as f64 + 0.5;
+                sy += y as f64 + 0.5;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let (px, py) = (sx / n as f64, sy / n as f64);
+    Some((
+        px / W as f64 * 2.0 - 1.0,
+        1.0 - py / H as f64 * 2.0,
+        n,
+    ))
+}
+
+/// The tilt, measured on rendered pixels through the production emitter.
+///
+/// **The subject is a synthetic magenta capsule against a black sky**, and the
+/// detector is a difference against an empty frame — the shape `handshot`
+/// settled on after three detector errors, each of which looked for a signal
+/// against a background that already contained it. Two further guards:
+/// the marker's *count* is asserted stable across the tilted and untilted
+/// frames (a detector that started counting something else would move it), and
+/// the empty frame is asserted to contain nothing.
+///
+/// What is measured is the marker's **polar angle about the principal point**,
+/// not a pixel count: a camera tilt moves the whole frame, so any count-based
+/// detector changes for reasons unrelated to the angle. The frame is square,
+/// so a `Rz` between the projection and the view is exactly a rotation of the
+/// NDC image about its origin — which makes the angle directly comparable with
+/// the transcription in [`oracle_tilt_degrees`].
+fn check_tilt_pixels(
+    c: &mut Checker,
+    gpu: &mut Gpu,
+    off: &mut Offscreen,
+    wr: &mut WorldRenderer,
+    draw: &OverlayDraw,
+) -> Result<(), String> {
+    use crate::live_cmd::{eye_view_proj_hurt, HurtTilt};
+
+    // A magenta capsule up and to the right of the eye's forward axis, far
+    // enough off-centre that a 14 degree roll is tens of pixels and close
+    // enough in that the roll cannot carry it off the frame.
+    let marker = || EntityDraw {
+        pos: [1.0, 1.0, -4.0],
+        width: 0.5,
+        height: 0.5,
+        color: [1.0, 0.0, 1.0],
+        ..render_marker_template()
+    };
+    let eye = Vec3::new(0.0, 0.0, 0.0);
+    let up = Vec3::Y.to_array();
+    let right = [1.0, 0.0, 0.0];
+    wr.set_camera(eye.to_array());
+
+    // `eye_view_proj_hurt` is the production emitter: yaw 0 faces +Z, so the
+    // camera is turned 180 degrees to look at the marker down -Z.
+    let vp = |t: HurtTilt| eye_view_proj_hurt(eye, 180.0, 0.0, 1.0, 60.0, t);
+
+    // **The background is re-rendered at every tilt.** A camera tilt turns the
+    // sky gradient with it, so differencing a tilted frame against an
+    // *untilted* empty one measures the whole sky as "the marker" — 13,119
+    // pixels of it, on the first run of this witness. That is the same
+    // detector error `handshot` hit three times: a signal looked for against a
+    // background that already contained it. The subject is isolated by
+    // comparing each frame only with its own background.
+    let mut shot = |t: HurtTilt| -> Result<(Vec<u8>, Option<(f64, f64, u32)>), String> {
+        wr.set_entities(&[], right, up, 0.0);
+        off.render(gpu, Some((&mut *wr, vp(t))), draw, CLEAR)?;
+        let empty = off.read_rgba(gpu)?;
+        wr.set_entities(&[marker()], right, up, 0.0);
+        off.render(gpu, Some((&mut *wr, vp(t))), draw, CLEAR)?;
+        let img = off.read_rgba(gpu)?;
+        let m = marker_ndc(&img, &empty);
+        Ok((img, m))
+    };
+
+    let (flat, flat_marker) = shot(HurtTilt::NONE)?;
+    let Some((fx, fy, fn_)) = flat_marker else {
+        return Err("hurtshot: the tilt marker rendered no pixels at all".into());
+    };
+    c.record(
+        "e15.the_marker_is_present_and_off_centre",
+        fn_ > 40 && (fx * fx + fy * fy).sqrt() > 0.3,
+        format!(
+            "{fn_} pixels at NDC ({fx:.4}, {fy:.4}), radius {:.4} — an empty frame \
+             contains none of them, so the detector cannot be measuring the sky",
+            (fx * fx + fy * fy).sqrt()
+        ),
+    );
+
+    // The peak frame of a full-strength tilt, `hurt_dir = 0` (a pure roll).
+    let peak = HurtTilt {
+        hurt_time: 8.41,
+        hurt_duration: 10,
+        hurt_dir: 0.0,
+        strength: 1.0,
+    };
+    let Some((rx, ry, rn)) = shot(peak)?.1 else {
+        return Err("hurtshot: the tilted marker rendered no pixels".into());
+    };
+    let angle = ry.atan2(rx).to_degrees() - fy.atan2(fx).to_degrees();
+    let want = oracle_tilt_degrees(8.41, 10.0, 1.0);
+    c.record(
+        "e16.the_rendered_roll_is_the_transcribed_angle",
+        (angle - want).abs() < 2.0 && (rn as i32 - fn_ as i32).abs() < (fn_ as i32) / 3,
+        format!(
+            "the marker swung {angle:.3} degrees about the principal point; \
+             bobHurt predicts {want:.3} ({rn} pixels vs {fn_} — the subject did not \
+             change, only its position)"
+        ),
+    );
+
+    // MUTATION: `hurt_dir = 90` is a **pitch**, not a mirrored roll — and the
+    // property that separates them is the marker's **radius** from the
+    // principal point, not its x. A roll is a rotation of the NDC image about
+    // its origin and preserves the radius exactly; a pitch moves the marker
+    // through the perspective divide, so its radius changes.
+    //
+    // The first version of this witness asserted a pitch leaves x alone. It
+    // does not: rotating the marker about the camera's X axis changes its
+    // depth, and 1/w scales x with it — measured, 0.437 → 0.474. The
+    // measurement was right and the expectation was wrong.
+    //
+    // An implementation that dropped the two `Ry` conjugation factors rolls
+    // regardless of direction, preserving the radius in both rows, and fails
+    // the second half while passing e16.
+    let Some((px, py, _)) = shot(HurtTilt {
+        hurt_dir: 90.0,
+        ..peak
+    })?
+    .1
+    else {
+        return Err("hurtshot: the pitched marker rendered no pixels".into());
+    };
+    let radius = |x: f64, y: f64| (x * x + y * y).sqrt();
+    let (r_flat, r_roll, r_pitch) = (radius(fx, fy), radius(rx, ry), radius(px, py));
+    c.record(
+        "e17.a_roll_preserves_the_radius_and_a_pitch_does_not",
+        (r_roll - r_flat).abs() < 0.02 && (r_pitch - r_flat).abs() > 0.2,
+        format!(
+            "radius: untilted {r_flat:.4}, rr=0 {r_roll:.4} (a rotation about the \
+             principal point), rr=90 {r_pitch:.4} at NDC ({px:.4}, {py:.4}) — the \
+             conjugation puts the roll axis somewhere other than the view axis"
+        ),
+    );
+
+    // MUTATION: the module. `no_damage_tilt` drives `damageTiltStrength` to
+    // zero, and the rendered frame must then be **byte-identical** to the
+    // untilted one — not merely close.
+    let strength = {
+        let mut m = crate::modules::Modules::from_defaults();
+        m.toggle("no_damage_tilt");
+        m.render().damage_tilt_strength
+    };
+    let (suppressed, _) = shot(HurtTilt { strength, ..peak })?;
+    c.record(
+        "e18.the_module_suppresses_the_tilt_at_the_pixel",
+        suppressed == flat,
+        format!(
+            "with damageTiltStrength {strength}, the peak frame is {} the untilted one",
+            if suppressed == flat {
+                "byte-identical to"
+            } else {
+                "DIFFERENT from"
+            }
+        ),
+    );
+
     Ok(())
+}
+
+/// A neutral `EntityDraw` for the tilt marker — everything but position, size
+/// and colour left at rest.
+fn render_marker_template() -> EntityDraw<'static> {
+    EntityDraw {
+        pos: [0.0; 3],
+        width: 1.0,
+        height: 1.0,
+        color: [1.0, 0.0, 1.0],
+        name: None,
+        health: None,
+        kind: EntityModelKind::Capsule,
+        yaw: 0.0,
+        death_time: 0.0,
+        head_yaw: 0.0,
+        pitch: 0.0,
+        limb_swing: 0.0,
+        limb_amount: 0.0,
+        gesture: None,
+        events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+        shell: false,
+        allay_dance: None,
+        attack: rewo_gpu::mobs::SwingPose::NONE,
+        arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+        mob: rewo_gpu::mobs::MobCombat::default(),
+        hurt: false,
+        held: [None, None],
+        ground_item: None,
+        armor: [None; 4],
+        held_glint: [false; 2],
+        ground_glint: false,
+        ground_count: 0,
+        ground_seed: 0,
+        ground_age: None,
+        bob_offset: 0.0,
+        skin_uv: None,
+        scale_mul: 1.0,
+        mount: None,
+        anim_id: 0.0,
+        light: [1.0, 1.0, 1.0],
+        emissive: rewo_gpu::entities::EmissiveState::default(),
+        variant: 0,
+        dye: None,
+        sheared: false,
+        undercoat: false,
+        fish_dye: None,
+        cape: None,
+    }
 }

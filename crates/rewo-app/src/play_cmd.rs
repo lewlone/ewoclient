@@ -657,6 +657,15 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    // M81: `handleTakeItemEntity` branches three ways on the collected
+    // entity's class — an item's stack is shrunk and only then removed, an
+    // experience orb is never removed here at all, and anything else goes
+    // immediately. The two ids are what tell those apart.
+    session.take_item_kinds = rewo_net::TakeItemKinds {
+        item: data.entity_types.id_of("minecraft:item"),
+        orb: data.entity_types.id_of("minecraft:experience_orb"),
+        local_player: None,
+    };
     // M19 combat swings — every production `PlaySession` consumer interprets
     // them, not just `live_cmd`: the player type id gates the swing clock and
     // the equipment tables supply each swing's duration + animation type.

@@ -15,6 +15,7 @@ mod attributeshot_cmd;
 mod danceshot_cmd;
 mod rideshot_cmd;
 mod healthbarshot_cmd;
+mod breakshot_cmd;
 mod hurtshot_cmd;
 mod labelshot_cmd;
 mod itemshot_cmd;
@@ -240,8 +241,12 @@ enum Command {
     /// cut-off, invisibility, the camera entity, `isVehicle`, F1 and the four
     /// `Team.Visibility` arms, plus the property that both labels agree.
     Labelshot(labelshot_cmd::LabelshotArgs),
-    /// M21: the combat damage response — hurt clock + the red flash.
+    /// M21: the combat damage response — hurt clock + the red flash. M81
+    /// adds `hurt_animation` and the camera tilt it steers.
     Hurtshot(hurtshot_cmd::HurtshotArgs),
+    /// M81: the block-break crack overlay — `block_destruction`'s two
+    /// indexes, the block's own decal geometry, and the multiply blend.
+    Breakshot(breakshot_cmd::BreakshotArgs),
     /// M22: held items — both geometry paths, placement and suppression.
     Itemshot(itemshot_cmd::ItemshotArgs),
     /// M19 combat-swing oracle: drive raw `ClientboundAnimatePacket` bodies
@@ -300,6 +305,7 @@ fn main() {
         Some(Command::Healthbarshot(hb_args)) => healthbarshot_cmd::run(hb_args),
         Some(Command::Labelshot(label_args)) => labelshot_cmd::run(label_args),
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
+        Some(Command::Breakshot(a)) => breakshot_cmd::run(a),
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),

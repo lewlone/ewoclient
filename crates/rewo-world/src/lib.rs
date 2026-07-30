@@ -16,6 +16,7 @@ pub mod chunk;
 pub mod chunk_cache;
 pub mod conduit;
 pub mod daylight;
+pub mod destruction;
 pub mod dimension;
 pub mod entities;
 pub mod entity_pick;
@@ -27,6 +28,7 @@ pub mod minecart;
 pub mod palette;
 pub mod particles;
 pub mod physics;
+pub mod pickup;
 pub mod raycast;
 pub mod riding;
 pub mod rotation;
@@ -71,6 +73,12 @@ pub struct World {
     /// the world rather than the column because the render pass wants them by
     /// area; column load / unload keeps it in step.
     pub block_entities: block_entities::BlockEntities,
+    /// `ClientLevel.destroyingBlocks` / `destructionProgress` — the crack
+    /// overlay somebody else's mining paints (M81).
+    pub destruction: destruction::DestructionProgress,
+    /// `ItemPickupParticle`s in flight (M81). On the world rather than beside
+    /// the entities because the entity they draw has already been removed.
+    pub pickups: pickup::Pickups,
 }
 
 impl World {
@@ -87,6 +95,8 @@ impl World {
             cardinal_light_type: CardinalLightType::DEFAULT,
             cardinal_light: CardinalLighting::DEFAULT,
             block_entities: block_entities::BlockEntities::default(),
+            destruction: destruction::DestructionProgress::default(),
+            pickups: pickup::Pickups::default(),
         }
     }
 
@@ -102,6 +112,8 @@ impl World {
             cardinal_light_type: def.cardinal_light_type,
             cardinal_light: def.cardinal_light,
             block_entities: block_entities::BlockEntities::default(),
+            destruction: destruction::DestructionProgress::default(),
+            pickups: pickup::Pickups::default(),
         }
     }
 
@@ -363,6 +375,11 @@ impl World {
             // concern and are never read from a snapshot, so carrying them
             // would only cost the clone.
             block_entities: block_entities::BlockEntities::default(),
+            // Same reason for both (M81): a crack overlay is a decal drawn
+            // over the finished mesh and a pickup is a particle, so neither is
+            // reachable from a mesh worker.
+            destruction: destruction::DestructionProgress::default(),
+            pickups: pickup::Pickups::default(),
         }
     }
 

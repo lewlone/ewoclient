@@ -203,6 +203,15 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    // M81: `handleTakeItemEntity` branches three ways on the collected
+    // entity's class — an item's stack is shrunk and only then removed, an
+    // experience orb is never removed here at all, and anything else goes
+    // immediately. The two ids are what tell those apart.
+    session.take_item_kinds = rewo_net::TakeItemKinds {
+        item: data.entity_types.id_of("minecraft:item"),
+        orb: data.entity_types.id_of("minecraft:experience_orb"),
+        local_player: None,
+    };
     // M64: the six mobs whose texture a metadata field chooses. An id that
     // does not resolve leaves that mob on its baked texture.
     session.variant_type_ids = rewo_net::VariantKinds {
@@ -2293,6 +2302,9 @@ fn collect_entities<'a>(
             // match, because vanilla's own clients each roll their own.
             bob_offset: bob_offset_for(id),
             ground_seed: ground_stack.map_or(0, |(i, _, _)| i),
+            // A live item entity turns on the shared clock; only a pickup
+            // animation freezes it (M81).
+            ground_age: None,
             head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
             pitch: e.pitch,
             limb_swing,
@@ -2584,13 +2596,101 @@ fn eye_view_proj(
     aspect: f32,
     fov_deg: f32,
 ) -> [[f32; 4]; 4] {
+    eye_view_proj_hurt(eye, yaw_deg, pitch_deg, aspect, fov_deg, HurtTilt::NONE)
+}
+
+/// `GameRenderer.bobHurt`'s inputs, resolved for one frame (M81).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HurtTilt {
+    /// `cameraState.entityRenderState.hurtTime` — `hurtTime - partialTicks`,
+    /// and therefore **negative** on the frames after the clock hits zero.
+    pub hurt_time: f32,
+    /// `hurtDuration`, the divisor. 10 for every armed clock.
+    pub hurt_duration: i32,
+    /// `getHurtDir()` in degrees — 0 for anything that is not a player.
+    pub hurt_dir: f32,
+    /// `optionsRenderState.damageTiltStrength`, vanilla's accessibility slider
+    /// (`UnitDouble`, default 1.0). Rewo's `no_damage_tilt` module drives it to
+    /// 0, which is exactly what the slider's "off" end does.
+    pub strength: f32,
+}
+
+impl HurtTilt {
+    /// No tilt: an entity that has never been hurt.
+    pub const NONE: Self = Self {
+        hurt_time: 0.0,
+        hurt_duration: 10,
+        hurt_dir: 0.0,
+        strength: 1.0,
+    };
+}
+
+/// `GameRenderer.bobHurt` — the camera lurch when you take a hit (M81).
+///
+/// ```text
+/// float hurt = hurtTime;                       // already minus partialTicks
+/// if (hurt < 0.0F) return;
+/// hurt /= hurtDuration;
+/// hurt = Mth.sin(hurt * hurt * hurt * hurt * (float) Math.PI);
+/// float rr = hurtDir;
+/// poseStack.mulPose(Axis.YP.rotationDegrees(-rr));
+/// poseStack.mulPose(Axis.ZP.rotationDegrees(-hurt * 14.0 * damageTiltStrength));
+/// poseStack.mulPose(Axis.YP.rotationDegrees(rr));
+/// ```
+///
+/// Three things read backwards here:
+///
+/// * **It is not a lean, it is a conjugated roll.** `Ry(-rr) · Rz(θ) · Ry(rr)`
+///   is a rotation about the axis `Ry(-rr) · ẑ` — so at `hurtDir` 0 the camera
+///   *rolls* (the horizon tips), and at 90° it *pitches* (the camera nods).
+///   `hurtDir` selects the plane, and the plane is a **camera-space** one,
+///   because vanilla post-multiplies this onto the projection and leaves the
+///   view matrix alone.
+/// * **The easing is `sin(x⁴·π)`, in the fraction of the clock remaining.**
+///   `hurtTime` counts *down* from 10, so `x` runs 1 → 0, and `sin(x⁴π)` is
+///   zero at both ends with its peak at `x = 0.5^0.25 ≈ 0.841` — a fifth of a
+///   second after the hit. A tilt that started at full strength and decayed
+///   (the obvious reading) would snap rather than swing.
+/// * **The guard is `< 0`, not `<= 0`.** The render-state field is
+///   `hurtTime - partialTicks`, so on the frames after the last tick it goes
+///   negative and the tilt is skipped outright; at exactly 0 it is still
+///   evaluated, and `sin(0)` makes it a no-op anyway.
+///
+/// The death spin vanilla applies *before* the guard is not here: Rewo has no
+/// first-person death camera, and reproducing half of `bobHurt` in the wrong
+/// order would be worse than leaving that clause out and saying so.
+pub(crate) fn bob_hurt(t: HurtTilt) -> Mat4 {
+    if t.hurt_time < 0.0 || t.hurt_duration == 0 {
+        return Mat4::IDENTITY;
+    }
+    let x = t.hurt_time / t.hurt_duration as f32;
+    let hurt = (x * x * x * x * std::f32::consts::PI).sin();
+    let rr = t.hurt_dir.to_radians();
+    let tilt = (-hurt * 14.0 * t.strength).to_radians();
+    Mat4::from_rotation_y(-rr) * Mat4::from_rotation_z(tilt) * Mat4::from_rotation_y(rr)
+}
+
+/// The frame's view-projection with the damage tilt folded in.
+///
+/// **`P · B · V`**, matching vanilla's `projectionMatrix.mul(bobStack)`
+/// followed by a separately-set model-view: the bob sits between the
+/// projection and the view, so it rotates in camera space rather than about a
+/// world axis.
+pub(crate) fn eye_view_proj_hurt(
+    eye: Vec3,
+    yaw_deg: f32,
+    pitch_deg: f32,
+    aspect: f32,
+    fov_deg: f32,
+    tilt: HurtTilt,
+) -> [[f32; 4]; 4] {
     let view = eye_view(eye, yaw_deg, pitch_deg);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         fov_deg.to_radians(),
         aspect.max(0.01),
         0.05,
     ));
-    (proj * view).to_cols_array_2d()
+    (proj * bob_hurt(tilt) * view).to_cols_array_2d()
 }
 
 /// The view matrix alone — extracted so the M37 particle billboards take their
@@ -2605,6 +2705,37 @@ fn eye_view(eye: Vec3, yaw_deg: f32, pitch_deg: f32) -> Mat4 {
         yaw.cos() * pitch.cos(),
     );
     Mat4::look_to_rh(eye, dir, Vec3::Y)
+}
+
+/// `Camera.setup`'s fill of the camera entity's hurt fields (M81).
+///
+/// ```text
+/// cameraState.entityRenderState.hurtDir      = livingEntity.getHurtDir();
+/// cameraState.entityRenderState.hurtTime     = livingEntity.hurtTime - cameraEntityPartialTicks;
+/// cameraState.entityRenderState.hurtDuration = livingEntity.hurtDuration;
+/// ```
+///
+/// The camera entity is the local player, whose id the entity table does not
+/// hold — but the hurt clock and direction are keyed by entity id and
+/// `hurt_animation` addresses the local player by its own id, so both live in
+/// the table's side maps regardless.
+///
+/// **`hurtTime` is the raw counter minus the partial tick**, which is why the
+/// value handed on is a float and can be negative: `bobHurt` uses that
+/// negativity as its own guard rather than clamping.
+fn local_hurt_tilt(session: &PlaySession, alpha: f32, strength: f32) -> HurtTilt {
+    let Some(id) = session.player_id else {
+        return HurtTilt::NONE;
+    };
+    let h = session.world.entities.hurt_state(id);
+    HurtTilt {
+        hurt_time: h.hurt_time as f32 - alpha,
+        // Raw, not clamped: an unhurt entity's 0 is vanilla's 0, and
+        // `bob_hurt` guards the division rather than inventing a divisor.
+        hurt_duration: h.hurt_duration,
+        hurt_dir: session.world.entities.hurt_dir(id),
+        strength,
+    }
 }
 
 fn player_eye(session: &PlaySession) -> Vec3 {
@@ -2736,6 +2867,7 @@ fn run_headless(
     init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
+    init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
     let mut weather_assets = WeatherAssets::new(&baked);
     let mut gui_items = GuiItemState::new(&baked);
     let mut particle_assets = ParticleAssets::new(&baked);
@@ -3306,6 +3438,7 @@ fn run_headless(
             view,
         );
     }
+    apply_crumbling(&mut world_renderer, &mut gpu, &session, &baked, eye);
     // M38: the first-person hand. `REWO_HAND_SWING=<0..1>` freezes the swing
     // partway for a shot — it is a tick clock, so a headless frame would
     // otherwise always catch it at rest.
@@ -3345,6 +3478,17 @@ fn run_headless(
     world_renderer.set_end_portals(&mut gpu, &portals, session.game_time())?;
     let mut draws = draws;
     draws.extend(caged.iter().map(spawner_mob_draw));
+    // M81: the stacks in flight to whoever picked them up. Appended to the
+    // same list so they go through `prepare_held_items` below — a pickup's
+    // item needs an atlas slot exactly as a dropped one does, and the entity
+    // it came from has already left the table.
+    draws.extend(collect_pickups(
+        &session,
+        &items,
+        &lightmap,
+        1.0,
+        start.elapsed().as_secs_f32(),
+    ));
     // Every texture the frame samples from the entity atlas — items in hands,
     // dropped stacks, and now block-entity models, which share the pool.
     let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
@@ -3641,6 +3785,7 @@ impl ApplicationHandler for LiveApp {
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
+    init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
@@ -4271,6 +4416,13 @@ impl LiveApp {
         }
         let mut draws = draws;
         draws.extend(caged.iter().map(spawner_mob_draw));
+        draws.extend(collect_pickups(
+            session,
+            &self.items,
+            &lightmap,
+            alpha,
+            anim_time,
+        ));
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
         held.extend(draws.iter().filter_map(|d| d.ground_item));
         held.extend(bes.iter().map(|b| b.model.as_str()));
@@ -4435,6 +4587,13 @@ impl LiveApp {
                     view,
                 );
             }
+            apply_crumbling(
+                &mut state.world_renderer,
+                &mut state.gpu,
+                session,
+                baked,
+                player_eye(session),
+            );
         }
         state
             .world_renderer
@@ -4469,12 +4628,13 @@ impl LiveApp {
         // constants this path used before -- which is what keeps the golden
         // PNGs byte-identical.
         let render_modules = self.modules.render();
-        let vp = eye_view_proj(
+        let vp = eye_view_proj_hurt(
             eye,
             session.player.yaw,
             session.player.pitch,
             aspect,
             render_modules.fov_degrees,
+            local_hurt_tilt(session, alpha, render_modules.damage_tilt_strength),
         );
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,
@@ -5565,6 +5725,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         ground_glint: false,
         ground_count: 0,
         ground_seed: 0,
+        ground_age: None,
         bob_offset: 0.0,
         skin_uv: None,
         scale_mul: 1.0,
@@ -5579,6 +5740,97 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         fish_dye: None,
         cape: None,
     }
+}
+
+/// The in-flight pickup animations, as entity draws (M81).
+///
+/// Same shape as the spawner's caged mob and for the same reason: this is an
+/// *item*, and Rewo's item geometry lives on the entity pass, so the animation
+/// reuses the whole `emit_ground_item` path — bob, spin, per-copy jitter and
+/// all — rather than growing a second item emitter. Vanilla splits them (a
+/// particle group with a captured render state) only because its entity is
+/// already deleted; Rewo's problem is the same and its answer is
+/// [`rewo_world::pickup`] holding the appearance rather than the entity.
+///
+/// Everything except position, item and age is neutral: a collected stack does
+/// not walk, look around or take damage.
+pub(crate) fn collect_pickups<'a>(
+    session: &PlaySession,
+    item_names: &'a rewo_data::items::Items,
+    lightmap: &LightmapState,
+    alpha: f32,
+    now: f32,
+) -> Vec<rewo_gpu::entities::EntityDraw<'a>> {
+    let mut out = Vec::new();
+    for p in session.world.pickups.iter() {
+        let Some((item, count, foil)) = p.stack else {
+            // An experience orb or an arrow: vanilla adds the particle
+            // regardless and renders that entity's own model, which Rewo does
+            // not have. The record exists; nothing is drawn.
+            continue;
+        };
+        let Some(name) = item_names.name(item) else {
+            continue;
+        };
+        let pos = p.render_pos(alpha);
+        let pos = [pos[0] as f32, pos[1] as f32, pos[2] as f32];
+        let light = entity_light(
+            &session.world,
+            pos[0] as f64,
+            pos[1] as f64,
+            pos[2] as f64,
+            lightmap,
+        );
+        out.push(rewo_gpu::entities::EntityDraw {
+            pos,
+            width: 0.25,
+            height: 0.25,
+            color: [1.0; 3],
+            name: None,
+            health: None,
+            kind: rewo_gpu::entities::EntityModelKind::Capsule,
+            yaw: 0.0,
+            death_time: 0.0,
+            head_yaw: 0.0,
+            pitch: 0.0,
+            limb_swing: 0.0,
+            limb_amount: 0.0,
+            gesture: None,
+            shell: false,
+            events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
+            allay_dance: None,
+            attack: rewo_gpu::mobs::SwingPose::NONE,
+            arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
+            mob: Default::default(),
+            hurt: false,
+            held: [None, None],
+            ground_item: Some(name),
+            armor: [None; 4],
+            held_glint: [false; 2],
+            ground_glint: foil,
+            ground_count: count,
+            ground_seed: item,
+            // The captured `ageInTicks`, reconstructed from the animation's own
+            // life counter: the flight is `life + alpha` ticks old, so capture
+            // was that many ticks before now. No second clock, and it cannot
+            // drift from the one `emit_ground_item` would otherwise use.
+            ground_age: Some(now * 20.0 - (p.life as f32 + alpha)),
+            bob_offset: bob_offset_for(p.entity_id),
+            skin_uv: None,
+            scale_mul: 1.0,
+            mount: None,
+            anim_id: 0.0,
+            light,
+            emissive: rewo_gpu::entities::EmissiveState::default(),
+            variant: 0,
+            dye: None,
+            sheared: false,
+            undercoat: false,
+            fish_dye: None,
+            cape: None,
+        });
+    }
+    out
 }
 
 /// One spawner's caged mob.
@@ -6916,6 +7168,71 @@ fn init_particles_if_present(
     )
 }
 
+/// Build the block-break crumbling pass from the jar's ten stage textures
+/// (M81). A jar without them simply draws no cracks.
+fn init_crumbling_if_present(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+) -> Result<(), String> {
+    let Some(stages) = baked.destroy_stages.as_ref() else {
+        log::warn!("live: no destroy_stage textures in the jar bake — no block-break overlay");
+        return Ok(());
+    };
+    let size = stages[0].w.max(1);
+    let layers: Vec<Vec<u8>> = stages.iter().map(|s| s.rgba.clone()).collect();
+    wr.init_crumbling(gpu, &layers, size)
+}
+
+/// This frame's block-break decals (M81).
+///
+/// `extractBlockDestroyAnimation`'s two rules, both here: the **highest**
+/// progress at a position wins (the store resolves that), and a position
+/// further than 32 blocks from the camera is skipped — `distToCenterSqr(camX,
+/// camY, camZ) > 1024.0`, measured from the block's **centre**, not its
+/// corner.
+fn apply_crumbling(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    baked: &assets::BakedAssets,
+    eye: Vec3,
+) {
+    use rewo_gpu::crumbling::CrumblingVertex;
+    let mut verts: Vec<CrumblingVertex> = Vec::new();
+    for (pos, stage) in session.world.destruction.iter() {
+        let (cx, cy, cz) = (
+            pos[0] as f32 + 0.5,
+            pos[1] as f32 + 0.5,
+            pos[2] as f32 + 0.5,
+        );
+        let d2 = (cx - eye.x).powi(2) + (cy - eye.y).powi(2) + (cz - eye.z).powi(2);
+        if d2 > 1024.0 {
+            continue;
+        }
+        let state = session
+            .world
+            .block_state_at(pos[0], pos[1], pos[2]);
+        for q in rewo_mesh::crumbling::block_decal_quads(
+            &baked.render,
+            &baked.models,
+            state,
+            pos,
+        ) {
+            let v = |i: usize| CrumblingVertex {
+                pos: q.verts[i],
+                uv: q.uv[i],
+                stage: stage as u32,
+            };
+            // Two triangles, the same 0-1-2 / 0-2-3 winding the mesher uses.
+            verts.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);
+        }
+    }
+    if let Err(e) = wr.set_crumbling(gpu, &verts) {
+        log::warn!("live: crumbling upload: {e}");
+    }
+}
+
 /// Drain the frame's spawn requests, advance the simulation on the game tick,
 /// and hand the renderer this frame's quads.
 ///
@@ -7435,6 +7752,7 @@ fn preview_draw<'a>(
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,
+        ground_age: None,
         head_yaw: 180.0 + x_angle,
         pitch: -y_angle,
         limb_swing: 0.0,

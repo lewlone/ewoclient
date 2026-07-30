@@ -39,6 +39,8 @@ fn main() {
         ("shaders/clouds.vert", "clouds.vert.spv"),
         ("shaders/particle.vert", "particle.vert.spv"),
         ("shaders/particle.frag", "particle.frag.spv"),
+        ("shaders/crumbling.vert", "crumbling.vert.spv"),
+        ("shaders/crumbling.frag", "crumbling.frag.spv"),
         ("shaders/weather.vert", "weather.vert.spv"),
         ("shaders/weather.frag", "weather.frag.spv"),
         ("shaders/clouds.frag", "clouds.frag.spv"),

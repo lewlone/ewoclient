@@ -17,16 +17,24 @@
 //!
 //! `REWO_FEATURE_SURVEY.md` ranks this port as one milestone worth ~418 mods
 //! and 242M downloads of demand. Auditing the modules against the `rewo-*`
-//! crates found two of the twelve are **vacuous here**:
+//! crates found two of the twelve were **vacuous here**:
 //!
 //! * `no_view_bob` — Rewo has never implemented view bobbing.
 //! * `no_damage_tilt` — nor `bobHurt`.
 //!
-//! You cannot disable what was never built, so those two are deliberately
-//! absent from [`Modules::render`] rather than wired to a no-op. They become
-//! real only if Rewo first ships the vanilla behaviour they suppress. Recorded
-//! because a module list that silently contains dead toggles is worse than one
-//! that is honestly short.
+//! You cannot disable what was never built, so those two were deliberately
+//! absent from [`Modules::render`] rather than wired to a no-op, and the note
+//! recorded the condition on which they would become real: *first ship the
+//! vanilla behaviour they suppress*.
+//!
+//! **M81 shipped `bobHurt`,** so `no_damage_tilt` is now a real toggle —
+//! [`RenderModules::damage_tilt_strength`], driving vanilla's own
+//! `damageTiltStrength` accessibility slider to its "off" end rather than
+//! branching around the tilt. The blocker was the packet: `hurt_animation`
+//! (42) carries the tilt's direction and nothing else does, and it was one of
+//! the 54 clientbound-play names Rewo had never resolved.
+//!
+//! `no_view_bob` is still vacuous, on the same terms.
 
 use ewo_core::modules as catalog;
 
@@ -45,6 +53,14 @@ pub struct RenderModules {
     pub hide_fire_overlay: bool,
     /// Suppress the pumpkin overlay (`no_pumpkin_overlay`).
     pub hide_pumpkin_overlay: bool,
+    /// `Options.damageTiltStrength` — the multiplier on `bobHurt`'s 14° (M81).
+    ///
+    /// Vanilla's own accessibility slider, a `UnitDouble` defaulting to 1.0.
+    /// `no_damage_tilt` drives it to 0, which is the slider's "off" end and
+    /// not a branch around the tilt: every other term of `bobHurt` still
+    /// evaluates, so turning the module on mid-animation cannot leave the
+    /// camera stuck at an angle.
+    pub damage_tilt_strength: f32,
 }
 
 impl Default for RenderModules {
@@ -54,6 +70,7 @@ impl Default for RenderModules {
             gamma: 0.0,
             hide_fire_overlay: false,
             hide_pumpkin_overlay: false,
+            damage_tilt_strength: VANILLA_DAMAGE_TILT,
         }
     }
 }
@@ -68,6 +85,9 @@ pub const VANILLA_FOV: f32 = 70.0;
 /// 1000%" — which is beyond-vanilla territory. Rewo starts at parity; going
 /// further is a setting, not a different mechanism.
 pub const MAX_GAMMA: f32 = 1.0;
+
+/// `Options.damageTiltStrength`'s default — a `UnitDouble` initialised to 1.0.
+pub const VANILLA_DAMAGE_TILT: f32 = 1.0;
 
 /// Live module state: the persisted toggles plus the transient ones a key
 /// holds down.
@@ -202,6 +222,11 @@ impl Modules {
             gamma: if self.is_on("fullbright") { MAX_GAMMA } else { 0.0 },
             hide_fire_overlay: self.is_on("no_fire_overlay"),
             hide_pumpkin_overlay: self.is_on("no_pumpkin_overlay"),
+            damage_tilt_strength: if self.is_on("no_damage_tilt") {
+                0.0
+            } else {
+                VANILLA_DAMAGE_TILT
+            },
         }
     }
 }
@@ -284,13 +309,68 @@ mod tests {
     }
 
     #[test]
-    fn the_two_vacuous_modules_are_not_in_the_render_state() {
-        // `no_view_bob` and `no_damage_tilt` exist in the catalog but Rewo has
-        // no view bobbing and no hurt-cam to suppress. If either ever gains a
-        // field in RenderModules, the behaviour must have been built first.
+    fn no_view_bob_is_still_vacuous() {
+        // Rewo has no view bobbing to suppress. If this ever gains a field in
+        // RenderModules, the behaviour must have been built first — which is
+        // exactly the route `no_damage_tilt` took in M81.
         let mut m = Modules::from_defaults();
         m.toggle("no_view_bob");
-        m.toggle("no_damage_tilt");
         assert_eq!(m.render(), Modules::from_defaults().render());
+    }
+
+    /// M81: `no_damage_tilt` is real. The M52a note said it would become so
+    /// only once `bobHurt` existed, and that is what happened.
+    ///
+    /// MUTATION: dropping the `is_on("no_damage_tilt")` branch from `render`
+    /// leaves the strength at 1.0 and fails the second assertion. Restoring
+    /// the old vacuity test — asserting the toggle changes nothing — now fails
+    /// on the *first*.
+    #[test]
+    fn no_damage_tilt_turns_the_tilt_off() {
+        let mut m = Modules::from_defaults();
+        assert_eq!(
+            m.render().damage_tilt_strength,
+            VANILLA_DAMAGE_TILT,
+            "off by default — the module must not change the vanilla camera"
+        );
+        m.toggle("no_damage_tilt");
+        assert_eq!(m.render().damage_tilt_strength, 0.0);
+        assert_ne!(
+            m.render(),
+            Modules::from_defaults().render(),
+            "the toggle must be observable in the render state"
+        );
+    }
+
+    /// And a zero strength really does flatten the tilt, rather than merely
+    /// being carried around — the property the module claims.
+    ///
+    /// MUTATION: a `bob_hurt` that ignored `strength` would return a rotation
+    /// here and fail. Sampled at an **off-axis** point, because
+    /// `transform_point3(ZERO)` sees only translation and a pure rotation
+    /// would measure as motionless there (the trap two `handshot` witnesses
+    /// fell into).
+    #[test]
+    fn zero_strength_is_the_identity_at_the_tilt_peak() {
+        use crate::live_cmd::{bob_hurt, HurtTilt};
+        // x = 0.841 is where `sin(x⁴π)` peaks — the strongest frame there is.
+        let peak = HurtTilt {
+            hurt_time: 8.41,
+            hurt_duration: 10,
+            hurt_dir: 0.0,
+            strength: VANILLA_DAMAGE_TILT,
+        };
+        let probe = glam::Vec3::new(0.0, 1.0, -4.0);
+        let tilted = bob_hurt(peak).transform_point3(probe);
+        assert!(
+            (tilted.x - probe.x).abs() > 0.1,
+            "the tilt must actually move a probe: {tilted:?}"
+        );
+        let off = bob_hurt(HurtTilt {
+            strength: 0.0,
+            ..peak
+        })
+        .transform_point3(probe);
+        assert!((off - probe).length() < 1e-6, "strength 0 must be flat: {off:?}");
     }
 }

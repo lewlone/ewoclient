@@ -223,6 +223,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         ground_count: 0,
         bob_offset: 0.0,
         ground_seed: 0,
+        ground_age: None,
         head_yaw: 0.0,
         pitch: 0.0,
         limb_swing: 0.0,

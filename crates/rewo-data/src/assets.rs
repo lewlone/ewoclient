@@ -25,6 +25,9 @@ pub const TEX_SIZE: u32 = 16;
 /// so a block-break burst draws nothing rather than an arbitrary texture.
 pub const NO_PARTICLE_LAYER: u16 = u16::MAX;
 
+/// `ModelBakery.DESTROY_STAGE_COUNT` — `block/destroy_stage_0` … `_9` (M81).
+pub const DESTROY_STAGE_COUNT: usize = 10;
+
 /// Face order used across the bake + mesher:
 /// 0 up(+Y) 1 down(-Y) 2 north(-Z) 3 south(+Z) 4 west(-X) 5 east(+X).
 pub const FACE_NAMES: [&str; 6] = ["up", "down", "north", "south", "west", "east"];
@@ -307,6 +310,10 @@ pub struct BakedAssets {
     /// over the End skybox cube (M16). `None` if the jar lacks it — the End
     /// then draws no sky at all rather than an invented flat colour.
     pub end_sky: Option<DecodedImage>,
+    /// `ModelBakery.BREAKING_LOCATIONS` — the ten block-break crack overlays,
+    /// stage 0 first (M81). `None` when the jar has none, which draws no
+    /// crumbling at all rather than a partial set.
+    pub destroy_stages: Option<[DecodedImage; DESTROY_STAGE_COUNT]>,
     /// `entity/end_portal/end_portal.png` — Sampler1 of the end-portal shader
     /// (M32). `None` if the jar lacks it, in which case no portal draws.
     pub end_portal: Option<DecodedImage>,
@@ -862,6 +869,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     if celestial.is_none() {
         log::warn!("rewo-data: celestial textures missing — no sun/moon");
     }
+    let destroy_stages = bake_destroy_stages(&mut jar);
+    if destroy_stages.is_none() {
+        log::warn!("rewo-data: block/destroy_stage_* missing — no block-break overlay");
+    }
 
     let mut baker = Baker {
         jar: &mut jar,
@@ -1107,6 +1118,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         container,
         celestial,
         end_sky,
+        destroy_stages,
         end_portal,
         rain,
         snow,
@@ -1229,6 +1241,33 @@ fn bake_env_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
         .ok()?;
     let (rgba, w, h) = decode_png_any(&bytes)?;
     Some(DecodedImage { rgba, w, h })
+}
+
+/// `ModelBakery.BREAKING_LOCATIONS` — the ten `block/destroy_stage_N.png`
+/// crack overlays, in stage order (M81).
+///
+/// **Not interned into the world texture array.** `RenderTypes.crumbling`
+/// binds each stage as its own `Sampler0`, so these are standalone textures
+/// that never appear in a block model — putting them in the block array would
+/// grow it by ten layers no mesh can reference. The crumbling pass owns its
+/// own small array instead.
+///
+/// All ten or none: a partial set would make some stages of the same break
+/// invisible, which reads as a rendering bug rather than a missing asset.
+fn bake_destroy_stages(jar: Jar) -> Option<[DecodedImage; DESTROY_STAGE_COUNT]> {
+    let mut out: Vec<DecodedImage> = Vec::with_capacity(DESTROY_STAGE_COUNT);
+    for i in 0..DESTROY_STAGE_COUNT {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!(
+            "assets/minecraft/textures/block/destroy_stage_{i}.png"
+        ))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        out.push(DecodedImage { rgba, w, h });
+    }
+    out.try_into().ok()
 }
 
 /// Load the sun + 8 moon-phase textures from the jar's `environment/celestial/`

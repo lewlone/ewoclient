@@ -36,7 +36,9 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 62;
+/// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
+/// pickup animation's flight.
+const EXPECTED_WITNESSES: usize = 75;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -96,6 +98,7 @@ pub fn run(args: ItemshotArgs) -> Result<(), String> {
     };
     check_resolution(&mut c, &jar, &baked);
     check_geometry(&mut c, &baked);
+    check_pickup(&mut c, &args.version)?;
     check_render(&mut c, &baked, &args)?;
 
     println!(
@@ -124,6 +127,306 @@ pub fn run(args: ItemshotArgs) -> Result<(), String> {
 /// Read one JSON entry out of the jar, for the definition witnesses.
 fn jar_json(jar: &std::path::Path, path: &str) -> Option<serde_json::Value> {
     rewo_data::assets::jar_text(jar, path).and_then(|s| serde_json::from_str(&s).ok())
+}
+
+// ------------------------------------------- M81: the pickup animation (p)
+
+fn varint(mut v: i32, out: &mut Vec<u8>) {
+    let mut u = v as u32;
+    loop {
+        let b = (u & 0x7F) as u8;
+        u >>= 7;
+        v = u as i32;
+        if v == 0 {
+            out.push(b);
+            return;
+        }
+        out.push(b | 0x80);
+    }
+}
+
+/// `ClientboundTakeItemEntityPacket` — three VarInts.
+fn take_body(item: i32, player: i32, amount: i32) -> Vec<u8> {
+    let mut b = Vec::new();
+    varint(item, &mut b);
+    varint(player, &mut b);
+    varint(amount, &mut b);
+    b
+}
+
+/// A world holding one entity of `type_id` at `(x, y, z)`, spun up to the
+/// point where `render_pos` reports it (a fresh `EntityState` starts its lerp
+/// at the synced position, so no tick is needed).
+fn world_with(entities: &[(i32, i32, [f64; 3])]) -> rewo_world::World {
+    use rewo_world::dimension::DimensionShape;
+    let mut w = rewo_world::World::new(DimensionShape {
+        min_y: -64,
+        height: 384,
+    });
+    for &(id, type_id, p) in entities {
+        w.entities.add(
+            id,
+            rewo_world::entities::EntityState::new(0, type_id, p[0], p[1], p[2], 0.0, 0.0),
+        );
+    }
+    w
+}
+
+/// `handleTakeItemEntity` and `ItemPickupParticle`, through the production
+/// dispatch seam.
+fn check_pickup(c: &mut Checker, version: &str) -> Result<(), String> {
+    use rewo_net::{route_take_item_entity, TakeItemKinds};
+
+    let paths = rewo_data::DataPaths::for_version(version)
+        .ok_or_else(|| "no config dir for version data".to_string())?;
+    let packets = rewo_data::packets::Packets::load(&paths.packets_json())?;
+    let ids = rewo_net::ids::Ids::resolve(&packets)?;
+    let types = rewo_data::entity_types::EntityTypes::load(&paths.registries_json())?;
+    let item = types
+        .id_of("minecraft:item")
+        .ok_or("registries.json: no minecraft:item")?;
+    let orb = types
+        .id_of("minecraft:experience_orb")
+        .ok_or("registries.json: no minecraft:experience_orb")?;
+    let arrow = types
+        .id_of("minecraft:arrow")
+        .ok_or("registries.json: no minecraft:arrow")?;
+    let kinds = TakeItemKinds {
+        item: Some(item),
+        orb: Some(orb),
+        local_player: Some((7, [0.0, 1.62 / 2.0, 0.0])),
+    };
+
+    c.record(
+        "p1.the_take_item_entity_id_resolves_and_is_distinct",
+        ids.cb_play_take_item_entity != ids.cb_play_remove_entities
+            && ids.cb_play_take_item_entity != ids.cb_play_set_entity_data,
+        format!(
+            "take_item_entity={} vs remove_entities={} — the pickup is NOT a heads-up \
+             that a removal is coming, it *is* the removal",
+            ids.cb_play_take_item_entity, ids.cb_play_remove_entities
+        ),
+    );
+
+    // A whole stack, collected by a tracked mob. The entity goes; an
+    // animation appears carrying its appearance.
+    let mut w = world_with(&[(1, item, [4.0, 64.0, 0.0]), (2, types.player_id, [0.0, 64.0, 0.0])]);
+    w.entities.set_item_stack(1, Some((99, 3, false)));
+    let routed = route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 2, 3),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p2.a_whole_stack_is_removed_by_this_packet_alone",
+        routed && w.entities.get(1).is_none() && w.pickups.len() == 1,
+        format!(
+            "routed={routed}; entity present after={}; pickups={} \
+             (`removeEntity(itemId, DISCARDED)` is in the handler)",
+            w.entities.get(1).is_some(),
+            w.pickups.len()
+        ),
+    );
+    let p = *w.pickups.iter().next().unwrap();
+    c.record(
+        "p3.the_animation_carries_the_appearance_past_the_removal",
+        p.stack == Some((99, 3, false)) && p.from == [4.0, 64.0, 0.0] && p.entity_id == 1,
+        format!(
+            "stack={:?} from={:?} entity_id={} — captured before the removal, because \
+             nothing can read it afterwards",
+            p.stack, p.from, p.entity_id
+        ),
+    );
+    // `(target.getY() + target.getEyeY()) / 2` with an **absolute** eye Y —
+    // the chest, not half an eye height off the floor.
+    //
+    // MUTATION: reading `getEyeY()` as a relative height puts the target at
+    // 0.81 above the world origin instead of above the collector's feet.
+    c.record(
+        "p4.the_target_is_the_collectors_chest",
+        (p.target_cur[1] - (64.0 + 1.62 / 2.0)).abs() < 1e-9,
+        format!(
+            "target y {} for a collector standing at y 64 (want 64.81)",
+            p.target_cur[1]
+        ),
+    );
+
+    // A **partial** pickup: the client shrinks its own copy and the entity
+    // survives. No further packet says so.
+    //
+    // MUTATION: removing on every pickup passes p2 and fails here.
+    let mut w = world_with(&[(1, item, [0.0, 64.0, 0.0])]);
+    w.entities.set_item_stack(1, Some((99, 5, true)));
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 7, 2),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p5.a_partial_pickup_shrinks_the_stack_and_keeps_the_entity",
+        w.entities.get(1).is_some() && w.entities.item_stack(1) == Some((99, 3, true)),
+        format!(
+            "entity present={} stack={:?} (want 5 - 2 = 3, foil preserved)",
+            w.entities.get(1).is_some(),
+            w.entities.item_stack(1)
+        ),
+    );
+
+    // …and the shrink that reaches zero removes it, which is the branch p2
+    // took by a different route.
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 7, 3),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p6.the_shrink_to_empty_is_what_removes_it",
+        w.entities.get(1).is_none(),
+        "a second pickup of the remaining 3 empties the stack and the entity goes",
+    );
+
+    // An experience orb: the animation is added, and the orb is **not**
+    // removed. `else if (!(from instanceof ExperienceOrb))` — the one class
+    // this handler leaves alone.
+    //
+    // MUTATION: removing every non-item entity passes p8 and fails here.
+    let mut w = world_with(&[(1, orb, [0.0, 64.0, 0.0])]);
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 7, 1),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p7.an_experience_orb_is_not_removed_by_this_handler",
+        w.entities.get(1).is_some() && w.pickups.len() == 1,
+        format!(
+            "orb present after={} pickups={} — the sound and the particle happen; \
+             the removal does not",
+            w.entities.get(1).is_some(),
+            w.pickups.len()
+        ),
+    );
+    c.record(
+        "p8.a_record_with_no_stack_is_kept_and_draws_nothing",
+        w.pickups.iter().next().is_some_and(|p| p.stack.is_none()),
+        "vanilla adds the particle for any collected entity; Rewo has no orb model, \
+         so the record exists and the renderer skips it",
+    );
+
+    // An arrow: neither an item nor an orb, so it is removed outright with no
+    // stack arithmetic at all.
+    let mut w = world_with(&[(1, arrow, [0.0, 64.0, 0.0])]);
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 7, 1),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p9.anything_else_is_removed_outright",
+        w.entities.get(1).is_none() && w.pickups.len() == 1,
+        "an arrow takes the `else if (!(from instanceof ExperienceOrb))` branch",
+    );
+
+    // The collected entity being untracked drops the whole handler —
+    // `if (from != null)`.
+    let mut w = world_with(&[]);
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 7, 1),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    c.record(
+        "p10.an_untracked_collected_entity_is_inert",
+        w.pickups.is_empty(),
+        format!("pickups={} after a packet naming an unknown entity", w.pickups.len()),
+    );
+
+    // …but an untracked **collector** is not inert: `if (to == null) to =
+    // this.minecraft.player`. The substitution is on the entity, so the
+    // animation then follows the local player for its whole life.
+    //
+    // MUTATION: making the collector's absence inert (the symmetric-looking
+    // reading) drops the animation entirely.
+    let mut w = world_with(&[(1, item, [4.0, 64.0, 0.0])]);
+    w.entities.set_item_stack(1, Some((99, 1, false)));
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 12345, 1),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    let sub = w.pickups.iter().next().copied();
+    c.record(
+        "p11.an_unknown_collector_falls_back_to_the_local_player",
+        sub.is_some_and(|p| p.collector == 7 && p.target_cur == [0.0, 1.62 / 2.0, 0.0]),
+        format!(
+            "collector={:?} target={:?} — id 12345 is not tracked, and vanilla \
+             substitutes the player object rather than dropping the packet",
+            sub.map(|p| p.collector),
+            sub.map(|p| p.target_cur)
+        ),
+    );
+
+    // The flight. `time = ((life + partial) / 3)²` — quadratic in the whole
+    // life fraction, and the source is frozen while the target is re-read.
+    //
+    // MUTATION: a linear ease puts the halfway point at 0.5 of the distance
+    // rather than 0.25.
+    let mut w = world_with(&[(1, item, [0.0, 0.0, 0.0]), (2, types.player_id, [0.0, 10.0, 0.0])]);
+    w.entities.set_item_stack(1, Some((99, 1, false)));
+    route_take_item_entity(
+        ids.cb_play_take_item_entity,
+        &take_body(1, 2, 1),
+        &ids,
+        &mut w,
+        kinds,
+    );
+    // The halfway point of a 3-tick life is `life 1, partial 0.5`, which has
+    // to be reached — the first draft of this witness sampled partial 0.5 at
+    // life 0, which is a *sixth* of the way through, and measured 0.300
+    // against an expectation written for the halfway point. The measurement
+    // was right and the sample was in the wrong place.
+    w.pickups.tick(|_| Some([0.0, 10.0 + 1.62 / 2.0, 0.0]));
+    let p = *w.pickups.iter().next().unwrap();
+    let mid = p.render_pos(0.5);
+    let want = 10.0 + 1.62 / 2.0;
+    c.record(
+        "p12.the_flight_is_quadratic_in_the_life_fraction",
+        (mid[1] - want * 0.25).abs() < 1e-9,
+        format!(
+            "half-way through (life 1, partial 0.5) the item is at y {} — ((1+0.5)/3)² \
+             of {want} = {} (a linear ease would give {})",
+            mid[1],
+            want * 0.25,
+            want * 0.5
+        ),
+    );
+    c.record(
+        "p13.the_animation_expires_after_exactly_three_ticks",
+        {
+            // One tick already ran above, so one more reaches life 2.
+            w.pickups.tick(|_| Some([0.0, 10.0, 0.0]));
+            let alive = w.pickups.len();
+            w.pickups.tick(|_| Some([0.0, 10.0, 0.0]));
+            alive == 1 && w.pickups.is_empty()
+        },
+        "LIFE_TIME 3: alive at 2 ticks, gone at 3 — `if (this.life == 3) this.remove()`",
+    );
+
+    Ok(())
 }
 
 fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::BakedAssets) {
@@ -453,6 +756,7 @@ fn check_render(
             ground_count: 0,
             bob_offset: 0.0,
             ground_seed: 0,
+            ground_age: None,
             head_yaw: 0.0,
             pitch: 0.0,
             limb_swing: 0.0,
@@ -512,6 +816,7 @@ fn check_render(
             ground_count: 0,
             bob_offset: 0.0,
             ground_seed: 0,
+            ground_age: None,
             head_yaw: 0.0,
             pitch: 0.0,
             limb_swing: 0.0,
@@ -582,6 +887,7 @@ fn check_render(
             ground_count: count,
             bob_offset: bob,
             ground_seed: seed,
+            ground_age: None,
             head_yaw: 0.0,
             pitch: 0.0,
             limb_swing: 0.0,

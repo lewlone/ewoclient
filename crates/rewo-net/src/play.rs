@@ -519,6 +519,13 @@ pub struct PlaySession {
     /// texture Rewo baked — the same "`None` means don't interpret" rule the
     /// type ids above use.
     pub variant_type_ids: crate::VariantKinds,
+    /// `minecraft:item` and `minecraft:experience_orb` (M81) —
+    /// `handleTakeItemEntity` branches on both, and the three outcomes (shrink
+    /// then maybe remove / never remove / remove outright) are not
+    /// interchangeable. `None` on either collapses that type into the
+    /// "remove outright" arm, which is the safe reading for a harness that
+    /// resolves neither.
+    pub take_item_kinds: crate::TakeItemKinds,
     /// The block-entity type ids whose `triggerEvent` this client implements
     /// (M26). Default-empty, which routes every `block_event` nowhere — the
     /// correct behaviour for a harness that never renders a chest, and the
@@ -1350,6 +1357,7 @@ impl<'a> Connection<'a> {
             creaking_type_id: None,
             player_type_id: None,
             variant_type_ids: crate::VariantKinds::default(),
+            take_item_kinds: crate::TakeItemKinds::default(),
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
@@ -1596,6 +1604,16 @@ impl PlaySession {
         std::mem::take(&mut self.removed)
     }
 
+    /// The local player as a pickup collector (M81): its id, and vanilla's
+    /// `(getY() + getEyeY()) / 2` chest point from the real eye height.
+    ///
+    /// `None` before login, which is when `minecraft.player` is null too.
+    fn local_collector(&self) -> Option<(i32, [f64; 3])> {
+        let p = &self.player;
+        self.player_id
+            .map(|pid| (pid, [p.x, (p.y + p.eye_y()) / 2.0, p.z]))
+    }
+
     /// One 20 Hz tick: drain inbound, run physics, send movement.
     pub fn tick(&mut self, input: &TickInput) -> Result<(), String> {
         self.drain_inbound()?;
@@ -1652,6 +1670,18 @@ impl PlaySession {
             &self.conduit_frame_states,
             gt,
         );
+        // `ClientLevel.removeBlockBreakingProgress` — a breaker who wandered
+        // off sends no "stop", so the record is retired by silence (M81).
+        self.world.destruction.tick(gt);
+        // `ItemPickupParticle.tick`, after the entity lerps above so the
+        // collector's `cur` is this tick's (M81). The local player is not in
+        // the entity table, so its own id resolves through the same fallback
+        // `handleTakeItemEntity` uses.
+        {
+            let local = self.local_collector();
+            let (entities, pickups) = (&self.world.entities, &mut self.world.pickups);
+            pickups.tick(|id| crate::collector_chest(entities, id, local));
+        }
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -1876,6 +1906,9 @@ impl PlaySession {
 
     fn handle_packet(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
         let ids = &self.ids;
+        // Resolved before the ladder because the `take_item_entity` arm below
+        // borrows `self.world` mutably and cannot read `self.player` too.
+        let local_collector = self.local_collector();
         if id == ids.cb_play_keep_alive {
             let mut r = PacketReader::new(body);
             if let Ok(v) = r.i64() {
@@ -2328,6 +2361,40 @@ impl PlaySession {
         ) {
             // M21: the damage response — arms the hurt clock (red overlay) and
             // kicks the walk animation, for a tracked living entity only.
+        } else if crate::route_hurt_animation(
+            id,
+            body,
+            ids,
+            &mut self.world.entities,
+            self.entity_classes.as_deref(),
+            self.player_type_id,
+            self.player_id,
+        ) {
+            // M81: `damage_event`'s twin. It arms the same clock and, for a
+            // player only, stores the yaw the camera tilt leans away from —
+            // the one thing `damage_event` never carries.
+        } else if crate::route_block_destruction(
+            id,
+            body,
+            ids,
+            &mut self.world.destruction,
+            self.game_time.unwrap_or(0),
+        ) {
+            // M81: somebody else's mining progress. The stage byte is
+            // unsigned, and anything outside 0..10 retires the record.
+        } else if crate::route_take_item_entity(
+            id,
+            body,
+            ids,
+            &mut self.world,
+            crate::TakeItemKinds {
+                local_player: local_collector,
+                ..self.take_item_kinds
+            },
+        ) {
+            // M81: the pickup animation, and the *client-side* removal of the
+            // collected entity — this packet is not a heads-up that a
+            // `remove_entities` is coming, it is the removal.
         } else if crate::route_update_attributes(
             id,
             body,
