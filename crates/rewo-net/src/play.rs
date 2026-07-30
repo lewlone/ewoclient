@@ -785,6 +785,15 @@ pub struct PlaySession {
     /// the raw NBT so it can style it. Cleared by [`Self::take_death`], so a
     /// caller that never drains it holds one death, not a queue.
     death: Option<crate::CombatKill>,
+    /// The local player's statistics (M84).
+    ///
+    /// `Minecraft.player.getStats()`, which is why it lives on the session and
+    /// not on an entity: `handleAwardStats` writes into it with no id to
+    /// address, so there is nothing to look up.
+    pub stats: rewo_world::stats::StatsCounter,
+    /// Scratch for the dispatch arm above — a decoded `award_stats` on its
+    /// way into [`Self::stats`], and always `None` between packets.
+    awarded_stats: Option<Vec<(rewo_world::stats::StatKey, i32)>>,
     pub disconnect: Option<String>,
     /// **Which** of vanilla's three producers ended the connection (M85).
     ///
@@ -1492,6 +1501,8 @@ impl<'a> Connection<'a> {
             score: 0,
             respawn_epoch: 0,
             death: None,
+            stats: Default::default(),
+            awarded_stats: None,
             disconnect: None,
             disconnect_cause: None,
             last_pos: (0.0, 0.0, 0.0),
@@ -2521,6 +2532,13 @@ impl PlaySession {
                 crate::DeathAction::ShowScreen(kill) => self.death = Some(kill),
                 crate::DeathAction::RespawnNow => self.perform_respawn()?,
                 crate::DeathAction::None => {}
+            }
+        } else if crate::route_award_stats(id, body, ids, &mut self.awarded_stats) {
+            // M84: your own statistics, in reply to a `REQUEST_STATS` this
+            // client sent when the screen opened. `setValue`, not `increment`,
+            // and the map is never cleared — see `StatsCounter::apply`.
+            if let Some(pairs) = self.awarded_stats.take() {
+                self.stats.apply(&pairs);
             }
         } else if crate::route_block_destruction(
             id,
@@ -3718,6 +3736,25 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.buf.extend_from_slice(&crate::client_command_body(
             crate::ClientCommand::PerformRespawn,
+        ));
+        self.send(p)
+    }
+
+    /// `StatsScreen.init()`'s last line —
+    /// `send(new ServerboundClientCommandPacket(REQUEST_STATS))` (M84).
+    ///
+    /// The screen asks; the server answers with `award_stats`. **Vanilla sends
+    /// this from `init()`, so it is re-sent on every window resize**, because
+    /// `init()` is what `repositionElements` runs. Rewo sends it only when the
+    /// screen opens, which is a deliberate deviation: a resize costs a round
+    /// trip in vanilla and buys nothing the client does not already hold.
+    pub fn request_stats(&mut self) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_client_command else {
+            return Err("client_command unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf.extend_from_slice(&crate::client_command_body(
+            crate::ClientCommand::RequestStats,
         ));
         self.send(p)
     }

@@ -47,6 +47,7 @@ pub mod sign_states;
 pub mod sign_text;
 pub mod sound_events;
 pub mod sounds_json;
+pub mod stats;
 pub mod swing_anim;
 pub mod swing_anim_table;
 pub mod use_item;
@@ -127,6 +128,9 @@ pub struct GameData {
     /// The `minecraft:attribute` id table joined with the extracted
     /// per-attribute clamps and per-entity-type suppliers (M52).
     pub attributes: std::sync::Arc<attributes::AttributeRegistry>,
+    /// `minecraft:stat_type` + `minecraft:custom_stat` + `minecraft:block`,
+    /// the three registries the statistics screen needs (M84).
+    pub stat_registries: stats::StatRegistries,
 }
 
 impl GameData {
@@ -149,6 +153,7 @@ impl GameData {
             number_formats::NumberFormatTypeIds::load(&paths.registries_json())?;
         let attributes =
             std::sync::Arc::new(attributes::AttributeRegistry::load(&paths.registries_json())?);
+        let stat_registries = stats::StatRegistries::load(&paths.registries_json())?;
         Ok(Self {
             blocks,
             packets,
@@ -164,6 +169,7 @@ impl GameData {
             sound_events,
             number_formats,
             attributes,
+            stat_registries,
         })
     }
 

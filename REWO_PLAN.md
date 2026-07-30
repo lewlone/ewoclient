@@ -481,6 +481,14 @@ Original M0–M6 (still the foundation):
 Per-milestone figures inside §15 are the measurement taken at that milestone
 and will not match.
 
+**Re-measured at M84 (2026-07-30):** **1623 tests** — `rewo-net` 565,
+`rewo-world` 489, `rewo-gpu` 249, `rewo-data` 179, app 85, `rewo-mesh` 45,
+`rewo-proto` 11. **Thirty-two serverless gate commands green, 0 VUIDs** —
+M83's twenty-nine plus `deathshot` (M82), `serverlinkshot` (M85) and `statshot`
+(M84). **`REWO_PACKET_COVERAGE.md` is at 107 / 0 / 34 and classes A and B are
+both empty**: every packet Rewo can render is rendered, and picking work from
+that document now means choosing a *subsystem* rather than a packet.
+
 **Re-measured at M83 (2026-07-30):** **1512 tests** — `rewo-net` 551,
 `rewo-world` 400, `rewo-gpu` 245, `rewo-data` 175, app 85, `rewo-mesh` 45,
 `rewo-proto` 11. **Twenty-nine serverless gate commands green, 0 VUIDs** —
@@ -2130,6 +2138,243 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M84 — `award_stats` (3), the statistics screen (2026-07-30)
+
+**The packet that closes class B.** `REWO_PACKET_COVERAGE.md` is at 107 / 0 / 34
+with classes A and B both empty, so every packet Rewo can render is rendered and
+what remains needs a subsystem it has not got. It is also the screen framework's
+stress test: M82 built the framework and proved it with two buttons and three
+lines of text, and this is the one that needed a **scrolling list** and a **tab
+bar**.
+
+#### The two-level dispatch is uniform, and that is the headline
+
+`Stat.STREAM_CODEC` is `ByteBufCodecs.registry(Registries.STAT_TYPE)
+.dispatch(Stat::getType, StatType::streamCodec)` — a stat type id, then a value
+id in *that type's own* registry. A dispatched codec is normally the
+`DataComponentPatch` hazard in miniature: an untranscribed variant cannot be
+*skipped*, because the reader parks mid-value and the rest of the packet is
+garbage. **Here it cannot happen**, and the reason is structural rather than
+lucky. Every `StatType`'s second level is built by one line of its constructor,
+`ByteBufCodecs.registry(registry.key())`, so all nine are a **single VarInt**;
+what the first level selects is *which registry resolves the id*, not a
+different wire shape. `apply_award_stats` therefore stays in step through a stat
+type it has never heard of, and `statshot`'s `w3` witnesses it by reading the
+entry **after** an id of 9999. There were no unwalkable variants to find.
+
+The resolution is deferred: `StatKey` keeps the raw `(type_id, value_id)` pair
+and the screen resolves it at display time, so an unresolvable value costs one
+dropped row rather than a dropped packet — where vanilla's `byIdOrThrow` would
+reject it.
+
+`handleAwardStats` writes straight into `minecraft.player.getStats()` and the
+body carries **no entity id at all**, so this is gotcha 13's benign shape: the
+packet that cannot be got wrong the way M81's `hurt_animation` was.
+
+#### Six things that read backwards
+
+* **`StatsScreen.isInGameUi()` is false**, so this screen does *not* dim the
+  world the way the inventory does. The only override of `isInGameUi` in the
+  tree is `AbstractContainerScreen`'s, so the inventory takes
+  `extractTransparentBackground`'s `0xC0101010 → 0xD0101010` gradient and the
+  statistics screen takes the *menu* branch — two tiled sheets, no gradient. (It
+  does not follow that they are opaque: both carry alpha and vanilla relies on
+  the blurred panorama beneath. `statshot`'s `p2` asserted "covers the whole
+  frame" and failed, correctly, because the claim was wrong.)
+* **The header is 24 and the footer is 33, and only one is the constant whose
+  name says so.** `HeaderAndFooterLayout.DEFAULT_HEADER_AND_FOOTER_HEIGHT` is 33
+  and the footer keeps it; `repositionElements` *overwrites* the header with
+  `tabNavigationBar.getRectangle().bottom()`, and the bar is built at
+  `(0, 0, width, 24)`. Taking 33 for both moves every row nine pixels down.
+* **`WidgetSprites`' field names lie at one of its two call sites.** The record
+  is `(enabled, disabled, enabledFocused, disabledFocused)`, and
+  `MenuTabButton` calls `SPRITES.get(this.isSelected(), …)` — so its
+  `disabledFocused` slot holds `tab_highlighted`, a *brighter* sheet than
+  `disabled`. That is the exact opposite of M82's three-argument case, where
+  `disabledFocused == disabled` and hovering a dead button changes nothing.
+  Which is why `WidgetKind::Sprites` carries the first argument explicitly
+  instead of assuming it is `active`. The sort buttons are a third reading:
+  `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)` makes the **hover** sheet the
+  plainer one.
+* **The two mob templates take their arguments in opposite orders.** `killed` is
+  `translatable(key, kills, mobName)` and `killed_by` is
+  `translatable(key, mobName, killedBy)`, which the English strings confirm
+  ("You killed %s %s" against "%s killed you %s time(s)"). One order for both
+  gives two sentences that read plausibly and are both wrong.
+* **The last branch of `DISTANCE` and of `TIME` skips `DECIMAL_FORMAT`.**
+  `cm + " cm"` is on an **int**, so a short distance prints ungrouped and
+  undecimalised (`"37 cm"`); `seconds + " s"` is on a **double**, so
+  `Double.toString` always emits a fractional digit and 20 ticks is `"1.0 s"`,
+  never `"1 s"`. And `DEFAULT` is `NumberFormat.getIntegerInstance(Locale.US)`,
+  which **groups**, while `"########0.00"` has no `,` in its pattern — the two
+  disagree about grouping in opposite directions and sit in the same list.
+* **`CROUCH_TIME = makeCustomStat("sneak_time", TIME)`.** The Java constant and
+  the registry name disagree, and the registry name is the one on the wire.
+
+Three column orders exist and they disagree: the `minecraft:stat_type`
+**registry** is mined/crafted/used/broken/picked_up/dropped, the items tab's
+**columns** are mined/broken/crafted/used/picked_up/dropped, and the general
+tab's rows are sorted by their **translated** text.
+
+#### Two milestones needed the same framework gap, and one nine-slice survived
+
+M84 and M85 ran in parallel and both needed `blitNineSlicedSprite`, the gap M82
+had named and declined. Both wrote one. That is a scheduling artefact rather
+than a finding, and it resolved on the evidence rather than on authorship:
+
+* **M85's took its sheet size from the `SPRITE_W`/`SPRITE_H` constants and its
+  border from a single `NINE_SLICE_BORDER = 3`**, so it could express the 200×20
+  button and nothing else. A tab is 130×24 with an **asymmetric** border
+  (`{left 2, top 2, right 2, bottom 0}`), which a single number cannot say.
+* **M85 transcribed only the two branches whose height matches the sheet's** and
+  skipped a button of any other height — deliberately, because every `Button` is
+  `Button.DEFAULT_HEIGHT`. The scrollbar *track* is not a button: it is a 32-tall
+  sheet drawn at the list's whole 183-px height.
+
+So M84's parameterised four-branch form is the one that survives, and M85's two
+findings — the inner segment **tiles** rather than stretching, and the borders
+are **clamped to half the target** — were never in doubt and are obeyed by it.
+`serverlinkshot`'s four nine-slice witnesses pass against it unchanged, and the
+200×20 button still comes out as the 1:1 blit M82 shipped.
+
+The **layout helpers** went the other way: M85's `rewo_world::layout`
+(`GridLayout`, `LinearLayout`, `FrameLayout`, `HeaderAndFooterLayout`, `Divisor`)
+is the transcription, so `stats_screen` deleted its own `round_toward` and its
+own truncating lerp and calls `layout::round_toward` and
+`layout::align_in_dimension`. `round_toward` was published and rewritten to
+`-Math.floorDiv(-input, divisor)` verbatim on the way — the two forms agree on
+every non-negative input and part company on a negative even one.
+
+#### `deathshot`'s `p11` was written three times
+
+M82 wrote it to assert the nine-slice *gap*; M85 flipped it to a 150-wide button
+drawing with the skip moved to a non-20 height; M84's implementation skips
+nothing, so both readings became false. The version that landed grades what a
+nine-slice *is*: a 150×24 button's 3-px borders are the sheet's own, unscaled,
+on **both** axes, against a 200×20 control where the nine-slice degenerates to
+the 1:1 blit. A skip would be identical to the bare backdrop and a stretch would
+resample. The other 39 witnesses are untouched.
+
+#### A gate caught a live path — in five places
+
+**M82 passed `self.screen.mouse` — screen pixels — into a widget model whose
+rects are in GUI space**, while `deathshot` divides by the GUI scale before
+calling the same builders. So at any scale above 1 the death screen's buttons
+could not be hovered, and could only be *clicked* where the mis-scaled point
+happened to land on one. M85 then built three more screens against the same
+call. By the time M84's own hover witness measured a zero-pixel difference it
+was in five places — the inventory being the sixth and correctly excluded, since
+`container::screen_to_gui` is panel-relative and takes screen pixels by design.
+`LiveApp::mouse_gui` is the fix and every screen goes through it;
+`statshot`'s `p13` is the witness that stops it being undone, by requiring that
+the *same point in screen pixels* hovers nothing.
+
+#### The deviations, all named
+
+* **An items row is keyed by registry name and draws that name**, where vanilla
+  keys it by an `Item` and draws only an icon, joining a block's `mined` count
+  on through `Item.BY_BLOCK`. Rewo has no `BY_BLOCK` table: its only source is
+  `Items.java`'s 643 `registerBlock(BlockItemIds.X, Blocks.Y)` lines, which need
+  `Blocks.java`'s *constant → registry name* map — irregular exactly where M10
+  records it being irregular (`copper_block` against `exposed_copper`), so
+  lower-casing the constant is wrong in a direction no gate here would see. The
+  failure mode of matching by name is a *split* row, never a wrong number.
+* **Item icons are not drawn.** M86 restored the windowed bake while this was in
+  flight, so the reason has changed: it is no longer "the bake is missing", it
+  is that an items row would need `gui_item`'s atlas driven from a second call
+  site. Deliberately out of scope here rather than blocked.
+* **Rows are not scissored.** Vanilla wraps the row draw in
+  `enableScissor(list rect)`; Rewo's text pass has no scissor, so a row
+  straddling an edge is skipped rather than half-drawn.
+* **The screen opens on F6.** Vanilla reaches it from the pause menu's
+  `Statistics` button, and M85's `PauseScreen` transcription does not carry one.
+* **`REQUEST_STATS` is sent on open, not on every resize.** Vanilla sends it from
+  `init()`, which `repositionElements` re-runs.
+
+#### The gate, and what the mutation battery found
+
+`rewo statshot --check` — serverless, validation-required, **47 witnesses**, 9
+on the wire, 23 on the model and 15 on the pixels. The pixel half is built
+around one rule: the screen covers the frame with two *translucent* tiled
+sheets, so "is it darker" is not a measurement, and neither is "is it covered" —
+every pixel witness is a difference between two frames that differ in exactly
+one input, or a comparison against the pure-green empty frame `p1` proves is
+uniform.
+
+**43 mutations across two batteries, 42 caught and one deliberate survivor** —
+and the batteries found six real defects in the gate before they found anything
+in the code:
+
+* `w9` applied two *different* keys, so a counter that **accumulated** agreed
+  with one that replaced on every value.
+* `p4` measured "the tab band changed", which the focus **underline** produces
+  on its own, so a mutant marking every tab selected left it green.
+* **`p8`'s control was contaminated twice**: first the general frame (two
+  *different* bars satisfy "they differ" as well as one bar and none), then the
+  loading frame (the same mutant drew an identical bar *there*). The third
+  version compares the bar's column against the same frame's tile 32 px to its
+  left, which a mutation of the frame's contents cannot reach.
+* `p11` predicted the `Done` button's rect by calling `ss::done_bounds`, the
+  function it was grading.
+* **`m2`'s first mutation partner was an equivalent mutant.** For
+  `multiple == 2` — the only multiple `MenuTabBar` uses — ceil-to-multiple and
+  round-to-nearest-multiple are the *same function* on every integer.
+* **The vertical nine-slice branches were ungraded**, and `p8` could not see
+  it: the general list's scroller comes out at exactly 32 px because
+  `clamp(h²/content, 32, h - 8)` floors, so it takes the 1:1 branch. Only the
+  *track* is a vertical resize. `p14` grades it — and **its own first control
+  was contaminated for a third distinct reason**, because the tile 32 px to the
+  left of the bar is GUI x 276, inside the 20..300 row span, so the general
+  list's 77 rows of text put a difference there whatever the bar did.
+
+The one deliberate survivor is `m_ninesl_no_border_clamp`: removing
+`min(border, width / 2)` changes nothing at any size Rewo draws, because the
+clamp bites at width ≤ 5 and the narrowest thing here is a 6-px scrollbar. It is
+transcribed anyway, because the alternative is a silent negative inner width.
+
+Two of the gate's own witnesses failed on their first run and were **right to**:
+`p2` asserted the screen covers the frame, and `p5`'s control widened tab 0 to
+130 without hiding tab 1, which then painted over exactly the right border the
+witness reads. `p5` is also worth keeping in mind for future nine-slice work:
+**the left border alone cannot discriminate a nine-slice from a stretch** — a
+stretch maps dest `x` to sheet `x * 130 / 98`, which for `x < 2` still lands on
+sheet columns 0 and 1.
+
+#### Live
+
+`rewo play --stats-check` drives the whole round trip against a fresh flat
+server on its own port: walk and jump for four seconds, send `REQUEST_STATS`,
+require a reply, and require that its `minecraft:custom` stats resolve through
+**both** levels of the dispatch. Fail-closed on observation.
+
+Green on a 30 s run: `REQUEST_STATS` at tick 85, **1 reply, 5 stats**, and the
+formatter branches firing on real numbers — `play_time = 4.25 s`
+(`Double.toString`), `walk_one_cm = 8.72 m`; and on a longer run
+`jump = 18` (DEFAULT), `fly_one_cm = 27 cm` (the bare-int centimetre branch),
+`play_time = 1.24 min` (`DECIMAL_FORMAT`). `CORRECTIONS 0`, both build actions
+server-observed. `rewo live --render-check` with M86's staged-hotbar recipe:
+**18/18**.
+
+#### Measured
+
+**1623 unit tests** (net 565, world 489, gpu 249, data 179, app 85, mesh 45,
+proto 11). All **32** serverless gates green with Vulkan validation ON and **0
+VUIDs** — `statshot` 47, `serverlinkshot` 37, `deathshot` 40, `inventoryshot`
+152, `blockentityshot` 172, `swingshot` 97, `abilityshot` 96, `itemshot` 75,
+`capeshot` 69, `hurtshot` 56, `titleshot` 55, `locatorshot` 49, `labelshot` 47,
+`rideshot` 45, `attributeshot` 43, `hudshot` 41, `weathershot` 35, `handshot`
+34, `healthbarshot` 33, `bordershot` 31, `eventshot` 28, `danceshot` 24,
+`breakshot` 22, `captureshot` 17, `portalshot` 12, plus `particleshot`,
+`skyshot`, `lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck` and
+`mobshot` 246/246. Demo PNG SHA-256
+`2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635`,
+byte-identical to M15 onward.
+
+**Open:** item icons on the items tab; a click on a *row* (vanilla selects one
+and narrates it, and nothing else happens); the sort-button tooltips; keyboard
+navigation into the list; and `gui.stats.none_found`, which is modelled as a
+disabled tab but has no tooltip surface to render into.
 
 ### M86 — the windowed client renders what it was built to render (2026-07-30)
 

@@ -1535,9 +1535,42 @@ pub struct WidgetSprites {
     /// `textures/gui/inworld_menu_background.png` — the same, for a screen with
     /// a level behind it (the pause screen).
     pub inworld_menu_background: HudSprite,
+    /// `MenuTabButton.SPRITES`, in its declared order: `tab_selected`, `tab`,
+    /// `tab_selected_highlighted`, `tab_highlighted` (M84). All four are
+    /// 130×24 with a `nine_slice` `.mcmeta` whose border is
+    /// `{left 2, top 2, right 2, bottom 0}` — **asymmetric**, so unlike the
+    /// button's `"border": 3` it cannot be a single number.
+    pub tabs: [HudSprite; 4],
+    /// `widget/scroller` and `widget/scroller_background`, 6×32, nine-sliced
+    /// with border 1. These are the only sheets Rewo draws at a height that is
+    /// not their own, which is what forces the nine-slice's *vertical*
+    /// branches.
+    pub scroller: HudSprite,
+    pub scroller_background: HudSprite,
+    /// `container/slot`, 18×18 and **not** nine-sliced.
+    pub slot: HudSprite,
+    /// `statistics/header`, the sort button's resting background.
+    pub stat_header: HudSprite,
+    /// The six `statistics/<column>` icons, in the items tab's column order:
+    /// `block_mined`, `item_broken`, `item_crafted`, `item_used`,
+    /// `item_picked_up`, `item_dropped`. **Not the registry's order** — the
+    /// registry puts `crafted` and `used` before `broken`.
+    pub stat_columns: [HudSprite; 6],
+    pub sort_up: HudSprite,
+    pub sort_down: HudSprite,
+    /// `textures/gui/tab_header_background.png`, 16×16 and blitted with a
+    /// declared texture size of **16×16** — so it tiles 1:1, where its
+    /// neighbour above is declared 32×32 and comes out 2× magnified. The
+    /// asymmetry is in the two call sites, not in the files.
+    pub tab_header_background: HudSprite,
+    /// The 32×2 separator strips. `minecraft.level != null` on an in-game
+    /// screen, so the `inworld_` pair is the one that draws.
+    pub inworld_header_separator: HudSprite,
+    pub inworld_footer_separator: HudSprite,
 }
 
-/// Extract the three button sheets. Any missing one → no buttons.
+/// Extract the button, background, tab and statistics sheets. Any missing one
+/// → no widgets at all, which degrades to a screen with text and no chrome.
 fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
     let get = |jar: Jar, rel: &str| -> Option<HudSprite> {
         let mut bytes = Vec::new();
@@ -1548,12 +1581,45 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         let (rgba, w, h) = decode_png_any(&bytes)?;
         Some(HudSprite { rgba, w, h })
     };
+    const TABS: [&str; 4] = [
+        "tab_selected",
+        "tab",
+        "tab_selected_highlighted",
+        "tab_highlighted",
+    ];
+    const COLUMNS: [&str; 6] = [
+        "block_mined",
+        "item_broken",
+        "item_crafted",
+        "item_used",
+        "item_picked_up",
+        "item_dropped",
+    ];
+    let mut tabs = Vec::with_capacity(4);
+    for name in TABS {
+        tabs.push(get(jar, &format!("gui/sprites/widget/{name}.png"))?);
+    }
+    let mut columns = Vec::with_capacity(6);
+    for name in COLUMNS {
+        columns.push(get(jar, &format!("gui/sprites/statistics/{name}.png"))?);
+    }
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
         button_highlighted: get(jar, "gui/sprites/widget/button_highlighted.png")?,
         menu_background: get(jar, "gui/menu_background.png")?,
         inworld_menu_background: get(jar, "gui/inworld_menu_background.png")?,
+        tabs: tabs.try_into().ok()?,
+        scroller: get(jar, "gui/sprites/widget/scroller.png")?,
+        scroller_background: get(jar, "gui/sprites/widget/scroller_background.png")?,
+        slot: get(jar, "gui/sprites/container/slot.png")?,
+        stat_header: get(jar, "gui/sprites/statistics/header.png")?,
+        stat_columns: columns.try_into().ok()?,
+        sort_up: get(jar, "gui/sprites/statistics/sort_up.png")?,
+        sort_down: get(jar, "gui/sprites/statistics/sort_down.png")?,
+        tab_header_background: get(jar, "gui/tab_header_background.png")?,
+        inworld_header_separator: get(jar, "gui/inworld_header_separator.png")?,
+        inworld_footer_separator: get(jar, "gui/inworld_footer_separator.png")?,
     })
 }
 

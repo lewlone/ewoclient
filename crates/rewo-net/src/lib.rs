@@ -1408,6 +1408,80 @@ pub fn client_command_body(action: ClientCommand) -> Vec<u8> {
     w.buf
 }
 
+/// `ClientboundAwardStatsPacket` → `handleAwardStats` (M84).
+///
+/// ```java
+/// STAT_VALUES_STREAM_CODEC = ByteBufCodecs.map(
+///    Object2IntOpenHashMap::new, Stat.STREAM_CODEC, ByteBufCodecs.VAR_INT);
+/// Stat.STREAM_CODEC = ByteBufCodecs.registry(Registries.STAT_TYPE)
+///    .dispatch(Stat::getType, StatType::streamCodec);
+/// ```
+///
+/// so the body is `VarInt count` then `count × (VarInt statType, VarInt value,
+/// VarInt amount)`.
+///
+/// # The two-level dispatch is uniform, which is why this is total
+///
+/// A dispatched codec is normally the `DataComponentPatch` hazard — an
+/// untranscribed variant cannot be skipped, because the reader parks mid-value.
+/// Here every `StatType`'s second level is built by the same one-line
+/// constructor, `ByteBufCodecs.registry(registry.key())`, so **all nine are a
+/// single VarInt** and the first level selects only *which registry to resolve
+/// it in*. This walk therefore stays in step for a stat type it has never heard
+/// of, and the resolution is deferred to display time — see
+/// `rewo_world::stats::StatKey`.
+///
+/// # It is addressed to you, and carries no id to prove it
+///
+/// `handleAwardStats` writes into `minecraft.player.getStats()` unconditionally.
+/// There is nothing to look up in an entity table and nothing to compare
+/// against the local player, which is the *good* shape of gotcha 13: the packet
+/// that cannot be got wrong that way.
+///
+/// `ByteBufCodecs.map`'s default `maxSize` is `Integer.MAX_VALUE`, so vanilla
+/// imposes no cap; a short read ends the walk and keeps what it had, because a
+/// truncated statistics list is worth more than a dropped one.
+pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey, i32)>> {
+    let mut r = PacketReader::new(body);
+    let count = r.varint().ok()?;
+    if count < 0 {
+        log::warn!("net: award_stats with a negative count {count}");
+        return None;
+    }
+    let mut out = Vec::with_capacity((count as usize).min(4096));
+    for _ in 0..count {
+        let Ok(type_id) = r.varint() else { break };
+        let Ok(value_id) = r.varint() else { break };
+        let Ok(amount) = r.varint() else { break };
+        out.push((rewo_world::stats::StatKey::new(type_id, value_id), amount));
+    }
+    if out.len() != count as usize {
+        log::warn!(
+            "net: award_stats truncated at {} of {count} entries",
+            out.len()
+        );
+    }
+    Some(out)
+}
+
+/// The dispatch seam for [`apply_award_stats`].
+pub fn route_award_stats(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    out: &mut Option<Vec<(rewo_world::stats::StatKey, i32)>>,
+) -> bool {
+    if id == ids.cb_play_award_stats {
+        if let Some(stats) = apply_award_stats(body) {
+            log::debug!("net: award_stats — {} entries", stats.len());
+            *out = Some(stats);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// What `handlePlayerCombatKill` does once the packet is decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeathAction {
@@ -4249,6 +4323,89 @@ mod scoreboard_name_tests {
         assert_eq!(
             crate::play::uuid_to_dashed(1),
             "00000000-0000-0000-0000-000000000001"
+        );
+    }
+}
+
+#[cfg(test)]
+mod award_stats_tests {
+    use super::*;
+    use rewo_proto::writer::PacketWriter;
+    use rewo_world::stats::StatKey;
+
+    /// `VarInt count` then `count x (statType, value, amount)`.
+    fn body(entries: &[(i32, i32, i32)]) -> Vec<u8> {
+        let mut w = PacketWriter::default();
+        w.varint(entries.len() as i32);
+        for (t, v, a) in entries {
+            w.varint(*t);
+            w.varint(*v);
+            w.varint(*a);
+        }
+        w.buf
+    }
+
+    #[test]
+    fn the_map_decodes_as_three_varints_per_entry() {
+        let out = apply_award_stats(&body(&[(8, 1, 1200), (0, 9, 42)])).unwrap();
+        assert_eq!(
+            out,
+            vec![(StatKey::new(8, 1), 1200), (StatKey::new(0, 9), 42)]
+        );
+    }
+
+    #[test]
+    fn an_empty_map_is_a_valid_packet_and_not_a_failure() {
+        assert_eq!(apply_award_stats(&body(&[])), Some(Vec::new()));
+    }
+
+    /// The finding this milestone is built on: the second level of the
+    /// dispatch is one VarInt **whatever the first level said**, so a stat type
+    /// this client has never heard of leaves the walk in step and the entries
+    /// after it decode correctly.
+    #[test]
+    fn an_unknown_stat_type_does_not_desync_the_walk() {
+        let out = apply_award_stats(&body(&[(9999, 7, 1), (8, 2, 5)])).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], (StatKey::new(9999, 7), 1));
+        assert_eq!(
+            out[1],
+            (StatKey::new(8, 2), 5),
+            "the entry *after* the unknown type is the witness - a \
+             DataComponentPatch-style dispatch would have parked mid-value"
+        );
+    }
+
+    /// A short read keeps what it had rather than dropping the packet: a
+    /// truncated statistics list is worth more than none.
+    #[test]
+    fn a_truncated_body_yields_the_entries_that_did_decode() {
+        let full = body(&[(8, 1, 1200), (8, 2, 42)]);
+        let out = apply_award_stats(&full[..full.len() - 1]).unwrap();
+        assert_eq!(out, vec![(StatKey::new(8, 1), 1200)]);
+        // A body with only the count is not a panic either.
+        assert_eq!(apply_award_stats(&[5u8]), Some(Vec::new()));
+        assert_eq!(apply_award_stats(&[]), None, "no count at all");
+    }
+
+    /// A negative count is `readCount`'s uncovered case - vanilla only tests
+    /// `count > maxSize`, so a negative one falls into `for (i = 0; i < count)`
+    /// and yields an empty map. Rewo refuses it instead of allocating on it.
+    #[test]
+    fn a_negative_count_is_refused_rather_than_allocated_on() {
+        let mut w = PacketWriter::default();
+        w.varint(-1);
+        assert_eq!(apply_award_stats(&w.buf), None);
+    }
+
+    /// `writeEnum` is the ordinal as a VarInt, and asking for the *wrong* one
+    /// respawns you instead of fetching statistics.
+    #[test]
+    fn the_statistics_request_is_ordinal_one() {
+        assert_eq!(client_command_body(ClientCommand::RequestStats), vec![1u8]);
+        assert_eq!(
+            client_command_body(ClientCommand::PerformRespawn),
+            vec![0u8]
         );
     }
 }
