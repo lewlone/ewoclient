@@ -556,6 +556,14 @@ pub struct HudSprites {
     pub food_full: HudSprite,
     pub food_half: HudSprite,
     pub food_empty: HudSprite,
+    /// `ExperienceBar.EXPERIENCE_BAR_BACKGROUND_SPRITE` (M79) — 182×5.
+    pub experience_bar_background: HudSprite,
+    /// `ExperienceBar.EXPERIENCE_BAR_PROGRESS_SPRITE` (M79) — also 182×5, and
+    /// blitted as a **sub-rectangle** whose width is the filled part. Vanilla
+    /// computes that width as `(int)(progress * 183.0F)` against a 182-wide
+    /// background, so a full bar overhangs its own frame by one pixel. The
+    /// discrepancy is vanilla's and is transcribed rather than tidied.
+    pub experience_bar_progress: HudSprite,
 }
 
 /// One animated texture-array layer, from an N-frame vertical strip +
@@ -1429,6 +1437,8 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
         food_full: get(jar, "gui/sprites/hud/food_full.png")?,
         food_half: get(jar, "gui/sprites/hud/food_half.png")?,
         food_empty: get(jar, "gui/sprites/hud/food_empty.png")?,
+        experience_bar_background: get(jar, "gui/sprites/hud/experience_bar_background.png")?,
+        experience_bar_progress: get(jar, "gui/sprites/hud/experience_bar_progress.png")?,
     })
 }
 

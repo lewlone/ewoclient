@@ -27,6 +27,7 @@ pub mod trim_parse;
 pub mod variant_parse;
 pub mod effects;
 pub mod game_event;
+pub mod hud_state;
 pub mod ids;
 pub mod item_stack;
 pub mod metadata;
@@ -1362,6 +1363,7 @@ fn read_slot(
                 unbreakable: c.unbreakable,
                 enchantments: c.enchantments.clone(),
                 is_enchanted: c.is_enchanted,
+                cooldown_group: c.use_cooldown_group.clone(),
             };
             (
                 Some(rewo_world::inventory::ItemSlot {
@@ -2803,6 +2805,37 @@ pub fn route_session(
     true
 }
 
+/// The clientbound-play dispatch seam for M79's title overlay and two HUD
+/// gauges. Returns whether the id matched — **not** whether the body decoded.
+///
+/// The id table is load-bearing here in a way it is not for most of these
+/// seams: `set_title_text`, `set_subtitle_text` and `set_action_bar_text` all
+/// carry **exactly one NBT tag and nothing else**, so their bodies are
+/// byte-for-byte indistinguishable. Nothing but the id says whether a
+/// component belongs in the middle of the screen at 4× scale, under it at 2×,
+/// or over the hotbar for sixty ticks.
+pub fn route_hud_state(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    state: &mut hud_state::HudState,
+) -> bool {
+    let table = hud_state::HudIds {
+        clear_titles: ids.cb_play_clear_titles,
+        cooldown: ids.cb_play_cooldown,
+        set_action_bar_text: ids.cb_play_set_action_bar_text,
+        set_experience: ids.cb_play_set_experience,
+        set_subtitle_text: ids.cb_play_set_subtitle_text,
+        set_title_text: ids.cb_play_set_title_text,
+        set_titles_animation: ids.cb_play_set_titles_animation,
+    };
+    let Some(kind) = hud_state::kind_for_id(id, table) else {
+        return false;
+    };
+    hud_state::apply(kind, body, state);
+    true
+}
+
 /// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
 /// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
 /// (byte0 & 4) continuation flag set, read a trailing VarInt.
@@ -3315,6 +3348,7 @@ mod animate_tests {
             charged_projectiles: 7,
             bundle_contents: 16,
             container: 17,
+            use_cooldown: 18,
         };
         let data = super::item_stack::SwingWireData {
             prototypes: unreachable_prototypes(),

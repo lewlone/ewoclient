@@ -3527,7 +3527,10 @@ fn pixels_inner(
     // exist for them to appear at all — which is itself the M34 wiring claim.
     let sprites = crate::live_cmd::hud_sprites(baked).ok_or("hud sprites missing from the jar")?;
     wr.init_hud(gpu, &sprites)?;
-    wr.set_hud(20.0, 20, 0);
+    // M79 added the two gauges; this gate owns neither, so it passes the
+    // default (no XP bar, no cooldown sweep) and its measurements are
+    // unchanged.
+    wr.set_hud(20.0, 20, 0, rewo_gpu::hud::HudGauges::default());
     wr.init_gui_items(gpu, &atlas.rgba, 512, 512)?;
 
     // The GUI pass works in screen pixels and ignores the world's matrix

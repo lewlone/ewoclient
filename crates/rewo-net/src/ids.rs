@@ -392,6 +392,30 @@ pub struct Ids {
     /// the loop `cookie_request` already answers. Before M78 the reply was
     /// always "no payload", because nothing ever stored one.
     pub cb_play_store_cookie: i32,
+    /// `ClientboundSetTitleTextPacket` — a trusted `Component`, and the **only**
+    /// one of the title trio that arms `Hud.titleTime` (M79). See
+    /// [`crate::hud_state`].
+    pub cb_play_set_title_text: i32,
+    /// `ClientboundSetSubtitleTextPacket` — the same one-NBT-tag body as the
+    /// title and the action bar, so the **id is the only discriminator**.
+    pub cb_play_set_subtitle_text: i32,
+    /// `ClientboundSetActionBarTextPacket` — `setOverlayMessage(text, false)`,
+    /// a fixed 60-tick clock unrelated to the title times.
+    pub cb_play_set_action_bar_text: i32,
+    /// `ClientboundSetTitlesAnimationPacket` — three **fixed big-endian i32s**,
+    /// each of which is a no-op when negative.
+    pub cb_play_set_titles_animation: i32,
+    /// `ClientboundClearTitlesPacket` — one boolean, and it does something the
+    /// clear itself does not (restore 10 / 70 / 20).
+    pub cb_play_clear_titles: i32,
+    /// `ClientboundSetExperiencePacket` — float progress, then **level**, then
+    /// total. The declaration order is progress / total / level, which is not
+    /// the wire order.
+    pub cb_play_set_experience: i32,
+    /// `ClientboundCooldownPacket` — an `Identifier` cooldown *group* and a
+    /// VarInt duration in ticks, where `0` is a removal rather than a
+    /// zero-length cooldown.
+    pub cb_play_cooldown: i32,
 }
 
 impl Ids {
@@ -540,6 +564,13 @@ impl Ids {
             cb_play_player_rotation: req!(p, P, C, "player_rotation"),
             cb_play_player_look_at: req!(p, P, C, "player_look_at"),
             cb_play_set_default_spawn_position: req!(p, P, C, "set_default_spawn_position"),
+            cb_play_set_title_text: req!(p, P, C, "set_title_text"),
+            cb_play_set_subtitle_text: req!(p, P, C, "set_subtitle_text"),
+            cb_play_set_action_bar_text: req!(p, P, C, "set_action_bar_text"),
+            cb_play_set_titles_animation: req!(p, P, C, "set_titles_animation"),
+            cb_play_clear_titles: req!(p, P, C, "clear_titles"),
+            cb_play_set_experience: req!(p, P, C, "set_experience"),
+            cb_play_cooldown: req!(p, P, C, "cooldown"),
         })
     }
 }

@@ -27,16 +27,22 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 87 of them. 54
+1. **141 clientbound-play packets. Rewo resolves and consumes 94 of them. 47
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty.** The 54 gaps split 0 / 20 / 23 / 11 across pure state,
-   needs-rendering, needs-a-missing-subsystem and not-applicable. Every packet
-   that was decodable and headlessly gateable with no renderer and no design
-   decision — the test the M52–M78 batches were chosen by — has now been taken.
-   The next tranche is class **B**, where the decode is possible and the
-   *feature* wants an eyeball. §2.
+2. **Class A is empty, and class B is being worked.** The 47 gaps split
+   0 / 13 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
+   and not-applicable. Every packet that was decodable and headlessly gateable
+   with no renderer and no design decision — the test the M52–M78 batches were
+   chosen by — was taken by them. **M79 took the first seven of class B** (the
+   title overlay, the XP gauge and the item-cooldown sweep) and showed that the
+   class letter does not change the *standard*: all seven have an exact vanilla
+   oracle in `Gui` / `Hud`, so they are transcribed and gated like a class-A
+   packet, with a pixel read-back half added on top. What class B costs is a
+   renderer, not a judgement call. The 13 that remain are the world border (6),
+   `block_destruction`, `hurt_animation`, `take_item_entity`, `waypoint` and
+   four screens. §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -130,7 +136,7 @@ belongs in the note column; the status column has two values.
 
 ### Classification
 
-Each of the 54 gaps carries one class. The classes are about **what it would
+Each of the 47 gaps carries one class. The classes are about **what it would
 take**, not about how much anyone wants it:
 
 | Class | Meaning |
@@ -165,30 +171,41 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **87** |
+| Resolved **and** consumed | **94** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **54** |
+| Not resolved at all | **47** |
 | **Total clientbound-play** | **141** |
 
-The 54 gaps, by class:
+The 47 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **20** | 37% |
-| **C** needs a subsystem Rewo lacks | **23** | 43% |
-| **D** not applicable | **11** | 20% |
+| **B** needs rendering | **13** | 28% |
+| **C** needs a subsystem Rewo lacks | **23** | 49% |
+| **D** not applicable | **11** | 23% |
 
-M67 audited 56 / 0 / 85 with class A at 31. **Twenty-eight** packets separate
-that published 56 from this 84, and **ten of them had already landed when M67
+M67 audited 56 / 0 / 85 with class A at 31. **Thirty-eight** packets separate
+that published 56 from this 94, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
 from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
-M75's, three are M77's, and eight are M78's.
+M75's, three are M76's, three are M77's, eight are M78's and seven are M79's.
 
-**Class A is nearly exhausted.** Three pure-state gaps remain — `player_rotation`,
-`player_look_at` and `set_default_spawn_position`, all of which write the local
-player's own state (§3). The next-largest tranche of decodable-today work is
-class **B**, where the decode is possible and the *feature* wants an eyeball.
+**Class A is exhausted; class B is open.** M76 took the last three pure-state
+gaps (`player_rotation`, `player_look_at`, `set_default_spawn_position`) and
+M79 took the first seven of class B. What that first B milestone established is
+worth keeping: **the class letter changes the gate, not the standard.** All
+seven of M79's have an exact vanilla oracle (`Gui.renderTitle`,
+`ExperienceBar`, `ContextualBar.extractExperienceLevel`, `ItemCooldowns`,
+`GuiGraphicsExtractor.itemCooldown`), so the decode *and* the render are
+transcribed line by line and graded by an oracle, with a pixel read-back half
+on top of the model half. A class-B packet is not a guess; it is a transcription
+that happens to need a renderer to land.
+
+The 13 that remain: the **world border** (43 + 88–92, six packets sharing one
+lerp model), `block_destruction` (5), `hurt_animation` (42),
+`take_item_entity` (124), `waypoint` (138), `award_stats` (3),
+`player_combat_kill` (68) and `server_links` (137).
 
 ---
 
@@ -365,7 +382,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 11 | `chunk_batch_finished` | handled | `req!` → `cb_play_chunk_batch_finished` | **M74** consumed the `batchSize` VarInt and fixed the reply. §4. |
 | 12 | `chunk_batch_start` | handled | `req!` → `cb_play_chunk_batch_start` | **M74.** Empty body. Stamps the clock the batch-size calculator measures against; without it the reply is a constant, not an estimate. |
 | 13 | `chunks_biomes` | handled | `opt!` → `cb_play_chunks_biomes` | |
-| 14 | `clear_titles` | absent | **B** | Title overlay. |
+| 14 | `clear_titles` | handled | `req!` → `cb_play_clear_titles` | **M79.** One boolean, and it does something the clear itself does not: `clearTitles()` drops the text and zeroes the countdown, and only `resetTimes` puts the three **durations** back to 10 / 70 / 20. So `/title clear` and `/title reset` differ in what the *next* title does, not in what is on screen. |
 | 15 | `command_suggestions` | absent | **C** | Chat/command input. |
 | 16 | `commands` | absent | **C** | The Brigadier command tree. Worthless without command input. |
 | 17 | `container_close` | handled | `req!` → `cb_play_container_close` | **M74.** One VarInt container id, which vanilla reads and then **ignores** — `handleContainerClose` closes whatever is open without comparing ids. |
@@ -373,7 +390,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 19 | `container_set_data` | absent | **C** | Furnace/brewing/enchanting progress — needs the non-player menus M34 excluded. |
 | 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | §4 partial — container id 0 only. |
 | 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered from the jar `store_cookie` (120) fills, since **M78**. Before it, "handled" was true only of the M1-era `Connection::run_play` harness — `PlaySession` had no arm at all, so the real client left a play-state request unanswered. §4, §9. |
-| 22 | `cooldown` | absent | **B** | The hotbar cooldown sweep. |
+| 22 | `cooldown` | handled | `req!` → `cb_play_cooldown` | **M79.** An `Identifier` **cooldown group** + a VarInt duration — no start tick, no end tick; `addCooldown` supplies the start from `ItemCooldowns.tickCount`. `duration == 0` routes to `removeCooldown`, so it **cancels** rather than starting a zero-length cooldown whose percent would be `0/0`. |
 | 23 | `custom_chat_completions` | absent | **C** | Chat input autocomplete. |
 | 24 | `custom_payload` | handled | `req!` → `cb_play_custom_payload` | **M78.** An unknown identifier is **discarded, not rejected**, and the fallback consumes the remainder. The copy a vanilla server actually sends is **configuration 1** — see §9. |
 | 25 | `damage_event` | handled | `req!` → `cb_play_damage_event` | |
@@ -438,7 +455,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 84 | `section_blocks_update` | handled | `req!` → `cb_play_section_blocks_update` | |
 | 85 | `select_advancements_tab` | absent | **C** | Advancements screen. |
 | 86 | `server_data` | handled | `req!` → `cb_play_server_data` | **M78.** MOTD flattened, icon kept as bytes. §4 partial — vanilla runs the icon through `ServerData.validateIcon` (a PNG parse capped at 1024²) and records only when the session came from the server list; Rewo does neither. |
-| 87 | `set_action_bar_text` | absent | **B** | Action-bar overlay. |
+| 87 | `set_action_bar_text` | handled | `req!` → `cb_play_set_action_bar_text` | **M79.** `setOverlayMessage(text, **false**)` — the animated rainbow belongs to `setNowPlaying` (a jukebox) and is unreachable from this packet. Its 60-tick clock and its `/20.0F` fade are constants, unrelated to `set_titles_animation`. |
 | 88 | `set_border_center` | absent | **B** | World border. |
 | 89 | `set_border_lerp_size` | absent | **B** | World border. |
 | 90 | `set_border_size` | absent | **B** | World border. |
@@ -454,7 +471,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 100 | `set_entity_link` | handled | `req!` → `cb_play_set_entity_link` | **M77.** Leash holder id, stored and **not drawn** — rendering the rope is still separate (B). Both fields are fixed big-endian **i32**s, not var-ints, and `destId == 0` is the wire's null. The cast is `instanceof Leashable`, an *interface*, so the gate is the union of `Mob`'s and `AbstractBoat`'s subtrees. |
 | 101 | `set_entity_motion` | handled | `req!` → `cb_play_set_entity_motion` | **M68.** The body is `Vec3.LP_STREAM_CODEC` (`LpVec3`), **not** the legacy `short / 8000.0` fixed point, which no longer exists in 26.2. |
 | 102 | `set_equipment` | handled | `req!` → `cb_play_set_equipment` | |
-| 103 | `set_experience` | absent | **B** | XP bar and level number. |
+| 103 | `set_experience` | handled | `req!` → `cb_play_set_experience` | **M79.** The **wire order is not the declaration order**: the fields read progress / total / level and the reader is `readFloat, readVarInt **level**, readVarInt **total**`. Both are var-ints, so the swapped reading decodes without erroring and shows lifetime XP as the level. `totalExperience` has **no client reader at all** beyond the assignment. |
 | 104 | `set_health` | handled | `opt!` → `cb_play_set_health` | |
 | 105 | `set_held_slot` | handled | `req!` → `cb_play_set_held_slot` | |
 | 106 | `set_objective` | handled | `req!` → `cb_play_set_objective` | M65. |
@@ -463,10 +480,10 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 109 | `set_player_team` | handled | `req!` → `cb_play_set_player_team` | M62. |
 | 110 | `set_score` | handled | `req!` → `cb_play_set_score` | M65. |
 | 111 | `set_simulation_distance` | handled | `req!` → `cb_play_set_simulation_distance` | M67. |
-| 112 | `set_subtitle_text` | absent | **B** | Title overlay. |
+| 112 | `set_subtitle_text` | handled | `req!` → `cb_play_set_subtitle_text` | **M79.** `setSubtitle` sets the field and **arms no clock** — `extractTitle` is gated on `title != null && titleTime > 0` and draws the subtitle inside that block, so a subtitle sent alone shows nothing. Same one-NBT-tag body as 114 and 87; only the id separates them. |
 | 113 | `set_time` | handled | `req!` → `cb_play_set_time` | |
-| 114 | `set_title_text` | absent | **B** | Title overlay. |
-| 115 | `set_titles_animation` | absent | **B** | Title overlay timings. |
+| 114 | `set_title_text` | handled | `req!` → `cb_play_set_title_text` | **M79.** The only one of the trio that arms `Hud.titleTime`, at the full `fadeIn + stay + fadeOut`. Drawn at **4× scale** centred on the screen, with the fade alpha as a *default* colour a span's own `color` replaces — keeping the caller's alpha, so a coloured title still fades. |
+| 115 | `set_titles_animation` | handled | `req!` → `cb_play_set_titles_animation` | **M79.** Three **fixed big-endian i32s** (twelve bytes), each a per-axis no-op when negative — and the trailing `if (titleTime > 0)` **re-arms a live title at its full duration** rather than retiming the remainder. |
 | 116 | `sound_entity` | handled | `req!` → `cb_play_sound_entity` | M63 — decode only, no playback. |
 | 117 | `sound` | handled | `req!` → `cb_play_sound` | M63 — decode only, no playback. |
 | 118 | `start_configuration` | handled | `opt!` → `cb_play_start_configuration` | |

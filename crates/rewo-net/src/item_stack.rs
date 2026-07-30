@@ -306,6 +306,15 @@ pub struct StackComponents {
     /// absence: `getOrDefault` then answers with the type's default rather
     /// than the item's prototype value.
     pub removed: Vec<i32>,
+    /// `minecraft:use_cooldown`'s optional `cooldownGroup` (M79) — the key
+    /// `ItemCooldowns` indexes this stack by.
+    ///
+    /// `None` covers **two** cases that resolve the same way: the component is
+    /// absent, or it is present with an empty `Optional`. Both fall through to
+    /// `BuiltInRegistries.ITEM.getKey(item.getItem())`, which is
+    /// `getCooldownGroup`'s `orElse` — so the caller needs the item's registry
+    /// name either way and nothing is lost by collapsing them.
+    pub use_cooldown_group: Option<String>,
     /// A canonical digest of every entry, added or removed, interpreted or
     /// not.
     ///
@@ -322,6 +331,23 @@ impl StackComponents {
     /// `stack.isDamaged()` — a damage value above zero.
     pub fn is_damaged(&self) -> bool {
         self.damage.unwrap_or(0) > 0
+    }
+
+    /// `ItemCooldowns.getCooldownGroup(stack)` (M79), given the item's own
+    /// registry name.
+    ///
+    /// ```java
+    /// UseCooldown useCooldown = item.get(DataComponents.USE_COOLDOWN);
+    /// Identifier defaultItemGroup = BuiltInRegistries.ITEM.getKey(item.getItem());
+    /// return useCooldown == null ? defaultItemGroup
+    ///                            : useCooldown.cooldownGroup().orElse(defaultItemGroup);
+    /// ```
+    ///
+    /// The item name is a parameter rather than a field because it comes from
+    /// the item **table**, not the patch — the wire carries a numeric item id
+    /// and the registry name lives in `rewo_data::items`.
+    pub fn cooldown_group<'a>(&'a self, item_name: &'a str) -> &'a str {
+        self.use_cooldown_group.as_deref().unwrap_or(item_name)
     }
 
     /// `ItemStack.hasFoil()` — whether this stack draws an enchantment glint.
@@ -796,6 +822,22 @@ fn read_interpreted(
             None => false,
         });
     }
+    if ty == ids.use_cooldown {
+        // `UseCooldown.STREAM_CODEC` = composite(FLOAT seconds,
+        // ByteBufCodecs.optional(Identifier.STREAM_CODEC) cooldownGroup) —
+        // exactly the `Tuple(&[FLOAT, Optional(STR)])` the shape table walks,
+        // so capturing here consumes the same bytes walking past it did.
+        //
+        // The float is the *server's* cooldown length in seconds and is read
+        // by nothing on the client: `ClientboundCooldownPacket` carries the
+        // duration in ticks. Only the group matters here, and only because it
+        // is the key `ItemCooldowns` is indexed by (M79).
+        let _seconds = r.f32().map_err(|_| ())?;
+        if r.bool().map_err(|_| ())? {
+            out.use_cooldown_group = Some(r.identifier().map_err(|_| ())?);
+        }
+        return Ok(true);
+    }
     if ty == ids.enchantments || ty == ids.stored_enchantments {
         let n = r.varint().map_err(|_| ())?;
         if !(0..=65536).contains(&n) {
@@ -910,6 +952,7 @@ mod tests {
         trim: 15,
         bundle_contents: 16,
         container: 17,
+        use_cooldown: 18,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -931,6 +974,7 @@ mod tests {
             ("minecraft:dyed_color", 14),
             ("minecraft:bundle_contents", 16),
             ("minecraft:container", 17),
+            ("minecraft:use_cooldown", 18),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -974,6 +1018,56 @@ mod tests {
         assert_eq!(rewo_data::equipment::dye_argb(s.components.dyed_color), 0);
         // ...and a *black* dye is a real dye, distinct from absence.
         assert_eq!(rewo_data::equipment::dye_argb(Some(0)), 0xFF00_0000);
+    }
+
+    /// `getCooldownGroup` (M79): the component's group when it sets one, the
+    /// item's registry name when it does not — and the *same* answer when the
+    /// component is present with an empty `Optional`.
+    #[test]
+    fn a_use_cooldown_group_overrides_the_item_name() {
+        install_test_shapes();
+        // seconds = 1.0f, then Optional = present, "minecraft:mace_smash".
+        let group = "minecraft:mace_smash";
+        let mut value = 1.0f32.to_be_bytes().to_vec();
+        value.push(1);
+        value.push(group.len() as u8); // a var-int under 128
+        value.extend_from_slice(group.as_bytes());
+        let raw = stack(1, 1, &[(18, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.use_cooldown_group.as_deref(), Some(group));
+        assert_eq!(s.components.cooldown_group("minecraft:mace"), group);
+        // The whole value was consumed — the float is read and thrown away,
+        // not skipped by a guess at its width.
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn an_empty_use_cooldown_group_falls_back_to_the_item_name() {
+        install_test_shapes();
+        // seconds = 0.5f, Optional = absent.
+        let mut value = 0.5f32.to_be_bytes().to_vec();
+        value.push(0);
+        let raw = stack(1, 1, &[(18, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.use_cooldown_group, None);
+        assert_eq!(
+            s.components.cooldown_group("minecraft:ender_pearl"),
+            "minecraft:ender_pearl"
+        );
+        assert_eq!(r.remaining(), 0);
+        // …and so does a stack with no component at all.
+        let bare = stack(1, 1, &[], &[]);
+        let WireSlot::Stack(s) = read_optional(&mut PacketReader::new(&bare), IDS).expect("decodes")
+        else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.cooldown_group("minecraft:chorus_fruit"), "minecraft:chorus_fruit");
     }
 
     fn varint(v: i32, out: &mut Vec<u8>) {
