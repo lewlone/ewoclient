@@ -624,6 +624,12 @@ pub struct PlaySession {
     /// Rain and thunder (M33), off `ClientboundGameEventPacket`. Cleared on a
     /// dimension change, the way a fresh `ClientLevel`'s are.
     pub weather: rewo_world::weather::WeatherState,
+    /// The world border (M80). Level state — vanilla's lives on `ClientLevel`
+    /// and a dimension change builds a fresh one — so it is cleared by
+    /// [`WorldTransition`] alongside the weather. The server re-sends
+    /// `initialize_border` after a respawn, so the default is never seen for
+    /// more than the packets in flight.
+    pub border: rewo_world::border::WorldBorder,
     /// The player's own inventory (M34). Unlike the weather this is **not**
     /// level state — vanilla's `Inventory` lives on the player, who survives a
     /// dimension change — so it is deliberately not cleared by the transition.
@@ -923,6 +929,12 @@ struct WorldTransition<'a> {
     /// clear, and stays clear until the new dimension's server sends its own
     /// `game_event`. Carrying rain into the Nether would be visible.
     weather: &'a mut rewo_world::weather::WeatherState,
+    /// The border is `ClientLevel` state on the same argument (M80): vanilla
+    /// builds a fresh `WorldBorder` with the new level, and the server sends
+    /// `initialize_border` again right after the respawn. Carrying the
+    /// Overworld's 60-million-block default into a 1,000-block Nether border
+    /// would be a wall in the wrong place.
+    border: &'a mut rewo_world::border::WorldBorder,
     biome_zoom_seed: &'a mut Option<i64>,
     sea_level: &'a mut Option<i32>,
     /// The parsed biome registry, *retained* across the change — it is a synced
@@ -1012,6 +1024,7 @@ impl WorldTransition<'_> {
         *self.overworld_clock = None;
         *self.game_time = None;
         self.weather.clear();
+        *self.border = rewo_world::border::WorldBorder::default();
 
         // `spawnInfo.seed()` is the new level's `biomeZoomSeed`.
         *self.biome_zoom_seed = Some(spawn.seed);
@@ -1373,6 +1386,7 @@ impl<'a> Connection<'a> {
             motion_stats: MotionStats::default(),
             day_ticks: None,
             weather: rewo_world::weather::WeatherState::default(),
+            border: rewo_world::border::WorldBorder::default(),
             inventory: rewo_world::inventory::Inventory::default(),
             component_names: None,
             stack_details: crate::item_stack::StackDetails::default(),
@@ -1652,6 +1666,11 @@ impl PlaySession {
             &self.conduit_frame_states,
             gt,
         );
+        // `ClientLevel.tick` advances the border before anything moves, and it
+        // must stay ahead of the physics below: `getMinX()` is the *previous*
+        // tick's size, so ticking after the move would clip this tick's
+        // movement against a box two ticks stale. M80.
+        self.border.tick();
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -1717,7 +1736,14 @@ impl PlaySession {
             }
             let mut owes_packet = step.abilities_changed;
             let abilities = self.abilities;
-            physics::tick_with(&mut self.player, input, &abilities, spectator, &shapes);
+            physics::tick_with(
+                &mut self.player,
+                input,
+                &abilities,
+                spectator,
+                Some(self.border.collision()),
+                &shapes,
+            );
             owes_packet |= self
                 .flight
                 .after_travel(&mut self.abilities, &self.player, spectator);
@@ -2370,6 +2396,7 @@ impl PlaySession {
         } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
             // M67 — the server's view area. Decode and state only; nothing
             // evicts a column or gates a tick on it yet.
+        } else if crate::route_border(id, body, ids, &mut self.border) {
         } else if crate::route_ticking(id, body, ids, &mut self.ticking) {
             // M74 — `/tick rate`, `/tick freeze`, `/tick step`. Decode and
             // state only; the 20 Hz loop does not consult it yet.
@@ -3173,6 +3200,7 @@ impl PlaySession {
             overworld_clock: &mut self.overworld_clock,
             game_time: &mut self.game_time,
             weather: &mut self.weather,
+            border: &mut self.border,
             biome_zoom_seed: &mut self.biome_zoom_seed,
             sea_level: &mut self.sea_level,
             biome_registry: self.pending_biome_registry.as_ref(),
@@ -4200,6 +4228,7 @@ mod respawn_tests {
         overworld_clock: Option<WorldClock>,
         game_time: Option<i64>,
         weather: rewo_world::weather::WeatherState,
+        border: rewo_world::border::WorldBorder,
         biome_zoom_seed: Option<i64>,
         sea_level: Option<i32>,
         colormaps: rewo_world::biome::Colormaps,
@@ -4241,6 +4270,16 @@ mod respawn_tests {
                 w.set_thunder(0.5);
                 w
             },
+            // Same argument as the storm: a small off-centre border, so a
+            // transition that failed to reset it would not hide behind the
+            // default's own numbers.
+            border: {
+                let mut b = rewo_world::border::WorldBorder::default();
+                b.set_center(120.0, -64.0);
+                b.set_size(500.0);
+                b.set_warning_blocks(11);
+                b
+            },
             biome_zoom_seed: Some(0x0bad_f00d),
             sea_level: Some(63),
             colormaps: rewo_world::biome::Colormaps::neutral(),
@@ -4263,6 +4302,7 @@ mod respawn_tests {
                 overworld_clock: &mut self.overworld_clock,
                 game_time: &mut self.game_time,
                 weather: &mut self.weather,
+                border: &mut self.border,
                 biome_zoom_seed: &mut self.biome_zoom_seed,
                 sea_level: &mut self.sea_level,
                 biome_registry: None,
@@ -4427,6 +4467,7 @@ mod respawn_tests {
             0.8,
             "no new level, so the storm keeps falling"
         );
+        assert_eq!(s.border.size(), 500.0, "and the same border still stands");
     }
 
     /// Weather is `ClientLevel` state: a real dimension change discards it, so
@@ -4440,6 +4481,22 @@ mod respawn_tests {
         assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
         assert_eq!(s.weather.rain_level(), 0.0);
         assert_eq!(s.weather.thunder_level(), 0.0);
+    }
+
+    /// The border is `ClientLevel` state on the same argument (M80). The
+    /// harness starts at a 500-block border centred on (120, -64) so a
+    /// transition that carried it through would be visible in all three of
+    /// size, centre and warning distance.
+    #[test]
+    fn a_dimension_change_clears_the_world_border() {
+        let defs = registry();
+        let mut s = overworld_session(&defs, 4);
+        assert_eq!(s.border.size(), 500.0, "precondition");
+        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
+        assert_eq!(s.border.size(), rewo_world::border::MAX_SIZE);
+        assert_eq!(s.border.center_x(), 0.0);
+        assert_eq!(s.border.center_z(), 0.0);
+        assert_eq!(s.border.warning_blocks(), 5);
     }
 
     /// The generation is a counter, not an index: at `u64::MAX` it wraps to 0

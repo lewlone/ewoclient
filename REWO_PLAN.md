@@ -1988,6 +1988,299 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M80 — the world border: six packets, one feature (2026-07-30)
+
+The first class-**B** tranche, and the reason to take all six at once is that
+they are not six features. `initialize_border` (43), `set_border_center` (88),
+`set_border_lerp_size` (89), `set_border_size` (90),
+`set_border_warning_delay` (91) and `set_border_warning_distance` (92) all
+write **one object**, `net.minecraft.world.level.border.WorldBorder`, and
+everything else — the collision planes, the wall's colour, the red vignette,
+the wall's position at a partial tick — is derived from it. Splitting the
+decode from the wall would have left the state machine with nothing to be
+tested against.
+
+Three halves, and each fails in a different way, so each is graded differently:
+the arithmetic against an independent transcription, the physics as a measured
+**displacement**, the wall as a CPU-predicted pixel.
+
+#### The lerp's clock is ticks — and the brief that said otherwise was pointing at something real one layer over
+
+`lerpSizeBetween(from, to, ticks, gameTime)` looks like it starts a wall-clock
+animation, and the milestone brief hypothesised that it did, which would have
+made it the only non-tick clock in Rewo's client. **It does not.**
+`MovingBorderExtent` stores `lerpProgress = duration` and `WorldBorder.tick()`
+— reached once per client tick from `ClientLevel.tick` — decrements it. The
+size is `lerp((duration − progress) / duration, from, to)`, a pure function of
+a tick counter.
+
+The `gameTime` argument is **inert**. It is stored as `lerpBegin` / `lerpEnd`
+and read by exactly one method, `getLerpSpeed`, and there only as the
+difference `lerpEnd − lerpBegin` — which is `duration` again. Nothing anywhere
+depends on the game time a lerp began at, so `rewo_world::border` does not take
+the parameter.
+
+**But the instinct was right about the feature, just not about the lerp.** The
+rendered wall's *texture scroll* is `(Util.getMillis() % 3000L) / 3000.0F` —
+genuine wall-clock milliseconds, and the only such quantity in the whole world
+border. It lives in `WorldBorderRenderer.render`, not in the state machine.
+
+#### `getMinX()` is the previous tick's size, and only the renderer sees this one
+
+The sharpest inversion here. `getMinX()` delegates to `getMinX(0.0F)`, and
+`MovingBorderExtent` computes `Mth.lerp(deltaPartialTick, previousSize, size)`
+— at partial **0** that is `previousSize`. So during a lerp, *every*
+non-rendering consumer — the collision shape, `isWithinBounds`,
+`getDistanceToBorder`, the HUD vignette — measures against the box as of the
+end of the **previous** tick, while the renderer, which passes a real partial
+tick, measures this one. Making the no-argument accessor read the current size
+looks like a fix and is a divergence.
+
+The HUD then mixes the two deliberately: `Hud.extractVignette` takes its
+distance from `getDistanceToBorder` (previous size) and its threshold from
+`getSize()` (current). Both are transcribed as written.
+
+#### What else in the brief inverted
+
+- **`set_border_size` cancels an in-flight lerp** — confirmed, and the
+  mechanism is why: `setSize` assigns a brand-new `StaticBorderExtent` to
+  `this.extent`, throwing the running one away. It is not a retarget.
+- **`initialize_border` guards `lerpTime > 0`; `set_border_lerp_size` does
+  not.** `handleInitializeBorder` writes `if (lerpTime > 0L) lerpSizeBetween(…)
+  else setSize(newSize)`. `handleSetBorderLerpSize` calls `lerpSizeBetween`
+  flat. So the *same numbers* on the two packets produce a static extent on one
+  and a moving extent with an **infinite** lerp speed on the other. Adding the
+  guard to both looks like symmetry.
+- **The warning delay and the warning distance are one threshold, not two
+  routes.** `max(warningBlocks, min(lerpSpeed × warningTime, |lerpTarget −
+  size|))`. The delay becomes a *distance* by multiplying blocks-per-tick by
+  ticks; the `min` caps it at the travel still to come, so a nearly-finished
+  shrink stops warning; the flat `warningBlocks` is a floor under the result.
+  Each of the three terms wins in a different regime, which is how the gate
+  grades it.
+- **`warningTime` is in ticks, not seconds** — 26.x's `WorldBorderCommand` uses
+  `TimeArgument.time(0)`, whose bare-number unit is `1` (`UNITS.put("", 1)`),
+  and `WorldBorderWarningTimeFix` multiplies an old save's `warning_time` by
+  20. That is what makes `lerpSpeed × warningTime` dimensionally a distance.
+  **And it left a stale value behind**: `WorldBorder`'s field initializer is
+  still `warningTime = 15`, the old *seconds* default, while `Settings.DEFAULT`
+  duly says 300. Invisible, because every server overwrites it from
+  `initialize_border` before the client renders anything.
+- **`getStatus` is derived, not sent** — confirmed. `to < from ? SHRINKING :
+  GROWING`, and equality never reaches it because `lerpSizeBetween` builds a
+  static extent for `from == to`.
+- **The fifth bullet was half wrong.** `absoluteMaxSize` is **not** a client
+  constant: `initialize_border` carries it as a VarInt and
+  `handleInitializeBorder` calls `setAbsoluteMaxSize`. `damagePerBlock` and
+  `safeZone` genuinely are client-side dead fields — they are on *no* packet,
+  and the damage tick that reads them is guarded by `this.level() instanceof
+  ServerLevel`, so **the client never applies border damage at all**. The
+  border's only client-side consequence is the push.
+
+#### `MAX_SIZE` is a `float` literal
+
+`public static final double MAX_SIZE = 5.999997E7F;` — the `F` rounds the value
+to `f32` *before* widening, so the double is exactly **59999968.0**, not
+59999970. Its half is exactly `absoluteMaxSize` (29999984), so the default
+border sits precisely on the clamp bound. Reading the literal as its decimal
+spelling gives a default two blocks wider that the clamp then silently
+corrects — a difference no render could ever show.
+
+#### The physics: it landed in `physics.rs`
+
+`tick_with` gained a `border: Option<BorderCollision>` parameter and `collide`
+clips against it after the block sweep. Three things made that faithful rather
+than approximate:
+
+**The shape is the complement of a box.** `getCollisionShape` is
+`Shapes.join(INFINITY, box(…), ONLY_FIRST)` — infinite in Y, so being *inside*
+the shape means being *outside* the border. As a point set that complement is
+the union of four half-spaces, each infinite in the other two axes, so it
+decomposes into a per-axis clip with no cross-axis overlap test, and taking the
+tighter of the block result and this one is exactly what putting both in
+vanilla's single collider list does.
+
+**The box is floored and ceiled.** So the wall you *collide* with snaps outward
+to whole blocks while the wall you *see* is at the exact fractional coordinate.
+They coincide for an integer border and disagree for any other.
+
+**`isInsideCloseToBorder` is not an optimisation.** It is what stops an outside
+player being sealed in solid: the complement is solid *everywhere* out there,
+so without the gate a player teleported past the wall could not move at all.
+Its two arguments come from different places, which is easy to miss — `bbMax`
+is derived from the **movement-expanded** box, while the distance is measured
+from the entity's own x/z.
+
+**`CORRECTIONS 0` cannot grade this.** M67's audit recorded that the meter is
+structurally blind to a movement the client fails to *stop* — vanilla's move
+check flags a client that moves too much. So the physics witnesses measure the
+**displacement** instead: 240 ticks of holding forward inside a ±10 border ends
+at z = 9.70 against z = 51.2 with no border, a 41.5-block gap.
+
+#### The wall
+
+`crates/rewo-gpu/src/border.rs` plus a shader pair. Four quads, `POSITION_TEX`,
+`BlendFunction.OVERLAY` = `(SRC_ALPHA, ONE)` colour and `(ONE, ZERO)` alpha,
+depth `GREATER_OR_EQUAL` with the write **on** and a 3.0/3.0 bias, and
+`withCull(false)` — which is why the NORTH and EAST quads may be wound opposite
+to SOUTH and WEST without vanishing (M33's cloud-facing trap does not apply
+here, and the pipeline says so).
+
+**M33's lesson did apply.** Vanilla emits positions relative to `(minX, 0,
+minZ)` and hands the pass a `ModelOffset` of `(minX − cameraX, −cameraY, minZ −
+cameraZ)` against a camera-relative model-view. Those cancel to plain world
+space, and Rewo's `view_proj` already carries the camera, so the port emits the
+world-space form directly. Porting only half of it would drag the whole border
+along behind the player. The **UVs** keep their camera dependence, because
+vanilla's do — `v0 = −frac(cameraY × 0.5)` is a separate term, not an artefact
+of the offset.
+
+**The depth write makes the draw order load-bearing.** `closestBorder` sorts
+the four walls by distance and vanilla draws them nearest-first; in reversed-Z
+with `GREATER_OR_EQUAL` that lets the near wall occlude the far one where they
+overlap on screen.
+
+Two recorded caveats. The colour reaches the shader **linearised**, following
+the house convention `end_sky` and `clouds` set, because the attachment
+re-encodes on store; vanilla's target is not sRGB, so it adds in gamma space,
+and M50's finding about the glint applies here in principle. It is not
+singled out for a UNORM view because — unlike the glint, whose difference was
+exactly zero — the border is one of many blended passes in Rewo that already
+share this convention, and at alpha 1 over a dark background the two agree.
+And the vertex buffer is rebuilt **every frame** rather than reproducing
+`shouldRebuildWorldBorderBuffer`, which keys only on the border box and
+therefore leaves the horizontal clip stale for a stationary border with a
+moving camera; sixteen vertices is not worth reproducing a latency artefact
+for.
+
+#### The gate, and the two witnesses that were wrong first
+
+**`rewo bordershot --check`, 31 witnesses**, serverless, validation ON, in four
+layers named `s*` / `w*` / `p*` / `g*`. Every `s*` expectation is an
+*independent* transcription written out again in the gate — nothing reads
+`rewo_world::border`'s own arithmetic as its expectation — and the six ids come
+out of the real `packets.json` through the production `Ids::resolve`.
+
+The detector follows `handshot`'s doctrine, adapted: the wall is a scrolling
+tinted texture over sky and terrain, so both are removed (`SkyMode::None`, no
+columns, a black clear), the forcefield sheet is **synthetic**, and `g1`
+asserts the frame is byte-for-byte black before any other pixel witness runs.
+That turns a black clear into the same guarantee a magenta subject gives.
+
+Then the arithmetic collapses to something exact: at alpha 1 over black,
+`OVERLAY` gives `dst = 0 + linear(tint) × 1` and the sRGB attachment re-encodes
+on store, so **the stored byte is the status colour's byte** — measured error
+0.00 on all three statuses, and true whether the blend runs in linear or gamma,
+so the one witness that matters most is convention-independent.
+
+**Two witnesses failed on their first run and both were the witness's fault,
+not the code's.** `s10` asserted the warning threshold was 4.0 at a sample
+where its own detail string correctly said the flat floor of 5 wins — the prose
+was right and the assertion was not. It is now three samples with a different
+one of the three terms winning each time, which is a strictly better witness
+than the one I meant to write. And `g7` tried to observe the fragment discard
+through the alpha channel at modulator alpha **1.0**, where a drawn fragment
+and a discarded one can both reach 255; the sampler is also LINEAR, so the
+texture's alpha band arrives as a ramp rather than two values. Neither is a
+reason to change the sampler — it is a reason to grade two *populations*, which
+at alpha 0.5 separate cleanly (drawn caps at 128, discarded keeps 255).
+
+Worth recording from `g7`: **the discard is invisible in the colour channels by
+construction.** `SRC_ALPHA` already weights a zero-alpha texel to nothing, so
+removing `if (color.a == 0.0) discard;` changes no rgb pixel at all. It is
+observable only because `OVERLAY`'s alpha equation is `(ONE, ZERO)` and a drawn
+fragment therefore *replaces* the destination alpha.
+
+#### The mutation battery, and the witness it exposed
+
+**28 mutations, one per named partner, all 28 caught** — but four survived the
+first run, and only three of those were my patch rather than the code.
+
+Three were **equivalent mutants**, which is worth naming because they are easy
+to write by accident. `s1`'s "swap the tick order" swapped two *independent*
+statements (`previous_size = size` does not read `progress`), so the real
+off-by-one is moving the decrement to *after* the size is recomputed. `s12`'s
+"drop the NaN guard" clamped `p` to 1.0, which lands on the same answer as the
+guard; the real mutation is the unguarded `lerp(p, …)`, which yields NaN.
+`p3`'s "collide in the no-clip arm" *appended* a `collide_move` after the
+direct position add, leaving the player already past the wall — where the
+`gap >= -EPS` rule correctly declines to clip — so it could not fail.
+
+**`p2` was the real one, and the witness was measuring the wrong thing.** It
+asserted that a player four blocks outside the wall can walk back in, on the
+reasoning that the collision shape is an infinite complement and would
+otherwise seal them in. That is true of vanilla's `VoxelShape` as a set, but
+it is **not what saves the player here**: `clip_border` inherits `clip_axis`'s
+`gap >= -EPS` rule, so a face behind you never clips you, and the walk-back
+works with or without `isInsideCloseToBorder`. The witness passed under its own
+mutation.
+
+What the gate actually decides is whether the **other axis's** walls apply out
+there. `isWithinBounds(x, z, bbMax)` fails on its z term for a player past the
++Z wall, so the whole shape is withheld and they walk freely through where the
+x walls would be; without the gate, a player standing outside the z walls is
+fenced in by the x ones. The witness now measures that, and it fails under the
+mutation.
+
+The remaining deliberate green is a semantically-null edit to `set_draw`,
+which must leave the gate at 31 — and `g8`'s own mutation (leave the previous
+frame's draw list in place when handed `None`) is what proves its byte-for-byte
+comparison against `g1`'s frame is load-bearing.
+
+#### Measured
+
+**1421 tests** (world 383, net 517, gpu 214, data 175, mesh 38, proto 11 = 1338
+lib; app 83) against M76's 1378. `bordershot --check` 31/31 with Vulkan
+validation ON and 0 VUIDs; every other gate green; the demo PNG SHA-256 is
+still `2cc56b4a…`. The coverage table's machine check flipped all six rows and
+both count tables — 87 → **93** consumed, 54 → **48** absent, class B 20 → 14 —
+and class **A** is now empty in §2's prose as well as its counts.
+
+#### Verified live
+
+`rewo play` gained a border line in its summary — the decoded box, the status
+and the bot's signed distance from the wall — because `CORRECTIONS` alone
+cannot say whether the wall was *respected*, only whether the server
+disagreed. Against the 26.2 server on port 25610, with
+`--setup "worldborder center ~ ~; worldborder set 60; worldborder set 12 120s"`:
+
+```
+world border: Shrinking size 48.7 centre (-121.1, -65.7)
+              box x[-145.4, -96.7] z[-90.0, -41.3]  warn 5b/300t
+              distance from bot -0.65
+final pos: (-98.37, -60.00, -90.70)     teleports: 1  CORRECTIONS: 0
+```
+
+That one line exercises all six packets — `initialize_border` on join, then
+`set_border_center`, `set_border_size` and `set_border_lerp_size` from the
+command — plus the tick clock (48.7 of the way from 60 to 12 after 30 s of a
+120 s shrink) and the collision. The bot walked into the wall and stopped.
+
+**And the live run confirmed the floor/ceil finding by accident.** `distance
+from bot` is **−0.65**, i.e. the bot finished *outside* the exact border — its
+box face resting on the **floored** plane while the visible wall sits 0.3–0.65
+of a block inside it. That is `p4` reproduced on a real server rather than in
+the gate's synthetic world.
+
+**One false alarm worth recording, because the diagnosis was not the obvious
+one.** The first live run had the bot 95 blocks outside a border it should have
+been confined by, and the border decoded *correctly* in the same summary — the
+natural reading is "the collider is not wired up". It was: the bot **spawns at
+its saved position from the previous session**, which had drifted, so the
+border had been centred on a spawn point the player no longer used, and
+`isInsideCloseToBorder` was correctly withholding the shape 95 blocks out.
+Centring with `~ ~` instead of a literal fixed it. The tell was that the
+instrumented first tick already reported the *previous run's* final
+coordinates.
+
+**Not verified.** The wall has had no eyeball pass — `g3`'s exact-byte
+prediction is what M80 verifies about its colour, and "looks like Minecraft's
+border" is not claimed. The red warning vignette is computed
+(`warning_strength`) and unit-graded but **not rendered**: Rewo has no vignette
+layer for it to tint, which is the same "to port the disable you must first
+build the thing" shape `REWO_PACKET_COVERAGE.md` §0 records for
+`hurt_animation`.
+
 ### M77 — the minecart's own interpolation, the leash holder, the projectile's power (2026-07-29)
 
 Three class-A rows out of `REWO_PACKET_COVERAGE.md`: `move_minecart_along_track`

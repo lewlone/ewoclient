@@ -27,16 +27,17 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 87 of them. 54
+1. **141 clientbound-play packets. Rewo resolves and consumes 93 of them. 48
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty.** The 54 gaps split 0 / 20 / 23 / 11 across pure state,
+2. **Class A is empty.** The 48 gaps split 0 / 14 / 23 / 11 across pure state,
    needs-rendering, needs-a-missing-subsystem and not-applicable. Every packet
    that was decodable and headlessly gateable with no renderer and no design
    decision — the test the M52–M78 batches were chosen by — has now been taken.
-   The next tranche is class **B**, where the decode is possible and the
-   *feature* wants an eyeball. §2.
+   Class **B** is the live tranche, and **M80 took six of its rows in one
+   milestone** — the world border, whose six packets are one feature with one
+   state machine, one physics consequence and one wall. §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -136,7 +137,7 @@ take**, not about how much anyone wants it:
 | Class | Meaning |
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
-| **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, a world border, an XP bar). Landing the *feature* needs an eyeball; landing the *decode* does not. |
+| **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
 | **C** — needs a subsystem Rewo lacks | A screen/menu framework, a chat-input path, a recipe book, a resource-pack fetcher, a map image pipeline, a reconnect flow. The decode is not the hard part and shipping it alone buys nothing. |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
@@ -165,19 +166,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **87** |
+| Resolved **and** consumed | **93** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **54** |
+| Not resolved at all | **48** |
 | **Total clientbound-play** | **141** |
 
-The 54 gaps, by class:
+The 48 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **20** | 37% |
-| **C** needs a subsystem Rewo lacks | **23** | 43% |
-| **D** not applicable | **11** | 20% |
+| **B** needs rendering | **14** | 29% |
+| **C** needs a subsystem Rewo lacks | **23** | 48% |
+| **D** not applicable | **11** | 23% |
 
 M67 audited 56 / 0 / 85 with class A at 31. **Twenty-eight** packets separate
 that published 56 from this 84, and **ten of them had already landed when M67
@@ -185,10 +186,12 @@ published** (§8) — three from M67's own sibling work, three from M68, three
 from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
 M75's, three are M77's, and eight are M78's.
 
-**Class A is nearly exhausted.** Three pure-state gaps remain — `player_rotation`,
-`player_look_at` and `set_default_spawn_position`, all of which write the local
-player's own state (§3). The next-largest tranche of decodable-today work is
-class **B**, where the decode is possible and the *feature* wants an eyeball.
+**Class A is empty** — M76 took the last three (`player_rotation`,
+`player_look_at`, `set_default_spawn_position`, §3). Work has moved to class
+**B**, where the decode is possible and the *feature* wants an eyeball: **M80
+took six of them at once**, the world border, because those six are one
+feature and splitting the decode from the wall would have left the state
+machine untestable against anything.
 
 ---
 
@@ -394,7 +397,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
 | 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |
 | 42 | `hurt_animation` | absent | **B** | The damage camera yaw-tilt. **This is the input `M52a`'s vacuous `no_damage_tilt` module has nothing to disable.** |
-| 43 | `initialize_border` | absent | **B** | World border. |
+| 43 | `initialize_border` | handled | `req!` → `cb_play_initialize_border` | **M80.** The whole border at once. Its `lerpTime > 0` guard picks `setSize(newSize)` over `lerpSizeBetween` — the guard `set_border_lerp_size` (89) does *not* have. |
 | 44 | `keep_alive` | handled | `req!` → `cb_play_keep_alive` | |
 | 45 | `level_chunk_with_light` | handled | `req!` → `cb_play_level_chunk` | |
 | 46 | `level_event` | handled | `opt!` → `cb_play_level_event` | §4 partial — the particle half only. |
@@ -439,11 +442,11 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 85 | `select_advancements_tab` | absent | **C** | Advancements screen. |
 | 86 | `server_data` | handled | `req!` → `cb_play_server_data` | **M78.** MOTD flattened, icon kept as bytes. §4 partial — vanilla runs the icon through `ServerData.validateIcon` (a PNG parse capped at 1024²) and records only when the session came from the server list; Rewo does neither. |
 | 87 | `set_action_bar_text` | absent | **B** | Action-bar overlay. |
-| 88 | `set_border_center` | absent | **B** | World border. |
-| 89 | `set_border_lerp_size` | absent | **B** | World border. |
-| 90 | `set_border_size` | absent | **B** | World border. |
-| 91 | `set_border_warning_delay` | absent | **B** | World border. |
-| 92 | `set_border_warning_distance` | absent | **B** | World border. |
+| 88 | `set_border_center` | handled | `req!` → `cb_play_set_border_center` | **M80.** Two `f64`; moves the box without touching the size or a running lerp. |
+| 89 | `set_border_lerp_size` | handled | `req!` → `cb_play_set_border_lerp_size` | **M80.** Two `f64` and a **var-long**. `handleSetBorderLerpSize` is unguarded, so a zero duration builds a *moving* extent with an infinite lerp speed. |
+| 90 | `set_border_size` | handled | `req!` → `cb_play_set_border_size` | **M80.** One `f64`. `setSize` replaces the extent object, so it **cancels** an in-flight lerp rather than retargeting it. |
+| 91 | `set_border_warning_delay` | handled | `req!` → `cb_play_set_border_warning_delay` | **M80.** One VarInt → `warningTime`, in **ticks** since 26.x (`WorldBorderWarningTimeFix` ×20). Same body as 92 and a different field; only the id separates them. |
+| 92 | `set_border_warning_distance` | handled | `req!` → `cb_play_set_border_warning_distance` | **M80.** One VarInt → `warningBlocks`. Both warning packets feed one threshold, `max(warningBlocks, min(lerpSpeed × warningTime, remaining travel))`. |
 | 93 | `set_camera` | handled | `req!` → `cb_play_set_camera` | **M74.** One VarInt entity id; an id the client cannot resolve leaves the camera **where it was**. Feeds `LabelViewer::camera_entity`, which M70 had hard-wired to the local player. |
 | 94 | `set_chunk_cache_center` | handled | `req!` → `cb_play_set_chunk_cache_center` | M67. |
 | 95 | `set_chunk_cache_radius` | handled | `req!` → `cb_play_set_chunk_cache_radius` | M67. |

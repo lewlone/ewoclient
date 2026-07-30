@@ -28,6 +28,7 @@
 //! the "corrections rare" DoD is the parity meter.
 
 use crate::abilities::Abilities;
+use crate::border::BorderCollision;
 
 /// Player collision box: 0.6 × 1.8 (eye height 1.62).
 pub const PLAYER_HALF_WIDTH: f64 = 0.3;
@@ -114,7 +115,7 @@ pub fn tick<'s>(
     input: &TickInput,
     shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
 ) {
-    tick_with(state, input, &Abilities::default(), false, shapes);
+    tick_with(state, input, &Abilities::default(), false, None, shapes);
 }
 
 /// One vanilla tick in any of the three movement modes.
@@ -128,11 +129,18 @@ pub fn tick<'s>(
 /// delegates to `LivingEntity.travelInAir` in **both** the flying and the
 /// walking case, and differs only in what it does to the vertical result
 /// afterwards.
+///
+/// `border` is the world border's collision extent (M80), or `None` for a
+/// session that has never been sent one. It is a *collider*, not a mode: it
+/// joins the block shapes in exactly the place vanilla puts it,
+/// `Entity.collectCollidersIgnoringWorldBorder`. `no_clip` skips it along with
+/// everything else, which is also vanilla — a spectator walks through the wall.
 pub fn tick_with<'s>(
     state: &mut PlayerState,
     input: &TickInput,
     abilities: &Abilities,
     no_clip: bool,
+    border: Option<BorderCollision>,
     shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
 ) {
     let flying = abilities.flying;
@@ -228,7 +236,7 @@ pub fn tick_with<'s>(
         state.horizontal_collision = false;
         state.on_ground = false;
     } else {
-        collide_move(state, shapes);
+        collide_move(state, border, shapes);
     }
 
     // -- gravity + drag (travel tail) --------------------------------------
@@ -257,22 +265,26 @@ pub fn tick_with<'s>(
 
 /// Axis-separated AABB collision (vanilla order: Y, then X, then Z), with a
 /// 0.6 step-up retry on horizontal block.
-fn collide_move<'s>(state: &mut PlayerState, shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]]) {
+fn collide_move<'s>(
+    state: &mut PlayerState,
+    border: Option<BorderCollision>,
+    shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
+) {
     let (dx, dy, dz) = (state.vx, state.vy, state.vz);
-    let (mx, my, mz) = collide(state, dx, dy, dz, shapes);
+    let (mx, my, mz) = collide(state, dx, dy, dz, border, shapes);
 
     // Step-up: horizontally blocked while on the ground → retry from +0.6.
     let blocked_x = mx != dx;
     let blocked_z = mz != dz;
     let (mx, my, mz) = if (blocked_x || blocked_z) && (state.on_ground || dy.abs() < 1e-9) {
-        let (sx, sy, sz) = collide(state, dx, STEP_HEIGHT, dz, shapes);
+        let (sx, sy, sz) = collide(state, dx, STEP_HEIGHT, dz, border, shapes);
         if sx * sx + sz * sz > mx * mx + mz * mz {
             // Settle back down onto the step.
             let mut stepped = *state;
             stepped.x += sx;
             stepped.y += sy;
             stepped.z += sz;
-            let (_, down, _) = collide(&stepped, 0.0, -STEP_HEIGHT, 0.0, shapes);
+            let (_, down, _) = collide(&stepped, 0.0, -STEP_HEIGHT, 0.0, border, shapes);
             (sx, sy + down, sz)
         } else {
             (mx, my, mz)
@@ -303,6 +315,7 @@ fn collide<'s>(
     dx: f64,
     dy: f64,
     dz: f64,
+    border: Option<BorderCollision>,
     shapes: &dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
 ) -> (f64, f64, f64) {
     let mut min = [
@@ -315,14 +328,63 @@ fn collide<'s>(
         state.y + PLAYER_HEIGHT,
         state.z + PLAYER_HALF_WIDTH,
     ];
+    // `collectCollidersIgnoringWorldBorder` decides *once*, before the sweep,
+    // whether the border shape joins the block list — and it asks with the
+    // **movement-expanded** box. Only `bbMax` comes from that box; the distance
+    // is measured from the entity's own x/z.
+    let border = border.filter(|b| {
+        b.is_inside_close_to_border(
+            state.x,
+            state.z,
+            2.0 * PLAYER_HALF_WIDTH + dx.abs(),
+            2.0 * PLAYER_HALF_WIDTH + dz.abs(),
+        )
+    });
+    // The border shape is infinite in Y, so it never clips the vertical step.
     let my = clip_axis(1, dy, &min, &max, shapes);
     min[1] += my;
     max[1] += my;
-    let mx = clip_axis(0, dx, &min, &max, shapes);
+    let mx = clip_border(clip_axis(0, dx, &min, &max, shapes), min[0], max[0], {
+        border.map(|b| (b.plane_min_x(), b.plane_max_x()))
+    });
     min[0] += mx;
     max[0] += mx;
-    let mz = clip_axis(2, dz, &min, &max, shapes);
+    let mz = clip_border(clip_axis(2, dz, &min, &max, shapes), min[2], max[2], {
+        border.map(|b| (b.plane_min_z(), b.plane_max_z()))
+    });
     (mx, my, mz)
+}
+
+/// Clip one axis of an already-block-clipped step against the border's two
+/// walls on that axis.
+///
+/// The border's collision shape is the complement of a box, and as a *set* that
+/// complement is the union of four half-spaces — `x < lo`, `x > hi`, `z < lo`,
+/// `z > hi` — each infinite in the other two axes. So it decomposes into a
+/// per-axis clip that needs no cross-axis overlap test, and taking the tighter
+/// of the block result and this one is what putting both in vanilla's single
+/// collider list does.
+///
+/// The `gap >= -EPS` guard is [`clip_axis`]'s, and it is the reason a player who
+/// is *already* past the wall is not frozen: a face behind you does not clip
+/// you, so you can walk back in.
+fn clip_border(moved: f64, box_min: f64, box_max: f64, walls: Option<(f64, f64)>) -> f64 {
+    const EPS: f64 = 1.0e-7;
+    let Some((lo, hi)) = walls else {
+        return moved;
+    };
+    if moved > 0.0 {
+        let gap = hi - box_max;
+        if gap >= -EPS && gap < moved {
+            return gap.max(0.0);
+        }
+    } else if moved < 0.0 {
+        let gap = lo - box_min;
+        if gap <= EPS && gap > moved {
+            return gap.min(0.0);
+        }
+    }
+    moved
 }
 
 /// Move an AABB along one axis, stopping at the first solid block face.
@@ -597,7 +659,7 @@ mod tests {
         let a = flying();
         let mut seen = Vec::new();
         for _ in 0..5 {
-            tick_with(&mut p, &TickInput::default(), &a, false, &air);
+            tick_with(&mut p, &TickInput::default(), &a, false, None, &air);
             seen.push(p.vy);
         }
         // 1.0 → 0.6 → 0.36 → 0.216 → 0.1296 → 0.07776, each exactly ×0.6.
@@ -641,14 +703,14 @@ mod tests {
         let mut ab = a;
         for _ in 0..200 {
             fc.before_travel(&mut ab, &mut p, &up, false, false);
-            tick_with(&mut p, &up, &ab, false, &air);
+            tick_with(&mut p, &up, &ab, false, None, &air);
         }
         // I is the f32-computed 0.15f, so the fixed point is 1.5·I exactly.
         let i = crate::abilities::Abilities::default().vertical_flight_impulse(true, false);
         assert!((p.vy - 1.5 * i).abs() < 1e-12, "carried vy={}, want 1.5·I", p.vy);
         let before = p.y;
         fc.before_travel(&mut ab, &mut p, &up, false, false);
-        tick_with(&mut p, &up, &ab, false, &air);
+        tick_with(&mut p, &up, &ab, false, None, &air);
         assert!(
             (p.y - before - 2.5 * i).abs() < 1e-12,
             "per-tick ascent = {}, want 1.5·I + I",
@@ -678,7 +740,7 @@ mod tests {
                 ..Default::default()
             };
             for _ in 0..400 {
-                tick_with(&mut p, &input, &a, false, &air);
+                tick_with(&mut p, &input, &a, false, None, &air);
             }
             p.vz
         };
@@ -707,7 +769,7 @@ mod tests {
                 ..Default::default()
             };
             for _ in 0..200 {
-                tick_with(&mut p, &input, &a, false, &air);
+                tick_with(&mut p, &input, &a, false, None, &air);
             }
             p.vz
         };
@@ -748,7 +810,7 @@ mod tests {
         let mut ab = a;
         for _ in 0..60 {
             fc.before_travel(&mut ab, &mut p, &down, false, false);
-            tick_with(&mut p, &down, &ab, false, &world);
+            tick_with(&mut p, &down, &ab, false, None, &world);
         }
         assert!(p.y >= -1e-9, "flying down stops at the floor, y={}", p.y);
 
@@ -758,7 +820,7 @@ mod tests {
         let mut ab2 = flying();
         for _ in 0..60 {
             fc2.before_travel(&mut ab2, &mut q, &down, false, false);
-            tick_with(&mut q, &down, &ab2, true, &world);
+            tick_with(&mut q, &down, &ab2, true, None, &world);
         }
         assert!(q.y < -5.0, "no-clip passes through the floor, y={}", q.y);
         assert!(!q.on_ground && !q.horizontal_collision, "flags cleared");
@@ -779,7 +841,7 @@ mod tests {
         let mut b = PlayerState::at(0.5, 0.0, 0.5);
         for _ in 0..120 {
             tick(&mut a, &input, &world);
-            tick_with(&mut b, &input, &Abilities::default(), false, &world);
+            tick_with(&mut b, &input, &Abilities::default(), false, None, &world);
         }
         assert_eq!((a.x, a.y, a.z, a.vx, a.vy, a.vz), (b.x, b.y, b.z, b.vx, b.vy, b.vz));
     }
@@ -841,5 +903,154 @@ mod tests {
             tick(&mut q, &walk, &world);
         }
         assert!(q.y < 0.5, "walking must not scale a full block, y={}", q.y);
+    }
+
+    // ── The world border as a collider (M80) ──────────────────────────────
+
+    /// A border centred on the origin, `size` across, already ticked into a
+    /// static extent.
+    fn border(size: f64) -> crate::border::BorderCollision {
+        let mut b = crate::border::WorldBorder::default();
+        b.set_center(0.0, 0.0);
+        b.set_size(size);
+        b.collision()
+    }
+
+    #[test]
+    fn the_border_stops_a_walking_player_at_the_wall() {
+        let world = |_x: i32, y: i32, _z: i32| cube(y < 0);
+        let wall = border(20.0); // ±10
+        let input = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
+        let mut p = PlayerState::at(0.0, 0.0, 5.0);
+        for _ in 0..200 {
+            tick_with(
+                &mut p,
+                &input,
+                &Abilities::default(),
+                false,
+                Some(wall),
+                &world,
+            );
+        }
+        assert!(
+            p.z <= 10.0 - PLAYER_HALF_WIDTH + 1e-6,
+            "the box's far face rests on the wall, z={}",
+            p.z
+        );
+        assert!(p.z > 9.0, "and got there, z={}", p.z);
+        assert!(p.horizontal_collision, "the border reports as a collision");
+
+        // The mutation partner: the same 200 ticks with no border passed. The
+        // walk is otherwise identical, so any stop above is the border and not
+        // the floor, the drag, or a tick-count artefact.
+        let mut q = PlayerState::at(0.0, 0.0, 5.0);
+        for _ in 0..200 {
+            tick(&mut q, &input, &world);
+        }
+        assert!(q.z > 20.0, "unbordered, the same walk goes far past, z={}", q.z);
+        assert!(!q.horizontal_collision);
+    }
+
+    #[test]
+    fn a_player_left_outside_the_border_can_walk_back_in() {
+        // `isInsideCloseToBorder` withholds the collider once you are further
+        // than your own width outside. Without that gate the shape — an
+        // infinite complement — would seal an outside player in place.
+        let world = |_x: i32, y: i32, _z: i32| cube(y < 0);
+        let wall = border(20.0);
+        let input = TickInput {
+            forward: -1.0, // south → north, back toward the border
+            ..Default::default()
+        };
+        let mut p = PlayerState::at(0.0, 0.0, 14.0);
+        for _ in 0..200 {
+            tick_with(
+                &mut p,
+                &input,
+                &Abilities::default(),
+                false,
+                Some(wall),
+                &world,
+            );
+        }
+        assert!(p.z < 12.0, "walked back toward the wall, z={}", p.z);
+    }
+
+    #[test]
+    fn the_border_does_not_clip_vertical_movement() {
+        // The collision shape is infinite in Y, so standing at the wall must
+        // not interfere with falling onto the floor.
+        let world = |_x: i32, y: i32, _z: i32| cube(y < 0);
+        let wall = border(20.0);
+        let mut p = PlayerState::at(0.0, 6.0, 9.9);
+        for _ in 0..60 {
+            tick_with(
+                &mut p,
+                &TickInput::default(),
+                &Abilities::default(),
+                false,
+                Some(wall),
+                &world,
+            );
+        }
+        assert!(p.on_ground, "landed");
+        assert!(p.y.abs() < 1e-6, "on the floor, y={}", p.y);
+    }
+
+    #[test]
+    fn a_spectator_passes_through_the_border() {
+        let world = |_x: i32, y: i32, _z: i32| cube(y < 0);
+        let wall = border(20.0);
+        let mut a = Abilities::default();
+        a.flying = true;
+        let input = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
+        let mut p = PlayerState::at(0.0, 4.0, 5.0);
+        for _ in 0..200 {
+            tick_with(&mut p, &input, &a, true, Some(wall), &world);
+        }
+        assert!(p.z > 20.0, "no-clip ignores the wall, z={}", p.z);
+    }
+
+    #[test]
+    fn the_collider_plane_is_the_floored_wall_not_the_exact_one() {
+        // A fractional border collides on whole-block boundaries — the box in
+        // `getCollisionShape` is floored and ceiled. The visible wall is at
+        // 10.25; the one you bump into is at 11.
+        let world = |_x: i32, y: i32, _z: i32| cube(y < 0);
+        let mut b = crate::border::WorldBorder::default();
+        b.set_center(0.0, 0.0);
+        b.set_size(20.5); // ±10.25
+        let wall = b.collision();
+        let input = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
+        let mut p = PlayerState::at(0.0, 0.0, 5.0);
+        for _ in 0..200 {
+            tick_with(
+                &mut p,
+                &input,
+                &Abilities::default(),
+                false,
+                Some(wall),
+                &world,
+            );
+        }
+        assert!(
+            p.z > 10.25 - PLAYER_HALF_WIDTH,
+            "walked past the *visible* wall, z={}",
+            p.z
+        );
+        assert!(
+            p.z <= 11.0 - PLAYER_HALF_WIDTH + 1e-6,
+            "and stopped at the *floored* one, z={}",
+            p.z
+        );
     }
 }

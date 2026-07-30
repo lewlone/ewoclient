@@ -392,6 +392,38 @@ pub struct Ids {
     /// the loop `cookie_request` already answers. Before M78 the reply was
     /// always "no payload", because nothing ever stored one.
     pub cb_play_store_cookie: i32,
+
+    // ── M80: the world border ─────────────────────────────────────────────
+    // Six packets, one feature. All `req!` on the same argument as above: a
+    // server with no border set simply never sends the five mutators, but it
+    // always sends `initialize_border` on join, and a report missing any of the
+    // six is a version mismatch rather than a runtime state.
+    /// `ClientboundInitializeBorderPacket` — the whole border at once: four
+    /// `f64` (centre, current size, lerp target), a **var-long** remaining lerp
+    /// time, then three VarInts (absolute max size, warning blocks, warning
+    /// time). Its `lerpTime > 0` guard is the one the mutator below lacks.
+    pub cb_play_initialize_border: i32,
+    /// `ClientboundSetBorderCenterPacket` — two `f64`. Moves the box without
+    /// touching the size or a running lerp.
+    pub cb_play_set_border_center: i32,
+    /// `ClientboundSetBorderLerpSizePacket` — two `f64` and a var-long.
+    /// `handleSetBorderLerpSize` calls `lerpSizeBetween` **unguarded**, so a
+    /// zero duration here builds a moving extent where `initialize_border`
+    /// would have built a static one.
+    pub cb_play_set_border_lerp_size: i32,
+    /// `ClientboundSetBorderSizePacket` — one `f64`, and `setSize` replaces the
+    /// extent object, so this **cancels** an in-flight lerp rather than
+    /// retargeting it.
+    pub cb_play_set_border_size: i32,
+    /// `ClientboundSetBorderWarningDelayPacket` — one VarInt, written to
+    /// `warningTime`. In **ticks** since 26.x moved the field off seconds
+    /// (`WorldBorderWarningTimeFix` multiplies old saves by 20).
+    pub cb_play_set_border_warning_delay: i32,
+    /// `ClientboundSetBorderWarningDistancePacket` — one VarInt, written to
+    /// `warningBlocks`. Same body as its sibling above; only the id separates
+    /// them, which is why [`crate::border`] dispatches on a kind rather than
+    /// on the shape of the body.
+    pub cb_play_set_border_warning_distance: i32,
 }
 
 impl Ids {
@@ -540,6 +572,12 @@ impl Ids {
             cb_play_player_rotation: req!(p, P, C, "player_rotation"),
             cb_play_player_look_at: req!(p, P, C, "player_look_at"),
             cb_play_set_default_spawn_position: req!(p, P, C, "set_default_spawn_position"),
+            cb_play_initialize_border: req!(p, P, C, "initialize_border"),
+            cb_play_set_border_center: req!(p, P, C, "set_border_center"),
+            cb_play_set_border_lerp_size: req!(p, P, C, "set_border_lerp_size"),
+            cb_play_set_border_size: req!(p, P, C, "set_border_size"),
+            cb_play_set_border_warning_delay: req!(p, P, C, "set_border_warning_delay"),
+            cb_play_set_border_warning_distance: req!(p, P, C, "set_border_warning_distance"),
         })
     }
 }

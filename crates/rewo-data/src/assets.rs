@@ -206,6 +206,9 @@ pub struct BakedAssets {
     /// item one above, which is the first of the three things that separate a
     /// worn piece's foil from a held stack's. `None` means no armour glint.
     pub armor_glint: Option<DecodedImage>,
+    /// `misc/forcefield.png` — the world-border wall (M80). `None` means the
+    /// wall is not drawn at all, rather than an invented sheet.
+    pub forcefield: Option<DecodedImage>,
     /// Armour layer definitions and their 64x32 sheets (M46).
     pub equipment: crate::equipment::EquipmentAssets,
     /// Trim pattern sources + palettes; the sprites themselves are permuted on
@@ -827,6 +830,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // they are different images — the worn foil is not the item foil at a
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
+    let forcefield = bake_misc_texture(&mut jar, "forcefield.png");
     let equipment = crate::equipment::EquipmentAssets::load(client_jar);
     let trims = crate::equipment::TrimAssets::load(client_jar);
     if hud.is_none() {
@@ -1080,6 +1084,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         enchantment_text,
         glint,
         armor_glint,
+        forcefield,
         equipment,
         trims,
         held_items,

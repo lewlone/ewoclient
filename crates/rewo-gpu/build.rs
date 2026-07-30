@@ -11,6 +11,8 @@ fn main() {
     let out: PathBuf = env::var("OUT_DIR").unwrap().into();
     let glslc = find_glslc();
     for (src, dst) in [
+        ("shaders/border.vert", "border.vert.spv"),
+        ("shaders/border.frag", "border.frag.spv"),
         ("shaders/overlay.vert", "overlay.vert.spv"),
         ("shaders/overlay.frag", "overlay.frag.spv"),
         ("shaders/world.vert", "world.vert.spv"),

@@ -590,7 +590,7 @@ fn check_flight_physics(c: &mut Checker) {
     let ab = creative_flying();
     let mut seen = Vec::new();
     for _ in 0..5 {
-        tick_with(&mut p, &TickInput::default(), &ab, false, &air);
+        tick_with(&mut p, &TickInput::default(), &ab, false, None, &air);
         seen.push(p.vy);
     }
     let want: Vec<f64> = (1..=5).map(|n| 0.6f64.powi(n)).collect();
@@ -622,7 +622,7 @@ fn check_flight_physics(c: &mut Checker) {
         q.vy = 1.0;
         let mut lo = q.vy;
         for _ in 0..ticks {
-            tick_with(&mut q, &TickInput::default(), ab, false, &air);
+            tick_with(&mut q, &TickInput::default(), ab, false, None, &air);
             lo = lo.min(q.vy);
         }
         lo
@@ -664,12 +664,12 @@ fn check_flight_physics(c: &mut Checker) {
     };
     for _ in 0..300 {
         fc.before_travel(&mut ab, &mut p, &up, false, false);
-        tick_with(&mut p, &up, &ab, false, &air);
+        tick_with(&mut p, &up, &ab, false, None, &air);
     }
     let carried = p.vy;
     let before = p.y;
     fc.before_travel(&mut ab, &mut p, &up, false, false);
-    tick_with(&mut p, &up, &ab, false, &air);
+    tick_with(&mut p, &up, &ab, false, None, &air);
     let per_tick = p.y - before;
     c.record(
         "w5.ascent_reaches_its_closed_form_terminal",
@@ -696,7 +696,7 @@ fn check_flight_physics(c: &mut Checker) {
             ..Default::default()
         };
         for _ in 0..600 {
-            tick_with(&mut p, &input, &ab, false, &air);
+            tick_with(&mut p, &input, &ab, false, None, &air);
         }
         p.vz
     };
@@ -739,7 +739,7 @@ fn check_flight_physics(c: &mut Checker) {
             ..Default::default()
         };
         for _ in 0..300 {
-            tick_with(&mut p, &input, &ab, false, &air);
+            tick_with(&mut p, &input, &ab, false, None, &air);
         }
         p.vz
     };
@@ -751,7 +751,7 @@ fn check_flight_physics(c: &mut Checker) {
             ..Default::default()
         };
         for _ in 0..80 {
-            tick_with(&mut p, &input, &Abilities::default(), false, &ground);
+            tick_with(&mut p, &input, &Abilities::default(), false, None, &ground);
         }
         p.vz
     };
@@ -778,7 +778,7 @@ fn check_flight_physics(c: &mut Checker) {
             ..Default::default()
         };
         for _ in 0..80 {
-            tick_with(&mut p, &input, &ab, false, &ground);
+            tick_with(&mut p, &input, &ab, false, None, &ground);
         }
         p.z
     };
@@ -803,7 +803,7 @@ fn check_flight_physics(c: &mut Checker) {
             ..Default::default()
         };
         for _ in 0..600 {
-            tick_with(&mut p, &input, &ab, false, &air);
+            tick_with(&mut p, &input, &ab, false, None, &air);
         }
         p.vz
     };
@@ -829,7 +829,7 @@ fn check_flight_physics(c: &mut Checker) {
         let mut p = PlayerState::at(0.5, 80.0, 0.5);
         p.vx = vx;
         p.vz = vz;
-        tick_with(&mut p, &TickInput::default(), &Abilities::default(), false, &air);
+        tick_with(&mut p, &TickInput::default(), &Abilities::default(), false, None, &air);
         (p.vx != 0.0, p.vz != 0.0)
     };
     let joint = survives(0.0025, 0.0025);
@@ -856,7 +856,7 @@ fn check_flight_physics(c: &mut Checker) {
         };
         for _ in 0..80 {
             fc.before_travel(&mut ab, &mut p, &down, true, false);
-            tick_with(&mut p, &down, &ab, no_clip, &ground);
+            tick_with(&mut p, &down, &ab, no_clip, None, &ground);
         }
         p.y
     };
@@ -1074,7 +1074,7 @@ fn check_packet_to_flight(c: &mut Checker) {
         ..Default::default()
     };
     for _ in 0..600 {
-        tick_with(&mut p, &input, &ab, false, &air);
+        tick_with(&mut p, &input, &ab, false, None, &air);
     }
     let want = f64::from(0.1f32) * 0.98 * 0.91 / (1.0 - 0.91);
     c.record(
@@ -1093,7 +1093,7 @@ fn check_packet_to_flight(c: &mut Checker) {
     let mut q = PlayerState::at(0.5, 80.0, 0.5);
     q.vy = 0.0;
     for _ in 0..5 {
-        tick_with(&mut q, &TickInput::default(), &ab, false, &air);
+        tick_with(&mut q, &TickInput::default(), &ab, false, None, &air);
     }
     c.record(
         "w7.a_packet_can_take_flight_away_mid_air",

@@ -3207,6 +3207,7 @@ fn run_headless(
         1.0,
         None,
     );
+    apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
     // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
     // a PNG can show it without a windowed session and a keypress. The cursor
     // is parked at the window centre, which is where `set_screen_open` puts it.
@@ -4416,6 +4417,7 @@ impl LiveApp {
                 // 20 ticks per second — .
                 Some(dt * 20.0),
             );
+            apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
             if self.particles.is_none() {
                 self.particles = ParticleAssets::new(baked);
             }
@@ -6802,7 +6804,68 @@ fn init_weather_if_present(
         )?,
         _ => log::warn!("live: no rain/snow texture in the jar bake — no precipitation"),
     }
+    match &baked.forcefield {
+        Some(tex) => wr.init_border(
+            gpu,
+            &rewo_gpu::border::BorderImage {
+                rgba: &tex.rgba,
+                w: tex.w,
+                h: tex.h,
+            },
+        )?,
+        None => log::warn!("live: no forcefield.png in the jar bake — no world-border wall"),
+    }
     Ok(())
+}
+
+/// Rewo's own render distance, in chunks — the `local` half of
+/// `Options.getEffectiveRenderDistance`. The server's cap is the other half and
+/// arrives on `set_chunk_cache_radius`.
+const LOCAL_RENDER_DISTANCE_CHUNKS: i32 = 12;
+
+/// This frame's world-border wall (M80).
+///
+/// `renderDistance` is `getEffectiveRenderDistance() * 16` and `depthFar` is
+/// `Camera.update`'s `max(renderDistance * 4, cloudRange * 16)` — the wall's
+/// half-height is literally the camera's far plane, so it always spans the
+/// view vertically.
+fn apply_border(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    partial_ticks: f32,
+) {
+    if !wr.border_ready() {
+        return;
+    }
+    let eye = eye_f64(session);
+    let render_distance =
+        (session.view_area.effective_render_distance(LOCAL_RENDER_DISTANCE_CHUNKS) * 16) as f64;
+    let depth_far = (render_distance as f32 * 4.0).max((CLOUD_RANGE_CHUNKS * 16) as f32);
+    let extracted = session
+        .border
+        .extract(partial_ticks, eye[0], eye[2], render_distance)
+        .map(|r| rewo_gpu::border::BorderState {
+            min_x: r.min_x,
+            max_x: r.max_x,
+            min_z: r.min_z,
+            max_z: r.max_z,
+            tint: r.tint,
+            alpha: r.alpha,
+        });
+    // The scroll is wall-clock, not tick-derived — `Util.getMillis()`, which is
+    // `System.nanoTime() / 1_000_000`. A monotonic clock, so a wrapping `as
+    // u64` of the elapsed millis is the same modulo-3000 sequence.
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let draw = extracted.map(|state| {
+        rewo_gpu::border::BorderDraw::build(&state, eye, render_distance, depth_far, millis)
+    });
+    if let Err(e) = wr.set_border(gpu, draw.as_ref()) {
+        log::warn!("live: border upload failed: {e}");
+    }
 }
 
 /// This frame's cloud deck and precipitation.
