@@ -37,7 +37,7 @@
 
 use ash::vk;
 
-use crate::end_sky::{upload_buffer, Buf};
+use crate::buf_ring::BufRing;
 use crate::Gpu;
 
 /// One particle as the renderer needs it — the twin of
@@ -182,7 +182,10 @@ pub struct ParticlePass {
     sampler: vk::Sampler,
     image: (vk::Image, vk::ImageView),
     alloc: Option<gpu_allocator::vulkan::Allocation>,
-    vbuf: Option<Buf>,
+    /// This frame's quads. A [`BufRing`] rather than a bare buffer because
+    /// `set_draw` runs before the frame is submitted — see `buf_ring`'s module
+    /// docs (M86).
+    vbuf: BufRing,
     count: u32,
 }
 
@@ -286,23 +289,21 @@ impl ParticlePass {
             sampler,
             image: (img, view),
             alloc: Some(alloc),
-            vbuf: None,
+            vbuf: BufRing::new(),
             count: 0,
         })
     }
 
     pub fn set_draw(&mut self, gpu: &mut Gpu, draw: &ParticleDraw) -> Result<(), String> {
-        free_buf(gpu, self.vbuf.take());
         self.count = draw.verts.len() as u32;
-        if draw.is_empty() {
-            return Ok(());
-        }
-        self.vbuf = Some(upload_buffer(
+        // `is_empty` is the draw's own emptiness test, not the vertex slice's —
+        // keep asking it, and clear the slot when it says yes.
+        let verts: &[ParticleVertex] = if draw.is_empty() { &[] } else { &draw.verts };
+        self.vbuf.set(
             gpu,
-            bytemuck::cast_slice(&draw.verts),
+            bytemuck::cast_slice(verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
-        Ok(())
+        )
     }
 
     pub fn draw(
@@ -313,12 +314,12 @@ impl ParticlePass {
         lightmap: ([f32; 4], [f32; 4], [f32; 4]),
         extent: vk::Extent2D,
     ) {
-        let Some(vbuf) = self.vbuf.as_ref() else {
-            return;
-        };
         if self.count == 0 {
             return;
         }
+        let Some(vbuf) = self.vbuf.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -329,7 +330,7 @@ impl ParticlePass {
                 .max_depth(1.0);
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             let push = Push {
                 mvp: view_proj,
                 light: lightmap.0,
@@ -357,7 +358,7 @@ impl ParticlePass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
+        self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -458,15 +459,6 @@ fn create_layer_array(
             )
             .map_err(|e| format!("particle array view: {e}"))?;
         Ok((image, alloc, view))
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
     }
 }
 

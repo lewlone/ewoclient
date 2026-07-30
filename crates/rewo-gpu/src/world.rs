@@ -533,6 +533,11 @@ pub struct WorldRenderer {
     border: Option<crate::border::BorderPass>,
     /// Item icons in hotbar slots (M34). `None` until `init_gui_items`.
     gui_items: Option<crate::gui_item::GuiItemPass>,
+    /// Rebuild counters for the two ringed passes the app repacks mid-session,
+    /// so `live --render-check` can tell a legitimate ring reset from a
+    /// use-after-free. See [`Self::gui_item_generation`].
+    gui_item_generation: u64,
+    hand_generation: u64,
     /// The inventory screen (M35). `None` until `init_container`; `Some` but
     /// closed draws nothing.
     container: Option<crate::container::ContainerPass>,
@@ -1097,6 +1102,8 @@ impl WorldRenderer {
                 border: None,
                 weather: None,
                 gui_items: None,
+                gui_item_generation: 0,
+                hand_generation: 0,
                 container: None,
                 container_open: None,
                 container_tooltip: None,
@@ -1413,7 +1420,25 @@ impl WorldRenderer {
             atlas_w,
             atlas_h,
         )?);
+        self.gui_item_generation += 1;
         Ok(())
+    }
+
+    /// How many times the GUI-item pass has been (re)built.
+    ///
+    /// `live --render-check` needs it: a rebuild legitimately discards the
+    /// whole ring — `GuiItemPass::destroy` idles first, so nothing in flight is
+    /// reading it — and without this the gate would score that as the very
+    /// use-after-free it is looking for. It scored exactly one such false
+    /// orphan on the hand pass before this existed.
+    pub fn gui_item_generation(&self) -> u64 {
+        self.gui_item_generation
+    }
+
+    /// How many times the hand pass has been (re)built. See
+    /// [`Self::gui_item_generation`].
+    pub fn hand_generation(&self) -> u64 {
+        self.hand_generation
     }
 
     /// Build the inventory-screen pass (M35).
@@ -1499,11 +1524,57 @@ impl WorldRenderer {
             atlas_w,
             atlas_h,
         )?);
+        self.hand_generation += 1;
         Ok(())
     }
 
     pub fn hand_ready(&self) -> bool {
         self.hand.is_some()
+    }
+
+    /// The raw handle of the buffer the hand pass would bind this frame, or 0.
+    ///
+    /// For `live --render-check`'s rotation witnesses (M86): the whole point of
+    /// [`crate::buf_ring::BufRing`] is that consecutive frames hand back
+    /// *different* buffers, and that is only observable from outside if the
+    /// handle is. Raw `u64` rather than `vk::Buffer` so the check does not have
+    /// to reach into ash's types to compare two of them.
+    pub fn hand_vertex_buffer(&self) -> u64 {
+        use ash::vk::Handle;
+        self.hand
+            .as_ref()
+            .and_then(|p| p.vertex_buffer())
+            .map(|b| b.as_raw())
+            .unwrap_or(0)
+    }
+
+    /// The raw handle of the buffer the GUI-item pass would bind this frame,
+    /// or 0. See [`Self::hand_vertex_buffer`].
+    pub fn gui_item_vertex_buffer(&self) -> u64 {
+        use ash::vk::Handle;
+        self.gui_items
+            .as_ref()
+            .and_then(|p| p.vertex_buffer())
+            .map(|b| b.as_raw())
+            .unwrap_or(0)
+    }
+
+    /// Every buffer the hand pass is keeping alive. See
+    /// [`crate::buf_ring::BufRing::live`] for why the gate needs this rather
+    /// than just the current handle.
+    pub fn hand_live_buffers(&self) -> Vec<u64> {
+        self.hand
+            .as_ref()
+            .map(|p| p.live_vertex_buffers())
+            .unwrap_or_default()
+    }
+
+    /// Every buffer the GUI-item pass is keeping alive.
+    pub fn gui_item_live_buffers(&self) -> Vec<u64> {
+        self.gui_items
+            .as_ref()
+            .map(|p| p.live_vertex_buffers())
+            .unwrap_or_default()
     }
 
     /// This frame's hand geometry and the matrix that projects it. An empty

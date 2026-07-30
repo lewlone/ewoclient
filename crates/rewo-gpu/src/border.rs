@@ -29,7 +29,7 @@
 //! walls of. Rewo rebuilds sixteen vertices per frame instead of reproducing
 //! the staleness.
 
-use crate::end_sky::{upload_buffer, Buf};
+use crate::buf_ring::BufRing;
 use crate::Gpu;
 use ash::vk;
 
@@ -234,8 +234,12 @@ pub struct BorderPass {
     image: vk::Image,
     view: vk::ImageView,
     alloc: Option<gpu_allocator::vulkan::Allocation>,
-    vbuf: Option<Buf>,
-    ibuf: Option<Buf>,
+    /// This frame's wall. Two [`BufRing`]s rather than bare buffers because
+    /// `set_draw` runs before the frame is submitted — see `buf_ring`'s module
+    /// docs (M86). The two advance in lockstep because they are always written
+    /// and always bound together.
+    vbuf: BufRing,
+    ibuf: BufRing,
     color: [f32; 4],
     tex_offset: [f32; 2],
     sides: Vec<usize>,
@@ -339,8 +343,8 @@ impl BorderPass {
             image,
             view,
             alloc: Some(alloc),
-            vbuf: None,
-            ibuf: None,
+            vbuf: BufRing::new(),
+            ibuf: BufRing::new(),
             color: [0.0; 4],
             tex_offset: [0.0; 2],
             sides: Vec::new(),
@@ -351,23 +355,21 @@ impl BorderPass {
     /// `extract` that decided the wall is invisible must draw nothing, not the
     /// last visible one.
     pub fn set_draw(&mut self, gpu: &mut Gpu, draw: Option<&BorderDraw>) -> Result<(), String> {
-        free_buf(gpu, self.vbuf.take());
-        free_buf(gpu, self.ibuf.take());
         self.sides.clear();
-        let Some(draw) = draw else {
+        let visible = draw.filter(|d| !d.sides.is_empty());
+        let Some(draw) = visible else {
+            self.vbuf.clear(gpu);
+            self.ibuf.clear(gpu);
             return Ok(());
         };
-        if draw.sides.is_empty() {
-            return Ok(());
-        }
         self.color = draw.color;
         self.tex_offset = draw.tex_offset;
         self.sides = draw.sides.clone();
-        self.vbuf = Some(upload_buffer(
+        self.vbuf.set(
             gpu,
             bytemuck::cast_slice(&draw.verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
+        )?;
         // Six indices per quad, the `AutoStorageIndexBuffer` vanilla shares
         // across every QUADS pipeline.
         let mut idx: Vec<u32> = Vec::with_capacity(24);
@@ -375,12 +377,11 @@ impl BorderPass {
             let b = q * 4;
             idx.extend_from_slice(&[b, b + 1, b + 2, b + 2, b + 3, b]);
         }
-        self.ibuf = Some(upload_buffer(
+        self.ibuf.set(
             gpu,
             bytemuck::cast_slice(&idx),
             vk::BufferUsageFlags::INDEX_BUFFER,
-        )?);
-        Ok(())
+        )
     }
 
     pub fn draw(
@@ -390,12 +391,12 @@ impl BorderPass {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let (Some(vbuf), Some(ibuf)) = (self.vbuf.as_ref(), self.ibuf.as_ref()) else {
-            return;
-        };
         if self.sides.is_empty() {
             return;
         }
+        let (Some(vbuf), Some(ibuf)) = (self.vbuf.bind(), self.ibuf.bind()) else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -427,8 +428,8 @@ impl BorderPass {
                 0,
                 bytemuck::bytes_of(&push),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
-            device.cmd_bind_index_buffer(cb, ibuf.buffer, 0, vk::IndexType::UINT32);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
+            device.cmd_bind_index_buffer(cb, ibuf, 0, vk::IndexType::UINT32);
             // One draw per visible wall, nearest first — vanilla's
             // `drawMultipleIndexed` over `closestBorder`.
             for side in &self.sides {
@@ -439,8 +440,8 @@ impl BorderPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
-        free_buf(gpu, self.ibuf.take());
+        self.vbuf.destroy(gpu);
+        self.ibuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -452,15 +453,6 @@ impl BorderPass {
             device.destroy_image(self.image, None);
         }
         if let Some(a) = self.alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
             let _ = gpu.allocator.free(a);
         }
     }

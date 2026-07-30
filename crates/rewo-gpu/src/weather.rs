@@ -32,7 +32,7 @@
 
 use ash::vk;
 
-use crate::end_sky::{upload_buffer, Buf};
+use crate::buf_ring::BufRing;
 use crate::Gpu;
 
 /// One weather column as the renderer needs it.
@@ -275,7 +275,10 @@ pub struct WeatherPass {
     sampler: vk::Sampler,
     images: [(vk::Image, vk::ImageView); 2],
     allocs: Vec<gpu_allocator::vulkan::Allocation>,
-    vbuf: Option<Buf>,
+    /// This frame's precipitation. A [`BufRing`] rather than a bare buffer
+    /// because `set_draw` runs before the frame is submitted — see `buf_ring`'s
+    /// module docs (M86).
+    vbuf: BufRing,
     rain_count: u32,
     snow_count: u32,
 }
@@ -385,27 +388,26 @@ impl WeatherPass {
             sampler,
             images: [(rain_img, rain_view), (snow_img, snow_view)],
             allocs: vec![rain_alloc, snow_alloc],
-            vbuf: None,
+            vbuf: BufRing::new(),
             rain_count: 0,
             snow_count: 0,
         })
     }
 
     pub fn set_draw(&mut self, gpu: &mut Gpu, draw: &WeatherDraw) -> Result<(), String> {
-        free_buf(gpu, self.vbuf.take());
         self.rain_count = draw.rain.len() as u32;
         self.snow_count = draw.snow.len() as u32;
         if draw.is_empty() {
+            self.vbuf.clear(gpu);
             return Ok(());
         }
         let mut verts = draw.rain.clone();
         verts.extend_from_slice(&draw.snow);
-        self.vbuf = Some(upload_buffer(
+        self.vbuf.set(
             gpu,
             bytemuck::cast_slice(&verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
-        Ok(())
+        )
     }
 
     pub fn draw(
@@ -416,12 +418,12 @@ impl WeatherPass {
         lightmap: ([f32; 4], [f32; 4], [f32; 4]),
         extent: vk::Extent2D,
     ) {
-        let Some(vbuf) = self.vbuf.as_ref() else {
-            return;
-        };
         if self.rain_count + self.snow_count == 0 {
             return;
         }
+        let Some(vbuf) = self.vbuf.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -432,7 +434,7 @@ impl WeatherPass {
                 .max_depth(1.0);
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             let push = Push {
                 mvp: view_proj,
                 light: lightmap.0,
@@ -470,7 +472,7 @@ impl WeatherPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
+        self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -484,15 +486,6 @@ impl WeatherPass {
             }
         }
         for a in self.allocs.drain(..) {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
             let _ = gpu.allocator.free(a);
         }
     }

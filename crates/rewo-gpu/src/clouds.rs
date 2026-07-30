@@ -32,7 +32,7 @@
 
 use ash::vk;
 
-use crate::end_sky::Buf;
+use crate::buf_ring::{BufRing, BUF_RING};
 use crate::Gpu;
 
 /// `CELL_SIZE_IN_BLOCKS`.
@@ -402,9 +402,19 @@ pub struct CloudPass {
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
-    ubo: Option<Buf>,
-    faces: Option<Buf>,
+    /// One descriptor set **per ring slot** (M86).
+    ///
+    /// This pass is the only one whose per-frame data reaches the shader
+    /// through a descriptor set rather than a vertex binding, and
+    /// `vkUpdateDescriptorSets` is illegal on a set that a pending command
+    /// buffer has bound. Rewriting one set every frame was therefore a second
+    /// hazard sitting on top of the buffer one, and it needs the same remedy:
+    /// set `i` describes slot `i`, so a set is only ever rewritten when its
+    /// buffers are, i.e. once per [`BUF_RING`] frames.
+    sets: [vk::DescriptorSet; BUF_RING],
+    /// This frame's uniform and face list. See `buf_ring`'s module docs.
+    ubo: BufRing,
+    faces: BufRing,
     quad_count: u32,
     fog_clouds_end: f32,
 }
@@ -435,30 +445,33 @@ impl CloudPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1),
+                .descriptor_count(BUF_RING as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1),
+                .descriptor_count(BUF_RING as u32),
         ];
         let pool = unsafe {
             device
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(1)
+                        .max_sets(BUF_RING as u32)
                         .pool_sizes(&pool_sizes),
                     None,
                 )
                 .map_err(|e| format!("cloud pool: {e}"))?
         };
         let set_layouts = [set_layout];
-        let set = unsafe {
+        let ring_layouts = [set_layout; BUF_RING];
+        let sets: [vk::DescriptorSet; BUF_RING] = unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(pool)
-                        .set_layouts(&set_layouts),
+                        .set_layouts(&ring_layouts),
                 )
-                .map_err(|e| format!("cloud set: {e}"))?[0]
+                .map_err(|e| format!("cloud set: {e}"))?
+                .try_into()
+                .map_err(|_| "cloud set: wrong count".to_string())?
         };
         let push_range = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
@@ -480,9 +493,9 @@ impl CloudPass {
             layout,
             set_layout,
             pool,
-            set,
-            ubo: None,
-            faces: None,
+            sets,
+            ubo: BufRing::new(),
+            faces: BufRing::new(),
             quad_count: 0,
             fog_clouds_end: 0.0,
         })
@@ -493,11 +506,11 @@ impl CloudPass {
     /// colour should produce, though the caller is expected to skip us
     /// entirely in that case.
     pub fn set_draw(&mut self, gpu: &mut Gpu, draw: &CloudDraw) -> Result<(), String> {
-        free_buf(gpu, self.ubo.take());
-        free_buf(gpu, self.faces.take());
         self.quad_count = draw.faces.len() as u32;
         self.fog_clouds_end = draw.fog_clouds_end;
         if draw.faces.is_empty() {
+            self.ubo.clear(gpu);
+            self.faces.clear(gpu);
             return Ok(());
         }
         let argb = draw.color_argb as u32;
@@ -522,33 +535,43 @@ impl CloudPass {
             cell_size: [CELL_SIZE, CELL_HEIGHT, CELL_SIZE, 0.0],
             camera: [draw.camera[0], draw.camera[1], draw.camera[2], 0.0],
         };
-        self.ubo = Some(crate::end_sky::upload_buffer(
+        self.ubo.set(
             gpu,
             bytemuck::bytes_of(&info),
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-        )?);
+        )?;
         let flat: Vec<i32> = draw.faces.iter().flat_map(|f| f.iter().copied()).collect();
-        self.faces = Some(crate::end_sky::upload_buffer(
+        self.faces.set(
             gpu,
             bytemuck::cast_slice(&flat),
             vk::BufferUsageFlags::STORAGE_BUFFER,
-        )?);
+        )?;
+        // The two rings are written together on every path, so they are always
+        // on the same slot — and that slot's descriptor set is the one to
+        // rewrite. Asserted rather than assumed: a future edit that clears one
+        // without the other would otherwise describe slot A's uniform with
+        // slot B's faces, which validation cannot see.
+        debug_assert_eq!(self.ubo.cursor(), self.faces.cursor());
+        let slot = self.ubo.cursor();
+        let (Some(ubo), Some(faces)) = (self.ubo.peek(), self.faces.peek()) else {
+            return Err("cloud: buffers vanished after upload".into());
+        };
         let ubo_info = [vk::DescriptorBufferInfo::default()
-            .buffer(self.ubo.as_ref().unwrap().buffer)
+            .buffer(ubo)
             .range(vk::WHOLE_SIZE)];
         let faces_info = [vk::DescriptorBufferInfo::default()
-            .buffer(self.faces.as_ref().unwrap().buffer)
+            .buffer(faces)
             .range(vk::WHOLE_SIZE)];
         unsafe {
             gpu.device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::default()
-                        .dst_set(self.set)
+                        .dst_set(self.sets[slot])
                         .dst_binding(0)
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .buffer_info(&ubo_info),
                     vk::WriteDescriptorSet::default()
-                        .dst_set(self.set)
+                        .dst_set(self.sets[slot])
                         .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(&faces_info),
@@ -566,9 +589,14 @@ impl CloudPass {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        if self.quad_count == 0 || self.faces.is_none() {
+        if self.quad_count == 0 {
             return;
         }
+        // Claim both slots, so the ring knows this frame reads them.
+        let (Some(_), Some(_)) = (self.ubo.bind(), self.faces.bind()) else {
+            return;
+        };
+        let set = self.sets[self.ubo.cursor()];
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -584,7 +612,7 @@ impl CloudPass {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
                 0,
-                &[self.set],
+                &[set],
                 &[],
             );
             let push = Push {
@@ -609,8 +637,8 @@ impl CloudPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.ubo.take());
-        free_buf(gpu, self.faces.take());
+        self.ubo.destroy(gpu);
+        self.faces.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -626,15 +654,6 @@ fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
     }
 }
 

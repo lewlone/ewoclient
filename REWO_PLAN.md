@@ -167,6 +167,20 @@ session before the shot — together they make a scene reproducible in one frame
 which matters because **two live runs are not the same scene** (mobs move,
 weather changes, spawn drifts).
 
+**`testserver-inv` is not a control** — a concurrent session left it with a
+size-12 world border, which M20.1 learned the hard way and M82 hit again. For
+anything where the world's shape matters, make your own directory on a free
+port (copy `testserver/server.properties`, change `server-port`, copy
+`eula.txt` **byte-for-byte** — a PowerShell-written one gets a UTF-8 BOM the
+server rejects), and stop it when done. M86 used `testserver-m86` on 25620.
+
+**`rewo live --render-check`** (M86) is the one live check that drives the
+*windowed* client. It runs 8 s, forces rain, opens the inventory halfway
+through, and prints 18 fail-closed witnesses covering which bake-gated render
+paths the frame loop reached, that the per-frame buffer rings keep a bound
+buffer alive, and that the whole session was validation-clean. Run it after
+any milestone that adds a render path.
+
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
 and time-driven. They are not: `Particle.tick()` contains no randomness at all,
@@ -481,7 +495,12 @@ list that follows is the 2026-07-27 snapshot and is left as written.
   harness exercises* (M67's audit: it is never knocked back, exploded at or
   mounted, so `explode`/`set_entity_motion`/`move_vehicle`/`set_passengers`
   are outside what that number can test); build actions prove
-  place == dirt and dig == air.
+  place == dirt and dig == air. **`live --render-check` 18/18** (M86) — the
+  only gate that runs the *windowed* client, and the only one that can see a
+  render path the windowed client never reaches. **Run it after any milestone
+  that adds one**: every other gate goes through `run_headless`, and nine
+  shipped features sat unrendered in `rewo live` for eighty milestones because
+  nothing did.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
   byte-identical from M15 through M38. Any change to it is a regression until
@@ -789,6 +808,21 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    router with **no entity table in scope at all** — a table-based lookup
    could not even compile against it. The pattern for the witness: pass no
    table, and make dropping the door the named mutation partner.
+14. **A per-frame GPU resource written *before* `Renderer::render` needs
+   `fif + 1` slots, not `fif`** — and the tree contains the other answer, one
+   apart, fully documented, for a resource written *inside* it. The fence wait
+   is at the top of `render`, so a `set_*` in the app's frame loop has only
+   frames `0 ..= n - 1 - fif` retired behind it while `WorldRenderer::draw` has
+   `0 ..= n - fif`. Copying `LIGHTMAP_UBO_RING`'s rule into a `set_*` ring is
+   one short at *every* `fif`. See `buf_ring.rs` (M86), which states it as
+   `ring_slot_is_retired(ring, fif) = ring >= fif + 1` and checks it over every
+   `fif` the `--fif` knob permits. Corollary worth knowing before writing a
+   witness for one: **"consecutive frames returned different buffer handles" is
+   not evidence of a working ring** — a driver mints a fresh `VkBuffer` for an
+   immediate free-and-recreate, measured at 3,097 distinct handles over 3,099
+   frames while validation logged 11,881 destroy-while-in-use errors. The
+   property to assert is that the buffer a frame *bound* is still alive on the
+   next one.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
@@ -796,52 +830,37 @@ Grouped by severity. The assistant is encouraged to challenge any of these,
 find more, and propose better approaches — you are a stronger reviewer than
 the code's author. Nothing below is settled truth.
 
-**The sharpest live bug on the list, found by M82 and deliberately not fixed
-by it:**
-- **`LiveApp::self.baked` is `None` for the entire windowed session, so a
-  dozen per-frame branches in `LiveApp::frame` are dead code.** `resumed`'s
-  init closure does `let baked = self.baked.take()` and drops it at the end
-  of the closure (`crates/rewo-app/src/live_cmd.rs`, since M3 / `47da8a0`),
-  and every `if let Some(baked) = self.baked.as_ref()` in the frame loop
-  therefore never runs in `rewo live` — the **item icons**, the
-  **first-person hand**, the **weather assets**, the **particle assets** and
-  the held-item label among them. The comment on `LiveApp::equipment` records
-  the consequence for the two fields somebody worked around ("cloned because
-  `self.baked` is *taken* when the window opens") without noticing the rest.
-  Proven with a one-frame probe (`PROBE: baked=false`), not by reading.
-  M82 routed around it (an `Arc<Language>` clone, and the `ScreenPass` built
-  in `resumed` beside `init_hud`) rather than fixing it, and called it a
-  milestone of its own. **That judgement was correct, and the coordinator
-  root-caused why on 2026-07-30 — the finding is recorded here so the fix does
-  not have to rediscover it:**
+**~~The sharpest live bug on the list~~ — CLOSED by M86, 2026-07-30.** Kept as
+a record, because what it teaches outlived it:
 
-  1. The restore itself is small and *works*: make the init closure return
-     `(LiveState, BakedAssets)` instead of `LiveState` and store the bake back
-     in the `Ok` arm. A one-frame probe against a live 26.2 server then reports
-     `baked=true gui_items=true hand=true weather=true`, against M82's
-     `baked=false`.
-  2. **It is not landable on its own**, because turning those paths on exposes
-     a latent defect: a 10-second windowed run goes from **0** validation
-     errors to ~**35,000**, all `VUID-vkDestroyBuffer-buffer-00922`, spread
-     across the whole run rather than at teardown.
-  3. The cause is two passes that free and recreate their vertex buffer **in
-     place, every frame**: `gui_item.rs::set_vertices` and
-     `hand_pass.rs::set_vertices` both open with `free_buf(gpu,
-     self.vbuf.take())`, destroying a buffer the in-flight command buffers
-     still reference. It was unobservable before only because neither pass was
-     ever constructed in the windowed client, and it is unobservable headlessly
-     because a single frame never overlaps itself.
-  4. **The working precedent is in the tree**: `entities.rs::set_draws` flips a
-     2-slot ring (`self.cursor = (self.cursor + 1) % RING`) sized to
-     frames-in-flight, so the slot being rewritten is never the one in use. A
-     deferred-destroy queue would also do.
-  5. Separately, the windowed teardown (`live_cmd.rs`, `state.world_renderer
-     .destroy`) has no `device_wait_idle` where the headless path fences on its
-     single frame. Adding `state.gpu.wait_idle()` there is correct but did
-     **not** move the count, because the bulk is per-frame, not teardown.
-
-  **Anyone touching the windowed client should check this first**; a feature
-  that "does not render in `rewo live`" may be this and not itself.
+- **`LiveApp::self.baked` was `None` for the entire windowed session**, from M3
+  (`47da8a0`) to M86 — `resumed`'s init closure did `let baked =
+  self.baked.take()` and dropped it at the closing brace, so every `if let
+  Some(baked) = self.baked.as_ref()` in `LiveApp::frame` was dead code in `rewo
+  live`. Nine shipped features had **never once rendered in the windowed
+  client**: item icons (M34), the inventory screen (M35), the player preview
+  (M36), the first-person hand (M38), the cloud deck and precipitation (M33),
+  the rain-fog band (M33b), particles (M37), the world border and the
+  block-breaking decals. Every headless gate was honest throughout, because
+  `run_headless` owns the bake as a plain value — which is exactly why nothing
+  caught it for eighty milestones.
+  - **The fix is four lines** (return `(LiveState, BakedAssets)`, store it
+    back), and it was not landable alone: turning the paths on took a 10-second
+    run from **0** validation errors to **40,532**, all
+    `VUID-vkDestroyBuffer-buffer-00922`. Eight passes were freeing and
+    recreating their vertex buffer in place every frame; see the M86 entry in
+    §15 for the ring, the `fif + 1` derivation, and the ninth instance
+    (`velvet_text::sync_atlas`) that the fix also switched on.
+  - **The lesson that generalises, and it is a big one:** a feature can be
+    fully built, fully gated and completely absent from the product. Every gate
+    in this project renders offscreen through `run_headless`; nothing but a
+    windowed run exercises `LiveApp::resumed`, and until M86 nothing did. `rewo
+    live --render-check` now does, and it fails closed on reachability rather
+    than on pixels — **run it after any milestone that adds a render path**, or
+    the path may join the list above.
+  - Still true, and still worth checking first: a feature that "does not render
+    in `rewo live`" may be a plumbing gap rather than itself. The difference is
+    now one command.
 
 **Architectural deviations from the plan (§4) worth reconsidering:**
 - ~~Meshing runs on the MAIN thread~~ — **RESOLVED 2026-07-21.** Meshing
@@ -2069,6 +2088,221 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M86 — the windowed client renders what it was built to render (2026-07-30)
+
+Not a packet milestone. A bug live since M3 (`47da8a0`), found by M82 and
+root-caused by the coordinator: **`LiveApp::resumed`'s init closure did
+`self.baked.take()` and dropped the bake at its closing brace**, so `self.baked`
+was `None` for the whole windowed session and every `if let Some(baked) =
+self.baked.as_ref()` in `LiveApp::frame` was dead code in `rewo live`.
+
+**Nine shipped features had never once rendered in the windowed client**: item
+icons (M34), the inventory screen (M35), the player preview (M36), the
+first-person hand (M38), the cloud deck and precipitation (M33), the rain-fog
+band (M33b), particles (M37), the world border (M80) and the block-breaking
+decals (M81). All of them are honest headlessly — `run_headless` owns the bake
+as a plain value — which is precisely why eighty milestones of gates never saw
+it. The restore is four lines: return `(LiveState, BakedAssets)` from the
+closure and store it back in the `Ok` arm.
+
+#### It was not landable alone, and the number is bigger than the estimate
+
+Turning the paths on took a 10-second windowed run from **0** validation errors
+to **40,532**, every one `VUID-vkDestroyBuffer-buffer-00922` (the §0.0 finding
+estimated ~35,000; measured at `--fif 2`, and 44,738 at `--fif 1`). **Eight**
+passes — not the two named — opened their `set_*` with `free_buf(gpu,
+self.vbuf.take())`, destroying a buffer that submitted command buffers still
+reference: `gui_item`, `hand_pass`, `weather`, `clouds`, `particles`,
+`crumbling`, `border`, `end_portal`. Unobservable before only because none of
+them was ever constructed in the windowed client, and unobservable headlessly
+because a one-frame oracle never overlaps itself.
+
+#### The number that is one apart from the one already in the tree
+
+The fix is a shared `crates/rewo-gpu/src/buf_ring.rs`, and the whole milestone
+turns on how long its ring has to be.
+
+`world.rs`'s `LIGHTMAP_UBO_RING` is `>= fif`, and its documentation says so at
+length. That is correct **for it**, because its slot is written inside
+`WorldRenderer::draw` — inside `Renderer::render`, *after* that frame's fence
+wait — at which point frames `0 ..= n - fif` have retired.
+
+A `set_*` runs in the app's frame loop **before** `render`. The most recent
+fence wait was the *previous* frame's, so only frames `0 ..= n - 1 - fif` have
+retired and `fif` frames may still be reading. A slot last written `ring` frames
+ago is safe exactly when `n - ring <= n - 1 - fif`:
+
+> **`ring >= fif + 1` for a ring written before `render`; `ring >= fif` for one
+> written inside it.**
+
+Copying the neighbouring constant would have been one short at every `fif`.
+`BUF_RING` is therefore `MAX_FRAMES_IN_FLIGHT + 1` = **4**, sized for the worst
+case `--fif` permits because a pass holds no reference to the `Renderer` driving
+it.
+
+#### The cursor advances on *use*, not on *call*
+
+`BufRing::set` advances only when the slot it is about to overwrite was actually
+bound by a draw (a `Cell<bool>` set in `bind()`, because `draw` takes `&self`
+throughout this crate). Two consequences:
+
+- Calling `set` twice in one frame consumes **one** slot. The second call frees
+  a buffer no command buffer has seen, which is always legal. Without this the
+  ring would have to be `calls_per_frame * (fif + 1)` long, and "how many times
+  does the driver call this per frame?" is exactly the invariant a later
+  milestone breaks silently — two sibling agents were adding screens to
+  `live_cmd.rs` the same week.
+- A pass whose draw is skipped never advances and never grows a hole: its slot
+  was not bound, so replacing it in place is safe by the same argument.
+
+#### The ninth instance, which the fix itself switched on
+
+`velvet_text::sync_atlas` destroys its glyph image, its view and its descriptor
+set **in place** whenever the cache goes dirty. Its own comment said "the caller
+is expected to have idled or to be outside the ring" — of a caller
+(`live_cmd`'s inventory branch) that does neither. It is reachable only with the
+inventory screen open, i.e. only through code this milestone re-enabled. Fixed
+with `gpu.wait_idle()`, matching what `GuiItemPass::destroy` and
+`HandPass::destroy` already do for their own rebuilds; a ring for an image, a
+view and a descriptor set would cost far more than a rare event saves.
+
+**That one is argued from the spec, not measured** — see "the mutation that
+survived" below.
+
+`clouds` needed a second remedy on top of the buffer ring: it is the only pass
+whose per-frame data reaches the shader through a **descriptor set**, and
+`vkUpdateDescriptorSets` is illegal on a set a pending command buffer has bound.
+It now allocates one set per ring slot and rewrites set `i` only when slot `i`'s
+buffers are written.
+
+#### The gate: `rewo live --render-check`
+
+Nothing existing could grade this, which is why M82 declined to fix it. The new
+one runs the windowed client against a server for 8 s, opens the inventory
+halfway through, and prints **18 witnesses**, failing closed. It is a
+**reachability** gate, not a pixel one — every path it covers is already graded
+headlessly; what none of those could see is that the windowed client never
+called into any of it.
+
+| mutation | caught by | result |
+|---|---|---|
+| M1 — drop the bake again (the original bug) | r2, r3, r5, r7, r8, r14, r15, r16 | 8/18 witnesses, exit 1 |
+| M2 — `BUF_RING = 1` | r14, r15, r18 | 14/18, 12,368 VUIDs, exit 1 |
+| M3 — delete `velvet_text`'s `wait_idle` | **nothing** | 18/18, exit 0 — see below |
+
+**Three of my own witnesses were wrong, and mutation found all three.**
+
+1. **r3** measured "the rain-fog band is not the `None` sentinel `[1e9, 1e9+1]`"
+   — and that sentinel is *also* the correct clear-weather answer. The signal
+   was measured against a background that already contained it, which is this
+   project's recurring detector error in its fifteenth costume. Fixed by forcing
+   rain (`REWO_FORCE_WEATHER=1.0`) for the duration of the check, which also
+   makes the precipitation rows about drawn rain rather than a built pass.
+2. **r14/r15** originally asserted "consecutive frames return different buffer
+   handles". Measured against M2: **3,097 distinct handles and zero repeats over
+   3,099 frames, while validation logged 11,881 destroy-while-in-use errors.** A
+   driver mints a fresh `VkBuffer` even for an immediate free-and-recreate, so
+   the changed handle was never evidence of anything. Rewritten as the property
+   the VUID is actually about: *the buffer a frame bound must still be alive on
+   the next frame*. Under M2 that reports 3,206 orphans and a peak depth of 1
+   against the 4 required.
+3. The rewritten r15 then reported **one** orphan on a clean run — a real
+   `init_hand` rebuild, which idles first and is legal. `WorldRenderer` now
+   exposes rebuild generations so the gate can tell a legitimate ring reset from
+   a use-after-free, and reports the rebuild count rather than silently
+   forgiving it.
+
+Two further honesty notes, both from running the battery rather than from
+reading:
+
+- **r9–r13 ("the pass was built") survive M1.** Those five passes are
+  constructed in `resumed` from the bake it still had at that moment, so they
+  exist even when nothing ever feeds them. They catch a pass that failed to
+  build; they do not catch the bug this milestone is about. Recorded in the code
+  beside them.
+- **M3 survived the whole gate**, on a run that provably performed two
+  `sync_atlas` rebuilds — one of them with the pass drawing every frame. Core
+  validation tracks a buffer bound by `vkCmdBindVertexBuffers` precisely (that
+  is what produced the 40,532) and does not track an image reached through a
+  descriptor set the same way. So `velvet_text`'s `wait_idle` is there because
+  `vkDestroyImage` requires it, not because a witness demanded it.
+  `VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION` would grade it, and
+  would also light up every other cross-frame hazard in the tree at once — its
+  own milestone.
+
+Getting M3 to fire *at all* took three attempts, each a reachability failure
+rather than a logic one: the gate parked the cursor at a plausible fraction of
+the window (no slot hovered), then over the right slot but **before**
+`set_screen_open`, which parks the cursor in the window centre itself. A tooltip
+is the only thing in this client that lays out Velvet glyphs and an empty slot
+produces none, so until all three were right the path ran zero times.
+
+#### The audit, and the one it found that is not a VUID
+
+`entities.rs`'s vertex ring was **`RING = 2`, and 2 is one short at the default
+`--fif 2`** by the derivation above — `set_draws` runs before `render`, so
+frames `n-1` and `n-2` may both still be reading when frame `n` writes, and a
+2-slot ring hands frame `n` the slot frame `n-2` is on. Nothing catches it: the
+write is a CPU memcpy into a mapped allocation, not a `vkDestroy`, so core
+validation is silent and the only symptom is entity geometry that is briefly
+some other frame's. Widened to `MAX_FRAMES_IN_FLIGHT + 1`, at ~27 MB per
+`EntityPass`. **Argued from the derivation, not measured** — this milestone has
+no gate that can see a CPU/GPU data race.
+
+That may be worth a look against §0.0's open "a mob can render with another
+mob's texture when more than one is in the scene", which is pre-existing, needs
+more than one entity in the scene, and is in the family "the draw ranges are
+wrong". It is a lead, not a diagnosis.
+
+The audit also found every other ring in the crate is written **inside**
+`render` (`SELECT_RING`, `container`, `screen`, `hud`, `text`, `locator_bar`,
+`velvet_text`, `velvet_chrome`), so each needs `>= fif` and each is 2 — correct
+at the default and **one short only at `--fif 3`**. Left alone deliberately:
+that is a different, non-default failure and a different milestone's worth of
+memory. Two more open items it turned up, both recorded rather than fixed:
+`world.rs::sync_meta` writes a single un-ringed cull SSBO from inside `cull`,
+and the `indirect`/`count` buffers are likewise single; and a dozen `init_*`
+methods drop the old pass without destroying it, which leaks rather than races.
+
+#### Also in this milestone
+
+- The windowed teardown gained `state.gpu.wait_idle()`, which the headless path
+  has always had by fencing on its single frame. It did **not** move the VUID
+  count — the bulk was per-frame — but several `destroy`s do not idle for
+  themselves and the hole was real.
+- `rewo_gpu::validation_error_count()` — a process-wide counter in the debug
+  callback. Every gate's bar is "0 VUIDs" and until now that was checked by
+  grepping a log *outside* the process, which means no gate could fail on it.
+
+#### Measured
+
+**1,544 tests** (proto 11, world 249, data 45, net 428, mesh 85, gpu 249, app
+175 + 302 across the other targets — was 1,540; +4 are `buf_ring`'s ring
+predicate and cursor rules). All **30 gates** `--check` exit 0 with **0 VUIDs**:
+mobshot 246/246, blockentityshot 172, inventoryshot 152, swingshot 97,
+abilityshot 96, itemshot 75, capeshot 69, hurtshot 56, titleshot 55,
+locatorshot 49, labelshot 47, rideshot 45, attributeshot 43, hudshot 41,
+deathshot 40, weathershot 35, handshot 34, particleshot 34, healthbarshot 33,
+bordershot 31, eventshot 28, danceshot 24, breakshot 22, captureshot 17,
+portalshot 12, plus skyshot / lightmapshot / tintshot / meshshot /
+dimensioncheck. Release build green; `demo --out` SHA-256
+`2cc56b4acbfb92cb…46635`, byte-identical to M15 onward.
+
+Live, against a fresh flat-world 26.2 server on port 25620 (its own directory —
+a concurrent session's `testserver-inv` on 25610 has a size-12 world border and
+is not a control):
+
+| run | before | after |
+|---|---|---|
+| `live --run-seconds 10 --fif 1` | 44,738 VUIDs | **0** |
+| `live --run-seconds 10 --fif 2` | 40,532 VUIDs | **0** |
+| `live --run-seconds 10 --fif 3` | — | **0** |
+| `live --render-check` at fif 1 / 2 / 3 | — | **18/18**, exit 0 |
+
+Frame time went from avg 0.57 ms to avg **0.91–1.48 ms** (p99 1.63 → 3.4–3.7,
+max 5.6 → 17–20). That is not a regression: it is the cost of nine features that
+had been free because they were dead. `corrections 0` throughout.
 
 ### M82 — the screen framework, and the death screen (2026-07-30)
 
