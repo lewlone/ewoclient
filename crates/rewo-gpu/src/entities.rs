@@ -23,9 +23,12 @@
 //! with depth-write off. Both mask alpha writes (render discipline #2) and
 //! take pre-linearized vertex colors (discipline #1).
 //!
-//! Buffers are a 2-slot ring flipped on each `set_draws`: with the frame
-//! driver fence-pacing at most 2 frames in flight, the slot being rewritten
-//! retired two submissions ago.
+//! Buffers are a ring flipped on each `set_draws`, [`RING`] slots long. The
+//! comment that stood here said "2-slot … with the frame driver fence-pacing at
+//! most 2 frames in flight, the slot being rewritten retired two submissions
+//! ago" — which was the wrong count *and* the wrong reasoning: `set_draws` runs
+//! before the frame's fence wait, not after it, so a slot must survive
+//! `fif + 1` frames rather than `fif`. See [`RING`] (M86).
 //!
 //! Verification knob: `REWO_MOB_DEBUG_TEX=1` replaces every mob texture
 //! with facelabel colors (each box-UV face rect painted its
@@ -48,7 +51,22 @@ const VERTEX_STRIDE: u64 = 52; // 3 pos + 2 uv + 4 rgba + 3 light + 1 hurt f32s
 /// entities ≈ 65k verts). 9.4 MB × 2 ring slots — cheap; the CPU soup
 /// build is the real ceiling long before this is.
 const MAX_VERTS: usize = 262_144;
-const RING: usize = 2;
+/// Slots in the vertex ring — `MAX_FRAMES_IN_FLIGHT + 1`, the same rule
+/// [`crate::buf_ring::BUF_RING`] states and for the same reason.
+///
+/// **This was 2 until M86, and 2 is one short at the default `--fif 2`.**
+/// `set_draws` runs in the app's frame loop *before* `Renderer::render`, so the
+/// most recent fence wait was the previous frame's: frames `n-1` and `n-2` may
+/// both still be reading when frame `n` writes. A 2-slot ring hands frame `n`
+/// the slot frame `n-2` is on. Nothing catches it — the write is a CPU memcpy
+/// into a mapped allocation, not a `vkDestroy`, so core validation is silent
+/// and the only symptom is entity geometry that is briefly some other frame's.
+///
+/// Argued from that derivation, not measured: this milestone has no gate that
+/// can see a CPU/GPU data race, and the ~27 MB it costs
+/// (`MAX_VERTS × VERTEX_STRIDE × 2` extra slots, per `EntityPass`) buys
+/// correctness at every `--fif` the knob permits rather than at one.
+const RING: usize = crate::MAX_FRAMES_IN_FLIGHT + 1;
 /// Capsule tessellation: segments around Y × profile bands.
 const SEGMENTS: usize = 12;
 /// Nametag world scale per font pixel at cell=8 (vanilla's 0.025).
@@ -1300,7 +1318,7 @@ impl EntityPass {
             )?;
 
             let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = [None, None];
+            let mut allocs: [Option<Allocation>; RING] = std::array::from_fn(|_| None);
             for i in 0..RING {
                 let buffer = device
                     .create_buffer(

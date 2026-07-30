@@ -31,9 +31,8 @@
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
-use crate::end_sky::upload_buffer;
+use crate::buf_ring::BufRing;
 use crate::entities::create_texture;
-use crate::end_sky::Buf;
 use crate::Gpu;
 use crate::world::DEPTH_FORMAT;
 
@@ -81,7 +80,10 @@ pub struct EndPortalPass {
     sampler: vk::Sampler,
     images: [(vk::Image, vk::ImageView); 2],
     allocs: Vec<Allocation>,
-    vbuf: Option<Buf>,
+    /// This frame's portal quads. A [`BufRing`] rather than a bare buffer
+    /// because `set_draws` runs before the frame is submitted — see `buf_ring`'s
+    /// module docs (M86).
+    vbuf: BufRing,
     vert_count: u32,
     /// Where each draw's vertices start, with its layer count.
     runs: Vec<(u32, u32, i32)>,
@@ -211,7 +213,7 @@ impl EndPortalPass {
             sampler,
             images: [(sky_img, sky_view), (por_img, por_view)],
             allocs: vec![sky_alloc, por_alloc],
-            vbuf: None,
+            vbuf: BufRing::new(),
             vert_count: 0,
             runs: Vec::new(),
         })
@@ -227,16 +229,11 @@ impl EndPortalPass {
             self.runs.push((start, d.verts.len() as u32, d.layers));
         }
         self.vert_count = verts.len() as u32;
-        free_buf(gpu, self.vbuf.take());
-        if verts.is_empty() {
-            return Ok(());
-        }
-        self.vbuf = Some(upload_buffer(
+        self.vbuf.set(
             gpu,
             bytemuck::cast_slice(&verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
-        Ok(())
+        )
     }
 
     /// Draw every portal. One `cmd_draw` per run, because the layer count is a
@@ -249,12 +246,12 @@ impl EndPortalPass {
         game_time: f32,
         extent: vk::Extent2D,
     ) {
-        let Some(vbuf) = self.vbuf.as_ref() else {
-            return;
-        };
         if self.vert_count == 0 {
             return;
         }
+        let Some(vbuf) = self.vbuf.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -273,7 +270,7 @@ impl EndPortalPass {
                 &[self.set],
                 &[],
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             for (start, count, layers) in &self.runs {
                 let push = Push {
                     mvp: view_proj,
@@ -295,7 +292,7 @@ impl EndPortalPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
+        self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -309,15 +306,6 @@ impl EndPortalPass {
             }
         }
         for a in self.allocs.drain(..) {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
             let _ = gpu.allocator.free(a);
         }
     }

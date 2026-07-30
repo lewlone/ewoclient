@@ -14,6 +14,7 @@
 //!   (device → surface → debug → instance, after a wait_idle).
 
 pub mod border;
+pub(crate) mod buf_ring;
 pub mod celestial;
 pub mod clouds;
 pub mod container;
@@ -62,12 +63,24 @@ pub const FRAMES_IN_FLIGHT: usize = 2;
 /// The largest value [`renderer::Renderer::with_frames_in_flight`] will accept
 /// — the M6 knob clamps into `1..=MAX_FRAMES_IN_FLIGHT`.
 ///
-/// Any per-frame ring a `WorldRenderer` owns must be at least this long, not
-/// merely [`FRAMES_IN_FLIGHT`] long: the renderer's fence wait only guarantees
-/// that frame `n - fif` has retired, so a ring shorter than the *actual* `fif`
-/// would let a recording frame overwrite a slot an in-flight frame still reads.
+/// Any per-frame ring a `WorldRenderer` owns must be sized from **this**, not
+/// from [`FRAMES_IN_FLIGHT`]: the renderer's fence wait only guarantees that
+/// frame `n - fif` has retired, so a ring shorter than the *actual* `fif` would
+/// let a recording frame overwrite a slot an in-flight frame still reads.
 /// `WorldRenderer` has no handle on the `Renderer` that drives it, so it sizes
 /// its rings for the worst case the knob permits.
+///
+/// **Exactly how long depends on where the slot is written**, and the two
+/// answers are one apart (M86):
+///
+/// - Written *inside* `Renderer::render` — i.e. from `WorldRenderer::draw` or
+///   `cull`, after that frame's fence wait — needs `ring >= fif`. That is
+///   `world::LIGHTMAP_UBO_RING`'s case.
+/// - Written *before* `render`, i.e. from a `set_*` the app's frame loop calls,
+///   needs `ring >= fif + 1`: the most recent fence wait was the previous
+///   frame's, so `fif` frames may still be reading. That is
+///   `buf_ring::BUF_RING`'s case, and the one that produced 40,532
+///   `VUID-vkDestroyBuffer-buffer-00922` in M86.
 pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
@@ -359,11 +372,34 @@ unsafe extern "system" fn debug_callback(
         CStr::from_ptr((*data).p_message).to_string_lossy()
     };
     if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        VALIDATION_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         log::error!("[vk] {message}");
     } else {
         log::warn!("[vk] {message}");
     }
     vk::FALSE
+}
+
+/// Validation errors seen since the process started (M86).
+///
+/// Every gate's bar is "exit 0 with 0 VUIDs", and until M86 that was checked by
+/// grepping a log outside the process — which means a gate could not *fail* on
+/// it, only a human reading the output could. Counting here lets a check assert
+/// the number itself. Zero when validation is off, which is why a run that
+/// asserts on this must also assert validation was actually enabled.
+static VALIDATION_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many validation errors the debug callback has seen. See
+/// [`VALIDATION_ERRORS`].
+pub fn validation_error_count() -> u64 {
+    VALIDATION_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Slots in a per-frame buffer ring — `buf_ring::BUF_RING`, re-exported so
+/// `live --render-check` can state its expectation in terms of the contract
+/// rather than a copied number.
+pub const fn buf_ring_slots() -> usize {
+    buf_ring::BUF_RING
 }
 
 /// The full-image color subresource range used everywhere in M0.

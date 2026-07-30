@@ -46,7 +46,7 @@
 
 use ash::vk;
 
-use crate::end_sky::{upload_buffer, Buf};
+use crate::buf_ring::BufRing;
 use crate::Gpu;
 
 /// One decal vertex. 24 bytes.
@@ -74,7 +74,10 @@ pub struct CrumblingPass {
     sampler: vk::Sampler,
     image: (vk::Image, vk::ImageView),
     alloc: Option<gpu_allocator::vulkan::Allocation>,
-    vbuf: Option<Buf>,
+    /// This frame's decals. A [`BufRing`] rather than a bare buffer because
+    /// `set_verts` runs before the frame is submitted — see `buf_ring`'s module
+    /// docs (M86).
+    vbuf: BufRing,
     count: u32,
 }
 
@@ -181,7 +184,7 @@ impl CrumblingPass {
             sampler,
             image: (img, view),
             alloc: Some(alloc),
-            vbuf: None,
+            vbuf: BufRing::new(),
             count: 0,
         })
     }
@@ -189,17 +192,12 @@ impl CrumblingPass {
     /// Replace the frame's decal geometry. An empty list draws nothing, which
     /// is the ordinary case.
     pub fn set_verts(&mut self, gpu: &mut Gpu, verts: &[CrumblingVertex]) -> Result<(), String> {
-        free_buf(gpu, self.vbuf.take());
         self.count = verts.len() as u32;
-        if verts.is_empty() {
-            return Ok(());
-        }
-        self.vbuf = Some(upload_buffer(
+        self.vbuf.set(
             gpu,
             bytemuck::cast_slice(verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
-        Ok(())
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -213,12 +211,12 @@ impl CrumblingPass {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let Some(vbuf) = self.vbuf.as_ref() else {
-            return;
-        };
         if self.count == 0 {
             return;
         }
+        let Some(vbuf) = self.vbuf.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -229,7 +227,7 @@ impl CrumblingPass {
                 .max_depth(1.0);
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             let push = Push { view_proj };
             device.cmd_push_constants(
                 cb,
@@ -252,7 +250,7 @@ impl CrumblingPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
+        self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -351,15 +349,6 @@ fn create_stage_array(
             )
             .map_err(|e| format!("crumbling array view: {e}"))?;
         Ok((image, alloc, view))
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
     }
 }
 

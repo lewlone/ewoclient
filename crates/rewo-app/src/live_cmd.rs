@@ -100,6 +100,277 @@ pub struct LiveArgs {
     wavy_cape: bool,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
+    /// M86's live gate. Runs the windowed client against a server, counts which
+    /// bake-gated render paths the frame loop actually reached, proves each
+    /// per-frame buffer ring rotates, and asserts the run was
+    /// validation-clean — then prints one row per witness and exits non-zero if
+    /// any failed. Implies `--run-seconds` if none was given.
+    ///
+    /// This is a **reachability** gate, not a pixel one. The pixels of every
+    /// path it covers are already graded headlessly (`itemshot`, `handshot`,
+    /// `weathershot`, `particleshot`, `bordershot`, `breakshot`); what none of
+    /// them could see is that the windowed client never called into any of it.
+    #[arg(long = "render-check", default_value_t = false)]
+    render_check: bool,
+}
+
+/// How many seconds `--render-check` runs for when `--run-seconds` is absent.
+///
+/// Long enough for the server to send the inventory and for the weather /
+/// particle paths to have been reached many times over, short enough to be a
+/// gate rather than a soak.
+const RENDER_CHECK_SECONDS: f32 = 8.0;
+
+/// What `live --render-check` observed (M86).
+///
+/// Every field is a **count of frames on which something happened**, never a
+/// snapshot, because the failure this gate exists for is "the branch never ran
+/// at all" and a snapshot taken on the wrong frame cannot tell that from "it
+/// ran and had nothing to do".
+#[derive(Default)]
+struct RenderCheck {
+    frames: u64,
+    /// `self.baked.is_some()` observed at the top of a frame. The witness whose
+    /// absence let the bug live from M3 to M86.
+    baked_frames: u64,
+    /// Frames on which the rain-fog band came from the bake rather than from
+    /// the `None` sentinel `[1e9, 1e9 + 1]`. A *value* witness, not a call
+    /// count: the sentinel is what the dead branch produced, so a finite band
+    /// cannot be faked by merely entering the arm.
+    fog_band_frames: u64,
+    gui_item_frames: u64,
+    hand_frames: u64,
+    weather_frames: u64,
+    /// Frames on which the inventory screen was drawn. The gate opens it
+    /// halfway through, so this is roughly half the run — it exists to prove
+    /// the screen path (and with it `VelvetTextPass::sync_atlas`) was reached
+    /// at all, not to pin a count.
+    screen_frames: u64,
+    /// Passes actually constructed by the end of the run.
+    gui_items_ready: bool,
+    hand_ready: bool,
+    clouds_ready: bool,
+    weather_ready: bool,
+    particles_ready: bool,
+    border_ready: bool,
+    crumbling_ready: bool,
+    /// The ring witnesses, for each of the two passes M86 names.
+    ///
+    /// `last` is the handle the previous frame bound; `orphans` counts the
+    /// frames on which that handle was **no longer among the pass's live
+    /// buffers** — i.e. the previous frame's vertex buffer was destroyed while
+    /// that frame could still be reading it, which is the VUID stated as a
+    /// property. `max_live` is the deepest the ring ever got.
+    ///
+    /// A first cut of these counted *distinct consecutive handles* instead, on
+    /// the theory that a 1-slot ring would keep handing back the same address.
+    /// It does not: measured against the 1-slot mutation, that version reported
+    /// 3,097 distinct handles and zero repeats over 3,099 frames while
+    /// validation logged 11,881 destroy-while-in-use errors. A driver mints a
+    /// fresh `VkBuffer` even for an immediate free-and-recreate, so the changed
+    /// handle was never evidence of anything.
+    gui_item_last: u64,
+    hand_last: u64,
+    gui_item_orphans: u64,
+    hand_orphans: u64,
+    gui_item_max_live: usize,
+    hand_max_live: usize,
+    /// Last-seen rebuild counters, so a legitimate ring reset is not scored as
+    /// a use-after-free.
+    gui_item_generation: u64,
+    hand_generation: u64,
+    /// How many rebuilds happened, reported so a run where the exemption fired
+    /// suspiciously often is visible rather than silently forgiven.
+    gui_item_rebuilds: u64,
+    hand_rebuilds: u64,
+    /// Whether validation was actually on. Asserting "0 errors" is worthless
+    /// without it — a run with the layer off reports 0 for free.
+    validation: bool,
+}
+
+impl RenderCheck {
+    /// Sample the ringed passes once per frame, after this frame's `set_*`
+    /// calls and before the next one.
+    fn sample_rings(&mut self, wr: &WorldRenderer) {
+        // A pass rebuild (`init_gui_items` / `init_hand`, on an atlas repack)
+        // legitimately throws the whole ring away — `Pass::destroy` idles
+        // first — so the frame after one is exempt, and the comparison
+        // restarts from the new ring.
+        let g_gen = wr.gui_item_generation();
+        let g_rebuilt = g_gen != self.gui_item_generation;
+        self.gui_item_rebuilds += u64::from(g_rebuilt);
+        self.gui_item_generation = g_gen;
+        let g_live = wr.gui_item_live_buffers();
+        self.gui_item_max_live = self.gui_item_max_live.max(g_live.len());
+        let g = wr.gui_item_vertex_buffer();
+        if g != 0 {
+            if !g_rebuilt && self.gui_item_last != 0 && !g_live.contains(&self.gui_item_last) {
+                self.gui_item_orphans += 1;
+            }
+            self.gui_item_last = g;
+        }
+        let h_gen = wr.hand_generation();
+        let h_rebuilt = h_gen != self.hand_generation;
+        self.hand_rebuilds += u64::from(h_rebuilt);
+        self.hand_generation = h_gen;
+        let h_live = wr.hand_live_buffers();
+        self.hand_max_live = self.hand_max_live.max(h_live.len());
+        let h = wr.hand_vertex_buffer();
+        if h != 0 {
+            if !h_rebuilt && self.hand_last != 0 && !h_live.contains(&self.hand_last) {
+                self.hand_orphans += 1;
+            }
+            self.hand_last = h;
+        }
+    }
+
+    /// Print one row per witness; `true` if every one passed.
+    fn report(&self) -> bool {
+        let vuids = rewo_gpu::validation_error_count();
+        let mut rows: Vec<(&str, bool, String)> = Vec::new();
+        let mut row = |name: &'static str, ok: bool, detail: String| rows.push((name, ok, detail));
+
+        row(
+            "r1 the run rendered frames",
+            self.frames >= 60,
+            format!("{} frames", self.frames),
+        );
+        row(
+            "r2 the bake survives `resumed`",
+            self.baked_frames == self.frames && self.frames > 0,
+            format!("{} of {} frames", self.baked_frames, self.frames),
+        );
+        // Every frame **but the first**. `RainFog` is a stateful ease advanced
+        // by `delta_ticks`, and frame 1's `dt` is 0 because there is no previous
+        // frame to subtract from — so on that one frame the multiplier is still
+        // exactly zero and `rain_fog_band` correctly returns the disabled
+        // sentinel. The bound is derived from that, not fitted to the
+        // measurement: it is 1, and a second frame of sentinel would fail.
+        row(
+            "r3 the rain-fog band is the bake's, not the None sentinel",
+            self.fog_band_frames + 1 >= self.frames && self.frames > 0,
+            format!("{} of {} frames", self.fog_band_frames, self.frames),
+        );
+        row(
+            "r4 the GUI-item pass was built",
+            self.gui_items_ready,
+            format!("{}", self.gui_items_ready),
+        );
+        row(
+            "r5 the GUI-item branch ran every frame",
+            self.gui_item_frames == self.frames && self.frames > 0,
+            format!("{} of {} frames", self.gui_item_frames, self.frames),
+        );
+        row(
+            "r6 the hand pass was built",
+            self.hand_ready,
+            format!("{}", self.hand_ready),
+        );
+        row(
+            "r7 the hand branch ran every frame",
+            self.hand_frames == self.frames && self.frames > 0,
+            format!("{} of {} frames", self.hand_frames, self.frames),
+        );
+        row(
+            "r8 the weather branch ran every frame",
+            self.weather_frames == self.frames && self.frames > 0,
+            format!("{} of {} frames", self.weather_frames, self.frames),
+        );
+        // r9-r13 are **weaker than they look, and were measured to be**.
+        //
+        // Under the milestone's headline mutation — dropping the bake again, so
+        // every branch below goes dead — all five of these still pass, because
+        // these passes are constructed in `resumed` from the bake it still had
+        // at that moment. They catch a pass that failed to build (a jar missing
+        // a texture); they cannot catch a pass that is built and never fed.
+        // The rows that die under that mutation are r2, r3, r5, r7, r8, r14,
+        // r15 and r16. Do not read a green r9-r13 as "the clouds rendered".
+        row(
+            "r9 the cloud pass was built",
+            self.clouds_ready,
+            format!("{}", self.clouds_ready),
+        );
+        row(
+            "r10 the precipitation pass was built",
+            self.weather_ready,
+            format!("{}", self.weather_ready),
+        );
+        row(
+            "r11 the particle pass was built",
+            self.particles_ready,
+            format!("{}", self.particles_ready),
+        );
+        row(
+            "r12 the world-border pass was built",
+            self.border_ready,
+            format!("{}", self.border_ready),
+        );
+        row(
+            "r13 the block-breaking pass was built",
+            self.crumbling_ready,
+            format!("{}", self.crumbling_ready),
+        );
+        // The ring witnesses, stated as the property the VUID is about: a
+        // buffer a frame bound must still exist on the next frame. `orphans`
+        // counts violations directly; `max_live` proves the ring reached its
+        // declared depth rather than merely never being caught out.
+        //
+        // The depth bar is `MAX_FRAMES_IN_FLIGHT + 1`, derived here from the
+        // contract rather than read off `buf_ring_slots()` — comparing the ring
+        // against its own declared length would be self-calibrating, passing at
+        // 4 and at 1 alike. `buf_ring_slots()` appears only in the message, so
+        // a disagreement between the two is visible.
+        let required = rewo_gpu::MAX_FRAMES_IN_FLIGHT + 1;
+        let slots = rewo_gpu::buf_ring_slots();
+        row(
+            "r14 the GUI-item ring keeps a bound buffer alive",
+            self.gui_item_orphans == 0 && self.gui_item_max_live >= required,
+            format!(
+                "{} orphaned, {} live at peak, need {required}, declared {slots}, {} rebuilds",
+                self.gui_item_orphans, self.gui_item_max_live, self.gui_item_rebuilds
+            ),
+        );
+        row(
+            "r15 the hand ring keeps a bound buffer alive",
+            self.hand_orphans == 0 && self.hand_max_live >= required,
+            format!(
+                "{} orphaned, {} live at peak, need {required}, declared {slots}, {} rebuilds",
+                self.hand_orphans, self.hand_max_live, self.hand_rebuilds
+            ),
+        );
+        // The screen is the only door to `VelvetTextPass::sync_atlas`, this
+        // milestone's ninth destroy-in-place. A quarter of the run is a floor
+        // well under the half the gate opens for, so it fails on "never
+        // reached" rather than on scheduling jitter.
+        row(
+            "r16 the inventory screen was drawn",
+            self.screen_frames * 4 >= self.frames && self.frames > 0,
+            format!("{} of {} frames", self.screen_frames, self.frames),
+        );
+        row(
+            "r17 validation was enabled",
+            self.validation,
+            format!("{}", self.validation),
+        );
+        row(
+            "r18 the session was validation-clean",
+            vuids == 0,
+            format!("{vuids} errors"),
+        );
+
+        let mut pass = 0usize;
+        for (name, ok, detail) in &rows {
+            println!(
+                "[rendercheck] {} {name} ({detail})",
+                if *ok { "PASS" } else { "FAIL" }
+            );
+            if *ok {
+                pass += 1;
+            }
+        }
+        println!("[rendercheck] {pass}/{} witnesses", rows.len());
+        pass == rows.len()
+    }
 }
 
 /// Whether the wavy cape is switched on for this run (M61).
@@ -3721,6 +3992,9 @@ struct LiveApp {
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
+    /// M86's live reachability + validation gate. `None` unless
+    /// `--render-check`.
+    check: Option<RenderCheck>,
     fif: usize,
     state: Option<LiveState>,
     ring: OverlayRing,
@@ -3821,7 +4095,19 @@ impl ApplicationHandler for LiveApp {
                 return;
             }
         };
-        let init = (|| -> Result<LiveState, String> {
+        // Returns the bake **alongside** the state, and the `Ok` arm below puts
+        // it back in `self.baked`.
+        //
+        // This closure used to return `LiveState` alone, which meant the
+        // `self.baked.take()` below dropped the bake at the closing brace and
+        // left `self.baked` as `None` for the entire windowed session. Every
+        // `if let Some(baked) = self.baked.as_ref()` in `frame` was therefore
+        // dead code in `rewo live` — the item icons, the inventory screen, the
+        // first-person hand, the cloud deck, the precipitation, the rain-fog
+        // band, the particles, the world border and the block-breaking decals,
+        // none of which had ever rendered in the windowed client since M3. See
+        // the M86 entry in `REWO_PLAN.md` §15.
+        let init = (|| -> Result<(LiveState, assets::BakedAssets), String> {
             let rdh = window
                 .display_handle()
                 .map_err(|e| format!("dh: {e}"))?
@@ -3874,19 +4160,25 @@ impl ApplicationHandler for LiveApp {
                     }
                 }
             }
-            Ok(LiveState {
-                window: window.clone(),
-                gpu,
-                renderer,
-                world_renderer,
-            })
+            Ok((
+                LiveState {
+                    window: window.clone(),
+                    gpu,
+                    renderer,
+                    world_renderer,
+                },
+                baked,
+            ))
         })();
         match init {
-            Ok(state) => {
+            Ok((state, baked)) => {
                 let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
                 state.window.set_cursor_visible(false);
                 self.started = Instant::now();
                 self.state = Some(state);
+                // The half M3 forgot. Without it every baked-gated branch in
+                // `frame` is unreachable — see the closure's doc above.
+                self.baked = Some(baked);
             }
             Err(e) => {
                 self.init_error = Some(e);
@@ -4473,6 +4765,63 @@ impl LiveApp {
             self.set_screen_open(false);
         }
 
+        // M86's gate drives the inventory open for the second half of its run.
+        //
+        // The screen is one of the paths the bake fix re-enables, and it is the
+        // one carrying the ninth instance of this milestone's bug —
+        // `VelvetTextPass::sync_atlas` destroying its glyph image and rewriting
+        // its descriptor set in place, whose own comment said "the caller is
+        // expected to have idled" of a caller that does not. Nothing reaches it
+        // except an open inventory, so a check that never opens one would grade
+        // that fix not at all. The mouse is parked over the panel so a tooltip
+        // lays out glyphs and the cache actually goes dirty.
+        if let Some(c) = self.check.as_ref() {
+            // Half of *this* run, not half of the default: `--render-check
+            // --run-seconds 4` would otherwise never reach the trigger and
+            // `r16` would fail with the screen having never opened. Caught by
+            // exactly that.
+            let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+            let half = c.frames > 0 && self.started.elapsed().as_secs_f32() >= limit * 0.5;
+            if half && !self.screen.inventory_open() {
+                self.set_screen_open(true);
+                // **After** the open, not before: `grab_for_screen` parks the
+                // cursor in the middle of the window, which would overwrite
+                // this. Menu slot 36 is hotbar slot 0, which the spawn handler
+                // fills with a stack of dirt on the creative test server.
+                //
+                // The slot choice is not cosmetic. A tooltip is the only thing
+                // in this client that lays out Velvet glyphs, an *empty* slot
+                // produces none, and without one the glyph cache never goes
+                // dirty and `VelvetTextPass::sync_atlas` never runs at all. Two
+                // earlier cuts of this — a plausible-looking fraction of the
+                // window, then the right slot set before the open — both left
+                // the M3 mutation (deleting that path's `wait_idle`) alive
+                // through the entire gate.
+                if let Some(s) = self.state.as_ref() {
+                    let e = s.window.inner_size();
+                    let r = screen_slot_rects(e.width as f32, e.height as f32)
+                        [rewo_world::inventory::HOTBAR_MENU_START];
+                    self.screen.mouse = ((r.0 + r.2 * 0.5) as f64, (r.1 + r.2 * 0.5) as f64);
+                }
+            }
+            // Three-quarters through, turn on advanced tooltips (F3+H), which
+            // adds the item's id as a second line.
+            //
+            // This is what makes the Velvet fix *gradeable*. The rebuild the
+            // screen-open triggers happens on the first frame the pass exists,
+            // before it has ever drawn — so destroying its image then is legal
+            // and the M3 mutation survived it. New glyphs arriving while the
+            // pass is already drawing every frame is the case the `wait_idle`
+            // is actually for, and a second tooltip line is the cheapest way to
+            // produce it.
+            if half && self.screen.inventory_open() && !self.advanced_tooltips {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.75 {
+                    self.advanced_tooltips = true;
+                }
+            }
+        }
+
         // M82: you died, or you respawned. Both before the session borrow
         // below, for the same reason `container_close` is.
         self.pump_death_screen();
@@ -4682,12 +5031,24 @@ impl LiveApp {
                 let w = effective_weather(session);
                 (w.rain_level(), w.thunder_level())
             },
-            match self.baked.as_ref() {
-                Some(baked) => {
-                    let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
-                    rain_fog_band(session, w, Some(dt * 20.0))
+            {
+                let band = match self.baked.as_ref() {
+                    Some(baked) => {
+                        let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
+                        rain_fog_band(session, w, Some(dt * 20.0))
+                    }
+                    None => [1.0e9, 1.0e9 + 1.0],
+                };
+                // r3: the sentinel the dead branch produced is 1e9 blocks out.
+                // Counting a *finite* band rather than "we took the Some arm"
+                // is what makes this a value witness — the arm could be taken
+                // and still hand the renderer nonsense.
+                if let Some(c) = self.check.as_mut() {
+                    if band[0] < 1.0e8 {
+                        c.fog_band_frames += 1;
+                    }
                 }
-                None => [1.0e9, 1.0e9 + 1.0],
+                band
             },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
@@ -4787,9 +5148,15 @@ impl LiveApp {
             .then(|| self.screen.hovered(sw, sh))
             .flatten();
         if let Some(baked) = self.baked.as_ref() {
+            if let Some(c) = self.check.as_mut() {
+                c.gui_item_frames += 1;
+            }
             let items = self.items.clone();
             let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.inventory_open() {
+                if let Some(c) = self.check.as_mut() {
+                    c.screen_frames += 1;
+                }
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -4835,6 +5202,9 @@ impl LiveApp {
         // M38: the first-person hand. Suppressed while the inventory screen is
         // open — the screen owns the view, and vanilla does the same.
         if let Some(baked) = self.baked.as_ref() {
+            if let Some(c) = self.check.as_mut() {
+                c.hand_frames += 1;
+            }
             let items = self.items.clone();
             let h = self.hand.get_or_insert_with(|| HandState::new(baked));
             h.tick(session, &items);
@@ -4857,6 +5227,9 @@ impl LiveApp {
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
+            if let Some(c) = self.check.as_mut() {
+                c.weather_frames += 1;
+            }
             let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
             apply_weather(
                 &mut state.world_renderer,
@@ -5047,6 +5420,22 @@ impl LiveApp {
                 Err(e) => log::warn!("screenshot failed: {e}"),
             }
         }
+        // M86's gate samples here: after every `set_*` this frame made and
+        // before `render` consumes them, which is the only window in which the
+        // rings' current slots are the ones about to be bound.
+        let baked_live = self.baked.is_some();
+        if let Some(c) = self.check.as_mut() {
+            c.frames += 1;
+            c.baked_frames += u64::from(baked_live);
+            c.sample_rings(world_renderer);
+            c.gui_items_ready |= world_renderer.gui_items_ready();
+            c.hand_ready |= world_renderer.hand_ready();
+            c.clouds_ready |= world_renderer.clouds_ready();
+            c.weather_ready |= world_renderer.weather_ready();
+            c.particles_ready |= world_renderer.particles_ready();
+            c.border_ready |= world_renderer.border_ready();
+            c.crumbling_ready |= world_renderer.crumbling_ready();
+        }
         match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
             Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
             Ok(RenderOutcome::NeedsRecreate) => {
@@ -5081,6 +5470,20 @@ fn run_windowed(
     want_validation: bool,
     dirt_item: Option<i32>,
 ) -> Result<(), String> {
+    // M86's gate runs in the rain, unless the caller asked for something else.
+    //
+    // Not a convenience. Without it the precipitation pass is built and then
+    // fed nothing, and — the part that actually bit — `rain_fog_band` returns
+    // the very same `[1e9, 1e9 + 1]` the dead branch produced, because that is
+    // the *correct* answer in clear weather. The `r3` witness failed on its
+    // first run for exactly that reason: this project's recurring detector
+    // error, a signal measured against a background that already contains it.
+    // Forcing rain gives the band a finite value the sentinel cannot be
+    // mistaken for, and makes `r8`/`r10` about drawn precipitation rather than
+    // about a pass merely existing.
+    if args.render_check && std::env::var_os("REWO_FORCE_WEATHER").is_none() {
+        std::env::set_var("REWO_FORCE_WEATHER", "1.0");
+    }
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let pool = MeshPool::new(MeshTables {
@@ -5117,7 +5520,15 @@ fn run_windowed(
         preview_skin: None,
         keys: Keys::default(),
         want_validation,
-        run_seconds: args.run_seconds,
+        run_seconds: match (args.run_seconds, args.render_check) {
+            (Some(s), _) => Some(s),
+            (None, true) => Some(RENDER_CHECK_SECONDS),
+            (None, false) => None,
+        },
+        check: args.render_check.then(|| RenderCheck {
+            validation: want_validation,
+            ..RenderCheck::default()
+        }),
         fif: args.fif,
         state: None,
         ring: OverlayRing::default(),
@@ -5192,8 +5603,27 @@ fn run_windowed(
             session.world.entities.len(),
         );
         let _ = EYE_HEIGHT;
+        // Idle before tearing anything down. The last frames submitted are
+        // still in flight when the loop exits, and several `destroy`s
+        // (`text`, `hud`, `locator_bar`, `entities`, `velvet_*`, `overlay`)
+        // do not idle for themselves. The headless path fences on its single
+        // frame and so has never needed this; the windowed path had no
+        // equivalent (M86).
+        //
+        // Recorded honestly: this did **not** move the VUID count on its own.
+        // The ~35,000 destroy-while-in-use errors M86 fixed were all per-frame,
+        // not teardown — this closes a real hole that simply was not the one
+        // producing the noise.
+        state.gpu.wait_idle();
         state.world_renderer.destroy(&mut state.gpu);
         state.renderer.destroy(&mut state.gpu);
+    }
+    // M86's gate. Reported after teardown so `r17` also covers the destroys —
+    // the windowed path had no `device_wait_idle` there until this milestone.
+    if let Some(c) = app.check.as_ref() {
+        if !c.report() {
+            return Err("render-check: one or more witnesses failed".into());
+        }
     }
     Ok(())
 }

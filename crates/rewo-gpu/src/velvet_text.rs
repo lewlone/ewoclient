@@ -226,9 +226,40 @@ impl VelvetTextPass {
         let edge = cache.atlas_edge();
         let (image, alloc, view) =
             crate::entities::create_texture_r8(gpu, cache.atlas(), edge, edge)?;
-        // The old texture may still be referenced by frames in flight, so the
-        // caller is expected to have idled or to be outside the ring. Rewo's
-        // other passes take the same stance on a resize.
+        // The old texture and the descriptor set that names it may both still
+        // be referenced by frames in flight, and destroying or rewriting either
+        // one is illegal while they are.
+        //
+        // The comment that stood here said "the caller is expected to have
+        // idled or to be outside the ring" — and the caller (`live_cmd`'s
+        // inventory branch) does neither. That went unnoticed until M86, for the
+        // same reason the eight `set_*` buffers did: this path is only reachable
+        // when the inventory screen is open, and the whole screen was dead code
+        // in the windowed client. `create_texture_r8` fences on its *own*
+        // upload, which says nothing about earlier frames.
+        //
+        // A ring would work, but a rebuild is rare — the cache goes dirty only
+        // when a glyph at a new (char, size, axis) key is rasterised, so it
+        // settles within a few frames of new text appearing — and ringing an
+        // image, a view and a descriptor set for a rare event costs far more
+        // than it saves. An idle is what `GuiItemPass::destroy` and
+        // `HandPass::destroy` already do for their own rebuilds; this joins
+        // them.
+        //
+        // **Argued from the spec, not measured.** `live --render-check` drives
+        // this path twice per run — once when the screen opens, once when a
+        // second tooltip line brings new glyphs in while the pass is already
+        // drawing every frame — and deleting this `wait_idle` produced **zero**
+        // validation errors both times. Core validation tracks a buffer bound
+        // by `vkCmdBindVertexBuffers` precisely (that is what caught the eight
+        // `set_*` rings, 40,532 times) and does not track an image reached
+        // through a descriptor set the same way. So the gate cannot fail on
+        // this line, and the honest statement is that it is here because
+        // `vkDestroyImage` requires it, not because a witness demanded it.
+        // Enabling `VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION`
+        // would grade it; that is its own milestone, because it would also
+        // light up every other cross-frame hazard in the tree at once.
+        gpu.wait_idle();
         unsafe {
             let device = gpu.device.clone();
             device.destroy_image_view(self.view, None);

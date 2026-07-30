@@ -54,7 +54,7 @@ use glam::{Mat3, Vec3};
 
 use gpu_allocator::vulkan::Allocation;
 
-use crate::end_sky::{upload_buffer, Buf};
+use crate::buf_ring::BufRing;
 use crate::held::{DisplayTransform, HeldItemModel, HeldItems};
 use crate::Gpu;
 
@@ -393,7 +393,10 @@ pub struct GuiItemPass {
     sampler: vk::Sampler,
     atlas: (vk::Image, vk::ImageView),
     allocs: Vec<gpu_allocator::vulkan::Allocation>,
-    vbuf: Option<Buf>,
+    /// This frame's geometry. A [`BufRing`] rather than a bare buffer because
+    /// `set_vertices` runs before the frame is submitted — see `buf_ring`'s
+    /// module docs (M86).
+    vbuf: BufRing,
     vert_count: u32,
 }
 
@@ -498,7 +501,7 @@ impl GuiItemPass {
             sampler,
             atlas: (img, view),
             allocs: vec![alloc],
-            vbuf: None,
+            vbuf: BufRing::new(),
             vert_count: 0,
             glint: None,
             glint_verts: 0,
@@ -506,17 +509,22 @@ impl GuiItemPass {
     }
 
     pub fn set_vertices(&mut self, gpu: &mut Gpu, verts: &[GuiItemVertex]) -> Result<(), String> {
-        free_buf(gpu, self.vbuf.take());
         self.vert_count = verts.len() as u32;
-        if verts.is_empty() {
-            return Ok(());
-        }
-        self.vbuf = Some(upload_buffer(
+        self.vbuf.set(
             gpu,
             bytemuck::cast_slice(verts),
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?);
-        Ok(())
+        )
+    }
+
+    /// The handle this frame's draws bind, and every handle the ring is
+    /// keeping alive. Both for `live --render-check`'s ring witnesses.
+    pub fn vertex_buffer(&self) -> Option<vk::Buffer> {
+        self.vbuf.peek()
+    }
+
+    pub fn live_vertex_buffers(&self) -> Vec<u64> {
+        self.vbuf.live()
     }
 
     /// Build the glint's pipeline and upload its sheet (M43).
@@ -628,12 +636,12 @@ impl GuiItemPass {
 
     /// The glint, over the icons it belongs to.
     pub fn draw_glint(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
-        let (Some(parts), Some(vbuf)) = (self.glint.as_ref(), self.vbuf.as_ref()) else {
-            return;
-        };
         if self.glint_verts == 0 {
             return;
         }
+        let (Some(parts), Some(vbuf)) = (self.glint.as_ref(), self.vbuf.bind()) else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, parts.pipeline);
@@ -663,18 +671,18 @@ impl GuiItemPass {
                 0,
                 bytemuck::bytes_of(&push),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.glint_verts, 1, self.vert_count, 0);
         }
     }
 
     pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
-        let Some(vbuf) = self.vbuf.as_ref() else {
-            return;
-        };
         if self.vert_count == 0 {
             return;
         }
+        let Some(vbuf) = self.vbuf.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -705,14 +713,14 @@ impl GuiItemPass {
                 0,
                 bytemuck::bytes_of(&push),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf.buffer], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.vert_count, 1, 0, 0);
         }
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
-        free_buf(gpu, self.vbuf.take());
+        self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -734,15 +742,6 @@ impl GuiItemPass {
             }
         }
         for a in self.allocs.drain(..) {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-fn free_buf(gpu: &mut Gpu, buf: Option<Buf>) {
-    if let Some(mut b) = buf {
-        unsafe { gpu.device.destroy_buffer(b.buffer, None) };
-        if let Some(a) = b.alloc.take() {
             let _ = gpu.allocator.free(a);
         }
     }
