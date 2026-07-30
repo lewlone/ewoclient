@@ -2088,6 +2088,15 @@ impl EntityTable {
         self.attachments = Some(attachments);
     }
 
+    /// The installed attachment table, if any. Read by M83's locator bar for
+    /// a type's declared `sized(width, height)` — the only place outside
+    /// riding that needs an entity's bounding box.
+    pub fn attachments(
+        &self,
+    ) -> Option<&rewo_data::entity_attachments::Attachments> {
+        self.attachments.as_deref()
+    }
+
     /// `ClientLevel.tickNonPassenger` → `tickPassenger` → `Entity.rideTick`.
     ///
     /// Walks vehicle-first from every **root** — an entity that carries

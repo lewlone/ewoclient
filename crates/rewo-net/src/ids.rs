@@ -463,6 +463,11 @@ pub struct Ids {
     /// VarInt duration in ticks, where `0` is a removal rather than a
     /// zero-length cooldown.
     pub cb_play_cooldown: i32,
+    /// `ClientboundTrackedWaypointPacket` — the locator bar (M83). An
+    /// operation whose id **wraps** rather than being rejected, then a
+    /// `TrackedWaypoint` whose body shape depends on a type tag whose id is
+    /// rejected. See [`crate::waypoints`].
+    pub cb_play_waypoint: i32,
 }
 
 impl Ids {
@@ -627,6 +632,7 @@ impl Ids {
             cb_play_clear_titles: req!(p, P, C, "clear_titles"),
             cb_play_set_experience: req!(p, P, C, "set_experience"),
             cb_play_cooldown: req!(p, P, C, "cooldown"),
+            cb_play_waypoint: req!(p, P, C, "waypoint"),
         })
     }
 }

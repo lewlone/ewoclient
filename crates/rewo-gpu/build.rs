@@ -24,6 +24,8 @@ fn main() {
         ("shaders/sky.frag", "sky.frag.spv"),
         ("shaders/hud.vert", "hud.vert.spv"),
         ("shaders/hud.frag", "hud.frag.spv"),
+        ("shaders/locator.vert", "locator.vert.spv"),
+        ("shaders/locator.frag", "locator.frag.spv"),
         ("shaders/line.vert", "line.vert.spv"),
         ("shaders/line.frag", "line.frag.spv"),
         ("shaders/celestial.vert", "celestial.vert.spv"),

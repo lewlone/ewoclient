@@ -27,23 +27,24 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 103 of them. 38
+1. **141 clientbound-play packets. Rewo resolves and consumes 104 of them. 37
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty and class B is down to four.** The 38 gaps split
-   0 / 4 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
-   and not-applicable. What the three B milestones established is worth keeping:
+2. **Class A is empty and class B is down to three, all of them screens.** The
+   37 gaps split 0 / 3 / 23 / 11 across pure state, needs-rendering,
+   needs-a-missing-subsystem and not-applicable. What the four B milestones
+   established is worth keeping:
    **the class letter changes the gate, not the standard.** M79's seven (title
    overlay, XP gauge, cooldown sweep), M80's six (the world border) and M81's
    three (hurt tilt, block cracks, item pickup) all have an exact vanilla oracle,
    so the decode *and* the render are transcribed line by line and graded against
    it, with a pixel read-back half on top of the model half. A class-B packet is
    not a guess; it is a transcription that happens to need a renderer to land.
-   The four left are `waypoint` (138) and three **screens** — `award_stats` (3),
-   `player_combat_kill` (68), `server_links` (137) — and those genuinely change
-   character, because a screen framework is a design decision rather than a
-   transcription. §2.
+   M83's `waypoint` (138) closed the last non-screen one. The three left are all
+   **screens** — `award_stats` (3), `player_combat_kill` (68), `server_links`
+   (137) — and those genuinely change character, because a screen framework is a
+   design decision rather than a transcription. §2.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -176,22 +177,22 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **103** |
+| Resolved **and** consumed | **104** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **38** |
+| Not resolved at all | **37** |
 | **Total clientbound-play** | **141** |
 
-The 38 gaps, by class:
+The 37 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **4** | 11% |
-| **C** needs a subsystem Rewo lacks | **23** | 60% |
-| **D** not applicable | **11** | 29% |
+| **B** needs rendering | **3** | 8% |
+| **C** needs a subsystem Rewo lacks | **23** | 62% |
+| **D** not applicable | **11** | 30% |
 
-M67 audited 56 / 0 / 85 with class A at 31. **Thirty-eight** packets separate
-that published 56 from this 94, and **ten of them had already landed when M67
+M67 audited 56 / 0 / 85 with class A at 31. **Thirty-nine** packets separate
+that published 56 from this 95, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
 from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
 M75's, three are M76's, three are M77's, eight are M78's and seven are M79's.
@@ -514,7 +515,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 135 | `projectile_power` | handled | `req!` → `cb_play_projectile_power` | **M77.** A VarInt id (unlike `set_entity_link`'s fixed i32, one packet away) then an f64. Written onto `AbstractHurtingProjectile` only — an **arrow is not one**, it is an `AbstractArrow` on a sibling branch, so a `projectile_power` naming one mutates nothing. |
 | 136 | `custom_report_details` | absent | **D** | Key/value metadata to attach to a crash report. |
 | 137 | `server_links` | absent | **B** | Links rendered on the pause and disconnect screens. |
-| 138 | `waypoint` | absent | **B** | The locator bar. |
+| 138 | `waypoint` | handled | M83 — the locator bar. |
 | 139 | `clear_dialog` | absent | **C** | The dialog framework. |
 | 140 | `show_dialog` | absent | **C** | The dialog framework. `Holder<Dialog>` over the **datapack** `minecraft:dialog` registry plus `Dialog`'s codec tree — resolvable in principle, **not verified in detail** here. |
 

@@ -303,6 +303,10 @@ pub struct BakedAssets {
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
     /// jar's `gui/sprites/hud/`. `None` degrades to no HUD.
     pub hud: Option<HudSprites>,
+    /// The locator bar's sprites + style table (M83). `None` degrades to no
+    /// locator bar and leaves the rest of the HUD alone — see
+    /// [`LocatorSprites`].
+    pub locator: Option<LocatorSprites>,
     /// The container screen's textures (M35). `None` degrades to no screen,
     /// exactly as a missing HUD sprite degrades to no HUD.
     pub container: Option<ContainerSprites>,
@@ -576,6 +580,38 @@ pub struct HudSprites {
     pub experience_bar_progress: HudSprite,
 }
 
+/// One `assets/minecraft/waypoint_style/*.json` (M83).
+///
+/// `near_distance`/`far_distance` default to 128/332 and the sprite list is
+/// required and non-empty; the names are `Identifier`s that
+/// `WaypointStyle`'s canonical constructor prefixes with
+/// `hud/locator_bar_dot/`.
+pub struct WaypointStyleAsset {
+    /// The registry key, e.g. `minecraft:default`.
+    pub key: String,
+    pub near_distance: i32,
+    pub far_distance: i32,
+    /// Indices into [`LocatorSprites::dots`], in the file's order.
+    pub sprites: Vec<u16>,
+}
+
+/// The locator bar's sprite set + style table (M83).
+///
+/// Deliberately a **separate** struct from [`HudSprites`] rather than more
+/// fields on it: `bake_hud` is all-or-nothing (`?` on every sprite), and a
+/// resource pack or a version that dropped one dot would take the hotbar and
+/// the hearts down with the locator bar.
+pub struct LocatorSprites {
+    /// 12×5 — a nine-slice, **not** the 182×5 the bar blits.
+    pub background: HudSprite,
+    /// 7×10 — two 7×5 animation frames stacked, per its `.mcmeta`.
+    pub arrow_up: HudSprite,
+    pub arrow_down: HudSprite,
+    /// Every 9×9 dot named by any style, deduplicated, in first-seen order.
+    pub dots: Vec<HudSprite>,
+    pub styles: Vec<WaypointStyleAsset>,
+}
+
 /// One animated texture-array layer, from an N-frame vertical strip +
 /// its `.mcmeta` ({"animation": {"frametime": T, "frames": [...]?}}).
 pub struct AnimatedLayer {
@@ -836,6 +872,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         }
     }
     let hud = bake_hud(&mut jar);
+    let locator = bake_locator(&mut jar);
     let container = bake_container(&mut jar);
     let lang = crate::lang::Language::load(client_jar);
     let item_names = bake_item_names(&mut jar, &lang);
@@ -1128,6 +1165,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         mob_textures,
         mob_variant_textures,
         hud,
+        locator,
         container,
         celestial,
         end_sky,
@@ -1483,6 +1521,115 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
         food_empty: get(jar, "gui/sprites/hud/food_empty.png")?,
         experience_bar_background: get(jar, "gui/sprites/hud/experience_bar_background.png")?,
         experience_bar_progress: get(jar, "gui/sprites/hud/experience_bar_progress.png")?,
+    })
+}
+
+/// Extract the locator bar's sprites and parse `waypoint_style/*.json` (M83).
+///
+/// The style files are read rather than hard-coded because the sprite *list*
+/// is what selects a dot, and it is data: `bowtie.json` overrides
+/// `near_distance` to 64 and puts its own sprite in front of the four defaults.
+/// Any missing piece → no locator bar, and the rest of the HUD is unaffected.
+fn bake_locator(jar: Jar) -> Option<LocatorSprites> {
+    let get = |jar: Jar, rel: &str| -> Option<HudSprite> {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!("assets/minecraft/textures/{rel}"))
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        Some(HudSprite { rgba, w, h })
+    };
+    let background = get(jar, "gui/sprites/hud/locator_bar_background.png")?;
+    let arrow_up = get(jar, "gui/sprites/hud/locator_bar_arrow_up.png")?;
+    let arrow_down = get(jar, "gui/sprites/hud/locator_bar_arrow_down.png")?;
+
+    let names: Vec<String> = jar
+        .file_names()
+        .filter_map(|p| {
+            p.strip_prefix("assets/minecraft/waypoint_style/")
+                .and_then(|r| r.strip_suffix(".json"))
+                .filter(|r| !r.contains('/'))
+                .map(str::to_string)
+        })
+        .collect();
+
+    let mut dots: Vec<HudSprite> = Vec::new();
+    let mut dot_index: HashMap<String, u16> = HashMap::new();
+    let mut styles = Vec::new();
+    for name in names {
+        let mut text = String::new();
+        if jar
+            .by_name(&format!("assets/minecraft/waypoint_style/{name}.json"))
+            .ok()?
+            .read_to_string(&mut text)
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        // `DISTANCE_CODEC.optionalFieldOf("near_distance", 128)`.
+        let near = v
+            .get("near_distance")
+            .and_then(|d| d.as_i64())
+            .unwrap_or(128) as i32;
+        let far = v
+            .get("far_distance")
+            .and_then(|d| d.as_i64())
+            .unwrap_or(332) as i32;
+        let mut sprites = Vec::new();
+        for s in v
+            .get("sprites")
+            .and_then(|s| s.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
+            let Some(id) = s.as_str() else { continue };
+            // `sprite.withPrefix("hud/locator_bar_dot/")` — the prefix goes on
+            // the *path*, so `minecraft:default_0` becomes
+            // `minecraft:hud/locator_bar_dot/default_0`.
+            let path = id.strip_prefix("minecraft:").unwrap_or(id);
+            if let Some(&i) = dot_index.get(path) {
+                sprites.push(i);
+                continue;
+            }
+            let Some(img) = get(jar, &format!("gui/sprites/hud/locator_bar_dot/{path}.png"))
+            else {
+                continue;
+            };
+            let i = dots.len() as u16;
+            dots.push(img);
+            dot_index.insert(path.to_string(), i);
+            sprites.push(i);
+        }
+        // `ExtraCodecs.nonEmptyList(...)` — an empty list fails the codec, so
+        // the style would not exist at all rather than resolve to nothing.
+        if sprites.is_empty() {
+            continue;
+        }
+        styles.push(WaypointStyleAsset {
+            key: format!("minecraft:{name}"),
+            near_distance: near,
+            far_distance: far,
+            sprites,
+        });
+    }
+    if styles.is_empty() {
+        return None;
+    }
+    log::info!(
+        "rewo-data: locator bar — {} style(s), {} dot sprite(s)",
+        styles.len(),
+        dots.len()
+    );
+    Some(LocatorSprites {
+        background,
+        arrow_up,
+        arrow_down,
+        dots,
+        styles,
     })
 }
 
