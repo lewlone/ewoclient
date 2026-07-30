@@ -181,6 +181,21 @@ paths the frame loop reached, that the per-frame buffer rings keep a bound
 buffer alive, and that the whole session was validation-clean. Run it after
 any milestone that adds a render path.
 
+**It does not stage its own hotbar, and it fails closed when you don't.**
+`r14` needs the GUI-item ring to actually fill, which needs items in the
+hotbar; on a bare flat creative world it reports `0 live at peak, need 4` and
+exits 1. That is the gate working — it is refusing to certify a ring it never
+saw rotate — but the requirement is on the caller. Op the username (write
+`ops.json` with the offline UUID, i.e. name-based MD5 of
+`OfflinePlayer:<name>` with the version/variant nibbles set) and stage with the
+knob:
+
+```
+REWO_PRECMD="give @s minecraft:diamond_sword 1;give @s minecraft:dirt 64"   rewo live --host 127.0.0.1 --port <yours> --username <opped> --render-check
+```
+
+Verified by the coordinator on a clean server: 17/18 bare, **18/18 staged**.
+
 **Before it (2026-07-27): M37 — particles.** The one milestone §16 refused to
 propose, because every gate here is geometry-based and particles are stochastic
 and time-driven. They are not: `Particle.tick()` contains no randomness at all,
