@@ -121,6 +121,24 @@ pub struct PlayArgs {
     /// `motion_acceptance`.
     #[arg(long, default_value_t = false)]
     motion_check: bool,
+    /// M83's live gate for `waypoint` (138), the locator bar.
+    ///
+    /// **A vanilla server transmits a waypoint for a player and for nothing
+    /// else by default** — `LivingEntity.isTransmittingWaypoint` is
+    /// `getAttributeValue(WAYPOINT_TRANSMIT_RANGE) > 0`, and only
+    /// `Player.createAttributes` gives it a non-zero base (6.0E7). Every other
+    /// `LivingEntity` carries the attribute at 0. So rather than needing a
+    /// second account, this drives `/attribute` on a summoned mob, which is
+    /// the same transmitter path a player takes
+    /// (`ServerLevel.onAttributeUpdated` hands it to the level's
+    /// `ServerWaypointManager`).
+    ///
+    /// Fail-closed on observation: if no `waypoint` packet arrived, or the
+    /// store is empty at the end, the gate is red rather than quietly
+    /// reporting a run that tested nothing. Needs the op account
+    /// (`--username RewoOp`).
+    #[arg(long, default_value_t = false)]
+    waypoint_check: bool,
     /// M75's live gate for creative flight and the gamemode → abilities binding.
     ///
     /// **Read the caveat in `fly_acceptance` before citing this run's
@@ -188,6 +206,35 @@ const MOTION_PHASE_SPLIT: f32 = 1.0 + 0.25 * MOTION_MOUNT_PHASE_COMMANDS as f32;
 /// Two phases, in this order for a reason: the mount phase runs first, while
 /// the ground under the bot is still undisturbed, because the knockback phase
 /// craters it.
+/// M83's live command stream — make a mob transmit a waypoint.
+///
+/// The mob is placed **80 blocks north** so it lands in the position tier
+/// (`EntityBlockConnection`) rather than the chunk or azimuth ones: within
+/// view distance and under `REALLY_FAR_DISTANCE` (332). The `say` lines are
+/// spacers against the server's chat rate limiter, exactly as the motion
+/// gate's are.
+fn waypoint_check_commands() -> Vec<String> {
+    vec![
+        "gamerule locator_bar true".into(),
+        "kill @e[type=zombie,tag=rewo_wp]".into(),
+        "say waypoint-check w1".into(),
+        "summon zombie ~ ~ ~80 {Tags:[\"rewo_wp\"],NoAI:1b,Silent:1b}".into(),
+        "say waypoint-check w2".into(),
+        // `LivingEntity.isTransmittingWaypoint` is this attribute > 0, and
+        // `onAttributeUpdated` hands the entity to the level's waypoint
+        // manager the moment it crosses.
+        "attribute @e[type=zombie,tag=rewo_wp,limit=1] minecraft:waypoint_transmit_range base set 1000".into(),
+        "say waypoint-check w3".into(),
+        "say waypoint-check w4".into(),
+        // Setting it back to 0 must UNTRACK it — the other half of the
+        // connection lifecycle.
+        "attribute @e[type=zombie,tag=rewo_wp,limit=1] minecraft:waypoint_transmit_range base set 0".into(),
+        "say waypoint-check w5".into(),
+        "say waypoint-check w6".into(),
+        "kill @e[type=zombie,tag=rewo_wp]".into(),
+    ]
+}
+
 fn motion_check_commands() -> Vec<String> {
     let boat = format!("@e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
     let zombie =
@@ -740,6 +787,8 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         swing_check_commands()
     } else if args.motion_check {
         motion_check_commands()
+    } else if args.waypoint_check {
+        waypoint_check_commands()
     } else {
         args.setup
             .as_deref()
@@ -751,6 +800,15 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             })
             .unwrap_or_default()
     };
+
+    if args.waypoint_check && username != OP_USERNAME {
+        return Err(format!(
+            "--waypoint-check joined as {username:?}, not the op account \
+             {OP_USERNAME:?}. A non-op's commands are silently rejected, so the \
+             attribute would never land and the failure would misreport itself \
+             as a decode bug."
+        ));
+    }
 
     if args.fly_check && username != OP_USERNAME {
         // Same reason the motion gate refuses: every observation here starts
@@ -767,6 +825,12 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     let total_ticks = (args.seconds / 0.05) as u64;
     let mut acted = Actions::default();
     let mut fly = args.fly_check.then(FlyCheck::default);
+    // M83's observation. The store is a live map, so a run that saw a TRACK and
+    // then an UNTRACK ends empty — the peak and the snapshot are what say the
+    // packet arrived at all.
+    let mut wp_peak = 0usize;
+    let mut wp_seen: Option<String> = None;
+    let mut wp_untracked = false;
     // Tick index at which the server first spawned us — the action clock is
     // relative to spawn, not connect (chunk streaming can take a second).
     let mut spawn_tick: Option<u64> = None;
@@ -815,10 +879,34 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         if clock_start.is_none() {
             clock_start = session.day_ticks;
         }
+        {
+            let n = session.waypoints.len();
+            if n > wp_peak {
+                wp_peak = n;
+                wp_seen = session
+                    .waypoints
+                    .iter_sorted()
+                    .first()
+                    .map(|w| format!("{:?} style={} colour={:?} {:?}", w.id, w.icon.style, w.icon.color, w.contents));
+            }
+            if wp_peak > 0 && n == 0 {
+                wp_untracked = true;
+            }
+        }
         // Real-time pacing so the server sees a genuine 20 Hz client.
         let now = Instant::now();
         if now < deadline {
             std::thread::sleep(deadline - now);
+        }
+    }
+
+    if args.waypoint_check {
+        println!(
+            "[rewo-m83] waypoints: peak {wp_peak}, untrack observed: {wp_untracked}"
+        );
+        match &wp_seen {
+            Some(w) => println!("[rewo-m83] first tracked waypoint: {w}"),
+            None => println!("[rewo-m83] first tracked waypoint: NONE"),
         }
     }
 
@@ -830,6 +918,29 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         &data,
         clock_start,
     );
+
+    if args.waypoint_check {
+        // Fail-closed on OBSERVATION: a command the server ignored leaves the
+        // peak at zero, and a run that never saw the packet must be red rather
+        // than quietly reporting that nothing broke.
+        if wp_peak == 0 {
+            return Err(
+                "--waypoint-check: no waypoint was ever tracked. The `/attribute` \
+                 either never landed or the packet was not decoded — either way \
+                 this run proved nothing."
+                    .into(),
+            );
+        }
+        if !wp_untracked {
+            return Err(
+                "--waypoint-check: a waypoint was tracked but never untracked. \
+                 Setting `waypoint_transmit_range` back to 0 must send \
+                 `removeWaypoint`, so half the connection lifecycle went \
+                 unexercised."
+                    .into(),
+            );
+        }
+    }
     if !session.spawned {
         return Err("never spawned (no initial position from server)".into());
     }

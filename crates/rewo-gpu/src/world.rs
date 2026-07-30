@@ -576,6 +576,8 @@ pub struct WorldRenderer {
     /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
     sky_mode: SkyMode,
     hud: Option<HudPass>,
+    locator: Option<crate::locator_bar::LocatorBarPass>,
+    locator_state: Option<crate::locator_bar::LocatorBarState>,
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
     hud_state: Option<(f32, i32, u8, crate::hud::HudGauges)>,
@@ -1100,6 +1102,8 @@ impl WorldRenderer {
                 crumbling: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
+                locator: None,
+                locator_state: None,
                 hud_state: None,
                 text: None,
                 text_lines: Vec::new(),
@@ -2085,6 +2089,30 @@ impl WorldRenderer {
         self.hud_state = Some((health, food, slot, gauges));
     }
 
+    /// Attach the locator bar (M83). Independent of `init_hud` because its
+    /// sprites bake separately — see `rewo_data::assets::LocatorSprites`.
+    pub fn init_locator_bar(
+        &mut self,
+        gpu: &mut Gpu,
+        sprites: &crate::locator_bar::LocatorSpritesData<'_>,
+    ) -> Result<(), String> {
+        self.locator = Some(crate::locator_bar::LocatorBarPass::new(
+            gpu,
+            self.color_format,
+            sprites,
+        )?);
+        Ok(())
+    }
+
+    /// Set (or clear) this frame's locator-bar draw list. `None` is the
+    /// contextual bar *not* being the locator bar, which is a different thing
+    /// from an empty marker list: `Some(state)` with no markers still paints
+    /// the 182x5 strip, because `extractBackground` and `extractRenderState`
+    /// are separate calls and only the second one loops.
+    pub fn set_locator_bar(&mut self, state: Option<crate::locator_bar::LocatorBarState>) {
+        self.locator_state = state;
+    }
+
     /// Attach the screen-space text pass (chat + coords overlay).
     pub fn init_text(&mut self, gpu: &mut Gpu, font: &FontData<'_>) -> Result<(), String> {
         self.text = Some(TextPass::new(gpu, self.color_format, font)?);
@@ -2693,6 +2721,16 @@ impl WorldRenderer {
         {
             hud.draw(gpu, cb, extent, health, food, slot, gauges);
             if screen.is_none() {
+                // M83 — the contextual bar's slot, which is the XP bar's slot:
+                // `Hud.nextContextualInfoState` picks one of them and the
+                // caller has already made that choice (`set_locator_bar(None)`
+                // when the XP bar won). Behind the hotbar icons for the same
+                // reason the XP bar is: it is background chrome.
+                if let (Some(pass), Some(state)) =
+                    (self.locator.as_mut(), self.locator_state.as_ref())
+                {
+                    pass.draw(gpu, cb, extent, state);
+                }
                 if let Some(items) = &self.gui_items {
                     items.draw(gpu, cb, extent);
                     self.in_gamma_space(gpu, cb, extent, || items.draw_glint(gpu, cb, extent));
@@ -3066,6 +3104,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.preview.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.locator.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.container.take() {

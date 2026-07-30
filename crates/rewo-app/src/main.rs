@@ -29,6 +29,7 @@ mod eventshot_cmd;
 mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
+mod locatorshot_cmd;
 mod titleshot_cmd;
 mod mobshot_cmd;
 mod modules;
@@ -186,6 +187,8 @@ enum Command {
     /// assert the pixels against a synthetic magenta subject with `--check`
     /// (no server; Vulkan required).
     Titleshot(titleshot_cmd::TitleshotArgs),
+    /// M83's locator-bar oracle: the `waypoint` packet and the HUD strip.
+    Locatorshot(locatorshot_cmd::LocatorshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -311,6 +314,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),

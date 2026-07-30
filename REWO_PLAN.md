@@ -452,6 +452,13 @@ Original M0–M6 (still the foundation):
 Per-milestone figures inside §15 are the measurement taken at that milestone
 and will not match.
 
+**Re-measured at M83 (2026-07-30):** **1512 tests** — `rewo-net` 551,
+`rewo-world` 400, `rewo-gpu` 245, `rewo-data` 175, app 85, `rewo-mesh` 45,
+`rewo-proto` 11. **Twenty-nine serverless gate commands green, 0 VUIDs** —
+the twenty-eight of the M79-M81 batch plus M83's `locatorshot` 49/49.
+`REWO_PACKET_COVERAGE.md` is at 104 consumed / 37 absent, and **class B is down to three, all of them
+screens** — `waypoint` (138) was the last non-screen one.
+
 **Re-measured at M57 (2026-07-29):** **705 tests** — `rewo-world` 208,
 `rewo-net` 141, `rewo-gpu` 103, `rewo-data` 93, `rewo-mesh` 38, `rewo-proto` 11,
 app 65. **Twenty gate invocations green, 0 VUIDs**, adding `mobshot
@@ -13008,3 +13015,262 @@ dimension change are unit-true and unobserved on a connection. `CORRECTIONS 0`
 is unchanged and says nothing about them — the server does not correct
 rotation, so that meter is structurally blind to this milestone in the same way
 §6 records it being blind to a dropped knockback.
+
+### M83 — `waypoint` (138), the locator bar (2026-07-30)
+
+The last class-B packet that is not a screen, and the newest feature in the
+batch. A strip above the hotbar carrying one 9x9 dot per tracked waypoint,
+placed by the **bearing** from the camera; Rewo dropped the packet entirely.
+
+#### What identifies a waypoint
+
+`Either<UUID, String>` — and `FriendlyByteBuf.writeEither` writes **`true` for
+the *left***, which is the UUID. Nothing in vanilla ever writes the string form
+(every transmitter is a `LivingEntity`), but the codec allows it and the map is
+keyed by the `Either` itself, so a UUID and a string that print the same are
+different waypoints.
+
+The identifier reaches the renderer twice and both are worth knowing. It is the
+**colour of last resort** — `icon.color.orElseGet(() -> id.map(uuid -> …, name
+-> …))` through `ARGB.setBrightness(ARGB.color(255, hash), 0.9F)`, and a live
+vanilla server sends `colour=None`, so on a real connection the hash *is* the
+colour. And it is the **self-skip**: `LocatorBar` refuses the waypoint whose
+UUID equals `cameraEntity.getUUID()`.
+
+That second use is REWO_PLAN §0.0 gotcha 13 in both directions at once. The
+subject of a waypoint may be an entity `EntityTable` holds; the **observer
+never is**. So the skip cannot be derived from the table — it comes from the
+session's own UUID — and a client that dropped the check looks perfectly
+correct on a vanilla server, because `ServerWaypointManager.createConnection`
+opens `if (player != waypoint)` and never sends you your own. It would paint a
+permanent dot at your own bearing the moment a datapack or a plugin transmitted
+one. The gate witnesses it (`m6`) rather than the code merely doing it.
+
+#### How a bearing becomes a screen position
+
+```text
+angle       = yawAngleToCamera(...)                 // degreesDifference, (-180, 180]
+visible    <=> !(angle <= -60) && !(angle > 60)
+screenMid   = Mth.ceil((guiWidth - 9) / 2.0F)
+dotPosition = Mth.floor(angle * 173.0 / 2.0 / 60.0)
+dot         at (screenMid + dotPosition, top - 2), 9x9, tinted
+arrow       at (screenMid + dotPosition + 1, top +/- 6), 7x5, UNtinted
+```
+
+`yawAngleToCamera` is the same shape for the position and chunk tiers:
+`camera.position() - waypointPos`, **rotated clockwise 90 degrees**
+(`Vec3(-z, y, x)`), then `Mth.atan2(dir.z, dir.x)` in degrees, then
+`degreesDifference` against the camera yaw. The rotation is what converts a
+world-axis bearing into Minecraft's yaw convention; dropping it turns every dot
+a quarter turn. The azimuth tier skips all of it — the wire already carries the
+angle.
+
+**The bearing is purely horizontal.** `atan2` reads only x and z, so the y
+component of `position()` is consumed by nothing but the pitch arrow. That is
+why the one approximation in this milestone (a tracked entity's eye height, for
+which Rewo has no per-type table and uses `EntityDimensions.scalable`'s default
+`height * 0.85`) cannot move a dot sideways by a single pixel.
+
+#### Ten things that read backwards
+
+1. **The operation wraps; the type tag one field later rejects.** `Operation` is
+   `ByIdMap.continuous(…, WRAP)` — `Math.floorMod`, so **no id is refused** and
+   a negative one is legal (`-1` is UPDATE, `Integer.MIN_VALUE` is UNTRACK).
+   Rust's `%` is a remainder and would index out of the array; `rem_euclid` is
+   the operator that matches. Then `TrackedWaypoint.Type` is
+   `byteBuf.readEnum`, i.e. `getEnumConstants()[readVarInt()]`, a bare array
+   index that **throws**. Two enums, one field apart, with opposite
+   out-of-range behaviour, and only the decompile distinguishes them.
+
+2. **The visibility window is half-open, and the open end is the left one.**
+   `!(angle <= -60) && !(angle > 60)` is `(-60, 60]`. Written `abs() <= 60` it
+   is `[-60, 60]`; written `abs() < 60`, `(-60, 60)`. Both differ from vanilla
+   only on a measure-zero set, which is exactly why nobody would notice.
+
+3. **An `EMPTY` waypoint is visible, at dead centre.** Its bearing is
+   `Double.NaN`, and *every* comparison against NaN is false, so both halves of
+   that guard pass. `Mth.floor(NaN)` is `(int)Math.floor(NaN)` = `(int)NaN` =
+   **0**; Rust agrees by a different route, since a saturating float-to-int cast
+   sends NaN to 0. A guard written with `abs()` rejects NaN and hides it. Its
+   `distanceSquared` is `+Infinity`, which is not a sentinel that gets filtered
+   — it flows into `WaypointStyle.sprite` and selects the *last*, smallest dot.
+
+4. **The dot travels 173 pixels, not 182.** `182 - 9` — the bar's width less
+   the dot's, so an extreme dot sits flush inside the strip.
+
+5. **Two centres, computed two ways, that disagree at odd widths.** The strip
+   is `(guiWidth - 182) / 2`, an integer divide; the dot column is
+   `Mth.ceil((guiWidth - 9) / 2.0F)`, a float ceiling. Transcribed rather than
+   unified.
+
+6. **Two different points measure the two different quantities.** The bearing
+   uses `camera.position()` (the eye); the distance that picks the sprite uses
+   `Entity.distanceToSqr` against the camera entity's **feet**.
+
+7. **`UPDATE` is not an insert.** `updateWaypoint` is `get(id).update(other)`
+   and each override assigns only its own position field — icon and type are
+   `final`. An update therefore **cannot** recolour a waypoint, restyle it, or
+   move it between the position/chunk/azimuth tiers; vanilla logs
+   `"Unsupported Waypoint update operation"` and keeps the old value. Reusing
+   the TRACK path for UPDATE applies all three and reports nothing.
+
+8. **`WaypointStyle.sprite`'s last band is unreachable through `lerpInt`.**
+   `Mth.lerpInt(alpha, 1, n - 1)` is `1 + floor(alpha * (n - 2))`, so a
+   four-sprite style tops out at index 2 inside the band and reaches 3 only
+   through the `>= farDistance` early return. The explicit `n == 3` branch
+   above it is not an optimisation of the same formula either — it pins index 1
+   where `lerpInt` would give 1 or 2.
+
+9. **`isBehindCamera` no longer means what it says.** `pitchDirectionToCamera`
+   tests `pointOnScreen.z > 1.0` under that name, and 26.2's
+   `Projection.getMatrix` opens `float near = this.zFar; float far =
+   this.zNear;` — reversed-Z, the swap M36 recorded. A point behind the camera
+   now projects to a **negative** z; `> 1.0` is reachable only inside the real
+   near plane. Transcribed as written rather than as named, and witnessed
+   (`m11`) so the finding cannot be quietly "fixed" back.
+
+10. **Having waypoints is not enough to show the bar.**
+    `Hud.nextContextualInfoState` gives the slot to the XP bar for 100 ticks
+    after every XP change, so on a server that both grants XP and transmits
+    waypoints the strip blinks out on each orb. M79's `ExperienceState::
+    will_prioritize` already existed and its doc comment already anticipated
+    this; the composition was one line.
+
+#### Two sprites that are not what their blit says
+
+`blitSprite(LOCATOR_BAR_BACKGROUND, left, top, 182, 5)` reads like a 182x5
+sprite. **`locator_bar_background.png` is 12x5**, with a `.mcmeta` declaring
+`nine_slice`, border 5/5/1/1 and no `stretch_inner` — so the blit takes
+`blitNineSlicedSprite`'s `height == nineSlice.height()` branch, a horizontal
+three-slice whose 2-px middle is **tiled** 86 times. And
+`locator_bar_arrow_up.png` is **7x10**: two 7x5 animation frames stacked, index
+0 for 10 ticks then index 1 for 4. Reading either file at face value gives a
+squashed bar and an arrow that never blinks.
+
+Both are baked once into the pass's atlas rather than resolved per frame, and
+`waypoint_style/*.json` is parsed from the jar rather than hard-coded — the
+sprite *list* is what selects a dot, and `bowtie.json` overrides
+`near_distance` to 64 and puts its own sprite in front of the four defaults.
+
+#### The tint, and M50's rule again
+
+The dot is `blitSprite(…, color)` — vanilla's `texture * vertexColor` — and
+vanilla evaluates that product in **gamma** space, because its GUI textures
+carry no sRGB view. This is M50's finding in a second place, so the atlas is
+uploaded UNORM, the tint arrives gamma-encoded, the multiply happens in the
+fragment shader and the result is decoded to linear for the sRGB attachment.
+With a white tint that round trip is the identity, so an untinted quad matches
+`hud.frag` exactly.
+
+**What the gate learned while measuring it is the more useful half.** The two
+rules are *not* generally far apart: sRGB is nearly a pure power, and a power
+**commutes** with multiplication — `(a*b)^g == a^g * b^g` exactly. The entire
+difference lives in sRGB's linear toe below 0.04045, so it is only observable
+when the **product** lands in the toe. The first version of the witness used a
+mid-grey tint and measured a 0.78-byte gap against a 0.21-byte one — a witness
+that could not have failed. At tint 32 the gap is 3.5 bytes and the claim is
+per-pixel rather than a mean.
+
+#### Structure
+
+`crates/rewo-net/src/waypoints.rs` (decode + the map semantics),
+`crates/rewo-net/src/lib.rs::route_waypoint` (the seam),
+`crates/rewo-gpu/src/locator_bar.rs` (the model *and* its own pass, with a
+per-quad colour `hud.rs`'s vertex has no room for),
+`crates/rewo-gpu/shaders/locator.{vert,frag}`,
+`crates/rewo-data/src/assets.rs::bake_locator` (a **separate** struct from
+`HudSprites`, whose `?`-per-sprite bake is all-or-nothing — a missing dot must
+not take the hotbar and the hearts down with it), and
+`live_cmd::{locator_sprites, locator_bar_state, resolve_locator_bar}`. The
+resolver is split session-free so the gate drives the emitter the frame drives
+rather than a copy of it, the way M59 split `resolve_health_bar`.
+
+The store is **connection state, not level state** — `ClientWaypointManager` is
+a field of `ClientPacketListener`, not of `ClientLevel` — so it is deliberately
+absent from `WorldTransition` beside the weather and the border. It stays
+correct across a dimension change because `ServerWaypointManager` is per-level
+and its `removePlayer`/`addPlayer` pair sends an UNTRACK for every waypoint of
+the level being left and a TRACK for every one of the level entered.
+
+#### Verification
+
+**`rewo locatorshot --check` — 49 witnesses**, serverless, validation-required,
+0 VUIDs, in four phases: `t*` re-transcribes the decompile independently (a
+witness that asks the implementation what to expect asserts only that the
+implementation equals itself), `w*` drives the real `route_waypoint` with a
+real `Ids::resolve`d table, `m*` drives the production `markers`, and `p*` reads
+back real pixels.
+
+The subject is a **synthetic magenta tint**, delivered through the packet's own
+`icon.color`, and `p1` asserts an otherwise-identical frame with no bar contains
+none of it. `p3` then asserts not "some magenta appeared" but that **every**
+magenta pixel in the frame lies inside the 9x9 rect the model predicted — a
+claim the strip itself cannot satisfy.
+
+**28 mutations run, 28 caught.** Three survived the first pass and every one was
+a defect in the gate, all the same shape: *the sample did not sit where the
+mutation bites*.
+
+* Swapping the distance's point for the bearing's survived, because the sample
+  sat at 200 blocks where both distances land in the same sprite band. It now
+  sits at 229, a hair under the band edge, where the 60-block eye shift crosses
+  it.
+* Hashing a UUID's two halves with `+` instead of `^` survived, because the
+  fixture's low half was **zero**, for which the two are identical.
+* The `Math.round` mutation I wrote was **equivalent**, and finding that out
+  corrected my own comment. `0.9f * 255.0f` rounds *up* to exactly `229.5f` in
+  f32, so `floor(x + 0.5)` gives 230 — but widening the operands first gives
+  `229.49999392` and 229, while *truncating* also gives 229. The two errors are
+  indistinguishable from the output, so the gate now pins the arithmetic
+  (computing both products itself) rather than the result.
+
+**And one mutation still leaves the gate green, which the row now says.**
+Stretching the nine-slice instead of tiling it does not move a rendered pixel,
+because `locator_bar_background.png`'s columns 5 and 6 are byte-identical in
+every row — the sprite is symmetric about its centre. Tile and stretch produce
+the same 172 columns for *this* sprite. `p7` was rewritten to claim what it can
+(all 182 columns match an independent expansion of the 12-wide source), and
+`t11` carries the tiling rule on synthetic data where the two middle columns
+differ.
+
+**`Mth.atan2` is transcribed, and the cost of not transcribing it is
+measured.** It is vanilla's table-driven approximation (a 257-entry asin/cos
+LUT plus `fastInvSqrt`), not `Math.atan2`. Over 36,000 bearings the worst
+disagreement with the platform is **7.4e-6 rad**, which at the bar's
+1.44 px/degree moves the dot by at most **1 px**. That number is the finding;
+the pass is not.
+
+**Live: `rewo play --waypoint-check`**, against a real 26.2 server on port
+25610. A vanilla server transmits a waypoint for a **player and nothing else**
+by default — `LivingEntity.isTransmittingWaypoint` is
+`getAttributeValue(WAYPOINT_TRANSMIT_RANGE) > 0` and only
+`Player.createAttributes` gives it a non-zero base (6.0E7) — so rather than
+needing a second account the gate drives `/attribute` on a summoned mob, which
+is the same transmitter path (`ServerLevel.onAttributeUpdated` hands it to the
+level's `ServerWaypointManager`). Fail-closed on **observation**: a peak of
+zero, or a track with no matching untrack, is red.
+
+Measured: `waypoints: peak 1, untrack observed: true`, the tracked entry
+`Uuid(...) style=minecraft:default colour=None Vec3i { x: -130, y: -60, z: 8 }`
+— the position tier, the default style, and **no colour**, which is what makes
+the identifier-hash fallback the live path rather than a fallback.
+`CORRECTIONS 0` over 600 ticks, unchanged.
+
+Gates: **1512 tests** (proto 11, world 400, data 175, net 551, mesh 45, gpu 245,
+app 85), all 29 serverless gates green with Vulkan validation ON and 0 VUIDs —
+`mobshot` 246, `blockentityshot` 172, `inventoryshot` 152, `swingshot` 97,
+`abilityshot` 96, `itemshot` 75, `capeshot` 69, `hurtshot` 56, `titleshot` 55,
+**`locatorshot` 49**, `labelshot` 47, `rideshot` 45, `attributeshot` 43,
+`hudshot` 41, `weathershot` 35, `handshot` 34, `particleshot` 34,
+`healthbarshot` 33, `bordershot` 31, `eventshot` 28, `danceshot` 24,
+`breakshot` 22, `captureshot` 17, `portalshot` 12, plus `skyshot`,
+`lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`. Demo PNG SHA-256
+`2cc56b4acbfb92cb…` — byte-identical to M15 onward.
+
+**Open.** The `JUMPABLE_VEHICLE` contextual bar is unreachable (Rewo models no
+rideable-jumping vehicle), so the third branch of `nextContextualInfoState`
+collapses and is recorded rather than transcribed as dead code. A tracked
+entity's eye height uses `EntityDimensions.scalable`'s `height * 0.85` default
+rather than the per-type overrides, which is confined to the pitch arrow by the
+bearing being horizontal. And no eyeball pass has been made: what this
+milestone claims is the properties the gate measures.

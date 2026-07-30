@@ -653,6 +653,17 @@ pub struct PlaySession {
     /// dimension change — so it is deliberately not cleared by the transition.
     /// The server re-sends the contents on respawn anyway.
     pub inventory: rewo_world::inventory::Inventory,
+    /// The tracked waypoints the locator bar draws (M83).
+    ///
+    /// **Connection state, not level state.** `ClientWaypointManager` is a
+    /// field of `ClientPacketListener`, not of `ClientLevel`, so it is one of
+    /// the few things a dimension change does *not* discard — which is why it
+    /// is absent from [`WorldTransition`] beside the weather and the border.
+    /// It stays correct across a change because `ServerWaypointManager` is
+    /// per-level and its `removePlayer`/`addPlayer` pair sends an `UNTRACK`
+    /// for every waypoint of the level being left and a `TRACK` for every one
+    /// of the level being entered.
+    pub waypoints: crate::waypoints::WaypointStore,
     /// The `minecraft:data_component_type` registry, kept so a *name* can be
     /// recovered from a patch's raw ids (M66).
     ///
@@ -1411,6 +1422,7 @@ impl<'a> Connection<'a> {
             weather: rewo_world::weather::WeatherState::default(),
             border: rewo_world::border::WorldBorder::default(),
             inventory: rewo_world::inventory::Inventory::default(),
+            waypoints: crate::waypoints::WaypointStore::default(),
             component_names: None,
             stack_details: crate::item_stack::StackDetails::default(),
             player_id: None,
@@ -2502,6 +2514,12 @@ impl PlaySession {
             // parse.
             let lines = self.session.take_chat();
             self.chat_log.extend(lines);
+        } else if crate::route_waypoint(id, body, ids, &mut self.waypoints) {
+            // M83 — the locator bar. `handleWaypoint` is two lines: the thread
+            // check and `packet.apply(this.waypointManager)`. There is no
+            // gamerule check and no range check on this side; the server has
+            // already decided both, and the client draws whatever it was told
+            // to track. See `crate::waypoints`.
         } else if crate::route_hud_state(id, body, ids, &mut self.hud) {
             // M79 — the title overlay, the XP gauge and the item-cooldown map.
             // Every one of the seven writes state a renderer reads; none of

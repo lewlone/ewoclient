@@ -33,6 +33,7 @@ pub mod vanilla_hier;
 pub mod mobs;
 pub mod held;
 pub mod hud;
+pub mod locator_bar;
 pub mod offscreen;
 pub mod velvet_chrome;
 pub mod velvet_glyph;

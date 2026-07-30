@@ -2877,6 +2877,14 @@ fn run_headless(
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
     }
+    let locator_styles = match locator_sprites(&baked) {
+        Some(l) => {
+            let styles = l.styles.clone();
+            world_renderer.init_locator_bar(&mut gpu, &l)?;
+            styles
+        }
+        None => Vec::new(),
+    };
     if let Some(c) = container_sprites(&baked) {
         world_renderer.init_container(&mut gpu, &c)?;
     }
@@ -3535,6 +3543,18 @@ fn run_headless(
             0.0,
         ),
     );
+    {
+        let scale = rewo_gpu::hud::gui_scale(1280.0, 720.0);
+        world_renderer.set_locator_bar(resolve_locator_bar(
+            &session,
+            &session.world.entities,
+            &locator_styles,
+            crate::modules::VANILLA_FOV,
+            (1280.0 / scale) as i32,
+            (720.0 / scale) as i32,
+            0.0,
+        ));
+    }
     let mut headless_text = build_text(&session, gui_px(1280, 720), 720.0, None, true);
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
@@ -3718,6 +3738,10 @@ struct LiveApp {
     /// `Hud.lastToolHighlight` + `toolHighlightTimer` (M66) — the held-item
     /// name that fades in over the hotbar.
     tool_highlight: rewo_gpu::hud::ToolHighlight,
+    /// M83's `waypoint_style` table, resolved once at init. Held rather than
+    /// rebuilt per frame because `markers` needs it every frame and its
+    /// sprite lists are `Vec`s.
+    locator_styles: Vec<rewo_gpu::locator_bar::WaypointStyle>,
     /// M52 module port: the legit module set, loaded from the active client
     /// profile's `modules.toml` -- the same file the launcher's Settings →
     /// Modules tab writes, so a Native instance needs no new config contract.
@@ -3801,6 +3825,10 @@ impl ApplicationHandler for LiveApp {
             init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
+            if let Some(l) = locator_sprites(&baked) {
+                self.locator_styles = l.styles.clone();
+                world_renderer.init_locator_bar(&mut gpu, &l)?;
+            }
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
                 // M52b: the Velvet type stack, windowed only. A build with no
@@ -4675,6 +4703,23 @@ impl LiveApp {
         // constants this path used before -- which is what keeps the golden
         // PNGs byte-identical.
         let render_modules = self.modules.render();
+        // M83's locator bar. After `render_modules` because its bearing window
+        // is measured against the same FOV the frame is projected through --
+        // the Zoom module divides it, and a dot must not drift out of a strip
+        // that is still 60 degrees wide in the shader's terms.
+        {
+            let scale = rewo_gpu::hud::gui_scale(extent.width as f32, extent.height as f32);
+            let bar = resolve_locator_bar(
+                session,
+                &session.world.entities,
+                &self.locator_styles,
+                render_modules.fov_degrees,
+                (extent.width as f32 / scale) as i32,
+                (extent.height as f32 / scale) as i32,
+                alpha,
+            );
+            state.world_renderer.set_locator_bar(bar);
+        }
         let vp = eye_view_proj_hurt(
             eye,
             session.player.yaw,
@@ -4806,6 +4851,7 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
+        locator_styles: Vec::new(),
         modules: crate::modules::Modules::load(),
         glyphs: load_velvet_fonts(),
         gestures: GestureTracker::default(),
@@ -5118,6 +5164,228 @@ pub(crate) fn resolve_hud_gauges(
         xp_needed: xp.xp_needed_for_next_level(),
         cooldowns,
     }
+}
+
+pub(crate) fn locator_sprites(
+    baked: &assets::BakedAssets,
+) -> Option<rewo_gpu::locator_bar::LocatorSpritesData<'_>> {
+    let l = baked.locator.as_ref()?;
+    Some(rewo_gpu::locator_bar::LocatorSpritesData {
+        background: hud_sprite(&l.background),
+        arrow_up: hud_sprite(&l.arrow_up),
+        arrow_down: hud_sprite(&l.arrow_down),
+        dots: l.dots.iter().map(hud_sprite).collect(),
+        styles: l
+            .styles
+            .iter()
+            .map(|s| rewo_gpu::locator_bar::WaypointStyle {
+                key: s.key.clone(),
+                near_distance: s.near_distance,
+                far_distance: s.far_distance,
+                sprites: s.sprites.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// The net → gpu bridge for M83's locator bar, and the three things neither
+/// side can do alone.
+///
+/// * **The identifier.** `rewo_gpu::locator_bar` never sees one, so the
+///   `icon.color`-absent fallback (`setBrightness(color(255, hash), 0.9)`) and
+///   the camera-entity skip are resolved here, where the store's keys are.
+/// * **The style key → index.** The wire carries an `Identifier`; the atlas
+///   carries a slot. An unknown key resolves to *no* style, which the pass
+///   draws as the synthesised `MissingTextureAtlasSprite` patch — the same
+///   answer `WaypointStyleManager.get`'s `getOrDefault(id, MISSING)` gives.
+/// * **The entity substitution.** `Vec3iWaypoint.position` prefers the tracked
+///   entity's interpolated eye position, which is a `level.getEntity(uuid)`
+///   lookup — and `EntityTable` is keyed by entity *id*, so this is the O(n)
+///   scan the table's only UUID map (profile names) cannot serve.
+///
+/// Returns `None` when the locator bar is not the contextual bar this frame.
+///
+/// **The observer is never in `EntityTable`** (REWO_PLAN §0.0 gotcha 13). Both
+/// the camera position and the entity position come from `session.player`; a
+/// version of this that reached for `entities.get(session.player_id)` would
+/// find nothing and emit an empty bar on every frame, and a gate that built
+/// its own table would never see it.
+pub(crate) struct LocatorInputs<'a> {
+    pub waypoints: &'a rewo_net::waypoints::WaypointStore,
+    /// The **camera entity's** UUID. `session.own_uuid`, never a lookup in
+    /// `entities` — see the doc above.
+    pub own_uuid: Option<u128>,
+    pub entities: &'a rewo_world::entities::EntityTable,
+    pub styles: &'a [rewo_gpu::locator_bar::WaypointStyle],
+    /// `camera.position()`.
+    pub eye: [f64; 3],
+    /// `cameraEntity.position()` — the feet.
+    pub feet: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub fov: f32,
+    pub has_experience: bool,
+    pub xp_prioritised: bool,
+    pub ticks: u64,
+}
+
+/// The session adapter. Split from [`locator_bar_state`] so the gate drives
+/// the emitter the frame drives rather than a copy of it — M45's
+/// `install_shapes` failure and M41's rotted `swingshot` fixture were both
+/// gates that had reimplemented a slice of the app and stopped testing their
+/// subject. Same split M59 made for `resolve_health_bar`.
+pub(crate) fn resolve_locator_bar(
+    session: &PlaySession,
+    entities: &rewo_world::entities::EntityTable,
+    styles: &[rewo_gpu::locator_bar::WaypointStyle],
+    fov_deg: f32,
+    gui_w: i32,
+    gui_h: i32,
+    alpha: f32,
+) -> Option<rewo_gpu::locator_bar::LocatorBarState> {
+    let eye = player_eye(session);
+    locator_bar_state(
+        LocatorInputs {
+            waypoints: &session.waypoints,
+            own_uuid: session.own_uuid,
+            entities,
+            styles,
+            eye: [eye.x as f64, eye.y as f64, eye.z as f64],
+            feet: [session.player.x, session.player.y, session.player.z],
+            yaw: session.player.yaw,
+            pitch: session.player.pitch,
+            fov: fov_deg,
+            has_experience: has_experience(session),
+            xp_prioritised: session.hud.experience.will_prioritize(),
+            ticks: session.ticks,
+        },
+        gui_w,
+        gui_h,
+        alpha,
+    )
+}
+
+pub(crate) fn locator_bar_state(
+    input: LocatorInputs<'_>,
+    gui_w: i32,
+    gui_h: i32,
+    alpha: f32,
+) -> Option<rewo_gpu::locator_bar::LocatorBarState> {
+    use rewo_gpu::locator_bar as lb;
+    use rewo_net::waypoints::{WaypointContents, WaypointId};
+
+    let LocatorInputs {
+        waypoints,
+        own_uuid,
+        entities,
+        styles,
+        eye,
+        feet,
+        yaw,
+        pitch,
+        fov,
+        has_experience,
+        xp_prioritised,
+        ticks,
+    } = input;
+
+    if !lb::contextual_bar(!waypoints.is_empty(), has_experience, xp_prioritised) {
+        return None;
+    }
+
+    let cam = lb::LocatorCamera {
+        yaw,
+        pitch,
+        fov,
+        camera_pos: eye,
+        // `cameraEntity.position()` — the **feet**, which is the wire position.
+        entity_pos: feet,
+        // Rewo's own projection is infinite-far reversed-Z, so there is no
+        // `far` to read; vanilla's is finite. It only scales `z_ndc`, whose
+        // sole consumer is a `> 1.0` test that reduces to "closer than the
+        // near plane" for any `far >> near` — so a nominal value is exact to
+        // the part in `near/far` that the test cannot resolve.
+        near: 0.05,
+        far: 1024.0,
+    };
+
+    let mut out = Vec::new();
+    for w in waypoints.iter_sorted() {
+        let subject = match w.contents {
+            WaypointContents::Empty => lb::WaypointSubject::Empty,
+            WaypointContents::Chunk { x, z } => lb::WaypointSubject::Chunk { x, z },
+            WaypointContents::Azimuth { radians } => lb::WaypointSubject::Azimuth { radians },
+            WaypointContents::Vec3i { x, y, z } => {
+                let entity_eye = match w.id {
+                    WaypointId::Uuid(uuid) => entities
+                        .iter()
+                        .find(|(_, e)| e.uuid == uuid)
+                        .and_then(|(_, e)| {
+                            let p = e.render_pos(alpha);
+                            // `e.blockPosition().distManhattan(this.vector) > 3
+                            //  ? null : e.getEyePosition(partialTick)` — a
+                            // staleness guard, because the waypoint packet and
+                            // the entity's own movement packets arrive
+                            // independently.
+                            let bx = p[0].floor() as i32;
+                            let by = p[1].floor() as i32;
+                            let bz = p[2].floor() as i32;
+                            let manhattan =
+                                (bx - x).abs() + (by - y).abs() + (bz - z).abs();
+                            if manhattan > 3 {
+                                return None;
+                            }
+                            // `EntityDimensions.scalable`'s default eye height
+                            // is `height * 0.85`. A handful of types override
+                            // it; the approximation is confined to the pitch
+                            // arrow, because `yawAngleToCamera` reads only x
+                            // and z — the bearing is a purely horizontal
+                            // computation and the y component never enters it.
+                            let h = entities
+                                .attachments()
+                                .and_then(|a| a.points(e.type_id))
+                                .map(|p| p.height as f64)
+                                .unwrap_or(1.8);
+                            Some([p[0], p[1] + h * 0.85, p[2]])
+                        }),
+                    WaypointId::Name(_) => None,
+                };
+                lb::WaypointSubject::Vec3i {
+                    x,
+                    y,
+                    z,
+                    entity_eye,
+                }
+            }
+        };
+        // `icon.color.orElseGet(() -> id.map(uuid -> …, name -> …))` — the two
+        // arms differ only in which `hashCode` they call, and both go through
+        // `ARGB.color(255, hash)`, the **two-argument** overload that keeps the
+        // hash's low 24 bits as RGB rather than treating it as three channels.
+        let color = w.icon.color.unwrap_or_else(|| {
+            let hash = match &w.id {
+                WaypointId::Uuid(u) => lb::java_uuid_hash(*u),
+                WaypointId::Name(n) => lb::java_string_hash(n),
+            };
+            lb::argb_set_brightness(0xFF00_0000 | (hash as u32 & 0x00FF_FFFF), 0.9)
+        });
+        out.push(lb::LocatorWaypoint {
+            subject,
+            color,
+            // `usize::MAX` is "no style resolved", which the pass draws as the
+            // missing patch.
+            style: styles
+                .iter()
+                .position(|s| s.key == w.icon.style)
+                .unwrap_or(usize::MAX),
+            is_camera_entity: matches!(w.id, WaypointId::Uuid(u) if Some(u) == own_uuid),
+        });
+    }
+
+    Some(lb::LocatorBarState {
+        markers: lb::markers(&out, styles, &cam, gui_w, gui_h),
+        tick: ticks as i64,
+    })
 }
 
 /// `gameMode.hasExperience()` is `localPlayerMode.isSurvival()`, which is

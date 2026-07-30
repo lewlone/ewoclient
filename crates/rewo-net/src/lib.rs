@@ -46,6 +46,7 @@ pub mod tags;
 pub mod teams;
 pub mod ticking;
 pub mod view_area;
+pub mod waypoints;
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
@@ -3022,6 +3023,38 @@ pub fn route_border(
     };
     if !border::apply(kind, body, border) {
         log::debug!("net: border {kind:?} decode failed ({} bytes)", body.len());
+    }
+    true
+}
+
+/// The clientbound-play dispatch seam for M83's locator bar. Returns whether
+/// the id matched — **not** whether the body decoded.
+///
+/// One packet, so there is no id table to get wrong; the seam exists so the
+/// waypoint map is written in exactly one place and the app can drive the same
+/// entry point the session does.
+///
+/// **This handler deliberately does not touch [`rewo_world::entities::
+/// EntityTable`]** — see REWO_PLAN §0.0 gotcha 13. A waypoint's identifier is
+/// a UUID and the obvious first move is to resolve it to an entity, but the
+/// two places that identifier is *compared* are both about the receiver: the
+/// renderer skips the waypoint whose UUID is the **camera entity's**, which is
+/// the local player, and the table never holds it. Resolving here would also
+/// be wrong in the other direction — a waypoint is tracked whether or not its
+/// subject is in render distance (that is the whole point of the chunk and
+/// azimuth tiers), so an entity lookup would drop exactly the far-away
+/// waypoints the bar exists to show.
+pub fn route_waypoint(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    store: &mut waypoints::WaypointStore,
+) -> bool {
+    if id != ids.cb_play_waypoint {
+        return false;
+    }
+    if !waypoints::apply(body, store) {
+        log::debug!("net: waypoint decode failed ({} bytes)", body.len());
     }
     true
 }
