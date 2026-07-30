@@ -18,19 +18,44 @@
 //! store; the texture is sampled from an `R8G8B8A8_SRGB` image and is already
 //! linear. Same discipline as every other Rewo UI pass.
 //!
-//! # The button is blitted 1:1 and that is a decision
+//! # The nine-slice, and the half of it that is still a named gap (M85)
 //!
-//! `widget/button.png` is 200×20 with a `nine_slice` `.mcmeta` (`border: 3`),
-//! and `Button.BIG_WIDTH` is 200 — so at the size the death screen draws them
-//! the nine-slice **is** a 1:1 blit: the corners come out at 3 px and the
-//! middles span exactly the source's own `200 − 6` and `20 − 6`.
+//! `widget/button.png` is 200×20 with a `nine_slice` `.mcmeta` (`border: 3`,
+//! and **no `stretch_inner`**, so `GuiSpriteScaling.NineSlice.stretchInner`
+//! defaults to `false` → `blitTiledSprite`). At `Button.BIG_WIDTH` the
+//! nine-slice degenerates to a 1:1 blit, which is why M82 shipped one and
+//! asserted that any other size was *skipped*.
 //!
-//! `blitNineSlicedSprite` is not transcribed here. It is ~200 lines with a
-//! tile-vs-stretch fork (`GuiSpriteScaling.NineSlice.stretchInner`, default
-//! **false** → `blitTiledSprite`), and every line of it would be untested at
-//! the one size Rewo actually uses. A screen that wants a 150-wide button
-//! needs it; until then [`ButtonDraw`] is asserted to be the sprite's own
-//! size, so the gap fails loud rather than stretching silently.
+//! M85's server-links dialog draws **310**-wide buttons and the pause menu
+//! draws 204 and 98, so that assertion came due. What is transcribed now is
+//! `blitNineSlicedSprite`'s first two branches:
+//!
+//! * `width == sprite width && height == sprite height` — one quad.
+//! * `height == sprite height` — left border, **tiled** inner, right border.
+//!
+//! The two branches that resize *vertically* are still not here, and a button
+//! whose height is not the sheet's 20 is still skipped with a warning. That is
+//! not laziness twice over: every `Button` Rewo builds is
+//! `Button.DEFAULT_HEIGHT`, so the vertical branches would be untranscribed
+//! *and* unexercised, which is the shape M82 declined for arrow-key navigation.
+//! `deathshot`'s `p11` still asserts the skip; `serverlinkshot` asserts that a
+//! 310-wide button now draws.
+//!
+//! **The inner segment tiles, it does not stretch.** `TiledBlitRenderState`
+//! repeats the 194×20 middle across the gap and clips the last partial tile by
+//! `Mth.lerp(remaining / tileWidth, u0, u1)`. Stretching instead is the
+//! plausible shortcut and it is visibly wrong on a 310-wide button: the sheet's
+//! centre has a vertical highlight gradient, and stretched it smears where
+//! tiled it repeats.
+//!
+//! # The menu background (M85)
+//!
+//! `Screen.extractBackground`'s *other* branch — `extractMenuBackground`, a
+//! 16×16 texture blitted with a declared size of `32, 32` so the on-screen tile
+//! is 32 GUI px of a 2×-magnified sheet, repeating. Rewo's sampler is
+//! `CLAMP_TO_EDGE` over an atlas, so the repeat is done on the CPU: one quad
+//! per tile, each carrying the sprite's own UV rect. At 4× GUI scale on a 4K
+//! display that is ~250 quads, which is why [`MAX_VERTS`] is what it is.
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
@@ -41,13 +66,19 @@ use crate::entities::create_texture;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
-/// The backdrop plus a generous button count. A vanilla screen tops out well
-/// below this (`PauseScreen` has eight); the statistics screen's list will
-/// need its own budget when it lands.
-const MAX_VERTS: usize = 1024;
+/// Enough for the tiled menu background plus every button a screen can hold.
+///
+/// The background dominates: it is one quad per 32×32 GUI-pixel cell, so a
+/// 3840×2160 display at GUI scale 4 is `ceil(960/32) * ceil(540/32)` = 30 × 17
+/// = 510 quads = 3060 vertices. The buttons are noise beside that (a nine-slice
+/// button is at most three quads plus its tiles). 8192 leaves headroom for a
+/// GUI scale of 2 on the same display, which is 120 × 68 = 8160 — over the cap,
+/// and [`push_quad`] drops the overflow rather than corrupting the buffer.
+const MAX_VERTS: usize = 8192;
 const RING: usize = 2;
 const ATLAS_W: u32 = 256;
-const ATLAS_H: u32 = 64;
+/// Three 20-px button rows, then the two 16×16 menu-background sheets.
+const ATLAS_H: u32 = 96;
 
 /// `Button.BIG_WIDTH` / `Button.DEFAULT_HEIGHT`, and the three sheets' own
 /// size. Mirrored from `rewo_world::screen` rather than imported: `rewo-gpu`
@@ -80,6 +111,17 @@ pub struct ButtonDraw {
     pub sprite: ButtonSprite,
 }
 
+/// `Screen.extractMenuBackground`'s tiled texture (M85).
+///
+/// Mutually exclusive with [`ScreenDraw::backdrop`] in vanilla, because
+/// `extractBackground`'s two branches are an if/else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuBackgroundDraw {
+    /// `minecraft.level != null` — selects `INWORLD_MENU_BACKGROUND` over
+    /// `MENU_BACKGROUND`.
+    pub in_world: bool,
+}
+
 /// Everything a screen asks this pass for in one frame.
 #[derive(Clone, Debug, Default)]
 pub struct ScreenDraw {
@@ -87,12 +129,14 @@ pub struct ScreenDraw {
     /// paints no backdrop of its own. `col1` is the top — see
     /// `ColoredRectangleRenderState.buildVertices`.
     pub backdrop: Option<([f32; 4], [f32; 4])>,
+    /// The other branch of `extractBackground` — see [`MenuBackgroundDraw`].
+    pub menu_background: Option<MenuBackgroundDraw>,
     pub buttons: Vec<ButtonDraw>,
 }
 
 impl ScreenDraw {
     pub fn is_empty(&self) -> bool {
-        self.backdrop.is_none() && self.buttons.is_empty()
+        self.backdrop.is_none() && self.menu_background.is_none() && self.buttons.is_empty()
     }
 }
 
@@ -101,7 +145,20 @@ pub struct WidgetSpriteData<'a> {
     pub button: crate::hud::HudSpriteData<'a>,
     pub button_disabled: crate::hud::HudSpriteData<'a>,
     pub button_highlighted: crate::hud::HudSpriteData<'a>,
+    pub menu_background: crate::hud::HudSpriteData<'a>,
+    pub inworld_menu_background: crate::hud::HudSpriteData<'a>,
 }
+
+/// `GuiSpriteScaling.NineSlice` from `widget/button.png.mcmeta`:
+/// `{"type":"nine_slice","width":200,"height":20,"border":3}`.
+///
+/// `border` is the one-number form, so all four edges are 3. `stretch_inner` is
+/// absent and its default is **false**, which is what sends the middle segments
+/// through `blitTiledSprite`.
+const NINE_SLICE_BORDER: i32 = 3;
+/// The tile size of the menu background, in GUI pixels — the `32, 32` declared
+/// size in `extractMenuBackgroundTexture`, not the 16×16 file.
+const MENU_BACKGROUND_TILE: f32 = 32.0;
 
 pub struct ScreenPass {
     layout: vk::PipelineLayout,
@@ -121,6 +178,8 @@ pub struct ScreenPass {
     disabled: Rect,
     highlighted: Rect,
     white: Rect,
+    menu_bg: Rect,
+    inworld_menu_bg: Rect,
 }
 
 impl ScreenPass {
@@ -141,6 +200,8 @@ impl ScreenPass {
         place(&mut atlas, &sprites.button, 0, 0);
         place(&mut atlas, &sprites.button_disabled, 0, 20);
         place(&mut atlas, &sprites.button_highlighted, 0, 40);
+        place(&mut atlas, &sprites.menu_background, 0, 60);
+        place(&mut atlas, &sprites.inworld_menu_background, 16, 60);
         // One opaque white texel so the untextured backdrop can share this
         // pipeline — the fragment shader's `texture * color` then leaves the
         // gradient alone.
@@ -158,6 +219,8 @@ impl ScreenPass {
         let highlighted = uv(0.0, 40.0, SPRITE_W as f32, SPRITE_H as f32);
         // Half a texel in, so filtering cannot reach a neighbour.
         let white = uv(208.5, 4.5, 0.0, 0.0);
+        let menu_bg = uv(0.0, 60.0, 16.0, 16.0);
+        let inworld_menu_bg = uv(16.0, 60.0, 16.0, 16.0);
 
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let device = gpu.device.clone();
@@ -265,6 +328,8 @@ impl ScreenPass {
             disabled,
             highlighted,
             white,
+            menu_bg,
+            inworld_menu_bg,
         })
     }
 
@@ -282,33 +347,60 @@ impl ScreenPass {
             push_quad(&mut v, 0.0, 0.0, w, h, self.white, top, bottom);
         }
 
-        // 2. The buttons, in GUI space.
+        // 2. The menu background, tiled in GUI space. Drawn after the
+        //    gradient because the two are an if/else in vanilla and never
+        //    coexist; the order only matters if a caller sets both.
+        if let Some(bg) = draw.menu_background {
+            let rect = if bg.in_world {
+                self.inworld_menu_bg
+            } else {
+                self.menu_bg
+            };
+            let tile = MENU_BACKGROUND_TILE * scale;
+            let (mut ty, mut rows) = (0.0f32, 0usize);
+            while ty < h && rows < 512 {
+                let (mut tx, mut cols) = (0.0f32, 0usize);
+                while tx < w && cols < 512 {
+                    // The last tile in each direction runs past the edge in
+                    // vanilla too — `blit` draws the whole quad and the
+                    // framebuffer clips it — so no partial-UV handling is
+                    // needed here.
+                    push_quad(&mut v, tx, ty, tile, tile, rect, [1.0; 4], [1.0; 4]);
+                    tx += tile;
+                    cols += 1;
+                }
+                ty += tile;
+                rows += 1;
+            }
+        }
+
+        // 3. The buttons, in GUI space.
         for b in &draw.buttons {
             let rect = match b.sprite {
                 ButtonSprite::Enabled => self.enabled,
                 ButtonSprite::Disabled => self.disabled,
                 ButtonSprite::Highlighted => self.highlighted,
             };
-            // See the module docs: nine-slice is not transcribed, so a button
-            // at any other size would be silently stretched. Refuse instead.
-            if b.width != SPRITE_W || b.height != SPRITE_H {
+            // `blitNineSlicedSprite`'s vertical branches are not transcribed —
+            // see the module docs — so a button whose height is not the
+            // sheet's is skipped rather than stretched.
+            if b.height != SPRITE_H {
                 log::warn!(
-                    "screen: {}x{} button needs blitNineSlicedSprite, which is not \
-                     implemented — skipped",
+                    "screen: {}x{} button needs blitNineSlicedSprite's vertical branches, \
+                     which are not implemented — skipped",
                     b.width,
                     b.height
                 );
                 continue;
             }
-            push_quad(
+            push_nine_slice(
                 &mut v,
                 b.x as f32 * scale,
                 b.y as f32 * scale,
-                b.width as f32 * scale,
-                b.height as f32 * scale,
+                b.width,
+                b.height,
                 rect,
-                [1.0; 4],
-                [1.0; 4],
+                scale,
             );
         }
 
@@ -414,6 +506,96 @@ fn push_quad(
     }
     for (pos, uv, color) in corners {
         v.push(Vertex { pos, uv, color });
+    }
+}
+
+/// `blitNineSlicedSprite`, restricted to the two branches whose height matches
+/// the sheet's — see the module docs.
+///
+/// `rect` is the sheet's UV rectangle inside the atlas and `SPRITE_W`/`SPRITE_H`
+/// its texel size, so a fraction `f` of the sheet's width is
+/// `u0 + f * (u1 - u0)`.
+fn push_nine_slice(
+    v: &mut Vec<Vertex>,
+    x: f32,
+    y: f32,
+    width: i32,
+    height: i32,
+    rect: Rect,
+    scale: f32,
+) {
+    let white = [1.0f32; 4];
+    // `int borderLeft = Math.min(border.left(), width / 2);` — the clamp is
+    // what keeps a button narrower than twice the border from drawing
+    // overlapping corners. It bites at width 5 and below, which nothing here
+    // reaches, and it is transcribed rather than skipped because the
+    // alternative is a silent negative inner width.
+    let bl = NINE_SLICE_BORDER.min(width / 2);
+    let br = NINE_SLICE_BORDER.min(width / 2);
+    // Texel -> UV inside the sheet's atlas rect.
+    let ur = |tx: f32| rect.u0 + (tx / SPRITE_W as f32) * (rect.u1 - rect.u0);
+    let sub = |tx0: f32, tx1: f32| Rect {
+        u0: ur(tx0),
+        v0: rect.v0,
+        u1: ur(tx1),
+        v1: rect.v1,
+    };
+    let h = height as f32 * scale;
+
+    if width == SPRITE_W {
+        // `width == nineSlice.width() && height == nineSlice.height()` — the
+        // 1:1 blit M82 shipped, unchanged.
+        push_quad(v, x, y, width as f32 * scale, h, rect, white, white);
+        return;
+    }
+
+    // `height == nineSlice.height()`: left border, tiled inner, right border.
+    push_quad(v, x, y, bl as f32 * scale, h, sub(0.0, bl as f32), white, white);
+    let inner_x = x + bl as f32 * scale;
+    let inner_w = (width - br - bl) as f32 * scale;
+    let tile_w = (SPRITE_W - br - bl) as f32;
+    push_tiled(
+        v,
+        inner_x,
+        y,
+        inner_w,
+        h,
+        tile_w * scale,
+        sub(bl as f32, (SPRITE_W - br) as f32),
+    );
+    push_quad(
+        v,
+        x + (width - br) as f32 * scale,
+        y,
+        br as f32 * scale,
+        h,
+        sub((SPRITE_W - br) as f32, SPRITE_W as f32),
+        white,
+        white,
+    );
+}
+
+/// `TiledBlitRenderState.buildVertices`, horizontal only (every caller here has
+/// `tileHeight == height`).
+///
+/// The partial last tile is **clipped by UV**, not stretched:
+/// `u1 = Mth.lerp(remaining / tileWidth, u0, u1)`. Stretching it instead makes a
+/// 310-wide button's centre highlight visibly wider than a 204-wide one's.
+fn push_tiled(v: &mut Vec<Vertex>, x: f32, y: f32, width: f32, height: f32, tile: f32, r: Rect) {
+    let white = [1.0f32; 4];
+    if width <= 0.0 || height <= 0.0 || tile <= 0.0 {
+        return;
+    }
+    let mut done = 0.0f32;
+    while done < width {
+        let remaining = width - done;
+        let (w, u1) = if tile <= remaining {
+            (tile, r.u1)
+        } else {
+            (remaining, r.u0 + (remaining / tile) * (r.u1 - r.u0))
+        };
+        push_quad(v, x + done, y, w, height, Rect { u1, ..r }, white, white);
+        done += tile;
     }
 }
 

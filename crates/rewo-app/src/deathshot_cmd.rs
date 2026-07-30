@@ -792,7 +792,7 @@ fn check_pixels(
     let screen_px = (W as f32, H as f32);
     let live = |screen: &Screen, mouse: Option<(f64, f64)>| {
         (
-            crate::live_cmd::death_screen_chrome(screen, mouse),
+            crate::live_cmd::screen_chrome(screen, mouse),
             crate::live_cmd::death_screen_lines(
                 &view,
                 screen,
@@ -1038,32 +1038,42 @@ fn check_pixels(
 
     // p11: the documented gap fails loud rather than stretching.
     //
-    // `blitNineSlicedSprite` is not transcribed, so a button at any size but
-    // the sheet's own 200x20 is **skipped**. Asserted, because the alternative
-    // — a silently stretched sprite — is exactly the kind of wrong that looks
-    // fine until someone measures it.
+    // **The gap moved in M85 and this witness moved with it.** M82 shipped a
+    // 1:1 blit and asserted that a button of *any* other size was skipped;
+    // M85's server-links dialog draws 310-wide buttons, so
+    // `blitNineSlicedSprite`'s two width-resizing branches are now transcribed
+    // and a 150-wide button really does draw (`serverlinkshot` asserts that it
+    // does). What is still not transcribed is the pair of branches that resize
+    // **vertically**, so the sample here is a button whose *height* is not the
+    // sheet's 20. Asserted for the same reason as before: a silently stretched
+    // sprite is exactly the kind of wrong that looks fine until someone
+    // measures it.
     let odd = rewo_gpu::screen::ScreenDraw {
         backdrop: Some((ds::BACKDROP.top, ds::BACKDROP.bottom)),
+        menu_background: None,
         buttons: vec![rewo_gpu::screen::ButtonDraw {
             x: 60,
             y: 132,
-            width: 150,
-            height: 20,
+            width: 200,
+            height: 24,
             sprite: rewo_gpu::screen::ButtonSprite::Enabled,
         }],
     };
     let backdrop_only = rewo_gpu::screen::ScreenDraw {
         backdrop: odd.backdrop,
+        menu_background: None,
         buttons: Vec::new(),
     };
     let odd_frame = shot(&mut gpu, &mut off, &mut wr, odd, Vec::new())?;
     let bare = shot(&mut gpu, &mut off, &mut wr, backdrop_only, Vec::new())?;
     c.record(
-        "p11.a_button_at_any_other_size_is_skipped_rather_than_stretched",
+        "p11.a_button_of_another_height_is_skipped_rather_than_stretched",
         odd_frame == bare,
-        "the sheets are 200x20 nine-slice (border 3) and Rewo blits 1:1, so a \
-         150-wide button draws nothing at all until `blitNineSlicedSprite` \
-         lands — a named gap, not a silent approximation",
+        "the sheets are 200x20 nine-slice (border 3) and M85 transcribed only \
+         the two branches whose height matches, so a 24-tall button draws \
+         nothing at all — a named gap, not a silent approximation. Every \
+         `Button` Rewo builds is `Button.DEFAULT_HEIGHT`, which is why the \
+         vertical branches would be untranscribed *and* unexercised",
     );
 
     if let Some(dir) = &args.out_dir {

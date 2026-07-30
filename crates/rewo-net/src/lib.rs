@@ -37,6 +37,7 @@ pub mod play;
 pub mod player_rotation;
 pub mod record;
 pub mod scoreboard;
+pub mod server_links;
 pub mod session;
 pub mod skins;
 pub mod sounds;
@@ -536,6 +537,17 @@ impl<'a> Connection<'a> {
                     // boundary it happens to be on, and the jar is one store.
                     crate::session::apply(
                         crate::session::SessionPacket::StoreCookie,
+                        &self.packet[body..],
+                        &mut self.session,
+                    );
+                }
+                x if x == self.ids.cb_config_server_links => {
+                    // M85 — the third `common` packet, and the state a vanilla
+                    // server actually sends it in. `serverLinks` is a field of
+                    // the same common listener the brand and the cookie jar
+                    // are, so it crosses into play with them (`into_play`).
+                    crate::session::apply(
+                        crate::session::SessionPacket::ServerLinks,
                         &self.packet[body..],
                         &mut self.session,
                     );
@@ -3329,6 +3341,7 @@ pub fn route_session(
         player_combat_end: ids.cb_play_player_combat_end,
         player_combat_enter: ids.cb_play_player_combat_enter,
         server_data: ids.cb_play_server_data,
+        server_links: ids.cb_play_server_links,
         store_cookie: ids.cb_play_store_cookie,
     };
     let Some(kind) = session::kind_for_id(id, table) else {

@@ -27,12 +27,12 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 104 of them. 37
+1. **141 clientbound-play packets. Rewo resolves and consumes 106 of them. 35
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty and class B is down to two, both of them screens.** The
-   36 gaps split 0 / 2 / 23 / 11 across pure state, needs-rendering,
+2. **Class A is empty and class B is down to one screen.** The
+   35 gaps split 0 / 1 / 23 / 11 across pure state, needs-rendering,
    needs-a-missing-subsystem and not-applicable. What the five B milestones
    established is worth keeping:
    **the class letter changes the gate, not the standard.** M79's seven (title
@@ -41,9 +41,11 @@ impossible to repeat: every clientbound-play packet in the report appears in
    so the decode *and* the render are transcribed line by line and graded against
    it, with a pixel read-back half on top of the model half. A class-B packet is
    not a guess; it is a transcription that happens to need a renderer to land.
-   M83's `waypoint` (138) closed the last non-screen one, and M82 took
+   M83's `waypoint` (138) closed the last non-screen one, M82 took
    `player_combat_kill` (68) together with the screen framework the remaining
-   two sit on. The two left are `award_stats` (3) and `server_links` (137).
+   two sit on, and M85 took `server_links` (137). The one left is
+   `award_stats` (3), which a sibling milestone is taking in parallel — when it
+   lands, class B is empty.
 
    **This entry used to call the screens a different kind of problem, "a design
    decision rather than a transcription". M82 found that only half true.** The
@@ -182,28 +184,28 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **105** |
+| Resolved **and** consumed | **106** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **36** |
+| Not resolved at all | **35** |
 | **Total clientbound-play** | **141** |
 
-The 36 gaps, by class:
+The 35 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **2** | 6% |
-| **C** needs a subsystem Rewo lacks | **23** | 64% |
-| **D** not applicable | **11** | 30% |
+| **B** needs rendering | **1** | 3% |
+| **C** needs a subsystem Rewo lacks | **23** | 66% |
+| **D** not applicable | **11** | 31% |
 
 M67 audited 56 / 0 / 85 with class A at 31. **Forty-nine** packets separate
 that published 56 from this 105, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
 from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
 M75's, three are M76's, three are M77's, eight are M78's, seven are M79's, six are M80's, three are
-M81's, and one each from M82 and M83.
+M81's, and one each from M82, M83 and M85.
 
-**Class A is exhausted; class B is down to two screens.** M76 took the last
+**Class A is exhausted; class B is down to one screen.** M76 took the last
 three pure-state gaps (`player_rotation`, `player_look_at`,
 `set_default_spawn_position`, §3), and the five milestones after it took eighteen
 of class B's twenty. What they established is worth keeping: **the class letter
@@ -218,8 +220,11 @@ with one state machine, one physics consequence and one wall, and splitting the
 decode from the render would have left the state machine untestable against
 anything.
 
-The 3 that remain: `waypoint` (138) and two screens — `award_stats` (3) and
-`server_links` (137).
+The one that remains is `award_stats` (3), the statistics screen — taken by a
+sibling milestone running in parallel with M85. When it lands, **class B is
+empty**: every clientbound-play packet that needs a renderer will be rendered,
+and the whole remaining gap is class C (a subsystem Rewo lacks) and class D
+(not applicable).
 
 **M82 took the third screen, `player_combat_kill` (68), and with it the
 framework the other two were waiting on.** What this document said about them —
@@ -234,6 +239,29 @@ draws the plain disabled sprite, and `Esc` on a death screen does nothing at
 all. `award_stats` and `server_links` are now class-B transcriptions like any
 other: `rewo_world::screen` is the shared part and
 `rewo_world::death_screen` is the worked example of a consumer.
+
+**M85 took `server_links` (137), and it needed two more framework pieces plus
+three corrections to what this document said the packet was for.** The
+corrections first, because each one changes what has to be built:
+
+* **The pause screen shows one button, not a list.** `getCustomAdditions`
+  returns `Dialogs.SERVER_LINKS` when the list is non-empty, and
+  `addCustomDialogButtons` makes that a single 204-wide button that opens a
+  separate `ServerLinksDialogScreen`. Three screens, not one.
+* **The disconnect screen shows at most one link, and only ever `BUG_REPORT`** —
+  through `DisconnectionDetails.bugReportLink`, filled *only* on the client's
+  own error paths. `DisconnectedScreen` never mentions `ServerLinks`, and a
+  server that kicks you politely shows no link however many it advertised.
+* **The packet exists in configuration too**, so this row covers two ids. Third
+  time (M69 `update_tags`, M78 `custom_payload`/`store_cookie`), and the pattern
+  is now reliable enough to check first: if the handler is on
+  `ClientCommonPacketListener`, look for the configuration copy.
+
+The framework pieces: `blitNineSlicedSprite` (M82 named it as a gap and its
+`p11` witness asserted the skip; a 310-wide dialog button is what needed it) and
+a transcription of `GridLayout` / `LinearLayout` / `FrameLayout` /
+`HeaderAndFooterLayout`, because the pause and dialog screens are laid out
+rather than positioned by arithmetic the way `DeathScreen` is.
 
 ---
 
@@ -533,7 +561,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 134 | `update_tags` | handled | `req!` → `cb_play_update_tags` | **M69.** The play copy is the `/reload` case; the join-time copy is **configuration 13**, and resolving only this one would have looked like it worked until someone reloaded. |
 | 135 | `projectile_power` | handled | `req!` → `cb_play_projectile_power` | **M77.** A VarInt id (unlike `set_entity_link`'s fixed i32, one packet away) then an f64. Written onto `AbstractHurtingProjectile` only — an **arrow is not one**, it is an `AbstractArrow` on a sibling branch, so a `projectile_power` naming one mutates nothing. |
 | 136 | `custom_report_details` | absent | **D** | Key/value metadata to attach to a crash report. |
-| 137 | `server_links` | absent | **B** | Links rendered on the pause and disconnect screens. |
+| 137 | `server_links` | handled | M85 (`session`/`server_links`, both states) |
 | 138 | `waypoint` | handled | M83 — the locator bar. |
 | 139 | `clear_dialog` | absent | **C** | The dialog framework. |
 | 140 | `show_dialog` | absent | **C** | The dialog framework. `Holder<Dialog>` over the **datapack** `minecraft:dialog` registry plus `Dialog`'s codec tree — resolvable in principle, **not verified in detail** here. |

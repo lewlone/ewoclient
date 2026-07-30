@@ -786,6 +786,15 @@ pub struct PlaySession {
     /// caller that never drains it holds one death, not a queue.
     death: Option<crate::CombatKill>,
     pub disconnect: Option<String>,
+    /// **Which** of vanilla's three producers ended the connection (M85).
+    ///
+    /// Set beside [`Self::disconnect`] at every site that sets it, because the
+    /// reason string alone cannot say: `DisconnectionDetails` has two
+    /// constructors and only `createDisconnectionInfo` fills `bugReportLink`,
+    /// so a disconnect screen that inferred the cause from the text would
+    /// offer the server's bug-report link on a plain kick. See
+    /// [`rewo_world::disconnect_screen::DisconnectCause`].
+    pub disconnect_cause: Option<rewo_world::disconnect_screen::DisconnectCause>,
     // sendPosition cadence state (decompiled LocalPlayer).
     last_pos: (f64, f64, f64),
     last_rot: (f32, f32),
@@ -1484,6 +1493,7 @@ impl<'a> Connection<'a> {
             respawn_epoch: 0,
             death: None,
             disconnect: None,
+            disconnect_cause: None,
             last_pos: (0.0, 0.0, 0.0),
             last_rot: (0.0, 0.0),
             reminder: 0,
@@ -1957,7 +1967,13 @@ impl PlaySession {
                 Err(TryRecvError::Empty) => return Ok(()),
                 Err(TryRecvError::Disconnected) => {
                     if self.disconnect.is_none() {
+                        // `Connection.channelInactive` — the socket went away
+                        // with no packet. Vanilla's reason is
+                        // `disconnect.endOfStream` and its details carry
+                        // neither a report nor a link.
                         self.disconnect = Some("connection closed".into());
+                        self.disconnect_cause =
+                            Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
                     }
                     return Ok(());
                 }
@@ -1997,6 +2013,12 @@ impl PlaySession {
                     log::warn!("net: bundle: {reason}");
                     if self.disconnect.is_none() {
                         self.disconnect = Some(format!("bundle: {reason}"));
+                        // A malformed packet stream is vanilla's
+                        // `onPacketError`, which is one of the two paths that
+                        // *does* offer the server's bug-report link — the whole
+                        // point of the link being that it reports a server bug.
+                        self.disconnect_cause =
+                            Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
                     }
                     return Ok(());
                 }
@@ -2837,6 +2859,11 @@ impl PlaySession {
             let mut r = PacketReader::new(body);
             let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
             self.disconnect = Some(reason);
+            // `handleDisconnect` is `connection.disconnect(packet.reason())` —
+            // the ONE-argument `DisconnectionDetails`, so no bug-report link
+            // however many the server advertised (M85).
+            self.disconnect_cause =
+                Some(rewo_world::disconnect_screen::DisconnectCause::ServerRequested);
         }
         Ok(())
     }

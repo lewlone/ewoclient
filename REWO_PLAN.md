@@ -839,6 +839,33 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    property to assert is that the buffer a frame *bound* is still alive on the
    next one.
 
+14. **A `Some(session)` test is a data-availability test, not a liveness test —
+   and a client that has only ever had one of them cannot tell the two
+   apart.** `LiveApp::frame`'s whole body sits after
+   `let Some(session) = self.session.as_mut() else { return; };`, so everything
+   the frame loop does was *implicitly* session-gated. That was invisible until
+   M85 added the first screen that exists **because** there is no session (the
+   disconnect screen), at which point two unrelated things turned out to be
+   behind the same guard: the `--run-seconds` soak deadline (checked at the
+   bottom of `frame`, so a disconnected client ran forever) and the shutdown
+   teardown (one `if let (Some(state), Some(session))`, so `world_renderer
+   .destroy` never ran and `gpu_allocator` reported every allocation leaked).
+   Both were found by a **live** run, not by a gate — the gate renders screens
+   offscreen and has no frame loop to bypass. When a milestone adds a state the
+   client has not been in before, the thing to audit is not the new code: it is
+   every `let Some(…) else { return }` the new state now walks past.
+
+15. **A witness that can panic is a witness that can silently not run.** M85's
+   first mutation battery scored four of twenty-six mutations as "survived
+   (gate stayed green)" or "caught by the wrong witness". All four were the
+   same defect: the gate `unwrap()`ed a widget lookup, so a mutation that
+   *removed* the widget aborted the process before that widget's own witness
+   ran — and a harness that scrapes `FAIL` lines cannot distinguish a panic
+   from a pass. Two rules fall out, both now applied: every lookup inside a
+   `*shot` is `Option`-shaped and reports rather than aborting, and a mutation
+   harness must require the gate's **summary line** before it will call a
+   mutation a survivor.
+
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
 Grouped by severity. The assistant is encouraged to challenge any of these,
@@ -13819,3 +13846,280 @@ entity's eye height uses `EntityDimensions.scalable`'s `height * 0.85` default
 rather than the per-type overrides, which is confined to the pitch arrow by the
 bearing being horizontal. And no eyeball pass has been made: what this
 milestone claims is the properties the gate measures.
+
+
+---
+
+### M85 — `server_links` (137), and the two screens it renders on (2026-07-30)
+
+`REWO_PACKET_COVERAGE.md`'s last class-B entry but one. The packet is eleven
+lines of decode; the milestone is that **it had nowhere to render**, and finding
+out where turned three of the four things the brief said about it into
+corrections.
+
+#### What vanilla actually does — three corrections
+
+The brief (and this plan) said "vanilla draws server links on the pause screen
+and the disconnect screen". Both halves are off, and each correction changed
+what had to be built.
+
+1. **The pause screen shows one button, not a list.**
+   `PauseScreen.getCustomAdditions()` ends with
+
+   ```java
+   ServerLinks serverLinks = this.minecraft.player.connection.serverLinks();
+   return !serverLinks.isEmpty() ? dialogRegistry.get(Dialogs.SERVER_LINKS) : Optional.empty();
+   ```
+
+   and `addCustomDialogButtons` turns that into a **single** 204-wide button
+   labelled `dialog.value().common().computeExternalTitle()` — for the built-in
+   dialog, `menu.server_links`, *"Server Links..."*. The list lives on a
+   separate `ServerLinksDialogScreen` that the button opens. **Three** screens,
+   not one.
+
+2. **The disconnect screen shows at most one link, and only ever
+   `BUG_REPORT`.** `DisconnectedScreen` never mentions `ServerLinks`. What
+   reaches it is `DisconnectionDetails.bugReportLink`, filled by
+   `serverLinks.findKnownType(BUG_REPORT).map(Entry::link)` in **exactly two
+   places** — `onPacketError` and `createDisconnectionInfo`, the client's own
+   error paths. A server-sent `ClientboundDisconnectPacket` goes through
+   `connection.disconnect(packet.reason())`, which is the *one-argument*
+   `DisconnectionDetails` with both optionals empty. **So a server that kicks
+   you politely shows no link however many it advertised, and one whose packet
+   crashes your client shows exactly one.** That distinction is the milestone's
+   sharpest transcription and it is invisible to any test that only asks
+   whether the button can appear.
+
+3. **The packet exists in the configuration state too** (`ConfigurationProtocols`
+   and `GameProtocols` both `.addPacket(CLIENTBOUND_SERVER_LINKS, …)`), because
+   `handleServerLinks` is on `ClientCommonPacketListener`. Third time — M69's
+   `update_tags`, M78's `custom_payload`/`store_cookie`, this. The pattern is
+   now reliable enough to check first: **if the handler is on
+   `ClientCommonPacketListener`, look for the configuration copy.** And it is
+   not academic here: a vanilla *dedicated server* sends its links from
+   `ServerConfigurationPacketListenerImpl`, so a play-only resolution would have
+   decoded nothing against any real server (verified live — see below).
+
+#### What the brief got right, and one it did not
+
+Right: the `Either`, the known-type enum, and that vanilla does not open a URL
+without a confirmation screen. Wrong: it framed the disconnect screen as a
+*list* of links.
+
+**Rewo opens nothing.** Vanilla's click path is
+`StaticAction(ClickEvent.OpenUrl)` → `Screen.defaultHandleClickEvent` →
+`Screen.clickUrlAction`, which returns silently if `chatLinks` is off, and
+otherwise shows a `ConfirmLinkScreen` (with a red `chat.link.warning` line,
+because `trusted = false`) unless the player turned `chatLinksPrompt` off.
+Pressing a link in Rewo logs the URL and does nothing else. Launching a browser
+from a string a remote server chose is a decision, not a transcription; it is
+left to the project.
+
+#### The wire, and the three conventions one field apart
+
+* `ByteBufCodecs.either` is `input.readBoolean() ? Either.left(…) :
+  Either.right(…)` — **`true` selects the left**, which is the *boring* enum,
+  not the interesting custom `Component`. M83 records the same for
+  `writeEither`.
+* The enum reads through `ByteBufCodecs.idMapper` (a **VarInt**) against
+  `ByIdMap.continuous(…, OutOfBoundsStrategy.ZERO)`. So an out-of-range id — or
+  a **negative** one — is neither an error nor a wrap: it silently becomes
+  `BUG_REPORT`, which is the one type the disconnect screen singles out. That is
+  the third of the three conventions M65 and M83 found in other packets, and the
+  hardest to notice, because a wrong link is still a link.
+* **`BUG_REPORT`'s name is `report_bug`.** The constant and its string are
+  transposed and nothing else in the table is, so a lang key derived from the
+  constant gives `known_server_link.bug_report`, which the jar does not have,
+  and the button renders its own key.
+* The trust step is a **filter, not a validation**: `handleServerLinks` catches
+  *inside* its loop, so one malformed URL drops itself and every other link
+  survives. Rejecting the packet is M41's instinct for an untranscribed
+  component and it is wrong here.
+
+#### The framework it needed
+
+Two pieces, both of which M82 had named as gaps.
+
+**`blitNineSlicedSprite`.** M82 shipped a 1:1 blit and asserted with
+`deathshot`'s `p11` that a button of any other size was *skipped*; the
+server-links dialog draws **310**-wide buttons and the pause menu draws 204 and
+98, so the assertion came due. The two branches whose height matches the
+sheet's are transcribed — left border, **tiled** inner, right border — and the
+inner segment really tiles: `stretch_inner` is absent from
+`widget/button.png.mcmeta` and its default is `false`, so
+`TiledBlitRenderState` repeats the 194-px middle and clips the last partial tile
+by `Mth.lerp(remaining / tileWidth, u0, u1)`. Stretching is the plausible
+shortcut and it is visibly wrong on a 310-wide button. The two branches that
+resize *vertically* are still not transcribed — every `Button` Rewo builds is
+`Button.DEFAULT_HEIGHT`, so they would be untranscribed *and* unexercised, which
+is the shape M82 declined for arrow-key navigation — and `deathshot`'s `p11`
+**moved to that gap** rather than being deleted.
+
+**The layout system** (`rewo_world::layout`): `LayoutSettings`, `GridLayout`
+(+ `RowHelper` + `Divisor`), `LinearLayout`, `FrameLayout`,
+`HeaderAndFooterLayout`. `DeathScreen.init()` writes literal arithmetic and M82
+transcribed the arithmetic; `PauseScreen` and `DialogScreen` build a tree and
+call `arrangeElements()`, and what comes out is not writable in closed form.
+Three things invert:
+
+* **`setX` truncates and `setY` rounds**, four lines apart in
+  `AbstractChildWrapper`, and `FrameLayout.alignInDimension` is a *third* call
+  site that truncates. At `align = 0.5` they differ by a pixel on every odd
+  leftover — which is exactly what puts the dialog's Back button at `y + 7` of
+  its 33-px footer band rather than the `+ 6` an integer division gives.
+* **`Divisor` carries its remainder forward to the *later* part.** `Divisor(5,
+  2)` is `2, 3`. **This milestone's own unit test asserted `3, 2`** — the
+  natural `ceil`-then-`floor` reading — and the line-by-line transcription
+  disagreed with it. The transposition survives every even-width sample, which
+  is why the test now samples 5 and 7 rather than the 204 the pause menu
+  actually uses.
+* **`AbstractLayout.setX` is a translation, not an assignment**, and the
+  difference is invisible on a single-column layout — which the server-links
+  dialog is.
+
+#### The screens
+
+`PauseScreen(showPauseMenu = true)`, the `Dialogs.SERVER_LINKS`
+`ServerLinksDialogScreen`, and `DisconnectedScreen`. Details worth keeping:
+
+* `gridLayout.defaultCellSetting().padding(4, 4, 4, 0)` is the **four**-argument
+  overload — bottom is **0**. The two-argument one is `(horizontal, vertical)`,
+  so a symmetric reading adds 4 px to every row gap.
+* `newCellSettings()` is a **copy**, taken at add time. On the disconnect screen
+  `defaultCellSetting()` is mutated mid-build (`padding(10)`, then `padding(2)`),
+  and the second call does *not* reach back to the title and the reason.
+* `alignInRectangle(grid, 0, 0, w, h, 0.5F, **0.25F**)` — the pause menu is a
+  quarter of the way down, not centred.
+* `hasSingleplayerServer()` is false for Rewo *always*, so the Options row is
+  the single 204-wide button spanning both columns. That is the branch a
+  multiplayer client takes, not a simplification.
+* The dialog's header is a `LinearLayout.horizontal().spacing(10)` of
+  `[title, warningButton]`, so the title sits **15 px left of centre**.
+
+**Two widgets are reserved geometry: their rectangles are real and nothing is
+drawn in them.** The pause menu's four-icon row (bug report and feedback are a
+browser, Friends is Realms auth, player reporting is the chat-report subsystem)
+and the dialog's warning `ImageButton` (it opens a nested `ConfirmScreen`, which
+is exactly what M82 declined to build for the death screen). Four dead buttons
+would be worse; omitting either would move every widget below it. The gate
+grades them by geometry and by a byte-identical frame.
+
+**`ScrollableLayout` is not transcribed** and `HeaderAndFooterLayout`'s content
+`y` is a bare `min` with no lower bound, so a link list taller than the content
+band overflows upward rather than scrolling. Named, and bounded: ten links is
+218 px against `height - 66`.
+
+#### The one screen with no session behind it — and it broke the same assumption twice
+
+This is what the milestone was really for. Every screen Rewo had before it opens
+while a world is loaded. `DisconnectedScreen` exists *because* there is none, and
+`LiveApp::frame`'s whole body sits after
+
+```rust
+let Some(session) = self.session.as_mut() else { return; };
+```
+
+so the client used to `event_loop.exit()` on a disconnect rather than showing
+anything. M85 appends a `render_screen_only` arm above that borrow. **The
+live run then found two places where `Some(session)` had been standing in for
+"the client is alive", and neither was reachable before this milestone:**
+
+1. **`--run-seconds` was checked at the bottom of `frame`**, past the borrow, so
+   a client that lost its connection ran forever. Caught by a soak that never
+   ended.
+2. **The shutdown teardown was one `if let (Some(state), Some(session))`**, so a
+   run that ended on the disconnect screen never called
+   `world_renderer.destroy` and `gpu_allocator` reported every allocation as
+   leaked. Caught by diffing the disconnect run's log against a control run that
+   exited normally — the control had zero leak warnings and the disconnect run
+   had dozens.
+
+Both are one-line fixes and neither is a *screen* bug. The general shape is
+worth carrying: **a `Some(session)` test is a data-availability test, not a
+liveness test**, and a codebase that has only ever had one of them cannot tell.
+
+The links themselves are the gotcha-13 shape one step over: they live on
+`SessionState` (which is `ClientCommonPacketListenerImpl`'s own home for them,
+beside the brand and the cookie jar) and `PlaySession` owns that, so **a list
+read at disconnect time is read off a session that has ended**. `LiveApp`
+mirrors them out every frame the session is alive.
+
+#### The gate
+
+`rewo serverlinkshot --check` — serverless, validation-required, **37/37**, 0
+VUIDs. Nine wire witnesses through the real `route_session` with a real
+`Ids::resolve`d table, fifteen model witnesses against independent decompile
+literals, thirteen pixel witnesses over a **pure magenta** clear (the button
+sheets are 8-bit greyscale, so `r == g == b` means *button*; the menu background
+is a flat black wash, which keeps `r == b`).
+
+**The menu background can witness less than it looks like it can.** Both
+`menu_background.png` and `inworld_menu_background.png` are 16×16 of a single
+`rgba(0, 0, 0, 64)`, so the tile size, the 2× magnification and the `in_world`
+selector are all unobservable in 26.2's own assets. The gate says so and grades
+the two properties a uniform texture still has: the composite (exactly once, at
+the sheet's alpha, in the right colour space — a doubled tile predicts
+differently) and the **coverage**, including the partial tiles past the right
+and bottom edges, which is what a `while tx + tile <= w` bound would break.
+
+**Mutation battery: 26 mutations, 26 caught** — after a fix. The first run
+scored four as "survived (gate stayed green)" or "caught by the wrong witness",
+and all four were the same defect: **the gate `unwrap()`ed a widget lookup, so a
+mutation that removed the widget aborted the process before its own witness
+ran**, and a FAIL-line scraper cannot distinguish a panic from a pass. Every
+lookup is `Option`-shaped now, and the harness requires the summary line before
+it will call a mutation survived. That is a general rule for this project's
+gates: **a witness that can panic is a witness that can silently not run**, and
+the mutation battery is the one instrument whose whole job is to notice.
+
+#### Live-verified
+
+Own server, own port (25617), `bug-report-link=https://bugs.example.test/report`
+in `server.properties` — which is how a *vanilla* dedicated server advertises a
+link (`DedicatedServer.createServerLinks`), and it sends it during
+**configuration**, so this exercises precisely the id correction 3 predicted a
+play-only resolution would miss.
+
+* `rewo play` decoded `1 server link(s): [(Known(BugReport),
+  "https://bugs.example.test/report")]`, CORRECTIONS 0.
+* `rewo live` mirrored it (`live: 1 server link(s)`), and killing the server
+  under the connected client produced
+  `live: disconnected (EndOfStream): connection closed — bug report link:
+  **None**` — the transcription's central rule observed live, and in the
+  *negative* direction, which is the harder one: the server really had
+  advertised a `BUG_REPORT` link and the disconnect screen really does not offer
+  it, because an end-of-stream is not `createDisconnectionInfo`.
+* The client then rendered the disconnect screen with no session for the rest of
+  the soak and exited on the deadline with **zero** allocator leak warnings.
+
+The `ClientError` direction — a disconnect that *does* offer the link — is
+graded by `m8` and by mutation 15, not live: staging it needs a malformed packet
+stream, and inventing one would be testing the harness.
+
+#### Measured
+
+* **1576 tests** (proto 11, world 456, data 175, net 559, mesh 45, gpu 245, app
+  85) — 1540 before.
+* All **31** gates `--check` exit 0 with Vulkan validation ON and **0 VUIDs**:
+  serverlinkshot 37/37, deathshot 40/40, locatorshot 49/49, breakshot 22/22,
+  titleshot 55/55, bordershot 31/31, abilityshot 96/96, rideshot 45/45,
+  labelshot 47/47, capeshot 69/69, itemshot 75/75, inventoryshot 152/152,
+  healthbarshot 33/33, attributeshot 43/43, captureshot 17/17, blockentityshot
+  172/172, swingshot 97/97, hurtshot 56/56, weathershot 35/35, handshot 34/34,
+  particleshot 34/34, eventshot 28/28, danceshot 24/24, portalshot 12/12,
+  hudshot 41/41, mobshot 246/246, plus skyshot, lightmapshot, tintshot, meshshot
+  and dimensioncheck.
+* Demo PNG SHA-256 `2cc56b4acbfb92cb…` — byte-identical to M15 onward.
+
+#### Open
+
+* The vertical branches of `blitNineSlicedSprite` (asserted skipped, not
+  approximated).
+* `ScrollableLayout` — a link list taller than the content band overflows
+  upward.
+* The four pause-menu icon buttons and the dialog's warning button are reserved
+  geometry, and Advancements / Statistics / Options are drawn as vanilla draws
+  them and log on press. `award_stats` is the sibling milestone that gives the
+  second of those a screen.
+* No eyeball pass. What this milestone claims is the properties the gate
+  measures.

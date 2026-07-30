@@ -15,6 +15,7 @@ mod bench_cmd;
 mod attributeshot_cmd;
 mod danceshot_cmd;
 mod deathshot_cmd;
+mod serverlinkshot_cmd;
 mod rideshot_cmd;
 mod healthbarshot_cmd;
 mod breakshot_cmd;
@@ -197,6 +198,14 @@ enum Command {
     /// offscreen over a pure-green clear and assert the pixels with `--check`
     /// (no server; Vulkan required).
     Deathshot(deathshot_cmd::DeathshotArgs),
+    /// M85 `server_links` + pause/disconnect-screen oracle: drive a raw
+    /// `server_links` body through the real `route_session`, grade the
+    /// `Either` flag, the `ByIdMap.ZERO` enum and the per-entry URL filter,
+    /// then the three screens' layouts against the decompile, then render them
+    /// offscreen over a pure-magenta clear and assert the nine-slice, the
+    /// tiled menu background and the reserved cells with `--check` (no server;
+    /// Vulkan required).
+    Serverlinkshot(serverlinkshot_cmd::ServerLinkshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -324,6 +333,7 @@ fn main() {
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
+        Some(Command::Serverlinkshot(sl_args)) => serverlinkshot_cmd::run(sl_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),

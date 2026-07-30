@@ -2839,6 +2839,8 @@ pub(crate) fn widget_sprites(
         button: hud_sprite(&w.button),
         button_disabled: hud_sprite(&w.button_disabled),
         button_highlighted: hud_sprite(&w.button_highlighted),
+        menu_background: hud_sprite(&w.menu_background),
+        inworld_menu_background: hud_sprite(&w.inworld_menu_background),
     })
 }
 
@@ -4073,6 +4075,20 @@ struct LiveApp {
     etf: rewo_data::etf::EtfPack,
     /// The death screen's own state (M82) — `None` while alive.
     death: Option<DeathView>,
+    /// Whichever of M85's three screens is up, and the state it needs to be
+    /// rebuilt on a resize.
+    view: ScreenView,
+    /// **The durable copy of the server's links (M85).**
+    ///
+    /// `SessionState` owns them while the session lives, exactly as
+    /// `ClientCommonPacketListenerImpl.serverLinks` does — but the disconnect
+    /// screen exists *after* the session is dropped, and it is the one screen
+    /// that needs them. So they are mirrored here every frame the session is
+    /// alive. Reading them off the session at disconnect time would be
+    /// `REWO_PLAN.md` §0.0 gotcha 13 in its other shape: state consulted after
+    /// the event that destroys it, with every gate that builds the state
+    /// blind to the difference.
+    server_links: rewo_net::server_links::ServerLinks,
     /// A screen asked to leave the server (M82). Serviced in the frame loop,
     /// because a widget press has no `ActiveEventLoop` to exit with.
     exit_requested: bool,
@@ -4265,9 +4281,17 @@ impl ApplicationHandler for LiveApp {
                                 self.press_widget(kind, id);
                                 return;
                             }
-                            Some((_, rewo_world::screen::KeyResult::Close)) => {
-                                self.screen.screens.close();
-                                self.grab_for_screen(false);
+                            Some((kind, rewo_world::screen::KeyResult::Close)) => {
+                                // `onClose()`. For a dialog that is
+                                // `DialogAction.CLOSE` → the previous screen,
+                                // which is the pause screen it was opened
+                                // from; for everything else it is
+                                // `setScreen(null)`.
+                                if kind == rewo_world::screen::ScreenKind::ServerLinks {
+                                    self.open_pause_screen();
+                                } else {
+                                    self.close_view_screen();
+                                }
                                 return;
                             }
                             Some((_, rewo_world::screen::KeyResult::Handled)) => return,
@@ -4320,11 +4344,20 @@ impl ApplicationHandler for LiveApp {
                     // Zoomify's default. The divide happens in
                     // `Modules::render` so it composes with FOV Control.
                     PhysicalKey::Code(KeyCode::KeyC) => self.modules.set_zoom_held(p),
-                    // Esc closes the screen if it is open, and only quits
-                    // otherwise — the same precedence vanilla gives it.
+                    // Esc closes the inventory if it is open, opens the
+                    // **pause screen** if a session is running, and only quits
+                    // otherwise (M85 — before it, Esc quit outright).
+                    //
+                    // A non-inventory screen never reaches this arm: the block
+                    // above hands Esc to `Screen.keyPressed`, whose
+                    // `shouldCloseOnEsc()` decides. That is why the pause
+                    // screen closes on Esc and the death and disconnect
+                    // screens do not.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
                         if self.screen.inventory_open() {
                             self.set_screen_open(false);
+                        } else if self.session.is_some() {
+                            self.open_pause_screen();
                         } else {
                             event_loop.exit();
                         }
@@ -4636,6 +4669,140 @@ impl LiveApp {
         }
     }
 
+    /// The vanilla bitmap font's advance table, when the renderer has one.
+    ///
+    /// M85's three screens are *laid out* from text widths (a title's
+    /// `StringWidget` width, a disconnect reason's wrap), so the builder needs
+    /// this before anything is drawn. Windowed, it lives on the entity pass —
+    /// `self.baked` was `take()`n in `resumed` and has been `None` ever since
+    /// (see the `lang` field's docs).
+    fn advance(&self) -> Option<[u8; 256]> {
+        self.state
+            .as_ref()
+            .and_then(|s| s.world_renderer.font_advance())
+            .copied()
+    }
+
+    fn text_width(&self, text: &str) -> i32 {
+        self.advance()
+            .map(|a| rewo_gpu::text::width(text, &a))
+            .unwrap_or(0)
+    }
+
+    /// `PauseScreen(true)` — Esc with a session behind it (M85).
+    fn open_pause_screen(&mut self) {
+        let labels = rewo_world::pause_screen::PauseLabels::resolve(&self.lang);
+        // `!connection.serverLinks().isEmpty()` — the packet's whole effect on
+        // this screen. Read from the durable mirror, which is the same value
+        // the session holds while it is alive.
+        let has_links = !self.server_links.is_empty();
+        self.view = ScreenView::Pause(labels, has_links);
+        self.rebuild_view_screen();
+        self.grab_for_screen(true);
+        log::info!("live: pause screen (server links: {has_links})");
+    }
+
+    /// The button on the pause screen — `showDialog(Dialogs.SERVER_LINKS)`.
+    fn open_links_screen(&mut self) {
+        let labels = rewo_world::server_links_screen::ServerLinksLabels {
+            title: self
+                .lang
+                .or_key(rewo_world::server_links_screen::KEY_TITLE)
+                .to_string(),
+            back: self
+                .lang
+                .or_key(rewo_world::server_links_screen::KEY_BACK)
+                .to_string(),
+            // `ServerLinks.Entry.displayName()` —
+            // `type.map(KnownLinkType::displayName, r -> r)`: the lang map for
+            // a known type, the server's own component for a custom one.
+            links: self
+                .server_links
+                .entries()
+                .iter()
+                .map(|e| match &e.label {
+                    rewo_net::server_links::ServerLinkLabel::Known(t) => {
+                        self.lang.or_key(&t.lang_key()).to_string()
+                    }
+                    rewo_net::server_links::ServerLinkLabel::Custom(text) => text.clone(),
+                })
+                .collect(),
+        };
+        log::info!("live: server-links dialog ({} link(s))", labels.links.len());
+        self.view = ScreenView::Links(labels);
+        self.rebuild_view_screen();
+        self.grab_for_screen(true);
+    }
+
+    /// `createDisconnectScreen` — **the screen with no session behind it.**
+    fn open_disconnect_screen(
+        &mut self,
+        cause: rewo_world::disconnect_screen::DisconnectCause,
+        reason: String,
+    ) {
+        use rewo_net::server_links::KnownLinkType;
+        // `serverLinks.findKnownType(BUG_REPORT).map(Entry::link)`, off the
+        // durable mirror — the session is about to be dropped, and on the
+        // `ClientError` path it may already be unusable.
+        let candidate = self
+            .server_links
+            .find_known_type(KnownLinkType::BugReport)
+            .map(|e| e.link.clone());
+        let details = rewo_world::disconnect_screen::DisconnectDetails::new(
+            cause,
+            reason,
+            candidate.as_deref(),
+        );
+        let labels = rewo_world::disconnect_screen::DisconnectLabels::resolve(&self.lang);
+        log::warn!(
+            "live: disconnected ({cause:?}): {} — bug report link: {:?}",
+            details.reason,
+            details.bug_report_link
+        );
+        self.view = ScreenView::Disconnected(labels, details);
+        self.session = None;
+        self.rebuild_view_screen();
+        self.grab_for_screen(true);
+    }
+
+    /// `Screen.resize` → `repositionElements` → `rebuildWidgets` → `init()`,
+    /// for whichever of M85's screens is up. Also the opener: building a
+    /// screen and rebuilding it are the same call, which is exactly vanilla's
+    /// arrangement and the reason `ScreenView` carries what it does.
+    fn rebuild_view_screen(&mut self) {
+        let (gw, gh) = self.gui_size();
+        if gw <= 0 || gh <= 0 {
+            return;
+        }
+        let advance = self.advance();
+        let screen = match &self.view {
+            ScreenView::None => return,
+            ScreenView::Pause(labels, has_links) => {
+                let tw = self.text_width(&labels.title);
+                rewo_world::pause_screen::build(labels, *has_links, tw, gw, gh)
+            }
+            ScreenView::Links(labels) => {
+                let tw = self.text_width(&labels.title);
+                rewo_world::server_links_screen::build(labels, tw, gw, gh)
+            }
+            ScreenView::Disconnected(labels, details) => {
+                let width_of = move |t: &str| match &advance {
+                    Some(a) => rewo_gpu::text::width(t, a),
+                    None => 0,
+                };
+                rewo_world::disconnect_screen::build(labels, details, gw, gh, &width_of)
+            }
+        };
+        self.screen.screens.open(screen);
+    }
+
+    /// Close whichever of M85's screens is up and hand the cursor back.
+    fn close_view_screen(&mut self) {
+        self.view = ScreenView::None;
+        self.screen.screens.close();
+        self.grab_for_screen(false);
+    }
+
     /// One widget press on whatever screen is up (M82).
     ///
     /// This is the dispatch arm a new screen adds: the framework hands back a
@@ -4660,6 +4827,58 @@ impl LiveApp {
                 }
                 // `KeyMapping.resetToggleKeys()`.
                 self.keys = Keys::default();
+            }
+            // M85's three screens.
+            (ScreenKind::Pause, rewo_world::pause_screen::RETURN_TO_GAME) => {
+                // `this.minecraft.gui.setScreen(null); mouseHandler.grabMouse();`
+                self.close_view_screen();
+            }
+            (ScreenKind::Pause, rewo_world::pause_screen::SERVER_LINKS) => {
+                // `minecraft.player.connection.showDialog(dialog, this)`.
+                self.open_links_screen();
+            }
+            (ScreenKind::Pause, rewo_world::pause_screen::DISCONNECT) => {
+                // `minecraft.disconnectFromWorld(DEFAULT_QUIT_MESSAGE)`. Rewo
+                // has no title screen to land on, so leaving the session is
+                // the whole of it — the same call the death screen's second
+                // button makes.
+                log::info!("live: pause screen — leaving the server");
+                self.exit_requested = true;
+            }
+            (ScreenKind::Pause, id) => {
+                // Advancements, Statistics and Options. Drawn as vanilla draws
+                // them and inert on press: `award_stats` is a sibling
+                // milestone's screen and the other two do not exist. Logged
+                // rather than silently swallowed.
+                log::info!("live: pause screen — widget {id} is not implemented");
+            }
+            (ScreenKind::ServerLinks, rewo_world::server_links_screen::BACK) => {
+                // `DialogAction.CLOSE` → `previousScreen`, which is the pause
+                // screen this dialog was opened from.
+                self.open_pause_screen();
+            }
+            (ScreenKind::ServerLinks, id) => {
+                // **Rewo does not open a URL.** Vanilla's path is
+                // `StaticAction(ClickEvent.OpenUrl)` → `Screen.clickUrlAction`,
+                // which itself shows a `ConfirmLinkScreen` unless the player
+                // turned the prompt off. Launching a browser from a string a
+                // remote server chose is a decision, not a transcription — see
+                // `rewo_net::server_links`.
+                let i = rewo_world::server_links_screen::link_index(id).unwrap_or(0);
+                match self.server_links.entries().get(i) {
+                    Some(e) => log::info!(
+                        "live: server link {i} selected: {} (Rewo does not open URLs)",
+                        e.link
+                    ),
+                    None => log::warn!("live: server link {i} has no entry"),
+                }
+            }
+            (ScreenKind::Disconnected, _) => {
+                // `gui.toMenu` / `gui.toTitle` — a server list and a title
+                // screen, neither of which Rewo has. Leaving is the whole of
+                // it.
+                log::info!("live: disconnect screen — exiting");
+                self.exit_requested = true;
             }
             (ScreenKind::Death, ds::TITLE_SCREEN) => {
                 // `exitToTitleScreen`: `level.disconnect(...)` then
@@ -4728,6 +4947,78 @@ impl LiveApp {
         if stale {
             if let (Some(view), Some(s)) = (self.death.as_ref(), self.screen.screens.current_mut()) {
                 view.reposition(s, gw, gh);
+            }
+        }
+    }
+
+    /// One frame with **no session** — the disconnect screen (M85).
+    ///
+    /// Deliberately not a cut-down copy of [`Self::frame`]: it renders the
+    /// screen pass and the text pass and nothing else, because with no world
+    /// there is nothing else to render. The view-projection is the identity,
+    /// which is what the offscreen gates have passed since M82 and which the
+    /// (empty) world pass does not read anyway.
+    fn render_screen_only(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested {
+            event_loop.exit();
+            return;
+        }
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let extent = state.renderer.swapchain.extent;
+        let px = gui_px(extent.width, extent.height);
+        let mut chrome = rewo_gpu::screen::ScreenDraw::default();
+        let mut text = Vec::new();
+        if let Some(screen) = self.screen.screens.current() {
+            chrome = screen_chrome(screen, Some(self.screen.mouse));
+            if let Some(advance) = state.world_renderer.font_advance() {
+                text = screen_text_lines(screen, &advance, px);
+            }
+        }
+        state.world_renderer.set_screen(chrome);
+        state.world_renderer.set_text(text);
+        let draw = OverlayDraw {
+            samples_ms: &self.ring.data,
+            head: self.ring.head(),
+            scale_ms: 20.0,
+            // Off-screen: the strip chart measures a frame loop that is no
+            // longer running.
+            origin: [-4000.0, -4000.0],
+            size: [8.0, 8.0],
+        };
+        let LiveState {
+            window,
+            gpu,
+            renderer,
+            world_renderer,
+        } = state;
+        let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
+        match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
+            Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+            Ok(RenderOutcome::NeedsRecreate) => {
+                let size = window.inner_size();
+                let _ = renderer.recreate(gpu, size.width, size.height);
+                let _ = renderer.ensure_depth(gpu);
+            }
+            Err(e) => {
+                log::error!("live: render failed: {e}");
+                event_loop.exit();
+            }
+        }
+        window.request_redraw();
+        // **The soak deadline lives here too, and its absence is the one thing
+        // the live run caught that the gate could not.**
+        //
+        // `--run-seconds` was checked at the bottom of `frame`, past the point
+        // where the session is borrowed — so a client that lost its connection
+        // ran forever. That is the shape this milestone is about: everything
+        // the frame loop does after acquiring a session was *implicitly*
+        // session-gated, and a screen with no session behind it is what makes
+        // the implicit gate observable.
+        if let Some(limit) = self.run_seconds {
+            if self.started.elapsed().as_secs_f32() >= limit {
+                event_loop.exit();
             }
         }
     }
@@ -4822,11 +5113,73 @@ impl LiveApp {
             }
         }
 
+        // M85: mirror the server's links out of the session while it is
+        // alive. The disconnect screen reads them *after* it is gone — see the
+        // field's docs.
+        if let Some(s) = self.session.as_ref() {
+            if s.session.server_links != self.server_links {
+                self.server_links = s.session.server_links.clone();
+                log::info!("live: {} server link(s)", self.server_links.len());
+            }
+        }
+
+        // M85: the connection ended. Before the session borrow below, because
+        // it drops the session — and vanilla's `onDisconnect` is likewise the
+        // thing that tears the level down rather than something the level does.
+        let ended = self.session.as_ref().and_then(|s| {
+            s.disconnect.clone().map(|reason| {
+                (
+                    s.disconnect_cause
+                        .unwrap_or(rewo_world::disconnect_screen::DisconnectCause::EndOfStream),
+                    reason,
+                )
+            })
+        });
+        if let Some((cause, reason)) = ended {
+            self.death = None;
+            self.open_disconnect_screen(cause, reason);
+        }
+
+        // M85: a window resize while one of M85's screens is up. Same
+        // watermark shape as `pump_death_screen`'s — compare the screen's
+        // recorded size so a frame that changes nothing rebuilds nothing.
+        {
+            let (gw, gh) = self.gui_size();
+            let stale = !matches!(self.view, ScreenView::None)
+                && self
+                    .screen
+                    .screens
+                    .current()
+                    .is_some_and(|s| s.width != gw || s.height != gh);
+            if stale {
+                self.rebuild_view_screen();
+            }
+        }
+
         // M82: you died, or you respawned. Both before the session borrow
         // below, for the same reason `container_close` is.
         self.pump_death_screen();
         if self.exit_requested {
             event_loop.exit();
+            return;
+        }
+
+        // **M85: the frame with no session.**
+        //
+        // Every frame before this one needed a world: the loop below borrows
+        // `self.session` and returns if there is none, which is why the client
+        // used to `event_loop.exit()` on a disconnect rather than showing a
+        // screen. The disconnect screen exists *because* there is no session,
+        // so it gets its own arm — appended, not woven into the path below,
+        // which stays exactly as it was.
+        //
+        // What it draws is the screen and nothing else. The world pass runs
+        // with an identity view-projection over an empty world (no columns, no
+        // entities), which is what `deathshot` has been doing offscreen since
+        // M82; the menu background is opaque, so nothing behind it is visible
+        // anyway.
+        if self.session.is_none() {
+            self.render_screen_only(event_loop);
             return;
         }
 
@@ -4840,8 +5193,19 @@ impl LiveApp {
         while self.tick_accum >= TICK_DT {
             self.tick_accum -= TICK_DT;
             if let Err(e) = session.tick(&input) {
+                // `onPacketError` — a handler threw. Vanilla's is the path that
+                // fills `bugReportLink`, so this is a `ClientError` and the
+                // server's own bug-report link (if it sent one) appears on the
+                // disconnect screen (M85).
+                //
+                // Recorded onto the session rather than acted on here: `self`
+                // is mutably borrowed through `session` for this whole block,
+                // and routing it through the one field the top of the frame
+                // already reads keeps every disconnect on one path.
                 log::error!("live: tick failed: {e}");
-                event_loop.exit();
+                session.disconnect = Some(e);
+                session.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
                 return;
             }
             // Advance the block-light flicker exactly once per successful tick.
@@ -4882,9 +5246,11 @@ impl LiveApp {
             }
             ran_tick = true;
         }
-        if let Some(reason) = session.disconnect.clone() {
-            log::warn!("live: disconnected: {reason}");
-            event_loop.exit();
+        if session.disconnect.is_some() {
+            // Serviced at the top of the *next* frame, by the block that opens
+            // the disconnect screen. Returning here rather than acting is what
+            // keeps that decision in one place — and this frame has already
+            // borrowed the session it is about to drop.
             return;
         }
         if ran_tick && session.spawned && !self.logged_spawn {
@@ -5335,7 +5701,7 @@ impl LiveApp {
                     // The pass itself is built in `resumed`, beside
                     // `init_hud` and `init_container` — the one place the bake
                     // is still alive.
-                    chrome = death_screen_chrome(screen, Some(self.screen.mouse));
+                    chrome = screen_chrome(screen, Some(self.screen.mouse));
                     if let Some(advance) = state.world_renderer.font_advance() {
                         text.extend(death_screen_lines(
                             view,
@@ -5344,6 +5710,17 @@ impl LiveApp {
                             px,
                             (extent.width as f32, extent.height as f32),
                         ));
+                    }
+                }
+            } else if !matches!(self.view, ScreenView::None) {
+                // M85's three screens. All of their text is on their widgets,
+                // so one generic builder serves all three — the death screen
+                // keeps its own only because its title, cause and score are
+                // *not* widgets in vanilla either.
+                if let Some(screen) = self.screen.screens.current() {
+                    chrome = screen_chrome(screen, Some(self.screen.mouse));
+                    if let Some(advance) = state.world_renderer.font_advance() {
+                        text.extend(screen_text_lines(screen, &advance, px));
                     }
                 }
             }
@@ -5559,6 +5936,8 @@ fn run_windowed(
         pack: args.pack.clone(),
         etf: rewo_data::etf::EtfPack::default(),
         death: None,
+        view: ScreenView::None,
+        server_links: rewo_net::server_links::ServerLinks::default(),
         exit_requested: false,
         init_error: None,
     };
@@ -5569,7 +5948,19 @@ fn run_windowed(
         return Err(e);
     }
     let elapsed = app.started.elapsed().as_secs_f32();
-    if let (Some(mut state), Some(session)) = (app.state.take(), app.session.take()) {
+    // **The teardown is not session-gated and the summary is.**
+    //
+    // It used to be one `if let (Some(state), Some(session))`, which made
+    // `Some(session)` a proxy for "the client is alive" — so a run that ended
+    // on the disconnect screen never called `world_renderer.destroy`, and
+    // `gpu_allocator` reported every one of its allocations as leaked on exit.
+    // That is the second place M85 found the same implicit assumption (the
+    // first was the `--run-seconds` deadline, which lived past the session
+    // borrow in `frame`), and it is the answer to "does a screen with no
+    // session break any framework assumption": twice, and both times the
+    // assumption was the same one written two different ways.
+    let mut state = app.state.take();
+    if let (Some(state), Some(session)) = (state.as_mut(), app.session.take()) {
         println!(
             "[rewo-m3-live] windowed: {:.1}s, {} frames, avg fps {:.0}, frames-in-flight {}",
             elapsed,
@@ -5603,6 +5994,12 @@ fn run_windowed(
             session.world.entities.len(),
         );
         let _ = EYE_HEIGHT;
+    }
+    // M85's gotcha 14: this block used to be joined to the session summary
+    // above by one `if let (Some(state), Some(session))`, so a client that
+    // outlived its session tore nothing down and `gpu_allocator` reported
+    // everything leaked. The renderer's lifetime is not the session's.
+    if let Some(mut state) = state {
         // Idle before tearing anything down. The last frames submitted are
         // still in flight when the loop exits, and several `destroy`s
         // (`text`, `hud`, `locator_bar`, `entities`, `velvet_*`, `overlay`)
@@ -5611,7 +6008,7 @@ fn run_windowed(
         // equivalent (M86).
         //
         // Recorded honestly: this did **not** move the VUID count on its own.
-        // The ~35,000 destroy-while-in-use errors M86 fixed were all per-frame,
+        // The ~40,000 destroy-while-in-use errors M86 fixed were all per-frame,
         // not teardown — this closes a real hole that simply was not the one
         // producing the noise.
         state.gpu.wait_idle();
@@ -9546,6 +9943,28 @@ impl ScreenState {
     }
 }
 
+/// The per-screen state M85's three screens need across frames.
+///
+/// The death screen keeps its own field (`LiveApp::death`) because M82 gave it
+/// one and its lifecycle is driven by the wire rather than by a key; these
+/// three are opened and closed by presses, so one slot mirroring
+/// [`rewo_world::screen::Screens`]' one slot is the honest shape.
+///
+/// What each variant carries is exactly what a **resize rebuild** needs —
+/// `Screen.resize` is `init()`, so the builder has to be re-runnable from
+/// state the app still holds.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum ScreenView {
+    #[default]
+    None,
+    Pause(rewo_world::pause_screen::PauseLabels, bool),
+    Links(rewo_world::server_links_screen::ServerLinksLabels),
+    Disconnected(
+        rewo_world::disconnect_screen::DisconnectLabels,
+        rewo_world::disconnect_screen::DisconnectDetails,
+    ),
+}
+
 /// Everything the death screen needs across frames (M82).
 ///
 /// The model and its labels are separate because the labels come from the
@@ -9616,22 +10035,32 @@ impl DeathView {
     }
 }
 
-/// The death screen's chrome: its backdrop and its two buttons (M82).
+/// Any screen's chrome: its background and its buttons (M82, generalised in
+/// M85).
 ///
 /// Pure, and takes the screen rather than the app, so the gate drives the same
-/// builder the frame path does.
-pub(crate) fn death_screen_chrome(
+/// builder the frame path does. Nothing here is death-screen-specific and
+/// nothing ever was — M85 only had to teach it the two widget kinds that are
+/// **not** buttons: a label draws through the text pass, and a
+/// [`rewo_world::screen::WidgetKind::Reserved`] draws nothing at all, on
+/// purpose (see `Widget::reserved`).
+pub(crate) fn screen_chrome(
     screen: &rewo_world::screen::Screen,
     mouse: Option<(f64, f64)>,
 ) -> rewo_gpu::screen::ScreenDraw {
-    use rewo_world::screen::ButtonSprite as W;
+    use rewo_world::screen::{ButtonSprite as W, WidgetKind};
     let focused = screen.focused();
     rewo_gpu::screen::ScreenDraw {
         backdrop: screen.backdrop.map(|b| (b.top, b.bottom)),
+        menu_background: screen
+            .menu_background
+            .map(|b| rewo_gpu::screen::MenuBackgroundDraw {
+                in_world: b.in_world,
+            }),
         buttons: screen
             .widgets
             .iter()
-            .filter(|w| w.visible)
+            .filter(|w| w.visible && w.kind == WidgetKind::Button)
             .map(|w| rewo_gpu::screen::ButtonDraw {
                 x: w.x,
                 y: w.y,
@@ -9645,6 +10074,71 @@ pub(crate) fn death_screen_chrome(
             })
             .collect(),
     }
+}
+
+/// Every widget's text, for a screen whose widgets carry all of it (M85).
+///
+/// A button's label is centred in its own rect by `defaultScrollingHelper` and
+/// coloured by `WithInactiveMessage`; a `StringWidget` draws at its own `x`; a
+/// `MultiLineTextWidget` draws one line per 9 px, centred about the widget's
+/// midpoint when `setCentered(true)`. A `Reserved` widget draws nothing.
+///
+/// `px` is the GUI scale, the same convention `death_screen_lines` uses.
+pub(crate) fn screen_text_lines(
+    screen: &rewo_world::screen::Screen,
+    advance: &[u8; 256],
+    px: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_world::screen::WidgetKind;
+    let mut out = Vec::new();
+    let mut push = |text: &str, x: i32, y: i32, color: [f32; 3]| {
+        if text.is_empty() {
+            return;
+        }
+        out.push(rewo_gpu::world::OwnedTextLine {
+            x: x as f32 * px,
+            y: y as f32 * px,
+            px,
+            color,
+            alpha: 1.0,
+            shadow: true,
+            text: text.to_string(),
+        });
+    };
+    for widget in screen.widgets.iter().filter(|w| w.visible) {
+        match &widget.kind {
+            WidgetKind::Reserved => {}
+            WidgetKind::Button => {
+                let w = rewo_gpu::text::width(&widget.message, advance);
+                let (anchor, top) = widget.label_anchor(w);
+                push(&widget.message, anchor - w / 2, top, widget.label_color());
+            }
+            WidgetKind::Label { centered } => {
+                // `StringWidget.visitLines`: `x = getX()`, and
+                // `y = getY() + (getHeight() - 9) / 2`.
+                let w = rewo_gpu::text::width(&widget.message, advance);
+                let x = if *centered {
+                    widget.x + widget.width / 2 - w / 2
+                } else {
+                    widget.x
+                };
+                let y = widget.y + (widget.height - 9) / 2;
+                push(&widget.message, x, y, widget.label_color());
+            }
+            WidgetKind::MultiLabel { lines, centered } => {
+                // `MultiLineLabel.visitLines(alignment, midX, y, 9, output)` —
+                // `getTextY()` is the widget's own `y`, with no vertical
+                // centring, because the widget's height *is* the text's.
+                let mid = widget.x + widget.width / 2;
+                for (i, line) in lines.iter().enumerate() {
+                    let w = rewo_gpu::text::width(line, advance);
+                    let x = if *centered { mid - w / 2 } else { widget.x };
+                    push(line, x, widget.y + 9 * i as i32, widget.label_color());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The death screen's four text runs — title, cause, score, and each button's
