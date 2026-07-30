@@ -739,6 +739,41 @@ pub struct PlaySession {
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
     pub food: i32,
     pub dead: bool,
+    /// `ClientboundLoginPacket.hardcore` (M82) — the death screen's title and
+    /// respawn-button labels branch on it. `handlePlayerCombatKill` reads it
+    /// from `this.level.getLevelData().isHardcore()`, which is seeded from the
+    /// login packet and never changes for the life of a connection.
+    pub hardcore: bool,
+    /// `Player.getScore()` — metadata index 18, INT, for the local player
+    /// (M82). Vanilla's field initialiser is 0, and a server that never awards
+    /// a kill score never sends it.
+    pub score: i32,
+    /// How many `respawn` packets have been applied (M82).
+    ///
+    /// A watermark, not a flag, for the reason `container_close`'s is one: the
+    /// only consumer is "close the death screen if it is open", and vanilla's
+    /// own rule is exactly that — `handleRespawn` ends with
+    ///
+    /// ```java
+    /// if (this.minecraft.gui.screen() instanceof DeathScreen
+    ///  || this.minecraft.gui.screen() instanceof DeathScreen.TitleConfirmScreen) {
+    ///    this.minecraft.gui.setScreen(null);
+    /// }
+    /// ```
+    ///
+    /// **The button press does not close the screen.** `DeathScreen`'s
+    /// `onPress` sends `PERFORM_RESPAWN` and sets `button.active = false`, and
+    /// the screen stays up until the server's respawn arrives — which is why a
+    /// laggy respawn leaves you looking at a dead "Respawn" button rather than
+    /// at a black world.
+    respawn_epoch: u64,
+    /// The last `player_combat_kill` addressed to us, waiting to be drained
+    /// (M82).
+    ///
+    /// Not a `bool`: the packet carries the death message, and the app needs
+    /// the raw NBT so it can style it. Cleared by [`Self::take_death`], so a
+    /// caller that never drains it holds one death, not a queue.
+    death: Option<crate::CombatKill>,
     pub disconnect: Option<String>,
     // sendPosition cadence state (decompiled LocalPlayer).
     last_pos: (f64, f64, f64),
@@ -1432,6 +1467,10 @@ impl<'a> Connection<'a> {
             health: 20.0,
             food: 20,
             dead: false,
+            hardcore: false,
+            score: 0,
+            respawn_epoch: 0,
+            death: None,
             disconnect: None,
             last_pos: (0.0, 0.0, 0.0),
             last_rot: (0.0, 0.0),
@@ -2401,6 +2440,13 @@ impl PlaySession {
             // Entity metadata (custom name, pose, gesture state, cube size, and
             // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
             // Allay dance counters then advance in `tick_lerp`.
+            //
+            // M82: and the local player's own, which the line above cannot
+            // store for the reason M73 records two arms down — the entity
+            // table has no row for you. `ServerEntity.sendChanges` broadcasts
+            // through `sendToTrackingPlayersAndSelf`, so the packet really
+            // does arrive.
+            crate::apply_local_player_score(body, self.player_id, &mut self.score);
         } else if crate::route_damage_event(
             id,
             body,
@@ -2422,6 +2468,26 @@ impl PlaySession {
             // M81: `damage_event`'s twin. It arms the same clock and, for a
             // player only, stores the yaw the camera tilt leans away from —
             // the one thing `damage_event` never carries.
+        } else if crate::route_player_combat_kill(
+            id,
+            body,
+            ids,
+            self.player_id,
+            &mut self.death,
+        ) {
+            // M82: you died. The id is always your own, so this is resolved
+            // against the local-player door and never against the entity
+            // table — `REWO_PLAN.md` §0.0 gotcha 13.
+            //
+            // `handlePlayerCombatKill`'s own branch, transcribed: with the
+            // death screen suppressed the client respawns *immediately* and
+            // never records a death at all. Nothing downstream then has to
+            // know the rule.
+            match crate::death_action(self.death.take(), self.game_state.show_death_screen()) {
+                crate::DeathAction::ShowScreen(kill) => self.death = Some(kill),
+                crate::DeathAction::RespawnNow => self.perform_respawn()?,
+                crate::DeathAction::None => {}
+            }
         } else if crate::route_block_destruction(
             id,
             body,
@@ -2713,16 +2779,17 @@ impl PlaySession {
                 if let Ok(f) = r.varint() {
                     self.food = f;
                 }
-                if h <= 0.0 && !self.dead {
-                    self.dead = true;
-                    // client_command action 0 = perform respawn.
-                    if let Some(cc) = self.ids.sb_play_client_command {
-                        let mut p = PacketWriter::packet(cc);
-                        p.varint(0);
-                        self.send(p)?;
-                        self.dead = false;
-                    }
-                }
+                // `Player.isDeadOrDying()`'s health half. **This used to send
+                // `PERFORM_RESPAWN` from here** (M3, so the headless bot could
+                // recover), and that is not what a vanilla client does:
+                // `handleSetHealth` assigns the three fields and nothing else.
+                // Respawning is a *screen* action, so M82 moved it to
+                // `player_combat_kill` — which is where vanilla decides
+                // between the death screen and an immediate respawn — and left
+                // the flag here. A harness with no screen respawns by draining
+                // [`Self::take_death`], which is the same branch vanilla takes
+                // when `shouldShowDeathScreen()` is false.
+                self.dead = h <= 0.0;
             }
         } else if Some(id) == ids.cb_play_system_chat {
             let mut r = PacketReader::new(body);
@@ -3221,6 +3288,14 @@ impl PlaySession {
         // either is still fully described.
         self.view_area
             .apply_login(prefix.chunk_radius, prefix.simulation_distance);
+        // M82. `handleLogin` seeds the level data from `packet.hardcore()` and
+        // calls `player.setShowDeathScreen(packet.showDeathScreen())`. Both
+        // bytes were read into a discard before — the same shape as M52c's
+        // latency and M67's two view distances, and the third time this one
+        // walk turned out to be already reading something nothing consumed.
+        self.hardcore = prefix.hardcore;
+        self.game_state
+            .set_show_death_screen(prefix.show_death_screen);
         // One shared spawn-info decoder for login and respawn — no second,
         // partial decoder anywhere: the dimension holder is
         // `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry` =
@@ -3279,6 +3354,11 @@ impl PlaySession {
     /// in rather than half-way into a new one. The caller propagates the error.
     fn apply_respawn(&mut self, body: &[u8]) -> Result<(), String> {
         let info = RespawnInfo::parse(body).map_err(|e| format!("play respawn: {e}"))?;
+        // M82: bumped before anything else can fail, because a respawn the
+        // client half-applied still ends the death screen in vanilla — the
+        // `setScreen(null)` is unconditional on everything but the screen's
+        // own type.
+        self.respawn_epoch = self.respawn_epoch.wrapping_add(1);
         let spawn = &info.spawn;
         // M75. `handleRespawn` calls the same two-argument `setLocalMode` that
         // `handleLogin` does — so a death or a dimension change re-announces
@@ -3565,6 +3645,57 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.u16(slot as u16);
         self.send(p)
+    }
+
+    /// `LocalPlayer.respawn()` (M82) —
+    /// `ServerboundClientCommandPacket(PERFORM_RESPAWN)`, action **0**.
+    ///
+    /// ```java
+    /// public void respawn() {
+    ///    this.connection.send(new ServerboundClientCommandPacket(Action.PERFORM_RESPAWN));
+    ///    KeyMapping.resetToggleKeys();
+    /// }
+    /// ```
+    ///
+    /// The `resetToggleKeys()` half is real and belongs to the app: a player
+    /// who died sprinting must not respawn still sprinting. Rewo's toggle
+    /// state lives in `live_cmd`'s `Keys`, so the caller clears it.
+    ///
+    /// The enum's other values are `REQUEST_STATS` and
+    /// `REQUEST_GAMERULE_VALUES` — so the action is a VarInt `0`, and getting
+    /// it wrong asks the server for the statistics screen instead of a
+    /// respawn. The body is built by [`crate::client_command_body`] so a gate
+    /// can grade the ordinal without a socket.
+    pub fn perform_respawn(&mut self) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_client_command else {
+            return Err("client_command unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf.extend_from_slice(&crate::client_command_body(
+            crate::ClientCommand::PerformRespawn,
+        ));
+        self.send(p)
+    }
+
+    /// Drain the pending death, if any (M82).
+    ///
+    /// Draining rather than peeking, because the consumer is "open a screen" —
+    /// an idempotent read would re-open it on every frame and reset its
+    /// anti-misclick clock forever.
+    pub fn take_death(&mut self) -> Option<crate::CombatKill> {
+        self.death.take()
+    }
+
+    /// `LocalPlayer.shouldShowDeathScreen()` — the login flag, as amended by
+    /// `game_event` id 11 (M82).
+    pub fn show_death_screen(&self) -> bool {
+        self.game_state.show_death_screen()
+    }
+
+    /// How many respawns have been applied (M82). See [`Self::respawn_epoch`]'s
+    /// field docs for why this is a watermark.
+    pub fn respawn_epoch(&self) -> u64 {
+        self.respawn_epoch
     }
 
     /// Start digging (creative servers break the block on START).

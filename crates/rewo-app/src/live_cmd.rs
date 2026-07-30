@@ -2557,6 +2557,20 @@ pub(crate) fn container_sprites(
     })
 }
 
+/// Borrow the three button sheets out of the bake (M82). `None` when the jar
+/// had none, which degrades to a screen with no button chrome — text still
+/// draws, exactly as a missing HUD sprite degrades to no HUD.
+pub(crate) fn widget_sprites(
+    baked: &assets::BakedAssets,
+) -> Option<rewo_gpu::screen::WidgetSpriteData<'_>> {
+    let w = baked.widgets.as_ref()?;
+    Some(rewo_gpu::screen::WidgetSpriteData {
+        button: hud_sprite(&w.button),
+        button_disabled: hud_sprite(&w.button_disabled),
+        button_highlighted: hud_sprite(&w.button_highlighted),
+    })
+}
+
 pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
     let h = baked.hud.as_ref()?;
     Some(rewo_gpu::hud::HudSpritesData {
@@ -3639,6 +3653,16 @@ struct LiveApp {
     equipment: std::sync::Arc<rewo_data::equipment::EquipmentAssets>,
     /// Trim sources + palettes (M48), cloned for the same reason.
     trims: std::sync::Arc<rewo_data::equipment::TrimAssets>,
+    /// The language map (M82), cloned for the same reason as the two above.
+    ///
+    /// **`self.baked` is `None` for the whole windowed session** — the init
+    /// closure `take()`s it and drops it, which has been true since M3
+    /// (`47da8a0`) and is why `equipment` and `trims` are cloned here at all.
+    /// The death screen's four labels are resolved from this instead, so the
+    /// screen does not join the list of things that silently never happen in
+    /// the windowed client. See the M82 entry in `REWO_PLAN.md` §15 for the
+    /// full finding.
+    lang: std::sync::Arc<rewo_data::lang::Language>,
     pool: MeshPool,
     /// M33: the cloud map, the climate noises and the cached cloud mesh. Built
     /// on the first frame that has a bake, since `baked` arrives with the
@@ -3749,6 +3773,11 @@ struct LiveApp {
     /// The same pack's ETF random-entity rules (M52), consulted per entity per
     /// frame. Empty without a pack.
     etf: rewo_data::etf::EtfPack,
+    /// The death screen's own state (M82) — `None` while alive.
+    death: Option<DeathView>,
+    /// A screen asked to leave the server (M82). Serviced in the frame loop,
+    /// because a widget press has no `ActiveEventLoop` to exit with.
+    exit_requested: bool,
     init_error: Option<String>,
 }
 
@@ -3801,6 +3830,9 @@ impl ApplicationHandler for LiveApp {
             init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
     init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
+            if let Some(w) = widget_sprites(&baked) {
+                world_renderer.init_screen(&mut gpu, &w)?;
+            }
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
                 // M52b: the Velvet type stack, windowed only. A build with no
@@ -3860,7 +3892,7 @@ impl ApplicationHandler for LiveApp {
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
                     self.ctrl = p;
                 }
-                if self.screen.open {
+                if self.screen.inventory_open() {
                     if p {
                         if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
                             let ext = self.state.as_ref().map(|s| s.window.inner_size());
@@ -3884,6 +3916,49 @@ impl ApplicationHandler for LiveApp {
                             | PhysicalKey::Code(KeyCode::KeyE)
                             | PhysicalKey::Code(KeyCode::ShiftLeft)
                             | PhysicalKey::Code(KeyCode::ShiftRight)
+                    ) {
+                        return;
+                    }
+                }
+                // M82: a non-inventory screen owns the keyboard.
+                //
+                // `Screen.keyPressed`'s order is Esc → the focused widget →
+                // Tab; the inventory is exempt above only because its own
+                // `keyPressed` override runs first and it has no widgets to
+                // focus. The three debug keys still get through, which is
+                // vanilla's arrangement too — `KeyboardHandler.keyPress`
+                // handles the screenshot and debug keys before it hands the
+                // event to `minecraft.gui.screen()`. **Esc is not on that
+                // list**, so a death screen (`shouldCloseOnEsc() == false`)
+                // swallows it and `rewo live` does not quit.
+                if self.screen.any_open() && !self.screen.inventory_open() {
+                    if p {
+                        let shift = self.shift;
+                        let result = glfw_key(event.physical_key).and_then(|k| {
+                            self.screen
+                                .screens
+                                .current_mut()
+                                .map(|s| (s.kind, s.key_pressed(k, shift)))
+                        });
+                        match result {
+                            Some((kind, rewo_world::screen::KeyResult::Pressed(id))) => {
+                                self.press_widget(kind, id);
+                                return;
+                            }
+                            Some((_, rewo_world::screen::KeyResult::Close)) => {
+                                self.screen.screens.close();
+                                self.grab_for_screen(false);
+                                return;
+                            }
+                            Some((_, rewo_world::screen::KeyResult::Handled)) => return,
+                            _ => {}
+                        }
+                    }
+                    if !matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::F1)
+                            | PhysicalKey::Code(KeyCode::F2)
+                            | PhysicalKey::Code(KeyCode::F3)
                     ) {
                         return;
                     }
@@ -3928,7 +4003,7 @@ impl ApplicationHandler for LiveApp {
                     // Esc closes the screen if it is open, and only quits
                     // otherwise — the same precedence vanilla gives it.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
-                        if self.screen.open {
+                        if self.screen.inventory_open() {
                             self.set_screen_open(false);
                         } else {
                             event_loop.exit();
@@ -3937,7 +4012,7 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::Escape) => {}
                     // E opens and closes the inventory (M35).
                     PhysicalKey::Code(KeyCode::KeyE) if p => {
-                        let open = !self.screen.open;
+                        let open = !self.screen.inventory_open();
                         self.set_screen_open(open);
                     }
                     // F3 is a **modifier** whose release toggles the overlay
@@ -3998,9 +4073,36 @@ impl ApplicationHandler for LiveApp {
                     _ => {}
                 }
             }
+            // M82: a click on a widget-bearing screen. Before the inventory's
+            // arm and before the world's, because
+            // `ContainerEventHandler.mouseClicked` returns **true whenever
+            // `getChildAt` found something** — the child's own answer only
+            // decides whether it was *pressed*. So a right-click on a button
+            // is eaten by the screen and never digs.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } if self.screen.any_open() && !self.screen.inventory_open() => {
+                let (mx, my) = self.screen.mouse;
+                let b = match button {
+                    MouseButton::Left => 0u8,
+                    MouseButton::Right => 1,
+                    MouseButton::Middle => 2,
+                    _ => return,
+                };
+                let pressed = self
+                    .screen
+                    .screens
+                    .current_mut()
+                    .map(|s| (s.kind, s.mouse_clicked(mx, my, b)));
+                if let Some((kind, rewo_world::screen::MouseResult::Pressed(id))) = pressed {
+                    self.press_widget(kind, id);
+                }
+            }
             WindowEvent::MouseInput {
                 state: btn, button, ..
-            } if btn == ElementState::Pressed && self.screen.open => {
+            } if btn == ElementState::Pressed && self.screen.inventory_open() => {
                 // A click on the screen moves items; it never digs or places.
                 let ext = self.state.as_ref().map(|s| s.window.inner_size());
                 let items = self.items.clone();
@@ -4057,7 +4159,7 @@ impl ApplicationHandler for LiveApp {
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
-            } if self.screen.open => {
+            } if self.screen.inventory_open() => {
                 let items = self.items.clone();
                 if let Some(session) = self.session.as_mut() {
                     finish_drag(session, &items, &mut self.drag);
@@ -4117,7 +4219,7 @@ impl ApplicationHandler for LiveApp {
                 // Crossing a slot with the button down extends a drag. The
                 // slot only *joins* it if the server would accept it, and that
                 // is decided at release — this records the path.
-                if self.screen.open {
+                if self.screen.inventory_open() {
                     if let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) {
                         if let Some(slot) =
                             self.screen.hovered(ext.width as f32, ext.height as f32)
@@ -4133,7 +4235,7 @@ impl ApplicationHandler for LiveApp {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if self.screen.open {
+        if self.screen.any_open() {
             // The cursor is free and driving the screen; the camera holds
             // still. `CursorMoved` supplies the position, so this raw delta is
             // simply dropped rather than accumulated.
@@ -4163,7 +4265,40 @@ impl LiveApp {
     /// no position until the mouse moves, so without it the first frame would
     /// hover whatever slot happens to sit at the stale coordinate.
     fn set_screen_open(&mut self, open: bool) {
-        self.screen.open = open;
+        if open {
+            let (gw, gh) = self.gui_size();
+            self.screen
+                .screens
+                .open(rewo_world::screen::Screen::new(
+                    rewo_world::screen::ScreenKind::Inventory,
+                    gw,
+                    gh,
+                ));
+        } else {
+            self.screen.screens.close();
+        }
+        self.grab_for_screen(open);
+    }
+
+    /// The window in GUI pixels — the space every screen lays its widgets out
+    /// in. `(0, 0)` before the window exists, which no screen is ever built
+    /// against.
+    fn gui_size(&self) -> (i32, i32) {
+        let Some(state) = self.state.as_ref() else {
+            return (0, 0);
+        };
+        let size = state.window.inner_size();
+        let px = gui_px(size.width, size.height);
+        ((size.width as f32 / px) as i32, (size.height as f32 / px) as i32)
+    }
+
+    /// `Gui.setScreen`'s cursor half — `mouseHandler.releaseMouse()` +
+    /// `KeyMapping.releaseAll()` on the way in, `grabMouse()` on the way out.
+    ///
+    /// Split out of [`Self::set_screen_open`] so a screen that is *not* the
+    /// inventory gets exactly the same treatment: the death screen frees the
+    /// cursor for the same reason and by the same code.
+    fn grab_for_screen(&mut self, open: bool) {
         // Every movement key is released, so one held while opening does not
         // stay pressed behind the screen.
         self.keys = Keys::default();
@@ -4178,6 +4313,102 @@ impl LiveApp {
         } else {
             let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
             state.window.set_cursor_visible(false);
+        }
+    }
+
+    /// One widget press on whatever screen is up (M82).
+    ///
+    /// This is the dispatch arm a new screen adds: the framework hands back a
+    /// `(ScreenKind, WidgetId)` and the app decides what it means.
+    fn press_widget(&mut self, kind: rewo_world::screen::ScreenKind, id: rewo_world::screen::WidgetId) {
+        use rewo_world::death_screen as ds;
+        use rewo_world::screen::ScreenKind;
+        match (kind, id) {
+            (ScreenKind::Death, ds::RESPAWN) => {
+                if let Some(session) = self.session.as_mut() {
+                    if let Err(e) = session.perform_respawn() {
+                        log::warn!("live: respawn: {e}");
+                    }
+                }
+                // `button.active = false` — the second half of vanilla's
+                // `onPress`. The screen stays up until the server's respawn
+                // arrives; this is what stops a double press.
+                if let Some(s) = self.screen.screens.current_mut() {
+                    if let Some(w) = s.widget_mut(ds::RESPAWN) {
+                        w.active = false;
+                    }
+                }
+                // `KeyMapping.resetToggleKeys()`.
+                self.keys = Keys::default();
+            }
+            (ScreenKind::Death, ds::TITLE_SCREEN) => {
+                // `exitToTitleScreen`: `level.disconnect(...)` then
+                // `disconnectWithSavingScreen()` then a `TitleScreen`. Rewo
+                // has no title screen, so leaving the session is the whole of
+                // it. The `ConfirmScreen` vanilla interposes for a non-hardcore
+                // world is not reproduced — see `death_screen`'s docs.
+                log::info!("live: death screen — leaving the server");
+                self.exit_requested = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Open, reposition and close the death screen (M82).
+    ///
+    /// Three separate rules, and only the first is the packet's:
+    ///
+    /// 1. `handlePlayerCombatKill` opens it. The session has already taken
+    ///    vanilla's other branch (`!shouldShowDeathScreen()` → respawn
+    ///    immediately), so a drained death always means "show the screen".
+    /// 2. `Screen.resize` rebuilds it — which is `init()`, so the one-second
+    ///    button guard restarts. That is vanilla's behaviour and not a bug.
+    /// 3. **`handleRespawn` closes it**, not the button press. Watched through
+    ///    the session's respawn watermark.
+    fn pump_death_screen(&mut self) {
+        use rewo_world::screen::ScreenKind;
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let (respawns, kill) = (session.respawn_epoch(), session.take_death());
+        let (hardcore, score) = (session.hardcore, session.score);
+        if let Some(kill) = kill {
+            let (gw, gh) = self.gui_size();
+            let lang = self.lang.clone();
+            let (view, screen) =
+                DeathView::open(&kill, hardcore, score, &lang, respawns, gw, gh);
+            log::info!(
+                "live: death screen — \"{}\", hardcore={hardcore}, score={score}",
+                view.model.cause_of_death.as_deref().unwrap_or("")
+            );
+            self.death = Some(view);
+            self.screen.screens.open(screen);
+            self.grab_for_screen(true);
+            return;
+        }
+        let Some(view) = self.death.as_ref() else {
+            return;
+        };
+        if respawns != view.respawn_epoch {
+            log::info!("live: respawned — closing the death screen");
+            self.death = None;
+            self.screen.screens.close();
+            self.grab_for_screen(false);
+            return;
+        }
+        // A resize while dead. Compared against the screen's recorded size so
+        // a frame that changes nothing rebuilds nothing — a rebuild resets the
+        // guard, and doing it every frame would leave the buttons dead forever.
+        let (gw, gh) = self.gui_size();
+        let stale = self
+            .screen
+            .screens
+            .current()
+            .is_some_and(|s| s.kind == ScreenKind::Death && (s.width != gw || s.height != gh));
+        if stale {
+            if let (Some(view), Some(s)) = (self.death.as_ref(), self.screen.screens.current_mut()) {
+                view.reposition(s, gw, gh);
+            }
         }
     }
 
@@ -4210,8 +4441,16 @@ impl LiveApp {
             }
             None => false,
         };
-        if close_requested && self.screen.open {
+        if close_requested && self.screen.inventory_open() {
             self.set_screen_open(false);
+        }
+
+        // M82: you died, or you respawned. Both before the session borrow
+        // below, for the same reason `container_close` is.
+        self.pump_death_screen();
+        if self.exit_requested {
+            event_loop.exit();
+            return;
         }
 
         // Fixed 20 Hz tick on an accumulator.
@@ -4256,6 +4495,14 @@ impl LiveApp {
                 label.as_ref().map(|(id, n)| (*id, n.as_str())),
                 NOTIFICATION_DISPLAY_TIME,
             );
+            // M82: `Screen.tick()` — once per client tick, for whatever screen
+            // is up. The death screen's is `delayTicker++`, and its buttons
+            // arm at exactly 20.
+            if self.death.is_some() {
+                if let Some(s) = self.screen.screens.current_mut() {
+                    rewo_world::death_screen::DeathScreen::tick(s);
+                }
+            }
             ran_tick = true;
         }
         if let Some(reason) = session.disconnect.clone() {
@@ -4265,6 +4512,16 @@ impl LiveApp {
         }
         if ran_tick && session.spawned && !self.logged_spawn {
             self.logged_spawn = true;
+            // `REWO_PRECMD`: the same semicolon-separated op-command knob the
+            // headless path has had since M64, wired into the windowed one
+            // (M82) — without it a windowed run cannot stage anything that
+            // needs a command, and the death screen needs `/kill`.
+            if let Ok(cmd) = std::env::var("REWO_PRECMD") {
+                for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
+                    let _ = session.send_command(one);
+                    log::info!("REWO_PRECMD: {one}");
+                }
+            }
             log::info!(
                 "live: spawned at ({:.1},{:.1},{:.1})",
                 session.player.x,
@@ -4498,13 +4755,13 @@ impl LiveApp {
         let (sw, sh) = (ext.width as f32, ext.height as f32);
         let hovered = self
             .screen
-            .open
+            .inventory_open()
             .then(|| self.screen.hovered(sw, sh))
             .flatten();
         if let Some(baked) = self.baked.as_ref() {
             let items = self.items.clone();
             let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
-            if self.screen.open {
+            if self.screen.inventory_open() {
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -4543,7 +4800,7 @@ impl LiveApp {
                 );
             }
         }
-        if !self.screen.open {
+        if !self.screen.inventory_open() {
             state.world_renderer.set_container(false, None);
         }
         let _ = hovered;
@@ -4553,7 +4810,7 @@ impl LiveApp {
             let items = self.items.clone();
             let h = self.hand.get_or_insert_with(|| HandState::new(baked));
             h.tick(session, &items);
-            if self.screen.open {
+            if self.screen.inventory_open() {
                 let _ = state
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
@@ -4663,6 +4920,34 @@ impl LiveApp {
         // The stack counts are text like any other line, drawn after the icons
         // because the text pass runs last.
         text.extend(self.screen_labels.drain(..));
+        // M82: the death screen — its chrome into the screen pass, its four
+        // text runs onto the end of this frame's lines. Last, so the title,
+        // the cause and the button labels sit over the HUD, which is where
+        // `extractRenderStateWithTooltipAndSubtitles`'s stratum order puts
+        // everything a screen draws.
+        {
+            let mut chrome = rewo_gpu::screen::ScreenDraw::default();
+            if self.death.is_some() {
+                if let (Some(view), Some(screen)) =
+                    (self.death.as_ref(), self.screen.screens.current())
+                {
+                    // The pass itself is built in `resumed`, beside
+                    // `init_hud` and `init_container` — the one place the bake
+                    // is still alive.
+                    chrome = death_screen_chrome(screen, Some(self.screen.mouse));
+                    if let Some(advance) = state.world_renderer.font_advance() {
+                        text.extend(death_screen_lines(
+                            view,
+                            screen,
+                            &advance,
+                            px,
+                            (extent.width as f32, extent.height as f32),
+                        ));
+                    }
+                }
+            }
+            state.world_renderer.set_screen(chrome);
+        }
         state.world_renderer.set_text(text);
         if let Err(e) = state
             .world_renderer
@@ -4765,6 +5050,7 @@ fn run_windowed(
         // window opens and the entity draws need this every frame after.
         equipment: std::sync::Arc::new(baked.equipment.clone()),
         trims: std::sync::Arc::new(baked.trims.clone()),
+        lang: std::sync::Arc::new(baked.lang.clone()),
         baked: Some(baked),
         etypes,
         spears,
@@ -4815,6 +5101,8 @@ fn run_windowed(
         skins: SkinLoader::new(),
         pack: args.pack.clone(),
         etf: rewo_data::etf::EtfPack::default(),
+        death: None,
+        exit_requested: false,
         init_error: None,
     };
     event_loop
@@ -5352,6 +5640,37 @@ fn face_index(n: [i32; 3]) -> u8 {
         [1, 0, 0] => 5,
         _ => 1,
     }
+}
+
+/// winit → GLFW key code, for the keys the screen framework reads (M82).
+///
+/// `KeyEvent.key()` is a **GLFW** code and `rewo_world::screen` compares
+/// against those integers directly, because GLFW is Minecraft's own key
+/// namespace — the same reasoning `ewo_core::keybind` records for the
+/// launcher's keybind registry. Only the keys `Screen.keyPressed` and
+/// `InputWithModifiers.isSelection` look at are mapped; everything else
+/// answers `None` and never reaches the screen.
+///
+/// The four arrow codes are here even though
+/// [`rewo_world::screen::Screen::key_pressed`] leaves them inert, so that
+/// implementing arrow navigation later is a change in one crate rather than
+/// two.
+fn glfw_key(key: PhysicalKey) -> Option<i32> {
+    let PhysicalKey::Code(code) = key else {
+        return None;
+    };
+    Some(match code {
+        KeyCode::Space => 32,
+        KeyCode::Escape => 256,
+        KeyCode::Enter => 257,
+        KeyCode::Tab => 258,
+        KeyCode::ArrowRight => 262,
+        KeyCode::ArrowLeft => 263,
+        KeyCode::ArrowDown => 264,
+        KeyCode::ArrowUp => 265,
+        KeyCode::NumpadEnter => 335,
+        _ => return None,
+    })
 }
 
 /// Number keys 1..9 → hotbar slot 0..8.
@@ -8483,16 +8802,24 @@ fn apply_hand(
     }
 }
 
-/// Everything the inventory screen needs across frames (M35).
+/// The app's screen state: the framework's one slot (M82) plus the cursor.
 ///
-/// Deliberately small: the contents live in `PlaySession::inventory`, and the
-/// slot layout is a pure function. What is left is whether the screen is open
-/// and where the cursor is — the two things winit tells us and nothing else
-/// remembers.
+/// Before M82 this was the inventory's `open: bool`. The slot is
+/// `rewo_world::screen::Screens` — vanilla's `Gui.screen`, a single field, not
+/// a stack — and the two accessors below are the seam every input path routes
+/// through:
+///
+/// * [`Self::any_open`] is "a screen owns the cursor and the keyboard", which
+///   is what frees the mouse, holds the camera still and swallows world input.
+/// * [`Self::inventory_open`] is the *inventory* specifically, which is what
+///   the slot hover, the drag and `click_screen` mean.
+///
+/// Conflating the two is the mistake this split exists to prevent: a death
+/// screen must free the cursor without making `slot_at` meaningful.
 #[derive(Default)]
 pub struct ScreenState {
-    pub open: bool,
-    /// Cursor position in screen pixels. Only tracked while the screen is
+    pub screens: rewo_world::screen::Screens,
+    /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
     pub mouse: (f64, f64),
@@ -8504,11 +8831,240 @@ pub struct ScreenState {
 }
 
 impl ScreenState {
+    /// Any screen at all.
+    pub fn any_open(&self) -> bool {
+        self.screens.is_open()
+    }
+
+    /// The inventory specifically.
+    pub fn inventory_open(&self) -> bool {
+        self.screens.is(rewo_world::screen::ScreenKind::Inventory)
+    }
+
     /// The menu slot under the cursor, if any.
     fn hovered(&self, w: f32, h: f32) -> Option<usize> {
         let (gx, gy) = rewo_gpu::container::screen_to_gui(self.mouse, w, h);
         rewo_world::inventory::slot_at(gx, gy)
     }
+}
+
+/// Everything the death screen needs across frames (M82).
+///
+/// The model and its labels are separate because the labels come from the
+/// language map (an asset) and the model comes from the wire, and only the
+/// model changes while the screen is up.
+pub(crate) struct DeathView {
+    pub model: rewo_world::death_screen::DeathScreen,
+    pub labels: rewo_world::death_screen::DeathLabels,
+    /// The death message, parsed into styled spans once. A server's is
+    /// routinely coloured, and `TRUSTED_STREAM_CODEC` means the style is the
+    /// server's to set.
+    pub cause: Option<rewo_net::chat_style::ChatLine>,
+    /// `PlaySession::respawn_epoch` when the screen opened. The screen closes
+    /// when it moves — see the field's docs for why that, and not the button
+    /// press, is what ends it.
+    pub respawn_epoch: u64,
+}
+
+impl DeathView {
+    /// `DeathScreen`'s constructor + `init()`, given a decoded kill and the
+    /// baked language map.
+    pub(crate) fn open(
+        kill: &rewo_net::CombatKill,
+        hardcore: bool,
+        score: i32,
+        lang: &rewo_data::lang::Language,
+        respawn_epoch: u64,
+        gui_w: i32,
+        gui_h: i32,
+    ) -> (Self, rewo_world::screen::Screen) {
+        use rewo_net::chat_style::{self, ChatStyle};
+        let model = rewo_world::death_screen::DeathScreen {
+            // The message is kept even when it flattens to nothing: vanilla's
+            // `causeOfDeath` is `@Nullable` and a *present but empty* component
+            // still takes the non-null branch and draws an empty line.
+            cause_of_death: Some(kill.message.to_plain_text()),
+            hardcore,
+            score,
+        };
+        let labels = model.labels(lang);
+        let cause = Some(chat_style::parse_component(&kill.message, ChatStyle::WHITE));
+        let screen = model.build(&labels, gui_w, gui_h);
+        (
+            Self {
+                model,
+                labels,
+                cause,
+                respawn_epoch,
+            },
+            screen,
+        )
+    }
+
+    /// `Screen.resize` → `repositionElements` → `rebuildWidgets` → `init()`.
+    ///
+    /// **`init()` resets `delayTicker` to 0 and disables the buttons again**,
+    /// so resizing the window while dead restarts the one-second guard. That
+    /// falls out of rebuilding rather than being coded, because
+    /// [`rewo_world::death_screen::DeathScreen::build`] *is* `init()` and
+    /// `Screen::new` starts its clock at zero.
+    pub(crate) fn reposition(
+        &self,
+        screen: &mut rewo_world::screen::Screen,
+        gui_w: i32,
+        gui_h: i32,
+    ) {
+        *screen = self.model.build(&self.labels, gui_w, gui_h);
+    }
+}
+
+/// The death screen's chrome: its backdrop and its two buttons (M82).
+///
+/// Pure, and takes the screen rather than the app, so the gate drives the same
+/// builder the frame path does.
+pub(crate) fn death_screen_chrome(
+    screen: &rewo_world::screen::Screen,
+    mouse: Option<(f64, f64)>,
+) -> rewo_gpu::screen::ScreenDraw {
+    use rewo_world::screen::ButtonSprite as W;
+    let focused = screen.focused();
+    rewo_gpu::screen::ScreenDraw {
+        backdrop: screen.backdrop.map(|b| (b.top, b.bottom)),
+        buttons: screen
+            .widgets
+            .iter()
+            .filter(|w| w.visible)
+            .map(|w| rewo_gpu::screen::ButtonDraw {
+                x: w.x,
+                y: w.y,
+                width: w.width,
+                height: w.height,
+                sprite: match w.sprite(w.is_hovered(mouse), focused == Some(w.id)) {
+                    W::Enabled => rewo_gpu::screen::ButtonSprite::Enabled,
+                    W::Disabled => rewo_gpu::screen::ButtonSprite::Disabled,
+                    W::Highlighted => rewo_gpu::screen::ButtonSprite::Highlighted,
+                },
+            })
+            .collect(),
+    }
+}
+
+/// The death screen's four text runs — title, cause, score, and each button's
+/// label (M82).
+///
+/// `px` is the GUI scale; every coordinate below is in GUI pixels and is
+/// multiplied by it, which is the same convention `title_lines` uses.
+pub(crate) fn death_screen_lines(
+    view: &DeathView,
+    screen: &rewo_world::screen::Screen,
+    advance: &[u8; 256],
+    px: f32,
+    (screen_w, _screen_h): (f32, f32),
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_net::chat_style::{self, ChatSpan};
+    use rewo_world::death_screen as ds;
+    let gui_w = (screen_w / px) as i32;
+    let mut out = Vec::new();
+
+    // A run of spans laid end to end from a GUI-space top-left, at a
+    // whole-number extra scale. `scale` multiplies the *font* pixel, which is
+    // how the title comes out double-size without a second font.
+    let mut run = |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
+                   spans: &[ChatSpan],
+                   x: i32,
+                   y: i32,
+                   scale: i32| {
+        let mut pen = x;
+        for span in spans {
+            let w = rewo_gpu::text::width(&span.text, advance);
+            if !span.text.is_empty() {
+                out.push(rewo_gpu::world::OwnedTextLine {
+                    x: pen as f32 * px,
+                    y: y as f32 * px,
+                    px: px * scale as f32,
+                    color: span.color,
+                    alpha: 1.0,
+                    shadow: true,
+                    text: span.text.clone(),
+                });
+            }
+            pen += w * scale;
+        }
+    };
+
+    // The title, at `TITLE_SCALE`. Its anchor truncates twice — see
+    // `rewo_world::death_screen`.
+    let title_w = rewo_gpu::text::width(&view.labels.title, advance);
+    run(
+        &mut out,
+        &[plain_span(&view.labels.title)],
+        ds::title_left(gui_w, title_w),
+        ds::title_top(),
+        ds::TITLE_SCALE,
+    );
+
+    // The death message, in the server's own styling.
+    if let Some(cause) = &view.cause {
+        let w = rewo_gpu::text::width(&chat_style::plain_text(cause), advance);
+        let (x, y) = ds::cause_pos(gui_w, w);
+        run(&mut out, cause, x, y, 1);
+    }
+
+    // `deathScreen.score.value` — "Score: %s" with the value in YELLOW. Two
+    // spans, not one: `Component.translatable(key, scoreValue)` nests a styled
+    // literal inside an unstyled template, so the number is yellow and the
+    // word is not.
+    let score = score_spans(&view.labels.score_template, view.model.score);
+    let w = rewo_gpu::text::width(&chat_style::plain_text(&score), advance);
+    let (x, y) = ds::score_pos(gui_w, w);
+    run(&mut out, &score, x, y, 1);
+
+    // Each button's label, centred in its own rect by
+    // `defaultScrollingHelper` and coloured by `WithInactiveMessage`.
+    for widget in screen.widgets.iter().filter(|w| w.visible) {
+        let w = rewo_gpu::text::width(&widget.message, advance);
+        let (anchor, top) = widget.label_anchor(w);
+        let mut span = plain_span(&widget.message);
+        span.color = widget.label_color();
+        run(&mut out, &[span], anchor - w / 2, top, 1);
+    }
+    out
+}
+
+fn plain_span(text: &str) -> rewo_net::chat_style::ChatSpan {
+    rewo_net::chat_style::ChatSpan {
+        text: text.to_string(),
+        color: [1.0, 1.0, 1.0],
+        bold: false,
+        italic: false,
+        underlined: false,
+        strikethrough: false,
+        obfuscated: false,
+    }
+}
+
+/// `Component.translatable("deathScreen.score.value", literal(score).withStyle(YELLOW))`.
+///
+/// The template is split on its one `%s`; the value takes
+/// `ChatFormatting.YELLOW`'s `0xFFFF55`. A template with no `%s` — a resource
+/// pack could ship one — yields the template alone, which is what
+/// `decomposeTemplate` does with a pattern that consumes no argument.
+pub(crate) fn score_spans(template: &str, score: i32) -> rewo_net::chat_style::ChatLine {
+    const YELLOW: u32 = 0xFF_FF55;
+    let mut out = Vec::new();
+    let value = score.to_string();
+    match template.split_once("%s") {
+        Some((head, tail)) => {
+            out.push(plain_span(head));
+            let mut v = plain_span(&value);
+            v.color = rewo_net::chat_style::rgb_f32(YELLOW);
+            out.push(v);
+            out.push(plain_span(tail));
+        }
+        None => out.push(plain_span(template)),
+    }
+    out.retain(|s| !s.text.is_empty());
+    out
 }
 
 /// Build and hand over one frame of the open screen: icons, count labels,

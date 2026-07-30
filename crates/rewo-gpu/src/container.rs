@@ -74,19 +74,19 @@ pub struct ContainerSpriteData<'a> {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Rect {
-    u0: f32,
-    v0: f32,
-    u1: f32,
-    v1: f32,
+pub(crate) struct Rect {
+    pub(crate) u0: f32,
+    pub(crate) v0: f32,
+    pub(crate) u1: f32,
+    pub(crate) v1: f32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Vertex {
-    pos: [f32; 2],
-    uv: [f32; 2],
-    color: [f32; 4],
+pub(crate) struct Vertex {
+    pub(crate) pos: [f32; 2],
+    pub(crate) uv: [f32; 2],
+    pub(crate) color: [f32; 4],
 }
 
 /// The GUI scale, and where the panel's top-left corner sits in screen pixels.
@@ -1097,7 +1097,7 @@ fn new_vertex_buffer(gpu: &mut Gpu) -> Result<(vk::Buffer, Allocation), String> 
     Ok((buf, alloc))
 }
 
-fn build_pipeline(
+pub(crate) fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,

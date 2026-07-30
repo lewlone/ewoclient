@@ -400,6 +400,15 @@ pub struct Ids {
     /// bytes**, and an empty handler. Its sibling above is *not* empty on the
     /// wire; the two are vestigial in the same way and shaped differently.
     pub cb_play_player_combat_enter: i32,
+    /// `ClientboundPlayerCombatKillPacket` (M82) — the death screen. The third
+    /// of the `player_combat_*` trio and the only one that does anything:
+    /// a VarInt `playerId` and a `TRUSTED_STREAM_CODEC` death message.
+    ///
+    /// The id it carries is **always your own** — `ServerPlayer.die` sends it
+    /// through `this.connection`, never to trackers — which is why its handler
+    /// needs [`crate::PlaySession`]'s local-player door rather than the entity
+    /// table (see `REWO_PLAN.md` §0.0 gotcha 13).
+    pub cb_play_player_combat_kill: i32,
     /// `ClientboundServerDataPacket` — the MOTD `Component` and an
     /// `Optional<byte[]>` icon.
     pub cb_play_server_data: i32,
@@ -609,6 +618,7 @@ impl Ids {
             cb_play_game_rule_values: req!(p, P, C, "game_rule_values"),
             cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),
+            cb_play_player_combat_kill: req!(p, P, C, "player_combat_kill"),
             cb_play_server_data: req!(p, P, C, "server_data"),
             cb_play_store_cookie: req!(p, P, C, "store_cookie"),
             cb_play_player_rotation: req!(p, P, C, "player_rotation"),

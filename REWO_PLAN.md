@@ -775,12 +775,40 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    never arrives in. Both were caught live, not headlessly. When a packet
    carries an entity id that can be your own, the resolution needs a local
    fallback *and* a witness that exercises the id the table does not hold.
+   **M82 is the third and it landed clean**, because it was written knowing
+   this: `player_combat_kill` (68) and `Player.DATA_SCORE_ID` (metadata index
+   18, a *second* walk of the same `set_entity_data` body) both resolve
+   against the local-player door, and `deathshot`'s first witness drives the
+   router with **no entity table in scope at all** — a table-based lookup
+   could not even compile against it. The pattern for the witness: pass no
+   table, and make dropping the door the named mutation partner.
 
 ### Known issues, gaps, and deviations from the plan — CRITIQUE THESE
 
 Grouped by severity. The assistant is encouraged to challenge any of these,
 find more, and propose better approaches — you are a stronger reviewer than
 the code's author. Nothing below is settled truth.
+
+**The sharpest live bug on the list, found by M82 and deliberately not fixed
+by it:**
+- **`LiveApp::self.baked` is `None` for the entire windowed session, so a
+  dozen per-frame branches in `LiveApp::frame` are dead code.** `resumed`'s
+  init closure does `let baked = self.baked.take()` and drops it at the end
+  of the closure (`crates/rewo-app/src/live_cmd.rs`, since M3 / `47da8a0`),
+  and every `if let Some(baked) = self.baked.as_ref()` in the frame loop
+  therefore never runs in `rewo live` — the **item icons**, the
+  **first-person hand**, the **weather assets**, the **particle assets** and
+  the held-item label among them. The comment on `LiveApp::equipment` records
+  the consequence for the two fields somebody worked around ("cloned because
+  `self.baked` is *taken* when the window opens") without noticing the rest.
+  Proven with a one-frame probe (`PROBE: baked=false`), not by reading.
+  M82 routed around it (an `Arc<Language>` clone, and the `ScreenPass` built
+  in `resumed` beside `init_hud`) rather than fixing it: restoring the bake is
+  one line, but it turns a dozen render paths back on at once with no gate
+  that can grade the result, and that is a milestone of its own — probably a
+  headless `live --out` comparison before and after. **Anyone touching the
+  windowed client should check this first**; a feature that "does not render
+  in `rewo live`" may be this and not itself.
 
 **Architectural deviations from the plan (§4) worth reconsidering:**
 - ~~Meshing runs on the MAIN thread~~ — **RESOLVED 2026-07-21.** Meshing
@@ -2008,6 +2036,248 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M82 — the screen framework, and the death screen (2026-07-30)
+
+`player_combat_kill` (68), and the framework the other two screens in
+`REWO_PACKET_COVERAGE.md`'s class B — `award_stats` (3) and `server_links`
+(137) — were waiting on. Rewo had exactly one screen before this (the
+inventory, M35–M43) and its whole state was `open: bool` plus a cursor
+position.
+
+#### There is no stack, and that is the design decision
+
+The coverage document said the screens "genuinely change character, because a
+screen framework is a design decision rather than a transcription". **Half
+right.** The decision was real and it was *smaller* than it sounded: vanilla
+has **one screen slot, not a stack**. `Gui.screen` is a single field and
+`Gui.setScreen` replaces it. The nesting that looks like a stack — the death
+screen's "Title Screen" button opening a `ConfirmScreen` — is a replacement
+carrying a `BooleanConsumer`, and nothing anywhere pops back to the
+`DeathScreen` instance. So `rewo_world::screen::Screens` is one slot, and a
+screen that wants a "back" target carries it itself.
+
+Everything else was an ordinary transcription, and it produced the usual crop
+of readings that invert:
+
+* **A hovered *disabled* button draws the plain disabled sprite.**
+  `AbstractButton.SPRITES` is built with the **three-argument** `WidgetSprites`
+  constructor, whose body is `this(enabled, disabled, focused, disabled)` — so
+  `disabledFocused` **is** `button_disabled`. Hovering a dead button changes
+  nothing at all, and the obvious reading ("hover highlights, active or not")
+  is wrong in a direction a screenshot would not settle, because the disabled
+  sprite is already dim.
+* **`isHovered` and `isMouseOver` disagree on purpose.** `extractRenderState`
+  assigns `isHovered = containsPointInScissor && areCoordinatesInRectangle`
+  with **no `isActive()` test**, while `isMouseOver` is
+  `isActive() && areCoordinatesInRectangle`. The asymmetry is observable only
+  through the cursor icon (`handleCursor` picks `NOT_ALLOWED`); it never
+  reaches the sprite, because the table above collapses it.
+* **`ContainerEventHandler.mouseClicked` returns `true` whenever `getChildAt`
+  found something**, whatever the child's own `mouseClicked` answered. A
+  right-click on a button is eaten by the screen and never digs. But
+  `getChildAt` uses `isMouseOver`, so an **inactive** widget is not found at
+  all and the click falls straight through.
+* **Esc does nothing on a death screen**, and `Gui.setScreen(null)` *re-opens*
+  it (with `causeOfDeath = null`) while `isDeadOrDying()`. There is no path out
+  but its own two buttons. It is also the one screen whose `isPauseScreen()` is
+  false — the world keeps ticking behind it.
+* **The button press does not close the screen.** `onPress` sends
+  `PERFORM_RESPAWN` and sets `button.active = false`; **`handleRespawn`** ends
+  with `if (screen() instanceof DeathScreen || …TitleConfirmScreen)
+  setScreen(null)`. So a laggy respawn leaves you looking at a dead "Respawn"
+  button, which is exactly what a client that closed the screen optimistically
+  would get wrong.
+* **`init()` resets the one-second guard**, and `resize` → `repositionElements`
+  → `rebuildWidgets` → `init()`. Resizing the window while dead really does
+  cost you another second before the buttons arm.
+* **The two hardcore pairs run in opposite directions.** The hardcore *title*
+  is the second key (`deathScreen.title.hardcore`) and the hardcore *button* is
+  the first (`deathScreen.spectate`). Reading `hardcore ? a : b` off one and
+  applying it to the other swaps both.
+* **The title's anchor truncates twice.** `withScale(2.0F)` scales the *pose*,
+  so `accept(CENTER, middleLine / 2, 30, title)` is `(width/2)/2` in half-size
+  units and the run's left edge is `anchor - font.width/2` *before* the pose
+  doubles it. `2 * (width/4 - w/2)` is not `width/2 - w` for an odd-width
+  title.
+* **The guard is `delayTicker == 20`, incremented before the test**, so the
+  twentieth tick arms the buttons. Without it the click that killed you
+  respawns you.
+
+#### The seam, for the two screens that land on it next
+
+* **`rewo_world::screen`** — `ScreenKind` (the registry: one variant per
+  screen, a tag with no data), `Widget` (rect + `active`/`visible` + label,
+  with `contains` / `is_mouse_over` / `is_hovered` / `sprite` / `label_color` /
+  `label_anchor`), `Screen` (widgets, focus, backdrop, `close_on_esc`, `pause`,
+  a tick counter, the GUI size it was laid out for), `Screens` (the one slot),
+  and the routing: `mouse_clicked -> MouseResult{Pressed,Consumed,Ignored}`,
+  `key_pressed -> KeyResult{Pressed,Close,Handled,Ignored}`.
+* **`rewo_world::death_screen`** — the worked example of a consumer. A module
+  beside the framework holding *only* that screen's layout, its lang keys and
+  its `build` (which **is** `init()`).
+* **`rewo_gpu::screen`** — the chrome pass: a backdrop gradient and buttons.
+  Reuses `container`'s pipeline rather than shipping a second GLSL pair.
+* **The app** adds two arms: one that rebuilds on resize, one that acts on the
+  `(ScreenKind, WidgetId)` a press returns (`LiveApp::press_widget`).
+* **`ScreenState::any_open` vs `inventory_open`** is the split that makes this
+  work. `any_open` frees the cursor, holds the camera and swallows world input;
+  `inventory_open` is what the slot hover, the drag and `click_screen` mean.
+  Conflating them would make `slot_at` meaningful on a death screen.
+
+**Deliberately not built:** arrow-key focus navigation.
+`ContainerEventHandler.handleArrowNavigation` is a directional search with a
+`nextFocusPathVaguelyInDirection` fallback, and half of it is worse than none —
+a partial transcription moves focus somewhere plausible and wrong. Tab reaches
+the same set on every screen Rewo has. Also not built: `blitNineSlicedSprite`.
+All three button sheets are 200×20 with `border 3`, and `Button.BIG_WIDTH` is
+200, so the nine-slice **is** a 1:1 blit at the only size Rewo draws; a button
+at any other size is **skipped and logged** rather than stretched, and
+`p11` asserts that.
+
+#### The gotcha-13 trap was live, and something else was hiding behind it
+
+`handlePlayerCombatKill` opens with `this.level.getEntity(packet.playerId())`
+and compares against `minecraft.player`, so the obvious transcription looks the
+id up in `EntityTable` — which never holds the local player, which is the only
+player this packet is ever about (`ServerPlayer.die` sends it down
+`this.connection`). That is §0.0 gotcha 13's third instance after M73 and M81,
+and it was written into the handler from the start this time. `w2` drives the
+router with **no entity table in scope at all**, and `w3` is its partner: drop
+the local-player door and the packet is still consumed and produces nothing.
+
+**The live run found a different bug the gate could not.** `rewo live` opened
+no screen, with all 40 witnesses green. `LiveApp::pump_death_screen` resolved
+its labels from `self.baked` — and **`self.baked` is `None` for the entire
+windowed session**: `resumed`'s init closure `take()`s the bake and drops it at
+the end of the closure. That has been true since M3 (`47da8a0`), and the
+comment on `LiveApp::equipment` even records the consequence ("cloned because
+`self.baked` is *taken* when the window opens") for the two fields that were
+worked around. **Every other `if let Some(baked) = self.baked.as_ref()` in
+`LiveApp::frame` is dead code in the windowed client** — the item icons, the
+first-person hand, the weather assets, the particle assets and the held-item
+label among them. Proven with a one-frame probe, not by reading:
+`PROBE: baked=false`.
+
+M82 does **not** fix that — it is out of this milestone's territory, it changes
+what the windowed client draws, and it has no gate. It is recorded in §0.0's
+known-issues list as its own item. What M82 does is not depend on it: the
+language map is an `Arc` clone on `LiveApp` (the pattern `items`, `equipment`
+and `trims` already use) and the `ScreenPass` is built in `resumed`, beside
+`init_hud` and `init_container`, which is where it belonged anyway.
+
+#### Two more things the wire was already reading and throwing away
+
+`spawn_info::read_login_prefix` had `r.bool()?;` twice — **`hardcore`** and
+**`showDeathScreen`**. This is the third time that one walk turned out to be
+reading something nothing consumed (after M52c's latency and M67's two view
+distances). `hardcore` chooses the title and the first button's label and
+exists nowhere else on the wire; `showDeathScreen` is the *join-time* value of
+the flag M71 shipped `game_event` id 11 to amend mid-session, so a server that
+starts with `doImmediateRespawn true` and never touches it again looked like a
+server that wanted the screen.
+
+`Player.getScore()` is metadata **index 18, INT** — `Entity` 0..7,
+`LivingEntity` 8..14, `Avatar` 15 (main hand) and 16 (mode customisation),
+`Player` 17 (absorption) and 18. The two `Avatar` slots are not a guess: M19
+and M60 already read them there and are gated live. Index 18 INT is
+polymorphic (`Axolotl`'s variant lives there), so the caller's local-player id
+is the kind gate — a stronger one than the type-id gates elsewhere, because
+there is exactly one entity it can be. It needs a **second** walk of the same
+body for the same gotcha-13 reason `apply_local_attributes` does.
+
+#### The M3-era auto-respawn was not vanilla, and it moved
+
+`handleSetHealth` assigns three fields and nothing else; Rewo's has sent
+`PERFORM_RESPAWN` from there since M3 so the headless bot could recover.
+Respawning is a **screen** action, so it moved to `player_combat_kill` — which
+is where vanilla decides between the screen and an immediate respawn — and
+`rewo play` now drains `take_death()` and respawns explicitly, which is the
+same branch vanilla takes when `shouldShowDeathScreen()` is false. A client
+with no screen should *say* so rather than have the protocol layer decide for
+it. `client_command`'s action is ordinal **0**; ordinal 1 is `REQUEST_STATS`, a
+well-formed packet that opens the statistics screen and does not respawn you.
+
+#### The gate, and what its mutation battery found
+
+`rewo deathshot --check` — serverless, fail-closed, **40 witnesses** (9 wire,
+19 model, 12 pixel), Vulkan validation ON, 0 VUIDs. It drives the production
+router with a real `Ids::resolve`d table, the production `death_action`, the
+production `DeathScreen::build`, and the two builders `LiveApp::frame` calls.
+
+The pixel half renders over a **pure green** clear, because a full-screen dark
+backdrop makes the project's recurring detector error *worse* — "is it dimmer"
+stops being a measurement. Nothing the death screen draws is green: the
+backdrop is red, the buttons are the only greyscale thing on screen, the text
+is white and yellow. `p1` asserts an otherwise-identical frame with no screen
+is *uniformly* that green.
+
+**24 mutations run, 23 caught.** Two results are worth keeping:
+
+* **`p2` was self-calibrating and the battery caught it.** It predicted the
+  backdrop's composite from `ds::BACKDROP` — the very constant it was grading —
+  so swapping `col1` and `col2` swapped the prediction *and* the render and the
+  witness stayed green. The two ARGB literals are now re-declared in the gate.
+  That is `healthbarshot`'s rule and M80's self-calibrating shape, and it is the
+  fourth time a mutation battery has found a witness measuring itself.
+* **One survivor, and it is an equivalent mutant by redundancy.** Removing the
+  `index + (forward ? 1 : 0)` step from `handleTabNavigation` changes nothing,
+  because `AbstractWidget.nextFocusPath` *also* returns null for the
+  already-focused widget. Removing only the skip likewise changes nothing.
+  Removing **both** fails `m11` — which is the proof the witness can fail at
+  all. Vanilla implements the forward step twice; either alone suffices.
+
+And a fifteenth instance of the detector error, in this gate's own first draft:
+`p4` asked for "red outside the button" on the reflex that the backdrop is red.
+It is red *over black*; over a green destination it is green-dominant. The
+predicate is now "the buttons are the only greyscale thing on screen".
+
+#### Measured (2026-07-30)
+
+**1515 tests** — `rewo-net` 543, `rewo-world` 428, `rewo-gpu` 228, `rewo-data`
+175, `rewo-app` 85, `rewo-mesh` 45, `rewo-proto` 11. Twenty-nine serverless
+gates green with **validation ON and 0 VUIDs**: `deathshot` 40, plus
+`inventoryshot` 152, `blockentityshot` 172, `swingshot` 97, `itemshot` 75,
+`capeshot` 69, `hurtshot` 56, `titleshot` 55, `labelshot` 47, `rideshot` 45,
+`attributeshot` 43, `hudshot` 41, `weathershot` 35, `handshot` 34,
+`particleshot` 34, `healthbarshot` 33, `bordershot` 31, `eventshot` 28,
+`danceshot` 24, `breakshot` 22, `captureshot` 17, `portalshot` 12,
+`abilityshot` 96/96, `mobshot` 246/246, plus `skyshot`, `lightmapshot`,
+`tintshot`, `meshshot` and `dimensioncheck`. Demo PNG SHA-256
+`2cc56b4a…46635`, byte-identical from M15 onward.
+
+**Live** (a clean 26.2 server, offline mode, port 25611): `rewo play`
+CORRECTIONS **0**, place == dirt ✓, dig == air ✓; two deaths decoded
+(`player_combat_kill eid=427 message="death.attack.genericKill"` and
+`"death.attack.mob"`) and both respawned. `rewo live` windowed:
+`player_combat_kill eid=542` → `live: death screen — "death.attack.mob",
+hardcore=false, score=0`, with the server log agreeing ("RewoOp was slain by
+Slime"), corrections 0, and the screen correctly still up at exit because
+nothing pressed its buttons.
+
+**A harness note, the M20.1 lesson again.** The first live attempts ran on
+`testserver-inv`, which a concurrent milestone had left with a **size-12 world
+border**; the bot spawned outside it, loaded 0 columns and reported 298
+corrections. Nothing to do with this change — but a run against a world another
+session has edited cannot be read as a control. The clean server was cloned
+fresh. And `/kill` on a **creative** player prints `Killed <name>` and does not
+kill: the command feedback is not the death.
+
+#### Open
+
+* The `ConfirmScreen` between "Title Screen" and leaving is not reproduced;
+  Rewo takes vanilla's hardcore branch always, and "leave the server" is what
+  a client with no title screen can mean by it.
+* Arrow-key focus navigation and `blitNineSlicedSprite`, both named above.
+* Rewo's text pass writes its colour straight to an sRGB attachment, so a
+  label's `0xA0A0A0` lands at `srgb_encode(160/255)` = 208 and `0xFFFF55`'s
+  blue at 156. That is a **pre-existing Rewo-wide convention** — the chat, the
+  F3 block, the titles and the HUD all share it — and a real deviation from
+  vanilla, which composites GUI text in gamma space. `p8` and `p10` predict the
+  encoded values rather than pretending otherwise; fixing it would move every
+  text pixel in every existing gate and is its own milestone.
+* `LiveApp::self.baked` (above) — the largest thing found here and the one this
+  milestone deliberately did not touch.
 
 ### M80 — the world border: six packets, one feature (2026-07-30)
 

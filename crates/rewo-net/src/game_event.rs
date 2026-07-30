@@ -398,8 +398,11 @@ impl Applied {
 ///   calls both setters from it. The `game_event` ids 11/12 are only the
 ///   *mid-session gamerule change* (`MinecraftServer` sends them when
 ///   `IMMEDIATE_RESPAWN` or `LIMITED_CRAFTING` is edited). So the defaults
-///   below are vanilla's field initialisers, correct until the server speaks,
-///   but the join-time truth rides a packet whose flags Rewo does not read.
+///   below are vanilla's field initialisers, correct until the server speaks.
+///   **M82 closed half of this**: `showDeathScreen` now arrives from the login
+///   packet through [`Self::set_show_death_screen`], because the death screen
+///   is the thing it gates. `doLimitedCrafting`'s join-time value is still
+///   dropped — it has no consumer yet.
 /// - **Gamemode also arrives on the login and respawn packets**, via
 ///   `spawnInfo.gameType()`. `handleRespawn` ends with the **two-argument**
 ///   `setLocalMode(gameType, previousGameType)`, which assigns both directly
@@ -551,6 +554,22 @@ impl ClientGameState {
     /// `LocalPlayer.shouldShowDeathScreen()`. Defaults to `true`.
     pub fn show_death_screen(&self) -> bool {
         self.show_death_screen
+    }
+
+    /// `handleLogin`'s `player.setShowDeathScreen(packet.showDeathScreen())`
+    /// (M82).
+    ///
+    /// The join-time half of what `game_event` id 11 changes mid-session. It
+    /// is a plain assignment in vanilla, with none of `setLocalMode`'s
+    /// change-guard, so a login that repeats the value Rewo already holds
+    /// simply writes it again.
+    ///
+    /// `handleRespawn` also copies the flag onto the new `LocalPlayer`
+    /// (`newPlayer.setShowDeathScreen(oldPlayer.shouldShowDeathScreen())`),
+    /// which is why nothing resets it on a dimension change — see the type
+    /// docs.
+    pub fn set_show_death_screen(&mut self, show: bool) {
+        self.show_death_screen = show;
     }
 
     /// `LocalPlayer.getDoLimitedCrafting()`. Defaults to `false`.

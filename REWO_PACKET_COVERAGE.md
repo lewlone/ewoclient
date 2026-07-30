@@ -27,23 +27,27 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 103 of them. 38
+1. **141 clientbound-play packets. Rewo resolves and consumes 104 of them. 37
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty and class B is down to four.** The 38 gaps split
-   0 / 4 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
-   and not-applicable. What the three B milestones established is worth keeping:
+2. **Class A is empty and class B is down to three.** The 37 gaps split
+   0 / 3 / 23 / 11 across pure state, needs-rendering, needs-a-missing-subsystem
+   and not-applicable. What the B milestones established is worth keeping:
    **the class letter changes the gate, not the standard.** M79's seven (title
    overlay, XP gauge, cooldown sweep), M80's six (the world border) and M81's
    three (hurt tilt, block cracks, item pickup) all have an exact vanilla oracle,
    so the decode *and* the render are transcribed line by line and graded against
    it, with a pixel read-back half on top of the model half. A class-B packet is
    not a guess; it is a transcription that happens to need a renderer to land.
-   The four left are `waypoint` (138) and three **screens** — `award_stats` (3),
-   `player_combat_kill` (68), `server_links` (137) — and those genuinely change
-   character, because a screen framework is a design decision rather than a
-   transcription. §2.
+   The three left are `waypoint` (138) and two **screens** — `award_stats` (3)
+   and `server_links` (137). This entry used to call the screens a different
+   kind of problem, "a design decision rather than a transcription"; **M82 took
+   `player_combat_kill` (68) and found that only half true.** The design
+   decision was real and was *smaller* than it sounded — vanilla has one screen
+   slot, not a stack — and everything else was an ordinary transcription that
+   produced the usual inverted readings. The two that remain now sit on
+   `rewo_world::screen`. §2, §3.
 3. **The hand-maintained version of this document decayed at the rate the
    codebase changed.** M67 wrote it by grepping; four packets landed in
    `ids.rs` the same day, three of them from M68. By the time M74 re-derived
@@ -176,19 +180,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **103** |
+| Resolved **and** consumed | **104** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **38** |
+| Not resolved at all | **37** |
 | **Total clientbound-play** | **141** |
 
-The 38 gaps, by class:
+The 37 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **4** | 11% |
-| **C** needs a subsystem Rewo lacks | **23** | 60% |
-| **D** not applicable | **11** | 29% |
+| **B** needs rendering | **3** | 8% |
+| **C** needs a subsystem Rewo lacks | **23** | 62% |
+| **D** not applicable | **11** | 30% |
 
 M67 audited 56 / 0 / 85 with class A at 31. **Thirty-eight** packets separate
 that published 56 from this 94, and **ten of them had already landed when M67
@@ -211,9 +215,22 @@ with one state machine, one physics consequence and one wall, and splitting the
 decode from the render would have left the state machine untestable against
 anything.
 
-The 7 that remain: `block_destruction` (5), `hurt_animation` (42),
-`take_item_entity` (124), `waypoint` (138), and the four screens —
-`award_stats` (3), `player_combat_kill` (68), `server_links` (137).
+The 3 that remain: `waypoint` (138) and two screens — `award_stats` (3) and
+`server_links` (137).
+
+**M82 took the third screen, `player_combat_kill` (68), and with it the
+framework the other two were waiting on.** What this document said about them —
+"those genuinely change character, because a screen framework is a design
+decision rather than a transcription" — turned out to be **half right and half
+backwards**. The design decision was real and it was smaller than expected:
+vanilla has *one* screen slot, not a stack, so most of what a framework looked
+like it needed was not there to build. The rest was an ordinary transcription
+(`AbstractWidget`, `WidgetSprites`, `ContainerEventHandler`'s routing), and it
+produced the usual crop of inverted readings — a hovered *disabled* button
+draws the plain disabled sprite, and `Esc` on a death screen does nothing at
+all. `award_stats` and `server_links` are now class-B transcriptions like any
+other: `rewo_world::screen` is the shared part and
+`rewo_world::death_screen` is the worked example of a consumer.
 
 ---
 
@@ -444,7 +461,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 65 | `player_chat` | handled | `opt!` → `cb_play_player_chat` | |
 | 66 | `player_combat_end` | handled | `req!` → `cb_play_player_combat_end` | **M78.** Vestigial: the handler is an **empty method**, so nothing is stored — inventing a field would be a divergence dressed as decode-and-state. The body is **not** empty (a VarInt `duration`), and the only gradeable property is that the reader consumes exactly it. §9. |
 | 67 | `player_combat_enter` | handled | `req!` → `cb_play_player_combat_enter` | **M78.** Vestigial, empty handler, and `StreamCodec.unit` — **zero** bytes. Graded the same way as its sibling: reader position, which here means reading nothing at all. §9. |
-| 68 | `player_combat_kill` | absent | **B** | The death screen. |
+| 68 | `player_combat_kill` | handled | `ids.rs` + `route_player_combat_kill` | M82 — the death screen, and the screen framework under it. VarInt `playerId` + a `TRUSTED_STREAM_CODEC` message; the id is always your own, so it resolves against the local-player door (§0.0 gotcha 13), never the entity table. |
 | 69 | `player_info_remove` | handled | `req!` → `cb_play_player_info_remove` | |
 | 70 | `player_info_update` | handled | `req!` → `cb_play_player_info_update` | §4 partial — display name and chat session are walked and discarded. |
 | 71 | `player_look_at` | handled | `req!` → `cb_play_player_look_at` | **M76.** `/teleport … facing`. An anchor `readEnum`, three doubles, a flag, and **only then** a conditional entity + anchor pair. An unresolvable entity falls back to the packet's own coordinates, which are the sender's snapshot of `toAnchor.apply(entity)` — not a placeholder. |

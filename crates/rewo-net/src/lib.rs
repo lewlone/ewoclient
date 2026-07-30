@@ -89,6 +89,23 @@ pub(crate) fn parse_login_dimension_holder(packet: &[u8]) -> rewo_proto::Result<
     r.varint() // dimension-type holder (raw 0-based registry id)
 }
 
+/// `ClientboundLoginPacket`'s `(hardcore, showDeathScreen)` (M82).
+///
+/// Both were `r.bool()?;` discards in [`spawn_info::read_login_prefix`] before
+/// M82, and both are the *join-time* half of something the client already
+/// modelled: `hardcore` chooses the death screen's title and its first
+/// button's label, and `showDeathScreen` is the initial value of the flag
+/// `game_event` id 11 amends mid-session.
+///
+/// Reads through the same walk `PlaySession` does, so a gate cannot grade a
+/// second, drifting copy — the mistake M62 records finding in the tab list's
+/// entry walk.
+pub fn login_flags(packet: &[u8]) -> Option<(bool, bool)> {
+    let mut r = PacketReader::new(packet);
+    let p = spawn_info::read_login_prefix(&mut r).ok()?;
+    Some((p.hardcore, p.show_death_screen))
+}
+
 /// Select the synced dimension-type definition a login / respawn packet names,
 /// by **raw 0-based registry id** — the vector index *is* the holder id, so
 /// this is a direct index and never a name lookup.
@@ -1301,6 +1318,141 @@ pub fn route_block_destruction(
     }
 }
 
+/// What a decoded `player_combat_kill` says (M82).
+///
+/// The message is kept as its raw NBT tag rather than flattened, so the
+/// renderer can style it — a server's death message is routinely coloured, and
+/// `chat_style::parse_component` is what turns it into spans.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CombatKill {
+    /// `packet.playerId()`.
+    pub player_id: i32,
+    /// `packet.message()` — `ComponentSerialization.TRUSTED_STREAM_CODEC`, one
+    /// NBT tag.
+    pub message: rewo_proto::nbt::Nbt,
+}
+
+/// `ClientboundPlayerCombatKillPacket` → `handlePlayerCombatKill` (M82).
+///
+/// ```text
+/// VarInt     playerId
+/// Component  message      // TRUSTED_STREAM_CODEC, one NBT tag
+/// ```
+///
+/// **`local_player` is the whole handler, not a filter on it.** Vanilla is
+///
+/// ```java
+/// Entity player = this.level.getEntity(packet.playerId());
+/// if (player == this.minecraft.player) { … }
+/// ```
+///
+/// and `ClientLevel`'s entity storage *contains* the local player, so the
+/// obvious transcription — look the id up in [`rewo_world::entities::EntityTable`]
+/// — resolves to `None` every single time, because the server sends no
+/// `add_entity` for your own player and Rewo's table is built from those. That
+/// is `REWO_PLAN.md` §0.0 gotcha 13, and this is its third instance (M73's
+/// attributes, M81's hurt animation). The id this packet carries is *always*
+/// your own: `ServerPlayer.die` sends it down `this.connection`.
+///
+/// Returns `None` for an id that is not the local player's, and for a body
+/// that does not decode. A packet naming somebody else is not an error —
+/// vanilla drops it silently, and so does this.
+pub(crate) fn apply_player_combat_kill(body: &[u8], local_player: Option<i32>) -> Option<CombatKill> {
+    let mut r = PacketReader::new(body);
+    let player_id = r.varint().ok()?;
+    let message = r.nbt().ok()?;
+    if local_player != Some(player_id) {
+        log::debug!("net: player_combat_kill for {player_id}, not the local player");
+        return None;
+    }
+    log::debug!(
+        "net: player_combat_kill eid={player_id} message={:?}",
+        message.to_plain_text()
+    );
+    Some(CombatKill { player_id, message })
+}
+
+/// `ServerboundClientCommandPacket.Action`, in the enum's declaration order —
+/// which **is** the wire value, because the codec is
+/// `output.writeEnum(action)` and `writeEnum` writes `ordinal()` as a VarInt.
+///
+/// Three values, and only the first is what a respawn sends. Getting the
+/// ordinal wrong asks the server for the *statistics screen*
+/// (`REQUEST_STATS`), which is a well-formed packet that does not respawn you
+/// and produces no error anywhere.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(i32)]
+pub enum ClientCommand {
+    PerformRespawn = 0,
+    RequestStats = 1,
+    RequestGameruleValues = 2,
+}
+
+/// The body of a `ServerboundClientCommandPacket` — one VarInt.
+pub fn client_command_body(action: ClientCommand) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(action as i32);
+    w.buf
+}
+
+/// What `handlePlayerCombatKill` does once the packet is decoded.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeathAction {
+    /// Nothing: the packet named somebody else, or did not decode.
+    None,
+    /// `minecraft.gui.setScreen(new DeathScreen(...))`.
+    ShowScreen(CombatKill),
+    /// `minecraft.player.respawn()` — with the death screen suppressed the
+    /// client never sees one, and **records nothing**, so no state downstream
+    /// has to know the rule.
+    RespawnNow,
+}
+
+/// `handlePlayerCombatKill`'s branch, as a function so a gate can drive the
+/// production one:
+///
+/// ```java
+/// if (this.minecraft.player.shouldShowDeathScreen()) {
+///    this.minecraft.gui.setScreen(new DeathScreen(...));
+/// } else {
+///    this.minecraft.player.respawn();
+/// }
+/// ```
+///
+/// `shouldShowDeathScreen()` is the `doImmediateRespawn` gamerule inverted —
+/// it arrives on the login packet and is amended by `game_event` id 11, whose
+/// parameter is itself inverted (`param == 0` **shows** the screen).
+pub fn death_action(kill: Option<CombatKill>, show_death_screen: bool) -> DeathAction {
+    match (kill, show_death_screen) {
+        (None, _) => DeathAction::None,
+        (Some(k), true) => DeathAction::ShowScreen(k),
+        (Some(_), false) => DeathAction::RespawnNow,
+    }
+}
+
+/// The dispatch seam for [`apply_player_combat_kill`].
+///
+/// `handled` and `kill` are separate answers: a packet addressed to another
+/// player is *handled* (the id matched, the body was consumed) and produces no
+/// kill. Collapsing the two would let a stray combat-kill fall through to the
+/// rest of the dispatch chain.
+pub fn route_player_combat_kill(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    local_player: Option<i32>,
+    out: &mut Option<CombatKill>,
+) -> bool {
+    if id == ids.cb_play_player_combat_kill {
+        if let Some(kill) = apply_player_combat_kill(body, local_player) {
+            *out = Some(kill);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// What [`apply_take_item_entity`] needs to resolve a collection.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TakeItemKinds {
@@ -2229,6 +2381,47 @@ pub(crate) fn apply_set_entity_data<'a>(
         if let (Some(v), true) = (value, kind == Some(type_id)) {
             entities.set_variant(eid, v);
         }
+    }
+}
+
+/// The local player's own `set_entity_data`, for the one entry Rewo reads off
+/// it (M82).
+///
+/// **[`apply_set_entity_data`] cannot do this**, and the reason is
+/// `REWO_PLAN.md` §0.0 gotcha 13 again: its second statement is
+/// `entities.get(eid)`, and Rewo's [`rewo_world::entities::EntityTable`] never
+/// holds the local player, so every metadata packet the server addresses to
+/// you is dropped. Vanilla's `handleSetEntityData` looks the id up in the
+/// *level*, which does contain it. So the same body is walked a second time
+/// when it names the camera entity — the shape M73 added
+/// [`attributes::apply_local_attributes`] for.
+///
+/// The entry is `Player.DATA_SCORE_ID`, **index 18, INT**, which the death
+/// screen renders as `deathScreen.score.value`. The index is counted up the
+/// hierarchy: `Entity` 0..7, `LivingEntity` 8..14, `Avatar` 15 (main hand) and
+/// 16 (mode customisation), `Player` 17 (absorption, FLOAT) and **18**
+/// (score). The two `Avatar` slots are not a guess — M19 and M60 already read
+/// them at 15 and 16 and are gated live.
+///
+/// Index 18 INT is polymorphic (`Axolotl`'s variant is read there too), so the
+/// caller's local-player id is the kind gate; it is a stronger one than the
+/// type-id gates elsewhere in this file, because there is exactly one entity
+/// it can be.
+///
+/// Silent on a body that names anybody else, and on one that does not decode.
+pub(crate) fn apply_local_player_score(body: &[u8], local_player: Option<i32>, score: &mut i32) {
+    let mut r = PacketReader::new(body);
+    let Ok(eid) = r.varint() else {
+        return;
+    };
+    if local_player != Some(eid) {
+        return;
+    }
+    // No component table: the score is an INT, and any entry this walk cannot
+    // size stops it — which is the existing `parse` contract, not a new rule.
+    if let Some(v) = crate::metadata::parse(&mut r, None).int18 {
+        log::debug!("net: local player score = {v}");
+        *score = v;
     }
 }
 

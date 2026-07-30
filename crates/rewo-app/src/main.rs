@@ -14,6 +14,7 @@ mod captureshot_cmd;
 mod bench_cmd;
 mod attributeshot_cmd;
 mod danceshot_cmd;
+mod deathshot_cmd;
 mod rideshot_cmd;
 mod healthbarshot_cmd;
 mod breakshot_cmd;
@@ -186,6 +187,13 @@ enum Command {
     /// assert the pixels against a synthetic magenta subject with `--check`
     /// (no server; Vulkan required).
     Titleshot(titleshot_cmd::TitleshotArgs),
+    /// M82 screen-framework + death-screen oracle: drive a raw
+    /// `player_combat_kill` body through the real router with **no entity
+    /// table at all**, grade the widget model's hit rects, focus, sprite table
+    /// and one-second guard against the decompile, then render the screen
+    /// offscreen over a pure-green clear and assert the pixels with `--check`
+    /// (no server; Vulkan required).
+    Deathshot(deathshot_cmd::DeathshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -311,6 +319,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
