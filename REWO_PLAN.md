@@ -810,12 +810,38 @@ by it:**
   `self.baked` is *taken* when the window opens") without noticing the rest.
   Proven with a one-frame probe (`PROBE: baked=false`), not by reading.
   M82 routed around it (an `Arc<Language>` clone, and the `ScreenPass` built
-  in `resumed` beside `init_hud`) rather than fixing it: restoring the bake is
-  one line, but it turns a dozen render paths back on at once with no gate
-  that can grade the result, and that is a milestone of its own — probably a
-  headless `live --out` comparison before and after. **Anyone touching the
-  windowed client should check this first**; a feature that "does not render
-  in `rewo live`" may be this and not itself.
+  in `resumed` beside `init_hud`) rather than fixing it, and called it a
+  milestone of its own. **That judgement was correct, and the coordinator
+  root-caused why on 2026-07-30 — the finding is recorded here so the fix does
+  not have to rediscover it:**
+
+  1. The restore itself is small and *works*: make the init closure return
+     `(LiveState, BakedAssets)` instead of `LiveState` and store the bake back
+     in the `Ok` arm. A one-frame probe against a live 26.2 server then reports
+     `baked=true gui_items=true hand=true weather=true`, against M82's
+     `baked=false`.
+  2. **It is not landable on its own**, because turning those paths on exposes
+     a latent defect: a 10-second windowed run goes from **0** validation
+     errors to ~**35,000**, all `VUID-vkDestroyBuffer-buffer-00922`, spread
+     across the whole run rather than at teardown.
+  3. The cause is two passes that free and recreate their vertex buffer **in
+     place, every frame**: `gui_item.rs::set_vertices` and
+     `hand_pass.rs::set_vertices` both open with `free_buf(gpu,
+     self.vbuf.take())`, destroying a buffer the in-flight command buffers
+     still reference. It was unobservable before only because neither pass was
+     ever constructed in the windowed client, and it is unobservable headlessly
+     because a single frame never overlaps itself.
+  4. **The working precedent is in the tree**: `entities.rs::set_draws` flips a
+     2-slot ring (`self.cursor = (self.cursor + 1) % RING`) sized to
+     frames-in-flight, so the slot being rewritten is never the one in use. A
+     deferred-destroy queue would also do.
+  5. Separately, the windowed teardown (`live_cmd.rs`, `state.world_renderer
+     .destroy`) has no `device_wait_idle` where the headless path fences on its
+     single frame. Adding `state.gpu.wait_idle()` there is correct but did
+     **not** move the count, because the bulk is per-frame, not teardown.
+
+  **Anyone touching the windowed client should check this first**; a feature
+  that "does not render in `rewo live`" may be this and not itself.
 
 **Architectural deviations from the plan (§4) worth reconsidering:**
 - ~~Meshing runs on the MAIN thread~~ — **RESOLVED 2026-07-21.** Meshing
