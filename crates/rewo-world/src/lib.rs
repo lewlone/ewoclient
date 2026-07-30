@@ -17,6 +17,7 @@ pub mod chunk;
 pub mod chunk_cache;
 pub mod conduit;
 pub mod daylight;
+pub mod death_screen;
 pub mod destruction;
 pub mod dimension;
 pub mod entities;
@@ -33,6 +34,7 @@ pub mod pickup;
 pub mod raycast;
 pub mod riding;
 pub mod rotation;
+pub mod screen;
 pub mod wavy_cape;
 pub mod weather;
 

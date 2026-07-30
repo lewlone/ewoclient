@@ -35,6 +35,7 @@ pub mod held;
 pub mod hud;
 pub mod locator_bar;
 pub mod offscreen;
+pub mod screen;
 pub mod velvet_chrome;
 pub mod velvet_glyph;
 pub mod velvet_text;

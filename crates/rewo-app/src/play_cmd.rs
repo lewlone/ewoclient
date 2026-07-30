@@ -866,6 +866,17 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         };
 
         session.tick(&input)?;
+        // M82: the headless bot has no screen, so it takes the branch vanilla
+        // takes when `shouldShowDeathScreen()` is false — respawn at once.
+        //
+        // This moved here from `PlaySession`'s `set_health` handler, where it
+        // had been since M3. Vanilla's `handleSetHealth` sends nothing; the
+        // respawn is a *screen* action, and a client that has no screen must
+        // say so rather than have the protocol layer decide for it.
+        if session.take_death().is_some() {
+            log::info!("play: died at tick {tick_n} — respawning (no screen to show)");
+            session.perform_respawn()?;
+        }
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }

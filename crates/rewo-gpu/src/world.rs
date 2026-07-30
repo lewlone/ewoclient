@@ -536,6 +536,13 @@ pub struct WorldRenderer {
     /// The inventory screen (M35). `None` until `init_container`; `Some` but
     /// closed draws nothing.
     container: Option<crate::container::ContainerPass>,
+    /// The screen framework's chrome pass (M82) — a screen's backdrop gradient
+    /// and its buttons. Distinct from `container`, which is the *inventory's*
+    /// panel and slot highlights and is inventory-specific throughout.
+    screen: Option<crate::screen::ScreenPass>,
+    /// This frame's screen chrome. Empty = nothing to draw, which is the
+    /// in-game case and also a screen that draws only text.
+    screen_draw: crate::screen::ScreenDraw,
     /// Whether the screen is open, and which slot's GUI-space top-left the
     /// cursor is over.
     container_open: Option<Option<(i32, i32)>>,
@@ -1093,6 +1100,8 @@ impl WorldRenderer {
                 container: None,
                 container_open: None,
                 container_tooltip: None,
+                screen: None,
+                screen_draw: crate::screen::ScreenDraw::default(),
                 item_bars: Vec::new(),
                 preview: None,
                 preview_state: None,
@@ -1419,6 +1428,33 @@ impl WorldRenderer {
             sprites,
         )?);
         Ok(())
+    }
+
+    /// Build the screen-framework chrome pass (M82). Idempotent, so the app
+    /// can call it the first time any screen opens rather than at startup.
+    pub fn init_screen(
+        &mut self,
+        gpu: &mut Gpu,
+        sprites: &crate::screen::WidgetSpriteData<'_>,
+    ) -> Result<(), String> {
+        if self.screen.is_some() {
+            return Ok(());
+        }
+        self.screen = Some(crate::screen::ScreenPass::new(
+            gpu,
+            self.color_format,
+            sprites,
+        )?);
+        Ok(())
+    }
+
+    pub fn screen_ready(&self) -> bool {
+        self.screen.is_some()
+    }
+
+    /// This frame's screen chrome. `ScreenDraw::default()` draws nothing.
+    pub fn set_screen(&mut self, draw: crate::screen::ScreenDraw) {
+        self.screen_draw = draw;
     }
 
     /// Build the preview's entity pass. Idempotent, and cheap to call every
@@ -2760,6 +2796,14 @@ impl WorldRenderer {
             // text follows in the text pass below, which is drawn last of all.
             pass.draw_tooltip(gpu, cb, extent);
         }
+        // The screen framework's chrome (M82), over the HUD and the inventory
+        // and under the text pass — vanilla's own order is
+        // `extractBackground` then the widgets then the deferred text, and the
+        // text pass below is drawn last of all for every caller.
+        if let Some(pass) = self.screen.as_mut() {
+            pass.set_state(extent, &self.screen_draw);
+            pass.draw(gpu, cb, extent);
+        }
         if let Some(text) = self.text.as_mut() {
             if !self.text_lines.is_empty() {
                 let lines: Vec<TextLine> = self
@@ -3110,6 +3154,9 @@ impl WorldRenderer {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.container.take() {
+            pass.destroy(gpu);
+        }
+        if let Some(mut pass) = self.screen.take() {
             pass.destroy(gpu);
         }
         if let Some(mut pass) = self.gui_items.take() {

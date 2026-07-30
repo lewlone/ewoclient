@@ -310,6 +310,9 @@ pub struct BakedAssets {
     /// The container screen's textures (M35). `None` degrades to no screen,
     /// exactly as a missing HUD sprite degrades to no HUD.
     pub container: Option<ContainerSprites>,
+    /// `AbstractButton.SPRITES` — the three `widget/button*` sheets (M82).
+    /// `None` degrades to a screen with no button chrome.
+    pub widgets: Option<WidgetSprites>,
     /// Sun + 8 moon-phase textures from `environment/celestial/`. `None` if the
     /// jar lacks them — the sky then renders without sun/moon (M12).
     pub celestial: Option<CelestialTextures>,
@@ -874,6 +877,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let hud = bake_hud(&mut jar);
     let locator = bake_locator(&mut jar);
     let container = bake_container(&mut jar);
+    let widgets = bake_widgets(&mut jar);
     let lang = crate::lang::Language::load(client_jar);
     let item_names = bake_item_names(&mut jar, &lang);
     let enchantment_text = crate::enchantments::EnchantmentText::load(client_jar, &lang);
@@ -1167,6 +1171,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         hud,
         locator,
         container,
+        widgets,
         celestial,
         end_sky,
         destroy_stages,
@@ -1495,6 +1500,46 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
             jar,
             "gui/sprites/container/bundle/bundle_progressbar_full.png",
         )?,
+    })
+}
+
+/// `AbstractButton.SPRITES` — the three button sheets (M82).
+///
+/// **All three are 200×20 eight-bit greyscale with no alpha channel**, so a
+/// button is fully opaque over its whole rect and the `.mcmeta` nine-slice
+/// (`width 200, height 20, border 3`) degenerates to a 1:1 blit at the only
+/// size Rewo draws them, `Button.BIG_WIDTH` × `DEFAULT_HEIGHT`. Greyscale is
+/// worth knowing rather than assuming: `decode_png_any` expands it to RGBA
+/// with `a = 255`, which is why the button's black 1-px border really is black
+/// and not transparent — and why `button_highlighted`'s border, which is 255,
+/// is a **white** frame rather than a brighter fill. That single row is the
+/// clearest tell a hover is being drawn.
+pub struct WidgetSprites {
+    /// `widget/button` — enabled, not hovered.
+    pub button: HudSprite,
+    /// `widget/button_disabled` — `active == false`, hovered or not (the
+    /// three-argument `WidgetSprites` constructor maps `disabledFocused` back
+    /// onto this one).
+    pub button_disabled: HudSprite,
+    /// `widget/button_highlighted` — enabled and hovered-or-focused.
+    pub button_highlighted: HudSprite,
+}
+
+/// Extract the three button sheets. Any missing one → no buttons.
+fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
+    let get = |jar: Jar, rel: &str| -> Option<HudSprite> {
+        let mut bytes = Vec::new();
+        jar.by_name(&format!("assets/minecraft/textures/{rel}"))
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        Some(HudSprite { rgba, w, h })
+    };
+    Some(WidgetSprites {
+        button: get(jar, "gui/sprites/widget/button.png")?,
+        button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
+        button_highlighted: get(jar, "gui/sprites/widget/button_highlighted.png")?,
     })
 }
 

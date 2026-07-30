@@ -170,6 +170,22 @@ pub(crate) struct LoginPrefix {
     pub chunk_radius: i32,
     /// `ClientboundLoginPacket.simulationDistance`.
     pub simulation_distance: i32,
+    /// `ClientboundLoginPacket.hardcore` (M82) — the third field the walk read
+    /// into a discard, and the same lesson a third time. It chooses the death
+    /// screen's title (`deathScreen.title.hardcore`) and its first button's
+    /// label (`deathScreen.spectate`), and nothing else on the wire carries
+    /// it: `handlePlayerCombatKill` reads it off
+    /// `this.level.getLevelData().isHardcore()`, which `handleLogin` seeded
+    /// from exactly this byte.
+    pub hardcore: bool,
+    /// `ClientboundLoginPacket.showDeathScreen` (M82) — the *join-time* value
+    /// of the `doImmediateRespawn` game rule.
+    ///
+    /// M71 shipped `game_event` id 11 (`IMMEDIATE_RESPAWN`), which is only the
+    /// **mid-session** change; the initial state rides here and was being
+    /// dropped, so a server that starts with `doImmediateRespawn true` and
+    /// never touches it again looked like a server that wanted the screen.
+    pub show_death_screen: bool,
 }
 
 /// Read the `ClientboundLoginPacket` fields that come *before* its embedded
@@ -179,7 +195,7 @@ pub(crate) struct LoginPrefix {
 /// "where does the spawn info start" is answered in exactly one place.
 pub(crate) fn read_login_prefix(r: &mut PacketReader<'_>) -> Result<LoginPrefix> {
     let player_id = r.i32()?;
-    r.bool()?; // hardcore
+    let hardcore = r.bool()?; // M82
     let levels = r.count("dimensions", 1)?;
     for _ in 0..levels {
         r.identifier()?; // ResourceKey<Level>
@@ -188,12 +204,14 @@ pub(crate) fn read_login_prefix(r: &mut PacketReader<'_>) -> Result<LoginPrefix>
     let chunk_radius = r.varint()?; // view distance (M67)
     let simulation_distance = r.varint()?; // M67
     r.bool()?; // reduced debug info
-    r.bool()?; // show death screen
+    let show_death_screen = r.bool()?; // M82
     r.bool()?; // do limited crafting
     Ok(LoginPrefix {
         player_id,
         chunk_radius,
         simulation_distance,
+        hardcore,
+        show_death_screen,
     })
 }
 
@@ -464,6 +482,11 @@ mod tests {
                 player_id: 42,
                 chunk_radius: 12,
                 simulation_distance: 10,
+                // M82: the two booleans this walk used to discard. They are
+                // written above as `true` / `true` against neighbours that are
+                // `false`, so reading either off the wrong byte fails here.
+                hardcore: true,
+                show_death_screen: true,
             }
         );
         assert_eq!(r.remaining(), bytes.len() - prefix_len);
