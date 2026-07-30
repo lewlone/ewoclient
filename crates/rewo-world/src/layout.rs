@@ -547,10 +547,15 @@ impl Grid {
 
 /// `Mth.roundToward(input, multiple)` = `positiveCeilDiv(input, multiple) *
 /// multiple`.
-fn round_toward(input: i32, multiple: i32) -> i32 {
-    // `positiveCeilDiv(x, y) = -Math.floorDiv(-x, y)`, which for the
-    // non-negative inputs a `RowHelper` index takes is `ceil`.
-    (input + multiple - 1) / multiple * multiple
+///
+/// **Public since M84**, which needs it for `MenuTabBar.arrangeElements` and
+/// had shipped a second copy. Written as `-Math.floorDiv(-input, divisor)`
+/// verbatim rather than as `(input + multiple - 1) / multiple`: the two agree
+/// on every non-negative input — which is all a `RowHelper` index or a tab
+/// width can be — and part company on a negative even one, where Rust's `/`
+/// truncates toward zero and Java's `floorDiv` does not.
+pub fn round_toward(input: i32, multiple: i32) -> i32 {
+    -(-input).div_euclid(multiple) * multiple
 }
 
 /// `GridLayout.RowHelper` — the cursor `PauseScreen` fills its grid through.

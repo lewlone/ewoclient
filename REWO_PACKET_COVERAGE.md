@@ -27,14 +27,15 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 106 of them. 35
+1. **141 clientbound-play packets. Rewo resolves and consumes 107 of them. 34
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A is empty and class B is down to one screen.** The
-   35 gaps split 0 / 1 / 23 / 11 across pure state, needs-rendering,
-   needs-a-missing-subsystem and not-applicable. What the five B milestones
-   established is worth keeping:
+2. **Class A and class B are both empty.** The 34 gaps split 0 / 0 / 23 / 11
+   across pure state, needs-rendering, needs-a-missing-subsystem and
+   not-applicable — so every packet Rewo can render *is* rendered, and what is
+   left needs a subsystem it has not got or is a reply to something it never
+   sends. What the seven B milestones established is worth keeping:
    **the class letter changes the gate, not the standard.** M79's seven (title
    overlay, XP gauge, cooldown sweep), M80's six (the world border) and M81's
    three (hurt tilt, block cracks, item pickup) all have an exact vanilla oracle,
@@ -43,9 +44,18 @@ impossible to repeat: every clientbound-play packet in the report appears in
    not a guess; it is a transcription that happens to need a renderer to land.
    M83's `waypoint` (138) closed the last non-screen one, M82 took
    `player_combat_kill` (68) together with the screen framework the remaining
-   two sit on, and M85 took `server_links` (137). The one left is
-   `award_stats` (3), which a sibling milestone is taking in parallel — when it
-   lands, class B is empty.
+   two sit on, M85 took `server_links` (137), and **M84 closed the class with
+   `award_stats` (3)**.
+
+   The two screens that closed it ran in parallel and both needed the one gap
+   M82 had named — `blitNineSlicedSprite` — so both wrote one. That is a
+   scheduling artefact rather than a finding, and it resolved on the evidence:
+   M85's took its sheet size and its border from constants, so it could express
+   the 200×20 button and nothing else, and it stopped at the two branches that
+   resize horizontally. M84's is parameterised and has all four, because a
+   130×24 tab sheet drawn at 98 needs an asymmetric border and a 6×32 scroller
+   drawn at 6×35 needs the vertical branches. One survived; `serverlinkshot`'s
+   four nine-slice witnesses pass against it unchanged.
 
    **This entry used to call the screens a different kind of problem, "a design
    decision rather than a transcription". M82 found that only half true.** The
@@ -184,19 +194,28 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **106** |
+| Resolved **and** consumed | **107** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **35** |
+| Not resolved at all | **34** |
 | **Total clientbound-play** | **141** |
 
-The 35 gaps, by class:
+The 34 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
-| **B** needs rendering | **1** | 3% |
-| **C** needs a subsystem Rewo lacks | **23** | 66% |
-| **D** not applicable | **11** | 31% |
+| **B** needs rendering | **0** | 0% |
+| **C** needs a subsystem Rewo lacks | **23** | 68% |
+| **D** not applicable | **11** | 32% |
+
+**Both actionable classes are now empty**, which changes what this document is
+for. It was written to enumerate what Rewo ignores; what remains is 23 packets
+that need a subsystem (a chat-input path, a recipe book, a map-image pipeline, a
+resource-pack fetcher, a reconnect flow) and 11 that do not apply. Picking work
+from here now means **choosing a subsystem**, not choosing a packet — and
+`REWO_FEATURE_SURVEY.md` is the better guide to that than a class-C count is.
+The one thing this document still adjudicates on its own is §4: "handled" is not
+"complete", and six consumed packets decode less than their body carries.
 
 M67 audited 56 / 0 / 85 with class A at 31. **Forty-nine** packets separate
 that published 56 from this 105, and **ten of them had already landed when M67
@@ -427,7 +446,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 0 | `bundle_delimiter` | handled | `req!` → `cb_play_bundle_delimiter` | **M78.** Empty body, and **not an inert packet** — `BundleDelimiterPacket.handle` throws. Consumed by `crate::bundle` *before* dispatch, so the `else if` ladder never learns bundles exist. §9. |
 | 1 | `add_entity` | handled | `req!` → `cb_play_add_entity` | |
 | 2 | `animate` | handled | `req!` → `cb_play_animate` | M19/M20 — combat swings. |
-| 3 | `award_stats` | absent | **B** | Statistics screen. `Stat.STREAM_CODEC` dispatches on `minecraft:stat_type` (9) then the per-type value registry — both in `registries.json`. |
+| 3 | `award_stats` | handled | `req!` → `cb_play_award_stats` (M84) | The statistics screen. Both levels of `Stat.STREAM_CODEC`'s dispatch are `ByteBufCodecs.registry`, i.e. a raw VarInt, so the walk is total for a stat type it has never seen — the `DataComponentPatch` hazard does not apply. |
 | 4 | `block_changed_ack` | handled | `opt!` → `cb_play_block_ack` | §4 partial — the arm is a log line. |
 | 5 | `block_destruction` | handled | `req!` → `cb_play_block_destruction` | **M81.** The crack overlay. The stage byte is **unsigned**, so the server's `(byte) -1` arrives as 255 and the removal is the range test failing, not a sentinel. |
 | 6 | `block_entity_data` | handled | `req!` → `cb_play_block_entity_data` | |

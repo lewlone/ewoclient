@@ -1036,44 +1036,72 @@ fn check_pixels(
         ),
     );
 
-    // p11: the documented gap fails loud rather than stretching.
+    // p11: the nine-slice, in pixels — and **three milestones have now written
+    // this witness**.
     //
-    // **The gap moved in M85 and this witness moved with it.** M82 shipped a
-    // 1:1 blit and asserted that a button of *any* other size was skipped;
-    // M85's server-links dialog draws 310-wide buttons, so
-    // `blitNineSlicedSprite`'s two width-resizing branches are now transcribed
-    // and a 150-wide button really does draw (`serverlinkshot` asserts that it
-    // does). What is still not transcribed is the pair of branches that resize
-    // **vertically**, so the sample here is a button whose *height* is not the
-    // sheet's 20. Asserted for the same reason as before: a silently stretched
-    // sprite is exactly the kind of wrong that looks fine until someone
-    // measures it.
-    let odd = rewo_gpu::screen::ScreenDraw {
+    // M82 shipped a 1:1 blit and asserted that a button of any other size was
+    // *skipped*. M85 transcribed the two branches that resize horizontally and
+    // moved the skip assertion to a button whose *height* is not the sheet's.
+    // M84 transcribed all four, because a 6x32 scroller drawn at 6x35 is a
+    // vertical resize and a 130x24 tab sheet at 98 needs an asymmetric border —
+    // neither of which M85's `SPRITE_W`-and-`NINE_SLICE_BORDER` form could say.
+    // There is one implementation now and no size is skipped, so the property
+    // worth grading is what a nine-slice *is*: the sheet's own 3-px borders,
+    // unscaled, on **both** axes.
+    //
+    // The control is the 200x20 button, where the nine-slice degenerates to the
+    // 1:1 blit M82 shipped, so a border that matches it is the sheet's own. A
+    // skip would be identical to the bare backdrop; a stretch would resample.
+    let button_at = |width: i32, height: i32| rewo_gpu::screen::ScreenDraw {
         backdrop: Some((ds::BACKDROP.top, ds::BACKDROP.bottom)),
-        menu_background: None,
         buttons: vec![rewo_gpu::screen::ButtonDraw {
             x: 60,
             y: 132,
-            width: 200,
-            height: 24,
+            width,
+            height,
             sprite: rewo_gpu::screen::ButtonSprite::Enabled,
         }],
+        ..Default::default()
     };
     let backdrop_only = rewo_gpu::screen::ScreenDraw {
-        backdrop: odd.backdrop,
-        menu_background: None,
-        buttons: Vec::new(),
+        backdrop: Some((ds::BACKDROP.top, ds::BACKDROP.bottom)),
+        ..Default::default()
     };
-    let odd_frame = shot(&mut gpu, &mut off, &mut wr, odd, Vec::new())?;
+    let odd_frame = shot(&mut gpu, &mut off, &mut wr, button_at(150, 24), Vec::new())?;
+    let control = shot(&mut gpu, &mut off, &mut wr, button_at(200, 20), Vec::new())?;
     let bare = shot(&mut gpu, &mut off, &mut wr, backdrop_only, Vec::new())?;
+    let border_px = 3 * SCALE as u32;
+    // **Every sample is a 3-GUI-px corner block**, never a whole column or a
+    // whole row. The first version compared a full column of each button, and
+    // the two are different heights, so the `Vec`s could never be equal — and a
+    // full row would have run into the narrow button's *right* border at GUI x
+    // 147 while the control was still inside its tiled middle. A corner is the
+    // only span the two agree about by construction.
+    let block = |buf: &[u8], x: u32, y0: u32| -> Vec<[u8; 3]> {
+        (y0..y0 + border_px).map(|y| px(buf, x, y)).collect()
+    };
+    let odd_right = (60 + 150) as u32 * SCALE as u32;
+    let odd_bottom = (132 + 24) as u32 * SCALE as u32;
+    let ctl_right = (60 + 200) as u32 * SCALE as u32;
+    let ctl_bottom = (132 + 20) as u32 * SCALE as u32;
+    // Horizontal: the top-left corner is at the same x in both; the top-right
+    // is measured back from each button's own right edge.
+    let left_same =
+        (0..border_px).all(|d| block(&odd_frame, bx0 + d, by0) == block(&control, bx0 + d, by0));
+    let right_same = (1..=border_px)
+        .all(|d| block(&odd_frame, odd_right - d, by0) == block(&control, ctl_right - d, by0));
+    // Vertical — the branch M85 could not reach. The bottom-left corner of a
+    // 24-tall button is the sheet's own rows 17..20, exactly as it is on a
+    // 20-tall one, even though four rows of tiled middle sit above it that do
+    // not exist on the control.
+    let bottom_same = (0..border_px).all(|d| {
+        block(&odd_frame, bx0 + d, odd_bottom - border_px)
+            == block(&control, bx0 + d, ctl_bottom - border_px)
+    });
     c.record(
-        "p11.a_button_of_another_height_is_skipped_rather_than_stretched",
-        odd_frame == bare,
-        "the sheets are 200x20 nine-slice (border 3) and M85 transcribed only \
-         the two branches whose height matches, so a 24-tall button draws \
-         nothing at all — a named gap, not a silent approximation. Every \
-         `Button` Rewo builds is `Button.DEFAULT_HEIGHT`, which is why the \
-         vertical branches would be untranscribed *and* unexercised",
+        "p11.a_button_at_neither_the_sheets_width_nor_its_height_is_nine_sliced",
+        odd_frame != bare && left_same && right_same && bottom_same,
+        "150x24 out of a 200x20 sheet: the 3-px borders survive unscaled on          both axes. A skip would leave the bare backdrop, a stretch would          resample all three, and M85's horizontal-only transcription would          fail `bottom_same` by drawing nothing at all",
     );
 
     if let Some(dir) = &args.out_dir {

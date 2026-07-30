@@ -46,6 +46,8 @@ mod portalshot_cmd;
 mod skin_fetch;
 mod skyshot_cmd;
 mod stats;
+mod stats_view;
+mod statshot_cmd;
 mod swingshot_cmd;
 mod view_cmd;
 mod hudshot_cmd;
@@ -198,6 +200,8 @@ enum Command {
     /// offscreen over a pure-green clear and assert the pixels with `--check`
     /// (no server; Vulkan required).
     Deathshot(deathshot_cmd::DeathshotArgs),
+    /// M84: the statistics screen + `award_stats` oracle.
+    Statshot(statshot_cmd::StatshotArgs),
     /// M85 `server_links` + pause/disconnect-screen oracle: drive a raw
     /// `server_links` body through the real `route_session`, grade the
     /// `Either` flag, the `ByIdMap.ZERO` enum and the per-entry URL filter,
@@ -333,6 +337,7 @@ fn main() {
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
+        Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
         Some(Command::Serverlinkshot(sl_args)) => serverlinkshot_cmd::run(sl_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),

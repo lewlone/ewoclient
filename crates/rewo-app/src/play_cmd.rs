@@ -159,6 +159,20 @@ pub struct PlayArgs {
     /// than passing a run that tested nothing. Needs the op account.
     #[arg(long, default_value_t = false)]
     fly_check: bool,
+    /// M84's live gate for `award_stats` (3), the statistics screen.
+    ///
+    /// The packet is a **reply**: nothing arrives until the client sends
+    /// `ServerboundClientCommandPacket(REQUEST_STATS)`, which vanilla sends
+    /// from `StatsScreen.init()`. So this drives the whole round trip — walk
+    /// and jump for a few seconds so the server has something to count, ask,
+    /// and then require that the counter holds the stats those actions
+    /// produced.
+    ///
+    /// Fail-closed on **observation**: no reply, or a reply with no
+    /// `minecraft:custom` stat in it, is red rather than a run that proved
+    /// nothing. Needs no op account — `REQUEST_STATS` is not a command.
+    #[arg(long, default_value_t = false)]
+    stats_check: bool,
 }
 
 /// The scoreboard tag scoping every fixture `--motion-check` creates, so a
@@ -828,6 +842,11 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     // M83's observation. The store is a live map, so a run that saw a TRACK and
     // then an UNTRACK ends empty — the peak and the snapshot are what say the
     // packet arrived at all.
+    // M84: the statistics round trip. `asked` is the tick the request went out
+    // on, so a reply that arrives *before* it would be a decode of something
+    // else entirely.
+    let mut stats_asked: Option<u64> = None;
+    let mut stats_updates_at_ask = 0u64;
     let mut wp_peak = 0usize;
     let mut wp_seen: Option<String> = None;
     let mut wp_untracked = false;
@@ -904,10 +923,103 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
                 wp_untracked = true;
             }
         }
+        // M84: send `REQUEST_STATS` once, four seconds after spawn — late
+        // enough that the walking and the jumps this run does have already been
+        // counted server-side.
+        if args.stats_check && stats_asked.is_none() {
+            if let Some(st) = spawn_tick {
+                if tick_n >= st + 80 {
+                    stats_updates_at_ask = session.stats.updates;
+                    match session.request_stats() {
+                        Ok(()) => {
+                            stats_asked = Some(tick_n);
+                            println!("[rewo-m84] sent REQUEST_STATS at tick {tick_n}");
+                        }
+                        Err(e) => return Err(format!("--stats-check: request_stats: {e}")),
+                    }
+                }
+            }
+        }
+
         // Real-time pacing so the server sees a genuine 20 Hz client.
         let now = Instant::now();
         if now < deadline {
             std::thread::sleep(deadline - now);
+        }
+    }
+
+    if args.stats_check {
+        let reg = &data.stat_registries;
+        let custom = reg.stat_type.id_of("minecraft:custom");
+        let held = session.stats.len();
+        let replies = session.stats.updates - stats_updates_at_ask;
+        println!(
+            "[rewo-m84] award_stats: asked at tick {stats_asked:?}, {replies} \
+             repl{}, {held} stat{} held",
+            if replies == 1 { "y" } else { "ies" },
+            if held == 1 { "" } else { "s" }
+        );
+        // Print a handful, resolved through the same tables the screen uses, so
+        // the run shows the *second* level of the dispatch actually resolving
+        // and not just a pile of integers.
+        if let Some(custom) = custom {
+            let mut named: Vec<(String, String)> = session
+                .stats
+                .of_type(custom)
+                .filter_map(|(value_id, count)| {
+                    let name = reg.custom_stat.name(value_id)?;
+                    Some((
+                        name.to_string(),
+                        rewo_world::stats::format_stat(
+                            rewo_data::stats::custom_formatter(name),
+                            count,
+                        ),
+                    ))
+                })
+                .collect();
+            named.sort();
+            for (name, value) in named.iter().take(8) {
+                println!("[rewo-m84]   {name} = {value}");
+            }
+            if stats_asked.is_some() && replies == 0 {
+                return Err(
+                    "--stats-check: REQUEST_STATS went out and no award_stats came \
+                     back. Either the serverbound ordinal is wrong or the reply was \
+                     not decoded — either way this run proved nothing."
+                        .into(),
+                );
+            }
+            if named.is_empty() {
+                return Err(
+                    "--stats-check: a reply arrived but held no `minecraft:custom` \
+                     stat, so the second level of the dispatch resolved nothing."
+                        .into(),
+                );
+            }
+            // The run walks and jumps, so `play_time` must be non-zero and its
+            // formatter must be TIME. A raw tick count here would mean the
+            // per-stat formatter table never fired.
+            let played = named.iter().find(|(n, _)| n == "minecraft:play_time");
+            match played {
+                Some((_, v)) if v.ends_with(" s") || v.ends_with(" min") => {
+                    println!("[rewo-m84] play_time formats as {v:?} (StatFormatter.TIME)")
+                }
+                other => {
+                    return Err(format!(
+                        "--stats-check: play_time is {other:?}, which is not a TIME \
+                         format — the per-stat formatter table did not fire."
+                    ))
+                }
+            }
+        } else {
+            return Err("--stats-check: no minecraft:custom stat type in the report".into());
+        }
+        if stats_asked.is_none() {
+            return Err(
+                "--stats-check: the request never went out (the session never \
+                 spawned in time), so nothing was tested."
+                    .into(),
+            );
         }
     }
 

@@ -56,6 +56,8 @@ pub enum ScreenKind {
     Inventory,
     /// The death screen (M82).
     Death,
+    /// The statistics screen (M84).
+    Stats,
     /// `PauseScreen(showPauseMenu = true)` — Esc with a session behind it
     /// (M85).
     Pause,
@@ -118,6 +120,103 @@ pub const BUTTON_WIDTH: i32 = 200;
 /// `MultiLineTextWidget` and `defaultScrollingHelper`.
 pub const LINE_HEIGHT: i32 = 9;
 
+/// One GUI sheet this framework can blit.
+///
+/// A mirror of the sprite *names* `rewo_gpu::screen` packs, for the same
+/// crate-boundary reason [`ButtonSprite`] is one: the world crate decides
+/// *which* sprite a widget shows and the gpu crate owns *where it lives*.
+/// The list grows when a screen needs a sheet, which is the honest signal that
+/// a screen has arrived.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sprite {
+    /// `widget/tab` â€” an unselected tab.
+    Tab,
+    /// `widget/tab_highlighted`.
+    TabHighlighted,
+    /// `widget/tab_selected`.
+    TabSelected,
+    /// `widget/tab_selected_highlighted`.
+    TabSelectedHighlighted,
+    /// `statistics/header` â€” the sort button's resting background.
+    StatHeader,
+    /// `container/slot` â€” an 18Ã—18 slot, and the sort button's *hovered*
+    /// background (see [`WidgetSprites`]).
+    Slot,
+    /// The six `statistics/<column>` icons, in `ItemStatisticsList`'s own
+    /// column order: mined, broken, crafted, used, picked_up, dropped.
+    StatColumn(u8),
+    /// `statistics/sort_up` / `statistics/sort_down`.
+    SortUp,
+    SortDown,
+}
+
+/// `WidgetSprites`, the record, verbatim.
+///
+/// ```java
+/// public record WidgetSprites(Identifier enabled, Identifier disabled,
+///                             Identifier enabledFocused, Identifier disabledFocused)
+/// ```
+///
+/// **The field names lie at one of its two call sites, and that is the point of
+/// modelling it rather than hard-coding each widget's four sprites.**
+/// `MenuTabBar.MenuTabButton` calls `SPRITES.get(this.isSelected(), â€¦)` â€” so
+/// its `enabled` slot holds `tab_selected` and its `disabledFocused` slot holds
+/// `tab_highlighted`, a *brighter* sprite than `disabled`. That is the exact
+/// opposite of the death screen's three-argument case, where
+/// `disabledFocused == disabled` and hovering a dead button changes nothing.
+/// One record, two call sites, opposite meanings â€” [`WidgetKind::Sprites`]
+/// therefore carries the first argument explicitly instead of assuming it is
+/// `active`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WidgetSprites {
+    pub enabled: Sprite,
+    pub disabled: Sprite,
+    pub enabled_focused: Sprite,
+    pub disabled_focused: Sprite,
+}
+
+impl WidgetSprites {
+    /// `WidgetSprites(sprite, focused)` â†’ `(sprite, sprite, focused, focused)`.
+    ///
+    /// The two-argument overload, which is what the statistics sort buttons
+    /// take: `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)`. So hovering one
+    /// replaces `statistics/header` with the plain `container/slot` â€” the
+    /// hover state is the *less* decorated sheet, which reads backwards.
+    pub const fn two(sprite: Sprite, focused: Sprite) -> Self {
+        Self {
+            enabled: sprite,
+            disabled: sprite,
+            enabled_focused: focused,
+            disabled_focused: focused,
+        }
+    }
+
+    /// The four-argument constructor, in its declared order.
+    pub const fn four(
+        enabled: Sprite,
+        disabled: Sprite,
+        enabled_focused: Sprite,
+        disabled_focused: Sprite,
+    ) -> Self {
+        Self {
+            enabled,
+            disabled,
+            enabled_focused,
+            disabled_focused,
+        }
+    }
+
+    /// `get(enabled, focused)`.
+    pub fn get(&self, enabled: bool, focused: bool) -> Sprite {
+        match (enabled, focused) {
+            (true, true) => self.enabled_focused,
+            (true, false) => self.enabled,
+            (false, true) => self.disabled_focused,
+            (false, false) => self.disabled,
+        }
+    }
+}
+
 /// What shape of `AbstractWidget` this is.
 ///
 /// M82 left the note that "when a sibling milestone needs a second widget
@@ -147,6 +246,20 @@ pub enum WidgetKind {
     MultiLabel { lines: Vec<String>, centered: bool },
     /// **Geometry with nothing drawn** — see [`Widget::reserved`].
     Reserved,
+    /// Anything drawn from a `WidgetSprites` record: a tab, an image button
+    /// (M84).
+    Sprites {
+        sprites: WidgetSprites,
+        /// The **first** argument to `WidgetSprites.get`. `isSelected()` for a
+        /// tab, `isActive()` for an `ImageButton`. See [`WidgetSprites`].
+        first: bool,
+        /// A second sheet blitted over the first at the same rect — the sort
+        /// button's column icon over its background.
+        overlay: Option<Sprite>,
+        /// Whether the widget draws its `getMessage()`. A tab does; a
+        /// statistics sort button does not (its message is its tooltip).
+        label: bool,
+    },
 }
 
 /// One `AbstractWidget`, flattened to the parts the screens Rewo has need.
@@ -259,6 +372,13 @@ impl Widget {
             message: String::new(),
             kind: WidgetKind::Reserved,
         }
+    }
+
+    /// The same widget drawn from a `WidgetSprites` record instead of the
+    /// `widget/button` family (M84).
+    pub fn with_kind(mut self, kind: WidgetKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// `AbstractWidget.getRight`.
@@ -804,6 +924,213 @@ impl Screens {
     }
 }
 
+/// `AbstractScrollArea.SCROLLBAR_WIDTH`.
+pub const SCROLLBAR_WIDTH: i32 = 6;
+/// `AbstractScrollArea.SCROLLBAR_MIN_HEIGHT`.
+pub const SCROLLBAR_MIN_HEIGHT: i32 = 32;
+/// `AbstractSelectionList.Entry.CONTENT_PADDING`.
+pub const CONTENT_PADDING: i32 = 2;
+
+/// `AbstractSelectionList` + `AbstractScrollArea`, as far as the geometry goes
+/// (M84).
+///
+/// The rows themselves are the screen's business â€” this holds only their
+/// heights, because that is all the scroll model needs. Three lists share it on
+/// the statistics screen and they have nothing else in common.
+///
+/// # The three constants that are not where they look
+///
+/// * **`x` is always 0.** `AbstractSelectionList`'s constructor is
+///   `super(0, y, width, height, â€¦)` â€” a list spans the whole screen and the
+///   *rows* are centred inside it by [`Self::row_left`]. Passing the screen's
+///   own left edge would centre the rows over the wrong span at any width.
+/// * **The scroll rate is `defaultEntryHeight / 2`, an integer division**, from
+///   `AbstractScrollArea.defaultSettings(defaultEntryHeight / 2)`. So a
+///   14-px-row list scrolls 7 px a notch and a 9-px one would scroll 4, not
+///   4.5.
+/// * **The scrollbar is not at the list's right edge.**
+///   `AbstractSelectionList` overrides `scrollBarX()` to
+///   `getRowRight() + scrollbarWidth() + 2` â€” beside the *rows*, with a gap of
+///   one whole scrollbar width plus two. `AbstractScrollArea`'s own
+///   `getRight() - scrollbarWidth()` is what a container widget uses, and it
+///   would put the bar hard against the window edge on a wide screen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScrollList {
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    /// `getRowWidth()`.
+    pub row_width: i32,
+    /// `AbstractScrollArea.scrollAmount`, always clamped to
+    /// `[0, max_scroll()]`.
+    scroll: f64,
+    /// `defaultEntryHeight / 2`.
+    pub scroll_rate: i32,
+    /// Each row's height, in order. `defaultEntryHeight` for every row on
+    /// every list Rewo has; kept per-row because `addEntry(entry, height)`
+    /// exists and `contentHeight()` sums them.
+    pub rows: Vec<i32>,
+}
+
+impl ScrollList {
+    /// `AbstractSelectionList(minecraft, width, height, y, defaultEntryHeight)`.
+    pub fn new(width: i32, height: i32, y: i32, default_entry_height: i32, row_width: i32) -> Self {
+        Self {
+            y,
+            width,
+            height,
+            row_width,
+            scroll: 0.0,
+            scroll_rate: default_entry_height / 2,
+            rows: Vec::new(),
+        }
+    }
+
+    /// `contentHeight()` â€” the rows plus **4**, which is
+    /// `getFirstEntryY()`'s 2 at the top and a matching 2 at the bottom.
+    pub fn content_height(&self) -> i32 {
+        self.rows.iter().sum::<i32>() + 4
+    }
+
+    /// `maxScrollAmount()`.
+    pub fn max_scroll(&self) -> i32 {
+        (self.content_height() - self.height).max(0)
+    }
+
+    /// `scrollable()` â€” strictly greater than zero, so a list that exactly
+    /// fills its box draws no scrollbar at all.
+    pub fn scrollable(&self) -> bool {
+        self.max_scroll() > 0
+    }
+
+    pub fn scroll(&self) -> f64 {
+        self.scroll
+    }
+
+    /// `setScrollAmount` â€” `Mth.clamp(v, 0, maxScrollAmount())`.
+    pub fn set_scroll(&mut self, v: f64) {
+        self.scroll = v.clamp(0.0, self.max_scroll() as f64);
+    }
+
+    /// `mouseScrolled` â€” `setScrollAmount(scrollAmount() - scrollY * scrollRate())`.
+    ///
+    /// Note the **minus**: a positive `scrollY` (wheel away from you) moves the
+    /// list *up*, toward row 0.
+    pub fn mouse_scrolled(&mut self, scroll_y: f64) {
+        self.set_scroll(self.scroll - scroll_y * self.scroll_rate as f64);
+    }
+
+    /// `getFirstEntryY()`.
+    pub fn first_entry_y(&self) -> i32 {
+        self.y + 2
+    }
+
+    /// A row's top in screen space.
+    ///
+    /// `addEntry` sets `entry.y = getNextY()`, which is
+    /// `getFirstEntryY() - (int) scrollAmount + Î£ heights`. The cast is a
+    /// **truncation**, and `scrollAmount` is clamped non-negative, so it floors.
+    pub fn row_top(&self, row: usize) -> i32 {
+        let above: i32 = self.rows.iter().take(row).sum();
+        self.first_entry_y() - self.scroll as i32 + above
+    }
+
+    pub fn row_height(&self, row: usize) -> i32 {
+        self.rows.get(row).copied().unwrap_or(0)
+    }
+
+    pub fn row_bottom(&self, row: usize) -> i32 {
+        self.row_top(row) + self.row_height(row)
+    }
+
+    /// `getRowLeft()` â€” `getX() + width / 2 - getRowWidth() / 2`, with
+    /// `getX() == 0`.
+    pub fn row_left(&self) -> i32 {
+        self.width / 2 - self.row_width / 2
+    }
+
+    pub fn row_right(&self) -> i32 {
+        self.row_left() + self.row_width
+    }
+
+    pub fn bottom(&self) -> i32 {
+        self.y + self.height
+    }
+
+    /// `AbstractWidget.isMouseOver` on the *list*, which
+    /// `extractWidgetRenderState` gates the row search on. A row scrolled past
+    /// the list's own box is still `isMouseOver` itself â€” only this gate stops
+    /// it being hovered.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        x >= 0.0 && y >= self.y as f64 && x < self.width as f64 && y < self.bottom() as f64
+    }
+
+    /// `getEntryAtPosition` â€” the first row whose rectangle contains the
+    /// point, **without** the list gate. Half-open on the far edges, like every
+    /// other hit rect here.
+    pub fn row_at_unclipped(&self, x: f64, y: f64) -> Option<usize> {
+        let (l, r) = (self.row_left() as f64, self.row_right() as f64);
+        if x < l || x >= r {
+            return None;
+        }
+        (0..self.rows.len())
+            .find(|&i| y >= self.row_top(i) as f64 && y < self.row_bottom(i) as f64)
+    }
+
+    /// The row under the cursor as the renderer sees it: the list gate, then
+    /// the row search.
+    pub fn row_at(&self, x: f64, y: f64) -> Option<usize> {
+        if !self.contains(x, y) {
+            return None;
+        }
+        self.row_at_unclipped(x, y)
+    }
+
+    /// `scrollerHeight()` â€” `clamp(heightÂ² / contentHeight, 32, height - 8)`.
+    pub fn scroller_height(&self) -> i32 {
+        let ch = self.content_height().max(1);
+        let raw = ((self.height as f32 * self.height as f32) / ch as f32) as i32;
+        raw.clamp(SCROLLBAR_MIN_HEIGHT, self.height - 8)
+    }
+
+    /// `AbstractSelectionList.scrollBarX()` â€” beside the rows, not at the
+    /// right edge. See the type's docs.
+    pub fn scroll_bar_x(&self) -> i32 {
+        self.row_right() + SCROLLBAR_WIDTH + 2
+    }
+
+    /// `scrollBarY()`.
+    pub fn scroll_bar_y(&self) -> i32 {
+        let max = self.max_scroll();
+        if max == 0 {
+            self.y
+        } else {
+            self.y
+                .max((self.scroll as i32) * (self.height - self.scroller_height()) / max + self.y)
+        }
+    }
+
+    /// `isOverScrollbar` â€” **inclusive** on the right edge (`x <=`) where
+    /// every other hit test here is half-open, and half-open on the bottom.
+    pub fn over_scrollbar(&self, x: f64, y: f64) -> bool {
+        x >= self.scroll_bar_x() as f64
+            && x <= (self.scroll_bar_x() + SCROLLBAR_WIDTH) as f64
+            && y >= self.y as f64
+            && y < self.bottom() as f64
+    }
+
+    /// A row's content rect â€” `Entry.getContentX/Y/Width/Height`, inset by
+    /// [`CONTENT_PADDING`] on all four sides.
+    pub fn content_rect(&self, row: usize) -> (i32, i32, i32, i32) {
+        (
+            self.row_left() + CONTENT_PADDING,
+            self.row_top(row) + CONTENT_PADDING,
+            self.row_width - 2 * CONTENT_PADDING,
+            self.row_height(row) - 2 * CONTENT_PADDING,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,6 +1324,190 @@ mod tests {
             Backdrop::TRANSPARENT.top,
             [16.0 / 255.0, 16.0 / 255.0, 16.0 / 255.0, 192.0 / 255.0]
         );
+    }
+
+    // ---- M84: the two framework extensions the statistics screen needed ----
+
+    /// The same record, two call sites, opposite meanings for the same slot.
+    #[test]
+    fn the_tab_sprites_put_a_brighter_sheet_in_the_disabled_focused_slot() {
+        // `MenuTabButton.SPRITES`, in its declared order.
+        let tab = WidgetSprites::four(
+            Sprite::TabSelected,
+            Sprite::Tab,
+            Sprite::TabSelectedHighlighted,
+            Sprite::TabHighlighted,
+        );
+        assert_eq!(tab.get(true, false), Sprite::TabSelected);
+        assert_eq!(tab.get(true, true), Sprite::TabSelectedHighlighted);
+        assert_eq!(tab.get(false, false), Sprite::Tab);
+        assert_eq!(
+            tab.get(false, true),
+            Sprite::TabHighlighted,
+            "`disabledFocused` is a *highlight* here â€” the three-argument \
+             constructor's rule (disabledFocused == disabled) is not a \
+             property of the record"
+        );
+    }
+
+    /// `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)` â€” the hovered sheet is
+    /// the *plainer* one.
+    #[test]
+    fn the_sort_buttons_hover_sheet_is_the_bare_slot() {
+        let s = WidgetSprites::two(Sprite::StatHeader, Sprite::Slot);
+        assert_eq!(s.get(true, false), Sprite::StatHeader);
+        assert_eq!(s.get(true, true), Sprite::Slot);
+        assert_eq!(
+            s.get(false, false),
+            Sprite::StatHeader,
+            "the two-argument overload puts the same sheet in enabled and \
+             disabled, so an inactive sort button looks identical"
+        );
+        assert_eq!(s.get(false, true), Sprite::Slot);
+    }
+
+    fn general_list() -> ScrollList {
+        // `GeneralStatisticsList`: width 320, content height 100, y 33, row
+        // height 14, row width 280.
+        let mut l = ScrollList::new(320, 100, 33, 14, 280);
+        l.rows = vec![14; 20];
+        l
+    }
+
+    #[test]
+    fn the_scroll_rate_is_half_the_row_height_truncated() {
+        assert_eq!(ScrollList::new(320, 100, 33, 14, 280).scroll_rate, 7);
+        assert_eq!(ScrollList::new(320, 100, 33, 22, 280).scroll_rate, 11);
+        assert_eq!(
+            ScrollList::new(320, 100, 33, 9, 280).scroll_rate,
+            4,
+            "an integer division, so 9/2 is 4 and not 4.5"
+        );
+    }
+
+    #[test]
+    fn the_content_height_is_the_rows_plus_four() {
+        let l = general_list();
+        assert_eq!(l.content_height(), 20 * 14 + 4);
+        assert_eq!(l.max_scroll(), 20 * 14 + 4 - 100);
+        let mut short = general_list();
+        short.rows = vec![14; 2];
+        assert_eq!(short.max_scroll(), 0, "32 of content in a 100-px box");
+        assert!(!short.scrollable());
+    }
+
+    /// The clamp, sampled **on** both ends.
+    #[test]
+    fn the_scroll_clamps_to_zero_and_to_max() {
+        let mut l = general_list();
+        let max = l.max_scroll() as f64;
+        l.set_scroll(-1.0);
+        assert_eq!(l.scroll(), 0.0);
+        l.set_scroll(max);
+        assert_eq!(l.scroll(), max);
+        l.set_scroll(max + 1.0);
+        assert_eq!(l.scroll(), max, "one past the end is the end");
+        // The wheel's sign: away from you scrolls toward row 0.
+        l.set_scroll(50.0);
+        l.mouse_scrolled(1.0);
+        assert_eq!(l.scroll(), 43.0, "50 - 1 * 7");
+        l.mouse_scrolled(-1.0);
+        assert_eq!(l.scroll(), 50.0);
+    }
+
+    /// The row `y` uses `(int) scrollAmount`, a truncation.
+    #[test]
+    fn a_fractional_scroll_truncates_the_row_positions() {
+        let mut l = general_list();
+        assert_eq!(l.row_top(0), 35, "y + 2");
+        assert_eq!(l.row_top(1), 49);
+        l.set_scroll(7.9);
+        assert_eq!(l.row_top(0), 28, "35 - 7, not 35 - 8");
+    }
+
+    #[test]
+    fn the_rows_are_centred_in_the_list_and_the_bar_sits_beside_them() {
+        let l = general_list();
+        assert_eq!(l.row_left(), 320 / 2 - 280 / 2);
+        assert_eq!(l.row_right(), 20 + 280);
+        assert_eq!(
+            l.scroll_bar_x(),
+            300 + 6 + 2,
+            "getRowRight() + scrollbarWidth() + 2 â€” a whole bar width of gap"
+        );
+        assert_ne!(
+            l.scroll_bar_x(),
+            l.width - SCROLLBAR_WIDTH,
+            "the AbstractScrollArea default would sit at the window edge"
+        );
+    }
+
+    /// The row hit rect and the list gate are two separate tests, and the
+    /// boundary between them is where a scrolled-past row lives.
+    #[test]
+    fn a_row_scrolled_above_the_list_is_still_its_own_rect_but_not_hovered() {
+        let mut l = general_list();
+        l.set_scroll(20.0);
+        // Row 0 now spans y 15..29, entirely above the list's y = 33.
+        assert_eq!(l.row_top(0), 15);
+        assert!(l.row_at_unclipped(160.0, 20.0) == Some(0));
+        assert!(
+            l.row_at(160.0, 20.0).is_none(),
+            "the list's own isMouseOver gate is what clips it"
+        );
+        // Row 2 straddles the top edge; the part inside the list hits.
+        assert_eq!(l.row_at(160.0, 45.0), Some(2));
+    }
+
+    #[test]
+    fn the_row_hit_rect_is_half_open_on_both_axes() {
+        let l = general_list();
+        assert_eq!(l.row_at(20.0, 35.0), Some(0), "the near corner is inside");
+        assert_eq!(l.row_at(19.0, 35.0), None, "one left of getRowLeft()");
+        assert_eq!(l.row_at(299.0, 35.0), Some(0));
+        assert_eq!(l.row_at(300.0, 35.0), None, "x == getRowRight() misses");
+        assert_eq!(l.row_at(160.0, 48.0), Some(0));
+        assert_eq!(l.row_at(160.0, 49.0), Some(1), "y == bottom is the next row");
+    }
+
+    /// `isOverScrollbar` is `x <= scrollBarX() + width`, inclusive â€” the one
+    /// hit test in this module that is not half-open.
+    #[test]
+    fn the_scrollbar_hit_test_is_inclusive_on_its_right_edge() {
+        let l = general_list();
+        let x0 = l.scroll_bar_x();
+        assert!(l.over_scrollbar(x0 as f64, 40.0));
+        assert!(l.over_scrollbar((x0 + SCROLLBAR_WIDTH) as f64, 40.0));
+        assert!(!l.over_scrollbar((x0 + SCROLLBAR_WIDTH + 1) as f64, 40.0));
+        assert!(!l.over_scrollbar(x0 as f64, l.bottom() as f64), "bottom is not");
+    }
+
+    #[test]
+    fn the_scroller_is_clamped_between_thirty_two_and_the_box_less_eight() {
+        let l = general_list();
+        // 100Â² / 284 = 35
+        assert_eq!(l.scroller_height(), 35);
+        let mut tall = general_list();
+        tall.rows = vec![14; 400];
+        assert_eq!(
+            tall.scroller_height(),
+            SCROLLBAR_MIN_HEIGHT,
+            "a very long list floors at 32"
+        );
+        // At scroll 0 the bar is at the list's own top; at max it is at the
+        // bottom of its travel.
+        let mut l = general_list();
+        assert_eq!(l.scroll_bar_y(), l.y);
+        l.set_scroll(l.max_scroll() as f64);
+        assert_eq!(l.scroll_bar_y(), l.y + l.height - l.scroller_height());
+    }
+
+    #[test]
+    fn a_rows_content_is_inset_by_two_on_every_side() {
+        let l = general_list();
+        let (x, y, w, h) = l.content_rect(0);
+        assert_eq!((x, y, w, h), (22, 37, 276, 10));
+        assert_eq!(x + w, l.row_right() - CONTENT_PADDING);
     }
 
     #[test]

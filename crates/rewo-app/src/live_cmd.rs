@@ -575,6 +575,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     );
     log::info!("live: session up, opening window…");
     let etypes = data.entity_types;
+    // M84: the three registries the statistics screen resolves against.
+    let stat_registries = data.stat_registries;
     // M52 attributes: the type registry turns a spawned entity's type id into
     // the name `DefaultAttributes.SUPPLIERS` is keyed by, and the attribute
     // registry supplies both the clamp and the supplier filter. Without both,
@@ -613,6 +615,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             session,
             baked,
             etypes,
+            stat_registries,
             spears,
             chest_states,
             sign_states,
@@ -2841,6 +2844,17 @@ pub(crate) fn widget_sprites(
         button_highlighted: hud_sprite(&w.button_highlighted),
         menu_background: hud_sprite(&w.menu_background),
         inworld_menu_background: hud_sprite(&w.inworld_menu_background),
+        tabs: std::array::from_fn(|i| hud_sprite(&w.tabs[i])),
+        scroller: hud_sprite(&w.scroller),
+        scroller_background: hud_sprite(&w.scroller_background),
+        slot: hud_sprite(&w.slot),
+        stat_header: hud_sprite(&w.stat_header),
+        stat_columns: std::array::from_fn(|i| hud_sprite(&w.stat_columns[i])),
+        sort_up: hud_sprite(&w.sort_up),
+        sort_down: hud_sprite(&w.sort_down),
+        tab_header_background: hud_sprite(&w.tab_header_background),
+        inworld_header_separator: hud_sprite(&w.inworld_header_separator),
+        inworld_footer_separator: hud_sprite(&w.inworld_footer_separator),
     })
 }
 
@@ -4073,6 +4087,16 @@ struct LiveApp {
     /// The same pack's ETF random-entity rules (M52), consulted per entity per
     /// frame. Empty without a pack.
     etf: rewo_data::etf::EtfPack,
+    /// `minecraft:stat_type` / `custom_stat` / `block` (M84). Cloned out of the
+    /// report because `self.baked` is a `LiveState` concern.
+    stat_registries: std::sync::Arc<rewo_data::stats::StatRegistries>,
+    /// The statistics screen's own state (M84) — `None` when it is shut.
+    ///
+    /// Opened by F6, because vanilla's only route to it is the pause menu's
+    /// `Statistics` button and M85's pause screen does not carry one. Recorded
+    /// as a Rewo-specific opener rather than smuggled in as if it were
+    /// vanilla's.
+    stats: Option<crate::stats_view::StatsView>,
     /// The death screen's own state (M82) — `None` while alive.
     death: Option<DeathView>,
     /// Whichever of M85's three screens is up, and the state it needs to be
@@ -4289,6 +4313,11 @@ impl ApplicationHandler for LiveApp {
                                 // `setScreen(null)`.
                                 if kind == rewo_world::screen::ScreenKind::ServerLinks {
                                     self.open_pause_screen();
+                                } else if kind == rewo_world::screen::ScreenKind::Stats {
+                                    // M84: a screen with per-screen state must
+                                    // drop it here too, or `pump_stats_screen`
+                                    // re-opens the screen Esc just closed.
+                                    self.close_stats();
                                 } else {
                                     self.close_view_screen();
                                 }
@@ -4363,6 +4392,22 @@ impl ApplicationHandler for LiveApp {
                         }
                     }
                     PhysicalKey::Code(KeyCode::Escape) => {}
+                    // F6 opens and closes the statistics screen (M84).
+                    //
+                    // **A Rewo-specific binding.** Vanilla reaches this screen
+                    // from the pause menu's `Statistics` button; M85's pause
+                    // screen transcribes `PauseScreen`'s own grid, which does
+                    // not carry one (`StatsScreen` is reached from the
+                    // *singleplayer* pause menu's second row, which M85's
+                    // multiplayer transcription omits). A key is the interim
+                    // route rather than a claim about vanilla's input.
+                    PhysicalKey::Code(KeyCode::F6) if p && !event.repeat => {
+                        if self.stats.is_some() {
+                            self.close_stats();
+                        } else {
+                            self.open_stats();
+                        }
+                    }
                     // E opens and closes the inventory (M35).
                     PhysicalKey::Code(KeyCode::KeyE) if p => {
                         let open = !self.screen.inventory_open();
@@ -4437,7 +4482,7 @@ impl ApplicationHandler for LiveApp {
                 button,
                 ..
             } if self.screen.any_open() && !self.screen.inventory_open() => {
-                let (mx, my) = self.screen.mouse;
+                let (mx, my) = self.mouse_gui();
                 let b = match button {
                     MouseButton::Left => 0u8,
                     MouseButton::Right => 1,
@@ -4582,6 +4627,24 @@ impl ApplicationHandler for LiveApp {
                     }
                 }
             }
+            // M84: the scroll wheel drives whichever list is up.
+            //
+            // `AbstractScrollArea.mouseScrolled` is
+            // `setScrollAmount(scrollAmount() - scrollY * scrollRate())`, and
+            // the **minus** is the whole of it: a positive `scrollY` (wheel
+            // away from you) moves the list toward row 0. winit reports a notch
+            // as `LineDelta(_, 1.0)`, which is GLFW's own unit, so the two need
+            // no conversion; a trackpad's `PixelDelta` is divided by a line's
+            // height first.
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 16.0,
+                };
+                if let Some(view) = self.stats.as_mut() {
+                    view.model.list_mut().mouse_scrolled(dy);
+                }
+            }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
         }
@@ -4631,6 +4694,29 @@ impl LiveApp {
             self.screen.screens.close();
         }
         self.grab_for_screen(open);
+    }
+
+    /// The cursor in **GUI** pixels — the space every widget's rect is in.
+    ///
+    /// **M82 passed `self.screen.mouse` straight through, and it is in screen
+    /// pixels.** `deathshot` divides by the GUI scale before calling the same
+    /// builders, so its hover and click witnesses passed while the live path
+    /// tested a point up to four times too far right and down: at any scale
+    /// above 1 the death screen's buttons could not be hovered, and could only
+    /// be *clicked* where the mis-scaled point happened to land on one. M85
+    /// then built three more screens against the same call, so by the time M84
+    /// found it — through its own hover witness measuring a zero-pixel
+    /// difference — it was in five places. Every screen goes through here now.
+    ///
+    /// The inventory does **not**: `rewo_gpu::container::screen_to_gui` is
+    /// panel-relative, which is what `slot_at` wants, and it takes screen
+    /// pixels by design.
+    fn mouse_gui(&self) -> (f64, f64) {
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return (0.0, 0.0);
+        };
+        let scale = rewo_gpu::hud::gui_scale(ext.width as f32, ext.height as f32) as f64;
+        (self.screen.mouse.0 / scale, self.screen.mouse.1 / scale)
     }
 
     /// The window in GUI pixels — the space every screen lays its widgets out
@@ -4811,6 +4897,18 @@ impl LiveApp {
         use rewo_world::death_screen as ds;
         use rewo_world::screen::ScreenKind;
         match (kind, id) {
+            // M84: the statistics screen. `Done` is `onClose()`, a tab press is
+            // `selectTab`, and a sort button is `sortByColumn` — the last two
+            // rebuild, because a tab change moves the six sort widgets and
+            // reselects every tab's sheet.
+            (ScreenKind::Stats, rewo_world::stats_screen::DONE) => {
+                self.close_stats();
+            }
+            (ScreenKind::Stats, id) => {
+                if self.stats.as_mut().is_some_and(|v| v.press(id)) {
+                    self.rebuild_stats_screen();
+                }
+            }
             (ScreenKind::Death, ds::RESPAWN) => {
                 if let Some(session) = self.session.as_mut() {
                     if let Err(e) = session.perform_respawn() {
@@ -4963,6 +5061,7 @@ impl LiveApp {
             event_loop.exit();
             return;
         }
+        let mouse_gui = self.mouse_gui();
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -4971,7 +5070,7 @@ impl LiveApp {
         let mut chrome = rewo_gpu::screen::ScreenDraw::default();
         let mut text = Vec::new();
         if let Some(screen) = self.screen.screens.current() {
-            chrome = screen_chrome(screen, Some(self.screen.mouse));
+            chrome = screen_chrome(screen, Some(mouse_gui));
             if let Some(advance) = state.world_renderer.font_advance() {
                 text = screen_text_lines(screen, &advance, px);
             }
@@ -5020,6 +5119,111 @@ impl LiveApp {
             if self.started.elapsed().as_secs_f32() >= limit {
                 event_loop.exit();
             }
+        }
+    }
+
+    /// Open the statistics screen and ask the server for the numbers (M84).
+    ///
+    /// `StatsScreen.init()`'s last line is the `REQUEST_STATS` client command,
+    /// so the request is part of *opening*, not of rendering — a screen opened
+    /// with no request sits on "Retrieving statistics…" forever.
+    fn open_stats(&mut self) {
+        let (gw, gh) = self.gui_size();
+        let labels = rewo_world::stats_screen::StatsLabels::resolve(&self.lang);
+        let counter = self
+            .session
+            .as_ref()
+            .map(|s| s.stats.clone())
+            .unwrap_or_default();
+        let (view, screen) = crate::stats_view::StatsView::build(
+            &counter,
+            &self.stat_registries,
+            &self.items,
+            &self.etypes,
+            &self.lang,
+            labels,
+            Default::default(),
+            (None, 0),
+            gw,
+            gh,
+        );
+        log::info!(
+            "live: statistics screen — {} stats held, loading={}",
+            counter.len(),
+            view.model.loading
+        );
+        self.stats = Some(view);
+        self.screen.screens.open(screen);
+        self.grab_for_screen(true);
+        if let Some(session) = self.session.as_mut() {
+            if let Err(e) = session.request_stats() {
+                log::warn!("live: request_stats: {e}");
+            }
+        }
+    }
+
+    fn close_stats(&mut self) {
+        self.stats = None;
+        self.screen.screens.close();
+        self.grab_for_screen(false);
+    }
+
+    /// `repositionElements` — rebuild from the current counter, keeping the
+    /// tab, the sort and the scroll.
+    fn rebuild_stats_screen(&mut self) {
+        let (gw, gh) = self.gui_size();
+        let Some(view) = self.stats.as_ref() else {
+            return;
+        };
+        let (tab, sort) = (
+            view.model.tab,
+            (view.model.sort_column, view.model.sort_order),
+        );
+        let scrolls: Vec<f64> = view.model.lists.iter().map(|l| l.scroll()).collect();
+        let labels = view.labels.clone();
+        let counter = self
+            .session
+            .as_ref()
+            .map(|s| s.stats.clone())
+            .unwrap_or_default();
+        let (mut view, screen) = crate::stats_view::StatsView::build(
+            &counter,
+            &self.stat_registries,
+            &self.items,
+            &self.etypes,
+            &self.lang,
+            labels,
+            tab,
+            sort,
+            gw,
+            gh,
+        );
+        // The scroll survives a rebuild, re-clamped against the new content —
+        // `updateSizeAndPosition` ends in `refreshScrollAmount()`, which is
+        // `setScrollAmount(scrollAmount)` and therefore exactly this clamp.
+        for (l, v) in view.model.lists.iter_mut().zip(scrolls) {
+            l.set_scroll(v);
+        }
+        self.stats = Some(view);
+        self.screen.screens.open(screen);
+    }
+
+    /// Rebuild when the numbers or the window changed (M84).
+    fn pump_stats_screen(&mut self) {
+        use rewo_world::screen::ScreenKind;
+        if self.stats.is_none() {
+            return;
+        }
+        let updates = self.session.as_ref().map(|s| s.stats.updates).unwrap_or(0);
+        let (gw, gh) = self.gui_size();
+        let stale = self
+            .screen
+            .screens
+            .current()
+            .is_some_and(|s| s.kind == ScreenKind::Stats && (s.width != gw || s.height != gh));
+        let fresh = self.stats.as_ref().is_some_and(|v| v.built_from != updates);
+        if stale || fresh {
+            self.rebuild_stats_screen();
         }
     }
 
@@ -5159,6 +5363,7 @@ impl LiveApp {
         // M82: you died, or you respawned. Both before the session borrow
         // below, for the same reason `container_close` is.
         self.pump_death_screen();
+        self.pump_stats_screen();
         if self.exit_requested {
             event_loop.exit();
             return;
@@ -5694,14 +5899,36 @@ impl LiveApp {
         // everything a screen draws.
         {
             let mut chrome = rewo_gpu::screen::ScreenDraw::default();
-            if self.death.is_some() {
+            // Every hover test wants the cursor in GUI space — see
+            // `LiveApp::mouse_gui` for the M82 bug this fixes, and for why all
+            // five screens share the one conversion.
+            let mouse_gui = (
+                self.screen.mouse.0 / px as f64,
+                self.screen.mouse.1 / px as f64,
+            );
+            // M84: the statistics screen, on the same seam. Only one screen is
+            // ever up, so the three arms are exclusive by construction rather
+            // than by an ordering rule.
+            if let (Some(view), Some(screen)) = (self.stats.as_ref(), self.screen.screens.current())
+            {
+                let advance = state.world_renderer.font_advance();
+                chrome = crate::stats_view::chrome(
+                    view,
+                    screen,
+                    Some(mouse_gui),
+                    advance.as_ref().map(|a| &**a),
+                );
+                if let Some(advance) = advance {
+                    text.extend(crate::stats_view::lines(view, screen, &advance, px));
+                }
+            } else if self.death.is_some() {
                 if let (Some(view), Some(screen)) =
                     (self.death.as_ref(), self.screen.screens.current())
                 {
                     // The pass itself is built in `resumed`, beside
                     // `init_hud` and `init_container` — the one place the bake
                     // is still alive.
-                    chrome = screen_chrome(screen, Some(self.screen.mouse));
+                    chrome = screen_chrome(screen, Some(mouse_gui));
                     if let Some(advance) = state.world_renderer.font_advance() {
                         text.extend(death_screen_lines(
                             view,
@@ -5718,7 +5945,7 @@ impl LiveApp {
                 // keeps its own only because its title, cause and score are
                 // *not* widgets in vanilla either.
                 if let Some(screen) = self.screen.screens.current() {
-                    chrome = screen_chrome(screen, Some(self.screen.mouse));
+                    chrome = screen_chrome(screen, Some(mouse_gui));
                     if let Some(advance) = state.world_renderer.font_advance() {
                         text.extend(screen_text_lines(screen, &advance, px));
                     }
@@ -5838,6 +6065,7 @@ fn run_windowed(
     session: PlaySession,
     baked: assets::BakedAssets,
     etypes: EntityTypes,
+    stat_registries: rewo_data::stats::StatRegistries,
     spears: rewo_data::item_tags::ItemTag,
     chest_states: rewo_data::chest_states::ChestStates,
     sign_states: rewo_data::sign_states::SignStates,
@@ -5887,6 +6115,8 @@ fn run_windowed(
         weather: None,
         gui_items: None,
         screen: ScreenState::default(),
+        stat_registries: std::sync::Arc::new(stat_registries),
+        stats: None,
         hand: None,
         shift: false,
         ctrl: false,
@@ -10073,6 +10303,9 @@ pub(crate) fn screen_chrome(
                 },
             })
             .collect(),
+        // M84's statistics screen fills this; every other screen's chrome is
+        // its backdrop and its buttons.
+        sprites: Vec::new(),
     }
 }
 
@@ -10108,6 +10341,12 @@ pub(crate) fn screen_text_lines(
     for widget in screen.widgets.iter().filter(|w| w.visible) {
         match &widget.kind {
             WidgetKind::Reserved => {}
+            // M84's tabs and image buttons. Only the statistics screen builds
+            // them and it has its own text builder (`stats_view::lines`),
+            // because a tab's label is centred by `MenuTabButton.renderLabel`
+            // rather than by `defaultScrollingHelper` — the two differ by the
+            // 3-px drop an unselected tab takes.
+            WidgetKind::Sprites { .. } => {}
             WidgetKind::Button => {
                 let w = rewo_gpu::text::width(&widget.message, advance);
                 let (anchor, top) = widget.label_anchor(w);

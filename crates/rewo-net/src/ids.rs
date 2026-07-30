@@ -418,6 +418,19 @@ pub struct Ids {
     /// needs [`crate::PlaySession`]'s local-player door rather than the entity
     /// table (see `REWO_PLAN.md` §0.0 gotcha 13).
     pub cb_play_player_combat_kill: i32,
+    /// `ClientboundAwardStatsPacket` (M84) — the statistics screen.
+    ///
+    /// A `ByteBufCodecs.map` of `Stat<?>` to VarInt, and the key is the
+    /// project's first **two-level** dispatch: a `minecraft:stat_type` id, then
+    /// a value id in *that type's own* registry. Both levels are
+    /// `ByteBufCodecs.registry`, i.e. a raw VarInt — see `rewo_data::stats` for
+    /// why that makes the whole packet walkable whatever the type turns out to
+    /// be.
+    ///
+    /// Addressed to **you**: `handleAwardStats` writes straight into
+    /// `minecraft.player.getStats()` and the body carries no entity id at all,
+    /// so there is nothing here to look up in a table (gotcha 13).
+    pub cb_play_award_stats: i32,
     /// `ClientboundServerDataPacket` — the MOTD `Component` and an
     /// `Optional<byte[]>` icon.
     pub cb_play_server_data: i32,
@@ -639,6 +652,7 @@ impl Ids {
             cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),
             cb_play_player_combat_kill: req!(p, P, C, "player_combat_kill"),
+            cb_play_award_stats: req!(p, P, C, "award_stats"),
             cb_play_server_data: req!(p, P, C, "server_data"),
             cb_play_store_cookie: req!(p, P, C, "store_cookie"),
             cb_play_player_rotation: req!(p, P, C, "player_rotation"),

@@ -15,7 +15,12 @@ pub struct EntityTypes {
 
 impl EntityTypes {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let json = read_json_file(path)?;
+        Self::from_value(&read_json_file(path)?)
+    }
+
+    /// The same table from an already-parsed report, so a gate or a test can
+    /// hand over a fixture without a file (M84).
+    pub fn from_value(json: &serde_json::Value) -> Result<Self, String> {
         let entries = json
             .get("minecraft:entity_type")
             .and_then(|r| r.get("entries"))
@@ -33,6 +38,19 @@ impl EntityTypes {
             .map(|(id, _)| *id)
             .ok_or("registries.json: no minecraft:player entity type")?;
         log::info!("rewo-data: {} entity types (player = {player_id})", by_id.len());
+        Ok(Self { by_id, player_id })
+    }
+
+    /// A table from literal pairs, for fixtures (M84). `minecraft:player` must
+    /// be among them, because [`Self::player_id`] has no sensible default.
+    pub fn from_pairs(pairs: &[(i32, &str)]) -> Result<Self, String> {
+        let by_id: HashMap<i32, String> =
+            pairs.iter().map(|(i, n)| (*i, n.to_string())).collect();
+        let player_id = by_id
+            .iter()
+            .find(|(_, n)| n.as_str() == "minecraft:player")
+            .map(|(id, _)| *id)
+            .ok_or("EntityTypes::from_pairs: no minecraft:player")?;
         Ok(Self { by_id, player_id })
     }
 
