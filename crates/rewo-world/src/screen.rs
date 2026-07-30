@@ -56,6 +56,15 @@ pub enum ScreenKind {
     Inventory,
     /// The death screen (M82).
     Death,
+    /// `PauseScreen(showPauseMenu = true)` — Esc with a session behind it
+    /// (M85).
+    Pause,
+    /// `ServerLinksDialogScreen` for the built-in `Dialogs.SERVER_LINKS`
+    /// (M85). Reached from [`Self::Pause`], never opened directly.
+    ServerLinks,
+    /// `DisconnectedScreen` (M85) — **the one screen with no session behind
+    /// it.** Every other variant here is opened while a world is loaded.
+    Disconnected,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the
@@ -105,14 +114,45 @@ pub const DEFAULT_LABEL: [f32; 3] = [1.0, 1.0, 1.0];
 pub const BUTTON_HEIGHT: i32 = 20;
 /// `Button.BIG_WIDTH` — and the width of the three `widget/button*` sprites.
 pub const BUTTON_WIDTH: i32 = 200;
+/// `Font.lineHeight`. The 9 that appears in every `StringWidget`,
+/// `MultiLineTextWidget` and `defaultScrollingHelper`.
+pub const LINE_HEIGHT: i32 = 9;
 
-/// One `AbstractWidget`, flattened to the parts a button needs.
+/// What shape of `AbstractWidget` this is.
 ///
-/// Rewo has no text fields, sliders or lists yet, so this is the whole widget
-/// model: a rectangle, the two flags every `AbstractWidget` carries, and a
-/// label. When a sibling milestone needs a second widget *shape* the honest
-/// move is a `kind` field here, not a parallel type — the routing below is
-/// written against `AbstractWidget`, not against buttons.
+/// M82 left the note that "when a sibling milestone needs a second widget
+/// *shape* the honest move is a `kind` field here, not a parallel type"; M85 is
+/// that milestone. The routing below is written against `AbstractWidget` and is
+/// unchanged — what a kind decides is only how the *app* draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WidgetKind {
+    /// `Button` — a nine-sliced sprite plus a centred label.
+    Button,
+    /// `StringWidget` — one line of text, no chrome.
+    ///
+    /// **Its constructor sets `this.active = false`**, which is why a label is
+    /// invisible to [`Screen::mouse_clicked`]'s `getChildAt` and skipped by
+    /// Tab, with no special case anywhere in the routing. `centered` is
+    /// `MultiLineTextWidget.setCentered`'s single-line analogue: vanilla's
+    /// `StringWidget` draws at `getX()` and its *frame cell* does the
+    /// centring, so this flag is only set where the screen wants the text
+    /// centred inside a wider widget rect.
+    Label { centered: bool },
+    /// `MultiLineTextWidget` — pre-wrapped, `9 * lines` tall.
+    ///
+    /// One widget rather than one per line, because that is what the layout
+    /// measures: `getHeight()` is `lineCount * 9` and `getWidth()` is the
+    /// widest line, and splitting it into N widgets would let the layout put a
+    /// gap between them.
+    MultiLabel { lines: Vec<String>, centered: bool },
+    /// **Geometry with nothing drawn** — see [`Widget::reserved`].
+    Reserved,
+}
+
+/// One `AbstractWidget`, flattened to the parts the screens Rewo has need.
+///
+/// A rectangle, the two flags every `AbstractWidget` carries, a label, and a
+/// [`WidgetKind`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
     pub id: WidgetId,
@@ -125,6 +165,7 @@ pub struct Widget {
     /// `AbstractWidget.visible`.
     pub visible: bool,
     pub message: String,
+    pub kind: WidgetKind,
 }
 
 impl Widget {
@@ -146,6 +187,77 @@ impl Widget {
             active: true,
             visible: true,
             message: message.into(),
+            kind: WidgetKind::Button,
+        }
+    }
+
+    /// `new StringWidget(message, font)` — `active = false`, height 9.
+    pub fn label(id: WidgetId, x: i32, y: i32, width: i32, message: impl Into<String>) -> Self {
+        Self {
+            id,
+            x,
+            y,
+            width,
+            height: LINE_HEIGHT,
+            active: false,
+            visible: true,
+            message: message.into(),
+            kind: WidgetKind::Label { centered: false },
+        }
+    }
+
+    /// `new MultiLineTextWidget(message, font).setCentered(centered)`, with the
+    /// wrap already done by the caller (which owns the font metrics).
+    pub fn multi_label(
+        id: WidgetId,
+        x: i32,
+        y: i32,
+        width: i32,
+        lines: Vec<String>,
+        centered: bool,
+    ) -> Self {
+        Self {
+            id,
+            x,
+            y,
+            width,
+            height: LINE_HEIGHT * lines.len() as i32,
+            active: false,
+            visible: true,
+            message: lines.join(" "),
+            kind: WidgetKind::MultiLabel { lines, centered },
+        }
+    }
+
+    /// A widget whose **geometry is real and whose rendering is deliberately
+    /// absent** — it occupies its cell in the layout so everything around it
+    /// lands where vanilla puts it, and nothing draws inside it.
+    ///
+    /// Two places need this and they share one reason: the widget's *action* is
+    /// a subsystem Rewo does not have, so drawing a working-looking control
+    /// would be a lie about what pressing it does, while omitting the widget
+    /// entirely would move every sibling.
+    ///
+    /// * `PauseScreen`'s four-icon row — bug report and feedback are
+    ///   `ConfirmLinkScreen.confirmLink` (a browser), Friends is Realms auth,
+    ///   and player reporting is the chat-report subsystem.
+    /// * `DialogScreen`'s warning `ImageButton` — it opens
+    ///   `DialogScreen.WarningScreen`, a `ConfirmScreen` with a
+    ///   `BooleanConsumer`, which is exactly the nesting M82 declined to build
+    ///   for the death screen's "Title Screen" button.
+    ///
+    /// `active = false`, so it is click-through and Tab-skipped like a label.
+    pub fn reserved(id: WidgetId, x: i32, y: i32, width: i32, height: i32) -> Self {
+        Self {
+            id,
+            x,
+            y,
+            width,
+            height,
+            active: false,
+            visible: true,
+            message: String::new(),
+            kind: WidgetKind::Reserved,
         }
     }
 
@@ -346,6 +458,53 @@ impl Backdrop {
     pub const TRANSPARENT: Self = Self::argb(0xC010_1010, 0xD010_1010);
 }
 
+/// `Screen.extractMenuBackground` — the tiled 32-px texture a *menu* screen
+/// paints instead of the in-game dim (M85).
+///
+/// `Screen.extractBackground` has three cases and M82 needed only the first:
+///
+/// ```java
+/// if (this.isInGameUi())            this.extractTransparentBackground(graphics);   // the gradient
+/// else {
+///    if (this.minecraft.level == null) this.extractPanorama(graphics, a);
+///    this.extractBlurredBackground(graphics);
+///    this.extractMenuBackground(graphics);                                         // this
+/// }
+/// ```
+///
+/// **The pause screen and the disconnect screen both take the second branch**,
+/// so neither of them draws the gradient [`Backdrop`] the inventory and the
+/// death screen do.
+///
+/// `in_world` selects the texture: `minecraft.level == null ? MENU_BACKGROUND :
+/// INWORLD_MENU_BACKGROUND` — and that same null test is what decides whether a
+/// panorama is drawn under it. So the disconnect screen, which by definition
+/// has no level, is the one that gets the plain `menu_background.png`.
+///
+/// **In 26.2 the two sheets are byte-identical and both are uniform.** Each is
+/// 16×16 of `rgba(0, 0, 0, 64)` — a flat 25 % black wash, no pattern at all. So
+/// the whole tiling apparatus (a 16×16 file, a declared size of 32, one full
+/// wrap per 32 screen pixels) is currently *unobservable*: any tile size, and
+/// either sheet, produce the same pixels. It is transcribed rather than
+/// collapsed to a fill because a resource pack — or a version — that gives
+/// either file a pattern makes every one of those numbers visible at once, and
+/// because the flag is what a future panorama would branch on. The gate says
+/// so: it grades the composite and the coverage, which are the two properties
+/// a uniform texture still has, and does **not** claim to distinguish the
+/// sheets.
+///
+/// **The blur and the panorama are not reproduced.** The blur is a
+/// backdrop-blur pass Rewo's screen framework has not got; the panorama is a
+/// rotating cube-map of a purpose-built scene. Both are named rather than
+/// approximated. Because the wash is 25 % rather than opaque, what shows
+/// through an in-world pause screen is the *unblurred* world — the one place
+/// the missing blur is visible.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MenuBackground {
+    /// `minecraft.level != null` — true while a world is loaded.
+    pub in_world: bool,
+}
+
 const fn unpack(argb: u32) -> [f32; 4] {
     [
         ((argb >> 16) & 0xFF) as f32 / 255.0,
@@ -361,6 +520,10 @@ pub struct Screen {
     pub kind: ScreenKind,
     pub widgets: Vec<Widget>,
     pub backdrop: Option<Backdrop>,
+    /// `Screen.extractMenuBackground` — see [`MenuBackground`]. Mutually
+    /// exclusive with [`Self::backdrop`] in vanilla, because
+    /// `extractBackground`'s two branches are an if/else.
+    pub menu_background: Option<MenuBackground>,
     /// `Screen.shouldCloseOnEsc` — **true by default, and the death screen
     /// overrides it to false.** A screen that returns false cannot be
     /// dismissed at all; it must be left through one of its own buttons.
@@ -390,6 +553,7 @@ impl Screen {
             kind,
             widgets: Vec::new(),
             backdrop: None,
+            menu_background: None,
             close_on_esc: true,
             pause: true,
             width,
@@ -406,6 +570,13 @@ impl Screen {
 
     pub fn with_backdrop(mut self, backdrop: Backdrop) -> Self {
         self.backdrop = Some(backdrop);
+        self
+    }
+
+    /// `extractBackground`'s else branch — the tiled menu texture. See
+    /// [`MenuBackground`].
+    pub fn with_menu_background(mut self, in_world: bool) -> Self {
+        self.menu_background = Some(MenuBackground { in_world });
         self
     }
 

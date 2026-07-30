@@ -1523,6 +1523,18 @@ pub struct WidgetSprites {
     pub button_disabled: HudSprite,
     /// `widget/button_highlighted` — enabled and hovered-or-focused.
     pub button_highlighted: HudSprite,
+    /// `textures/gui/menu_background.png` (M85) — `Screen.MENU_BACKGROUND`,
+    /// tiled behind a screen with **no level** loaded (the disconnect screen).
+    ///
+    /// Not under `gui/sprites/`: these two are plain textures rather than atlas
+    /// sprites, so they carry no `.mcmeta` and no nine-slice. They are **16×16**
+    /// and `extractMenuBackgroundTexture` blits them with a declared size of
+    /// `32, 32`, which is what makes the on-screen tile 32 px and the sheet 2×
+    /// magnified.
+    pub menu_background: HudSprite,
+    /// `textures/gui/inworld_menu_background.png` — the same, for a screen with
+    /// a level behind it (the pause screen).
+    pub inworld_menu_background: HudSprite,
 }
 
 /// Extract the three button sheets. Any missing one → no buttons.
@@ -1540,6 +1552,8 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
         button_highlighted: get(jar, "gui/sprites/widget/button_highlighted.png")?,
+        menu_background: get(jar, "gui/menu_background.png")?,
+        inworld_menu_background: get(jar, "gui/inworld_menu_background.png")?,
     })
 }
 

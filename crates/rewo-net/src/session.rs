@@ -227,6 +227,17 @@ pub struct SessionState {
     /// The last `game_rule_values` map, whole. Ordered so a witness (and a
     /// future UI) reads the same sequence twice.
     pub game_rules: BTreeMap<String, String>,
+    /// `ClientCommonPacketListenerImpl.serverLinks` (M85).
+    ///
+    /// Beside the brand and the cookie jar because it is beside them in the
+    /// jar too — the same class, and for the same reason: it arrives in
+    /// *either* connection state and belongs to the connection rather than to
+    /// the world. `handleServerLinks` **assigns**, so a later packet replaces
+    /// the list wholesale and an empty one retracts it.
+    ///
+    /// See [`crate::server_links`] for why the disconnect screen needs this to
+    /// outlive the session that received it.
+    pub server_links: crate::server_links::ServerLinks,
     /// `ClientCommonPacketListenerImpl.serverCookies`.
     cookies: BTreeMap<String, Vec<u8>>,
     /// Disguised-chat lines awaiting the session's chat log. Drained by
@@ -272,6 +283,10 @@ pub enum SessionPacket {
     PlayerCombatEnd,
     PlayerCombatEnter,
     ServerData,
+    /// `ClientboundServerLinksPacket` (M85) — a `common` packet like
+    /// `custom_payload` and `store_cookie`, so it too exists in both
+    /// connection states and reaches this one [`apply`] from both.
+    ServerLinks,
     StoreCookie,
 }
 
@@ -290,6 +305,7 @@ pub struct SessionIds {
     pub player_combat_end: i32,
     pub player_combat_enter: i32,
     pub server_data: i32,
+    pub server_links: i32,
     pub store_cookie: i32,
 }
 
@@ -307,6 +323,8 @@ pub fn kind_for_id(id: i32, ids: SessionIds) -> Option<SessionPacket> {
         Some(SessionPacket::PlayerCombatEnter)
     } else if id == ids.server_data {
         Some(SessionPacket::ServerData)
+    } else if id == ids.server_links {
+        Some(SessionPacket::ServerLinks)
     } else if id == ids.store_cookie {
         Some(SessionPacket::StoreCookie)
     } else {
@@ -392,6 +410,35 @@ pub fn apply(kind: SessionPacket, body: &[u8], state: &mut SessionState) -> bool
             }
             Err(err) => {
                 log::debug!("net: server_data decode: {err}");
+                false
+            }
+        },
+        // M85. Vanilla's `handleServerLinks` validates **per entry** and keeps
+        // the survivors, so a decode failure of the *list* is the only thing
+        // that can leave the previous links in place — one bad URL cannot.
+        SessionPacket::ServerLinks => match crate::server_links::read_server_links(body) {
+            Ok(entries) => {
+                let (links, dropped) = crate::server_links::trust(entries);
+                if dropped > 0 {
+                    // `LOGGER.warn("Received invalid link for type {}:{}")`,
+                    // once per bad entry in vanilla; once per packet here,
+                    // because the reader has already dropped the offenders.
+                    log::warn!("net: {dropped} server link(s) failed URL validation and were dropped");
+                }
+                log::debug!(
+                    "net: {} server link(s): {:?}",
+                    links.len(),
+                    links
+                        .entries()
+                        .iter()
+                        .map(|e| (&e.label, &e.link))
+                        .collect::<Vec<_>>()
+                );
+                state.server_links = links;
+                true
+            }
+            Err(err) => {
+                log::debug!("net: server_links decode: {err}");
                 false
             }
         },
@@ -605,6 +652,7 @@ mod tests {
             player_combat_end: 66,
             player_combat_enter: 67,
             server_data: 86,
+            server_links: 137,
             store_cookie: 120,
         }
     }
@@ -899,8 +947,42 @@ mod tests {
         assert_eq!(kind_for_id(66, t), Some(SessionPacket::PlayerCombatEnd));
         assert_eq!(kind_for_id(67, t), Some(SessionPacket::PlayerCombatEnter));
         assert_eq!(kind_for_id(86, t), Some(SessionPacket::ServerData));
+        assert_eq!(kind_for_id(137, t), Some(SessionPacket::ServerLinks));
         assert_eq!(kind_for_id(120, t), Some(SessionPacket::StoreCookie));
         assert_eq!(kind_for_id(1, t), None);
+    }
+
+    /// A `server_links` body reaches [`SessionState::server_links`] through the
+    /// same [`apply`] the configuration loop and `route_session` both call, and
+    /// a later packet **replaces** the list.
+    ///
+    /// MUTATION: `state.server_links.entries` extended rather than assigned.
+    /// `handleServerLinks` builds a fresh `ServerLinks` from the packet, so a
+    /// merge would make an empty list — the packet a server sends to retract —
+    /// do nothing at all, and the pause menu would keep a button for links the
+    /// server has withdrawn.
+    #[test]
+    fn server_links_reach_the_session_state_and_a_second_packet_replaces_them() {
+        use crate::server_links::{KnownLinkType, ServerLinkLabel};
+        let mut body = vec![0x01, 0x01];
+        rewo_proto::varint::write_varint(&mut body, 6); // WEBSITE
+        body.extend(wire_string("https://example.test"));
+
+        let mut s = SessionState::default();
+        assert!(s.server_links.is_empty());
+        assert!(apply(SessionPacket::ServerLinks, &body, &mut s));
+        assert_eq!(s.server_links.len(), 1);
+        assert_eq!(
+            s.server_links.entries()[0].label,
+            ServerLinkLabel::Known(KnownLinkType::Website)
+        );
+
+        // The retraction.
+        assert!(apply(SessionPacket::ServerLinks, &[0x00], &mut s));
+        assert!(
+            s.server_links.is_empty(),
+            "the list is assigned, not merged"
+        );
     }
 
     /// A malformed body is reported rather than half-applied.
@@ -919,6 +1001,8 @@ mod tests {
         assert!(!apply(SessionPacket::ServerData, &[], &mut s));
         assert!(!apply(SessionPacket::StoreCookie, &[], &mut s));
         assert!(!apply(SessionPacket::PlayerCombatEnd, &[], &mut s));
+        // A count that outruns the buffer, so the list never starts.
+        assert!(!apply(SessionPacket::ServerLinks, &[0x7f, 0x00], &mut s));
         assert_eq!(s, before);
     }
 }

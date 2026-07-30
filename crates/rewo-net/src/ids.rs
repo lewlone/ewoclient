@@ -61,6 +61,15 @@ pub struct Ids {
     /// stores its cookies on whichever side of the state boundary it happens to
     /// be, and the jar is one store.
     pub cb_config_store_cookie: i32,
+    /// `ClientboundServerLinksPacket` in the **configuration** state (M85).
+    ///
+    /// The third `common` packet to need both ids, after M69's `update_tags`
+    /// and M78's `custom_payload`/`store_cookie` — and `serverLinks` is a field
+    /// of the very same `ClientCommonPacketListenerImpl` those two live on. A
+    /// server is free to advertise its links before the play state begins, and
+    /// then a play-only resolution would leave the pause menu with no links
+    /// against a server that sent them.
+    pub cb_config_server_links: i32,
     pub cb_config_disconnect: i32,
     // play
     pub sb_play_keep_alive: i32,
@@ -477,6 +486,11 @@ pub struct Ids {
     /// `TrackedWaypoint` whose body shape depends on a type tag whose id is
     /// rejected. See [`crate::waypoints`].
     pub cb_play_waypoint: i32,
+    /// `ClientboundServerLinksPacket` in the **play** state (M85) — the
+    /// `/reload`-shaped copy, sent when a server changes its links mid-session.
+    /// See [`cb_config_server_links`](Self::cb_config_server_links) for the one
+    /// that actually fires on a join.
+    pub cb_play_server_links: i32,
 }
 
 impl Ids {
@@ -509,6 +523,7 @@ impl Ids {
             cb_config_cookie_request: opt!(p, Cfg, C, "cookie_request"),
             cb_config_custom_payload: req!(p, Cfg, C, "custom_payload"),
             cb_config_store_cookie: req!(p, Cfg, C, "store_cookie"),
+            cb_config_server_links: req!(p, Cfg, C, "server_links"),
             cb_config_disconnect: req!(p, Cfg, C, "disconnect"),
 
             sb_play_keep_alive: req!(p, P, S, "keep_alive"),
@@ -643,6 +658,7 @@ impl Ids {
             cb_play_set_experience: req!(p, P, C, "set_experience"),
             cb_play_cooldown: req!(p, P, C, "cooldown"),
             cb_play_waypoint: req!(p, P, C, "waypoint"),
+            cb_play_server_links: req!(p, P, C, "server_links"),
         })
     }
 }
