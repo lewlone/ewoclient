@@ -30,6 +30,15 @@ pub struct TextLine<'a> {
     pub color: [f32; 3],
     /// Opacity (chat fades old lines).
     pub alpha: f32,
+    /// `graphics.text(font, str, x, y, color, **shadow**)`'s last argument.
+    ///
+    /// Almost everything the HUD draws passes `true`, and before M79 this pass
+    /// hard-coded it. `ContextualBar.extractExperienceLevel` passes `false`
+    /// for all five of its draws, because the XP level number carries a
+    /// four-way black **outline** instead — and drawing both would put a
+    /// shadow copy of every outline copy inside the outline, thickening the
+    /// glyph rather than framing it.
+    pub shadow: bool,
     pub text: &'a str,
 }
 
@@ -209,8 +218,10 @@ impl TextPass {
         let mut v: Vec<Vertex> = Vec::with_capacity(1024);
         for line in lines {
             // Shadow first (offset +1 font-px, darkened), then the glyph.
-            let sh = [line.color[0] * 0.25, line.color[1] * 0.25, line.color[2] * 0.25];
-            self.push_line(&mut v, line, line.px, line.px, sh, line.alpha);
+            if line.shadow {
+                let sh = [line.color[0] * 0.25, line.color[1] * 0.25, line.color[2] * 0.25];
+                self.push_line(&mut v, line, line.px, line.px, sh, line.alpha);
+            }
             self.push_line(&mut v, line, 0.0, 0.0, line.color, line.alpha);
         }
         self.verts = v.len() as u32;

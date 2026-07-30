@@ -12207,6 +12207,245 @@ on a real connection is unobserved. The same applies to the two things wired
 into the app — `set_camera` reaching `LabelViewer` and `container_close`
 closing the inventory screen are unit-true and un-eyeballed.
 
+### M79 — the title overlay and two HUD gauges: the first of class B (2026-07-30)
+
+Seven packets that all land on vanilla's `Gui` / `Hud`: `set_title_text` (114),
+`set_subtitle_text` (112), `set_action_bar_text` (87), `set_titles_animation`
+(115), `clear_titles` (14), `set_experience` (103) and `cooldown` (22).
+
+They are `REWO_PACKET_COVERAGE.md`'s first **class B** work — the class that
+"needs rendering" — and the thing this milestone establishes is that **the
+class letter changes the gate, not the standard.** Every one of the seven has
+an exact vanilla oracle (`Hud.extractTitle`, `Hud.extractOverlayMessage`,
+`ExperienceBar.extractBackground`, `ContextualBar.extractExperienceLevel`,
+`ItemCooldowns`, `GuiGraphicsExtractor.itemCooldown`), so the decode *and* the
+render are transcribed line by line and graded against an oracle exactly as a
+class-A milestone is. What class B costs is a renderer, not a judgement call.
+
+#### Five places vanilla inverts the obvious reading
+
+**1. `set_subtitle_text` on its own shows nothing.** `Hud.setSubtitle` is one
+assignment; only `setTitle` writes `titleTime`, and `extractTitle`'s entire
+body — the subtitle draw included — is gated on
+`this.title != null && this.titleTime > 0`. So a server that sends a subtitle
+and no title displays nothing, and one that sends the subtitle *after* the
+title is relying on it surviving into a countdown that is already running. An
+implementation that armed the clock from either packet would show a bare
+subtitle vanilla never shows *and* restart the countdown on the second half of
+every two-packet title.
+
+**2. A negative animation field means "leave unchanged", and the packet re-arms
+a live title.** `setTimes` guards each assignment on `>= 0`, per axis, so
+`-1, -1, 40` changes only the fade-out and zero is a legal set. Then the
+trailing `if (this.titleTime > 0) this.titleTime = fadeIn + stay + fadeOut;`
+**restarts a title already on screen at its full duration** — `/title @a times`
+sent mid-title does not retime the remainder, it hands the title its whole life
+back.
+
+**3. `clear_titles`' boolean does something the clear does not.**
+`clearTitles()` drops both components and zeroes the countdown; it leaves the
+three durations exactly as the last `set_titles_animation` left them. Only
+`resetTimes` restores 10 / 70 / 20. So `/title clear` and `/title reset` differ
+in what the *next* title does, not in what is on screen.
+
+**4. `set_experience`'s wire order is not its declaration order.** The fields
+are declared `(float experienceProgress, int totalExperience, int
+experienceLevel)` and the reader is
+`readFloat(); this.experienceLevel = readVarInt(); this.totalExperience = readVarInt();`.
+Reading them top to bottom swaps the last two, and **decodes without erroring**
+— both are var-ints — putting lifetime XP in the level display. `SetExperience`
+therefore names its fields rather than being a tuple. `totalExperience` turns
+out to have **no client reader at all** beyond the assignment: the bar is drawn
+from `experienceProgress`, the number and `getXpNeededForNextLevel` from
+`experienceLevel`, and `LocalPlayer.java`'s only other mention of the total is
+the store itself.
+
+**5. `cooldown` carries no start and no end.** It is
+`(Identifier cooldownGroup, VarInt duration)`; `addCooldown` supplies the start
+from `ItemCooldowns.tickCount`. And `duration == 0` routes to `removeCooldown`,
+so it **cancels** rather than starting a zero-length cooldown — which is
+observable, because `getCooldownPercent` on a zero-length instance is `0/0`, a
+NaN `Mth.clamp` does not rescue.
+
+#### Two more that are not inversions but are invisible if wrong
+
+**The action bar's clock is a constant, and it never animates from this
+packet.** `setOverlayMessage(text, **false**)`: the rainbow belongs to
+`setNowPlaying` (a jukebox). Its life is a fixed 60 ticks and its fade is
+`alpha = (int)(t * 255.0F / **20.0F**)` — a literal, *not* the title's
+`fadeOut`, which also defaults to 20. Reusing the title's field is invisible
+until a server sends `set_titles_animation` with a different fade-out.
+
+**The XP display window is re-armed by `progress` alone, and the first update
+deliberately does not arm it.** `setExperienceValues` calls
+`setExperienceDisplayStartTickToTickCount()` only `if (experienceProgress !=
+this.experienceProgress)`, so a level change at the same fraction leaves the
+window where it was. And that method replaces the `Integer.MIN_VALUE` sentinel
+with `Integer.MIN_VALUE + 1` rather than with `tickCount`, so the join-time
+`set_experience` every vanilla server sends does **not** pop the XP bar over
+the locator bar. Every change after it does.
+
+#### The render, and the arithmetic in it
+
+- Title at **4×** scale, subtitle at **2×**, action bar at **1×**. The centring
+  halves the width **before** the scale (`-titleWidth / 2` inside a
+  `scale(4,4)`), in integer arithmetic — so an odd-width title lands two GUI
+  pixels left of where `-(width * 4) / 2` would put it.
+- The alpha ramp's two branches gate on the **integer** `titleTime` and compute
+  from the **float** `t`, and the second is **not** an `else if`. For any
+  non-negative triple they are mutually exclusive, which is also why vanilla
+  can divide by `fadeIn` and `fadeOut` unguarded: `fadeIn == 0` makes the first
+  guard unreachable (the arming value cannot exceed `stay + fadeOut`) and
+  `fadeOut == 0` makes the second `titleTime <= 0`, which the caller's own guard
+  already excluded. `/title times 0 0 0` is not a crash.
+- **A span's own colour replaces the RGB and keeps the caller's alpha.**
+  `Font.StringRenderOutput.getTextColor` is
+  `ARGB.color(ARGB.alpha(this.color), textColor.getValue())`, so a
+  `{"color":"red"}` title still fades. Taking the span's colour whole — the
+  natural reading of "the style wins" — gives a coloured title that snaps in and
+  out at full opacity while a white one fades. Rewo emits one text line per
+  styled span, penned out with the font's advances, which is what
+  `drawInBatch` does.
+- `int progress = (int)(experienceProgress * **183.0F**)` against a **182**-wide
+  background sprite. That is vanilla's own off-by-one and it is **not clamped**:
+  `blitSprite(…, 182, 5, 0, 0, left, top, progress, 5)` computes
+  `sprite.getU((textureX + width) / spriteWidth)` = `getU(183/182)`, a UV past
+  the sprite's right edge. In vanilla's *stitched* GUI atlas that samples
+  whatever was packed next; in Rewo's fixed layout it samples transparent and is
+  discarded. The overrun is transcribed rather than tidied, and the gate states
+  the consequence rather than claiming to know which neighbour vanilla picks up.
+- The level number is **five shadowless draws** — black at ±1 on each axis, then
+  `-8323296` (`0xFF80FF20`) — and it **straddles** the bar rather than clearing
+  it: `y = guiHeight - 24 - 9 - 2` is its own literal chain, so its last three
+  rows overlap the bar's first three. Its `shadow = false` forced a `shadow`
+  field onto `TextLine` / `OwnedTextLine`, deliberately without a `Default` so
+  adding a caller is a decision rather than an omission.
+- `itemCooldown` fills with **`Integer.MAX_VALUE`**, which as ARGB is white at
+  **alpha 127** — a half-transparent wash, not the opaque white the constant's
+  name suggests. And it is **pinned at the bottom**: `floor(16·(1−c)) +
+  ceil(16·c)` is exactly 16 for every `c`, so `bottom` is always `y + 16` and
+  only the top moves. The wash shrinks *upward off the bottom of the slot*; the
+  obvious reading, a bar growing from the top, is upside down.
+
+#### The respawn asymmetry, and where the group comes from
+
+`handleRespawn` splits this state across two objects with opposite lifetimes.
+The titles live on `Minecraft.gui.hud`, which the respawn never touches — a
+title survives a death and a Nether portal, and only `onDisconnected` clears it.
+The experience fields and the cooldown map live on the `LocalPlayer` a respawn
+**replaces**, and neither is in the explicitly-carried list, so both reset —
+including `experienceDisplayStartTick`'s sentinel, which means the
+`set_experience` the server sends right after a respawn *again* fails to
+prioritise the bar.
+
+The cooldown's key is `getCooldownGroup(stack)`: the stack's
+`minecraft:use_cooldown` `cooldownGroup` when it sets one, and the item's
+registry name otherwise. M41 walked that component and discarded its value, so
+this milestone captures it (`StackComponents::use_cooldown_group`, carried to
+the renderer on `SlotText` — whose `is_empty` had to learn the new field, the
+bug M42's enchantments hit). Without it every stack falls through to its item
+id, which is right for every item that does not set a group and **silently
+wrong** for one that does: the sweep lands on the wrong hotbar slots with no
+error anywhere.
+
+#### The gate
+
+`rewo titleshot --check` — serverless, validation-required, **55 witnesses**,
+fail-closed. One grades this file's own transcription of the placement and ramp
+arithmetic against hand-computed literals *and* against `rewo_gpu::hud` over
+their whole useful ranges; eighteen drive `route_hud_state` with a real
+`Ids::resolve`d table; eleven drive the three `live_cmd` line builders (made
+session-free for this, the way M59 extracted `resolve_health_bar`); the rest
+read back real pixels.
+
+**Four detector errors, all mine, all caught by the gate rather than by
+reading.** They are the same class §0.0 already collects, and the fourth is new:
+
+1. **The fade was measured over the whole upper half of the screen** and read
+   255 at every alpha. The **crosshair** sits at the screen centre and its top
+   half is inside that window — a signal measured against a background that
+   already carries it, for the fourth time on this project. Restricted to the
+   title's own rect, which the preceding witness had just proved holds every
+   magenta pixel.
+2. **The XP fill's right edge was measured on `g − b`.** The two sprites do
+   separate on that axis (background 4..7, progress 11..119) but by two, and the
+   progress sprite's own dark right-edge column sits at the bottom of the range
+   — so the detector stopped seeing the fill's last column and the measurement
+   came up two GUI pixels short. `g − r` separates 7..13 against 20..66, three
+   clear either side.
+3. **The cooldown control assumed the hotbar sprite is periodic.** It is not:
+   the slot interiors are dithered and two neighbours differ by a few bytes in
+   scattered rows. The first version also picked slot 0, which carries the
+   selection frame. Replaced by an absolute threshold, which is stronger — every
+   slot interior is under 60 composited and every washed pixel is at least 187
+   by construction — with the untouched frame asserted to carry nothing above it.
+4. **A whole-frame green sweep is not a valid XP detector**: the hotbar's own
+   light highlight is `(221,240,216)`, a `g − r` of 19. The window is restricted
+   to the bar's five rows, and the witness now *asserts* that window ends above
+   the hotbar's top rather than assuming it.
+
+Two more witnesses were wrong on their first run and both were worth writing:
+`the_experience_bar_sits_between_the_hearts_and_the_hotbar` asserted the level
+number clears the bar (it straddles it), and the title-centring sample used a
+string whose width happened to be **even**, where the two readings of the
+halving agree and the witness is vacuous — M76's "a sample must sit where the
+mutation bites", one milestone later. The gate now *chooses* a string for its
+odd width and records that choice as its own witness.
+
+#### Verification
+
+`cargo test` **1417** (proto 11, world 363, data 175, net 532, mesh 38, gpu 218,
+app 80) — +39 on M78's 1378. `titleshot --check` **55 / 55** with Vulkan
+validation ON, 0 VUIDs. Every other gate green. Demo PNG SHA-256
+byte-identical to M15 onward.
+
+**30 distinct mutations run over three rounds: 29 caught, 1 equivalent.** The
+three rounds are the milestone's real verification story, because each round's
+survivors were a different *kind* of gate defect:
+
+- **Round 1, 20 / 23.** The three survivors: a fade-in mutation whose only
+  sample sat in the fade-**out** branch (the sample did not sit where the
+  mutation bites); the `else if` probe below; and — the sharpest — inverting
+  the cooldown span to grow downward, which left every witness green **because
+  the gate computed its own expectation by calling the function under test.**
+  That is M41's `t4` failure repeating, and reading the file would not have
+  found it.
+- **Round 2, 6 / 9**, after the gate was given its own transcription of the
+  placement and ramp arithmetic (`ref_title_pos`, `ref_title_alpha`,
+  `ref_cooldown_offsets`, …) plus hand-computed literals for every sampled
+  answer. Two new survivors, both real gaps rather than equivalences: moving
+  the XP bar's `MARGIN_BOTTOM` from 24 to 22 was invisible because **every XP
+  witness measured a horizontal edge**, and a vertical shift does not move one;
+  and doubling `SUBTITLE_SCALE` was invisible because the subtitle witness
+  counted pixels in a band and read the scale back off the constant it was
+  meant to be testing.
+- **Round 3, 6 / 7**, after adding `p9c` (the bar's five rows, measured above
+  the hotbar) and `p4b` (the subtitle's *rect*, not its band), and pinning the
+  scale as a literal. Two extra probes went in with them — the title's
+  `TITLE_Y` sign and the wash's alpha channel — and both were caught.
+
+**The one survivor is genuinely equivalent**: making the fade-out branch an
+`else if`. The two guards cannot both hold for any non-negative triple, which
+`hud::title_and_gauge_tests::the_two_alpha_branches_are_mutually_exclusive`
+proves exhaustively over 0..12³ — so the mutant has no reachable behaviour to
+observe, and the unit test is what pins the *reason* rather than the gate.
+
+Two things the battery could not reach, stated rather than implied. The
+`use_cooldown` group capture is witnessed by two unit tests in
+`item_stack.rs`, not by `titleshot` — the gate's hotbar is empty, so the
+group-resolution branch in `resolve_hud_gauges` never runs. And the six
+`m*` line-builder witnesses drive the app's real resolvers but not the frame
+path that calls them, which is a plumbing claim no gate here makes.
+
+**Not verified.** No live server: `rewo play`'s harness has no `/title`,
+`/xp` or cooldown step, so the wire is driven by raw injection into the real
+dispatcher rather than observed on a connection — which is the deterministic
+proof for a packet whose whole effect is client-side, and is what `eventshot`
+and `danceshot` already do for the same reason. And **no eyeball**: this is a
+class-B milestone and its point is that the *decode and the arithmetic* are
+gateable without one, not that the result has been looked at. The `--out-dir`
+frames exist for whoever does.
+
 ### M76 — the rotation the server writes, and the world spawn (2026-07-29)
 
 Three class-A packets that write local player and level state:

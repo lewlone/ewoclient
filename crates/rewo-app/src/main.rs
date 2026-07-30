@@ -28,6 +28,7 @@ mod eventshot_cmd;
 mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
+mod titleshot_cmd;
 mod mobshot_cmd;
 mod modules;
 mod live_cmd;
@@ -177,6 +178,13 @@ enum Command {
     /// and assert the flags byte, the flight constants, the double-tap window
     /// and the mode transitions with `--check` (no server, no GPU).
     Abilityshot(abilityshot_cmd::AbilityshotArgs),
+    /// M79 title-overlay + HUD-gauge oracle: drive raw `set_title_text`,
+    /// `set_subtitle_text`, `set_action_bar_text`, `set_titles_animation`,
+    /// `clear_titles`, `set_experience` and `cooldown` bodies through the real
+    /// router and the real line builders, then render the result offscreen and
+    /// assert the pixels against a synthetic magenta subject with `--check`
+    /// (no server; Vulkan required).
+    Titleshot(titleshot_cmd::TitleshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -297,6 +305,7 @@ fn main() {
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
+        Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),

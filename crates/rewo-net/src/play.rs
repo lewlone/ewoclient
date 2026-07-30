@@ -463,6 +463,17 @@ pub struct PlaySession {
     /// change entirely — a `WorldTransition` rebuilds the level, not the
     /// connection.
     pub session: crate::session::SessionState,
+    /// The title overlay and the two HUD gauges (M79): the title / subtitle /
+    /// action-bar clocks and durations, the experience triple, and the
+    /// item-cooldown map. See [`crate::hud_state`].
+    ///
+    /// [`Self::apply_respawn`] resets **half** of this and keeps the other
+    /// half, because vanilla splits it across two objects with opposite
+    /// lifetimes: the titles live on `Minecraft.gui.hud`, which outlives a
+    /// death and a dimension change, while the experience fields and the
+    /// cooldown map live on the `LocalPlayer` a respawn replaces. See
+    /// [`crate::hud_state::HudState::reset_for_respawn`].
+    pub hud: crate::hud_state::HudState,
     /// The bundle reassembler (M78). Sits between the socket and
     /// [`Self::handle_packet`], so everything between two `bundle_delimiter`s
     /// is applied in one drain and no frame is rendered part-way through a
@@ -1336,6 +1347,10 @@ impl<'a> Connection<'a> {
             ticking: crate::ticking::TickRateManager::default(),
             client_state: crate::client_state::ClientState::default(),
             session: session_state,
+            // M79. A fresh `Hud` has already run `resetTitleTimes()`, so the
+            // default carries 10 / 70 / 20 rather than three zeros — see
+            // `hud_state::TitleOverlay::default`.
+            hud: crate::hud_state::HudState::default(),
             bundle,
             clock_epoch: std::time::Instant::now(),
             number_formats: self.data.number_formats,
@@ -1639,6 +1654,14 @@ impl PlaySession {
         // `VisualEffects::tick` no-ops until `set_player_id`, so calling it
         // before login (no local entity yet, as in vanilla) does nothing.
         self.visual_effects.tick();
+        // M79: the title/action-bar countdowns (`Hud.tick`), the local
+        // player's `tickCount` (which the XP bar's display window is measured
+        // against) and `ItemCooldowns.tick`. Three vanilla call sites, one
+        // cadence — `Minecraft.tick` drives the first and `ClientLevel`'s
+        // entity tick the other two, and all three run once per client tick.
+        // Placed beside `visual_effects` because it is the same kind of thing:
+        // a purely local clock the server never re-states.
+        self.hud.tick();
         // M38: publish what the local player is holding into the entity table,
         // so its swing runs through M19's machine like any other entity's.
         //
@@ -2412,6 +2435,10 @@ impl PlaySession {
             // parse.
             let lines = self.session.take_chat();
             self.chat_log.extend(lines);
+        } else if crate::route_hud_state(id, body, ids, &mut self.hud) {
+            // M79 — the title overlay, the XP gauge and the item-cooldown map.
+            // Every one of the seven writes state a renderer reads; none of
+            // them answers the server. See `crate::hud_state`.
         } else if Some(id) == ids.cb_play_cookie_request {
             // M78 closes a hole it would otherwise have shipped around: the
             // *play-state* `cookie_request` was answered only by the M1-era
@@ -3255,6 +3282,17 @@ impl PlaySession {
         // server re-sends whatever effects still apply. The registry ids and the
         // (unchanged) local entity id are kept.
         self.visual_effects.reset_for_respawn();
+
+        // M79, and it runs the opposite way to the fields above it. The
+        // experience triple and the item-cooldown map are `LocalPlayer` /
+        // `Player` state that the fresh player does not inherit — including
+        // `experienceDisplayStartTick`'s `Integer.MIN_VALUE` sentinel, so the
+        // `set_experience` the server sends right after a respawn again fails
+        // to prioritise the XP bar. The *titles* are untouched here on
+        // purpose: they live on `Minecraft.gui.hud`, which `handleRespawn`
+        // never reaches, so a title survives a death and a Nether portal and
+        // is cleared only by a disconnect.
+        self.hud.reset_for_respawn();
 
         if changed {
             let def = self

@@ -427,6 +427,18 @@ pub struct SlotText {
     /// carries `stored_enchantments` and is *not* enchanted, so its rarity is
     /// not promoted.
     pub is_enchanted: bool,
+    /// `minecraft:use_cooldown`'s `cooldownGroup` (M79) — the key
+    /// `ItemCooldowns` indexes this stack by, when the stack overrides it.
+    ///
+    /// `None` means "use the item's registry name", which is
+    /// `getCooldownGroup`'s `orElse` and covers both an absent component and a
+    /// present one with an empty `Optional`.
+    ///
+    /// Not tooltip text, unlike everything above it — it rides here because
+    /// this is the per-fingerprint carrier for *interpreted components* and
+    /// `ItemSlot` is `Copy`, which is the same reason the tooltip text is not
+    /// on the slot either.
+    pub cooldown_group: Option<String>,
 }
 
 impl SlotText {
@@ -443,6 +455,7 @@ impl SlotText {
             && !self.unbreakable
             && self.enchantments.is_empty()
             && !self.is_enchanted
+            && self.cooldown_group.is_none()
     }
 }
 

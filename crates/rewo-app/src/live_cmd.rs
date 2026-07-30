@@ -2557,6 +2557,8 @@ pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::
         food_full: hud_sprite(&h.food_full),
         food_half: hud_sprite(&h.food_half),
         food_empty: hud_sprite(&h.food_empty),
+        experience_bar_background: hud_sprite(&h.experience_bar_background),
+        experience_bar_progress: hud_sprite(&h.experience_bar_progress),
     })
 }
 
@@ -3377,7 +3379,18 @@ fn run_headless(
         cu,
         start.elapsed().as_secs_f32(),
     );
-    world_renderer.set_hud(session.health, session.food, 0);
+    world_renderer.set_hud(
+        session.health,
+        session.food,
+        0,
+        resolve_hud_gauges(
+            &session.hud,
+            &session.inventory,
+            &items,
+            has_experience(&session),
+            0.0,
+        ),
+    );
     let mut headless_text = build_text(&session, gui_px(1280, 720), 720.0, None, true);
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
@@ -4440,7 +4453,18 @@ impl LiveApp {
         }
         state
             .world_renderer
-            .set_hud(session.health, session.food, self.hotbar_slot);
+            .set_hud(
+                session.health,
+                session.food,
+                self.hotbar_slot,
+                resolve_hud_gauges(
+                    &session.hud,
+                    &session.inventory,
+                    &self.items,
+                    has_experience(session),
+                    alpha,
+                ),
+            );
         let px = gui_px(extent.width, extent.height);
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
         let mut text = build_text(session, px, extent.height as f32, fps, self.debug);
@@ -4454,6 +4478,27 @@ impl LiveApp {
                 &advance,
                 px,
                 (extent.width as f32, extent.height as f32),
+            ));
+            // M79: the XP level number, then the title / subtitle / action
+            // bar. The titles go last so they sit over everything the HUD
+            // draws, which is where `nextStratum()` puts them in vanilla.
+            text.extend(experience_level_lines(
+                &session.hud.experience,
+                has_experience(session),
+                self.baked.as_ref().map(|b| &b.lang),
+                &advance,
+                px,
+                (extent.width as f32, extent.height as f32),
+            ));
+            text.extend(title_lines(
+                &session.hud.titles,
+                &advance,
+                px,
+                (extent.width as f32, extent.height as f32),
+                // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
+                // frame's fraction of the way into the current tick, the same
+                // `alpha` the entity lerps use.
+                alpha,
             ));
         }
         // The stack counts are text like any other line, drawn after the icons
@@ -4733,6 +4778,7 @@ fn build_text(
                 px,
                 color: white,
                 alpha: 1.0,
+                shadow: true,
                 text,
             });
         }
@@ -4751,6 +4797,7 @@ fn build_text(
             px,
             color: white,
             alpha: 1.0,
+            shadow: true,
             text,
         });
     }
@@ -4857,8 +4904,223 @@ fn selected_item_name_line(
         px,
         color,
         alpha: alpha as f32 / 255.0,
+        shadow: true,
         text: name.to_string(),
     })
+}
+
+/// M79's two HUD gauges, resolved from the session once per frame.
+///
+/// **The XP half is gated on `gameMode.hasExperience()`**, which is
+/// `localPlayerMode.isSurvival()` — i.e. SURVIVAL *or* ADVENTURE, the same
+/// two-value predicate M66's held-item label uses. Vanilla applies it in two
+/// places with different consequences: `nextContextualInfoState` picks
+/// `ContextualInfo.EMPTY` over `EXPERIENCE`, which removes the *bar*, and
+/// `extractCommonHud` guards the level *number* separately (and additionally
+/// on `experienceLevel > 0`, so level 0 shows no number even in survival).
+/// An unknown mode falls back to survival for the same reason the hearts do.
+///
+/// **The cooldown half needs a group per slot**, and the group is
+/// `getCooldownGroup(stack)`: the stack's `use_cooldown` override when it sets
+/// one, the item's registry name otherwise. Both halves of that are here
+/// because neither `rewo_net::hud_state` (which never sees a stack) nor
+/// `rewo_gpu::hud` (which never sees the item table) can do it alone.
+pub(crate) fn resolve_hud_gauges(
+    hud: &rewo_net::hud_state::HudState,
+    inventory: &rewo_world::inventory::Inventory,
+    items: &rewo_data::items::Items,
+    has_experience: bool,
+    partial: f32,
+) -> rewo_gpu::hud::HudGauges {
+    let xp = &hud.experience;
+    let mut cooldowns = [0.0f32; 9];
+    for (i, slot) in cooldowns.iter_mut().enumerate() {
+        let Some(stack) = inventory.hotbar(i) else {
+            continue;
+        };
+        let Some(name) = items.name(stack.item_id) else {
+            // An item id the table cannot name has no default group, and
+            // guessing one would sweep an unrelated slot. Vanilla cannot
+            // reach this: `BuiltInRegistries.ITEM.getKey` always answers.
+            continue;
+        };
+        let group = inventory
+            .text_of(stack)
+            .and_then(|t| t.cooldown_group.as_deref())
+            .unwrap_or(name);
+        // `getCooldownPercent(item, getGameTimeDeltaPartialTick(true))`: the
+        // frame's fraction into the tick, so the sweep slides rather than
+        // stepping at 20 Hz.
+        *slot = hud.cooldowns.percent(group, partial);
+    }
+    rewo_gpu::hud::HudGauges {
+        experience: has_experience.then_some(xp.progress),
+        xp_needed: xp.xp_needed_for_next_level(),
+        cooldowns,
+    }
+}
+
+/// `gameMode.hasExperience()` is `localPlayerMode.isSurvival()`, which is
+/// **SURVIVAL or ADVENTURE**.
+///
+/// An unknown mode falls back to survival, the same assumption the hearts
+/// already make (M66 records the reasoning at `selected_item_name_line`).
+pub(crate) fn has_experience(session: &PlaySession) -> bool {
+    session
+        .own_game_mode()
+        .map(rewo_net::play::GameMode::is_survival)
+        .unwrap_or(true)
+}
+
+/// The XP level number — `ContextualBar.extractExperienceLevel` (M79).
+///
+/// Five draws: a black copy at each of ±1 on both axes, then the green one,
+/// **all with `shadow = false`**. The outline is what makes the number legible
+/// over the bar it straddles; a drop shadow on top of it would thicken the
+/// glyphs instead of framing them.
+///
+/// The string is `Component.translatable("gui.experience.level", level)`,
+/// which the vanilla language file renders as the bare number — so the
+/// translated form is looked up and the number substituted, with the number
+/// alone as the fallback.
+pub(crate) fn experience_level_lines(
+    xp: &rewo_net::hud_state::ExperienceState,
+    has_experience: bool,
+    lang: Option<&rewo_data::lang::Language>,
+    advance: &[u8; 256],
+    px: f32,
+    (screen_w, screen_h): (f32, f32),
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    let level = xp.level;
+    if !has_experience || level <= 0 {
+        return Vec::new();
+    }
+    let number = level.to_string();
+    let text = match lang.and_then(|l| l.get("gui.experience.level")) {
+        // `%s` is the one substitution the vanilla key carries.
+        Some(pattern) if pattern.contains("%s") => pattern.replacen("%s", &number, 1),
+        _ => number,
+    };
+    let width = rewo_gpu::text::width(&text, advance);
+    let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
+    let (x, y) = rewo_gpu::hud::experience_level_pos(gw, gh, width);
+    let mut out = Vec::with_capacity(5);
+    let mut push = |dx: i32, dy: i32, color: u32| {
+        out.push(rewo_gpu::world::OwnedTextLine {
+            x: (x + dx) as f32 * px,
+            y: (y + dy) as f32 * px,
+            px,
+            color: rewo_net::chat_style::rgb_f32(color & 0x00FF_FFFF),
+            alpha: 1.0,
+            shadow: false,
+            text: text.clone(),
+        });
+    };
+    // The four black copies first, in vanilla's own order, then the green.
+    push(1, 0, rewo_gpu::hud::EXPERIENCE_LEVEL_OUTLINE);
+    push(-1, 0, rewo_gpu::hud::EXPERIENCE_LEVEL_OUTLINE);
+    push(0, 1, rewo_gpu::hud::EXPERIENCE_LEVEL_OUTLINE);
+    push(0, -1, rewo_gpu::hud::EXPERIENCE_LEVEL_OUTLINE);
+    push(0, 0, rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR);
+    out
+}
+
+/// The title, the subtitle and the action bar — `Hud.extractTitle` and
+/// `Hud.extractOverlayMessage` (M79).
+///
+/// **One text line per styled span**, penned out with the font's advances:
+/// vanilla's `graphics.text(font, Component, x, y, color, shadow)` passes the
+/// faded colour as a *default* that a span's own `color` replaces, and
+/// `Font.StringRenderOutput.getTextColor` keeps the **caller's alpha** when it
+/// does:
+///
+/// ```java
+/// if (textColor != null) {
+///    int alpha = ARGB.alpha(this.color);
+///    return ARGB.color(alpha, textColor.getValue());
+/// }
+/// ```
+///
+/// So `{"text":"GO","color":"red"}` is red *and* still fades. Taking the
+/// span's colour whole — the natural reading of "the style wins" — would give
+/// a title that snaps in and out at full opacity.
+pub(crate) fn title_lines(
+    t: &rewo_net::hud_state::TitleOverlay,
+    advance: &[u8; 256],
+    px: f32,
+    (screen_w, screen_h): (f32, f32),
+    partial: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_net::chat_style::{self, ChatStyle};
+    let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
+    let mut out = Vec::new();
+    // A run of spans laid end to end from a top-left in GUI pixels, at a
+    // whole-number scale. `scale` multiplies the *font* pixel, which is why
+    // the title is 4× and the subtitle 2× rather than being pre-scaled
+    // strings.
+    let mut run =
+        |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
+         line: &chat_style::ChatLine,
+         x: i32,
+         y: i32,
+         scale: i32,
+         alpha: f32| {
+            let mut pen = x;
+            for span in line {
+                let w = rewo_gpu::text::width(&span.text, advance);
+                if !span.text.is_empty() {
+                    out.push(rewo_gpu::world::OwnedTextLine {
+                        x: pen as f32 * px,
+                        y: y as f32 * px,
+                        px: px * scale as f32,
+                        color: span.color,
+                        alpha,
+                        shadow: true,
+                        text: span.text.clone(),
+                    });
+                }
+                pen += w * scale;
+            }
+        };
+
+    // `if (this.title != null && this.titleTime > 0)`.
+    if let Some(title) = t.title.as_ref().filter(|_| t.title_time > 0) {
+        let alpha = rewo_gpu::hud::title_alpha(t.title_time, t.fade_in, t.stay, t.fade_out, partial);
+        // `if (alpha > 0)` — the draw's own guard, so a fully-faded frame
+        // emits nothing rather than a transparent quad.
+        if alpha > 0 {
+            let a = alpha as f32 / 255.0;
+            let line = chat_style::parse_component(title, ChatStyle::WHITE);
+            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let (x, y) = rewo_gpu::hud::title_pos(gw, gh, width);
+            run(&mut out, &line, x, y, rewo_gpu::hud::TITLE_SCALE, a);
+            // The subtitle is drawn *inside* the title's block, at the title's
+            // alpha — it has no ramp of its own.
+            if let Some(subtitle) = &t.subtitle {
+                let line = chat_style::parse_component(subtitle, ChatStyle::WHITE);
+                let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+                let (x, y) = rewo_gpu::hud::subtitle_pos(gw, gh, width);
+                run(&mut out, &line, x, y, rewo_gpu::hud::SUBTITLE_SCALE, a);
+            }
+        }
+    }
+
+    // `if (this.overlayMessageString != null && this.overlayMessageTime > 0)`.
+    // A separate block, not an `else` — an action bar and a title show at once.
+    if let Some(message) = t
+        .overlay_message
+        .as_ref()
+        .filter(|_| t.overlay_message_time > 0)
+    {
+        let alpha = rewo_gpu::hud::action_bar_alpha(t.overlay_message_time, partial);
+        if alpha > 0 {
+            let line = chat_style::parse_component(message, ChatStyle::WHITE);
+            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let (x, y) = rewo_gpu::hud::action_bar_pos(gw, gh, width);
+            run(&mut out, &line, x, y, 1, alpha as f32 / 255.0);
+        }
+    }
+    out
 }
 
 /// Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
@@ -8698,6 +8960,7 @@ fn screen_tooltip(
                 px: scale,
                 color,
                 alpha: 1.0,
+                shadow: true,
                 text: rewo_gpu::tooltip::line_text(&spans),
             };
             y += rewo_gpu::container::TOOLTIP_LINE_HEIGHT + if i == 0 { 2 } else { 0 };
@@ -8812,6 +9075,7 @@ fn count_label(
         px: scale,
         color: [1.0, 1.0, 1.0],
         alpha: 1.0,
+        shadow: true,
         text,
     })
 }

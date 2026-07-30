@@ -86,6 +86,27 @@ pub struct DataComponentIds {
     /// Note the slot is an **`Optional`** template, unlike a bundle's plain
     /// one — the list is indexed by slot number and gaps are real.
     pub container: i32,
+    /// `minecraft:use_cooldown` (M79) — `UseCooldown(float seconds,
+    /// Optional<Identifier> cooldownGroup)`.
+    ///
+    /// Read for the **group**, which is the key `ClientboundCooldownPacket`
+    /// addresses:
+    ///
+    /// ```java
+    /// public Identifier getCooldownGroup(final ItemStack item) {
+    ///    UseCooldown useCooldown = item.get(DataComponents.USE_COOLDOWN);
+    ///    Identifier defaultItemGroup = BuiltInRegistries.ITEM.getKey(item.getItem());
+    ///    return useCooldown == null ? defaultItemGroup
+    ///                               : useCooldown.cooldownGroup().orElse(defaultItemGroup);
+    /// }
+    /// ```
+    ///
+    /// The `float` is the *server's* cooldown length and is not read by the
+    /// HUD at all — the packet carries the duration in ticks. Without this,
+    /// every stack falls through to its item id, which is right for every item
+    /// that does not set a group and silently wrong for one that does: the
+    /// sweep would be drawn on the wrong hotbar slots, with no error anywhere.
+    pub use_cooldown: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -171,6 +192,7 @@ impl DataComponentIds {
             trim: id("minecraft:trim")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
+            use_cooldown: id("minecraft:use_cooldown")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

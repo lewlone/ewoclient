@@ -40,6 +40,10 @@ pub struct OwnedTextLine {
     pub px: f32,
     pub color: [f32; 3],
     pub alpha: f32,
+    /// [`crate::text::TextLine::shadow`] — deliberately **not** defaulted, so
+    /// adding a caller is a decision rather than an omission. Everything but
+    /// M79's XP level number passes `true`.
+    pub shadow: bool,
     pub text: String,
 }
 
@@ -571,7 +575,7 @@ pub struct WorldRenderer {
     hud: Option<HudPass>,
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
-    hud_state: Option<(f32, i32, u8)>,
+    hud_state: Option<(f32, i32, u8, crate::hud::HudGauges)>,
     text: Option<TextPass>,
     /// The Velvet type stack (M52b) — real variable-font text, for the pieces
     /// that need per-run styling the bitmap pass cannot express (tooltips
@@ -2027,10 +2031,10 @@ impl WorldRenderer {
         Ok(())
     }
 
-    /// Set this frame's HUD state (health/food 0..20, selected slot 0..8).
-    /// Never called → no HUD (view/demo/bench).
-    pub fn set_hud(&mut self, health: f32, food: i32, slot: u8) {
-        self.hud_state = Some((health, food, slot));
+    /// Set this frame's HUD state (health/food 0..20, selected slot 0..8) and
+    /// M79's two gauges. Never called → no HUD (view/demo/bench).
+    pub fn set_hud(&mut self, health: f32, food: i32, slot: u8, gauges: crate::hud::HudGauges) {
+        self.hud_state = Some((health, food, slot, gauges));
     }
 
     /// Attach the screen-space text pass (chat + coords overlay).
@@ -2627,8 +2631,9 @@ impl WorldRenderer {
                 &self.item_bars,
             );
         }
-        if let (Some(hud), Some((health, food, slot))) = (self.hud.as_mut(), self.hud_state) {
-            hud.draw(gpu, cb, extent, health, food, slot);
+        if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
+        {
+            hud.draw(gpu, cb, extent, health, food, slot, gauges);
             if screen.is_none() {
                 if let Some(items) = &self.gui_items {
                     items.draw(gpu, cb, extent);
@@ -2670,6 +2675,7 @@ impl WorldRenderer {
                         px: l.px,
                         color: l.color,
                         alpha: l.alpha,
+                        shadow: l.shadow,
                         text: &l.text,
                     })
                     .collect();
