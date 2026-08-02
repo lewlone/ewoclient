@@ -24,10 +24,17 @@
 //! - 94`. Six screens override the title's x, and they do it in **two
 //! different ways**:
 //!
-//! * `dispenser`, `crafter_3x3` and `brewing_stand` compute
-//!   `(imageWidth - font.width(title)) / 2` — a *centring*, which depends on
-//!   the rendered width of a title the server chose, so it cannot be stored as
-//!   a constant.
+//! * `dispenser`, `crafter_3x3`, `brewing_stand` and **the three furnaces**
+//!   compute `(imageWidth - font.width(title)) / 2` — a *centring*, which
+//!   depends on the rendered width of a title the server chose, so it cannot be
+//!   stored as a constant.
+//!
+//!   **The furnaces are inherited, and that is how they were missed.** M87f
+//!   surveyed each `*Screen.java` individually and recorded six; the three
+//!   furnaces set nothing of their own, because `AbstractFurnaceScreen.init`
+//!   does it for them. A survey that does not follow `extends` sees a base
+//!   class's overrides as absent from every subclass. `tools/check_menu_layouts.py`
+//!   now walks the chain and grades this table against it.
 //! * `anvil` (60), `crafting` (29) and `smithing` (44, and a `titleLabelY` of
 //!   15) are plain literals.
 //!
@@ -199,11 +206,11 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_w: 256.0,
         sheet_h: 256.0,
     }),
-    plain("textures/gui/container/blast_furnace.png"),
+    centered("textures/gui/container/blast_furnace.png"),
     centered("textures/gui/container/brewing_stand.png"),
     titled("textures/gui/container/crafting_table.png", 29),
     plain("textures/gui/container/enchanting_table.png"),
-    plain("textures/gui/container/furnace.png"),
+    centered("textures/gui/container/furnace.png"),
     plain("textures/gui/container/grindstone.png"),
     Some(MenuScreen {
         texture: "textures/gui/container/hopper.png",
@@ -255,7 +262,7 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_w: 256.0,
         sheet_h: 256.0,
     }),
-    plain("textures/gui/container/smoker.png"),
+    centered("textures/gui/container/smoker.png"),
     plain("textures/gui/container/cartography_table.png"),
     plain("textures/gui/container/stonecutter.png"),
 ];
