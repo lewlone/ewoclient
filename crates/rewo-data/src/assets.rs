@@ -1365,6 +1365,44 @@ fn bake_entity_tex(jar: Jar, rel: &str, w: u32, h: u32) -> Option<Vec<u8>> {
     }
 }
 
+/// The **distinct** background sheets the 24 container screens draw (M87).
+///
+/// Distinct, not one per menu: the six `generic_9xN` chests share
+/// `generic_54.png` — `ContainerScreen` blits two sub-rects of it and skips
+/// whatever rows the row count does not want — so 25 menu types resolve to 19
+/// sheets. Loading one per menu would put six copies of a 256×256 sheet in the
+/// atlas.
+///
+/// Paths are jar-relative in the form [`ContainerSprites`]'s loader takes,
+/// which is `gui/...` — `menu_screen`'s table writes the same files as
+/// `textures/gui/...`, the form vanilla's `Identifier` uses. `rewo-data` has no
+/// `rewo-world` dependency and so cannot read that table; the two lists are
+/// cross-checked from `rewo-world`, where both are visible.
+///
+/// `lectern` contributes nothing: `LecternScreen` is a `BookViewScreen` and
+/// draws no container background at all.
+pub const MENU_BACKGROUND_TEXTURES: &[&str] = &[
+    "gui/container/generic_54.png",
+    "gui/container/dispenser.png",
+    "gui/container/crafter.png",
+    "gui/container/anvil.png",
+    "gui/container/beacon.png",
+    "gui/container/blast_furnace.png",
+    "gui/container/brewing_stand.png",
+    "gui/container/crafting_table.png",
+    "gui/container/enchanting_table.png",
+    "gui/container/furnace.png",
+    "gui/container/grindstone.png",
+    "gui/container/hopper.png",
+    "gui/container/loom.png",
+    "gui/container/villager.png",
+    "gui/container/shulker_box.png",
+    "gui/container/smithing.png",
+    "gui/container/smoker.png",
+    "gui/container/cartography_table.png",
+    "gui/container/stonecutter.png",
+];
+
 /// The textures the container screen and its tooltips draw (M35, M40, M58).
 pub struct ContainerSprites {
     /// `AbstractContainerScreen.INVENTORY_LOCATION` — a 256×256 sheet whose
@@ -1387,6 +1425,13 @@ pub struct ContainerSprites {
     /// middles, frame `border: 10` sets `stretch_inner`, so it stretches them.
     pub tooltip_background: HudSprite,
     pub tooltip_frame: HudSprite,
+    /// The 19 distinct container background sheets (M87), in
+    /// [`MENU_BACKGROUND_TEXTURES`] order.
+    ///
+    /// A parallel `Vec` rather than a map: the order is the contract, and a
+    /// map would let a missing sheet look like a lookup miss at draw time
+    /// instead of a load failure at bake time.
+    pub menu_backgrounds: Vec<HudSprite>,
     /// `ClientBundleTooltip`'s six sprites (M58) — the cell chrome of the grid
     /// M52 computed the geometry of.
     ///
@@ -1470,7 +1515,14 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         let (rgba, w, h) = decode_png_any(&bytes)?;
         Some(HudSprite { rgba, w, h })
     };
+    let mut menu_backgrounds = Vec::with_capacity(MENU_BACKGROUND_TEXTURES.len());
+    for path in MENU_BACKGROUND_TEXTURES {
+        // `?` rather than a skip: a container Rewo can open but cannot paint
+        // is worse than a bake that says which sheet is missing.
+        menu_backgrounds.push(get(jar, path)?);
+    }
     Some(ContainerSprites {
+        menu_backgrounds,
         background: get(jar, "gui/container/inventory.png")?,
         highlight_back: get(jar, "gui/sprites/container/slot_highlight_back.png")?,
         highlight_front: get(jar, "gui/sprites/container/slot_highlight_front.png")?,

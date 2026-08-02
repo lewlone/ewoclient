@@ -327,6 +327,54 @@ pub fn background_quads(s: &MenuScreen) -> Vec<PanelQuad> {
 mod tests {
     use super::*;
 
+    /// This table's texture paths, deduplicated, in first-appearance order.
+    fn distinct_textures() -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for s in SCREENS.iter().flatten() {
+            if !out.contains(&s.texture) {
+                out.push(s.texture);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_screens_texture_is_one_the_asset_bake_loads() {
+        // The two lists live in different crates and neither can see the
+        // other: `rewo-data` has no `rewo-world` dependency, so its loader
+        // list is written independently of this table. That makes this a real
+        // cross-check rather than a restatement -- a sheet named here and not
+        // there is a container that opens and paints nothing, and a sheet
+        // named there and not here is dead weight in the atlas.
+        //
+        // The two spell paths differently on purpose, each in its own crate's
+        // idiom: vanilla's `Identifier` form here (`textures/gui/...`) and the
+        // jar-relative form the loader takes there (`gui/...`).
+        let mut mine: Vec<String> = distinct_textures()
+            .iter()
+            .map(|t| t.trim_start_matches("textures/").to_string())
+            .collect();
+        let mut theirs: Vec<String> = rewo_data::assets::MENU_BACKGROUND_TEXTURES
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        mine.sort();
+        theirs.sort();
+        assert_eq!(mine, theirs);
+    }
+
+    #[test]
+    fn the_chest_family_shares_one_sheet() {
+        // 25 menu types, 24 container screens, 19 sheets: the six chests share
+        // generic_54.png, which is why the bake list is not one per menu.
+        assert_eq!(SCREENS.len(), 25);
+        assert_eq!(SCREENS.iter().flatten().count(), 24);
+        assert_eq!(distinct_textures().len(), 19);
+        let chest_sheets: std::collections::HashSet<_> =
+            (0..6).map(|i| screen_of(i).unwrap().texture).collect();
+        assert_eq!(chest_sheets.len(), 1, "all six chests are one sheet");
+    }
+
     #[test]
     fn there_is_one_screen_slot_per_menu_type() {
         assert_eq!(SCREENS.len(), crate::menu_layout::REGISTRY.len());
