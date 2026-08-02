@@ -35,10 +35,25 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M57 shipped and merged to `main`
+### Where it is: M0–M86 shipped and merged to `main`
 
-`origin/main` is at **`aadd8e9`** and everything from M0 to M57 is on it. The
-working tree is clean and there are no stashes.
+`origin/main` is at **`0ddbc66`** and everything from M0 to M86 is on it. The
+working tree is clean, there are no stashes, and **no branch anywhere carries a
+commit that is not on `main`** — the multi-agent worktrees under
+`.claude/worktrees/` hold dirty scratch copies whose every file is already
+landed by another path, so they are litter rather than work in progress.
+
+**Re-verified from a cold start on 2026-08-02**, by running the checks rather
+than reading this file: `cargo build --release -p rewo-app` clean (30
+pre-existing dead-code warnings); **1623 tests, 0 failures** (`rewo-net` 565,
+`rewo-world` 489, `rewo-gpu` 249, `rewo-data` 179, app 85, `rewo-mesh` 45,
+`rewo-proto` 11 — matching the M84 measurement exactly); `mobshot --check`
+**246/246**. The numbers in this file are trustworthy. **Two of its *plans*
+were not, and are corrected below** — the block you are reading claimed M57,
+and the "What to do next" that follows offered two items that had both shipped
+(the health bar's render half as M59, the bundle grid's chrome as M58). A fresh
+session should treat §15's status log and `REWO_PACKET_COVERAGE.md` as current
+and any forward-looking prose as suspect until checked against `git log`.
 
 **A numbering note, because the ladder is not contiguous by accident.** M52 is
 the **EwoClient module port**, which landed on `main` from a second concurrent
@@ -129,20 +144,52 @@ byte-identical since M15.
 ETF (M57), tooltips (M54 data + M56 image pass), screenshots (M51), and the data
 half of health bars (M55).
 
-Two pieces are finished-but-for-one-step, and are the cheapest things to pick up:
+**Both "finished-but-for-one-step" items this section used to name have
+shipped** — the health bar's render half as **M59** (with `healthbarshot`, the
+first gate in the project with no vanilla oracle to predict from) and the
+bundle grid's cell chrome as **M58** (six sprites, two of which are the
+`container/bundle/…` pair rather than the `container/…` pair M35 already
+loads). Nothing is mid-flight.
 
-- **The health bar's render half.** The spec is written
-  (`REWO_HEALTH_BAR_SPEC.md`) and the data is decoded (M55 `update_attributes`,
-  43 witnesses). What is missing is a `push_health_bar` sibling to
-  `entities.rs::push_tag` — the nametag's backing plate is already a
-  camera-billboarded untextured coloured rect, so this needs no new geometry
-  type, texture, pipeline or blend state. **This is the first Rewo feature with
-  no vanilla oracle**; read the spec's preamble before writing a witness.
-- **The bundle grid's cell chrome.** M56 computes and grades every cell
-  position but does not blit `container/bundle/slot_background`, the two
-  highlights or the three `bundle_progressbar_*` sprites — they need fields on
-  `assets::ContainerSprites`, and that agent was fenced out of `assets.rs` to
-  keep it from racing the ETF port. Geometry is done; only the blits are absent.
+**The packet ladder is finished, and that changes the unit of work.**
+`REWO_PACKET_COVERAGE.md` is at **107 consumed / 0 resolved-but-ignored / 34
+absent**, and **classes A and B are both empty**: every clientbound-play packet
+Rewo *can* render is rendered. The 34 that remain are 23 that need a subsystem
+Rewo has not got and 11 that do not apply, so picking work from that document
+now means **choosing a subsystem, not a packet**. The 23 cluster:
+
+| Cluster | Packets | Note |
+|---|---:|---|
+| **Container / menu screens** | 6 | `open_screen`, `container_set_data`, `merchant_offers`, `open_book`, `open_sign_editor`, `mount_screen_open` |
+| Recipe book | 5 | incl. `update_recipes` |
+| Chat / command input | 4 | Brigadier tree, suggestions, completions, `delete_chat` |
+| Advancements | 2 | |
+| Resource-pack fetch | 2 | |
+| Dialog framework | 2 | `show_dialog` / `clear_dialog` |
+| Map rendering, transfer | 2 | |
+
+**The container/menu cluster is the largest and the most player-visible**, and
+the machinery is mostly already built. `apply_container_set_content` hard-returns
+on any container id but 0 — its own comment says *"Rewo has none — so ignoring
+them is not a shortcut, it is the whole truth about what this client can show"*
+— so on a real server you cannot open a chest, a furnace or a villager trade.
+What exists to build on: `rewo-world/inventory.rs` (slot arithmetic, `HashedStack`
+click prediction, quick-move), `screen.rs` + `layout.rs` (M82/M85), `rewo-gpu/
+container.rs`, M84's parameterised nine-slice, and the `minecraft:menu` registry
+— **25 entries, present in the datagen report**. It has an exact vanilla oracle
+(`AbstractContainerScreen` plus one menu class each) and extends `inventoryshot`
+rather than needing a new kind of witness.
+
+Two other candidates worth naming, since the choice is the user's: **chat and
+command input** (4 packets, plus the `disguised_chat` / `player_chat` decoration
+partial — `/msg` renders the bare message with no "X whispers to you" wrapper,
+which needs the `minecraft:chat_type` registry `parse_registry_data` does not
+capture), and **audio**, which carries the largest ecosystem demand in
+`REWO_FEATURE_SURVEY.md` (~117M downloads) and whose decode half is done (M63
+packets, M64's 1,968-entry registry, M66's `sounds.json` variants and
+`level_event` table) — what is missing is a device and a mixer, and the final
+check on it is the one thing in this project that genuinely needs a human to
+listen.
 
 **Survey item 1 — porting the EwoClient module + HUD set — is USER-GATED.** The
 repo owner's instruction: it "must not go ahead without my explicit go ahead, it
@@ -529,7 +576,14 @@ list that follows is the 2026-07-27 snapshot and is left as written.
   byte-identical from M15 through M38. Any change to it is a regression until
   argued otherwise.
 
-### What to do next
+### What to do next — HISTORICAL (2026-07-27); the live one is above
+
+**Do not act on this block.** It is the snapshot that belonged to the
+2026-07-27 numbers above it and is kept for the same reason they are. All three
+of its candidates have shipped: worn armour as **M46–M50** (the armour arc,
+including the `ARMOR_ENTITY_GLINT_TEXTURING` it says could not ship), the
+hand's unknowns in **M38**, and survey items 2–5 across **M51/M54–M57**. The
+current queue is the "What to do next" in §0.0 above.
 
 Nothing is mid-flight — every milestone through M37 is shipped, gated and
 merged. Three candidates, in the order I would take them:

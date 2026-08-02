@@ -1610,6 +1610,23 @@ band in the world pass, pinned by four mutation-verified pixel witnesses in
 M15 onward. All of M10–M33b is now **pushed** to
 `codex/rewo-m19-combat-swings`; **merged to `origin/main` on 2026-07-27** as a
 clean fast-forward, closing the long-standing unmerged-branch risk.*
+
+*Update (2026-08-02 session, docs): **caught this file up from M73 to M86** —
+twenty milestones (M54–M60, M74–M86) that shipped without a CLAUDE.md pass, now
+one grouped section at the end of the Rewo part rather than twenty essays. The
+session opened by verifying rather than reading: build clean, **1623 tests / 0
+failures**, `mobshot` 246/246, `HEAD == origin/main == 0ddbc66`, no branch
+holding an unmerged commit, and the fourteen dirty agent worktrees confirmed to
+be litter (every file already on `main`). **The numbers in the docs were exact;
+two of the plans were stale** — `REWO_PLAN.md` §0.0 still said "M0–M57 at
+`aadd8e9`" and still offered the health-bar render half and the bundle grid's
+chrome as the cheapest pickups, both shipped (M59, M58). §0.0's "Where it is"
+and "What to do next" are rewritten, and its second, 2026-07-27 "What to do
+next" is now explicitly marked HISTORICAL, because it still recommends worn
+armour (shipped M46–M50) and a fresh session reading top-down could act on it.
+**The headline state change: `REWO_PACKET_COVERAGE.md` is at 107 / 0 / 34 with
+classes A and B both empty** — every packet Rewo can render is rendered, so the
+next unit of work is a **subsystem**, not a packet.*
 ---
 
 ## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, the first-person hand, and the Velvet type stack)
@@ -1618,9 +1635,19 @@ clean fast-forward, closing the long-standing unmerged-branch risk.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and pushed to `origin/main`** as of 2026-07-28
-(`f7901f2`). The long-unmerged-branch risk closed on 2026-07-27; branch new
-work from `main` and keep it that way.
+**Everything is shipped, gated and pushed to `origin/main`** as of 2026-07-30
+(**`0ddbc66`**, M86) — re-verified from a cold start 2026-08-02: build clean,
+**1623 tests / 0 failures**, `mobshot` 246/246, no branch anywhere holding a
+commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
+new work from `main` and keep it that way.
+
+> **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
+> found the handoff still claiming M57 at `aadd8e9` and still offering two
+> "cheapest things to pick up" that had both shipped (M58, M59), while every
+> *measurement* in the same file was exact. `REWO_PACKET_COVERAGE.md` does not
+> have this problem because its table is **machine-checked** against `ids.rs`
+> by a unit test. Treat §15's log and the coverage table as current; treat any
+> forward-looking paragraph as suspect until checked against `git log`.
 
 > **⚠ The M-numbers are not a contiguous index — use commit subjects.**
 > Several sessions have run concurrently with parallel agents, so numbers were
@@ -3726,6 +3753,228 @@ Both sessions updated `REWO_PLAN.md` and the coverage doc but **not `CLAUDE.md`*
 318, gpu 205, data 175, mesh 38, proto 11, app 80); `rideshot` 24, `labelshot`
 47, `weathershot` 35, `inventoryshot` 152, `mobshot` 246/246; demo PNG
 `2cc56b4acbfb92cb` byte-identical.
+
+### M54–M86 — the fidelity arc, the coverage sweep, class B, and the bug eighty milestones of gates could not see (2026-07-28 → 07-30)
+
+Twenty milestones, caught up here on 2026-08-02 after a session found this file
+still ending at M73. **Verified from a cold start rather than read off a doc:**
+`origin/main` `0ddbc66`, tree clean, **no branch anywhere holds a commit not on
+`main`**; release build clean; **1623 tests, 0 failures** (net 565, world 489,
+gpu 249, data 179, app 85, mesh 45, proto 11); `mobshot --check` **246/246**;
+**32 serverless gate commands** green, 0 VUIDs; demo PNG still
+`2cc56b4acbfb92cb`.
+
+**`REWO_PACKET_COVERAGE.md` is at 107 consumed / 0 ignored / 34 absent, and
+classes A and B are both empty** — every clientbound-play packet Rewo *can*
+render is rendered. The 34 remaining are 23 needing a subsystem Rewo lacks
+(container/menu screens ×6, recipe book ×5, chat input ×4, advancements ×2,
+resource-pack fetch ×2, dialog ×2, map + transfer ×2) and 11 not applicable.
+**Picking work there now means choosing a subsystem, not a packet.**
+
+**M54–M60 — data and fidelity.**
+
+- **M54 the language map.** `en_us.json` **is not the language map**; it is step
+  1 of three. `loadFromJson` rewrites every unsupported format specifier
+  (`%d`/`%f` → `%s`, which is why `decomposeTemplate` only understands `s`;
+  inert on 26.2 and transcribed anyway, because its absence is invisible until
+  a pack carries a `%d` and the whole line collapses to its raw pattern), then
+  `deprecated.json`'s `applyToMap` applies **383 removals and 146 renames**
+  — remove first, then rename, and the order is load-bearing. **105 of the 146
+  rename targets do not appear in `en_us.json` at all**, and 41 that do are
+  overwritten, changing **27 item display names** (the eighteen smithing
+  templates stop reading "Smithing Template") — every change *toward* vanilla.
+- **M55 entity attributes.** `MAX_HEALTH` is not metadata, it is an
+  **attribute**, and `update_attributes` (131) was falling off the dispatch
+  chain. The holder is `holderRegistry` — **raw 0-based**, third time this has
+  bitten (M16 dimensions, M21 damage types) — and here the failure is *quiet*:
+  `max_health` is 23 and `max_absorption` 22, both real syncable attributes on
+  the same entity, so an off-by-one clamps against the wrong range rather than
+  throwing. The operation is a **VarInt, not a byte**, and an out-of-range id
+  is `ADD_VALUE`, not an error. `ADD_MULTIPLIED_BASE` reads the *post-*`ADD_VALUE`
+  base and every such modifier reads that same base — they do not compound.
+- **M56 the tooltip's image pass.** `GuiGraphicsExtractor.tooltip` walks its
+  components **twice with `localY = y` between**, and the two loops advance
+  identically — so the split is a **layering device, not a layout one**: it
+  guarantees every image draws after every text line whatever the component
+  order. Run as one cursor and the grid drops below its box by the height of
+  all the text (57 px in the fixture). `lines.size() == 1 ? -2 : 0` counts
+  **components**, not text lines. Three brief errors the decompile settled: the
+  `+N` badge is the **bottom-right** cell; thirteen stacks show **eight** items,
+  not twelve; and the badge counts hidden **items**, not stacks (thirteen full
+  stacks badge `+320`, never `+1`).
+- **M57 entity fidelity — emissive, ETF, the dye tint.** Eight mobs have
+  emissive layers in vanilla and none glowed; a warden, whose whole visual
+  identity is bioluminescence, had none. Both `RenderLayer` shapes re-render the
+  mob's **own model** with a second texture at full brightness, so the geometry
+  is the same quads re-pointed at another texture. The warden's tendril layer
+  samples the **base** warden texture, not an overlay.
+- **M58 the bundle grid's chrome.** `container/bundle/slot_highlight_back` is
+  **not** the `container/slot_highlight_back` M35 already loads for the
+  inventory hover box — both exist, both 24×24, and reusing the inventory's
+  renders something that looks approximately right. The badge cell gets **no
+  chrome at all**: `extractCount`'s entire body is one `centeredText`.
+- **M59 the health bar's render half — the first Rewo feature with no vanilla
+  oracle.** Vanilla renders no health bar over any entity, so there was nothing
+  to transcribe; the numbers were written down first as a *decision*
+  (`REWO_HEALTH_BAR_SPEC.md`) and the gate grades against that. **The gate
+  re-declares the spec's constants rather than importing the implementation's**
+  — importing them asserts only that the implementation equals itself, which is
+  M41's `t4` failure mode exactly. Two spec witnesses are unobservable from
+  outside and say so in their detail strings rather than being quietly dropped.
+- **M60 the vanilla cape.** Scoped as needing "the milestone's one structural
+  change" (`Rx·Rz·Ry`, which Rewo's `Rz·Ry·Rx` parts cannot produce) and needed
+  **none**: `rotateBy`'s leading `rotateY(-PI)` exists to **cancel the pose**,
+  so the net rotation *replaces* the `PartPose` rotation — while the pose's
+  **translation still applies**, which is the asymmetry that makes it easy to
+  get wrong in either direction.
+
+**M74–M78 — the coverage re-audit, then the class-A sweep.**
+
+- **M74 the re-audit.** Ten of 141 rows were wrong, **all in one direction**
+  (`absent` about code that was present). The mechanism is not neglect: M67
+  wrote the table by grepping a moving tree and four packets landed the same
+  day. M67 *saw* it happening and worked around it twice, both of which made it
+  worse — a predictive "After §7" column describing a moment that never
+  existed, and milestone markers written into the **status** column, putting
+  four rows outside any grammar a future check could read. **Annotating decay
+  is not fixing it.** The fix is a unit test in `ids.rs`, deliberately *not* a
+  `*shot` gate, because it must fire on the event that **causes** the drift
+  (someone editing `ids.rs`). It also found a **live flow-control divergence
+  hiding as a missing decode**: Rewo answered every `chunk_batch_finished` with
+  a hard-coded `64.0` where vanilla's seeded opening bid is **3.5**, so it
+  over-bid the server ~18× on every batch of every session and never adapted.
+- **M75 abilities and flight.** The flags byte is `1/2/4/8` then two floats —
+  nine fixed bytes; **the serverbound twin is one byte**, so writing the
+  clientbound body there desyncs the stream by eight. An unauthorised flying
+  claim is **ignored, not kicked**. **Flight does not go through
+  `travelFlying`** — that was the central misdirection, and the method is for
+  mobs and swimming. `Player.travel`'s flying arm captures `originalMovementY`,
+  delegates to the *ordinary* `travelInAir`, then **overwrites** the Y it just
+  computed with `originalMovementY * 0.6`: so flight has **no gravity term**,
+  vertical drag **0.6**, and flying into a ceiling does not zero your upward
+  velocity. `walkingSpeed` is **not** the client's walking speed (its only
+  client consumer is the FOV modifier's divisor). `SPECTATOR` sets `flying =
+  true` while `CREATIVE` only sets `mayfly`.
+- **M76 rotation and world spawn.** The brief *and* this project's own coverage
+  doc were wrong about the headline: `player_rotation` carries **no relative
+  bitfield**. It is four fields with each `BOOL` sitting **after** the float it
+  qualifies — and a reader written from the wrong description **decodes every
+  packet without erroring**, because the arity happens to work out. The
+  `Set<Relative>` is real one layer up, so the two teleport packets **share
+  their semantics and not their layout**. The clamp is on the **sum**, not the
+  step; the yaw gets neither clamp nor wrap.
+- **M77 the minecart's own interpolation.** Framed as replace-or-feed; the
+  answer is **neither** — it overrides the generic lerp at the *render* seam and
+  leaves it running, and four separate places in the decompile have to agree for
+  that to be true. Vanilla **measures one against the other**: a passenger's
+  offset is literally the schedule minus the generic lerp. Mirror image of M72,
+  where the rider's own lerp is computed and thrown away.
+- **M78 session, server metadata, chat.** `bundle_delimiter` is a **pipeline
+  instruction**, not an inert packet — its `handle` throws `AssertionError` if
+  it ever reaches a listener, so decoding it as a no-op is the one way of being
+  wrong that leaves no trace. A bundle is applied **all at once on close**;
+  **the coverage doc's "in one tick" was wrong** — nothing defers a bundle to a
+  tick boundary, the guarantee is that no *frame* renders part-way through. An
+  unterminated bundle is **withheld**, neither dropped nor applied. There is **no
+  nesting**, so a depth counter — the natural implementation — never closes.
+
+**M79–M85 — class B, everything that needed a renderer.** The recurring finding:
+**the class letter changes the gate, not the standard.** Each of these has an
+exact vanilla oracle, so decode *and* render are transcribed line by line and
+graded, with a pixel read-back half on top of the model half.
+
+- **M79 titles, XP, cooldown.** A subtitle on its own **shows nothing** (only
+  `setTitle` arms the clock). A negative animation field means *leave
+  unchanged*, and the packet **re-arms a live title at its full duration** —
+  `/title times` mid-title hands the title its whole life back. `/title clear`
+  and `/title reset` differ in what the *next* title does, not what is on
+  screen. **`set_experience`'s wire order is not its declaration order**, and
+  reading top-to-bottom swaps two var-ints, decodes without erroring, and puts
+  lifetime XP in the level display.
+- **M80 the world border — six packets, one object.** Splitting the decode from
+  the wall would have left the state machine with nothing to test against. The
+  lerp's clock is **ticks**, not wall-clock, and the `gameTime` argument is
+  **inert** — but the wall's *texture scroll* really is wall-clock milliseconds,
+  the only such quantity in the feature, so the instinct was right one layer
+  over. **`getMinX()` is the previous tick's size**: every non-rendering
+  consumer (collision, the vignette) measures against the previous tick's box
+  while the renderer alone passes a real partial.
+- **M81 the hurt tilt, block cracks, item pickup.** Packet 42 is what made
+  `no_damage_tilt` real — the Velvet batch's *"to port the disable you must
+  first build the thing being disabled"* named the condition and this was it.
+  It drives vanilla's own `damageTiltStrength` accessibility slider to its off
+  end rather than branching around the tilt, so toggling mid-animation cannot
+  strand the camera at an angle. **The server already subtracted the camera
+  yaw** before sending, so the tilt direction is **frozen at the hit** and does
+  not track subsequent turning.
+- **M82 the screen framework and the death screen.** The coverage doc called the
+  screens "a design decision rather than a transcription" — **half right**. The
+  decision was real and *smaller* than it sounded: **vanilla has one screen
+  slot, not a stack**; the nesting that looks like a stack is a replacement
+  carrying a `BooleanConsumer`. The rest was ordinary transcription with the
+  usual inversions: a hovered **disabled** button draws the plain disabled
+  sprite (the three-arg `WidgetSprites` makes `disabledFocused` *be*
+  `button_disabled`); `isHovered` and `isMouseOver` disagree **on purpose**, and
+  because `getChildAt` uses the latter an **inactive** widget is not found at all
+  and the click falls straight through; **`Esc` does nothing** on a death screen
+  and `setScreen(null)` *re-opens* it.
+- **M83 the locator bar.** `writeEither` writes **`true` for the left** (the
+  UUID). The identifier is the **colour of last resort**, and a live vanilla
+  server sends `colour=None`, so on a real connection the hash **is** the
+  colour. The self-skip is gotcha 13 in both directions at once: the observer is
+  never in `EntityTable`, so it must come from the session's own UUID — and a
+  client that dropped the check **looks perfectly correct on vanilla**, because
+  the server never sends you your own waypoint.
+- **M84 the statistics screen — the packet that closes class B.** `Stat`'s
+  two-level dispatch would normally be the `DataComponentPatch` hazard in
+  miniature (an untranscribed variant cannot be skipped), and **here it cannot
+  happen**, structurally: every `StatType`'s second level is a single VarInt, so
+  what the first level selects is *which registry resolves the id*, not a
+  different wire shape. Resolution is deferred, so an unresolvable value costs
+  one dropped row rather than a dropped packet. **`StatsScreen.isInGameUi()` is
+  false**, so it does not dim the world the way the inventory does.
+- **M85 server links.** Three of the four things the brief said about the packet
+  were corrections. The pause screen shows **one button, not a list** (it opens
+  a separate dialog screen — three screens, not one). The disconnect screen
+  shows **at most one link and only ever `BUG_REPORT`**, filled only on the
+  client's *own* error paths — so **a server that kicks you politely shows no
+  link however many it advertised, and one whose packet crashes your client
+  shows exactly one**. And the packet exists in the **configuration** state too;
+  third time (M69 `update_tags`, M78 `custom_payload`), so the rule is now
+  reliable: **if the handler is on `ClientCommonPacketListener`, look for the
+  configuration copy.**
+
+**M86 — the bug eighty milestones of gates could not see.** `LiveApp::resumed`'s
+init closure did `self.baked.take()` and **dropped the bake at its closing
+brace**, so `self.baked` was `None` for the whole windowed session and every
+`if let Some(baked) = self.baked.as_ref()` in `LiveApp::frame` was dead code.
+**Nine shipped features had never once rendered in `rewo live`** — item icons
+(M34), the inventory screen (M35), the player preview (M36), the first-person
+hand (M38), clouds and precipitation (M33), the rain-fog band (M33b), particles
+(M37), the world border (M80) and block-breaking decals (M81). Live since M3.
+All of them are honest *headlessly*, because `run_headless` owns the bake as a
+plain value — **which is exactly why eighty milestones of gates never saw it**.
+The restore is four lines.
+
+It was **not landable alone**: turning the paths on took a 10-second windowed
+run from 0 validation errors to **40,532**, every one
+`VUID-vkDestroyBuffer-buffer-00922`. **Eight** passes opened their `set_*` with
+`free_buf(gpu, self.vbuf.take())`, destroying a buffer submitted command buffers
+still reference — unobservable before only because none was ever constructed in
+the windowed client, and unobservable headlessly because a one-frame oracle
+never overlaps itself. The rule that came out of it, now in
+`crates/rewo-gpu/src/buf_ring.rs`:
+
+> **`ring >= fif + 1` for a ring written before `render`; `ring >= fif` for one
+> written inside it** — because a `set_*` runs in the app's frame loop *before*
+> `render`, so the most recent fence wait was the *previous* frame's.
+
+**The gate it left behind is the one to remember: `rewo live --render-check`.**
+It is the only check that drives the **windowed** client, and therefore the only
+one that can see a render path the windowed client never reaches. **Run it after
+any milestone that adds one.** It does not stage its own hotbar and **fails
+closed when you don't** — `REWO_PRECMD="give @s minecraft:diamond_sword 1;give
+@s minecraft:dirt 64"` against an opped username; 17/18 bare, 18/18 staged.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

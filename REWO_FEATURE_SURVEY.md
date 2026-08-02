@@ -381,6 +381,23 @@ F3 overlay and chat/coords text — nothing more.
 
 ### Sequence
 
+> **Status, 2026-08-02 — items 2, 3 and 4 are DONE, and 5 is half done.** Read
+> this before picking from the list below, which is written as if none of it
+> had shipped. **2** closed as **M57** (ETF, plus emissive layers and the dye
+> tint). **3** closed across **M40** (the tooltip surface), **M41** (durability
+> bars — they needed the `DataComponentPatch` decode, which is why they blocked
+> for six milestones), **M42/M43** (enchantment lines and the glint), **M54**
+> (the language map underneath all of it), **M56** (the image pass) and **M58**
+> (the bundle grid's chrome). **4** closed as **M51**. Of **5**: health bars
+> shipped (**M53** spec → **M55** data → **M59** render), scoreboard / tab list
+> has its **data** half only (**M62**, **M65** — nothing renders it), and block
+> highlight configurability is untouched. **1 remains USER-GATED** (below).
+>
+> The wider point: this document ranks *features*, and the project has since
+> exhausted `REWO_PACKET_COVERAGE.md`'s actionable classes, so the live choice
+> is now between a **subsystem** (container/menu screens, chat input, audio)
+> and a feature from here. See `REWO_PLAN.md` §0.0 "What to do next".
+
 1. **Port the module + HUD set into Rewo.** 7 of the top 11 rows, one piece of
    work, and the thing standing between Rewo and being a daily driver.
 2. **Finish M9b (ETF).** Outside the ranked table (class B, not D) but the
