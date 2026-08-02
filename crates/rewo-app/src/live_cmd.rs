@@ -165,6 +165,15 @@ struct RenderCheck {
     /// the player's 166-tall panel. A value witness is only a value witness if
     /// it reads the value the draw used.
     container_panel_h: Option<f32>,
+    /// Frames on which a container was drawn **before** the gate force-opened
+    /// the inventory (M89).
+    ///
+    /// The witness for `open_screen` opening the client's screen. M87 decoded
+    /// the packet and drew whatever menu was open, but nothing turned the
+    /// screen on, so a chest recorded its menu and showed nothing unless the
+    /// player independently pressed E. These frames can only exist if the
+    /// packet did it.
+    container_self_opened_frames: u64,
     /// Passes actually constructed by the end of the run.
     gui_items_ready: bool,
     hand_ready: bool,
@@ -376,6 +385,14 @@ impl RenderCheck {
         // to `PLAYER` would keep r19 green while drawing 176x166 geometry for a
         // 63-slot menu, which is the failure worth naming rather than the one
         // that is merely absent.
+        row(
+            "r21 open_screen opened the client's screen by itself",
+            self.container_self_opened_frames > 0,
+            format!(
+                "{} frames drawn before the gate force-opened the inventory",
+                self.container_self_opened_frames
+            ),
+        );
         row(
             "r20 the container's panel was its own, not the player's 166",
             self.container_panel_h.is_some_and(|h| (h - 166.0).abs() > 0.5),
@@ -3347,7 +3364,7 @@ fn run_headless(
                         .collect();
                     let props = |id: i32| item_props(&items, id);
                     let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
-                    match session.inventory.click_quick_craft(&accepted, kind, &props) {
+                    match session.shown_menu_mut().click_quick_craft(&accepted, kind, &props) {
                         Some(end) => {
                             use rewo_world::inventory::Inventory as Inv;
                             let input = rewo_world::inventory::CONTAINER_INPUT_QUICK_CRAFT;
@@ -3371,7 +3388,7 @@ fn run_headless(
                                         .is_ok();
                             }
                             if ok && session.container_click_input(&end, input).is_ok() {
-                                session.inventory.apply_prediction(&end);
+                                session.shown_menu_mut().apply_prediction(&end);
                                 println!(
                                     "[rewo-m35] DRAG over {accepted:?} type {kind}: \
                                      3 + {} packet(s), {} changed slot(s), carried {:?}",
@@ -3402,27 +3419,27 @@ fn run_headless(
                 let (input, predicted) = match kind.as_str() {
                     "q" => (
                         rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
-                        session.inventory.click_quick_move(slot, &props),
+                        session.shown_menu_mut().click_quick_move(slot, &props),
                     ),
                     "s" => (
                         rewo_world::inventory::CONTAINER_INPUT_SWAP,
-                        session.inventory.click_swap(slot, button as i32, &props),
+                        session.shown_menu_mut().click_swap(slot, button as i32, &props),
                     ),
                     "t" => (
                         rewo_world::inventory::CONTAINER_INPUT_THROW,
-                        session.inventory.click_throw(slot, button, &props),
+                        session.shown_menu_mut().click_throw(slot, button, &props),
                     ),
                     "a" => (
                         rewo_world::inventory::CONTAINER_INPUT_PICKUP_ALL,
-                        session.inventory.click_pickup_all(slot, button, &props),
+                        session.shown_menu_mut().click_pickup_all(slot, button, &props),
                     ),
-                    _ => (0, session.inventory.click_pickup(slot, button, &props)),
+                    _ => (0, session.shown_menu_mut().click_pickup(slot, button, &props)),
                 };
                 match predicted {
                     Some(prediction) => {
                         match session.container_click_input(&prediction, input) {
                             Ok(()) => {
-                                session.inventory.apply_prediction(&prediction);
+                                session.shown_menu_mut().apply_prediction(&prediction);
                                 println!(
                                     "[rewo-m35] CLICK slot {slot} button {button} input \
                                      {input}: predicted {} changed slot(s), carried {:?}",
@@ -4088,6 +4105,10 @@ struct LiveApp {
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
     container_injected: bool,
+    /// Whether `--render-check` has force-opened the inventory yet (M89).
+    /// Frames before this are the ones that prove `open_screen` opens the
+    /// screen on its own.
+    screen_forced_open: bool,
     /// `Hud.lastToolHighlight` + `toolHighlightTimer` (M66) — the held-item
     /// name that fades in over the hotbar.
     tool_highlight: rewo_gpu::hud::ToolHighlight,
@@ -4553,9 +4574,10 @@ impl ApplicationHandler for LiveApp {
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
                     // 250 ms" — moving to a neighbouring slot resets it.
-                    let slot = self
-                        .screen
-                        .hovered(ext.width as f32, ext.height as f32);
+                    let layout = session.shown_menu().layout();
+                    let slot =
+                        self.screen
+                            .hovered(layout, ext.width as f32, ext.height as f32);
                     let now = std::time::Instant::now();
                     let doubled = b == 0
                         && slot.is_some()
@@ -4658,8 +4680,10 @@ impl ApplicationHandler for LiveApp {
                 // is decided at release — this records the path.
                 if self.screen.inventory_open() {
                     if let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) {
+                        let layout = self.shown_layout();
                         if let Some(slot) =
-                            self.screen.hovered(ext.width as f32, ext.height as f32)
+                            self.screen
+                                .hovered(layout, ext.width as f32, ext.height as f32)
                         {
                             self.drag.add(slot);
                         }
@@ -4719,6 +4743,17 @@ impl LiveApp {
     /// closing grabs it again and hides it. The park matters — winit reports
     /// no position until the mouse moves, so without it the first frame would
     /// hover whatever slot happens to sit at the stale coordinate.
+    /// The layout on screen — the open container's, or the player's.
+    ///
+    /// Falls back to `PLAYER` with no session, which is what the screen shows
+    /// before a connection anyway.
+    fn shown_layout(&self) -> &'static rewo_world::menu_layout::MenuLayout {
+        self.session
+            .as_ref()
+            .map(|s| s.shown_menu().layout())
+            .unwrap_or(&rewo_world::menu_layout::PLAYER)
+    }
+
     fn set_screen_open(&mut self, open: bool) {
         if open {
             let (gw, gh) = self.gui_size();
@@ -5299,6 +5334,35 @@ impl LiveApp {
             self.set_screen_open(false);
         }
 
+        // M89 — a container the server opened opens the client's screen.
+        //
+        // M87 decoded `open_screen` into `Menus` and rendered whatever menu
+        // was open, but nothing turned the screen ON, so right-clicking a
+        // chest recorded the menu and showed nothing: the render only engaged
+        // if the player separately pressed E while a container happened to be
+        // open. `handleOpenScreen` is `MenuScreens.create`, which *is* the
+        // screen opening — the two are one action in vanilla.
+        //
+        // Watermarked like `close_requested` above rather than compared to the
+        // screen's state, so a server that re-opens the same container id (a
+        // fresh menu, per `reopening_replaces_the_slots_rather_than_keeping_them`)
+        // is not mistaken for the one already showing.
+        let opened = self
+            .session
+            .as_ref()
+            .and_then(|s| s.menus.open().map(|m| m.container_id));
+        if opened != self.screen.container_shown {
+            self.screen.container_shown = opened;
+            match opened {
+                Some(_) => self.set_screen_open(true),
+                // The menu closing closes the screen with it — but only if a
+                // container was what put it up. Pressing E with no container
+                // open must not be closed by this.
+                None if self.screen.inventory_open() => self.set_screen_open(false),
+                None => {}
+            }
+        }
+
         // M86's gate drives the inventory open for the second half of its run.
         //
         // The screen is one of the paths the bake fix re-enables, and it is the
@@ -5316,8 +5380,19 @@ impl LiveApp {
             // exactly that.
             let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
             let half = c.frames > 0 && self.started.elapsed().as_secs_f32() >= limit * 0.5;
-            if half && !self.screen.inventory_open() {
-                self.set_screen_open(true);
+            // M89 note: the guard is `!screen_forced_open`, not
+            // `!inventory_open()`. Since M89 the injected container opens the
+            // screen at 0.4, so an `inventory_open()` guard skips this whole
+            // branch — INCLUDING the cursor park below, which is the only
+            // thing that lays out a tooltip and therefore the only door to
+            // `VelvetTextPass::sync_atlas`. `r16` would have stayed green
+            // while no longer proving anything it was written for, which is
+            // the same vacuity `p3` exists to catch in `containershot`.
+            if half && !self.screen_forced_open {
+                self.screen_forced_open = true;
+                if !self.screen.inventory_open() {
+                    self.set_screen_open(true);
+                }
                 // **After** the open, not before: `grab_for_screen` parks the
                 // cursor in the middle of the window, which would overwrite
                 // this. Menu slot 36 is hotbar slot 0, which the spawn handler
@@ -5353,9 +5428,15 @@ impl LiveApp {
             // A generic_9x3 chest: menu id 2, 63 slots, and a 168-tall panel,
             // so its geometry is distinguishable from the player's 46-slot
             // 166-tall one by more than rounding.
-            if half && self.screen.inventory_open() && !self.container_injected {
+            // Four-tenths through — BEFORE the gate force-opens the inventory
+            // at half (M89). The ordering is the witness: if the screen is up
+            // between 0.4 and 0.5 it can only be because `open_screen` opened
+            // it, which is the behaviour M87 was missing and M89 added. With
+            // the injection after the forced open, the container would render
+            // either way and `r21` could not tell.
+            if !self.container_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
-                if self.started.elapsed().as_secs_f32() >= limit * 0.6 {
+                if self.started.elapsed().as_secs_f32() >= limit * 0.4 {
                     if let Some(session) = self.session.as_mut() {
                         // VarInt container id, VarInt menu type (RAW, not a
                         // holder), then an NBT string title.
@@ -5790,7 +5871,7 @@ impl LiveApp {
         let hovered = self
             .screen
             .inventory_open()
-            .then(|| self.screen.hovered(sw, sh))
+            .then(|| self.screen.hovered(session.shown_menu().layout(), sw, sh))
             .flatten();
         if let Some(baked) = self.baked.as_ref() {
             if let Some(c) = self.check.as_mut() {
@@ -5821,9 +5902,13 @@ impl LiveApp {
                 // would answer 168 for a chest whether or not the panel
                 // builder returned one.
                 if let Some(h) = state.world_renderer.container_panel_height() {
+                    let forced = self.screen_forced_open;
                     if let Some(c) = self.check.as_mut() {
                         c.container_frames += 1;
                         c.container_panel_h = Some(h);
+                        if !forced {
+                            c.container_self_opened_frames += 1;
+                        }
                     }
                 }
                 // Any glyph laid out above may be new to the atlas. Sync
@@ -6239,6 +6324,7 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         container_injected: false,
+        screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
         modules: crate::modules::Modules::load(),
@@ -10332,6 +10418,12 @@ pub struct ScreenState {
     /// the same frame as another cannot be swallowed, and so nothing has to
     /// reach into the session to clear state it does not own.
     pub close_requests_seen: u64,
+    /// The container id whose screen is currently up, if a container's (M89).
+    ///
+    /// A watermark on the *menu*, not a mirror of the screen's open flag: a
+    /// server re-opening the same slot gets a fresh menu, and comparing
+    /// against the screen state would miss it.
+    pub container_shown: Option<i32>,
 }
 
 impl ScreenState {
@@ -10346,9 +10438,26 @@ impl ScreenState {
     }
 
     /// The menu slot under the cursor, if any.
-    fn hovered(&self, w: f32, h: f32) -> Option<usize> {
-        let (gx, gy) = rewo_gpu::container::screen_to_gui(self.mouse, w, h);
-        rewo_world::inventory::slot_at(gx, gy)
+    ///
+    /// Takes the layout on screen (M89): both halves of this are panel-sized.
+    /// `screen_to_gui` centres the panel to find the origin, and `slot_at`
+    /// scans that layout's own slots — so asking the player's 176x166 while a
+    /// 176x222 chest is up shifts the cursor 28 px relative to the panel *and*
+    /// then looks it up in the wrong slot list. The two errors do not cancel.
+    fn hovered(
+        &self,
+        layout: &rewo_world::menu_layout::MenuLayout,
+        w: f32,
+        h: f32,
+    ) -> Option<usize> {
+        let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+            self.mouse,
+            w,
+            h,
+            layout.image_w as f32,
+            layout.image_h as f32,
+        );
+        layout.slot_at(gx, gy)
     }
 }
 
@@ -11846,14 +11955,14 @@ fn finish_drag(
     if let Some((slot, button)) =
         rewo_world::inventory::Inventory::quick_craft_is_pickup(&accepted, kind)
     {
-        if let Some(p) = session.inventory.click_pickup(slot as i32, button, &props) {
+        if let Some(p) = session.shown_menu_mut().click_pickup(slot as i32, button, &props) {
             if session.container_click_input(&p, 0).is_ok() {
-                session.inventory.apply_prediction(&p);
+                session.shown_menu_mut().apply_prediction(&p);
             }
         }
         return;
     }
-    let Some(end) = session.inventory.click_quick_craft(&accepted, kind, &props) else {
+    let Some(end) = session.shown_menu_mut().click_quick_craft(&accepted, kind, &props) else {
         return;
     };
     use rewo_world::inventory::Inventory as Inv;
@@ -11882,7 +11991,7 @@ fn finish_drag(
         }
     }
     if session.container_click_input(&end, input).is_ok() {
-        session.inventory.apply_prediction(&end);
+        session.shown_menu_mut().apply_prediction(&end);
     }
 }
 
@@ -11894,38 +12003,38 @@ fn click_screen(
     w: f32,
     h: f32,
 ) {
-    let Some(slot) = screen.hovered(w, h) else {
+    let Some(slot) = screen.hovered(session.shown_menu().layout(), w, h) else {
         return;
     };
     let props = |id: i32| item_props(items, id);
     use rewo_world::inventory as inv;
     let slot = slot as i32;
     let (input, button, predicted) = match action {
-        SlotAction::Pickup(b) => (0, b, session.inventory.click_pickup(slot, b, &props)),
+        SlotAction::Pickup(b) => (0, b, session.shown_menu_mut().click_pickup(slot, b, &props)),
         SlotAction::QuickMove => (
             inv::CONTAINER_INPUT_QUICK_MOVE,
             0,
-            session.inventory.click_quick_move(slot, &props),
+            session.shown_menu_mut().click_quick_move(slot, &props),
         ),
         // The button here is an inventory index, not a menu slot — see
         // `Inventory::click_swap`.
         SlotAction::Swap(index) => (
             inv::CONTAINER_INPUT_SWAP,
             index as i8,
-            session.inventory.click_swap(slot, index, &props),
+            session.shown_menu_mut().click_swap(slot, index, &props),
         ),
         SlotAction::Throw { all } => {
             let b = i8::from(all);
             (
                 inv::CONTAINER_INPUT_THROW,
                 b,
-                session.inventory.click_throw(slot, b, &props),
+                session.shown_menu_mut().click_throw(slot, b, &props),
             )
         }
         SlotAction::PickupAll => (
             inv::CONTAINER_INPUT_PICKUP_ALL,
             0,
-            session.inventory.click_pickup_all(slot, 0, &props),
+            session.shown_menu_mut().click_pickup_all(slot, 0, &props),
         ),
     };
     let _ = button;
@@ -11933,7 +12042,7 @@ fn click_screen(
         log::debug!("live: {action:?} on slot {slot} not predictable — not sent");
         return;
     };
-    if prediction.changed.is_empty() && prediction.carried == session.inventory.carried() {
+    if prediction.changed.is_empty() && prediction.carried == session.shown_menu().carried() {
         // Nothing moved (an empty slot with an empty cursor, or a placement the
         // slot refuses). Vanilla still sends it; there is no reason to.
         return;
@@ -11942,7 +12051,7 @@ fn click_screen(
         log::warn!("live: container_click: {e}");
         return;
     }
-    session.inventory.apply_prediction(&prediction);
+    session.shown_menu_mut().apply_prediction(&prediction);
 }
 
 /// State the hotbar icons need across frames: the atlas currently uploaded and
