@@ -1636,7 +1636,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and pushed to `origin/main`** as of 2026-08-02
-(**`6123058`**, M89) — **1683 tests / 0 failures**, `mobshot` 246/246,
+(**`a82f539`**, M90) — **1688 tests / 0 failures**, `mobshot` 246/246,
 `containershot` 17/17, `inventoryshot` 152/152, `live --render-check` **21/21**
 with validation ON and 0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
 commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
@@ -4132,12 +4132,40 @@ it happens.*
 18 → **21** validation ON 0 VUIDs, `inventoryshot` 152/152, demo PNG
 byte-identical.
 
+### M90 — shift-click routes by the menu's own quickMoveStack (2026-08-02)
+
+The last silently-wrong path in the arc, and a second one under it.
+`quickMoveStack` is a **per-menu-class override** and Rewo's routing was
+hard-coded to `InventoryMenu`'s ranges, so shift-clicking a chest's slot 0
+routed as though it were the crafting result.
+
+**Nine of the 25 menus share one shape** (the six chests, dispenser, hopper,
+shulker box): `slot < containerSize` → the player range **backwards** (the
+hotbar's right-hand end, since `addStandardInventorySlots` appends it last),
+else → the container range forwards. The furnace and crafting families have
+their own and are **not** transcribed — they answer `QuickMove::Unimplemented`
+and the caller **declines**, because moving nothing is inert where a
+shift-click under another menu's rules moves the wrong stack and the server
+applies it.
+
+**The second bug was found by a witness, not by reading.** The first cut failed
+on the container→player direction only: `move_stack_to` calls `slot_kind(i)` —
+the *player's* — which returns `None` past 45, so the `?` aborted the whole
+move. Nine call sites shared it, and the consequence is wider than shift-click:
+**plain clicks past a chest's slot 45 also silently did nothing**, and below 45
+read the wrong kind. M89 routed *which menu* a click applies to and not the
+slot-kind lookup, so it fixed only the visible half. **When a type is
+generalized, the functions it calls generalize with it — and the ones taking a
+bare index rather than `&self` are the ones that get missed, because they do
+not look like they belong to anything.** `slot_kind` is now
+`MenuLayout::slot_kind`, with `SlotKind::Plain` for a container's slots and
+`None` (decline) for an untranscribed menu.
+
 **Open on the container arc:** the ~11 bespoke-widget screens (anvil text
 field, enchantment buttons, beacon, merchant trade list, loom/stonecutter
 scroll grids, crafter toggles); `container_set_data` is decoded and drawn by
-nothing (no furnace arrow, no brewing bubbles); and `quickMoveStack` is a
-**per-menu-class override**, so shift-click into a chest still routes by the
-player's rules and needs per-menu transcription.
+nothing (no furnace arrow, no brewing bubbles); and the furnace/crafting
+`quickMoveStack` shapes, which decline rather than guess.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

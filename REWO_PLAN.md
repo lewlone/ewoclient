@@ -2193,6 +2193,65 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M90 — shift-click routes by the menu's own quickMoveStack (2026-08-02)
+
+The last silently-wrong path in the container arc, and it had a second one
+underneath it.
+
+**`quickMoveStack` is a per-menu-class override**, and Rewo's
+`quick_move_destination` was hard-coded to `InventoryMenu`'s slot ranges. So
+shift-clicking a chest's slot 0 routed as though it were the crafting result,
+and a chest's player-section slots matched the player's `9..=35` arm — the
+wrong destination, silently, and the server applies it.
+
+**Nine of the 25 menus share one shape** — the six `generic_9xN` chests,
+`generic_3x3` (dispenser), `hopper` and `shulker_box`:
+
+```java
+if (slotIndex < containerSize) moveItemStackTo(stack, containerSize, size, true);
+else                           moveItemStackTo(stack, 0, containerSize, false);
+```
+
+Container-to-player fills **backwards**, from the top of the range, which in
+these menus is the hotbar's right-hand end because `addStandardInventorySlots`
+appends the hotbar last. The furnace and crafting families have their own
+shapes and are **not** transcribed: they answer `QuickMove::Unimplemented` and
+the caller declines. *Moving nothing is inert; sending a shift-click under
+another menu's rules moves the wrong stack and the server applies it.*
+
+#### The second bug, found by a witness rather than by reading
+
+The first cut failed on the container-to-player direction **only**, and the
+cause was one level down: `move_stack_to` calls `slot_kind(i)` — the
+**player's** — which returns `None` past 45, so the `?` aborted the whole move.
+Nine call sites had the same shape, and the consequence is wider than
+shift-click: **plain clicks past slot 45 of a chest also silently did nothing**,
+and below 45 they read the wrong kind.
+
+M89 routed *which menu* a click applies to and did not route the slot-kind
+lookup, so it fixed the visible half of this. The general form is worth
+keeping: **when a type is generalized, the functions it calls generalize with
+it — and the ones taking a bare index rather than `&self` are the ones that get
+missed, because they do not look like they belong to anything.**
+
+`slot_kind` is now `MenuLayout::slot_kind`. A container's slots are all plain
+`Slot`s (none of these menus has a result or equipment slot), hence
+`SlotKind::Plain`. An untranscribed menu answers `None` and every click on it
+declines, for the same reason quick-move does: an anvil's result slot refuses
+placement, and treating it as plain would let a click put something there.
+
+**One test assertion was written wrong and the witness said so**: it required
+every changed slot to be at or past the container's 27, but the *source* slot
+is in `changed` too, emptied to `None`. The routing was right; the assertion was
+over-strict, and it now names the source explicitly.
+
+Mutation-tested — making containers borrow the player's routing fails three
+witnesses; letting an untranscribed menu borrow the container shape fails the
+decline witness.
+
+**Measured:** 1688 tests, 0 failures; `containershot` 17/17, `inventoryshot`
+152/152 unchanged, demo PNG `2cc56b4acbfb92cb` byte-identical.
+
 ### M88 + M89 — proving the container renders, then making it work (2026-08-02)
 
 Two milestones that between them close what M87 left open, and the second of
