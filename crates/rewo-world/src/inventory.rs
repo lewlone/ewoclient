@@ -652,6 +652,25 @@ pub struct ItemProps {
     pub max_stack: i32,
     /// The armour slot this item can be equipped into, if any.
     pub equips: Option<ArmorPiece>,
+    /// `FuelValues.isFuel` (M91).
+    pub is_fuel: bool,
+    /// `canSmelt` per furnace, indexed by [`furnace_index`] — **blast,
+    /// furnace, smoker**, which is `minecraft:menu` id order (10, 14, 22).
+    ///
+    /// Three booleans rather than one because the three furnaces have
+    /// different accepted-input sets: a smoker takes food and not ore, a blast
+    /// furnace the reverse. One flag would route beef into a blast furnace.
+    pub smeltable: [bool; 3],
+}
+
+/// Which entry of [`ItemProps::smeltable`] a `minecraft:menu` id selects.
+pub fn furnace_index(protocol_id: i32) -> Option<usize> {
+    match protocol_id {
+        10 => Some(0), // blast_furnace
+        14 => Some(1), // furnace
+        22 => Some(2), // smoker
+        _ => None,
+    }
 }
 
 /// One slot's new contents, as predicted locally.
@@ -988,6 +1007,40 @@ impl Inventory {
                     (0..container_slots, false)
                 });
             }
+            QuickMove::Furnace => {
+                // AbstractFurnaceMenu.quickMoveStack. The literal ranges are
+                // 3, 30 and 39 in vanilla; a furnace is 3 container slots plus
+                // the player's 36, so they are container / container+27 / end.
+                let (ingredient, fuel, result) = (0usize, 1usize, 2usize);
+                let player = 3usize;
+                let hotbar = player + 27;
+                let end = slots.len();
+                return Some(if slot == result {
+                    // The result fills the player backwards.
+                    (player..end, true)
+                } else if slot == ingredient || slot == fuel {
+                    (player..end, false)
+                } else {
+                    // A player slot. canSmelt FIRST, then isFuel — a log is
+                    // both, and vanilla sends it to the ingredient slot.
+                    let _ = item;
+                    // The menu decides WHICH accepted-input set applies; an
+                    // id this client cannot resolve never reaches here,
+                    // because `props` already returned None for it.
+                    let Some(which) = furnace_index(self.layout.protocol_id) else {
+                        return None;
+                    };
+                    if p.smeltable[which] {
+                        (ingredient..ingredient + 1, false)
+                    } else if p.is_fuel {
+                        (fuel..fuel + 1, false)
+                    } else if slot < hotbar {
+                        (hotbar..end, false)
+                    } else {
+                        (player..hotbar, false)
+                    }
+                });
+            }
             QuickMove::PlayerInventory => {}
         }
         Some(match slot {
@@ -1138,6 +1191,28 @@ mod tests {
         Some(ItemProps {
             max_stack: 64,
             equips: None,
+            is_fuel: false,
+            smeltable: [false; 3],
+        })
+    }
+
+    /// An item that is BOTH fuel and smeltable, which is what a log is.
+    fn log_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            max_stack: 64,
+            equips: None,
+            is_fuel: true,
+            smeltable: [false, true, false], // smeltable in a furnace only
+        })
+    }
+
+    /// Fuel that is not smeltable, which is what coal is.
+    fn coal_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            max_stack: 64,
+            equips: None,
+            is_fuel: true,
+            smeltable: [false; 3],
         })
     }
 
@@ -1191,6 +1266,103 @@ mod tests {
         let p = c.click_quick_move(0, &plain_props).unwrap();
         let placed = p.changed.iter().map(|&(s, _)| s as usize).max().unwrap();
         assert_eq!(placed, 62, "the last slot of a 63-slot chest menu");
+    }
+
+    // -- M91: the furnace shape --------------------------------------------
+
+    /// A furnace (menu 14): ingredient 0, fuel 1, result 2, player 3..39.
+    fn furnace_with(slot: usize, item: Option<ItemSlot>) -> Inventory {
+        let mut f = Inventory::with_layout(crate::menu_layout::layout_of(14).unwrap());
+        let mut v = vec![None; f.slot_count()];
+        v[slot] = item;
+        assert!(f.set_content(1, &v, None));
+        f
+    }
+
+    fn moved_into(p: &ClickPrediction, from: usize) -> Vec<usize> {
+        p.changed
+            .iter()
+            .map(|&(s, _)| s as usize)
+            .filter(|&s| s != from)
+            .collect()
+    }
+
+    #[test]
+    fn a_log_routes_to_the_ingredient_slot_not_the_fuel_slot() {
+        // THE case that decides the shape. Vanilla checks canSmelt BEFORE
+        // isFuel, and a log is both — fuel, and smeltable to charcoal — so it
+        // goes to the ingredient slot. Routing on isFuel alone puts it in the
+        // fuel slot, which is wrong and looks entirely reasonable.
+        let f = furnace_with(20, stack(1, 5));
+        let p = f.click_quick_move(20, &log_props).expect("predictable");
+        assert_eq!(moved_into(&p, 20), vec![0], "the ingredient slot");
+    }
+
+    #[test]
+    fn coal_routes_to_the_fuel_slot() {
+        let f = furnace_with(20, stack(1, 5));
+        let p = f.click_quick_move(20, &coal_props).expect("predictable");
+        assert_eq!(moved_into(&p, 20), vec![1], "the fuel slot");
+    }
+
+    #[test]
+    fn a_neither_item_crosses_between_the_players_own_rows() {
+        // Not smeltable, not fuel: main (3..30) goes to the hotbar, and the
+        // hotbar (30..39) goes to main. Vanilla's last two branches.
+        let f = furnace_with(5, stack(1, 5));
+        let p = f.click_quick_move(5, &plain_props).expect("predictable");
+        assert!(
+            moved_into(&p, 5).iter().all(|&s| (30..39).contains(&s)),
+            "a main-inventory slot must cross to the hotbar, got {:?}",
+            p.changed
+        );
+
+        let g = furnace_with(35, stack(1, 5));
+        let q = g.click_quick_move(35, &plain_props).expect("predictable");
+        assert!(
+            moved_into(&q, 35).iter().all(|&s| (3..30).contains(&s)),
+            "a hotbar slot must cross to main, got {:?}",
+            q.changed
+        );
+    }
+
+    #[test]
+    fn the_result_slot_fills_the_player_backwards() {
+        let f = furnace_with(2, stack(1, 5));
+        let p = f.click_quick_move(2, &plain_props).expect("predictable");
+        assert_eq!(
+            moved_into(&p, 2),
+            vec![38],
+            "the result fills from the top of the player range"
+        );
+    }
+
+    #[test]
+    fn the_ingredient_and_fuel_slots_empty_forwards() {
+        // Slots 0 and 1 take the same branch, and it is NOT the result's:
+        // forwards, so the first free player slot rather than the last.
+        for from in [0usize, 1] {
+            let f = furnace_with(from, stack(1, 5));
+            let p = f.click_quick_move(from as i32, &plain_props).expect("predictable");
+            assert_eq!(moved_into(&p, from), vec![3], "slot {from} fills forwards");
+        }
+    }
+
+    #[test]
+    fn a_smoker_and_a_blast_furnace_read_different_accepted_sets() {
+        // `smeltable` is three booleans, not one, because the sets differ. A
+        // log is smeltable in a furnace only, so in a smoker it is merely fuel.
+        let smoker = Inventory::with_layout(crate::menu_layout::layout_of(22).unwrap());
+        let mut v = vec![None; smoker.slot_count()];
+        v[20] = stack(1, 5);
+        let mut smoker = smoker;
+        smoker.set_content(1, &v, None);
+        let p = smoker.click_quick_move(20, &log_props).expect("predictable");
+        assert_eq!(
+            moved_into(&p, 20),
+            vec![1],
+            "a log in a SMOKER is fuel, not an ingredient"
+        );
     }
 
     #[test]

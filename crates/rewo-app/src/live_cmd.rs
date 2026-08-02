@@ -11821,6 +11821,14 @@ fn item_props(
     let name = items.name(id)?;
     Some(rewo_world::inventory::ItemProps {
         max_stack: max_stack_size(name),
+        // M91 — the furnace quick-move's two predicates, resolved here because
+        // this is where the numeric id becomes a name.
+        is_fuel: rewo_data::fuel_table::is_fuel(name),
+        smeltable: [
+            rewo_data::smelting_table::accepts(10, name) == Some(true),
+            rewo_data::smelting_table::accepts(14, name) == Some(true),
+            rewo_data::smelting_table::accepts(22, name) == Some(true),
+        ],
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

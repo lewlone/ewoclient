@@ -35,6 +35,7 @@ pub mod item_components_table;
 pub mod item_geometry;
 pub mod item_models;
 pub mod fuel_table;
+pub mod smelting_table;
 pub mod item_props_table;
 pub mod item_tags;
 pub mod lang;
