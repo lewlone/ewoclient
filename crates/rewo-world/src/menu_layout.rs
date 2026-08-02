@@ -121,6 +121,61 @@ impl MenuLayout {
         n
     }
 
+    /// Where one menu slot's 16x16 icon sits, relative to the GUI's top-left.
+    ///
+    /// Walks the blocks rather than expanding them, because the hover test
+    /// asks this for every slot of the menu on every frame — `getHoveredSlot`
+    /// is a linear scan, so an allocating accessor would allocate once per
+    /// slot per frame.
+    pub fn position(&self, slot: usize) -> Option<(i16, i16)> {
+        let mut base = 0usize;
+        for block in self.blocks {
+            let (len, pos) = match *block {
+                SlotBlock::One { x, y } => (1usize, Some((x, y))),
+                SlotBlock::Grid {
+                    left,
+                    top,
+                    cols,
+                    rows,
+                } => {
+                    let (cols, rows) = (cols as usize, rows as usize);
+                    let len = cols * rows;
+                    let i = slot.wrapping_sub(base);
+                    (
+                        len,
+                        (i < len).then(|| {
+                            (
+                                left + (i % cols) as i16 * SLOT_PITCH,
+                                top + (i / cols) as i16 * SLOT_PITCH,
+                            )
+                        }),
+                    )
+                }
+                SlotBlock::StandardInventory { left, top } => {
+                    let i = slot.wrapping_sub(base);
+                    (
+                        36usize,
+                        (i < 36).then(|| {
+                            if i < 27 {
+                                (
+                                    left + (i % 9) as i16 * SLOT_PITCH,
+                                    top + (i / 9) as i16 * SLOT_PITCH,
+                                )
+                            } else {
+                                (left + (i - 27) as i16 * SLOT_PITCH, top + TOP_TO_HOTBAR)
+                            }
+                        }),
+                    )
+                }
+            };
+            if slot >= base && slot < base + len {
+                return pos;
+            }
+            base += len;
+        }
+        None
+    }
+
     /// Expand the blocks into one position per menu slot index, in wire order.
     pub fn positions(&self) -> Vec<(i16, i16)> {
         let mut out = Vec::with_capacity(self.slot_count());
@@ -355,6 +410,55 @@ const STONECUTTER: [SlotBlock; 3] = [
     SlotBlock::One { x: 20, y: 33 },
     SlotBlock::One { x: 143, y: 33 },
     SlotBlock::StandardInventory { left: 8, top: 84 },
+];
+
+/// The player's own `InventoryMenu` — **container id 0**, and deliberately not
+/// in [`REGISTRY`].
+///
+/// It has no `minecraft:menu` protocol id because `open_screen` never opens it:
+/// it exists for the whole session, is created client-side with the player, and
+/// is the menu `container_set_slot` writes whenever the id is 0, whatever else
+/// is open. So it carries [`NO_PROTOCOL_ID`] and is reached by name.
+///
+/// Transcribed from `InventoryMenu`'s constructor, which is the only place
+/// these numbers exist — there is no data file:
+///
+/// ```text
+/// addResultSlot(owner, 154, 28)                -> slot 0
+/// addCraftingGridSlots(98, 18)                 -> slots 1..=4   (a 2x2)
+/// ArmorSlot(..., 39 - i, 8, 8 + i * 18)        -> slots 5..=8
+/// addStandardInventorySlots(inventory, 8, 84)  -> slots 9..=44
+/// Slot(inventory, 40, 77, 62)                  -> slot 45        (offhand)
+/// ```
+///
+/// The armour column is a `Grid` of one column and four rows rather than four
+/// `One`s, because that is what it is; note its **backing** indices run
+/// backwards (`39 - i`, head-first), which is M69's finding and is a property
+/// of the container behind the slots, not of where they are drawn.
+pub static PLAYER: MenuLayout = MenuLayout {
+    protocol_id: NO_PROTOCOL_ID,
+    name: "player",
+    blocks: &PLAYER_BLOCKS,
+    image_w: 176,
+    image_h: 166,
+};
+
+const PLAYER_BLOCKS: [SlotBlock; 5] = [
+    SlotBlock::One { x: 154, y: 28 },
+    SlotBlock::Grid {
+        left: 98,
+        top: 18,
+        cols: 2,
+        rows: 2,
+    },
+    SlotBlock::Grid {
+        left: 8,
+        top: 8,
+        cols: 1,
+        rows: 4,
+    },
+    SlotBlock::StandardInventory { left: 8, top: 84 },
+    SlotBlock::One { x: 77, y: 62 },
 ];
 
 /// Every `minecraft:menu` type, indexed by registry id.

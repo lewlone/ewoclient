@@ -560,22 +560,17 @@ pub fn slot_kind(slot: usize) -> Option<SlotKind> {
 /// `addStandardInventorySlots` splits into three rows of nine from the given
 /// top, then the hotbar at `top + 58` — the 58 is a named local in vanilla
 /// (`topToHotbar`), not a coincidence of 3*18 + 4.
+/// M87 made this layout-driven: the numbers above now live in
+/// [`crate::menu_layout::PLAYER`], expressed as the same `addSlot` blocks every
+/// other menu uses, so the player's menu stops being a special case and becomes
+/// the one with no protocol id. The behaviour is unchanged and
+/// `layout_matches_the_hand_written_positions` proves it against a frozen copy
+/// of the original hard-coded match — not against the layout, which would only
+/// assert that the implementation equals itself.
 pub fn slot_position(slot: usize) -> Option<(i32, i32)> {
-    Some(match slot {
-        0 => (154, 28),
-        1..=4 => {
-            let i = (slot - 1) as i32;
-            (98 + (i % 2) * 18, 18 + (i / 2) * 18)
-        }
-        5..=8 => (8, 8 + (slot - 5) as i32 * 18),
-        9..=35 => {
-            let i = (slot - 9) as i32;
-            (8 + (i % 9) * 18, 84 + (i / 9) * 18)
-        }
-        36..=44 => (8 + (slot - 36) as i32 * 18, 84 + 58),
-        45 => (77, 62),
-        _ => return None,
-    })
+    crate::menu_layout::PLAYER
+        .position(slot)
+        .map(|(x, y)| (x as i32, y as i32))
 }
 
 /// `AbstractContainerScreen.isHovering` — **an 18x18 box, not 16x16**.
@@ -1027,6 +1022,67 @@ impl Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original hard-coded `slot_position`, frozen at the commit before
+    /// M87 made it layout-driven.
+    ///
+    /// This is the refactor's oracle and it is deliberately a *copy*, not a
+    /// call: asserting the new implementation against `menu_layout::PLAYER`
+    /// would only prove the layout equals itself, which is M41's `t4` and
+    /// M59's recorded failure mode. Transcribed from `InventoryMenu`'s
+    /// constructor; if a future version moves a slot, this and the layout
+    /// disagree and the test says which.
+    fn legacy_slot_position(slot: usize) -> Option<(i32, i32)> {
+        Some(match slot {
+            0 => (154, 28),
+            1..=4 => {
+                let i = (slot - 1) as i32;
+                (98 + (i % 2) * 18, 18 + (i / 2) * 18)
+            }
+            5..=8 => (8, 8 + (slot - 5) as i32 * 18),
+            9..=35 => {
+                let i = (slot - 9) as i32;
+                (8 + (i % 9) * 18, 84 + (i / 9) * 18)
+            }
+            36..=44 => (8 + (slot - 36) as i32 * 18, 84 + 58),
+            45 => (77, 62),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn layout_matches_the_hand_written_positions() {
+        for slot in 0..MENU_SLOTS {
+            assert_eq!(
+                slot_position(slot),
+                legacy_slot_position(slot),
+                "menu slot {slot} moved"
+            );
+        }
+    }
+
+    #[test]
+    fn the_player_layout_ends_where_the_menu_does() {
+        assert_eq!(crate::menu_layout::PLAYER.slot_count(), MENU_SLOTS);
+        assert_eq!(slot_position(MENU_SLOTS), None);
+        assert_eq!(legacy_slot_position(MENU_SLOTS), None);
+    }
+
+    #[test]
+    fn the_player_menu_has_no_protocol_id() {
+        // It is never opened by `open_screen`; it is container id 0 and exists
+        // for the whole session. So it must not be reachable by registry id --
+        // `layout_of(-1)` answering PLAYER would let a malformed packet open
+        // the player's own inventory as if it were a container.
+        assert_eq!(
+            crate::menu_layout::PLAYER.protocol_id,
+            crate::menu_layout::NO_PROTOCOL_ID
+        );
+        assert!(crate::menu_layout::layout_of(crate::menu_layout::NO_PROTOCOL_ID).is_none());
+        for (i, m) in crate::menu_layout::REGISTRY.iter().enumerate() {
+            assert_ne!(m.name, "player", "PLAYER must not be in the registry (id {i})");
+        }
+    }
 
     fn stack(id: i32, n: i32) -> Option<ItemSlot> {
         Some(ItemSlot {
