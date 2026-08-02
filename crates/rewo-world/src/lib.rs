@@ -30,6 +30,7 @@ pub mod light;
 pub mod lightmap;
 pub mod menu;
 pub mod menu_layout;
+pub mod menu_screen;
 pub mod minecart;
 pub mod palette;
 pub mod particles;
