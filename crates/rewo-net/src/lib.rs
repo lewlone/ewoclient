@@ -31,6 +31,7 @@ pub mod game_event;
 pub mod hud_state;
 pub mod ids;
 pub mod item_stack;
+pub mod menu;
 pub mod metadata;
 pub mod motion;
 pub mod play;
@@ -2131,6 +2132,46 @@ pub fn route_inventory(
         return true;
     }
     false
+}
+
+/// The container-menu dispatch seam (M87): `open_screen` and
+/// `container_set_data`.
+///
+/// **`container_close` is deliberately not here.** M74 already dispatches it
+/// through [`route_client_state`], and the play loop's router chain is a
+/// sequence of `else if`s — so exactly one seam sees any given id. Claiming it
+/// here would either run before `route_client_state` and silently stop M74's
+/// close counter, or run after it and never fire at all. Neither failure
+/// announces itself. The menu is closed from inside that existing arm in
+/// [`play::PlaySession`] instead, so there is still one dispatcher per packet.
+///
+/// A sibling of [`route_inventory`] rather than an extension of it, because
+/// the two write different objects — vanilla keeps `player.inventoryMenu`
+/// (container id 0, permanent) and `player.containerMenu` (whatever is open)
+/// side by side, and the server addresses each independently. Keeping the
+/// seams apart is also what lets this land without touching
+/// `route_inventory`'s signature, and therefore without disturbing the
+/// `inventoryshot` witnesses that drive it.
+///
+/// Returns whether the id matched — **not** whether anything was applied. All
+/// three have their own reasons to decline: an unknown menu type opens
+/// nothing, data for a non-matching container id is dropped, and a malformed
+/// body is dropped whole.
+pub fn route_menu(
+    id: i32,
+    body: &[u8],
+    ids: &crate::ids::Ids,
+    menus: &mut rewo_world::menu::Menus,
+) -> bool {
+    crate::menu::route(
+        crate::menu::MenuIds {
+            open_screen: ids.cb_play_open_screen,
+            container_set_data: ids.cb_play_container_set_data,
+        },
+        id,
+        body,
+        menus,
+    )
 }
 
 /// The `update_tags` dispatch seam (M69) — the play-state half.

@@ -653,6 +653,14 @@ pub struct PlaySession {
     /// dimension change — so it is deliberately not cleared by the transition.
     /// The server re-sends the contents on respawn anyway.
     pub inventory: rewo_world::inventory::Inventory,
+    /// The open container menu, if any (M87).
+    ///
+    /// Vanilla's second menu: `player.containerMenu`, beside the permanent
+    /// `player.inventoryMenu` that [`Self::inventory`] is. The server
+    /// addresses them independently — `container_set_slot` with id 0 always
+    /// writes the inventory whatever is open — so they are two fields rather
+    /// than one.
+    pub menus: rewo_world::menu::Menus,
     /// The tracked waypoints the locator bar draws (M83).
     ///
     /// **Connection state, not level state.** `ClientWaypointManager` is a
@@ -1475,6 +1483,7 @@ impl<'a> Connection<'a> {
             weather: rewo_world::weather::WeatherState::default(),
             border: rewo_world::border::WorldBorder::default(),
             inventory: rewo_world::inventory::Inventory::default(),
+            menus: rewo_world::menu::Menus::new(),
             waypoints: crate::waypoints::WaypointStore::default(),
             component_names: None,
             stack_details: crate::item_stack::StackDetails::default(),
@@ -2659,6 +2668,19 @@ impl PlaySession {
         ) {
             // M74 — difficulty, the camera's target, and the container-close
             // latch. Decode and state; the app reads the camera and the latch.
+            //
+            // M87 hangs the menu close off this arm rather than off
+            // `route_menu`, because this chain is a sequence of `else if`s and
+            // `container_close` already belongs to this seam. A second seam
+            // claiming the same id would either steal it from M74's counter or
+            // never see it, depending only on which arm came first.
+            if id == ids.cb_play_container_close {
+                self.menus.apply_close();
+            }
+        } else if crate::route_menu(id, body, ids, &mut self.menus) {
+            // M87 — `open_screen` and `container_set_data`. State only so far:
+            // the menu's own item slots arrive when `Inventory` becomes a
+            // layout-driven menu, and nothing renders it yet.
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
             // decode feeds the weather levels, the client game state and the

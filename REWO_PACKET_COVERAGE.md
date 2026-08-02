@@ -194,19 +194,28 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **107** |
+| Resolved **and** consumed | **109** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **34** |
+| Not resolved at all | **32** |
 | **Total clientbound-play** | **141** |
 
-The 34 gaps, by class:
+The 32 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **23** | 68% |
-| **D** not applicable | **11** | 32% |
+| **C** needs a subsystem Rewo lacks | **21** | 66% |
+| **D** not applicable | **11** | 34% |
+
+**M87 is the first bite out of class C**, and it is a worked example of what
+that class costs. `open_screen` and `container_set_data` are eleven lines of
+decode between them; what made them class C is that neither means anything
+without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
+being hard-wired to the player's 46 slots. The decode landed first and on its
+own precisely because it is the small half: the row above says `handled` and
+the feature is still not visible, which is the honest state and is why the
+"what is not" column exists.
 
 **Both actionable classes are now empty**, which changes what this document is
 for. It was written to enumerate what Rewo ignores; what remains is 23 packets
@@ -462,7 +471,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 16 | `commands` | absent | **C** | The Brigadier command tree. Worthless without command input. |
 | 17 | `container_close` | handled | `req!` → `cb_play_container_close` | **M74.** One VarInt container id, which vanilla reads and then **ignores** — `handleContainerClose` closes whatever is open without comparing ids. |
 | 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | §4 partial — container id 0 only. |
-| 19 | `container_set_data` | absent | **C** | Furnace/brewing/enchanting progress — needs the non-player menus M34 excluded. |
+| 19 | `container_set_data` | handled | — | M87. VarInt container id then **two signed `readShort`s**, applied only when the id matches the open menu. The values are stored; no screen draws a progress bar from them yet. |
 | 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | §4 partial — container id 0 only. |
 | 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered from the jar `store_cookie` (120) fills, since **M78**. Before it, "handled" was true only of the M1-era `Connection::run_play` harness — `PlaySession` had no arm at all, so the real client left a play-state request unanswered. §4, §9. |
 | 22 | `cooldown` | handled | `req!` → `cb_play_cooldown` | **M79.** An `Identifier` **cooldown group** + a VarInt duration — no start tick, no end tick; `addCooldown` supplies the start from `ItemCooldowns.tickCount`. `duration == 0` routes to `removeCooldown`, so it **cancels** rather than starting a zero-length cooldown whose percent would be `0/0`. |
@@ -502,7 +511,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 56 | `move_entity_rot` | handled | `req!` → `cb_play_move_entity_rot` | |
 | 57 | `move_vehicle` | handled | `req!` → `cb_play_move_vehicle` | **M68.** Carries **no entity id** — the client resolves `getRootVehicle()`. Sent only as a rejection of a serverbound vehicle move, so a passenger-only client never receives one. |
 | 58 | `open_book` | absent | **C** | Book screen. |
-| 59 | `open_screen` | absent | **C** | The menu framework — `minecraft:menu` registry + a screen per type. |
+| 59 | `open_screen` | handled | — | M87. VarInt container id, the `minecraft:menu` id as a **raw 0-based** `registry` (not `holder`'s `id + 1`), then an NBT title. All 25 layouts resolve; an unregistered type opens nothing, as `MenuScreens.create` does. No screen renders it yet. |
 | 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |
 | 62 | `pong_response` | absent | **D** | The reply to a serverbound `ping_request` Rewo never sends (`pingDebugMonitor`). |
