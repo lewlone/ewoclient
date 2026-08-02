@@ -1635,9 +1635,10 @@ next unit of work is a **subsystem**, not a packet.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and pushed to `origin/main`** as of 2026-07-30
-(**`0ddbc66`**, M86) — re-verified from a cold start 2026-08-02: build clean,
-**1623 tests / 0 failures**, `mobshot` 246/246, no branch anywhere holding a
+**Everything is shipped, gated and pushed to `origin/main`** as of 2026-08-02
+(**`2cd5635`**, M87) — **1683 tests / 0 failures**, `mobshot` 246/246,
+`containershot` 13/13, `inventoryshot` 152/152, `live --render-check` 18/18
+with validation ON, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
 commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
 new work from `main` and keep it that way.
 
@@ -3975,6 +3976,106 @@ one that can see a render path the windowed client never reaches. **Run it after
 any milestone that adds one.** It does not stage its own hotbar and **fails
 closed when you don't** — `REWO_PRECMD="give @s minecraft:diamond_sword 1;give
 @s minecraft:dirt 64"` against an opped username; 17/18 bare, 18/18 staged.
+
+### M87 — the container/menu screens (2026-08-02)
+
+Twelve commits (`f99ad5c..bd39954`, merged `2cd5635`). **The first bite out of
+class C**, and a worked example of what that class costs: `open_screen` and
+`container_set_data` are eleven lines of decode between them, and the other
+eleven commits are what makes those lines mean anything. Before it,
+`apply_container_set_content` opened with `if container != 0 { return false }`
+and its own comment called that *"the whole truth about what this client can
+show"* — on a real server you could not open a chest.
+
+**Findings that invert, in the order they bite:**
+
+- **`crafter_3x3` puts its result slot AFTER the player inventory** — grid
+  0..8, `addStandardInventorySlots` 9..44, result at **45**. Every other menu
+  appends the player's 36 last, so "container slots, then the player's" puts
+  the crafter's output *inside* the player's inventory and shifts nothing
+  else. **`crafting` inverts the other way**: its result is slot 0, before the
+  grid.
+- **`lectern` has one slot, no player inventory, and no container screen.**
+  `LecternMenu` never calls `addStandardInventorySlots`, and `LecternScreen
+  extends BookViewScreen` — the same fact from both sides. Any
+  `slots.len() - 36` is a panic there. So it is **24 container screens and one
+  book viewer**, not 25.
+- **`open_screen`'s menu type is `registry(...)` — raw 0-based, not `holder`'s
+  `id + 1`.** Fourth time (M16, M21, M55) and the quietest: id 2
+  (`generic_9x3`) reads as 1 (`generic_9x2`), a real menu with a real screen
+  and nine fewer slots, so a chest opens with its bottom row missing.
+- **`container_set_data` is a VarInt then two *signed* `readShort`s** in a
+  mostly-var-int protocol. Negatives are real (the anvil's cost, the beacon's
+  "no effect").
+- **Six screens override the title's x, in two different ways.** `dispenser`,
+  `crafter_3x3`, `brewing_stand` compute `(imageWidth - font.width(title)) / 2`
+  — a server-chosen name, so not storable as a constant; `anvil` (60),
+  `crafting` (29), `smithing` (44 + `titleLabelY` 15) are literals.
+- **The blit's sheet size is a per-call argument.** Twenty-one backgrounds pass
+  `256, 256`; **`MerchantScreen` passes `512, 256`**, because a 276 px panel
+  cannot come off a 256-wide texture. A global 256 gives `u1 = 1.078` and the
+  sampler repeats its left edge across the right-hand third of the trade
+  screen — which reads as a texture bug, not an arithmetic one.
+- **A chest's background stops one pixel short of its declared height**
+  (`114 + rows*18` vs blits covering `rows*18 + 113`). Vanilla's arithmetic;
+  closing the gap samples a row of `generic_54.png` vanilla never samples.
+
+**Three process results, each of which changed the work:**
+
+1. **A checker, not a generator.** Every other bulk fact in Rewo comes from a
+   `tools/gen_*.py`; here that is measurably the wrong tool. The 25 menus use
+   **four idioms** (direct `addSlot`, a nested loop, a field assigned earlier,
+   a fluent builder consumed by a base class) and five declare no slots and
+   inherit them — one extractor reaches **17 of 25**, and chasing the rest is a
+   small Java interpreter whose failure mode is a silently *short* slot list.
+   `tools/check_menu_layouts.py` re-derives independently and diffs; it earned
+   that on run one by **refusing to proceed**, seeing four slots in
+   `BrewingStandMenu` where the table has five (`IngredientsSlot` takes a
+   leading argument a four-arg pattern misses). The table was right.
+2. **One dispatcher per packet id.** First a hazard — `container_close` is
+   already owned by `route_client_state`, and the play loop is a chain of
+   `else if`s, so a second claimant either steals M74's counter or never fires,
+   with no error either way. Then a design constraint:
+   `container_set_content` is one id addressing two menus, so `route_inventory`
+   grew a `&mut Menus` rather than the container path getting its own router.
+3. **A half-landed feature is a bug, not half a feature.** M87j shipped the
+   panel setter *uncalled* on purpose: the icons and hover still keyed off the
+   player's 176x166 origin, so setting only the panel would paint a chest sheet
+   with the player's icons 28 px off — broken, not unfinished. M87k landed all
+   four consumers together, choosing the menu **once** and threading it.
+
+**The gate, and the witness that caught its own vacuity.** `rewo containershot
+--check` — serverless, validation-required, fail-closed, **13 witnesses**,
+grading against oracles the tables cannot influence (the slot geometry
+re-derived from `ChestMenu`'s constructor; the panel against `generic_54.png`
+itself). **Its first run failed on the witness written to detect exactly
+that**: `p3` asks whether `p2`'s probes can distinguish the two readings, and
+on a six-row chest they cannot — `split` is 125, the lower band maps
+`y -> y + 1`, and the two candidate source rows are *adjacent* and identical
+wherever the art is flat. The band probes now use a **one**-row chest (offset
+91) and centring the **six**-row one (28 px vs 2). One fixture cannot serve
+both claims.
+
+**Measured:** 1683 tests, 0 failures; `containershot` 13/13, `inventoryshot`
+152/152 **unchanged across all twelve commits**, `itemshot` 75/75, `handshot`
+34/34, `menucheck` 25/25, demo PNG `2cc56b4acbfb92cb` byte-identical
+throughout. `REWO_PACKET_COVERAGE.md` 107/0/34 → **109/0/32**, class C 23 → 21.
+**`live --render-check` 18/18, validation ON, 0 validation errors** — note
+validation is `cfg!(debug_assertions)`-gated for `live`, so a *release* binary
+reports `r17` false and makes `r18` vacuous.
+
+**What that check does NOT prove, and it matters:** `--render-check` opens the
+*inventory*, not a chest. It grades the windowed client's health with M87 in it
+and **not** that a container renders there. Nothing yet drives a chest open in
+the windowed client — the same shape of blind spot M86 was, a path nothing
+exercises. Closing it needs a scripted right-click on a placed chest.
+
+**Open:** the ~11 bespoke-widget screens (anvil text field, enchantment
+buttons, beacon, merchant trade list, loom/stonecutter scroll grids, crafter
+toggles); `container_set_data` is stored and drawn by nothing (no furnace
+arrow, no brewing bubbles); and `quickMoveStack` is a **per-menu-class
+override**, so shift-click into a chest is per-menu transcription work, not a
+parameter — player-only today and correct as such.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
