@@ -2880,6 +2880,7 @@ pub(crate) fn container_sprites(
         bundle_bar_fill: s(&c.bundle_bar_fill),
         bundle_bar_full: s(&c.bundle_bar_full),
         menu_backgrounds: c.menu_backgrounds.iter().map(s).collect(),
+        furnace_progress: c.furnace_progress.iter().map(s).collect(),
     })
 }
 
@@ -8545,14 +8546,14 @@ mod tests {
         // a panel here would send it through the container path instead --
         // which is the change `inventoryshot` would catch, but only because
         // this stays None.
-        assert!(container_panel(&rewo_world::menu_layout::PLAYER).is_none());
+        assert!(container_panel(&rewo_world::menu_layout::PLAYER, None).is_none());
     }
 
     #[test]
     fn a_lectern_paints_no_panel_rather_than_someone_elses() {
         // LecternScreen is a BookViewScreen. Falling through to a default
         // would paint some other menu's sheet behind a book.
-        assert!(container_panel(layout(17)).is_none());
+        assert!(container_panel(layout(17), None).is_none());
     }
 
     #[test]
@@ -8562,7 +8563,7 @@ mod tests {
             if id == 17 {
                 continue;
             }
-            let p = container_panel(l).unwrap_or_else(|| panic!("{} has no panel", l.name));
+            let p = container_panel(l, None).unwrap_or_else(|| panic!("{} has no panel", l.name));
             assert!(
                 p.sheet < rewo_data::assets::MENU_BACKGROUND_TEXTURES.len(),
                 "{} indexes past the atlas",
@@ -8576,7 +8577,7 @@ mod tests {
         // generic_9x3: the top 3*18 + 17 = 71 px from the sheet's top, then
         // 96 px from v = 126. The gap between them is the rows a three-row
         // chest does not want.
-        let p = container_panel(layout(2)).unwrap();
+        let p = container_panel(layout(2), None).unwrap();
         assert_eq!(p.blits.len(), 2);
         assert_eq!((p.gui_w, p.gui_h), (176.0, 168.0));
         assert_eq!((p.blits[0].dy, p.blits[0].sy, p.blits[0].h), (0.0, 0.0, 71.0));
@@ -8589,7 +8590,7 @@ mod tests {
         // merchant against 512, so multiplying by 512 must return the pixels
         // vanilla blits -- 0, 0, 276 wide. Multiplying by 256 (the other
         // twenty-one screens' sheet) would halve them.
-        let p = container_panel(layout(19)).unwrap();
+        let p = container_panel(layout(19), None).unwrap();
         assert_eq!(p.blits.len(), 1);
         assert_eq!((p.blits[0].sx, p.blits[0].sy), (0.0, 0.0));
         assert_eq!(p.blits[0].w, 276.0);
@@ -10824,7 +10825,7 @@ fn apply_screen(
 
     // The container's own background sheet, or `None` for the player's
     // inventory, which the pass draws from its own `inventory.png` rect.
-    wr.set_container_panel(container_panel(layout));
+    wr.set_container_panel(container_panel(layout, session.menus.open()));
 
     let (mut icons, mut labels) = screen_icons(menu, items, &session.trim_materials, w, h);
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
@@ -10968,6 +10969,7 @@ fn apply_screen(
 /// some other menu's.
 fn container_panel(
     layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         return None;
@@ -10985,11 +10987,37 @@ fn container_panel(
             sy: q.v0 * screen.sheet_h,
         })
         .collect();
+    // M91 — a furnace's flame and arrow, from its `container_set_data` slots.
+    let mut progress = Vec::new();
+    if let (Some(m), Some(base)) = (
+        open,
+        rewo_data::assets::progress_index(layout.protocol_id),
+    ) {
+        let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
+            m.furnace_is_lit(),
+            m.furnace_lit_progress(),
+            m.furnace_burn_progress(),
+        );
+        let to_blit = |b: rewo_world::menu_screen::ProgressBlit| rewo_gpu::container::PanelBlit {
+            dx: b.dx as f32,
+            dy: b.dy as f32,
+            w: b.w as f32,
+            h: b.h as f32,
+            sx: b.sx as f32,
+            sy: b.sy as f32,
+        };
+        // The lit sprite is the pair's first, the burn its second.
+        if let Some(f) = flame {
+            progress.push((base, to_blit(f)));
+        }
+        progress.push((base + 1, to_blit(arrow)));
+    }
     Some(rewo_gpu::container::ContainerPanel {
         sheet,
         blits,
         gui_w: screen.image_w as f32,
         gui_h: screen.image_h as f32,
+        progress,
     })
 }
 
@@ -10999,7 +11027,7 @@ fn container_panel(
 pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
-    container_panel(layout)
+    container_panel(layout, None)
 }
 
 /// [`sheet_index`] for `containershot`.

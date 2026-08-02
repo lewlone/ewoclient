@@ -1403,6 +1403,32 @@ pub const MENU_BACKGROUND_TEXTURES: &[&str] = &[
     "gui/container/stonecutter.png",
 ];
 
+/// The furnace family's progress overlays (M91), in this order.
+///
+/// Two per furnace — the flame and the arrow — and the three furnaces have
+/// their **own art**, not one shared pair: a blast furnace's flame is a
+/// different sprite from a furnace's. `progress_index` maps a `minecraft:menu`
+/// id to the pair's base.
+pub const FURNACE_PROGRESS_SPRITES: &[&str] = &[
+    "gui/sprites/container/blast_furnace/lit_progress.png",
+    "gui/sprites/container/blast_furnace/burn_progress.png",
+    "gui/sprites/container/furnace/lit_progress.png",
+    "gui/sprites/container/furnace/burn_progress.png",
+    "gui/sprites/container/smoker/lit_progress.png",
+    "gui/sprites/container/smoker/burn_progress.png",
+];
+
+/// Where a furnace menu's `(lit, burn)` pair starts in
+/// [`FURNACE_PROGRESS_SPRITES`], or `None` for a menu that is not a furnace.
+pub fn progress_index(menu_protocol_id: i32) -> Option<usize> {
+    match menu_protocol_id {
+        10 => Some(0), // blast_furnace
+        14 => Some(2), // furnace
+        22 => Some(4), // smoker
+        _ => None,
+    }
+}
+
 /// The textures the container screen and its tooltips draw (M35, M40, M58).
 pub struct ContainerSprites {
     /// `AbstractContainerScreen.INVENTORY_LOCATION` — a 256×256 sheet whose
@@ -1425,6 +1451,9 @@ pub struct ContainerSprites {
     /// middles, frame `border: 10` sets `stretch_inner`, so it stretches them.
     pub tooltip_background: HudSprite,
     pub tooltip_frame: HudSprite,
+    /// The six furnace progress overlays (M91), in
+    /// [`FURNACE_PROGRESS_SPRITES`] order.
+    pub furnace_progress: Vec<HudSprite>,
     /// The 19 distinct container background sheets (M87), in
     /// [`MENU_BACKGROUND_TEXTURES`] order.
     ///
@@ -1521,7 +1550,12 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         // is worse than a bake that says which sheet is missing.
         menu_backgrounds.push(get(jar, path)?);
     }
+    let mut furnace_progress = Vec::with_capacity(FURNACE_PROGRESS_SPRITES.len());
+    for path in FURNACE_PROGRESS_SPRITES {
+        furnace_progress.push(get(jar, path)?);
+    }
     Some(ContainerSprites {
+        furnace_progress,
         menu_backgrounds,
         background: get(jar, "gui/container/inventory.png")?,
         highlight_back: get(jar, "gui/sprites/container/slot_highlight_back.png")?,
