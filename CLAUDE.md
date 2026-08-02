@@ -1636,9 +1636,9 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and pushed to `origin/main`** as of 2026-08-02
-(**`2cd5635`**, M87) — **1683 tests / 0 failures**, `mobshot` 246/246,
-`containershot` 13/13, `inventoryshot` 152/152, `live --render-check` 18/18
-with validation ON, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
+(**`6123058`**, M89) — **1683 tests / 0 failures**, `mobshot` 246/246,
+`containershot` 17/17, `inventoryshot` 152/152, `live --render-check` **21/21**
+with validation ON and 0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
 commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
 new work from `main` and keep it that way.
 
@@ -4064,18 +4064,80 @@ throughout. `REWO_PACKET_COVERAGE.md` 107/0/34 → **109/0/32**, class C 23 → 
 validation is `cfg!(debug_assertions)`-gated for `live`, so a *release* binary
 reports `r17` false and makes `r18` vacuous.
 
-**What that check does NOT prove, and it matters:** `--render-check` opens the
-*inventory*, not a chest. It grades the windowed client's health with M87 in it
-and **not** that a container renders there. Nothing yet drives a chest open in
-the windowed client — the same shape of blind spot M86 was, a path nothing
-exercises. Closing it needs a scripted right-click on a placed chest.
+**What that check did NOT prove, and it mattered:** `--render-check` opens the
+*inventory*, not a chest, so it graded the windowed client's health with M87 in
+it and **not** that a container rendered there — the same shape of blind spot
+M86 was. **M88 closed this**; see below.
 
-**Open:** the ~11 bespoke-widget screens (anvil text field, enchantment
-buttons, beacon, merchant trade list, loom/stonecutter scroll grids, crafter
-toggles); `container_set_data` is stored and drawn by nothing (no furnace
-arrow, no brewing bubbles); and `quickMoveStack` is a **per-menu-class
-override**, so shift-click into a chest is per-menu transcription work, not a
-parameter — player-only today and correct as such.
+### M88 + M89 — proving the container renders, then making it work (2026-08-02)
+
+**M87's merge commit said "Rewo can open a chest" and that was an over-claim.**
+It built the *render*. These two make it true. Detail in `REWO_PLAN.md` §15.
+
+**M88 (`9666045`)** closed the render-check gap with `r19` (a container screen
+was drawn — 1513 of 3551 frames) and `r20` (its panel was its own, 168, not the
+player's 166). The container is opened by injecting a raw `open_screen` body
+through the **production router**, per M17: injection is the deterministic
+proof where a live encounter depends on the server's timing and the client
+aiming at the right block.
+
+**`r20` was wrong in its first cut**, and that is the transferable part: it read
+`image_h` off the open menu's **layout**, which answers 168 for a chest whether
+or not the panel builder returned one — so it could not tell a working
+container from a silent fallback to the player's panel, the failure actually
+worth naming. It now reads the height back **out of the renderer** after the
+draw set it. *A value witness is only a value witness if it reads the value the
+draw used* — reading one that merely **implies** the draw is a proxy that looks
+more rigorous than it is. Mutation-tested: a silent `None` fallback drops `r19`
+to 0 frames and `r20` to `None`; the first cut stayed green through it.
+
+**M89 (`6123058`)** made a container *usable*. Three things were still
+player-keyed, all reachable today (open a container, press E, click):
+
+1. **Nothing opened the screen** on `open_screen` — the menu was recorded and
+   nothing shown unless the player independently pressed E. In vanilla
+   `handleOpenScreen` **is** `MenuScreens.create`; decode and screen are one
+   action.
+2. **Every click operated on the player's menu** — all sixteen sites used
+   `session.inventory`, so clicking a chest's slot 5 picked up the player's
+   crafting grid.
+3. **The click packet hard-coded container 0 and the player's `state_id`** —
+   and `stateId` is per-menu (`incrementStateId` is an instance counter; the
+   resync test is against the menu the click *names*), so the server would
+   apply a chest click to the inventory or reject it on a stale id.
+
+The fix is **one accessor** (`PlaySession::shown_menu{,_mut}`,
+`shown_container_id`) that every consumer goes through — the five click
+actions, the prediction apply, the hover, and the packet's two ids. A
+per-call-site choice is *how* they came to disagree. The hover needed **both**
+halves: `screen_to_gui` centres the panel to find the origin and `slot_at`
+scans that layout's slots, so asking the player's 176x166 while a 176x222 chest
+is up shifts the cursor 28 px **and** looks it up in the wrong slot list — the
+two errors do not cancel.
+
+**`r21` isolates the new behaviour by ordering** — the container is injected at
+0.4, *before* the gate force-opens the inventory at 0.5, so frames in that
+window can only exist if the packet opened the screen. **And that reordering
+silently broke M86's own coverage**: the forced-open branch guarded on
+`!inventory_open()`, which the injected container now satisfies, so the branch
+was skipped — including the **cursor park**, the only thing that lays out a
+tooltip and therefore the only door to `VelvetTextPass::sync_atlas`. `r16`
+stayed green while proving nothing it was written for. **The tell was a number
+that was too good** (`r21` counting all 2244 frames rather than a ~290-frame
+window) — the shape of a guard that has stopped firing. *A test can be disabled
+by a change to an unrelated part of its harness, and it reports success while
+it happens.*
+
+**Measured:** 1683 tests; `containershot` 13 → **17**, `live --render-check`
+18 → **21** validation ON 0 VUIDs, `inventoryshot` 152/152, demo PNG
+byte-identical.
+
+**Open on the container arc:** the ~11 bespoke-widget screens (anvil text
+field, enchantment buttons, beacon, merchant trade list, loom/stonecutter
+scroll grids, crafter toggles); `container_set_data` is decoded and drawn by
+nothing (no furnace arrow, no brewing bubbles); and `quickMoveStack` is a
+**per-menu-class override**, so shift-click into a chest still routes by the
+player's rules and needs per-menu transcription.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;

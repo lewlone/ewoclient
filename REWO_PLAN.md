@@ -2193,6 +2193,101 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M88 + M89 — proving the container renders, then making it work (2026-08-02)
+
+Two milestones that between them close what M87 left open, and the second of
+them **corrects an over-claim in M87's own merge commit**, which said "Rewo can
+open a chest". M87 built the *render*. It did not make a chest work.
+
+#### M88 — the windowed client is proven to render a container (`9666045`)
+
+M87 recorded that `--render-check` opens the *inventory*, which is
+`menu_layout::PLAYER` and takes the pass's own `inventory.png` rect, so every
+container-specific path stayed unexercised in the windowed client — the same
+shape of blind spot M86 was, a path nothing drives.
+
+Closed with `r19` (a container screen was drawn) and `r20` (its panel was its
+own, not the player's 166). The container is opened by injecting a raw
+`open_screen` body through the **production router**, per M17: injection is the
+deterministic proof where a live encounter depends on the server's timing and
+on the client aiming at the right block.
+
+**`r20` was wrong in its first cut, and the fix is the transferable part.** It
+read `image_h` off the open menu's **layout**, which answers 168 for a chest
+whether or not the panel builder returned one — so it could not tell a working
+container from one that had silently fallen back to the player's 166-tall
+panel, which is the failure actually worth naming. It now reads the height back
+**out of the renderer** (`WorldRenderer::container_panel_height`) after the draw
+path set it. *A value witness is only a value witness if it reads the value the
+draw used*; reading a value that merely **implies** the draw is asserting a
+proxy, and it looks more rigorous than it is. Mutation-tested with exactly that
+failure — making `container_panel` return `None` for every container, a silent
+fallback with no error anywhere, drops `r19` to 0 of 3964 frames and `r20` to
+`None`. The first cut of `r20` would have stayed green through it.
+
+#### M89 — a container is usable, not just visible (`6123058`)
+
+Three things were still player-keyed after M87, all reachable today (open a
+container, press E, click):
+
+1. **Nothing opened the screen.** `open_screen` was decoded into `Menus` and
+   the frame loop drew whatever menu was open, but no path turned the screen
+   *on* — so right-clicking a chest recorded the menu and showed nothing unless
+   the player independently pressed E. In vanilla `handleOpenScreen` **is**
+   `MenuScreens.create`; the decode and the screen are one action.
+2. **Every click operated on the player's menu.** All sixteen call sites used
+   `session.inventory`, so clicking a chest's slot 5 picked up the player's
+   crafting grid.
+3. **The click packet hard-coded container 0 and the player's state id.**
+   `stateId` is per-menu — `incrementStateId` is an instance counter and the
+   resync test is `packet.stateId() != menu.getStateId()` against the menu the
+   click *names* — so the server would apply a chest click to the player's
+   inventory or reject it on a stale id.
+
+The fix is **one accessor** — `PlaySession::shown_menu{,_mut}` and
+`shown_container_id` — that every consumer goes through: the five click
+actions, the prediction apply, the hover, and the packet's two ids. M87 shipped
+with those disagreeing, and a per-call-site choice is *how* they disagreed.
+
+The hover needed **both** halves: `screen_to_gui` centres the panel to find the
+origin and `slot_at` scans that layout's own slots, so asking the player's
+176x166 while a 176x222 chest is up shifts the cursor 28 px **and** looks it up
+in the wrong slot list. The two errors do not cancel.
+
+**`r21` isolates the new behaviour by ordering**: the container is injected at
+0.4 of the run, *before* the gate force-opens the inventory at 0.5, so frames in
+that window can only exist if `open_screen` opened the screen itself. Reverting
+to the pre-M89 behaviour drops `r21` to 0 while `r19` stays green — the
+discrimination `r19` alone cannot make.
+
+**And that reordering silently broke M86's own coverage.** The forced-open
+branch guarded on `!inventory_open()`, which the injected container now
+satisfies, so the whole branch was skipped — **including the cursor park**,
+which is the only thing that lays out a tooltip and therefore the only door to
+`VelvetTextPass::sync_atlas`. `r16` stayed green while proving nothing it was
+written for. The guard is now `!screen_forced_open`. **The tell was a number
+that was too good**: `r21` counting *all* 2244 frames rather than a ~290-frame
+window, which is the shape of a guard that has stopped firing. A test can be
+disabled by a change to an unrelated part of its harness, and it reports success
+while it happens.
+
+#### Measured
+
+**1683 tests**, 0 failures. `containershot` 13 → **17** (M89's `s1`–`s4` grade
+the shown-menu choice serverless), `live --render-check` 18 → **21** with
+validation ON and 0 VUIDs, `inventoryshot` 152/152, demo PNG
+`2cc56b4acbfb92cb` byte-identical. Server started for each run and stopped
+after; port 25620 confirmed free.
+
+#### Still open on the container arc
+
+`container_set_data` is decoded and drawn by nothing (no furnace arrow, no
+brewing bubbles, no enchantment levels); `quickMoveStack` is a **per-menu-class
+override**, so shift-click into a chest still routes by the player's rules and
+needs per-menu transcription; and the ~11 bespoke-widget screens (anvil text
+field, enchantment buttons, beacon, merchant trade list, loom and stonecutter
+scroll grids, crafter toggles) are each a small feature.
+
 ### M87 — the container/menu screens (2026-08-02)
 
 Twelve commits, `f99ad5c..c901f9f`. The first bite out of class C, and a
