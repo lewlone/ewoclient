@@ -550,6 +550,10 @@ pub enum SlotKind {
     /// Slot 45. A plain `Slot` in vanilla — it accepts **anything**, not just
     /// shields, which is why it is not an `Armor` variant.
     Offhand,
+    /// A plain `Slot` in a container menu (M90): accepts anything, caps at the
+    /// item's own max stack. Every slot of a chest, shulker box, dispenser and
+    /// hopper is one — none of those menus has a result or equipment slot.
+    Plain,
 }
 
 /// The four `ArmorSlot`s, in menu order (`SLOT_IDS` is head-first).
@@ -738,7 +742,7 @@ impl Inventory {
         // item entity, so it declines rather than predicting a stack that
         // vanishes into nothing.
         let index = usize::try_from(slot).ok()?;
-        let kind = slot_kind(index)?;
+        let kind = self.layout.slot_kind(index)?;
         let clicked = self.slots[index];
 
         // Resolve every stack this click touches up front: a click that cannot
@@ -878,6 +882,7 @@ impl Inventory {
     /// `backwards` walks the range from its top, which the crafting result
     /// uses so a craft fills the hotbar from the right.
     fn move_stack_to(
+        &self,
         slots: &mut [Option<ItemSlot>],
         moving: &mut ItemSlot,
         range: std::ops::Range<usize>,
@@ -902,7 +907,7 @@ impl Inventory {
                 if !Self::same_item_same_components(*moving, target) {
                     continue;
                 }
-                let kind = slot_kind(i)?;
+                let kind = self.layout.slot_kind(i)?;
                 let cap = slot_max_stack(kind).min(props(target.item_id)?.max_stack);
                 let total = target.count + moving.count;
                 if total <= cap {
@@ -924,7 +929,7 @@ impl Inventory {
                 if slots[i].is_some() {
                     continue;
                 }
-                let kind = slot_kind(i)?;
+                let kind = self.layout.slot_kind(i)?;
                 if !Self::may_place(kind, p) {
                     continue;
                 }
@@ -947,12 +952,44 @@ impl Inventory {
     /// off-hand are checked *first* for an item that fits them and whose slot
     /// is empty, which is why shift-clicking a helmet equips it rather than
     /// moving it to the hotbar.
+    /// Where a shift-click from `slot` sends its stack, and whether the
+    /// destination range fills backwards.
+    ///
+    /// `quickMoveStack` is a per-menu-class **override** in vanilla, so this
+    /// dispatches on the menu's shape rather than computing one (M90). An
+    /// untranscribed menu returns `None`, which the caller turns into "not
+    /// predictable — not sent": moving nothing is inert, where sending a
+    /// shift-click under another menu's rules moves the wrong stack to the
+    /// wrong place and the server applies it.
     fn quick_move_destination(
+        &self,
         slot: usize,
         item: ItemSlot,
         slots: &[Option<ItemSlot>],
         p: ItemProps,
     ) -> Option<(std::ops::Range<usize>, bool)> {
+        use crate::menu_layout::QuickMove;
+        match self.layout.quick_move() {
+            QuickMove::Unimplemented => return None,
+            QuickMove::SimpleContainer { container_slots } => {
+                // ChestMenu / ShulkerBoxMenu / DispenserMenu / HopperMenu:
+                //
+                //   if (slotIndex < containerSize)
+                //       moveItemStackTo(stack, containerSize, slots.size(), true);
+                //   else
+                //       moveItemStackTo(stack, 0, containerSize, false);
+                //
+                // Container to player fills BACKWARDS — from the top of the
+                // range, which is the hotbar's right-hand end, because
+                // `addStandardInventorySlots` appends the hotbar last.
+                return Some(if slot < container_slots {
+                    (container_slots..slots.len(), true)
+                } else {
+                    (0..container_slots, false)
+                });
+            }
+            QuickMove::PlayerInventory => {}
+        }
         Some(match slot {
             // The crafting result fills backwards, so a craft lands in the
             // hotbar's right-hand slots first.
@@ -1002,10 +1039,17 @@ impl Inventory {
         props: &dyn Fn(i32) -> Option<ItemProps>,
     ) -> Option<ClickPrediction> {
         let index = usize::try_from(slot).ok()?;
-        let kind = slot_kind(index)?;
+        // A bounds check against THIS menu, not the player's. It used to be
+        // `self.layout.slot_kind(index)?`, whose result was then discarded (`let _ = kind`)
+        // — so it was only ever a bounds check, and a 46-slot one: a chest's
+        // slots 46 and up returned `None` and silently moved nothing, while
+        // 0..46 fell through to the player's routing and silently moved the
+        // wrong stack.
+        if index >= self.slots.len() {
+            return None;
+        }
         let source = self.slots[index]?;
         let p = props(source.item_id)?;
-        let _ = kind;
 
         let mut slots = self.slots.clone();
         let mut changed: Vec<SlotChange> = Vec::new();
@@ -1014,8 +1058,8 @@ impl Inventory {
         for _ in 0..slots.len() {
             let Some(current) = slots[index] else { break };
             let mut moving = current;
-            let (range, backwards) = Self::quick_move_destination(index, moving, &slots, p)?;
-            let moved = Self::move_stack_to(
+            let (range, backwards) = self.quick_move_destination(index, moving, &slots, p)?;
+            let moved = self.move_stack_to(
                 &mut slots, &mut moving, range, backwards, props, &mut changed,
             )?;
             if !moved {
@@ -1077,6 +1121,92 @@ mod tests {
             45 => (77, 62),
             _ => return None,
         })
+    }
+
+    // -- M90: shift-click routes by the menu's own quickMoveStack ----------
+
+    fn chest_with(slot: usize, item: Option<ItemSlot>) -> Inventory {
+        // generic_9x3: 27 container slots then the player's 36.
+        let mut c = Inventory::with_layout(crate::menu_layout::layout_of(2).unwrap());
+        let mut v = vec![None; c.slot_count()];
+        v[slot] = item;
+        assert!(c.set_content(1, &v, None));
+        c
+    }
+
+    fn plain_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            max_stack: 64,
+            equips: None,
+        })
+    }
+
+    #[test]
+    fn a_chests_container_slot_shift_clicks_into_the_player_range() {
+        let c = chest_with(0, stack(1, 5));
+        let p = c.click_quick_move(0, &plain_props).expect("predictable");
+        // Everything it touched is at or past the container's 27 slots.
+        assert!(!p.changed.is_empty());
+        // The source slot is in `changed` too — emptied to None — so the
+        // claim is about every OTHER touched slot. (This assertion was written
+        // without that and failed on it; the routing was right.)
+        assert!(
+            p.changed.iter().all(|&(s, _)| s == 0 || s as usize >= 27),
+            "a container slot must move into the player's range, got {:?}",
+            p.changed
+        );
+        assert_eq!(p.changed.iter().find(|&&(s, _)| s == 0).unwrap().1, None);
+    }
+
+    #[test]
+    fn a_chests_player_slot_shift_clicks_into_the_container_range() {
+        let c = chest_with(30, stack(1, 5));
+        let p = c.click_quick_move(30, &plain_props).expect("predictable");
+        assert!(!p.changed.is_empty());
+        assert!(
+            p.changed.iter().all(|&(s, _)| (s as usize) < 27 || s as usize == 30),
+            "a player slot must move into the container, got {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_chest_slot_past_the_players_46_is_no_longer_inert() {
+        // The bug this replaced: `self.layout.slot_kind(index)?` returned None past 45, so
+        // slots 46..63 of a chest silently moved nothing at all. 54 is the
+        // chest menu's first hotbar slot.
+        let c = chest_with(54, stack(1, 5));
+        assert!(
+            c.click_quick_move(54, &plain_props).is_some(),
+            "slot 54 must be predictable — it was None before M90"
+        );
+    }
+
+    #[test]
+    fn a_container_fills_the_player_from_the_top_of_the_range() {
+        // ChestMenu passes `true` for reverse, so the first empty slot taken
+        // is the LAST — the hotbar's right-hand end, since
+        // addStandardInventorySlots appends the hotbar after the main rows.
+        let c = chest_with(0, stack(1, 5));
+        let p = c.click_quick_move(0, &plain_props).unwrap();
+        let placed = p.changed.iter().map(|&(s, _)| s as usize).max().unwrap();
+        assert_eq!(placed, 62, "the last slot of a 63-slot chest menu");
+    }
+
+    #[test]
+    fn an_untranscribed_menu_declines_rather_than_borrowing_another_shape() {
+        // An anvil's quickMoveStack is its own; routing it as a chest would
+        // move the wrong stack and the server would apply it. Declining sends
+        // nothing.
+        let mut anvil = Inventory::with_layout(crate::menu_layout::layout_of(8).unwrap());
+        let mut v = vec![None; anvil.slot_count()];
+        v[0] = stack(1, 5);
+        anvil.set_content(1, &v, None);
+        assert_eq!(
+            anvil.layout().quick_move(),
+            crate::menu_layout::QuickMove::Unimplemented
+        );
+        assert!(anvil.click_quick_move(0, &plain_props).is_none());
     }
 
     #[test]
@@ -1450,7 +1580,7 @@ impl Inventory {
             return None;
         }
         let target_index = usize::try_from(slot).ok()?;
-        let kind = slot_kind(target_index)?;
+        let kind = self.layout.slot_kind(target_index)?;
         // The inventory index the button names, back in menu coordinates.
         let source_index = if button == SWAP_OFFHAND_BUTTON {
             OFFHAND_MENU_SLOT
@@ -1557,7 +1687,7 @@ impl Inventory {
             return None;
         }
         let index = usize::try_from(slot).ok()?;
-        let kind = slot_kind(index)?;
+        let kind = self.layout.slot_kind(index)?;
         let stack = self.slots[index]?;
         let p = props(stack.item_id)?;
         let amount = if button == 0 { 1 } else { stack.count };
@@ -1603,7 +1733,7 @@ impl Inventory {
         props: &dyn Fn(i32) -> Option<ItemProps>,
     ) -> Option<ClickPrediction> {
         let index = usize::try_from(slot).ok()?;
-        let kind = slot_kind(index)?;
+        let kind = self.layout.slot_kind(index)?;
         let mut carried = self.carried?;
         let cp = props(carried.item_id)?;
         let clicked = self.slots[index];
@@ -1632,7 +1762,7 @@ impl Inventory {
                     continue;
                 }
                 let tp = props(target.item_id)?;
-                if !Self::allow_modification(slot_kind(i)?, tp) {
+                if !Self::allow_modification(self.layout.slot_kind(i)?, tp) {
                     continue;
                 }
                 // Pass 0 leaves full stacks alone.
@@ -1706,7 +1836,7 @@ impl Inventory {
     /// item qualifies on identity alone and the room left in it is worked out
     /// later. An empty slot always qualifies.
     fn may_drag_into(&self, index: usize, carried: ItemSlot, p: ItemProps) -> bool {
-        let Some(kind) = slot_kind(index) else {
+        let Some(kind) = self.layout.slot_kind(index) else {
             return false;
         };
         if !Self::may_place(kind, p) {
@@ -1776,7 +1906,7 @@ impl Inventory {
         let mut remaining = source.count;
         let mut changed: Vec<SlotChange> = Vec::new();
         for &i in slots {
-            let kind_of = slot_kind(i)?;
+            let kind_of = self.layout.slot_kind(i)?;
             if !self.may_drag_into(i, source, p) {
                 continue;
             }

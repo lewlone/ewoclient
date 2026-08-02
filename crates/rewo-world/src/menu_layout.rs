@@ -633,6 +633,74 @@ pub static REGISTRY: &[MenuLayout] = &[
     },
 ];
 
+/// How a menu routes a shift-click.
+///
+/// `AbstractContainerMenu.quickMoveStack` is a **per-menu-class override**, not
+/// a parameter — `ChestMenu`'s differs from `InventoryMenu`'s, and the furnace
+/// and crafting families differ again — so this is a transcription per shape,
+/// not a formula.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickMove {
+    /// The player's own `InventoryMenu`: armour first, then the main/hotbar
+    /// cross-move, with the crafting result filling backwards.
+    PlayerInventory,
+    /// The shape `ChestMenu`, `ShulkerBoxMenu`, `DispenserMenu` and
+    /// `HopperMenu` share, differing only in how many slots the container has:
+    ///
+    /// ```java
+    /// if (slotIndex < containerSize) moveItemStackTo(stack, containerSize, slots.size(), true);
+    /// else                           moveItemStackTo(stack, 0, containerSize, false);
+    /// ```
+    ///
+    /// Container to player fills **backwards** — from the top of the range,
+    /// which in these menus is the hotbar's right-hand end, because
+    /// `addStandardInventorySlots` appends the hotbar last.
+    SimpleContainer { container_slots: usize },
+    /// Not transcribed yet. The caller must **decline** rather than fall back
+    /// to another menu's routing: a shift-click sent under the wrong menu's
+    /// rules moves the wrong stack to the wrong place and the server applies
+    /// it, where declining moves nothing and is merely inert.
+    Unimplemented,
+}
+
+impl MenuLayout {
+    /// What kind of slot a menu index is, which is what decides its rules.
+    ///
+    /// Player-specific in vanilla only because `InventoryMenu` is the menu with
+    /// result, crafting and armour slots — a chest's are all plain `Slot`s. An
+    /// untranscribed menu answers `None` and every click on it declines, which
+    /// is the same choice [`QuickMove::Unimplemented`] makes and for the same
+    /// reason: an anvil's result slot refuses placement, and treating it as
+    /// plain would let a click put something there that the server then
+    /// rejects.
+    pub fn slot_kind(&self, slot: usize) -> Option<crate::inventory::SlotKind> {
+        if slot >= self.slot_count() {
+            return None;
+        }
+        match self.quick_move() {
+            QuickMove::PlayerInventory => crate::inventory::slot_kind(slot),
+            QuickMove::SimpleContainer { .. } => Some(crate::inventory::SlotKind::Plain),
+            QuickMove::Unimplemented => None,
+        }
+    }
+
+    /// This menu's shift-click routing.
+    pub fn quick_move(&self) -> QuickMove {
+        if self.protocol_id == NO_PROTOCOL_ID {
+            return QuickMove::PlayerInventory;
+        }
+        match self.protocol_id {
+            // generic_9x1..9x6, generic_3x3 (dispenser), hopper, shulker_box —
+            // every one of them the player's 36 appended after the container's
+            // own slots, which is what makes `slot_count() - 36` the split.
+            0..=6 | 16 | 20 => QuickMove::SimpleContainer {
+                container_slots: self.slot_count() - 36,
+            },
+            _ => QuickMove::Unimplemented,
+        }
+    }
+}
+
 /// Resolve a `minecraft:menu` registry id.
 ///
 /// Returns `None` for an unknown id rather than substituting a default: a menu
