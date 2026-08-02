@@ -10642,16 +10642,37 @@ fn apply_screen(
 /// The same shape `hotbar_slot_rects` returns, because they feed the same
 /// pass: an icon in an inventory slot is the same draw as an icon in a hotbar
 /// slot, and only the rectangle differs.
-fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory::MENU_SLOTS] {
-    let (left, top, scale) = rewo_gpu::container::gui_origin(w, h);
-    std::array::from_fn(|i| {
-        let (x, y) = rewo_world::inventory::slot_position(i).unwrap_or((0, 0));
-        (
-            left + x as f32 * scale,
-            top + y as f32 * scale,
-            16.0 * scale,
-        )
-    })
+/// Every slot's on-screen rect for a menu, in its own layout and at its own
+/// panel size (M87).
+///
+/// Takes the menu rather than assuming the player's: a container is a
+/// different slot count *and* a different panel, and the panel is what centres
+/// it — a six-row chest is 176x222, so measuring its slots from a 176x166
+/// origin puts every one of them 28 px low.
+fn menu_slot_rects(menu: &rewo_world::inventory::Inventory, w: f32, h: f32) -> Vec<(f32, f32, f32)> {
+    let layout = menu.layout();
+    let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+        w,
+        h,
+        layout.image_w as f32,
+        layout.image_h as f32,
+    );
+    (0..menu.slot_count())
+        .map(|i| {
+            let (x, y) = layout.position(i).unwrap_or((0, 0));
+            (
+                left + x as f32 * scale,
+                top + y as f32 * scale,
+                16.0 * scale,
+            )
+        })
+        .collect()
+}
+
+/// The player inventory's slot rects — [`menu_slot_rects`] for the menu that
+/// was the only one before M87.
+fn screen_slot_rects(w: f32, h: f32) -> Vec<(f32, f32, f32)> {
+    menu_slot_rects(&rewo_world::inventory::Inventory::default(), w, h)
 }
 
 /// This frame's icons and stack counts for the open screen.

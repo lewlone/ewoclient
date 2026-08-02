@@ -580,6 +580,37 @@ fn shelf_pack(sizes: impl IntoIterator<Item = (u32, u32)>) -> (Vec<(u32, u32, u3
     (out, y + row_h)
 }
 
+/// One background blit of a container panel: where it goes in GUI pixels
+/// relative to the panel's top-left, and which pixels of the sheet it takes.
+///
+/// A pass-local type rather than `rewo_world::menu_screen::PanelQuad`, because
+/// `rewo-gpu` holds no dependency on the world crate — the same arrangement the
+/// font and skin slices use. The caller converts, which is also where the
+/// sheet-size normalisation is undone: this carries **pixels**, so the two
+/// different divisors (a blit's declared 256-or-512, and the atlas's own
+/// height) never meet.
+#[derive(Clone, Copy, Debug)]
+pub struct PanelBlit {
+    pub dx: f32,
+    pub dy: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Source origin in sheet pixels.
+    pub sx: f32,
+    pub sy: f32,
+}
+
+/// An open container's panel: which sheet, which blits, and how big the panel
+/// is (which is what centres it).
+#[derive(Clone, Debug)]
+pub struct ContainerPanel {
+    /// Index into `rewo_data::assets::MENU_BACKGROUND_TEXTURES`.
+    pub sheet: usize,
+    pub blits: Vec<PanelBlit>,
+    pub gui_w: f32,
+    pub gui_h: f32,
+}
+
 /// `itemBar`'s background fill, `-16777216` — opaque black.
 const BAR_BED: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -838,9 +869,17 @@ impl ContainerPass {
         hovered: Option<(i32, i32)>,
         tooltip: Option<&TooltipDraw>,
         bars: &[ItemBar],
+        // The open container's panel (M87). `None` is the player's own
+        // inventory, which keeps the 176x166 `inventory.png` path unchanged —
+        // that is what holds `inventoryshot` still.
+        panel: Option<&ContainerPanel>,
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
-        let (left, top, scale) = gui_origin(w, h);
+        // A container's panel is its own size, so the origin that centres it —
+        // and therefore every slot rect measured from it — has to be computed
+        // against that size, not against the player inventory's.
+        let (gui_w, gui_h) = panel.map_or((GUI_WIDTH, GUI_HEIGHT), |p| (p.gui_w, p.gui_h));
+        let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
         self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(192);
         let quad = push_quad;
@@ -848,9 +887,32 @@ impl ContainerPass {
         // 1. The backdrop, over everything the world drew.
         if open {
             quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
-            // 2. The panel.
-            let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
-            quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+            // 2. The panel. One quad for the player's inventory; for a
+            //    container, whatever its screen's blits are — two for a chest,
+            //    which takes a band from the top of `generic_54.png` and
+            //    another from `v = 126`, skipping the rows its row count does
+            //    not want.
+            match panel {
+                None => {
+                    let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
+                    quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+                }
+                Some(p) => {
+                    for b in &p.blits {
+                        let r = self.menu_rect_px(p.sheet, b.sx, b.sy, b.w, b.h);
+                        quad(
+                            &mut v,
+                            left + b.dx * scale,
+                            top + b.dy * scale,
+                            b.w * scale,
+                            b.h * scale,
+                            r,
+                            WHITE,
+                            WHITE,
+                        );
+                    }
+                }
+            }
         }
         // 3. The hovered slot's *back* highlight, at `slot - 4` and 24×24 —
         //    a four-pixel bleed on every side of the 16 px icon.

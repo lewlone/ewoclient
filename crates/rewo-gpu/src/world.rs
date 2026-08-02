@@ -551,6 +551,10 @@ pub struct WorldRenderer {
     /// Whether the screen is open, and which slot's GUI-space top-left the
     /// cursor is over.
     container_open: Option<Option<(i32, i32)>>,
+    /// The open container's panel (M87). `None` means the player's own
+    /// inventory, whose 176x166 panel the container pass draws from its own
+    /// `inventory.png` rect.
+    container_panel: Option<crate::container::ContainerPanel>,
     /// This frame's tooltip: the text block's GUI-space top-left and size,
     /// both measured by the caller (M40), plus the bundle grid inside it if the
     /// hovered stack produced one (M58). The pass owns no font.
@@ -1106,6 +1110,7 @@ impl WorldRenderer {
                 hand_generation: 0,
                 container: None,
                 container_open: None,
+                container_panel: None,
                 container_tooltip: None,
                 screen: None,
                 screen_draw: crate::screen::ScreenDraw::default(),
@@ -1659,6 +1664,16 @@ impl WorldRenderer {
 
     /// Open or close the screen for this frame. `hovered` is the GUI-space
     /// top-left of the slot under the cursor, or `None`.
+    /// The open container's panel, or `None` for the player's own inventory.
+    ///
+    /// Separate from [`Self::set_container`] because the two answer different
+    /// questions — that one is *whether* a screen is open and what is hovered,
+    /// this one is *which* menu — and a container can open and close without
+    /// the hover changing.
+    pub fn set_container_panel(&mut self, panel: Option<crate::container::ContainerPanel>) {
+        self.container_panel = panel;
+    }
+
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
         self.container_open = open.then_some(hovered);
     }
@@ -2822,6 +2837,7 @@ impl WorldRenderer {
                 screen.flatten(),
                 self.container_tooltip.as_ref(),
                 &self.item_bars,
+                self.container_panel.as_ref(),
             );
         }
         if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
