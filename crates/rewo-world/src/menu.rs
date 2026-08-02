@@ -45,6 +45,13 @@ pub struct OpenMenu {
     pub title: String,
     /// `container_set_data` values, indexed by data slot id.
     pub data: [i16; MAX_DATA_SLOTS],
+    /// This menu's slots — the same [`crate::inventory::Inventory`] type the
+    /// player's menu is, sized by `layout`.
+    ///
+    /// One type for both is the point of the generalization: the click
+    /// arithmetic that `container_set_content` feeds is the same code
+    /// whichever menu it lands in, so it cannot drift between them.
+    pub menu: crate::inventory::Inventory,
 }
 
 impl OpenMenu {
@@ -93,8 +100,20 @@ impl Menus {
             layout,
             title,
             data: [0; MAX_DATA_SLOTS],
+            menu: crate::inventory::Inventory::with_layout(layout),
         });
         true
+    }
+
+    /// The open menu's slots, if its id matches.
+    ///
+    /// `handleContainerContent` and `handleContainerSetSlot` both gate on
+    /// `packet.containerId() == player.containerMenu.containerId`, so a write
+    /// addressed to a stale or unknown container is dropped rather than
+    /// applied to whatever happens to be open.
+    pub fn menu_for(&mut self, container_id: i32) -> Option<&mut crate::inventory::Inventory> {
+        let m = self.open.as_mut()?;
+        (m.container_id == container_id).then_some(&mut m.menu)
     }
 
     /// Apply `container_set_data`, gated the way `handleContainerSetData` is:
@@ -177,6 +196,53 @@ mod tests {
         assert!(!m.apply_set_data(1, -1, 9));
         assert!(!m.apply_set_data(1, MAX_DATA_SLOTS as i16, 9));
         assert_eq!(m.open().unwrap().data(0), 0);
+    }
+
+    #[test]
+    fn an_open_menu_carries_slots_sized_by_its_layout() {
+        let mut m = Menus::new();
+        m.apply_open_screen(3, 5, "Double Chest".into());
+        assert_eq!(m.open().unwrap().menu.slot_count(), 54 + 36);
+        m.apply_open_screen(4, 17, "Lectern".into());
+        assert_eq!(m.open().unwrap().menu.slot_count(), 1);
+    }
+
+    #[test]
+    fn menu_for_matches_only_the_open_container_id() {
+        let mut m = Menus::new();
+        m.apply_open_screen(9, 2, "Chest".into());
+        assert!(m.menu_for(9).is_some());
+        assert!(m.menu_for(8).is_none(), "a different id must not match");
+        assert!(
+            m.menu_for(0).is_none(),
+            "id 0 is the PLAYER's menu and must never resolve to a container"
+        );
+    }
+
+    #[test]
+    fn a_stale_id_after_a_close_finds_nothing() {
+        // The failure this prevents: a write addressed to a container that has
+        // been closed landing in the next one to open.
+        let mut m = Menus::new();
+        m.apply_open_screen(9, 2, "Chest".into());
+        m.apply_close();
+        assert!(m.menu_for(9).is_none());
+        m.apply_open_screen(10, 2, "Another".into());
+        assert!(m.menu_for(9).is_none(), "the old id must not match the new menu");
+        assert!(m.menu_for(10).is_some());
+    }
+
+    #[test]
+    fn reopening_replaces_the_slots_rather_than_keeping_them() {
+        // `MenuScreens.create` builds a fresh menu; a second open_screen for
+        // the same id must not inherit the previous container's contents.
+        let mut m = Menus::new();
+        m.apply_open_screen(3, 2, "Chest".into());
+        m.menu_for(3).unwrap().set_content(1, &vec![None; 63], None);
+        let before = m.open().unwrap().menu.state_id();
+        m.apply_open_screen(3, 2, "Chest".into());
+        assert_eq!(m.open().unwrap().menu.state_id(), 0, "state id resets");
+        assert_ne!(before, 0, "and the first open really had advanced it");
     }
 
     #[test]

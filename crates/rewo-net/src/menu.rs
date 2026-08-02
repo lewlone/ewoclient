@@ -278,6 +278,74 @@ mod tests {
         assert!(m.open().is_none(), "but nothing opened");
     }
 
+    // --- container_target: the routing rule `handleContainerContent` states ---
+
+    /// A `container_set_content` body's first field is the container id; the
+    /// rest is irrelevant to routing, which is the point.
+    fn body_for(container_id: u8) -> Vec<u8> {
+        vec![container_id, 0, 0]
+    }
+
+    #[test]
+    fn id_zero_routes_to_the_player_even_with_a_container_open() {
+        // The inversion: it is not "the open menu, defaulting to the
+        // inventory". inventoryMenu and containerMenu are separate objects and
+        // id 0 always means the former. Routing it to the open chest would
+        // write the chest's slots with the player's items.
+        //
+        // HONESTY NOTE, on M59's terms: no single-point mutation breaks this
+        // one, and it was mutation-tested to find that out. Two independent
+        // guards enforce it -- `container_target` tests id 0 first, and
+        // `menu_for` gates on equality with an id that is never 0 -- so
+        // inverting the priority leaves it passing (the non-matching-id
+        // witness is what catches that), and opening `menu_for` to any id
+        // leaves it passing too. It takes both at once. The witness is kept as
+        // a statement of the rule rather than deleted, because the realistic
+        // regression is someone rewriting this function wholesale as "the open
+        // menu, else the player", and then this is the line that says what the
+        // answer must be.
+        let mut player = rewo_world::inventory::Inventory::default();
+        let mut menus = rewo_world::menu::Menus::new();
+        menus.apply_open_screen(3, 5, "Double Chest".into());
+        let (id, target) = crate::container_target(&body_for(0), &mut player, &mut menus).unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(
+            target.slot_count(),
+            rewo_world::inventory::MENU_SLOTS,
+            "id 0 must reach the 46-slot player menu, not the 90-slot chest"
+        );
+    }
+
+    #[test]
+    fn a_matching_nonzero_id_routes_to_the_container() {
+        // The whole point of M87d: before it, this returned None and every
+        // chest was invisible.
+        let mut player = rewo_world::inventory::Inventory::default();
+        let mut menus = rewo_world::menu::Menus::new();
+        menus.apply_open_screen(3, 5, "Double Chest".into());
+        let (id, target) = crate::container_target(&body_for(3), &mut player, &mut menus).unwrap();
+        assert_eq!(id, 3);
+        assert_eq!(target.slot_count(), 54 + 36);
+    }
+
+    #[test]
+    fn a_nonmatching_nonzero_id_routes_nowhere() {
+        let mut player = rewo_world::inventory::Inventory::default();
+        let mut menus = rewo_world::menu::Menus::new();
+        menus.apply_open_screen(3, 5, "Double Chest".into());
+        assert!(crate::container_target(&body_for(4), &mut player, &mut menus).is_none());
+        // ...and with nothing open at all.
+        let mut empty = rewo_world::menu::Menus::new();
+        assert!(crate::container_target(&body_for(3), &mut player, &mut empty).is_none());
+    }
+
+    #[test]
+    fn an_empty_body_routes_nowhere_rather_than_defaulting_to_the_player() {
+        let mut player = rewo_world::inventory::Inventory::default();
+        let mut menus = rewo_world::menu::Menus::new();
+        assert!(crate::container_target(&[], &mut player, &mut menus).is_none());
+    }
+
     #[test]
     fn a_truncated_open_screen_is_an_error_not_a_default() {
         assert!(read_open_screen(&[]).is_err());

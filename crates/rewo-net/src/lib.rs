@@ -1911,6 +1911,10 @@ fn read_slot(
 pub fn apply_container_set_content(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
+    // The container id `inventory` *is* — 0 for the player's own menu, or an
+    // open container's. M87 made this a parameter: it was hard-coded to 0,
+    // which is why every container but the player's was dropped.
+    expect_container: i32,
     inventory: &mut rewo_world::inventory::Inventory,
     mut details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
@@ -1918,7 +1922,7 @@ pub fn apply_container_set_content(
     let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
         return false;
     };
-    if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
+    if container != expect_container {
         return false;
     }
     // A hostile or mismatched length is rejected before allocating for it.
@@ -1959,6 +1963,8 @@ pub fn apply_container_set_content(
 pub fn apply_container_set_slot(
     body: &[u8],
     components: rewo_data::components::DataComponentIds,
+    // See `apply_container_set_content`.
+    expect_container: i32,
     inventory: &mut rewo_world::inventory::Inventory,
     details: Option<&mut crate::item_stack::StackDetails>,
 ) -> bool {
@@ -1966,7 +1972,7 @@ pub fn apply_container_set_slot(
     let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
         return false;
     };
-    if container != rewo_world::inventory::PLAYER_CONTAINER_ID {
+    if container != expect_container {
         return false;
     }
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
@@ -2093,6 +2099,14 @@ pub fn route_inventory(
     // is applied regardless.
     components: Option<rewo_data::components::DataComponentIds>,
     inventory: &mut rewo_world::inventory::Inventory,
+    // The open container menu (M87). `container_set_content` and
+    // `container_set_slot` are ONE packet each that can address either menu —
+    // `handleContainerContent` is `if id == 0 { inventoryMenu } else if id ==
+    // containerMenu.containerId { containerMenu }` — so both targets have to
+    // be reachable from one dispatcher. Splitting them across two routers
+    // would put two seams on one packet id, and in an `else if` chain only the
+    // first would ever run.
+    menus: &mut rewo_world::menu::Menus,
     // M66's third slot carrier. `None` for a caller that does not draw
     // tooltips — the decode is unchanged either way, so passing it or not
     // cannot move a byte.
@@ -2100,13 +2114,17 @@ pub fn route_inventory(
 ) -> bool {
     if id == ids.cb_play_container_set_content {
         if let Some(c) = components {
-            apply_container_set_content(body, c, inventory, details);
+            if let Some((target_id, target)) = container_target(body, inventory, menus) {
+                apply_container_set_content(body, c, target_id, target, details);
+            }
         }
         return true;
     }
     if id == ids.cb_play_container_set_slot {
         if let Some(c) = components {
-            apply_container_set_slot(body, c, inventory, details);
+            if let Some((target_id, target)) = container_target(body, inventory, menus) {
+                apply_container_set_slot(body, c, target_id, target, details);
+            }
         }
         return true;
     }
@@ -2132,6 +2150,41 @@ pub fn route_inventory(
         return true;
     }
     false
+}
+
+/// Which menu a `container_set_content` / `container_set_slot` body is
+/// addressed to, and that menu's id.
+///
+/// Transcribed from `handleContainerContent`, whose two arms are the whole
+/// rule:
+///
+/// ```java
+/// if (packet.containerId() == 0)                                   -> inventoryMenu
+/// else if (packet.containerId() == player.containerMenu.containerId) -> containerMenu
+/// ```
+///
+/// Three things follow that are easy to get wrong in the obvious direction:
+///
+/// * **Id 0 goes to the player's own menu whatever is open.** It is not "the
+///   open menu, which defaults to the inventory" — `inventoryMenu` and
+///   `containerMenu` are separate objects and the server addresses each
+///   deliberately. Routing 0 to an open chest would write the chest's slots
+///   with the player's items.
+/// * **A non-zero id that does not match is dropped**, not applied to whatever
+///   is open. A stale id arriving after a close must not land in the next
+///   container.
+/// * The id is only peeked here; the applier re-reads and re-checks it, so a
+///   body whose id disagrees with the target it was routed to still declines.
+pub(crate) fn container_target<'a>(
+    body: &[u8],
+    inventory: &'a mut rewo_world::inventory::Inventory,
+    menus: &'a mut rewo_world::menu::Menus,
+) -> Option<(i32, &'a mut rewo_world::inventory::Inventory)> {
+    let container = rewo_proto::reader::PacketReader::new(body).varint().ok()?;
+    if container == rewo_world::inventory::PLAYER_CONTAINER_ID {
+        return Some((container, inventory));
+    }
+    menus.menu_for(container).map(|m| (container, m))
 }
 
 /// The container-menu dispatch seam (M87): `open_screen` and

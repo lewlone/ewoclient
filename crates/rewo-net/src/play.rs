@@ -2600,10 +2600,12 @@ impl PlaySession {
             ids,
             self.swing_data.as_ref().map(|d| d.components),
             &mut self.inventory,
+            &mut self.menus,
             Some(&mut self.stack_details),
         ) {
             // M34: the player's own inventory — contents, one slot, or the
-            // server moving the selection.
+            // server moving the selection. M87: or an open container's, since
+            // the same two packet ids address either menu.
         } else if crate::route_tags(id, body, ids, &mut self.tags) {
             // M69 — a datapack reload's `update_tags`. The join-time copy
             // arrives during configuration and is applied there; this arm is
