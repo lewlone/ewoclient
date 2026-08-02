@@ -95,12 +95,27 @@ pub(crate) struct Vertex {
 /// sprites with them, and the app maps the cursor back through them to find
 /// which slot it is over.
 pub fn gui_origin(w: f32, h: f32) -> (f32, f32, f32) {
+    gui_origin_for(w, h, GUI_WIDTH, GUI_HEIGHT)
+}
+
+/// [`gui_origin`] for a panel that is not 176x166.
+///
+/// `AbstractContainerScreen.init` is `leftPos = (width - imageWidth) / 2`, and
+/// `imageWidth`/`imageHeight` vary by menu: a six-row chest is 176x222, a
+/// beacon 230x219, a merchant 276x166, a hopper 176x133. The 176x166 pair is
+/// only `DEFAULT_IMAGE_WIDTH`/`HEIGHT`, which the player's own inventory
+/// happens to use.
+///
+/// Additive rather than a signature change on [`gui_origin`]: of that
+/// function's ~19 callers, almost all want only the third element (the GUI
+/// scale), which does not depend on the panel at all.
+pub fn gui_origin_for(w: f32, h: f32, gui_w: f32, gui_h: f32) -> (f32, f32, f32) {
     let scale = crate::hud::gui_scale(w, h);
     let (sw, sh) = (w / scale, h / scale);
     // Integer division in vanilla, and it matters: a half-pixel origin would
     // resample every sprite in the panel.
-    let left = ((sw - GUI_WIDTH) / 2.0).floor();
-    let top = ((sh - GUI_HEIGHT) / 2.0).floor();
+    let left = ((sw - gui_w) / 2.0).floor();
+    let top = ((sh - gui_h) / 2.0).floor();
     (left * scale, top * scale, scale)
 }
 
@@ -108,7 +123,22 @@ pub fn gui_origin(w: f32, h: f32) -> (f32, f32, f32) {
 /// to the panel's top-left — which is what
 /// `rewo_world::inventory::slot_at` expects.
 pub fn screen_to_gui(mouse: (f64, f64), w: f32, h: f32) -> (f64, f64) {
-    let (left, top, scale) = gui_origin(w, h);
+    screen_to_gui_for(mouse, w, h, GUI_WIDTH, GUI_HEIGHT)
+}
+
+/// [`screen_to_gui`] for a panel that is not 176x166.
+///
+/// The panel size has to match the one the render used, or the hover test
+/// answers for a differently-centred panel and every slot is off by half the
+/// size difference — which for a six-row chest is 28 px, more than a slot.
+pub fn screen_to_gui_for(
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    gui_w: f32,
+    gui_h: f32,
+) -> (f64, f64) {
+    let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
     (
         (mouse.0 - left as f64) / scale as f64,
         (mouse.1 - top as f64) / scale as f64,

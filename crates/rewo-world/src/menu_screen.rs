@@ -44,6 +44,17 @@
 //! from `v = 0`, then 96 px from `v = 126` for the player's half. One sheet
 //! serves all six row counts because the second blit skips whatever rows the
 //! first did not use. Every other container screen is a single full-size blit.
+//!
+//! # The sheet size is a per-blit argument, and one screen is not 256 wide
+//!
+//! `blit(pipeline, texture, x, y, u, v, w, h, texWidth, texHeight)` takes the
+//! sheet's dimensions per call. Twenty-one of the twenty-two container
+//! backgrounds pass `256, 256` and `MerchantScreen` passes **`512, 256`** —
+//! which it has to, since its panel is 276 px wide. Treating 256 as a constant
+//! makes the merchant's `u1` run to `276 / 256 = 1.078`, and the sampler then
+//! wraps or clamps: the right-hand third of the trade screen paints as a
+//! repeat of its own left edge, which looks like a texture bug rather than an
+//! arithmetic one.
 
 /// Where a screen puts its title's x.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +91,17 @@ pub struct MenuScreen {
     /// `inventoryLabelX`, 8 unless overridden (only `merchant`, at 107).
     pub inventory_label_x: i32,
     pub background: Background,
+    /// The `texWidth`/`texHeight` this screen's blit declares.
+    ///
+    /// **Not a constant.** `blit(..., u, v, w, h, texWidth, texHeight)` takes
+    /// them per call, and while 21 of the 22 container backgrounds pass
+    /// `256, 256`, `MerchantScreen` passes **`512, 256`** — which it must,
+    /// because its panel is 276 px wide and a 256-wide sheet cannot supply
+    /// that. A global 256 makes the merchant's UVs run to 1.078 and the
+    /// sampler wrap or clamp, painting the right-hand third of the trade
+    /// screen with a repeat of its own left edge.
+    pub sheet_w: f32,
+    pub sheet_h: f32,
 }
 
 impl MenuScreen {
@@ -115,6 +137,8 @@ const fn chest(rows: u8) -> Option<MenuScreen> {
         title_y: 6,
         inventory_label_x: 8,
         background: Background::ChestRows(rows),
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     })
 }
 
@@ -128,6 +152,8 @@ const fn plain(texture: &'static str) -> Option<MenuScreen> {
         title_y: 6,
         inventory_label_x: 8,
         background: Background::Whole,
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     })
 }
 
@@ -170,6 +196,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         title_y: 6,
         inventory_label_x: 8,
         background: Background::Whole,
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     }),
     plain("textures/gui/container/blast_furnace.png"),
     centered("textures/gui/container/brewing_stand.png"),
@@ -185,6 +213,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         title_y: 6,
         inventory_label_x: 8,
         background: Background::Whole,
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     }),
     // lectern -- a BookViewScreen, not a container screen.
     None,
@@ -199,6 +229,9 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         // left = 108 rather than 8.
         inventory_label_x: 107,
         background: Background::Whole,
+        // The one screen that is not 256x256; see `sheet_w`.
+        sheet_w: 512.0,
+        sheet_h: 256.0,
     }),
     Some(MenuScreen {
         texture: "textures/gui/container/shulker_box.png",
@@ -208,6 +241,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         title_y: 6,
         inventory_label_x: 8,
         background: Background::Whole,
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     }),
     Some(MenuScreen {
         texture: "textures/gui/container/smithing.png",
@@ -217,6 +252,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         title_y: 15,
         inventory_label_x: 8,
         background: Background::Whole,
+        sheet_w: 256.0,
+        sheet_h: 256.0,
     }),
     plain("textures/gui/container/smoker.png"),
     plain("textures/gui/container/cartography_table.png"),
@@ -244,6 +281,46 @@ pub fn background_blits(s: &MenuScreen) -> Vec<(i32, f32, i32)> {
             vec![(0, 0.0, top), (top, 126.0, 96)]
         }
     }
+}
+
+/// One background quad: where it goes in GUI pixels relative to the panel's
+/// top-left, and which part of the 256x256 sheet it samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelQuad {
+    pub dx: i32,
+    pub dy: i32,
+    pub w: i32,
+    pub h: i32,
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
+/// The background quads for a screen, ready to hand to a textured quad
+/// emitter.
+///
+/// Vanilla's call is
+/// `blit(pipeline, texture, x, y, u, v, w, h, texWidth, texHeight)` with
+/// `texWidth`/`texHeight` **always 256** for these sheets, so the UVs are
+/// `u / 256` and `(u + w) / 256`. The source rect is the same size as the
+/// destination in every case — nothing here scales — which is why a chest
+/// needs two quads rather than one stretched one: the middle of
+/// `generic_54.png` is rows the panel does not want.
+pub fn background_quads(s: &MenuScreen) -> Vec<PanelQuad> {
+    background_blits(s)
+        .into_iter()
+        .map(|(dy, v, h)| PanelQuad {
+            dx: 0,
+            dy,
+            w: s.image_w,
+            h,
+            u0: 0.0,
+            v0: v / s.sheet_h,
+            u1: s.image_w as f32 / s.sheet_w,
+            v1: (v + h as f32) / s.sheet_h,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -326,6 +403,64 @@ mod tests {
             assert_eq!(b.len(), 1, "{i}");
             assert_eq!(b[0], (0, 0.0, s.image_h), "{i}");
         }
+    }
+
+    #[test]
+    fn a_quads_source_rect_is_the_same_size_as_its_destination() {
+        // Nothing here scales. If a source rect were ever a different size
+        // from its destination the sheet would be stretched, and the tell is
+        // subtle -- a one-row difference reads as a slightly soft panel edge,
+        // not as an obvious stretch.
+        for s in SCREENS.iter().flatten() {
+            for q in background_quads(s) {
+                let src_w = (q.u1 - q.u0) * s.sheet_w;
+                let src_h = (q.v1 - q.v0) * s.sheet_h;
+                assert!((src_w - q.w as f32).abs() < 1e-4, "{} w", s.texture);
+                assert!((src_h - q.h as f32).abs() < 1e-4, "{} h", s.texture);
+            }
+        }
+    }
+
+    #[test]
+    fn a_chests_two_quads_sample_a_gap_in_the_sheet() {
+        // The reason a chest cannot be one stretched quad: the second blit
+        // starts at v = 126 while the first ended at v = rows*18 + 17, so for
+        // anything under six rows there is a band of generic_54.png between
+        // them that the panel deliberately skips. At six rows the two meet
+        // (108 + 17 = 125) and the gap closes to a single row.
+        let three = screen_of(2).unwrap();
+        let q = background_quads(three);
+        assert_eq!(q.len(), 2);
+        let first_end_v = q[0].v1 * three.sheet_h;
+        let second_start_v = q[1].v0 * three.sheet_h;
+        assert_eq!(first_end_v, 71.0, "3 rows: 3*18 + 17");
+        assert_eq!(second_start_v, 126.0);
+        assert!(second_start_v > first_end_v, "the skipped band is real");
+
+        let six = screen_of(5).unwrap();
+        let q6 = background_quads(six);
+        assert_eq!(q6[0].v1 * six.sheet_h, 125.0, "6 rows: 6*18 + 17");
+        assert_eq!(q6[1].v0 * six.sheet_h, 126.0, "still one row apart, never before");
+    }
+
+    #[test]
+    fn a_quad_never_samples_outside_the_sheet() {
+        for s in SCREENS.iter().flatten() {
+            for q in background_quads(s) {
+                assert!(q.u1 <= 1.0 + 1e-6, "{} u {}", s.texture, q.u1);
+                assert!(q.v1 <= 1.0 + 1e-6, "{} v {}", s.texture, q.v1);
+            }
+        }
+        // This assertion FAILED when the sheet size was a global 256, and the
+        // failure was the finding: `MerchantScreen` blits `512, 256`, because
+        // a 276 px panel cannot come off a 256-wide texture. With a global
+        // 256 its u1 is 276/256 = 1.078 and the sampler wraps or clamps,
+        // repeating the left edge across the right-hand third of the trade
+        // screen. So the sheet is per-screen, and this is the witness.
+        let merchant = screen_of(19).unwrap();
+        assert_eq!(merchant.image_w, 276);
+        assert_eq!(merchant.sheet_w, 512.0);
+        assert!((background_quads(merchant)[0].u1 - 276.0 / 512.0).abs() < 1e-6);
     }
 
     #[test]
