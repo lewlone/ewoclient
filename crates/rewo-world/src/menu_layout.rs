@@ -176,6 +176,31 @@ impl MenuLayout {
         None
     }
 
+    /// `AbstractContainerScreen.isHovering` — **an 18x18 box, not 16x16**.
+    ///
+    /// The icon is 16 px, but the test is `x >= left - 1 && x < left + w + 1`
+    /// with `w = 16`, so it reaches one pixel out on every side and the slots
+    /// tile without gaps. Using the icon's own rect leaves a one-pixel dead
+    /// cross between every pair of neighbours.
+    pub fn slot_contains(&self, slot: usize, gui_x: f64, gui_y: f64) -> bool {
+        let Some((left, top)) = self.position(slot) else {
+            return false;
+        };
+        let (left, top) = (left as f64, top as f64);
+        gui_x >= left - 1.0 && gui_x < left + 17.0 && gui_y >= top - 1.0 && gui_y < top + 17.0
+    }
+
+    /// The menu slot under a GUI-relative point, or `None`.
+    ///
+    /// The boxes overlap by their one-pixel bleed and vanilla's
+    /// `getHoveredSlot` returns the **first** match in menu order, so this
+    /// scans rather than computing an index — and the scan order is the menu's
+    /// slot order, which for `crafter_3x3` means the result slot is tested
+    /// last because it *is* last.
+    pub fn slot_at(&self, gui_x: f64, gui_y: f64) -> Option<usize> {
+        (0..self.slot_count()).find(|&s| self.slot_contains(s, gui_x, gui_y))
+    }
+
     /// Expand the blocks into one position per menu slot index, in wire order.
     pub fn positions(&self) -> Vec<(i16, i16)> {
         let mut out = Vec::with_capacity(self.slot_count());
