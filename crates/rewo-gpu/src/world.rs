@@ -1674,6 +1674,16 @@ impl WorldRenderer {
         self.container_panel = panel;
     }
 
+    /// The panel height the renderer is actually holding, if a container's.
+    ///
+    /// Read back rather than inferred from the open menu's layout: a fallback
+    /// in the panel builder would leave the layout saying 168 while the
+    /// renderer drew the player's 166, and a witness that asked the layout
+    /// could not tell those apart. This is what the draw uses.
+    pub fn container_panel_height(&self) -> Option<f32> {
+        self.container_panel.as_ref().map(|p| p.gui_h)
+    }
+
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
         self.container_open = open.then_some(hovered);
     }
