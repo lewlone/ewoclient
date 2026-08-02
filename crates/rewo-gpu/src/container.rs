@@ -71,6 +71,9 @@ pub struct ContainerSpriteData<'a> {
     pub bundle_bar_border: crate::hud::HudSpriteData<'a>,
     pub bundle_bar_fill: crate::hud::HudSpriteData<'a>,
     pub bundle_bar_full: crate::hud::HudSpriteData<'a>,
+    /// The 19 distinct container background sheets (M87), in
+    /// `rewo_data::assets::MENU_BACKGROUND_TEXTURES` order.
+    pub menu_backgrounds: Vec<crate::hud::HudSpriteData<'a>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -95,12 +98,27 @@ pub(crate) struct Vertex {
 /// sprites with them, and the app maps the cursor back through them to find
 /// which slot it is over.
 pub fn gui_origin(w: f32, h: f32) -> (f32, f32, f32) {
+    gui_origin_for(w, h, GUI_WIDTH, GUI_HEIGHT)
+}
+
+/// [`gui_origin`] for a panel that is not 176x166.
+///
+/// `AbstractContainerScreen.init` is `leftPos = (width - imageWidth) / 2`, and
+/// `imageWidth`/`imageHeight` vary by menu: a six-row chest is 176x222, a
+/// beacon 230x219, a merchant 276x166, a hopper 176x133. The 176x166 pair is
+/// only `DEFAULT_IMAGE_WIDTH`/`HEIGHT`, which the player's own inventory
+/// happens to use.
+///
+/// Additive rather than a signature change on [`gui_origin`]: of that
+/// function's ~19 callers, almost all want only the third element (the GUI
+/// scale), which does not depend on the panel at all.
+pub fn gui_origin_for(w: f32, h: f32, gui_w: f32, gui_h: f32) -> (f32, f32, f32) {
     let scale = crate::hud::gui_scale(w, h);
     let (sw, sh) = (w / scale, h / scale);
     // Integer division in vanilla, and it matters: a half-pixel origin would
     // resample every sprite in the panel.
-    let left = ((sw - GUI_WIDTH) / 2.0).floor();
-    let top = ((sh - GUI_HEIGHT) / 2.0).floor();
+    let left = ((sw - gui_w) / 2.0).floor();
+    let top = ((sh - gui_h) / 2.0).floor();
     (left * scale, top * scale, scale)
 }
 
@@ -108,7 +126,22 @@ pub fn gui_origin(w: f32, h: f32) -> (f32, f32, f32) {
 /// to the panel's top-left — which is what
 /// `rewo_world::inventory::slot_at` expects.
 pub fn screen_to_gui(mouse: (f64, f64), w: f32, h: f32) -> (f64, f64) {
-    let (left, top, scale) = gui_origin(w, h);
+    screen_to_gui_for(mouse, w, h, GUI_WIDTH, GUI_HEIGHT)
+}
+
+/// [`screen_to_gui`] for a panel that is not 176x166.
+///
+/// The panel size has to match the one the render used, or the hover test
+/// answers for a differently-centred panel and every slot is off by half the
+/// size difference — which for a six-row chest is 28 px, more than a slot.
+pub fn screen_to_gui_for(
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    gui_w: f32,
+    gui_h: f32,
+) -> (f64, f64) {
+    let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
     (
         (mouse.0 - left as f64) / scale as f64,
         (mouse.1 - top as f64) / scale as f64,
@@ -523,6 +556,61 @@ fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
     }
 }
 
+/// Shelf-pack the container background sheets below the atlas's existing
+/// content, returning each one's `(x, y, w, h)` and the atlas height needed.
+///
+/// One function rather than one in `new` and a copy in the tests: M62 found
+/// two copies of a packet walk that had already drifted, and the test copy was
+/// the one being graded. A packer is the same hazard in miniature — a test
+/// copy that wrapped at a different width would prove nothing about the atlas
+/// the GPU actually gets.
+fn shelf_pack(sizes: impl IntoIterator<Item = (u32, u32)>) -> (Vec<(u32, u32, u32, u32)>, u32) {
+    let (mut x, mut y, mut row_h) = (0u32, ATLAS_H, 0u32);
+    let mut out = Vec::new();
+    for (w, h) in sizes {
+        if x + w > ATLAS_W {
+            x = 0;
+            y += row_h;
+            row_h = 0;
+        }
+        out.push((x, y, w, h));
+        x += w;
+        row_h = row_h.max(h);
+    }
+    (out, y + row_h)
+}
+
+/// One background blit of a container panel: where it goes in GUI pixels
+/// relative to the panel's top-left, and which pixels of the sheet it takes.
+///
+/// A pass-local type rather than `rewo_world::menu_screen::PanelQuad`, because
+/// `rewo-gpu` holds no dependency on the world crate — the same arrangement the
+/// font and skin slices use. The caller converts, which is also where the
+/// sheet-size normalisation is undone: this carries **pixels**, so the two
+/// different divisors (a blit's declared 256-or-512, and the atlas's own
+/// height) never meet.
+#[derive(Clone, Copy, Debug)]
+pub struct PanelBlit {
+    pub dx: f32,
+    pub dy: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Source origin in sheet pixels.
+    pub sx: f32,
+    pub sy: f32,
+}
+
+/// An open container's panel: which sheet, which blits, and how big the panel
+/// is (which is what centres it).
+#[derive(Clone, Debug)]
+pub struct ContainerPanel {
+    /// Index into `rewo_data::assets::MENU_BACKGROUND_TEXTURES`.
+    pub sheet: usize,
+    pub blits: Vec<PanelBlit>,
+    pub gui_w: f32,
+    pub gui_h: f32,
+}
+
 /// `itemBar`'s background fill, `-16777216` — opaque black.
 const BAR_BED: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -561,6 +649,18 @@ pub struct ContainerPass {
     bar_border: Rect,
     bar_fill: Rect,
     bar_full: Rect,
+    /// Where each container background sheet landed in the atlas, in atlas
+    /// **pixels** — `(x, y, w, h)`, parallel to
+    /// `rewo_data::assets::MENU_BACKGROUND_TEXTURES`.
+    ///
+    /// Pixels rather than a `Rect`, because a screen samples a *sub-rect* of
+    /// its sheet (a chest takes two bands out of `generic_54.png`) and the
+    /// sub-rect is computed per menu by `rewo_world::menu_screen`. Storing a
+    /// normalised whole-sheet rect would mean converting back to pixels to
+    /// index into it.
+    menu_sheets: Vec<(u32, u32, u32, u32)>,
+    /// The atlas's height, needed to normalise a sub-rect at draw time.
+    atlas_h: u32,
 }
 
 impl ContainerPass {
@@ -569,7 +669,20 @@ impl ContainerPass {
         color_format: vk::Format,
         sprites: &ContainerSpriteData<'_>,
     ) -> Result<Self, String> {
-        let mut atlas = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
+        // The 19 container backgrounds (M87) shelf-pack below everything the
+        // pass already had, and the atlas grows downward to fit them.
+        //
+        // Growing it is safe *because the rects are normalised*: every existing
+        // sprite keeps its atlas pixel position, so although its `v` values
+        // change (they are divided by a larger height) they still address the
+        // same texels. Moving a sprite's pixels would be the unsafe change.
+        //
+        // The width stays 512 and cannot shrink: `villager.png` is 512 wide,
+        // which is also why its blit declares a 512 sheet.
+        let (menu_sheets, atlas_h) =
+            shelf_pack(sprites.menu_backgrounds.iter().map(|s| (s.w, s.h)));
+
+        let mut atlas = vec![0u8; (ATLAS_W * atlas_h * 4) as usize];
         let place = |dst: &mut [u8], s: &crate::hud::HudSpriteData<'_>, x: u32, y: u32| {
             for row in 0..s.h {
                 let src = (row * s.w * 4) as usize;
@@ -578,6 +691,9 @@ impl ContainerPass {
                 dst[d..d + n].copy_from_slice(&s.rgba[src..src + n]);
             }
         };
+        for (s, &(x, y, _, _)) in sprites.menu_backgrounds.iter().zip(&menu_sheets) {
+            place(&mut atlas, s, x, y);
+        }
         // The background sheet is 256×256 and only its top-left 176×166 is the
         // panel, so the UVs below crop what the blit crops.
         place(&mut atlas, &sprites.background, 0, 0);
@@ -598,11 +714,13 @@ impl ContainerPass {
         let w = (304 * 4) as usize;
         atlas[w..w + 4].copy_from_slice(&[255, 255, 255, 255]);
 
+        // Normalised against the *runtime* height: ATLAS_H is now only where
+        // the menu sheets start packing, not how tall the atlas ends up.
         let uv = |x: f32, y: f32, w: f32, h: f32| Rect {
             u0: x / ATLAS_W as f32,
-            v0: y / ATLAS_H as f32,
+            v0: y / atlas_h as f32,
             u1: (x + w) / ATLAS_W as f32,
-            v1: (y + h) / ATLAS_H as f32,
+            v1: (y + h) / atlas_h as f32,
         };
         let panel = uv(0.0, 0.0, GUI_WIDTH, GUI_HEIGHT);
         let highlight_back = uv(256.0, 0.0, 24.0, 24.0);
@@ -618,7 +736,7 @@ impl ContainerPass {
         let bar_fill = uv(340.0, 32.0, 6.0, 6.0);
         let bar_full = uv(346.0, 32.0, 6.0, 6.0);
 
-        let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
+        let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, atlas_h)?;
         let device = gpu.device.clone();
         let sampler = unsafe {
             device
@@ -733,6 +851,8 @@ impl ContainerPass {
             bar_border,
             bar_fill,
             bar_full,
+            menu_sheets,
+            atlas_h,
             tooltip_verts: 0,
             bar_range: (0, 0),
         })
@@ -749,9 +869,17 @@ impl ContainerPass {
         hovered: Option<(i32, i32)>,
         tooltip: Option<&TooltipDraw>,
         bars: &[ItemBar],
+        // The open container's panel (M87). `None` is the player's own
+        // inventory, which keeps the 176x166 `inventory.png` path unchanged —
+        // that is what holds `inventoryshot` still.
+        panel: Option<&ContainerPanel>,
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
-        let (left, top, scale) = gui_origin(w, h);
+        // A container's panel is its own size, so the origin that centres it —
+        // and therefore every slot rect measured from it — has to be computed
+        // against that size, not against the player inventory's.
+        let (gui_w, gui_h) = panel.map_or((GUI_WIDTH, GUI_HEIGHT), |p| (p.gui_w, p.gui_h));
+        let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
         self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(192);
         let quad = push_quad;
@@ -759,9 +887,32 @@ impl ContainerPass {
         // 1. The backdrop, over everything the world drew.
         if open {
             quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
-            // 2. The panel.
-            let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
-            quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+            // 2. The panel. One quad for the player's inventory; for a
+            //    container, whatever its screen's blits are — two for a chest,
+            //    which takes a band from the top of `generic_54.png` and
+            //    another from `v = 126`, skipping the rows its row count does
+            //    not want.
+            match panel {
+                None => {
+                    let (pw, ph) = (GUI_WIDTH * scale, GUI_HEIGHT * scale);
+                    quad(&mut v, left, top, pw, ph, self.panel, WHITE, WHITE);
+                }
+                Some(p) => {
+                    for b in &p.blits {
+                        let r = self.menu_rect_px(p.sheet, b.sx, b.sy, b.w, b.h);
+                        quad(
+                            &mut v,
+                            left + b.dx * scale,
+                            top + b.dy * scale,
+                            b.w * scale,
+                            b.h * scale,
+                            r,
+                            WHITE,
+                            WHITE,
+                        );
+                    }
+                }
+            }
         }
         // 3. The hovered slot's *back* highlight, at `slot - 4` and 24×24 —
         //    a four-pixel bleed on every side of the 16 px icon.
@@ -972,6 +1123,31 @@ impl ContainerPass {
 
     /// The backdrop, the panel and the back highlight — everything that goes
     /// *under* the item icons.
+    /// The atlas rect for a pixel sub-rect of one menu background sheet.
+    ///
+    /// Takes pixels within the sheet rather than the sheet's own normalised
+    /// UVs, because the two normalisations are against different numbers: a
+    /// screen's UVs are divided by the sheet size its *blit* declares (256, or
+    /// 512 for the merchant), while the atlas divides by its own dimensions.
+    /// Converting through pixels keeps the two from being confused for each
+    /// other — which would put the merchant's panel at half scale and nothing
+    /// else wrong.
+    pub(crate) fn menu_rect_px(&self, sheet: usize, x: f32, y: f32, w: f32, h: f32) -> Rect {
+        let (sx, sy, _, _) = self.menu_sheets[sheet];
+        let (sx, sy) = (sx as f32, sy as f32);
+        Rect {
+            u0: (sx + x) / ATLAS_W as f32,
+            v0: (sy + y) / self.atlas_h as f32,
+            u1: (sx + x + w) / ATLAS_W as f32,
+            v1: (sy + y + h) / self.atlas_h as f32,
+        }
+    }
+
+    /// How many background sheets the atlas holds.
+    pub fn menu_sheet_count(&self) -> usize {
+        self.menu_sheets.len()
+    }
+
     pub fn draw_back(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         self.draw_range(gpu, cb, extent, 0, self.back_verts);
     }
@@ -1202,6 +1378,57 @@ pub(crate) fn build_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_packed_sheets_never_overlap_and_stay_inside_the_atlas() {
+        // The real sheet sizes: 18 at 256x256 and villager at 512x256.
+        let mut sizes = vec![(256u32, 256u32); 18];
+        sizes.insert(13, (512, 256));
+        let (rects, atlas_h) = shelf_pack(sizes);
+        assert_eq!(rects.len(), 19);
+        for (i, &(x, y, w, h)) in rects.iter().enumerate() {
+            assert!(x + w <= ATLAS_W, "sheet {i} runs off the right edge");
+            assert!(y + h <= atlas_h, "sheet {i} runs off the bottom");
+            assert!(y >= ATLAS_H, "sheet {i} overlaps the pre-M87 content");
+            for (j, &(x2, y2, w2, h2)) in rects.iter().enumerate().skip(i + 1) {
+                let disjoint = x + w <= x2 || x2 + w2 <= x || y + h <= y2 || y2 + h2 <= y;
+                assert!(disjoint, "sheets {i} and {j} overlap");
+            }
+        }
+    }
+
+    #[test]
+    fn a_512_wide_sheet_takes_a_row_of_its_own() {
+        // villager.png is exactly ATLAS_W wide, so it cannot share a shelf.
+        // If the packer ever placed something beside it the copy would run off
+        // the row and corrupt the sheet below -- `place` does not clip.
+        let (rects, _) = shelf_pack([(256, 256), (512, 256), (256, 256)]);
+        assert_eq!(rects[0].0, 0);
+        assert_eq!(rects[1].0, 0, "the wide sheet starts a new shelf");
+        assert_ne!(rects[1].1, rects[0].1, "on a new row");
+        assert_eq!(rects[2].0, 0, "and the next one starts another");
+        assert_ne!(rects[2].1, rects[1].1);
+    }
+
+    #[test]
+    fn growing_the_atlas_moves_uvs_but_not_texels() {
+        // Why growing the atlas is safe: a sprite's normalised v changes,
+        // because it is divided by a bigger number, but it addresses the same
+        // texel row -- the content below it is appended, not inserted. This
+        // pins the property that makes that true: the pre-M87 region starts at
+        // y = 0 and the menu sheets start at ATLAS_H, so nothing above moves.
+        let (rects, atlas_h) = shelf_pack([(256u32, 256u32); 19]);
+        assert!(atlas_h > ATLAS_H);
+        let tooltip_v_before = 166.0 / ATLAS_H as f32;
+        let tooltip_v_after = 166.0 / atlas_h as f32;
+        assert!(tooltip_v_after < tooltip_v_before, "the UV moves");
+        assert_eq!(
+            (tooltip_v_after * atlas_h as f32).round(),
+            166.0,
+            "and still addresses texel row 166"
+        );
+        assert!(rects.iter().all(|&(_, y, _, _)| y >= ATLAS_H));
+    }
 
     /// The panel is centred by vanilla's integer division, and the result is
     /// scaled up — so at GUI scale 2 on a 1280×720 window the origin is an even

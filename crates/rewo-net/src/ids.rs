@@ -347,6 +347,16 @@ pub struct Ids {
     /// vanilla reads and then **ignores**: `handleContainerClose` closes
     /// whatever is open without comparing ids.
     pub cb_play_container_close: i32,
+    /// `ClientboundOpenScreenPacket` (M87) — VarInt container id, then the
+    /// `minecraft:menu` id as a **raw 0-based** `ByteBufCodecs.registry`
+    /// (not `holder`'s `id + 1`), then an NBT `Component` title. An
+    /// unregistered type makes `MenuScreens.create` log and do nothing, so a
+    /// menu Rewo cannot lay out leaves whatever was open open.
+    pub cb_play_open_screen: i32,
+    /// `ClientboundContainerSetDataPacket` (M87) — VarInt container id, then
+    /// **two signed `readShort`s** in a mostly-var-int protocol. Applied only
+    /// when the id matches the open menu.
+    pub cb_play_container_set_data: i32,
     /// `ClientboundSetCameraPacket` — one VarInt entity id. An id the client
     /// cannot resolve leaves the camera where it is.
     pub cb_play_set_camera: i32,
@@ -639,6 +649,8 @@ impl Ids {
             cb_play_chunk_batch_start: req!(p, P, C, "chunk_batch_start"),
             cb_play_change_difficulty: req!(p, P, C, "change_difficulty"),
             cb_play_container_close: req!(p, P, C, "container_close"),
+            cb_play_open_screen: req!(p, P, C, "open_screen"),
+            cb_play_container_set_data: req!(p, P, C, "container_set_data"),
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),

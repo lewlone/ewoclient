@@ -192,7 +192,19 @@ pub fn menu_slot_of_inventory_index(index: i32) -> IndexWrite {
 
 #[derive(Clone, Debug)]
 pub struct Inventory {
-    slots: [Option<ItemSlot>; MENU_SLOTS],
+    /// Which menu this is. `PLAYER` for the player's own `InventoryMenu`
+    /// (container id 0); one of [`crate::menu_layout::REGISTRY`] for a
+    /// container opened by `open_screen`.
+    ///
+    /// This is the type vanilla calls `AbstractContainerMenu`: there, the
+    /// player's inventory is not a distinct class, it is `InventoryMenu` —
+    /// *a* menu, with a particular slot list. The name here stays `Inventory`
+    /// because it was that before it was general and ~110 call sites say so;
+    /// what changed is that it is no longer only the player's.
+    layout: &'static crate::menu_layout::MenuLayout,
+    /// One entry per menu slot, in wire order. Length is `layout.slot_count()`
+    /// — 46 for the player, 90 for a double chest, **1 for a lectern**.
+    slots: Vec<Option<ItemSlot>>,
     /// The stack on the cursor. Decoded because the packet carries it; nothing
     /// renders it yet (it is only visible with an inventory screen open).
     carried: Option<ItemSlot>,
@@ -215,14 +227,35 @@ pub struct Inventory {
 
 impl Default for Inventory {
     fn default() -> Self {
+        Self::with_layout(&crate::menu_layout::PLAYER)
+    }
+}
+
+impl Inventory {
+    /// A menu of the given layout, all slots empty.
+    ///
+    /// `Default` is this with [`crate::menu_layout::PLAYER`], which is the
+    /// player's permanent container-id-0 menu.
+    pub fn with_layout(layout: &'static crate::menu_layout::MenuLayout) -> Self {
         Self {
-            slots: [None; MENU_SLOTS],
+            layout,
+            slots: vec![None; layout.slot_count()],
             carried: None,
             selected: 0,
             state_id: 0,
             content_updates: 0,
             texts: std::collections::HashMap::new(),
         }
+    }
+
+    /// This menu's layout.
+    pub fn layout(&self) -> &'static crate::menu_layout::MenuLayout {
+        self.layout
+    }
+
+    /// How many slots this menu has. `MENU_SLOTS` for the player.
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 }
 
@@ -247,7 +280,7 @@ impl Inventory {
         slots: &[Option<ItemSlot>],
         carried: Option<ItemSlot>,
     ) -> bool {
-        if slots.len() != MENU_SLOTS {
+        if slots.len() != self.slots.len() {
             return false;
         }
         self.slots.copy_from_slice(slots);
@@ -263,7 +296,7 @@ impl Inventory {
         let Ok(idx) = usize::try_from(slot) else {
             return false;
         };
-        if idx >= MENU_SLOTS {
+        if idx >= self.slots.len() {
             return false;
         }
         self.slots[idx] = item;
@@ -560,22 +593,17 @@ pub fn slot_kind(slot: usize) -> Option<SlotKind> {
 /// `addStandardInventorySlots` splits into three rows of nine from the given
 /// top, then the hotbar at `top + 58` — the 58 is a named local in vanilla
 /// (`topToHotbar`), not a coincidence of 3*18 + 4.
+/// M87 made this layout-driven: the numbers above now live in
+/// [`crate::menu_layout::PLAYER`], expressed as the same `addSlot` blocks every
+/// other menu uses, so the player's menu stops being a special case and becomes
+/// the one with no protocol id. The behaviour is unchanged and
+/// `layout_matches_the_hand_written_positions` proves it against a frozen copy
+/// of the original hard-coded match — not against the layout, which would only
+/// assert that the implementation equals itself.
 pub fn slot_position(slot: usize) -> Option<(i32, i32)> {
-    Some(match slot {
-        0 => (154, 28),
-        1..=4 => {
-            let i = (slot - 1) as i32;
-            (98 + (i % 2) * 18, 18 + (i / 2) * 18)
-        }
-        5..=8 => (8, 8 + (slot - 5) as i32 * 18),
-        9..=35 => {
-            let i = (slot - 9) as i32;
-            (8 + (i % 9) * 18, 84 + (i / 9) * 18)
-        }
-        36..=44 => (8 + (slot - 36) as i32 * 18, 84 + 58),
-        45 => (77, 62),
-        _ => return None,
-    })
+    crate::menu_layout::PLAYER
+        .position(slot)
+        .map(|(x, y)| (x as i32, y as i32))
 }
 
 /// `AbstractContainerScreen.isHovering` — **an 18x18 box, not 16x16**.
@@ -585,11 +613,7 @@ pub fn slot_position(slot: usize) -> Option<(i32, i32)> {
 /// without gaps. Using the icon's own rect instead leaves a one-pixel dead
 /// cross between every pair of neighbours.
 pub fn slot_contains(slot: usize, gui_x: f64, gui_y: f64) -> bool {
-    let Some((left, top)) = slot_position(slot) else {
-        return false;
-    };
-    let (left, top) = (left as f64, top as f64);
-    gui_x >= left - 1.0 && gui_x < left + 17.0 && gui_y >= top - 1.0 && gui_y < top + 17.0
+    crate::menu_layout::PLAYER.slot_contains(slot, gui_x, gui_y)
 }
 
 /// The menu slot under a GUI-relative point, or `None`.
@@ -598,7 +622,7 @@ pub fn slot_contains(slot: usize, gui_x: f64, gui_y: f64) -> bool {
 /// returns the **first** match in menu order, so this iterates rather than
 /// computing an index.
 pub fn slot_at(gui_x: f64, gui_y: f64) -> Option<usize> {
-    (0..MENU_SLOTS).find(|&s| slot_contains(s, gui_x, gui_y))
+    crate::menu_layout::PLAYER.slot_at(gui_x, gui_y)
 }
 
 /// `Container.getMaxStackSize()` as seen through a slot — `ArmorSlot`
@@ -854,7 +878,7 @@ impl Inventory {
     /// `backwards` walks the range from its top, which the crafting result
     /// uses so a craft fills the hotbar from the right.
     fn move_stack_to(
-        slots: &mut [Option<ItemSlot>; MENU_SLOTS],
+        slots: &mut [Option<ItemSlot>],
         moving: &mut ItemSlot,
         range: std::ops::Range<usize>,
         backwards: bool,
@@ -926,7 +950,7 @@ impl Inventory {
     fn quick_move_destination(
         slot: usize,
         item: ItemSlot,
-        slots: &[Option<ItemSlot>; MENU_SLOTS],
+        slots: &[Option<ItemSlot>],
         p: ItemProps,
     ) -> Option<(std::ops::Range<usize>, bool)> {
         Some(match slot {
@@ -983,11 +1007,11 @@ impl Inventory {
         let p = props(source.item_id)?;
         let _ = kind;
 
-        let mut slots = self.slots;
+        let mut slots = self.slots.clone();
         let mut changed: Vec<SlotChange> = Vec::new();
         // Bounded rather than `loop`: each pass either empties the source or
-        // fills one destination, and 46 slots cannot absorb more than that.
-        for _ in 0..MENU_SLOTS {
+        // fills one destination, so the menu's own slot count is the ceiling.
+        for _ in 0..slots.len() {
             let Some(current) = slots[index] else { break };
             let mut moving = current;
             let (range, backwards) = Self::quick_move_destination(index, moving, &slots, p)?;
@@ -1027,6 +1051,115 @@ impl Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original hard-coded `slot_position`, frozen at the commit before
+    /// M87 made it layout-driven.
+    ///
+    /// This is the refactor's oracle and it is deliberately a *copy*, not a
+    /// call: asserting the new implementation against `menu_layout::PLAYER`
+    /// would only prove the layout equals itself, which is M41's `t4` and
+    /// M59's recorded failure mode. Transcribed from `InventoryMenu`'s
+    /// constructor; if a future version moves a slot, this and the layout
+    /// disagree and the test says which.
+    fn legacy_slot_position(slot: usize) -> Option<(i32, i32)> {
+        Some(match slot {
+            0 => (154, 28),
+            1..=4 => {
+                let i = (slot - 1) as i32;
+                (98 + (i % 2) * 18, 18 + (i / 2) * 18)
+            }
+            5..=8 => (8, 8 + (slot - 5) as i32 * 18),
+            9..=35 => {
+                let i = (slot - 9) as i32;
+                (8 + (i % 9) * 18, 84 + (i / 9) * 18)
+            }
+            36..=44 => (8 + (slot - 36) as i32 * 18, 84 + 58),
+            45 => (77, 62),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn layout_matches_the_hand_written_positions() {
+        for slot in 0..MENU_SLOTS {
+            assert_eq!(
+                slot_position(slot),
+                legacy_slot_position(slot),
+                "menu slot {slot} moved"
+            );
+        }
+    }
+
+    #[test]
+    fn the_player_layout_ends_where_the_menu_does() {
+        assert_eq!(crate::menu_layout::PLAYER.slot_count(), MENU_SLOTS);
+        assert_eq!(slot_position(MENU_SLOTS), None);
+        assert_eq!(legacy_slot_position(MENU_SLOTS), None);
+    }
+
+    #[test]
+    fn a_container_layout_sizes_its_own_storage() {
+        // The point of the generalization: the same struct is a chest.
+        let chest = Inventory::with_layout(crate::menu_layout::layout_of(5).unwrap());
+        assert_eq!(chest.slot_count(), 54 + 36, "generic_9x6 is 54 + the player's");
+        assert_eq!(chest.layout().name, "generic_9x6");
+        // And set_content's length check follows the layout, not a constant.
+        assert!(chest_accepts(&chest, 90));
+        assert!(!chest_accepts(&chest, MENU_SLOTS));
+    }
+
+    fn chest_accepts(proto: &Inventory, n: usize) -> bool {
+        let mut c = Inventory::with_layout(proto.layout());
+        c.set_content(1, &vec![None; n], None)
+    }
+
+    #[test]
+    fn the_lectern_is_a_one_slot_menu_and_does_not_underflow() {
+        // `slots.len() - 36` is a panic here; nothing may assume a trailing
+        // player inventory.
+        let lectern = Inventory::with_layout(crate::menu_layout::layout_of(17).unwrap());
+        assert_eq!(lectern.slot_count(), 1);
+        assert_eq!(lectern.menu_slot(0), None);
+        assert_eq!(lectern.menu_slot(1), None, "out of range reads empty");
+        assert!(lectern.layout().slot_at(-99.0, -99.0).is_none());
+    }
+
+    #[test]
+    fn hover_geometry_is_unchanged_for_the_player() {
+        // slot_at/slot_contains moved onto the layout; the player's answers
+        // must be identical. Sweep the whole GUI rather than spot-checking,
+        // since the 18x18 boxes overlap and an off-by-one would only show at
+        // a seam.
+        for y in 0..GUI_HEIGHT {
+            for x in 0..GUI_WIDTH {
+                let (fx, fy) = (x as f64, y as f64);
+                let expect = (0..MENU_SLOTS).find(|&s| {
+                    let Some((l, t)) = legacy_slot_position(s) else {
+                        return false;
+                    };
+                    let (l, t) = (l as f64, t as f64);
+                    fx >= l - 1.0 && fx < l + 17.0 && fy >= t - 1.0 && fy < t + 17.0
+                });
+                assert_eq!(slot_at(fx, fy), expect, "hover differs at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_player_menu_has_no_protocol_id() {
+        // It is never opened by `open_screen`; it is container id 0 and exists
+        // for the whole session. So it must not be reachable by registry id --
+        // `layout_of(-1)` answering PLAYER would let a malformed packet open
+        // the player's own inventory as if it were a container.
+        assert_eq!(
+            crate::menu_layout::PLAYER.protocol_id,
+            crate::menu_layout::NO_PROTOCOL_ID
+        );
+        assert!(crate::menu_layout::layout_of(crate::menu_layout::NO_PROTOCOL_ID).is_none());
+        for (i, m) in crate::menu_layout::REGISTRY.iter().enumerate() {
+            assert_ne!(m.name, "player", "PLAYER must not be in the registry (id {i})");
+        }
+    }
 
     fn stack(id: i32, n: i32) -> Option<ItemSlot> {
         Some(ItemSlot {
@@ -1481,12 +1614,13 @@ impl Inventory {
             }
         }
         let max = cp.max_stack;
-        let mut slots = self.slots;
+        let mut slots = self.slots.clone();
         let mut changed: Vec<SlotChange> = Vec::new();
+        let n = slots.len();
         let order: Vec<usize> = if button == 0 {
-            (0..MENU_SLOTS).collect()
+            (0..n).collect()
         } else {
-            (0..MENU_SLOTS).rev().collect()
+            (0..n).rev().collect()
         };
         for pass in 0..2 {
             for &i in &order {

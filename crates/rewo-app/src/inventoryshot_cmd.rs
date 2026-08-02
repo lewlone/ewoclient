@@ -119,7 +119,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn client_jar(version: &str) -> Option<PathBuf> {
+pub(crate) fn client_jar(version: &str) -> Option<PathBuf> {
     let mut p = dirs::config_dir()?;
     p.push("EwoClient");
     p.push("shared/versions");
@@ -161,7 +161,13 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     let components = rewo_data::components::DataComponentIds::load(&paths.registries_json())
         .map_err(|e| format!("component ids: {e}"))?;
     let route = |id: i32, body: &[u8], inv: &mut Inventory| -> bool {
-        rewo_net::route_inventory(id, body, &ids, Some(components), inv, None)
+        // No menu open: this gate is the PLAYER's inventory, so every witness
+        // below addresses container 0. A fresh empty `Menus` reproduces
+        // exactly the pre-M87 behaviour these 152 witnesses were written
+        // against -- a non-zero container id has nowhere to land and is
+        // dropped. The container path is `containershot`'s to grade.
+        let mut menus = rewo_world::menu::Menus::new();
+        rewo_net::route_inventory(id, body, &ids, Some(components), inv, &mut menus, None)
     };
 
     c.record(
@@ -296,7 +302,9 @@ fn check_authoritative_writes(
     components: rewo_data::components::DataComponentIds,
 ) -> Result<(), String> {
     let route = |id: i32, body: &[u8], inv: &mut Inventory| -> bool {
-        rewo_net::route_inventory(id, body, ids, Some(components), inv, None)
+        // See the note in the caller above: no menu open, container 0 only.
+        let mut menus = rewo_world::menu::Menus::new();
+        rewo_net::route_inventory(id, body, ids, Some(components), inv, &mut menus, None)
     };
 
     c.record(

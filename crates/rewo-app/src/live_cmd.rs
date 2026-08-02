@@ -2828,6 +2828,7 @@ pub(crate) fn container_sprites(
         bundle_bar_border: s(&c.bundle_bar_border),
         bundle_bar_fill: s(&c.bundle_bar_fill),
         bundle_bar_full: s(&c.bundle_bar_full),
+        menu_backgrounds: c.menu_backgrounds.iter().map(s).collect(),
     })
 }
 
@@ -8362,6 +8363,100 @@ mod tests {
     use super::*;
     use rewo_net::effects::VisualEffectSnapshot;
 
+    // -- M87: the container panel the screen path builds --------------------
+
+    fn layout(id: i32) -> &'static rewo_world::menu_layout::MenuLayout {
+        rewo_world::menu_layout::layout_of(id).unwrap()
+    }
+
+    #[test]
+    fn the_players_own_menu_has_no_container_panel() {
+        // It is drawn from the pass's own `inventory.png` rect, and returning
+        // a panel here would send it through the container path instead --
+        // which is the change `inventoryshot` would catch, but only because
+        // this stays None.
+        assert!(container_panel(&rewo_world::menu_layout::PLAYER).is_none());
+    }
+
+    #[test]
+    fn a_lectern_paints_no_panel_rather_than_someone_elses() {
+        // LecternScreen is a BookViewScreen. Falling through to a default
+        // would paint some other menu's sheet behind a book.
+        assert!(container_panel(layout(17)).is_none());
+    }
+
+    #[test]
+    fn every_other_menu_resolves_to_a_sheet_in_the_atlas() {
+        for id in 0..25 {
+            let l = layout(id);
+            if id == 17 {
+                continue;
+            }
+            let p = container_panel(l).unwrap_or_else(|| panic!("{} has no panel", l.name));
+            assert!(
+                p.sheet < rewo_data::assets::MENU_BACKGROUND_TEXTURES.len(),
+                "{} indexes past the atlas",
+                l.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_chest_is_two_blits_that_take_the_right_bands() {
+        // generic_9x3: the top 3*18 + 17 = 71 px from the sheet's top, then
+        // 96 px from v = 126. The gap between them is the rows a three-row
+        // chest does not want.
+        let p = container_panel(layout(2)).unwrap();
+        assert_eq!(p.blits.len(), 2);
+        assert_eq!((p.gui_w, p.gui_h), (176.0, 168.0));
+        assert_eq!((p.blits[0].dy, p.blits[0].sy, p.blits[0].h), (0.0, 0.0, 71.0));
+        assert_eq!((p.blits[1].dy, p.blits[1].sy, p.blits[1].h), (71.0, 126.0, 96.0));
+    }
+
+    #[test]
+    fn the_merchants_source_pixels_come_back_off_a_512_sheet() {
+        // The conversion this function exists for. menu_screen normalises the
+        // merchant against 512, so multiplying by 512 must return the pixels
+        // vanilla blits -- 0, 0, 276 wide. Multiplying by 256 (the other
+        // twenty-one screens' sheet) would halve them.
+        let p = container_panel(layout(19)).unwrap();
+        assert_eq!(p.blits.len(), 1);
+        assert_eq!((p.blits[0].sx, p.blits[0].sy), (0.0, 0.0));
+        assert_eq!(p.blits[0].w, 276.0);
+        assert_eq!(p.gui_w, 276.0);
+    }
+
+    #[test]
+    fn every_screens_sheet_index_resolves() {
+        // sheet_index returning None would mean the cross-check in rewo-world
+        // had been removed; this is the same claim from the consuming side.
+        for id in (0..25).filter(|&i| i != 17) {
+            let s = rewo_world::menu_screen::screen_of(id).unwrap();
+            assert!(sheet_index(s.texture).is_some(), "{}", s.texture);
+        }
+    }
+
+    #[test]
+    fn slot_rects_follow_the_menus_own_panel() {
+        // A six-row chest is 176x222; measuring its slots from a 176x166
+        // origin would put every one of them 28 px low. Same window, two
+        // menus, and the difference is exactly half the height difference.
+        let (w, h) = (1280.0f32, 720.0f32);
+        let chest = rewo_world::inventory::Inventory::with_layout(layout(5));
+        let player = rewo_world::inventory::Inventory::default();
+        let (_, ctop, scale) =
+            rewo_gpu::container::gui_origin_for(w, h, 176.0, chest.layout().image_h as f32);
+        let (_, ptop, _) = rewo_gpu::container::gui_origin(w, h);
+        assert!(ctop < ptop, "the taller panel starts higher");
+        let cr = menu_slot_rects(&chest, w, h);
+        let pr = menu_slot_rects(&player, w, h);
+        assert_eq!(cr.len(), 90);
+        assert_eq!(pr.len(), 46);
+        // Slot 0 of each sits at its own layout's first position.
+        assert_eq!(cr[0].1, ctop + 18.0 * scale, "chest grid starts at y=18");
+        assert_eq!(pr[0].1, ptop + 28.0 * scale, "player's result slot at y=28");
+    }
+
     #[test]
     fn stale_mesh_output_is_rejected_by_generation() {
         assert!(!mesh_output_is_stale(7, 7));
@@ -10521,29 +10616,54 @@ fn apply_screen(
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
 ) {
-    let (mut icons, mut labels) =
-        screen_icons(&session.inventory, items, &session.trim_materials, w, h);
-    if let Some((icon, label)) = carried_icon(&session.inventory, items, &session.trim_materials, mouse, w, h) {
+    // Which menu is on screen: the open container if there is one, else the
+    // player's own. Chosen ONCE and threaded everywhere, because the panel,
+    // the icons, the hover and the durability bars are all measured from the
+    // same origin — and that origin depends on the menu's panel size. Picking
+    // it per-consumer is how a chest ends up painted at one size with its
+    // icons placed at another.
+    let menu = session
+        .menus
+        .open()
+        .map(|m| &m.menu)
+        .unwrap_or(&session.inventory);
+    let layout = menu.layout();
+
+    // The container's own background sheet, or `None` for the player's
+    // inventory, which the pass draws from its own `inventory.png` rect.
+    wr.set_container_panel(container_panel(layout));
+
+    let (mut icons, mut labels) = screen_icons(menu, items, &session.trim_materials, w, h);
+    if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
     }
     apply_gui_icons(wr, gpu, gui, &icons);
 
-    let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        mouse,
+        w,
+        h,
+        layout.image_w as f32,
+        layout.image_h as f32,
+    );
     wr.set_container(
         true,
-        rewo_world::inventory::slot_at(gx, gy).and_then(rewo_world::inventory::slot_position),
+        layout
+            .slot_at(gx, gy)
+            .and_then(|s| layout.position(s))
+            .map(|(x, y)| (x as i32, y as i32)),
     );
 
     // Every visible slot's durability bar, plus the cursor's. The screen's
     // rects and the hotbar's go through the same builder.
     {
-        let rects = screen_slot_rects(w, h);
-        let mut stacks: Vec<_> = (0..rewo_world::inventory::MENU_SLOTS)
-            .map(|i| (session.inventory.menu_slot(i), rects[i]))
+        let rects = menu_slot_rects(menu, w, h);
+        let mut stacks: Vec<_> = (0..menu.slot_count())
+            .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
-        if let Some(carried) = session.inventory.carried() {
-            if let Some((icon, _)) = carried_icon(&session.inventory, items, &session.trim_materials, mouse, w, h) {
+        if let Some(carried) = menu.carried() {
+            if let Some((icon, _)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
                 stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
             }
         }
@@ -10641,16 +10761,103 @@ fn apply_screen(
 /// The same shape `hotbar_slot_rects` returns, because they feed the same
 /// pass: an icon in an inventory slot is the same draw as an icon in a hotbar
 /// slot, and only the rectangle differs.
-fn screen_slot_rects(w: f32, h: f32) -> [(f32, f32, f32); rewo_world::inventory::MENU_SLOTS] {
-    let (left, top, scale) = rewo_gpu::container::gui_origin(w, h);
-    std::array::from_fn(|i| {
-        let (x, y) = rewo_world::inventory::slot_position(i).unwrap_or((0, 0));
-        (
-            left + x as f32 * scale,
-            top + y as f32 * scale,
-            16.0 * scale,
-        )
+/// The pass's panel description for a menu, or `None` for the player's own.
+///
+/// This is where `menu_screen`'s sheet-relative UVs are converted back to
+/// PIXELS, which is the whole reason `PanelBlit` carries pixels: a screen's
+/// UVs are normalised against the sheet size its blit declares — 256 for
+/// twenty-one of them and **512 for the merchant** — while the atlas
+/// normalises against its own dimensions. Handing the UVs straight across
+/// would divide by the wrong number for exactly one screen.
+///
+/// `None` for a menu with no container screen (`lectern`, a `BookViewScreen`)
+/// as well as for the player's, so an open lectern paints no panel rather than
+/// some other menu's.
+fn container_panel(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+) -> Option<rewo_gpu::container::ContainerPanel> {
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        return None;
+    }
+    let screen = rewo_world::menu_screen::screen_of(layout.protocol_id)?;
+    let sheet = sheet_index(screen.texture)?;
+    let blits = rewo_world::menu_screen::background_quads(screen)
+        .into_iter()
+        .map(|q| rewo_gpu::container::PanelBlit {
+            dx: q.dx as f32,
+            dy: q.dy as f32,
+            w: q.w as f32,
+            h: q.h as f32,
+            sx: q.u0 * screen.sheet_w,
+            sy: q.v0 * screen.sheet_h,
+        })
+        .collect();
+    Some(rewo_gpu::container::ContainerPanel {
+        sheet,
+        blits,
+        gui_w: screen.image_w as f32,
+        gui_h: screen.image_h as f32,
     })
+}
+
+/// [`container_panel`] for `containershot`, which drives the production
+/// builder rather than a copy of it — M45's finding: a gate that reimplements
+/// a slice of the app's setup misses whatever the app adds to it.
+pub(crate) fn container_panel_for_test(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+) -> Option<rewo_gpu::container::ContainerPanel> {
+    container_panel(layout)
+}
+
+/// [`sheet_index`] for `containershot`.
+pub(crate) fn sheet_index_for_test(texture: &str) -> Option<usize> {
+    sheet_index(texture)
+}
+
+/// A texture's index in the atlas, by the path the bake loaded it under.
+///
+/// `menu_screen` spells paths in vanilla's `Identifier` form and the bake in
+/// the jar-relative one, so the prefix comes off here. The two lists are
+/// cross-checked by a test in `rewo-world`; this returning `None` would mean
+/// that check had been removed.
+fn sheet_index(texture: &str) -> Option<usize> {
+    let want = texture.trim_start_matches("textures/");
+    rewo_data::assets::MENU_BACKGROUND_TEXTURES
+        .iter()
+        .position(|t| *t == want)
+}
+
+/// Every slot's on-screen rect for a menu, in its own layout and at its own
+/// panel size (M87).
+///
+/// Takes the menu rather than assuming the player's: a container is a
+/// different slot count *and* a different panel, and the panel is what centres
+/// it — a six-row chest is 176x222, so measuring its slots from a 176x166
+/// origin puts every one of them 28 px low.
+fn menu_slot_rects(menu: &rewo_world::inventory::Inventory, w: f32, h: f32) -> Vec<(f32, f32, f32)> {
+    let layout = menu.layout();
+    let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+        w,
+        h,
+        layout.image_w as f32,
+        layout.image_h as f32,
+    );
+    (0..menu.slot_count())
+        .map(|i| {
+            let (x, y) = layout.position(i).unwrap_or((0, 0));
+            (
+                left + x as f32 * scale,
+                top + y as f32 * scale,
+                16.0 * scale,
+            )
+        })
+        .collect()
+}
+
+/// The player inventory's slot rects — [`menu_slot_rects`] for the menu that
+/// was the only one before M87.
+fn screen_slot_rects(w: f32, h: f32) -> Vec<(f32, f32, f32)> {
+    menu_slot_rects(&rewo_world::inventory::Inventory::default(), w, h)
 }
 
 /// This frame's icons and stack counts for the open screen.
@@ -11312,7 +11519,7 @@ fn screen_icons(
     w: f32,
     h: f32,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
-    let rects = screen_slot_rects(w, h);
+    let rects = menu_slot_rects(inv, w, h);
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
     let mut icons = Vec::new();
     let mut labels = Vec::new();
