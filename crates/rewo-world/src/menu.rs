@@ -83,6 +83,10 @@ impl Menus {
         self.open.as_ref()
     }
 
+    pub fn open_mut(&mut self) -> Option<&mut OpenMenu> {
+        self.open.as_mut()
+    }
+
     /// Apply `open_screen`.
     ///
     /// Returns `false` and changes nothing when the menu type has no layout —

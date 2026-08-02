@@ -149,6 +149,61 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         "LecternScreen is a BookViewScreen — a fallthrough would paint another menu's sheet",
     );
 
+    // -- M89: the shown menu is the one every consumer uses -----------------
+    //
+    // M87 rendered the container while every click still operated on the
+    // player's inventory, so clicking a chest's slot 5 picked up the player's
+    // crafting grid, and the click packet named container 0 with the player's
+    // state id. These grade the accessor all of them now go through.
+
+    let mut session_menus = rewo_world::menu::Menus::new();
+    let player = rewo_world::inventory::Inventory::default();
+    c.record(
+        "s1.with_nothing_open_the_shown_menu_is_the_players",
+        session_menus.open().is_none(),
+        "no container -> Inventory::default(), container id 0",
+    );
+    session_menus.apply_open_screen(7, 2, "Chest".into());
+    let shown = session_menus.open().map(|m| &m.menu).unwrap_or(&player);
+    c.record(
+        "s2.with_a_container_open_the_shown_menu_is_the_container",
+        shown.slot_count() == 63 && shown.layout().name == "generic_9x3",
+        format!(
+            "{} slots, layout {} (the player's is 46)",
+            shown.slot_count(),
+            shown.layout().name
+        ),
+    );
+    // The hover geometry the click path uses. A chest's slot 0 sits at (8, 18)
+    // in its own panel; the player's slot 0 is the crafting RESULT at
+    // (154, 28). Asking the player's layout while a chest is up therefore does
+    // not merely shift the answer — it indexes a different kind of slot.
+    let chest = rewo_world::menu_layout::layout_of(2).unwrap();
+    c.record(
+        "s3.a_chests_slot_zero_is_its_grid_not_the_players_result",
+        chest.position(0) == Some((8, 18))
+            && rewo_world::menu_layout::PLAYER.position(0) == Some((154, 28)),
+        format!(
+            "chest slot 0 {:?}, player slot 0 {:?}",
+            chest.position(0),
+            rewo_world::menu_layout::PLAYER.position(0)
+        ),
+    );
+    // And the two panels centre differently, so the same cursor position maps
+    // to different GUI coordinates in each.
+    let (_, chest_top, _) = rewo_gpu::container::gui_origin_for(
+        W as f32,
+        H as f32,
+        chest.image_w as f32,
+        chest.image_h as f32,
+    );
+    let (_, player_top, _) = rewo_gpu::container::gui_origin(W as f32, H as f32);
+    c.record(
+        "s4.the_two_panels_do_not_share_an_origin",
+        chest_top != player_top,
+        format!("chest top {chest_top}, player top {player_top} — a hover asked of the wrong one is off by their difference"),
+    );
+
     // -- the pixel half ------------------------------------------------------
 
     let mut gpu = Gpu::new(None, true)?;

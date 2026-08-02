@@ -3692,6 +3692,38 @@ impl PlaySession {
 
     /// [`Self::container_click`] with the `ContainerInput` named — PICKUP for a
     /// plain click, QUICK_MOVE for a shift-click.
+    /// The menu the player is looking at: the open container, or their own.
+    ///
+    /// One accessor rather than the choice being made at each call site (M89).
+    /// Every consumer — hover, the five click actions, the click packet's
+    /// container id and state id — has to agree about which menu is on screen,
+    /// and M87 shipped with them disagreeing: the render drew the container
+    /// while every click operated on `inventory`, so clicking a chest's slot 5
+    /// picked up the player's crafting grid.
+    pub fn shown_menu(&self) -> &rewo_world::inventory::Inventory {
+        self.menus
+            .open()
+            .map(|m| &m.menu)
+            .unwrap_or(&self.inventory)
+    }
+
+    /// [`Self::shown_menu`], mutably.
+    pub fn shown_menu_mut(&mut self) -> &mut rewo_world::inventory::Inventory {
+        match self.menus.open_mut() {
+            Some(m) => &mut m.menu,
+            None => &mut self.inventory,
+        }
+    }
+
+    /// The container id the shown menu is addressed by — 0 for the player's.
+    pub fn shown_container_id(&self) -> i32 {
+        self.menus
+            .open()
+            .map_or(rewo_world::inventory::PLAYER_CONTAINER_ID, |m| {
+                m.container_id
+            })
+    }
+
     pub fn container_click_input(
         &mut self,
         prediction: &rewo_world::inventory::ClickPrediction,
@@ -3711,8 +3743,16 @@ impl PlaySession {
             ));
         }
         let mut p = PacketWriter::packet(id);
-        p.varint(rewo_world::inventory::PLAYER_CONTAINER_ID);
-        p.varint(self.inventory.state_id());
+        // M89 — the SHOWN menu's id and state id, not the player's. Hard-coding
+        // container 0 told the server every chest click was a click on the
+        // player's own inventory, and paired it with the player's state id, so
+        // the server would either apply it to the wrong menu or reject it on a
+        // stale id. `stateId` is per-menu: `AbstractContainerMenu.incrementStateId`
+        // is an instance counter, and the resync test is
+        // `packet.stateId() != menu.getStateId()` against the menu the click
+        // names.
+        p.varint(self.shown_container_id());
+        p.varint(self.shown_menu().state_id());
         p.u16(prediction.slot as u16);
         p.i8(prediction.button);
         p.varint(input);
