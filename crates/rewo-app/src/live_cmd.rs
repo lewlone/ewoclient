@@ -146,6 +146,25 @@ struct RenderCheck {
     /// the screen path (and with it `VelvetTextPass::sync_atlas`) was reached
     /// at all, not to pin a count.
     screen_frames: u64,
+    /// Frames on which a CONTAINER's screen was drawn — a menu other than the
+    /// player's own (M88).
+    ///
+    /// M87 shipped the container render and could not prove the windowed
+    /// client reached it: `--render-check` opens the *inventory*, which is
+    /// `menu_layout::PLAYER` and takes the pass's own `inventory.png` rect, so
+    /// every container-specific path — the panel blits, the container-sized
+    /// origin, the layout's own slot rects — stayed unexercised here. That is
+    /// the exact shape of the blind spot M86 was: a path nothing drives.
+    container_frames: u64,
+    /// The panel height the RENDERER was holding while a container was open.
+    ///
+    /// Read back from `WorldRenderer::container_panel_height`, not from the
+    /// open menu's layout — the first cut asked the layout, which answers 168
+    /// for a chest whether or not the panel builder returned one, so it could
+    /// not tell a working container from one that had silently fallen back to
+    /// the player's 166-tall panel. A value witness is only a value witness if
+    /// it reads the value the draw used.
+    container_panel_h: Option<f32>,
     /// Passes actually constructed by the end of the run.
     gui_items_ready: bool,
     hand_ready: bool,
@@ -346,6 +365,21 @@ impl RenderCheck {
             "r16 the inventory screen was drawn",
             self.screen_frames * 4 >= self.frames && self.frames > 0,
             format!("{} of {} frames", self.screen_frames, self.frames),
+        );
+        // M88 — the gap M87 recorded and could not close from a headless gate.
+        row(
+            "r19 a container screen was drawn in the windowed client",
+            self.container_frames > 0,
+            format!("{} of {} frames", self.container_frames, self.frames),
+        );
+        // ...and that it was a CONTAINER's panel, not the player's. A fallback
+        // to `PLAYER` would keep r19 green while drawing 176x166 geometry for a
+        // 63-slot menu, which is the failure worth naming rather than the one
+        // that is merely absent.
+        row(
+            "r20 the container's panel was its own, not the player's 166",
+            self.container_panel_h.is_some_and(|h| (h - 166.0).abs() > 0.5),
+            format!("panel height {:?} (player's is 166)", self.container_panel_h),
         );
         row(
             "r17 validation was enabled",
@@ -4050,6 +4084,10 @@ struct LiveApp {
     /// `Options.advancedItemTooltips` — F3+H (M66). Vanilla persists it to
     /// `options.txt`; Rewo has no options file, so it resets each session.
     advanced_tooltips: bool,
+    /// M88 — whether `--render-check` has injected its container open yet.
+    /// Latched so the inject happens once rather than every frame past the
+    /// threshold, which would re-open the menu and reset its state each frame.
+    container_injected: bool,
     /// `Hud.lastToolHighlight` + `toolHighlightTimer` (M66) — the held-item
     /// name that fades in over the hotbar.
     tool_highlight: rewo_gpu::hud::ToolHighlight,
@@ -5300,6 +5338,41 @@ impl LiveApp {
                     self.screen.mouse = ((r.0 + r.2 * 0.5) as f64, (r.1 + r.2 * 0.5) as f64);
                 }
             }
+            // M88 — six-tenths through, open a CONTAINER over the inventory.
+            //
+            // Injected as a raw `open_screen` body through the production
+            // router rather than staged by interacting with a real chest,
+            // which is M17's precedent and its reasoning: raw-packet injection
+            // into the production dispatcher is the deterministic proof, where
+            // a live encounter depends on the server's own timing and on the
+            // client aiming at the right block. What is being graded here is
+            // the *render*, and this drives the whole chain that feeds it —
+            // decode, layout resolution, `Menus::apply_open_screen`, and the
+            // frame loop's choice of which menu to draw.
+            //
+            // A generic_9x3 chest: menu id 2, 63 slots, and a 168-tall panel,
+            // so its geometry is distinguishable from the player's 46-slot
+            // 166-tall one by more than rounding.
+            if half && self.screen.inventory_open() && !self.container_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.6 {
+                    if let Some(session) = self.session.as_mut() {
+                        // VarInt container id, VarInt menu type (RAW, not a
+                        // holder), then an NBT string title.
+                        let mut body: Vec<u8> = vec![7, 2, 8];
+                        let title = b"Chest";
+                        body.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                        body.extend_from_slice(title);
+                        let id = session.ids.cb_play_open_screen;
+                        let opened =
+                            rewo_net::route_menu(id, &body, &session.ids, &mut session.menus)
+                                && session.menus.open().is_some();
+                        if opened {
+                            self.container_injected = true;
+                        }
+                    }
+                }
+            }
             // Three-quarters through, turn on advanced tooltips (F3+H), which
             // adds the item's id as a second line.
             //
@@ -5743,6 +5816,16 @@ impl LiveApp {
                     (sw, sh),
                 );
                 self.screen_labels = labels;
+                // M88 — read the panel back OUT of the renderer, after the
+                // draw path set it. Asking the open menu's layout instead
+                // would answer 168 for a chest whether or not the panel
+                // builder returned one.
+                if let Some(h) = state.world_renderer.container_panel_height() {
+                    if let Some(c) = self.check.as_mut() {
+                        c.container_frames += 1;
+                        c.container_panel_h = Some(h);
+                    }
+                }
                 // Any glyph laid out above may be new to the atlas. Sync
                 // BEFORE the runs are drawn and outside the rendering scope --
                 // it records a transfer, and a run referencing a rect that has
@@ -6155,6 +6238,7 @@ fn run_windowed(
         f3_down: false,
         f3_used_as_modifier: false,
         advanced_tooltips: false,
+        container_injected: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
         modules: crate::modules::Modules::load(),
