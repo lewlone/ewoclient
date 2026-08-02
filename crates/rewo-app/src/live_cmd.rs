@@ -2828,6 +2828,7 @@ pub(crate) fn container_sprites(
         bundle_bar_border: s(&c.bundle_bar_border),
         bundle_bar_fill: s(&c.bundle_bar_fill),
         bundle_bar_full: s(&c.bundle_bar_full),
+        menu_backgrounds: c.menu_backgrounds.iter().map(s).collect(),
     })
 }
 
