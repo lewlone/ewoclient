@@ -10800,6 +10800,20 @@ fn container_panel(
     })
 }
 
+/// [`container_panel`] for `containershot`, which drives the production
+/// builder rather than a copy of it — M45's finding: a gate that reimplements
+/// a slice of the app's setup misses whatever the app adds to it.
+pub(crate) fn container_panel_for_test(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+) -> Option<rewo_gpu::container::ContainerPanel> {
+    container_panel(layout)
+}
+
+/// [`sheet_index`] for `containershot`.
+pub(crate) fn sheet_index_for_test(texture: &str) -> Option<usize> {
+    sheet_index(texture)
+}
+
 /// A texture's index in the atlas, by the path the bake loaded it under.
 ///
 /// `menu_screen` spells paths in vanilla's `Identifier` form and the bake in

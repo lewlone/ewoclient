@@ -119,7 +119,7 @@ pub fn run(args: InventoryshotArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn client_jar(version: &str) -> Option<PathBuf> {
+pub(crate) fn client_jar(version: &str) -> Option<PathBuf> {
     let mut p = dirs::config_dir()?;
     p.push("EwoClient");
     p.push("shared/versions");

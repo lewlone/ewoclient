@@ -40,6 +40,7 @@ mod net_cmd;
 mod play_cmd;
 mod capeshot_cmd;
 mod handshot_cmd;
+mod containershot_cmd;
 mod inventoryshot_cmd;
 mod particleshot_cmd;
 mod portalshot_cmd;
@@ -234,6 +235,8 @@ enum Command {
     /// diffuse on the CPU, then render real baked items into real hotbar slots
     /// offscreen and assert their pixels with `--check` (no server).
     Inventoryshot(inventoryshot_cmd::InventoryshotArgs),
+    /// M87 — the container-screen gate.
+    Containershot(containershot_cmd::ContainershotArgs),
     /// M38 first-person hand oracle: grade the two first-person display
     /// transforms on the real jar, the pose chain against a derivation from the
     /// decompile, and the pass's pixels — with a synthetic magenta texture, so
@@ -342,6 +345,7 @@ fn main() {
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
+        Some(Command::Containershot(cs_args)) => containershot_cmd::run(cs_args),
         Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
         Some(Command::Capeshot(cape_args)) => capeshot_cmd::run(cape_args),
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
