@@ -11,6 +11,7 @@
 pub mod assets;
 pub mod attributes;
 pub mod be_transform;
+pub mod beacon_payment_table;
 pub mod block_entity_models;
 pub mod block_entity_types;
 pub mod block_light;
