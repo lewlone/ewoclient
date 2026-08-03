@@ -254,6 +254,17 @@ pub struct StackComponents {
     /// there. No prototype carries MAP_ID, so a patch is the only source and
     /// the three-step `has()` collapses to this one bit.
     pub has_map_id: bool,
+    /// Whether the patch removed `minecraft:dye` (M93g).
+    ///
+    /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
+    /// component the patch removed even when the prototype carries it. Two
+    /// separate flags rather than one shared "a loom component was removed",
+    /// because an item is in at most one of the two tags and a shared bit
+    /// would let a removal on the *other* component falsify the wrong
+    /// predicate.
+    pub dye_removed: bool,
+    /// Whether the patch removed `minecraft:provides_banner_patterns` (M93g).
+    pub provides_banner_patterns_removed: bool,
     /// Whether the patch **removed** `minecraft:damage` or
     /// `minecraft:max_damage` (M93e).
     ///
@@ -699,6 +710,13 @@ fn read_patch_at(
         if ty == ids.max_damage || ty == ids.damage {
             comps.damage_component_removed = true;
         }
+        // M93g — the loom's two conjunctions. Same rule, one flag each.
+        if ty == ids.dye {
+            comps.dye_removed = true;
+        }
+        if ty == ids.provides_banner_patterns {
+            comps.provides_banner_patterns_removed = true;
+        }
         comps.removed.push(ty);
         // A removal has no value, so its own id is all there is to fold in —
         // and it must be folded in, or "damage removed" and "damage absent"
@@ -988,6 +1006,8 @@ mod tests {
         dyed_color: 14,
         trim: 15,
         map_id: 19,
+        dye: 20,
+        provides_banner_patterns: 21,
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
@@ -1018,6 +1038,8 @@ mod tests {
             // are kept separate on purpose — an id the table does not know is
             // reported unwalkable however well the interpreter handles it.
             ("minecraft:map_id", 19),
+            ("minecraft:dye", 20),
+            ("minecraft:provides_banner_patterns", 21),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1347,6 +1369,42 @@ mod tests {
         };
         assert_eq!(r.remaining(), 0, "the patch was not consumed exactly");
         s.components
+    }
+
+    /// M93g — the decoder half of the loom's two conjunctions.
+    ///
+    /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
+    /// component the patch removed. The tag half is unpatchable (item
+    /// identity) and the prototype half is fixed, so a **removal** is the only
+    /// way the wire can change either answer — which makes these two flags the
+    /// whole patch contribution.
+    #[test]
+    fn a_removed_loom_component_is_recorded_from_the_wire() {
+        install_test_shapes();
+        let c = components_of(&stack(1, 100, &[], &[IDS.dye]));
+        assert!(c.dye_removed);
+        assert!(
+            !c.provides_banner_patterns_removed,
+            "the two must not share a flag — an item is in at most one of the \
+             two tags, so a removal on the other component must not falsify it"
+        );
+
+        let c = components_of(&stack(1, 100, &[], &[IDS.provides_banner_patterns]));
+        assert!(c.provides_banner_patterns_removed);
+        assert!(!c.dye_removed);
+
+        // Neither is set by an unrelated removal, by a plain stack, or by
+        // SETTING the component — the last being the opposite answer from the
+        // same id.
+        assert!(!components_of(&stack(1, 100, &[], &[IDS.rarity])).dye_removed);
+        assert!(!components_of(&stack(1, 100, &[], &[])).dye_removed);
+        let mut dye = Vec::new();
+        varint(14, &mut dye);
+        let c = components_of(&stack(1, 100, &[(IDS.dye, dye)], &[]));
+        assert!(
+            !c.dye_removed,
+            "a SET dye component is present, not removed"
+        );
     }
 
     /// M93f — the decoder half of `has(DataComponents.MAP_ID)`.

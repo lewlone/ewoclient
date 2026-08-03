@@ -98,6 +98,11 @@ pub struct ItemSlot {
     /// `minecraft:unbreakable`'s presence in the patch (M93e). The prototype
     /// never carries it, so the patch is the whole answer.
     pub unbreakable: bool,
+    /// Whether the patch removed `minecraft:dye` (M93g) — the component half
+    /// of `isDyeItem`'s conjunction.
+    pub dye_removed: bool,
+    /// Whether the patch removed `minecraft:provides_banner_patterns` (M93g).
+    pub provides_banner_patterns_removed: bool,
     /// `ItemStack.has(DataComponents.MAP_ID)` (M93f). No prototype carries
     /// MAP_ID, so the patch is the whole answer and this is the whole of
     /// `has()`.
@@ -576,6 +581,17 @@ pub enum SlotKind {
     /// item's own max stack. Every slot of a chest, shulker box, dispenser and
     /// hopper is one — none of those menus has a result or equipment slot.
     Plain,
+    /// `LoomMenu`'s banner slot (M93g): `getItem() instanceof BannerItem`.
+    LoomBanner,
+    /// `LoomMenu`'s dye slot (M93g): `is(#LOOM_DYES) && has(DYE)`.
+    LoomDye,
+    /// `LoomMenu`'s pattern slot (M93g):
+    /// `is(#LOOM_PATTERNS) && has(PROVIDES_BANNER_PATTERNS)`.
+    ///
+    /// Three kinds, because the loom tests three disjoint predicates in a
+    /// fixed order and each slot enforces its own. One shared kind would let a
+    /// dye into the pattern slot.
+    LoomPattern,
     /// `CartographyTableMenu`'s MAP slot (M93f): `mayPlace` is
     /// `itemStack.has(DataComponents.MAP_ID)`.
     CartographyMap,
@@ -724,6 +740,18 @@ pub struct ItemProps {
     /// `update_recipes` is the authoritative source and Rewo does not decode
     /// it, so a datapack recipe change makes this wrong silently.
     pub stonecuttable: bool,
+    /// `getItem() instanceof BannerItem` (M93g), from `#minecraft:banners`.
+    ///
+    /// **Not** the `minecraft:banner_patterns` prototype component, which the
+    /// SHIELD also carries — see `loom_table`'s module docs.
+    pub loom_banner: bool,
+    /// **Both** halves of `isDyeItem` that the item alone can answer:
+    /// `is(#LOOM_DYES) && prototype_has(DYE)` (M93g). The patch's removal is
+    /// on the stack.
+    pub loom_dye: bool,
+    /// The same for `isPatternItem`: `is(#LOOM_PATTERNS) &&
+    /// prototype_has(PROVIDES_BANNER_PATTERNS)` (M93g).
+    pub loom_pattern: bool,
     /// `CartographyTableMenu`'s ADDITIONAL slot (M93f) —
     /// `is(PAPER) || is(MAP) || is(GLASS_PANE)`.
     ///
@@ -832,6 +860,14 @@ impl Inventory {
             // M93f — the cartography table's two slots, whose predicates the
             // shift-click branch tests as well. Both are needed: the branch
             // chooses WHICH slot to try, `mayPlace` confirms it will take it.
+            // M93g — the loom. The banner test is item identity alone; the
+            // other two are conjunctions whose component half can be removed
+            // by the patch, which is what `*_removed` answers.
+            SlotKind::LoomBanner => props.loom_banner,
+            SlotKind::LoomDye => props.loom_dye && !stack.dye_removed,
+            SlotKind::LoomPattern => {
+                props.loom_pattern && !stack.provides_banner_patterns_removed
+            }
             SlotKind::CartographyMap => stack.has_map_id,
             SlotKind::CartographyAdditional => props.cartography_additional,
             _ => true,
@@ -1272,6 +1308,27 @@ impl Inventory {
                     (player..hotbar, false)
                 }]);
             }
+            QuickMove::Loom => {
+                // LoomMenu: banner 0, dye 1, pattern 2, result 3,
+                // player 4..40.
+                let (player, hotbar, end) = (4usize, 31usize, 40usize);
+                // Each conjunction's component half, resolved here so the
+                // three branch tests read as the three vanilla predicates.
+                let is_dye = p.loom_dye && !item.dye_removed;
+                let is_pattern = p.loom_pattern && !item.provides_banner_patterns_removed;
+                return Some(vec![match slot {
+                    3 => (player..end, true),
+                    0 | 1 | 2 => (player..end, false),
+                    // Tested in this order, and each branch CONSUMES — a
+                    // banner with slot 0 already taken moves nothing rather
+                    // than falling through to the dye slot or the hotbar.
+                    _ if p.loom_banner => (0..1, false),
+                    _ if is_dye => (1..2, false),
+                    _ if is_pattern => (2..3, false),
+                    s if s < hotbar => (hotbar..end, false),
+                    _ => (player..hotbar, false),
+                }]);
+            }
             QuickMove::Cartography => {
                 // CartographyTableMenu: map 0, additional 1, result 2,
                 // player 3..39.
@@ -1533,6 +1590,9 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+            loom_banner: false,
+            loom_dye: false,
+            loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -1548,6 +1608,9 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+            loom_banner: false,
+            loom_dye: false,
+            loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -1563,6 +1626,9 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+            loom_banner: false,
+            loom_dye: false,
+            loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -2156,6 +2222,223 @@ mod tests {
         );
     }
 
+    // -- M93g: the loom ----------------------------------------------------
+
+    fn loom_props(banner: bool, dye: bool, pattern: bool) -> impl Fn(i32) -> Option<ItemProps> {
+        move |_id| {
+            Some(ItemProps {
+                loom_banner: banner,
+                loom_dye: dye,
+                loom_pattern: pattern,
+                ..plain_props(0).unwrap()
+            })
+        }
+    }
+
+    #[test]
+    fn the_looms_three_predicates_route_to_three_different_slots() {
+        for (i, props) in [
+            loom_props(true, false, false),
+            loom_props(false, true, false),
+            loom_props(false, false, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = single_input_menu(18, 4, stack(1, 1));
+            let p = m.click_quick_move(4, &props).expect("predictable");
+            assert!(
+                p.changed.iter().any(|(s, _)| *s as usize == i),
+                "predicate {i} must fill slot {i}, {:?}",
+                p.changed
+            );
+        }
+    }
+
+    #[test]
+    fn the_looms_predicates_are_tested_in_vanillas_order() {
+        // Banner, then dye, then pattern. Only a stack satisfying more than
+        // one can show the order, and no vanilla item does — so construct the
+        // overlap, exactly as M93f's cartography precedence witness does.
+        let m = single_input_menu(18, 4, stack(1, 1));
+        let p = m
+            .click_quick_move(4, &loom_props(true, true, true))
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(s, _)| *s == 0),
+            "banner is tested first, {:?}",
+            p.changed
+        );
+        let m = single_input_menu(18, 4, stack(1, 1));
+        let p = m
+            .click_quick_move(4, &loom_props(false, true, true))
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(s, _)| *s == 1),
+            "dye is tested before pattern, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_removed_component_breaks_the_conjunction_though_the_tag_still_matches() {
+        // THE reason `loom_dye` is a conjunction and not a tag lookup. The tag
+        // half is item identity and cannot be patched; the component half can
+        // be REMOVED, and `has()` is false for a removed component even when
+        // the prototype carries it. A tag-only test routes this to the dye
+        // slot and the server rejects it.
+        let stripped = stack(1, 1).map(|s| ItemSlot {
+            dye_removed: true,
+            ..s
+        });
+        let m = single_input_menu(18, 4, stripped);
+        let p = m
+            .click_quick_move(4, &loom_props(false, true, false))
+            .expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(s, _)| *s == 1),
+            "a dye whose DYE component was removed must not take the dye slot, {:?}",
+            p.changed
+        );
+        assert!(
+            p.changed.iter().any(|(s, _)| (31..40).contains(s)),
+            "it cross-moves instead, {:?}",
+            p.changed
+        );
+
+        // ...and the two removals must not be interchangeable: stripping
+        // PROVIDES_BANNER_PATTERNS from a dye changes nothing about it.
+        let other = stack(1, 1).map(|s| ItemSlot {
+            provides_banner_patterns_removed: true,
+            ..s
+        });
+        let m = single_input_menu(18, 4, other);
+        let p = m
+            .click_quick_move(4, &loom_props(false, true, false))
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(s, _)| *s == 1),
+            "the OTHER component's removal is irrelevant to a dye, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn the_pattern_conjunction_breaks_on_its_own_removal_too() {
+        // Found by a surviving mutation. The dye witness above covers one half
+        // of a SYMMETRIC pair, and testing one of two mirrored terms leaves
+        // the other free to be deleted — `is_pattern`'s removal term was.
+        let stripped = stack(1, 1).map(|s| ItemSlot {
+            provides_banner_patterns_removed: true,
+            ..s
+        });
+        let m = single_input_menu(18, 4, stripped);
+        let p = m
+            .click_quick_move(4, &loom_props(false, false, true))
+            .expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(s, _)| *s == 2),
+            "a pattern item whose component was removed must not take the pattern slot, {:?}",
+            p.changed
+        );
+        // ...and the mirror of the mirror: a removed DYE is irrelevant to it.
+        let other = stack(1, 1).map(|s| ItemSlot {
+            dye_removed: true,
+            ..s
+        });
+        let m = single_input_menu(18, 4, other);
+        let p = m
+            .click_quick_move(4, &loom_props(false, false, true))
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(s, _)| *s == 2),
+            "the other component's removal is irrelevant to a pattern, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_plain_click_respects_the_conjunctions_removal_term_as_well() {
+        // The second surviving mutation. Every plain-click witness above uses
+        // a stack with no removals, so `may_place`'s removal term was never
+        // exercised on that path — only on the quick-move's. The two are
+        // separate code and both must carry it, or an ordinary click predicts
+        // a placement the server rejects.
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(18).unwrap());
+        assert!(m.set_content(1, &vec![None; m.slot_count()], None));
+        let dye = loom_props(false, true, false);
+
+        m.set_carried(stack(1, 1));
+        assert!(
+            !m.click_pickup(1, 0, &dye).unwrap().changed.is_empty(),
+            "an intact dye is placeable by hand"
+        );
+
+        m.set_carried(stack(1, 1).map(|s| ItemSlot {
+            dye_removed: true,
+            ..s
+        }));
+        assert!(
+            m.click_pickup(1, 0, &dye).unwrap().changed.is_empty(),
+            "one whose DYE component was removed is not"
+        );
+
+        // The same for the pattern slot, so this witness is not itself half a
+        // symmetric pair.
+        let pat = loom_props(false, false, true);
+        m.set_carried(stack(1, 1));
+        assert!(!m.click_pickup(2, 0, &pat).unwrap().changed.is_empty());
+        m.set_carried(stack(1, 1).map(|s| ItemSlot {
+            provides_banner_patterns_removed: true,
+            ..s
+        }));
+        assert!(m.click_pickup(2, 0, &pat).unwrap().changed.is_empty());
+    }
+
+    #[test]
+    fn a_loom_input_branch_consumes_rather_than_trying_the_next_slot() {
+        // All three branches return on failure. A banner with slot 0 taken
+        // moves nothing — it does not fall through to the dye slot, nor to
+        // the hotbar.
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(18).unwrap());
+        let mut v = vec![None; m.slot_count()];
+        v[0] = stack(7, 1);
+        v[4] = stack(1, 1);
+        assert!(m.set_content(1, &v, None));
+        assert!(
+            m.click_quick_move(4, &loom_props(true, false, false)).is_none(),
+            "an occupied banner slot must move nothing"
+        );
+        let free = single_input_menu(18, 4, stack(1, 1));
+        assert!(free
+            .click_quick_move(4, &loom_props(true, false, false))
+            .is_some());
+    }
+
+    #[test]
+    fn the_looms_three_slots_refuse_each_others_items_on_a_plain_click() {
+        // Each slot enforces its own predicate, so one shared SlotKind would
+        // let a dye into the pattern slot.
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(18).unwrap());
+        assert!(m.set_content(1, &vec![None; m.slot_count()], None));
+        let kinds = [
+            loom_props(true, false, false),
+            loom_props(false, true, false),
+            loom_props(false, false, true),
+        ];
+        for (owner, props) in kinds.iter().enumerate() {
+            for slot in 0..3usize {
+                m.set_carried(stack(1, 1));
+                let changed = m.click_pickup(slot as i32, 0, props).unwrap().changed;
+                assert_eq!(
+                    !changed.is_empty(),
+                    slot == owner,
+                    "predicate {owner} into slot {slot}: {changed:?}"
+                );
+            }
+        }
+    }
+
     // -- M93f: the cartography table --------------------------------------
 
     /// `minecraft:paper` / `minecraft:map` / `minecraft:glass_pane`.
@@ -2468,7 +2751,7 @@ mod tests {
         // in the first free main-inventory slot. Both look like "it moved".
         //
         // (menu id, the slot whose contents leave via the player range)
-        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2), (23, 2)] {
+        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2), (23, 2), (18, 3)] {
             let m = single_input_menu(id, source, stack(1, 1));
             let p = m
                 .click_quick_move(source as i32, &plain_props)
@@ -2495,7 +2778,15 @@ mod tests {
         // `false`, and reporting it as Plain would let a click drop something
         // into it that the server then rejects.
         use crate::menu_layout::layout_of;
-        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1), (15, 2), (23, 2)] {
+        for (id, result) in [
+            (8i32, 2usize),
+            (9, usize::MAX),
+            (19, 2),
+            (24, 1),
+            (15, 2),
+            (23, 2),
+            (18, 3),
+        ] {
             let layout = layout_of(id).unwrap();
             for slot in 0..layout.slot_count() {
                 let kind = layout.slot_kind(slot).expect("transcribed");
@@ -2658,6 +2949,8 @@ mod tests {
             unbreakable: false,
             damage_component_removed: false,
             has_map_id: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
             trim_material: None,
         })
     }

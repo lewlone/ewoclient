@@ -753,6 +753,19 @@ pub enum QuickMove {
     /// The accepted set is jar-derived (`stonecutter_table`), with M91's
     /// caveat: `update_recipes` is the authoritative source and is class C.
     Stonecutter,
+    /// `LoomMenu` — banner 0, dye 1, pattern 2, result 3, player 4..40.
+    ///
+    /// Three input predicates tested in a fixed order, and each is also its
+    /// slot's `mayPlace` — the cartography table's arrangement with one more
+    /// slot. Two of the three are **conjunctions**: `isDyeItem` is
+    /// `is(#LOOM_DYES) && has(DYE)`, not either. Every vanilla item satisfies
+    /// both terms together, so a tag-only test looks correct and diverges the
+    /// moment a datapack tags an item without the component.
+    ///
+    /// The banner test is `getItem() instanceof BannerItem` — a class, whose
+    /// data stand-in must be `#minecraft:banners` and **not** the
+    /// `minecraft:banner_patterns` component, which the shield carries too.
+    Loom,
     /// `CartographyTableMenu` — map 0, additional 1, result 2, player 3..39.
     ///
     /// The only menu here whose branch predicates and `mayPlace` predicates are
@@ -873,6 +886,15 @@ impl MenuLayout {
             }),
             // M93f — two DIFFERENT kinds, because the two slots take disjoint
             // sets. Sharing one would let a filled map into the paper slot.
+            // M93g — three kinds, because the three predicates are disjoint
+            // and each slot enforces its own.
+            QuickMove::Loom => Some(match slot {
+                0 => crate::inventory::SlotKind::LoomBanner,
+                1 => crate::inventory::SlotKind::LoomDye,
+                2 => crate::inventory::SlotKind::LoomPattern,
+                3 => crate::inventory::SlotKind::Result,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::Cartography => Some(match slot {
                 0 => crate::inventory::SlotKind::CartographyMap,
                 1 => crate::inventory::SlotKind::CartographyAdditional,
@@ -918,6 +940,8 @@ impl MenuLayout {
             15 => QuickMove::Grindstone,
             // cartography_table (M93f).
             23 => QuickMove::Cartography,
+            // loom (M93g).
+            18 => QuickMove::Loom,
             _ => QuickMove::Unimplemented,
         }
     }

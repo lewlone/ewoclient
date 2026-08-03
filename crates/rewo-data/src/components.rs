@@ -71,6 +71,11 @@ pub struct DataComponentIds {
     /// MAP_ID — verified against the per-item component table — so a patch is
     /// the only way a stack can have one.
     pub map_id: i32,
+    /// `minecraft:dye` and `minecraft:provides_banner_patterns` (M93g) — the
+    /// component halves of the loom's two conjunctions. Resolved only so a
+    /// **removal** can be spotted: the prototype answers the positive case.
+    pub dye: i32,
+    pub provides_banner_patterns: i32,
     /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
     /// under `ByteBufCodecs.list()`.
     ///
@@ -201,6 +206,8 @@ impl DataComponentIds {
             dyed_color: id("minecraft:dyed_color")?,
             trim: id("minecraft:trim")?,
             map_id: id("minecraft:map_id")?,
+            dye: id("minecraft:dye")?,
+            provides_banner_patterns: id("minecraft:provides_banner_patterns")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,

@@ -307,6 +307,87 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 stick_p.cartography_additional
             ),
         );
+        // M93g — the loom's three sets, through the production resolver.
+        let banner = id_of("minecraft:white_banner")?;
+        let dye = id_of("minecraft:red_dye")?;
+        let pattern = id_of("minecraft:flower_banner_pattern")?;
+        let shield = id_of("minecraft:shield")?;
+        let b_p = props_of(banner).ok_or("containershot: item_props declined")?;
+        let d_p = props_of(dye).ok_or("containershot: item_props declined")?;
+        let pat_p = props_of(pattern).ok_or("containershot: item_props declined")?;
+        let sh_p = props_of(shield).ok_or("containershot: item_props declined")?;
+        c.record(
+            "d7.the_live_client_resolves_the_looms_three_sets_disjointly",
+            (b_p.loom_banner, b_p.loom_dye, b_p.loom_pattern) == (true, false, false)
+                && (d_p.loom_banner, d_p.loom_dye, d_p.loom_pattern) == (false, true, false)
+                && (pat_p.loom_banner, pat_p.loom_dye, pat_p.loom_pattern)
+                    == (false, false, true),
+            format!(
+                "white_banner {:?}, red_dye {:?}, flower_banner_pattern {:?} (banner, dye, pattern)",
+                (b_p.loom_banner, b_p.loom_dye, b_p.loom_pattern),
+                (d_p.loom_banner, d_p.loom_dye, d_p.loom_pattern),
+                (pat_p.loom_banner, pat_p.loom_dye, pat_p.loom_pattern)
+            ),
+        );
+        // THE witness the tag exists for. A shield's prototype carries
+        // `minecraft:banner_patterns` exactly as a banner's does, so a
+        // component-derived banner set would put a shield in the loom's banner
+        // slot — and every unit witness, which hand-builds its props, would
+        // stay green while it did.
+        c.record(
+            "d8.a_shield_is_not_a_banner_though_it_carries_banner_patterns",
+            !sh_p.loom_banner
+                && rewo_data::item_components_table::prototype_has_component(
+                    "minecraft:shield",
+                    "minecraft:banner_patterns",
+                ) == Some(true),
+            format!(
+                "shield loom_banner={}, but its prototype DOES carry banner_patterns ({:?}) \
+                 — so the set came from #minecraft:banners and not from the component",
+                sh_p.loom_banner,
+                rewo_data::item_components_table::prototype_has_component(
+                    "minecraft:shield",
+                    "minecraft:banner_patterns",
+                )
+            ),
+        );
+        // d9 exists because a mutation SURVIVED and was shown to be equivalent
+        // rather than fixed. Dropping `&& prototype_has(DYE)` from the
+        // conjunction changes no answer the jar can produce, because every
+        // item in `#minecraft:loom_dyes` also carries the component — which is
+        // exactly the coincidence `loom_table`'s docs warn about. No fixture
+        // built from vanilla data can distinguish the two readings.
+        //
+        // So this pins the COINCIDENCE instead of the behaviour: if a version
+        // bump ever tags an item without the component, the conjunction starts
+        // mattering and this fires to say so. (The *patch* half of the
+        // conjunction IS reachable and is witnessed in rewo-world.)
+        let tag_and_component_agree = |tag: &[&str], component: &str| {
+            tag.iter().all(|i| {
+                rewo_data::item_components_table::prototype_has_component(i, component)
+                    == Some(true)
+            })
+        };
+        let dyes_agree = tag_and_component_agree(
+            rewo_data::loom_table::LOOM_DYES,
+            "minecraft:dye",
+        );
+        let patterns_agree = tag_and_component_agree(
+            rewo_data::loom_table::LOOM_PATTERNS,
+            "minecraft:provides_banner_patterns",
+        );
+        c.record(
+            "d9.the_looms_tags_and_components_still_coincide",
+            dyes_agree && patterns_agree,
+            format!(
+                "every one of {} loom dyes carries minecraft:dye ({dyes_agree}) and every one \
+                 of {} loom patterns carries provides_banner_patterns ({patterns_agree}) — \
+                 while that holds, the conjunction's second term is unobservable on vanilla \
+                 data and is kept because vanilla writes it",
+                rewo_data::loom_table::LOOM_DYES.len(),
+                rewo_data::loom_table::LOOM_PATTERNS.len()
+            ),
+        );
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
         // Wiring both fields to one table would leave d3 green.
