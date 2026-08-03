@@ -919,7 +919,7 @@ pub enum BeaconButtonState {
 }
 
 /// The beacon screen's live state, as the buttons read it.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BeaconChoice {
     /// `menu.getLevels()` — the pyramid's height, 0..=4.
     pub levels: i32,
@@ -1985,5 +1985,186 @@ mod m93j_crafter {
             assert_eq!(width / 2 + 9 - left, r.dx, "at {width}x{height}");
             assert_eq!(height / 2 - 48 - top, r.dy, "at {width}x{height}");
         }
+    }
+}
+
+/// What pressing a beacon button does (M93l).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconPress {
+    /// Nothing: the button is disabled or hidden, or it is already selected.
+    None,
+    /// The screen's new `(primary, secondary)`.
+    Select(BeaconChoice),
+    /// Send `set_beacon` with the current choice, then close the container.
+    Confirm,
+    /// Close the container, sending nothing.
+    Cancel,
+}
+
+/// `BeaconPowerButton.onPress` and its two siblings (M93l).
+///
+/// ```java
+/// if (!this.isSelected()) {
+///    if (this.isPrimary) {
+///       primary = this.effect;
+///       if (!Objects.equals(secondary, this.effect)) secondary = null;
+///    } else {
+///       secondary = this.effect;
+///    }
+///    updateButtons();
+/// }
+/// ```
+///
+/// # Choosing a primary CLEARS the secondary — except when they match
+///
+/// That guard reads backwards at first. Picking a new primary discards
+/// whatever secondary you had, because a secondary is only meaningful
+/// alongside the primary it was chosen with — **unless** the secondary is
+/// already the same effect, which is the "primary at level II" double and is
+/// still valid. Inverting the condition keeps exactly the choices that should
+/// be discarded and discards the one that should be kept.
+///
+/// # The upgrade button is an ordinary secondary button
+///
+/// `BeaconUpgradePowerButton extends BeaconPowerButton` with `isPrimary =
+/// false` and `tier = 3`, and `updateStatus` re-points its effect at the
+/// current primary. So pressing it takes the secondary branch with
+/// `effect = primary` — it is not a fourth kind of press.
+///
+/// # A press only happens on an ACTIVE, VISIBLE button
+///
+/// `AbstractWidget.onClick` is reached through `mouseClicked`, which requires
+/// both. Gating here rather than at the call site keeps the button's own
+/// `updateStatus` rules — `tier < levels`, `hasPayment() && primary != null` —
+/// as the single source for both what is drawn and what responds.
+pub fn beacon_press(b: BeaconButton, s: BeaconChoice) -> BeaconPress {
+    match beacon_button_state(b, s, false) {
+        BeaconButtonState::Disabled | BeaconButtonState::Hidden => return BeaconPress::None,
+        _ => {}
+    }
+    match b.kind {
+        BeaconButtonKind::Confirm => BeaconPress::Confirm,
+        BeaconButtonKind::Cancel => BeaconPress::Cancel,
+        BeaconButtonKind::Power { effect, primary, .. } => beacon_select(s, effect, primary),
+        // The upgrade button borrows the primary and presses as a secondary.
+        BeaconButtonKind::Upgrade => match s.primary {
+            Some(p) => beacon_select(s, p, false),
+            None => BeaconPress::None,
+        },
+    }
+}
+
+fn beacon_select(s: BeaconChoice, effect: BeaconEffect, primary: bool) -> BeaconPress {
+    let chosen = if primary { s.primary } else { s.secondary };
+    // `if (!this.isSelected())` — pressing the lit button is inert.
+    if chosen == Some(effect) {
+        return BeaconPress::None;
+    }
+    let mut next = s;
+    if primary {
+        next.primary = Some(effect);
+        if next.secondary != Some(effect) {
+            next.secondary = None;
+        }
+    } else {
+        next.secondary = Some(effect);
+    }
+    BeaconPress::Select(next)
+}
+
+#[cfg(test)]
+mod m93l_beacon_press {
+    use super::*;
+
+    fn power(effect: BeaconEffect, primary: bool, tier: i32) -> BeaconButton {
+        BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Power { effect, primary, tier } }
+    }
+    fn lit() -> BeaconChoice {
+        BeaconChoice { levels: 4, has_payment: true, ..Default::default() }
+    }
+    fn effects(primary: bool) -> (BeaconEffect, BeaconEffect) {
+        // Two distinct tier-0 effects from the real table, so the fixture
+        // cannot drift from the layout.
+        let t0 = beacon_tier_effects(0);
+        let other = beacon_tier_effects(1);
+        let _ = primary;
+        (t0[0], other[0])
+    }
+
+    #[test]
+    fn choosing_a_primary_clears_a_DIFFERENT_secondary_and_keeps_a_matching_one() {
+        // THE guard that reads backwards. A secondary is only meaningful
+        // alongside the primary it was chosen with — except when it IS that
+        // primary, which is the "primary at level II" double.
+        let (a, b) = effects(true);
+        // secondary = b, choose primary = a  ->  b is discarded.
+        let s = BeaconChoice { primary: None, secondary: Some(b), ..lit() };
+        let BeaconPress::Select(next) = beacon_press(power(a, true, 0), s) else {
+            panic!("a fresh primary must select");
+        };
+        assert_eq!(next.primary, Some(a));
+        assert_eq!(next.secondary, None, "a different secondary is cleared");
+
+        // secondary = a, choose primary = a  ->  a is KEPT.
+        let s = BeaconChoice { primary: None, secondary: Some(a), ..lit() };
+        let BeaconPress::Select(next) = beacon_press(power(a, true, 0), s) else {
+            panic!("must select");
+        };
+        assert_eq!(next.primary, Some(a));
+        assert_eq!(next.secondary, Some(a), "a MATCHING secondary survives");
+    }
+
+    #[test]
+    fn pressing_the_lit_button_is_inert() {
+        let (a, _) = effects(true);
+        let s = BeaconChoice { primary: Some(a), ..lit() };
+        assert_eq!(beacon_press(power(a, true, 0), s), BeaconPress::None);
+        // ...but the same button in the OTHER column is a different selection.
+        assert!(matches!(
+            beacon_press(power(a, false, 0), s),
+            BeaconPress::Select(_)
+        ));
+    }
+
+    #[test]
+    fn a_disabled_or_hidden_button_does_not_press() {
+        let (a, _) = effects(true);
+        // tier 3 on a level-1 beacon: `tier < levels` is false.
+        let weak = BeaconChoice { levels: 1, has_payment: true, ..Default::default() };
+        assert_eq!(beacon_press(power(a, true, 3), weak), BeaconPress::None);
+        // Confirm needs BOTH a payment and a primary.
+        let confirm = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Confirm };
+        assert_eq!(
+            beacon_press(confirm, BeaconChoice { primary: Some(a), has_payment: false, ..lit() }),
+            BeaconPress::None
+        );
+        assert_eq!(
+            beacon_press(confirm, BeaconChoice { primary: None, ..lit() }),
+            BeaconPress::None
+        );
+        assert_eq!(
+            beacon_press(confirm, BeaconChoice { primary: Some(a), ..lit() }),
+            BeaconPress::Confirm
+        );
+        // Cancel is unconditional — it does not even need a primary.
+        let cancel = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Cancel };
+        assert_eq!(beacon_press(cancel, BeaconChoice::default()), BeaconPress::Cancel);
+    }
+
+    #[test]
+    fn the_upgrade_button_presses_as_a_SECONDARY_holding_the_primary() {
+        // It is a BeaconPowerButton with isPrimary = false whose effect is
+        // re-pointed at the primary, not a fourth kind of press.
+        let (a, _) = effects(true);
+        let up = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Upgrade };
+        let s = BeaconChoice { primary: Some(a), ..lit() };
+        let BeaconPress::Select(next) = beacon_press(up, s) else {
+            panic!("the upgrade must select");
+        };
+        assert_eq!(next.primary, Some(a), "the primary is untouched");
+        assert_eq!(next.secondary, Some(a), "the secondary becomes the primary");
+        // Hidden with no primary, and inert once already doubled.
+        assert_eq!(beacon_press(up, BeaconChoice { primary: None, ..lit() }), BeaconPress::None);
+        assert_eq!(beacon_press(up, next), BeaconPress::None);
     }
 }

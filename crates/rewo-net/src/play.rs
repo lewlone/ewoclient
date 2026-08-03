@@ -3906,6 +3906,26 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `BeaconConfirmButton.onPress` (M93l) — `set_beacon`, then close.
+    ///
+    /// The close is the CALLER's: vanilla sends the packet and then calls
+    /// `player.closeContainer()`, and Rewo's close path is its own method, so
+    /// keeping them separate here means a send failure does not leave the
+    /// screen shut over a beacon the server never heard about.
+    pub fn set_beacon(
+        &mut self,
+        primary: Option<i32>,
+        secondary: Option<i32>,
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_set_beacon else {
+            return Err("set_beacon unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf
+            .extend_from_slice(&crate::set_beacon_body(primary, secondary));
+        self.send(p)
+    }
+
     pub fn select_hotbar(&mut self, slot: u8) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_set_carried_item else {
             return Err("set_carried_item unavailable".into());
