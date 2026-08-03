@@ -11017,7 +11017,7 @@ fn apply_screen(
     // build with no baked font simply draws no tooltip.
     let tooltip = wr.font_advance().and_then(|advance| {
         screen_tooltip(
-            &session.inventory,
+            menu,
             items,
             &baked.item_names,
             &baked.lang,
@@ -11030,6 +11030,12 @@ fn apply_screen(
             glyphs.as_deref_mut(),
             mouse,
             (w, h),
+            layout,
+            session.menus.open(),
+            session
+                .game_state
+                .game_mode()
+                .is_some_and(|m| m.is_spectator()),
         )
     });
     wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
@@ -11955,7 +11961,7 @@ const GRAY_TEXT: [f32; 3] = [170.0 / 255.0, 170.0 / 255.0, 170.0 / 255.0];
 const WHITE_TEXT: [f32; 3] = [1.0, 1.0, 1.0];
 
 #[allow(clippy::too_many_arguments)]
-fn screen_tooltip(
+pub(crate) fn screen_tooltip(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     names: &std::collections::HashMap<String, String>,
@@ -11969,6 +11975,15 @@ fn screen_tooltip(
     glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
     mouse: (f64, f64),
     (w, h): (f32, f32),
+    // M93k — the SHOWN menu's layout. Without it this hover centres a
+    // 176x166 panel and scans the player's 46 slots, which is the M89 bug in
+    // a fourth consumer: the highlight and the icons were made container-aware
+    // and this one was not, so with a chest open the tooltip named whatever
+    // the PLAYER happened to have at the same index.
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+    // `player.isSpectator()` — the fifth of the hint's conditions.
+    spectator: bool,
 ) -> Option<(
     rewo_gpu::container::TooltipDraw,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -11980,102 +11995,151 @@ fn screen_tooltip(
     if inv.carried().is_some() {
         return None;
     }
-    let (gx, gy) = rewo_gpu::container::screen_to_gui(mouse, w, h);
-    let slot = rewo_world::inventory::slot_at(gx, gy)?;
-    let stack = inv.menu_slot(slot)?;
-    let item_name = items.name(stack.item_id)?;
-    let translated = names.get(item_name)?;
-
-    // `getTooltipLines` in vanilla's order: the styled hover name, then the
-    // details each component contributes. Rewo produces the three it can read
-    // exactly — the name, the lore, and the `Unbreakable` marker.
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        mouse,
+        w,
+        h,
+        layout.image_w as f32,
+        layout.image_h as f32,
+    );
+    let slot = layout.slot_at(gx, gy)?;
+    // M93k — the crafter's `gui.togglable_slot` hint, which is shown on an
+    // EMPTY slot and so must be resolved before the item tooltip's
+    // `menu_slot(slot)?` bails out.
     //
-    let text = inv.text_of(stack);
-    // A line is a sequence of styled spans (M52b), not a string and a colour.
-    // Vanilla styles per run, and the old model was strictly less: it could
-    // not say "italic", so `ItemLore.LORE_STYLE`'s italic was silently
-    // dropped. Geometry is unchanged -- the box is still measured from the
-    // plain text with the vanilla advances.
-    let mut lines: Vec<rewo_gpu::tooltip::Line> = Vec::new();
-    lines.push(vec![rewo_gpu::tooltip::Span::new(
-        text.and_then(|t| t.name.as_deref())
-            .unwrap_or(translated)
-            .to_string(),
-        rarity_color(stack_rarity(
-            Some(item_name),
-            text.and_then(|t| t.rarity),
-            text.is_some_and(|t| t.is_enchanted),
-        )),
-    )]);
-    if let Some(t) = text {
-        // Vanilla's order: the enchantments come before the lore.
-        lines.extend(enchantment_lines(
-            &t.enchantments,
-            enchant_registry,
-            enchant_text,
-        ));
-        for line in &t.lore {
-            // `ItemLore.LORE_STYLE` is
-            // `Style.EMPTY.withColor(DARK_PURPLE).withItalic(true)`. The
-            // colour was already right; the italic had nowhere to live until
-            // the span model, so Rewo rendered lore upright.
-            lines.push(vec![
-                rewo_gpu::tooltip::Span::new(line.clone(), LORE_COLOR).italic(),
-            ]);
+    // Vanilla's five conditions here are exactly the preconditions of a PICKUP
+    // that would DISABLE the slot, so the hint is DERIVED from the same
+    // decision the click uses rather than transcribed a second time — the two
+    // then cannot disagree about whether a click would do anything. The
+    // string says as much: the constant is named DISABLED_SLOT_TOOLTIP and
+    // reads "Click to disable slot", and it appears on an ENABLED slot.
+    let crafter_hint: Option<Vec<rewo_gpu::tooltip::Line>> = open.and_then(|m| {
+        if !rewo_world::menu::is_crafter_grid_slot(layout.protocol_id, slot as i32) {
+            return None;
         }
-        if t.unbreakable {
-            lines.push(vec![rewo_gpu::tooltip::Span::new(
-                "Unbreakable".to_string(),
-                UNBREAKABLE_COLOR,
-            )]);
+        let would_disable = rewo_world::menu::crafter_toggle(
+            rewo_world::inventory::CONTAINER_INPUT_PICKUP,
+            m.crafter_slot_disabled(slot as i32),
+            inv.menu_slot(slot).is_some(),
+            spectator,
+            // Already known empty — the guard at the top of this function
+            // returns early otherwise — but passed rather than hard-coded, so
+            // the two guards cannot drift apart.
+            inv.carried().is_none(),
+            false,
+        ) == rewo_world::menu::CrafterToggle::Disable;
+        if !would_disable {
+            return None;
         }
-    }
-    // M66 stage 4: `minecraft:container`'s preview. Vanilla's component
-    // tooltips run in `DataComponents` registration order and `container`
-    // comes after the lore block, which is where this sits.
-    let detail = details.get(stack.components);
-    if let Some(d) = detail {
-        lines.extend(container_lines(&d.container, items, names, lang));
-    }
-    // M66 stage 3: the advanced block, last of everything a component adds.
-    {
-        let has = |c: &str| stack_has_component(item_name, c, detail, component_registry);
-        let durability = rewo_gpu::tooltip::DurabilityState {
-            damage: stack.damage.unwrap_or(0),
-            max: stack
-                .max_damage
-                .or_else(|| rewo_data::item_props_table::max_damage(item_name))
-                .unwrap_or(0),
-            has_max_damage: has("minecraft:max_damage").unwrap_or(false),
-            has_damage: has("minecraft:damage").unwrap_or(false),
-            unbreakable: has("minecraft:unbreakable").unwrap_or(false),
-        };
-        // `PatchedDataComponentMap.size()`. Both halves can decline — an item
-        // outside the prototype table, or a component id with no name — and
-        // either way the line is dropped rather than guessed.
-        let count = match detail {
-            Some(d) => rewo_net::item_stack::StackComponents {
-                added: d.added.clone(),
-                removed: d.removed.clone(),
-                ..Default::default()
+        lang.get("gui.togglable_slot")
+            .map(|t| vec![vec![rewo_gpu::tooltip::Span::new(t.to_string(), [1.0, 1.0, 1.0])]])
+    });
+    // The item tooltip's content. A closure so the crafter's hint can
+    // select between the two and share the assembly below — the measure,
+    // position and glyph-run code is the same for any tooltip, and a second
+    // copy of it is how two tooltips come to sit in different places.
+    let item_lines = || -> Option<Vec<rewo_gpu::tooltip::Line>> {
+        let stack = inv.menu_slot(slot)?;
+        let item_name = items.name(stack.item_id)?;
+        let translated = names.get(item_name)?;
+
+        // `getTooltipLines` in vanilla's order: the styled hover name, then the
+        // details each component contributes. Rewo produces the three it can read
+        // exactly — the name, the lore, and the `Unbreakable` marker.
+        //
+        let text = inv.text_of(stack);
+        // A line is a sequence of styled spans (M52b), not a string and a colour.
+        // Vanilla styles per run, and the old model was strictly less: it could
+        // not say "italic", so `ItemLore.LORE_STYLE`'s italic was silently
+        // dropped. Geometry is unchanged -- the box is still measured from the
+        // plain text with the vanilla advances.
+        let mut lines: Vec<rewo_gpu::tooltip::Line> = Vec::new();
+        lines.push(vec![rewo_gpu::tooltip::Span::new(
+            text.and_then(|t| t.name.as_deref())
+                .unwrap_or(translated)
+                .to_string(),
+            rarity_color(stack_rarity(
+                Some(item_name),
+                text.and_then(|t| t.rarity),
+                text.is_some_and(|t| t.is_enchanted),
+            )),
+        )]);
+        if let Some(t) = text {
+            // Vanilla's order: the enchantments come before the lore.
+            lines.extend(enchantment_lines(
+                &t.enchantments,
+                enchant_registry,
+                enchant_text,
+            ));
+            for line in &t.lore {
+                // `ItemLore.LORE_STYLE` is
+                // `Style.EMPTY.withColor(DARK_PURPLE).withItalic(true)`. The
+                // colour was already right; the italic had nowhere to live until
+                // the span model, so Rewo rendered lore upright.
+                lines.push(vec![
+                    rewo_gpu::tooltip::Span::new(line.clone(), LORE_COLOR).italic(),
+                ]);
             }
-            .component_count(
-                || rewo_data::item_components_table::prototype_component_count(item_name),
-                |id| {
-                    let name = component_registry?.name_of(id)?;
-                    rewo_data::item_components_table::prototype_has_component(item_name, name)
-                },
-            ),
-            // No patch at all: the merged size is the prototype's.
-            None => rewo_data::item_components_table::prototype_component_count(item_name),
-        };
-        // `display.shows(DataComponents.DAMAGE)` — Rewo does not interpret
-        // `minecraft:tooltip_display`, so this is `TooltipDisplay.DEFAULT`,
-        // which shows everything. A server that hid the damage line would
-        // still see it here.
-        let advanced = rewo_gpu::tooltip::advanced_lines(flag, durability, true, count);
-        lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
-    }
+            if t.unbreakable {
+                lines.push(vec![rewo_gpu::tooltip::Span::new(
+                    "Unbreakable".to_string(),
+                    UNBREAKABLE_COLOR,
+                )]);
+            }
+        }
+        // M66 stage 4: `minecraft:container`'s preview. Vanilla's component
+        // tooltips run in `DataComponents` registration order and `container`
+        // comes after the lore block, which is where this sits.
+        let detail = details.get(stack.components);
+        if let Some(d) = detail {
+            lines.extend(container_lines(&d.container, items, names, lang));
+        }
+        // M66 stage 3: the advanced block, last of everything a component adds.
+        {
+            let has = |c: &str| stack_has_component(item_name, c, detail, component_registry);
+            let durability = rewo_gpu::tooltip::DurabilityState {
+                damage: stack.damage.unwrap_or(0),
+                max: stack
+                    .max_damage
+                    .or_else(|| rewo_data::item_props_table::max_damage(item_name))
+                    .unwrap_or(0),
+                has_max_damage: has("minecraft:max_damage").unwrap_or(false),
+                has_damage: has("minecraft:damage").unwrap_or(false),
+                unbreakable: has("minecraft:unbreakable").unwrap_or(false),
+            };
+            // `PatchedDataComponentMap.size()`. Both halves can decline — an item
+            // outside the prototype table, or a component id with no name — and
+            // either way the line is dropped rather than guessed.
+            let count = match detail {
+                Some(d) => rewo_net::item_stack::StackComponents {
+                    added: d.added.clone(),
+                    removed: d.removed.clone(),
+                    ..Default::default()
+                }
+                .component_count(
+                    || rewo_data::item_components_table::prototype_component_count(item_name),
+                    |id| {
+                        let name = component_registry?.name_of(id)?;
+                        rewo_data::item_components_table::prototype_has_component(item_name, name)
+                    },
+                ),
+                // No patch at all: the merged size is the prototype's.
+                None => rewo_data::item_components_table::prototype_component_count(item_name),
+            };
+            // `display.shows(DataComponents.DAMAGE)` — Rewo does not interpret
+            // `minecraft:tooltip_display`, so this is `TooltipDisplay.DEFAULT`,
+            // which shows everything. A server that hid the damage line would
+            // still see it here.
+            let advanced = rewo_gpu::tooltip::advanced_lines(flag, durability, true, count);
+            lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
+        }
+
+        Some(lines)
+    };
+    let lines = match crafter_hint {
+        Some(l) => l,
+        None => item_lines()?,
+    };
 
     // Measure with the font that will DRAW. Once the tooltip renders in
     // Newsreader, sizing it with the bitmap advances measures a font it no

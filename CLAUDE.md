@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1829 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **42/42**, `inventoryshot` 152/152,
+(M93) — **1831 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **46/46**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**110 mutations across M93a–j, 109 killed and 1 shown equivalent**.
+**117 mutations across M93a–k, 116 killed and 1 shown equivalent**.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
@@ -4489,8 +4489,30 @@ premise inverting the witness. The item-suppression mutation survived because
 `containershot` never calls `init_gui_items`, so no pixel witness there reaches
 the icon pass — graded instead by calling the production `screen_icons`.
 
+**M93k added the `gui.togglable_slot` hint — and found a fourth hover that
+was never made container-aware.** `screen_tooltip` was handed
+`session.inventory` and the free `slot_at` (which *is* `PLAYER.slot_at`), so
+with a chest open it named whatever the player had at the same index, at a
+differently-centred origin. The highlight and the icons were both fixed; this
+one was missed — **M89's "a per-call-site choice is how they come to disagree",
+surviving in a fourth site.**
+
+The hint is **derived, not transcribed**: vanilla's five conditions are exactly
+the preconditions of a PICKUP that would *disable* the slot, so it asks
+`crafter_toggle(PICKUP, ..) == Disable` and cannot promise an action the click
+will not take. (It shows on an **enabled** slot — the constant is named
+`DISABLED_SLOT_TOOLTIP` and reads "Click to disable slot".)
+
+**Two mutations survived and each needed a different fixture.** Dropping the
+grid gate survived because every witness hovered a crafter's grid — so every
+empty slot in every menu would have offered to disable itself. And dropping the
+panel-size half survived because **the crafter's panel IS 176x166**, making the
+two forms identical for it; only a six-row chest (176x222, origin 28 px off
+against an 18 px pitch) can see it.
+
 **The crafter is complete end to end**: decode, model, packet, click routing,
-render.
+render, hint. Only `requestCursor(POINTING_HAND)` remains, and Rewo has **no
+cursor-shape concept at all** — winit plumbing, not a transcription.
 
  `live --render-check` not re-run —
 M93 adds no render path.

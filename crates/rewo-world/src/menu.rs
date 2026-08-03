@@ -1033,3 +1033,74 @@ mod m93h_crafter {
         }
     }
 }
+
+#[cfg(test)]
+mod m93k_tooltip {
+    use super::*;
+    use crate::inventory::CONTAINER_INPUT_PICKUP as PICKUP;
+
+    /// M93k — the `gui.togglable_slot` hint's condition IS the click's.
+    ///
+    /// Vanilla writes them as two separate expressions:
+    ///
+    /// ```java
+    /// // the hint
+    /// hoveredSlot instanceof CrafterSlot && !isSlotDisabled(index)
+    ///   && getCarried().isEmpty() && !hoveredSlot.hasItem() && !isSpectator()
+    /// // the click
+    /// case PICKUP: if (isSlotDisabled) enable; else if (getCarried().isEmpty()) disable;
+    /// ```
+    ///
+    /// and they agree exactly: the hint shows iff a plain click would DISABLE
+    /// the slot. Deriving it means the tooltip cannot promise an action the
+    /// click will not take — which is what "Click to disable slot" claims.
+    #[test]
+    fn the_hint_shows_exactly_when_a_click_would_disable_the_slot() {
+        for disabled in [false, true] {
+            for occupied in [false, true] {
+                for spectator in [false, true] {
+                    for carried_empty in [false, true] {
+                        let vanilla_hint =
+                            !disabled && carried_empty && !occupied && !spectator;
+                        let would_disable = crafter_toggle(
+                            PICKUP,
+                            disabled,
+                            occupied,
+                            spectator,
+                            carried_empty,
+                            false,
+                        ) == CrafterToggle::Disable;
+                        assert_eq!(
+                            vanilla_hint, would_disable,
+                            "disabled={disabled} occupied={occupied} \
+                             spectator={spectator} carried_empty={carried_empty}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// ...and the equivalence is not vacuous: both are true somewhere and
+    /// false somewhere, so the test above is not comparing two constants.
+    #[test]
+    fn the_hint_is_neither_always_on_nor_always_off() {
+        assert_eq!(
+            crafter_toggle(PICKUP, false, false, false, true, false),
+            CrafterToggle::Disable,
+            "an empty enabled slot with an empty cursor shows the hint"
+        );
+        for (d, o, sp, ce) in [
+            (true, false, false, true),   // already disabled
+            (false, true, false, true),   // has an item
+            (false, false, true, true),   // spectator
+            (false, false, false, false), // holding something
+        ] {
+            assert_ne!(
+                crafter_toggle(PICKUP, d, o, sp, ce, false),
+                CrafterToggle::Disable,
+                "disabled={d} occupied={o} spectator={sp} carried_empty={ce}"
+            );
+        }
+    }
+}

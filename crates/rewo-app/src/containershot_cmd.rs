@@ -1114,6 +1114,206 @@ fn overlays(
         );
     }
 
+    // o14/o15 — the `gui.togglable_slot` hint, and the container-aware hover
+    // that had to be fixed to make it reachable.
+    {
+        let lang = &baked.lang;
+        let advance = &baked
+            .font
+            .as_ref()
+            .ok_or("containershot: no baked font")?
+            .advance;
+        let items = rewo_data::items::Items::load(
+            &rewo_data::DataPaths::for_version("26.2")
+                .ok_or("containershot: no data dir")?
+                .registries_json(),
+        )?;
+        let crafter_layout = rewo_world::menu_layout::layout_of(7).unwrap();
+        // Grid slot 4 sits at (44, 35); its centre in screen pixels.
+        let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+            W as f32,
+            H as f32,
+            crafter_layout.image_w as f32,
+            crafter_layout.image_h as f32,
+        );
+        let over_slot4 = (
+            (left + (44.0 + 8.0) * scale) as f64,
+            (top + (35.0 + 8.0) * scale) as f64,
+        );
+        let hint = |m: &Menus, spectator: bool| -> bool {
+            let open = m.open().expect("open");
+            crate::live_cmd::screen_tooltip(
+                &open.menu,
+                &items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                over_slot4,
+                (W as f32, H as f32),
+                crafter_layout,
+                Some(open),
+                spectator,
+            )
+            .is_some()
+        };
+        let enabled = menu(7, &[]);
+        let disabled = menu(7, &[(4, 1)]);
+        c.record(
+            "o14.the_hint_is_on_an_ENABLED_slot_and_gone_once_it_is_disabled",
+            hint(&enabled, false) && !hint(&disabled, false),
+            format!(
+                "hovering grid slot 4: enabled -> {}, disabled -> {} — the constant is                  named DISABLED_SLOT_TOOLTIP and reads {:?}, and it appears on the                  ENABLED one",
+                hint(&enabled, false),
+                hint(&disabled, false),
+                lang.get("gui.togglable_slot")
+            ),
+        );
+        c.record(
+            "o15.a_spectator_gets_no_hint",
+            !hint(&enabled, true),
+            "the fifth condition, and the only one not otherwise observable here",
+        );
+
+        // Found by a surviving mutation: o14/o15 only ever hover a crafter's
+        // GRID, so dropping `is_crafter_grid_slot` left every empty slot in
+        // every menu offering to disable itself, and nothing could see it.
+        let hint_at = |m: &Menus,
+                       lay: &'static rewo_world::menu_layout::MenuLayout,
+                       gui: (f64, f64)|
+         -> bool {
+            let open = m.open().expect("open");
+            let (l, t, sc) = rewo_gpu::container::gui_origin_for(
+                W as f32,
+                H as f32,
+                lay.image_w as f32,
+                lay.image_h as f32,
+            );
+            crate::live_cmd::screen_tooltip(
+                &open.menu,
+                &items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (
+                    (l + (gui.0 as f32 + 8.0) * sc) as f64,
+                    (t + (gui.1 as f32 + 8.0) * sc) as f64,
+                ),
+                (W as f32, H as f32),
+                lay,
+                Some(open),
+                false,
+            )
+            .is_some()
+        };
+        // A chest's slot 0, at (8, 18) in its own panel.
+        let chest_layout = rewo_world::menu_layout::layout_of(2).unwrap();
+        let chest = menu(2, &[]);
+        // The crafter's own PLAYER slots start at slot 9; the standard block
+        // is at (8, 84), so slot 9 sits there.
+        let crafter_player = (8.0, 84.0);
+        c.record(
+            "o16.the_hint_is_confined_to_a_crafters_grid",
+            !hint_at(&chest, chest_layout, (8.0, 18.0))
+                && !hint_at(&enabled, crafter_layout, crafter_player)
+                && hint_at(&enabled, crafter_layout, (44.0, 35.0)),
+            format!(
+                "chest slot 0 -> {}, crafter PLAYER slot -> {}, crafter GRID slot -> {}                  — without the grid gate every empty slot in every menu offers to                  disable itself",
+                hint_at(&chest, chest_layout, (8.0, 18.0)),
+                hint_at(&enabled, crafter_layout, crafter_player),
+                hint_at(&enabled, crafter_layout, (44.0, 35.0))
+            ),
+        );
+
+        // o17 — the OTHER half of the container-aware fix, and it needed a
+        // different fixture to be observable at all.
+        //
+        // Reverting `screen_to_gui_for(layout)` to the player's 176x166
+        // survives every witness above, because the CRAFTER's panel IS
+        // 176x166: the two forms give identical answers for it. The panel size
+        // only matters where the panel differs by more than a slot, which is
+        // what `screen_to_gui_for`'s own doc says — a six-row chest is 176x222,
+        // so its origin sits 28 px higher than the player's, more than the
+        // 18 px pitch. An item tooltip is the probe, because an empty chest
+        // has nothing to hover.
+        let big = rewo_world::menu_layout::layout_of(5).unwrap();
+        let mut chest6 = menu(5, &[]);
+        {
+            let open = chest6.open_mut().expect("open");
+            let mut content = vec![None; open.menu.slot_count()];
+            let stone = (0..)
+                .take(4096)
+                .find(|&i| items.name(i) == Some("minecraft:stone"))
+                .ok_or("containershot: stone is not in the item registry")?;
+            content[0] = Some(rewo_world::inventory::ItemSlot {
+                item_id: stone,
+                count: 1,
+                has_components: false,
+                components: 0,
+                damage: None,
+                max_damage: None,
+                enchanted: false,
+                any_enchantments: false,
+                unbreakable: false,
+                damage_component_removed: false,
+                has_map_id: false,
+                dye_removed: false,
+                provides_banner_patterns_removed: false,
+                trim_material: None,
+            });
+            assert!(open.menu.set_content(1, &content, None));
+        }
+        // Slot 0 of a chest sits at (8, 18) in ITS panel.
+        let over = {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_for(
+                W as f32,
+                H as f32,
+                big.image_w as f32,
+                big.image_h as f32,
+            );
+            ((l + 16.0 * sc) as f64, (t + 26.0 * sc) as f64)
+        };
+        let open6 = chest6.open().expect("open");
+        let got = crate::live_cmd::screen_tooltip(
+            &open6.menu,
+            &items,
+            &baked.item_names,
+            lang,
+            &[],
+            &baked.enchantment_text,
+            &Default::default(),
+            None,
+            rewo_gpu::tooltip::TooltipFlag::NORMAL,
+            advance,
+            None,
+            over,
+            (W as f32, H as f32),
+            big,
+            Some(open6),
+            false,
+        );
+        c.record(
+            "o17.a_six_row_chests_hover_uses_ITS_panel_size_and_not_the_players",
+            got.is_some(),
+            format!(
+                "a stack in slot 0 of a 176x{} panel resolves a tooltip; with the                  player's 166 the origin is {} px off — more than the 18 px slot pitch",
+                big.image_h,
+                (big.image_h - 166) / 2
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
