@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1783 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **29/29**, `inventoryshot` 152/152,
+(M93) — **1791 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **31/31**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4271,11 +4271,24 @@ claims invert.
   respects the tag too — `Plain` would keep the quick-move exact and let an
   ordinary click predict a placement the server rejects.
 
-**Five still decline, on five different blockers** (sizes in REWO_PLAN §0.0):
-stonecutter (recipes — jar-derivable on the M91 precedent, the cheapest thing
-left), grindstone (`isDamageableItem || hasAnyEnchantments`), cartography table
-and loom (item **prototype** components, which Rewo models only as a patch),
-smithing (`RecipePropertySet`, class C).
+**M93b–d then took the stonecutter**, and found that
+`stonecutterRecipes().acceptsInput` is **not** a `RecipePropertySet` — that
+registry's seven keys are smithing×3, the three furnaces and campfire.
+`RecipeAccess` exposes it separately as a `SelectableRecipe.SingleInputSet`.
+The difference does not reach the accepted-input table (`Ingredient.test` is
+item identity) but *is* what the recipe **list widget** needs, so that stays
+blocked on `update_recipes`. It is also the **third guard behaviour in three
+menus**: the anvil's is always true, the beacon's falls through when it fails,
+and the stonecutter's falls through when the *guard* fails but **moves nothing
+when the MOVE fails** — two exits from one branch, only the first cross-moves.
+Its predicate is branch-only (slot 0 is a bare `Slot`), and vanilla's
+`player.drop` of an unfitting result remainder is **recorded, not modelled**.
+
+**Four still decline, on four different blockers** (sizes in REWO_PLAN §0.0):
+grindstone (`isDamageableItem || hasAnyEnchantments` — the cheapest left),
+cartography table and loom (both want item **prototype** components, which Rewo
+models only as a patch — **one piece of work, not two**), smithing
+(`RecipePropertySet`, class C).
 
 > **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
 > says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
@@ -4304,10 +4317,31 @@ because the negative alone would pass against a function that resolved nothing.
 **The general sweep is still open** — grep for a `*shot` gate that builds a
 struct production resolves from a table or the wire.
 
-**Measured:** 1773 → **1783 tests**, 0 failures, seven crates reporting;
-`containershot` 27 → **29**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
-`mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **11 mutations,
-11 killed**. `live --render-check` not re-run — M93 adds no render path.
+**A generated file was lying about itself, and the extraction caught it.** The
+stonecutter needed M91's recursive tag expander, so it moved to
+`tools/recipe_ingredients.py`; an extraction is only safe if provably inert, so
+the check was to re-run `gen_smelting_inputs.py` and diff. **54 deletions.** The
+data was byte-identical — what the diff showed is that `smelting_table.rs` says
+*"Do not edit. Re-run the generator"* and carried five hand-added tests the
+generator never emitted, **including the one pinning M91's own headline
+finding**. The generator emits them now. The fifth was dropped deliberately: a
+`.len()` assertion is fine hand-written and **vacuous once generated**, so the
+guard moved to the generator's recipe-count floor, where a re-run cannot
+recalibrate it.
+
+**A surviving mutation found a hole spanning M93a**: nothing witnessed
+`backwards` for *any* of the four menus, which is the difference between a
+taken result landing in the hotbar's right-hand end and in the first free main
+slot. And a fourth witness of the session was wrong before the code was —
+**stone is both stonecuttable and smeltable** (slabs, and smooth stone), so the
+disjoint pair is andesite/beef, with cobblestone pinned as M91's log one menu
+over.
+
+**Measured:** 1773 → **1791 tests**, 0 failures, seven crates reporting;
+`containershot` 27 → **31**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
+`swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
+**22 mutations across M93a–d, 22 killed**. `live --render-check` not re-run —
+M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
 

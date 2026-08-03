@@ -44,11 +44,11 @@ M89 making it usable, M90 shift-click routing by the menu's own
 `quickMoveStack`, M91 the furnace family, M92 the rest of
 `container_set_data` (brewing stand, enchanting table, beacon), the crafting
 quick-move, and the first bespoke widget — and **M93 three of the eight
-single-input quick-moves (merchant, anvil, beacon), plus the measurement that
-the other five are blocked on five different things**. Current measurement,
-taken 2026-08-03: **1783 tests, 0 failures** (world 608, net 581, gpu 252,
-data 194, app 92, mesh 45, proto 11 — all seven confirmed reporting);
-`containershot` **29/29**, `inventoryshot` 152/152, `itemshot` 75/75,
+single-input quick-moves (merchant, anvil, beacon) and then the stonecutter,
+plus the measurement that the rest are blocked on four different things**. Current measurement,
+taken 2026-08-03: **1791 tests, 0 failures** (world 613, net 581, gpu 252,
+data 197, app 92, mesh 45, proto 11 — all seven confirmed reporting);
+`containershot` **31/31**, `inventoryshot` 152/152, `itemshot` 75/75,
 `handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
 validation ON and 0 validation errors (M92's measurement — **not re-run for
 M93**, which adds no render path); demo PNG `2cc56b4acbfb92cb`,
@@ -169,13 +169,18 @@ the rest.** The previous version of this block said the eight were "each a few
 lines"; that was wrong, and the correction is the useful part. They are **four
 shapes**, and the remaining five are blocked on five *different* things:
 
+**M93b–d then took the stonecutter**, leaving four:
+
 | Menu | Blocker | Size |
 |---|---|---|
-| `stonecutter` | `stonecutterRecipes().acceptsInput` — jar-derivable on the M91 precedent (`data/minecraft/recipe/*.json`, `type: stonecutting`) | **one generator**, the cheapest thing left |
-| `grindstone` | `isDamageableItem() \|\| hasAnyEnchantments()` — needs an `unbreakable` bit on `ItemSlot`, and a real enchantments check (see the warning below) | small, two decode bits |
+| `grindstone` | `isDamageableItem() \|\| hasAnyEnchantments()` — needs an `unbreakable` bit on `ItemSlot`, and a real enchantments check (see the warning below) | **small, two decode bits — the cheapest left** |
 | `cartography_table` | `stack.has(DataComponents.MAP_ID)` — Rewo models components as a *patch digest*, not a presence set, and `has()` consults the prototype too | needs a prototype-component model |
 | `loom` | `isDyeItem`/`isPatternItem` = a jar tag **and** a prototype component (`DYE`, `PROVIDES_BANNER_PATTERNS`) | same gap as above |
 | `smithing` | `canMoveIntoInputSlots` overridden with three `RecipePropertySet` tests | `update_recipes`, class C |
+
+**The cartography table and the loom are one piece of work, not two** — both
+want "does this item's *prototype* carry component X", which nothing in Rewo
+models. That is the thing to scope before either.
 
 > **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
 > says `ItemStack.isEnchanted`, and the assignment is `c.has_foil()`. M43
@@ -188,9 +193,10 @@ shapes**, and the remaining five are blocked on five *different* things:
 
 So, in ratio order:
 
-1. **The stonecutter's quick-move** — one generator, and M91 already proved the
-   recipes are readable from the jar. Note M91's caveat travels with it: a
-   datapack that adds or removes a recipe makes the table wrong with no error.
+1. **The grindstone's quick-move** — two decode bits (`unbreakable`, and a real
+   enchantments check), and a guard shape already built. After that, the
+   cartography table and loom together, once something models prototype
+   components.
 2. **The bespoke widgets, by blocker rather than by screen.** The enchanting
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
@@ -2312,7 +2318,85 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
-### M93 — the single-input quick-moves, and the derivation nobody was grading (2026-08-03)
+### M93b–d — the stonecutter, a third guard behaviour, and a generated file that lied about itself (2026-08-03)
+
+Two commits after M93a. **`stonecutterRecipes().acceptsInput` is not a
+`RecipePropertySet`**, and this plan said it was. That registry has seven keys
+— smithing×3, the three furnaces, campfire — and the stonecutter is not among
+them; `RecipeAccess` exposes it separately as a
+`SelectableRecipe.SingleInputSet`, tested by
+`entries.stream().anyMatch(e -> e.input.test(input))` rather than by a flat set
+lookup. The difference does **not** reach the table (`Ingredient.test` is
+`input.is(this.values)`, item identity with no components, so membership is the
+same union), but it *is* what `selectByInput` needs to offer the matching
+results — the recipe **list widget**, still blocked on `update_recipes`.
+319 recipes → 65 accepted inputs.
+
+**The third guard behaviour in three menus**, which is why the eight could not
+share a shape:
+
+| menu | guard | when it fails |
+|---|---|---|
+| anvil | always `true` | cross-move structurally unreachable |
+| beacon | tag + count + empty | falls through to the cross-move |
+| stonecutter | `acceptsInput` | falls through — **but a failed MOVE returns** |
+
+That last row is the sharp one: a stonecuttable stack whose input slot already
+holds something else moves **nothing**, because `moveItemStackTo(0, 1)` returns
+false and vanilla `return`s rather than trying the hotbar. **Guard-falls-through
+and move-fails-out are two exits from one branch and only the first
+cross-moves.** Unlike the beacon's, this predicate is **branch-only** — slot 0
+is a bare `Slot` with no `mayPlace` override, so an ordinary click may put a
+stick in it, and giving it a `SlotKind` would be stricter than vanilla.
+
+**Recorded, not modelled:** vanilla runs `if (slotIndex == 1)
+player.drop(stack, false)` after taking the result — a remainder that did not
+fit is **dropped on the ground**. Rewo has no dropped-item prediction, so with
+a nearly-full inventory its local view keeps the remainder until the next
+`container_set_slot` corrects it.
+
+**The extraction found a generated file lying about itself.** The stonecutter
+needed M91's recursive tag expander, so it moved to
+`tools/recipe_ingredients.py` — and an extraction is only safe if it is
+provably inert, so the check was to re-run `gen_smelting_inputs.py` and diff.
+**It came back with 54 deletions.** The generated *data* was byte-identical;
+what the diff showed is that `smelting_table.rs` opens with *"Do not edit.
+Re-run the generator after a version bump"* and carried five hand-added tests
+the generator never emitted — **including the one pinning M91's own headline
+finding**, that a log is both fuel and smeltable and therefore routes to the
+ingredient slot. Following the file's own instruction deletes them, silently.
+Fixed by making the generator emit them.
+
+Four moved across verbatim; the fifth did not. `the_sets_are_the_sizes_the_
+generator_reported` asserting `FURNACE_INPUT.len() == 156` is fine hand-written
+and **vacuous once generated** — it would pass at 156 and at 6 alike, the
+self-calibrating witness M92 records, which is worse than no test because it
+reads as a guard. The non-vacuous version is the recipe-count **floor** in the
+generator, where a re-run cannot recalibrate it; tightened 60/20/5 → 70/24/8.
+
+**Two mutations survived the first battery and only one was a real gap.** The
+"guard falls through instead of consuming" mutation was *broken* — an
+unreachable match arm, changing nothing; rewritten as an actual fallback chain
+it dies. The other was real: **nothing witnessed `backwards` for any of the
+four menus**, and `backwards` is the difference between a taken result landing
+in the hotbar's right-hand end (where `addStandardInventorySlots` appends it)
+and in the first free main slot. Both look like "it moved". The new sweep
+covers all four, so it closed the hole in M93a's anvil and merchant too.
+
+**A third witness was wrong before the code was** (fourth of the session): the
+generated test asserted stone is stonecuttable and not smeltable. **Stone is
+both** — it cuts into slabs and smelts into smooth stone. Replaced with
+andesite/beef, plus a new test on **cobblestone**, which is M91's log one menu
+over: a single "what is this item for" flag cannot route an item both menus
+accept, and each menu is right about its own.
+
+Gates: **1791 tests**, 0 failures; `containershot` 29 → **31** (`d3`/`d4` grade
+the production resolver, with `d4` proving the two jar-derived tables are
+different data — wiring both fields to one would leave `d3` green);
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97, `mobshot`
+246/246; **11 mutations, 11 killed**; demo PNG `2cc56b4acbfb92cb`.
+
+### M93a — the single-input quick-moves, and the derivation nobody was grading (2026-08-03)
 
 Two commits. The plan named the eight item-combiner / single-input menus as the
 cheapest work left, "a few lines each". **The decompile does not support that,
