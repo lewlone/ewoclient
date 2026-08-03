@@ -1635,12 +1635,14 @@ next unit of work is a **subsystem**, not a packet.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and pushed to `origin/main`** as of 2026-08-02
-(**`01f41dd`**, M91) — **1712 tests / 0 failures**, `mobshot` 246/246,
-`containershot` 17/17, `inventoryshot` 152/152, `live --render-check` **21/21**
-with validation ON and 0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
-commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
-new work from `main` and keep it that way.
+**Everything is shipped and gated. M0–M86 are on `origin/main`; M87–M92 (the
+container arc) are on a branch and NOT yet merged** — as of 2026-08-03,
+**1773 tests / 0 failures** (all seven crates confirmed reporting), `mobshot`
+246/246, `containershot` **27/27**, `inventoryshot` 152/152,
+`live --render-check` **22/22** with validation ON and 0 VUIDs, demo PNG
+`2cc56b4acbfb92cb`. **Merging that branch is the first item in §0.0's "What to
+do next"** — the long-unmerged-branch risk closed once on 2026-07-27 and this
+is it re-opening. Branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
 > found the handoff still claiming M57 at `aadd8e9` and still offering two
@@ -4160,6 +4162,90 @@ bare index rather than `&self` are the ones that get missed, because they do
 not look like they belong to anything.** `slot_kind` is now
 `MenuLayout::slot_kind`, with `SlotKind::Plain` for a container's slots and
 `None` (decline) for an untranscribed menu.
+
+### M92 — the rest of `container_set_data`, the crafting quick-move, and the first bespoke widget (2026-08-03)
+
+Eight commits, and all three of M91's recorded open items. Detail in
+`REWO_PLAN.md` §15.
+
+**Three data consumers, each inverting against the last.** The brewing stand's
+slots are the **reverse** of the furnace's — `getBrewingTicks()` is `get(0)`
+and `getFuel()` is `get(1)`, where the furnace puts fuel at 0; both menus are
+five bytes on the wire and naming them by analogy swaps a 0..20 fuel level with
+a 0..400 tick counter. Its timer counts **down**, its arrow grows downward
+while its bubbles grow upward (one function apart), its fuel bar grows rightward
+— three directions on one screen — and its arrow **truncates where the furnace
+ceils**, so at 399 ticks vanilla shows no arrow where a ceil shows a pixel.
+`BUBBLELENGTHS` ends in **0**, so one frame in seven is blank.
+
+The enchanting table's costs are **only a third of what its rows need**: the
+lapis is the *count of the stack in menu slot 1* (a different packet) and the XP
+level and creative flag are the player's. **The lapis requirement is the row
+INDEX plus one, not the cost.** There are **three row states, not two** — an
+empty row draws its background and nothing else; an unaffordable one draws the
+same background *plus* its numeral. `col` does double duty and is reassigned
+before the cost text, so a row's name and cost are different colours and the
+cost's does not track the hover. The highlight and the tooltip use **different
+rectangles**, and neither is a slip.
+
+The beacon says "absent" with **0 and shifts real ids up by one**, where the
+enchanting table one menu earlier uses **-1** — two conventions in the same
+signed short on the same packet. And **an invisible button moves a visible
+one**: the upgrade slot is counted into the column's `totalWidth` while
+`visible = false`, so dropping it slides regeneration 12 px.
+
+**The crafting quick-move needed a structural change**: `quickMoveStack` there
+is a **fallback chain** (`if (!moveItemStackTo(grid)) { cross-move }`), which a
+single-range return cannot express — it must either always try the grid or
+never. This is the branch that makes a crafting table *fill its grid* on a
+shift-click, which `InventoryMenu` does not do. The two crafting menus put
+their result at **opposite ends** (CraftingMenu slot 0, CrafterMenu slot 45).
+
+**`container_button_click`** is two var-ints and the **whole** input surface for
+four screens; it carries **no state id**, unlike its sibling. The enchanting
+table's click gate is **not** its render gate — it additionally requires slot 0
+to hold something and tests the level against both `row + 1` and `costs[row]`.
+
+**The bug it uncovered is bigger than the milestone.** Five `mob_effect` ids
+(night vision, darkness, haste, conduit power, mining fatigue) were read from a
+`registry_data` branch **that cannot fire** — `MOB_EFFECT` is a
+`BuiltInRegistries` entry and appears **zero times** in
+`RegistryDataLoader.java`'s synchronised list. So M13's night vision/darkness
+and M19's dig-speed adjustment had **never worked live**, and no gate could see
+it because `lightmapshot` and `swingshot` are serverless and *construct* the
+effect state, supplying the very ids the live path fails to obtain. **When a
+gate supplies an input production must derive, the derivation is untested by
+construction** — worth a sweep for other instances. Fixed by the rule
+`attributes.rs` already states: a built-in registry resolves **by name from the
+report**.
+
+**Three detector errors and a harness bug**, all mine: a control frame that
+differed in its *background* rather than its subject; a probe on a glyph's
+transparent row; a probe on a button that its icon repainted independently of
+its chrome; and a mutation harness whose `mv` restore preserved the **older**
+mtime, so cargo skipped the rebuild and the next run silently graded the
+mutated binary (it presented as a green witness regressing with no code
+change). A fourth finding came out of the same battery: `enchant_row_sprites`
+had its own copy of the numeral mapping, so emptying `EnchantRow::numeral()`
+changed nothing rendered — a model accessor graded by tests the app did not
+call.
+
+**Measured:** 1712 → **1773 tests**, all seven crates confirmed reporting;
+`containershot` 17 → **27**; `live --render-check` 21 → **22/22** with
+validation ON and 0 errors (it must be run from a **debug** build — validation
+is `cfg!(debug_assertions)`-gated for `live`); demo PNG `2cc56b4acbfb92cb`
+byte-identical; 41 mutations, 40 killed and the survivor shown to be doubly
+guarded in vanilla too. `REWO_PACKET_COVERAGE.md` 109 / 0 / 32.
+
+**Open:** `container_set_data` is now consumed by every menu that sends it.
+`quickMoveStack` still declines for the brewing stand (three item predicates),
+the enchantment table (its last branch is not a range move — it places exactly
+one item), the beacon, and the eight item-combiner menus. Of the bespoke
+widgets the enchanting rows are done; the loom and crafter now only need their
+button lists, the beacon needs `set_beacon`, the anvil a text field, and the
+merchant and stonecutter are blocked on class-C packets.
+
+**M87–M92 are on a branch and not merged to `main`.**
 
 ### M91 — the furnace family (2026-08-03)
 
