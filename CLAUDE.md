@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1806 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **33/33**, `inventoryshot` 152/152,
+(M93) — **1817 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **36/36**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4312,10 +4312,24 @@ transcribed forwards with the arms swapped. No prototype carries MAP_ID, so
 this is the cleanest three-step `has()` case: one bit. The value is read and
 discarded but **must** be read, or the length-prefix-less patch desynchronises.
 
-**Two still decline**, seven of the eight done: **loom** (`isDyeItem` /
-`isPatternItem` are **conjunctions** — a jar tag `&&` a prototype component
-each; needs nothing new) and **smithing** (`RecipePropertySet`, class C — the
-only genuine blocker left).
+**M93g then took the loom, closing the arc bar one.** Its banner test is
+`instanceof BannerItem` — a **class** — and the obvious data stand-in is wrong
+by exactly one item: every banner's prototype carries
+`minecraft:banner_patterns`, set by the very lambda that constructs the
+`BannerItem`, **and so does `Items.SHIELD`**. `BannerItem` has exactly one
+construction site (the 16-colour `ColorCollection`) and `#minecraft:banners`
+holds exactly those 16, which the generator asserts rather than assumes. Its
+other two predicates are genuine **conjunctions** (`is(#LOOM_DYES) &&
+has(DYE)`), each with its own removal bit — two rather than one shared, since
+an item is in at most one tag and a shared bit would falsify the wrong
+predicate.
+
+**Seven of the eight single-input quick-moves are done**; nine of the 25 menus
+route a shift-click. **Only `smithing` remains**, blocked on
+`RecipePropertySet` off `update_recipes` (class C) — and note these sets are
+*not* jar-derivable the way M91's smelting ones were, because a smithing
+recipe's three ingredient slots are per-recipe rather than one flat
+`ingredient` field.
 
 > **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
 > says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
@@ -4383,10 +4397,24 @@ decides *meaning*, kept separate on purpose, so a fabricated test id absent
 from `install_test_shapes` reads as unwalkable however well the interpreter
 handles it. Production was never affected.
 
-**Measured:** 1773 → **1806 tests**, 0 failures, seven crates reporting;
-`containershot` 27 → **33**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
+**Two mutation lessons from M93g.** One **survived and was shown equivalent
+rather than fixed**: dropping a conjunction's second term changes no answer the
+jar can produce, because every item in `#loom_dyes` also carries the component
+— so `d9` pins the *coincidence* instead, and fires if a version ever breaks
+it. Two others were real and shared a shape: **a witness on one of two mirrored
+terms leaves the other free to be deleted** (the dye removal was witnessed and
+the pattern one was not; both on the quick-move path and neither on the
+plain-click path).
+
+**And a timeout kill left a mutation on disk** — the battery restores in a
+`finally`, which a killed process skips. **Grep for the mutation markers before
+anything else after an interrupted battery**, and split batteries so each stays
+inside the 10-minute tool cap.
+
+**Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
+`containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**51 mutations across M93a–f, 51 killed**. `live --render-check` not re-run —
+**68 mutations across M93a–g, 67 killed and 1 shown equivalent**. `live --render-check` not re-run —
 M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
