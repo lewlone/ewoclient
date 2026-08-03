@@ -35,92 +35,34 @@ import json
 import os
 import sys
 
-BASE = os.path.expandvars(r"%APPDATA%/EwoClient/rewo/26.2")
-RECIPES = os.path.join(BASE, "decompiled/data/minecraft/recipe")
-TAGS = os.path.join(BASE, "decompiled/data/minecraft/tags/item")
-REGISTRIES = os.path.join(BASE, "datagen/generated/reports/registries.json")
+from recipe_ingredients import accepted_inputs  # tools/ is sys.path[0]
+
 OUT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "crates", "rewo-data", "src", "smelting_table.rs",
 )
 
 # (recipe type, the RecipePropertySet it feeds, a floor the count must clear)
+#
+# The floors are the guard against the data moving, and they live HERE rather
+# than as a `.len()` assertion in the generated file on purpose. A length test
+# the generator emits asserts the table equals itself — it passes at 156 and at
+# 6 alike — which is the self-calibrating witness M92 records. A literal in the
+# generator cannot recalibrate itself on a re-run.
+#
+# Set just under the observed 73 / 25 / 9 so a collapse fails and a single new
+# vanilla recipe does not.
 KINDS = [
-    ("minecraft:smelting", "FURNACE", 60),
-    ("minecraft:blasting", "BLAST_FURNACE", 20),
-    ("minecraft:smoking", "SMOKER", 5),
+    ("minecraft:smelting", "FURNACE", 70),
+    ("minecraft:blasting", "BLAST_FURNACE", 24),
+    ("minecraft:smoking", "SMOKER", 8),
 ]
 
 
-def die(msg: str) -> None:
-    print(f"[gen_smelt] FAIL — {msg}")
-    sys.exit(1)
-
-
-def expand_tag(name: str, seen: set[str] | None = None) -> list[str]:
-    seen = seen or set()
-    if name in seen:
-        die(f"tag cycle at {name}")
-    seen.add(name)
-    p = os.path.join(TAGS, name.split(":")[-1] + ".json")
-    if not os.path.exists(p):
-        die(f"no tag file for {name}")
-    out: list[str] = []
-    for v in json.load(open(p, encoding="utf-8"))["values"]:
-        entry = v["id"] if isinstance(v, dict) else v
-        if entry.startswith("#"):
-            out += expand_tag(entry[1:], set(seen))
-        else:
-            out.append(entry if ":" in entry else "minecraft:" + entry)
-    return out
-
-
-def ingredients(value) -> list[str]:
-    """A recipe's `ingredient` field: an id, a `#tag`, or a list of either."""
-    if isinstance(value, list):
-        out: list[str] = []
-        for v in value:
-            out += ingredients(v)
-        return out
-    if isinstance(value, dict):
-        # Older/alternate shapes carry the id under a key.
-        for k in ("item", "tag", "id"):
-            if k in value:
-                v = value[k]
-                return ingredients(("#" + v) if k == "tag" else v)
-        die(f"unrecognised ingredient object: {value!r}")
-    if not isinstance(value, str):
-        die(f"unrecognised ingredient: {value!r}")
-    return expand_tag(value[1:]) if value.startswith("#") else [
-        value if ":" in value else "minecraft:" + value
-    ]
-
-
 def main() -> int:
-    if not os.path.isdir(RECIPES):
-        die(f"no recipe data at {RECIPES}")
-    items = set(json.load(open(REGISTRIES, encoding="utf-8"))["minecraft:item"]["entries"])
-
     sets: dict[str, list[str]] = {}
     for kind, name, floor in KINDS:
-        found = 0
-        acc: list[str] = []
-        for fn in sorted(os.listdir(RECIPES)):
-            if not fn.endswith(".json"):
-                continue
-            r = json.load(open(os.path.join(RECIPES, fn), encoding="utf-8"))
-            if r.get("type") != kind:
-                continue
-            found += 1
-            if "ingredient" not in r:
-                die(f"{fn}: a {kind} recipe with no ingredient")
-            for i in ingredients(r["ingredient"]):
-                if i not in items:
-                    die(f"{fn}: ingredient {i} is not a registered item")
-                if i not in acc:
-                    acc.append(i)
-        if found < floor:
-            die(f"{kind}: {found} recipes, expected at least {floor} — the data moved")
+        acc, found = accepted_inputs("gen_smelt", kind, floor)
         sets[name] = acc
         print(f"[gen_smelt] {name}: {found} recipes -> {len(acc)} accepted inputs")
 
@@ -162,6 +104,53 @@ pub fn accepts(menu_protocol_id: i32, item: &str) -> Option<bool> {{
         _ => return None,
     }};
     Some(set.contains(&item))
+}}
+
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+    /// The menu ids `accepts` dispatches on, from `minecraft:menu`.
+    const BLAST: i32 = 10;
+    const FURNACE: i32 = 14;
+    const SMOKER: i32 = 22;
+
+    #[test]
+    fn each_furnace_accepts_its_own_recipe_type() {{
+        // A smoker takes food and not ore; a blast furnace the reverse. If the
+        // three sets were the same the routing would still "work" and be wrong.
+        assert_eq!(accepts(SMOKER, "minecraft:beef"), Some(true));
+        assert_eq!(accepts(SMOKER, "minecraft:iron_ore"), Some(false));
+        assert_eq!(accepts(BLAST, "minecraft:iron_ore"), Some(true));
+        assert_eq!(accepts(BLAST, "minecraft:beef"), Some(false));
+        // A furnace takes both, being the superset.
+        assert_eq!(accepts(FURNACE, "minecraft:beef"), Some(true));
+        assert_eq!(accepts(FURNACE, "minecraft:iron_ore"), Some(true));
+    }}
+
+    #[test]
+    fn a_log_is_smeltable_which_is_what_makes_it_route_as_an_ingredient() {{
+        // The case that decides the whole furnace quick-move: vanilla checks
+        // canSmelt BEFORE isFuel, and a log is both — fuel, and smeltable to
+        // charcoal — so it goes to the INGREDIENT slot. Routing on isFuel
+        // alone puts it in the fuel slot, which is wrong and looks reasonable.
+        assert_eq!(accepts(FURNACE, "minecraft:oak_log"), Some(true));
+        assert!(crate::fuel_table::is_fuel("minecraft:oak_log"));
+    }}
+
+    #[test]
+    fn coal_is_fuel_and_not_an_ingredient() {{
+        assert_eq!(accepts(FURNACE, "minecraft:coal"), Some(false));
+        assert!(crate::fuel_table::is_fuel("minecraft:coal"));
+    }}
+
+    #[test]
+    fn a_non_furnace_menu_answers_none_not_false() {{
+        // `None` is "this menu has no accepted-input set", which the caller
+        // must not read as "it accepts nothing".
+        assert_eq!(accepts(2, "minecraft:iron_ore"), None); // generic_9x3
+        assert_eq!(accepts(8, "minecraft:iron_ore"), None); // anvil
+    }}
 }}
 '''
     open(OUT, "w", encoding="utf-8", newline="\n").write(out)

@@ -312,11 +312,4 @@ mod tests {
         assert_eq!(accepts(2, "minecraft:iron_ore"), None); // generic_9x3
         assert_eq!(accepts(8, "minecraft:iron_ore"), None); // anvil
     }
-
-    #[test]
-    fn the_sets_are_the_sizes_the_generator_reported() {
-        assert_eq!(FURNACE_INPUT.len(), 156);
-        assert_eq!(BLAST_FURNACE_INPUT.len(), 62);
-        assert_eq!(SMOKER_INPUT.len(), 9);
-    }
 }
