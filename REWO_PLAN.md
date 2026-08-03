@@ -47,7 +47,7 @@ quick-move, and the first bespoke widget — and **M93 three of the eight
 single-input quick-moves — merchant, anvil, beacon, stonecutter, grindstone,
 cartography table and loom, **seven of eight**, leaving only smithing, which is
 genuinely blocked on class C**. Current measurement,
-taken 2026-08-03: **1823 tests, 0 failures** (world 637, net 586, gpu 252,
+taken 2026-08-03: **1827 tests, 0 failures** (world 641, net 586, gpu 252,
 data 200, app 92, mesh 45, proto 11 — all seven confirmed reporting);
 `containershot` **37/37**, `inventoryshot` 152/152, `itemshot` 75/75,
 `handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
@@ -195,7 +195,7 @@ So, in ratio order:
 
    | Screen | What it actually needs |
    |---|---|
-   | **crafter** | ✅ model + packet shipped (M93h). Left: calling them from `live_cmd`'s slot-click routing, and drawing the disabled-slot overlay |
+   | **crafter** | ✅ model, packet **and click wiring** shipped (M93h + M93i). Left: **drawing** the disabled-slot overlay — a toggled slot is correct on the wire and invisible on screen |
    | **loom** | **not** a button list. `getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` (a **`banner_pattern`** tag — `expand_tag` hardcodes `tags/item`) when the pattern slot is empty, and the stack's `PROVIDES_BANNER_PATTERNS` **HolderSet value** otherwise — which Rewo walks and discards, and whose ids need the `minecraft:banner_pattern` **registry** that `parse_registry_data` does not capture |
    | **beacon** | `set_beacon` (serverbound) plus click-tracked primary/secondary |
    | **anvil** | a text field |
@@ -2326,6 +2326,45 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93i — wiring the crafter toggles, and the defect that wiring exposed (2026-08-03)
+
+M93h shipped the toggle model and the packet with nothing calling them. This
+calls them, and **the first thing it found was a bug in what M93h shipped.**
+
+`crafter_toggle` took `is_swap: bool`, so it treated **every** non-swap input
+as PICKUP. Vanilla's `switch (containerInput)` has `case PICKUP` and
+`case SWAP` and **no default** — QUICK_MOVE, THROW, PICKUP_ALL and QUICK_CRAFT
+fall straight through. Under the old signature, shift-clicking a disabled
+crafter slot would have silently re-enabled it, and **no witness could see it
+because the function had no caller**: every fixture passed `is_swap` explicitly
+and so only exercised the two arms that are real.
+
+**That is the argument against leaving a model unwired.** The shape of the call
+site is an input to the design, and a model built without one guesses it.
+
+**One funnel, not a check per call site.** Vanilla has exactly one
+`slotClicked` override, so this is one `PlaySession::crafter_slot_click` called
+from both paths — the `REWO_CLICK` dispatch and `finish_drag`'s one-slot-drag
+re-dispatch, which vanilla routes back through PICKUP and which would otherwise
+have been the path that quietly did not toggle (M89's lesson).
+
+**`PlaySession` has no test module anywhere in the repo** — it owns a socket,
+the hazard M71 recorded. So everything the adapter does except the send is
+extracted into a tested function: `menu::is_crafter_grid_slot`,
+`OpenMenu::set_crafter_slot_state` (storing the inverse), and
+`inventory::swap_button_menu_slot`. The last is the mapping `click_swap`
+already had inline, **extracted rather than copied** — a second copy of a
+coordinate conversion is M90's `slot_kind` bug waiting to happen.
+
+Send first, apply second, the opposite of vanilla's order: the two differ only
+when the send fails, where this leaves the local view *behind* the server's
+rather than ahead, matching the rest of the click path.
+
+Gates: **1827 tests**, 0 failures; **7 mutations, 7 killed**; `containershot`
+37, `inventoryshot` 152, `itemshot` 75, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb`. **Open:** nothing draws the disabled-slot overlay, so a
+toggled slot is correct on the wire and invisible on screen.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice (2026-08-03)
 
