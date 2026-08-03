@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1836 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **47/47**, `inventoryshot` 152/152,
+(M93) — **1840 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **48/48**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4442,6 +4442,35 @@ stay the single source for both what is drawn and what responds.
 quiet every time: an off-by-one names a **real** effect, so the beacon grants
 the wrong one. The witness pins effect id **0**, which is where the two
 conventions disagree most visibly.
+
+**M93m wired the press — and the choice had to stop being derived.** M92's own
+comment admitted it: *"Rewo has no click path here yet, so this reads the data
+slots directly"*. Vanilla's `BeaconScreen` owns `primary`/`secondary`, seeded
+from the menu and then **moved by clicks** before the server hears anything, so
+a click-driven beacon cannot re-derive them each frame.
+
+**The seeding rule is odder than it looks**: `dataChanged` re-reads *both*
+effects on **any** slot id — including the pyramid levels — so a beacon growing
+under you discards an unconfirmed pick. Hence the watermark is a per-menu
+**data-write counter**, not the menu identity (misses it) and not the effect
+slots (also misses it, because the clobbering write is to a different slot).
+Only the two effects are screen-owned; levels and payment are re-read every
+frame, so a payment arriving mid-selection lights Confirm without disturbing
+the pick.
+
+**A dark button does not consume the click** — `AbstractWidget.mouseClicked`
+returns true only when it fires, so a disabled beacon button falls through to
+the slot logic exactly as a disabled enchanting row does.
+
+**One mutation survived, and it was the render**: every witness drove the
+menu's data slots, so reverting the render to the derived choice changed
+nothing they could see — a click would have moved a choice nothing drew, M93i's
+"correct but invisible" one screen over.
+
+**Recorded, not fixed:** the confirm closes the **client's** screen only. Rewo
+resolves no *serverbound* `container_close` — `ids.rs` has the clientbound one
+alone — so the server still believes the menu is open. That predates this and
+affects **every** screen close.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
