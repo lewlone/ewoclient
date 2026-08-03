@@ -35,7 +35,24 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M86 shipped and merged to `main`
+### Where it is: M0–M92 shipped (M0–M86 merged to `main`; M87–M92 local)
+
+**Update (2026-08-03, the M87–M92 container arc).** Six milestones landed after
+the cold-start audit below, all on the current branch and **not yet merged**:
+M87 the container/menu screens, M88 proving the windowed client renders one,
+M89 making it usable, M90 shift-click routing by the menu's own
+`quickMoveStack`, M91 the furnace family, and **M92 the rest of
+`container_set_data` (brewing stand, enchanting table, beacon), the crafting
+quick-move, and the first bespoke widget**. Current measurement, taken
+2026-08-03: **1773 tests, 0 failures** (world 600, net 581, gpu 252, data 192,
+app 92, mesh 45, proto 11 — all seven confirmed reporting); `containershot`
+27/27, `inventoryshot` 152/152, `itemshot` 75/75, `mobshot` 246/246,
+`live --render-check` **22/22** with validation ON and 0 validation errors;
+demo PNG `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at
+**109 / 0 / 32**. Everything below this paragraph is the 2026-08-02 audit and
+is accurate as of that date.
+
+### Where it was: M0–M86 shipped and merged to `main`
 
 `origin/main` is at **`0ddbc66`** and everything from M0 to M86 is on it. The
 working tree is clean, there are no stashes, and **no branch anywhere carries a
@@ -138,6 +155,42 @@ green with Vulkan validation ON and 0 VUIDs (`itemshot` 62, `inventoryshot` 91,
 byte-identical since M15.
 
 ### What to do next
+
+**Read this block, not the one after it (2026-08-03).** The container arc
+M87–M92 has closed everything the section below points at, so its
+"container/menu cluster is the largest" recommendation is spent. Three things
+are worth picking up, in rough order of ratio:
+
+1. **Merge M87–M92 to `main`.** Six milestones sit on this branch only. The
+   long-unmerged-branch risk closed once on 2026-07-27 and this is it
+   re-opening; branch new work from `main` and keep it that way.
+2. **The remaining `quickMoveStack` shapes**, which is the cheapest real work
+   left in the arc. The brewing stand needs three item predicates (the
+   `BREWING_FUEL` tag and the four potion items are trivial;
+   `PotionBrewing.isIngredient` is the one to scope first), and the enchantment
+   table needs a *non-range* move — its last branch places exactly ONE item
+   into slot 0, which `move_stack_to` cannot express. The eight
+   item-combiner / single-input menus are each a few lines.
+3. **The bespoke widgets, by blocker rather than by screen.** The enchanting
+   rows are done and `container_button_click` is shipped, so the loom and the
+   crafter are *only* missing their button lists; the beacon needs
+   `set_beacon` plus click-tracked `primary`/`secondary` state; the anvil
+   needs a text field; and the merchant and stonecutter are genuinely blocked
+   on class-C packets (`merchant_offers`, `update_recipes`).
+
+**A finding from M92 that outlives it, and belongs in any planning:** a
+serverless oracle can prove a formula exactly while the input feeding it is
+dead. M13's night vision and M19's mining-fatigue swing adjustment had never
+once worked live, because five `mob_effect` ids were read from a
+`registry_data` branch that cannot fire — and `lightmapshot` and `swingshot`
+could not see it, because both *construct* the effect state and supply the very
+ids the live path fails to obtain. **When a gate supplies an input that
+production must derive, the derivation is untested by construction.** It is
+worth a sweep for other instances.
+
+---
+
+*The rest of this section is the 2026-08-02 audit, retained as written.*
 
 **§16 is history, not a forward plan** (M23–M25, all shipped). The live queue is
 `REWO_FEATURE_SURVEY.md` §5 "Sequence", and items 2–5 of it are now **done**:
@@ -795,6 +848,33 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   (§11). Both are git-ignored (derived from the user's own Mojang download).
 
 ### Load-bearing gotchas (each cost real debugging time — internalize them)
+
+0. **(M92) A gate that supplies an input production must derive leaves the
+   derivation untested by construction.** Five `mob_effect` ids were read from a
+   `registry_data` branch that cannot fire — `MOB_EFFECT` is a
+   `BuiltInRegistries` entry and appears **zero times** in
+   `RegistryDataLoader.java`'s synchronised list — so M13's night vision and
+   darkness and M19's mining-fatigue swing adjustment had never worked live.
+   `lightmapshot` and `swingshot` are serverless and *construct* the effect
+   state, supplying the very ids the live path fails to obtain, so both proved
+   their formulas exactly over a dead input. The rule this restores is already
+   written in `attributes.rs` and `sound_events.rs`: **a built-in registry is
+   resolved by name from the datagen report**, never off the wire. A witness on
+   such a value must assert the *source*, not the number.
+
+0b. **(M92) A mutation harness that restores by `mv` silently grades the
+   mutated binary.** `mv`/`cp` preserve the original file's mtime, which is
+   *older* than the mutated build, so cargo considers the artifact current and
+   skips the rebuild. It presents as a witness regressing with no change to its
+   code. Bump the mtime after restoring. Applies to any timestamp-based build
+   system.
+
+0c. **(M92) A sprite NAME is not a file path.** Most GUI sprites resolve under
+   `textures/gui/sprites/`, but `assets/minecraft/atlases/gui.json` also
+   declares `{type: directory, prefix: "mob_effect/", source: "mob_effect"}`,
+   so the sprite `mob_effect/speed` comes from `textures/mob_effect/speed.png`.
+   Read the atlas's source list rather than assuming the prefix.
+
 
 1. **World-space vertices + no shader origin.** The mesher emits world-space
    positions (`cx*16+lx+corner`); the vertex shader must NOT add a column
@@ -2192,6 +2272,195 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M92 — the rest of `container_set_data`, the crafting quick-move, and the first bespoke widget (2026-08-03)
+
+Eight commits. M91 closed the container arc's furnace half and recorded three
+open items; this is all three. `container_set_data` now feeds **every** menu
+that sends it, the crafting family's `quickMoveStack` no longer declines, and
+the first of the bespoke-widget screens is usable.
+
+#### The three data consumers, and how each inverts against the last
+
+**The brewing stand's data slots are the reverse of the furnace's.**
+`getBrewingTicks()` is `get(0)` and `getFuel()` is `get(1)`, where
+`AbstractFurnaceMenu` puts its *fuel* at 0. Both menus are five bytes on the
+wire and neither says which is which; naming them by analogy swaps a 0..20 fuel
+level with a 0..400 tick counter, and the result is a fuel bar pinned full and
+bubbles that never move.
+
+**Its brew timer counts DOWN** — the field is the ticks *remaining*, so the
+arrow is `28 * (1 - t/400)`, empty at the start and full just before the potion
+pops. **Its arrow grows downward while its bubbles grow upward**, one function
+apart: the arrow's `dy` is a fixed 16, the bubbles' source and destination `y`
+move together so their bottom is pinned at 43 (M91's flame shape), and the fuel
+bar is a third direction again. And **the arrow truncates where the furnace
+ceils**, so at 399 ticks vanilla shows no arrow where a ceil would show a pixel.
+`BUBBLELENGTHS` is a table, not a formula; its last entry is **0**, so one frame
+in seven is blank; and `tickCount / 2 % 7` divides first, making each frame a
+two-tick hold.
+
+**The enchanting table's costs are only a third of what its rows need.** The
+affordability test's three inputs come from three different places: `costs` is
+`container_set_data`, `getGoldCount()` is **the count of the stack in menu slot
+1** (so it arrives on `container_set_content`), and the XP level and creative
+flag are the local player's, from M79 and M75. A client wiring the data packet
+alone would grey every row the moment it had no lapis value to check against.
+**The lapis requirement is the row INDEX plus one, not the cost.** There are
+**three row states, not two** — an empty row draws its background and nothing
+else, an unaffordable one draws the same background *plus* its numeral. And
+`col` does double duty and is **reassigned before the cost text is drawn**, so a
+row's name and its cost are different colours and the cost's does not track the
+hover.
+
+**The highlight and the tooltip use different rectangles** and neither is a
+slip: the click/highlight test is a bare 108x19, the tooltip's is
+`isHovering(.., 108, 17, ..)` whose body bleeds a pixel on every side of a box
+declared two rows shorter. They agree over the middle and disagree at the edges.
+
+**The beacon says "absent" with 0 where the enchanting table says -1.**
+`encodeEffect(e) = e == null ? 0 : id(e) + 1`. Two adjacent menus, two
+conventions, the same signed short on the same packet; carrying either across is
+a silent off-by-one where every effect renders as its registry neighbour. It is
+`holder`'s `id + 1` scheme (M16/M21/M55's recurring fork) inside a **data slot**,
+where every other value in the arc is raw.
+
+**An invisible beacon button moves a visible one.** The secondary column's count
+is `BEACON_EFFECTS.get(3).size() + 1`, and the `+ 1` is the upgrade slot — which
+is `visible = false` until a primary is chosen, yet is still counted into
+`totalWidth`. Dropping it slides regeneration 12 px onto the panel's recess. The
+two columns also do not share their y arithmetic (primary steps
+`22 + tier * 25`, secondary is a fixed 47), the four states are a **priority
+chain** rather than independent flags (`!active` first, so a selected button out
+of tier range still paints disabled), and the five payment icons are spaced
+21, 22, 23, 22 — vanilla's own literals.
+
+#### The chain, and why one range could not express it
+
+`quick_move_destination` returned ONE destination and `CraftingMenu` writes
+`if (!moveItemStackTo(stack, 1, 10, false)) { … }`, where `moveItemStackTo`
+returns *whether anything moved*. A single range must either always try the grid
+— and never cross-move once it is full — or never try it. The return type is now
+the **chain to try in order**, and the caller takes the first entry that moves
+something; every other menu returns a chain of one.
+
+**This is the branch that makes a crafting table feel different from your
+inventory**: a shift-click there fills the 3x3 grid, because vanilla tries
+`1..10` first. `InventoryMenu` has no such branch. And **the two crafting menus
+put their result at opposite ends** — `CraftingMenu` slot 0, `CrafterMenu` slot
+45, after the player's 36 — so `slot_kind` has to ask the menu's own shape.
+
+A mutation found the crafter's `9..45` bound **unobservable**, and the finding
+is kept rather than fixed: the result slot is guarded twice, by the range *and*
+by `slot_kind` answering `Result`, so removing either alone changes nothing and
+removing both is caught. **That redundancy is vanilla's own** — `CrafterMenu`
+passes 45 *and* `NonInteractiveResultSlot.mayPlace` returns false.
+
+#### The first bespoke widget
+
+`ServerboundContainerButtonClickPacket` is two var-ints and is the **whole**
+input surface for four screens — an enchanting offer, a loom pattern, a
+stonecutter recipe and a crafter toggle are all this packet with a different
+index. It carries **no state id**: its sibling `container_click` carries one
+because it is a prediction the server grades, and this is not.
+
+**The click gate is not the render gate.** `clickMenuButton` additionally
+requires slot 0 to hold something — the render leans on `costs[i]` being 0
+without an item, which is true but is an invariant maintained in `slotsChanged`,
+a different method — and tests the level against **both** `row + 1` and
+`costs[row]`. Vanilla sends the packet only when it returns true, and since Rewo
+has no server-side menu to ask, this *is* that gate. Ordering is vanilla's too:
+the row loop runs **before** `super.mouseClicked`, and a press failing the gate
+is not consumed.
+
+#### The bug the beacon's icons uncovered, which was not the beacon's
+
+Sourcing the six effect ids found that Rewo read `night_vision`, `darkness`,
+`haste`, `conduit_power` and `mining_fatigue` from the Configuration
+`registry_data` packet, inside a `registry == "minecraft:mob_effect"` branch
+**that cannot fire**. `registry_data` carries only
+`RegistryDataLoader.SYNCHRONIZED_REGISTRIES`, and `Registries.MOB_EFFECT`
+appears **zero times** in that file — a `BuiltInRegistries` entry the server
+never sends. All five stayed `None` for the whole session, so **M13's night
+vision and darkness and M19's dig-speed / mining-fatigue swing adjustment did
+nothing live**.
+
+**No gate could see it, and that is the transferable part.** `lightmapshot` and
+`swingshot` are serverless and *construct* the effect state themselves,
+supplying the very ids the live path fails to obtain. M86's shape exactly — and
+the second time in this project that a serverless oracle proved a formula while
+the input feeding it was dead. The rule was already written down in
+`attributes.rs` and `sound_events.rs` (a built-in registry is resolved **by name
+from the report**) and this module was the only one reading the wire for it. The
+regression witness asserts the **source**, not the values: a value witness would
+have passed against the broken code too.
+
+#### Three detector errors, one structural duplication, and a harness bug
+
+Extending `containershot` to grade the overlays as pixels took four corrections.
+
+* **o5 compared an empty table against an affordable one.** Those have different
+  backgrounds, and the background rect *contains* the numeral rect, so
+  suppressing every numeral left it passing — the detector was measuring the
+  background. The control is now an *unaffordable* table, which shares the empty
+  one's background, and **o5b asserts that it does**.
+* **o5's probe was then one row** of the numeral, which is a glyph's transparent
+  second row. It reads the whole 16x16 rect.
+* **o8 probed the whole upgrade button**, but `beacon_upgrade_effect` reads
+  `choice.primary` independently, so the icon appears whether or not the button
+  is visible. It probes the 2 px chrome ring.
+* **`enchant_row_sprites` had its own copy of the numeral mapping**, so emptying
+  `EnchantRow::numeral()` changed nothing rendered — a model accessor graded by
+  unit tests the app did not call. M18's and M45's finding in one.
+
+**And the harness bug, which is general.** Restoring a mutated file with `mv`
+preserves the ORIGINAL's mtime, which is older than the mutated build, so cargo
+considers the mutated binary current and the next run silently grades it. It
+showed as a witness regressing with no change to its code — o4 went
+green→red→green with nothing between. Any mutation harness against a
+timestamp-based build system has this hazard; the restore must bump the mtime.
+
+#### The windowed client, again
+
+`containershot` grades the overlays offscreen and the render-check's injected
+container is a **chest**, which has none — so nothing said the windowed client
+ever reached the overlay builder. `r22` injects a brewing stand with data at
+0.85 and reads the overlay count back **out of the renderer** (asking the menu
+answers from the model). It reports **3**; mutation-tested to 0.
+
+#### Measured
+
+**1773 tests** (from 1712), all seven crates confirmed reporting — world
+545→600, data 188→192, net 579→581. `containershot` 17 → **27**,
+`live --render-check` 21 → **22/22** validation ON and 0 validation errors,
+`inventoryshot` 152/152, `itemshot` 75/75, `handshot` 34/34, `hudshot` 41/41,
+`mobshot` 246/246, `blockentityshot` 172/172, `swingshot` 97/97, and the rest of
+the battery green. Demo PNG `2cc56b4acbfb92cb`, byte-identical.
+**41 mutations across the eight commits, 40 killed**; the survivor is the
+doubly-guarded crafter bound above, whose two-guard partner is caught.
+
+Note `live --render-check` must be run from a **debug** build: validation is
+`cfg!(debug_assertions)`-gated for `live`, so a release binary reports `r17`
+false and makes `r18` vacuous.
+
+#### Open
+
+`container_set_data` is now consumed by every menu that sends it. Still
+declining in `quickMoveStack`: the **brewing stand** (needs three item
+predicates — the `BREWING_FUEL` tag, the four potion items, and
+`PotionBrewing.isIngredient`), the **enchantment table** (its last branch is not
+a range move at all — it places exactly ONE item into slot 0), the **beacon**,
+and the eight item-combiner / single-input menus.
+
+Of the bespoke widgets, the enchanting rows are done. Still open, with the
+specific blocker for each: the **beacon** needs `set_beacon` plus the screen's
+own click-tracked `primary`/`secondary` (vanilla moves them *before* the server
+hears); the **anvil** needs a text field and `rename_item`; the **merchant**
+needs `merchant_offers`, which is class C; the **loom** needs its pattern list;
+the **stonecutter** needs `update_recipes`, also class C; the **crafter**'s
+toggles need its disabled-slot state. The enchanting table's Standard Galactic
+name needs a second bitmap font and `EnchantmentNames`' word list, and its clue
+tooltip would come from M42's registry.
 
 ### M91 — the furnace family (2026-08-03)
 
