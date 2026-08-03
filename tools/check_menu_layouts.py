@@ -310,7 +310,100 @@ def main() -> int:
     if covered < 25:
         missing = sorted(set(actual) - set(expected))
         print(f"[menucheck] NOT CHECKED: {missing}")
+    bad += check_title_x()
     return 1 if bad else 0
+
+
+
+
+# ---------------------------------------------------------------------------
+# The title-x classification, graded by walking the `extends` chain.
+#
+# Added after M91 found that M87f's table had the three furnaces wrong: they
+# set no `titleLabelX` of their own because `AbstractFurnaceScreen.init` does
+# it for them, and a survey that greps each `*Screen.java` individually sees a
+# base class's override as absent from every subclass. Unlike the slot layouts,
+# this IS mechanically checkable -- the chain is short and the thing being
+# looked for is one assignment -- so it is checked rather than trusted.
+# ---------------------------------------------------------------------------
+
+SCREEN_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(DECOMP)), "client", "gui", "screens", "inventory"
+)
+
+
+def title_x_from_decompile(cls: str, depth: int = 0) -> str:
+    """`Centered`, `Fixed`, or `Default`, following `extends` up to the base."""
+    if depth > 6:
+        raise ValueError(f"{cls}: extends chain too deep")
+    p = os.path.join(SCREEN_DIR, cls + ".java")
+    if not os.path.exists(p):
+        # Not in this package (e.g. the abstract recipe-book screen); the chain
+        # ends here rather than silently answering Default.
+        return "Default"
+    s = open(p, encoding="utf-8", errors="replace").read()
+    if re.search(r"titleLabelX\s*=\s*\(this\.imageWidth\s*-\s*this\.font\.width", s):
+        return "Centered"
+    if re.search(r"titleLabelX\s*=\s*\d+", s):
+        return "Fixed"
+    m = re.search(r"class\s+" + cls + r"[^{]*?\bextends\s+(\w+)", s)
+    if m and m.group(1) != "AbstractContainerScreen":
+        return title_x_from_decompile(m.group(1), depth + 1)
+    return "Default"
+
+
+def check_title_x() -> int:
+    rust = open(RUST.replace("menu_layout.rs", "menu_screen.rs"), encoding="utf-8").read()
+    screens = {
+        "generic_9x1": "ContainerScreen", "generic_9x2": "ContainerScreen",
+        "generic_9x3": "ContainerScreen", "generic_9x4": "ContainerScreen",
+        "generic_9x5": "ContainerScreen", "generic_9x6": "ContainerScreen",
+        "generic_3x3": "DispenserScreen", "crafter_3x3": "CrafterScreen",
+        "anvil": "AnvilScreen", "beacon": "BeaconScreen",
+        "blast_furnace": "BlastFurnaceScreen", "brewing_stand": "BrewingStandScreen",
+        "crafting": "CraftingScreen", "enchantment": "EnchantmentScreen",
+        "furnace": "FurnaceScreen", "grindstone": "GrindstoneScreen",
+        "hopper": "HopperScreen", "loom": "LoomScreen", "merchant": "MerchantScreen",
+        "shulker_box": "ShulkerBoxScreen", "smithing": "SmithingScreen",
+        "smoker": "SmokerScreen", "cartography_table": "CartographyTableScreen",
+        "stonecutter": "StonecutterScreen",
+    }
+    # How the Rust table spells each menu's title-x, by its constructor.
+    bad = 0
+    for name, cls in sorted(screens.items()):
+        want = title_x_from_decompile(cls)
+        if name.startswith("generic_9x"):
+            got = "Default"  # chest(rows) uses TitleX::Default
+        else:
+            m = re.search(r'(chest|plain|centered|titled)\("textures/gui/container/[^"]+\.png"'
+                          r'(?:,\s*(\d+))?\),?\s*(?://[^\n]*)?\n', rust)
+            got = None
+            for ctor, tex in re.findall(r'(plain|centered|titled)\("(textures/gui/container/[^"]+\.png)"', rust):
+                pass
+            # Match by texture path, which is unique per screen.
+            tex_of = {
+                "generic_3x3": "dispenser", "crafter_3x3": "crafter", "anvil": "anvil",
+                "blast_furnace": "blast_furnace", "brewing_stand": "brewing_stand",
+                "crafting": "crafting_table", "enchantment": "enchanting_table",
+                "furnace": "furnace", "grindstone": "grindstone", "hopper": "hopper",
+                "loom": "loom", "merchant": "villager", "shulker_box": "shulker_box",
+                "smithing": "smithing", "smoker": "smoker",
+                "cartography_table": "cartography_table", "stonecutter": "stonecutter",
+                "beacon": "beacon",
+            }[name]
+            mm = re.search(r'(plain|centered|titled)\("textures/gui/container/' + tex_of + r'\.png"', rust)
+            if mm:
+                got = {"plain": "Default", "centered": "Centered", "titled": "Fixed"}[mm.group(1)]
+            elif re.search(r'texture: "textures/gui/container/' + tex_of + r'\.png"', rust):
+                blk = rust[rust.index('texture: "textures/gui/container/' + tex_of + '.png"'):][:400]
+                got = ("Centered" if "TitleX::Centered" in blk
+                       else "Fixed" if "TitleX::Fixed" in blk else "Default")
+        if got != want:
+            print(f"[menucheck] FAIL title-x {name}: decompile says {want}, table says {got}")
+            bad += 1
+    print(f"[menucheck] title-x: {len(screens) - bad}/{len(screens)} screens agree "
+          f"(the chain is followed, so inherited overrides count)")
+    return bad
 
 
 if __name__ == "__main__":

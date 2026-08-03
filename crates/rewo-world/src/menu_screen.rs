@@ -24,10 +24,17 @@
 //! - 94`. Six screens override the title's x, and they do it in **two
 //! different ways**:
 //!
-//! * `dispenser`, `crafter_3x3` and `brewing_stand` compute
-//!   `(imageWidth - font.width(title)) / 2` — a *centring*, which depends on
-//!   the rendered width of a title the server chose, so it cannot be stored as
-//!   a constant.
+//! * `dispenser`, `crafter_3x3`, `brewing_stand` and **the three furnaces**
+//!   compute `(imageWidth - font.width(title)) / 2` — a *centring*, which
+//!   depends on the rendered width of a title the server chose, so it cannot be
+//!   stored as a constant.
+//!
+//!   **The furnaces are inherited, and that is how they were missed.** M87f
+//!   surveyed each `*Screen.java` individually and recorded six; the three
+//!   furnaces set nothing of their own, because `AbstractFurnaceScreen.init`
+//!   does it for them. A survey that does not follow `extends` sees a base
+//!   class's overrides as absent from every subclass. `tools/check_menu_layouts.py`
+//!   now walks the chain and grades this table against it.
 //! * `anvil` (60), `crafting` (29) and `smithing` (44, and a `titleLabelY` of
 //!   15) are plain literals.
 //!
@@ -199,11 +206,11 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_w: 256.0,
         sheet_h: 256.0,
     }),
-    plain("textures/gui/container/blast_furnace.png"),
+    centered("textures/gui/container/blast_furnace.png"),
     centered("textures/gui/container/brewing_stand.png"),
     titled("textures/gui/container/crafting_table.png", 29),
     plain("textures/gui/container/enchanting_table.png"),
-    plain("textures/gui/container/furnace.png"),
+    centered("textures/gui/container/furnace.png"),
     plain("textures/gui/container/grindstone.png"),
     Some(MenuScreen {
         texture: "textures/gui/container/hopper.png",
@@ -255,7 +262,7 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_w: 256.0,
         sheet_h: 256.0,
     }),
-    plain("textures/gui/container/smoker.png"),
+    centered("textures/gui/container/smoker.png"),
     plain("textures/gui/container/cartography_table.png"),
     plain("textures/gui/container/stonecutter.png"),
 ];
@@ -323,6 +330,66 @@ pub fn background_quads(s: &MenuScreen) -> Vec<PanelQuad> {
         .collect()
 }
 
+/// One progress overlay a furnace draws: where it goes in GUI pixels relative
+/// to the panel, and which pixels of its 14x14 or 24x16 sprite it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressBlit {
+    pub dx: i32,
+    pub dy: i32,
+    pub w: i32,
+    pub h: i32,
+    /// Source origin within the sprite.
+    pub sx: i32,
+    pub sy: i32,
+}
+
+/// `AbstractFurnaceScreen.extractBackground`'s two overlays (M91).
+///
+/// Returns `(lit, burn)`. The lit flame is `None` unless the furnace is lit —
+/// vanilla guards it on `isLit()`, where the burn arrow is drawn
+/// **unconditionally** and simply comes out zero-width.
+///
+/// ```java
+/// if (menu.isLit()) {
+///     int h = Mth.ceil(getLitProgress() * 13.0F) + 1;
+///     blitSprite(litProgressSprite, 14, 14, 0, 14 - h, xo + 56, yo + 36 + 14 - h, 14, h);
+/// }
+/// int w = Mth.ceil(getBurnProgress() * 24.0F);
+/// blitSprite(burnProgressSprite, 24, 16, 0, 0, xo + 79, yo + 34, w, 16);
+/// ```
+///
+/// **The flame grows upward from a fixed bottom edge**, which is why both its
+/// source `y` and its destination `y` move together: the sprite is sampled from
+/// `14 - h` down, and drawn at `36 + 14 - h`, so its bottom stays at `y = 50`
+/// and the top rises. Anchoring it at a fixed top instead would make the flame
+/// shrink downward, which reads as burning *up*.
+///
+/// **`ceil`, not round or truncate**, and the `+ 1` on the flame: a furnace
+/// with a hair of fuel left still shows one pixel of flame, and an arrow at
+/// any progress at all shows one pixel of arrow.
+pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Option<ProgressBlit>, ProgressBlit) {
+    let flame = lit.then(|| {
+        let h = (lit_progress * 13.0).ceil() as i32 + 1;
+        ProgressBlit {
+            dx: 56,
+            dy: 36 + 14 - h,
+            w: 14,
+            h,
+            sx: 0,
+            sy: 14 - h,
+        }
+    });
+    let arrow = ProgressBlit {
+        dx: 79,
+        dy: 34,
+        w: (burn_progress * 24.0).ceil() as i32,
+        h: 16,
+        sx: 0,
+        sy: 0,
+    };
+    (flame, arrow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +440,67 @@ mod tests {
         let chest_sheets: std::collections::HashSet<_> =
             (0..6).map(|i| screen_of(i).unwrap().texture).collect();
         assert_eq!(chest_sheets.len(), 1, "all six chests are one sheet");
+    }
+
+    // -- M91: the furnace's progress overlays -------------------------------
+
+    #[test]
+    fn an_unlit_furnace_draws_no_flame_but_still_draws_the_arrow() {
+        // Vanilla guards the flame on isLit() and draws the arrow
+        // unconditionally — at zero progress it is simply zero-width.
+        let (flame, arrow) = furnace_progress(false, 0.0, 0.0);
+        assert!(flame.is_none());
+        assert_eq!(arrow.w, 0);
+        assert_eq!((arrow.dx, arrow.dy, arrow.h), (79, 34, 16));
+    }
+
+    #[test]
+    fn the_flame_grows_upward_from_a_fixed_bottom_edge() {
+        // Its source y and destination y move together, so the bottom stays
+        // put and the top rises. Anchoring at a fixed top instead makes the
+        // flame shrink downward, which reads as burning up.
+        let bottoms: Vec<i32> = [0.0f32, 0.25, 0.5, 1.0]
+            .iter()
+            .map(|&p| {
+                let f = furnace_progress(true, p, 0.0).0.unwrap();
+                f.dy + f.h
+            })
+            .collect();
+        assert_eq!(bottoms, vec![50, 50, 50, 50], "the bottom edge never moves");
+        // ...and the height really does grow.
+        let hs: Vec<i32> = [0.0f32, 0.5, 1.0]
+            .iter()
+            .map(|&p| furnace_progress(true, p, 0.0).0.unwrap().h)
+            .collect();
+        assert_eq!(hs, vec![1, 8, 14]);
+    }
+
+    #[test]
+    fn the_source_row_tracks_the_height_so_the_sprite_is_not_stretched() {
+        for p in [0.0f32, 0.3, 0.7, 1.0] {
+            let f = furnace_progress(true, p, 0.0).0.unwrap();
+            assert_eq!(f.sy, 14 - f.h, "sampled from the sprite's bottom up");
+            assert_eq!(f.sy + f.h, 14, "and always reaching its bottom edge");
+        }
+    }
+
+    #[test]
+    fn ceil_means_a_sliver_of_progress_still_shows_a_pixel() {
+        // `Mth.ceil`, not round or truncate. A furnace with a hair of fuel
+        // left shows one pixel of flame; an arrow at any progress at all shows
+        // one pixel of arrow. Truncation would show nothing until 1/24th.
+        assert_eq!(furnace_progress(false, 0.0, 0.001).1.w, 1);
+        assert_eq!(furnace_progress(false, 0.0, 1.0 / 24.0).1.w, 1);
+        assert_eq!(furnace_progress(false, 0.0, 1.0).1.w, 24);
+        // The flame's `+ 1` is on top of the ceil, so even zero is one pixel.
+        assert_eq!(furnace_progress(true, 0.0, 0.0).0.unwrap().h, 1);
+    }
+
+    #[test]
+    fn a_full_flame_is_the_whole_sprite() {
+        let f = furnace_progress(true, 1.0, 0.0).0.unwrap();
+        assert_eq!((f.sx, f.sy, f.w, f.h), (0, 0, 14, 14));
+        assert_eq!((f.dx, f.dy), (56, 36));
     }
 
     #[test]

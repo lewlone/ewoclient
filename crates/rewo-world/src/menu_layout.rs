@@ -656,6 +656,12 @@ pub enum QuickMove {
     /// which in these menus is the hotbar's right-hand end, because
     /// `addStandardInventorySlots` appends the hotbar last.
     SimpleContainer { container_slots: usize },
+    /// `AbstractFurnaceMenu`: ingredient 0, fuel 1, result 2, then the
+    /// player's 36. Needs the item to decide, unlike every other shape —
+    /// `canSmelt` is checked **before** `isFuel`, and a log is both, so a log
+    /// goes to the INGREDIENT slot. Routing on `isFuel` alone puts it in the
+    /// fuel slot, which is wrong and looks reasonable.
+    Furnace,
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -680,6 +686,13 @@ impl MenuLayout {
         match self.quick_move() {
             QuickMove::PlayerInventory => crate::inventory::slot_kind(slot),
             QuickMove::SimpleContainer { .. } => Some(crate::inventory::SlotKind::Plain),
+            // A furnace's slot 2 is a `FurnaceResultSlot` — it refuses
+            // placement, so it must not read as plain.
+            QuickMove::Furnace => Some(if slot == 2 {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -696,6 +709,9 @@ impl MenuLayout {
             0..=6 | 16 | 20 => QuickMove::SimpleContainer {
                 container_slots: self.slot_count() - 36,
             },
+            // blast_furnace, furnace, smoker — one shape, three accepted-input
+            // sets, which `smelting_table::accepts` selects by this same id.
+            10 | 14 | 22 => QuickMove::Furnace,
             _ => QuickMove::Unimplemented,
         }
     }

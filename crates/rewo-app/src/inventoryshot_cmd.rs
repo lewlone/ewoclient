@@ -638,7 +638,14 @@ fn patched_stack(item_id: i32, count: i32, fingerprint: u64) -> Option<ItemSlot>
 /// the generated table, so the arithmetic witnesses grade the arithmetic and
 /// not the table (which has its own tests).
 fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
-    ItemProps { max_stack, equips }
+    // The furnace predicates are irrelevant to this gate — every witness here
+    // is the PLAYER's menu, whose routing never consults them.
+    ItemProps {
+        max_stack,
+        equips,
+        is_fuel: false,
+        smeltable: [false; 3],
+    }
 }
 
 fn check_screen(c: &mut Checker) {

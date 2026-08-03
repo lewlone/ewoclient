@@ -66,6 +66,55 @@ impl OpenMenu {
     }
 }
 
+/// A furnace's four data slots, as `AbstractFurnaceMenu` names them.
+///
+/// `container_set_data` carries them by index; these are what the indices
+/// mean.
+pub const FURNACE_LIT_REMAINING: i16 = 0;
+pub const FURNACE_LIT_DURATION: i16 = 1;
+pub const FURNACE_COOK_PROGRESS: i16 = 2;
+pub const FURNACE_COOK_TOTAL: i16 = 3;
+
+/// `AbstractFurnaceMenu`'s three derived quantities (M91).
+///
+/// Two of the three have an edge case that a plain division gets wrong, and
+/// both are pinned by witnesses:
+///
+/// * `getLitProgress` divides by `data[1]`, but **substitutes 200 when it is
+///   zero** — a real fallback, not a guard. Dividing by zero gives infinity,
+///   which clamps to 1.0 and paints a permanently full flame on a furnace that
+///   has never been lit.
+/// * `getBurnProgress` returns 0 unless **both** `data[2]` and `data[3]` are
+///   non-zero. The `total != 0` half is what avoids the division; the
+///   `current != 0` half is mathematically redundant (0/total is already 0)
+///   and is transcribed anyway, because it is what the source says.
+impl OpenMenu {
+    /// `isLit()` — any lit time remaining.
+    pub fn furnace_is_lit(&self) -> bool {
+        self.data(FURNACE_LIT_REMAINING) > 0
+    }
+
+    /// `getLitProgress()` — how much of the current fuel is left, 0..=1.
+    pub fn furnace_lit_progress(&self) -> f32 {
+        let mut duration = self.data(FURNACE_LIT_DURATION) as f32;
+        if duration == 0.0 {
+            duration = 200.0;
+        }
+        (self.data(FURNACE_LIT_REMAINING) as f32 / duration).clamp(0.0, 1.0)
+    }
+
+    /// `getBurnProgress()` — how far the current item has cooked, 0..=1.
+    pub fn furnace_burn_progress(&self) -> f32 {
+        let current = self.data(FURNACE_COOK_PROGRESS) as f32;
+        let total = self.data(FURNACE_COOK_TOTAL) as f32;
+        if total != 0.0 && current != 0.0 {
+            (current / total).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
 /// The client's menu slot. Vanilla has exactly one — `Gui.screen` is a single
 /// field and `setScreen` replaces it (M82's finding for the screen framework
 /// generalises here), so this is an `Option`, not a stack.
@@ -247,6 +296,63 @@ mod tests {
         m.apply_open_screen(3, 2, "Chest".into());
         assert_eq!(m.open().unwrap().menu.state_id(), 0, "state id resets");
         assert_ne!(before, 0, "and the first open really had advanced it");
+    }
+
+    // -- M91: the furnace's derived progress -------------------------------
+
+    fn furnace(data: [i16; 4]) -> Menus {
+        let mut m = Menus::new();
+        m.apply_open_screen(3, 14, "Furnace".into());
+        for (i, v) in data.iter().enumerate() {
+            assert!(m.apply_set_data(3, i as i16, *v));
+        }
+        m
+    }
+
+    #[test]
+    fn a_zero_lit_duration_falls_back_to_200_rather_than_dividing_by_zero() {
+        // The fallback is a real substitution, not a guard. Dividing by zero
+        // gives infinity, which clamps to 1.0 — a permanently full flame on a
+        // furnace that has never been lit.
+        let m = furnace([100, 0, 0, 0]);
+        let f = m.open().unwrap();
+        assert!((f.furnace_lit_progress() - 0.5).abs() < 1e-6, "100 / 200");
+        assert!(f.furnace_is_lit());
+    }
+
+    #[test]
+    fn lit_progress_clamps_and_an_unlit_furnace_reads_zero() {
+        let m = furnace([0, 200, 0, 0]);
+        assert_eq!(m.open().unwrap().furnace_lit_progress(), 0.0);
+        assert!(!m.open().unwrap().furnace_is_lit());
+        // More remaining than the duration cannot exceed a full flame.
+        let m = furnace([400, 200, 0, 0]);
+        assert_eq!(m.open().unwrap().furnace_lit_progress(), 1.0);
+    }
+
+    #[test]
+    fn burn_progress_is_zero_when_either_field_is_zero() {
+        // total == 0 is the one that matters — it is what would divide by
+        // zero. current == 0 is redundant (0/total is 0 already) and is
+        // transcribed because the source says it.
+        assert_eq!(furnace([0, 0, 100, 0]).open().unwrap().furnace_burn_progress(), 0.0);
+        assert_eq!(furnace([0, 0, 0, 200]).open().unwrap().furnace_burn_progress(), 0.0);
+        let m = furnace([0, 0, 100, 200]);
+        assert!((m.open().unwrap().furnace_burn_progress() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_data_indices_are_the_ones_container_set_data_carries() {
+        // A transposition here is invisible: the flame would track cooking and
+        // the arrow the fuel, both animating plausibly.
+        let m = furnace([50, 100, 3, 4]);
+        let f = m.open().unwrap();
+        assert_eq!(f.data(FURNACE_LIT_REMAINING), 50);
+        assert_eq!(f.data(FURNACE_LIT_DURATION), 100);
+        assert_eq!(f.data(FURNACE_COOK_PROGRESS), 3);
+        assert_eq!(f.data(FURNACE_COOK_TOTAL), 4);
+        assert!((f.furnace_lit_progress() - 0.5).abs() < 1e-6);
+        assert!((f.furnace_burn_progress() - 0.75).abs() < 1e-6);
     }
 
     #[test]
