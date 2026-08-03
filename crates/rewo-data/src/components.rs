@@ -61,6 +61,16 @@ pub struct DataComponentIds {
     /// `minecraft:trim` (M48) — `ArmorTrim.STREAM_CODEC`, a pair of
     /// `ByteBufCodecs.holder`s (material then pattern).
     pub trim: i32,
+    /// `minecraft:map_id` (M93f) — `CartographyTableMenu`'s map slot is
+    /// `mayPlace = itemStack.has(DataComponents.MAP_ID)`, and its
+    /// `quickMoveStack` asks the same question first.
+    ///
+    /// Read for its **presence only**, never its value: the id indexes the
+    /// server's saved map data, which this client has no equivalent of. And
+    /// presence is the whole answer, because no item's prototype carries
+    /// MAP_ID — verified against the per-item component table — so a patch is
+    /// the only way a stack can have one.
+    pub map_id: i32,
     /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
     /// under `ByteBufCodecs.list()`.
     ///
@@ -190,6 +200,7 @@ impl DataComponentIds {
             enchantment_glint_override: id("minecraft:enchantment_glint_override")?,
             dyed_color: id("minecraft:dyed_color")?,
             trim: id("minecraft:trim")?,
+            map_id: id("minecraft:map_id")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,

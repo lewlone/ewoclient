@@ -12368,6 +12368,13 @@ pub(crate) fn item_props(
             "minecraft:damage",
         )
         .unwrap_or(false),
+        // M93f — `is(PAPER) || is(MAP) || is(GLASS_PANE)`. Item identity, so
+        // three names rather than a table. `minecraft:map` is the EMPTY map;
+        // `filled_map` is a different item and routes by its MAP_ID component.
+        cartography_additional: matches!(
+            name,
+            "minecraft:paper" | "minecraft:map" | "minecraft:glass_pane"
+        ),
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

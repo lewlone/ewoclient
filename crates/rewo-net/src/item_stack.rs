@@ -245,6 +245,15 @@ pub struct StackComponents {
     /// where the merged list would promote it to EPIC (M50).
     pub is_enchanted: bool,
     pub unbreakable: bool,
+    /// Whether the patch carries `minecraft:map_id` (M93f) — the whole of
+    /// `ItemStack.has(DataComponents.MAP_ID)`.
+    ///
+    /// Presence only. The id itself points at server-side saved map data this
+    /// client does not model, and the two consumers — the cartography table's
+    /// map slot and its shift-click routing — both ask only whether it is
+    /// there. No prototype carries MAP_ID, so a patch is the only source and
+    /// the three-step `has()` collapses to this one bit.
+    pub has_map_id: bool,
     /// Whether the patch **removed** `minecraft:damage` or
     /// `minecraft:max_damage` (M93e).
     ///
@@ -733,6 +742,15 @@ fn read_interpreted(
         out.rarity = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
     }
+    if ty == ids.map_id {
+        // Presence is the answer; the value is a saved-data index this client
+        // has no use for. Still read, because the walk must stay aligned —
+        // the patch has no length prefix, so skipping a value desynchronises
+        // the rest of the packet.
+        let _ = r.varint().map_err(|_| ())?;
+        out.has_map_id = true;
+        return Ok(true);
+    }
     if ty == ids.dyed_color {
         // `ByteBufCodecs.INT` — a fixed big-endian i32 among the var-ints,
         // the same trap `container_set_slot`'s signed short is.
@@ -969,6 +987,7 @@ mod tests {
         enchantment_glint_override: 13,
         dyed_color: 14,
         trim: 15,
+        map_id: 19,
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
@@ -994,6 +1013,11 @@ mod tests {
             ("minecraft:bundle_contents", 16),
             ("minecraft:container", 17),
             ("minecraft:use_cooldown", 18),
+            // M93f. Must be here as well as in IDS: the shape table decides
+            // WALKABILITY and the interpretation decides MEANING, and the two
+            // are kept separate on purpose — an id the table does not know is
+            // reported unwalkable however well the interpreter handles it.
+            ("minecraft:map_id", 19),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1323,6 +1347,55 @@ mod tests {
         };
         assert_eq!(r.remaining(), 0, "the patch was not consumed exactly");
         s.components
+    }
+
+    /// M93f — the decoder half of `has(DataComponents.MAP_ID)`.
+    ///
+    /// Written with the feature rather than after a surviving mutation, which
+    /// is what M93e's equivalent needed: every `rewo-world` witness for the
+    /// cartography table constructs an `ItemSlot` with the flag already set,
+    /// so without this the decoder could never set it and all five would stay
+    /// green while a real filled map cross-moved to the hotbar.
+    #[test]
+    fn a_map_id_component_is_recorded_from_the_wire() {
+        install_test_shapes();
+        let mut id = Vec::new();
+        varint(42, &mut id);
+        let c = components_of(&stack(1, 100, &[(IDS.map_id, id)], &[]));
+        assert!(c.has_map_id, "a patched map_id must be seen");
+
+        // The negatives. A plain stack has none...
+        assert!(!components_of(&stack(1, 100, &[], &[])).has_map_id);
+        // ...another component is not it — a flag set by any patch at all
+        // would send every named item to the map slot...
+        let mut dmg = Vec::new();
+        varint(1, &mut dmg);
+        assert!(!components_of(&stack(1, 100, &[(IDS.damage, dmg)], &[])).has_map_id);
+        // ...and a REMOVAL is not a presence. `has()` is false either way here
+        // (no prototype carries MAP_ID), so this is the one case where the
+        // removal needs no separate flag — but reading a removal as a presence
+        // would invert it.
+        assert!(!components_of(&stack(1, 100, &[], &[IDS.map_id])).has_map_id);
+    }
+
+    /// The value is read and discarded, and the reader must still be aligned:
+    /// the patch has no length prefix, so a component whose value is skipped
+    /// desynchronises everything after it.
+    #[test]
+    fn map_id_is_consumed_exactly_so_a_later_component_still_decodes() {
+        install_test_shapes();
+        let mut id = Vec::new();
+        varint(300, &mut id); // two bytes, so a one-byte skip would misalign
+        let mut dmg = Vec::new();
+        varint(37, &mut dmg);
+        let c = components_of(&stack(
+            1,
+            100,
+            &[(IDS.map_id, id), (IDS.damage, dmg)],
+            &[],
+        ));
+        assert!(c.has_map_id);
+        assert_eq!(c.damage, Some(37), "the component after map_id still reads");
     }
 
     /// M93e — the decoder half of `isDamageableItem`'s removal term.

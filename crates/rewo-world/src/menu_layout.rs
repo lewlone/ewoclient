@@ -753,6 +753,19 @@ pub enum QuickMove {
     /// The accepted set is jar-derived (`stonecutter_table`), with M91's
     /// caveat: `update_recipes` is the authoritative source and is class C.
     Stonecutter,
+    /// `CartographyTableMenu` — map 0, additional 1, result 2, player 3..39.
+    ///
+    /// The only menu here whose branch predicates and `mayPlace` predicates are
+    /// the **same two tests**, written twice. The branch picks which slot to
+    /// try; `mayPlace` confirms it will take the stack. That redundancy is
+    /// vanilla's, and it means neither can be dropped: without the branch a
+    /// map would cross-move, without `mayPlace` an ordinary click could put a
+    /// filled map in the paper slot.
+    ///
+    /// `has(MAP_ID)` is tested first, which is what separates `filled_map`
+    /// (component present -> slot 0) from `minecraft:map` (a different item,
+    /// no component -> slot 1). Putting both in one slot would break cloning.
+    Cartography,
     /// `GrindstoneMenu` — repair 0 and 1, result 2, then the player's 36.
     ///
     /// **Its `quickMoveStack` has no item predicate at all.** The guard is
@@ -858,6 +871,14 @@ impl MenuLayout {
                 2 => crate::inventory::SlotKind::Result,
                 _ => crate::inventory::SlotKind::Plain,
             }),
+            // M93f — two DIFFERENT kinds, because the two slots take disjoint
+            // sets. Sharing one would let a filled map into the paper slot.
+            QuickMove::Cartography => Some(match slot {
+                0 => crate::inventory::SlotKind::CartographyMap,
+                1 => crate::inventory::SlotKind::CartographyAdditional,
+                2 => crate::inventory::SlotKind::Result,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -895,6 +916,8 @@ impl MenuLayout {
             24 => QuickMove::Stonecutter,
             // grindstone (M93e) — the predicate lives in `mayPlace`.
             15 => QuickMove::Grindstone,
+            // cartography_table (M93f).
+            23 => QuickMove::Cartography,
             _ => QuickMove::Unimplemented,
         }
     }

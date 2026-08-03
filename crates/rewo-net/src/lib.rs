@@ -1930,6 +1930,8 @@ fn read_slot(
                     any_enchantments: !c.enchantments.is_empty(),
                     unbreakable: c.unbreakable,
                     damage_component_removed: c.damage_component_removed,
+                    // M93f — the cartography table's map slot.
+                    has_map_id: c.has_map_id,
                     // M49: only the material — the icon's `select` is on it alone.
                     trim_material: c.trim.map(|(m, _)| m),
                 }),
@@ -4092,6 +4094,7 @@ mod animate_tests {
             enchantment_glint_override: 13,
             dyed_color: 14,
             trim: 15,
+            map_id: 19,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

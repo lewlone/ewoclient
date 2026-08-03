@@ -283,6 +283,30 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 stick_p.proto_damage
             ),
         );
+        // M93f — the cartography table's additional-slot set is three item
+        // identities, resolved here rather than from a table. If this returned
+        // false for all three, paper would cross-move to the hotbar while
+        // every unit witness — which hand-builds the props — stayed green.
+        let paper = id_of("minecraft:paper")?;
+        let map = id_of("minecraft:map")?;
+        let pane = id_of("minecraft:glass_pane")?;
+        let filled = id_of("minecraft:filled_map")?;
+        let props_of = |id: i32| crate::live_cmd::item_props(&items, id);
+        let three = [paper, map, pane]
+            .iter()
+            .all(|&i| props_of(i).is_some_and(|p| p.cartography_additional));
+        c.record(
+            "d6.the_live_client_resolves_the_cartography_additional_items",
+            three
+                && !props_of(filled).is_some_and(|p| p.cartography_additional)
+                && !stick_p.cartography_additional,
+            format!(
+                "paper/map/glass_pane all additional={three}; filled_map={}, stick={} \
+                 — filled_map is a DIFFERENT item and routes by its MAP_ID component",
+                props_of(filled).is_some_and(|p| p.cartography_additional),
+                stick_p.cartography_additional
+            ),
+        );
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
         // Wiring both fields to one table would leave d3 green.

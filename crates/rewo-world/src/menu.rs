@@ -600,6 +600,7 @@ mod tests {
             any_enchantments: false,
             unbreakable: false,
             damage_component_removed: false,
+            has_map_id: false,
             trim_material: None,
         });
         inv.set_content(1, &content, None);

@@ -98,6 +98,10 @@ pub struct ItemSlot {
     /// `minecraft:unbreakable`'s presence in the patch (M93e). The prototype
     /// never carries it, so the patch is the whole answer.
     pub unbreakable: bool,
+    /// `ItemStack.has(DataComponents.MAP_ID)` (M93f). No prototype carries
+    /// MAP_ID, so the patch is the whole answer and this is the whole of
+    /// `has()`.
+    pub has_map_id: bool,
     /// Whether the patch removed `minecraft:damage` or `minecraft:max_damage`
     /// (M93e) — see `StackComponents::damage_component_removed`.
     pub damage_component_removed: bool,
@@ -572,6 +576,16 @@ pub enum SlotKind {
     /// item's own max stack. Every slot of a chest, shulker box, dispenser and
     /// hopper is one — none of those menus has a result or equipment slot.
     Plain,
+    /// `CartographyTableMenu`'s MAP slot (M93f): `mayPlace` is
+    /// `itemStack.has(DataComponents.MAP_ID)`.
+    CartographyMap,
+    /// `CartographyTableMenu`'s ADDITIONAL slot (M93f): `mayPlace` is
+    /// `is(PAPER) || is(MAP) || is(GLASS_PANE)`.
+    ///
+    /// Two kinds rather than one, because the two slots take **disjoint** sets
+    /// and the shift-click routes between them on the same two predicates. One
+    /// shared kind would let a filled map into the paper slot.
+    CartographyAdditional,
     /// `GrindstoneMenu`'s two repair slots (M93e): `mayPlace` is
     /// `itemStack.isDamageableItem() || EnchantmentHelper.hasAnyEnchantments(itemStack)`.
     ///
@@ -710,6 +724,14 @@ pub struct ItemProps {
     /// `update_recipes` is the authoritative source and Rewo does not decode
     /// it, so a datapack recipe change makes this wrong silently.
     pub stonecuttable: bool,
+    /// `CartographyTableMenu`'s ADDITIONAL slot (M93f) —
+    /// `is(PAPER) || is(MAP) || is(GLASS_PANE)`.
+    ///
+    /// Item identity, so the item table answers it. Note `minecraft:map` here
+    /// is the **empty** map: `filled_map` is a different item and is routed by
+    /// [`ItemSlot::has_map_id`] to the other slot entirely, which is what makes
+    /// map-cloning work.
+    pub cartography_additional: bool,
     /// Whether the item's **prototype** carries `minecraft:max_damage` (M93e).
     /// From the per-item component table, which M56 already generates.
     pub proto_max_damage: bool,
@@ -807,6 +829,11 @@ impl Inventory {
             SlotKind::GrindstoneInput => {
                 Self::is_damageable_item(stack, props) || stack.any_enchantments
             }
+            // M93f — the cartography table's two slots, whose predicates the
+            // shift-click branch tests as well. Both are needed: the branch
+            // chooses WHICH slot to try, `mayPlace` confirms it will take it.
+            SlotKind::CartographyMap => stack.has_map_id,
+            SlotKind::CartographyAdditional => props.cartography_additional,
             _ => true,
         }
     }
@@ -1245,6 +1272,30 @@ impl Inventory {
                     (player..hotbar, false)
                 }]);
             }
+            QuickMove::Cartography => {
+                // CartographyTableMenu: map 0, additional 1, result 2,
+                // player 3..39.
+                let (player, hotbar, end) = (3usize, 30usize, 39usize);
+                return Some(vec![match slot {
+                    2 => (player..end, true),
+                    0 | 1 => (player..end, false),
+                    // `has(MAP_ID)` is tested FIRST, and it is what separates a
+                    // FILLED map from an empty one: `filled_map` carries the
+                    // component and goes to slot 0, while `minecraft:map` is a
+                    // different item with no component and falls through to
+                    // the additional slot below. That split is map-cloning.
+                    _ if item.has_map_id => (0..1, false),
+                    // Vanilla writes this arm as a triple negation —
+                    // `!is(PAPER) && !is(MAP) && !is(GLASS_PANE)` -> cross-move
+                    // — so the paper slot is the branch reached when the stack
+                    // IS one of the three. Transcribing the negation as
+                    // written and inverting the arms is the same thing said
+                    // forwards, and much harder to misread.
+                    _ if p.cartography_additional => (1..2, false),
+                    s if s < hotbar => (hotbar..end, false),
+                    _ => (player..hotbar, false),
+                }]);
+            }
             QuickMove::Grindstone => {
                 // GrindstoneMenu: repair 0 and 1, result 2, player 3..39.
                 let (player, hotbar, end) = (3usize, 30usize, 39usize);
@@ -1481,6 +1532,7 @@ mod tests {
             smeltable: [false; 3],
             beacon_payment: false,
             stonecuttable: false,
+            cartography_additional: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -1495,6 +1547,7 @@ mod tests {
             smeltable: [false, true, false], // smeltable in a furnace only
             beacon_payment: false,
             stonecuttable: false,
+            cartography_additional: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -1509,6 +1562,7 @@ mod tests {
             smeltable: [false; 3],
             beacon_payment: false,
             stonecuttable: false,
+            cartography_additional: false,
             proto_max_damage: false,
             proto_damage: false,
         })
@@ -2102,6 +2156,142 @@ mod tests {
         );
     }
 
+    // -- M93f: the cartography table --------------------------------------
+
+    /// `minecraft:paper` / `minecraft:map` / `minecraft:glass_pane`.
+    fn additional_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            cartography_additional: true,
+            ..plain_props(0).unwrap()
+        })
+    }
+
+    fn filled_map(id: i32) -> Option<ItemSlot> {
+        stack(id, 1).map(|s| ItemSlot {
+            has_map_id: true,
+            ..s
+        })
+    }
+
+    #[test]
+    fn a_filled_map_and_an_empty_one_go_to_different_slots() {
+        // THE case. `has(MAP_ID)` is tested first, so a filled map takes the
+        // map slot; `minecraft:map` is a different item carrying no such
+        // component, falls past that test, and is caught by
+        // `is(PAPER) || is(MAP) || is(GLASS_PANE)` into the additional slot.
+        // Routing both to one slot is what would break map cloning.
+        let m = single_input_menu(23, 3, filled_map(1));
+        let p = m.click_quick_move(3, &plain_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "a filled map belongs in the MAP slot, {:?}",
+            p.changed
+        );
+
+        let m = single_input_menu(23, 3, stack(1, 1));
+        let p = m
+            .click_quick_move(3, &additional_props)
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 1),
+            "paper / an empty map / a glass pane belongs in the ADDITIONAL slot, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn the_map_component_wins_over_the_item_identity() {
+        // The two tests are checked in a fixed order, and only a stack that is
+        // BOTH can show it. A filled map is not one of the three items, so
+        // vanilla's ordering is invisible on real data — construct the overlap
+        // and the precedence becomes observable.
+        let both = stack(1, 1).map(|s| ItemSlot {
+            has_map_id: true,
+            ..s
+        });
+        let m = single_input_menu(23, 3, both);
+        let p = m
+            .click_quick_move(3, &additional_props)
+            .expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "MAP_ID is tested first, so it takes the map slot, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn anything_else_cross_moves() {
+        let m = single_input_menu(23, 3, stack(1, 5));
+        let p = m.click_quick_move(3, &plain_props).expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(i, _)| *i < 3),
+            "a stick must not enter either input slot, {:?}",
+            p.changed
+        );
+        assert!(
+            p.changed.iter().any(|(i, _)| (30..39).contains(i)),
+            "and it must reach the hotbar, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn an_occupied_input_slot_moves_nothing_rather_than_cross_moving() {
+        // Both input branches CONSUME: `moveItemStackTo` returning false is
+        // followed by `return ItemStack.EMPTY`, not by a fallback. So a second
+        // filled map with the map slot already taken moves nothing at all.
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(23).unwrap());
+        let mut v = vec![None; m.slot_count()];
+        v[0] = filled_map(7);
+        v[3] = filled_map(1);
+        assert!(m.set_content(1, &v, None));
+        assert!(
+            m.click_quick_move(3, &plain_props).is_none(),
+            "an occupied map slot must move nothing, not divert to the hotbar"
+        );
+        // Paired positive, so `None` is not confusable with an untranscribed
+        // menu: clear the slot and the same click predicts.
+        let free = single_input_menu(23, 3, filled_map(1));
+        assert!(free.click_quick_move(3, &plain_props).is_some());
+    }
+
+    #[test]
+    fn the_two_input_slots_refuse_each_others_items_on_a_plain_click() {
+        // Unlike the stonecutter's, these predicates are on the SLOTS as well
+        // as in the branch — so an ordinary click is bound by them too, and
+        // one shared `SlotKind` would let a filled map into the paper slot.
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(23).unwrap());
+        assert!(m.set_content(1, &vec![None; m.slot_count()], None));
+
+        // A filled map: accepted by slot 0, refused by slot 1.
+        m.set_carried(filled_map(1));
+        assert_eq!(
+            m.click_pickup(0, 0, &plain_props).unwrap().changed,
+            vec![(0u16, filled_map(1))],
+            "the map slot takes a filled map"
+        );
+        assert!(
+            m.click_pickup(1, 0, &plain_props).unwrap().changed.is_empty(),
+            "the additional slot must refuse it"
+        );
+
+        // Paper: the mirror image.
+        m.set_carried(stack(2, 1));
+        assert!(
+            m.click_pickup(0, 0, &additional_props)
+                .unwrap()
+                .changed
+                .is_empty(),
+            "the map slot must refuse paper"
+        );
+        assert_eq!(
+            m.click_pickup(1, 0, &additional_props).unwrap().changed,
+            vec![(1u16, stack(2, 1))],
+            "the additional slot takes paper"
+        );
+    }
+
     // -- M93e: the grindstone --------------------------------------------
 
     /// A damaged tool: the prototype carries both damage components.
@@ -2278,7 +2468,7 @@ mod tests {
         // in the first free main-inventory slot. Both look like "it moved".
         //
         // (menu id, the slot whose contents leave via the player range)
-        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2)] {
+        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2), (23, 2)] {
             let m = single_input_menu(id, source, stack(1, 1));
             let p = m
                 .click_quick_move(source as i32, &plain_props)
@@ -2305,7 +2495,7 @@ mod tests {
         // `false`, and reporting it as Plain would let a click drop something
         // into it that the server then rejects.
         use crate::menu_layout::layout_of;
-        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1), (15, 2)] {
+        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1), (15, 2), (23, 2)] {
             let layout = layout_of(id).unwrap();
             for slot in 0..layout.slot_count() {
                 let kind = layout.slot_kind(slot).expect("transcribed");
@@ -2467,6 +2657,7 @@ mod tests {
             any_enchantments: false,
             unbreakable: false,
             damage_component_removed: false,
+            has_map_id: false,
             trim_material: None,
         })
     }
