@@ -390,6 +390,103 @@ pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Op
     (flame, arrow)
 }
 
+/// `BrewingStandScreen`'s bubble column heights, one per animation frame.
+///
+/// A **table**, not a formula — the gaps are 5, 4, 4, 5, 5, 6, which no
+/// arithmetic produces — and its last entry is **0**, so one frame in seven
+/// draws no bubbles at all. Reading the guard as "bubbles are always visible
+/// while brewing" loses that blink, which is the animation's whole character.
+pub const BUBBLE_LENGTHS: [i32; 7] = [29, 24, 20, 16, 11, 6, 0];
+
+/// How long a brew takes, in ticks. `BrewingStandBlockEntity`'s
+/// `BREWING_TIME_SECONDS * 20`.
+pub const BREW_TICKS_TOTAL: i32 = 400;
+
+/// `BrewingStandScreen.extractBackground`'s three overlays (M92).
+///
+/// ```java
+/// int fuelLength = Mth.clamp((18 * fuel + 20 - 1) / 20, 0, 18);
+/// if (fuelLength > 0) blitSprite(FUEL_LENGTH, 18, 4, 0, 0, xo + 60, yo + 44, fuelLength, 4);
+/// int tickCount = menu.getBrewingTicks();
+/// if (tickCount > 0) {
+///     int length = (int)(28.0F * (1.0F - tickCount / 400.0F));
+///     if (length > 0) blitSprite(BREW_PROGRESS, 9, 28, 0, 0, xo + 97, yo + 16, 9, length);
+///     length = BUBBLELENGTHS[tickCount / 2 % 7];
+///     if (length > 0) blitSprite(BUBBLES, 12, 29, 0, 29 - length, xo + 63, yo + 14 + 29 - length, 12, length);
+/// }
+/// ```
+///
+/// # Three things here invert
+///
+/// 1. **The brew timer counts DOWN.** `getBrewingTicks` is the ticks
+///    *remaining* out of 400, so the arrow's length is `28 * (1 - t/400)`: it
+///    is empty when brewing starts and full just before the potion pops.
+///    Treating the field as elapsed time runs the arrow backwards, which looks
+///    like a plausible animation and is exactly wrong.
+/// 2. **The arrow grows DOWNWARD and the bubbles grow UPWARD.** The arrow's
+///    destination `y` is a fixed `16` and only its height changes; the
+///    bubbles' source and destination `y` move together (`29 - length`), so
+///    their *bottom* edge is pinned at `14 + 29 = 43` and the top rises — the
+///    same shape as M91's furnace flame, and the reason to state it separately
+///    is that the two are one function apart and differ.
+/// 3. **Nothing is drawn at all when `tickCount == 0`.** Both the arrow and
+///    the bubbles are inside that guard, so an idle stand shows a bare panel;
+///    only the fuel bar survives it. Hoisting either out paints a stopped
+///    animation on an idle stand.
+///
+/// The fuel bar is the odd one out in a fourth way: it grows **rightward**
+/// from a fixed left edge, so its source rect never moves.
+///
+/// Returns `(fuel, brew, bubbles)`, each `None` where vanilla's guard skips
+/// the blit — which is a real state, not an optimisation.
+pub fn brewing_progress(
+    fuel: i32,
+    ticks: i32,
+) -> (Option<ProgressBlit>, Option<ProgressBlit>, Option<ProgressBlit>) {
+    // Integer ceiling division by 20: `(18 * fuel + 19) / 20`, written in
+    // vanilla as `+ 20 - 1`. Clamped on BOTH sides, so a corrupt negative fuel
+    // reads as empty rather than as a huge negative width.
+    let fuel_len = ((18 * fuel + 20 - 1) / 20).clamp(0, 18);
+    let fuel_bar = (fuel_len > 0).then_some(ProgressBlit {
+        dx: 60,
+        dy: 44,
+        w: fuel_len,
+        h: 4,
+        sx: 0,
+        sy: 0,
+    });
+
+    if ticks <= 0 {
+        return (fuel_bar, None, None);
+    }
+
+    // `(int)` on a float — truncation toward zero, not `ceil` like the
+    // furnace's. The two screens genuinely differ.
+    let arrow_h = (28.0 * (1.0 - ticks as f32 / BREW_TICKS_TOTAL as f32)) as i32;
+    let brew = (arrow_h > 0).then_some(ProgressBlit {
+        dx: 97,
+        dy: 16,
+        w: 9,
+        h: arrow_h,
+        sx: 0,
+        sy: 0,
+    });
+
+    // `tickCount / 2 % 7` — integer divide first, so each frame is held for
+    // two ticks and the cycle is 14 ticks long.
+    let bubble_h = BUBBLE_LENGTHS[(ticks / 2 % 7) as usize];
+    let bubbles = (bubble_h > 0).then_some(ProgressBlit {
+        dx: 63,
+        dy: 14 + 29 - bubble_h,
+        w: 12,
+        h: bubble_h,
+        sx: 0,
+        sy: 29 - bubble_h,
+    });
+
+    (fuel_bar, brew, bubbles)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +598,136 @@ mod tests {
         let f = furnace_progress(true, 1.0, 0.0).0.unwrap();
         assert_eq!((f.sx, f.sy, f.w, f.h), (0, 0, 14, 14));
         assert_eq!((f.dx, f.dy), (56, 36));
+    }
+
+    // -- M92: the brewing stand's three overlays ----------------------------
+
+    #[test]
+    fn the_brew_arrow_counts_down_from_four_hundred() {
+        // `getBrewingTicks` is the ticks REMAINING, so the arrow is empty when
+        // brewing starts and full just before the potion pops. Reading the
+        // field as elapsed time runs the animation backwards, which looks
+        // plausible and is exactly inverted.
+        let started = brewing_progress(0, 400).1;
+        assert!(started.is_none(), "at t=400 the arrow is 0 tall, so not drawn");
+        let nearly_done = brewing_progress(0, 1).1.expect("almost finished");
+        assert_eq!(nearly_done.h, 27);
+        // ...and it is monotonic in the direction that matters.
+        let mut last = 0;
+        for t in [400, 300, 200, 100, 1] {
+            let h = brewing_progress(0, t).1.map_or(0, |b| b.h);
+            assert!(h >= last, "t={t}: the arrow must grow as ticks fall");
+            last = h;
+        }
+    }
+
+    #[test]
+    fn the_arrow_grows_downward_but_the_bubbles_grow_upward() {
+        // The two are one function apart and they differ. The arrow's dy is a
+        // fixed 16 and only its height changes; the bubbles' source and
+        // destination y move together so their BOTTOM edge is pinned.
+        for t in [1, 50, 150, 399] {
+            if let Some(a) = brewing_progress(0, t).1 {
+                assert_eq!(a.dy, 16, "the arrow's top never moves");
+                assert_eq!(a.sy, 0, "so it always samples from the sprite's top");
+            }
+        }
+        let bottoms: Vec<i32> = (0..14)
+            .filter_map(|t| brewing_progress(0, 400 - t).2)
+            .map(|b| b.dy + b.h)
+            .collect();
+        assert!(!bottoms.is_empty());
+        assert!(
+            bottoms.iter().all(|&b| b == 43),
+            "the bubbles' bottom edge is pinned at 14 + 29: {bottoms:?}"
+        );
+    }
+
+    #[test]
+    fn the_bubbles_source_row_tracks_their_height() {
+        // M91's furnace-flame witness has this half and the brewing one was
+        // written without it, which a mutation found: pinning `sy` to 0 while
+        // the destination still rises samples the TOP of the bubble column and
+        // draws it at the bottom, so the art slides instead of filling.
+        for t in 1..15 {
+            let Some(b) = brewing_progress(0, t).2 else { continue };
+            assert_eq!(b.sy, 29 - b.h, "t={t}: sampled from the sprite's bottom up");
+            assert_eq!(b.sy + b.h, 29, "t={t}: and always reaching its bottom edge");
+        }
+    }
+
+    #[test]
+    fn one_bubble_frame_in_seven_is_blank() {
+        // BUBBLELENGTHS ends in 0. A guard read as "bubbles are always visible
+        // while brewing" loses the blink, which is the animation's character.
+        assert_eq!(BUBBLE_LENGTHS[6], 0);
+        let frames: Vec<bool> = (0..7)
+            .map(|f| brewing_progress(0, 400 - f * 2).2.is_some())
+            .collect();
+        assert_eq!(frames.iter().filter(|v| !**v).count(), 1, "{frames:?}");
+    }
+
+    #[test]
+    fn each_bubble_frame_is_held_for_two_ticks() {
+        // `tickCount / 2 % 7` divides FIRST, so the cycle is 14 ticks and not
+        // 7. Taking the modulo first would flicker at twice the speed.
+        let h = |t: i32| brewing_progress(0, t).2.map_or(0, |b| b.h);
+        // The pairs held together start on EVEN ticks, because the divide
+        // truncates: 2/2 and 3/2 are both frame 1. This witness was written
+        // pairing (1,2) first and failed, and the failure was the finding —
+        // that pair straddles a frame boundary.
+        for pair in (2..14).step_by(2) {
+            assert_eq!(h(pair), h(pair + 1), "ticks {pair} and {} differ", pair + 1);
+        }
+        assert_eq!(h(2), h(16), "and the cycle repeats after 14 ticks");
+        assert_ne!(h(2), h(4), "while adjacent frames really are different");
+    }
+
+    #[test]
+    fn the_arrow_truncates_where_the_furnace_ceils() {
+        // The two screens genuinely differ: `(int)(28.0F * ...)` here against
+        // `Mth.ceil` in AbstractFurnaceScreen. At one tick remaining the
+        // arrow's exact height is 27.93 and vanilla shows 27; at 399 it is
+        // 0.07 and vanilla shows NOTHING, where a ceil would show a pixel.
+        assert!(brewing_progress(0, 399).1.is_none(), "0.07 truncates to 0");
+        assert_eq!(brewing_progress(0, 1).1.unwrap().h, 27, "27.93 truncates to 27");
+        // The furnace, for contrast, is the other way at the same fraction.
+        assert_eq!(furnace_progress(false, 0.0, 0.001).1.w, 1);
+    }
+
+    #[test]
+    fn the_fuel_bar_ceils_so_one_charge_shows_one_pixel() {
+        // `(18 * fuel + 20 - 1) / 20` is a ceiling divide. Truncating would
+        // show an empty bar for one blaze powder charge (18/20 = 0), so a
+        // player would think fuelling had failed.
+        assert!(brewing_progress(0, 0).0.is_none(), "no fuel, no bar");
+        assert_eq!(brewing_progress(1, 0).0.unwrap().w, 1);
+        assert_eq!(brewing_progress(20, 0).0.unwrap().w, 18, "full");
+        assert_eq!(brewing_progress(10, 0).0.unwrap().w, 9, "half");
+        // Clamped on BOTH sides: a corrupt value cannot produce a negative or
+        // over-wide quad.
+        assert!(brewing_progress(-5, 0).0.is_none());
+        assert_eq!(brewing_progress(9999, 0).0.unwrap().w, 18);
+    }
+
+    #[test]
+    fn an_idle_stand_keeps_its_fuel_bar_and_drops_both_animations() {
+        // Both the arrow and the bubbles live inside `if (tickCount > 0)`.
+        // Hoisting either out paints a stopped animation on an idle stand.
+        let (fuel, brew, bubbles) = brewing_progress(20, 0);
+        assert!(fuel.is_some(), "fuel is outside the guard");
+        assert!(brew.is_none());
+        assert!(bubbles.is_none());
+    }
+
+    #[test]
+    fn the_fuel_bar_never_moves_only_its_width_changes() {
+        // The third growth direction on one screen: rightward from a fixed
+        // left edge, so unlike the bubbles its source rect stays put.
+        for f in 1..=20 {
+            let b = brewing_progress(f, 0).0.unwrap();
+            assert_eq!((b.dx, b.dy, b.sx, b.sy, b.h), (60, 44, 0, 0, 4));
+        }
     }
 
     #[test]

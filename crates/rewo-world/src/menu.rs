@@ -115,6 +115,31 @@ impl OpenMenu {
     }
 }
 
+/// `BrewingStandMenu`'s two data slots — **and they are the other way round
+/// from the furnace's** (M92).
+///
+/// `getBrewingTicks()` is `brewingStandData.get(0)` and `getFuel()` is
+/// `get(1)`, where `AbstractFurnaceMenu` puts its *fuel* at 0 and its cook
+/// progress at 2. Naming these by analogy with the furnace — "0 is the fuel,
+/// it was last time" — swaps a 0..20 fuel level with a 0..400 tick counter,
+/// and the result is a fuel bar pinned full and bubbles that never move. Both
+/// menus are five bytes on the wire and neither says which is which; only the
+/// accessor does.
+pub const BREW_TICKS: i16 = 0;
+pub const BREW_FUEL: i16 = 1;
+
+impl OpenMenu {
+    /// `getBrewingTicks()` — ticks **remaining**, counting down from 400.
+    pub fn brewing_ticks(&self) -> i32 {
+        self.data(BREW_TICKS) as i32
+    }
+
+    /// `getFuel()` — blaze-powder charges left, 0..=20.
+    pub fn brewing_fuel(&self) -> i32 {
+        self.data(BREW_FUEL) as i32
+    }
+}
+
 /// The client's menu slot. Vanilla has exactly one — `Gui.screen` is a single
 /// field and `setScreen` replaces it (M82's finding for the screen framework
 /// generalises here), so this is an `Option`, not a stack.
@@ -353,6 +378,35 @@ mod tests {
         assert_eq!(f.data(FURNACE_COOK_TOTAL), 4);
         assert!((f.furnace_lit_progress() - 0.5).abs() < 1e-6);
         assert!((f.furnace_burn_progress() - 0.75).abs() < 1e-6);
+    }
+
+    // -- M92: the brewing stand's data slots, which invert ------------------
+
+    #[test]
+    fn the_brewing_stands_data_slots_are_the_reverse_of_the_furnaces() {
+        // The whole point: slot 0 is the TICK COUNTER here and the FUEL in a
+        // furnace. Transposing them is invisible on the wire — both menus send
+        // the same five bytes — and shows up only as a fuel bar pinned full
+        // and bubbles that never move.
+        let mut m = Menus::new();
+        m.apply_open_screen(3, 11, "Brewing Stand".into()); // brewing_stand
+        assert!(m.apply_set_data(3, 0, 380), "slot 0 is the tick counter");
+        assert!(m.apply_set_data(3, 1, 17), "slot 1 is the fuel");
+        let b = m.open().unwrap();
+        assert_eq!(b.brewing_ticks(), 380);
+        assert_eq!(b.brewing_fuel(), 17);
+        // A furnace's slot 0 is the fuel, and the two accessors must not be
+        // reading the same constant.
+        assert_ne!(BREW_TICKS, FURNACE_LIT_DURATION);
+        assert_eq!(BREW_TICKS, FURNACE_LIT_REMAINING, "the same index, the other meaning");
+    }
+
+    #[test]
+    fn an_untouched_brewing_stand_reads_zero_on_both() {
+        let mut m = Menus::new();
+        m.apply_open_screen(1, 11, "Brewing Stand".into());
+        let b = m.open().unwrap();
+        assert_eq!((b.brewing_ticks(), b.brewing_fuel()), (0, 0));
     }
 
     #[test]

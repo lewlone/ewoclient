@@ -74,9 +74,9 @@ pub struct ContainerSpriteData<'a> {
     /// The 19 distinct container background sheets (M87), in
     /// `rewo_data::assets::MENU_BACKGROUND_TEXTURES` order.
     pub menu_backgrounds: Vec<crate::hud::HudSpriteData<'a>>,
-    /// The six furnace progress overlays (M91), in
-    /// `rewo_data::assets::FURNACE_PROGRESS_SPRITES` order.
-    pub furnace_progress: Vec<crate::hud::HudSpriteData<'a>>,
+    /// Everything a container screen paints over its background sheet, in
+    /// `rewo_data::assets::MENU_OVERLAY_SPRITES` order (M91, M92).
+    pub overlays: Vec<crate::hud::HudSpriteData<'a>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -612,13 +612,18 @@ pub struct ContainerPanel {
     pub blits: Vec<PanelBlit>,
     pub gui_w: f32,
     pub gui_h: f32,
-    /// The furnace's progress overlays (M91): the sprite's index in
-    /// `rewo_data::assets::FURNACE_PROGRESS_SPRITES`, and where it goes.
+    /// What this screen paints over its background sheet (M91, M92): the
+    /// sprite's index in `rewo_data::assets::MENU_OVERLAY_SPRITES`, and where
+    /// it goes.
     ///
     /// Drawn **after** the panel and before the slot highlights, which is
     /// where `extractBackground` puts them — they sit on the sheet's own
     /// painted recesses.
-    pub progress: Vec<(usize, PanelBlit)>,
+    ///
+    /// **In order**, because several screens overlap deliberately: an
+    /// enchanting row draws its background and then its level numeral *on top
+    /// of it*, so a set rather than a list would lose the numeral.
+    pub overlays: Vec<(usize, PanelBlit)>,
 }
 
 /// `itemBar`'s background fill, `-16777216` — opaque black.
@@ -669,8 +674,8 @@ pub struct ContainerPass {
     /// normalised whole-sheet rect would mean converting back to pixels to
     /// index into it.
     menu_sheets: Vec<(u32, u32, u32, u32)>,
-    /// Where each furnace progress overlay landed, in atlas pixels (M91).
-    progress_sheets: Vec<(u32, u32, u32, u32)>,
+    /// Where each screen overlay landed, in atlas pixels (M91, M92).
+    overlay_sheets: Vec<(u32, u32, u32, u32)>,
     /// The atlas's height, needed to normalise a sub-rect at draw time.
     atlas_h: u32,
 }
@@ -697,11 +702,11 @@ impl ContainerPass {
             sprites
                 .menu_backgrounds
                 .iter()
-                .chain(sprites.furnace_progress.iter())
+                .chain(sprites.overlays.iter())
                 .map(|s| (s.w, s.h)),
         );
-        let (menu_sheets, progress_sheets) = all_sheets.split_at(sprites.menu_backgrounds.len());
-        let (menu_sheets, progress_sheets) = (menu_sheets.to_vec(), progress_sheets.to_vec());
+        let (menu_sheets, overlay_sheets) = all_sheets.split_at(sprites.menu_backgrounds.len());
+        let (menu_sheets, overlay_sheets) = (menu_sheets.to_vec(), overlay_sheets.to_vec());
 
         let mut atlas = vec![0u8; (ATLAS_W * atlas_h * 4) as usize];
         let place = |dst: &mut [u8], s: &crate::hud::HudSpriteData<'_>, x: u32, y: u32| {
@@ -715,7 +720,7 @@ impl ContainerPass {
         for (s, &(x, y, _, _)) in sprites.menu_backgrounds.iter().zip(&menu_sheets) {
             place(&mut atlas, s, x, y);
         }
-        for (s, &(x, y, _, _)) in sprites.furnace_progress.iter().zip(&progress_sheets) {
+        for (s, &(x, y, _, _)) in sprites.overlays.iter().zip(&overlay_sheets) {
             place(&mut atlas, s, x, y);
         }
         // The background sheet is 256×256 and only its top-left 176×166 is the
@@ -876,7 +881,7 @@ impl ContainerPass {
             bar_fill,
             bar_full,
             menu_sheets,
-            progress_sheets,
+            overlay_sheets,
             atlas_h,
             tooltip_verts: 0,
             bar_range: (0, 0),
@@ -936,15 +941,16 @@ impl ContainerPass {
                             WHITE,
                         );
                     }
-                    // M91 — the furnace's flame and arrow, over the panel.
-                    for &(sprite, b) in &p.progress {
+                    // M91/M92 — the screen's own overlays, over the panel and
+                    // in the order it draws them.
+                    for &(sprite, b) in &p.overlays {
                         if b.w <= 0.0 || b.h <= 0.0 {
                             // A zero-width arrow is vanilla's own state at zero
                             // progress; emitting a degenerate quad would be a
                             // wasted draw, not a visible one.
                             continue;
                         }
-                        let r = self.progress_rect_px(sprite, b.sx, b.sy, b.w, b.h);
+                        let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.w, b.h);
                         quad(
                             &mut v,
                             left + b.dx * scale,
@@ -1188,8 +1194,8 @@ impl ContainerPass {
         }
     }
 
-    /// The atlas rect for a pixel sub-rect of one furnace progress overlay.
-    pub(crate) fn progress_rect_px(
+    /// The atlas rect for a pixel sub-rect of one screen overlay sprite.
+    pub(crate) fn overlay_rect_px(
         &self,
         sprite: usize,
         x: f32,
@@ -1197,7 +1203,7 @@ impl ContainerPass {
         w: f32,
         h: f32,
     ) -> Rect {
-        let (sx, sy, _, _) = self.progress_sheets[sprite];
+        let (sx, sy, _, _) = self.overlay_sheets[sprite];
         let (sx, sy) = (sx as f32, sy as f32);
         Rect {
             u0: (sx + x) / ATLAS_W as f32,

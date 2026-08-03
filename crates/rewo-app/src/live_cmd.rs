@@ -2880,7 +2880,7 @@ pub(crate) fn container_sprites(
         bundle_bar_fill: s(&c.bundle_bar_fill),
         bundle_bar_full: s(&c.bundle_bar_full),
         menu_backgrounds: c.menu_backgrounds.iter().map(s).collect(),
-        furnace_progress: c.furnace_progress.iter().map(s).collect(),
+        overlays: c.overlays.iter().map(s).collect(),
     })
 }
 
@@ -10987,38 +10987,73 @@ fn container_panel(
             sy: q.v0 * screen.sheet_h,
         })
         .collect();
-    // M91 — a furnace's flame and arrow, from its `container_set_data` slots.
-    let mut progress = Vec::new();
-    if let (Some(m), Some(base)) = (
-        open,
-        rewo_data::assets::progress_index(layout.protocol_id),
-    ) {
-        let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
-            m.furnace_is_lit(),
-            m.furnace_lit_progress(),
-            m.furnace_burn_progress(),
-        );
-        let to_blit = |b: rewo_world::menu_screen::ProgressBlit| rewo_gpu::container::PanelBlit {
-            dx: b.dx as f32,
-            dy: b.dy as f32,
-            w: b.w as f32,
-            h: b.h as f32,
-            sx: b.sx as f32,
-            sy: b.sy as f32,
-        };
-        // The lit sprite is the pair's first, the burn its second.
-        if let Some(f) = flame {
-            progress.push((base, to_blit(f)));
-        }
-        progress.push((base + 1, to_blit(arrow)));
-    }
     Some(rewo_gpu::container::ContainerPanel {
         sheet,
         blits,
         gui_w: screen.image_w as f32,
         gui_h: screen.image_h as f32,
-        progress,
+        overlays: menu_overlays(layout, open),
     })
+}
+
+/// A `menu_screen::ProgressBlit` in the render's own units.
+fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::PanelBlit {
+    rewo_gpu::container::PanelBlit {
+        dx: b.dx as f32,
+        dy: b.dy as f32,
+        w: b.w as f32,
+        h: b.h as f32,
+        sx: b.sx as f32,
+        sy: b.sy as f32,
+    }
+}
+
+/// Everything an open menu paints over its background sheet, in draw order
+/// (M91 the furnaces, M92 the rest).
+///
+/// Empty for a menu with no overlays *and* for one that is not open — a
+/// `containershot` panel built with no `OpenMenu` has no data slots to read,
+/// and inventing a plausible-looking half-lit furnace would make the gate's
+/// panel witnesses grade a state no server ever sent.
+fn menu_overlays(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
+    use rewo_data::assets as a;
+    let mut out = Vec::new();
+    let Some(m) = open else { return out };
+    match layout.protocol_id {
+        // The furnace family (M91): flame then arrow.
+        id if a::progress_index(id).is_some() => {
+            let base = a::progress_index(id).expect("guarded above");
+            let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
+                m.furnace_is_lit(),
+                m.furnace_lit_progress(),
+                m.furnace_burn_progress(),
+            );
+            // The lit sprite is the pair's first, the burn its second.
+            if let Some(f) = flame {
+                out.push((base, to_blit(f)));
+            }
+            out.push((base + 1, to_blit(arrow)));
+        }
+        // brewing_stand (M92): fuel, arrow, bubbles — vanilla's own order.
+        11 => {
+            let (fuel, brew, bubbles) =
+                rewo_world::menu_screen::brewing_progress(m.brewing_fuel(), m.brewing_ticks());
+            for (sprite, blit) in [
+                (a::BREW_FUEL, fuel),
+                (a::BREW_PROGRESS, brew),
+                (a::BREW_BUBBLES, bubbles),
+            ] {
+                if let Some(b) = blit {
+                    out.push((sprite, to_blit(b)));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// [`container_panel`] for `containershot`, which drives the production
