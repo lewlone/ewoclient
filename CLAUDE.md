@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1831 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **46/46**, `inventoryshot` 152/152,
+(M93) — **1836 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **47/47**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4414,7 +4414,34 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**117 mutations across M93a–k, 116 killed and 1 shown equivalent**.
+**126 mutations across M93a–l, 125 killed and 1 shown equivalent**.
+
+### M93l — the beacon's press state machine and `set_beacon`
+
+M92d shipped the chrome, the geometry **and** `beacon_button_hovered`, so
+unlike M93h the call site already existed and the model is not built against a
+guessed one.
+
+**The guard that reads backwards:** choosing a new primary **discards** the
+secondary — *unless* the secondary is already the same effect. A secondary is
+only meaningful alongside the primary it was chosen with, and the exception is
+the "primary at level II" double. Inverting it keeps exactly what should be
+discarded and discards what should be kept.
+
+**The upgrade button is not a fourth kind of press** —
+`BeaconUpgradePowerButton extends BeaconPowerButton` with `isPrimary = false`,
+and `updateStatus` re-points its effect at the primary, so it presses as an
+ordinary *secondary* holding the primary's effect.
+
+**A press only happens on an active, visible button**, so the gate is
+`beacon_button_state(..)` rather than a re-derivation — `updateStatus`'s rules
+stay the single source for both what is drawn and what responds.
+
+**`MobEffect.STREAM_CODEC` is `holderRegistry` — a RAW 0-based id**, not
+`holder`'s `id + 1`. That has now bitten in M16, M21, M55 and M92d, and it is
+quiet every time: an off-by-one names a **real** effect, so the beacon grants
+the wrong one. The witness pins effect id **0**, which is where the two
+conventions disagree most visibly.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
