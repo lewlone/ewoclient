@@ -3461,6 +3461,13 @@ fn run_headless(
                     ),
                     _ => (0, session.shown_menu_mut().click_pickup(slot, button, &props)),
                 };
+                // M93i — `CrafterScreen.slotClicked` runs its toggle BEFORE
+                // the ordinary click and then falls through to it, so this is
+                // additive: whatever it does, the click below still happens.
+                let toggle = session.crafter_slot_click(slot, button, input);
+                if toggle != rewo_world::menu::CrafterToggle::None {
+                    println!("[rewo-m93i] CRAFTER slot {slot}: {toggle:?}");
+                }
                 match predicted {
                     Some(prediction) => {
                         match session.container_click_input(&prediction, input) {
@@ -12525,8 +12532,23 @@ fn finish_drag(
     if let Some((slot, button)) =
         rewo_world::inventory::Inventory::quick_craft_is_pickup(&accepted, kind)
     {
+        // A one-slot drag is re-dispatched as PICKUP, so it reaches
+        // `slotClicked` exactly as a click does and must run the same toggle
+        // (M93i). Vanilla has ONE `slotClicked` override; two call sites here
+        // with only one of them toggling is how they would come to disagree.
+        let toggle = session.crafter_slot_click(
+            slot as i32,
+            button,
+            rewo_world::inventory::CONTAINER_INPUT_PICKUP,
+        );
+        if toggle != rewo_world::menu::CrafterToggle::None {
+            println!("[rewo-m93i] CRAFTER slot {slot}: {toggle:?} (from a one-slot drag)");
+        }
         if let Some(p) = session.shown_menu_mut().click_pickup(slot as i32, button, &props) {
-            if session.container_click_input(&p, 0).is_ok() {
+            if session
+                .container_click_input(&p, rewo_world::inventory::CONTAINER_INPUT_PICKUP)
+                .is_ok()
+            {
                 session.shown_menu_mut().apply_prediction(&p);
             }
         }

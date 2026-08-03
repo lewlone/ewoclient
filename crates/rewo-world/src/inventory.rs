@@ -1031,6 +1031,8 @@ impl Inventory {
 }
 
 /// `ContainerInput.QUICK_MOVE`'s wire id — shift-click.
+/// `ContainerInput.PICKUP` — the ordinary click, and the enum's zero.
+pub const CONTAINER_INPUT_PICKUP: i32 = 0;
 pub const CONTAINER_INPUT_QUICK_MOVE: i32 = 1;
 
 impl Inventory {
@@ -3209,6 +3211,23 @@ pub const CONTAINER_INPUT_PICKUP_ALL: i32 = 6;
 /// `Inventory.SLOT_OFFHAND` — the button `SWAP` uses for the off-hand.
 pub const SWAP_OFFHAND_BUTTON: i32 = 40;
 
+/// The menu slot a SWAP button names in the **player's own** inventory (M93i).
+///
+/// `ContainerInput.SWAP`'s `buttonNum` is an *inventory index* — M69's third
+/// coordinate system — and both `click_swap` and `CrafterScreen`'s
+/// `player.getInventory().getItem(buttonNum)` resolve it the same way. An
+/// out-of-range button is `None`, matching `Inventory.getItem`, which answers
+/// EMPTY rather than throwing.
+pub fn swap_button_menu_slot(button: i32) -> Option<usize> {
+    if button == SWAP_OFFHAND_BUTTON {
+        Some(OFFHAND_MENU_SLOT)
+    } else if (0..HOTBAR_SIZE as i32).contains(&button) {
+        Some(HOTBAR_MENU_START + button as usize)
+    } else {
+        None
+    }
+}
+
 impl Inventory {
     /// `doClick`'s `SWAP` arm — a number key, or F for the off-hand.
     ///
@@ -3592,5 +3611,25 @@ impl Inventory {
     /// straight through as the button.
     pub fn quick_craft_is_pickup(slots: &[usize], kind: i32) -> Option<(usize, i8)> {
         (slots.len() == 1).then(|| (slots[0], kind as i8))
+    }
+}
+
+#[cfg(test)]
+mod m93i_swap_button {
+    use super::*;
+
+    /// M93i — the SWAP button's inventory index, shared by `click_swap` and
+    /// the crafter's toggle gate.
+    #[test]
+    fn a_swap_button_names_the_hotbar_or_the_offhand_and_nothing_else() {
+        assert_eq!(swap_button_menu_slot(0), Some(HOTBAR_MENU_START));
+        assert_eq!(swap_button_menu_slot(8), Some(HOTBAR_MENU_START + 8));
+        assert_eq!(swap_button_menu_slot(SWAP_OFFHAND_BUTTON), Some(OFFHAND_MENU_SLOT));
+        // 9..40 is not a swap target — the range is the hotbar plus the one
+        // literal 40, not a contiguous span, which M40 records as the reason
+        // the check REJECTS rather than clamping.
+        for b in [9, 10, 39, 41, -1] {
+            assert_eq!(swap_button_menu_slot(b), None, "button {b}");
+        }
     }
 }

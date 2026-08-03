@@ -25,6 +25,11 @@ use crate::Connection;
 
 /// `GameType`, from `player_info_update`'s `UPDATE_GAME_MODE` (M62).
 ///
+/// `minecraft:menu`'s `crafter_3x3` protocol id — the one menu with slot
+/// toggles, and the only reason `crafter_slot_click` needs to know a menu type
+/// at all.
+pub const CRAFTER_MENU_PROTOCOL_ID: i32 = 7;
+
 /// The tab list's second sort key is `getGameMode() == SPECTATOR`, and a
 /// spectator's row is also grey and italic, so this has to survive decode as
 /// something better than a raw int.
@@ -3722,6 +3727,69 @@ impl PlaySession {
             .map_or(rewo_world::inventory::PLAYER_CONTAINER_ID, |m| {
                 m.container_id
             })
+    }
+
+    /// `CrafterScreen.slotClicked`'s toggle half (M93i).
+    ///
+    /// Call this **before** the ordinary click and then send the click anyway:
+    /// vanilla's override ends in an unconditional `super.slotClicked(...)`,
+    /// so the toggle is additive. One method rather than a check at each click
+    /// site, because vanilla has exactly one `slotClicked` override and M89's
+    /// lesson was that a per-call-site choice is how paths come to disagree.
+    ///
+    /// Returns what it did, for the caller to log. A menu that is not a
+    /// crafter, or a slot outside its grid, is [`CrafterToggle::None`] — the
+    /// same answer as a click that legitimately toggles nothing, because
+    /// neither does anything.
+    pub fn crafter_slot_click(
+        &mut self,
+        slot: i32,
+        button: i8,
+        input: i32,
+    ) -> rewo_world::menu::CrafterToggle {
+        use rewo_world::menu::CrafterToggle;
+        let none = CrafterToggle::None;
+        let Some(open) = self.menus.open() else {
+            return none;
+        };
+        if !rewo_world::menu::is_crafter_grid_slot(open.layout.protocol_id, slot) {
+            return none;
+        }
+        let disabled = open.crafter_slot_disabled(slot);
+        let slot_occupied = open.menu.menu_slot(slot as usize).is_some();
+        // `player.getInventory().getItem(buttonNum)` — read off the PLAYER's
+        // inventory, not the open menu, so the mapping is the player menu's
+        // and the same one `click_swap` uses. An out-of-range button names no
+        // stack: vanilla's `Inventory.getItem` answers EMPTY rather than
+        // throwing, so it reads as empty and enables nothing.
+        let swap_target_empty = rewo_world::inventory::swap_button_menu_slot(button as i32)
+            .and_then(|i| self.inventory.menu_slot(i))
+            .is_none();
+        let toggle = rewo_world::menu::crafter_toggle(
+            input,
+            disabled,
+            slot_occupied,
+            self.game_state.game_mode().is_some_and(|m| m.is_spectator()),
+            self.inventory.carried().is_none(),
+            swap_target_empty,
+        );
+        let enabled = match toggle {
+            CrafterToggle::Enable => true,
+            CrafterToggle::Disable => false,
+            CrafterToggle::None => return none,
+        };
+        // Send first, apply second. Vanilla is the other way round
+        // (`setSlotState` then the packet), and the two differ only when the
+        // send fails — where this order leaves the local view behind the
+        // server's rather than ahead of it, which is the direction the rest of
+        // the click path already chose.
+        if self.container_slot_state_changed(slot, enabled).is_err() {
+            return none;
+        }
+        if let Some(open) = self.menus.open_mut() {
+            open.set_crafter_slot_state(slot, enabled);
+        }
+        toggle
     }
 
     pub fn container_click_input(
