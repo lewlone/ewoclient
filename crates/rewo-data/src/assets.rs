@@ -1476,7 +1476,19 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "mob_effect/jump_boost.png",
     "mob_effect/strength.png",
     "mob_effect/regeneration.png",
+    // 30..=32 — the crafter (M93j): the disabled-slot cover, then the two
+    // redstone arrows in `isPowered()` order so `CRAFTER_REDSTONE + powered`
+    // indexes them.
+    "gui/sprites/container/crafter/disabled_slot.png",
+    "gui/sprites/container/crafter/unpowered_redstone.png",
+    "gui/sprites/container/crafter/powered_redstone.png",
 ];
+
+/// The crafter's disabled-slot cover in [`MENU_OVERLAY_SPRITES`] (M93j).
+pub const CRAFTER_DISABLED_SLOT: usize = 30;
+/// Its two redstone arrows, **unpowered first**, so `CRAFTER_REDSTONE +
+/// usize::from(powered)` picks one.
+pub const CRAFTER_REDSTONE: usize = 31;
 
 /// Where a furnace menu's `(lit, burn)` pair starts in
 /// [`MENU_OVERLAY_SPRITES`], or `None` for a menu that is not a furnace.

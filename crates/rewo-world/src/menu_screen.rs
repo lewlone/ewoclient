@@ -1887,3 +1887,103 @@ mod tests {
         assert_eq!(moved, vec!["merchant"]);
     }
 }
+
+// -- CrafterScreen (M93j) ---------------------------------------------------
+
+/// `CrafterScreen.extractDisabledSlot` —
+/// `blitSprite(DISABLED_SLOT, cs.x - 1, cs.y - 1, 18, 18)`.
+///
+/// **A third slot geometry**, and none of the three is the obvious one. The
+/// icon is 16x16 at the slot's own position; M35's hover highlight is 24x24 at
+/// `slot - 4`, *bracketing* the icon; this cover is 18x18 at `slot - 1`, which
+/// is the recess the sheet paints rather than either of those. Reusing the
+/// highlight's numbers puts a 24px cover over an 18px hole.
+///
+/// It **replaces** the slot's normal render rather than layering over it:
+/// `extractSlot` calls this *instead of* `super.extractSlot`, so a disabled
+/// slot shows no item. That is the opposite of the toggle itself, which is
+/// additive (M93i) — the two halves of the same feature compose the two
+/// different ways, and swapping them either hides an enabled slot's item or
+/// paints the cover under one.
+pub fn crafter_disabled_cover(slot_x: i32, slot_y: i32) -> ProgressBlit {
+    ProgressBlit {
+        dx: slot_x - 1,
+        dy: slot_y - 1,
+        w: CRAFTER_COVER_SIZE,
+        h: CRAFTER_COVER_SIZE,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// The disabled-slot cover's edge, in GUI pixels.
+pub const CRAFTER_COVER_SIZE: i32 = 18;
+
+/// `CrafterScreen.extractRedstone`'s arrow — 16x16 at panel-relative (97, 35).
+///
+/// **Vanilla writes this one in SCREEN coordinates**, alone in the class:
+///
+/// ```java
+/// int xo = this.width / 2 + 9;
+/// int yo = this.height / 2 - 48;
+/// ```
+///
+/// where every other blit is `leftPos + ...`. The two agree *only* because the
+/// crafter's panel is the standard 176x166: `leftPos = width/2 - 88`, so
+/// `width/2 + 9 == leftPos + 97`, and `topPos = height/2 - 83`, so
+/// `height/2 - 48 == topPos + 35`. Recorded as panel-relative because that is
+/// what Rewo's overlay seam speaks, and with the derivation written down
+/// because a screen with a non-standard panel size would make the two forms
+/// diverge and this constant silently wrong.
+pub fn crafter_redstone() -> ProgressBlit {
+    ProgressBlit {
+        dx: 97,
+        dy: 35,
+        w: 16,
+        h: 16,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+#[cfg(test)]
+mod m93j_crafter {
+    use super::*;
+
+    /// The cover is 18x18 at `slot - 1` — **not** the icon's 16x16 at the slot,
+    /// and not M35's highlight at `slot - 4` / 24x24.
+    #[test]
+    fn the_cover_is_a_third_slot_geometry() {
+        // CrafterMenu's grid slot 0 is at (26, 17).
+        let c = crafter_disabled_cover(26, 17);
+        assert_eq!((c.dx, c.dy, c.w, c.h), (25, 16, 18, 18));
+        // Explicitly NOT the highlight's numbers, which bracket the icon and
+        // would put a 24px cover over an 18px hole.
+        assert_ne!((c.dx, c.dy, c.w, c.h), (26 - 4, 17 - 4, 24, 24));
+        // ...and not the icon's, which would leave the recess showing.
+        assert_ne!((c.dx, c.dy, c.w, c.h), (26, 17, 16, 16));
+        // The offset is uniform, so the last grid slot lands the same way.
+        let c8 = crafter_disabled_cover(26 + 2 * 18, 17 + 2 * 18);
+        assert_eq!((c8.dx, c8.dy), (25 + 36, 16 + 36));
+    }
+
+    /// Vanilla writes the arrow in SCREEN coordinates; this records the
+    /// panel-relative equivalent, and the two agree only for a 176x166 panel.
+    #[test]
+    fn the_redstone_arrow_is_the_screen_form_resolved_against_a_176x166_panel() {
+        let r = crafter_redstone();
+        assert_eq!((r.dx, r.dy, r.w, r.h), (97, 35, 16, 16));
+        // The derivation, so the constant is checkable rather than magic:
+        //   leftPos = (width - 176) / 2 = width/2 - 88, and vanilla's
+        //   xo = width/2 + 9, so xo - leftPos = 97.
+        //   topPos = (height - 166) / 2 = height/2 - 83, and yo = height/2 - 48,
+        //   so yo - topPos = 35.
+        let (image_w, image_h) = (176i32, 166i32);
+        for (width, height) in [(854i32, 480i32), (1280, 720), (640, 400)] {
+            let left = (width - image_w) / 2;
+            let top = (height - image_h) / 2;
+            assert_eq!(width / 2 + 9 - left, r.dx, "at {width}x{height}");
+            assert_eq!(height / 2 - 48 - top, r.dy, "at {width}x{height}");
+        }
+    }
+}

@@ -906,6 +906,214 @@ fn overlays(
         "the 2px frame of the upgrade slot at (168, 47) is unpainted until primary is non-zero",
     );
 
+    // -- M93j: the crafter's disabled-slot cover and redstone arrow --------
+    //
+    // The end-to-end half: M93i made a toggle correct on the wire and
+    // invisible on screen. These grade that it reaches the frame.
+
+    let crafter = rewo_world::menu_layout::layout_of(7).unwrap();
+    let at_crafter = probe(crafter);
+    let mut crafter_frame = |data: &[(i16, i16)],
+                             gpu: &mut Gpu,
+                             off: &mut Offscreen,
+                             wr: &mut WorldRenderer|
+     -> Result<Vec<u8>, String> {
+        let m = menu(7, data);
+        let open = m.open().expect("a menu must be open");
+        wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+            open, 30, false, effects, None,
+        ));
+        wr.set_container(true, None);
+        shot(gpu, off, wr)
+    };
+
+    // All nine enabled is the control. Grid slot 4 is the centre, at
+    // (26 + 18, 17 + 18) = (44, 35), so its cover spans (43, 34)..(60, 51).
+    let none_disabled = crafter_frame(&[], gpu, off, wr)?;
+    let slot4_disabled = crafter_frame(&[(4, 1)], gpu, off, wr)?;
+
+    // Measured, not assumed: the bounding box of everything that changed.
+    let changed_box = |a: &[u8], b: &[u8]| -> Option<(i32, i32, i32, i32)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for gy in 0..166i32 {
+            for gx in 0..176i32 {
+                if at_crafter(a, gx, gy) != at_crafter(b, gx, gy) {
+                    x0 = x0.min(gx);
+                    y0 = y0.min(gy);
+                    x1 = x1.max(gx);
+                    y1 = y1.max(gy);
+                }
+            }
+        }
+        (x0 <= x1).then_some((x0, y0, x1, y1))
+    };
+    let bbox = changed_box(&none_disabled, &slot4_disabled);
+    c.record(
+        "o9.disabling_a_slot_paints_an_18x18_cover_at_slot_minus_one",
+        bbox.is_some_and(|(x0, y0, x1, y1)| {
+            // Inside the declared 18x18 at (43, 34), and wide enough to be a
+            // cover rather than a stray pixel. The far edges use `<=` because
+            // the sprite may carry transparent margins.
+            x0 >= 43 && y0 >= 34 && x1 <= 43 + 17 && y1 <= 34 + 17 && x1 - x0 >= 12
+        }),
+        format!(
+            "changed bbox {bbox:?} — declared (43, 34)..(60, 51); the HIGHLIGHT's geometry              would be (40, 31)..(63, 54) and the ICON's (44, 35)..(59, 50)"
+        ),
+    );
+
+    // ...and it lands on the slot that was disabled, not a fixed one.
+    let slot0_disabled = crafter_frame(&[(0, 1)], gpu, off, wr)?;
+    let bbox0 = changed_box(&none_disabled, &slot0_disabled);
+    c.record(
+        "o10.the_cover_follows_the_slot_that_was_disabled",
+        bbox0.is_some_and(|(x0, y0, _, _)| x0 >= 25 && y0 >= 16 && x0 < 43),
+        format!("slot 0 changed at {bbox0:?}, slot 4 at {bbox:?} — 18px apart per grid step"),
+    );
+
+    // The power flag shares the toggle array, and index 9 must move the ARROW
+    // and cover no slot. Without the range guard on
+    // `crafter_slot_disabled` this would paint a tenth cover as well.
+    let powered = crafter_frame(&[(9, 1)], gpu, off, wr)?;
+    let bbox9 = changed_box(&none_disabled, &powered);
+    c.record(
+        "o11.the_power_flag_swaps_the_arrow_and_covers_no_slot",
+        bbox9.is_some_and(|(x0, y0, x1, y1)| {
+            // The arrow is 16x16 at (97, 35); the grid ends at x = 80.
+            x0 >= 97 && y0 >= 35 && x1 <= 97 + 15 && y1 <= 35 + 15
+        }),
+        format!("changed bbox {bbox9:?} — the arrow is (97, 35)..(112, 50), the grid ends at x=80"),
+    );
+
+    // o11 checks WHERE the arrow is and not WHICH arrow, so swapping the two
+    // sprites survives it — both occupy the same 16x16 box. This pins the
+    // choice, with the discriminating statistic MEASURED FROM THE ART.
+    //
+    // The first draft used luma and asserted the powered arrow is brighter.
+    // It is not: measured, powered is luma 68 and unpowered 124, because a
+    // lit redstone arrow is saturated red (0.299 * 255 = 76) against a pale
+    // grey one. "Lit is brighter" is a perceptual intuition and luma is the
+    // wrong statistic for it. REDNESS is what actually separates them, and
+    // the witness derives the expectation rather than asserting it — which is
+    // why the art was able to correct the premise instead of the premise
+    // quietly inverting the witness.
+    let redness = |rgba: &[u8]| -> f64 {
+        let px: Vec<f64> = rgba
+            .chunks_exact(4)
+            .filter(|p| p[3] > 0)
+            .map(|p| p[0] as f64 - p[1] as f64)
+            .collect();
+        if px.is_empty() {
+            0.0
+        } else {
+            px.iter().sum::<f64>() / px.len() as f64
+        }
+    };
+    // Read straight out of the bake: the point is an oracle from the ART.
+    let overlay_sprites = &baked
+        .container
+        .as_ref()
+        .ok_or("containershot: no container sprites in the bake")?
+        .overlays;
+    let sprite_redness = |i: usize| redness(&overlay_sprites[i].rgba);
+    let off_red = sprite_redness(rewo_data::assets::CRAFTER_REDSTONE);
+    let on_red = sprite_redness(rewo_data::assets::CRAFTER_REDSTONE + 1);
+    // The rendered arrows over o11's box. Both frames share a background, so
+    // the difference between them is driven by the sprite.
+    let frame_redness = |f: &[u8]| -> f64 {
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for gy in 35..51i32 {
+            for gx in 97..113i32 {
+                let p = at_crafter(f, gx, gy);
+                sum += p[0] as f64 - p[1] as f64;
+                n += 1.0;
+            }
+        }
+        sum / n
+    };
+    let unpowered_drawn = frame_redness(&none_disabled);
+    let powered_drawn = frame_redness(&powered);
+    c.record(
+        "o12.the_powered_arrow_is_the_red_one_and_not_merely_a_different_sprite",
+        // The art must separate on this statistic at all...
+        on_red > off_red + 5.0
+            // ...and the frames must order the same way, which a swap inverts.
+            && powered_drawn > unpowered_drawn,
+        format!(
+            "sprite redness unpowered {off_red:.1} < powered {on_red:.1};              drawn unpowered {unpowered_drawn:.1} < powered {powered_drawn:.1}"
+        ),
+    );
+
+    // o13 — the OTHER half of the cover, and the one a pixel witness here
+    // cannot reach: `containershot` never calls `init_gui_items`, so the icon
+    // pass is not running in these frames. This grades the production
+    // `screen_icons` directly instead — the same function the live render
+    // calls, on the M93b rule that a gate must exercise the derivation rather
+    // than a copy of it.
+    //
+    // `extractSlot` calls `extractDisabledSlot` INSTEAD of `super`, so a
+    // disabled slot draws no item. That is the opposite composition from the
+    // toggle itself, which is additive (M93i).
+    {
+        let items = rewo_data::items::Items::load(
+            &rewo_data::DataPaths::for_version("26.2")
+                .ok_or("containershot: no data dir")?
+                .registries_json(),
+        )?;
+        let stone = (0..)
+            .take(4096)
+            .find(|&i| items.name(i) == Some("minecraft:stone"))
+            .ok_or("containershot: stone is not in the item registry")?;
+        let stack = rewo_world::inventory::ItemSlot {
+            item_id: stone,
+            count: 1,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            damage_component_removed: false,
+            has_map_id: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
+            trim_material: None,
+        };
+        // A crafter with the same stack in grid slots 0 and 4.
+        let mut m = menu(7, &[]);
+        let open = m.open_mut().expect("open");
+        let mut content = vec![None; open.menu.slot_count()];
+        content[0] = Some(stack);
+        content[4] = Some(stack);
+        assert!(open.menu.set_content(1, &content, None));
+
+        let count = |m: &Menus| -> usize {
+            let open = m.open().expect("open");
+            crate::live_cmd::screen_icons(
+                &open.menu,
+                &items,
+                &[],
+                W as f32,
+                H as f32,
+                Some(open),
+            )
+            .0
+            .len()
+        };
+        let all_enabled = count(&m);
+        // Disable slot 4 only.
+        m.open_mut().expect("open").data[4] = 1;
+        let one_disabled = count(&m);
+        c.record(
+            "o13.a_disabled_slot_draws_no_item",
+            all_enabled == 2 && one_disabled == 1,
+            format!(
+                "two stacks in the grid: {all_enabled} icons with both enabled,                  {one_disabled} with slot 4 disabled — extractSlot replaces the                  slot's render rather than layering over it"
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(

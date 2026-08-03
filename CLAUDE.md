@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1827 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **37/37**, `inventoryshot` 152/152,
+(M93) — **1829 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **42/42**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**97 mutations across M93a–i, 96 killed and 1 shown equivalent**.
+**110 mutations across M93a–j, 109 killed and 1 shown equivalent**.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
@@ -4470,8 +4470,27 @@ through PICKUP and which would otherwise have quietly not toggled. And because
 owns a socket), everything the adapter does except the send is extracted into a
 tested function.
 
-**Open:** nothing draws the disabled-slot overlay, so a toggled slot is correct
-on the wire and invisible on screen.
+**M93j drew it, pixel-graded.** The cover is a **third slot geometry** — the
+icon is 16x16 at the slot, M35's highlight 24x24 at `slot - 4` *bracketing* it,
+and the cover 18x18 at `slot - 1`. And it **replaces** the slot's render rather
+than layering over it (`extractSlot` never reaches `super`), the opposite
+composition from the toggle's additive one. Vanilla writes the redstone arrow
+in **screen coordinates**, alone in the class; the two forms agree only for the
+standard 176x166 panel, so the witness re-derives it at three window sizes.
+
+**Two render mutations survived first, and both taught something.** The arrow
+*swap* survived a bbox witness — same box, different sprite — and the witness
+that fixed it was itself wrong: it asserted the powered arrow is *brighter*,
+where measured it is luma 68 against 124, because lit redstone is saturated
+**red** (`0.299·255 ≈ 76`) against pale grey. **Luma is the wrong statistic for
+"lit"**; redness separates them 0.0 vs 227.5. The witness derived its
+expectation from the art, so the art corrected the premise rather than the
+premise inverting the witness. The item-suppression mutation survived because
+`containershot` never calls `init_gui_items`, so no pixel witness there reaches
+the icon pass — graded instead by calling the production `screen_icons`.
+
+**The crafter is complete end to end**: decode, model, packet, click routing,
+render.
 
  `live --render-check` not re-run —
 M93 adds no render path.
