@@ -1635,14 +1635,13 @@ next unit of work is a **subsystem**, not a packet.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped and gated. M0–M86 are on `origin/main`; M87–M92 (the
-container arc) are on a branch and NOT yet merged** — as of 2026-08-03,
-**1773 tests / 0 failures** (all seven crates confirmed reporting), `mobshot`
-246/246, `containershot` **27/27**, `inventoryshot` 152/152,
-`live --render-check` **22/22** with validation ON and 0 VUIDs, demo PNG
-`2cc56b4acbfb92cb`. **Merging that branch is the first item in §0.0's "What to
-do next"** — the long-unmerged-branch risk closed once on 2026-07-27 and this
-is it re-opening. Branch new work from `main` and keep it that way.
+**Everything is shipped, gated and merged to `main`** as of 2026-08-03
+(M92, the container arc's last milestone) — **1773 tests / 0 failures** (all
+seven crates confirmed reporting), `mobshot` 246/246, `containershot` **27/27**,
+`inventoryshot` 152/152, `live --render-check` **22/22** with validation ON and
+0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
+`main`. The long-unmerged-branch risk closed on 2026-07-27 and has stayed
+closed; branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
 > found the handoff still claiming M57 at `aadd8e9` and still offering two
@@ -4245,7 +4244,7 @@ widgets the enchanting rows are done; the loom and crafter now only need their
 button lists, the beacon needs `set_beacon`, the anvil a text field, and the
 merchant and stonecutter are blocked on class-C packets.
 
-**M87–M92 are on a branch and not merged to `main`.**
+*(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
 
 ### M91 — the furnace family (2026-08-03)
 

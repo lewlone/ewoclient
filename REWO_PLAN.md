@@ -38,8 +38,8 @@ into EwoClient reusing its MS auth. Everything else is open to revision.
 ### Where it is: M0–M92 shipped (M0–M86 merged to `main`; M87–M92 local)
 
 **Update (2026-08-03, the M87–M92 container arc).** Six milestones landed after
-the cold-start audit below, all on the current branch and **not yet merged**:
-M87 the container/menu screens, M88 proving the windowed client renders one,
+the cold-start audit below, **all now merged to `main`**: M87 the
+container/menu screens, M88 proving the windowed client renders one,
 M89 making it usable, M90 shift-click routing by the menu's own
 `quickMoveStack`, M91 the furnace family, and **M92 the rest of
 `container_set_data` (brewing stand, enchanting table, beacon), the crafting
@@ -158,20 +158,17 @@ byte-identical since M15.
 
 **Read this block, not the one after it (2026-08-03).** The container arc
 M87–M92 has closed everything the section below points at, so its
-"container/menu cluster is the largest" recommendation is spent. Three things
+"container/menu cluster is the largest" recommendation is spent. Two things
 are worth picking up, in rough order of ratio:
 
-1. **Merge M87–M92 to `main`.** Six milestones sit on this branch only. The
-   long-unmerged-branch risk closed once on 2026-07-27 and this is it
-   re-opening; branch new work from `main` and keep it that way.
-2. **The remaining `quickMoveStack` shapes**, which is the cheapest real work
+1. **The remaining `quickMoveStack` shapes**, which is the cheapest real work
    left in the arc. The brewing stand needs three item predicates (the
    `BREWING_FUEL` tag and the four potion items are trivial;
    `PotionBrewing.isIngredient` is the one to scope first), and the enchantment
    table needs a *non-range* move — its last branch places exactly ONE item
    into slot 0, which `move_stack_to` cannot express. The eight
    item-combiner / single-input menus are each a few lines.
-3. **The bespoke widgets, by blocker rather than by screen.** The enchanting
+2. **The bespoke widgets, by blocker rather than by screen.** The enchanting
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
    `set_beacon` plus click-tracked `primary`/`secondary` state; the anvil
