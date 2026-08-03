@@ -487,6 +487,203 @@ pub fn brewing_progress(
     (fuel_bar, brew, bubbles)
 }
 
+// -- the enchanting table (M92) ---------------------------------------------
+
+/// One enchanting-table offer row's visual state.
+///
+/// **Three states, not two.** A reading that splits rows into "offer" and "no
+/// offer" collapses the first two, and they differ by a whole sprite: an empty
+/// row draws its background and *nothing else*, while an unaffordable one
+/// draws the same background **plus its level numeral**. So a table with no
+/// item in it and a table you cannot afford look different, and conflating
+/// them makes an empty table sprout three numerals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnchantRow {
+    /// `cost == 0` — no offer at all. Background only.
+    Empty,
+    /// A real offer the player cannot take: the disabled background *and* the
+    /// disabled numeral, plus the name and cost dimmed.
+    Unaffordable { cost: i32 },
+    /// A real offer, cursor elsewhere.
+    Available { cost: i32 },
+    /// A real offer with the cursor over it.
+    Hovered { cost: i32 },
+}
+
+impl EnchantRow {
+    /// The offer's level cost, or `None` for an empty row.
+    pub fn cost(self) -> Option<i32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { cost }
+            | EnchantRow::Available { cost }
+            | EnchantRow::Hovered { cost } => Some(cost),
+        }
+    }
+
+    /// Whether this row draws its level numeral, and whether the numeral is
+    /// the greyed variant.
+    pub fn numeral(self) -> Option<bool> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(true),
+            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => Some(false),
+        }
+    }
+}
+
+/// The three rows' states (M92).
+///
+/// # The affordability rule, and where its inputs come from
+///
+/// ```java
+/// if ((goldCount < i + 1 || player.experienceLevel < cost) && !player.hasInfiniteMaterials())
+/// ```
+///
+/// **The lapis requirement is the row INDEX plus one, not the cost.** Row 0
+/// needs one lapis and row 2 needs three, whatever they charge in levels —
+/// reading it as "the cost in lapis" makes an expensive top row look
+/// unaffordable with a full stack sitting in the slot.
+///
+/// The three inputs come from three different places, which is the reason this
+/// takes them as parameters rather than reading a menu:
+///
+/// * `costs` is `container_set_data` slots 0..=2 — the only part that is,
+/// * `lapis` is `getGoldCount()`, which is **the COUNT of the stack in menu
+///   slot 1**, so it arrives through `container_set_content`, and
+/// * `xp_level` and `creative` are the local player's, from `set_experience`
+///   (M79) and `player_abilities` (M75).
+///
+/// So "the enchanting table's data packet drives its rows" is only a third
+/// true, and a client that wired the costs alone would grey every row the
+/// moment it had no lapis *value* to check against.
+///
+/// `hasInfiniteMaterials()` is `abilities.instabuild` — creative, which skips
+/// both halves at once.
+pub fn enchant_rows(
+    costs: [i32; 3],
+    lapis: i32,
+    xp_level: i32,
+    creative: bool,
+    mouse_gui: Option<(f64, f64)>,
+) -> [EnchantRow; 3] {
+    std::array::from_fn(|i| {
+        let cost = costs[i];
+        if cost == 0 {
+            return EnchantRow::Empty;
+        }
+        if (lapis < i as i32 + 1 || xp_level < cost) && !creative {
+            return EnchantRow::Unaffordable { cost };
+        }
+        match mouse_gui {
+            Some((x, y)) if enchant_row_hovered(i, x, y) => EnchantRow::Hovered { cost },
+            _ => EnchantRow::Available { cost },
+        }
+    })
+}
+
+/// Row `i`'s 108x19 background, in GUI pixels relative to the panel.
+pub fn enchant_row_rect(i: usize) -> ProgressBlit {
+    ProgressBlit {
+        dx: 60,
+        dy: 14 + 19 * i as i32,
+        w: 108,
+        h: 19,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Row `i`'s 16x16 level numeral — **one pixel in and one down** from the row,
+/// not flush with it.
+pub fn enchant_level_rect(i: usize) -> ProgressBlit {
+    ProgressBlit {
+        dx: 61,
+        dy: 15 + 19 * i as i32,
+        w: 16,
+        h: 16,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Whether the cursor is over row `i` for the purposes of the **highlight and
+/// the click**, which share one test:
+///
+/// ```java
+/// double xx = x - (xo + 60), yy = y - (yo + 14 + 19 * i);
+/// xx >= 0 && yy >= 0 && xx < 108 && yy < 19
+/// ```
+///
+/// A bare rect with no bleed — unlike a slot's, which is `isHovering`'s 18x18.
+pub fn enchant_row_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
+    let (x, y) = (gui_x - 60.0, gui_y - (14 + 19 * i as i32) as f64);
+    x >= 0.0 && y >= 0.0 && x < 108.0 && y < 19.0
+}
+
+/// Whether the cursor is over row `i` for the purposes of its **tooltip**,
+/// which is a *different rectangle* — and this is not a slip in either place.
+///
+/// `extractRenderState` uses `isHovering(60, 14 + 19 * i, 108, 17, ...)`, whose
+/// body applies a one-pixel bleed on every side to a box declared **17 tall**,
+/// giving `[59, 169) x [13 + 19i, 32 + 19i)`; the highlight's own test is a
+/// bare `[60, 168) x [14 + 19i, 33 + 19i)`. They agree over most of the row and
+/// disagree at its edges: the bottom row of pixels highlights without offering
+/// a tooltip, and the row above the top offers a tooltip without highlighting.
+pub fn enchant_tooltip_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
+    let (top, h) = ((14 + 19 * i as i32) as f64, 17.0);
+    gui_x >= 59.0 && gui_x < 60.0 + 108.0 + 1.0 && gui_y >= top - 1.0 && gui_y < top + h + 1.0
+}
+
+/// Where row `i`'s cost numeral is drawn, given its rendered width.
+///
+/// `leftPosText + 86 - font.width(costText)` with `leftPosText = 60 + 20`, so
+/// it is **right-aligned** against x = 166 and a two-digit cost starts further
+/// left than a one-digit one. The `+ 7` on y is on top of the row's own `+ 2`.
+pub fn enchant_cost_pos(i: usize, cost_width: i32) -> (i32, i32) {
+    (80 + 86 - cost_width, 16 + 19 * i as i32 + 7)
+}
+
+/// The four text colours `EnchantmentScreen` uses, as packed `0xRRGGBB`.
+///
+/// **`col` does double duty in vanilla and is reassigned before the cost text
+/// is drawn**, so the name and the cost in the same row are different colours,
+/// and the cost's colour does *not* track the hover. Reading the variable once
+/// gets one of the two wrong wherever they differ.
+///
+/// The disabled name is `(0x685E4A & 0xFEFEFE) >> 1` — the low bit is masked
+/// off *before* the shift so the halving cannot bleed between channels.
+pub const ENCHANT_NAME_AVAILABLE: u32 = 0x685E4A;
+pub const ENCHANT_NAME_HOVERED: u32 = 0xFFFF80;
+pub const ENCHANT_NAME_DISABLED: u32 = 0x342F25;
+pub const ENCHANT_COST_ENABLED: u32 = 0x80FF20;
+pub const ENCHANT_COST_DISABLED: u32 = 0x407F10;
+
+impl EnchantRow {
+    /// This row's cost-text colour, which depends only on affordability.
+    pub fn cost_color(self) -> Option<u32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(ENCHANT_COST_DISABLED),
+            // Not hover-dependent: `col` is reassigned to the same value in
+            // both arms of the enabled branch, after the name has used it.
+            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => {
+                Some(ENCHANT_COST_ENABLED)
+            }
+        }
+    }
+
+    /// This row's name-text colour, which *does* depend on the hover.
+    pub fn name_color(self) -> Option<u32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(ENCHANT_NAME_DISABLED),
+            EnchantRow::Available { .. } => Some(ENCHANT_NAME_AVAILABLE),
+            EnchantRow::Hovered { .. } => Some(ENCHANT_NAME_HOVERED),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,6 +925,139 @@ mod tests {
             let b = brewing_progress(f, 0).0.unwrap();
             assert_eq!((b.dx, b.dy, b.sx, b.sy, b.h), (60, 44, 0, 0, 4));
         }
+    }
+
+    // -- M92: the enchanting table's three rows -----------------------------
+
+    /// Rows with no cursor anywhere.
+    fn rows(costs: [i32; 3], lapis: i32, xp: i32) -> [EnchantRow; 3] {
+        enchant_rows(costs, lapis, xp, false, None)
+    }
+
+    #[test]
+    fn an_empty_row_draws_no_numeral_but_an_unaffordable_one_does() {
+        // The distinction a two-state reading loses. `cost == 0` blits the
+        // disabled background and returns; an unaffordable offer blits the
+        // same background AND its numeral. Conflating them makes an empty
+        // table sprout three numerals.
+        let empty = rows([0, 0, 0], 64, 30);
+        assert_eq!(empty, [EnchantRow::Empty; 3]);
+        assert!(empty.iter().all(|r| r.numeral().is_none()));
+
+        let poor = rows([5, 10, 15], 64, 0);
+        assert!(matches!(poor[0], EnchantRow::Unaffordable { cost: 5 }));
+        assert_eq!(poor[0].numeral(), Some(true), "greyed, but drawn");
+    }
+
+    #[test]
+    fn the_lapis_requirement_is_the_row_index_not_the_cost() {
+        // `goldCount < i + 1` — row 0 needs one lapis and row 2 needs three,
+        // whatever they charge in LEVELS. Reading it as "the cost in lapis"
+        // greys an expensive top row with a full stack in the slot.
+        let one = rows([1, 2, 3], 1, 30);
+        assert!(matches!(one[0], EnchantRow::Available { .. }), "1 lapis buys row 0");
+        assert!(matches!(one[1], EnchantRow::Unaffordable { .. }), "but not row 1");
+        assert!(matches!(one[2], EnchantRow::Unaffordable { .. }));
+        // ...and a costly row is affordable on one lapis if the levels are there.
+        let costly = rows([30, 0, 0], 1, 30);
+        assert!(matches!(costly[0], EnchantRow::Available { .. }));
+    }
+
+    #[test]
+    fn either_half_of_the_affordability_test_alone_disables_a_row() {
+        // It is an OR of two independent shortages, so a witness that only
+        // ever varies one of them cannot tell an `&&` from an `||`.
+        assert!(matches!(rows([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }), "no lapis");
+        assert!(matches!(rows([10, 0, 0], 64, 9)[0], EnchantRow::Unaffordable { .. }), "no levels");
+        assert!(matches!(rows([10, 0, 0], 64, 10)[0], EnchantRow::Available { .. }), "exactly enough");
+    }
+
+    #[test]
+    fn creative_mode_skips_both_halves_at_once() {
+        // `&& !hasInfiniteMaterials()` wraps the WHOLE test, so instabuild
+        // makes an offer available with no lapis and no levels.
+        let broke = enchant_rows([30, 30, 30], 0, 0, true, None);
+        assert!(broke.iter().all(|r| matches!(r, EnchantRow::Available { .. })));
+        // ...but it does not conjure an offer that is not there.
+        assert_eq!(enchant_rows([0, 0, 0], 0, 0, true, None), [EnchantRow::Empty; 3]);
+    }
+
+    #[test]
+    fn only_an_affordable_row_can_be_hovered() {
+        // The hover test sits inside the enabled branch, so the cursor over an
+        // unaffordable row changes nothing at all.
+        let at = |c: [i32; 3], lapis, xp| enchant_rows(c, lapis, xp, false, Some((100.0, 20.0)));
+        assert!(matches!(at([10, 0, 0], 64, 30)[0], EnchantRow::Hovered { .. }));
+        assert!(matches!(at([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }));
+        assert!(matches!(at([0, 0, 0], 64, 30)[0], EnchantRow::Empty));
+        // The cursor is over row 0's band only.
+        assert!(matches!(at([10, 10, 10], 64, 30)[1], EnchantRow::Available { .. }));
+    }
+
+    #[test]
+    fn the_rows_tile_at_a_nineteen_pixel_pitch_with_the_numeral_inset() {
+        for i in 0..3 {
+            let r = enchant_row_rect(i);
+            assert_eq!((r.dx, r.w, r.h), (60, 108, 19));
+            assert_eq!(r.dy, 14 + 19 * i as i32);
+            let n = enchant_level_rect(i);
+            // One in and one down, not flush: `leftPos + 1, yo + 15 + 19 * i`.
+            assert_eq!((n.dx - r.dx, n.dy - r.dy), (1, 1), "row {i}");
+            assert_eq!((n.w, n.h), (16, 16));
+        }
+        // The pitch is 19, so consecutive rows leave no gap and no overlap.
+        assert_eq!(enchant_row_rect(1).dy - enchant_row_rect(0).dy, 19);
+    }
+
+    #[test]
+    fn the_highlight_and_the_tooltip_use_different_rectangles() {
+        // Not a slip in either place: the click/highlight test is a bare
+        // 108x19 and the tooltip's is `isHovering(.., 108, 17, ..)`, whose
+        // body bleeds one pixel on every side of a box declared two rows
+        // shorter. They agree in the middle and disagree at the edges.
+        assert!(enchant_row_hovered(0, 100.0, 32.0), "the highlight reaches y=32");
+        assert!(!enchant_tooltip_hovered(0, 100.0, 32.0), "the tooltip stops at 31");
+        assert!(enchant_tooltip_hovered(0, 100.0, 13.0), "the tooltip reaches up to 13");
+        assert!(!enchant_row_hovered(0, 100.0, 13.0), "the highlight starts at 14");
+        assert!(enchant_tooltip_hovered(0, 59.0, 20.0), "and one pixel left of the row");
+        assert!(!enchant_row_hovered(0, 59.0, 20.0));
+        // Over the middle they agree, which is why the difference is easy to
+        // miss and why the witness probes the edges.
+        for x in [60.0, 100.0, 167.0] {
+            assert!(enchant_row_hovered(0, x, 20.0));
+            assert!(enchant_tooltip_hovered(0, x, 20.0));
+        }
+    }
+
+    #[test]
+    fn the_cost_text_is_right_aligned_so_a_wider_number_starts_further_left() {
+        // `leftPosText + 86 - font.width(costText)`, against a fixed right
+        // edge at 166.
+        let (x1, y) = enchant_cost_pos(0, 6); // one digit
+        let (x2, _) = enchant_cost_pos(0, 12); // two digits
+        assert_eq!(x1 + 6, x2 + 12, "both end at the same x");
+        assert_eq!(x1 + 6, 166);
+        assert_eq!(y, 23, "16 + 7");
+        assert_eq!(enchant_cost_pos(2, 6).1, 61, "16 + 38 + 7");
+    }
+
+    #[test]
+    fn the_cost_colour_ignores_the_hover_but_the_name_colour_does_not() {
+        // `col` does double duty: the name reads it, then it is REASSIGNED
+        // before the cost text is drawn. So a hovered row's name is pale
+        // yellow while its cost stays the same green as an unhovered one.
+        let hov = EnchantRow::Hovered { cost: 5 };
+        let avail = EnchantRow::Available { cost: 5 };
+        assert_ne!(hov.name_color(), avail.name_color(), "the name tracks hover");
+        assert_eq!(hov.cost_color(), avail.cost_color(), "the cost does not");
+        assert_eq!(hov.cost_color(), Some(ENCHANT_COST_ENABLED));
+        // And the disabled name is the available one halved per channel with
+        // the low bit masked off first.
+        assert_eq!(
+            EnchantRow::Unaffordable { cost: 5 }.name_color(),
+            Some((ENCHANT_NAME_AVAILABLE & 0xFEFEFE) >> 1)
+        );
+        assert_eq!(EnchantRow::Empty.cost_color(), None);
     }
 
     #[test]

@@ -8546,14 +8546,14 @@ mod tests {
         // a panel here would send it through the container path instead --
         // which is the change `inventoryshot` would catch, but only because
         // this stays None.
-        assert!(container_panel(&rewo_world::menu_layout::PLAYER, None).is_none());
+        assert!(container_panel(&rewo_world::menu_layout::PLAYER, None, EnchantPlayer::default(), None).is_none());
     }
 
     #[test]
     fn a_lectern_paints_no_panel_rather_than_someone_elses() {
         // LecternScreen is a BookViewScreen. Falling through to a default
         // would paint some other menu's sheet behind a book.
-        assert!(container_panel(layout(17), None).is_none());
+        assert!(container_panel(layout(17), None, EnchantPlayer::default(), None).is_none());
     }
 
     #[test]
@@ -8563,7 +8563,7 @@ mod tests {
             if id == 17 {
                 continue;
             }
-            let p = container_panel(l, None).unwrap_or_else(|| panic!("{} has no panel", l.name));
+            let p = container_panel(l, None, EnchantPlayer::default(), None).unwrap_or_else(|| panic!("{} has no panel", l.name));
             assert!(
                 p.sheet < rewo_data::assets::MENU_BACKGROUND_TEXTURES.len(),
                 "{} indexes past the atlas",
@@ -8577,7 +8577,7 @@ mod tests {
         // generic_9x3: the top 3*18 + 17 = 71 px from the sheet's top, then
         // 96 px from v = 126. The gap between them is the rows a three-row
         // chest does not want.
-        let p = container_panel(layout(2), None).unwrap();
+        let p = container_panel(layout(2), None, EnchantPlayer::default(), None).unwrap();
         assert_eq!(p.blits.len(), 2);
         assert_eq!((p.gui_w, p.gui_h), (176.0, 168.0));
         assert_eq!((p.blits[0].dy, p.blits[0].sy, p.blits[0].h), (0.0, 0.0, 71.0));
@@ -8590,7 +8590,7 @@ mod tests {
         // merchant against 512, so multiplying by 512 must return the pixels
         // vanilla blits -- 0, 0, 276 wide. Multiplying by 256 (the other
         // twenty-one screens' sheet) would halve them.
-        let p = container_panel(layout(19), None).unwrap();
+        let p = container_panel(layout(19), None, EnchantPlayer::default(), None).unwrap();
         assert_eq!(p.blits.len(), 1);
         assert_eq!((p.blits[0].sx, p.blits[0].sy), (0.0, 0.0));
         assert_eq!(p.blits[0].w, 276.0);
@@ -10825,12 +10825,53 @@ fn apply_screen(
 
     // The container's own background sheet, or `None` for the player's
     // inventory, which the pass draws from its own `inventory.png` rect.
-    wr.set_container_panel(container_panel(layout, session.menus.open()));
+    //
+    // The cursor goes in through the SAME panel size the panel itself uses
+    // (M87k's rule): the enchanting table's row highlight is measured from the
+    // panel's top-left, so converting against the player's 176x166 would offset
+    // it wherever the two disagree.
+    wr.set_container_panel(container_panel(
+        layout,
+        session.menus.open(),
+        EnchantPlayer {
+            xp_level: session.hud.experience.level,
+            creative: session.abilities.instabuild,
+        },
+        Some(rewo_gpu::container::screen_to_gui_for(
+            mouse,
+            w,
+            h,
+            layout.image_w as f32,
+            layout.image_h as f32,
+        )),
+    ));
 
     let (mut icons, mut labels) = screen_icons(menu, items, &session.trim_materials, w, h);
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
+    }
+    // M92 — the enchanting table's three cost numerals, from the SAME row
+    // derivation the overlays used.
+    if let (Some(rows), Some(font)) = (
+        enchant_rows_of(
+            layout,
+            session.menus.open(),
+            EnchantPlayer {
+                xp_level: session.hud.experience.level,
+                creative: session.abilities.instabuild,
+            },
+            Some(rewo_gpu::container::screen_to_gui_for(
+                mouse,
+                w,
+                h,
+                layout.image_w as f32,
+                layout.image_h as f32,
+            )),
+        ),
+        baked.font.as_ref(),
+    ) {
+        labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
     apply_gui_icons(wr, gpu, gui, &icons);
 
@@ -10970,6 +11011,8 @@ fn apply_screen(
 fn container_panel(
     layout: &'static rewo_world::menu_layout::MenuLayout,
     open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         return None;
@@ -10992,7 +11035,7 @@ fn container_panel(
         blits,
         gui_w: screen.image_w as f32,
         gui_h: screen.image_h as f32,
-        overlays: menu_overlays(layout, open),
+        overlays: menu_overlays(layout, open, player, mouse_gui),
     })
 }
 
@@ -11008,6 +11051,56 @@ fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::Pan
     }
 }
 
+/// The open menu's enchanting rows, or `None` when it is not that menu.
+///
+/// **One derivation, two consumers** — the sprite overlays and the cost
+/// labels. They must agree about which row is hovered and which is
+/// unaffordable, because a row whose background says "available" while its
+/// numeral says otherwise is not a state vanilla can produce; deriving it
+/// twice gives two chances to disagree (M18's finding, in miniature).
+pub(crate) fn enchant_rows_of(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
+) -> Option<[rewo_world::menu_screen::EnchantRow; 3]> {
+    if layout.protocol_id != 13 {
+        return None;
+    }
+    let m = open?;
+    Some(rewo_world::menu_screen::enchant_rows(
+        m.enchant_costs(),
+        m.enchant_lapis(),
+        player.xp_level,
+        player.creative,
+        mouse_gui,
+    ))
+}
+
+/// What an enchanting-table row's state selects, as `(row sprite, numeral)`.
+///
+/// Kept beside the overlay builder rather than in `rewo-world` because the
+/// indices are `rewo-data`'s and the state is `rewo-world`'s; this is the one
+/// place both are in scope.
+fn enchant_row_sprites(
+    i: usize,
+    row: rewo_world::menu_screen::EnchantRow,
+) -> (usize, Option<usize>) {
+    use rewo_data::assets as a;
+    use rewo_world::menu_screen::EnchantRow;
+    match row {
+        // `cost == 0` blits the disabled background and RETURNS — no numeral.
+        EnchantRow::Empty => (a::ENCHANT_ROW_DISABLED, None),
+        EnchantRow::Unaffordable { .. } => {
+            (a::ENCHANT_ROW_DISABLED, Some(a::ENCHANT_LEVEL_DISABLED + i))
+        }
+        EnchantRow::Available { .. } => (a::ENCHANT_ROW, Some(a::ENCHANT_LEVEL + i)),
+        EnchantRow::Hovered { .. } => {
+            (a::ENCHANT_ROW_HIGHLIGHTED, Some(a::ENCHANT_LEVEL + i))
+        }
+    }
+}
+
 /// Everything an open menu paints over its background sheet, in draw order
 /// (M91 the furnaces, M92 the rest).
 ///
@@ -11015,9 +11108,14 @@ fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::Pan
 /// `containershot` panel built with no `OpenMenu` has no data slots to read,
 /// and inventing a plausible-looking half-lit furnace would make the gate's
 /// panel witnesses grade a state no server ever sent.
+///
+/// `player` carries the two inputs the enchanting table needs that are not the
+/// menu's at all — the local XP level and the creative flag.
 fn menu_overlays(
     layout: &'static rewo_world::menu_layout::MenuLayout,
     open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
 ) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
     use rewo_data::assets as a;
     let mut out = Vec::new();
@@ -11051,9 +11149,35 @@ fn menu_overlays(
                 }
             }
         }
+        // enchantment (M92): each row's background, then its numeral ON TOP of
+        // it — which is why `overlays` is an ordered list and not a set.
+        13 => {
+            let rows = enchant_rows_of(layout, Some(m), player, mouse_gui)
+                .expect("id 13 with an open menu");
+            for (i, row) in rows.into_iter().enumerate() {
+                let (bg, numeral) = enchant_row_sprites(i, row);
+                out.push((bg, to_blit(rewo_world::menu_screen::enchant_row_rect(i))));
+                if let Some(n) = numeral {
+                    out.push((n, to_blit(rewo_world::menu_screen::enchant_level_rect(i))));
+                }
+            }
+        }
         _ => {}
     }
     out
+}
+
+/// The two enchanting-table inputs that are the *player's* rather than the
+/// menu's (M92).
+///
+/// A named pair rather than two loose parameters because they are only ever
+/// read together and swapping a level for a flag would compile.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EnchantPlayer {
+    /// `player.experienceLevel`, from `set_experience` (M79).
+    pub xp_level: i32,
+    /// `player.hasInfiniteMaterials()` — `abilities.instabuild` (M75).
+    pub creative: bool,
 }
 
 /// [`container_panel`] for `containershot`, which drives the production
@@ -11062,7 +11186,7 @@ fn menu_overlays(
 pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
-    container_panel(layout, None)
+    container_panel(layout, None, EnchantPlayer::default(), None)
 }
 
 /// [`sheet_index`] for `containershot`.
@@ -11846,6 +11970,50 @@ fn count_label(
         shadow: true,
         text,
     })
+}
+
+/// The enchanting table's three cost numerals (M92).
+///
+/// The first text a container screen draws that is not a stack count, and the
+/// alignment is why it needs the real advance table rather than a 6-px-per-
+/// digit estimate: `leftPosText + 86 - font.width(costText)` is **right**-
+/// aligned, so a wrong width moves a two-digit cost and leaves a one-digit one
+/// looking correct.
+///
+/// An empty row draws nothing at all — `cost == 0` returns before the numeral,
+/// the name and the cost, so a table with no item shows three blank rows.
+fn enchant_cost_labels(
+    rows: [rewo_world::menu_screen::EnchantRow; 3],
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    let layout = &rewo_world::menu_layout::REGISTRY[13]; // enchantment
+    let (left, top, scale) =
+        rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
+    let mut out = Vec::new();
+    for (i, row) in rows.into_iter().enumerate() {
+        let (Some(cost), Some(rgb)) = (row.cost(), row.cost_color()) else {
+            continue;
+        };
+        let text = cost.to_string();
+        let (x, y) =
+            rewo_world::menu_screen::enchant_cost_pos(i, rewo_gpu::text::width(&text, advance));
+        out.push(rewo_gpu::world::OwnedTextLine {
+            x: left + x as f32 * scale,
+            y: top + y as f32 * scale,
+            px: scale,
+            color: [
+                ((rgb >> 16) & 0xFF) as f32 / 255.0,
+                ((rgb >> 8) & 0xFF) as f32 / 255.0,
+                (rgb & 0xFF) as f32 / 255.0,
+            ],
+            alpha: 1.0,
+            shadow: true,
+            text,
+        });
+    }
+    out
 }
 
 /// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by

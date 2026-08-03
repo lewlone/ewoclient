@@ -140,6 +140,69 @@ impl OpenMenu {
     }
 }
 
+/// `EnchantmentMenu`'s ten data slots — the largest count in the registry, and
+/// what fixes [`MAX_DATA_SLOTS`] (M92).
+///
+/// ```text
+/// 0..=2  costs[i]       the level price of each offer, 0 for "no offer"
+/// 3      enchantmentSeed
+/// 4..=6  enchantClue[i] an ENCHANTMENT REGISTRY ID, or -1
+/// 7..=9  levelClue[i]   the offered level, or -1
+/// ```
+///
+/// **The clue sentinel is `-1`, and 0 is a perfectly valid registry id**, so
+/// the two cannot be conflated: a client that treated an absent clue as 0
+/// would name whichever enchantment happens to sit at index 0 in the server's
+/// registry. That is the reason M87's decode reads a **signed** short, and it
+/// is the only place in the container arc where a negative data value is the
+/// normal case rather than an edge one.
+///
+/// The initial values are never observed as Rewo's zeros: `sendAllDataToRemote`
+/// hands every data slot to `sendInitialData`, which broadcasts all ten before
+/// the screen can draw.
+pub const ENCHANT_COST: i16 = 0;
+pub const ENCHANT_SEED: i16 = 3;
+pub const ENCHANT_CLUE: i16 = 4;
+pub const ENCHANT_LEVEL_CLUE: i16 = 7;
+
+/// The menu slot the lapis sits in. Its **count**, not its presence, is what
+/// `getGoldCount()` returns.
+pub const ENCHANT_LAPIS_SLOT: usize = 1;
+
+impl OpenMenu {
+    /// `menu.costs` — the three offers' level prices, 0 meaning "no offer".
+    pub fn enchant_costs(&self) -> [i32; 3] {
+        std::array::from_fn(|i| self.data(ENCHANT_COST + i as i16) as i32)
+    }
+
+    /// `getEnchantmentSeed()`, which seeds the Standard Galactic name.
+    pub fn enchant_seed(&self) -> i32 {
+        self.data(ENCHANT_SEED) as i32
+    }
+
+    /// `menu.enchantClue[i]` — an enchantment registry id, or `None` for the
+    /// `-1` sentinel.
+    pub fn enchant_clue(&self, i: usize) -> Option<i32> {
+        let v = self.data(ENCHANT_CLUE + i as i16) as i32;
+        (v >= 0).then_some(v)
+    }
+
+    /// `menu.levelClue[i]` — the offered level, or `None` for `-1`.
+    pub fn enchant_level_clue(&self, i: usize) -> Option<i32> {
+        let v = self.data(ENCHANT_LEVEL_CLUE + i as i16) as i32;
+        (v >= 0).then_some(v)
+    }
+
+    /// `getGoldCount()` — **the count of the stack in menu slot 1**, not a
+    /// data slot. So the lapis half of the affordability test arrives through
+    /// `container_set_content`, on a different packet from the costs.
+    pub fn enchant_lapis(&self) -> i32 {
+        self.menu
+            .menu_slot(ENCHANT_LAPIS_SLOT)
+            .map_or(0, |s| s.count as i32)
+    }
+}
+
 /// The client's menu slot. Vanilla has exactly one — `Gui.screen` is a single
 /// field and `setScreen` replaces it (M82's finding for the screen framework
 /// generalises here), so this is an `Option`, not a stack.
@@ -407,6 +470,81 @@ mod tests {
         m.apply_open_screen(1, 11, "Brewing Stand".into());
         let b = m.open().unwrap();
         assert_eq!((b.brewing_ticks(), b.brewing_fuel()), (0, 0));
+    }
+
+    // -- M92: the enchanting table's ten data slots -------------------------
+
+    fn enchant(data: &[(i16, i16)]) -> Menus {
+        let mut m = Menus::new();
+        m.apply_open_screen(6, 13, "Enchant".into()); // enchantment
+        for &(id, v) in data {
+            assert!(m.apply_set_data(6, id, v), "slot {id}");
+        }
+        m
+    }
+
+    #[test]
+    fn the_ten_enchantment_slots_land_in_their_three_groups() {
+        // A transposition here is invisible: every one of these is a small
+        // non-negative integer, so costs read as clues and clues as levels
+        // all render something plausible.
+        let m = enchant(&[
+            (0, 5), (1, 12), (2, 30),      // costs
+            (3, 424242i32 as i16),         // seed
+            (4, 7), (5, 8), (6, 9),        // enchant clues
+            (7, 1), (8, 2), (9, 3),        // level clues
+        ]);
+        let e = m.open().unwrap();
+        assert_eq!(e.enchant_costs(), [5, 12, 30]);
+        assert_eq!(e.enchant_clue(0), Some(7));
+        assert_eq!(e.enchant_clue(2), Some(9));
+        assert_eq!(e.enchant_level_clue(0), Some(1));
+        assert_eq!(e.enchant_level_clue(2), Some(3));
+        assert_eq!(e.enchant_seed(), 424242i32 as i16 as i32);
+    }
+
+    #[test]
+    fn minus_one_is_no_clue_and_zero_is_enchantment_number_zero() {
+        // The sentinel is -1 and 0 is a valid registry id, so the two must not
+        // collapse — a client conflating them names whichever enchantment sits
+        // at index 0 in the server's registry. This is also why the wire field
+        // is a SIGNED short (M87).
+        let m = enchant(&[(4, -1), (5, 0), (7, -1), (8, 0)]);
+        let e = m.open().unwrap();
+        assert_eq!(e.enchant_clue(0), None, "-1 is absent");
+        assert_eq!(e.enchant_clue(1), Some(0), "0 is present, and is id 0");
+        assert_eq!(e.enchant_level_clue(0), None);
+        assert_eq!(e.enchant_level_clue(1), Some(0));
+    }
+
+    #[test]
+    fn the_lapis_count_comes_from_a_menu_slot_not_a_data_slot() {
+        // `getGoldCount()` reads the COUNT of the stack in menu slot 1, so the
+        // affordability test's two halves arrive on two different packets.
+        let mut m = enchant(&[(0, 5)]);
+        assert_eq!(m.open().unwrap().enchant_lapis(), 0, "an empty slot is zero");
+        let inv = m.menu_for(6).unwrap();
+        let mut content = vec![None; inv.slot_count()];
+        content[ENCHANT_LAPIS_SLOT] = Some(crate::inventory::ItemSlot {
+            item_id: 1,
+            count: 13,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            trim_material: None,
+        });
+        inv.set_content(1, &content, None);
+        assert_eq!(m.open().unwrap().enchant_lapis(), 13, "the COUNT, not 1");
+    }
+
+    #[test]
+    fn ten_data_slots_is_the_registry_maximum() {
+        // MAX_DATA_SLOTS exists because of this menu; if it ever shrank, the
+        // level clues would silently stop arriving.
+        assert_eq!(MAX_DATA_SLOTS, 10);
+        assert_eq!(ENCHANT_LEVEL_CLUE as usize + 2, MAX_DATA_SLOTS - 1);
     }
 
     #[test]
