@@ -1684,6 +1684,15 @@ impl WorldRenderer {
         self.container_panel.as_ref().map(|p| p.gui_h)
     }
 
+    /// How many overlay sprites this frame's container panel carries (M92).
+    ///
+    /// Read back OUT of the renderer for M88's reason: asking the open menu
+    /// what it *should* draw answers from the model, and the question is
+    /// whether the windowed frame loop reached the builder at all.
+    pub fn container_panel_overlays(&self) -> usize {
+        self.container_panel.as_ref().map_or(0, |p| p.overlays.len())
+    }
+
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
         self.container_open = open.then_some(hovered);
     }

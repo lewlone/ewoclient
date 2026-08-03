@@ -165,6 +165,16 @@ struct RenderCheck {
     /// the player's 166-tall panel. A value witness is only a value witness if
     /// it reads the value the draw used.
     container_panel_h: Option<f32>,
+    /// The most overlay sprites the renderer's panel carried on any frame
+    /// (M92).
+    ///
+    /// The chest injected at 0.4 has none — a chest's screen paints one sheet
+    /// and stops — so this stays 0 unless the second injection at 0.85 (a
+    /// brewing stand, with its data slots set) reaches the overlay builder.
+    /// `containershot` grades those overlays offscreen; this is the only check
+    /// that says the WINDOWED client draws them, which is the gap M88 closed
+    /// for the panel itself and M86 for nine features before that.
+    container_overlays_max: usize,
     /// Frames on which a container was drawn **before** the gate force-opened
     /// the inventory (M89).
     ///
@@ -397,6 +407,14 @@ impl RenderCheck {
             "r20 the container's panel was its own, not the player's 166",
             self.container_panel_h.is_some_and(|h| (h - 166.0).abs() > 0.5),
             format!("panel height {:?} (player's is 166)", self.container_panel_h),
+        );
+        row(
+            "r22 the windowed client drew a container's overlays",
+            self.container_overlays_max > 0,
+            format!(
+                "{} overlay sprites at peak (a brewing stand draws fuel + arrow + bubbles;                  the chest injected earlier draws none)",
+                self.container_overlays_max
+            ),
         );
         row(
             "r17 validation was enabled",
@@ -4112,6 +4130,8 @@ struct LiveApp {
     /// `Options.advancedItemTooltips` — F3+H (M66). Vanilla persists it to
     /// `options.txt`; Rewo has no options file, so it resets each session.
     advanced_tooltips: bool,
+    /// M92 — whether the second (brewing-stand) injection has happened.
+    brewing_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
@@ -5474,6 +5494,47 @@ impl LiveApp {
                     }
                 }
             }
+            // M92 — near the end, replace it with a BREWING STAND and give it
+            // data, so the frame loop has to reach the overlay builder.
+            //
+            // A chest has no overlays at all, so the injection above cannot
+            // exercise this path however long it runs. `containershot` grades
+            // the overlays offscreen; without this, nothing says the windowed
+            // client ever draws one — the gap M88 closed for the panel and M86
+            // for nine features before that.
+            //
+            // Late (0.85) and after `r20` has latched its height, because a
+            // brewing stand's panel is 166 tall — the same as the player's —
+            // and so cannot serve `r20`'s discrimination.
+            if !self.brewing_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.85 {
+                    if let Some(session) = self.session.as_mut() {
+                        let mut body: Vec<u8> = vec![9, 11, 8];
+                        let title = b"Brewing Stand";
+                        body.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                        body.extend_from_slice(title);
+                        let open_id = session.ids.cb_play_open_screen;
+                        if rewo_net::route_menu(open_id, &body, &session.ids, &mut session.menus) {
+                            // ...and its data: 200 ticks left of a brew, 20
+                            // charges of fuel. Both packets through the
+                            // production router (M17's precedent), so the
+                            // decode, the id gate and the data-slot write are
+                            // all the shipped ones.
+                            let data_id = session.ids.cb_play_container_set_data;
+                            for (slot, value) in [(0i16, 200i16), (1, 20)] {
+                                // VarInt container id, then two BE i16s —
+                                // fixed-width shorts among the var-ints (M87).
+                                let mut d = vec![9u8];
+                                d.extend_from_slice(&slot.to_be_bytes());
+                                d.extend_from_slice(&value.to_be_bytes());
+                                rewo_net::route_menu(data_id, &d, &session.ids, &mut session.menus);
+                            }
+                            self.brewing_injected = true;
+                        }
+                    }
+                }
+            }
             // Three-quarters through, turn on advanced tooltips (F3+H), which
             // adds the item's id as a second line.
             //
@@ -5926,7 +5987,14 @@ impl LiveApp {
                     let forced = self.screen_forced_open;
                     if let Some(c) = self.check.as_mut() {
                         c.container_frames += 1;
-                        c.container_panel_h = Some(h);
+                        // FIRST sighting, not the last: M92 injects a
+                        // second container late (a brewing stand, 166 tall
+                        // like the player's), and r20's question is about the
+                        // chest that proved the panel builder runs.
+                        c.container_panel_h.get_or_insert(h);
+                        c.container_overlays_max = c
+                            .container_overlays_max
+                            .max(state.world_renderer.container_panel_overlays());
                         if !forced {
                             c.container_self_opened_frames += 1;
                         }
@@ -6347,6 +6415,7 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         container_injected: false,
+        brewing_injected: false,
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
