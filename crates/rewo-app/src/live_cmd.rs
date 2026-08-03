@@ -12375,6 +12375,22 @@ pub(crate) fn item_props(
             name,
             "minecraft:paper" | "minecraft:map" | "minecraft:glass_pane"
         ),
+        // M93g — the loom. The banner half is item identity from the tag; the
+        // other two are the CONJUNCTIONS, tag AND prototype component, and a
+        // tag-only test would look correct on every vanilla item.
+        loom_banner: rewo_data::loom_table::is_banner(name),
+        loom_dye: rewo_data::loom_table::in_loom_dyes(name)
+            && rewo_data::item_components_table::prototype_has_component(
+                name,
+                "minecraft:dye",
+            )
+            .unwrap_or(false),
+        loom_pattern: rewo_data::loom_table::in_loom_patterns(name)
+            && rewo_data::item_components_table::prototype_has_component(
+                name,
+                "minecraft:provides_banner_patterns",
+            )
+            .unwrap_or(false),
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

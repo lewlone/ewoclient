@@ -41,6 +41,7 @@ pub mod item_props_table;
 pub mod item_tags;
 pub mod lang;
 pub mod level_event_sounds;
+pub mod loom_table;
 pub mod number_formats;
 pub mod mob_variants;
 pub mod packets;

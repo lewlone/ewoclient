@@ -601,6 +601,8 @@ mod tests {
             unbreakable: false,
             damage_component_removed: false,
             has_map_id: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
             trim_material: None,
         });
         inv.set_content(1, &content, None);
