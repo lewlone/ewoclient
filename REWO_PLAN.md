@@ -2193,6 +2193,117 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M91 — the furnace family (2026-08-03)
+
+Five commits. A furnace takes a shift-clicked stack to the right slot and shows
+its flame and progress arrow — `container_set_data`'s first consumers.
+
+#### The premise this was scoped on was wrong
+
+I proposed a fuel table on the grounds that it would unblock half the
+player→furnace direction, "coal would route to the fuel slot". **It would not
+have.** Vanilla checks `canSmelt` **before** `isFuel`:
+
+```java
+if (canSmelt(stack))     moveItemStackTo(stack, 0, 1, false);
+else if (isFuel(stack))  moveItemStackTo(stack, 1, 2, false);
+```
+
+and a log is **both** — fuel, and smeltable to charcoal via
+`#minecraft:logs_that_burn`. Without `canSmelt` the *first* branch is
+unevaluable for every item, so the whole chain is unknown and the fuel table
+unblocks nothing.
+
+**What unblocked it: the recipes are in the jar.** `canSmelt` is
+`acceptedInputs.test(stack)` over a `RecipePropertySet` the client normally
+receives in `update_recipes` (class C), but for vanilla its contents are exactly
+the ingredient sets of `data/minecraft/recipe/*.json` — already the source for
+`ItemTags.SPEARS` (M19) and the enchantment tags (M42). So a class-C blocker
+turned out not to be one for the vanilla case.
+
+**The caveat rides along and is stated in the generated file**, the same one M19
+and M42 carry: a datapack that adds or removes a smelting recipe makes the table
+wrong **with no error anywhere** — an item routes to the player's inventory
+instead of the ingredient slot, or the reverse.
+
+#### Two tables, two generators, and one that is not a generator
+
+`gen_fuel_values.py` (280 fuels from 65 builder steps at `baseUnit = 200`) and
+`gen_smelting_inputs.py` (FURNACE 73 recipes → 156 inputs, BLAST_FURNACE 25 →
+62, SMOKER 9 → 9). Both fail loud on an unresolvable tag, item or expression,
+and validate every generated name against the item registry.
+
+**Generators here where M87a's menu layouts are a hand table**, and the
+difference is measurable: `FuelValues.vanillaBurnTimes` is one regular builder
+idiom whose only cross-file work is expanding tags, which is data; the layouts
+were four idioms plus cross-class fluent builders, where one extractor reached
+17 of 25.
+
+Three `FuelValues.Builder` semantics, each of which changes the result: the map
+is insertion-ordered and `put` **overwrites** (a later `.add` wins); `.add(tag)`
+expands, and tags **nest**; and `.remove(NON_FLAMMABLE_WOOD)` **runs last**,
+without which crimson and warped burn.
+
+**The generator's arithmetic was wrong first, and the near-miss is the lesson.**
+I wrote the expression evaluator left-to-right *and said so in a comment*; Java
+respects precedence, so `1 + baseUnit * 20` is **4001**, not 4020. The *other*
+`1 + …` term, `1 + baseUnit / 3`, gives **67 under either reading** — so
+spot-checking that one (the distinctive-looking number, and the natural choice)
+would have confirmed a broken evaluator. Only `dried_kelp_block` separates them,
+out of 280 entries. The test now pins twelve values, and the two `1 + …` cases
+are kept together with a note saying neither is sufficient alone.
+
+#### Three accepted-input sets, not one
+
+A smoker takes food and not ore, a blast furnace the reverse, and a log is
+smeltable **in a furnace only** — so in a smoker it is merely fuel.
+`ItemProps::smeltable` is `[bool; 3]` for that reason; one flag routes beef into
+a blast furnace. Mutation-tested: collapsing them to `any()` fails the smoker
+witness, and checking `isFuel` before `canSmelt` fails the log witness.
+
+#### The flame grows upward
+
+Its **source** `y` and **destination** `y` move together (`14 - h` and
+`36 + 14 - h`), so the bottom edge stays at `y = 50` and the top rises.
+Anchoring at a fixed top makes it shrink downward, which reads as an animation
+rather than an error — so the witness asserts the bottom edge across four
+progress values rather than checking one height. `Mth.ceil` with a `+ 1`, so a
+hair of fuel still shows one pixel; truncation would show nothing until 1/24th.
+
+Two accessors have an edge case a plain division gets wrong: `getLitProgress`
+**substitutes 200** for a zero duration (dividing by zero gives infinity, which
+clamps to 1.0 and paints a permanently full flame on a furnace never lit), and
+`getBurnProgress` returns 0 unless **both** fields are non-zero.
+
+#### Two instrument failures, both found here and both fixed
+
+* **M87f's screen survey did not follow `extends`.** It recorded six screens
+  centring their title; it is **nine** — the three furnaces do too, via
+  `AbstractFurnaceScreen.init`, and they declare nothing of their own. A survey
+  that greps each file individually sees a base class's override as absent from
+  every subclass. `tools/check_menu_layouts.py` now walks the chain (24/24) and,
+  mutation-tested with the original bug, names all three and exits 1.
+* **My own test-totalling loop could not tell "0 tests passed" from "no tests
+  ran".** `rewo-app`'s tests stopped compiling — its library still built, so
+  every gate passed — and the loop's `sed` yielded empty, `T=$((T+))` treated it
+  as zero, and the total silently fell 1712 → 1620 while reporting success.
+  Ninety-two tests were not running. The only tell was a number moving in the
+  wrong direction with nothing removed.
+
+#### Measured
+
+**1712 tests** (from 1688), all seven crates confirmed reporting;
+`containershot` 17/17, `inventoryshot` 152/152, `itemshot` 75/75, `handshot`
+34/34, `hudshot` 41/41, `mobshot` 246/246, `menucheck` 25/25 slots + 24/24
+title-x; demo PNG `2cc56b4acbfb92cb` byte-identical.
+
+#### Open
+
+`container_set_data` is now consumed by the furnace family and by nothing else —
+brewing bubbles, enchantment levels and the beacon remain. The crafting family's
+`quickMoveStack` is still untranscribed and declines. The ~11 bespoke-widget
+screens are unchanged.
+
 ### M90 — shift-click routes by the menu's own quickMoveStack (2026-08-02)
 
 The last silently-wrong path in the container arc, and it had a second one

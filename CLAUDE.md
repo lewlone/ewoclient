@@ -1636,7 +1636,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and pushed to `origin/main`** as of 2026-08-02
-(**`a82f539`**, M90) — **1688 tests / 0 failures**, `mobshot` 246/246,
+(**`01f41dd`**, M91) — **1712 tests / 0 failures**, `mobshot` 246/246,
 `containershot` 17/17, `inventoryshot` 152/152, `live --render-check` **21/21**
 with validation ON and 0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
 commit off `main`. The long-unmerged-branch risk closed on 2026-07-27; branch
@@ -4161,11 +4161,61 @@ not look like they belong to anything.** `slot_kind` is now
 `MenuLayout::slot_kind`, with `SlotKind::Plain` for a container's slots and
 `None` (decline) for an untranscribed menu.
 
+### M91 — the furnace family (2026-08-03)
+
+Five commits. A furnace takes a shift-clicked stack to the right slot and
+shows its flame and progress arrow — `container_set_data`'s first consumers.
+Detail in `REWO_PLAN.md` §15.
+
+**The premise this was scoped on was wrong, and checking it before building
+saved the work.** A fuel table alone unblocks nothing: vanilla checks
+`canSmelt` **before** `isFuel`, and a log is **both** — fuel, and smeltable to
+charcoal — so without `canSmelt` the *first* branch is unevaluable for every
+item. **What unblocked it: the recipes are in the jar.** `canSmelt` reads a
+`RecipePropertySet` the client normally gets from `update_recipes` (class C),
+but for vanilla its contents are the ingredient sets of
+`data/minecraft/recipe/*.json` — already the source for `ItemTags.SPEARS`
+(M19) and the enchantment tags (M42). A class-C blocker that turned out not to
+be one. **The caveat is the same one M19/M42 carry** and is stated in the
+generated file: a datapack that adds or removes a smelting recipe makes the
+table wrong with no error anywhere.
+
+**Generators here, where M87a's layouts are a hand table**, and the difference
+is measurable rather than stylistic: `FuelValues` is one regular builder idiom
+whose only cross-file work is expanding tags (data), where the layouts were
+four idioms plus cross-class builders that defeated extraction at 17 of 25.
+280 fuels; FURNACE 156 / BLAST 62 / SMOKER 9 accepted inputs.
+
+**The generator's arithmetic was wrong first, and the near-miss is the
+lesson.** I wrote the evaluator left-to-right *and said so in a comment*; Java
+respects precedence, so `1 + baseUnit * 20` is 4001, not 4020. The *other*
+`1 + …` term gives **67 under either reading** — spot-checking that one (the
+distinctive number, the natural choice) would have confirmed a broken
+evaluator. Only `dried_kelp_block` separates them, out of 280. **Pin a set of
+known-good values, not a representative one: the space is not uniform.**
+
+**Three accepted-input sets, not one** — a smoker takes food and not ore, a
+blast furnace the reverse, and a log is smeltable in a furnace *only*, so in a
+smoker it is merely fuel.
+
+**The flame grows upward**: its source and destination `y` move together, so
+the bottom edge is fixed and the top rises. Anchoring at a fixed top makes it
+shrink downward — an animation rather than an error.
+
+**Two instrument failures, both found here:** M87f's screen survey did not
+follow `extends`, so it recorded six centred titles where there are **nine**
+(the furnaces inherit theirs); the checker now walks the chain. And **my own
+test-totalling loop could not tell "0 tests passed" from "no tests ran"** —
+`rewo-app`'s tests stopped compiling while its library built, every gate
+passed, and the total silently fell 1712 → 1620. Ninety-two tests were not
+running, and the only tell was a number moving the wrong way.
+
 **Open on the container arc:** the ~11 bespoke-widget screens (anvil text
 field, enchantment buttons, beacon, merchant trade list, loom/stonecutter
-scroll grids, crafter toggles); `container_set_data` is decoded and drawn by
-nothing (no furnace arrow, no brewing bubbles); and the furnace/crafting
-`quickMoveStack` shapes, which decline rather than guess.
+scroll grids, crafter toggles); `container_set_data` is consumed by the
+furnace family and by **nothing else** (brewing bubbles, enchantment levels,
+the beacon); and the crafting `quickMoveStack` shape, which declines rather
+than guess.
 
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
