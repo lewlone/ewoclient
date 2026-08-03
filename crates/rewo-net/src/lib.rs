@@ -1425,6 +1425,22 @@ pub fn client_command_body(action: ClientCommand) -> Vec<u8> {
     w.buf
 }
 
+/// The body of a `ServerboundContainerButtonClickPacket` (M92f) — the open
+/// menu's id and a button index, both var-ints, and **nothing else**.
+///
+/// Extracted so the shape is testable without a socket. The absence is the
+/// part worth pinning: its sibling `container_click` carries a **state id**
+/// and a slot map because it is a prediction the server grades, and this one
+/// carries neither because it is not. Adding a state id here — the natural
+/// instinct, since the two packets sit beside each other and both name a
+/// container — desynchronises every field after it.
+pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(container_id);
+    w.varint(button);
+    w.buf
+}
+
 /// `ClientboundAwardStatsPacket` → `handleAwardStats` (M84).
 ///
 /// ```java
@@ -4506,6 +4522,20 @@ mod award_stats_tests {
         let mut w = PacketWriter::default();
         w.varint(-1);
         assert_eq!(apply_award_stats(&w.buf), None);
+    }
+
+    /// Two var-ints and nothing else — no state id, unlike its sibling.
+    #[test]
+    fn the_button_click_body_is_two_varints() {
+        assert_eq!(container_button_click_body(3, 1), vec![3u8, 1]);
+        assert_eq!(container_button_click_body(0, 0), vec![0u8, 0]);
+        // A two-byte body is the whole packet: anything longer means a state
+        // id or a slot map crept in from `container_click`, which sits beside
+        // it and names a container the same way.
+        assert_eq!(container_button_click_body(127, 2).len(), 2);
+        // ...and a container id past 127 is a two-byte varint, so the total
+        // grows by exactly one.
+        assert_eq!(container_button_click_body(128, 2).len(), 3);
     }
 
     /// The `minecraft:mob_effect` registry is **not** network-synchronised, so

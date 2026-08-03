@@ -684,6 +684,74 @@ impl EnchantRow {
     }
 }
 
+/// `EnchantmentMenu.clickMenuButton` — whether pressing row `i` is legal
+/// (M92f).
+///
+/// **This is not the same predicate the row is drawn with**, and the two are
+/// worth keeping apart even though they almost always agree:
+///
+/// ```java
+/// if (buttonId >= 0 && buttonId < costs.length) {
+///    int enchantmentCost = buttonId + 1;
+///    if ((currency.isEmpty() || currency.getCount() < enchantmentCost) && !hasInfiniteMaterials())
+///       return false;
+///    if (costs[buttonId] <= 0 || item.isEmpty()
+///        || (experienceLevel < enchantmentCost || experienceLevel < costs[buttonId]) && !hasInfiniteMaterials())
+///       return false;
+///    ...
+///    return true;
+/// }
+/// return false;
+/// ```
+///
+/// Three differences from [`enchant_rows`]'s test:
+///
+/// * it requires **slot 0 to be non-empty**, which the render never asks —
+///   the render leans on `costs[i]` being 0 without an item, which is true but
+///   is an invariant maintained somewhere else entirely (`slotsChanged`);
+/// * it tests the level against **both** `buttonId + 1` and `costs[i]`, where
+///   the render tests only the second. The first is implied — `slotsChanged`
+///   zeroes any cost below `i + 1` — but again only by an invariant in another
+///   method, so transcribing one and deriving the other would couple them;
+/// * `costs[buttonId] <= 0` rather than `== 0`, so a negative cost is also
+///   refused.
+///
+/// Vanilla sends the packet **only when this returns true**: the client asks
+/// its own menu whether the press is legal before telling the server. Rewo has
+/// no server-side menu to ask, so this *is* that gate.
+pub fn enchant_click_allowed(
+    row: usize,
+    costs: [i32; 3],
+    lapis: i32,
+    has_item: bool,
+    xp_level: i32,
+    creative: bool,
+) -> bool {
+    if row >= costs.len() {
+        return false;
+    }
+    let enchantment_cost = row as i32 + 1;
+    if (lapis < enchantment_cost) && !creative {
+        return false;
+    }
+    if costs[row] <= 0
+        || !has_item
+        || ((xp_level < enchantment_cost || xp_level < costs[row]) && !creative)
+    {
+        return false;
+    }
+    true
+}
+
+/// The enchanting row a GUI-space cursor would press, if any.
+///
+/// The rect is the *highlight's*, not the tooltip's — `mouseClicked` and
+/// `extractBackground` share one test and `extractRenderState` uses another
+/// (see [`enchant_tooltip_hovered`]). Pressing is the highlight's.
+pub fn enchant_click_row(gui_x: f64, gui_y: f64) -> Option<usize> {
+    (0..3).find(|&i| enchant_row_hovered(i, gui_x, gui_y))
+}
+
 // -- the beacon (M92) --------------------------------------------------------
 
 /// The six effects a beacon can grant, in `BeaconBlockEntity.BEACON_EFFECTS`
@@ -1333,6 +1401,72 @@ mod tests {
             Some((ENCHANT_NAME_AVAILABLE & 0xFEFEFE) >> 1)
         );
         assert_eq!(EnchantRow::Empty.cost_color(), None);
+    }
+
+    // -- M92f: the enchanting table's click gate ----------------------------
+
+    #[test]
+    fn the_click_gate_requires_an_item_where_the_render_gate_does_not() {
+        // `clickMenuButton` tests `item.isEmpty()` outright. The render leans
+        // on `costs[i]` being 0 without an item — true, but maintained by
+        // `slotsChanged`, a different method. Transcribing one and deriving
+        // the other would couple them across that seam.
+        assert!(enchant_click_allowed(0, [5, 0, 0], 64, true, 30, false));
+        assert!(
+            !enchant_click_allowed(0, [5, 0, 0], 64, false, 30, false),
+            "no item in slot 0 refuses the press even with a live cost"
+        );
+    }
+
+    #[test]
+    fn the_click_gate_checks_the_level_against_the_row_index_too() {
+        // `experienceLevel < enchantmentCost || experienceLevel < costs[i]`.
+        // The first is normally implied (a cost below `i + 1` is zeroed), so
+        // this probes a cost that breaks the invariant — which is what tells
+        // the two conditions apart at all.
+        assert!(
+            !enchant_click_allowed(2, [0, 0, 1], 64, true, 1, false),
+            "row 2 needs level 3 even for a cost of 1"
+        );
+        assert!(enchant_click_allowed(2, [0, 0, 1], 64, true, 3, false));
+    }
+
+    #[test]
+    fn the_click_gates_lapis_requirement_is_the_row_index_like_the_renders() {
+        assert!(!enchant_click_allowed(2, [0, 0, 5], 2, true, 30, false), "needs 3");
+        assert!(enchant_click_allowed(2, [0, 0, 5], 3, true, 30, false));
+    }
+
+    #[test]
+    fn creative_skips_both_shortages_but_not_the_item_or_the_cost() {
+        // `hasInfiniteMaterials()` guards the two resource tests and NEITHER
+        // the empty-item test nor the zero-cost one, so instabuild cannot
+        // enchant an empty slot.
+        assert!(enchant_click_allowed(2, [0, 0, 5], 0, true, 0, true));
+        assert!(!enchant_click_allowed(2, [0, 0, 5], 0, false, 0, true), "still needs an item");
+        assert!(!enchant_click_allowed(0, [0, 0, 0], 64, true, 30, true), "and a live offer");
+    }
+
+    #[test]
+    fn a_negative_cost_is_refused_rather_than_treated_as_an_offer() {
+        // `costs[buttonId] <= 0`, not `== 0`.
+        assert!(!enchant_click_allowed(0, [-1, 0, 0], 64, true, 30, false));
+    }
+
+    #[test]
+    fn an_out_of_range_row_is_refused() {
+        assert!(!enchant_click_allowed(3, [5, 5, 5], 64, true, 30, true));
+    }
+
+    #[test]
+    fn the_press_uses_the_highlights_rectangle_not_the_tooltips() {
+        // Two rects on one screen (see the M92b witness); the press shares the
+        // highlight's.
+        assert_eq!(enchant_click_row(100.0, 20.0), Some(0));
+        assert_eq!(enchant_click_row(100.0, 39.0), Some(1));
+        assert_eq!(enchant_click_row(100.0, 13.0), None, "the tooltip's row, not the press's");
+        assert_eq!(enchant_click_row(59.0, 20.0), None);
+        assert_eq!(enchant_click_row(200.0, 20.0), None);
     }
 
     // -- M92: the beacon's buttons ------------------------------------------

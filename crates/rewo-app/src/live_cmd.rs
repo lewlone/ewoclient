@@ -4581,6 +4581,15 @@ impl ApplicationHandler for LiveApp {
                         MouseButton::Right => 1,
                         _ => return,
                     };
+                    // M92f — an enchanting row is pressed BEFORE the slot
+                    // logic, and only then. `EnchantmentScreen.mouseClicked`
+                    // runs its three-row loop first and calls
+                    // `super.mouseClicked` only when no row took the press, so
+                    // a click on a *disabled* row still falls through to the
+                    // normal slot handling (which finds nothing there).
+                    if enchant_press(session, &self.screen, ext.width as f32, ext.height as f32) {
+                        return;
+                    }
                     // `AbstractContainerScreen.mouseClicked`'s double click:
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
@@ -11092,6 +11101,56 @@ pub(crate) fn enchant_rows_of(
         player.creative,
         mouse_gui,
     ))
+}
+
+/// An enchanting-row press (M92f). Returns whether the press was taken.
+///
+/// Mirrors `EnchantmentScreen.mouseClicked`: the row loop runs first, and a
+/// row is taken **only if `clickMenuButton` would return true**. A press on a
+/// row that fails the gate is *not* consumed — vanilla falls through to
+/// `super.mouseClicked`, so the slot logic still gets it.
+///
+/// The gate is deliberately not the render's: it additionally requires slot 0
+/// to hold something, and tests the level against `row + 1` as well as the
+/// cost. See `menu_screen::enchant_click_allowed`.
+fn enchant_press(
+    session: &mut PlaySession,
+    screen: &ScreenState,
+    w: f32,
+    h: f32,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != 13 {
+        return false;
+    }
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    let Some(row) = rewo_world::menu_screen::enchant_click_row(gx, gy) else {
+        return false;
+    };
+    let allowed = rewo_world::menu_screen::enchant_click_allowed(
+        row,
+        open.enchant_costs(),
+        open.enchant_lapis(),
+        // `enchantSlots.getItem(0)` — the item being enchanted.
+        open.menu.menu_slot(0).is_some(),
+        session.hud.experience.level,
+        session.abilities.instabuild,
+    );
+    if !allowed {
+        return false;
+    }
+    if let Err(e) = session.container_button_click(row as i32) {
+        log::warn!("enchant button {row}: {e}");
+    }
+    true
 }
 
 /// The beacon's live choice, from its data slots (M92).
