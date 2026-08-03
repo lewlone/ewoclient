@@ -1636,7 +1636,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1823 tests / 0 failures** (all seven crates confirmed reporting),
+(M93) — **1827 tests / 0 failures** (all seven crates confirmed reporting),
 `mobshot` 246/246, `containershot` **37/37**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**79 mutations across M93a–h, 78 killed and 1 shown equivalent**.
+**97 mutations across M93a–i, 96 killed and 1 shown equivalent**.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
@@ -4455,8 +4455,25 @@ is `(containerId, button)`, this is `(slotId, containerId, newState)` — slot
 first. The transposition yields a *well-formed* packet that toggles the wrong
 slot of the wrong menu.
 
-**Open:** the toggle decision and the sender are tested and **not yet called**
-from `live_cmd`'s slot-click routing. `live --render-check` not re-run —
+**M93i wired it into both click paths, and the wiring exposed a defect in
+M93h.** `crafter_toggle` took an `is_swap: bool` and so treated **every**
+non-swap input as PICKUP — but vanilla's `switch` has `case PICKUP` and
+`case SWAP` and **no default**, so a shift-click would have silently re-enabled
+a disabled slot. **No witness could see it because the function had no
+caller.** That is the argument against leaving a model unwired: the shape of
+the call site is an input to the design.
+
+One funnel (`PlaySession::crafter_slot_click`) called from both paths —
+including `finish_drag`'s one-slot-drag re-dispatch, which vanilla routes back
+through PICKUP and which would otherwise have quietly not toggled. And because
+**`PlaySession` has no test module anywhere in the repo** (M71's hazard — it
+owns a socket), everything the adapter does except the send is extracted into a
+tested function.
+
+**Open:** nothing draws the disabled-slot overlay, so a toggled slot is correct
+on the wire and invisible on screen.
+
+ `live --render-check` not re-run —
 M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
