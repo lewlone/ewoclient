@@ -462,6 +462,10 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let sign_states = rewo_data::sign_states::SignStates::load(&paths.blocks_json())?;
     // M20: item identities the mob arm rigs test against.
     let bow_item = data.items.id("minecraft:bow");
+    // M92 — the beacon's six effect icons, by NAME from the report-backed
+    // table (M92c). Derived here beside `spears` because it is the same kind
+    // of fact: a small constant slice of `GameData` the render needs.
+    let beacon_effects = BeaconEffectIds::resolve(&data.mob_effects);
     // Shared with the entity collector for held-item id → name (M22).
     let items = std::sync::Arc::new(data.items.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
@@ -653,6 +657,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 sign_states,
                 bow_item,
                 items,
+                beacon_effects,
                 want_validation,
                 out,
                 settle,
@@ -672,6 +677,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             sign_states,
             bow_item,
             items,
+            beacon_effects,
             args,
             want_validation,
             dirt_item,
@@ -3204,6 +3210,7 @@ fn run_headless(
     sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
+    beacon_effects: BeaconEffectIds,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -3778,6 +3785,7 @@ fn run_headless(
             rewo_gpu::tooltip::TooltipFlag::NORMAL,
             mouse,
             (sw, sh),
+            beacon_effects,
         );
         headless_screen_labels = labels;
     } else {
@@ -4005,6 +4013,8 @@ struct LiveApp {
     sign_states: rewo_data::sign_states::SignStates,
     /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
     bow_item: Option<i32>,
+    /// The beacon's six effect icons (M92), by name from the report.
+    beacon_effects: BeaconEffectIds,
     /// Item registry, for id → name when resolving held models (M22).
     items: std::sync::Arc<rewo_data::items::Items>,
     /// Armour layer definitions (M46). Cloned out of the bake because
@@ -5896,6 +5906,7 @@ impl LiveApp {
                     rewo_gpu::tooltip::TooltipFlag::of(self.advanced_tooltips),
                     self.screen.mouse,
                     (sw, sh),
+                    self.beacon_effects,
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -6241,6 +6252,7 @@ fn run_windowed(
     sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
+    beacon_effects: BeaconEffectIds,
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
@@ -6280,6 +6292,7 @@ fn run_windowed(
         chest_states,
         sign_states,
         bow_item,
+        beacon_effects,
         items,
         pool,
         weather: None,
@@ -10806,6 +10819,8 @@ fn apply_screen(
     flag: rewo_gpu::tooltip::TooltipFlag,
     mouse: (f64, f64),
     (w, h): (f32, f32),
+    // M92 — the beacon's six effect ids, resolved once at startup.
+    beacon_effects: BeaconEffectIds,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -10836,6 +10851,7 @@ fn apply_screen(
         EnchantPlayer {
             xp_level: session.hud.experience.level,
             creative: session.abilities.instabuild,
+            beacon_effects,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -10860,6 +10876,7 @@ fn apply_screen(
             EnchantPlayer {
                 xp_level: session.hud.experience.level,
                 creative: session.abilities.instabuild,
+                beacon_effects,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11100,19 +11117,16 @@ fn beacon_choice(
 
 /// The six beacon effects' `minecraft:mob_effect` registry ids.
 ///
-/// Resolved by NAME from the datagen report, never by position — M64's
-/// alphabetisation trap, where `serde_json`'s sorted map made an
-/// `enumerate()`-derived table give a different wrong answer for every entry
-/// and no decode gate could see it.
+/// From `rewo_data`'s report-backed table (M92c) — by NAME, never by position.
+/// An unresolvable name leaves that slot `None` and the effect simply does not
+/// match, which shows as a button with no icon rather than the *wrong* icon.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct BeaconEffectIds([Option<i32>; 6]);
 
 impl BeaconEffectIds {
-    fn resolve(reg: &rewo_data::packets::Registries) -> Self {
+    pub(crate) fn resolve(m: &rewo_data::mob_effects::MobEffects) -> Self {
         use rewo_world::menu_screen::BeaconEffect;
-        Self(std::array::from_fn(|i| {
-            reg.id_of("minecraft:mob_effect", BeaconEffect::ALL[i].name())
-        }))
+        Self(std::array::from_fn(|i| m.id_of(BeaconEffect::ALL[i].name())))
     }
 
     /// Which of the six a registry id is, or `None` for any other effect.
@@ -11209,9 +11223,62 @@ fn menu_overlays(
                 }
             }
         }
+        // beacon (M92): each button's 22x22 chrome, then its 18x18 icon.
+        9 => {
+            let choice = beacon_choice(m, &player.beacon_effects);
+            for b in rewo_world::menu_screen::beacon_buttons() {
+                let hovered = mouse_gui
+                    .is_some_and(|(x, y)| rewo_world::menu_screen::beacon_button_hovered(b, x, y));
+                let state = rewo_world::menu_screen::beacon_button_state(b, choice, hovered);
+                if state == rewo_world::menu_screen::BeaconButtonState::Hidden {
+                    continue;
+                }
+                out.push((
+                    a::BEACON_BUTTON_CHROME + beacon_chrome_index(state),
+                    to_blit(rewo_world::menu_screen::beacon_button_rect(b)),
+                ));
+                if let Some(icon) = beacon_icon_sprite(b, choice) {
+                    out.push((icon, to_blit(rewo_world::menu_screen::beacon_icon_rect(b))));
+                }
+            }
+        }
         _ => {}
     }
     out
+}
+
+/// A button state's offset into the four chrome sprites, which are listed in
+/// the order `extractContents` tests for them.
+fn beacon_chrome_index(s: rewo_world::menu_screen::BeaconButtonState) -> usize {
+    use rewo_world::menu_screen::BeaconButtonState as S;
+    match s {
+        S::Disabled => 0,
+        S::Selected => 1,
+        S::Highlighted => 2,
+        S::Normal => 3,
+        // Never reached: a hidden button is skipped before it gets here.
+        S::Hidden => 3,
+    }
+}
+
+/// The 18x18 icon a beacon button draws inside its chrome.
+///
+/// The upgrade button **borrows the primary's effect**, so its icon changes as
+/// you click elsewhere — it is the one button whose art is not a constant.
+fn beacon_icon_sprite(
+    b: rewo_world::menu_screen::BeaconButton,
+    choice: rewo_world::menu_screen::BeaconChoice,
+) -> Option<usize> {
+    use rewo_data::assets as a;
+    use rewo_world::menu_screen::{beacon_upgrade_effect, BeaconButtonKind, BeaconEffect};
+    let effect = match b.kind {
+        BeaconButtonKind::Power { effect, .. } => effect,
+        BeaconButtonKind::Upgrade => beacon_upgrade_effect(choice)?,
+        BeaconButtonKind::Confirm => return Some(a::BEACON_CONFIRM),
+        BeaconButtonKind::Cancel => return Some(a::BEACON_CANCEL),
+    };
+    let i = BeaconEffect::ALL.iter().position(|e| *e == effect)?;
+    Some(a::BEACON_EFFECT_ICON + i)
 }
 
 /// The two enchanting-table inputs that are the *player's* rather than the
@@ -11225,6 +11292,9 @@ pub(crate) struct EnchantPlayer {
     pub xp_level: i32,
     /// `player.hasInfiniteMaterials()` — `abilities.instabuild` (M75).
     pub creative: bool,
+    /// The beacon's six effect ids (M92c). Carried here rather than passed
+    /// separately because both screens' extra inputs travel the same seam.
+    pub beacon_effects: BeaconEffectIds,
 }
 
 /// [`container_panel`] for `containershot`, which drives the production

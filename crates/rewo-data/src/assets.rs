@@ -1461,12 +1461,21 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // 24..=29 — the six beacon effect icons, in `BEACON_EFFECTS` flattened
     // order. `Hud.getMobEffectSprite` is `mob_effect/<registry name>`, and the
     // beacon uses only these six of the ~30 in the set.
-    "gui/sprites/mob_effect/speed.png",
-    "gui/sprites/mob_effect/haste.png",
-    "gui/sprites/mob_effect/resistance.png",
-    "gui/sprites/mob_effect/jump_boost.png",
-    "gui/sprites/mob_effect/strength.png",
-    "gui/sprites/mob_effect/regeneration.png",
+    //
+    // **A sprite NAME is not a file path**, and this is the one place in the
+    // list where the difference bites. Every other entry here resolves under
+    // `textures/gui/sprites/`, but `assets/minecraft/atlases/gui.json` also
+    // declares `{type: directory, prefix: "mob_effect/", source: "mob_effect"}`
+    // — so the sprite `mob_effect/speed` comes from `textures/mob_effect/
+    // speed.png`, a different root. Assuming the `gui/sprites/` prefix is
+    // universal makes the bake fail loudly here (it did), which is the good
+    // case; a silently wrong path would be worse.
+    "mob_effect/speed.png",
+    "mob_effect/haste.png",
+    "mob_effect/resistance.png",
+    "mob_effect/jump_boost.png",
+    "mob_effect/strength.png",
+    "mob_effect/regeneration.png",
 ];
 
 /// Where a furnace menu's `(lit, burn)` pair starts in
