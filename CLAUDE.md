@@ -1636,10 +1636,11 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M92, the container arc's last milestone) — **1773 tests / 0 failures** (all
-seven crates confirmed reporting), `mobshot` 246/246, `containershot` **27/27**,
-`inventoryshot` 152/152, `live --render-check` **22/22** with validation ON and
-0 VUIDs, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
+(M93) — **1783 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **29/29**, `inventoryshot` 152/152,
+`itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
+ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
+`2cc56b4acbfb92cb`. No branch or worktree holds a commit off
 `main`. The long-unmerged-branch risk closed on 2026-07-27 and has stayed
 closed; branch new work from `main` and keep it that way.
 
@@ -4237,12 +4238,76 @@ byte-identical; 41 mutations, 40 killed and the survivor shown to be doubly
 guarded in vanilla too. `REWO_PACKET_COVERAGE.md` 109 / 0 / 32.
 
 **Open:** `container_set_data` is now consumed by every menu that sends it.
-`quickMoveStack` still declines for the brewing stand (three item predicates),
-the enchantment table (its last branch is not a range move — it places exactly
-one item), the beacon, and the eight item-combiner menus. Of the bespoke
-widgets the enchanting rows are done; the loom and crafter now only need their
-button lists, the beacon needs `set_beacon`, the anvil a text field, and the
-merchant and stonecutter are blocked on class-C packets.
+`quickMoveStack` still declines for the brewing stand (three item predicates)
+and the enchantment table (its last branch is not a range move — it places
+exactly one item). Of the bespoke widgets the enchanting rows are done; the
+loom and crafter now only need their button lists, the beacon needs
+`set_beacon`, the anvil a text field, and the merchant and stonecutter are
+blocked on class-C packets. **M93 took the beacon's and three of the eight
+item-combiner menus' quick-moves** — see below.
+
+### M93 — the single-input quick-moves, and the derivation nobody was grading (2026-08-03)
+
+Two commits. The plan called the eight item-combiner / single-input menus "a
+few lines each"; **the decompile does not support that**, and the correction is
+worth more than the code. They are **four shapes**, and two of the plan's own
+claims invert.
+
+- **`MerchantMenu.quickMoveStack` consults nothing at all.** The merchant is
+  listed as blocked on class-C `merchant_offers` — true of the trade-list
+  *widget*, false of the quick-move, which never routes a player stack into
+  slots 0 or 1. **Vanilla will not load a trade for you.**
+- **`ItemCombinerMenu`'s player branch is a guard that CONSUMES, not a fallback
+  chain** (M92e's `CraftingMenu` shape). `canMoveIntoInputSlots` defaults to
+  `true`, so for the **anvil** the two main/hotbar arms below it are
+  structurally unreachable: an anvil does not cross-move your inventory, and a
+  full anvil moves *nothing*. Behaviour, not an omission.
+- **The beacon's count test is in the branch, not in `mayPlace`** — so the same
+  item routes two ways by count (one diamond claimed, two cross-moved). Its
+  guard failing *does* fall through, unlike the combiner's. Vanilla's fifth
+  beacon arm is **dead** and deliberately not transcribed. Its tag comes from
+  the jar via `tools/gen_beacon_payment.py` (the `gen_fuel_values.py`
+  precedent), and its slot gets `SlotKind::BeaconPayment` so a **plain** click
+  respects the tag too — `Plain` would keep the quick-move exact and let an
+  ordinary click predict a placement the server rejects.
+
+**Five still decline, on five different blockers** (sizes in REWO_PLAN §0.0):
+stonecutter (recipes — jar-derivable on the M91 precedent, the cheapest thing
+left), grindstone (`isDamageableItem || hasAnyEnchantments`), cartography table
+and loom (item **prototype** components, which Rewo models only as a patch),
+smithing (`RecipePropertySet`, class C).
+
+> **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
+> says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
+> proved those differ (`ENCHANTMENT_GLINT_OVERRIDE` wins both ways). It
+> compiles, reads correctly, and is wrong for exactly the cases that component
+> exists to create. `hasAnyEnchantments` is also `ENCHANTMENTS` **or**
+> `STORED_ENCHANTMENTS` — an enchanted *book* is the canonical grindstone input.
+
+**A fixture rotted, loudly this time.** M90's "an untranscribed menu declines"
+test named the **anvil**, which M93 transcribes — the rot M41 found in
+`swingshot` and M43 in two `item_stack` fixtures, where it was *silent*. It now
+asks the registry which menus are undone, proves the property on all of them,
+and fails if that set is ever empty. **Two witnesses were wrong before the code
+was:** a full anvil answers `None` (not `Some`-with-no-changes), so it is
+paired with a one-free-input anvil that must answer `Some`; and `click_pickup`
+*does* return `Some` with an empty change set, an asymmetry that is vanilla's.
+
+**M93b is the part that generalises — and it is the M92 sweep applied to my own
+code the same session.** M93a shipped with exactly the hole M92 names: all
+eight witnesses hand-build an `ItemProps`, so `beacon_payment` could have been
+wired to nothing and every one would stay green while a real beacon cross-moved
+every diamond. `containershot` now calls the production `live_cmd::item_props`
+and grades what it returns for real registry ids (`d1`), with a second witness
+(`d2`) pinning something the same call must get right in the *other* direction,
+because the negative alone would pass against a function that resolved nothing.
+**The general sweep is still open** — grep for a `*shot` gate that builds a
+struct production resolves from a table or the wire.
+
+**Measured:** 1773 → **1783 tests**, 0 failures, seven crates reporting;
+`containershot` 27 → **29**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
+`mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **11 mutations,
+11 killed**. `live --render-check` not re-run — M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
 

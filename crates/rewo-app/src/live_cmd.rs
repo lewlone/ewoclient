@@ -12321,11 +12321,20 @@ fn carried_icon(
     Some((icon, count_label(stack, x, y, scale)))
 }
 
-/// Resolve an item id into the two facts the click arithmetic needs.
+/// Resolve an item id into the facts the click arithmetic needs.
 ///
 /// `None` for an id the registry does not contain, which makes the whole click
 /// decline rather than predicting against a guessed stack cap.
-fn item_props(
+///
+/// `pub(crate)` so `containershot` can grade **this** function rather than its
+/// own copy. M92's finding is the reason: a gate that constructs the input
+/// production must derive leaves the derivation untested by construction —
+/// there, five `mob_effect` ids were read from a `registry_data` branch that
+/// cannot fire, and `lightmapshot`/`swingshot` could not see it because both
+/// supplied the ids themselves. Every unit test of the quick-move hand-builds
+/// an `ItemProps`, so without a witness on this function the table lookups
+/// below could all return the wrong thing in the live client and stay green.
+pub(crate) fn item_props(
     items: &rewo_data::items::Items,
     id: i32,
 ) -> Option<rewo_world::inventory::ItemProps> {
@@ -12342,6 +12351,8 @@ fn item_props(
             rewo_data::smelting_table::accepts(14, name) == Some(true),
             rewo_data::smelting_table::accepts(22, name) == Some(true),
         ],
+        // M93 — the beacon quick-move's one item predicate.
+        beacon_payment: rewo_data::beacon_payment_table::is_beacon_payment(name),
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

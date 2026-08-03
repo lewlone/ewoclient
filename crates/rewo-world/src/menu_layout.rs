@@ -679,6 +679,58 @@ pub enum QuickMove {
     /// vanilla excludes it from the range outright rather than relying on
     /// `mayPlace` to refuse it.
     Crafter { container_slots: usize },
+    /// `MerchantMenu` — trade inputs 0 and 1, result 2, then the player's 36.
+    ///
+    /// The **only** menu in the registry whose `quickMoveStack` consults
+    /// nothing at all: no item predicate, no recipe, no container state. That
+    /// matters because it contradicts the obvious reading of "the merchant is
+    /// blocked on `merchant_offers`" — the trade *list* is, and the quick-move
+    /// is not, because it never routes a player stack into slots 0 or 1. A
+    /// shift-click from the player inventory does the main/hotbar cross-move
+    /// and nothing else; vanilla will not load your emeralds into a trade for
+    /// you.
+    Merchant,
+    /// `ItemCombinerMenu` — `n` input slots, then the result, then the
+    /// player's 36. Anvil (`result_slot` 2) and smithing (3).
+    ///
+    /// # The branch that is a guard, not a fallback
+    ///
+    /// Its player-slot arm reads
+    ///
+    /// ```java
+    /// } else if (canMoveIntoInputSlots(stack) && slotIndex >= invStart && slotIndex < useRowEnd) {
+    ///     if (!moveItemStackTo(stack, 0, getResultSlot(), false)) return ItemStack.EMPTY;
+    /// } else if (slotIndex >= invStart && slotIndex < invEnd) {  // main -> hotbar
+    /// ```
+    ///
+    /// so the input-slot attempt **consumes** the branch rather than falling
+    /// through to the cross-move the way [`QuickMove::Crafting`] does (M92e).
+    /// `canMoveIntoInputSlots` defaults to `true`, so for the anvil the two
+    /// main/hotbar arms are **structurally unreachable**: shift-clicking
+    /// anywhere in your inventory with an anvil open either fills an input
+    /// slot or moves nothing at all. That is the behaviour, not an omission.
+    ///
+    /// Only the **anvil** maps here. It inherits the `true` guard and both its
+    /// input slots accept anything (`withSlot(0, .., itemStack -> true)`), so
+    /// the transcription is exact with nothing looked up. `SmithingMenu`
+    /// overrides `canMoveIntoInputSlots` with three recipe-derived item tests
+    /// and so stays [`QuickMove::Unimplemented`] — `result_slot` is carried
+    /// anyway because it is the only thing that differs between the two, and
+    /// a guard this menu cannot evaluate is the only reason smithing is out.
+    ItemCombiner { result_slot: usize },
+    /// `BeaconMenu` — one payment slot, then the player's 36.
+    ///
+    /// Its guard is three conditions and only one of them is about the item:
+    /// the payment slot must be **empty**, the stack must be in
+    /// `ItemTags.BEACON_PAYMENT_ITEMS`, and `stack.getCount() == 1`. The count
+    /// test is in the `quickMoveStack` branch itself rather than in
+    /// `mayPlace`, so a stack of two diamonds cross-moves like an ordinary
+    /// item while a single diamond is claimed by the beacon.
+    ///
+    /// Unlike the combiner, the guard failing here **does** fall through to
+    /// the main/hotbar cross-move, because it is a separate `else if` rather
+    /// than a condition on the destination.
+    Beacon,
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -726,6 +778,32 @@ impl MenuLayout {
             } else {
                 crate::inventory::SlotKind::Plain
             }),
+            // A merchant's slot 2 is a `MerchantResultSlot`, which extends
+            // `Slot` and overrides `mayPlace` to `false` — same shape as a
+            // furnace's, so the same `Result`.
+            QuickMove::Merchant => Some(if slot == 2 {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
+            // `createResultSlot` builds a slot whose `mayPlace` is `false`;
+            // every input slot before it carries the definition's own
+            // predicate, which for the anvil (the only menu mapped here) is
+            // `itemStack -> true`, i.e. exactly `Plain`.
+            QuickMove::ItemCombiner { result_slot } => Some(if slot == result_slot {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
+            // The beacon's payment slot takes a TAG, so it is not plain: it is
+            // the one container slot in the transcribed set that refuses an
+            // ordinary item, and `SlotKind::BeaconPayment` is what lets a
+            // plain click respect that too rather than only the quick-move.
+            QuickMove::Beacon => Some(if slot == 0 {
+                crate::inventory::SlotKind::BeaconPayment
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -750,6 +828,15 @@ impl MenuLayout {
             // crafter_3x3 (M92e) — a 9-slot container whose result sits AFTER
             // the player's inventory, so the split is not `slot_count() - 36`.
             7 => QuickMove::Crafter { container_slots: 9 },
+            // M93 — the single-input family.
+            //
+            // anvil: the ItemCombinerMenu shape, `withResultSlot(2, ...)`.
+            // Smithing (21) is the same shape at result 3 and is NOT here:
+            // it overrides `canMoveIntoInputSlots` with three recipe-derived
+            // item tests, which is a `RecipePropertySet` off `update_recipes`.
+            8 => QuickMove::ItemCombiner { result_slot: 2 },
+            9 => QuickMove::Beacon,
+            19 => QuickMove::Merchant,
             _ => QuickMove::Unimplemented,
         }
     }

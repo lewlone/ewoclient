@@ -554,6 +554,15 @@ pub enum SlotKind {
     /// item's own max stack. Every slot of a chest, shulker box, dispenser and
     /// hopper is one — none of those menus has a result or equipment slot.
     Plain,
+    /// `BeaconMenu`'s payment slot (M93): `mayPlace` is
+    /// `itemStack.is(ItemTags.BEACON_PAYMENT_ITEMS)`.
+    ///
+    /// A kind of its own rather than `Plain`, because it is the one container
+    /// slot in the transcribed set that refuses an ordinary item. Reporting it
+    /// as plain would keep the *quick-move* exact — that guard checks the tag
+    /// itself — but would let a **plain click** drop a stick into it locally,
+    /// which the server rejects and pays for with a full state-id resync.
+    BeaconPayment,
 }
 
 /// The four `ArmorSlot`s, in menu order (`SLOT_IDS` is head-first).
@@ -661,6 +670,14 @@ pub struct ItemProps {
     /// different accepted-input sets: a smoker takes food and not ore, a blast
     /// furnace the reverse. One flag would route beef into a blast furnace.
     pub smeltable: [bool; 3],
+    /// `ItemTags.BEACON_PAYMENT_ITEMS` (M93) — the beacon's payment slot.
+    ///
+    /// A tag rather than a component, so it is read from the jar's own
+    /// `data/minecraft/tags/item/beacon_payment_items.json` like
+    /// `ItemTags.SPEARS` (M19) and the enchantment tags (M42), with the same
+    /// caveat those carry: a **datapack** that retags it makes this wrong with
+    /// no error anywhere.
+    pub beacon_payment: bool,
 }
 
 /// Which entry of [`ItemProps::smeltable`] a `minecraft:menu` id selects.
@@ -715,6 +732,8 @@ impl Inventory {
             // and an item with no equippable component is main-hand-only — so
             // absence refuses, it does not default to allowed.
             SlotKind::Armor(piece) => props.equips == Some(piece),
+            // M93 — `itemStack.is(ItemTags.BEACON_PAYMENT_ITEMS)`.
+            SlotKind::BeaconPayment => props.beacon_payment,
             _ => true,
         }
     }
@@ -1088,6 +1107,71 @@ impl Inventory {
                     _ => vec![(player..end, false)],
                 });
             }
+            // M93 — the single-input family. Three shapes, not one.
+            QuickMove::Merchant => {
+                // MerchantMenu: trades 0 and 1, result 2, player 3..39.
+                //
+                // The whole method, and it consults nothing: no predicate, no
+                // recipe, no trade list. A player stack is never routed into
+                // slots 0 or 1 — vanilla will not load a trade for you.
+                let (player, hotbar, end) = (3usize, 30usize, 39usize);
+                return Some(vec![match slot {
+                    2 => (player..end, true),
+                    0 | 1 => (player..end, false),
+                    s if s < hotbar => (hotbar..end, false),
+                    _ => (player..hotbar, false),
+                }]);
+            }
+            QuickMove::ItemCombiner { result_slot } => {
+                // ItemCombinerMenu, i.e. the anvil. The ranges are derived,
+                // not literal: `getInventorySlotStart` is `resultSlot + 1`,
+                // and the player's 27 + 9 follow it.
+                let player = result_slot + 1;
+                let hotbar = player + 27;
+                let end = hotbar + 9;
+                return Some(vec![if slot == result_slot {
+                    (player..end, true)
+                } else if slot < result_slot {
+                    (player..end, false)
+                } else {
+                    // THE guard, and it is not a fallback chain (M92e's
+                    // shape). `canMoveIntoInputSlots` is the inherited `true`
+                    // for the anvil, so this arm always wins and the two
+                    // main/hotbar arms below it in vanilla are unreachable:
+                    // an anvil genuinely does not cross-move your inventory.
+                    // If the input slots are full, `move_stack_to` reports
+                    // nothing moved and the click sends nothing — which is
+                    // vanilla's `return ItemStack.EMPTY`, not a bug.
+                    (0..result_slot, false)
+                }]);
+            }
+            QuickMove::Beacon => {
+                // BeaconMenu: payment 0, player 1..37.
+                let (player, hotbar, end) = (1usize, 28usize, 37usize);
+                if slot == 0 {
+                    return Some(vec![(player..end, true)]);
+                }
+                // Empty slot AND tagged AND a single item. The count test
+                // lives in the branch rather than in `mayPlace`, so two
+                // diamonds cross-move where one diamond is claimed.
+                if slots[0].is_none() && p.beacon_payment && item.count == 1 {
+                    return Some(vec![(0..1, false)]);
+                }
+                // Unlike the combiner's, this guard falling through reaches
+                // the cross-move, because it is a sibling `else if` rather
+                // than a condition on the destination.
+                //
+                // Vanilla has a fifth arm here — `moveItemStackTo(stack, 1,
+                // 37, false)` — which is dead: arms 3 and 4 already cover
+                // 1..37 and slot 0 is arm 1, so no index reaches it. Not
+                // transcribed, because transcribing unreachable code invites
+                // a later reader to "fix" the ranges that make it unreachable.
+                return Some(vec![if slot < hotbar {
+                    (hotbar..end, false)
+                } else {
+                    (player..hotbar, false)
+                }]);
+            }
             QuickMove::Crafter { container_slots } => {
                 // CrafterMenu: grid 0..9, player 9..45, result 45.
                 //
@@ -1264,6 +1348,7 @@ mod tests {
             equips: None,
             is_fuel: false,
             smeltable: [false; 3],
+            beacon_payment: false,
         })
     }
 
@@ -1274,6 +1359,7 @@ mod tests {
             equips: None,
             is_fuel: true,
             smeltable: [false, true, false], // smeltable in a furnace only
+            beacon_payment: false,
         })
     }
 
@@ -1284,6 +1370,7 @@ mod tests {
             equips: None,
             is_fuel: true,
             smeltable: [false; 3],
+            beacon_payment: false,
         })
     }
 
@@ -1600,18 +1687,268 @@ mod tests {
 
     #[test]
     fn an_untranscribed_menu_declines_rather_than_borrowing_another_shape() {
-        // An anvil's quickMoveStack is its own; routing it as a chest would
-        // move the wrong stack and the server would apply it. Declining sends
+        // A menu's quickMoveStack is its own; routing it as a chest would move
+        // the wrong stack and the server would apply it. Declining sends
         // nothing.
-        let mut anvil = Inventory::with_layout(crate::menu_layout::layout_of(8).unwrap());
-        let mut v = vec![None; anvil.slot_count()];
-        v[0] = stack(1, 5);
-        anvil.set_content(1, &v, None);
-        assert_eq!(
-            anvil.layout().quick_move(),
-            crate::menu_layout::QuickMove::Unimplemented
+        //
+        // M90 wrote this against the **anvil**, which M93 then transcribed —
+        // so the fixture named a real-but-uncovered menu and a later milestone
+        // covered it. That is the rot M41 found in `swingshot` and M43 in two
+        // `item_stack` fixtures, and there it was silent: the witness kept
+        // passing while testing nothing. The remedy is the same one those took
+        // — do not name an example that can be taken away. This asks the
+        // registry which menus are still undone and proves the property on
+        // every one of them, so the day the last is transcribed this fails
+        // loudly rather than quietly asserting an empty loop.
+        use crate::menu_layout::{QuickMove, REGISTRY};
+        let undone: Vec<&'static crate::menu_layout::MenuLayout> = REGISTRY
+            .iter()
+            .filter(|m| m.quick_move() == QuickMove::Unimplemented)
+            .collect();
+        assert!(
+            !undone.is_empty(),
+            "every menu is transcribed — delete this test and the \
+             `QuickMove::Unimplemented` arm with it, rather than leaving a \
+             witness that iterates nothing"
         );
-        assert!(anvil.click_quick_move(0, &plain_props).is_none());
+        for layout in undone {
+            let mut menu = Inventory::with_layout(layout);
+            let mut v = vec![None; menu.slot_count()];
+            v[0] = stack(1, 5);
+            menu.set_content(1, &v, None);
+            assert!(
+                menu.click_quick_move(0, &plain_props).is_none(),
+                "{} predicted a shift-click with no transcribed routing",
+                layout.name
+            );
+        }
+    }
+
+    // -- M93: the single-input family --------------------------------------
+
+    /// Build one of the M93 menus with a single stack somewhere in it.
+    fn single_input_menu(protocol_id: i32, slot: usize, item: Option<ItemSlot>) -> Inventory {
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(protocol_id).unwrap());
+        let mut v = vec![None; m.slot_count()];
+        v[slot] = item;
+        assert!(m.set_content(1, &v, None));
+        m
+    }
+
+    fn payment_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            beacon_payment: true,
+            ..plain_props(0).unwrap()
+        })
+    }
+
+    #[test]
+    fn an_anvils_input_branch_consumes_and_never_cross_moves() {
+        // THE M93 finding. `canMoveIntoInputSlots` defaults to true, and the
+        // branch it guards RETURNS rather than falling through, so vanilla's
+        // two main/hotbar arms are unreachable for an anvil. A stack in the
+        // player's main inventory therefore goes to an INPUT slot (0 or 1),
+        // not to the hotbar the way it would in a chest.
+        let anvil = single_input_menu(8, 10, stack(1, 5));
+        let p = anvil.click_quick_move(10, &plain_props).expect("predictable");
+        let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
+        assert!(
+            touched.iter().any(|&i| i < 2),
+            "an anvil must fill an input slot, touched {touched:?}"
+        );
+        assert!(
+            !touched.iter().any(|&i| (30..39).contains(&i)),
+            "an anvil must NOT cross-move into the hotbar, touched {touched:?}"
+        );
+    }
+
+    #[test]
+    fn an_anvil_with_full_inputs_moves_nothing_at_all() {
+        // The other half of "consumes": once both inputs are taken there is no
+        // second destination, so vanilla returns EMPTY and this client sends
+        // nothing. Moving nothing is the correct answer, not a missing case.
+        //
+        // `None` on its own would be a weak witness — it is also what an
+        // untranscribed menu answers, so a regression that reverted the anvil
+        // to `Unimplemented` would pass this half. The pair is the witness:
+        // the SAME anvil with one input free must answer `Some`, which only a
+        // transcribed routing can do.
+        let full = {
+            let mut a = Inventory::with_layout(crate::menu_layout::layout_of(8).unwrap());
+            let mut v = vec![None; a.slot_count()];
+            // Two DIFFERENT ids, so the merge pass cannot top either up.
+            v[0] = stack(7, 1);
+            v[1] = stack(8, 1);
+            v[10] = stack(1, 5);
+            assert!(a.set_content(1, &v, None));
+            a
+        };
+        assert!(
+            full.click_quick_move(10, &plain_props).is_none(),
+            "a full anvil has nowhere to put it and must send nothing"
+        );
+
+        let one_free = {
+            let mut a = Inventory::with_layout(crate::menu_layout::layout_of(8).unwrap());
+            let mut v = vec![None; a.slot_count()];
+            v[0] = stack(7, 1);
+            v[10] = stack(1, 5);
+            assert!(a.set_content(1, &v, None));
+            a
+        };
+        let p = one_free
+            .click_quick_move(10, &plain_props)
+            .expect("one free input is still predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 1),
+            "it must land in the free input slot, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_merchants_player_slot_cross_moves_and_never_loads_a_trade() {
+        // MerchantMenu consults nothing — and specifically never routes a
+        // player stack into trade slots 0 or 1.
+        let m = single_input_menu(19, 3, stack(1, 5));
+        let p = m.click_quick_move(3, &plain_props).expect("predictable");
+        let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
+        assert!(
+            !touched.iter().any(|&i| i < 3),
+            "a merchant must not fill its own trade slots, touched {touched:?}"
+        );
+        assert!(
+            touched.iter().any(|&i| (30..39).contains(&i)),
+            "a main-inventory stack must reach the hotbar, touched {touched:?}"
+        );
+    }
+
+    #[test]
+    fn a_beacon_claims_one_payment_item_but_not_a_pair() {
+        // `stack.getCount() == 1` lives in the quickMoveStack branch, not in
+        // mayPlace — so the SAME item routes two different ways by count.
+        let one = single_input_menu(9, 1, stack(1, 1));
+        let p = one.click_quick_move(1, &payment_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "a single payment item belongs in the beacon slot, {:?}",
+            p.changed
+        );
+
+        let two = single_input_menu(9, 1, stack(1, 2));
+        let p = two.click_quick_move(1, &payment_props).expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(i, _)| *i == 0),
+            "a PAIR must cross-move like an ordinary item, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_beacons_untagged_item_falls_through_to_the_cross_move() {
+        // Unlike the combiner's guard, the beacon's is a sibling `else if`, so
+        // failing it reaches the main/hotbar arms rather than moving nothing.
+        let b = single_input_menu(9, 1, stack(1, 1));
+        let p = b.click_quick_move(1, &plain_props).expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(i, _)| *i == 0),
+            "an untagged item must not enter the payment slot, {:?}",
+            p.changed
+        );
+        assert!(
+            p.changed.iter().any(|(i, _)| (28..37).contains(i)),
+            "and it must still reach the hotbar, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_beacon_with_an_occupied_payment_slot_cross_moves_instead() {
+        let mut b = Inventory::with_layout(crate::menu_layout::layout_of(9).unwrap());
+        let mut v = vec![None; b.slot_count()];
+        v[0] = stack(7, 1);
+        v[1] = stack(1, 1);
+        assert!(b.set_content(1, &v, None));
+        let p = b.click_quick_move(1, &payment_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| (28..37).contains(i)),
+            "an occupied payment slot must not swallow a second, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn every_transcribed_result_slot_refuses_a_placement() {
+        // The three M93 menus each have a result slot whose `mayPlace` is
+        // `false`, and reporting it as Plain would let a click drop something
+        // into it that the server then rejects.
+        use crate::menu_layout::layout_of;
+        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2)] {
+            let layout = layout_of(id).unwrap();
+            for slot in 0..layout.slot_count() {
+                let kind = layout.slot_kind(slot).expect("transcribed");
+                let is_result = kind == SlotKind::Result;
+                assert_eq!(
+                    is_result,
+                    slot == result,
+                    "{} slot {slot} reported {kind:?}",
+                    layout.name
+                );
+            }
+        }
+        // ...and the beacon's payment slot is its own kind, because the tag is
+        // what makes it refuse a stick.
+        assert_eq!(
+            layout_of(9).unwrap().slot_kind(0),
+            Some(SlotKind::BeaconPayment)
+        );
+    }
+
+    #[test]
+    fn a_plain_click_respects_the_beacons_tag_too_not_just_the_shift_click() {
+        // The quick-move guard reads `beacon_payment` itself, so every witness
+        // above passes with `may_place` reporting the slot as accept-anything.
+        // This is the one that does not: a carried stack dropped straight into
+        // the payment slot goes through `may_place`, and reporting the slot as
+        // `Plain` there would predict a placement the server rejects — paid
+        // for with a full state-id resync, which is the whole thing the click
+        // prediction exists to avoid.
+        let mut b = Inventory::with_layout(crate::menu_layout::layout_of(9).unwrap());
+        assert!(b.set_content(1, &vec![None; b.slot_count()], None));
+
+        b.set_carried(stack(1, 1));
+
+        // The refusal shows as an empty change set, NOT as `None`. The two
+        // click paths differ here and both match vanilla: `doClick`'s PICKUP
+        // arm always sends its packet, so a refused placement is a click that
+        // changed nothing, whereas a quick-move that moved nothing is the one
+        // case `click_quick_move` declines outright. Asserting `is_none()`
+        // here — which the first draft of this witness did — measures the
+        // wrong path and fails against correct code.
+        let refused = b
+            .click_pickup(0, 0, &plain_props)
+            .expect("a pickup click is always sendable");
+        assert!(
+            refused.changed.is_empty(),
+            "an untagged item must not be predicted into the payment slot, {:?}",
+            refused.changed
+        );
+        assert_eq!(
+            refused.carried,
+            stack(1, 1),
+            "and it must stay on the cursor"
+        );
+
+        // ...and the same click with a tagged item must land, or the refusal
+        // above would be indistinguishable from a dead code path.
+        let placed = b
+            .click_pickup(0, 0, &payment_props)
+            .expect("a pickup click is always sendable");
+        assert_eq!(
+            placed.changed,
+            vec![(0u16, stack(1, 1))],
+            "a tagged item must still be placeable"
+        );
     }
 
     #[test]

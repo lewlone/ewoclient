@@ -204,6 +204,50 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         format!("chest top {chest_top}, player top {player_top} — a hover asked of the wrong one is off by their difference"),
     );
 
+    // -- M93: the derivation, not a constructed copy of it -------------------
+    //
+    // Every unit test of the single-input quick-moves hand-builds an
+    // `ItemProps`, so none of them can see whether the LIVE client resolves
+    // `beacon_payment` at all. That is M92's finding restated: when a gate
+    // supplies an input production must derive, the derivation is untested by
+    // construction. So this calls the production `live_cmd::item_props` and
+    // grades what it actually returns for real registry ids.
+    {
+        let items = rewo_data::items::Items::load(&paths.registries_json())?;
+        let id_of = |name: &str| -> Result<i32, String> {
+            (0..)
+                .take(4096)
+                .find(|&i| items.name(i) == Some(name))
+                .ok_or_else(|| format!("containershot: {name} not in the item registry"))
+        };
+        let iron = id_of("minecraft:iron_ingot")?;
+        let stick = id_of("minecraft:stick")?;
+        let iron_p = crate::live_cmd::item_props(&items, iron)
+            .ok_or("containershot: item_props declined a real id")?;
+        let stick_p = crate::live_cmd::item_props(&items, stick)
+            .ok_or("containershot: item_props declined a real id")?;
+        c.record(
+            "d1.the_live_client_resolves_the_beacon_payment_tag",
+            iron_p.beacon_payment && !stick_p.beacon_payment,
+            format!(
+                "production item_props: iron_ingot(id {iron}) payment={}, stick(id {stick}) payment={} \
+                 — graded through the same function the live click uses, not a copy",
+                iron_p.beacon_payment, stick_p.beacon_payment
+            ),
+        );
+        // The negative half on its own would pass against a function that
+        // resolved NOTHING, so pin something the same call must also get right.
+        c.record(
+            "d2.the_same_call_still_resolves_the_furnace_predicates",
+            stick_p.is_fuel && !iron_p.is_fuel && iron_p.smeltable == [false; 3],
+            format!(
+                "stick is_fuel={} iron is_fuel={} iron smeltable={:?} — so m1's \
+                 `false` is a real answer and not a dead lookup",
+                stick_p.is_fuel, iron_p.is_fuel, iron_p.smeltable
+            ),
+        );
+    }
+
     // -- the pixel half ------------------------------------------------------
 
     let mut gpu = Gpu::new(None, true)?;
