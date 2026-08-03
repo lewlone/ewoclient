@@ -1441,6 +1441,34 @@ pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
     w.buf
 }
 
+/// `ServerboundContainerSlotStateChangedPacket` (M93h) — the crafter's toggle.
+///
+/// ```java
+/// output.writeVarInt(this.slotId);
+/// output.writeContainerId(this.containerId);   // VarInt.write
+/// output.writeBoolean(this.newState);
+/// ```
+///
+/// **The slot comes FIRST and the container second** — the opposite order from
+/// `container_button_click`, whose body is `(containerId, button)`. Two
+/// adjacent serverbound container packets with their two var-ints transposed:
+/// writing this one container-first produces a well-formed packet that toggles
+/// the wrong slot of the wrong menu, and nothing on the wire says so.
+///
+/// `newState` is **enabled**, matching `setSlotState(slotId, isEnabled)` — not
+/// the stored data value, which is its inverse (`isEnabled ? 0 : 1`).
+pub fn container_slot_state_changed_body(
+    slot_id: i32,
+    container_id: i32,
+    new_state: bool,
+) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(slot_id);
+    w.varint(container_id);
+    w.u8(u8::from(new_state));
+    w.buf
+}
+
 /// `ClientboundAwardStatsPacket` → `handleAwardStats` (M84).
 ///
 /// ```java
@@ -4553,6 +4581,33 @@ mod award_stats_tests {
         // ...and a container id past 127 is a two-byte varint, so the total
         // grows by exactly one.
         assert_eq!(container_button_click_body(128, 2).len(), 3);
+    }
+
+    /// M93h — and the field order is the OPPOSITE of the one above.
+    ///
+    /// `container_button_click` writes `(containerId, button)`;
+    /// `container_slot_state_changed` writes `(slotId, containerId, newState)`.
+    /// Two adjacent serverbound container packets with their two var-ints
+    /// transposed. Writing this one container-first produces a well-formed
+    /// packet that toggles the wrong slot of the wrong menu, and nothing on
+    /// the wire says so — which is why the witness uses two DIFFERENT numbers
+    /// and asserts which is which, rather than a round trip.
+    #[test]
+    fn the_slot_state_body_is_slot_then_container_then_a_bool() {
+        assert_eq!(
+            container_slot_state_changed_body(4, 9, true),
+            vec![4u8, 9, 1],
+            "slot 4 of container 9 — not slot 9 of container 4"
+        );
+        assert_eq!(container_slot_state_changed_body(9, 4, true), vec![9u8, 4, 1]);
+        // The bool is one byte, 0 or 1, and it is `enabled` — the opposite of
+        // the value `setSlotState` stores (`isEnabled ? 0 : 1`).
+        assert_eq!(container_slot_state_changed_body(0, 0, false), vec![0u8, 0, 0]);
+        assert_eq!(container_slot_state_changed_body(0, 0, true), vec![0u8, 0, 1]);
+        // Three bytes is the whole packet at small ids; a state id creeping in
+        // from `container_click` would show here.
+        assert_eq!(container_slot_state_changed_body(8, 127, true).len(), 3);
+        assert_eq!(container_slot_state_changed_body(8, 128, true).len(), 4);
     }
 
     /// The `minecraft:mob_effect` registry is **not** network-synchronised, so

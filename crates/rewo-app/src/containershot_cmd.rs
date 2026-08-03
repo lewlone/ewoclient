@@ -388,6 +388,28 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 rewo_data::loom_table::LOOM_PATTERNS.len()
             ),
         );
+        // M93h — the crafter's toggle packet must RESOLVE, not merely exist as
+        // a field. `container_slot_state_changed` is a different packet from
+        // `container_button_click`, and a name that does not resolve leaves
+        // the sender returning Err forever while every unit witness — which
+        // grades the body builder, not the id — stays green.
+        {
+            let p = rewo_data::packets::Packets::load(&paths.packets_json())?;
+            let ids = rewo_net::ids::Ids::resolve(&p)?;
+            c.record(
+                "d10.the_crafters_toggle_packet_resolves_and_is_not_the_button_click",
+                ids.sb_play_container_slot_state_changed.is_some()
+                    && ids.sb_play_container_slot_state_changed
+                        != ids.sb_play_container_button_click,
+                format!(
+                    "container_slot_state_changed={:?}, container_button_click={:?} — two \
+                     different serverbound packets, and CrafterMenu has no clickMenuButton \
+                     override at all",
+                    ids.sb_play_container_slot_state_changed,
+                    ids.sb_play_container_button_click
+                ),
+            );
+        }
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
         // Wiring both fields to one table would leave d3 green.

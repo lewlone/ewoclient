@@ -3809,6 +3809,35 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `MultiPlayerGameMode.handleSlotStateChanged` (M93h) — a crafter toggle.
+    ///
+    /// Like `container_button_click` this carries **no state id**: it is not a
+    /// prediction the server grades. Unlike it, the slot precedes the
+    /// container in the body — see [`crate::container_slot_state_changed_body`].
+    ///
+    /// `CrafterScreen` sends this **in addition to** the ordinary click, not
+    /// instead of it, so the caller must still send whatever the click itself
+    /// resolved to.
+    pub fn container_slot_state_changed(
+        &mut self,
+        slot_id: i32,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_container_slot_state_changed else {
+            return Err("container_slot_state_changed unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf
+            .extend_from_slice(&crate::container_slot_state_changed_body(
+                slot_id,
+                // M89's rule: the SHOWN menu's id. A crafter toggle belongs to
+                // whatever screen is up, and container 0 is never a crafter.
+                self.shown_container_id(),
+                enabled,
+            ));
+        self.send(p)
+    }
+
     pub fn select_hotbar(&mut self, slot: u8) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_set_carried_item else {
             return Err("set_carried_item unavailable".into());

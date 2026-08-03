@@ -265,6 +265,12 @@ pub struct Ids {
     /// refusing to connect over a packet you may not send is worse than
     /// declining the click.
     pub sb_play_container_button_click: Option<i32>,
+    /// `container_slot_state_changed` (M93h) — the crafter's slot toggles.
+    ///
+    /// A **different packet** from `container_button_click`, not a mode of it:
+    /// `CrafterScreen` never calls `clickMenuButton`, and `CrafterMenu` has no
+    /// `clickMenuButton` override at all.
+    pub sb_play_container_slot_state_changed: Option<i32>,
     pub sb_play_use_item: Option<i32>,
     pub cb_play_set_health: Option<i32>,
     pub cb_play_system_chat: Option<i32>,
@@ -631,6 +637,7 @@ impl Ids {
             sb_play_client_command: opt!(p, P, S, "client_command"),
             sb_play_container_click: opt!(p, P, S, "container_click"),
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
+            sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_use_item: opt!(p, P, S, "use_item"),
             cb_play_set_health: opt!(p, P, C, "set_health"),
             cb_play_system_chat: opt!(p, P, C, "system_chat"),

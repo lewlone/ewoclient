@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1817 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **36/36**, `inventoryshot` 152/152,
+(M93) — **1823 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **37/37**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4414,7 +4414,49 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**68 mutations across M93a–g, 67 killed and 1 shown equivalent**. `live --render-check` not re-run —
+**79 mutations across M93a–h, 78 killed and 1 shown equivalent**.
+
+### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
+
+The first bespoke-widget work, and it opens by **correcting the plan**: the
+claim that "the loom and crafter need only their button lists" was wrong about
+both.
+
+**The crafter does not use `container_button_click`.** `CrafterMenu` has no
+`clickMenuButton` override; `CrafterScreen` sends
+`container_slot_state_changed` — **id 20** against the button click's 17. Only
+the loom, the enchanting table and the two class-C screens are button-click
+screens.
+
+**The loom needs far more than a button list** (and is not shipped):
+`getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` when the
+pattern slot is empty — a **`banner_pattern`** tag, where `expand_tag`
+hardcodes `tags/item` — and otherwise the stack's `PROVIDES_BANNER_PATTERNS`
+**HolderSet value**, which Rewo walks and discards, resolved through the
+`minecraft:banner_pattern` registry that `parse_registry_data` does not
+capture.
+
+Four crafter facts that invert:
+
+1. **`containerData[i] == 1` is DISABLED** — `setSlotState` takes an
+   `isEnabled` and stores its inverse, so reading the value as "enabled"
+   disables exactly the slots the player left on.
+2. **`isSlotDisabled`'s `< 9` is load-bearing**: index 9 is the **power flag in
+   the same array**, and 9 is a legal index, so a powered crafter would read as
+   having a ninth disabled slot with nothing faulting.
+3. **PICKUP is asymmetric** — re-enabling is unconditional, disabling needs an
+   **empty cursor**, because clicking an empty enabled slot while holding
+   something is a placement.
+4. **The toggle is ADDITIVE** — `slotClicked` ends in an unconditional
+   `super.slotClicked(...)`.
+
+**And the packet body inverts against its sibling**: `container_button_click`
+is `(containerId, button)`, this is `(slotId, containerId, newState)` — slot
+first. The transposition yields a *well-formed* packet that toggles the wrong
+slot of the wrong menu.
+
+**Open:** the toggle decision and the sender are tested and **not yet called**
+from `live_cmd`'s slot-click routing. `live --render-check` not re-run —
 M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
