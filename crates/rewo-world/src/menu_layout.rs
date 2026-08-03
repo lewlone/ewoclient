@@ -662,6 +662,23 @@ pub enum QuickMove {
     /// goes to the INGREDIENT slot. Routing on `isFuel` alone puts it in the
     /// fuel slot, which is wrong and looks reasonable.
     Furnace,
+    /// `CraftingMenu` — result 0, grid 1..=9, then the player's 36 (M92e).
+    ///
+    /// The only shape whose player-slot branch is a **fallback chain**: it
+    /// tries the crafting grid first and cross-moves between the main
+    /// inventory and the hotbar only if the grid took nothing. That is why
+    /// shift-clicking in a crafting table *fills the grid* — behaviour
+    /// `InventoryMenu` does not have, because its own 2x2 grid is not a
+    /// shift-click destination at all.
+    Crafting,
+    /// `CrafterMenu` — grid 0..=8, the player's 36, then the result at 45.
+    ///
+    /// Almost [`QuickMove::SimpleContainer`], and the one difference is the
+    /// number that matters: its player destination is `9..45`, **not**
+    /// `9..slots.size()`. Slot 45 is the `NonInteractiveResultSlot`, and
+    /// vanilla excludes it from the range outright rather than relying on
+    /// `mayPlace` to refuse it.
+    Crafter { container_slots: usize },
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -693,6 +710,22 @@ impl MenuLayout {
             } else {
                 crate::inventory::SlotKind::Plain
             }),
+            // A crafting table's slot 0 is a `ResultSlot` — it refuses
+            // placement, so it must not read as plain.
+            QuickMove::Crafting => Some(if slot == 0 {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
+            // ...and a crafter's result is its LAST slot, not its first. The
+            // two crafting menus put it at opposite ends (see the module
+            // docs), which is exactly the kind of thing a shared `Result`
+            // constant would paper over.
+            QuickMove::Crafter { .. } => Some(if slot + 1 == self.slot_count() {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -712,6 +745,11 @@ impl MenuLayout {
             // blast_furnace, furnace, smoker — one shape, three accepted-input
             // sets, which `smelting_table::accepts` selects by this same id.
             10 | 14 | 22 => QuickMove::Furnace,
+            // crafting (M92e) — the fallback-chain shape.
+            12 => QuickMove::Crafting,
+            // crafter_3x3 (M92e) — a 9-slot container whose result sits AFTER
+            // the player's inventory, so the split is not `slot_count() - 36`.
+            7 => QuickMove::Crafter { container_slots: 9 },
             _ => QuickMove::Unimplemented,
         }
     }

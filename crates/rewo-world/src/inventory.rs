@@ -971,8 +971,8 @@ impl Inventory {
     /// off-hand are checked *first* for an item that fits them and whose slot
     /// is empty, which is why shift-clicking a helmet equips it rather than
     /// moving it to the hotbar.
-    /// Where a shift-click from `slot` sends its stack, and whether the
-    /// destination range fills backwards.
+    /// Where a shift-click from `slot` sends its stack: the destination
+    /// ranges **to try in order**, each with whether it fills backwards.
     ///
     /// `quickMoveStack` is a per-menu-class **override** in vanilla, so this
     /// dispatches on the menu's shape rather than computing one (M90). An
@@ -980,13 +980,34 @@ impl Inventory {
     /// predictable — not sent": moving nothing is inert, where sending a
     /// shift-click under another menu's rules moves the wrong stack to the
     /// wrong place and the server applies it.
+    ///
+    /// # Why a chain and not one range (M92e)
+    ///
+    /// Most menus try exactly one destination, but `CraftingMenu` writes
+    ///
+    /// ```java
+    /// if (!moveItemStackTo(stack, 1, 10, false)) {          // the grid
+    ///     if (slotIndex < 37) moveItemStackTo(stack, 37, 46, false);
+    ///     else                moveItemStackTo(stack, 10, 37, false);
+    /// }
+    /// ```
+    ///
+    /// and `moveItemStackTo` returns *whether anything moved*, so the second
+    /// destination is reached only when the first took nothing. A single-range
+    /// return cannot express that: it must either always try the grid (and
+    /// never cross-move once the grid is full) or never try it. So the vector
+    /// is the fallback chain, and the caller takes the first entry that moves
+    /// something.
+    ///
+    /// Every other menu returns a one-element chain, which is the same
+    /// behaviour it had before.
     fn quick_move_destination(
         &self,
         slot: usize,
         item: ItemSlot,
         slots: &[Option<ItemSlot>],
         p: ItemProps,
-    ) -> Option<(std::ops::Range<usize>, bool)> {
+    ) -> Option<Vec<(std::ops::Range<usize>, bool)>> {
         use crate::menu_layout::QuickMove;
         match self.layout.quick_move() {
             QuickMove::Unimplemented => return None,
@@ -1001,11 +1022,11 @@ impl Inventory {
                 // Container to player fills BACKWARDS — from the top of the
                 // range, which is the hotbar's right-hand end, because
                 // `addStandardInventorySlots` appends the hotbar last.
-                return Some(if slot < container_slots {
+                return Some(vec![if slot < container_slots {
                     (container_slots..slots.len(), true)
                 } else {
                     (0..container_slots, false)
-                });
+                }]);
             }
             QuickMove::Furnace => {
                 // AbstractFurnaceMenu.quickMoveStack. The literal ranges are
@@ -1015,7 +1036,7 @@ impl Inventory {
                 let player = 3usize;
                 let hotbar = player + 27;
                 let end = slots.len();
-                return Some(if slot == result {
+                return Some(vec![if slot == result {
                     // The result fills the player backwards.
                     (player..end, true)
                 } else if slot == ingredient || slot == fuel {
@@ -1039,11 +1060,52 @@ impl Inventory {
                     } else {
                         (player..hotbar, false)
                     }
+                }]);
+            }
+            // M92e — the crafting family, the two shapes that needed the chain.
+            QuickMove::Crafting => {
+                // CraftingMenu: result 0, grid 1..10, player 10..46.
+                let (grid, player, hotbar, end) = (1usize, 10usize, 37usize, 46usize);
+                return Some(match slot {
+                    // The result fills the player BACKWARDS, so a craft lands
+                    // in the hotbar's right-hand slots first.
+                    0 => vec![(player..end, true)],
+                    // A player slot tries the GRID first and only cross-moves
+                    // when the grid took nothing. This is the branch that made
+                    // the chain necessary, and it is why shift-clicking in a
+                    // crafting table fills the grid rather than shuffling your
+                    // inventory — unlike `InventoryMenu`, whose 2x2 grid is not
+                    // a shift-click destination at all.
+                    s if (player..end).contains(&s) => vec![
+                        (grid..player, false),
+                        if s < hotbar {
+                            (hotbar..end, false)
+                        } else {
+                            (player..hotbar, false)
+                        },
+                    ],
+                    // A grid slot goes back to the player, forwards.
+                    _ => vec![(player..end, false)],
                 });
+            }
+            QuickMove::Crafter { container_slots } => {
+                // CrafterMenu: grid 0..9, player 9..45, result 45.
+                //
+                // Almost `SimpleContainer`, and the difference is the one
+                // number that matters: its player range is `9..45`, NOT
+                // `9..slots.size()`. Slot 45 is the `NonInteractiveResultSlot`
+                // and vanilla excludes it from the destination outright rather
+                // than relying on `mayPlace` to refuse it.
+                let end = slots.len().saturating_sub(1);
+                return Some(vec![if slot < container_slots {
+                    (container_slots..end, true)
+                } else {
+                    (0..container_slots, false)
+                }]);
             }
             QuickMove::PlayerInventory => {}
         }
-        Some(match slot {
+        Some(vec![match slot {
             // The crafting result fills backwards, so a craft lands in the
             // hotbar's right-hand slots first.
             0 => (9..45, true),
@@ -1060,7 +1122,7 @@ impl Inventory {
                             ArmorPiece::Feet => 3,
                         };
                     if slots[armour].is_none() {
-                        return Some((armour..armour + 1, false));
+                        return Some(vec![(armour..armour + 1, false)]);
                     }
                 }
                 let _ = item;
@@ -1070,7 +1132,7 @@ impl Inventory {
                     _ => (9..45, false),
                 }
             }
-        })
+        }])
     }
 
     /// `doClick`'s `QUICK_MOVE` arm — shift-click.
@@ -1111,10 +1173,19 @@ impl Inventory {
         for _ in 0..slots.len() {
             let Some(current) = slots[index] else { break };
             let mut moving = current;
-            let (range, backwards) = self.quick_move_destination(index, moving, &slots, p)?;
-            let moved = self.move_stack_to(
-                &mut slots, &mut moving, range, backwards, props, &mut changed,
-            )?;
+            let chain = self.quick_move_destination(index, moving, &slots, p)?;
+            // The first destination that moves something wins, which is what
+            // vanilla's `if (!moveItemStackTo(a)) moveItemStackTo(b)` means
+            // (M92e). A chain of one behaves exactly as the old single range.
+            let mut moved = false;
+            for (range, backwards) in chain {
+                moved = self.move_stack_to(
+                    &mut slots, &mut moving, range, backwards, props, &mut changed,
+                )?;
+                if moved {
+                    break;
+                }
+            }
             if !moved {
                 break;
             }
@@ -1363,6 +1434,168 @@ mod tests {
             vec![1],
             "a log in a SMOKER is fuel, not an ingredient"
         );
+    }
+
+    // -- M92e: the crafting family, and the fallback chain ------------------
+
+    /// A crafting table (menu 12): result 0, grid 1..=9, player 10..46.
+    fn crafting_with(items: &[(usize, Option<ItemSlot>)]) -> Inventory {
+        let mut c = Inventory::with_layout(crate::menu_layout::layout_of(12).unwrap());
+        let mut v = vec![None; c.slot_count()];
+        for &(slot, item) in items {
+            v[slot] = item;
+        }
+        assert!(c.set_content(1, &v, None));
+        c
+    }
+
+    #[test]
+    fn a_crafting_tables_player_slot_fills_the_GRID_first() {
+        // The behaviour the chain exists for, and the one that separates a
+        // crafting table from `InventoryMenu`: vanilla tries `1..10` before it
+        // cross-moves. A single-range implementation had to choose between
+        // "always the grid" and "never the grid", and picking either loses
+        // half the behaviour.
+        let c = crafting_with(&[(20, stack(1, 5))]);
+        let p = c.click_quick_move(20, &plain_props).expect("predictable");
+        let into = moved_into(&p, 20);
+        assert!(!into.is_empty());
+        assert!(
+            into.iter().all(|&s| (1..10).contains(&s)),
+            "must land in the 3x3 grid, got {into:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_grid_falls_back_to_the_cross_move() {
+        // The other half of the chain: `moveItemStackTo` returns whether
+        // anything moved, so the cross-move is reached only when the grid took
+        // nothing. Fill the grid with a DIFFERENT item so nothing can merge.
+        let mut items: Vec<(usize, Option<ItemSlot>)> =
+            (1..10).map(|s| (s, stack(2, 64))).collect();
+        items.push((20, stack(1, 5))); // a main-inventory slot
+        let c = crafting_with(&items);
+        let p = c.click_quick_move(20, &plain_props).expect("predictable");
+        let into = moved_into(&p, 20);
+        assert!(!into.is_empty(), "the fallback must actually run");
+        assert!(
+            into.iter().all(|&s| (37..46).contains(&s)),
+            "a main slot with a full grid goes to the hotbar, got {into:?}"
+        );
+    }
+
+    #[test]
+    fn the_cross_move_direction_depends_on_which_half_the_source_is_in() {
+        // Only reachable once the grid is full — which is why this witness
+        // has to set the grid up too, and why an implementation that skipped
+        // the grid would still pass a naive version of it.
+        let grid: Vec<(usize, Option<ItemSlot>)> =
+            (1..10).map(|s| (s, stack(2, 64))).collect();
+
+        let mut from_hotbar = grid.clone();
+        from_hotbar.push((40, stack(1, 5))); // a hotbar slot
+        let c = crafting_with(&from_hotbar);
+        let p = c.click_quick_move(40, &plain_props).expect("predictable");
+        assert!(
+            moved_into(&p, 40).iter().all(|&s| (10..37).contains(&s)),
+            "a hotbar slot goes to the main inventory"
+        );
+    }
+
+    #[test]
+    fn the_crafting_result_fills_the_player_backwards() {
+        // `moveItemStackTo(stack, 10, 46, true)` — a craft lands in the
+        // hotbar's right-hand end first.
+        let c = crafting_with(&[(0, stack(1, 5))]);
+        let p = c.click_quick_move(0, &plain_props).expect("predictable");
+        assert_eq!(
+            moved_into(&p, 0).into_iter().max(),
+            Some(45),
+            "the last slot of the crafting menu"
+        );
+    }
+
+    #[test]
+    fn a_grid_slot_goes_back_to_the_player_forwards() {
+        let c = crafting_with(&[(4, stack(1, 5))]);
+        let p = c.click_quick_move(4, &plain_props).expect("predictable");
+        let into = moved_into(&p, 4);
+        assert!(into.iter().all(|&s| (10..46).contains(&s)), "{into:?}");
+        assert_eq!(into.into_iter().min(), Some(10), "forwards, from the top");
+    }
+
+    #[test]
+    fn the_two_crafting_menus_put_their_result_at_opposite_ends() {
+        // `CraftingMenu` is result-first (slot 0) and `CrafterMenu` is
+        // result-LAST (slot 45). A shared "the result is slot 0" constant
+        // would make a crafter's output look like a plain slot and let a
+        // click try to put something in it.
+        let crafting = crate::menu_layout::layout_of(12).unwrap();
+        let crafter = crate::menu_layout::layout_of(7).unwrap();
+        assert_eq!(crafting.slot_kind(0), Some(SlotKind::Result));
+        assert_eq!(crafting.slot_kind(45), Some(SlotKind::Plain));
+        assert_eq!(crafter.slot_kind(0), Some(SlotKind::Plain));
+        assert_eq!(crafter.slot_kind(45), Some(SlotKind::Result));
+    }
+
+    #[test]
+    fn a_crafters_grid_slot_excludes_its_own_result_from_the_destination() {
+        // `moveItemStackTo(stack, 9, 45, true)` — 45, not `slots.size()`.
+        // Reversed, so without the exclusion the FIRST slot tried would be the
+        // result slot itself.
+        //
+        // HONESTY NOTE, on M59's terms: **no single-point mutation breaks
+        // this**, and it was mutation-tested to find that out. The result slot
+        // is guarded twice — the range stops at 45, *and* `slot_kind` answers
+        // `Result` there so `may_place` refuses it — so widening the range to
+        // `9..46` alone changes nothing observable, and neither does dropping
+        // the slot-kind alone. Removing BOTH is caught.
+        //
+        // That redundancy is **vanilla's own**, not an artefact of this port:
+        // `CrafterMenu` passes 45 as the bound *and* `NonInteractiveResultSlot`
+        // returns false from `mayPlace`. The transcription keeps the bound
+        // because the source has it; the witness is kept as a statement of the
+        // rule, because the realistic regression is someone "simplifying" the
+        // crafter into `SimpleContainer { container_slots: 9 }`, whose
+        // `slots.len()` bound would then be the only difference — and that
+        // mutation IS caught, by this test and by the opposite-ends one.
+        let mut c = Inventory::with_layout(crate::menu_layout::layout_of(7).unwrap());
+        let mut v = vec![None; c.slot_count()];
+        v[0] = stack(1, 5);
+        assert!(c.set_content(1, &v, None));
+        let p = c.click_quick_move(0, &plain_props).expect("predictable");
+        let into = moved_into(&p, 0);
+        assert!(!into.is_empty());
+        assert!(
+            into.iter().all(|&s| (9..45).contains(&s)),
+            "45 is the NonInteractiveResultSlot and must not receive, got {into:?}"
+        );
+        assert_eq!(into.into_iter().max(), Some(44), "backwards, from 44");
+    }
+
+    #[test]
+    fn a_crafters_player_slot_goes_to_its_nine_grid_slots() {
+        let mut c = Inventory::with_layout(crate::menu_layout::layout_of(7).unwrap());
+        let mut v = vec![None; c.slot_count()];
+        v[20] = stack(1, 5);
+        assert!(c.set_content(1, &v, None));
+        let p = c.click_quick_move(20, &plain_props).expect("predictable");
+        assert!(moved_into(&p, 20).iter().all(|&s| s < 9));
+    }
+
+    #[test]
+    fn a_one_element_chain_behaves_exactly_as_the_single_range_did() {
+        // The regression guard for the structural change: every shape that is
+        // not the crafting table returns a chain of one, and a chain of one
+        // must take the first destination and stop. If the loop ever ran on
+        // past a successful move, a chest's shift-click would keep going into
+        // a second range.
+        let c = chest_with(0, stack(1, 5));
+        let p = c.click_quick_move(0, &plain_props).unwrap();
+        assert!(moved_into(&p, 0).iter().all(|&s| s >= 27));
+        let f = furnace_with(20, stack(1, 5));
+        let q = f.click_quick_move(20, &plain_props).expect("predictable");
+        assert!(!moved_into(&q, 20).is_empty());
     }
 
     #[test]
