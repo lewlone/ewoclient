@@ -597,6 +597,9 @@ mod tests {
             damage: None,
             max_damage: None,
             enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            damage_component_removed: false,
             trim_material: None,
         });
         inv.set_content(1, &content, None);

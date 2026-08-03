@@ -1921,6 +1921,15 @@ fn read_slot(
                     damage: c.damage,
                     max_damage: c.max_damage,
                     enchanted: c.has_foil(),
+                    // M93e — the grindstone's predicate. NOT `enchanted`
+                    // above: that is `hasFoil()`, which respects
+                    // ENCHANTMENT_GLINT_OVERRIDE both ways and reads only
+                    // `minecraft:enchantments`. `c.enchantments` is already
+                    // the union of that and `stored_enchantments`, which is
+                    // exactly `hasAnyEnchantments`.
+                    any_enchantments: !c.enchantments.is_empty(),
+                    unbreakable: c.unbreakable,
+                    damage_component_removed: c.damage_component_removed,
                     // M49: only the material — the icon's `select` is on it alone.
                     trim_material: c.trim.map(|(m, _)| m),
                 }),

@@ -12355,6 +12355,19 @@ pub(crate) fn item_props(
         beacon_payment: rewo_data::beacon_payment_table::is_beacon_payment(name),
         // M93b — the stonecutter's.
         stonecuttable: rewo_data::stonecutter_table::accepts_input(name),
+        // M93e — the PROTOTYPE half of `isDamageableItem`. The patch half
+        // rides on the stack. `prototype_has_component` is M56's table, which
+        // already exists for the tooltip's component count.
+        proto_max_damage: rewo_data::item_components_table::prototype_has_component(
+            name,
+            "minecraft:max_damage",
+        )
+        .unwrap_or(false),
+        proto_damage: rewo_data::item_components_table::prototype_has_component(
+            name,
+            "minecraft:damage",
+        )
+        .unwrap_or(false),
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

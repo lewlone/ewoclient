@@ -261,6 +261,28 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 andesite_p.stonecuttable, stick_p.stonecuttable, iron_p.stonecuttable
             ),
         );
+        // M93e — the grindstone's PROTOTYPE half. `isDamageableItem` needs
+        // `has(MAX_DAMAGE) && has(DAMAGE)`, and for every vanilla item both
+        // come from the prototype, so if this resolver returned false the
+        // grindstone would refuse every tool while all six unit witnesses —
+        // which hand-build the props — stayed green.
+        let sword = id_of("minecraft:diamond_sword")?;
+        let sword_p = crate::live_cmd::item_props(&items, sword)
+            .ok_or("containershot: item_props declined a real id")?;
+        c.record(
+            "d5.the_live_client_resolves_the_damageable_prototype_components",
+            sword_p.proto_max_damage
+                && sword_p.proto_damage
+                && !stick_p.proto_max_damage
+                && !stick_p.proto_damage,
+            format!(
+                "diamond_sword(id {sword}) max_damage={} damage={}; stick max_damage={} damage={}",
+                sword_p.proto_max_damage,
+                sword_p.proto_damage,
+                stick_p.proto_max_damage,
+                stick_p.proto_damage
+            ),
+        );
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
         // Wiring both fields to one table would leave d3 green.

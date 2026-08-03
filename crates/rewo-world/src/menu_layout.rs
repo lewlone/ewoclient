@@ -753,6 +753,22 @@ pub enum QuickMove {
     /// The accepted set is jar-derived (`stonecutter_table`), with M91's
     /// caveat: `update_recipes` is the authoritative source and is class C.
     Stonecutter,
+    /// `GrindstoneMenu` — repair 0 and 1, result 2, then the player's 36.
+    ///
+    /// **Its `quickMoveStack` has no item predicate at all.** The guard is
+    /// `!input.isEmpty() && !additional.isEmpty()` — purely whether both repair
+    /// slots are occupied — which is the opposite arrangement from every other
+    /// menu here: the beacon and the stonecutter ask about the *item* in the
+    /// branch and let the slot accept anything, while the grindstone asks about
+    /// the *slots* in the branch and puts the item predicate in `mayPlace`.
+    ///
+    /// That is why [`crate::inventory::SlotKind::GrindstoneInput`] is
+    /// load-bearing for the shift-click and not only for an ordinary click: it
+    /// is the sole thing that stops a stick reaching a repair slot, via
+    /// `moveItemStackTo`'s placement pass. And when it does stop it, the move
+    /// returns false and vanilla `return`s — so shift-clicking a stick into an
+    /// empty grindstone moves **nothing**, rather than cross-moving.
+    Grindstone,
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -835,6 +851,13 @@ impl MenuLayout {
             } else {
                 crate::inventory::SlotKind::Plain
             }),
+            // A grindstone's slot 2 is its result; 0 and 1 share the
+            // damageable-or-enchanted predicate, so they are their own kind.
+            QuickMove::Grindstone => Some(match slot {
+                0 | 1 => crate::inventory::SlotKind::GrindstoneInput,
+                2 => crate::inventory::SlotKind::Result,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -870,6 +893,8 @@ impl MenuLayout {
             19 => QuickMove::Merchant,
             // stonecutter (M93b) — the jar-derived accepted-input set.
             24 => QuickMove::Stonecutter,
+            // grindstone (M93e) — the predicate lives in `mayPlace`.
+            15 => QuickMove::Grindstone,
             _ => QuickMove::Unimplemented,
         }
     }

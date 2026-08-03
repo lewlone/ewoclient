@@ -83,6 +83,24 @@ pub struct ItemSlot {
     /// entry — `ItemStack.isEnchanted`, which is what the glint and the
     /// tooltip's enchantment lines key on.
     pub enchanted: bool,
+    /// `EnchantmentHelper.hasAnyEnchantments` (M93e) — `minecraft:enchantments`
+    /// **or** `minecraft:stored_enchantments` non-empty.
+    ///
+    /// **Not [`Self::enchanted`]**, and the difference is not academic. That
+    /// field is assigned from `hasFoil()`, which M43 proved respects
+    /// `ENCHANTMENT_GLINT_OVERRIDE` in *both* directions — so a glinting
+    /// golden apple would pass a grindstone's `mayPlace` and a Sharpness V
+    /// sword told not to glint would fail it. It is also `isEnchanted()`,
+    /// which reads `minecraft:enchantments` alone, and an **enchanted book**
+    /// carries `stored_enchantments`: the canonical grindstone input is
+    /// exactly the case that field misses.
+    pub any_enchantments: bool,
+    /// `minecraft:unbreakable`'s presence in the patch (M93e). The prototype
+    /// never carries it, so the patch is the whole answer.
+    pub unbreakable: bool,
+    /// Whether the patch removed `minecraft:damage` or `minecraft:max_damage`
+    /// (M93e) — see `StackComponents::damage_component_removed`.
+    pub damage_component_removed: bool,
     /// `minecraft:trim`'s material registry id (M49), for picking the icon
     /// variant. The pattern is not here: an item definition's `select` is on
     /// `minecraft:trim_material` alone, so the pattern changes the worn model
@@ -554,6 +572,15 @@ pub enum SlotKind {
     /// item's own max stack. Every slot of a chest, shulker box, dispenser and
     /// hopper is one — none of those menus has a result or equipment slot.
     Plain,
+    /// `GrindstoneMenu`'s two repair slots (M93e): `mayPlace` is
+    /// `itemStack.isDamageableItem() || EnchantmentHelper.hasAnyEnchantments(itemStack)`.
+    ///
+    /// The grindstone's `quickMoveStack` has **no** item predicate of its own —
+    /// its guard is whether both repair slots are occupied — so this kind is
+    /// the only thing that stops a stick being shift-clicked into one, via
+    /// `moveItemStackTo`'s placement pass. That makes it load-bearing for the
+    /// shift-click and not merely for an ordinary one.
+    GrindstoneInput,
     /// `BeaconMenu`'s payment slot (M93): `mayPlace` is
     /// `itemStack.is(ItemTags.BEACON_PAYMENT_ITEMS)`.
     ///
@@ -683,6 +710,16 @@ pub struct ItemProps {
     /// `update_recipes` is the authoritative source and Rewo does not decode
     /// it, so a datapack recipe change makes this wrong silently.
     pub stonecuttable: bool,
+    /// Whether the item's **prototype** carries `minecraft:max_damage` (M93e).
+    /// From the per-item component table, which M56 already generates.
+    pub proto_max_damage: bool,
+    /// Whether the item's **prototype** carries `minecraft:damage` (M93e).
+    ///
+    /// Carried separately from [`Self::proto_max_damage`] even though the two
+    /// co-occur on every one of 26.2's items, because `isDamageableItem` tests
+    /// them as separate terms and collapsing them would quietly stop being
+    /// exact the version they diverge.
+    pub proto_damage: bool,
 }
 
 /// Which entry of [`ItemProps::smeltable`] a `minecraft:menu` id selects.
@@ -729,7 +766,30 @@ impl Inventory {
     }
 
     /// `Slot.mayPlace`.
-    fn may_place(kind: SlotKind, props: ItemProps) -> bool {
+    /// `ItemStack.isDamageableItem()` —
+    /// `has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE)` (M93e).
+    ///
+    /// `has` on a `PatchedDataComponentMap` resolves in three steps: a removed
+    /// component is absent whatever the prototype says, then a patched one is
+    /// present, then the prototype answers. `UNBREAKABLE` needs no prototype
+    /// term — no item carries it, verified against the component table — so
+    /// the patch bit is the whole answer there.
+    pub fn is_damageable_item(stack: ItemSlot, props: ItemProps) -> bool {
+        if stack.damage_component_removed {
+            return false;
+        }
+        let has_max = props.proto_max_damage || stack.max_damage.is_some();
+        let has_damage = props.proto_damage || stack.damage.is_some();
+        has_max && !stack.unbreakable && has_damage
+    }
+
+    /// `Slot.mayPlace` — whether this slot accepts this stack.
+    ///
+    /// Takes the **stack** and not only its item, because vanilla's signature
+    /// is `mayPlace(ItemStack)` and two of the predicates transcribed here read
+    /// the stack's components rather than its id: a grindstone accepts a
+    /// *damaged or enchanted* tool, which is a property of the stack.
+    fn may_place(kind: SlotKind, stack: ItemSlot, props: ItemProps) -> bool {
         match kind {
             // `ResultSlot.mayPlace` is `return false`.
             SlotKind::Result => false,
@@ -739,6 +799,14 @@ impl Inventory {
             SlotKind::Armor(piece) => props.equips == Some(piece),
             // M93 — `itemStack.is(ItemTags.BEACON_PAYMENT_ITEMS)`.
             SlotKind::BeaconPayment => props.beacon_payment,
+            // M93e — a grindstone's two repair slots share one predicate:
+            // `isDamageableItem() || EnchantmentHelper.hasAnyEnchantments()`.
+            // The second disjunct is what lets an **enchanted book** in, which
+            // is not damageable at all — and it reads `stored_enchantments`
+            // too, which `isEnchanted()` does not.
+            SlotKind::GrindstoneInput => {
+                Self::is_damageable_item(stack, props) || stack.any_enchantments
+            }
             _ => true,
         }
     }
@@ -748,8 +816,8 @@ impl Inventory {
     /// Only the result slot ever answers false, and only because it refuses
     /// every placement including its own contents. It is what stops a partial
     /// take out of the crafting output.
-    fn allow_modification(kind: SlotKind, occupant: ItemProps) -> bool {
-        Self::may_place(kind, occupant)
+    fn allow_modification(kind: SlotKind, stack: ItemSlot, occupant: ItemProps) -> bool {
+        Self::may_place(kind, stack, occupant)
     }
 
     /// `AbstractContainerMenu.doClick`'s PICKUP branch, for buttons 0 and 1.
@@ -804,7 +872,7 @@ impl Inventory {
             // Empty slot, something on the cursor: insert as much as fits.
             (None, Some(mut held)) => {
                 let hp = carried_props?;
-                if Self::may_place(kind, hp) {
+                if Self::may_place(kind, held, hp) {
                     let amount = if primary { held.count } else { 1 };
                     // `safeInsert`: min(inputAmount, stack count, headroom).
                     let n = amount.min(held.count).min(cap(hp));
@@ -833,7 +901,7 @@ impl Inventory {
             (Some(stack), Some(mut held)) => {
                 let hp = carried_props?;
                 let cp = clicked_props?;
-                if Self::may_place(kind, hp) {
+                if Self::may_place(kind, held, hp) {
                     if Self::same_item_same_components(stack, held) {
                         // Merge into the slot, up to its cap.
                         let amount = if primary { held.count } else { 1 };
@@ -864,7 +932,7 @@ impl Inventory {
                     let headroom = hp.max_stack - held.count;
                     let amount = stack.count.min(headroom);
                     let partial = headroom < stack.count;
-                    if amount > 0 && (!partial || Self::allow_modification(kind, cp)) {
+                    if amount > 0 && (!partial || Self::allow_modification(kind, stack, cp)) {
                         let left = stack.count - amount;
                         changed.push((
                             index as u16,
@@ -973,7 +1041,7 @@ impl Inventory {
                     continue;
                 }
                 let kind = self.layout.slot_kind(i)?;
-                if !Self::may_place(kind, p) {
+                if !Self::may_place(kind, *moving, p) {
                     continue;
                 }
                 let cap = slot_max_stack(kind).min(p.max_stack);
@@ -1175,6 +1243,36 @@ impl Inventory {
                     (hotbar..end, false)
                 } else {
                     (player..hotbar, false)
+                }]);
+            }
+            QuickMove::Grindstone => {
+                // GrindstoneMenu: repair 0 and 1, result 2, player 3..39.
+                let (player, hotbar, end) = (3usize, 30usize, 39usize);
+                return Some(vec![match slot {
+                    2 => (player..end, true),
+                    0 | 1 => (player..end, false),
+                    // The guard is about the SLOTS, not the item — the only
+                    // menu here arranged that way. Both repair slots occupied
+                    // means there is nowhere to put anything, so it degrades
+                    // to the ordinary main/hotbar cross-move.
+                    _ if slots[0].is_some() && slots[1].is_some() => {
+                        if slot < hotbar {
+                            (hotbar..end, false)
+                        } else {
+                            (player..hotbar, false)
+                        }
+                    }
+                    // Otherwise it always TRIES the repair slots, whatever the
+                    // item is — and `SlotKind::GrindstoneInput`'s `mayPlace` is
+                    // what turns a stick away. When it does, the move reports
+                    // nothing moved and vanilla `return`s, so a stick
+                    // shift-clicked into an empty grindstone moves NOTHING
+                    // rather than cross-moving. `p` is unused here for exactly
+                    // that reason: the branch does not consult the item.
+                    _ => {
+                        let _ = p;
+                        (0..2, false)
+                    }
                 }]);
             }
             QuickMove::Stonecutter => {
@@ -1383,6 +1481,8 @@ mod tests {
             smeltable: [false; 3],
             beacon_payment: false,
             stonecuttable: false,
+            proto_max_damage: false,
+            proto_damage: false,
         })
     }
 
@@ -1395,6 +1495,8 @@ mod tests {
             smeltable: [false, true, false], // smeltable in a furnace only
             beacon_payment: false,
             stonecuttable: false,
+            proto_max_damage: false,
+            proto_damage: false,
         })
     }
 
@@ -1407,6 +1509,8 @@ mod tests {
             smeltable: [false; 3],
             beacon_payment: false,
             stonecuttable: false,
+            proto_max_damage: false,
+            proto_damage: false,
         })
     }
 
@@ -1998,6 +2102,172 @@ mod tests {
         );
     }
 
+    // -- M93e: the grindstone --------------------------------------------
+
+    /// A damaged tool: the prototype carries both damage components.
+    fn tool_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            proto_max_damage: true,
+            proto_damage: true,
+            max_stack: 1,
+            ..plain_props(0).unwrap()
+        })
+    }
+
+    fn enchanted_book(id: i32) -> Option<ItemSlot> {
+        stack(id, 1).map(|s| ItemSlot {
+            any_enchantments: true,
+            ..s
+        })
+    }
+
+    #[test]
+    fn a_grindstone_takes_a_tool_and_turns_a_stick_away() {
+        // The predicate lives in `mayPlace`, so the ONLY way it shows is
+        // through `moveItemStackTo`'s placement pass — and when it refuses,
+        // vanilla returns rather than cross-moving. A stick shift-clicked into
+        // an empty grindstone therefore moves nothing at all.
+        let g = single_input_menu(15, 3, stack(1, 1));
+        let p = g.click_quick_move(3, &tool_props).expect("a tool is repairable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "a damageable tool belongs in a repair slot, {:?}",
+            p.changed
+        );
+
+        let g = single_input_menu(15, 3, stack(1, 1));
+        assert!(
+            g.click_quick_move(3, &plain_props).is_none(),
+            "a stick must move NOTHING — not to the repair slot, not to the hotbar"
+        );
+    }
+
+    #[test]
+    fn an_enchanted_book_is_accepted_though_it_is_not_damageable() {
+        // The second disjunct, and the case `ItemSlot::enchanted` would miss
+        // twice over: a book is not damageable, and its enchantments live in
+        // `stored_enchantments`, which `isEnchanted()` does not read.
+        let g = single_input_menu(15, 3, enchanted_book(1));
+        let p = g
+            .click_quick_move(3, &plain_props)
+            .expect("an enchanted book is grindable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "an enchanted book belongs in a repair slot, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn an_unbreakable_tool_is_not_damageable_and_is_turned_away() {
+        // `isDamageableItem` is `has(MAX_DAMAGE) && !has(UNBREAKABLE) &&
+        // has(DAMAGE)`. Dropping the middle term silently accepts every
+        // unbreakable tool, which looks right until you try to grind one.
+        let unbreakable = stack(1, 1).map(|s| ItemSlot {
+            unbreakable: true,
+            ..s
+        });
+        let g = single_input_menu(15, 3, unbreakable);
+        assert!(
+            g.click_quick_move(3, &tool_props).is_none(),
+            "an unbreakable tool is not damageable"
+        );
+    }
+
+    #[test]
+    fn a_patch_that_removes_a_damage_component_makes_a_tool_undamageable() {
+        // `has()` on a PatchedDataComponentMap is false for a REMOVED
+        // component even when the prototype carries it. Modelling `has` as
+        // "prototype or patch-set" alone would accept this.
+        let stripped = stack(1, 1).map(|s| ItemSlot {
+            damage_component_removed: true,
+            ..s
+        });
+        let g = single_input_menu(15, 3, stripped);
+        assert!(
+            g.click_quick_move(3, &tool_props).is_none(),
+            "a tool whose damage component was removed is not damageable"
+        );
+    }
+
+    #[test]
+    fn max_damage_alone_does_not_make_an_item_damageable() {
+        // Found by a surviving mutation: dropping the `has(DAMAGE)` term
+        // changed nothing, because every fixture set `proto_max_damage` and
+        // `proto_damage` together — which is true of all 1537 vanilla items
+        // and NOT true of a patched stack. A server that puts
+        // `minecraft:max_damage` on a stick without `minecraft:damage` gets
+        // `has(MAX_DAMAGE) && !has(UNBREAKABLE) && !has(DAMAGE)` = false, and
+        // a two-term formula would hand it to the grindstone.
+        //
+        // This is why the two prototype flags are carried separately rather
+        // than as one `damageable` bool.
+        let patched = stack(1, 1).map(|s| ItemSlot {
+            max_damage: Some(100),
+            damage: None,
+            ..s
+        });
+        let g = single_input_menu(15, 3, patched);
+        assert!(
+            g.click_quick_move(3, &plain_props).is_none(),
+            "max_damage without damage is not damageable"
+        );
+        // The mirror: with `damage` patched in as well, it IS.
+        let both = stack(1, 1).map(|s| ItemSlot {
+            max_damage: Some(100),
+            damage: Some(0),
+            ..s
+        });
+        let g = single_input_menu(15, 3, both);
+        let p = g
+            .click_quick_move(3, &plain_props)
+            .expect("both components present makes it damageable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "and then the grindstone takes it, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_full_grindstone_cross_moves_because_its_guard_is_about_the_slots() {
+        // The inversion worth having a witness for: every other menu here
+        // guards on the ITEM and lets the slot accept anything. This one
+        // guards on both repair slots being occupied, and then degrades to the
+        // ordinary main/hotbar cross-move — for a TOOL, which the repair slots
+        // would otherwise have taken.
+        let mut g = Inventory::with_layout(crate::menu_layout::layout_of(15).unwrap());
+        let mut v = vec![None; g.slot_count()];
+        v[0] = stack(7, 1);
+        v[1] = stack(8, 1);
+        v[3] = stack(1, 1);
+        assert!(g.set_content(1, &v, None));
+        let p = g.click_quick_move(3, &tool_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| (30..39).contains(i)),
+            "with both repair slots full a tool cross-moves to the hotbar, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_half_full_grindstone_still_takes_the_second_slot() {
+        // The guard is `!input.isEmpty() && !additional.isEmpty()` — BOTH.
+        // Reading it as "either" sends a tool to the hotbar while a repair
+        // slot sits empty, which looks like a plausible menu and is wrong.
+        let mut g = Inventory::with_layout(crate::menu_layout::layout_of(15).unwrap());
+        let mut v = vec![None; g.slot_count()];
+        v[0] = stack(7, 1);
+        v[3] = stack(1, 1);
+        assert!(g.set_content(1, &v, None));
+        let p = g.click_quick_move(3, &tool_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 1),
+            "the free repair slot must still take it, {:?}",
+            p.changed
+        );
+    }
+
     #[test]
     fn every_single_input_menu_empties_its_output_slot_backwards() {
         // Found by a surviving mutation: flipping the stonecutter's result arm
@@ -2008,7 +2278,7 @@ mod tests {
         // in the first free main-inventory slot. Both look like "it moved".
         //
         // (menu id, the slot whose contents leave via the player range)
-        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1)] {
+        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2)] {
             let m = single_input_menu(id, source, stack(1, 1));
             let p = m
                 .click_quick_move(source as i32, &plain_props)
@@ -2035,7 +2305,7 @@ mod tests {
         // `false`, and reporting it as Plain would let a click drop something
         // into it that the server then rejects.
         use crate::menu_layout::layout_of;
-        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1)] {
+        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1), (15, 2)] {
             let layout = layout_of(id).unwrap();
             for slot in 0..layout.slot_count() {
                 let kind = layout.slot_kind(slot).expect("transcribed");
@@ -2194,6 +2464,9 @@ mod tests {
             damage: None,
             max_damage: None,
             enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            damage_component_removed: false,
             trim_material: None,
         })
     }
@@ -2501,7 +2774,7 @@ impl Inventory {
             }
             (Some(s), None) => {
                 let p = props(s.item_id)?;
-                if !Self::may_place(kind, p) {
+                if !Self::may_place(kind, s, p) {
                     return Some(ClickPrediction {
                         slot: slot as i16,
                         button: button as i8,
@@ -2524,7 +2797,7 @@ impl Inventory {
             }
             (Some(s), Some(t)) => {
                 let p = props(s.item_id)?;
-                if !Self::may_place(kind, p) {
+                if !Self::may_place(kind, s, p) {
                     return Some(ClickPrediction {
                         slot: slot as i16,
                         button: button as i8,
@@ -2588,7 +2861,7 @@ impl Inventory {
         // `safeTake(amount, Integer.MAX_VALUE, player)` with a partial amount
         // still consults `allowModification`, which is what stops one item
         // being taken out of a crafting result.
-        if amount < stack.count && !Self::allow_modification(kind, p) {
+        if amount < stack.count && !Self::allow_modification(kind, stack, p) {
             return None;
         }
         let left = stack.count - amount;
@@ -2633,7 +2906,7 @@ impl Inventory {
         let clicked = self.slots[index];
         // `!slot.hasItem() || !slot.mayPickup(player)`.
         if let Some(stack) = clicked {
-            if Self::allow_modification(kind, props(stack.item_id)?) {
+            if Self::allow_modification(kind, stack, props(stack.item_id)?) {
                 return None;
             }
         }
@@ -2656,7 +2929,7 @@ impl Inventory {
                     continue;
                 }
                 let tp = props(target.item_id)?;
-                if !Self::allow_modification(self.layout.slot_kind(i)?, tp) {
+                if !Self::allow_modification(self.layout.slot_kind(i)?, target, tp) {
                     continue;
                 }
                 // Pass 0 leaves full stacks alone.
@@ -2733,7 +3006,7 @@ impl Inventory {
         let Some(kind) = self.layout.slot_kind(index) else {
             return false;
         };
-        if !Self::may_place(kind, p) {
+        if !Self::may_place(kind, carried, p) {
             return false;
         }
         match self.slots[index] {

@@ -245,6 +245,17 @@ pub struct StackComponents {
     /// where the merged list would promote it to EPIC (M50).
     pub is_enchanted: bool,
     pub unbreakable: bool,
+    /// Whether the patch **removed** `minecraft:damage` or
+    /// `minecraft:max_damage` (M93e).
+    ///
+    /// `has()` on a `PatchedDataComponentMap` is false for a removed component
+    /// even when the prototype carries it, and `isDamageableItem` needs both of
+    /// those terms true — so removing either is enough to answer the whole
+    /// predicate, and one flag is exact where two would be redundant. A
+    /// removed `unbreakable` is deliberately not tracked: no prototype carries
+    /// it (verified against the per-item component table), so removing it
+    /// cannot change `has(UNBREAKABLE)` from what an absent one already gives.
+    pub damage_component_removed: bool,
     /// `minecraft:enchantment_glint_override` (M43). `None` is absent, which
     /// is *not* the same as `Some(false)`: absent defers to whether the stack
     /// is enchanted, false suppresses the glint on one that is.
@@ -670,6 +681,14 @@ fn read_patch_at(
         }
         if ty == ids.charged_projectiles {
             charged = PatchCharged::Removed;
+        }
+        // M93e — `ItemStack.isDamageableItem()` is
+        // `has(MAX_DAMAGE) && !has(UNBREAKABLE) && has(DAMAGE)`, and `has` on a
+        // `PatchedDataComponentMap` is false for a component the patch
+        // REMOVED even when the prototype carries it. Removing either term
+        // makes the answer false, so one flag is exact rather than two.
+        if ty == ids.max_damage || ty == ids.damage {
+            comps.damage_component_removed = true;
         }
         comps.removed.push(ty);
         // A removal has no value, so its own id is all there is to fold in —
@@ -1304,6 +1323,42 @@ mod tests {
         };
         assert_eq!(r.remaining(), 0, "the patch was not consumed exactly");
         s.components
+    }
+
+    /// M93e — the decoder half of `isDamageableItem`'s removal term.
+    ///
+    /// Found by a **surviving mutation**: deleting the two lines that set this
+    /// flag changed nothing any test could see, because the only witness for
+    /// it (in `rewo-world`) constructs an `ItemSlot` with the flag already
+    /// set. That is M92's finding in miniature — a gate that supplies an input
+    /// production must derive leaves the derivation untested by construction —
+    /// so the assertion has to start from bytes.
+    #[test]
+    fn a_removed_damage_component_is_recorded_from_the_wire() {
+        install_test_shapes();
+        for ty in [IDS.damage, IDS.max_damage] {
+            let c = components_of(&stack(1, 100, &[], &[ty]));
+            assert!(
+                c.damage_component_removed,
+                "removing component {ty} must mark the stack undamageable"
+            );
+        }
+        // A removal of something else must NOT set it, or the flag would be
+        // "this patch removed anything" and every custom-named tool with a
+        // stripped component would stop being repairable.
+        let c = components_of(&stack(1, 100, &[], &[IDS.rarity]));
+        assert!(!c.damage_component_removed);
+        // ...and neither does a plain stack, nor one that SETS damage rather
+        // than removing it — the two are opposite answers from the same id.
+        assert!(!components_of(&stack(1, 100, &[], &[])).damage_component_removed);
+        let mut dmg = Vec::new();
+        varint(37, &mut dmg);
+        let c = components_of(&stack(1, 100, &[(IDS.damage, dmg)], &[]));
+        assert!(
+            !c.damage_component_removed,
+            "a SET damage component is present, not removed"
+        );
+        assert_eq!(c.damage, Some(37));
     }
 
     /// The whole point of M61: the stacks survive the walk instead of being

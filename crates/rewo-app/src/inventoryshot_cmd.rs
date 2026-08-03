@@ -615,6 +615,9 @@ fn plain(item_id: i32, count: i32) -> Option<ItemSlot> {
         damage: None,
         max_damage: None,
         enchanted: false,
+        any_enchantments: false,
+        unbreakable: false,
+        damage_component_removed: false,
         trim_material: None,
     })
 }
@@ -630,6 +633,9 @@ fn patched_stack(item_id: i32, count: i32, fingerprint: u64) -> Option<ItemSlot>
         damage: None,
         max_damage: None,
         enchanted: false,
+        any_enchantments: false,
+        unbreakable: false,
+        damage_component_removed: false,
         trim_material: None,
     })
 }
@@ -647,6 +653,8 @@ fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
         smeltable: [false; 3],
         beacon_payment: false,
         stonecuttable: false,
+        proto_max_damage: false,
+        proto_damage: false,
     }
 }
 
