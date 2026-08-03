@@ -11077,6 +11077,53 @@ pub(crate) fn enchant_rows_of(
     ))
 }
 
+/// The beacon's live choice, from its data slots (M92).
+///
+/// **Vanilla's screen keeps its own `primary`/`secondary` fields**, seeded
+/// from the menu by a `ContainerListener` on every `dataChanged` and then
+/// moved by clicks *before* the server hears about them — a click updates the
+/// screen and only `ServerboundSetBeaconPacket` on confirm tells the server.
+/// Rewo has no click path here yet, so this reads the data slots directly:
+/// the display is correct for whatever the server last said, and the
+/// unconfirmed-choice half arrives with the button clicks.
+fn beacon_choice(
+    m: &rewo_world::menu::OpenMenu,
+    effect_ids: &BeaconEffectIds,
+) -> rewo_world::menu_screen::BeaconChoice {
+    rewo_world::menu_screen::BeaconChoice {
+        levels: m.beacon_levels(),
+        primary: m.beacon_primary().and_then(|id| effect_ids.of(id)),
+        secondary: m.beacon_secondary().and_then(|id| effect_ids.of(id)),
+        has_payment: m.beacon_has_payment(),
+    }
+}
+
+/// The six beacon effects' `minecraft:mob_effect` registry ids.
+///
+/// Resolved by NAME from the datagen report, never by position — M64's
+/// alphabetisation trap, where `serde_json`'s sorted map made an
+/// `enumerate()`-derived table give a different wrong answer for every entry
+/// and no decode gate could see it.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BeaconEffectIds([Option<i32>; 6]);
+
+impl BeaconEffectIds {
+    fn resolve(reg: &rewo_data::packets::Registries) -> Self {
+        use rewo_world::menu_screen::BeaconEffect;
+        Self(std::array::from_fn(|i| {
+            reg.id_of("minecraft:mob_effect", BeaconEffect::ALL[i].name())
+        }))
+    }
+
+    /// Which of the six a registry id is, or `None` for any other effect.
+    fn of(&self, id: i32) -> Option<rewo_world::menu_screen::BeaconEffect> {
+        self.0
+            .iter()
+            .position(|e| *e == Some(id))
+            .map(|i| rewo_world::menu_screen::BeaconEffect::ALL[i])
+    }
+}
+
 /// What an enchanting-table row's state selects, as `(row sprite, numeral)`.
 ///
 /// Kept beside the overlay builder rather than in `rewo-world` because the

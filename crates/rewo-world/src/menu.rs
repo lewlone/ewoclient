@@ -203,6 +203,70 @@ impl OpenMenu {
     }
 }
 
+/// `BeaconMenu`'s three data slots (M92).
+///
+/// ```text
+/// 0  levels     the pyramid height, 0..=4
+/// 1  primary    encodeEffect(primary)
+/// 2  secondary  encodeEffect(secondary)
+/// ```
+///
+/// # Two adjacent screens, two different "absent" encodings
+///
+/// ```java
+/// encodeEffect(e) = e == null ? 0 : id(e) + 1;
+/// decodeEffect(v) = v == 0 ? null : byId(v - 1);
+/// ```
+///
+/// So the beacon says "no effect" with **0 and shifts every real id up by
+/// one**, where the enchanting table one menu earlier says "no clue" with
+/// **-1 and leaves its ids alone**. Both travel in the same signed short on
+/// the same packet, and neither is inferable from the wire. Carrying one
+/// convention across is a silent off-by-one: every beacon effect would render
+/// as its registry neighbour, and speed — id 0, encoded 1 — would read as the
+/// effect whose id is 1.
+///
+/// It is `holder`'s `id + 1` scheme (M16/M21/M55's recurring fork) turning up
+/// inside a **data slot**, where every other value in the arc is raw.
+pub const BEACON_LEVELS: i16 = 0;
+pub const BEACON_PRIMARY: i16 = 1;
+pub const BEACON_SECONDARY: i16 = 2;
+
+/// `BeaconMenu.decodeEffect` — `0` is absent, anything else is `id - 1`.
+pub fn decode_beacon_effect(v: i16) -> Option<i32> {
+    (v != 0).then(|| v as i32 - 1)
+}
+
+/// `BeaconMenu.encodeEffect` — the inverse, kept beside it so the pair cannot
+/// drift.
+pub fn encode_beacon_effect(id: Option<i32>) -> i16 {
+    id.map_or(0, |id| (id + 1) as i16)
+}
+
+impl OpenMenu {
+    /// `getLevels()` — the pyramid's height.
+    pub fn beacon_levels(&self) -> i32 {
+        self.data(BEACON_LEVELS) as i32
+    }
+
+    /// `getPrimaryEffect()` as a `minecraft:mob_effect` registry id.
+    pub fn beacon_primary(&self) -> Option<i32> {
+        decode_beacon_effect(self.data(BEACON_PRIMARY))
+    }
+
+    /// `getSecondaryEffect()`.
+    pub fn beacon_secondary(&self) -> Option<i32> {
+        decode_beacon_effect(self.data(BEACON_SECONDARY))
+    }
+
+    /// `menu.hasPayment()` — whether the payment slot (menu slot 0) holds
+    /// anything. Like the enchanting table's lapis, this is a **slot**, so it
+    /// arrives on a different packet from the levels.
+    pub fn beacon_has_payment(&self) -> bool {
+        self.menu.menu_slot(0).is_some()
+    }
+}
+
 /// The client's menu slot. Vanilla has exactly one — `Gui.screen` is a single
 /// field and `setScreen` replaces it (M82's finding for the screen framework
 /// generalises here), so this is an `Option`, not a stack.
@@ -545,6 +609,52 @@ mod tests {
         // level clues would silently stop arriving.
         assert_eq!(MAX_DATA_SLOTS, 10);
         assert_eq!(ENCHANT_LEVEL_CLUE as usize + 2, MAX_DATA_SLOTS - 1);
+    }
+
+    // -- M92: the beacon's data slots ---------------------------------------
+
+    #[test]
+    fn the_beacon_says_absent_with_zero_where_the_enchanting_table_says_minus_one() {
+        // Two adjacent menus, two conventions, one signed short. Carrying
+        // either across is a silent off-by-one: with the enchanting table's
+        // rule a beacon's 0 would read as effect id 0 (speed) and every real
+        // effect as its neighbour.
+        assert_eq!(decode_beacon_effect(0), None, "0 is ABSENT here");
+        assert_eq!(decode_beacon_effect(1), Some(0), "and 1 is id 0");
+        assert_eq!(decode_beacon_effect(11), Some(10), "resistance");
+        // The enchanting table's -1/0 pair, for contrast.
+        let e = {
+            let mut m = Menus::new();
+            m.apply_open_screen(1, 13, "E".into());
+            m.apply_set_data(1, ENCHANT_CLUE, 0);
+            m
+        };
+        assert_eq!(
+            e.open().unwrap().enchant_clue(0),
+            Some(0),
+            "0 is PRESENT there — the opposite reading of the same byte"
+        );
+    }
+
+    #[test]
+    fn encode_and_decode_beacon_effects_round_trip() {
+        for id in [None, Some(0), Some(1), Some(10), Some(31)] {
+            assert_eq!(decode_beacon_effect(encode_beacon_effect(id)), id, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_beacons_three_slots_land_where_they_belong() {
+        let mut m = Menus::new();
+        m.apply_open_screen(2, 9, "Beacon".into()); // beacon
+        for (id, v) in [(0i16, 3i16), (1, 5), (2, 0)] {
+            assert!(m.apply_set_data(2, id, v));
+        }
+        let b = m.open().unwrap();
+        assert_eq!(b.beacon_levels(), 3);
+        assert_eq!(b.beacon_primary(), Some(4), "encoded 5 is id 4");
+        assert_eq!(b.beacon_secondary(), None, "0 is no secondary");
+        assert!(!b.beacon_has_payment(), "the payment slot is a SLOT, not data");
     }
 
     #[test]

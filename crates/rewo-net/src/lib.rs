@@ -243,13 +243,23 @@ pub struct Connection<'a> {
     /// `parse_registry_data`); `None` on a server that syncs no clocks.
     overworld_clock_id: Option<i32>,
     /// Raw `minecraft:mob_effect` registry ids for `night_vision` / `darkness`,
-    /// captured from `registry_data` (never assumed from bootstrap order) so the
-    /// M13 lightmap can match the effect packets. `None` until config syncs the
-    /// registry.
+    /// so the M13 lightmap can match the effect packets.
+    ///
+    /// **Resolved from the datagen report, not from `registry_data` (M92c).**
+    /// They were read off the wire until M92c, inside a
+    /// `registry == "minecraft:mob_effect"` branch that cannot fire:
+    /// `registry_data` carries only `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`
+    /// and `Registries.MOB_EFFECT` is not one of them — it is a
+    /// `BuiltInRegistries` entry the server never sends. So these stayed `None`
+    /// for the whole session and night vision and darkness never engaged live,
+    /// which no gate could see because `lightmapshot` is serverless and builds
+    /// the effect state itself. The wire branch below is kept as an override
+    /// for a server that does sync the registry; the report is the default.
     night_vision_id: Option<i32>,
     darkness_id: Option<i32>,
     /// Raw `minecraft:mob_effect` ids of the three effects that change a swing's
-    /// duration (M19), captured the same way and for the same reason.
+    /// duration (M19). Same source and same history as the two above — these
+    /// were the other three ids M92c found unresolved.
     swing_effect_ids: SwingEffectIds,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
     biome_defs: Vec<rewo_world::biome::BiomeDef>,
@@ -295,9 +305,15 @@ impl<'a> Connection<'a> {
             recorder: None,
             dim_types: Vec::new(),
             overworld_clock_id: None,
-            night_vision_id: None,
-            darkness_id: None,
-            swing_effect_ids: SwingEffectIds::default(),
+            // M92c — from the report. `mob_effect` is a built-in registry, so
+            // this is the authority and `registry_data` never carries it.
+            night_vision_id: data.mob_effects.id_of("minecraft:night_vision"),
+            darkness_id: data.mob_effects.id_of("minecraft:darkness"),
+            swing_effect_ids: SwingEffectIds {
+                haste: data.mob_effects.id_of("minecraft:haste"),
+                conduit_power: data.mob_effects.id_of("minecraft:conduit_power"),
+                mining_fatigue: data.mob_effects.id_of("minecraft:mining_fatigue"),
+            },
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
             trim_materials: Vec::new(),
@@ -4490,6 +4506,41 @@ mod award_stats_tests {
         let mut w = PacketWriter::default();
         w.varint(-1);
         assert_eq!(apply_award_stats(&w.buf), None);
+    }
+
+    /// The `minecraft:mob_effect` registry is **not** network-synchronised, so
+    /// nothing arriving on the wire can supply these ids (M92c).
+    ///
+    /// This is the witness the original bug needed and did not have. Five ids
+    /// — night vision, darkness, haste, conduit power, mining fatigue — were
+    /// read only from a `registry_data` branch keyed on a registry name the
+    /// server never sends, so they stayed `None` for the whole session and two
+    /// shipped features silently did nothing live. `lightmapshot` and
+    /// `swingshot` could not see it because both are serverless and construct
+    /// the effect state themselves, supplying the very ids the live path
+    /// failed to obtain.
+    ///
+    /// It asserts the *source*, not the values: a witness on the numbers would
+    /// pass just as well if they came back from a wire branch that never runs.
+    #[test]
+    fn the_effect_ids_come_from_the_report_because_the_wire_never_carries_them() {
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+            return; // no local datagen -- nothing to grade against
+        };
+        let m = rewo_data::mob_effects::MobEffects::load(&paths.registries_json())
+            .expect("the report must carry minecraft:mob_effect");
+        for name in [
+            "minecraft:night_vision",
+            "minecraft:darkness",
+            "minecraft:haste",
+            "minecraft:conduit_power",
+            "minecraft:mining_fatigue",
+        ] {
+            assert!(
+                m.id_of(name).is_some(),
+                "{name} must resolve WITHOUT a server connection"
+            );
+        }
     }
 
     /// `writeEnum` is the ordinal as a VarInt, and asking for the *wrong* one

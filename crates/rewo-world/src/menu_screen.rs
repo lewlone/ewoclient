@@ -684,6 +684,281 @@ impl EnchantRow {
     }
 }
 
+// -- the beacon (M92) --------------------------------------------------------
+
+/// The six effects a beacon can grant, in `BeaconBlockEntity.BEACON_EFFECTS`
+/// order — which is also tier order, and is what the screen lays out.
+///
+/// ```java
+/// List.of(List.of(SPEED, HASTE),
+///         List.of(RESISTANCE, JUMP_BOOST),
+///         List.of(STRENGTH),
+///         List.of(REGENERATION))
+/// ```
+///
+/// A closed enum rather than a registry id because the *set* is fixed in code
+/// (`BEACON_EFFECTS` is a literal, and `VALID_EFFECTS` is derived from it), even
+/// though the ids that reach the wire are the `minecraft:mob_effect` registry's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconEffect {
+    Speed,
+    Haste,
+    Resistance,
+    JumpBoost,
+    Strength,
+    Regeneration,
+}
+
+impl BeaconEffect {
+    /// The registry name, for resolving an id against the datagen report.
+    pub const fn name(self) -> &'static str {
+        match self {
+            BeaconEffect::Speed => "minecraft:speed",
+            BeaconEffect::Haste => "minecraft:haste",
+            BeaconEffect::Resistance => "minecraft:resistance",
+            BeaconEffect::JumpBoost => "minecraft:jump_boost",
+            BeaconEffect::Strength => "minecraft:strength",
+            BeaconEffect::Regeneration => "minecraft:regeneration",
+        }
+    }
+
+    /// All six, in `BEACON_EFFECTS` flattened order.
+    pub const ALL: [BeaconEffect; 6] = [
+        BeaconEffect::Speed,
+        BeaconEffect::Haste,
+        BeaconEffect::Resistance,
+        BeaconEffect::JumpBoost,
+        BeaconEffect::Strength,
+        BeaconEffect::Regeneration,
+    ];
+}
+
+/// `BEACON_EFFECTS.get(tier)` — the effects a given tier offers.
+pub const fn beacon_tier_effects(tier: usize) -> &'static [BeaconEffect] {
+    match tier {
+        0 => &[BeaconEffect::Speed, BeaconEffect::Haste],
+        1 => &[BeaconEffect::Resistance, BeaconEffect::JumpBoost],
+        2 => &[BeaconEffect::Strength],
+        3 => &[BeaconEffect::Regeneration],
+        _ => &[],
+    }
+}
+
+/// What a beacon button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconButtonKind {
+    /// A power button: its effect, whether it is in the primary column, and
+    /// the tier that gates it.
+    Power {
+        effect: BeaconEffect,
+        primary: bool,
+        tier: i32,
+    },
+    /// The secondary column's last slot — the "primary effect at level II"
+    /// upgrade, which shows **whatever the primary currently is**.
+    Upgrade,
+    Confirm,
+    Cancel,
+}
+
+/// One beacon button: where it sits relative to the panel, and what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeaconButton {
+    pub x: i32,
+    pub y: i32,
+    pub kind: BeaconButtonKind,
+}
+
+/// Every beacon button is 22x22 (`BeaconScreenButton`'s constructor).
+pub const BEACON_BUTTON: i32 = 22;
+
+/// The beacon's buttons, in `BeaconScreen.init`'s own order.
+///
+/// # An invisible button moves a visible one
+///
+/// The secondary column's count is `BEACON_EFFECTS.get(3).size() + 1` — the
+/// **`+ 1` is the upgrade button**, which is `visible = false` unless a primary
+/// effect has been chosen. It is still counted into
+/// `totalWidth = count * 22 + (count - 1) * 2`, and every button in the column
+/// is placed at `167 + c * 24 - totalWidth / 2`. So dropping the `+ 1` because
+/// the button is usually invisible halves the total width and slides
+/// regeneration 12 px right, onto the panel's painted recess. The layout of
+/// what you can see depends on something you usually cannot.
+///
+/// # The two columns do not share their y arithmetic
+///
+/// The primary column steps `22 + tier * 25`, but the secondary column is a
+/// **fixed 47** — not `22 + 3 * 25`. Deriving it from the tier puts it 50 px
+/// below the panel's row.
+pub fn beacon_buttons() -> Vec<BeaconButton> {
+    let mut out = Vec::new();
+    // The primary column: tiers 0..=2, centred on x = 76.
+    for tier in 0..=2usize {
+        let effects = beacon_tier_effects(tier);
+        let count = effects.len() as i32;
+        let total_w = count * 22 + (count - 1) * 2;
+        for (c, &effect) in effects.iter().enumerate() {
+            out.push(BeaconButton {
+                x: 76 + c as i32 * 24 - total_w / 2,
+                y: 22 + tier as i32 * 25,
+                kind: BeaconButtonKind::Power {
+                    effect,
+                    primary: true,
+                    tier: tier as i32,
+                },
+            });
+        }
+    }
+    // The secondary column: tier 3's effects PLUS the upgrade slot, all at
+    // y = 47 and centred on x = 167.
+    let effects = beacon_tier_effects(3);
+    let count = effects.len() as i32 + 1;
+    let total_w = count * 22 + (count - 1) * 2;
+    for (c, &effect) in effects.iter().enumerate() {
+        out.push(BeaconButton {
+            x: 167 + c as i32 * 24 - total_w / 2,
+            y: 47,
+            kind: BeaconButtonKind::Power {
+                effect,
+                primary: false,
+                tier: 3,
+            },
+        });
+    }
+    out.push(BeaconButton {
+        x: 167 + (count - 1) * 24 - total_w / 2,
+        y: 47,
+        kind: BeaconButtonKind::Upgrade,
+    });
+    out.push(BeaconButton { x: 164, y: 107, kind: BeaconButtonKind::Confirm });
+    out.push(BeaconButton { x: 190, y: 107, kind: BeaconButtonKind::Cancel });
+    out
+}
+
+/// Which of the four chrome sprites a button draws, or that it draws nothing.
+///
+/// The priority is vanilla's own `if / else if` chain and it is **not** the
+/// order the states are named in: `active` is tested first, so a *selected*
+/// button whose tier is out of reach still paints as disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconButtonState {
+    /// `visible = false` — the upgrade button with no primary chosen.
+    Hidden,
+    Disabled,
+    Selected,
+    Highlighted,
+    Normal,
+}
+
+/// The beacon screen's live state, as the buttons read it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BeaconChoice {
+    /// `menu.getLevels()` — the pyramid's height, 0..=4.
+    pub levels: i32,
+    /// The screen's own `primary` / `secondary` fields, which start as the
+    /// menu's decoded data slots and then track the player's clicks.
+    pub primary: Option<BeaconEffect>,
+    pub secondary: Option<BeaconEffect>,
+    /// `menu.hasPayment()` — whether the payment slot holds anything.
+    pub has_payment: bool,
+}
+
+/// One button's state (M92).
+///
+/// * A power button is `active` when **`tier < levels`**, a strict comparison:
+///   a level-1 beacon lights only tier 0, and a level-4 one lights all four.
+/// * `selected` compares against `primary` **or** `secondary` depending on the
+///   button's own column, so the same effect can be lit in one column and not
+///   the other.
+/// * Confirm is active on `hasPayment() && primary != null` — it does **not**
+///   require a secondary, which is what lets you take a single effect.
+/// * Cancel is unconditionally active (`updateStatus` leaves it alone).
+/// * The upgrade button is hidden entirely while there is no primary, and
+///   otherwise **borrows the primary's effect**, so it is the one button whose
+///   icon changes as you click elsewhere.
+pub fn beacon_button_state(
+    b: BeaconButton,
+    s: BeaconChoice,
+    hovered: bool,
+) -> BeaconButtonState {
+    let (active, selected) = match b.kind {
+        BeaconButtonKind::Power { effect, primary, tier } => {
+            let chosen = if primary { s.primary } else { s.secondary };
+            (tier < s.levels, chosen == Some(effect))
+        }
+        BeaconButtonKind::Upgrade => {
+            let Some(p) = s.primary else {
+                return BeaconButtonState::Hidden;
+            };
+            // `setEffect(primary)` then `super.updateStatus(levels)`, so it
+            // gates on tier 3 like any other secondary-column button.
+            (3 < s.levels, s.secondary == Some(p))
+        }
+        BeaconButtonKind::Confirm => (s.has_payment && s.primary.is_some(), false),
+        BeaconButtonKind::Cancel => (true, false),
+    };
+    if !active {
+        BeaconButtonState::Disabled
+    } else if selected {
+        BeaconButtonState::Selected
+    } else if hovered {
+        BeaconButtonState::Highlighted
+    } else {
+        BeaconButtonState::Normal
+    }
+}
+
+/// What the upgrade button's icon shows — the *primary* effect, not its own.
+pub fn beacon_upgrade_effect(s: BeaconChoice) -> Option<BeaconEffect> {
+    s.primary
+}
+
+/// Whether the cursor is over a 22x22 button, in panel-relative GUI pixels.
+///
+/// `AbstractWidget.isMouseOver` is a plain half-open rect with no bleed —
+/// unlike a slot's 18x18 test, and unlike the enchanting row's.
+pub fn beacon_button_hovered(b: BeaconButton, gui_x: f64, gui_y: f64) -> bool {
+    gui_x >= b.x as f64
+        && gui_x < (b.x + BEACON_BUTTON) as f64
+        && gui_y >= b.y as f64
+        && gui_y < (b.y + BEACON_BUTTON) as f64
+}
+
+/// The 18x18 icon inside a 22x22 button — **inset by 2 on both axes**, so it
+/// leaves a 2 px frame on every side.
+pub fn beacon_icon_rect(b: BeaconButton) -> ProgressBlit {
+    ProgressBlit { dx: b.x + 2, dy: b.y + 2, w: 18, h: 18, sx: 0, sy: 0 }
+}
+
+/// The button's own 22x22 chrome rect.
+pub fn beacon_button_rect(b: BeaconButton) -> ProgressBlit {
+    ProgressBlit {
+        dx: b.x,
+        dy: b.y,
+        w: BEACON_BUTTON,
+        h: BEACON_BUTTON,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Where `extractBackground` draws the five payment-item icons, as
+/// `(item name, x)` at a shared `y = 109`.
+///
+/// **The spacing is irregular and it is vanilla's own**: the literals are
+/// `20`, `41`, `41 + 22`, `42 + 44`, `42 + 66`, so the gaps run 21, 22, 23, 22.
+/// A regular pitch reads as obviously right and misplaces three of the five.
+pub const BEACON_PAYMENT_ICONS: [(&str, i32); 5] = [
+    ("minecraft:netherite_ingot", 20),
+    ("minecraft:emerald", 41),
+    ("minecraft:diamond", 63),
+    ("minecraft:gold_ingot", 86),
+    ("minecraft:iron_ingot", 108),
+];
+
+/// The y every payment icon shares.
+pub const BEACON_PAYMENT_ICON_Y: i32 = 109;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,6 +1333,254 @@ mod tests {
             Some((ENCHANT_NAME_AVAILABLE & 0xFEFEFE) >> 1)
         );
         assert_eq!(EnchantRow::Empty.cost_color(), None);
+    }
+
+    // -- M92: the beacon's buttons ------------------------------------------
+
+    fn button_of(kind: BeaconButtonKind) -> BeaconButton {
+        beacon_buttons()
+            .into_iter()
+            .find(|b| b.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?}"))
+    }
+
+    #[test]
+    fn an_invisible_button_moves_a_visible_one() {
+        // The secondary column counts the upgrade slot into its total width
+        // even though it is usually invisible. Dropping the `+ 1` because "the
+        // button isn't there" halves the width and slides regeneration right.
+        let regen = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        // count = 2 -> total = 46 -> 167 + 0 - 23.
+        assert_eq!(regen.x, 144);
+        // What it would be with count = 1 (total 22): 167 - 11 = 156.
+        assert_ne!(regen.x, 156, "the +1 for the upgrade slot is load-bearing");
+        assert_eq!(button_of(BeaconButtonKind::Upgrade).x, 168, "167 + 24 - 23");
+    }
+
+    #[test]
+    fn the_two_columns_do_not_share_their_y_arithmetic() {
+        // The primary column steps 22 + tier * 25; the secondary is a FIXED
+        // 47, not 22 + 3 * 25 = 97.
+        let ys: Vec<i32> = (0..=2)
+            .map(|t| {
+                button_of(BeaconButtonKind::Power {
+                    effect: beacon_tier_effects(t as usize)[0],
+                    primary: true,
+                    tier: t,
+                })
+                .y
+            })
+            .collect();
+        assert_eq!(ys, vec![22, 47, 72]);
+        let regen = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        assert_eq!(regen.y, 47);
+        assert_ne!(regen.y, 22 + 3 * 25, "not derived from the tier");
+    }
+
+    #[test]
+    fn a_single_effect_tier_centres_rather_than_left_aligning() {
+        // Tier 2 has one effect, so total = 22 and the button lands at
+        // 76 - 11 = 65 — centred on the column, not at its left edge.
+        let strength = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Strength,
+            primary: true,
+            tier: 2,
+        });
+        assert_eq!(strength.x, 65);
+        // ...and a two-effect tier straddles the same centre.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let haste = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Haste,
+            primary: true,
+            tier: 0,
+        });
+        assert_eq!((speed.x, haste.x), (53, 77));
+        assert_eq!((speed.x + haste.x + BEACON_BUTTON) / 2, 76, "centred on 76");
+    }
+
+    #[test]
+    fn a_power_button_lights_only_when_its_tier_is_strictly_below_the_level() {
+        // `tier < levels`. A level-1 beacon lights tier 0 alone.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let strength = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Strength,
+            primary: true,
+            tier: 2,
+        });
+        let at = |levels| BeaconChoice { levels, ..Default::default() };
+        assert_eq!(beacon_button_state(speed, at(0), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(speed, at(1), false), BeaconButtonState::Normal);
+        assert_eq!(beacon_button_state(strength, at(2), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(strength, at(3), false), BeaconButtonState::Normal);
+    }
+
+    #[test]
+    fn disabled_beats_selected_which_beats_hovered() {
+        // Vanilla's chain tests `!active` FIRST, so a selected button out of
+        // tier range still paints disabled — the states are not independent
+        // flags and their order is not the order they are named in.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let chosen = |levels| BeaconChoice {
+            levels,
+            primary: Some(BeaconEffect::Speed),
+            ..Default::default()
+        };
+        assert_eq!(beacon_button_state(speed, chosen(0), true), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(speed, chosen(4), true), BeaconButtonState::Selected);
+        assert_eq!(
+            beacon_button_state(speed, BeaconChoice { levels: 4, ..Default::default() }, true),
+            BeaconButtonState::Highlighted
+        );
+    }
+
+    #[test]
+    fn the_same_effect_can_be_selected_in_one_column_and_not_the_other() {
+        // `selected` compares against primary OR secondary by the button's own
+        // column, so the two columns do not shadow each other.
+        let regen_secondary = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        let s = BeaconChoice {
+            levels: 4,
+            primary: Some(BeaconEffect::Regeneration),
+            secondary: None,
+            has_payment: true,
+        };
+        assert_eq!(
+            beacon_button_state(regen_secondary, s, false),
+            BeaconButtonState::Normal,
+            "the PRIMARY being regeneration must not light the secondary button"
+        );
+    }
+
+    #[test]
+    fn the_upgrade_button_is_hidden_until_a_primary_is_chosen() {
+        let up = button_of(BeaconButtonKind::Upgrade);
+        let none = BeaconChoice { levels: 4, ..Default::default() };
+        assert_eq!(beacon_button_state(up, none, false), BeaconButtonState::Hidden);
+        assert_eq!(beacon_upgrade_effect(none), None);
+        let with = BeaconChoice {
+            levels: 4,
+            primary: Some(BeaconEffect::Haste),
+            ..Default::default()
+        };
+        assert_ne!(beacon_button_state(up, with, false), BeaconButtonState::Hidden);
+        // It BORROWS the primary's icon — the one button whose art changes as
+        // you click elsewhere.
+        assert_eq!(beacon_upgrade_effect(with), Some(BeaconEffect::Haste));
+    }
+
+    #[test]
+    fn confirm_needs_a_payment_and_a_primary_but_no_secondary() {
+        // Requiring a secondary would make a single-effect beacon unusable.
+        let confirm = button_of(BeaconButtonKind::Confirm);
+        let cancel = button_of(BeaconButtonKind::Cancel);
+        let s = |pay: bool, prim: bool| BeaconChoice {
+            levels: 4,
+            primary: prim.then_some(BeaconEffect::Speed),
+            secondary: None,
+            has_payment: pay,
+        };
+        assert_eq!(beacon_button_state(confirm, s(false, true), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(confirm, s(true, false), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(confirm, s(true, true), false), BeaconButtonState::Normal);
+        // Cancel never disables — `updateStatus` leaves it alone.
+        assert_eq!(beacon_button_state(cancel, s(false, false), false), BeaconButtonState::Normal);
+    }
+
+    #[test]
+    fn the_icon_is_inset_two_pixels_inside_its_button() {
+        for b in beacon_buttons() {
+            let chrome = beacon_button_rect(b);
+            let icon = beacon_icon_rect(b);
+            assert_eq!((chrome.w, chrome.h), (22, 22));
+            assert_eq!((icon.w, icon.h), (18, 18));
+            assert_eq!((icon.dx - chrome.dx, icon.dy - chrome.dy), (2, 2));
+        }
+    }
+
+    #[test]
+    fn the_button_hover_box_has_no_bleed() {
+        // Unlike a slot's 18x18 test and unlike the enchanting row's tooltip
+        // box: `AbstractWidget.isMouseOver` is a plain half-open rect.
+        let b = BeaconButton { x: 50, y: 30, kind: BeaconButtonKind::Cancel };
+        assert!(beacon_button_hovered(b, 50.0, 30.0));
+        assert!(beacon_button_hovered(b, 71.9, 51.9));
+        assert!(!beacon_button_hovered(b, 49.0, 40.0), "no one-pixel bleed left");
+        assert!(!beacon_button_hovered(b, 72.0, 40.0), "nor right");
+        assert!(!beacon_button_hovered(b, 60.0, 52.0), "nor below");
+    }
+
+    #[test]
+    fn the_payment_icon_spacing_is_irregular() {
+        // 20, 41, 63, 86, 108 — gaps of 21, 22, 23, 22, straight out of
+        // vanilla's literals (`41`, `41 + 22`, `42 + 44`, `42 + 66`). A
+        // regular pitch reads as obviously right and misplaces three of five.
+        let xs: Vec<i32> = BEACON_PAYMENT_ICONS.iter().map(|(_, x)| *x).collect();
+        assert_eq!(xs, vec![20, 41, 63, 86, 108]);
+        let gaps: Vec<i32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(gaps, vec![21, 22, 23, 22]);
+        assert!(gaps.iter().any(|g| *g != gaps[0]), "not a constant pitch");
+    }
+
+    #[test]
+    fn each_effect_gets_exactly_one_button_and_only_one_column_offers_it() {
+        // FIVE power buttons in the primary column (tiers 0..=2 hold 2, 2, 1)
+        // and one in the secondary, plus the upgrade slot, confirm and cancel:
+        // nine. This witness was written asserting eight and failed, and the
+        // miscount pointed at the asymmetry below.
+        let b = beacon_buttons();
+        assert_eq!(b.len(), 9);
+        let powers = b
+            .iter()
+            .filter(|b| matches!(b.kind, BeaconButtonKind::Power { .. }))
+            .count();
+        assert_eq!(powers, 6, "5 primary + 1 secondary");
+
+        // The columns are built from DISJOINT tiers — 0..=2 primary, 3
+        // secondary — so no effect is offered in both. Strength can only ever
+        // be a primary and regeneration can only ever be a secondary, which is
+        // the game rule the layout encodes.
+        let column_of = |e: BeaconEffect| {
+            b.iter().find_map(|b| match b.kind {
+                BeaconButtonKind::Power { effect, primary, .. } if effect == e => Some(primary),
+                _ => None,
+            })
+        };
+        assert_eq!(column_of(BeaconEffect::Strength), Some(true));
+        assert_eq!(column_of(BeaconEffect::Regeneration), Some(false));
+        // Every effect in the flattened table appears exactly once.
+        for e in BeaconEffect::ALL {
+            assert_eq!(
+                b.iter()
+                    .filter(|b| matches!(b.kind, BeaconButtonKind::Power { effect, .. } if effect == e))
+                    .count(),
+                1,
+                "{e:?}"
+            );
+        }
     }
 
     #[test]

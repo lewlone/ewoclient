@@ -1448,6 +1448,25 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/enchanting_table/level_1_disabled.png",
     "gui/sprites/container/enchanting_table/level_2_disabled.png",
     "gui/sprites/container/enchanting_table/level_3_disabled.png",
+    // 18..=21 — the beacon's button chrome (M92), in the order
+    // `BeaconScreenButton.extractContents` tests for them, so
+    // `BEACON_BUTTON + state as usize` indexes it.
+    "gui/sprites/container/beacon/button_disabled.png",
+    "gui/sprites/container/beacon/button_selected.png",
+    "gui/sprites/container/beacon/button_highlighted.png",
+    "gui/sprites/container/beacon/button.png",
+    // 22..=23 — the confirm and cancel icons.
+    "gui/sprites/container/beacon/confirm.png",
+    "gui/sprites/container/beacon/cancel.png",
+    // 24..=29 — the six beacon effect icons, in `BEACON_EFFECTS` flattened
+    // order. `Hud.getMobEffectSprite` is `mob_effect/<registry name>`, and the
+    // beacon uses only these six of the ~30 in the set.
+    "gui/sprites/mob_effect/speed.png",
+    "gui/sprites/mob_effect/haste.png",
+    "gui/sprites/mob_effect/resistance.png",
+    "gui/sprites/mob_effect/jump_boost.png",
+    "gui/sprites/mob_effect/strength.png",
+    "gui/sprites/mob_effect/regeneration.png",
 ];
 
 /// Where a furnace menu's `(lit, burn)` pair starts in
@@ -1478,6 +1497,18 @@ pub const ENCHANT_ROW_HIGHLIGHTED: usize = 10;
 pub const ENCHANT_ROW_DISABLED: usize = 11;
 pub const ENCHANT_LEVEL: usize = 12;
 pub const ENCHANT_LEVEL_DISABLED: usize = 15;
+
+/// The beacon's twelve (M92).
+///
+/// The four chrome sprites are in the order
+/// `BeaconScreenButton.extractContents` tests for them — disabled, selected,
+/// highlighted, normal — so `BEACON_BUTTON_CHROME + state` is the lookup and
+/// the priority is expressed once rather than twice.
+pub const BEACON_BUTTON_CHROME: usize = 18;
+pub const BEACON_CONFIRM: usize = 22;
+pub const BEACON_CANCEL: usize = 23;
+/// The six effect icons, in `BEACON_EFFECTS` flattened order.
+pub const BEACON_EFFECT_ICON: usize = 24;
 
 /// The textures the container screen and its tooltips draw (M35, M40, M58).
 pub struct ContainerSprites {
