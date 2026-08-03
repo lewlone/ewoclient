@@ -702,7 +702,7 @@ fn overlays(
      -> Result<Vec<u8>, String> {
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None,
+            open, 30, false, effects, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -797,7 +797,7 @@ fn overlays(
         // answer: false gives three UNAFFORDABLE rows, true three available
         // ones — same costs, different backgrounds.
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, creative, effects, mouse,
+            open, 30, creative, effects, mouse, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -879,7 +879,7 @@ fn overlays(
         let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
         let open = m.open().unwrap();
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None,
+            open, 30, false, effects, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -937,7 +937,7 @@ fn overlays(
         let m = menu(7, data);
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None,
+            open, 30, false, effects, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -1330,6 +1330,50 @@ fn overlays(
         );
     }
 
+    // o18 — the render honours the SCREEN's beacon choice, not just the
+    // menu's. Found by a surviving mutation: every witness above drives the
+    // menu's data slots, so reverting the render to `beacon_choice(m, ..)`
+    // changed nothing any of them could see — and a click would have moved a
+    // choice that nothing drew, which is M93i's "correct but invisible" one
+    // screen over.
+    {
+        let beacon_layout = rewo_world::menu_layout::layout_of(9).unwrap();
+        let at_beacon = probe(beacon_layout);
+        let mut beacon_frame = |over: Option<rewo_world::menu_screen::BeaconChoice>,
+                                gpu: &mut Gpu,
+                                off: &mut Offscreen,
+                                wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            // levels 4 so every button is live, and a payment so Confirm is.
+            let m = menu(9, &[(0, 4)]);
+            let open = m.open().expect("open");
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                open, 30, false, effects, None, over,
+            ));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        let none = beacon_frame(None, gpu, off, wr)?;
+        let picked = beacon_frame(
+            Some(rewo_world::menu_screen::BeaconChoice {
+                levels: 4,
+                primary: Some(rewo_world::menu_screen::BeaconEffect::ALL[0]),
+                secondary: None,
+                has_payment: true,
+            }),
+            gpu,
+            off,
+            wr,
+        )?;
+        let differs = (0..166i32)
+            .any(|y| (0..176i32).any(|x| at_beacon(&none, x, y) != at_beacon(&picked, x, y)));
+        c.record(
+            "o18.the_render_honours_the_screens_beacon_choice",
+            differs,
+            "a screen-local primary changes the frame — the selected button's chrome,              and the upgrade button becoming visible at all",
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
@@ -1337,6 +1381,7 @@ fn overlays(
             30,
             false,
             effects,
+            None,
             None,
         ));
         let _ = shot(gpu, off, wr);
