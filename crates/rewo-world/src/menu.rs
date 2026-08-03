@@ -201,6 +201,106 @@ impl OpenMenu {
             .menu_slot(ENCHANT_LAPIS_SLOT)
             .map_or(0, |s| s.count as i32)
     }
+
+    // -- CrafterMenu (M93h) ------------------------------------------------
+    //
+    // `containerData` is a `SimpleContainerData(10)`: slots 0..=8 are the
+    // per-grid-slot toggle and slot 9 is redstone power. Both live in the same
+    // array, which is why `isSlotDisabled` carries its own range guard.
+
+    /// `CrafterMenu.isSlotDisabled` —
+    /// `slotId > -1 && slotId < 9 ? containerData.get(slotId) == 1 : false`.
+    ///
+    /// **1 is DISABLED, not enabled.** The inversion is easy to lose because
+    /// `setSlotState` takes an `isEnabled` and writes `isEnabled ? 0 : 1`, so
+    /// the argument and the stored value are opposites. Reading it the other
+    /// way disables exactly the eight slots the player left on.
+    ///
+    /// The `< 9` is load-bearing rather than defensive: index **9 is the
+    /// power flag**, in the same array, and a crafter that is powered would
+    /// otherwise read as having a ninth disabled slot.
+    pub fn crafter_slot_disabled(&self, slot: i32) -> bool {
+        (0..CRAFTER_GRID_SLOTS).contains(&slot) && self.data(slot as i16) == 1
+    }
+
+    /// `CrafterMenu.isPowered` — `containerData.get(9) == 1`.
+    pub fn crafter_powered(&self) -> bool {
+        self.data(CRAFTER_POWERED_DATA_SLOT) == 1
+    }
+}
+
+/// `CrafterMenu`'s grid size, and the exclusive bound `isSlotDisabled` tests.
+pub const CRAFTER_GRID_SLOTS: i32 = 9;
+/// The data slot holding redstone power — **inside the same array** as the
+/// nine toggles, which is why the toggle accessor bounds itself.
+pub const CRAFTER_POWERED_DATA_SLOT: i16 = 9;
+
+/// What clicking a crafter's grid slot does, before the ordinary click runs.
+///
+/// `CrafterScreen.slotClicked` gates on **three** things —
+/// `slot instanceof CrafterSlot && !slot.hasItem() && !player.isSpectator()`
+/// — so an occupied slot cannot be toggled at all, and then dispatches:
+///
+/// ```java
+/// case PICKUP:
+///    if (menu.isSlotDisabled(slotId))      enableSlot(slotId);
+///    else if (menu.getCarried().isEmpty()) disableSlot(slotId);
+///    break;
+/// case SWAP:
+///    if (menu.isSlotDisabled(slotId) && !playerInventoryItem.isEmpty())
+///       enableSlot(slotId);
+/// ```
+///
+/// **The PICKUP branch is asymmetric.** Re-enabling a disabled slot is
+/// unconditional; disabling an enabled one requires an EMPTY cursor, because
+/// clicking an empty enabled slot while holding something is a placement. A
+/// symmetric reading would make it impossible to put an item into a crafter by
+/// hand — it would toggle the slot off instead.
+///
+/// **And whatever this returns, the ordinary click still happens**:
+/// `slotClicked` ends in `super.slotClicked(...)` unconditionally, so a toggle
+/// is *additive* rather than a replacement. Treating it as an either/or drops
+/// the placement that the SWAP case exists to complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrafterToggle {
+    /// Send `container_slot_state_changed` with `newState = true`.
+    Enable,
+    /// ...with `newState = false`.
+    Disable,
+    /// No toggle — the ordinary click still runs.
+    None,
+}
+
+/// `CrafterScreen.slotClicked`'s toggle decision (M93h).
+///
+/// `swap_target_empty` is `player.getInventory().getItem(buttonNum).isEmpty()`
+/// and is only consulted on the SWAP path.
+pub fn crafter_toggle(
+    disabled: bool,
+    slot_occupied: bool,
+    spectator: bool,
+    carried_empty: bool,
+    is_swap: bool,
+    swap_target_empty: bool,
+) -> CrafterToggle {
+    if slot_occupied || spectator {
+        return CrafterToggle::None;
+    }
+    if is_swap {
+        // SWAP has no disable arm at all: a swap can only turn a slot back on,
+        // and only when it has something to put there.
+        if disabled && !swap_target_empty {
+            return CrafterToggle::Enable;
+        }
+        return CrafterToggle::None;
+    }
+    if disabled {
+        CrafterToggle::Enable
+    } else if carried_empty {
+        CrafterToggle::Disable
+    } else {
+        CrafterToggle::None
+    }
 }
 
 /// `BeaconMenu`'s three data slots (M92).
@@ -670,5 +770,116 @@ mod tests {
         m.apply_open_screen(4, 0, "Small".into());
         m.apply_close();
         assert!(m.open().is_none());
+    }
+}
+
+#[cfg(test)]
+mod m93h_crafter {
+    use super::*;
+
+    /// A crafter with the given ten data values.
+    fn crafter(data: [i16; 10]) -> Menus {
+        let mut m = Menus::new();
+        m.apply_open_screen(4, 7, "Crafter".into());
+        for (i, v) in data.iter().enumerate() {
+            assert!(m.apply_set_data(4, i as i16, *v));
+        }
+        m
+    }
+
+    #[test]
+    fn one_is_disabled_and_zero_is_enabled() {
+        // THE inversion. `setSlotState` takes an `isEnabled` and stores
+        // `isEnabled ? 0 : 1`, so the argument and the stored value are
+        // opposites — reading the value as "enabled" disables exactly the
+        // slots the player left on, which looks like a working crafter that
+        // never crafts.
+        let mut d = [0i16; 10];
+        d[3] = 1;
+        let m = crafter(d);
+        let o = m.open().unwrap();
+        assert!(o.crafter_slot_disabled(3), "1 means DISABLED");
+        for s in [0, 1, 2, 4, 5, 6, 7, 8] {
+            assert!(!o.crafter_slot_disabled(s), "0 means enabled, slot {s}");
+        }
+    }
+
+    #[test]
+    fn the_power_flag_shares_the_array_and_is_not_a_tenth_slot() {
+        // `isSlotDisabled` guards `slotId < 9` and index 9 is the power flag,
+        // in the SAME array. Without the guard a powered crafter reads as
+        // having a ninth disabled slot — and 9 is a legal index, so nothing
+        // would fault.
+        let mut d = [0i16; 10];
+        d[9] = 1;
+        let m = crafter(d);
+        let o = m.open().unwrap();
+        assert!(o.crafter_powered());
+        assert!(!o.crafter_slot_disabled(9), "index 9 is power, not a slot");
+        // ...and a negative or oversized index is not a slot either.
+        assert!(!o.crafter_slot_disabled(-1));
+        assert!(!o.crafter_slot_disabled(9));
+    }
+
+    #[test]
+    fn the_pickup_branch_is_asymmetric() {
+        // Re-enabling is unconditional; DISABLING needs an empty cursor,
+        // because clicking an empty enabled slot while holding something is a
+        // placement. A symmetric reading makes it impossible to put an item
+        // into a crafter by hand — it toggles the slot off instead.
+        let enable = crafter_toggle(true, false, false, true, false, false);
+        assert_eq!(enable, CrafterToggle::Enable);
+        // ...still enable even with a full cursor.
+        assert_eq!(
+            crafter_toggle(true, false, false, false, false, false),
+            CrafterToggle::Enable
+        );
+        // Enabled + empty cursor -> disable.
+        assert_eq!(
+            crafter_toggle(false, false, false, true, false, false),
+            CrafterToggle::Disable
+        );
+        // Enabled + FULL cursor -> nothing, so the placement can happen.
+        assert_eq!(
+            crafter_toggle(false, false, false, false, false, false),
+            CrafterToggle::None
+        );
+    }
+
+    #[test]
+    fn swap_can_only_turn_a_slot_back_on() {
+        // The SWAP arm has no disable branch at all, and it needs something to
+        // put there.
+        assert_eq!(
+            crafter_toggle(true, false, false, true, true, false),
+            CrafterToggle::Enable
+        );
+        assert_eq!(
+            crafter_toggle(true, false, false, true, true, true),
+            CrafterToggle::None,
+            "an empty swap target enables nothing"
+        );
+        assert_eq!(
+            crafter_toggle(false, false, false, true, true, false),
+            CrafterToggle::None,
+            "SWAP never disables"
+        );
+    }
+
+    #[test]
+    fn an_occupied_slot_or_a_spectator_toggles_nothing() {
+        // Both are outer gates, before the input dispatch.
+        for is_swap in [false, true] {
+            assert_eq!(
+                crafter_toggle(true, true, false, true, is_swap, false),
+                CrafterToggle::None,
+                "an occupied slot cannot toggle (swap={is_swap})"
+            );
+            assert_eq!(
+                crafter_toggle(true, false, true, true, is_swap, false),
+                CrafterToggle::None,
+                "a spectator cannot toggle (swap={is_swap})"
+            );
+        }
     }
 }
