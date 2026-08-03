@@ -3765,6 +3765,50 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `ServerboundContainerButtonClickPacket` (M92f) — two var-ints, the open
+    /// menu's id and a button index.
+    ///
+    /// ```java
+    /// StreamCodec.composite(ByteBufCodecs.CONTAINER_ID, ..., ByteBufCodecs.VAR_INT, ...)
+    /// ```
+    ///
+    /// The **whole** bespoke-widget input surface for four screens: an
+    /// enchanting row, a loom pattern, a stonecutter recipe and a crafter slot
+    /// toggle are all this one packet with a different index. Only the beacon
+    /// and the anvil need something else (`set_beacon` and `rename_item`), and
+    /// the merchant its own trade-select.
+    ///
+    /// **The button index is a per-menu meaning, not a shared enum** — 0..=2
+    /// is an enchanting offer, 0..=n a loom pattern, and 0..=8 a crafter slot.
+    /// Sending the wrong screen's index is accepted by the server and does
+    /// something, which is why the caller resolves it from the open menu's own
+    /// layout rather than from a screen-independent id.
+    ///
+    /// Vanilla gates the send on `menu.clickMenuButton(player, i)` returning
+    /// true — the client asks its *own* menu whether the press is legal before
+    /// telling the server. Rewo has no server-side menu to ask, so the gate is
+    /// the screen's own enabled/disabled state, which is the same predicate
+    /// the button is drawn with.
+    ///
+    /// It carries **no state id**: unlike `container_click` this is not a
+    /// prediction the server grades, so there is nothing to resync against.
+    pub fn container_button_click(&mut self, button: i32) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_container_button_click else {
+            return Err("container_button_click unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        // The SHOWN menu's id, on M89's rule — a button press belongs to
+        // whatever screen is up, and container 0 is never a button screen.
+        // The body comes from the tested builder rather than being written
+        // twice, so the witness grades the bytes this actually sends.
+        p.buf
+            .extend_from_slice(&crate::container_button_click_body(
+                self.shown_container_id(),
+                button,
+            ));
+        self.send(p)
+    }
+
     pub fn select_hotbar(&mut self, slot: u8) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_set_carried_item else {
             return Err("set_carried_item unavailable".into());

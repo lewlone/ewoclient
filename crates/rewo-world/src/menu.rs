@@ -115,6 +115,158 @@ impl OpenMenu {
     }
 }
 
+/// `BrewingStandMenu`'s two data slots — **and they are the other way round
+/// from the furnace's** (M92).
+///
+/// `getBrewingTicks()` is `brewingStandData.get(0)` and `getFuel()` is
+/// `get(1)`, where `AbstractFurnaceMenu` puts its *fuel* at 0 and its cook
+/// progress at 2. Naming these by analogy with the furnace — "0 is the fuel,
+/// it was last time" — swaps a 0..20 fuel level with a 0..400 tick counter,
+/// and the result is a fuel bar pinned full and bubbles that never move. Both
+/// menus are five bytes on the wire and neither says which is which; only the
+/// accessor does.
+pub const BREW_TICKS: i16 = 0;
+pub const BREW_FUEL: i16 = 1;
+
+impl OpenMenu {
+    /// `getBrewingTicks()` — ticks **remaining**, counting down from 400.
+    pub fn brewing_ticks(&self) -> i32 {
+        self.data(BREW_TICKS) as i32
+    }
+
+    /// `getFuel()` — blaze-powder charges left, 0..=20.
+    pub fn brewing_fuel(&self) -> i32 {
+        self.data(BREW_FUEL) as i32
+    }
+}
+
+/// `EnchantmentMenu`'s ten data slots — the largest count in the registry, and
+/// what fixes [`MAX_DATA_SLOTS`] (M92).
+///
+/// ```text
+/// 0..=2  costs[i]       the level price of each offer, 0 for "no offer"
+/// 3      enchantmentSeed
+/// 4..=6  enchantClue[i] an ENCHANTMENT REGISTRY ID, or -1
+/// 7..=9  levelClue[i]   the offered level, or -1
+/// ```
+///
+/// **The clue sentinel is `-1`, and 0 is a perfectly valid registry id**, so
+/// the two cannot be conflated: a client that treated an absent clue as 0
+/// would name whichever enchantment happens to sit at index 0 in the server's
+/// registry. That is the reason M87's decode reads a **signed** short, and it
+/// is the only place in the container arc where a negative data value is the
+/// normal case rather than an edge one.
+///
+/// The initial values are never observed as Rewo's zeros: `sendAllDataToRemote`
+/// hands every data slot to `sendInitialData`, which broadcasts all ten before
+/// the screen can draw.
+pub const ENCHANT_COST: i16 = 0;
+pub const ENCHANT_SEED: i16 = 3;
+pub const ENCHANT_CLUE: i16 = 4;
+pub const ENCHANT_LEVEL_CLUE: i16 = 7;
+
+/// The menu slot the lapis sits in. Its **count**, not its presence, is what
+/// `getGoldCount()` returns.
+pub const ENCHANT_LAPIS_SLOT: usize = 1;
+
+impl OpenMenu {
+    /// `menu.costs` — the three offers' level prices, 0 meaning "no offer".
+    pub fn enchant_costs(&self) -> [i32; 3] {
+        std::array::from_fn(|i| self.data(ENCHANT_COST + i as i16) as i32)
+    }
+
+    /// `getEnchantmentSeed()`, which seeds the Standard Galactic name.
+    pub fn enchant_seed(&self) -> i32 {
+        self.data(ENCHANT_SEED) as i32
+    }
+
+    /// `menu.enchantClue[i]` — an enchantment registry id, or `None` for the
+    /// `-1` sentinel.
+    pub fn enchant_clue(&self, i: usize) -> Option<i32> {
+        let v = self.data(ENCHANT_CLUE + i as i16) as i32;
+        (v >= 0).then_some(v)
+    }
+
+    /// `menu.levelClue[i]` — the offered level, or `None` for `-1`.
+    pub fn enchant_level_clue(&self, i: usize) -> Option<i32> {
+        let v = self.data(ENCHANT_LEVEL_CLUE + i as i16) as i32;
+        (v >= 0).then_some(v)
+    }
+
+    /// `getGoldCount()` — **the count of the stack in menu slot 1**, not a
+    /// data slot. So the lapis half of the affordability test arrives through
+    /// `container_set_content`, on a different packet from the costs.
+    pub fn enchant_lapis(&self) -> i32 {
+        self.menu
+            .menu_slot(ENCHANT_LAPIS_SLOT)
+            .map_or(0, |s| s.count as i32)
+    }
+}
+
+/// `BeaconMenu`'s three data slots (M92).
+///
+/// ```text
+/// 0  levels     the pyramid height, 0..=4
+/// 1  primary    encodeEffect(primary)
+/// 2  secondary  encodeEffect(secondary)
+/// ```
+///
+/// # Two adjacent screens, two different "absent" encodings
+///
+/// ```java
+/// encodeEffect(e) = e == null ? 0 : id(e) + 1;
+/// decodeEffect(v) = v == 0 ? null : byId(v - 1);
+/// ```
+///
+/// So the beacon says "no effect" with **0 and shifts every real id up by
+/// one**, where the enchanting table one menu earlier says "no clue" with
+/// **-1 and leaves its ids alone**. Both travel in the same signed short on
+/// the same packet, and neither is inferable from the wire. Carrying one
+/// convention across is a silent off-by-one: every beacon effect would render
+/// as its registry neighbour, and speed — id 0, encoded 1 — would read as the
+/// effect whose id is 1.
+///
+/// It is `holder`'s `id + 1` scheme (M16/M21/M55's recurring fork) turning up
+/// inside a **data slot**, where every other value in the arc is raw.
+pub const BEACON_LEVELS: i16 = 0;
+pub const BEACON_PRIMARY: i16 = 1;
+pub const BEACON_SECONDARY: i16 = 2;
+
+/// `BeaconMenu.decodeEffect` — `0` is absent, anything else is `id - 1`.
+pub fn decode_beacon_effect(v: i16) -> Option<i32> {
+    (v != 0).then(|| v as i32 - 1)
+}
+
+/// `BeaconMenu.encodeEffect` — the inverse, kept beside it so the pair cannot
+/// drift.
+pub fn encode_beacon_effect(id: Option<i32>) -> i16 {
+    id.map_or(0, |id| (id + 1) as i16)
+}
+
+impl OpenMenu {
+    /// `getLevels()` — the pyramid's height.
+    pub fn beacon_levels(&self) -> i32 {
+        self.data(BEACON_LEVELS) as i32
+    }
+
+    /// `getPrimaryEffect()` as a `minecraft:mob_effect` registry id.
+    pub fn beacon_primary(&self) -> Option<i32> {
+        decode_beacon_effect(self.data(BEACON_PRIMARY))
+    }
+
+    /// `getSecondaryEffect()`.
+    pub fn beacon_secondary(&self) -> Option<i32> {
+        decode_beacon_effect(self.data(BEACON_SECONDARY))
+    }
+
+    /// `menu.hasPayment()` — whether the payment slot (menu slot 0) holds
+    /// anything. Like the enchanting table's lapis, this is a **slot**, so it
+    /// arrives on a different packet from the levels.
+    pub fn beacon_has_payment(&self) -> bool {
+        self.menu.menu_slot(0).is_some()
+    }
+}
+
 /// The client's menu slot. Vanilla has exactly one — `Gui.screen` is a single
 /// field and `setScreen` replaces it (M82's finding for the screen framework
 /// generalises here), so this is an `Option`, not a stack.
@@ -353,6 +505,156 @@ mod tests {
         assert_eq!(f.data(FURNACE_COOK_TOTAL), 4);
         assert!((f.furnace_lit_progress() - 0.5).abs() < 1e-6);
         assert!((f.furnace_burn_progress() - 0.75).abs() < 1e-6);
+    }
+
+    // -- M92: the brewing stand's data slots, which invert ------------------
+
+    #[test]
+    fn the_brewing_stands_data_slots_are_the_reverse_of_the_furnaces() {
+        // The whole point: slot 0 is the TICK COUNTER here and the FUEL in a
+        // furnace. Transposing them is invisible on the wire — both menus send
+        // the same five bytes — and shows up only as a fuel bar pinned full
+        // and bubbles that never move.
+        let mut m = Menus::new();
+        m.apply_open_screen(3, 11, "Brewing Stand".into()); // brewing_stand
+        assert!(m.apply_set_data(3, 0, 380), "slot 0 is the tick counter");
+        assert!(m.apply_set_data(3, 1, 17), "slot 1 is the fuel");
+        let b = m.open().unwrap();
+        assert_eq!(b.brewing_ticks(), 380);
+        assert_eq!(b.brewing_fuel(), 17);
+        // A furnace's slot 0 is the fuel, and the two accessors must not be
+        // reading the same constant.
+        assert_ne!(BREW_TICKS, FURNACE_LIT_DURATION);
+        assert_eq!(BREW_TICKS, FURNACE_LIT_REMAINING, "the same index, the other meaning");
+    }
+
+    #[test]
+    fn an_untouched_brewing_stand_reads_zero_on_both() {
+        let mut m = Menus::new();
+        m.apply_open_screen(1, 11, "Brewing Stand".into());
+        let b = m.open().unwrap();
+        assert_eq!((b.brewing_ticks(), b.brewing_fuel()), (0, 0));
+    }
+
+    // -- M92: the enchanting table's ten data slots -------------------------
+
+    fn enchant(data: &[(i16, i16)]) -> Menus {
+        let mut m = Menus::new();
+        m.apply_open_screen(6, 13, "Enchant".into()); // enchantment
+        for &(id, v) in data {
+            assert!(m.apply_set_data(6, id, v), "slot {id}");
+        }
+        m
+    }
+
+    #[test]
+    fn the_ten_enchantment_slots_land_in_their_three_groups() {
+        // A transposition here is invisible: every one of these is a small
+        // non-negative integer, so costs read as clues and clues as levels
+        // all render something plausible.
+        let m = enchant(&[
+            (0, 5), (1, 12), (2, 30),      // costs
+            (3, 424242i32 as i16),         // seed
+            (4, 7), (5, 8), (6, 9),        // enchant clues
+            (7, 1), (8, 2), (9, 3),        // level clues
+        ]);
+        let e = m.open().unwrap();
+        assert_eq!(e.enchant_costs(), [5, 12, 30]);
+        assert_eq!(e.enchant_clue(0), Some(7));
+        assert_eq!(e.enchant_clue(2), Some(9));
+        assert_eq!(e.enchant_level_clue(0), Some(1));
+        assert_eq!(e.enchant_level_clue(2), Some(3));
+        assert_eq!(e.enchant_seed(), 424242i32 as i16 as i32);
+    }
+
+    #[test]
+    fn minus_one_is_no_clue_and_zero_is_enchantment_number_zero() {
+        // The sentinel is -1 and 0 is a valid registry id, so the two must not
+        // collapse — a client conflating them names whichever enchantment sits
+        // at index 0 in the server's registry. This is also why the wire field
+        // is a SIGNED short (M87).
+        let m = enchant(&[(4, -1), (5, 0), (7, -1), (8, 0)]);
+        let e = m.open().unwrap();
+        assert_eq!(e.enchant_clue(0), None, "-1 is absent");
+        assert_eq!(e.enchant_clue(1), Some(0), "0 is present, and is id 0");
+        assert_eq!(e.enchant_level_clue(0), None);
+        assert_eq!(e.enchant_level_clue(1), Some(0));
+    }
+
+    #[test]
+    fn the_lapis_count_comes_from_a_menu_slot_not_a_data_slot() {
+        // `getGoldCount()` reads the COUNT of the stack in menu slot 1, so the
+        // affordability test's two halves arrive on two different packets.
+        let mut m = enchant(&[(0, 5)]);
+        assert_eq!(m.open().unwrap().enchant_lapis(), 0, "an empty slot is zero");
+        let inv = m.menu_for(6).unwrap();
+        let mut content = vec![None; inv.slot_count()];
+        content[ENCHANT_LAPIS_SLOT] = Some(crate::inventory::ItemSlot {
+            item_id: 1,
+            count: 13,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            trim_material: None,
+        });
+        inv.set_content(1, &content, None);
+        assert_eq!(m.open().unwrap().enchant_lapis(), 13, "the COUNT, not 1");
+    }
+
+    #[test]
+    fn ten_data_slots_is_the_registry_maximum() {
+        // MAX_DATA_SLOTS exists because of this menu; if it ever shrank, the
+        // level clues would silently stop arriving.
+        assert_eq!(MAX_DATA_SLOTS, 10);
+        assert_eq!(ENCHANT_LEVEL_CLUE as usize + 2, MAX_DATA_SLOTS - 1);
+    }
+
+    // -- M92: the beacon's data slots ---------------------------------------
+
+    #[test]
+    fn the_beacon_says_absent_with_zero_where_the_enchanting_table_says_minus_one() {
+        // Two adjacent menus, two conventions, one signed short. Carrying
+        // either across is a silent off-by-one: with the enchanting table's
+        // rule a beacon's 0 would read as effect id 0 (speed) and every real
+        // effect as its neighbour.
+        assert_eq!(decode_beacon_effect(0), None, "0 is ABSENT here");
+        assert_eq!(decode_beacon_effect(1), Some(0), "and 1 is id 0");
+        assert_eq!(decode_beacon_effect(11), Some(10), "resistance");
+        // The enchanting table's -1/0 pair, for contrast.
+        let e = {
+            let mut m = Menus::new();
+            m.apply_open_screen(1, 13, "E".into());
+            m.apply_set_data(1, ENCHANT_CLUE, 0);
+            m
+        };
+        assert_eq!(
+            e.open().unwrap().enchant_clue(0),
+            Some(0),
+            "0 is PRESENT there — the opposite reading of the same byte"
+        );
+    }
+
+    #[test]
+    fn encode_and_decode_beacon_effects_round_trip() {
+        for id in [None, Some(0), Some(1), Some(10), Some(31)] {
+            assert_eq!(decode_beacon_effect(encode_beacon_effect(id)), id, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_beacons_three_slots_land_where_they_belong() {
+        let mut m = Menus::new();
+        m.apply_open_screen(2, 9, "Beacon".into()); // beacon
+        for (id, v) in [(0i16, 3i16), (1, 5), (2, 0)] {
+            assert!(m.apply_set_data(2, id, v));
+        }
+        let b = m.open().unwrap();
+        assert_eq!(b.beacon_levels(), 3);
+        assert_eq!(b.beacon_primary(), Some(4), "encoded 5 is id 4");
+        assert_eq!(b.beacon_secondary(), None, "0 is no secondary");
+        assert!(!b.beacon_has_payment(), "the payment slot is a SLOT, not data");
     }
 
     #[test]

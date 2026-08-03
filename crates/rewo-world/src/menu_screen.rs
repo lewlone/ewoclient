@@ -390,6 +390,643 @@ pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Op
     (flame, arrow)
 }
 
+/// `BrewingStandScreen`'s bubble column heights, one per animation frame.
+///
+/// A **table**, not a formula — the gaps are 5, 4, 4, 5, 5, 6, which no
+/// arithmetic produces — and its last entry is **0**, so one frame in seven
+/// draws no bubbles at all. Reading the guard as "bubbles are always visible
+/// while brewing" loses that blink, which is the animation's whole character.
+pub const BUBBLE_LENGTHS: [i32; 7] = [29, 24, 20, 16, 11, 6, 0];
+
+/// How long a brew takes, in ticks. `BrewingStandBlockEntity`'s
+/// `BREWING_TIME_SECONDS * 20`.
+pub const BREW_TICKS_TOTAL: i32 = 400;
+
+/// `BrewingStandScreen.extractBackground`'s three overlays (M92).
+///
+/// ```java
+/// int fuelLength = Mth.clamp((18 * fuel + 20 - 1) / 20, 0, 18);
+/// if (fuelLength > 0) blitSprite(FUEL_LENGTH, 18, 4, 0, 0, xo + 60, yo + 44, fuelLength, 4);
+/// int tickCount = menu.getBrewingTicks();
+/// if (tickCount > 0) {
+///     int length = (int)(28.0F * (1.0F - tickCount / 400.0F));
+///     if (length > 0) blitSprite(BREW_PROGRESS, 9, 28, 0, 0, xo + 97, yo + 16, 9, length);
+///     length = BUBBLELENGTHS[tickCount / 2 % 7];
+///     if (length > 0) blitSprite(BUBBLES, 12, 29, 0, 29 - length, xo + 63, yo + 14 + 29 - length, 12, length);
+/// }
+/// ```
+///
+/// # Three things here invert
+///
+/// 1. **The brew timer counts DOWN.** `getBrewingTicks` is the ticks
+///    *remaining* out of 400, so the arrow's length is `28 * (1 - t/400)`: it
+///    is empty when brewing starts and full just before the potion pops.
+///    Treating the field as elapsed time runs the arrow backwards, which looks
+///    like a plausible animation and is exactly wrong.
+/// 2. **The arrow grows DOWNWARD and the bubbles grow UPWARD.** The arrow's
+///    destination `y` is a fixed `16` and only its height changes; the
+///    bubbles' source and destination `y` move together (`29 - length`), so
+///    their *bottom* edge is pinned at `14 + 29 = 43` and the top rises — the
+///    same shape as M91's furnace flame, and the reason to state it separately
+///    is that the two are one function apart and differ.
+/// 3. **Nothing is drawn at all when `tickCount == 0`.** Both the arrow and
+///    the bubbles are inside that guard, so an idle stand shows a bare panel;
+///    only the fuel bar survives it. Hoisting either out paints a stopped
+///    animation on an idle stand.
+///
+/// The fuel bar is the odd one out in a fourth way: it grows **rightward**
+/// from a fixed left edge, so its source rect never moves.
+///
+/// Returns `(fuel, brew, bubbles)`, each `None` where vanilla's guard skips
+/// the blit — which is a real state, not an optimisation.
+pub fn brewing_progress(
+    fuel: i32,
+    ticks: i32,
+) -> (Option<ProgressBlit>, Option<ProgressBlit>, Option<ProgressBlit>) {
+    // Integer ceiling division by 20: `(18 * fuel + 19) / 20`, written in
+    // vanilla as `+ 20 - 1`. Clamped on BOTH sides, so a corrupt negative fuel
+    // reads as empty rather than as a huge negative width.
+    let fuel_len = ((18 * fuel + 20 - 1) / 20).clamp(0, 18);
+    let fuel_bar = (fuel_len > 0).then_some(ProgressBlit {
+        dx: 60,
+        dy: 44,
+        w: fuel_len,
+        h: 4,
+        sx: 0,
+        sy: 0,
+    });
+
+    if ticks <= 0 {
+        return (fuel_bar, None, None);
+    }
+
+    // `(int)` on a float — truncation toward zero, not `ceil` like the
+    // furnace's. The two screens genuinely differ.
+    let arrow_h = (28.0 * (1.0 - ticks as f32 / BREW_TICKS_TOTAL as f32)) as i32;
+    let brew = (arrow_h > 0).then_some(ProgressBlit {
+        dx: 97,
+        dy: 16,
+        w: 9,
+        h: arrow_h,
+        sx: 0,
+        sy: 0,
+    });
+
+    // `tickCount / 2 % 7` — integer divide first, so each frame is held for
+    // two ticks and the cycle is 14 ticks long.
+    let bubble_h = BUBBLE_LENGTHS[(ticks / 2 % 7) as usize];
+    let bubbles = (bubble_h > 0).then_some(ProgressBlit {
+        dx: 63,
+        dy: 14 + 29 - bubble_h,
+        w: 12,
+        h: bubble_h,
+        sx: 0,
+        sy: 29 - bubble_h,
+    });
+
+    (fuel_bar, brew, bubbles)
+}
+
+// -- the enchanting table (M92) ---------------------------------------------
+
+/// One enchanting-table offer row's visual state.
+///
+/// **Three states, not two.** A reading that splits rows into "offer" and "no
+/// offer" collapses the first two, and they differ by a whole sprite: an empty
+/// row draws its background and *nothing else*, while an unaffordable one
+/// draws the same background **plus its level numeral**. So a table with no
+/// item in it and a table you cannot afford look different, and conflating
+/// them makes an empty table sprout three numerals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnchantRow {
+    /// `cost == 0` — no offer at all. Background only.
+    Empty,
+    /// A real offer the player cannot take: the disabled background *and* the
+    /// disabled numeral, plus the name and cost dimmed.
+    Unaffordable { cost: i32 },
+    /// A real offer, cursor elsewhere.
+    Available { cost: i32 },
+    /// A real offer with the cursor over it.
+    Hovered { cost: i32 },
+}
+
+impl EnchantRow {
+    /// The offer's level cost, or `None` for an empty row.
+    pub fn cost(self) -> Option<i32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { cost }
+            | EnchantRow::Available { cost }
+            | EnchantRow::Hovered { cost } => Some(cost),
+        }
+    }
+
+    /// Whether this row draws its level numeral, and whether the numeral is
+    /// the greyed variant.
+    pub fn numeral(self) -> Option<bool> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(true),
+            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => Some(false),
+        }
+    }
+}
+
+/// The three rows' states (M92).
+///
+/// # The affordability rule, and where its inputs come from
+///
+/// ```java
+/// if ((goldCount < i + 1 || player.experienceLevel < cost) && !player.hasInfiniteMaterials())
+/// ```
+///
+/// **The lapis requirement is the row INDEX plus one, not the cost.** Row 0
+/// needs one lapis and row 2 needs three, whatever they charge in levels —
+/// reading it as "the cost in lapis" makes an expensive top row look
+/// unaffordable with a full stack sitting in the slot.
+///
+/// The three inputs come from three different places, which is the reason this
+/// takes them as parameters rather than reading a menu:
+///
+/// * `costs` is `container_set_data` slots 0..=2 — the only part that is,
+/// * `lapis` is `getGoldCount()`, which is **the COUNT of the stack in menu
+///   slot 1**, so it arrives through `container_set_content`, and
+/// * `xp_level` and `creative` are the local player's, from `set_experience`
+///   (M79) and `player_abilities` (M75).
+///
+/// So "the enchanting table's data packet drives its rows" is only a third
+/// true, and a client that wired the costs alone would grey every row the
+/// moment it had no lapis *value* to check against.
+///
+/// `hasInfiniteMaterials()` is `abilities.instabuild` — creative, which skips
+/// both halves at once.
+pub fn enchant_rows(
+    costs: [i32; 3],
+    lapis: i32,
+    xp_level: i32,
+    creative: bool,
+    mouse_gui: Option<(f64, f64)>,
+) -> [EnchantRow; 3] {
+    std::array::from_fn(|i| {
+        let cost = costs[i];
+        if cost == 0 {
+            return EnchantRow::Empty;
+        }
+        if (lapis < i as i32 + 1 || xp_level < cost) && !creative {
+            return EnchantRow::Unaffordable { cost };
+        }
+        match mouse_gui {
+            Some((x, y)) if enchant_row_hovered(i, x, y) => EnchantRow::Hovered { cost },
+            _ => EnchantRow::Available { cost },
+        }
+    })
+}
+
+/// Row `i`'s 108x19 background, in GUI pixels relative to the panel.
+pub fn enchant_row_rect(i: usize) -> ProgressBlit {
+    ProgressBlit {
+        dx: 60,
+        dy: 14 + 19 * i as i32,
+        w: 108,
+        h: 19,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Row `i`'s 16x16 level numeral — **one pixel in and one down** from the row,
+/// not flush with it.
+pub fn enchant_level_rect(i: usize) -> ProgressBlit {
+    ProgressBlit {
+        dx: 61,
+        dy: 15 + 19 * i as i32,
+        w: 16,
+        h: 16,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Whether the cursor is over row `i` for the purposes of the **highlight and
+/// the click**, which share one test:
+///
+/// ```java
+/// double xx = x - (xo + 60), yy = y - (yo + 14 + 19 * i);
+/// xx >= 0 && yy >= 0 && xx < 108 && yy < 19
+/// ```
+///
+/// A bare rect with no bleed — unlike a slot's, which is `isHovering`'s 18x18.
+pub fn enchant_row_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
+    let (x, y) = (gui_x - 60.0, gui_y - (14 + 19 * i as i32) as f64);
+    x >= 0.0 && y >= 0.0 && x < 108.0 && y < 19.0
+}
+
+/// Whether the cursor is over row `i` for the purposes of its **tooltip**,
+/// which is a *different rectangle* — and this is not a slip in either place.
+///
+/// `extractRenderState` uses `isHovering(60, 14 + 19 * i, 108, 17, ...)`, whose
+/// body applies a one-pixel bleed on every side to a box declared **17 tall**,
+/// giving `[59, 169) x [13 + 19i, 32 + 19i)`; the highlight's own test is a
+/// bare `[60, 168) x [14 + 19i, 33 + 19i)`. They agree over most of the row and
+/// disagree at its edges: the bottom row of pixels highlights without offering
+/// a tooltip, and the row above the top offers a tooltip without highlighting.
+pub fn enchant_tooltip_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
+    let (top, h) = ((14 + 19 * i as i32) as f64, 17.0);
+    gui_x >= 59.0 && gui_x < 60.0 + 108.0 + 1.0 && gui_y >= top - 1.0 && gui_y < top + h + 1.0
+}
+
+/// Where row `i`'s cost numeral is drawn, given its rendered width.
+///
+/// `leftPosText + 86 - font.width(costText)` with `leftPosText = 60 + 20`, so
+/// it is **right-aligned** against x = 166 and a two-digit cost starts further
+/// left than a one-digit one. The `+ 7` on y is on top of the row's own `+ 2`.
+pub fn enchant_cost_pos(i: usize, cost_width: i32) -> (i32, i32) {
+    (80 + 86 - cost_width, 16 + 19 * i as i32 + 7)
+}
+
+/// The four text colours `EnchantmentScreen` uses, as packed `0xRRGGBB`.
+///
+/// **`col` does double duty in vanilla and is reassigned before the cost text
+/// is drawn**, so the name and the cost in the same row are different colours,
+/// and the cost's colour does *not* track the hover. Reading the variable once
+/// gets one of the two wrong wherever they differ.
+///
+/// The disabled name is `(0x685E4A & 0xFEFEFE) >> 1` — the low bit is masked
+/// off *before* the shift so the halving cannot bleed between channels.
+pub const ENCHANT_NAME_AVAILABLE: u32 = 0x685E4A;
+pub const ENCHANT_NAME_HOVERED: u32 = 0xFFFF80;
+pub const ENCHANT_NAME_DISABLED: u32 = 0x342F25;
+pub const ENCHANT_COST_ENABLED: u32 = 0x80FF20;
+pub const ENCHANT_COST_DISABLED: u32 = 0x407F10;
+
+impl EnchantRow {
+    /// This row's cost-text colour, which depends only on affordability.
+    pub fn cost_color(self) -> Option<u32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(ENCHANT_COST_DISABLED),
+            // Not hover-dependent: `col` is reassigned to the same value in
+            // both arms of the enabled branch, after the name has used it.
+            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => {
+                Some(ENCHANT_COST_ENABLED)
+            }
+        }
+    }
+
+    /// This row's name-text colour, which *does* depend on the hover.
+    pub fn name_color(self) -> Option<u32> {
+        match self {
+            EnchantRow::Empty => None,
+            EnchantRow::Unaffordable { .. } => Some(ENCHANT_NAME_DISABLED),
+            EnchantRow::Available { .. } => Some(ENCHANT_NAME_AVAILABLE),
+            EnchantRow::Hovered { .. } => Some(ENCHANT_NAME_HOVERED),
+        }
+    }
+}
+
+/// `EnchantmentMenu.clickMenuButton` — whether pressing row `i` is legal
+/// (M92f).
+///
+/// **This is not the same predicate the row is drawn with**, and the two are
+/// worth keeping apart even though they almost always agree:
+///
+/// ```java
+/// if (buttonId >= 0 && buttonId < costs.length) {
+///    int enchantmentCost = buttonId + 1;
+///    if ((currency.isEmpty() || currency.getCount() < enchantmentCost) && !hasInfiniteMaterials())
+///       return false;
+///    if (costs[buttonId] <= 0 || item.isEmpty()
+///        || (experienceLevel < enchantmentCost || experienceLevel < costs[buttonId]) && !hasInfiniteMaterials())
+///       return false;
+///    ...
+///    return true;
+/// }
+/// return false;
+/// ```
+///
+/// Three differences from [`enchant_rows`]'s test:
+///
+/// * it requires **slot 0 to be non-empty**, which the render never asks —
+///   the render leans on `costs[i]` being 0 without an item, which is true but
+///   is an invariant maintained somewhere else entirely (`slotsChanged`);
+/// * it tests the level against **both** `buttonId + 1` and `costs[i]`, where
+///   the render tests only the second. The first is implied — `slotsChanged`
+///   zeroes any cost below `i + 1` — but again only by an invariant in another
+///   method, so transcribing one and deriving the other would couple them;
+/// * `costs[buttonId] <= 0` rather than `== 0`, so a negative cost is also
+///   refused.
+///
+/// Vanilla sends the packet **only when this returns true**: the client asks
+/// its own menu whether the press is legal before telling the server. Rewo has
+/// no server-side menu to ask, so this *is* that gate.
+pub fn enchant_click_allowed(
+    row: usize,
+    costs: [i32; 3],
+    lapis: i32,
+    has_item: bool,
+    xp_level: i32,
+    creative: bool,
+) -> bool {
+    if row >= costs.len() {
+        return false;
+    }
+    let enchantment_cost = row as i32 + 1;
+    if (lapis < enchantment_cost) && !creative {
+        return false;
+    }
+    if costs[row] <= 0
+        || !has_item
+        || ((xp_level < enchantment_cost || xp_level < costs[row]) && !creative)
+    {
+        return false;
+    }
+    true
+}
+
+/// The enchanting row a GUI-space cursor would press, if any.
+///
+/// The rect is the *highlight's*, not the tooltip's — `mouseClicked` and
+/// `extractBackground` share one test and `extractRenderState` uses another
+/// (see [`enchant_tooltip_hovered`]). Pressing is the highlight's.
+pub fn enchant_click_row(gui_x: f64, gui_y: f64) -> Option<usize> {
+    (0..3).find(|&i| enchant_row_hovered(i, gui_x, gui_y))
+}
+
+// -- the beacon (M92) --------------------------------------------------------
+
+/// The six effects a beacon can grant, in `BeaconBlockEntity.BEACON_EFFECTS`
+/// order — which is also tier order, and is what the screen lays out.
+///
+/// ```java
+/// List.of(List.of(SPEED, HASTE),
+///         List.of(RESISTANCE, JUMP_BOOST),
+///         List.of(STRENGTH),
+///         List.of(REGENERATION))
+/// ```
+///
+/// A closed enum rather than a registry id because the *set* is fixed in code
+/// (`BEACON_EFFECTS` is a literal, and `VALID_EFFECTS` is derived from it), even
+/// though the ids that reach the wire are the `minecraft:mob_effect` registry's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconEffect {
+    Speed,
+    Haste,
+    Resistance,
+    JumpBoost,
+    Strength,
+    Regeneration,
+}
+
+impl BeaconEffect {
+    /// The registry name, for resolving an id against the datagen report.
+    pub const fn name(self) -> &'static str {
+        match self {
+            BeaconEffect::Speed => "minecraft:speed",
+            BeaconEffect::Haste => "minecraft:haste",
+            BeaconEffect::Resistance => "minecraft:resistance",
+            BeaconEffect::JumpBoost => "minecraft:jump_boost",
+            BeaconEffect::Strength => "minecraft:strength",
+            BeaconEffect::Regeneration => "minecraft:regeneration",
+        }
+    }
+
+    /// All six, in `BEACON_EFFECTS` flattened order.
+    pub const ALL: [BeaconEffect; 6] = [
+        BeaconEffect::Speed,
+        BeaconEffect::Haste,
+        BeaconEffect::Resistance,
+        BeaconEffect::JumpBoost,
+        BeaconEffect::Strength,
+        BeaconEffect::Regeneration,
+    ];
+}
+
+/// `BEACON_EFFECTS.get(tier)` — the effects a given tier offers.
+pub const fn beacon_tier_effects(tier: usize) -> &'static [BeaconEffect] {
+    match tier {
+        0 => &[BeaconEffect::Speed, BeaconEffect::Haste],
+        1 => &[BeaconEffect::Resistance, BeaconEffect::JumpBoost],
+        2 => &[BeaconEffect::Strength],
+        3 => &[BeaconEffect::Regeneration],
+        _ => &[],
+    }
+}
+
+/// What a beacon button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconButtonKind {
+    /// A power button: its effect, whether it is in the primary column, and
+    /// the tier that gates it.
+    Power {
+        effect: BeaconEffect,
+        primary: bool,
+        tier: i32,
+    },
+    /// The secondary column's last slot — the "primary effect at level II"
+    /// upgrade, which shows **whatever the primary currently is**.
+    Upgrade,
+    Confirm,
+    Cancel,
+}
+
+/// One beacon button: where it sits relative to the panel, and what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeaconButton {
+    pub x: i32,
+    pub y: i32,
+    pub kind: BeaconButtonKind,
+}
+
+/// Every beacon button is 22x22 (`BeaconScreenButton`'s constructor).
+pub const BEACON_BUTTON: i32 = 22;
+
+/// The beacon's buttons, in `BeaconScreen.init`'s own order.
+///
+/// # An invisible button moves a visible one
+///
+/// The secondary column's count is `BEACON_EFFECTS.get(3).size() + 1` — the
+/// **`+ 1` is the upgrade button**, which is `visible = false` unless a primary
+/// effect has been chosen. It is still counted into
+/// `totalWidth = count * 22 + (count - 1) * 2`, and every button in the column
+/// is placed at `167 + c * 24 - totalWidth / 2`. So dropping the `+ 1` because
+/// the button is usually invisible halves the total width and slides
+/// regeneration 12 px right, onto the panel's painted recess. The layout of
+/// what you can see depends on something you usually cannot.
+///
+/// # The two columns do not share their y arithmetic
+///
+/// The primary column steps `22 + tier * 25`, but the secondary column is a
+/// **fixed 47** — not `22 + 3 * 25`. Deriving it from the tier puts it 50 px
+/// below the panel's row.
+pub fn beacon_buttons() -> Vec<BeaconButton> {
+    let mut out = Vec::new();
+    // The primary column: tiers 0..=2, centred on x = 76.
+    for tier in 0..=2usize {
+        let effects = beacon_tier_effects(tier);
+        let count = effects.len() as i32;
+        let total_w = count * 22 + (count - 1) * 2;
+        for (c, &effect) in effects.iter().enumerate() {
+            out.push(BeaconButton {
+                x: 76 + c as i32 * 24 - total_w / 2,
+                y: 22 + tier as i32 * 25,
+                kind: BeaconButtonKind::Power {
+                    effect,
+                    primary: true,
+                    tier: tier as i32,
+                },
+            });
+        }
+    }
+    // The secondary column: tier 3's effects PLUS the upgrade slot, all at
+    // y = 47 and centred on x = 167.
+    let effects = beacon_tier_effects(3);
+    let count = effects.len() as i32 + 1;
+    let total_w = count * 22 + (count - 1) * 2;
+    for (c, &effect) in effects.iter().enumerate() {
+        out.push(BeaconButton {
+            x: 167 + c as i32 * 24 - total_w / 2,
+            y: 47,
+            kind: BeaconButtonKind::Power {
+                effect,
+                primary: false,
+                tier: 3,
+            },
+        });
+    }
+    out.push(BeaconButton {
+        x: 167 + (count - 1) * 24 - total_w / 2,
+        y: 47,
+        kind: BeaconButtonKind::Upgrade,
+    });
+    out.push(BeaconButton { x: 164, y: 107, kind: BeaconButtonKind::Confirm });
+    out.push(BeaconButton { x: 190, y: 107, kind: BeaconButtonKind::Cancel });
+    out
+}
+
+/// Which of the four chrome sprites a button draws, or that it draws nothing.
+///
+/// The priority is vanilla's own `if / else if` chain and it is **not** the
+/// order the states are named in: `active` is tested first, so a *selected*
+/// button whose tier is out of reach still paints as disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeaconButtonState {
+    /// `visible = false` — the upgrade button with no primary chosen.
+    Hidden,
+    Disabled,
+    Selected,
+    Highlighted,
+    Normal,
+}
+
+/// The beacon screen's live state, as the buttons read it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BeaconChoice {
+    /// `menu.getLevels()` — the pyramid's height, 0..=4.
+    pub levels: i32,
+    /// The screen's own `primary` / `secondary` fields, which start as the
+    /// menu's decoded data slots and then track the player's clicks.
+    pub primary: Option<BeaconEffect>,
+    pub secondary: Option<BeaconEffect>,
+    /// `menu.hasPayment()` — whether the payment slot holds anything.
+    pub has_payment: bool,
+}
+
+/// One button's state (M92).
+///
+/// * A power button is `active` when **`tier < levels`**, a strict comparison:
+///   a level-1 beacon lights only tier 0, and a level-4 one lights all four.
+/// * `selected` compares against `primary` **or** `secondary` depending on the
+///   button's own column, so the same effect can be lit in one column and not
+///   the other.
+/// * Confirm is active on `hasPayment() && primary != null` — it does **not**
+///   require a secondary, which is what lets you take a single effect.
+/// * Cancel is unconditionally active (`updateStatus` leaves it alone).
+/// * The upgrade button is hidden entirely while there is no primary, and
+///   otherwise **borrows the primary's effect**, so it is the one button whose
+///   icon changes as you click elsewhere.
+pub fn beacon_button_state(
+    b: BeaconButton,
+    s: BeaconChoice,
+    hovered: bool,
+) -> BeaconButtonState {
+    let (active, selected) = match b.kind {
+        BeaconButtonKind::Power { effect, primary, tier } => {
+            let chosen = if primary { s.primary } else { s.secondary };
+            (tier < s.levels, chosen == Some(effect))
+        }
+        BeaconButtonKind::Upgrade => {
+            let Some(p) = s.primary else {
+                return BeaconButtonState::Hidden;
+            };
+            // `setEffect(primary)` then `super.updateStatus(levels)`, so it
+            // gates on tier 3 like any other secondary-column button.
+            (3 < s.levels, s.secondary == Some(p))
+        }
+        BeaconButtonKind::Confirm => (s.has_payment && s.primary.is_some(), false),
+        BeaconButtonKind::Cancel => (true, false),
+    };
+    if !active {
+        BeaconButtonState::Disabled
+    } else if selected {
+        BeaconButtonState::Selected
+    } else if hovered {
+        BeaconButtonState::Highlighted
+    } else {
+        BeaconButtonState::Normal
+    }
+}
+
+/// What the upgrade button's icon shows — the *primary* effect, not its own.
+pub fn beacon_upgrade_effect(s: BeaconChoice) -> Option<BeaconEffect> {
+    s.primary
+}
+
+/// Whether the cursor is over a 22x22 button, in panel-relative GUI pixels.
+///
+/// `AbstractWidget.isMouseOver` is a plain half-open rect with no bleed —
+/// unlike a slot's 18x18 test, and unlike the enchanting row's.
+pub fn beacon_button_hovered(b: BeaconButton, gui_x: f64, gui_y: f64) -> bool {
+    gui_x >= b.x as f64
+        && gui_x < (b.x + BEACON_BUTTON) as f64
+        && gui_y >= b.y as f64
+        && gui_y < (b.y + BEACON_BUTTON) as f64
+}
+
+/// The 18x18 icon inside a 22x22 button — **inset by 2 on both axes**, so it
+/// leaves a 2 px frame on every side.
+pub fn beacon_icon_rect(b: BeaconButton) -> ProgressBlit {
+    ProgressBlit { dx: b.x + 2, dy: b.y + 2, w: 18, h: 18, sx: 0, sy: 0 }
+}
+
+/// The button's own 22x22 chrome rect.
+pub fn beacon_button_rect(b: BeaconButton) -> ProgressBlit {
+    ProgressBlit {
+        dx: b.x,
+        dy: b.y,
+        w: BEACON_BUTTON,
+        h: BEACON_BUTTON,
+        sx: 0,
+        sy: 0,
+    }
+}
+
+/// Where `extractBackground` draws the five payment-item icons, as
+/// `(item name, x)` at a shared `y = 109`.
+///
+/// **The spacing is irregular and it is vanilla's own**: the literals are
+/// `20`, `41`, `41 + 22`, `42 + 44`, `42 + 66`, so the gaps run 21, 22, 23, 22.
+/// A regular pitch reads as obviously right and misplaces three of the five.
+pub const BEACON_PAYMENT_ICONS: [(&str, i32); 5] = [
+    ("minecraft:netherite_ingot", 20),
+    ("minecraft:emerald", 41),
+    ("minecraft:diamond", 63),
+    ("minecraft:gold_ingot", 86),
+    ("minecraft:iron_ingot", 108),
+];
+
+/// The y every payment icon shares.
+pub const BEACON_PAYMENT_ICON_Y: i32 = 109;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +1138,583 @@ mod tests {
         let f = furnace_progress(true, 1.0, 0.0).0.unwrap();
         assert_eq!((f.sx, f.sy, f.w, f.h), (0, 0, 14, 14));
         assert_eq!((f.dx, f.dy), (56, 36));
+    }
+
+    // -- M92: the brewing stand's three overlays ----------------------------
+
+    #[test]
+    fn the_brew_arrow_counts_down_from_four_hundred() {
+        // `getBrewingTicks` is the ticks REMAINING, so the arrow is empty when
+        // brewing starts and full just before the potion pops. Reading the
+        // field as elapsed time runs the animation backwards, which looks
+        // plausible and is exactly inverted.
+        let started = brewing_progress(0, 400).1;
+        assert!(started.is_none(), "at t=400 the arrow is 0 tall, so not drawn");
+        let nearly_done = brewing_progress(0, 1).1.expect("almost finished");
+        assert_eq!(nearly_done.h, 27);
+        // ...and it is monotonic in the direction that matters.
+        let mut last = 0;
+        for t in [400, 300, 200, 100, 1] {
+            let h = brewing_progress(0, t).1.map_or(0, |b| b.h);
+            assert!(h >= last, "t={t}: the arrow must grow as ticks fall");
+            last = h;
+        }
+    }
+
+    #[test]
+    fn the_arrow_grows_downward_but_the_bubbles_grow_upward() {
+        // The two are one function apart and they differ. The arrow's dy is a
+        // fixed 16 and only its height changes; the bubbles' source and
+        // destination y move together so their BOTTOM edge is pinned.
+        for t in [1, 50, 150, 399] {
+            if let Some(a) = brewing_progress(0, t).1 {
+                assert_eq!(a.dy, 16, "the arrow's top never moves");
+                assert_eq!(a.sy, 0, "so it always samples from the sprite's top");
+            }
+        }
+        let bottoms: Vec<i32> = (0..14)
+            .filter_map(|t| brewing_progress(0, 400 - t).2)
+            .map(|b| b.dy + b.h)
+            .collect();
+        assert!(!bottoms.is_empty());
+        assert!(
+            bottoms.iter().all(|&b| b == 43),
+            "the bubbles' bottom edge is pinned at 14 + 29: {bottoms:?}"
+        );
+    }
+
+    #[test]
+    fn the_bubbles_source_row_tracks_their_height() {
+        // M91's furnace-flame witness has this half and the brewing one was
+        // written without it, which a mutation found: pinning `sy` to 0 while
+        // the destination still rises samples the TOP of the bubble column and
+        // draws it at the bottom, so the art slides instead of filling.
+        for t in 1..15 {
+            let Some(b) = brewing_progress(0, t).2 else { continue };
+            assert_eq!(b.sy, 29 - b.h, "t={t}: sampled from the sprite's bottom up");
+            assert_eq!(b.sy + b.h, 29, "t={t}: and always reaching its bottom edge");
+        }
+    }
+
+    #[test]
+    fn one_bubble_frame_in_seven_is_blank() {
+        // BUBBLELENGTHS ends in 0. A guard read as "bubbles are always visible
+        // while brewing" loses the blink, which is the animation's character.
+        assert_eq!(BUBBLE_LENGTHS[6], 0);
+        let frames: Vec<bool> = (0..7)
+            .map(|f| brewing_progress(0, 400 - f * 2).2.is_some())
+            .collect();
+        assert_eq!(frames.iter().filter(|v| !**v).count(), 1, "{frames:?}");
+    }
+
+    #[test]
+    fn each_bubble_frame_is_held_for_two_ticks() {
+        // `tickCount / 2 % 7` divides FIRST, so the cycle is 14 ticks and not
+        // 7. Taking the modulo first would flicker at twice the speed.
+        let h = |t: i32| brewing_progress(0, t).2.map_or(0, |b| b.h);
+        // The pairs held together start on EVEN ticks, because the divide
+        // truncates: 2/2 and 3/2 are both frame 1. This witness was written
+        // pairing (1,2) first and failed, and the failure was the finding —
+        // that pair straddles a frame boundary.
+        for pair in (2..14).step_by(2) {
+            assert_eq!(h(pair), h(pair + 1), "ticks {pair} and {} differ", pair + 1);
+        }
+        assert_eq!(h(2), h(16), "and the cycle repeats after 14 ticks");
+        assert_ne!(h(2), h(4), "while adjacent frames really are different");
+    }
+
+    #[test]
+    fn the_arrow_truncates_where_the_furnace_ceils() {
+        // The two screens genuinely differ: `(int)(28.0F * ...)` here against
+        // `Mth.ceil` in AbstractFurnaceScreen. At one tick remaining the
+        // arrow's exact height is 27.93 and vanilla shows 27; at 399 it is
+        // 0.07 and vanilla shows NOTHING, where a ceil would show a pixel.
+        assert!(brewing_progress(0, 399).1.is_none(), "0.07 truncates to 0");
+        assert_eq!(brewing_progress(0, 1).1.unwrap().h, 27, "27.93 truncates to 27");
+        // The furnace, for contrast, is the other way at the same fraction.
+        assert_eq!(furnace_progress(false, 0.0, 0.001).1.w, 1);
+    }
+
+    #[test]
+    fn the_fuel_bar_ceils_so_one_charge_shows_one_pixel() {
+        // `(18 * fuel + 20 - 1) / 20` is a ceiling divide. Truncating would
+        // show an empty bar for one blaze powder charge (18/20 = 0), so a
+        // player would think fuelling had failed.
+        assert!(brewing_progress(0, 0).0.is_none(), "no fuel, no bar");
+        assert_eq!(brewing_progress(1, 0).0.unwrap().w, 1);
+        assert_eq!(brewing_progress(20, 0).0.unwrap().w, 18, "full");
+        assert_eq!(brewing_progress(10, 0).0.unwrap().w, 9, "half");
+        // Clamped on BOTH sides: a corrupt value cannot produce a negative or
+        // over-wide quad.
+        assert!(brewing_progress(-5, 0).0.is_none());
+        assert_eq!(brewing_progress(9999, 0).0.unwrap().w, 18);
+    }
+
+    #[test]
+    fn an_idle_stand_keeps_its_fuel_bar_and_drops_both_animations() {
+        // Both the arrow and the bubbles live inside `if (tickCount > 0)`.
+        // Hoisting either out paints a stopped animation on an idle stand.
+        let (fuel, brew, bubbles) = brewing_progress(20, 0);
+        assert!(fuel.is_some(), "fuel is outside the guard");
+        assert!(brew.is_none());
+        assert!(bubbles.is_none());
+    }
+
+    #[test]
+    fn the_fuel_bar_never_moves_only_its_width_changes() {
+        // The third growth direction on one screen: rightward from a fixed
+        // left edge, so unlike the bubbles its source rect stays put.
+        for f in 1..=20 {
+            let b = brewing_progress(f, 0).0.unwrap();
+            assert_eq!((b.dx, b.dy, b.sx, b.sy, b.h), (60, 44, 0, 0, 4));
+        }
+    }
+
+    // -- M92: the enchanting table's three rows -----------------------------
+
+    /// Rows with no cursor anywhere.
+    fn rows(costs: [i32; 3], lapis: i32, xp: i32) -> [EnchantRow; 3] {
+        enchant_rows(costs, lapis, xp, false, None)
+    }
+
+    #[test]
+    fn an_empty_row_draws_no_numeral_but_an_unaffordable_one_does() {
+        // The distinction a two-state reading loses. `cost == 0` blits the
+        // disabled background and returns; an unaffordable offer blits the
+        // same background AND its numeral. Conflating them makes an empty
+        // table sprout three numerals.
+        let empty = rows([0, 0, 0], 64, 30);
+        assert_eq!(empty, [EnchantRow::Empty; 3]);
+        assert!(empty.iter().all(|r| r.numeral().is_none()));
+
+        let poor = rows([5, 10, 15], 64, 0);
+        assert!(matches!(poor[0], EnchantRow::Unaffordable { cost: 5 }));
+        assert_eq!(poor[0].numeral(), Some(true), "greyed, but drawn");
+    }
+
+    #[test]
+    fn the_lapis_requirement_is_the_row_index_not_the_cost() {
+        // `goldCount < i + 1` — row 0 needs one lapis and row 2 needs three,
+        // whatever they charge in LEVELS. Reading it as "the cost in lapis"
+        // greys an expensive top row with a full stack in the slot.
+        let one = rows([1, 2, 3], 1, 30);
+        assert!(matches!(one[0], EnchantRow::Available { .. }), "1 lapis buys row 0");
+        assert!(matches!(one[1], EnchantRow::Unaffordable { .. }), "but not row 1");
+        assert!(matches!(one[2], EnchantRow::Unaffordable { .. }));
+        // ...and a costly row is affordable on one lapis if the levels are there.
+        let costly = rows([30, 0, 0], 1, 30);
+        assert!(matches!(costly[0], EnchantRow::Available { .. }));
+    }
+
+    #[test]
+    fn either_half_of_the_affordability_test_alone_disables_a_row() {
+        // It is an OR of two independent shortages, so a witness that only
+        // ever varies one of them cannot tell an `&&` from an `||`.
+        assert!(matches!(rows([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }), "no lapis");
+        assert!(matches!(rows([10, 0, 0], 64, 9)[0], EnchantRow::Unaffordable { .. }), "no levels");
+        assert!(matches!(rows([10, 0, 0], 64, 10)[0], EnchantRow::Available { .. }), "exactly enough");
+    }
+
+    #[test]
+    fn creative_mode_skips_both_halves_at_once() {
+        // `&& !hasInfiniteMaterials()` wraps the WHOLE test, so instabuild
+        // makes an offer available with no lapis and no levels.
+        let broke = enchant_rows([30, 30, 30], 0, 0, true, None);
+        assert!(broke.iter().all(|r| matches!(r, EnchantRow::Available { .. })));
+        // ...but it does not conjure an offer that is not there.
+        assert_eq!(enchant_rows([0, 0, 0], 0, 0, true, None), [EnchantRow::Empty; 3]);
+    }
+
+    #[test]
+    fn only_an_affordable_row_can_be_hovered() {
+        // The hover test sits inside the enabled branch, so the cursor over an
+        // unaffordable row changes nothing at all.
+        let at = |c: [i32; 3], lapis, xp| enchant_rows(c, lapis, xp, false, Some((100.0, 20.0)));
+        assert!(matches!(at([10, 0, 0], 64, 30)[0], EnchantRow::Hovered { .. }));
+        assert!(matches!(at([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }));
+        assert!(matches!(at([0, 0, 0], 64, 30)[0], EnchantRow::Empty));
+        // The cursor is over row 0's band only.
+        assert!(matches!(at([10, 10, 10], 64, 30)[1], EnchantRow::Available { .. }));
+    }
+
+    #[test]
+    fn the_rows_tile_at_a_nineteen_pixel_pitch_with_the_numeral_inset() {
+        for i in 0..3 {
+            let r = enchant_row_rect(i);
+            assert_eq!((r.dx, r.w, r.h), (60, 108, 19));
+            assert_eq!(r.dy, 14 + 19 * i as i32);
+            let n = enchant_level_rect(i);
+            // One in and one down, not flush: `leftPos + 1, yo + 15 + 19 * i`.
+            assert_eq!((n.dx - r.dx, n.dy - r.dy), (1, 1), "row {i}");
+            assert_eq!((n.w, n.h), (16, 16));
+        }
+        // The pitch is 19, so consecutive rows leave no gap and no overlap.
+        assert_eq!(enchant_row_rect(1).dy - enchant_row_rect(0).dy, 19);
+    }
+
+    #[test]
+    fn the_highlight_and_the_tooltip_use_different_rectangles() {
+        // Not a slip in either place: the click/highlight test is a bare
+        // 108x19 and the tooltip's is `isHovering(.., 108, 17, ..)`, whose
+        // body bleeds one pixel on every side of a box declared two rows
+        // shorter. They agree in the middle and disagree at the edges.
+        assert!(enchant_row_hovered(0, 100.0, 32.0), "the highlight reaches y=32");
+        assert!(!enchant_tooltip_hovered(0, 100.0, 32.0), "the tooltip stops at 31");
+        assert!(enchant_tooltip_hovered(0, 100.0, 13.0), "the tooltip reaches up to 13");
+        assert!(!enchant_row_hovered(0, 100.0, 13.0), "the highlight starts at 14");
+        assert!(enchant_tooltip_hovered(0, 59.0, 20.0), "and one pixel left of the row");
+        assert!(!enchant_row_hovered(0, 59.0, 20.0));
+        // Over the middle they agree, which is why the difference is easy to
+        // miss and why the witness probes the edges.
+        for x in [60.0, 100.0, 167.0] {
+            assert!(enchant_row_hovered(0, x, 20.0));
+            assert!(enchant_tooltip_hovered(0, x, 20.0));
+        }
+    }
+
+    #[test]
+    fn the_cost_text_is_right_aligned_so_a_wider_number_starts_further_left() {
+        // `leftPosText + 86 - font.width(costText)`, against a fixed right
+        // edge at 166.
+        let (x1, y) = enchant_cost_pos(0, 6); // one digit
+        let (x2, _) = enchant_cost_pos(0, 12); // two digits
+        assert_eq!(x1 + 6, x2 + 12, "both end at the same x");
+        assert_eq!(x1 + 6, 166);
+        assert_eq!(y, 23, "16 + 7");
+        assert_eq!(enchant_cost_pos(2, 6).1, 61, "16 + 38 + 7");
+    }
+
+    #[test]
+    fn the_cost_colour_ignores_the_hover_but_the_name_colour_does_not() {
+        // `col` does double duty: the name reads it, then it is REASSIGNED
+        // before the cost text is drawn. So a hovered row's name is pale
+        // yellow while its cost stays the same green as an unhovered one.
+        let hov = EnchantRow::Hovered { cost: 5 };
+        let avail = EnchantRow::Available { cost: 5 };
+        assert_ne!(hov.name_color(), avail.name_color(), "the name tracks hover");
+        assert_eq!(hov.cost_color(), avail.cost_color(), "the cost does not");
+        assert_eq!(hov.cost_color(), Some(ENCHANT_COST_ENABLED));
+        // And the disabled name is the available one halved per channel with
+        // the low bit masked off first.
+        assert_eq!(
+            EnchantRow::Unaffordable { cost: 5 }.name_color(),
+            Some((ENCHANT_NAME_AVAILABLE & 0xFEFEFE) >> 1)
+        );
+        assert_eq!(EnchantRow::Empty.cost_color(), None);
+    }
+
+    // -- M92f: the enchanting table's click gate ----------------------------
+
+    #[test]
+    fn the_click_gate_requires_an_item_where_the_render_gate_does_not() {
+        // `clickMenuButton` tests `item.isEmpty()` outright. The render leans
+        // on `costs[i]` being 0 without an item — true, but maintained by
+        // `slotsChanged`, a different method. Transcribing one and deriving
+        // the other would couple them across that seam.
+        assert!(enchant_click_allowed(0, [5, 0, 0], 64, true, 30, false));
+        assert!(
+            !enchant_click_allowed(0, [5, 0, 0], 64, false, 30, false),
+            "no item in slot 0 refuses the press even with a live cost"
+        );
+    }
+
+    #[test]
+    fn the_click_gate_checks_the_level_against_the_row_index_too() {
+        // `experienceLevel < enchantmentCost || experienceLevel < costs[i]`.
+        // The first is normally implied (a cost below `i + 1` is zeroed), so
+        // this probes a cost that breaks the invariant — which is what tells
+        // the two conditions apart at all.
+        assert!(
+            !enchant_click_allowed(2, [0, 0, 1], 64, true, 1, false),
+            "row 2 needs level 3 even for a cost of 1"
+        );
+        assert!(enchant_click_allowed(2, [0, 0, 1], 64, true, 3, false));
+    }
+
+    #[test]
+    fn the_click_gates_lapis_requirement_is_the_row_index_like_the_renders() {
+        assert!(!enchant_click_allowed(2, [0, 0, 5], 2, true, 30, false), "needs 3");
+        assert!(enchant_click_allowed(2, [0, 0, 5], 3, true, 30, false));
+    }
+
+    #[test]
+    fn creative_skips_both_shortages_but_not_the_item_or_the_cost() {
+        // `hasInfiniteMaterials()` guards the two resource tests and NEITHER
+        // the empty-item test nor the zero-cost one, so instabuild cannot
+        // enchant an empty slot.
+        assert!(enchant_click_allowed(2, [0, 0, 5], 0, true, 0, true));
+        assert!(!enchant_click_allowed(2, [0, 0, 5], 0, false, 0, true), "still needs an item");
+        assert!(!enchant_click_allowed(0, [0, 0, 0], 64, true, 30, true), "and a live offer");
+    }
+
+    #[test]
+    fn a_negative_cost_is_refused_rather_than_treated_as_an_offer() {
+        // `costs[buttonId] <= 0`, not `== 0`.
+        assert!(!enchant_click_allowed(0, [-1, 0, 0], 64, true, 30, false));
+    }
+
+    #[test]
+    fn an_out_of_range_row_is_refused() {
+        assert!(!enchant_click_allowed(3, [5, 5, 5], 64, true, 30, true));
+    }
+
+    #[test]
+    fn the_press_uses_the_highlights_rectangle_not_the_tooltips() {
+        // Two rects on one screen (see the M92b witness); the press shares the
+        // highlight's.
+        assert_eq!(enchant_click_row(100.0, 20.0), Some(0));
+        assert_eq!(enchant_click_row(100.0, 39.0), Some(1));
+        assert_eq!(enchant_click_row(100.0, 13.0), None, "the tooltip's row, not the press's");
+        assert_eq!(enchant_click_row(59.0, 20.0), None);
+        assert_eq!(enchant_click_row(200.0, 20.0), None);
+    }
+
+    // -- M92: the beacon's buttons ------------------------------------------
+
+    fn button_of(kind: BeaconButtonKind) -> BeaconButton {
+        beacon_buttons()
+            .into_iter()
+            .find(|b| b.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?}"))
+    }
+
+    #[test]
+    fn an_invisible_button_moves_a_visible_one() {
+        // The secondary column counts the upgrade slot into its total width
+        // even though it is usually invisible. Dropping the `+ 1` because "the
+        // button isn't there" halves the width and slides regeneration right.
+        let regen = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        // count = 2 -> total = 46 -> 167 + 0 - 23.
+        assert_eq!(regen.x, 144);
+        // What it would be with count = 1 (total 22): 167 - 11 = 156.
+        assert_ne!(regen.x, 156, "the +1 for the upgrade slot is load-bearing");
+        assert_eq!(button_of(BeaconButtonKind::Upgrade).x, 168, "167 + 24 - 23");
+    }
+
+    #[test]
+    fn the_two_columns_do_not_share_their_y_arithmetic() {
+        // The primary column steps 22 + tier * 25; the secondary is a FIXED
+        // 47, not 22 + 3 * 25 = 97.
+        let ys: Vec<i32> = (0..=2)
+            .map(|t| {
+                button_of(BeaconButtonKind::Power {
+                    effect: beacon_tier_effects(t as usize)[0],
+                    primary: true,
+                    tier: t,
+                })
+                .y
+            })
+            .collect();
+        assert_eq!(ys, vec![22, 47, 72]);
+        let regen = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        assert_eq!(regen.y, 47);
+        assert_ne!(regen.y, 22 + 3 * 25, "not derived from the tier");
+    }
+
+    #[test]
+    fn a_single_effect_tier_centres_rather_than_left_aligning() {
+        // Tier 2 has one effect, so total = 22 and the button lands at
+        // 76 - 11 = 65 — centred on the column, not at its left edge.
+        let strength = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Strength,
+            primary: true,
+            tier: 2,
+        });
+        assert_eq!(strength.x, 65);
+        // ...and a two-effect tier straddles the same centre.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let haste = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Haste,
+            primary: true,
+            tier: 0,
+        });
+        assert_eq!((speed.x, haste.x), (53, 77));
+        assert_eq!((speed.x + haste.x + BEACON_BUTTON) / 2, 76, "centred on 76");
+    }
+
+    #[test]
+    fn a_power_button_lights_only_when_its_tier_is_strictly_below_the_level() {
+        // `tier < levels`. A level-1 beacon lights tier 0 alone.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let strength = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Strength,
+            primary: true,
+            tier: 2,
+        });
+        let at = |levels| BeaconChoice { levels, ..Default::default() };
+        assert_eq!(beacon_button_state(speed, at(0), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(speed, at(1), false), BeaconButtonState::Normal);
+        assert_eq!(beacon_button_state(strength, at(2), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(strength, at(3), false), BeaconButtonState::Normal);
+    }
+
+    #[test]
+    fn disabled_beats_selected_which_beats_hovered() {
+        // Vanilla's chain tests `!active` FIRST, so a selected button out of
+        // tier range still paints disabled — the states are not independent
+        // flags and their order is not the order they are named in.
+        let speed = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Speed,
+            primary: true,
+            tier: 0,
+        });
+        let chosen = |levels| BeaconChoice {
+            levels,
+            primary: Some(BeaconEffect::Speed),
+            ..Default::default()
+        };
+        assert_eq!(beacon_button_state(speed, chosen(0), true), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(speed, chosen(4), true), BeaconButtonState::Selected);
+        assert_eq!(
+            beacon_button_state(speed, BeaconChoice { levels: 4, ..Default::default() }, true),
+            BeaconButtonState::Highlighted
+        );
+    }
+
+    #[test]
+    fn the_same_effect_can_be_selected_in_one_column_and_not_the_other() {
+        // `selected` compares against primary OR secondary by the button's own
+        // column, so the two columns do not shadow each other.
+        let regen_secondary = button_of(BeaconButtonKind::Power {
+            effect: BeaconEffect::Regeneration,
+            primary: false,
+            tier: 3,
+        });
+        let s = BeaconChoice {
+            levels: 4,
+            primary: Some(BeaconEffect::Regeneration),
+            secondary: None,
+            has_payment: true,
+        };
+        assert_eq!(
+            beacon_button_state(regen_secondary, s, false),
+            BeaconButtonState::Normal,
+            "the PRIMARY being regeneration must not light the secondary button"
+        );
+    }
+
+    #[test]
+    fn the_upgrade_button_is_hidden_until_a_primary_is_chosen() {
+        let up = button_of(BeaconButtonKind::Upgrade);
+        let none = BeaconChoice { levels: 4, ..Default::default() };
+        assert_eq!(beacon_button_state(up, none, false), BeaconButtonState::Hidden);
+        assert_eq!(beacon_upgrade_effect(none), None);
+        let with = BeaconChoice {
+            levels: 4,
+            primary: Some(BeaconEffect::Haste),
+            ..Default::default()
+        };
+        assert_ne!(beacon_button_state(up, with, false), BeaconButtonState::Hidden);
+        // It BORROWS the primary's icon — the one button whose art changes as
+        // you click elsewhere.
+        assert_eq!(beacon_upgrade_effect(with), Some(BeaconEffect::Haste));
+    }
+
+    #[test]
+    fn confirm_needs_a_payment_and_a_primary_but_no_secondary() {
+        // Requiring a secondary would make a single-effect beacon unusable.
+        let confirm = button_of(BeaconButtonKind::Confirm);
+        let cancel = button_of(BeaconButtonKind::Cancel);
+        let s = |pay: bool, prim: bool| BeaconChoice {
+            levels: 4,
+            primary: prim.then_some(BeaconEffect::Speed),
+            secondary: None,
+            has_payment: pay,
+        };
+        assert_eq!(beacon_button_state(confirm, s(false, true), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(confirm, s(true, false), false), BeaconButtonState::Disabled);
+        assert_eq!(beacon_button_state(confirm, s(true, true), false), BeaconButtonState::Normal);
+        // Cancel never disables — `updateStatus` leaves it alone.
+        assert_eq!(beacon_button_state(cancel, s(false, false), false), BeaconButtonState::Normal);
+    }
+
+    #[test]
+    fn the_icon_is_inset_two_pixels_inside_its_button() {
+        for b in beacon_buttons() {
+            let chrome = beacon_button_rect(b);
+            let icon = beacon_icon_rect(b);
+            assert_eq!((chrome.w, chrome.h), (22, 22));
+            assert_eq!((icon.w, icon.h), (18, 18));
+            assert_eq!((icon.dx - chrome.dx, icon.dy - chrome.dy), (2, 2));
+        }
+    }
+
+    #[test]
+    fn the_button_hover_box_has_no_bleed() {
+        // Unlike a slot's 18x18 test and unlike the enchanting row's tooltip
+        // box: `AbstractWidget.isMouseOver` is a plain half-open rect.
+        let b = BeaconButton { x: 50, y: 30, kind: BeaconButtonKind::Cancel };
+        assert!(beacon_button_hovered(b, 50.0, 30.0));
+        assert!(beacon_button_hovered(b, 71.9, 51.9));
+        assert!(!beacon_button_hovered(b, 49.0, 40.0), "no one-pixel bleed left");
+        assert!(!beacon_button_hovered(b, 72.0, 40.0), "nor right");
+        assert!(!beacon_button_hovered(b, 60.0, 52.0), "nor below");
+    }
+
+    #[test]
+    fn the_payment_icon_spacing_is_irregular() {
+        // 20, 41, 63, 86, 108 — gaps of 21, 22, 23, 22, straight out of
+        // vanilla's literals (`41`, `41 + 22`, `42 + 44`, `42 + 66`). A
+        // regular pitch reads as obviously right and misplaces three of five.
+        let xs: Vec<i32> = BEACON_PAYMENT_ICONS.iter().map(|(_, x)| *x).collect();
+        assert_eq!(xs, vec![20, 41, 63, 86, 108]);
+        let gaps: Vec<i32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(gaps, vec![21, 22, 23, 22]);
+        assert!(gaps.iter().any(|g| *g != gaps[0]), "not a constant pitch");
+    }
+
+    #[test]
+    fn each_effect_gets_exactly_one_button_and_only_one_column_offers_it() {
+        // FIVE power buttons in the primary column (tiers 0..=2 hold 2, 2, 1)
+        // and one in the secondary, plus the upgrade slot, confirm and cancel:
+        // nine. This witness was written asserting eight and failed, and the
+        // miscount pointed at the asymmetry below.
+        let b = beacon_buttons();
+        assert_eq!(b.len(), 9);
+        let powers = b
+            .iter()
+            .filter(|b| matches!(b.kind, BeaconButtonKind::Power { .. }))
+            .count();
+        assert_eq!(powers, 6, "5 primary + 1 secondary");
+
+        // The columns are built from DISJOINT tiers — 0..=2 primary, 3
+        // secondary — so no effect is offered in both. Strength can only ever
+        // be a primary and regeneration can only ever be a secondary, which is
+        // the game rule the layout encodes.
+        let column_of = |e: BeaconEffect| {
+            b.iter().find_map(|b| match b.kind {
+                BeaconButtonKind::Power { effect, primary, .. } if effect == e => Some(primary),
+                _ => None,
+            })
+        };
+        assert_eq!(column_of(BeaconEffect::Strength), Some(true));
+        assert_eq!(column_of(BeaconEffect::Regeneration), Some(false));
+        // Every effect in the flattened table appears exactly once.
+        for e in BeaconEffect::ALL {
+            assert_eq!(
+                b.iter()
+                    .filter(|b| matches!(b.kind, BeaconButtonKind::Power { effect, .. } if effect == e))
+                    .count(),
+                1,
+                "{e:?}"
+            );
+        }
     }
 
     #[test]

@@ -165,6 +165,16 @@ struct RenderCheck {
     /// the player's 166-tall panel. A value witness is only a value witness if
     /// it reads the value the draw used.
     container_panel_h: Option<f32>,
+    /// The most overlay sprites the renderer's panel carried on any frame
+    /// (M92).
+    ///
+    /// The chest injected at 0.4 has none — a chest's screen paints one sheet
+    /// and stops — so this stays 0 unless the second injection at 0.85 (a
+    /// brewing stand, with its data slots set) reaches the overlay builder.
+    /// `containershot` grades those overlays offscreen; this is the only check
+    /// that says the WINDOWED client draws them, which is the gap M88 closed
+    /// for the panel itself and M86 for nine features before that.
+    container_overlays_max: usize,
     /// Frames on which a container was drawn **before** the gate force-opened
     /// the inventory (M89).
     ///
@@ -399,6 +409,14 @@ impl RenderCheck {
             format!("panel height {:?} (player's is 166)", self.container_panel_h),
         );
         row(
+            "r22 the windowed client drew a container's overlays",
+            self.container_overlays_max > 0,
+            format!(
+                "{} overlay sprites at peak (a brewing stand draws fuel + arrow + bubbles;                  the chest injected earlier draws none)",
+                self.container_overlays_max
+            ),
+        );
+        row(
             "r17 validation was enabled",
             self.validation,
             format!("{}", self.validation),
@@ -462,6 +480,10 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let sign_states = rewo_data::sign_states::SignStates::load(&paths.blocks_json())?;
     // M20: item identities the mob arm rigs test against.
     let bow_item = data.items.id("minecraft:bow");
+    // M92 — the beacon's six effect icons, by NAME from the report-backed
+    // table (M92c). Derived here beside `spears` because it is the same kind
+    // of fact: a small constant slice of `GameData` the render needs.
+    let beacon_effects = BeaconEffectIds::resolve(&data.mob_effects);
     // Shared with the entity collector for held-item id → name (M22).
     let items = std::sync::Arc::new(data.items.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
@@ -653,6 +675,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 sign_states,
                 bow_item,
                 items,
+                beacon_effects,
                 want_validation,
                 out,
                 settle,
@@ -672,6 +695,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             sign_states,
             bow_item,
             items,
+            beacon_effects,
             args,
             want_validation,
             dirt_item,
@@ -2880,7 +2904,7 @@ pub(crate) fn container_sprites(
         bundle_bar_fill: s(&c.bundle_bar_fill),
         bundle_bar_full: s(&c.bundle_bar_full),
         menu_backgrounds: c.menu_backgrounds.iter().map(s).collect(),
-        furnace_progress: c.furnace_progress.iter().map(s).collect(),
+        overlays: c.overlays.iter().map(s).collect(),
     })
 }
 
@@ -3204,6 +3228,7 @@ fn run_headless(
     sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
+    beacon_effects: BeaconEffectIds,
     want_validation: bool,
     out: &std::path::Path,
     settle_seconds: f32,
@@ -3778,6 +3803,7 @@ fn run_headless(
             rewo_gpu::tooltip::TooltipFlag::NORMAL,
             mouse,
             (sw, sh),
+            beacon_effects,
         );
         headless_screen_labels = labels;
     } else {
@@ -4005,6 +4031,8 @@ struct LiveApp {
     sign_states: rewo_data::sign_states::SignStates,
     /// `Items.BOW` protocol id — a bow suppresses the skeleton attack rig.
     bow_item: Option<i32>,
+    /// The beacon's six effect icons (M92), by name from the report.
+    beacon_effects: BeaconEffectIds,
     /// Item registry, for id → name when resolving held models (M22).
     items: std::sync::Arc<rewo_data::items::Items>,
     /// Armour layer definitions (M46). Cloned out of the bake because
@@ -4102,6 +4130,8 @@ struct LiveApp {
     /// `Options.advancedItemTooltips` — F3+H (M66). Vanilla persists it to
     /// `options.txt`; Rewo has no options file, so it resets each session.
     advanced_tooltips: bool,
+    /// M92 — whether the second (brewing-stand) injection has happened.
+    brewing_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
@@ -4571,6 +4601,15 @@ impl ApplicationHandler for LiveApp {
                         MouseButton::Right => 1,
                         _ => return,
                     };
+                    // M92f — an enchanting row is pressed BEFORE the slot
+                    // logic, and only then. `EnchantmentScreen.mouseClicked`
+                    // runs its three-row loop first and calls
+                    // `super.mouseClicked` only when no row took the press, so
+                    // a click on a *disabled* row still falls through to the
+                    // normal slot handling (which finds nothing there).
+                    if enchant_press(session, &self.screen, ext.width as f32, ext.height as f32) {
+                        return;
+                    }
                     // `AbstractContainerScreen.mouseClicked`'s double click:
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
@@ -5455,6 +5494,47 @@ impl LiveApp {
                     }
                 }
             }
+            // M92 — near the end, replace it with a BREWING STAND and give it
+            // data, so the frame loop has to reach the overlay builder.
+            //
+            // A chest has no overlays at all, so the injection above cannot
+            // exercise this path however long it runs. `containershot` grades
+            // the overlays offscreen; without this, nothing says the windowed
+            // client ever draws one — the gap M88 closed for the panel and M86
+            // for nine features before that.
+            //
+            // Late (0.85) and after `r20` has latched its height, because a
+            // brewing stand's panel is 166 tall — the same as the player's —
+            // and so cannot serve `r20`'s discrimination.
+            if !self.brewing_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.85 {
+                    if let Some(session) = self.session.as_mut() {
+                        let mut body: Vec<u8> = vec![9, 11, 8];
+                        let title = b"Brewing Stand";
+                        body.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                        body.extend_from_slice(title);
+                        let open_id = session.ids.cb_play_open_screen;
+                        if rewo_net::route_menu(open_id, &body, &session.ids, &mut session.menus) {
+                            // ...and its data: 200 ticks left of a brew, 20
+                            // charges of fuel. Both packets through the
+                            // production router (M17's precedent), so the
+                            // decode, the id gate and the data-slot write are
+                            // all the shipped ones.
+                            let data_id = session.ids.cb_play_container_set_data;
+                            for (slot, value) in [(0i16, 200i16), (1, 20)] {
+                                // VarInt container id, then two BE i16s —
+                                // fixed-width shorts among the var-ints (M87).
+                                let mut d = vec![9u8];
+                                d.extend_from_slice(&slot.to_be_bytes());
+                                d.extend_from_slice(&value.to_be_bytes());
+                                rewo_net::route_menu(data_id, &d, &session.ids, &mut session.menus);
+                            }
+                            self.brewing_injected = true;
+                        }
+                    }
+                }
+            }
             // Three-quarters through, turn on advanced tooltips (F3+H), which
             // adds the item's id as a second line.
             //
@@ -5896,6 +5976,7 @@ impl LiveApp {
                     rewo_gpu::tooltip::TooltipFlag::of(self.advanced_tooltips),
                     self.screen.mouse,
                     (sw, sh),
+                    self.beacon_effects,
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -5906,7 +5987,14 @@ impl LiveApp {
                     let forced = self.screen_forced_open;
                     if let Some(c) = self.check.as_mut() {
                         c.container_frames += 1;
-                        c.container_panel_h = Some(h);
+                        // FIRST sighting, not the last: M92 injects a
+                        // second container late (a brewing stand, 166 tall
+                        // like the player's), and r20's question is about the
+                        // chest that proved the panel builder runs.
+                        c.container_panel_h.get_or_insert(h);
+                        c.container_overlays_max = c
+                            .container_overlays_max
+                            .max(state.world_renderer.container_panel_overlays());
                         if !forced {
                             c.container_self_opened_frames += 1;
                         }
@@ -6241,6 +6329,7 @@ fn run_windowed(
     sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
+    beacon_effects: BeaconEffectIds,
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
@@ -6280,6 +6369,7 @@ fn run_windowed(
         chest_states,
         sign_states,
         bow_item,
+        beacon_effects,
         items,
         pool,
         weather: None,
@@ -6325,6 +6415,7 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         container_injected: false,
+        brewing_injected: false,
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
@@ -8546,14 +8637,14 @@ mod tests {
         // a panel here would send it through the container path instead --
         // which is the change `inventoryshot` would catch, but only because
         // this stays None.
-        assert!(container_panel(&rewo_world::menu_layout::PLAYER, None).is_none());
+        assert!(container_panel(&rewo_world::menu_layout::PLAYER, None, EnchantPlayer::default(), None).is_none());
     }
 
     #[test]
     fn a_lectern_paints_no_panel_rather_than_someone_elses() {
         // LecternScreen is a BookViewScreen. Falling through to a default
         // would paint some other menu's sheet behind a book.
-        assert!(container_panel(layout(17), None).is_none());
+        assert!(container_panel(layout(17), None, EnchantPlayer::default(), None).is_none());
     }
 
     #[test]
@@ -8563,7 +8654,7 @@ mod tests {
             if id == 17 {
                 continue;
             }
-            let p = container_panel(l, None).unwrap_or_else(|| panic!("{} has no panel", l.name));
+            let p = container_panel(l, None, EnchantPlayer::default(), None).unwrap_or_else(|| panic!("{} has no panel", l.name));
             assert!(
                 p.sheet < rewo_data::assets::MENU_BACKGROUND_TEXTURES.len(),
                 "{} indexes past the atlas",
@@ -8577,7 +8668,7 @@ mod tests {
         // generic_9x3: the top 3*18 + 17 = 71 px from the sheet's top, then
         // 96 px from v = 126. The gap between them is the rows a three-row
         // chest does not want.
-        let p = container_panel(layout(2), None).unwrap();
+        let p = container_panel(layout(2), None, EnchantPlayer::default(), None).unwrap();
         assert_eq!(p.blits.len(), 2);
         assert_eq!((p.gui_w, p.gui_h), (176.0, 168.0));
         assert_eq!((p.blits[0].dy, p.blits[0].sy, p.blits[0].h), (0.0, 0.0, 71.0));
@@ -8590,7 +8681,7 @@ mod tests {
         // merchant against 512, so multiplying by 512 must return the pixels
         // vanilla blits -- 0, 0, 276 wide. Multiplying by 256 (the other
         // twenty-one screens' sheet) would halve them.
-        let p = container_panel(layout(19), None).unwrap();
+        let p = container_panel(layout(19), None, EnchantPlayer::default(), None).unwrap();
         assert_eq!(p.blits.len(), 1);
         assert_eq!((p.blits[0].sx, p.blits[0].sy), (0.0, 0.0));
         assert_eq!(p.blits[0].w, 276.0);
@@ -10806,6 +10897,8 @@ fn apply_screen(
     flag: rewo_gpu::tooltip::TooltipFlag,
     mouse: (f64, f64),
     (w, h): (f32, f32),
+    // M92 — the beacon's six effect ids, resolved once at startup.
+    beacon_effects: BeaconEffectIds,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -10825,12 +10918,55 @@ fn apply_screen(
 
     // The container's own background sheet, or `None` for the player's
     // inventory, which the pass draws from its own `inventory.png` rect.
-    wr.set_container_panel(container_panel(layout, session.menus.open()));
+    //
+    // The cursor goes in through the SAME panel size the panel itself uses
+    // (M87k's rule): the enchanting table's row highlight is measured from the
+    // panel's top-left, so converting against the player's 176x166 would offset
+    // it wherever the two disagree.
+    wr.set_container_panel(container_panel(
+        layout,
+        session.menus.open(),
+        EnchantPlayer {
+            xp_level: session.hud.experience.level,
+            creative: session.abilities.instabuild,
+            beacon_effects,
+        },
+        Some(rewo_gpu::container::screen_to_gui_for(
+            mouse,
+            w,
+            h,
+            layout.image_w as f32,
+            layout.image_h as f32,
+        )),
+    ));
 
     let (mut icons, mut labels) = screen_icons(menu, items, &session.trim_materials, w, h);
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
+    }
+    // M92 — the enchanting table's three cost numerals, from the SAME row
+    // derivation the overlays used.
+    if let (Some(rows), Some(font)) = (
+        enchant_rows_of(
+            layout,
+            session.menus.open(),
+            EnchantPlayer {
+                xp_level: session.hud.experience.level,
+                creative: session.abilities.instabuild,
+                beacon_effects,
+            },
+            Some(rewo_gpu::container::screen_to_gui_for(
+                mouse,
+                w,
+                h,
+                layout.image_w as f32,
+                layout.image_h as f32,
+            )),
+        ),
+        baked.font.as_ref(),
+    ) {
+        labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
     apply_gui_icons(wr, gpu, gui, &icons);
 
@@ -10970,6 +11106,8 @@ fn apply_screen(
 fn container_panel(
     layout: &'static rewo_world::menu_layout::MenuLayout,
     open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         return None;
@@ -10987,38 +11125,310 @@ fn container_panel(
             sy: q.v0 * screen.sheet_h,
         })
         .collect();
-    // M91 — a furnace's flame and arrow, from its `container_set_data` slots.
-    let mut progress = Vec::new();
-    if let (Some(m), Some(base)) = (
-        open,
-        rewo_data::assets::progress_index(layout.protocol_id),
-    ) {
-        let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
-            m.furnace_is_lit(),
-            m.furnace_lit_progress(),
-            m.furnace_burn_progress(),
-        );
-        let to_blit = |b: rewo_world::menu_screen::ProgressBlit| rewo_gpu::container::PanelBlit {
-            dx: b.dx as f32,
-            dy: b.dy as f32,
-            w: b.w as f32,
-            h: b.h as f32,
-            sx: b.sx as f32,
-            sy: b.sy as f32,
-        };
-        // The lit sprite is the pair's first, the burn its second.
-        if let Some(f) = flame {
-            progress.push((base, to_blit(f)));
-        }
-        progress.push((base + 1, to_blit(arrow)));
-    }
     Some(rewo_gpu::container::ContainerPanel {
         sheet,
         blits,
         gui_w: screen.image_w as f32,
         gui_h: screen.image_h as f32,
-        progress,
+        overlays: menu_overlays(layout, open, player, mouse_gui),
     })
+}
+
+/// A `menu_screen::ProgressBlit` in the render's own units.
+fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::PanelBlit {
+    rewo_gpu::container::PanelBlit {
+        dx: b.dx as f32,
+        dy: b.dy as f32,
+        w: b.w as f32,
+        h: b.h as f32,
+        sx: b.sx as f32,
+        sy: b.sy as f32,
+    }
+}
+
+/// The open menu's enchanting rows, or `None` when it is not that menu.
+///
+/// **One derivation, two consumers** — the sprite overlays and the cost
+/// labels. They must agree about which row is hovered and which is
+/// unaffordable, because a row whose background says "available" while its
+/// numeral says otherwise is not a state vanilla can produce; deriving it
+/// twice gives two chances to disagree (M18's finding, in miniature).
+pub(crate) fn enchant_rows_of(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
+) -> Option<[rewo_world::menu_screen::EnchantRow; 3]> {
+    if layout.protocol_id != 13 {
+        return None;
+    }
+    let m = open?;
+    Some(rewo_world::menu_screen::enchant_rows(
+        m.enchant_costs(),
+        m.enchant_lapis(),
+        player.xp_level,
+        player.creative,
+        mouse_gui,
+    ))
+}
+
+/// An enchanting-row press (M92f). Returns whether the press was taken.
+///
+/// Mirrors `EnchantmentScreen.mouseClicked`: the row loop runs first, and a
+/// row is taken **only if `clickMenuButton` would return true**. A press on a
+/// row that fails the gate is *not* consumed — vanilla falls through to
+/// `super.mouseClicked`, so the slot logic still gets it.
+///
+/// The gate is deliberately not the render's: it additionally requires slot 0
+/// to hold something, and tests the level against `row + 1` as well as the
+/// cost. See `menu_screen::enchant_click_allowed`.
+fn enchant_press(
+    session: &mut PlaySession,
+    screen: &ScreenState,
+    w: f32,
+    h: f32,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != 13 {
+        return false;
+    }
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    let Some(row) = rewo_world::menu_screen::enchant_click_row(gx, gy) else {
+        return false;
+    };
+    let allowed = rewo_world::menu_screen::enchant_click_allowed(
+        row,
+        open.enchant_costs(),
+        open.enchant_lapis(),
+        // `enchantSlots.getItem(0)` — the item being enchanted.
+        open.menu.menu_slot(0).is_some(),
+        session.hud.experience.level,
+        session.abilities.instabuild,
+    );
+    if !allowed {
+        return false;
+    }
+    if let Err(e) = session.container_button_click(row as i32) {
+        log::warn!("enchant button {row}: {e}");
+    }
+    true
+}
+
+/// The beacon's live choice, from its data slots (M92).
+///
+/// **Vanilla's screen keeps its own `primary`/`secondary` fields**, seeded
+/// from the menu by a `ContainerListener` on every `dataChanged` and then
+/// moved by clicks *before* the server hears about them — a click updates the
+/// screen and only `ServerboundSetBeaconPacket` on confirm tells the server.
+/// Rewo has no click path here yet, so this reads the data slots directly:
+/// the display is correct for whatever the server last said, and the
+/// unconfirmed-choice half arrives with the button clicks.
+fn beacon_choice(
+    m: &rewo_world::menu::OpenMenu,
+    effect_ids: &BeaconEffectIds,
+) -> rewo_world::menu_screen::BeaconChoice {
+    rewo_world::menu_screen::BeaconChoice {
+        levels: m.beacon_levels(),
+        primary: m.beacon_primary().and_then(|id| effect_ids.of(id)),
+        secondary: m.beacon_secondary().and_then(|id| effect_ids.of(id)),
+        has_payment: m.beacon_has_payment(),
+    }
+}
+
+/// The six beacon effects' `minecraft:mob_effect` registry ids.
+///
+/// From `rewo_data`'s report-backed table (M92c) — by NAME, never by position.
+/// An unresolvable name leaves that slot `None` and the effect simply does not
+/// match, which shows as a button with no icon rather than the *wrong* icon.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BeaconEffectIds([Option<i32>; 6]);
+
+impl BeaconEffectIds {
+    pub(crate) fn resolve(m: &rewo_data::mob_effects::MobEffects) -> Self {
+        use rewo_world::menu_screen::BeaconEffect;
+        Self(std::array::from_fn(|i| m.id_of(BeaconEffect::ALL[i].name())))
+    }
+
+    /// Which of the six a registry id is, or `None` for any other effect.
+    fn of(&self, id: i32) -> Option<rewo_world::menu_screen::BeaconEffect> {
+        self.0
+            .iter()
+            .position(|e| *e == Some(id))
+            .map(|i| rewo_world::menu_screen::BeaconEffect::ALL[i])
+    }
+}
+
+/// What an enchanting-table row's state selects, as `(row sprite, numeral)`.
+///
+/// Kept beside the overlay builder rather than in `rewo-world` because the
+/// indices are `rewo-data`'s and the state is `rewo-world`'s; this is the one
+/// place both are in scope.
+/// **The numeral goes through `EnchantRow::numeral()`, not a second match.**
+/// This function had its own copy of that mapping, and a mutation found the
+/// duplication: emptying `numeral()` changed nothing rendered, because nothing
+/// rendered was reading it. That is M18's finding and M45's in one — a second
+/// derivation of the same fact is a second chance to disagree, and here it was
+/// also a witness grading a function the app did not call.
+fn enchant_row_sprites(
+    i: usize,
+    row: rewo_world::menu_screen::EnchantRow,
+) -> (usize, Option<usize>) {
+    use rewo_data::assets as a;
+    use rewo_world::menu_screen::EnchantRow;
+    let background = match row {
+        // `cost == 0` blits the disabled background and RETURNS; an
+        // unaffordable offer blits the SAME one and then its numeral.
+        EnchantRow::Empty | EnchantRow::Unaffordable { .. } => a::ENCHANT_ROW_DISABLED,
+        EnchantRow::Available { .. } => a::ENCHANT_ROW,
+        EnchantRow::Hovered { .. } => a::ENCHANT_ROW_HIGHLIGHTED,
+    };
+    let numeral = row
+        .numeral()
+        .map(|greyed| if greyed { a::ENCHANT_LEVEL_DISABLED } else { a::ENCHANT_LEVEL } + i);
+    (background, numeral)
+}
+
+/// Everything an open menu paints over its background sheet, in draw order
+/// (M91 the furnaces, M92 the rest).
+///
+/// Empty for a menu with no overlays *and* for one that is not open — a
+/// `containershot` panel built with no `OpenMenu` has no data slots to read,
+/// and inventing a plausible-looking half-lit furnace would make the gate's
+/// panel witnesses grade a state no server ever sent.
+///
+/// `player` carries the two inputs the enchanting table needs that are not the
+/// menu's at all — the local XP level and the creative flag.
+fn menu_overlays(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+    player: EnchantPlayer,
+    mouse_gui: Option<(f64, f64)>,
+) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
+    use rewo_data::assets as a;
+    let mut out = Vec::new();
+    let Some(m) = open else { return out };
+    match layout.protocol_id {
+        // The furnace family (M91): flame then arrow.
+        id if a::progress_index(id).is_some() => {
+            let base = a::progress_index(id).expect("guarded above");
+            let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
+                m.furnace_is_lit(),
+                m.furnace_lit_progress(),
+                m.furnace_burn_progress(),
+            );
+            // The lit sprite is the pair's first, the burn its second.
+            if let Some(f) = flame {
+                out.push((base, to_blit(f)));
+            }
+            out.push((base + 1, to_blit(arrow)));
+        }
+        // brewing_stand (M92): fuel, arrow, bubbles — vanilla's own order.
+        11 => {
+            let (fuel, brew, bubbles) =
+                rewo_world::menu_screen::brewing_progress(m.brewing_fuel(), m.brewing_ticks());
+            for (sprite, blit) in [
+                (a::BREW_FUEL, fuel),
+                (a::BREW_PROGRESS, brew),
+                (a::BREW_BUBBLES, bubbles),
+            ] {
+                if let Some(b) = blit {
+                    out.push((sprite, to_blit(b)));
+                }
+            }
+        }
+        // enchantment (M92): each row's background, then its numeral ON TOP of
+        // it — which is why `overlays` is an ordered list and not a set.
+        13 => {
+            let rows = enchant_rows_of(layout, Some(m), player, mouse_gui)
+                .expect("id 13 with an open menu");
+            for (i, row) in rows.into_iter().enumerate() {
+                let (bg, numeral) = enchant_row_sprites(i, row);
+                out.push((bg, to_blit(rewo_world::menu_screen::enchant_row_rect(i))));
+                if let Some(n) = numeral {
+                    out.push((n, to_blit(rewo_world::menu_screen::enchant_level_rect(i))));
+                }
+            }
+        }
+        // beacon (M92): each button's 22x22 chrome, then its 18x18 icon.
+        9 => {
+            let choice = beacon_choice(m, &player.beacon_effects);
+            for b in rewo_world::menu_screen::beacon_buttons() {
+                let hovered = mouse_gui
+                    .is_some_and(|(x, y)| rewo_world::menu_screen::beacon_button_hovered(b, x, y));
+                let state = rewo_world::menu_screen::beacon_button_state(b, choice, hovered);
+                if state == rewo_world::menu_screen::BeaconButtonState::Hidden {
+                    continue;
+                }
+                out.push((
+                    a::BEACON_BUTTON_CHROME + beacon_chrome_index(state),
+                    to_blit(rewo_world::menu_screen::beacon_button_rect(b)),
+                ));
+                if let Some(icon) = beacon_icon_sprite(b, choice) {
+                    out.push((icon, to_blit(rewo_world::menu_screen::beacon_icon_rect(b))));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// A button state's offset into the four chrome sprites, which are listed in
+/// the order `extractContents` tests for them.
+fn beacon_chrome_index(s: rewo_world::menu_screen::BeaconButtonState) -> usize {
+    use rewo_world::menu_screen::BeaconButtonState as S;
+    match s {
+        S::Disabled => 0,
+        S::Selected => 1,
+        S::Highlighted => 2,
+        S::Normal => 3,
+        // Never reached: a hidden button is skipped before it gets here.
+        S::Hidden => 3,
+    }
+}
+
+/// The 18x18 icon a beacon button draws inside its chrome.
+///
+/// The upgrade button **borrows the primary's effect**, so its icon changes as
+/// you click elsewhere — it is the one button whose art is not a constant.
+fn beacon_icon_sprite(
+    b: rewo_world::menu_screen::BeaconButton,
+    choice: rewo_world::menu_screen::BeaconChoice,
+) -> Option<usize> {
+    use rewo_data::assets as a;
+    use rewo_world::menu_screen::{beacon_upgrade_effect, BeaconButtonKind, BeaconEffect};
+    let effect = match b.kind {
+        BeaconButtonKind::Power { effect, .. } => effect,
+        BeaconButtonKind::Upgrade => beacon_upgrade_effect(choice)?,
+        BeaconButtonKind::Confirm => return Some(a::BEACON_CONFIRM),
+        BeaconButtonKind::Cancel => return Some(a::BEACON_CANCEL),
+    };
+    let i = BeaconEffect::ALL.iter().position(|e| *e == effect)?;
+    Some(a::BEACON_EFFECT_ICON + i)
+}
+
+/// The two enchanting-table inputs that are the *player's* rather than the
+/// menu's (M92).
+///
+/// A named pair rather than two loose parameters because they are only ever
+/// read together and swapping a level for a flag would compile.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EnchantPlayer {
+    /// `player.experienceLevel`, from `set_experience` (M79).
+    pub xp_level: i32,
+    /// `player.hasInfiniteMaterials()` — `abilities.instabuild` (M75).
+    pub creative: bool,
+    /// The beacon's six effect ids (M92c). Carried here rather than passed
+    /// separately because both screens' extra inputs travel the same seam.
+    pub beacon_effects: BeaconEffectIds,
 }
 
 /// [`container_panel`] for `containershot`, which drives the production
@@ -11027,7 +11437,38 @@ fn container_panel(
 pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
-    container_panel(layout, None)
+    container_panel(layout, None, EnchantPlayer::default(), None)
+}
+
+/// [`container_panel`] for an *open* menu, so `containershot` can grade the
+/// M92 overlays — which only exist when there are data slots to read.
+///
+/// Drives the production builder for M45's reason: a gate that reimplements a
+/// slice of the app's setup misses whatever the app adds to it.
+pub(crate) fn container_panel_for_open_menu(
+    open: &rewo_world::menu::OpenMenu,
+    xp_level: i32,
+    creative: bool,
+    beacon_effects: BeaconEffectIds,
+    mouse_gui: Option<(f64, f64)>,
+) -> Option<rewo_gpu::container::ContainerPanel> {
+    container_panel(
+        open.layout,
+        Some(open),
+        EnchantPlayer {
+            xp_level,
+            creative,
+            beacon_effects,
+        },
+        mouse_gui,
+    )
+}
+
+/// [`BeaconEffectIds::resolve`] for `containershot`.
+pub(crate) fn beacon_effect_ids_for_test(
+    m: &rewo_data::mob_effects::MobEffects,
+) -> BeaconEffectIds {
+    BeaconEffectIds::resolve(m)
 }
 
 /// [`sheet_index`] for `containershot`.
@@ -11811,6 +12252,50 @@ fn count_label(
         shadow: true,
         text,
     })
+}
+
+/// The enchanting table's three cost numerals (M92).
+///
+/// The first text a container screen draws that is not a stack count, and the
+/// alignment is why it needs the real advance table rather than a 6-px-per-
+/// digit estimate: `leftPosText + 86 - font.width(costText)` is **right**-
+/// aligned, so a wrong width moves a two-digit cost and leaves a one-digit one
+/// looking correct.
+///
+/// An empty row draws nothing at all — `cost == 0` returns before the numeral,
+/// the name and the cost, so a table with no item shows three blank rows.
+fn enchant_cost_labels(
+    rows: [rewo_world::menu_screen::EnchantRow; 3],
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    let layout = &rewo_world::menu_layout::REGISTRY[13]; // enchantment
+    let (left, top, scale) =
+        rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
+    let mut out = Vec::new();
+    for (i, row) in rows.into_iter().enumerate() {
+        let (Some(cost), Some(rgb)) = (row.cost(), row.cost_color()) else {
+            continue;
+        };
+        let text = cost.to_string();
+        let (x, y) =
+            rewo_world::menu_screen::enchant_cost_pos(i, rewo_gpu::text::width(&text, advance));
+        out.push(rewo_gpu::world::OwnedTextLine {
+            x: left + x as f32 * scale,
+            y: top + y as f32 * scale,
+            px: scale,
+            color: [
+                ((rgb >> 16) & 0xFF) as f32 / 255.0,
+                ((rgb >> 8) & 0xFF) as f32 / 255.0,
+                (rgb & 0xFF) as f32 / 255.0,
+            ],
+            alpha: 1.0,
+            shadow: true,
+            text,
+        });
+    }
+    out
 }
 
 /// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by

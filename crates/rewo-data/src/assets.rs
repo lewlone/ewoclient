@@ -1403,23 +1403,83 @@ pub const MENU_BACKGROUND_TEXTURES: &[&str] = &[
     "gui/container/stonecutter.png",
 ];
 
-/// The furnace family's progress overlays (M91), in this order.
+/// Every sprite a container screen paints **over** its background sheet, in
+/// this order (M91 the furnaces, M92 the rest).
 ///
-/// Two per furnace — the flame and the arrow — and the three furnaces have
-/// their **own art**, not one shared pair: a blast furnace's flame is a
-/// different sprite from a furnace's. `progress_index` maps a `minecraft:menu`
-/// id to the pair's base.
-pub const FURNACE_PROGRESS_SPRITES: &[&str] = &[
+/// # Why one flat list rather than one per screen
+///
+/// Each of these is a `blitSprite(pipeline, sprite, spriteW, spriteH, u, v, x,
+/// y, w, h)` — the ten-argument form, which is a **1:1 sub-rect blit**: the
+/// declared `spriteW`/`spriteH` equal the PNG's own dimensions in every case
+/// here, and the destination `w`/`h` equal the source rect's. Nothing scales,
+/// and nothing nine-slices (none of these files has a `.mcmeta`, checked
+/// against the jar). So one sprite index plus a pixel sub-rect describes all of
+/// them, which is exactly what M91's `ContainerPanel::overlays` already
+/// carried — the mechanism was general and only its name was furnace-specific.
+///
+/// **The order is append-only.** The indices are the contract between this
+/// list, the atlas packer, and `menu_overlay_index`; inserting in the middle
+/// would silently repoint every later screen's overlay at its neighbour's art,
+/// which draws *something* and so does not fail loudly.
+///
+/// The three furnaces have their **own art**, not one shared pair — a blast
+/// furnace's flame is a different sprite from a furnace's.
+pub const MENU_OVERLAY_SPRITES: &[&str] = &[
+    // 0..=5 — the furnace family (M91), `(lit, burn)` per furnace.
     "gui/sprites/container/blast_furnace/lit_progress.png",
     "gui/sprites/container/blast_furnace/burn_progress.png",
     "gui/sprites/container/furnace/lit_progress.png",
     "gui/sprites/container/furnace/burn_progress.png",
     "gui/sprites/container/smoker/lit_progress.png",
     "gui/sprites/container/smoker/burn_progress.png",
+    // 6..=8 — the brewing stand (M92).
+    "gui/sprites/container/brewing_stand/fuel_length.png",
+    "gui/sprites/container/brewing_stand/brew_progress.png",
+    "gui/sprites/container/brewing_stand/bubbles.png",
+    // 9..=17 — the enchanting table (M92): the three row backgrounds, then the
+    // three enabled level numerals, then the three disabled ones. Grouped by
+    // role rather than by row so `ENCHANT_*` can index them arithmetically.
+    "gui/sprites/container/enchanting_table/enchantment_slot.png",
+    "gui/sprites/container/enchanting_table/enchantment_slot_highlighted.png",
+    "gui/sprites/container/enchanting_table/enchantment_slot_disabled.png",
+    "gui/sprites/container/enchanting_table/level_1.png",
+    "gui/sprites/container/enchanting_table/level_2.png",
+    "gui/sprites/container/enchanting_table/level_3.png",
+    "gui/sprites/container/enchanting_table/level_1_disabled.png",
+    "gui/sprites/container/enchanting_table/level_2_disabled.png",
+    "gui/sprites/container/enchanting_table/level_3_disabled.png",
+    // 18..=21 — the beacon's button chrome (M92), in the order
+    // `BeaconScreenButton.extractContents` tests for them, so
+    // `BEACON_BUTTON + state as usize` indexes it.
+    "gui/sprites/container/beacon/button_disabled.png",
+    "gui/sprites/container/beacon/button_selected.png",
+    "gui/sprites/container/beacon/button_highlighted.png",
+    "gui/sprites/container/beacon/button.png",
+    // 22..=23 — the confirm and cancel icons.
+    "gui/sprites/container/beacon/confirm.png",
+    "gui/sprites/container/beacon/cancel.png",
+    // 24..=29 — the six beacon effect icons, in `BEACON_EFFECTS` flattened
+    // order. `Hud.getMobEffectSprite` is `mob_effect/<registry name>`, and the
+    // beacon uses only these six of the ~30 in the set.
+    //
+    // **A sprite NAME is not a file path**, and this is the one place in the
+    // list where the difference bites. Every other entry here resolves under
+    // `textures/gui/sprites/`, but `assets/minecraft/atlases/gui.json` also
+    // declares `{type: directory, prefix: "mob_effect/", source: "mob_effect"}`
+    // — so the sprite `mob_effect/speed` comes from `textures/mob_effect/
+    // speed.png`, a different root. Assuming the `gui/sprites/` prefix is
+    // universal makes the bake fail loudly here (it did), which is the good
+    // case; a silently wrong path would be worse.
+    "mob_effect/speed.png",
+    "mob_effect/haste.png",
+    "mob_effect/resistance.png",
+    "mob_effect/jump_boost.png",
+    "mob_effect/strength.png",
+    "mob_effect/regeneration.png",
 ];
 
 /// Where a furnace menu's `(lit, burn)` pair starts in
-/// [`FURNACE_PROGRESS_SPRITES`], or `None` for a menu that is not a furnace.
+/// [`MENU_OVERLAY_SPRITES`], or `None` for a menu that is not a furnace.
 pub fn progress_index(menu_protocol_id: i32) -> Option<usize> {
     match menu_protocol_id {
         10 => Some(0), // blast_furnace
@@ -1428,6 +1488,36 @@ pub fn progress_index(menu_protocol_id: i32) -> Option<usize> {
         _ => None,
     }
 }
+
+/// The brewing stand's three overlays in [`MENU_OVERLAY_SPRITES`], in the order
+/// `BrewingStandScreen.extractBackground` draws them.
+pub const BREW_FUEL: usize = 6;
+pub const BREW_PROGRESS: usize = 7;
+pub const BREW_BUBBLES: usize = 8;
+
+/// The enchanting table's nine, as three parallel triples.
+///
+/// `ENCHANT_ROW_*` are the row backgrounds and `ENCHANT_LEVEL*` the numerals;
+/// a row's numeral is `ENCHANT_LEVEL + i` for row `i`, which is what makes
+/// `ENABLED_LEVEL_SPRITES[i]` / `DISABLED_LEVEL_SPRITES[i]` an index rather
+/// than a match.
+pub const ENCHANT_ROW: usize = 9;
+pub const ENCHANT_ROW_HIGHLIGHTED: usize = 10;
+pub const ENCHANT_ROW_DISABLED: usize = 11;
+pub const ENCHANT_LEVEL: usize = 12;
+pub const ENCHANT_LEVEL_DISABLED: usize = 15;
+
+/// The beacon's twelve (M92).
+///
+/// The four chrome sprites are in the order
+/// `BeaconScreenButton.extractContents` tests for them — disabled, selected,
+/// highlighted, normal — so `BEACON_BUTTON_CHROME + state` is the lookup and
+/// the priority is expressed once rather than twice.
+pub const BEACON_BUTTON_CHROME: usize = 18;
+pub const BEACON_CONFIRM: usize = 22;
+pub const BEACON_CANCEL: usize = 23;
+/// The six effect icons, in `BEACON_EFFECTS` flattened order.
+pub const BEACON_EFFECT_ICON: usize = 24;
 
 /// The textures the container screen and its tooltips draw (M35, M40, M58).
 pub struct ContainerSprites {
@@ -1451,9 +1541,9 @@ pub struct ContainerSprites {
     /// middles, frame `border: 10` sets `stretch_inner`, so it stretches them.
     pub tooltip_background: HudSprite,
     pub tooltip_frame: HudSprite,
-    /// The six furnace progress overlays (M91), in
-    /// [`FURNACE_PROGRESS_SPRITES`] order.
-    pub furnace_progress: Vec<HudSprite>,
+    /// Everything a container screen paints over its background sheet, in
+    /// [`MENU_OVERLAY_SPRITES`] order.
+    pub overlays: Vec<HudSprite>,
     /// The 19 distinct container background sheets (M87), in
     /// [`MENU_BACKGROUND_TEXTURES`] order.
     ///
@@ -1550,12 +1640,12 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         // is worse than a bake that says which sheet is missing.
         menu_backgrounds.push(get(jar, path)?);
     }
-    let mut furnace_progress = Vec::with_capacity(FURNACE_PROGRESS_SPRITES.len());
-    for path in FURNACE_PROGRESS_SPRITES {
-        furnace_progress.push(get(jar, path)?);
+    let mut overlays = Vec::with_capacity(MENU_OVERLAY_SPRITES.len());
+    for path in MENU_OVERLAY_SPRITES {
+        overlays.push(get(jar, path)?);
     }
     Some(ContainerSprites {
-        furnace_progress,
+        overlays,
         menu_backgrounds,
         background: get(jar, "gui/container/inventory.png")?,
         highlight_back: get(jar, "gui/sprites/container/slot_highlight_back.png")?,

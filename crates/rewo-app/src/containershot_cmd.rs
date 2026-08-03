@@ -390,5 +390,306 @@ fn pixels(
         "the two frames differ, so the panel really is what selected the sheet",
     );
 
+    overlays(c, gpu, off, wr, baked, args, &mut shot)?;
+
+    Ok(())
+}
+
+/// The M92 overlays: brewing, enchanting and the beacon, graded as **pixels**.
+///
+/// Every claim here is measured against a *control frame* of the same screen in
+/// a different state, never against "non-black" or "differs from the clear
+/// colour". That rule is the one this project keeps relearning — M34's
+/// non-black-against-a-painted-sky, M38's three detectors in one milestone,
+/// M50's `> 8` threshold — and the shape of the mistake is always the same: a
+/// detector that answers about the background rather than about the subject.
+fn overlays(
+    c: &mut Checker,
+    gpu: &mut Gpu,
+    off: &mut Offscreen,
+    wr: &mut WorldRenderer,
+    baked: &assets::BakedAssets,
+    args: &ContainershotArgs,
+    shot: &mut impl FnMut(&mut Gpu, &mut Offscreen, &mut WorldRenderer) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    use rewo_world::menu::Menus;
+
+    let mob_effects = rewo_data::mob_effects::MobEffects::load(
+        &rewo_data::DataPaths::for_version("26.2")
+            .ok_or("containershot: no data dir")?
+            .registries_json(),
+    )?;
+    let effects = crate::live_cmd::beacon_effect_ids_for_test(&mob_effects);
+
+    /// Open one menu with the given data slots set.
+    fn menu(protocol_id: i32, data: &[(i16, i16)]) -> Menus {
+        let mut m = Menus::new();
+        assert!(m.apply_open_screen(1, protocol_id, "T".into()));
+        for &(id, v) in data {
+            assert!(m.apply_set_data(1, id, v), "slot {id}");
+        }
+        m
+    }
+
+    // GUI-pixel → screen-pixel, for a panel of the given size.
+    let probe = |layout: &rewo_world::menu_layout::MenuLayout| {
+        let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+            W as f32,
+            H as f32,
+            layout.image_w as f32,
+            layout.image_h as f32,
+        );
+        move |img: &[u8], gx: i32, gy: i32| -> [u8; 3] {
+            let x = (left + (gx as f32 + 0.5) * scale) as u32;
+            let y = (top + (gy as f32 + 0.5) * scale) as u32;
+            let i = ((y.min(H - 1) * W + x.min(W - 1)) * 4) as usize;
+            [img[i], img[i + 1], img[i + 2]]
+        }
+    };
+
+    // -- the brewing stand ---------------------------------------------------
+
+    let brewing = rewo_world::menu_layout::layout_of(11).unwrap();
+    let at_brew = probe(brewing);
+    let mut frame = |m: &Menus,
+                     gpu: &mut Gpu,
+                     off: &mut Offscreen,
+                     wr: &mut WorldRenderer|
+     -> Result<Vec<u8>, String> {
+        let open = m.open().expect("a menu must be open");
+        wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+            open, 30, false, effects, None,
+        ));
+        wr.set_container(true, None);
+        shot(gpu, off, wr)
+    };
+
+    // An idle stand is the control: fuelled, but not brewing. Both animations
+    // live inside `if (tickCount > 0)`.
+    let idle = frame(&menu(11, &[(0, 0), (1, 20)]), gpu, off, wr)?;
+
+    // The bubbles' bottom edge, measured from the frames rather than computed:
+    // the lowest row inside the bubble column that differs from the idle
+    // control, at each of several tick values.
+    let bubble_x = 68; // inside the 12px column at x = 63
+    let bottoms: Vec<Option<i32>> = [2i16, 4, 6, 8, 10]
+        .iter()
+        .map(|&t| -> Result<Option<i32>, String> {
+            let f = frame(&menu(11, &[(0, 300 + t), (1, 20)]), gpu, off, wr)?;
+            Ok((0..60)
+                .rev()
+                .find(|&y| at_brew(&f, bubble_x, y) != at_brew(&idle, bubble_x, y)))
+        })
+        .collect::<Result<_, _>>()?;
+    let drawn: Vec<i32> = bottoms.iter().flatten().copied().collect();
+    c.record(
+        "o1.the_bubbles_bottom_edge_is_pinned_across_frames",
+        drawn.len() >= 3 && drawn.iter().all(|&b| b == drawn[0]),
+        format!(
+            "lowest changed row per frame: {bottoms:?} — the column grows upward from a fixed bottom"
+        ),
+    );
+
+    // ...and the heights really do vary, or o1 would pass on a static sprite.
+    let tops: Vec<Option<i32>> = [2i16, 6, 10]
+        .iter()
+        .map(|&t| -> Result<Option<i32>, String> {
+            let f = frame(&menu(11, &[(0, 300 + t), (1, 20)]), gpu, off, wr)?;
+            Ok((0..60).find(|&y| at_brew(&f, bubble_x, y) != at_brew(&idle, bubble_x, y)))
+        })
+        .collect::<Result<_, _>>()?;
+    let distinct: std::collections::BTreeSet<_> = tops.iter().flatten().collect();
+    c.record(
+        "o2.and_the_top_edge_moves_so_o1_is_not_a_static_sprite",
+        distinct.len() >= 2,
+        format!("topmost changed row per frame: {tops:?}"),
+    );
+
+    // The blank frame, observed rather than assumed. `BUBBLELENGTHS` ends in
+    // **0**, so one frame in seven paints no bubbles at all — the `None`s in
+    // o1 and o2 above are that frame, and this turns them from an incidental
+    // into a claim. At t = 306 the index is `306 / 2 % 7 = 6`.
+    let blank = frame(&menu(11, &[(0, 306), (1, 20)]), gpu, off, wr)?;
+    let blank_column = (0..60).all(|y| at_brew(&blank, bubble_x, y) == at_brew(&idle, bubble_x, y));
+    c.record(
+        "o2b.one_frame_in_seven_paints_no_bubbles_at_all",
+        blank_column,
+        "at 306 ticks (index 6, length 0) the bubble column is identical to an idle stand",
+    );
+
+    // An idle stand draws NEITHER animation: both are inside the tick guard.
+    // Measured over the whole panel against a stand that is brewing.
+    let brewing_frame = frame(&menu(11, &[(0, 200), (1, 20)]), gpu, off, wr)?;
+    c.record(
+        "o3.an_idle_stand_differs_from_a_brewing_one",
+        idle != brewing_frame,
+        "the tick guard is real — an idle stand paints no arrow and no bubbles",
+    );
+
+    // The fuel bar survives the tick guard, so an unfuelled idle stand and a
+    // fuelled idle stand differ, and they differ *at the bar*.
+    let unfuelled = frame(&menu(11, &[(0, 0), (1, 0)]), gpu, off, wr)?;
+    let bar_differs = (60..78).any(|x| at_brew(&idle, x, 45) != at_brew(&unfuelled, x, 45));
+    c.record(
+        "o4.the_fuel_bar_is_outside_the_tick_guard",
+        bar_differs,
+        "a fuelled idle stand differs from an unfuelled one at y=45, x in 60..78",
+    );
+
+    // -- the enchanting table ------------------------------------------------
+
+    let ench = rewo_world::menu_layout::layout_of(13).unwrap();
+    let at_ench = probe(ench);
+    let mut ench_frame = |costs: [i16; 3],
+                          mouse: Option<(f64, f64)>,
+                          creative: bool,
+                          gpu: &mut Gpu,
+                          off: &mut Offscreen,
+                          wr: &mut WorldRenderer|
+     -> Result<Vec<u8>, String> {
+        let m = menu(13, &[(0, costs[0]), (1, costs[1]), (2, costs[2])]);
+        let open = m.open().unwrap();
+        // With no lapis in the slot, `creative` is the whole affordability
+        // answer: false gives three UNAFFORDABLE rows, true three available
+        // ones — same costs, different backgrounds.
+        wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+            open, 30, creative, effects, mouse,
+        ));
+        wr.set_container(true, None);
+        shot(gpu, off, wr)
+    };
+
+    // An empty row blits the disabled background and NO numeral; an
+    // *unaffordable* one blits the SAME background plus its numeral. Comparing
+    // those two is what isolates the numeral.
+    //
+    // The obvious control — empty against an affordable offer — was written
+    // first and a mutation proved it vacuous: those two rows have different
+    // BACKGROUNDS (disabled vs normal), and the background rect contains the
+    // numeral rect, so suppressing every numeral left the probe passing. The
+    // detector was measuring the background. Same shape as M34's non-black
+    // against a painted sky and M50's threshold, and the fix is the same one:
+    // hold everything but the subject constant.
+    let empty = ench_frame([0, 0, 0], None, false, gpu, off, wr)?;
+    let unaffordable = ench_frame([5, 10, 30], None, false, gpu, off, wr)?;
+    // The WHOLE 16x16 numeral rect at (61, 15 + 19i), not one row of it: this
+    // probed row `16 + 19i` first and failed, because that is the numeral's
+    // second row and a glyph's top rows are transparent. The failure was the
+    // detector's, not the render's.
+    let numeral_changed = (0..3).all(|i| {
+        (61..77).any(|x| {
+            (15..31).any(|dy| {
+                at_ench(&empty, x, dy + 19 * i) != at_ench(&unaffordable, x, dy + 19 * i)
+            })
+        })
+    });
+    c.record(
+        "o5.an_offer_adds_a_numeral_where_an_empty_row_draws_none",
+        numeral_changed,
+        "all three numeral rects differ between an empty table and an unaffordable one, \
+         which share a background",
+    );
+
+    // ...and the two really do share a background, or o5 is measuring that
+    // instead. Probed at the row's left edge, outside the numeral's 16 px.
+    let bg_same = (0..3).all(|i| {
+        (60..61).all(|x| {
+            (14..33).all(|dy| {
+                at_ench(&empty, x, dy + 19 * i) == at_ench(&unaffordable, x, dy + 19 * i)
+            })
+        })
+    });
+    c.record(
+        "o5b.the_two_frames_o5_compares_share_a_row_background",
+        bg_same,
+        "the row's left column is identical in both, so o5 isolates the numeral",
+    );
+
+    let offered = ench_frame([5, 10, 30], None, true, gpu, off, wr)?;
+
+    // Hovering row 0 changes row 0 and leaves rows 1 and 2 alone. Creative is
+    // on above, so all three rows are affordable and hoverable — otherwise the
+    // hover branch is unreachable and this witness would be vacuous.
+    let hovered = ench_frame([5, 10, 30], Some((100.0, 20.0)), true, gpu, off, wr)?;
+    let row_changed = |i: i32, a: &[u8], b: &[u8]| {
+        (60..168).any(|x| (14 + 19 * i..33 + 19 * i).any(|y| at_ench(a, x, y) != at_ench(b, x, y)))
+    };
+    c.record(
+        "o6.a_hover_repaints_its_own_row_and_only_its_own",
+        row_changed(0, &offered, &hovered)
+            && !row_changed(1, &offered, &hovered)
+            && !row_changed(2, &offered, &hovered),
+        "row 0 differs under the cursor; rows 1 and 2 are byte-identical",
+    );
+
+    // -- the beacon ----------------------------------------------------------
+
+    let beacon = rewo_world::menu_layout::layout_of(9).unwrap();
+    let at_beacon = probe(beacon);
+    let mut beacon_frame = |levels: i16,
+                            primary: i16,
+                            gpu: &mut Gpu,
+                            off: &mut Offscreen,
+                            wr: &mut WorldRenderer|
+     -> Result<Vec<u8>, String> {
+        let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
+        let open = m.open().unwrap();
+        wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+            open, 30, false, effects, None,
+        ));
+        wr.set_container(true, None);
+        shot(gpu, off, wr)
+    };
+
+    // `tier < levels`: at 0 levels every power button is disabled, at 4 they
+    // are all enabled, so the tier-0 button's chrome must differ.
+    let dark = beacon_frame(0, 0, gpu, off, wr)?;
+    let lit = beacon_frame(4, 0, gpu, off, wr)?;
+    let tier0_differs =
+        (53..75).any(|x| (22..44).any(|y| at_beacon(&dark, x, y) != at_beacon(&lit, x, y)));
+    c.record(
+        "o7.a_beacons_power_button_changes_chrome_with_its_level",
+        tier0_differs,
+        "the tier-0 button at (53, 22) 22x22 differs between 0 and 4 levels",
+    );
+
+    // The upgrade button is HIDDEN until a primary is chosen, so choosing one
+    // paints something at (168, 47) that was not there before. Encoded, so
+    // `1` is registry id 0 — the beacon's own `id + 1` convention.
+    let no_primary = beacon_frame(4, 0, gpu, off, wr)?;
+    let with_primary = beacon_frame(4, 1, gpu, off, wr)?;
+    // Probe the button's 2 px CHROME ring, NOT the 18x18 icon it contains.
+    //
+    // The whole-button version was written first and a mutation proved it
+    // vacuous: making the button always visible still changed these pixels,
+    // because `beacon_upgrade_effect` reads `choice.primary` independently and
+    // so the ICON appears either way. The claim is about the chrome, so the
+    // probe has to be about the chrome.
+    let ring = |img: &[u8]| -> Vec<[u8; 3]> {
+        (168..190)
+            .flat_map(|x| [(x, 47), (x, 48), (x, 67), (x, 68)])
+            .chain((47..69).flat_map(|y| [(168, y), (169, y), (188, y), (189, y)]))
+            .map(|(x, y)| at_beacon(img, x, y))
+            .collect()
+    };
+    c.record(
+        "o8.the_upgrade_buttons_CHROME_appears_only_once_a_primary_is_chosen",
+        ring(&no_primary) != ring(&with_primary),
+        "the 2px frame of the upgrade slot at (168, 47) is unpainted until primary is non-zero",
+    );
+
+    if let Some(d) = &args.out_dir {
+        let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
+        wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+            menu(11, &[(0, 200), (1, 20)]).open().unwrap(),
+            30,
+            false,
+            effects,
+            None,
+        ));
+        let _ = shot(gpu, off, wr);
+        let _ = off.save_png(gpu, &d.join("containershot-brewing.png"));
+    }
+
     Ok(())
 }
