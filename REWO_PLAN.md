@@ -47,9 +47,9 @@ quick-move, and the first bespoke widget — and **M93 three of the eight
 single-input quick-moves — merchant, anvil, beacon, stonecutter, grindstone,
 cartography table and loom, **seven of eight**, leaving only smithing, which is
 genuinely blocked on class C**. Current measurement,
-taken 2026-08-03: **1817 tests, 0 failures** (world 632, net 585, gpu 252,
+taken 2026-08-03: **1823 tests, 0 failures** (world 637, net 586, gpu 252,
 data 200, app 92, mesh 45, proto 11 — all seven confirmed reporting);
-`containershot` **36/36**, `inventoryshot` 152/152, `itemshot` 75/75,
+`containershot` **37/37**, `inventoryshot` 152/152, `itemshot` 75/75,
 `handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
 validation ON and 0 validation errors (M92's measurement — **not re-run for
 M93**, which adds no render path); demo PNG `2cc56b4acbfb92cb`,
@@ -188,13 +188,23 @@ the one-generator job the stonecutter turned out to be.
 
 So, in ratio order:
 
-1. **The bespoke widgets, by blocker rather than by screen** — now the largest
-   remaining piece of the container arc. The enchanting rows are done and
-   `container_button_click` ships, so the **loom and crafter need only their
-   button lists**; the beacon needs `set_beacon` plus click-tracked
-   primary/secondary; the anvil needs a text field; the merchant's trade list
-   and the stonecutter's recipe list are blocked on class-C packets
-   (`merchant_offers`, `update_recipes`).
+1. **The bespoke widgets, by blocker rather than by screen** — the largest
+   remaining piece of the container arc. **M93h corrected this list**: the
+   claim that "the loom and crafter need only their button lists" was wrong
+   about both.
+
+   | Screen | What it actually needs |
+   |---|---|
+   | **crafter** | ✅ model + packet shipped (M93h). Left: calling them from `live_cmd`'s slot-click routing, and drawing the disabled-slot overlay |
+   | **loom** | **not** a button list. `getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` (a **`banner_pattern`** tag — `expand_tag` hardcodes `tags/item`) when the pattern slot is empty, and the stack's `PROVIDES_BANNER_PATTERNS` **HolderSet value** otherwise — which Rewo walks and discards, and whose ids need the `minecraft:banner_pattern` **registry** that `parse_registry_data` does not capture |
+   | **beacon** | `set_beacon` (serverbound) plus click-tracked primary/secondary |
+   | **anvil** | a text field |
+   | merchant, stonecutter | genuinely class-C (`merchant_offers`, `update_recipes`) |
+
+   **The crafter uses `container_slot_state_changed` (id 20), not
+   `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
+   override at all. Only the loom, enchanting table and the two class-C screens
+   are button-click screens.
 2. **The M92 sweep**, still open — grep for a `*shot` gate that builds a struct
    production resolves from a table or the wire. The enchanting
    rows are done and `container_button_click` is shipped, so the loom and the
@@ -2316,6 +2326,63 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice (2026-08-03)
+
+The first bespoke-widget work after the quick-move arc, and it opens by
+**correcting this plan**. §0.0 said the loom and crafter "are *only* missing
+their button lists, because `container_button_click` is shipped". Wrong about
+both, and finding out cost less than building on it would have.
+
+**The crafter does not use `container_button_click` at all.** `CrafterMenu` has
+no `clickMenuButton` override; `CrafterScreen` calls `handleSlotStateChanged`,
+which sends `ServerboundContainerSlotStateChangedPacket` — **id 20** against
+`container_button_click`'s 17, and a name Rewo did not resolve.
+
+**The loom is not "only a button list" either, and is not shipped here.**
+`getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` when the
+pattern slot is empty — a **`banner_pattern`** tag, where `expand_tag`
+hardcodes `tags/item` — and otherwise the stack's `PROVIDES_BANNER_PATTERNS`
+**HolderSet value**, which Rewo walks and discards and whose ids need the
+`minecraft:banner_pattern` registry `parse_registry_data` does not capture. A
+component value, a registry decode and a second tag namespace. Recorded rather
+than half-built.
+
+Four things in the crafter that invert or are easy to lose:
+
+1. **`containerData[i] == 1` means DISABLED.** `setSlotState` takes an
+   `isEnabled` and stores `isEnabled ? 0 : 1`, so the argument and the stored
+   value are opposites — reading it as "enabled" disables exactly the slots the
+   player left on, giving a crafter that looks fine and never crafts.
+2. **`isSlotDisabled`'s `< 9` is load-bearing, not defensive.** Index 9 is the
+   **power flag in the same array**, and 9 is a legal index, so without the
+   guard a powered crafter reads as having a ninth disabled slot and nothing
+   faults.
+3. **The PICKUP branch is asymmetric.** Re-enabling is unconditional;
+   *disabling* needs an **empty cursor**, because clicking an empty enabled
+   slot while holding something is a placement. A symmetric reading makes it
+   impossible to put an item into a crafter by hand.
+4. **`slotClicked` ends in an unconditional `super.slotClicked(...)`**, so a
+   toggle is **additive**, not a replacement — treating it as either/or drops
+   the placement the SWAP case exists to complete.
+
+**And the packet body is the other order from its sibling.**
+`container_button_click` writes `(containerId, button)`; this writes
+`(slotId, containerId, newState)` — **slot first**. Two adjacent serverbound
+container packets with their var-ints transposed, and the transposition yields
+a *well-formed* packet that toggles the wrong slot of the wrong menu. The
+witness uses two different numbers and asserts which is which rather than
+round-tripping.
+
+`containershot` `d10` grades that the packet name **resolves** and differs from
+`container_button_click`'s id — the body witnesses grade bytes, not the id, so
+a name that never resolved would leave the sender returning `Err` forever with
+every unit test green.
+
+Gates: **1823 tests**, 0 failures; `containershot` 36 → **37**; `inventoryshot`
+152, `itemshot` 75, `mobshot` 246/246; **11 mutations, 11 killed**; demo PNG
+`2cc56b4acbfb92cb`. **Open:** the toggle decision and the sender are both here
+and tested, and `live_cmd`'s slot-click routing does not call them yet.
 
 ### M93g — the loom: a tag standing in for a class, and two real conjunctions (2026-08-03)
 
