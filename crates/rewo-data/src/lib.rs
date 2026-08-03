@@ -52,6 +52,7 @@ pub mod mob_effects;
 pub mod sound_events;
 pub mod sounds_json;
 pub mod stats;
+pub mod stonecutter_table;
 pub mod swing_anim;
 pub mod swing_anim_table;
 pub mod use_item;

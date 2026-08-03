@@ -12353,6 +12353,8 @@ pub(crate) fn item_props(
         ],
         // M93 — the beacon quick-move's one item predicate.
         beacon_payment: rewo_data::beacon_payment_table::is_beacon_payment(name),
+        // M93b — the stonecutter's.
+        stonecuttable: rewo_data::stonecutter_table::accepts_input(name),
         equips: match equip_slot(name) {
             Some(EquipSlot::Head) => Some(ArmorPiece::Head),
             Some(EquipSlot::Chest) => Some(ArmorPiece::Chest),

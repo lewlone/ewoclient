@@ -646,6 +646,7 @@ fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
         is_fuel: false,
         smeltable: [false; 3],
         beacon_payment: false,
+        stonecuttable: false,
     }
 }
 

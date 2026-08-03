@@ -222,9 +222,12 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         };
         let iron = id_of("minecraft:iron_ingot")?;
         let stick = id_of("minecraft:stick")?;
+        let andesite = id_of("minecraft:andesite")?;
         let iron_p = crate::live_cmd::item_props(&items, iron)
             .ok_or("containershot: item_props declined a real id")?;
         let stick_p = crate::live_cmd::item_props(&items, stick)
+            .ok_or("containershot: item_props declined a real id")?;
+        let andesite_p = crate::live_cmd::item_props(&items, andesite)
             .ok_or("containershot: item_props declined a real id")?;
         c.record(
             "d1.the_live_client_resolves_the_beacon_payment_tag",
@@ -244,6 +247,38 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 "stick is_fuel={} iron is_fuel={} iron smeltable={:?} — so m1's \
                  `false` is a real answer and not a dead lookup",
                 stick_p.is_fuel, iron_p.is_fuel, iron_p.smeltable
+            ),
+        );
+        // M93b, built in with the feature rather than after it. Same reason:
+        // every stonecutter unit test hand-builds its ItemProps, so without
+        // this the live lookup could be wired to nothing.
+        c.record(
+            "d3.the_live_client_resolves_the_stonecutter_input_set",
+            andesite_p.stonecuttable && !stick_p.stonecuttable && !iron_p.stonecuttable,
+            format!(
+                "production item_props: andesite(id {andesite}) cuttable={}, stick cuttable={}, \
+                 iron_ingot cuttable={}",
+                andesite_p.stonecuttable, stick_p.stonecuttable, iron_p.stonecuttable
+            ),
+        );
+        // ...and the two jar-derived recipe tables must not be the same data.
+        // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
+        // Wiring both fields to one table would leave d3 green.
+        let iron_ore = id_of("minecraft:iron_ore")?;
+        let ore_p = crate::live_cmd::item_props(&items, iron_ore)
+            .ok_or("containershot: item_props declined a real id")?;
+        c.record(
+            "d4.the_stonecutter_and_furnace_sets_are_different_data",
+            andesite_p.stonecuttable
+                && andesite_p.smeltable == [false; 3]
+                && !ore_p.stonecuttable
+                && ore_p.smeltable[1],
+            format!(
+                "andesite cuttable={} smeltable={:?}; iron_ore cuttable={} smeltable={:?}",
+                andesite_p.stonecuttable,
+                andesite_p.smeltable,
+                ore_p.stonecuttable,
+                ore_p.smeltable
             ),
         );
     }

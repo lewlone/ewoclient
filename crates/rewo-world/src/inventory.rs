@@ -678,6 +678,11 @@ pub struct ItemProps {
     /// caveat those carry: a **datapack** that retags it makes this wrong with
     /// no error anywhere.
     pub beacon_payment: bool,
+    /// `stonecutterRecipes().acceptsInput` (M93b) — the stonecutter's input
+    /// slot. Jar-derived from the stonecutting recipes, with M91's caveat:
+    /// `update_recipes` is the authoritative source and Rewo does not decode
+    /// it, so a datapack recipe change makes this wrong silently.
+    pub stonecuttable: bool,
 }
 
 /// Which entry of [`ItemProps::smeltable`] a `minecraft:menu` id selects.
@@ -1172,6 +1177,34 @@ impl Inventory {
                     (player..hotbar, false)
                 }]);
             }
+            QuickMove::Stonecutter => {
+                // StonecutterMenu: input 0, result 1, player 2..38.
+                let (player, hotbar, end) = (2usize, 29usize, 38usize);
+                return Some(vec![match slot {
+                    // The result fills the player backwards. NOTE the tail
+                    // vanilla runs after this one and Rewo does not model:
+                    // `if (slotIndex == 1) player.drop(stack, false)` — a
+                    // remainder that did not fit is DROPPED ON THE GROUND, not
+                    // left in the result slot. Rewo has no dropped-item
+                    // prediction, so with a nearly-full inventory its local
+                    // view keeps the remainder and the server's does not; the
+                    // next `container_set_slot` corrects it. Recorded rather
+                    // than approximated, because predicting an entity spawn is
+                    // a bigger claim than predicting a slot.
+                    1 => (player..end, true),
+                    0 => (player..end, false),
+                    // A player slot holding something the stonecutter cuts.
+                    // Consumes: if slot 0 is occupied by something else this
+                    // moves NOTHING rather than reaching the cross-move, which
+                    // is the same `return ItemStack.EMPTY` shape the anvil has
+                    // and the opposite of what the beacon does when ITS guard
+                    // fails. Guard-fails-through and move-fails-out are two
+                    // different exits and only the first cross-moves.
+                    _ if p.stonecuttable => (0..1, false),
+                    s if s < hotbar => (hotbar..end, false),
+                    _ => (player..hotbar, false),
+                }]);
+            }
             QuickMove::Crafter { container_slots } => {
                 // CrafterMenu: grid 0..9, player 9..45, result 45.
                 //
@@ -1349,6 +1382,7 @@ mod tests {
             is_fuel: false,
             smeltable: [false; 3],
             beacon_payment: false,
+            stonecuttable: false,
         })
     }
 
@@ -1360,6 +1394,7 @@ mod tests {
             is_fuel: true,
             smeltable: [false, true, false], // smeltable in a furnace only
             beacon_payment: false,
+            stonecuttable: false,
         })
     }
 
@@ -1371,6 +1406,7 @@ mod tests {
             is_fuel: true,
             smeltable: [false; 3],
             beacon_payment: false,
+            stonecuttable: false,
         })
     }
 
@@ -1877,13 +1913,129 @@ mod tests {
         );
     }
 
+    fn cuttable_props(_id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            stonecuttable: true,
+            ..plain_props(0).unwrap()
+        })
+    }
+
+    #[test]
+    fn a_stonecuttable_stack_goes_to_the_input_slot_not_the_hotbar() {
+        let s = single_input_menu(24, 2, stack(1, 5));
+        let p = s.click_quick_move(2, &cuttable_props).expect("predictable");
+        assert!(
+            p.changed.iter().any(|(i, _)| *i == 0),
+            "stone belongs in the stonecutter's input slot, {:?}",
+            p.changed
+        );
+        assert!(
+            !p.changed.iter().any(|(i, _)| (29..38).contains(i)),
+            "and must not also reach the hotbar, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn an_uncuttable_stack_falls_through_to_the_cross_move() {
+        let s = single_input_menu(24, 2, stack(1, 5));
+        let p = s.click_quick_move(2, &plain_props).expect("predictable");
+        assert!(
+            !p.changed.iter().any(|(i, _)| *i == 0),
+            "a stick must not enter the input slot, {:?}",
+            p.changed
+        );
+        assert!(
+            p.changed.iter().any(|(i, _)| (29..38).contains(i)),
+            "and it must reach the hotbar, {:?}",
+            p.changed
+        );
+    }
+
+    #[test]
+    fn a_blocked_input_slot_moves_nothing_rather_than_cross_moving() {
+        // The distinction the three M93 menus turn on. When the stonecutter's
+        // GUARD fails (an uncuttable item) vanilla falls through to the
+        // cross-move — the test above. When the guard passes but the MOVE
+        // fails, `moveItemStackTo` returns false and vanilla `return`s, so
+        // nothing happens at all. Two different exits from one branch, and a
+        // shape that tried the cross-move as a fallback would pass the other
+        // two witnesses and fail this one.
+        let mut s = Inventory::with_layout(crate::menu_layout::layout_of(24).unwrap());
+        let mut v = vec![None; s.slot_count()];
+        v[0] = stack(7, 1); // a DIFFERENT item, so no merge is possible
+        v[2] = stack(1, 5);
+        assert!(s.set_content(1, &v, None));
+        assert!(
+            s.click_quick_move(2, &cuttable_props).is_none(),
+            "a blocked input slot must move nothing, not divert to the hotbar"
+        );
+        // Paired positive, so `None` is not confusable with "menu not
+        // transcribed": clear the input and the same click must predict.
+        let free = single_input_menu(24, 2, stack(1, 5));
+        assert!(
+            free.click_quick_move(2, &cuttable_props).is_some(),
+            "with the input free the same click is predictable"
+        );
+    }
+
+    #[test]
+    fn the_stonecutters_input_slot_accepts_anything_an_ordinary_click_puts_there() {
+        // Unlike the beacon's, this predicate is branch-only: slot 0 is a bare
+        // `Slot` with no `mayPlace` override, so vanilla lets you drop a stick
+        // in by hand. Giving it a SlotKind of its own would be stricter than
+        // vanilla and would mispredict a placement the server accepts.
+        let mut s = Inventory::with_layout(crate::menu_layout::layout_of(24).unwrap());
+        assert!(s.set_content(1, &vec![None; s.slot_count()], None));
+        s.set_carried(stack(1, 1));
+        let p = s
+            .click_pickup(0, 0, &plain_props)
+            .expect("a pickup click is always sendable");
+        assert_eq!(
+            p.changed,
+            vec![(0u16, stack(1, 1))],
+            "an ordinary click may place an uncuttable item in the input slot"
+        );
+    }
+
+    #[test]
+    fn every_single_input_menu_empties_its_output_slot_backwards() {
+        // Found by a surviving mutation: flipping the stonecutter's result arm
+        // from `true` to `false` changed nothing any witness could see, and
+        // the same hole covered the anvil, beacon and merchant. `backwards`
+        // is the difference between a taken result landing in the hotbar's
+        // RIGHT-hand end — where `addStandardInventorySlots` appends it — and
+        // in the first free main-inventory slot. Both look like "it moved".
+        //
+        // (menu id, the slot whose contents leave via the player range)
+        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1)] {
+            let m = single_input_menu(id, source, stack(1, 1));
+            let p = m
+                .click_quick_move(source as i32, &plain_props)
+                .unwrap_or_else(|| panic!("menu {id} declined"));
+            let landed: Vec<u16> = p
+                .changed
+                .iter()
+                .filter(|(i, v)| *i as usize != source && v.is_some())
+                .map(|(i, _)| *i)
+                .collect();
+            let last = m.slot_count() - 1;
+            assert_eq!(
+                landed,
+                vec![last as u16],
+                "menu {id}: a backwards fill lands in the LAST player slot ({last}), \
+                 forwards would land in the first"
+            );
+        }
+    }
+
     #[test]
     fn every_transcribed_result_slot_refuses_a_placement() {
         // The three M93 menus each have a result slot whose `mayPlace` is
         // `false`, and reporting it as Plain would let a click drop something
         // into it that the server then rejects.
         use crate::menu_layout::layout_of;
-        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2)] {
+        for (id, result) in [(8i32, 2usize), (9, usize::MAX), (19, 2), (24, 1)] {
             let layout = layout_of(id).unwrap();
             for slot in 0..layout.slot_count() {
                 let kind = layout.slot_kind(slot).expect("transcribed");

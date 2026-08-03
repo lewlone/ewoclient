@@ -731,6 +731,28 @@ pub enum QuickMove {
     /// the main/hotbar cross-move, because it is a separate `else if` rather
     /// than a condition on the destination.
     Beacon,
+    /// `StonecutterMenu` — input 0, result 1, then the player's 36.
+    ///
+    /// Its guard is `stonecutterRecipes().acceptsInput(stack)`, and it is the
+    /// **third** guard behaviour in three menus, which is why they could not
+    /// share a shape:
+    ///
+    /// | menu | guard | when it fails |
+    /// |---|---|---|
+    /// | anvil | always `true` | n/a — the cross-move is unreachable |
+    /// | beacon | tag + count + empty | falls through to the cross-move |
+    /// | stonecutter | `acceptsInput` | falls through to the cross-move… |
+    ///
+    /// …but the *move* consuming is what differs: a stonecuttable stack whose
+    /// input slot is already occupied by something else moves **nothing**,
+    /// because `moveItemStackTo(stack, 0, 1, false)` returns false and vanilla
+    /// then `return`s rather than trying the hotbar. The guard falling through
+    /// and the move failing are two different exits from the same branch, and
+    /// only the first reaches the cross-move.
+    ///
+    /// The accepted set is jar-derived (`stonecutter_table`), with M91's
+    /// caveat: `update_recipes` is the authoritative source and is class C.
+    Stonecutter,
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -804,6 +826,15 @@ impl MenuLayout {
             } else {
                 crate::inventory::SlotKind::Plain
             }),
+            // A stonecutter's slot 1 overrides `mayPlace` to false; slot 0 is a
+            // BARE `Slot` with no override, so it accepts anything an ordinary
+            // click puts there. `acceptsInput` gates the shift-click ONLY —
+            // giving slot 0 a kind of its own would be stricter than vanilla.
+            QuickMove::Stonecutter => Some(if slot == 1 {
+                crate::inventory::SlotKind::Result
+            } else {
+                crate::inventory::SlotKind::Plain
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -837,6 +868,8 @@ impl MenuLayout {
             8 => QuickMove::ItemCombiner { result_slot: 2 },
             9 => QuickMove::Beacon,
             19 => QuickMove::Merchant,
+            // stonecutter (M93b) — the jar-derived accepted-input set.
+            24 => QuickMove::Stonecutter,
             _ => QuickMove::Unimplemented,
         }
     }
