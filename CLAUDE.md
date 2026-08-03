@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1799 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **32/32**, `inventoryshot` 152/152,
+(M93) — **1806 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **33/33**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4300,9 +4300,22 @@ grindstone moves **nothing**.
 > before calling any component question unanswerable. The reusable shape:
 > `has(X)` = *removed → false, patch-set → true, else prototype*.
 
-**Three still decline**, and only one is genuinely blocked: cartography table
-(`has(MAP_ID)` — one patch-presence bit), loom (two jar tags + two prototype
-lookups), **smithing** (`RecipePropertySet`, class C).
+**M93f then took the cartography table** — the only menu here whose branch
+predicates and `mayPlace` predicates are the **same two tests, written twice**
+(the branch picks which slot to try, `mayPlace` confirms it will take it;
+neither is droppable). **`has(MAP_ID)` is tested first, and that ordering IS
+map cloning**: `filled_map` carries the component and takes slot 0, while
+`minecraft:map` is a *different item* with no component and falls through to
+the paper slot. Vanilla writes the middle arm as a triple negation, so the
+paper slot is the branch reached when the stack *is* one of the three —
+transcribed forwards with the arms swapped. No prototype carries MAP_ID, so
+this is the cleanest three-step `has()` case: one bit. The value is read and
+discarded but **must** be read, or the length-prefix-less patch desynchronises.
+
+**Two still decline**, seven of the eight done: **loom** (`isDyeItem` /
+`isPatternItem` are **conjunctions** — a jar tag `&&` a prototype component
+each; needs nothing new) and **smithing** (`RecipePropertySet`, class C — the
+only genuine blocker left).
 
 > **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
 > says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
@@ -4362,10 +4375,18 @@ already the union of both, so the correct bit was one line.
 damage-removal flag was untested by construction, because the only witness
 constructed an `ItemSlot` with it already set. Now asserted from **bytes**.
 
-**Measured:** 1773 → **1799 tests**, 0 failures, seven crates reporting;
-`containershot` 27 → **32**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
+**M93f's decode witnesses were written WITH the feature**, not after a
+surviving mutation as M93e's were — and its battery came back **13/13 clean
+first time**, which is what that bought. Their first run failed on the
+**harness**: the shape table decides *walkability* and the interpretation
+decides *meaning*, kept separate on purpose, so a fabricated test id absent
+from `install_test_shapes` reads as unwalkable however well the interpreter
+handles it. Production was never affected.
+
+**Measured:** 1773 → **1806 tests**, 0 failures, seven crates reporting;
+`containershot` 27 → **33**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**38 mutations across M93a–e, 38 killed**. `live --render-check` not re-run —
+**51 mutations across M93a–f, 51 killed**. `live --render-check` not re-run —
 M93 adds no render path.
 
 *(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*

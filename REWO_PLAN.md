@@ -44,12 +44,12 @@ M89 making it usable, M90 shift-click routing by the menu's own
 `quickMoveStack`, M91 the furnace family, M92 the rest of
 `container_set_data` (brewing stand, enchanting table, beacon), the crafting
 quick-move, and the first bespoke widget — and **M93 three of the eight
-single-input quick-moves (merchant, anvil, beacon), then the stonecutter and
-the grindstone — five of eight, with the rest blocked on three different
-things and only one of those genuinely blocked**. Current measurement,
-taken 2026-08-03: **1799 tests, 0 failures** (world 620, net 582, gpu 252,
+single-input quick-moves (merchant, anvil, beacon), then the stonecutter, the
+grindstone and the cartography table — **seven of eight**, with only the loom
+left to transcribe and smithing the one genuine blocker**. Current measurement,
+taken 2026-08-03: **1806 tests, 0 failures** (world 625, net 584, gpu 252,
 data 197, app 92, mesh 45, proto 11 — all seven confirmed reporting);
-`containershot` **32/32**, `inventoryshot` 152/152, `itemshot` 75/75,
+`containershot` **33/33**, `inventoryshot` 152/152, `itemshot` 75/75,
 `handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
 validation ON and 0 validation errors (M92's measurement — **not re-run for
 M93**, which adds no render path); demo PNG `2cc56b4acbfb92cb`,
@@ -170,13 +170,20 @@ the rest.** The previous version of this block said the eight were "each a few
 lines"; that was wrong, and the correction is the useful part. They are **four
 shapes**, and the remaining five are blocked on five *different* things:
 
-**M93b–d took the stonecutter and M93e the grindstone**, leaving three:
+**M93b–f took the stonecutter, the grindstone and the cartography table**,
+leaving two — **seven of the eight are done**:
 
 | Menu | Blocker | Size |
 |---|---|---|
-| `cartography_table` | `stack.has(DataComponents.MAP_ID)` — a **patch-presence** question. `map_id` is on no prototype, and `ItemSlot` carries a patch *digest*, not a presence set | one decode bit, on the M93e pattern |
-| `loom` | `isDyeItem`/`isPatternItem` = a jar tag **and** a prototype component (`DYE`, `PROVIDES_BANNER_PATTERNS`) | a tag generator + two prototype lookups |
-| `smithing` | `canMoveIntoInputSlots` overridden with three `RecipePropertySet` tests | `update_recipes`, class C — the only genuine blocker left |
+| `loom` | `isDyeItem`/`isPatternItem` = `is(#LOOM_DYES) && has(DYE)` and `is(#LOOM_PATTERNS) && has(PROVIDES_BANNER_PATTERNS)` — a jar tag **and** a prototype component each | a tag generator (M93a's `gen_beacon_payment.py`) + two `prototype_has_component` lookups. **Nothing new is needed** |
+| `smithing` | `canMoveIntoInputSlots` overridden with three `RecipePropertySet` tests | `update_recipes`, class C — **the only genuine blocker left** |
+
+> **⚠ Note the loom's predicates are conjunctions, not either/or.**
+> `isPatternItem` is `is(ItemTags.LOOM_PATTERNS) && has(PROVIDES_BANNER_PATTERNS)`
+> — both terms. For every vanilla item the two agree, so testing only the tag
+> looks correct and diverges the moment a datapack tags an item without the
+> component. That is the same shape as M93e's `max_damage`-without-`damage`,
+> which survived a mutation until a fixture made the terms diverge.
 
 > **⚠ A blocker recorded here was wrong, and the correction is reusable.**
 > M93a said the loom and cartography table were blocked on "a prototype
@@ -198,10 +205,10 @@ shapes**, and the remaining five are blocked on five *different* things:
 
 So, in ratio order:
 
-1. **The cartography table, then the loom** — the two remaining transcribable
-   quick-moves. Neither needs new machinery: M56's prototype-component table
-   and M93e's three-step `has()` cover both, and the loom's two tags follow
-   M93a's `gen_beacon_payment.py`. Smithing is the only one genuinely blocked.
+1. **The loom** — the last transcribable quick-move, and it needs no new
+   machinery: two jar tags on `gen_beacon_payment.py`'s pattern, plus two
+   `prototype_has_component` lookups. Smithing is the only one genuinely
+   blocked (class C). After that the quick-move arc is closed.
 2. **The bespoke widgets, by blocker rather than by screen.** The enchanting
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
@@ -2322,6 +2329,54 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93f — the cartography table, where the branch and the slot ask the same question twice (2026-08-03)
+
+The only menu in this set whose `quickMoveStack` predicates and its `mayPlace`
+predicates are the **same two tests, written twice**. The branch picks *which*
+slot to try; `mayPlace` confirms it will take the stack. The redundancy is
+vanilla's and neither half is droppable — without the branch a filled map
+cross-moves to the hotbar, without `mayPlace` an ordinary click drops one into
+the paper slot.
+
+**`has(MAP_ID)` is tested first, and that ordering is map cloning.**
+`filled_map` carries the component and takes slot 0; `minecraft:map` is a
+**different item** with no component, falls past that test, and is caught by
+`is(PAPER) || is(MAP) || is(GLASS_PANE)` into slot 1. Collapsing the two slots
+— or reversing the tests — puts both in one place and the recipe stops being
+expressible. It is also the reason for two `SlotKind`s rather than one: the
+slots take **disjoint** sets.
+
+Vanilla writes the middle arm as a **triple negation**
+(`!is(PAPER) && !is(MAP) && !is(GLASS_PANE)` → cross-move), so the paper slot
+is the branch reached when the stack *is* one of the three. Transcribed
+forwards with the arms swapped — same meaning, far harder to misread.
+
+This is the cleanest of M93e's three-step `has()` cases: **no prototype carries
+MAP_ID**, so a patch is the only source and the resolution collapses to one
+bit. The value is read and discarded (a server-side saved-data index) but it
+**must** be read — the patch has no length prefix, so skipping a value
+desynchronises every component after it.
+
+**The decode witnesses were written with the feature**, not after a surviving
+mutation as M93e's were. Their first run failed, and the failure was the
+**harness**: the shape table decides *walkability* and the interpretation
+decides *meaning*, kept separate on purpose so "a new interpretation cannot
+silently become the only thing keeping a codec walkable" — so a fabricated test
+id absent from `install_test_shapes` reads as unwalkable however well the
+interpreter handles it. Production was never affected; `minecraft:map_id` has
+been in the real shape table since M41.
+
+**13 mutations, 13 killed, no survivors** — the first battery of the M93 arc to
+come back clean first time, which is what writing the decode witnesses up front
+bought. They include inverting the precedence, sharing one `SlotKind` between
+the two slots, reading a *removal* as a presence, and skipping the value to
+desynchronise the walk.
+
+Gates: **1806 tests**, 0 failures; `containershot` 32 → **33** (`d6` grades the
+production resolution of the three item identities and pins that `filled_map`
+is *not* among them); `inventoryshot` 152, `itemshot` 75, `handshot` 34,
+`swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb`.
 
 ### M93e — the grindstone, whose predicate is in the SLOT and not in the branch (2026-08-03)
 
