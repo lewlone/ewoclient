@@ -409,6 +409,22 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                     ids.sb_play_container_button_click
                 ),
             );
+            // M93l — the beacon's confirm packet, same rule: the body-builder
+            // witness grades bytes, not the id, so a name that never resolved
+            // would leave the sender returning Err forever while every unit
+            // test stayed green.
+            c.record(
+                "d11.the_beacons_confirm_packet_resolves_and_is_its_own",
+                ids.sb_play_set_beacon.is_some()
+                    && ids.sb_play_set_beacon != ids.sb_play_container_button_click
+                    && ids.sb_play_set_beacon != ids.sb_play_container_slot_state_changed,
+                format!(
+                    "set_beacon={:?} — distinct from container_button_click {:?} and                      container_slot_state_changed {:?}; the beacon's confirm is neither                      of those, despite its chrome being ordinary buttons",
+                    ids.sb_play_set_beacon,
+                    ids.sb_play_container_button_click,
+                    ids.sb_play_container_slot_state_changed
+                ),
+            );
         }
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.

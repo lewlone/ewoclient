@@ -1457,6 +1457,36 @@ pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
 ///
 /// `newState` is **enabled**, matching `setSlotState(slotId, isEnabled)` — not
 /// the stored data value, which is its inverse (`isEnabled ? 0 : 1`).
+/// `ServerboundSetBeaconPacket` (M93l) — two `Optional<Holder<MobEffect>>`.
+///
+/// ```java
+/// STREAM_CODEC = composite(
+///    MobEffect.STREAM_CODEC.apply(ByteBufCodecs::optional), ..primary,
+///    MobEffect.STREAM_CODEC.apply(ByteBufCodecs::optional), ..secondary)
+/// ```
+///
+/// `optional` writes a **bool**, then the value only if present. And
+/// `MobEffect.STREAM_CODEC` is `ByteBufCodecs.holderRegistry(MOB_EFFECT)` —
+/// a **RAW 0-based id**, not `holder`'s `id + 1`. That distinction has now
+/// bitten in M16 (dimension types), M21 (damage types), M55 (attributes) and
+/// M92d (the beacon's own decode), and it is quiet every time: an off-by-one
+/// names a real effect, so the beacon simply grants the wrong one.
+pub fn set_beacon_body(primary: Option<i32>, secondary: Option<i32>) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    for id in [primary, secondary] {
+        match id {
+            Some(i) => {
+                w.u8(1);
+                w.varint(i);
+            }
+            None => {
+                w.u8(0);
+            }
+        }
+    }
+    w.buf
+}
+
 pub fn container_slot_state_changed_body(
     slot_id: i32,
     container_id: i32,
@@ -4581,6 +4611,24 @@ mod award_stats_tests {
         // ...and a container id past 127 is a two-byte varint, so the total
         // grows by exactly one.
         assert_eq!(container_button_click_body(128, 2).len(), 3);
+    }
+
+    /// M93l — two optionals, each a bool then a RAW registry id.
+    #[test]
+    fn the_set_beacon_body_is_two_optional_raw_ids() {
+        // Both present.
+        assert_eq!(set_beacon_body(Some(1), Some(11)), vec![1u8, 1, 1, 11]);
+        // Neither: two bare `false`s and nothing else. A codec that wrote the
+        // id anyway would make this four bytes.
+        assert_eq!(set_beacon_body(None, None), vec![0u8, 0]);
+        // One each way, and NOT symmetric — primary first.
+        assert_eq!(set_beacon_body(Some(3), None), vec![1u8, 3, 0]);
+        assert_eq!(set_beacon_body(None, Some(3)), vec![0u8, 1, 3]);
+        // `holderRegistry` is RAW: effect id 0 is a legal id and writes 0, not
+        // 1. Under `holder`'s `id + 1` convention this would be `[1, 1]`, and
+        // an off-by-one here names a real effect — the beacon would simply
+        // grant the wrong one, with nothing on the wire to say so.
+        assert_eq!(set_beacon_body(Some(0), None), vec![1u8, 0, 0]);
     }
 
     /// M93h — and the field order is the OPPOSITE of the one above.
