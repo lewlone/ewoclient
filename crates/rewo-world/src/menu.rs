@@ -45,6 +45,15 @@ pub struct OpenMenu {
     pub title: String,
     /// `container_set_data` values, indexed by data slot id.
     pub data: [i16; MAX_DATA_SLOTS],
+    /// How many data writes this menu has taken (M93m).
+    ///
+    /// A watermark for screens that keep their own copy of a data-derived
+    /// choice. `BeaconScreen` seeds `primary`/`secondary` from the menu in a
+    /// `ContainerListener.dataChanged`, which fires on **any** slot id — so a
+    /// pyramid-level change clobbers an unconfirmed selection exactly as a
+    /// primary/secondary change does. A watermark on the *menu identity*
+    /// alone would miss that; one on the effect slots alone would miss it too.
+    pub data_writes: u64,
     /// This menu's slots — the same [`crate::inventory::Inventory`] type the
     /// player's menu is, sized by `layout`.
     ///
@@ -472,6 +481,7 @@ impl Menus {
             layout,
             title,
             data: [0; MAX_DATA_SLOTS],
+            data_writes: 0,
             menu: crate::inventory::Inventory::with_layout(layout),
         });
         true
@@ -506,6 +516,8 @@ impl Menus {
             return false;
         };
         *slot = value;
+        // Any write, whatever the id — see `data_writes`.
+        menu.data_writes = menu.data_writes.wrapping_add(1);
         true
     }
 

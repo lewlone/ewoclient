@@ -3811,6 +3811,8 @@ fn run_headless(
             mouse,
             (sw, sh),
             beacon_effects,
+            // The headless path drives no screen, so the menu is the answer.
+            None,
         );
         headless_screen_labels = labels;
     } else {
@@ -4617,6 +4619,19 @@ impl ApplicationHandler for LiveApp {
                     if enchant_press(session, &self.screen, ext.width as f32, ext.height as f32) {
                         return;
                     }
+                    // M93m — the beacon's buttons, on the same seam and for
+                    // the same reason: a live widget consumes the click and
+                    // it never reaches the slot logic, while a DARK one falls
+                    // through exactly as a disabled enchanting row does.
+                    if beacon_press(
+                        session,
+                        &mut self.screen,
+                        &self.beacon_effects,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // `AbstractContainerScreen.mouseClicked`'s double click:
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
@@ -5380,6 +5395,20 @@ impl LiveApp {
         if close_requested && self.screen.inventory_open() {
             self.set_screen_open(false);
         }
+        // M93m — a beacon button asked to close. Drained here rather than
+        // closed from inside the press, so every close goes through the one
+        // path that owns the screen.
+        //
+        // **This closes the CLIENT's screen only.** Vanilla's
+        // `player.closeContainer()` also sends a serverbound
+        // `container_close`, and Rewo resolves no such packet — `ids.rs` has
+        // the clientbound one alone. So the server still believes the menu is
+        // open. That gap is older and wider than this milestone (it affects
+        // every screen close, not the beacon's), and is recorded rather than
+        // half-fixed here.
+        if std::mem::take(&mut self.screen.close_beacon) {
+            self.set_screen_open(false);
+        }
 
         // M89 — a container the server opened opens the client's screen.
         //
@@ -5971,6 +6000,11 @@ impl LiveApp {
                 if let Some(c) = self.check.as_mut() {
                     c.screen_frames += 1;
                 }
+                let beacon_override = session
+                    .menus
+                    .open()
+                    .filter(|m| m.layout.protocol_id == BEACON_MENU_PROTOCOL_ID)
+                    .map(|m| beacon_live(&mut self.screen, m, &self.beacon_effects));
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -5984,6 +6018,10 @@ impl LiveApp {
                     self.screen.mouse,
                     (sw, sh),
                     self.beacon_effects,
+                    // M93m — the SCREEN's choice, so a click lights the
+                    // button it pressed instead of the render continuing to
+                    // paint the server's last word.
+                    beacon_override,
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -10517,6 +10555,23 @@ pub struct ScreenState {
     /// the same frame as another cannot be swallowed, and so nothing has to
     /// reach into the session to clear state it does not own.
     pub close_requests_seen: u64,
+    /// The beacon screen's own `primary` / `secondary` (M93m).
+    ///
+    /// **Vanilla's screen owns these, not the menu.** A click moves them
+    /// locally and only `set_beacon` on confirm tells the server, so they
+    /// cannot be re-read from the data slots each frame — that was M92's
+    /// stated shortcut, and it is what this replaces.
+    ///
+    /// Seeded from the menu whenever *either* watermark moves: the container
+    /// id, because a new menu is a new beacon, and `data_writes`, because
+    /// `ContainerListener.dataChanged` re-reads both effects on ANY slot
+    /// change — so a pyramid growing under you discards an unconfirmed pick,
+    /// which is vanilla's behaviour and not a bug to design around.
+    pub beacon: Option<BeaconLocal>,
+    /// Set when a beacon button asks for the screen to close (M93m). Drained
+    /// by the frame loop rather than closing from inside the press, so the
+    /// close goes through the one path that owns the screen.
+    pub close_beacon: bool,
     /// The container id whose screen is currently up, if a container's (M89).
     ///
     /// A watermark on the *menu*, not a mirror of the screen's open flag: a
@@ -10906,6 +10961,8 @@ fn apply_screen(
     (w, h): (f32, f32),
     // M92 — the beacon's six effect ids, resolved once at startup.
     beacon_effects: BeaconEffectIds,
+    // The beacon screen's own choice (M93m), or `None` to read the menu.
+    beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -10937,6 +10994,7 @@ fn apply_screen(
             xp_level: session.hud.experience.level,
             creative: session.abilities.instabuild,
             beacon_effects,
+            beacon_override,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -10963,6 +11021,7 @@ fn apply_screen(
                 xp_level: session.hud.experience.level,
                 creative: session.abilities.instabuild,
                 beacon_effects,
+                beacon_override,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11245,6 +11304,113 @@ fn enchant_press(
 /// Rewo has no click path here yet, so this reads the data slots directly:
 /// the display is correct for whatever the server last said, and the
 /// unconfirmed-choice half arrives with the button clicks.
+/// `BeaconScreen`'s button press (M93m).
+///
+/// Placed beside `enchant_press` and called from the same seam, for the same
+/// reason: `BeaconScreen.mouseClicked` is `AbstractContainerScreen`'s with
+/// widgets in front of it, so a press on a live button consumes the click and
+/// never reaches the slot logic. Returns whether it did.
+///
+/// The confirm sends and then closes; vanilla's order is the same
+/// (`send(...)` then `closeContainer()`), and here the send failing must not
+/// close the screen over a beacon the server never heard about.
+fn beacon_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    effect_ids: &BeaconEffectIds,
+    w: f32,
+    h: f32,
+) -> bool {
+    use rewo_world::menu_screen::BeaconPress;
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != BEACON_MENU_PROTOCOL_ID {
+        return false;
+    }
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    let choice = beacon_live(screen, open, effect_ids);
+    let Some(button) = rewo_world::menu_screen::beacon_buttons()
+        .into_iter()
+        .find(|b| rewo_world::menu_screen::beacon_button_hovered(*b, gx, gy))
+    else {
+        return false;
+    };
+    match rewo_world::menu_screen::beacon_press(button, choice) {
+        // An inactive or already-selected button is NOT a consumed click:
+        // `AbstractWidget.mouseClicked` only returns true when it fires, so a
+        // press on a dark button falls through to the slot logic exactly as a
+        // disabled enchanting row does (M92f).
+        BeaconPress::None => false,
+        BeaconPress::Select(next) => {
+            if let Some(b) = screen.beacon.as_mut() {
+                b.choice = next;
+            }
+            true
+        }
+        BeaconPress::Confirm => {
+            let id = |e: Option<rewo_world::menu_screen::BeaconEffect>| {
+                e.and_then(|e| effect_ids.id_of(e))
+            };
+            match session.set_beacon(id(choice.primary), id(choice.secondary)) {
+                Ok(()) => screen.close_beacon = true,
+                Err(e) => log::warn!("set_beacon: {e}"),
+            }
+            true
+        }
+        BeaconPress::Cancel => {
+            screen.close_beacon = true;
+            true
+        }
+    }
+}
+
+/// `minecraft:menu`'s `beacon` id.
+const BEACON_MENU_PROTOCOL_ID: i32 = 9;
+
+/// The beacon screen's local choice and the watermarks it was seeded at.
+#[derive(Debug, Clone, Copy)]
+pub struct BeaconLocal {
+    container_id: i32,
+    data_writes: u64,
+    choice: rewo_world::menu_screen::BeaconChoice,
+}
+
+/// `BeaconScreen`'s live choice — seeded from the menu, then owned by the
+/// screen until the menu says otherwise (M93m).
+fn beacon_live(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    effect_ids: &BeaconEffectIds,
+) -> rewo_world::menu_screen::BeaconChoice {
+    let stale = match screen.beacon {
+        Some(b) => b.container_id != m.container_id || b.data_writes != m.data_writes,
+        None => true,
+    };
+    if stale {
+        screen.beacon = Some(BeaconLocal {
+            container_id: m.container_id,
+            data_writes: m.data_writes,
+            choice: beacon_choice(m, effect_ids),
+        });
+    }
+    // `levels` and `has_payment` are the MENU's on every frame, not the
+    // screen's: `updateStatus(levels)` is passed the menu's value each time
+    // and `hasPayment()` reads the slot directly. Only the two effects are
+    // screen-owned, so a payment arriving mid-selection lights Confirm
+    // without disturbing the pick.
+    let mut c = screen.beacon.expect("seeded above").choice;
+    c.levels = m.beacon_levels();
+    c.has_payment = m.beacon_has_payment();
+    c
+}
+
 fn beacon_choice(
     m: &rewo_world::menu::OpenMenu,
     effect_ids: &BeaconEffectIds,
@@ -11269,6 +11435,14 @@ impl BeaconEffectIds {
     pub(crate) fn resolve(m: &rewo_data::mob_effects::MobEffects) -> Self {
         use rewo_world::menu_screen::BeaconEffect;
         Self(std::array::from_fn(|i| m.id_of(BeaconEffect::ALL[i].name())))
+    }
+
+    /// The registry id of one of the six, for `set_beacon` (M93m).
+    fn id_of(&self, e: rewo_world::menu_screen::BeaconEffect) -> Option<i32> {
+        let i = rewo_world::menu_screen::BeaconEffect::ALL
+            .iter()
+            .position(|x| *x == e)?;
+        self.0[i]
     }
 
     /// Which of the six a registry id is, or `None` for any other effect.
@@ -11399,7 +11573,9 @@ fn menu_overlays(
         }
         // beacon (M92): each button's 22x22 chrome, then its 18x18 icon.
         9 => {
-            let choice = beacon_choice(m, &player.beacon_effects);
+            let choice = player
+                .beacon_override
+                .unwrap_or_else(|| beacon_choice(m, &player.beacon_effects));
             for b in rewo_world::menu_screen::beacon_buttons() {
                 let hovered = mouse_gui
                     .is_some_and(|(x, y)| rewo_world::menu_screen::beacon_button_hovered(b, x, y));
@@ -11469,6 +11645,15 @@ pub(crate) struct EnchantPlayer {
     /// The beacon's six effect ids (M92c). Carried here rather than passed
     /// separately because both screens' extra inputs travel the same seam.
     pub beacon_effects: BeaconEffectIds,
+    /// The beacon SCREEN's own choice (M93m), when a screen is driving.
+    ///
+    /// `None` re-reads the menu's data slots, which is right for a gate with
+    /// no screen state — and wrong for the live client, where a click moves
+    /// the choice and only `set_beacon` on confirm tells the server. Without
+    /// this the render would keep painting the server's last word and a click
+    /// would light nothing, which is M93i's "correct on the wire, invisible on
+    /// screen" one screen over.
+    pub beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
 }
 
 /// [`container_panel`] for `containershot`, which drives the production
@@ -11491,6 +11676,10 @@ pub(crate) fn container_panel_for_open_menu(
     creative: bool,
     beacon_effects: BeaconEffectIds,
     mouse_gui: Option<(f64, f64)>,
+    // M93m — the beacon screen's own choice. Carried on the SAME entry point
+    // the gate already drives rather than a second one, so `containershot`
+    // cannot exercise a path the live client does not take (M45).
+    beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     container_panel(
         open.layout,
@@ -11499,6 +11688,7 @@ pub(crate) fn container_panel_for_open_menu(
             xp_level,
             creative,
             beacon_effects,
+            beacon_override,
         },
         mouse_gui,
     )
@@ -12895,5 +13085,100 @@ fn upload_gui_icons(
     let glint = rewo_gpu::gui_item::build_glint_vertices(&state.held, icons, millis);
     if let Err(e) = wr.set_gui_items_with_glint(gpu, &verts, &glint) {
         log::warn!("live: gui-item upload failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod m93m_beacon {
+    use super::*;
+    use rewo_world::menu::Menus;
+    use rewo_world::menu_screen::BeaconEffect;
+
+    /// A beacon menu with the given data slots.
+    fn beacon(container_id: i32, data: &[(i16, i16)]) -> Menus {
+        let mut m = Menus::new();
+        assert!(m.apply_open_screen(container_id, 9, "B".into()));
+        for &(id, v) in data {
+            assert!(m.apply_set_data(container_id, id, v));
+        }
+        m
+    }
+
+    /// The six ids as the report would give them, so `of`/`id_of` round-trip.
+    fn ids() -> BeaconEffectIds {
+        BeaconEffectIds(std::array::from_fn(|i| Some(100 + i as i32)))
+    }
+
+    #[test]
+    fn a_click_survives_a_frame_but_not_a_data_write() {
+        // THE rule, and it reads as a bug until you see the listener:
+        // `ContainerListener.dataChanged` re-reads BOTH effects on ANY slot
+        // id, so a pyramid growing under you discards an unconfirmed pick.
+        // Vanilla's behaviour, not something to design around.
+        let mut sc = ScreenState::default();
+        let m = beacon(1, &[(0, 4)]);
+        let open = m.open().unwrap();
+        let first = beacon_live(&mut sc, open, &ids());
+        assert_eq!(first.primary, None);
+
+        // A click moves the screen's own copy.
+        sc.beacon.as_mut().unwrap().choice.primary = Some(BeaconEffect::ALL[0]);
+        let kept = beacon_live(&mut sc, open, &ids());
+        assert_eq!(kept.primary, Some(BeaconEffect::ALL[0]), "it survives a frame");
+
+        // ...and a data write of ANY slot re-seeds it from the menu.
+        let mut m2 = m.clone();
+        assert!(m2.apply_set_data(1, 0, 3));
+        let after = beacon_live(&mut sc, m2.open().unwrap(), &ids());
+        assert_eq!(
+            after.primary, None,
+            "a write to the LEVELS slot still clobbers the pick"
+        );
+    }
+
+    #[test]
+    fn a_new_container_re_seeds_even_at_the_same_write_count() {
+        let mut sc = ScreenState::default();
+        let a = beacon(1, &[]);
+        beacon_live(&mut sc, a.open().unwrap(), &ids());
+        sc.beacon.as_mut().unwrap().choice.primary = Some(BeaconEffect::ALL[2]);
+        // A different beacon, opened with the same number of data writes.
+        let b = beacon(2, &[]);
+        let after = beacon_live(&mut sc, b.open().unwrap(), &ids());
+        assert_eq!(after.primary, None, "a new menu is a new beacon");
+    }
+
+    #[test]
+    fn levels_and_payment_are_the_MENUS_every_frame_not_the_screens() {
+        // `updateStatus(levels)` is handed the menu's value each time and
+        // `hasPayment()` reads the slot, so a payment arriving mid-selection
+        // must light Confirm WITHOUT disturbing the pick.
+        let mut sc = ScreenState::default();
+        let m = beacon(1, &[(0, 4)]);
+        beacon_live(&mut sc, m.open().unwrap(), &ids());
+        sc.beacon.as_mut().unwrap().choice.primary = Some(BeaconEffect::ALL[1]);
+        // Stale copies that must NOT leak through.
+        sc.beacon.as_mut().unwrap().choice.levels = 0;
+        sc.beacon.as_mut().unwrap().choice.has_payment = true;
+        let live = beacon_live(&mut sc, m.open().unwrap(), &ids());
+        assert_eq!(live.levels, 4, "levels come from the menu");
+        assert!(!live.has_payment, "and so does the payment");
+        assert_eq!(
+            live.primary,
+            Some(BeaconEffect::ALL[1]),
+            "while the pick is still the screen's"
+        );
+    }
+
+    #[test]
+    fn the_effect_id_lookup_round_trips() {
+        // `id_of` is new and only used by `set_beacon`; if it disagreed with
+        // `of`, the packet would name a different effect from the one lit.
+        let e = ids();
+        for i in 0..6 {
+            let eff = BeaconEffect::ALL[i];
+            let id = e.id_of(eff).expect("resolvable");
+            assert_eq!(e.of(id), Some(eff), "{eff:?}");
+        }
     }
 }
