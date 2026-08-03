@@ -223,6 +223,23 @@ impl OpenMenu {
         (0..CRAFTER_GRID_SLOTS).contains(&slot) && self.data(slot as i16) == 1
     }
 
+    /// Whether this menu **replaces** a slot's normal render, so its item must
+    /// not be drawn (M93j).
+    ///
+    /// `CrafterScreen.extractSlot` calls `extractDisabledSlot` *instead of*
+    /// `super.extractSlot`, so a disabled crafter slot shows the cover and no
+    /// item. Note this is the opposite composition from the toggle itself,
+    /// which is **additive** (M93i): the two halves of one feature compose the
+    /// two different ways, and swapping them either hides an enabled slot's
+    /// item or paints the cover underneath one.
+    ///
+    /// A general predicate rather than a crafter check inlined in the icon
+    /// path, because "this screen draws something else here" is the shape any
+    /// future `extractSlot` override takes.
+    pub fn slot_hides_item(&self, slot: usize) -> bool {
+        i32::try_from(slot).is_ok_and(|s| self.crafter_slot_disabled(s))
+    }
+
     /// `CrafterMenu.isPowered` — `containerData.get(9) == 1`.
     pub fn crafter_powered(&self) -> bool {
         self.data(CRAFTER_POWERED_DATA_SLOT) == 1

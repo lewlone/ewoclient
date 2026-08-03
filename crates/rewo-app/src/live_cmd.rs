@@ -10947,7 +10947,8 @@ fn apply_screen(
         )),
     ));
 
-    let (mut icons, mut labels) = screen_icons(menu, items, &session.trim_materials, w, h);
+    let (mut icons, mut labels) =
+        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open());
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
@@ -11336,6 +11337,32 @@ fn menu_overlays(
                 out.push((base, to_blit(f)));
             }
             out.push((base + 1, to_blit(arrow)));
+        }
+        // crafter_3x3 (M93j): the redstone arrow, then one cover per disabled
+        // grid slot. Order matters only in that the covers must not be hidden
+        // by the arrow, and they do not overlap it.
+        rewo_world::menu::CRAFTER_MENU_PROTOCOL_ID => {
+            out.push((
+                a::CRAFTER_REDSTONE + usize::from(m.crafter_powered()),
+                to_blit(rewo_world::menu_screen::crafter_redstone()),
+            ));
+            for slot in 0..rewo_world::menu::CRAFTER_GRID_SLOTS {
+                if !m.crafter_slot_disabled(slot) {
+                    continue;
+                }
+                // The slot's position comes from the LAYOUT, not re-derived
+                // from `26 + x * 18`: a second copy of the grid arithmetic is
+                // the drift M90's `slot_kind` bug was made of.
+                let Some((sx, sy)) = layout.position(slot as usize) else {
+                    continue;
+                };
+                out.push((
+                    a::CRAFTER_DISABLED_SLOT,
+                    to_blit(rewo_world::menu_screen::crafter_disabled_cover(
+                        sx as i32, sy as i32,
+                    )),
+                ));
+            }
         }
         // brewing_stand (M92): fuel, arrow, bubbles — vanilla's own order.
         11 => {
@@ -12181,18 +12208,27 @@ fn screen_tooltip(
     ))
 }
 
-fn screen_icons(
+pub(crate) fn screen_icons(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
     w: f32,
     h: f32,
+    // M93j — the open menu, for the slots whose render it REPLACES. `None` is
+    // the player's own inventory, which replaces none.
+    open: Option<&rewo_world::menu::OpenMenu>,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
     let rects = menu_slot_rects(inv, w, h);
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
     let mut icons = Vec::new();
     let mut labels = Vec::new();
     for (slot, rect) in rects.iter().enumerate() {
+        // A slot the screen covers draws neither its icon nor its count —
+        // `extractSlot` never reaches `super`, and the count is part of what
+        // super draws.
+        if open.is_some_and(|m| m.slot_hides_item(slot)) {
+            continue;
+        }
         if let Some(stack) = inv.menu_slot(slot) {
             if let Some(icon) = icon_for(items, trim_materials, stack, rect.0, rect.1, rect.2) {
                 icons.push(icon);
