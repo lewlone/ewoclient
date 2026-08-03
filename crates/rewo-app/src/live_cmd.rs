@@ -11202,23 +11202,29 @@ impl BeaconEffectIds {
 /// Kept beside the overlay builder rather than in `rewo-world` because the
 /// indices are `rewo-data`'s and the state is `rewo-world`'s; this is the one
 /// place both are in scope.
+/// **The numeral goes through `EnchantRow::numeral()`, not a second match.**
+/// This function had its own copy of that mapping, and a mutation found the
+/// duplication: emptying `numeral()` changed nothing rendered, because nothing
+/// rendered was reading it. That is M18's finding and M45's in one — a second
+/// derivation of the same fact is a second chance to disagree, and here it was
+/// also a witness grading a function the app did not call.
 fn enchant_row_sprites(
     i: usize,
     row: rewo_world::menu_screen::EnchantRow,
 ) -> (usize, Option<usize>) {
     use rewo_data::assets as a;
     use rewo_world::menu_screen::EnchantRow;
-    match row {
-        // `cost == 0` blits the disabled background and RETURNS — no numeral.
-        EnchantRow::Empty => (a::ENCHANT_ROW_DISABLED, None),
-        EnchantRow::Unaffordable { .. } => {
-            (a::ENCHANT_ROW_DISABLED, Some(a::ENCHANT_LEVEL_DISABLED + i))
-        }
-        EnchantRow::Available { .. } => (a::ENCHANT_ROW, Some(a::ENCHANT_LEVEL + i)),
-        EnchantRow::Hovered { .. } => {
-            (a::ENCHANT_ROW_HIGHLIGHTED, Some(a::ENCHANT_LEVEL + i))
-        }
-    }
+    let background = match row {
+        // `cost == 0` blits the disabled background and RETURNS; an
+        // unaffordable offer blits the SAME one and then its numeral.
+        EnchantRow::Empty | EnchantRow::Unaffordable { .. } => a::ENCHANT_ROW_DISABLED,
+        EnchantRow::Available { .. } => a::ENCHANT_ROW,
+        EnchantRow::Hovered { .. } => a::ENCHANT_ROW_HIGHLIGHTED,
+    };
+    let numeral = row
+        .numeral()
+        .map(|greyed| if greyed { a::ENCHANT_LEVEL_DISABLED } else { a::ENCHANT_LEVEL } + i);
+    (background, numeral)
 }
 
 /// Everything an open menu paints over its background sheet, in draw order
@@ -11363,6 +11369,37 @@ pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     container_panel(layout, None, EnchantPlayer::default(), None)
+}
+
+/// [`container_panel`] for an *open* menu, so `containershot` can grade the
+/// M92 overlays — which only exist when there are data slots to read.
+///
+/// Drives the production builder for M45's reason: a gate that reimplements a
+/// slice of the app's setup misses whatever the app adds to it.
+pub(crate) fn container_panel_for_open_menu(
+    open: &rewo_world::menu::OpenMenu,
+    xp_level: i32,
+    creative: bool,
+    beacon_effects: BeaconEffectIds,
+    mouse_gui: Option<(f64, f64)>,
+) -> Option<rewo_gpu::container::ContainerPanel> {
+    container_panel(
+        open.layout,
+        Some(open),
+        EnchantPlayer {
+            xp_level,
+            creative,
+            beacon_effects,
+        },
+        mouse_gui,
+    )
+}
+
+/// [`BeaconEffectIds::resolve`] for `containershot`.
+pub(crate) fn beacon_effect_ids_for_test(
+    m: &rewo_data::mob_effects::MobEffects,
+) -> BeaconEffectIds {
+    BeaconEffectIds::resolve(m)
 }
 
 /// [`sheet_index`] for `containershot`.
