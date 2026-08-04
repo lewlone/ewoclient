@@ -4419,6 +4419,53 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M93z — the recipe book's UI model, and a filter button that toggles one stage of three
+
+M93y decoded the packets and named the book as the subsystem that had to
+follow. This is its **model** — geometry, tabs, collections, filtering,
+pagination. **The render is separate and not in it**, on M63's split.
+
+**It is positioned against the WINDOW, and nothing else Rewo draws is.** Every
+other screen is panel-relative. `getXOrigin` is `(width - 147) / 2 - xOffset`,
+centred on the *window* then pushed left 86 to flank the menu — and **`xOffset`
+collapses to 0 on a narrow window**, which is what makes the book cover the menu
+rather than hang off the edge. Deriving its origin from the open menu's panel is
+right at one window size and wrong at every other, invisibly until a resize.
+
+**`updateCollections` is three `removeIf` stages and the FIRST IS
+UNCONDITIONAL** — the filter button toggles only the third (`hasCraftable`).
+Read as gating the filter, it takes the first (`hasAnySelected`) with it, and
+"show all recipes" then lists furnace recipes in a crafting table.
+
+**The crafting tab lists `equipment` first**, not in the registry's id order
+(building_blocks, redstone, equipment, misc) — `includedCategories()` is a
+separate hand-written order, so deriving a tab's contents from ids reorders
+every crafting collection. **Three of the 13 categories belong to NO tab**
+(stonecutter, smithing, campfire — those screens have their own UI), so the
+lookup must be allowed to answer nothing. **Zero collections give ZERO pages**,
+and `clamp_page`'s `totalPages <= currentPage` resets an index *equal* to the
+count, to the **front** rather than the new last page.
+
+**Ordering is deliberately not a contract**: a group takes its first-seen
+member's position, and insertion order is preserved because a stable book beats
+an arbitrary one — **not** because vanilla guarantees it (its input is a
+`HashMap`'s `values()`). The opposite of M93s's stonecutter, where the index a
+click sends made order load-bearing.
+
+**The witness was wrong before the code, again**: it shrank to 20 collections —
+**one** page, whose last index *is* 0 — and asserted the reset was not to "the
+new last page", so `assert_ne!(0, 0)` failed and the fixture could not have
+expressed its claim either way. Now it shrinks a five-page list.
+
+**1956 tests**; `containershot` 76, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical; **10 mutations, 10 killed**. It also found
+**§0.0's own drift running in reverse** — the prose was current through M93t
+while the coverage number was four milestones stale at 109/0/32, because a
+milestone that ships a finding writes the paragraph and forgets the table.
+**Open:** the book's render (panel, tabs, 20 grid buttons, arrows, the search
+field on M93t's `EditBox`, the filter toggle), ghost placement into container
+slots, and the two serverbound packets — reachable now, still unsent.
+
 ### M93y — the recipe book's decode, and a class-C claim that IS one
 
 Four packets decoded into session state, plus the `SlotDisplay` (11 variants)
