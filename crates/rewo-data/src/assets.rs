@@ -1401,7 +1401,14 @@ pub const MENU_BACKGROUND_TEXTURES: &[&str] = &[
     "gui/container/smoker.png",
     "gui/container/cartography_table.png",
     "gui/container/stonecutter.png",
+    // The recipe book's own 256x256 sheet (M94). Not a container background —
+    // the book is a separate window-anchored panel — but it rides the same
+    // atlas because it is blitted the same way.
+    "gui/recipe_book.png",
 ];
+
+/// The recipe book's panel sheet in [`MENU_BACKGROUND_TEXTURES`] (M94).
+pub const RECIPE_BOOK_SHEET: usize = 19;
 
 /// Every sprite a container screen paints **over** its background sheet, in
 /// this order (M91 the furnaces, M92 the rest).
@@ -1580,7 +1587,54 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // dead weight in the atlas.
     "gui/sprites/widget/button.png",
     "gui/sprites/widget/button_highlighted.png",
+    // 98..=99 — the recipe book's tabs (M94), PLAIN FIRST.
+    //
+    // `RecipeBookTabButton` resolves `sprites.get(true, this.selected)`, so the
+    // second of the pair is the SELECTED tab, not the hovered one — a tab does
+    // not react to the cursor at all.
+    "gui/sprites/recipe_book/tab.png",
+    "gui/sprites/recipe_book/tab_selected.png",
+    // 100..=103 — the recipe slots, in `slot_sprite`'s (craftable, multiple)
+    // order: the 2x2 matrix `RecipeButton` selects from.
+    "gui/sprites/recipe_book/slot_craftable.png",
+    "gui/sprites/recipe_book/slot_many_craftable.png",
+    "gui/sprites/recipe_book/slot_uncraftable.png",
+    "gui/sprites/recipe_book/slot_many_uncraftable.png",
+    // 104..=107 — the page arrows, each pair PLAIN then HIGHLIGHTED.
+    "gui/sprites/recipe_book/page_forward.png",
+    "gui/sprites/recipe_book/page_forward_highlighted.png",
+    "gui/sprites/recipe_book/page_backward.png",
+    "gui/sprites/recipe_book/page_backward_highlighted.png",
+    // 108..=115 — the filter toggle, two families of four.
+    //
+    // The order inside each group is `filter_sprite_offset`'s: enabled,
+    // disabled, enabled_highlighted, disabled_highlighted — which is
+    // `WidgetSprites`' own field order, and where "enabled" means IS FILTERING
+    // rather than "the button works".
+    //
+    // The crafting and furnace families have entirely different art, which is
+    // why this is eight entries and not four.
+    "gui/sprites/recipe_book/filter_enabled.png",
+    "gui/sprites/recipe_book/filter_disabled.png",
+    "gui/sprites/recipe_book/filter_enabled_highlighted.png",
+    "gui/sprites/recipe_book/filter_disabled_highlighted.png",
+    "gui/sprites/recipe_book/furnace_filter_enabled.png",
+    "gui/sprites/recipe_book/furnace_filter_disabled.png",
+    "gui/sprites/recipe_book/furnace_filter_enabled_highlighted.png",
+    "gui/sprites/recipe_book/furnace_filter_disabled_highlighted.png",
 ];
+
+/// The recipe book's tab pair, **plain first** — `+ usize::from(selected)`
+/// (M94).
+pub const BOOK_TAB: usize = 98;
+/// Its four recipe-slot chromes, in `slot_sprite`'s order.
+pub const BOOK_SLOT: usize = 100;
+/// The page arrows: forward at `BOOK_PAGE_ARROW`, backward at `+ 2`, each
+/// `+ usize::from(hovered)`.
+pub const BOOK_PAGE_ARROW: usize = 104;
+/// The filter toggle's two families of four, crafting then furnace.
+pub const BOOK_FILTER: usize = 108;
+pub const BOOK_FILTER_FURNACE: usize = 112;
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
 /// selected, highlighted, plain (M93q).

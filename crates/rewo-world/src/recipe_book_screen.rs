@@ -461,9 +461,290 @@ pub fn filter_sprite_offset(filtering: bool, hovered: bool) -> usize {
     }
 }
 
+/// One quad of the book's chrome, in book-relative GUI pixels.
+///
+/// The sprite is named **semantically** rather than as an atlas index: the
+/// index is `rewo_data::assets`' business and its order is append-only, so
+/// keeping the geometry free of it means the atlas can grow without touching
+/// this file — and, more usefully, a test here can assert *which sprite* a
+/// state picks without knowing where it was packed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BookQuad {
+    pub sprite: BookSprite,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookSprite {
+    /// The 147x166 panel itself, sampled from `(1, 1)` of `recipe_book.png`.
+    Panel,
+    Tab { selected: bool },
+    Slot(SlotSprite),
+    PageForward { hovered: bool },
+    PageBackward { hovered: bool },
+    Filter { furnace: bool, filtering: bool, hovered: bool },
+}
+
+/// What a page of the book needs to know to draw itself.
+#[derive(Debug, Clone, Copy)]
+pub struct BookView {
+    /// How many tabs are visible. `updateTabs` makes every
+    /// `SearchRecipeBookCategory` visible unconditionally, so for the four
+    /// search tabs this is always 4 — but it is a parameter because the
+    /// *ghost* categories a modded book could add are not.
+    pub tabs: usize,
+    pub selected_tab: usize,
+    pub page: usize,
+    pub total_pages: usize,
+    /// How many recipe buttons this page shows — at most [`ITEMS_PER_PAGE`].
+    pub shown: usize,
+    pub filtering: bool,
+    /// The crafting family and the furnace family have different filter art.
+    pub furnace_family: bool,
+}
+
+/// Every quad the book's chrome draws, in vanilla's own order: the panel, then
+/// the tabs, then the page's recipe slots, then the arrows.
+///
+/// **The filter toggle and the search box are widgets on the screen, not part
+/// of this list's ordering contract** — vanilla adds them between the tabs and
+/// the page, but they are separate `AbstractWidget`s whose relative order among
+/// themselves is fixed by `initVisuals` rather than by a draw loop. The filter
+/// is emitted last here so a caller that cannot resolve hover for it can drop
+/// the final quad without disturbing anything else.
+pub fn book_chrome(view: BookView, slots: &[(bool, bool)], hover: BookHover) -> Vec<BookQuad> {
+    let mut out = Vec::with_capacity(2 + view.tabs + view.shown + 2);
+    out.push(BookQuad { sprite: BookSprite::Panel, x: 0, y: 0, w: IMAGE_W, h: IMAGE_H });
+
+    for i in 0..view.tabs {
+        let selected = i == view.selected_tab;
+        let (tx, ty) = Tab::position(i as i32);
+        out.push(BookQuad {
+            sprite: BookSprite::Tab { selected },
+            x: tx + tab_x_shift(selected),
+            y: ty,
+            w: TAB_W,
+            h: TAB_H,
+        });
+    }
+
+    for (i, &(craftable, multiple)) in slots.iter().take(view.shown).enumerate() {
+        let (sx, sy) = grid_slot(i);
+        out.push(BookQuad {
+            sprite: BookSprite::Slot(slot_sprite(craftable, multiple)),
+            x: sx,
+            y: sy,
+            w: SLOT_SIZE,
+            h: SLOT_SIZE,
+        });
+    }
+
+    let (fwd, back) = page_arrows_visible(view.page, view.total_pages);
+    if fwd {
+        out.push(BookQuad {
+            sprite: BookSprite::PageForward { hovered: hover.page_forward },
+            x: PAGE_FORWARD_X,
+            y: PAGE_ARROW_Y,
+            w: PAGE_ARROW_W,
+            h: PAGE_ARROW_H,
+        });
+    }
+    if back {
+        out.push(BookQuad {
+            sprite: BookSprite::PageBackward { hovered: hover.page_backward },
+            x: PAGE_BACK_X,
+            y: PAGE_ARROW_Y,
+            w: PAGE_ARROW_W,
+            h: PAGE_ARROW_H,
+        });
+    }
+
+    out.push(BookQuad {
+        sprite: BookSprite::Filter {
+            furnace: view.furnace_family,
+            filtering: view.filtering,
+            hovered: hover.filter,
+        },
+        x: FILTER_X,
+        y: FILTER_Y,
+        w: FILTER_W,
+        h: FILTER_H,
+    });
+    out
+}
+
+/// Which of the book's three hoverable widgets the cursor is over.
+///
+/// The tabs are absent on purpose: a tab's sprite reads `selected`, never
+/// hover ([`tab_selected_sprite`]), so a hover flag for one would have nowhere
+/// to go.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BookHover {
+    pub page_forward: bool,
+    pub page_backward: bool,
+    pub filter: bool,
+}
+
+/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
+/// with no gap and a click can never fall between two.
+pub const SLOT_SIZE: i32 = 25;
+
+/// Where the panel is sampled from `recipe_book.png`: **`(1, 1)`**.
+pub const PANEL_SOURCE: (i32, i32) = (1, 1);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn view(shown: usize, total: usize, page: usize) -> BookView {
+        BookView {
+            tabs: 4,
+            selected_tab: 0,
+            page,
+            total_pages: total,
+            shown,
+            filtering: false,
+            furnace_family: false,
+        }
+    }
+
+    #[test]
+    fn the_panel_is_sampled_from_one_one_not_the_sheets_corner() {
+        assert_eq!(PANEL_SOURCE, (1, 1));
+        let q = book_chrome(view(0, 1, 0), &[], BookHover::default());
+        assert_eq!(q[0].sprite, BookSprite::Panel);
+        assert_eq!((q[0].w, q[0].h), (IMAGE_W, IMAGE_H));
+        // The panel is first — everything else draws over it.
+        assert!(q[1..].iter().all(|b| b.sprite != BookSprite::Panel));
+    }
+
+    #[test]
+    fn only_the_selected_tab_wears_the_selected_sprite_and_sticks_out() {
+        let mut v = view(0, 1, 0);
+        v.selected_tab = 2;
+        let q = book_chrome(v, &[], BookHover::default());
+        let tabs: Vec<_> = q
+            .iter()
+            .filter(|b| matches!(b.sprite, BookSprite::Tab { .. }))
+            .collect();
+        assert_eq!(tabs.len(), 4);
+        for (i, t) in tabs.iter().enumerate() {
+            let sel = i == 2;
+            assert_eq!(t.sprite, BookSprite::Tab { selected: sel });
+            assert_eq!(t.x, TAB_DX + tab_x_shift(sel), "tab {i}");
+            assert_eq!(t.y, TAB_DY + TAB_PITCH * i as i32);
+        }
+        // The selected one is the ONLY one further left.
+        assert_eq!(tabs.iter().filter(|t| t.x == TAB_DX - 2).count(), 1);
+    }
+
+    #[test]
+    fn the_slots_tile_with_no_gap_so_a_click_cannot_fall_between_them() {
+        assert_eq!(SLOT_SIZE, GRID_PITCH);
+        let slots = vec![(true, false); 20];
+        let q = book_chrome(view(20, 1, 0), &slots, BookHover::default());
+        let cells: Vec<_> = q
+            .iter()
+            .filter(|b| matches!(b.sprite, BookSprite::Slot(_)))
+            .collect();
+        assert_eq!(cells.len(), 20);
+        // Row 0 is contiguous: each cell's right edge is the next one's left.
+        for i in 0..4 {
+            assert_eq!(cells[i].x + cells[i].w, cells[i + 1].x);
+        }
+        assert_eq!(cells[4].y + cells[4].h, cells[5].y, "and so are the rows");
+    }
+
+    #[test]
+    fn a_short_page_draws_only_the_slots_it_has() {
+        let slots = vec![(true, false); 20];
+        let q = book_chrome(view(5, 3, 2), &slots, BookHover::default());
+        assert_eq!(
+            q.iter().filter(|b| matches!(b.sprite, BookSprite::Slot(_))).count(),
+            5,
+            "the last page of 45 collections"
+        );
+    }
+
+    #[test]
+    fn each_slots_chrome_follows_its_own_state() {
+        let slots = [(true, false), (true, true), (false, false), (false, true)];
+        let q = book_chrome(view(4, 1, 0), &slots, BookHover::default());
+        let got: Vec<_> = q
+            .iter()
+            .filter_map(|b| match b.sprite {
+                BookSprite::Slot(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                SlotSprite::Craftable,
+                SlotSprite::ManyCraftable,
+                SlotSprite::Uncraftable,
+                SlotSprite::ManyUncraftable
+            ]
+        );
+    }
+
+    #[test]
+    fn the_arrows_appear_only_where_there_is_a_page_to_go_to() {
+        let has = |q: &[BookQuad], f: fn(&BookSprite) -> bool| q.iter().any(|b| f(&b.sprite));
+        let fwd = |s: &BookSprite| matches!(s, BookSprite::PageForward { .. });
+        let back = |s: &BookSprite| matches!(s, BookSprite::PageBackward { .. });
+
+        let one = book_chrome(view(3, 1, 0), &[], BookHover::default());
+        assert!(!has(&one, fwd) && !has(&one, back), "a single page has neither");
+
+        let first = book_chrome(view(20, 3, 0), &[], BookHover::default());
+        assert!(has(&first, fwd) && !has(&first, back));
+
+        let last = book_chrome(view(5, 3, 2), &[], BookHover::default());
+        assert!(!has(&last, fwd) && has(&last, back));
+    }
+
+    #[test]
+    fn hover_reaches_the_arrows_and_the_filter_and_nothing_else() {
+        let hover = BookHover { page_forward: true, page_backward: false, filter: true };
+        let q = book_chrome(view(20, 3, 1), &[], hover);
+        assert!(q.contains(&BookQuad {
+            sprite: BookSprite::PageForward { hovered: true },
+            x: PAGE_FORWARD_X,
+            y: PAGE_ARROW_Y,
+            w: PAGE_ARROW_W,
+            h: PAGE_ARROW_H,
+        }));
+        assert!(q
+            .iter()
+            .any(|b| b.sprite == BookSprite::PageBackward { hovered: false }));
+        assert!(q
+            .iter()
+            .any(|b| matches!(b.sprite, BookSprite::Filter { hovered: true, .. })));
+    }
+
+    #[test]
+    fn the_filter_carries_both_the_family_and_the_filter_state() {
+        let mut v = view(0, 1, 0);
+        v.filtering = true;
+        v.furnace_family = true;
+        let q = book_chrome(v, &[], BookHover::default());
+        let f = q.iter().find(|b| matches!(b.sprite, BookSprite::Filter { .. })).unwrap();
+        assert_eq!(
+            f.sprite,
+            BookSprite::Filter { furnace: true, filtering: true, hovered: false }
+        );
+        assert_eq!((f.x, f.y, f.w, f.h), (FILTER_X, FILTER_Y, FILTER_W, FILTER_H));
+        // A crafting book with the same filter state picks DIFFERENT art.
+        let mut c = view(0, 1, 0);
+        c.filtering = true;
+        let cq = book_chrome(c, &[], BookHover::default());
+        let cf = cq.iter().find(|b| matches!(b.sprite, BookSprite::Filter { .. })).unwrap();
+        assert_ne!(f.sprite, cf.sprite);
+    }
 
     #[test]
     fn opening_the_book_MOVES_the_menu_it_sits_beside() {

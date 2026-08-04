@@ -555,6 +555,9 @@ pub struct WorldRenderer {
     /// inventory, whose 176x166 panel the container pass draws from its own
     /// `inventory.png` rect.
     container_panel: Option<crate::container::ContainerPanel>,
+    /// The recipe book (M94). Beside the panel, not inside it: the player's
+    /// own inventory has no `ContainerPanel` and still has a book.
+    recipe_book: Option<crate::container::RecipeBookPanel>,
     /// This frame's tooltip: the text block's GUI-space top-left and size,
     /// both measured by the caller (M40), plus the bundle grid inside it if the
     /// hovered stack produced one (M58). The pass owns no font.
@@ -1111,6 +1114,7 @@ impl WorldRenderer {
                 container: None,
                 container_open: None,
                 container_panel: None,
+                recipe_book: None,
                 container_tooltip: None,
                 screen: None,
                 screen_draw: crate::screen::ScreenDraw::default(),
@@ -1691,6 +1695,23 @@ impl WorldRenderer {
     /// whether the windowed frame loop reached the builder at all.
     pub fn container_panel_overlays(&self) -> usize {
         self.container_panel.as_ref().map_or(0, |p| p.overlays.len())
+    }
+
+    /// How many quads this frame's RECIPE BOOK carries — its panel plus its
+    /// sprites — or 0 for a shut book (M94).
+    ///
+    /// Read out of the renderer for the same reason as the two above: asking
+    /// the session whether the book *should* be open answers from the model,
+    /// and the question is whether the windowed frame loop reached the book's
+    /// builder at all. That is the M86 gap, one feature over.
+    pub fn container_panel_book_quads(&self) -> usize {
+        self.recipe_book
+            .as_ref()
+            .map_or(0, |b| b.blits.len() + b.overlays.len())
+    }
+
+    pub fn set_recipe_book(&mut self, book: Option<crate::container::RecipeBookPanel>) {
+        self.recipe_book = book;
     }
 
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
@@ -2857,6 +2878,7 @@ impl WorldRenderer {
                 self.container_tooltip.as_ref(),
                 &self.item_bars,
                 self.container_panel.as_ref(),
+                self.recipe_book.as_ref(),
             );
         }
         if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)

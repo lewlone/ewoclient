@@ -116,13 +116,103 @@ pub fn gui_origin(w: f32, h: f32) -> (f32, f32, f32) {
 /// function's ~19 callers, almost all want only the third element (the GUI
 /// scale), which does not depend on the panel at all.
 pub fn gui_origin_for(w: f32, h: f32, gui_w: f32, gui_h: f32) -> (f32, f32, f32) {
+    gui_origin_placed(w, h, Placement::centred(gui_w, gui_h))
+}
+
+/// Where a screen's panel sits, and whether the recipe book has pushed it
+/// (M94).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub gui_w: f32,
+    pub gui_h: f32,
+    /// `RecipeBookComponent.isVisible()`. **An open book moves the menu**, so
+    /// this belongs beside the panel's size rather than being a render-only
+    /// concern: the draw and the hit test both resolve their origin through
+    /// [`gui_origin_placed`], and if only one of them knew about the book they
+    /// would disagree by 77 px — more than four slots.
+    pub book_open: bool,
+}
+
+impl Placement {
+    pub fn centred(gui_w: f32, gui_h: f32) -> Self {
+        Self { gui_w, gui_h, book_open: false }
+    }
+
+    pub fn with_book(gui_w: f32, gui_h: f32, book_open: bool) -> Self {
+        Self { gui_w, gui_h, book_open }
+    }
+}
+
+/// [`gui_origin_for`], but aware of the recipe book.
+///
+/// `RecipeBookComponent.updateScreenPosition` replaces
+/// `leftPos = (width - imageWidth) / 2` with
+/// `leftPos = 177 + (width - imageWidth - 200) / 2` while the book is visible
+/// and the window is wide enough. **`topPos` is untouched** — the shift is
+/// horizontal only.
+pub fn gui_origin_placed(w: f32, h: f32, p: Placement) -> (f32, f32, f32) {
     let scale = crate::hud::gui_scale(w, h);
     let (sw, sh) = (w / scale, h / scale);
     // Integer division in vanilla, and it matters: a half-pixel origin would
     // resample every sprite in the panel.
-    let left = ((sw - gui_w) / 2.0).floor();
-    let top = ((sh - gui_h) / 2.0).floor();
+    let left = if p.book_open && sw >= BOOK_WIDTH_TOO_NARROW_BELOW {
+        177.0 + ((sw - p.gui_w - 200.0) / 2.0).floor()
+    } else {
+        ((sw - p.gui_w) / 2.0).floor()
+    };
+    let top = ((sh - p.gui_h) / 2.0).floor();
     (left * scale, top * scale, scale)
+}
+
+/// The recipe book's own origin, in GUI pixels.
+///
+/// The book is **window**-relative, not panel-relative, so it is computed here
+/// rather than as an offset inside [`ContainerPanel`]'s blits: the gap between
+/// the two is not constant, because 147 is odd and a menu's width is even, so
+/// it alternates by a pixel with the window's parity.
+pub fn recipe_book_origin(w: f32, h: f32) -> (f32, f32, f32) {
+    let scale = crate::hud::gui_scale(w, h);
+    let (sw, sh) = (w / scale, h / scale);
+    let narrow = sw < BOOK_WIDTH_TOO_NARROW_BELOW;
+    let left =
+        ((sw - BOOK_IMAGE_W) / 2.0).floor() - if narrow { 0.0 } else { BOOK_OFFSET_X };
+    let top = ((sh - BOOK_IMAGE_H) / 2.0).floor();
+    (left * scale, top * scale, scale)
+}
+
+// The recipe book's three geometry constants, restated here rather than
+// imported (M94).
+//
+// `rewo-gpu` deliberately does not depend on `rewo-world` — the renderer takes
+// plain numbers so the model can change shape without a graphics rebuild, and
+// the Velvet work records that boundary explicitly. The cost is a second copy,
+// which is paid for by a cross-crate test in `rewo-app` (the one crate that
+// sees both) asserting these equal `recipe_book_screen`'s. A drift therefore
+// fails a test rather than silently drawing the book a pixel off.
+/// The book's sheet in `rewo_data::assets::MENU_BACKGROUND_TEXTURES`.
+/// Restated for the same reason as the geometry below, and cross-checked in
+/// `rewo-app`.
+const RECIPE_BOOK_SHEET: usize = 19;
+
+const BOOK_IMAGE_W: f32 = 147.0;
+const BOOK_IMAGE_H: f32 = 166.0;
+const BOOK_OFFSET_X: f32 = 86.0;
+const BOOK_WIDTH_TOO_NARROW_BELOW: f32 = 379.0;
+
+/// The restated constants, for the cross-crate check in `rewo-app`.
+///
+/// Exposed as a function rather than making the constants `pub` so the only
+/// way to read them from outside is the one the test uses — a caller that
+/// wanted the geometry would get it from `rewo_world::recipe_book_screen`,
+/// which is where it belongs.
+pub fn book_constants_for_cross_check() -> (f32, f32, f32, f32, usize) {
+    (
+        BOOK_IMAGE_W,
+        BOOK_IMAGE_H,
+        BOOK_OFFSET_X,
+        BOOK_WIDTH_TOO_NARROW_BELOW,
+        RECIPE_BOOK_SHEET,
+    )
 }
 
 /// Turn a cursor position in screen pixels into GUI-space coordinates relative
@@ -144,7 +234,15 @@ pub fn screen_to_gui_for(
     gui_w: f32,
     gui_h: f32,
 ) -> (f64, f64) {
-    let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
+    screen_to_gui_placed(mouse, w, h, Placement::centred(gui_w, gui_h))
+}
+
+/// [`screen_to_gui_for`], through the same [`Placement`] the render uses.
+///
+/// This exists so a book-shifted panel cannot be drawn in one place and hit
+/// tested in another.
+pub fn screen_to_gui_placed(mouse: (f64, f64), w: f32, h: f32, p: Placement) -> (f64, f64) {
+    let (left, top, scale) = gui_origin_placed(w, h, p);
     (
         (mouse.0 - left as f64) / scale as f64,
         (mouse.1 - top as f64) / scale as f64,
@@ -616,6 +714,25 @@ pub struct PanelBlit {
     pub sh: f32,
 }
 
+/// The recipe book's own panel (M94) — a **second, window-anchored** surface.
+///
+/// It is not part of [`ContainerPanel`]'s blits because it does not move with
+/// the menu: both are centred on the window, but 147 is odd and a menu's width
+/// is even, so the gap between them alternates by a pixel with the window's
+/// parity. Its blits are therefore book-relative and the renderer resolves the
+/// origin through [`recipe_book_origin`].
+#[derive(Debug, Clone, Default)]
+pub struct RecipeBookPanel {
+    /// The 147x166 panel, sampled from `recipe_book.png` — **at `(1, 1)`**, not
+    /// `(0, 0)`: `blit(…, xo, yo, 1.0F, 1.0F, 147, 166, 256, 256)`. Reading the
+    /// source as the origin shifts the whole book a pixel and takes in the
+    /// sheet's border.
+    pub blits: Vec<PanelBlit>,
+    /// Its sprites — tabs, recipe slots, page arrows, the filter toggle — in
+    /// draw order, indexed into `rewo_data::assets::MENU_OVERLAY_SPRITES`.
+    pub overlays: Vec<(usize, PanelBlit)>,
+}
+
 /// An open container's panel: which sheet, which blits, and how big the panel
 /// is (which is what centres it).
 #[derive(Clone, Debug)]
@@ -929,13 +1046,26 @@ impl ContainerPass {
         // inventory, which keeps the 176x166 `inventory.png` path unchanged —
         // that is what holds `inventoryshot` still.
         panel: Option<&ContainerPanel>,
+        // The recipe book (M94) — its OWN argument rather than a field on
+        // `panel`, because the player's own inventory has no `ContainerPanel`
+        // at all (that is the `None` path `inventoryshot` pins) and is one of
+        // the four screens that HAS a book. Hanging it off the panel made it
+        // undrawable in the commonest case, which `live --render-check`'s r23
+        // caught and no headless witness could: `containershot` only ever
+        // drives an open container.
+        book: Option<&RecipeBookPanel>,
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // A container's panel is its own size, so the origin that centres it —
         // and therefore every slot rect measured from it — has to be computed
         // against that size, not against the player inventory's.
         let (gui_w, gui_h) = panel.map_or((GUI_WIDTH, GUI_HEIGHT), |p| (p.gui_w, p.gui_h));
-        let (left, top, scale) = gui_origin_for(w, h, gui_w, gui_h);
+        // An open recipe book moves the menu (M94), and it has to move here
+        // rather than at the draw alone: `screen_to_gui_placed` resolves the
+        // hover through the same `Placement`, so the two cannot disagree.
+        let book_open = book.is_some();
+        let (left, top, scale) =
+            gui_origin_placed(w, h, Placement::with_book(gui_w, gui_h, book_open));
         self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(192);
         let quad = push_quad;
@@ -994,6 +1124,48 @@ impl ContainerPass {
                             b.tint,
                         );
                     }
+                }
+            }
+            // 2b. The recipe book, on its own window-anchored origin (M94).
+            //
+            // Drawn with the menu rather than over its icons, which vanilla's
+            // `nextStratum()` would suggest — and the two agree for every
+            // reachable configuration, because vanilla never overlaps them: a
+            // wide window puts the book beside the menu, and a narrow one draws
+            // the menu's background WITHOUT its slots
+            // (`AbstractRecipeBookScreen.extractRenderState` calls
+            // `extractBackground` instead of `super.extractContents`), so there
+            // are no menu icons under the book to be covered.
+            if let Some(bk) = book {
+                let (bl, bt, _) = recipe_book_origin(w, h);
+                for b in &bk.blits {
+                    let r = self.menu_rect_px(RECIPE_BOOK_SHEET, b.sx, b.sy, b.sw, b.sh);
+                    quad(
+                        &mut v,
+                        bl + b.dx * scale,
+                        bt + b.dy * scale,
+                        b.w * scale,
+                        b.h * scale,
+                        r,
+                        WHITE,
+                        WHITE,
+                    );
+                }
+                for &(sprite, b) in &bk.overlays {
+                    if b.w <= 0.0 || b.h <= 0.0 {
+                        continue;
+                    }
+                    let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh);
+                    quad(
+                        &mut v,
+                        bl + b.dx * scale,
+                        bt + b.dy * scale,
+                        b.w * scale,
+                        b.h * scale,
+                        r,
+                        b.tint,
+                        b.tint,
+                    );
                 }
             }
         }

@@ -3978,7 +3978,10 @@ impl PlaySession {
     /// A malformed body is dropped whole and logged, never applied in part:
     /// `SlotDisplay`'s variants have different lengths, so a partial read has
     /// already lost its place and the rest of the list is garbage.
-    fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
+    /// `pub(crate)`-in-spirit but public: `--render-check` drives it directly
+    /// to open the book, which no server does unprompted (M94). Injection into
+    /// the production apply, not a shortcut past it — M17's rule.
+    pub fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
         let ids = &self.ids;
         if id == ids.cb_play_recipe_book_settings {
             match crate::recipe_book::parse_settings(body) {
