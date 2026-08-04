@@ -4079,6 +4079,17 @@ struct LiveApp {
     drag: DragState,
     /// Whether left control is held — Ctrl+Q drops a whole stack (M40).
     ctrl: bool,
+    /// Whether left alt is held (M93t). Only the edit box reads it, and only
+    /// to REFUSE: `isCopy` and friends require alt up, so Ctrl+Alt+C is not a
+    /// copy and falls through to the screen.
+    alt: bool,
+    /// An in-process clipboard (M93t).
+    ///
+    /// **Not the OS clipboard.** Rewo pulls in no clipboard crate and `winit`
+    /// exposes none, so copy/cut/paste are exact against each other and
+    /// isolated from the desktop. Swapping in a real one is a change at this
+    /// one field.
+    clipboard: String,
     /// The slot the last left click landed on and when, for the double click
     /// that becomes `PICKUP_ALL` (M40).
     last_click: Option<usize>,
@@ -4355,8 +4366,51 @@ impl ApplicationHandler for LiveApp {
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
                     self.ctrl = p;
                 }
+                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
+                    self.alt = p;
+                }
                 if self.screen.inventory_open() {
                     if p {
+                        // M93t — the anvil's name field runs FIRST and, while
+                        // it can consume input, swallows everything but Escape.
+                        // Vanilla's `AnvilScreen.keyPressed` reaches `super`
+                        // only when the box neither handled the key nor could
+                        // have, so with an item in slot 0 no screen shortcut
+                        // fires at all.
+                        let items = self.items.clone();
+                        let mods = (i32::from(self.shift))
+                            | (i32::from(self.ctrl) << 1)
+                            | (i32::from(self.alt) << 2);
+                        if let (Some(session), Some(key)) =
+                            (self.session.as_mut(), glfw_key(event.physical_key))
+                        {
+                            let mut clip = std::mem::take(&mut self.clipboard);
+                            let consumed = anvil_key(
+                                session,
+                                &mut self.screen,
+                                &items,
+                                rewo_world::edit_box::Input::new(key, mods),
+                                &mut clip,
+                            );
+                            self.clipboard = clip;
+                            if consumed {
+                                return;
+                            }
+                        }
+                        // A typed character. winit reports it separately from
+                        // the key, which is exactly the seam Rewo never read —
+                        // `KeyEvent.text`, not `PhysicalKey`.
+                        if let (Some(session), Some(text)) =
+                            (self.session.as_mut(), event.text.as_ref())
+                        {
+                            let mut any = false;
+                            for ch in text.chars() {
+                                any |= anvil_char(session, &mut self.screen, &items, ch);
+                            }
+                            if any {
+                                return;
+                            }
+                        }
                         if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
                             let ext = self.state.as_ref().map(|s| s.window.inner_size());
                             let items = self.items.clone();
@@ -6545,6 +6599,8 @@ fn run_windowed(
         hand: None,
         shift: false,
         ctrl: false,
+        alt: false,
+        clipboard: String::new(),
         drag: DragState::default(),
         last_click: None,
         last_click_at: std::time::Instant::now(),
@@ -7422,6 +7478,17 @@ fn glfw_key(key: PhysicalKey) -> Option<i32> {
         KeyCode::ArrowDown => 264,
         KeyCode::ArrowUp => 265,
         KeyCode::NumpadEnter => 335,
+        // M93t — what `EditBox.keyPressed` switches on, beyond the arrows this
+        // already had. The letters are for its four shortcuts; GLFW's letter
+        // codes are ASCII, which is why `KeyA` is 65 and not a table entry.
+        KeyCode::Backspace => 259,
+        KeyCode::Delete => 261,
+        KeyCode::Home => 268,
+        KeyCode::End => 269,
+        KeyCode::KeyA => 65,
+        KeyCode::KeyC => 67,
+        KeyCode::KeyV => 86,
+        KeyCode::KeyX => 88,
         _ => return None,
     })
 }
@@ -10692,6 +10759,9 @@ pub struct ScreenState {
     /// whenever the container or its input slot changes, which is what
     /// `containerChanged` does.
     pub cut: Option<CutLocal>,
+    /// The anvil's name field (M93t). Screen-local: no packet carries the text
+    /// being typed, only the `rename_item` it produces.
+    pub anvil: Option<AnvilLocal>,
     /// Set when a beacon button asks for the screen to close (M93m). Drained
     /// by the frame loop rather than closing from inside the press, so the
     /// close goes through the one path that owns the screen.
@@ -11598,6 +11668,213 @@ pub struct LoomView {
     pub selected: i32,
     /// `displayPatterns` — the grid is hidden entirely when false.
     pub display: bool,
+}
+
+/// `AnvilScreen.keyPressed` and `EditBox.charTyped` (M93t).
+///
+/// ```java
+/// public boolean keyPressed(final KeyEvent event) {
+///    if (event.isEscape()) { this.minecraft.player.closeContainer(); return true; }
+///    return !this.name.keyPressed(event) && !this.name.canConsumeInput()
+///        ? super.keyPressed(event) : true;
+/// }
+/// ```
+///
+/// **Read that return carefully.** It falls through to `super` only when the
+/// box did *not* handle the key **and** cannot consume input. With the field
+/// focused and editable — which it is whenever slot 0 holds something — the
+/// second half is false, so **every non-escape key is swallowed**: `E` does not
+/// close the anvil, a number key does not swap a hotbar slot, `Q` does not
+/// drop. That reads like a bug and is exactly what typing a name requires.
+///
+/// With slot 0 empty the field is uneditable, `canConsumeInput` is false, and
+/// the screen behaves normally again.
+///
+/// Returns whether the key was consumed.
+fn anvil_key(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    input: rewo_world::edit_box::Input,
+    clipboard: &mut String,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
+        return false;
+    }
+    // Escape is handled by the screen's own close path, before the field.
+    if input.key == 256 {
+        return false;
+    }
+    let slot0 = open
+        .menu
+        .menu_slot(0)
+        .and_then(|s| items.name(s.item_id).map(|n| (s, n)));
+    let handled = {
+        let local = anvil_local(screen, open, items);
+        let handled = local.field.key_pressed(input, clipboard);
+        // `!handled && !canConsumeInput()` is the ONLY path to `super`.
+        handled || local.field.can_consume_input()
+    };
+    anvil_flush(session, screen, slot0);
+    handled
+}
+
+/// A typed character — `EditBox.charTyped`, which the key path never sees
+/// because winit reports text separately from the key (M93t).
+fn anvil_char(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    ch: char,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
+        return false;
+    }
+    let slot0 = open
+        .menu
+        .menu_slot(0)
+        .and_then(|s| items.name(s.item_id).map(|n| (s, n)));
+    let handled = anvil_local(screen, open, items).field.char_typed(ch);
+    anvil_flush(session, screen, slot0);
+    handled
+}
+
+/// Drain the field's responder into `AnvilName::on_name_changed`, and send the
+/// packet it asks for.
+///
+/// The two-stage gate is M93n's and both stages are real: the field fires on
+/// every mutation, `on_name_changed` normalises "the item's own name" to the
+/// empty string, and `setItemName` refuses to re-send a name the server already
+/// has.
+fn anvil_flush(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    slot0: Option<(rewo_world::inventory::ItemSlot, &str)>,
+) {
+    let Some(local) = screen.anvil.as_mut() else {
+        return;
+    };
+    let Some(typed) = local.field.take_value_changed() else {
+        return;
+    };
+    let hover = slot0.map(|(_, n)| display_name_of(n));
+    let input = slot0.zip(hover.as_deref()).map(|((s, _), hover_name)| {
+        rewo_world::anvil::AnvilInput {
+            // A stack whose patch carried anything is the closest Rewo gets to
+            // `has(CUSTOM_NAME)` without decoding the component's text; the
+            // approximation is one-directional, since a patched-but-unnamed
+            // stack merely skips the clear-to-default normalisation.
+            has_custom_name: s.has_components,
+            hover_name,
+        }
+    });
+    if let Some(send) = local.name.on_name_changed(&typed, input) {
+        if let Err(e) = session.rename_item(&send) {
+            log::warn!("anvil rename {send:?}: {e}");
+        }
+    }
+}
+
+/// `minecraft:menu`'s `anvil` id.
+pub const ANVIL_MENU_PROTOCOL_ID: i32 = 8;
+
+/// The anvil screen's name field and the name it has sent (M93t).
+#[derive(Debug, Clone, Default)]
+pub struct AnvilLocal {
+    container_id: i32,
+    /// Slot 0 as last seen, so `slotChanged` fires exactly when vanilla's does.
+    slot0: Option<(i32, u64)>,
+    pub field: rewo_world::edit_box::EditBox,
+    pub name: rewo_world::anvil::AnvilName,
+}
+
+/// `AnvilScreen.subInit` + `slotChanged` — seed the field, and re-seed it
+/// whenever slot 0 changes (M93t).
+///
+/// ```java
+/// public void slotChanged(container, slotIndex, itemStack) {
+///    if (slotIndex == 0) {
+///       this.name.setValue(itemStack.isEmpty() ? "" : itemStack.getHoverName().getString());
+///       this.name.setEditable(!itemStack.isEmpty());
+///       this.setFocused(this.name);
+///    }
+/// }
+/// ```
+///
+/// So an **empty** input slot leaves an empty, UNEDITABLE field — and that
+/// matters for far more than the text, because `AnvilScreen.keyPressed` falls
+/// through to `super` only when the box can consume nothing. See `anvil_key`.
+fn anvil_local<'a>(
+    screen: &'a mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    items: &rewo_data::items::Items,
+) -> &'a mut AnvilLocal {
+    let slot0 = m.menu.menu_slot(0).map(|s| (s.item_id, s.components));
+    let stale = match &screen.anvil {
+        Some(a) => a.container_id != m.container_id || a.slot0 != slot0,
+        None => true,
+    };
+    if stale {
+        let mut field = rewo_world::edit_box::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+        // `setCanLoseFocus(false)` and `setInitialFocus(this.name)` — the field
+        // is focused from the moment the screen opens and cannot lose it.
+        field.set_focused(true);
+        let hover = slot0
+            .and_then(|(id, _)| items.name(id))
+            .map(display_name_of)
+            .unwrap_or_default();
+        field.set_value(&hover);
+        field.set_editable(slot0.is_some());
+        let mut local = AnvilLocal {
+            container_id: m.container_id,
+            slot0,
+            field,
+            name: screen
+                .anvil
+                .as_ref()
+                .filter(|a| a.container_id == m.container_id)
+                .map(|a| a.name.clone())
+                .unwrap_or_default(),
+        };
+        // The seeding `setValue` fires the responder, as vanilla's does; drain
+        // it so the re-seed does not send a rename of the name we were just
+        // told.
+        let _ = local.field.take_value_changed();
+        screen.anvil = Some(local);
+    }
+    screen.anvil.as_mut().expect("just seeded")
+}
+
+/// A stack's `getHoverName().getString()` for the seed — the item's display
+/// name, which for an un-renamed stack is its translated name.
+///
+/// **An approximation, and a recorded one**: Rewo resolves the display name
+/// from the item registry, so a stack carrying a `custom_name` component seeds
+/// the field with its *default* name instead. M41 decodes the component's
+/// bytes but not its text, which is the same wall the tooltip's name override
+/// hits. The consequence is narrow — the field starts on the wrong string for
+/// an already-renamed item — and it does not reach the wire, because
+/// `on_name_changed` compares against what the server was told.
+fn display_name_of(id: &str) -> String {
+    id.rsplit(':')
+        .next()
+        .unwrap_or(id)
+        .split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What the stonecutter's recipe grid needs, resolved by the caller (M93s).

@@ -137,19 +137,18 @@ impl AnvilName {
     }
 }
 
-// -- The recorded gap -------------------------------------------------------
+// -- The gap this module recorded is CLOSED (M93t) ---------------------------
 //
-// `EditBox` itself is absent: character input, the caret, selection, focus,
-// and the `setEditable(slot0.hasItem())` / `slotChanged` re-seed. Rewo's key
-// handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so nothing
-// can type — this is a subsystem Rewo has never had rather than a wiring
-// oversight, and it is shared with the chat/command-input cluster the coverage
-// doc lists as class C.
+// `EditBox` is now [`crate::edit_box`]: character input, the caret, selection,
+// focus, the four shortcuts, and the `setEditable(slot0.hasItem())` /
+// `slotChanged` re-seed, all wired in `live_cmd`. Rewo reads `KeyEvent.text`
+// now, which is the seam it had never read.
 //
-// M93i's warning about unwired models applies with a smaller blast radius
-// here: what it got wrong was the *shape* of a call site — an input enum with
-// four fall-through cases it had guessed. This interface is a `&str` and a
-// slot, and vanilla has exactly one caller for it.
+// Two things this module's note got right and are worth keeping: the interface
+// really was a `&str` and a slot with exactly one caller, so M93i's
+// unwired-model hazard never materialised — and the text entry really was a
+// subsystem rather than a wiring oversight, shared with the class-C chat and
+// command-input cluster, which can now be built on the same box.
 
 #[cfg(test)]
 mod tests {
