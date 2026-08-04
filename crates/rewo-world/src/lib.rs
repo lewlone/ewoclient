@@ -7,6 +7,7 @@
 
 pub mod abilities;
 pub mod anvil;
+pub mod edit_box;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;

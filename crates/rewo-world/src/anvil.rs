@@ -137,23 +137,60 @@ impl AnvilName {
     }
 }
 
-// -- The recorded gap -------------------------------------------------------
+/// `AnvilScreen.keyPressed`'s return — whether the screen consumes the key
+/// (M93t).
+///
+/// ```java
+/// return !this.name.keyPressed(event) && !this.name.canConsumeInput()
+///     ? super.keyPressed(event) : true;
+/// ```
+///
+/// **Read the negations carefully.** It reaches `super` only when the box
+/// neither handled the key **nor could have**. So with the field focused and
+/// editable — which it is whenever slot 0 holds something — the second
+/// disjunct is true and **every non-escape key is swallowed**: `E` does not
+/// close the anvil, a number key does not swap a hotbar slot, `Q` does not
+/// drop. That reads like a bug and is exactly what typing a name requires,
+/// because otherwise the letters would double as screen shortcuts.
+///
+/// With slot 0 empty the field is uneditable, `canConsumeInput` is false, and
+/// an unhandled key reaches the screen as usual.
+///
+/// Lives here rather than in `live_cmd` because `PlaySession`'s module has no
+/// test module anywhere in the repo — M71's finding, and this rule is one
+/// boolean expression whose two negations are exactly what a transcription
+/// gets wrong.
+pub fn key_consumed(field_handled: bool, field_can_consume: bool) -> bool {
+    field_handled || field_can_consume
+}
+
+// -- The gap this module recorded is CLOSED (M93t) ---------------------------
 //
-// `EditBox` itself is absent: character input, the caret, selection, focus,
-// and the `setEditable(slot0.hasItem())` / `slotChanged` re-seed. Rewo's key
-// handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so nothing
-// can type — this is a subsystem Rewo has never had rather than a wiring
-// oversight, and it is shared with the chat/command-input cluster the coverage
-// doc lists as class C.
+// `EditBox` is now [`crate::edit_box`]: character input, the caret, selection,
+// focus, the four shortcuts, and the `setEditable(slot0.hasItem())` /
+// `slotChanged` re-seed, all wired in `live_cmd`. Rewo reads `KeyEvent.text`
+// now, which is the seam it had never read.
 //
-// M93i's warning about unwired models applies with a smaller blast radius
-// here: what it got wrong was the *shape* of a call site — an input enum with
-// four fall-through cases it had guessed. This interface is a `&str` and a
-// slot, and vanilla has exactly one caller for it.
+// Two things this module's note got right and are worth keeping: the interface
+// really was a `&str` and a slot with exactly one caller, so M93i's
+// unwired-model hazard never materialised — and the text entry really was a
+// subsystem rather than a wiring oversight, shared with the class-C chat and
+// command-input cluster, which can now be built on the same box.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_editable_field_swallows_every_key_the_screen_would_have_used() {
+        // The surprising half, and the one a transcription inverts: `super` is
+        // reached only when the box did NOT handle the key AND could not have.
+        assert!(key_consumed(false, true), "unhandled but consumable — swallowed");
+        assert!(key_consumed(true, true));
+        assert!(key_consumed(true, false), "handled by an unfocusable box");
+        // The ONLY path to the screen.
+        assert!(!key_consumed(false, false));
+    }
 
     #[test]
     fn the_filter_strips_the_section_sign_and_the_control_range() {

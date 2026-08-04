@@ -1731,6 +1731,155 @@ fn overlays(
         );
     }
 
+    // x1..x4 — the anvil's name field (M93t).
+    //
+    // The EditBox itself is graded by 19 unit tests; what these add is that the
+    // RENDER reads it — the two cursor forms and the selection quad — through
+    // the production `anvil_field_render`.
+    {
+        use rewo_world::edit_box as eb;
+        let anvil_layout = rewo_world::menu_layout::layout_of(8).unwrap();
+        let at_anvil = probe(anvil_layout);
+        let mut field_frame = |setup: &dyn Fn(&mut eb::EditBox),
+                               input: bool,
+                               gpu: &mut Gpu,
+                               off: &mut Offscreen,
+                               wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let mut m = menu(8, &[]);
+            if input {
+                let o = m.open_mut().expect("open");
+                let mut content = vec![None; o.menu.slot_count()];
+                content[0] = Some(rewo_world::inventory::ItemSlot::plain(1, 1));
+                assert!(o.menu.set_content(1, &content, None));
+            }
+            let open = m.open().expect("open");
+            let mut field = eb::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+            field.set_focused(true);
+            setup(&mut field);
+            let mut panel = crate::live_cmd::container_panel_for_open_menu(
+                open, 30, false, effects, None, None, None, None,
+            )
+            .ok_or("containershot: no anvil panel")?;
+            // A 6-px monospace advance, so the geometry is arithmetic.
+            let (_, fills, _) = crate::live_cmd::anvil_field_render_for_test(
+                &field,
+                &[6u8; 256],
+                W as f32,
+                H as f32,
+            );
+            panel.overlays.extend(fills);
+            wr.set_container_panel(Some(panel));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        // The field's origin, from `AnvilScreen.subInit` — UNBORDERED, so the
+        // text sits at the box's own corner rather than inset by 4.
+        let (fx, fy) = (62, 24);
+        let empty = field_frame(&|_| {}, false, gpu, off, wr)?;
+        let typed = field_frame(&|f| f.set_value("abc"), false, gpu, off, wr)?;
+
+        // x1 — `insert` is `cursorPos < len || len >= maxLength`, so a FULL
+        // field shows the bar even with the cursor at the end.
+        let full = field_frame(
+            &|f| {
+                f.set_max_length(3);
+                f.set_value("abc");
+            },
+            false,
+            gpu,
+            off,
+            wr,
+        )?;
+        let bar = at_anvil(&full, fx + 18, fy + 4);
+        let none = at_anvil(&empty, fx + 18, fy + 4);
+        c.record(
+            "x1.a_full_field_shows_the_INSERT_bar_at_its_end",
+            bar != none,
+            format!(
+                "a 3/3 field draws a quad at the cursor ({bar:?}) where an empty one has                  nothing ({none:?}) — the bar is how vanilla says there is no room left"
+            ),
+        );
+
+        // x2 — and a field with room does not, because the append cursor is a
+        // GLYPH the container pass never draws.
+        let roomy = at_anvil(&typed, fx + 18, fy + 4);
+        c.record(
+            "x2.a_field_with_room_draws_no_cursor_QUAD",
+            roomy == none,
+            format!(
+                "the same probe on a 3/50 field reads {roomy:?}, identical to empty — its                  cursor is the character `_`, not a rectangle"
+            ),
+        );
+
+        // x3 — the selection is a blue quad over the highlighted run.
+        let selected = field_frame(
+            &|f| {
+                f.set_value("abc");
+                f.set_cursor_position(0);
+                f.set_highlight_pos(3);
+            },
+            false,
+            gpu,
+            off,
+            wr,
+        )?;
+        let mid = at_anvil(&selected, fx + 8, fy + 4);
+        let mid_plain = at_anvil(&typed, fx + 8, fy + 4);
+        c.record(
+            "x3.a_selection_paints_a_blue_quad_over_its_run",
+            mid[2] > mid[0] && mid[2] > mid[1] && mid != mid_plain,
+            format!(
+                "the middle of a fully-selected field reads {mid:?} against {mid_plain:?}                  unselected — `textHighlight` fills -16776961, pure blue"
+            ),
+        );
+
+        // x5 — the field's BACKGROUND is a pair chosen by slot 0, and it is
+        // load-bearing: `anvil.png` has a pure-red 255,0,0 band under it, so a
+        // screen that omits the blit shows the placeholder. Found exactly that
+        // way — the first run of these witnesses read [255, 0, 0] for the
+        // "bare panel" and the sprite was missing.
+        let with_item = field_frame(&|_| {}, true, gpu, off, wr)?;
+        let enabled = at_anvil(&with_item, fx + 4, fy + 4);
+        let disabled = at_anvil(&empty, fx + 4, fy + 4);
+        // The values are the sprites' own, read out of the PNGs rather than
+        // discovered from a frame: `text_field.png` is (160, 145, 114) and
+        // `text_field_disabled.png` is (78, 71, 55) throughout their interiors.
+        //
+        // Naming them is the point. The first cut asserted only that the two
+        // frames DIFFER, which is symmetric — inverting the pair swaps the two
+        // readings and passes. A surviving mutation said so.
+        c.record(
+            "x5.the_field_background_is_chosen_by_slot_zero_and_covers_a_red_placeholder",
+            enabled == [160, 145, 114] && disabled == [78, 71, 55],
+            format!(
+                "with an item the field reads {enabled:?} — `text_field.png` — and without it                  {disabled:?}, `text_field_disabled.png`. Neither is the sheet's red                  placeholder underneath, which is what the blit exists to cover"
+            ),
+        );
+
+        // x4 — and it stops where the highlight does.
+        let half = field_frame(
+            &|f| {
+                f.set_value("abcdef");
+                f.set_cursor_position(0);
+                f.set_highlight_pos(2);
+            },
+            false,
+            gpu,
+            off,
+            wr,
+        )?;
+        let inside = at_anvil(&half, fx + 4, fy + 4);
+        let outside = at_anvil(&half, fx + 28, fy + 4);
+        c.record(
+            "x4.the_selection_stops_where_the_highlight_does",
+            inside[2] > inside[0] && outside == none,
+            format!(
+                "two of six units selected: inside reads {inside:?} and outside {outside:?},                  the bare panel — the quad spans cursor..highlight, not the field"
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(

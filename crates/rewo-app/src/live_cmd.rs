@@ -3816,6 +3816,8 @@ fn run_headless(
             // …and it holds no scroll, so a stonecutter would draw its first
             // page. `run_headless` never opens one.
             None,
+            // …nor an anvil, so there is no field to draw.
+            None,
         );
         headless_screen_labels = labels;
     } else {
@@ -4079,6 +4081,17 @@ struct LiveApp {
     drag: DragState,
     /// Whether left control is held — Ctrl+Q drops a whole stack (M40).
     ctrl: bool,
+    /// Whether left alt is held (M93t). Only the edit box reads it, and only
+    /// to REFUSE: `isCopy` and friends require alt up, so Ctrl+Alt+C is not a
+    /// copy and falls through to the screen.
+    alt: bool,
+    /// An in-process clipboard (M93t).
+    ///
+    /// **Not the OS clipboard.** Rewo pulls in no clipboard crate and `winit`
+    /// exposes none, so copy/cut/paste are exact against each other and
+    /// isolated from the desktop. Swapping in a real one is a change at this
+    /// one field.
+    clipboard: String,
     /// The slot the last left click landed on and when, for the double click
     /// that becomes `PICKUP_ALL` (M40).
     last_click: Option<usize>,
@@ -4355,8 +4368,51 @@ impl ApplicationHandler for LiveApp {
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
                     self.ctrl = p;
                 }
+                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
+                    self.alt = p;
+                }
                 if self.screen.inventory_open() {
                     if p {
+                        // M93t — the anvil's name field runs FIRST and, while
+                        // it can consume input, swallows everything but Escape.
+                        // Vanilla's `AnvilScreen.keyPressed` reaches `super`
+                        // only when the box neither handled the key nor could
+                        // have, so with an item in slot 0 no screen shortcut
+                        // fires at all.
+                        let items = self.items.clone();
+                        let mods = (i32::from(self.shift))
+                            | (i32::from(self.ctrl) << 1)
+                            | (i32::from(self.alt) << 2);
+                        if let (Some(session), Some(key)) =
+                            (self.session.as_mut(), glfw_key(event.physical_key))
+                        {
+                            let mut clip = std::mem::take(&mut self.clipboard);
+                            let consumed = anvil_key(
+                                session,
+                                &mut self.screen,
+                                &items,
+                                rewo_world::edit_box::Input::new(key, mods),
+                                &mut clip,
+                            );
+                            self.clipboard = clip;
+                            if consumed {
+                                return;
+                            }
+                        }
+                        // A typed character. winit reports it separately from
+                        // the key, which is exactly the seam Rewo never read —
+                        // `KeyEvent.text`, not `PhysicalKey`.
+                        if let (Some(session), Some(text)) =
+                            (self.session.as_mut(), event.text.as_ref())
+                        {
+                            let mut any = false;
+                            for ch in text.chars() {
+                                any |= anvil_char(session, &mut self.screen, &items, ch);
+                            }
+                            if any {
+                                return;
+                            }
+                        }
                         if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
                             let ext = self.state.as_ref().map(|s| s.window.inner_size());
                             let items = self.items.clone();
@@ -6124,6 +6180,13 @@ impl LiveApp {
                             == rewo_world::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
                     .map(|m| cut_view(&mut self.screen, m, &items));
+                // M93t — likewise the anvil's field, seeded here so the render
+                // and the key handler see one box.
+                let anvil_field = session
+                    .menus
+                    .open()
+                    .filter(|m| m.layout.protocol_id == ANVIL_MENU_PROTOCOL_ID)
+                    .map(|m| anvil_local(&mut self.screen, m, &items).field.clone());
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -6142,6 +6205,7 @@ impl LiveApp {
                     // paint the server's last word.
                     beacon_override,
                     cut.as_ref(),
+                    anvil_field.as_ref(),
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -6545,6 +6609,8 @@ fn run_windowed(
         hand: None,
         shift: false,
         ctrl: false,
+        alt: false,
+        clipboard: String::new(),
         drag: DragState::default(),
         last_click: None,
         last_click_at: std::time::Instant::now(),
@@ -7422,6 +7488,17 @@ fn glfw_key(key: PhysicalKey) -> Option<i32> {
         KeyCode::ArrowDown => 264,
         KeyCode::ArrowUp => 265,
         KeyCode::NumpadEnter => 335,
+        // M93t — what `EditBox.keyPressed` switches on, beyond the arrows this
+        // already had. The letters are for its four shortcuts; GLFW's letter
+        // codes are ASCII, which is why `KeyA` is 65 and not a table entry.
+        KeyCode::Backspace => 259,
+        KeyCode::Delete => 261,
+        KeyCode::Home => 268,
+        KeyCode::End => 269,
+        KeyCode::KeyA => 65,
+        KeyCode::KeyC => 67,
+        KeyCode::KeyV => 86,
+        KeyCode::KeyX => 88,
         _ => return None,
     })
 }
@@ -10692,6 +10769,9 @@ pub struct ScreenState {
     /// whenever the container or its input slot changes, which is what
     /// `containerChanged` does.
     pub cut: Option<CutLocal>,
+    /// The anvil's name field (M93t). Screen-local: no packet carries the text
+    /// being typed, only the `rename_item` it produces.
+    pub anvil: Option<AnvilLocal>,
     /// Set when a beacon button asks for the screen to close (M93m). Drained
     /// by the frame loop rather than closing from inside the press, so the
     /// close goes through the one path that owns the screen.
@@ -11091,10 +11171,25 @@ fn apply_screen(
     // reason: it needs the screen-local scroll, and `apply_screen` holds no
     // `ScreenState` — which is also what keeps it drivable from a gate.
     cut: Option<&CutView>,
+    // M93t — the anvil's name field, resolved by the caller for the reason the
+    // beacon's choice and the stonecutter's grid are: it is screen-local state
+    // and `apply_screen` holds no `ScreenState`.
+    anvil_field: Option<&rewo_world::edit_box::EditBox>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
 ) {
+    // M93t — the anvil's field is rendered ONCE, here, because its text and
+    // its cursor share a width measurement: the cursor's x is the width of the
+    // run before it. Splitting the two would measure the same string twice
+    // with two chances to disagree.
+    let (anvil_labels, anvil_fills) = match (baked.font.as_ref(), anvil_field) {
+        (Some(f), Some(a)) => {
+            let (l, fills, _) = anvil_field_render(a, &f.advance, w, h);
+            (l, fills)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
     let loom = session.menus.open().and_then(|m| {
@@ -11150,6 +11245,7 @@ fn apply_screen(
             beacon_override,
             loom,
             cut,
+            anvil_fills: &anvil_fills,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -11178,7 +11274,8 @@ fn apply_screen(
                 beacon_effects,
                 beacon_override,
                 loom,
-            cut,
+                cut,
+                anvil_fills: &anvil_fills,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11192,6 +11289,10 @@ fn apply_screen(
     ) {
         labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
+    // The text and the append cursor are labels; the insert cursor and the
+    // selection travelled with the panel as solid quads — M93q's `FILL_SPRITE`
+    // doing the job it was built for, one screen over.
+    labels.extend(anvil_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
     let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
@@ -11600,6 +11701,212 @@ pub struct LoomView {
     pub display: bool,
 }
 
+/// `AnvilScreen.keyPressed` and `EditBox.charTyped` (M93t).
+///
+/// ```java
+/// public boolean keyPressed(final KeyEvent event) {
+///    if (event.isEscape()) { this.minecraft.player.closeContainer(); return true; }
+///    return !this.name.keyPressed(event) && !this.name.canConsumeInput()
+///        ? super.keyPressed(event) : true;
+/// }
+/// ```
+///
+/// **Read that return carefully.** It falls through to `super` only when the
+/// box did *not* handle the key **and** cannot consume input. With the field
+/// focused and editable — which it is whenever slot 0 holds something — the
+/// second half is false, so **every non-escape key is swallowed**: `E` does not
+/// close the anvil, a number key does not swap a hotbar slot, `Q` does not
+/// drop. That reads like a bug and is exactly what typing a name requires.
+///
+/// With slot 0 empty the field is uneditable, `canConsumeInput` is false, and
+/// the screen behaves normally again.
+///
+/// Returns whether the key was consumed.
+fn anvil_key(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    input: rewo_world::edit_box::Input,
+    clipboard: &mut String,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
+        return false;
+    }
+    // Escape is handled by the screen's own close path, before the field.
+    if input.key == 256 {
+        return false;
+    }
+    let slot0 = open
+        .menu
+        .menu_slot(0)
+        .and_then(|s| items.name(s.item_id).map(|n| (s, n)));
+    let handled = {
+        let local = anvil_local(screen, open, items);
+        let handled = local.field.key_pressed(input, clipboard);
+        rewo_world::anvil::key_consumed(handled, local.field.can_consume_input())
+    };
+    anvil_flush(session, screen, slot0);
+    handled
+}
+
+/// A typed character — `EditBox.charTyped`, which the key path never sees
+/// because winit reports text separately from the key (M93t).
+fn anvil_char(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    ch: char,
+) -> bool {
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
+        return false;
+    }
+    let slot0 = open
+        .menu
+        .menu_slot(0)
+        .and_then(|s| items.name(s.item_id).map(|n| (s, n)));
+    let handled = anvil_local(screen, open, items).field.char_typed(ch);
+    anvil_flush(session, screen, slot0);
+    handled
+}
+
+/// Drain the field's responder into `AnvilName::on_name_changed`, and send the
+/// packet it asks for.
+///
+/// The two-stage gate is M93n's and both stages are real: the field fires on
+/// every mutation, `on_name_changed` normalises "the item's own name" to the
+/// empty string, and `setItemName` refuses to re-send a name the server already
+/// has.
+fn anvil_flush(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    slot0: Option<(rewo_world::inventory::ItemSlot, &str)>,
+) {
+    let Some(local) = screen.anvil.as_mut() else {
+        return;
+    };
+    let Some(typed) = local.field.take_value_changed() else {
+        return;
+    };
+    let hover = slot0.map(|(_, n)| display_name_of(n));
+    let input = slot0.zip(hover.as_deref()).map(|((s, _), hover_name)| {
+        rewo_world::anvil::AnvilInput {
+            // A stack whose patch carried anything is the closest Rewo gets to
+            // `has(CUSTOM_NAME)` without decoding the component's text; the
+            // approximation is one-directional, since a patched-but-unnamed
+            // stack merely skips the clear-to-default normalisation.
+            has_custom_name: s.has_components,
+            hover_name,
+        }
+    });
+    if let Some(send) = local.name.on_name_changed(&typed, input) {
+        if let Err(e) = session.rename_item(&send) {
+            log::warn!("anvil rename {send:?}: {e}");
+        }
+    }
+}
+
+/// `minecraft:menu`'s `anvil` id.
+pub const ANVIL_MENU_PROTOCOL_ID: i32 = 8;
+
+/// The anvil screen's name field and the name it has sent (M93t).
+#[derive(Debug, Clone, Default)]
+pub struct AnvilLocal {
+    container_id: i32,
+    /// Slot 0 as last seen, so `slotChanged` fires exactly when vanilla's does.
+    slot0: Option<(i32, u64)>,
+    pub field: rewo_world::edit_box::EditBox,
+    pub name: rewo_world::anvil::AnvilName,
+}
+
+/// `AnvilScreen.subInit` + `slotChanged` — seed the field, and re-seed it
+/// whenever slot 0 changes (M93t).
+///
+/// ```java
+/// public void slotChanged(container, slotIndex, itemStack) {
+///    if (slotIndex == 0) {
+///       this.name.setValue(itemStack.isEmpty() ? "" : itemStack.getHoverName().getString());
+///       this.name.setEditable(!itemStack.isEmpty());
+///       this.setFocused(this.name);
+///    }
+/// }
+/// ```
+///
+/// So an **empty** input slot leaves an empty, UNEDITABLE field — and that
+/// matters for far more than the text, because `AnvilScreen.keyPressed` falls
+/// through to `super` only when the box can consume nothing. See `anvil_key`.
+fn anvil_local<'a>(
+    screen: &'a mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    items: &rewo_data::items::Items,
+) -> &'a mut AnvilLocal {
+    let slot0 = m.menu.menu_slot(0).map(|s| (s.item_id, s.components));
+    let stale = match &screen.anvil {
+        Some(a) => a.container_id != m.container_id || a.slot0 != slot0,
+        None => true,
+    };
+    if stale {
+        let mut field = rewo_world::edit_box::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+        // `setCanLoseFocus(false)` and `setInitialFocus(this.name)` — the field
+        // is focused from the moment the screen opens and cannot lose it.
+        field.set_focused(true);
+        let hover = slot0
+            .and_then(|(id, _)| items.name(id))
+            .map(display_name_of)
+            .unwrap_or_default();
+        field.set_value(&hover);
+        field.set_editable(slot0.is_some());
+        let mut local = AnvilLocal {
+            container_id: m.container_id,
+            slot0,
+            field,
+            name: screen
+                .anvil
+                .as_ref()
+                .filter(|a| a.container_id == m.container_id)
+                .map(|a| a.name.clone())
+                .unwrap_or_default(),
+        };
+        // The seeding `setValue` fires the responder, as vanilla's does; drain
+        // it so the re-seed does not send a rename of the name we were just
+        // told.
+        let _ = local.field.take_value_changed();
+        screen.anvil = Some(local);
+    }
+    screen.anvil.as_mut().expect("just seeded")
+}
+
+/// A stack's `getHoverName().getString()` for the seed — the item's display
+/// name, which for an un-renamed stack is its translated name.
+///
+/// **An approximation, and a recorded one**: Rewo resolves the display name
+/// from the item registry, so a stack carrying a `custom_name` component seeds
+/// the field with its *default* name instead. M41 decodes the component's
+/// bytes but not its text, which is the same wall the tooltip's name override
+/// hits. The consequence is narrow — the field starts on the wrong string for
+/// an already-renamed item — and it does not reach the wire, because
+/// `on_name_changed` compares against what the server was told.
+fn display_name_of(id: &str) -> String {
+    id.rsplit(':')
+        .next()
+        .unwrap_or(id)
+        .split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// What the stonecutter's recipe grid needs, resolved by the caller (M93s).
 ///
 /// Carried rather than derived in the overlay builder for `LoomView`'s reason:
@@ -11947,6 +12254,46 @@ fn menu_overlays(
                 }
             }
         }
+        // anvil (M93t): the name field's cursor and selection, measured by
+        // `anvil_field_render` alongside the text so the two cannot disagree
+        // about where the run ends.
+        ANVIL_MENU_PROTOCOL_ID => {
+            // `extractBackground` blits the field's own 110x16 background at
+            // (59, 20) — over a RED placeholder baked into `anvil.png`, so
+            // this is chrome the screen cannot omit. The pair is chosen by the
+            // same slot-0 predicate that makes the field editable.
+            let has_input = m.menu.menu_slot(0).is_some();
+            out.push((
+                a::ANVIL_TEXT_FIELD + usize::from(!has_input),
+                to_blit(rewo_world::menu_screen::ProgressBlit {
+                    dx: 59,
+                    dy: 20,
+                    w: 110,
+                    h: 16,
+                    sx: 0,
+                    sy: 0,
+                    src: None,
+                }),
+            ));
+            // Then the field's own cursor and selection, over it.
+            out.extend_from_slice(player.anvil_fills);
+            // `extractErrorIcon` — an input present and NO result, which is
+            // the combination the anvil refused.
+            if (has_input || m.menu.menu_slot(1).is_some()) && m.menu.menu_slot(2).is_none() {
+                out.push((
+                    a::ANVIL_ERROR,
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: 99,
+                        dy: 45,
+                        w: 28,
+                        h: 21,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
+            }
+        }
         // stonecutter (M93s): the scroller, then one button chrome per visible
         // cell. The result ICONS are not here — they are items, and go through
         // the GUI-item pass with the slots (see `screen_icons`).
@@ -12136,6 +12483,8 @@ pub(crate) struct EnchantPlayer<'a> {
     /// from `selectByInput`, and this struct is `Copy` because the enchanting
     /// rows and the panel each take it by value.
     pub cut: Option<&'a CutView>,
+    /// The anvil field's cursor and selection quads (M93t), already measured.
+    pub anvil_fills: &'a [(usize, rewo_gpu::container::PanelBlit)],
     /// The beacon SCREEN's own choice (M93m), when a screen is driving.
     ///
     /// `None` re-reads the menu's data slots, which is right for a gate with
@@ -12196,6 +12545,9 @@ pub(crate) fn container_panel_for_open_menu(
             beacon_override,
             loom,
             cut,
+            // A gate drives no anvil field; `containershot` supplies its own
+            // overlays when it wants a fill (M93q's o19/o20).
+            anvil_fills: &[],
         },
         mouse_gui,
     )
@@ -13137,6 +13489,151 @@ fn enchant_cost_labels(
         });
     }
     out
+}
+
+/// The anvil name field's geometry, from `AnvilScreen.subInit` (M93t).
+///
+/// ```java
+/// this.name = new EditBox(this.font, xo + 62, yo + 24, 103, 12, …);
+/// this.name.setBordered(false);
+/// ```
+///
+/// Unbordered, so `textX = getX() + 0` and `textY = getY()` — a bordered box
+/// would inset by 4 and centre vertically by `(height - 8) / 2`, and reusing
+/// those here would put the name four pixels right and two down.
+/// `getInnerWidth()` is likewise the full 103 rather than `width - 8`.
+const ANVIL_FIELD: (i32, i32, i32) = (62, 24, 103);
+
+/// The name field's text, cursor and selection (M93t).
+///
+/// The two-piece draw in `extractWidgetRenderState` exists to *place the
+/// cursor*, not to change the text: the halves are separated by `+1` and then
+/// pulled back by `-1` for an insert cursor, so the run is contiguous either
+/// way and one label is exact.
+fn anvil_field_render(
+    local: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Option<String>,
+) {
+    let layout = &rewo_world::menu_layout::REGISTRY[ANVIL_MENU_PROTOCOL_ID as usize];
+    let (left, top, scale) =
+        rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
+    let (fx, fy, inner) = ANVIL_FIELD;
+    let width = |u: &[u16]| rewo_gpu::text::width(&String::from_utf16_lossy(u), advance);
+    let displayed = local.displayed(inner, &width).to_vec();
+    let rel_cursor = local.cursor_position().saturating_sub(local.display_pos());
+    let on_screen = rel_cursor <= displayed.len();
+
+    let mut labels = Vec::new();
+    let mut fills = Vec::new();
+    let mut append = None;
+    let text = String::from_utf16_lossy(&displayed);
+    if !text.is_empty() {
+        labels.push(rewo_gpu::world::OwnedTextLine {
+            x: left + fx as f32 * scale,
+            y: top + fy as f32 * scale,
+            px: scale,
+            // `setTextColor(-1)` AND `setTextColorUneditable(-1)` — the anvil
+            // sets both to white, so an uneditable field is not greyed.
+            color: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            shadow: true,
+            text,
+        });
+    }
+
+    // `insert = cursorPos < value.length() || value.length() >= maxLength` —
+    // so a full field shows the BAR even with the cursor at the end, which is
+    // how vanilla tells you there is no room left.
+    let insert = local.cursor_position() < local.len() || local.len() >= local.max_length();
+    let before = if on_screen { &displayed[..rel_cursor] } else { &displayed[..] };
+    let mut cursor_x = fx + width(before) + if before.is_empty() { 0 } else { 1 };
+    if on_screen && insert {
+        cursor_x -= 1;
+    }
+
+    // The selection: `textHighlight(min(cursorX, x+width), textY-1,
+    // min(highlightX-1, x+width), textY+1+9, invert)`. The anvil sets
+    // `setInvertHighlightedTextColor(false)`, so only the blue fill runs.
+    let rel_highlight = local
+        .highlight_position()
+        .saturating_sub(local.display_pos())
+        .min(displayed.len());
+    if rel_highlight != rel_cursor {
+        let hx = fx + width(&displayed[..rel_highlight]);
+        let (x0, x1) = (cursor_x.min(fx + inner), (hx - 1).min(fx + inner));
+        let (x0, x1) = (x0.min(x1), x0.max(x1));
+        fills.push((
+            rewo_gpu::container::FILL_SPRITE,
+            rewo_gpu::container::PanelBlit {
+                dx: x0 as f32,
+                dy: (fy - 1) as f32,
+                w: (x1 - x0) as f32,
+                h: 11.0,
+                sx: 0.0,
+                sy: 0.0,
+                sw: 0.0,
+                sh: 0.0,
+                // `-16776961` = 0xFF0000FF. NOTE the pipeline is
+                // `GUI_TEXT_HIGHLIGHT`, whose blend Rewo's single container
+                // blend does not reproduce — the colour is exact, the
+                // compositing is a plain alpha draw.
+                tint: [0.0, 0.0, 1.0, 1.0],
+            },
+        ));
+    }
+
+    if local.is_focused() {
+        if insert {
+            // `fill(x, y - 1, x + 1, y + lineHeight)`, lineHeight 9 + 1.
+            fills.push((
+                rewo_gpu::container::FILL_SPRITE,
+                rewo_gpu::container::PanelBlit {
+                    dx: cursor_x as f32,
+                    dy: (fy - 1) as f32,
+                    w: 1.0,
+                    h: 11.0,
+                    sx: 0.0,
+                    sy: 0.0,
+                    sw: 0.0,
+                    sh: 0.0,
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                },
+            ));
+        } else {
+            // The append cursor is the CHARACTER "_", not a rectangle.
+            append = Some(String::from("_"));
+            labels.push(rewo_gpu::world::OwnedTextLine {
+                x: left + cursor_x as f32 * scale,
+                y: top + fy as f32 * scale,
+                px: scale,
+                color: [1.0, 1.0, 1.0],
+                alpha: 1.0,
+                shadow: true,
+                text: "_".into(),
+            });
+        }
+    }
+    (labels, fills, append)
+}
+
+/// [`anvil_field_render`] for `containershot`.
+pub(crate) fn anvil_field_render_for_test(
+    local: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Option<String>,
+) {
+    anvil_field_render(local, advance, w, h)
 }
 
 /// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by
