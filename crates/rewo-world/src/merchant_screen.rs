@@ -59,6 +59,206 @@ pub const SCROLL_HEIGHT: i32 = 139;
 pub const SCROLLER_W: i32 = 6;
 pub const SCROLLER_H: i32 = 27;
 
+// ── The XP bar (M93v) ─────────────────────────────────────────────────────
+//
+// `MerchantScreen.extractProgressBar`, and `VillagerData`'s thresholds.
+
+/// `PROGRESS_BAR_X` / `_Y`, and the bar's size.
+pub const XP_BAR_X: i32 = 136;
+pub const XP_BAR_Y: i32 = 16;
+pub const XP_BAR_W: i32 = 102;
+pub const XP_BAR_H: i32 = 5;
+
+/// `VillagerData.NEXT_LEVEL_XP_THRESHOLDS`.
+pub const XP_THRESHOLDS: [i32; 5] = [0, 10, 70, 150, 250];
+/// `MIN_VILLAGER_LEVEL` / `MAX_VILLAGER_LEVEL`.
+pub const MIN_VILLAGER_LEVEL: i32 = 1;
+pub const MAX_VILLAGER_LEVEL: i32 = 5;
+
+/// `VillagerData.canLevelUp` — `level >= 1 && level < 5`.
+pub fn can_level_up(level: i32) -> bool {
+    (MIN_VILLAGER_LEVEL..MAX_VILLAGER_LEVEL).contains(&level)
+}
+
+/// `getMinXpPerLevel` / `getMaxXpPerLevel`.
+///
+/// **Both return 0 when the villager cannot level up**, which makes their
+/// difference 0 — and the bar's `multiplier` divides by exactly that. The
+/// division is safe only because `extractProgressBar` guards on `canLevelUp`
+/// *and* on `traderLevel < 5` before computing it; reproducing the arithmetic
+/// without the guard is a divide by zero on a master villager.
+pub fn min_xp_per_level(level: i32) -> i32 {
+    if can_level_up(level) {
+        XP_THRESHOLDS[(level - 1) as usize]
+    } else {
+        0
+    }
+}
+
+pub fn max_xp_per_level(level: i32) -> i32 {
+    if can_level_up(level) {
+        XP_THRESHOLDS[level as usize]
+    } else {
+        0
+    }
+}
+
+/// The XP bar's three segment widths, or `None` for no bar at all.
+///
+/// ```java
+/// if (traderLevel < 5) {
+///    blit(BACKGROUND, xo + 136, yo + 16, 102, 5);
+///    int minXp = getMinXpPerLevel(traderLevel);
+///    if (traderXp >= minXp && canLevelUp(traderLevel)) {
+///       float multiplier = 102.0F / (getMaxXpPerLevel(traderLevel) - minXp);
+///       int w = Math.min(Mth.floor(multiplier * (traderXp - minXp)), 102);
+///       blit(CURRENT, 102, 5, 0, 0, xo + 136, yo + 16, w, 5);
+///       int futureXp = getFutureTraderXp();
+///       if (futureXp > 0) {
+///          int futureXpWidth = Math.min(Mth.floor(futureXp * multiplier), 102 - w);
+///          blit(RESULT, 102, 5, w, 0, xo + 136 + w, yo + 16, futureXpWidth, 5);
+///       }
+///    }
+/// }
+/// ```
+///
+/// Returns `(current, future)` widths; the background is drawn whenever the
+/// result is `Some`. Three things read backwards:
+///
+/// * **`traderLevel < 5` hides the whole bar**, background included — a master
+///   villager shows nothing rather than a full bar.
+/// * the **result segment samples the sprite from `w`**, not from 0, so it
+///   continues the gradient where the current segment stopped rather than
+///   restarting it. That is why it needs a source offset at all.
+/// * `futureXpWidth` is clamped to `102 - w`, the room *left*, so a trade
+///   worth more XP than the level needs fills the bar exactly and no further.
+pub fn xp_bar(level: i32, xp: i32, future_xp: i32) -> Option<(i32, i32)> {
+    if level >= MAX_VILLAGER_LEVEL {
+        return None;
+    }
+    let min_xp = min_xp_per_level(level);
+    if !(xp >= min_xp && can_level_up(level)) {
+        // The background still draws — the guard is inside it — so this is a
+        // bar with no fill rather than no bar.
+        return Some((0, 0));
+    }
+    let multiplier = XP_BAR_W as f32 / (max_xp_per_level(level) - min_xp) as f32;
+    let w = ((multiplier * (xp - min_xp) as f32).floor() as i32).min(XP_BAR_W);
+    let future = if future_xp > 0 {
+        ((future_xp as f32 * multiplier).floor() as i32).min(XP_BAR_W - w)
+    } else {
+        0
+    };
+    Some((w, future))
+}
+
+/// `MerchantOffer.satisfiedBy` — whether the payment slots match this offer.
+///
+/// ```java
+/// if (!this.baseCostA.test(buyA) || buyA.getCount() < this.getModifiedCostCount(this.baseCostA)) return false;
+/// return !this.costB.isPresent() ? buyB.isEmpty()
+///     : this.costB.get().test(buyB) && buyB.getCount() >= this.costB.get().count();
+/// ```
+///
+/// **Cost A is compared against its MODIFIED count and cost B against its
+/// base** — the same asymmetry `modified_cost_a` carries, one layer up. So a
+/// discount lowers what you must hand over for A and never for B.
+///
+/// And an offer with **no** cost B requires `buyB` to be *empty*: putting
+/// anything in the second slot makes a one-item trade stop matching.
+pub fn satisfied_by(
+    cost_a_ok: bool,
+    have_a: i32,
+    need_a: i32,
+    cost_b: Option<(bool, i32)>,
+    have_b: i32,
+) -> bool {
+    if !cost_a_ok || have_a < need_a {
+        return false;
+    }
+    match cost_b {
+        None => have_b == 0,
+        Some((ok, need_b)) => ok && have_b >= need_b,
+    }
+}
+
+/// One offer's inputs to [`satisfied_by`], as the client can resolve them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfferMatch {
+    pub cost_a_item: i32,
+    /// The **modified** count — a discount lowers what you must hand over.
+    pub need_a: i32,
+    pub cost_b: Option<(i32, i32)>,
+    /// Whether either cost carries a `DataComponentExactPredicate`.
+    pub constrained: bool,
+}
+
+/// Which offers the payment slots satisfy (M93v).
+///
+/// **A constrained cost is declined rather than guessed.** `ItemCost.test` is
+/// `stack.is(item) && components.test(stack)`, and the second half compares
+/// per-component *values* where M41 gives Rewo a digest of the whole patch. So
+/// an offer naming one cannot be evaluated, and treating it as matched would
+/// show a result segment for a trade the server will refuse.
+///
+/// The decline is **one-directional**: the bar's result segment is missing
+/// where vanilla would show it, never present where vanilla would not.
+///
+/// Lives here rather than in `live_cmd` because `PlaySession`'s module has no
+/// test module anywhere in the repo — M71's finding, and M93t's fix.
+pub fn satisfied_offers(
+    offers: &[OfferMatch],
+    have_a: Option<(i32, i32)>,
+    have_b: Option<(i32, i32)>,
+) -> Vec<bool> {
+    // `MerchantContainer.updateSellItem`: **if slot 0 is empty, slot 1 becomes
+    // `buyA` and `buyB` is empty** — so paying with only the second slot still
+    // matches a one-item trade.
+    let (a, b) = match (have_a, have_b) {
+        (None, s1) => (s1, None),
+        (s0, s1) => (s0, s1),
+    };
+    let Some((a_id, a_count)) = a else {
+        return vec![false; offers.len()];
+    };
+    let (b_id, b_count) = b.map_or((0, 0), |(i, c)| (i, c));
+    offers
+        .iter()
+        .map(|o| {
+            !o.constrained
+                && satisfied_by(
+                    o.cost_a_item == a_id,
+                    a_count,
+                    o.need_a,
+                    o.cost_b.map(|(id, n)| (id == b_id, n)),
+                    b_count,
+                )
+        })
+        .collect()
+}
+
+/// `MerchantOffers.getRecipeFor`'s selection rule.
+///
+/// ```java
+/// if (selectionHint > 0 && selectionHint < this.size()) { … return satisfiedBy ? offer : null; }
+/// for (i in 0..size) if (satisfiedBy) return offer;
+/// ```
+///
+/// **`selectionHint > 0` is strictly greater**, so selecting the FIRST trade
+/// does not take the fast path — it falls through to the linear scan and can
+/// therefore match a *different* offer than the one selected, if an earlier
+/// one is satisfied by the same items. Hint 0 is both "nothing selected" and
+/// "the first trade", and vanilla cannot tell them apart.
+///
+/// `satisfied` is indexed by offer.
+pub fn recipe_for(selection_hint: i32, satisfied: &[bool]) -> Option<usize> {
+    let n = satisfied.len();
+    if selection_hint > 0 && (selection_hint as usize) < n {
+        return satisfied[selection_hint as usize].then_some(selection_hint as usize);
+    }
+    satisfied.iter().position(|s| *s)
+}
+
 /// `canScroll` — `numberOfOffers > 7`, strictly greater, so exactly seven
 /// offers fill the window and do not scroll.
 pub fn can_scroll(offers: usize) -> bool {
@@ -217,6 +417,121 @@ pub fn offer_visible(index: i32, scroll_off: i32, offers: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_master_villager_shows_no_bar_at_all() {
+        // `traderLevel < 5` gates the BACKGROUND too, so level 5 is nothing
+        // rather than a full bar.
+        assert_eq!(xp_bar(5, 999, 0), None);
+        assert!(xp_bar(4, 999, 0).is_some());
+    }
+
+    #[test]
+    fn the_thresholds_are_vanillas_and_the_ends_return_zero() {
+        assert_eq!(XP_THRESHOLDS, [0, 10, 70, 150, 250]);
+        // Level 1 spans 0..10, level 4 spans 150..250.
+        assert_eq!((min_xp_per_level(1), max_xp_per_level(1)), (0, 10));
+        assert_eq!((min_xp_per_level(4), max_xp_per_level(4)), (150, 250));
+        // BOTH are 0 outside the levelling range, so their difference is 0 —
+        // the bar's divisor. Only `extractProgressBar`'s guards keep that
+        // division safe.
+        assert_eq!((min_xp_per_level(5), max_xp_per_level(5)), (0, 0));
+        assert_eq!((min_xp_per_level(0), max_xp_per_level(0)), (0, 0));
+        assert!(!can_level_up(0) && !can_level_up(5) && can_level_up(1) && can_level_up(4));
+    }
+
+    #[test]
+    fn the_fill_is_the_fraction_of_the_level_not_of_the_total() {
+        // Level 2 spans 10..70, so 40 xp is halfway through THAT level and not
+        // through the villager's career.
+        assert_eq!(xp_bar(2, 40, 0), Some((51, 0)));
+        assert_eq!(xp_bar(2, 10, 0), Some((0, 0)), "the level's floor is empty");
+        assert_eq!(xp_bar(2, 70, 0), Some((102, 0)), "and its ceiling is full");
+        // Below the level's own floor the fill guard fails and the bar is
+        // empty — but it still DRAWS, which is why this is Some.
+        assert_eq!(xp_bar(2, 5, 0), Some((0, 0)));
+    }
+
+    #[test]
+    fn the_future_segment_is_clamped_to_the_room_left() {
+        // Level 1 spans 0..10, so the multiplier is 10.2 px per xp.
+        let (w, f) = xp_bar(1, 5, 2).expect("level 1");
+        assert_eq!(w, 51);
+        assert_eq!(f, 20, "2 xp at 10.2 px each, floored");
+        // A trade worth more than the level needs fills the rest exactly and
+        // no further — `Math.min(…, 102 - w)`.
+        assert_eq!(xp_bar(1, 5, 99), Some((51, 51)));
+        assert_eq!(xp_bar(1, 9, 99), Some((91, 11)));
+        // Zero future xp draws no result segment.
+        assert_eq!(xp_bar(1, 5, 0), Some((51, 0)));
+    }
+
+    #[test]
+    fn cost_a_is_matched_at_its_MODIFIED_count_and_b_at_its_base() {
+        // 3 needed for A after a discount, 2 for B.
+        assert!(satisfied_by(true, 3, 3, Some((true, 2)), 2));
+        assert!(!satisfied_by(true, 2, 3, Some((true, 2)), 2), "short on A");
+        assert!(!satisfied_by(true, 3, 3, Some((true, 2)), 1), "short on B");
+        assert!(!satisfied_by(false, 9, 3, Some((true, 2)), 9), "wrong item in A");
+        // An offer with NO cost B requires the second slot to be EMPTY —
+        // putting anything there stops a one-item trade matching.
+        assert!(satisfied_by(true, 3, 3, None, 0));
+        assert!(!satisfied_by(true, 3, 3, None, 1));
+    }
+
+    #[test]
+    fn a_constrained_cost_is_declined_rather_than_guessed() {
+        let plain = OfferMatch {
+            cost_a_item: 7,
+            need_a: 2,
+            cost_b: None,
+            constrained: false,
+        };
+        let fancy = OfferMatch {
+            constrained: true,
+            ..plain
+        };
+        // The same payment matches the plain offer and not the constrained
+        // one, even though their items and counts are identical — Rewo cannot
+        // evaluate the component predicate and refuses to assume.
+        assert_eq!(
+            satisfied_offers(&[plain, fancy], Some((7, 2)), None),
+            vec![true, false]
+        );
+    }
+
+    #[test]
+    fn an_empty_first_slot_promotes_the_second() {
+        // `updateSellItem`: with slot 0 empty, slot 1 becomes `buyA`.
+        let o = OfferMatch {
+            cost_a_item: 7,
+            need_a: 2,
+            cost_b: None,
+            constrained: false,
+        };
+        assert_eq!(satisfied_offers(&[o], None, Some((7, 2))), vec![true]);
+        assert_eq!(satisfied_offers(&[o], Some((7, 2)), None), vec![true]);
+        // …and with BOTH filled a one-cost offer stops matching, because its
+        // `buyB` must be empty.
+        assert_eq!(satisfied_offers(&[o], Some((7, 2)), Some((9, 1))), vec![false]);
+        // Nothing at all matches nothing.
+        assert_eq!(satisfied_offers(&[o], None, None), vec![false]);
+    }
+
+    #[test]
+    fn selecting_the_FIRST_trade_does_not_take_the_fast_path() {
+        // `selectionHint > 0` is strictly greater, so hint 0 falls through to
+        // the linear scan — and hint 0 means both "nothing selected" and "the
+        // first trade", which vanilla cannot tell apart.
+        let sat = [false, true, true];
+        assert_eq!(recipe_for(0, &sat), Some(1), "the scan, not offer 0");
+        assert_eq!(recipe_for(2, &sat), Some(2), "the hint, exactly");
+        // A hint whose offer is NOT satisfied yields nothing rather than
+        // falling back to the scan.
+        assert_eq!(recipe_for(1, &[true, false, true]), None);
+        // An out-of-range hint falls through to the scan.
+        assert_eq!(recipe_for(99, &sat), Some(1));
+    }
 
     #[test]
     fn exactly_seven_offers_do_not_scroll() {

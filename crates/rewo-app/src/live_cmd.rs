@@ -11983,6 +11983,62 @@ pub struct MerchantView {
     /// is drawn in the right-hand panel. Screen-local: the packet does not
     /// carry a selection.
     pub selected: i32,
+    /// `getTraderLevel` / `getTraderXp`, straight off the packet.
+    pub level: i32,
+    pub xp: i32,
+    /// `showProgressBar()` — false for a wandering trader, which has no level
+    /// and no bar.
+    pub show_progress: bool,
+    /// `getFutureTraderXp` — the xp the currently-matched offer would grant.
+    ///
+    /// **Derived here rather than received**: no packet carries it.
+    /// `MerchantContainer.updateSellItem` matches the payment slots against
+    /// the offers and takes the matched offer's xp, and the client holds both
+    /// halves. See `merchant_future_xp` for the one case it declines.
+    pub future_xp: i32,
+}
+
+/// `MerchantContainer.updateSellItem`'s `futureXp` (M93v).
+///
+/// Vanilla derives it: the payment slots are matched against the offers by
+/// `getRecipeFor`, and the matched offer's xp is what the bar's result segment
+/// shows. Both halves are on the client, so this is a derivation and not a
+/// gap — the same shape as M93u's four class-C corrections one level down.
+///
+/// **The one case it declines.** `ItemCost.test` is `stack.is(item) &&
+/// components.test(stack)`, and the second half is a
+/// `DataComponentExactPredicate` — per-component *values*, where M41 gives
+/// Rewo a digest of the whole patch. So a **constrained** cost cannot be
+/// evaluated, and an offer carrying one is treated as unmatched. The
+/// consequence is narrow and one-directional: the result segment is missing
+/// where vanilla would show it, never present where vanilla would not. Vanilla
+/// villager trades are plain items, so in practice this is the enchanted-book
+/// and dyed-armour tail.
+///
+/// The slot order is `MerchantContainer`'s own: **if slot 0 is empty, slot 1
+/// becomes `buyA` and `buyB` is empty** — so paying with only the second slot
+/// still matches a one-item trade.
+fn merchant_future_xp(
+    m: &rewo_world::menu::OpenMenu,
+    offers: &rewo_net::merchant::MerchantOffers,
+    selected: i32,
+    props: &dyn Fn(i32) -> i32,
+) -> i32 {
+    let slot = |i: usize| m.menu.menu_slot(i).map(|s| (s.item_id, s.count));
+    let matches: Vec<rewo_world::merchant_screen::OfferMatch> = offers
+        .offers
+        .iter()
+        .map(|o| rewo_world::merchant_screen::OfferMatch {
+            cost_a_item: o.cost_a.item_id,
+            need_a: o.modified_cost_a(props(o.cost_a.item_id)),
+            cost_b: o.cost_b.as_ref().map(|c| (c.item_id, c.count)),
+            constrained: o.cost_a.constrained
+                || o.cost_b.as_ref().is_some_and(|c| c.constrained),
+        })
+        .collect();
+    let satisfied = rewo_world::merchant_screen::satisfied_offers(&matches, slot(0), slot(1));
+    rewo_world::merchant_screen::recipe_for(selected, &satisfied)
+        .map_or(0, |i| offers.offers[i].xp)
 }
 
 /// The merchant screen's scroll, which no packet carries (M93u).
@@ -12012,6 +12068,10 @@ pub(crate) fn merchant_view(
     }
     let local = screen.merchant.expect("just seeded");
     MerchantView {
+        level: offers.villager_level,
+        xp: offers.villager_xp,
+        show_progress: offers.show_progress,
+        future_xp: merchant_future_xp(m, offers, local.selected, props),
         cost_a_counts: offers
             .offers
             .iter()
@@ -12516,6 +12576,47 @@ fn menu_overlays(
                         src: None,
                     }),
                 ));
+            }
+            // The XP bar (M93v): background, then the fill, then the result
+            // segment — which samples the sprite from `w` rather than 0, so it
+            // CONTINUES the gradient where the fill stopped.
+            //
+            // `showProgressBar()` gates it: a wandering trader has no level.
+            if v.show_progress {
+                if let Some((fill, future)) = ms::xp_bar(v.level, v.xp, v.future_xp) {
+                    let bar = |dx: i32, sx: i32, w: i32| rewo_world::menu_screen::ProgressBlit {
+                        dx,
+                        dy: ms::XP_BAR_Y,
+                        w,
+                        h: ms::XP_BAR_H,
+                        sx,
+                        sy: 0,
+                        // `None` — the source size EQUALS the destination, so
+                        // this is a 1:1 slice at `sx` and not a scale.
+                        //
+                        // `blitSprite(sprite, 102, 5, u, v, x, y, w, h)` passes
+                        // the SHEET's size, not the source rect's: the rect is
+                        // `w x h` at `(u, v)`. Setting `src` to (102, 5) — the
+                        // obvious reading of those two arguments — squeezes the
+                        // whole bar into the segment, which a mutation caught
+                        // by NOT dying: the `sx` offset had no visible effect
+                        // because every segment was showing the entire sprite.
+                        src: None,
+                    };
+                    out.push((
+                        a::VILLAGER_XP_BAR,
+                        to_blit(bar(ms::XP_BAR_X, 0, ms::XP_BAR_W)),
+                    ));
+                    if fill > 0 {
+                        out.push((a::VILLAGER_XP_BAR + 1, to_blit(bar(ms::XP_BAR_X, 0, fill))));
+                    }
+                    if future > 0 {
+                        out.push((
+                            a::VILLAGER_XP_BAR + 2,
+                            to_blit(bar(ms::XP_BAR_X + fill, fill, future)),
+                        ));
+                    }
+                }
             }
             // The 28x21 red X is NOT per row — `extractButtonArrows` only
             // swaps the arrow. It belongs to the SELECTED offer, in the
