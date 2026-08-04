@@ -1894,6 +1894,10 @@ fn overlays(
                 count: 4,
                 constrained: false,
             },
+            // `special_price_diff` is inert here: the view carries the already
+            // -resolved `cost_a_counts`, so a discount is expressed by making
+            // those differ from `cost_a.count`.
+
             result: rewo_net::item_stack::WireSlot::Empty,
             cost_b: None,
             out_of_stock,
@@ -1908,6 +1912,7 @@ fn overlays(
                              scroll: i32,
                              spent: bool,
                              bar: Option<(i32, i32, i32)>,
+                             discounted: bool,
                              gpu: &mut Gpu,
                              off: &mut Offscreen,
                              wr: &mut WorldRenderer|
@@ -1916,7 +1921,7 @@ fn overlays(
             let open = m.open().expect("open");
             let offers: Vec<_> = (0..n).map(|i| offer(spent && i == 0)).collect();
             let view = crate::live_cmd::MerchantView {
-                cost_a_counts: vec![4; n],
+                cost_a_counts: vec![if discounted { 1 } else { 4 }; n],
                 offers,
                 scroll_off: scroll,
                 selected: 0,
@@ -1943,8 +1948,8 @@ fn overlays(
         // The arrow's centre for row 0. `COST_B_X + 20` — past cost B, which
         // is where the first cut of the ARM had it wrong too.
         let (ax, ay) = (ms::COST_B_X + 20 + 5, ms::row_item_y(0) + 3 + 4);
-        let empty = mer_frame(0, 0, false, None, gpu, off, wr)?;
-        let three = mer_frame(3, 0, false, None, gpu, off, wr)?;
+        let empty = mer_frame(0, 0, false, None, false, gpu, off, wr)?;
+        let three = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
 
         c.record(
             "y1.a_visible_offer_draws_its_trade_arrow",
@@ -1969,7 +1974,7 @@ fn overlays(
         // diff map says otherwise (row y=4 is `....XXX...`), and the centre
         // differs too. The lesson is the one M93s records: read the sprites
         // first, and do not invent a reason a witness passed.
-        let spent = mer_frame(3, 0, true, None, gpu, off, wr)?;
+        let spent = mer_frame(3, 0, true, None, false, gpu, off, wr)?;
         let (dx, dy) = (ms::COST_B_X + 20 + 6, ms::row_item_y(0) + 3 + 2);
         c.record(
             "y2.a_spent_offer_wears_a_different_arrow",
@@ -1984,8 +1989,8 @@ fn overlays(
         // y3 — the scroller appears exactly when the list scrolls, which is
         // `steps > 1` reached by different arithmetic than `can_scroll`.
         let sx = ms::SCROLL_X + 3;
-        let seven = mer_frame(7, 0, false, None, gpu, off, wr)?;
-        let nine = mer_frame(9, 0, false, None, gpu, off, wr)?;
+        let seven = mer_frame(7, 0, false, None, false, gpu, off, wr)?;
+        let nine = mer_frame(9, 0, false, None, false, gpu, off, wr)?;
         let sy = ms::scroller_y(0, 9).expect("nine scrolls") + 13;
         c.record(
             "y3.the_scroller_appears_exactly_when_the_list_scrolls",
@@ -2005,10 +2010,10 @@ fn overlays(
             };
             let by = bar::XP_BAR_Y + 2;
             // A wandering trader: `showProgressBar()` false, so no bar at all.
-            let none = mer_frame(3, 0, false, None, gpu, off, wr)?;
+            let none = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
             // Level 2 spans 10..70, so 40 xp is half the LEVEL — not half the
             // villager's career.
-            let half = mer_frame(3, 0, false, Some((2, 40, 0)), gpu, off, wr)?;
+            let half = mer_frame(3, 0, false, Some((2, 40, 0)), false, gpu, off, wr)?;
             let (fill, _) = bar::xp_bar(2, 40, 0).expect("level 2 has a bar");
             assert_eq!(fill, 51, "fixture: half of 102");
 
@@ -2035,7 +2040,7 @@ fn overlays(
             );
 
             // y7 — a master villager shows NOTHING, background included.
-            let master = mer_frame(3, 0, false, Some((5, 999, 0)), gpu, off, wr)?;
+            let master = mer_frame(3, 0, false, Some((5, 999, 0)), false, gpu, off, wr)?;
             c.record(
                 "y7.a_master_villager_shows_no_bar_at_all",
                 at_mer(&master, probe_x(0.25), by) == at_mer(&none, probe_x(0.25), by)
@@ -2053,7 +2058,7 @@ fn overlays(
             // x = 0 and x = 101 and flat in between — read out of the PNGs.
             // So the result segment's FIRST pixel is mid-gradient grey with
             // the offset and the sprite's dark left edge without it.
-            let future = mer_frame(3, 0, false, Some((2, 40, 2)), gpu, off, wr)?;
+            let future = mer_frame(3, 0, false, Some((2, 40, 2)), false, gpu, off, wr)?;
             let (f2, fut) = bar::xp_bar(2, 40, 2).expect("level 2");
             assert!(fut > 1, "fixture: {fut} px of result");
             let first = at_mer(&future, bar::XP_BAR_X + f2, by);
@@ -2066,9 +2071,56 @@ fn overlays(
             );
         }
 
+        // y9 — the discounted price pair (M93w): one icon, TWO numbers, and a
+        // strikethrough through the first.
+        {
+            use rewo_world::merchant_screen as ms;
+            let plain = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
+            let cut = mer_frame(3, 0, false, None, true, gpu, off, wr)?;
+            // The strikethrough's own row, at COST_A_X + 7, item y + 12.
+            let (sx, sy) = (
+                ms::COST_A_X + ms::STRIKETHROUGH_DX + 4,
+                ms::row_item_y(0) + ms::STRIKETHROUGH_DY,
+            );
+            let struck = at_mer(&cut, sx, sy);
+            let unstruck = at_mer(&plain, sx, sy);
+            c.record(
+                "y9.a_discounted_price_strikes_through_its_base_number",
+                struck != unstruck,
+                format!(
+                    "the strikethrough row reads {struck:?} discounted against {unstruck:?}                      plain — drawn at COST_A_X + 7, through the FIRST number rather than in                      the gap between the two"
+                ),
+            );
+            // The two DIGITS are not witnessed here, and the reason is
+            // structural rather than an omission: `mer_frame` builds the
+            // PANEL, and the count labels come from `screen_icons`, which this
+            // gate never calls. Probing for them found 0 changed pixels over a
+            // 10x10 cell — correctly, because nothing in this frame draws
+            // text. M45's shape: a gate reimplementing a slice of the app's
+            // setup misses whatever lives outside it.
+            //
+            // They are graded at the model level instead — `y10` below and
+            // `merchant_screen`'s three `cost_a_display` tests — which covers
+            // the rules (which digits, forced or not) and not their pixels.
+
+            // y10 — and the second number is a FORCED "1": vanilla's
+            // `countText` override exists to defeat `itemCount`'s own rule
+            // that a single item draws no digit at all.
+            let one = ms::cost_a_display(4, 1);
+            c.record(
+                "y10.the_discounted_digit_is_forced_even_when_it_is_a_one",
+                one.at_second == Some(1) && ms::cost_a_display(1, 1).at_icon.is_none(),
+                format!(
+                    "a 4 -> 1 discount draws {:?} as its second digit, while an undiscounted                      single item draws {:?} — the `count == 1 ? \"1\" : null` override is the                      whole difference",
+                    one.at_second,
+                    ms::cost_a_display(1, 1).at_icon
+                ),
+            );
+        }
+
         // y4 — scrolling moves WHICH offers are drawn, not where the rows are.
         // With 9 offers and scroll 2, offer 8 occupies row 6.
-        let scrolled = mer_frame(9, 2, false, None, gpu, off, wr)?;
+        let scrolled = mer_frame(9, 2, false, None, false, gpu, off, wr)?;
         let bottom = (ax, ms::row_item_y(6) + 3 + 4);
         let unscrolled_bottom = at_mer(&nine, bottom.0, bottom.1);
         let scrolled_bottom = at_mer(&scrolled, bottom.0, bottom.1);

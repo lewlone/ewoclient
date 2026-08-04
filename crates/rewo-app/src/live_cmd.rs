@@ -12577,6 +12577,29 @@ fn menu_overlays(
                     }),
                 ));
             }
+            // The discount strikethrough (M93w), through the FIRST number.
+            for (i, offer) in v.offers.iter().enumerate() {
+                let idx = i as i32;
+                if !ms::offer_visible(idx, v.scroll_off, n) {
+                    continue;
+                }
+                if !ms::cost_a_display(offer.cost_a.count, v.cost_a_counts[i]).strikethrough {
+                    continue;
+                }
+                let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
+                out.push((
+                    a::VILLAGER_STRIKETHROUGH,
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: ms::COST_A_X + ms::STRIKETHROUGH_DX,
+                        dy: ms::row_item_y(row) + ms::STRIKETHROUGH_DY,
+                        w: ms::STRIKETHROUGH_W,
+                        h: ms::STRIKETHROUGH_H,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
+            }
             // The XP bar (M93v): background, then the fill, then the result
             // segment — which samples the sprite from `w` rather than 0, so it
             // CONTINUES the gradient where the fill stopped.
@@ -13800,32 +13823,73 @@ pub(crate) fn screen_icons(
             }
             let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
             let y = ms::row_item_y(row);
-            let mut put = |gx: i32, id: i32, count: i32| {
-                if let Some(icon) = icon_for(
-                    items,
-                    trim_materials,
-                    rewo_world::inventory::ItemSlot::plain(id, count),
-                    left + gx as f32 * scale,
-                    top + y as f32 * scale,
-                    16.0 * scale,
-                ) {
-                    icons.push(icon);
-                }
-                labels.extend(count_label(
-                    rewo_world::inventory::ItemSlot::plain(id, count),
+            // Returns rather than pushes, so the cost-A branch below can use
+            // the same geometry without a second mutable borrow.
+            let at = |gx: i32, id: i32, count: i32| {
+                let (px, py) = (left + gx as f32 * scale, top + y as f32 * scale);
+                (
+                    icon_for(
+                        items,
+                        trim_materials,
+                        rewo_world::inventory::ItemSlot::plain(id, count),
+                        px,
+                        py,
+                        16.0 * scale,
+                    ),
+                    count_label(
+                        rewo_world::inventory::ItemSlot::plain(id, count),
+                        px,
+                        py,
+                        scale,
+                    ),
+                )
+            };
+            // Cost A: ONE icon, at its MODIFIED count — `fakeItem` is called
+            // once, outside `extractAndDecorateCostA`'s branch. The discounted
+            // display is two NUMBERS over a single item, not two items.
+            let modified = v.cost_a_counts[i];
+            let disp = ms::cost_a_display(offer.cost_a.count, modified);
+            //
+            // Only `.0`, the icon: cost A's DIGITS take the branch below.
+            // `icon_for` draws the item's model and ignores the count, so
+            // which count is passed here is inert — mutating it to the base
+            // cost is an equivalent mutant, and it is spelled `modified`
+            // because that is the stack vanilla passes to `fakeItem`.
+            icons.extend(at(ms::COST_A_X, offer.cost_a.item_id, modified).0);
+            // Both digits are FORCED in the discounted branch, including a 1 —
+            // `count == 1 ? "1" : null` exists to defeat `itemCount`'s own
+            // "a single item shows no digit" rule.
+            let forced = |n: i32| (n == 1).then(|| n.to_string());
+            for (gx, count) in [
+                (ms::COST_A_X, disp.at_icon),
+                (ms::COST_A_X + ms::DISCOUNT_SECOND_X, disp.at_second),
+            ] {
+                let Some(n) = count else { continue };
+                labels.extend(count_label_of(
+                    n,
+                    disp.strikethrough.then(|| forced(n)).flatten(),
                     left + gx as f32 * scale,
                     top + y as f32 * scale,
                     scale,
                 ));
-            };
-            // Cost A at its MODIFIED count — the number the player actually
-            // pays, not the base the offer was rolled with.
-            put(ms::COST_A_X, offer.cost_a.item_id, v.cost_a_counts[i]);
-            if let Some(b) = &offer.cost_b {
-                put(ms::COST_B_X, b.item_id, b.count);
             }
-            if let rewo_net::item_stack::WireSlot::Stack(st) = &offer.result {
-                put(ms::RESULT_X, st.item_id, st.count);
+            // Cost B and the result take the ordinary path: `itemDecorations`
+            // with no `countText`, so a single item shows no digit there.
+            for (gx, id, count) in [
+                offer.cost_b.as_ref().map(|b| (ms::COST_B_X, b.item_id, b.count)),
+                match &offer.result {
+                    rewo_net::item_stack::WireSlot::Stack(st) => {
+                        Some((ms::RESULT_X, st.item_id, st.count))
+                    }
+                    rewo_net::item_stack::WireSlot::Empty => None,
+                },
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let (icon, label) = at(gx, id, count);
+                icons.extend(icon);
+                labels.extend(label);
             }
         }
     }
@@ -13871,10 +13935,31 @@ fn count_label(
     y: f32,
     scale: f32,
 ) -> Option<rewo_gpu::world::OwnedTextLine> {
-    if stack.count == 1 {
+    count_label_of(stack.count, None, x, y, scale)
+}
+
+/// `itemCount` with vanilla's `countText` override (M93w).
+///
+/// ```java
+/// if (itemStack.getCount() != 1 || countText != null) {
+///    String amount = countText == null ? String.valueOf(itemStack.getCount()) : countText;
+/// ```
+///
+/// **The override's only job is to defeat the `!= 1` rule.** A single item
+/// normally shows no digit; the merchant's discounted price passes
+/// `count == 1 ? "1" : null` so both halves of the comparison stay visible,
+/// which matters exactly when a discount has reached 1.
+fn count_label_of(
+    count: i32,
+    force: Option<String>,
+    x: f32,
+    y: f32,
+    scale: f32,
+) -> Option<rewo_gpu::world::OwnedTextLine> {
+    if count == 1 && force.is_none() {
         return None;
     }
-    let text = stack.count.to_string();
+    let text = force.unwrap_or_else(|| count.to_string());
     // Vanilla measures the string; the digits are a uniform 6 px including
     // their one-pixel gap, and the trailing gap is not part of the width.
     let width = text.chars().count() as f32 * 6.0 - 1.0;
