@@ -282,9 +282,345 @@ pub fn search_query(raw: &str) -> String {
     raw.to_lowercase()
 }
 
+/// `AbstractRecipeBookScreen.init` — `this.widthTooNarrow = this.width < 379`.
+///
+/// A hard threshold in GUI pixels, not a computed fit. Below it the book stops
+/// flanking the menu and covers it instead ([`x_origin`]), and the screen stops
+/// forwarding clicks to the menu underneath.
+pub const WIDTH_TOO_NARROW_BELOW: i32 = 379;
+
+pub fn width_too_narrow(width: i32) -> bool {
+    width < WIDTH_TOO_NARROW_BELOW
+}
+
+/// `RecipeBookComponent.updateScreenPosition` — **opening the book MOVES the
+/// menu**.
+///
+/// ```java
+/// if (isVisible() && !widthTooNarrow) leftPos = 177 + (width - imageWidth - 200) / 2;
+/// else                               leftPos = (width - imageWidth) / 2;
+/// ```
+///
+/// This is the reason the book's render is not a pure addition. Every
+/// panel-relative thing — slot hit-testing, the icons drawn into slots, the
+/// hover box — is measured from `leftPos`, so drawing the book's pixels without
+/// this shift leaves the menu centred while the book overlaps it, and every
+/// click in the menu lands on the wrong slot.
+///
+/// **`topPos` does not move.** Only the horizontal position changes.
+///
+/// Note the shifted form is *not* "centre the pair": it is a literal 177 plus
+/// the centring of a 200-wide notional block. For a 176-wide menu on an 800-wide
+/// screen that is 177 + 212 = 389 against a centred 312 — 77 px right.
+pub fn screen_left(width: i32, image_w: i32, book_visible: bool, too_narrow: bool) -> i32 {
+    if book_visible && !too_narrow {
+        177 + (width - image_w - 200) / 2
+    } else {
+        (width - image_w) / 2
+    }
+}
+
+/// `RecipeBookTabButton` — 35x27.
+pub const TAB_W: i32 = 35;
+pub const TAB_H: i32 = 27;
+
+/// A selected tab is drawn **2 px further left**, so it sticks out of the
+/// column. Its icon moves with it (`moveLeft = selected ? -2 : 0`) — the sprite
+/// and the icon shift together, and shifting only one of them is a plausible
+/// half-transcription that reads as a misplaced icon.
+pub fn tab_x_shift(selected: bool) -> i32 {
+    if selected { -2 } else { 0 }
+}
+
+/// A tab's sprite tracks **selection, not hover**.
+///
+/// ```java
+/// Identifier sprite = this.sprites.get(true, this.selected);
+/// ```
+///
+/// `WidgetSprites.get(enabled, focused)` — `enabled` is a hard-coded `true`, so
+/// the disabled slots are unreachable, and the *focused* argument receives
+/// `selected`. The two-argument `WidgetSprites(tab, tab_selected)` constructor
+/// fills `(enabled, disabled, focused, disabledFocused)` as
+/// `(tab, tab, tab_selected, tab_selected)`, so the result is `tab_selected`
+/// exactly when selected. **A tab does not respond to the cursor at all** —
+/// `handleCursor` is even overridden to suppress the pointer while selected.
+pub fn tab_selected_sprite(selected: bool) -> bool {
+    selected
+}
+
+/// Where a tab's icons sit, relative to the tab's own unshifted origin.
+///
+/// One icon sits at **+9**, two at **+3** and **+14** — the single icon is
+/// *not* the average of the pair (which would be 8.5), so a centred derivation
+/// is half a pixel off and rounds wrong in one direction.
+pub fn tab_icon_offsets(has_secondary: bool, selected: bool) -> Vec<(i32, i32)> {
+    let dx = tab_x_shift(selected);
+    if has_secondary {
+        vec![(3 + dx, 5), (14 + dx, 5)]
+    } else {
+        vec![(9 + dx, 5)]
+    }
+}
+
+/// The recipe button's four background sprites, as a 2x2 matrix.
+///
+/// `hasCraftable` x `hasMultipleRecipes`, and **`hasMultipleRecipes` counts the
+/// SELECTED entries** (`selectedEntries.size() > 1`), not every recipe in the
+/// collection — so filtering can change a slot's chrome without changing what
+/// it makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotSprite {
+    Craftable,
+    ManyCraftable,
+    Uncraftable,
+    ManyUncraftable,
+}
+
+pub fn slot_sprite(craftable: bool, multiple: bool) -> SlotSprite {
+    match (craftable, multiple) {
+        (true, true) => SlotSprite::ManyCraftable,
+        (true, false) => SlotSprite::Craftable,
+        (false, true) => SlotSprite::ManyUncraftable,
+        (false, false) => SlotSprite::Uncraftable,
+    }
+}
+
+/// Where the item(s) go inside a 25x25 recipe button — `(back, front)`.
+///
+/// The "a stack of recipes" look is **two items**, not one sprite: when the
+/// collection has several recipes *and they all share a result display*,
+/// vanilla draws a copy at `offset + 1`, then **decrements `offset`** and draws
+/// the real one. So the pair is (5, 3) — the shadow down-right of centre and
+/// the front one up-left of it. With a single recipe there is no back copy and
+/// the item sits at 4.
+///
+/// Reading `offset--` as applying to the *back* copy gives (4, 4): two items
+/// exactly on top of each other, which renders as one and hides the effect.
+pub fn recipe_item_offsets(multiple_same_result: bool) -> (Option<i32>, i32) {
+    if multiple_same_result {
+        (Some(5), 3)
+    } else {
+        (None, 4)
+    }
+}
+
+/// `1.0F + 0.1F * sin(animationTime / 15.0F * PI)` — the highlight pulse.
+///
+/// One formula, **two different applications**: a recipe button scales
+/// `(squeeze, squeeze)` and a tab scales `(1.0, squeeze)`. Both pivot on
+/// `(x + 8, y + 12)`. A tab that pulsed uniformly would widen into its
+/// neighbour.
+pub const ANIMATION_TIME: f32 = 15.0;
+
+pub fn squeeze(animation_time: f32) -> f32 {
+    1.0 + 0.1 * (animation_time / ANIMATION_TIME * std::f32::consts::PI).sin()
+}
+
+/// `updateArrowButtons` — `(forward, back)`.
+///
+/// Both are gated on `totalPages > 1`, which is redundant for `forward`
+/// (`currentPage < totalPages - 1` already implies it for a clamped page) and
+/// **not** for `back` on an empty book, where `totalPages` is 0.
+pub fn page_arrows_visible(page: usize, total: usize) -> (bool, bool) {
+    (
+        total > 1 && page + 1 < total,
+        total > 1 && page > 0,
+    )
+}
+
+/// The `x/y` page counter, drawn **only when there is more than one page**.
+///
+/// `xo - width / 2 + 73`, `yo + 141`. Centred on 73 rather than the panel's
+/// true centre of 73.5, and the text width is halved with integer division
+/// first — so the label sits half a pixel left of centre by construction.
+pub const PAGE_LABEL_CENTRE_X: i32 = 73;
+pub const PAGE_LABEL_Y: i32 = 141;
+
+pub fn page_label_x(text_width: i32) -> i32 {
+    PAGE_LABEL_CENTRE_X - text_width / 2
+}
+
+/// The filter toggle's sprite, as an index into a four-entry
+/// `(enabled, disabled, enabled_highlighted, disabled_highlighted)` group.
+///
+/// `withSprite((button, filtering) -> textures.get(filtering, button.isHoveredOrFocused()))`
+/// — so `WidgetSprites`' **`enabled` slot carries "is filtering"**, not "is the
+/// button usable". The names line up (`filter_enabled` / `filter_disabled`),
+/// which is what makes the mis-reading easy: taking `enabled` as the widget's
+/// own state gives a button that never changes when you toggle it.
+///
+/// The crafting and furnace families have **different art** — `filter_*` versus
+/// `furnace_filter_*` — so the group base differs per menu.
+pub fn filter_sprite_offset(filtering: bool, hovered: bool) -> usize {
+    match (filtering, hovered) {
+        (true, false) => 0,
+        (false, false) => 1,
+        (true, true) => 2,
+        (false, true) => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_the_book_MOVES_the_menu_it_sits_beside() {
+        // Centred while the book is shut…
+        assert_eq!(screen_left(800, 176, false, false), (800 - 176) / 2);
+        // …and shoved right while it is open, by a literal 177 plus the
+        // centring of a 200-wide block. NOT the centring of the pair.
+        assert_eq!(screen_left(800, 176, true, false), 177 + (800 - 176 - 200) / 2);
+        assert_eq!(screen_left(800, 176, true, false) - screen_left(800, 176, false, false), 77);
+        // A narrow window keeps the menu centred and lets the book cover it.
+        assert_eq!(screen_left(360, 176, true, true), (360 - 176) / 2);
+        // Which is exactly the case `x_origin` stops offsetting for, so the
+        // two agree about the same window.
+        assert!(width_too_narrow(360) && !width_too_narrow(379));
+        assert_eq!(x_origin(360, width_too_narrow(360)), (360 - 147) / 2);
+    }
+
+    /// The threshold is a literal, and one below it is narrow.
+    #[test]
+    fn the_narrow_threshold_is_379_exclusive() {
+        assert!(width_too_narrow(378));
+        assert!(!width_too_narrow(379));
+        assert!(!width_too_narrow(380));
+    }
+
+    /// The book and the menu are BOTH window-centred, and the gap between them
+    /// is still not constant, because 147 is odd and a menu's width is even.
+    /// That is why the book is placed from the window rather than expressed as
+    /// an offset from the panel.
+    #[test]
+    fn the_book_to_panel_gap_changes_with_window_PARITY() {
+        let gap = |w: i32| x_origin(w, false) - screen_left(w, 176, true, false);
+        // One pixel apart on adjacent widths — an offset baked against either
+        // one is wrong on the other.
+        assert_ne!(gap(800), gap(801));
+        assert_eq!((gap(800) - gap(801)).abs(), 1);
+    }
+
+    #[test]
+    fn a_selected_tab_sticks_out_and_takes_its_icon_with_it() {
+        assert_eq!(tab_x_shift(true), -2);
+        assert_eq!(tab_x_shift(false), 0);
+        // The icon moves by the same amount — not by zero, and not by double.
+        assert_eq!(tab_icon_offsets(false, false), vec![(9, 5)]);
+        assert_eq!(tab_icon_offsets(false, true), vec![(7, 5)]);
+        assert_eq!(
+            tab_icon_offsets(false, true)[0].0 - tab_icon_offsets(false, false)[0].0,
+            tab_x_shift(true)
+        );
+    }
+
+    /// A single icon sits at 9; a pair at 3 and 14. 9 is NOT their midpoint,
+    /// so a "centre one icon between where two would go" derivation is wrong.
+    #[test]
+    fn one_tab_icon_is_not_the_midpoint_of_two() {
+        let pair = tab_icon_offsets(true, false);
+        assert_eq!(pair, vec![(3, 5), (14, 5)]);
+        let midpoint = (pair[0].0 + pair[1].0 + 16) / 2 - 8; // centre of the two 16px icons
+        assert_eq!(tab_icon_offsets(false, false)[0].0, 9);
+        assert_ne!(tab_icon_offsets(false, false)[0].0, midpoint);
+    }
+
+    /// A tab responds to SELECTION, never to the cursor.
+    #[test]
+    fn a_tabs_sprite_tracks_selection_and_not_hover() {
+        assert!(tab_selected_sprite(true));
+        assert!(!tab_selected_sprite(false));
+        // There is no hover input at all — the signature cannot express one,
+        // which is the point: `get(true, selected)` leaves hover unread.
+    }
+
+    #[test]
+    fn the_slot_chrome_is_a_two_by_two_matrix() {
+        assert_eq!(slot_sprite(true, false), SlotSprite::Craftable);
+        assert_eq!(slot_sprite(true, true), SlotSprite::ManyCraftable);
+        assert_eq!(slot_sprite(false, false), SlotSprite::Uncraftable);
+        assert_eq!(slot_sprite(false, true), SlotSprite::ManyUncraftable);
+        // All four are distinct — a collapsed pair would draw the wrong chrome
+        // for half the states.
+        let all = [
+            slot_sprite(true, false),
+            slot_sprite(true, true),
+            slot_sprite(false, false),
+            slot_sprite(false, true),
+        ];
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                assert_ne!(all[i], all[j]);
+            }
+        }
+    }
+
+    /// The stacked look is two items at DIFFERENT offsets. (4, 4) would render
+    /// as one item and hide the effect entirely.
+    #[test]
+    fn a_multi_recipe_slot_draws_two_items_that_do_not_coincide() {
+        assert_eq!(recipe_item_offsets(false), (None, 4));
+        let (back, front) = recipe_item_offsets(true);
+        assert_eq!((back, front), (Some(5), 3));
+        assert_ne!(back.unwrap(), front);
+        // The front one moves UP-LEFT of where a single item sits, and the
+        // back one down-right of it.
+        assert!(front < 4 && back.unwrap() > 4);
+    }
+
+    #[test]
+    fn the_pulse_peaks_at_half_and_is_flat_at_both_ends() {
+        assert!((squeeze(0.0) - 1.0).abs() < 1e-6);
+        assert!((squeeze(ANIMATION_TIME) - 1.0).abs() < 1e-6, "sin(PI) is 0");
+        assert!((squeeze(ANIMATION_TIME / 2.0) - 1.1).abs() < 1e-6, "the peak");
+        // It only ever grows.
+        assert!(squeeze(ANIMATION_TIME * 0.25) > 1.0);
+    }
+
+    #[test]
+    fn an_arrow_hides_at_the_end_it_points_at() {
+        assert_eq!(page_arrows_visible(0, 1), (false, false), "one page, neither");
+        assert_eq!(page_arrows_visible(0, 3), (true, false), "at the front");
+        assert_eq!(page_arrows_visible(1, 3), (true, true), "in the middle");
+        assert_eq!(page_arrows_visible(2, 3), (false, true), "at the end");
+        // An empty book has zero pages, and `total > 1` is what keeps the back
+        // arrow off it — `page > 0` alone would too, but only by luck of the
+        // clamp.
+        assert_eq!(page_arrows_visible(0, 0), (false, false));
+    }
+
+    #[test]
+    fn the_page_label_is_centred_on_73_not_on_the_panel() {
+        // 147 wide, so the true centre is 73.5 — vanilla uses 73.
+        assert_eq!(page_label_x(0), 73);
+        assert_eq!(page_label_x(20), 63);
+        assert_ne!(PAGE_LABEL_CENTRE_X * 2, IMAGE_W, "73*2 != 147, deliberately");
+        // The width is halved with integer division, so an odd label is not
+        // symmetric about the centre either.
+        assert_eq!(page_label_x(21), 73 - 10);
+    }
+
+    /// `WidgetSprites`' `enabled` slot carries "is filtering", not "is the
+    /// button usable". Read the other way the button never changes on click.
+    #[test]
+    fn the_filter_sprite_is_keyed_on_FILTERING_and_hover_is_the_second_axis() {
+        assert_eq!(filter_sprite_offset(true, false), 0);
+        assert_eq!(filter_sprite_offset(false, false), 1);
+        assert_eq!(filter_sprite_offset(true, true), 2);
+        assert_eq!(filter_sprite_offset(false, true), 3);
+        // Toggling the filter must move the sprite at BOTH hover states —
+        // the failure mode of reading the axes the wrong way round is that one
+        // of these two pairs collapses.
+        assert_ne!(
+            filter_sprite_offset(true, false),
+            filter_sprite_offset(false, false)
+        );
+        assert_ne!(
+            filter_sprite_offset(true, true),
+            filter_sprite_offset(false, true)
+        );
+    }
 
     #[test]
     fn the_book_is_positioned_against_the_WINDOW_and_slides_when_narrow() {
