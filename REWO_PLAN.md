@@ -2470,9 +2470,18 @@ the orderings differ *only* on a cell that is both and no witness passed a mouse
 over the selected cell. `w6` does.
 
 **Measured.** 1879 tests / 0 failures (world 676, net 588, gpu 255, data 208,
-app 97, mesh 45, proto 11); `containershot` 52 → **58**; `inventoryshot` 152,
+app 97, mesh 45, proto 11); `containershot` 52 → **58**; **`live --render-check`
+22/22, validation ON, 0 errors** — re-run because M93s adds a render path, and
+it confirms the grown atlas and the new arm cost the windowed client nothing; `inventoryshot` 152,
 `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb`
 byte-identical. 6 mutations, 6 killed.
+
+**What `--render-check` does not reach**, recorded rather than papered over: it
+never opens a **stonecutter**, so the grid's windowed call site is unexercised —
+the same gap M93q recorded for the loom, and the same blocker shape. Closing it
+needs an injected `open_screen` *plus* a `container_set_slot` putting a
+stonecuttable block in slot 0, since `hasInputItem` is both halves and an empty
+stonecutter draws no grid to witness.
 
 **Open.** `getOffscreenRows` is transcribed with its negative-for-a-short-list
 arithmetic intact because every vanilla caller is behind `isScrollBarActive`;
