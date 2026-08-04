@@ -12552,6 +12552,39 @@ fn menu_overlays(
                     }),
                 ));
             }
+            // The trade buttons FIRST (M93x) — `addRenderableWidget` puts them
+            // in the widget layer, which `extractBackground` has already run
+            // under. Drawn after the arrow they would cover it.
+            //
+            // A row past the end of the list draws nothing: vanilla toggles
+            // `visible`, not `active`, so there is no greyed button.
+            for (i, _) in v.offers.iter().enumerate() {
+                let i = i as i32;
+                if !ms::offer_visible(i, v.scroll_off, n) {
+                    continue;
+                }
+                let row = if ms::can_scroll(n) { i - v.scroll_off } else { i };
+                let hovered = mouse_gui.is_some_and(|(x, y)| ms::button_hovered(row, x, y));
+                for sl in ms::button_slices(ms::TRADE_BUTTON_W) {
+                    if sl.w == 0 {
+                        continue;
+                    }
+                    out.push((
+                        a::WIDGET_BUTTON + usize::from(hovered),
+                        to_blit(rewo_world::menu_screen::ProgressBlit {
+                            dx: ms::TRADE_BUTTON_X + sl.dx,
+                            dy: ms::button_y(row),
+                            w: sl.w,
+                            h: ms::TRADE_BUTTON_H,
+                            sx: sl.sx,
+                            sy: 0,
+                            // 1:1 — the source size equals the destination, so
+                            // this is a tile and not a scale.
+                            src: None,
+                        }),
+                    ));
+                }
+            }
             for (i, offer) in v.offers.iter().enumerate() {
                 let i = i as i32;
                 if !ms::offer_visible(i, v.scroll_off, n) {

@@ -59,6 +59,70 @@ pub const SCROLL_HEIGHT: i32 = 139;
 pub const SCROLLER_W: i32 = 6;
 pub const SCROLLER_H: i32 = 27;
 
+// ── The trade button's chrome (M93x) ──────────────────────────────────────
+
+/// `widget/button`'s sheet size and its nine-slice border, from
+/// `button.png.mcmeta`:
+///
+/// ```json
+/// { "gui": { "scaling": { "type": "nine_slice", "width": 200, "height": 20, "border": 3 } } }
+/// ```
+pub const BUTTON_SHEET_W: i32 = 200;
+pub const BUTTON_SHEET_H: i32 = 20;
+pub const BUTTON_BORDER: i32 = 3;
+
+/// One horizontal slice of a nine-sliced button: destination x and width, and
+/// the source x it samples. Every slice is **1:1** — see [`button_slices`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonSlice {
+    pub dx: i32,
+    pub w: i32,
+    pub sx: i32,
+}
+
+/// A trade button's chrome, as three 1:1 blits (M93x).
+///
+/// The button is **88x20 against a 200x20 sheet**, so its height matches
+/// exactly and the nine-slice degenerates to horizontal-only: no top or bottom
+/// edge, no centre row, just left corner / middle / right corner.
+///
+/// **The middle is tiled, not stretched**, and that is the part worth knowing.
+/// Vanilla's `NineSlice` blit tiles its edges and centre, so a button narrower
+/// than its sheet draws **one partial tile** — a 1:1 slice of the sheet's first
+/// `w - 6` middle pixels. Stretching the 194-px middle into 82 would resample
+/// every pixel of the button's face and visibly blur it, which is what a
+/// reader implementing "scale the middle" would produce.
+///
+/// Valid while `w <= BUTTON_SHEET_W`, i.e. while the middle fits in one tile;
+/// the merchant's 88 has room to spare and nothing else uses this yet.
+pub fn button_slices(w: i32) -> [ButtonSlice; 3] {
+    debug_assert!(w <= BUTTON_SHEET_W, "a wider button would repeat the tile");
+    let b = BUTTON_BORDER.min(w / 2).max(0);
+    [
+        ButtonSlice { dx: 0, w: b, sx: 0 },
+        ButtonSlice {
+            dx: b,
+            w: w - 2 * b,
+            sx: b,
+        },
+        ButtonSlice {
+            dx: w - b,
+            w: b,
+            sx: BUTTON_SHEET_W - b,
+        },
+    ]
+}
+
+/// Which button sprite a row wears — `SPRITES.get(active, isHoveredOrFocused())`.
+///
+/// **`TradeOfferButton` is never inactive**: vanilla toggles its `visible`
+/// (`button.index < offers.size()`) and leaves `active` alone, so the disabled
+/// sprite is unreachable and a row past the end of the list draws *nothing*
+/// rather than a greyed button.
+pub fn button_hovered(row: i32, gui_x: f64, gui_y: f64) -> bool {
+    button_at(gui_x, gui_y) == Some(row)
+}
+
 // ── The discounted price pair (M93w) ──────────────────────────────────────
 
 /// How far right the **modified** count is drawn when a price is discounted.
@@ -486,6 +550,39 @@ pub fn offer_visible(index: i32, scroll_off: i32, offers: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_button_slices_are_all_one_to_one() {
+        // 88 wide on a 200-wide sheet, border 3.
+        let s = button_slices(TRADE_BUTTON_W);
+        assert_eq!(
+            s,
+            [
+                ButtonSlice { dx: 0, w: 3, sx: 0 },
+                ButtonSlice { dx: 3, w: 82, sx: 3 },
+                ButtonSlice { dx: 85, w: 3, sx: 197 },
+            ]
+        );
+        // They tile the destination exactly, with no gap and no overlap.
+        assert_eq!(s[0].w + s[1].w + s[2].w, TRADE_BUTTON_W);
+        assert_eq!(s[1].dx, s[0].dx + s[0].w);
+        assert_eq!(s[2].dx, s[1].dx + s[1].w);
+        // And the middle samples the sheet's own pixels 1:1 rather than
+        // stretching its 194-px face into 82 — the source width EQUALS the
+        // destination width, which is what makes it a tile and not a scale.
+        assert!(s[1].w <= BUTTON_SHEET_W - 2 * BUTTON_BORDER);
+    }
+
+    #[test]
+    fn a_button_narrower_than_its_own_border_does_not_draw_its_corners_twice() {
+        // `Math.min(border.left(), width / 2)` — unreachable for the merchant
+        // at 88, and the clamp is transcribed because it is the rule.
+        let s = button_slices(4);
+        assert_eq!(s[0].w, 2);
+        assert_eq!(s[2].w, 2);
+        assert_eq!(s[1].w, 0, "no middle left");
+        assert_eq!(s[0].w + s[1].w + s[2].w, 4);
+    }
 
     #[test]
     fn an_undiscounted_price_is_one_number_and_a_single_item_is_none() {
