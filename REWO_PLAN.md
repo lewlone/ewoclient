@@ -65,17 +65,19 @@ a mutation kills* earned its place beside reading whether one did. **M93y** is
 the **recipe book's decode** — four packets and the `SlotDisplay` /
 `RecipeDisplay` trees — and the first class-C label in the arc that turned out
 to be **correct**. **M93z** is that book's **UI model**: window-relative
-geometry, tabs, collections, the three-stage filter and pagination.
+geometry, tabs, collections, the three-stage filter and pagination. **M94**
+renders it — and found that opening the book **moves the menu**, so the book's
+render is not a pure addition, plus two design errors that only the *windowed*
+client could show.
 
-Current measurement, taken 2026-08-04 after M93z: **1956 tests, 0 failures**
-(world 731, net 609, gpu 255, data 212, app 97, mesh 45, proto 11 — all seven
-confirmed reporting); `containershot` **76/76**, `inventoryshot` 152/152,
+Current measurement, taken 2026-08-04 after M94: **1979 tests, 0 failures**
+(world 754, net 609, gpu 255, data 212, app 103, mesh 45, proto 11 — all seven
+confirmed reporting); `containershot` **83/83**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
-22/22 with validation ON and 0 validation errors, re-run for M93q and M93y** —
-the first M93 milestone to touch a render path was M93q, so the earlier "M93
-adds no render path" caveat expired there; demo PNG `2cc56b4acbfb92cb`,
-byte-identical. `REWO_PACKET_COVERAGE.md` is at **114 / 0 / 27**, class C
-20 → **16** (M93y's four packets; M93z adds none).
+23/23 with validation ON and 0 validation errors, re-run for M94** — which is
+where it earned its keep twice over (see M94's §15 entry); demo PNG
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at
+**114 / 0 / 27**, class C **16** (M93y's four packets; M93z and M94 add none).
 
 **A drift worth naming, because it is this section's own documented failure
 mode running in reverse.** At M93z this block's *prose* had been updated
@@ -2390,6 +2392,115 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M94 — the recipe book renders, and two design errors only the windowed client could show (2026-08-04)
+
+M93z built the book's model; this draws it. The 147x166 panel, the four tabs,
+the page's recipe slots, the arrows and the filter toggle — and the **menu
+displacement**, which is what makes this not a pure addition.
+
+**`updateScreenPosition` is the headline, and the milestone was scoped without
+knowing about it.** Opening the book replaces `leftPos = (width - imageWidth) /
+2` with `177 + (width - imageWidth - 200) / 2` — 77 px right for a 176-wide
+panel. Rewo measures every panel-relative thing from that origin (slot
+hit-testing, the icons drawn into slots, the hover box), so drawing the book's
+pixels *without* the shift leaves the menu centred under a book that overlaps it
+and every click lands on the wrong slot. It is a **silent** failure: the render
+looks plausible and the input is wrong. `topPos` does not move. The shifted form
+is also not "centre the pair" — it is a literal 177 plus the centring of a
+200-wide notional block.
+
+The draw and the hit test now resolve their origin through one `Placement`, so
+they cannot disagree — M89's one-accessor rule applied to geometry rather than
+to a menu.
+
+**Two design errors, both found by `live --render-check`, neither visible to any
+headless gate.**
+
+1. **The book was first hung off `ContainerPanel`** — which `container_panel`
+   returns `None` for on the player's own inventory (the path `inventoryshot`
+   pins), and the player's inventory is one of exactly **four** screens that has
+   a book. So the book was undrawable in its commonest case. `containershot`
+   structurally cannot see this: it only ever drives an *open container*. The
+   book is now its own field beside the panel, which is what M94a's finding said
+   it was in the first place.
+2. **The gate's "crafting table" fixture used menu type 13, which is
+   `enchantment`.** Same 176x166 size, so every headless witness measured what it
+   expected and passed. Only opening it in the windowed client and finding no
+   book showed it. `crafting` is 12.
+
+Both are the M86 shape, and both argue the same thing: **run `--render-check` on
+any milestone that adds a render path.**
+
+**Four inversions in the chrome**, each mutation-tested:
+
+- **A tab's sprite tracks SELECTION, not hover.** `sprites.get(true,
+  this.selected)` hard-codes `enabled` and passes `selected` into the *focused*
+  argument, so a tab never responds to the cursor — `handleCursor` is overridden
+  to suppress even the pointer while selected. The filter toggle inverts the same
+  record the other way: `textures.get(filtering, isHoveredOrFocused())` puts "is
+  filtering" in the `enabled` slot, and the sprite *names* (`filter_enabled` /
+  `filter_disabled`) make reading it as the widget's own state easy — which gives
+  a button that never changes when you click it.
+- **A selected tab is drawn 2 px further left and its icon moves with it.**
+  Shifting one and not the other reads as a misplaced icon rather than a wrong
+  offset. One icon sits at +9 and a pair at +3/+14, and 9 is not the pair's
+  midpoint.
+- **The "stack of recipes" look is two items at different offsets**: vanilla
+  draws a copy at `offset + 1`, then **decrements** `offset` and draws the real
+  one — (5, 3). Reading `offset--` as applying to the back copy gives (4, 4), two
+  items exactly on top of each other, which renders as one and hides the effect.
+- **The panel is sampled from `(1, 1)`**, not the sheet's corner.
+
+**The gate's own rewrite was the instructive part.**
+
+- **b1 passed while measuring nothing it claimed.** It probed the book's centre
+  and compared open against shut, reading `[0,0,0]` against `[255,255,255]` —
+  and neither number was the book. (73,80) is inside recipe slot 7, near its
+  black bottom border; and the shut frame had the *menu* over that screen
+  position, because an open book moves the menu. **The control changed along with
+  the subject**, which is the one thing a frame diff may not do. It now probes
+  bare panel outside the menu in both frames and asserts `(55,55,55)`,
+  `recipe_book.png`'s own value there.
+- **Every witness names its sprite's value, read out of the PNG** — `tab.png`
+  139 against `tab_selected.png` 198, `slot_craftable` 139 against
+  `slot_uncraftable` 106. "Different from the backdrop" would pass with every tab
+  drawing the same art, which is exactly what `get(true, selected)` invites.
+- **A mutation deleting `take(view.shown)` survived the gate** and was killed by
+  the model's own test — because the gate's fixture sized its slot vec to
+  `shown`, making the guard a no-op. The fixture now passes twenty slots whatever
+  the page shows, which is vanilla's own structure (`updateButtonsForPage` keeps
+  20 buttons and flips `visible`).
+
+**`rewo-gpu` restates the book's four geometry constants rather than importing
+them.** The renderer deliberately does not depend on `rewo-world` — it takes
+plain numbers, a boundary the Velvet work records — so the copy is paid for by a
+cross-crate test in `rewo-app`, the one crate that sees both.
+
+An existing invariant test caught the new sheet: `MENU_BACKGROUND_TEXTURES` is
+asserted to be exactly the container screens' textures, and the book is not a
+container screen. Named as one explicit exception rather than by loosening the
+comparison, plus a second assertion that the exception names something real, so a
+stray entry still fails.
+
+**Measured.** **1979 tests / 0 failures**; `containershot` 76 → **83**;
+**`live --render-check` 22 → 23/23, validation ON, 0 errors** (debug build, own
+server on a free port, stopped afterwards); `inventoryshot` 152, `itemshot` 75,
+`handshot` 34, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical.
+**11 model mutations + 7 render mutations, all 18 killed.**
+
+**Open.** The book draws no **items** — the recipe results in the grid and the
+tab icons — which needs the GUI item pass to place icons on the book's own
+origin. `hasCraftable` is reported `false` for every collection, so every slot
+wears the *uncraftable* chrome: it needs `StackedItemContents`, vanilla's "can I
+make this from what I hold" solver, and guessing `true` would be worse because
+that is the state that tells a player a recipe is available. Nothing can click
+the book, so the selected tab and page are pinned to 0 and hover never reaches
+the arrows or the filter — the cursor would have to be converted into book space,
+which needs the window size only the renderer has. The search box, the page
+counter text, the overlay popup and ghost slots are not drawn.
+
+---
 
 ### M93z — the recipe book's UI model, and the filter button that toggles one stage of three (2026-08-04)
 
