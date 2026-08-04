@@ -1636,7 +1636,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1857 tests / 0 failures** (all seven crates confirmed reporting),
+(M93) — **1860 tests / 0 failures** (all seven crates confirmed reporting),
 `mobshot` 246/246, `containershot` **49/49**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**157 mutations across M93a–o, 155 killed and 2 shown equivalent**.
+**163 mutations across M93a–p, 160 killed, 2 shown equivalent, 1 alive by construction (named)**.
 
 ### M93l — the beacon's press state machine and `set_beacon`
 
@@ -4529,8 +4529,24 @@ nothing because `(-1i32) as usize` wraps past any representable bound; it is
 load-bearing in Java, where `<` does not wrap. Rewritten as `try_from` so the
 intent does not lean on the wrap.
 
-**Left:** the pattern **preview** inside each button — a render job on M28c's
-banner sprites, not more decode.
+**M93p landed the preview's geometry, not its render** — and says so, with a
+surviving mutation as the evidence: reverting the pass to ignore the new source
+size changes nothing observable, because no overlay uses it yet.
+
+Transcribed: a **5x10** destination at `(cell + 4, cell + 2)` sampling the
+**21x40** region of the 64x64 banner texture starting **one pixel down**. The
+ratio is **not uniform** (21/5 vs 40/10), so it cannot be a scale factor —
+hence `ProgressBlit.src` and `PanelBlit.{sw,sh}`, inert for every 1:1 blit
+before it. And the pattern is drawn **untinted over flat grey**
+(`DyeColor.GRAY.getTextureDiffuseColor()`) — not the banner's base colour, not
+the dye's; tinting it with the dye would look plausible and be wrong for every
+button.
+
+**Left, precisely:** the 43 banner textures into the **overlay atlas**
+(mechanical, but M48's lesson is that atlas growth is where addresses move),
+and a way to draw the **solid grey backing** — `overlays` is
+`(sprite, PanelBlit)` with no colour and no untextured mode, a third structural
+change.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
