@@ -4411,13 +4411,39 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1924 tests**, 0 failures, seven crates reporting (world
-712, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
-27 → **71**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1927 tests**, 0 failures, seven crates reporting (world
+715, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **73**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **194 mutations across M93a–v, 189 killed,
+`2cc56b4acbfb92cb` byte-identical; **198 mutations across M93a–w, 192 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93w — the discounted price pair, and an override that defeats a rule
+
+`extractAndDecorateCostA`. **One icon, not two** — `fakeItem` is called once,
+outside the branch, with the **modified** cost, so the discounted display is two
+*numbers* over a single item. The strikethrough at `+7` crosses the **first**
+number rather than the gap, because the labels are right-aligned into the icon's
+16 px box. And **a count of 1 normally draws nothing**, so the
+`count == 1 ? "1" : null` override exists *solely* to defeat that rule — passing
+`null` throughout drops a digit exactly when a discount has reached 1.
+
+**A witness had to be narrowed rather than fixed.** It first claimed the two
+digits as well as the strikethrough and measured **0 changed pixels** —
+correctly, because the gate's frame builds the **panel** and the count labels
+come from `screen_icons`, which it never calls. M45's shape again: a gate
+reimplementing a slice of the app's setup misses what lives outside it. The
+strikethrough is a panel overlay and is witnessed; the digits are graded at the
+model level, and the gate now says so in a comment so the next reader does not
+read it as an omission.
+
+One equivalent mutant, labelled in the code: `icon_for` ignores the count, so
+which count the cost-A icon call passes cannot matter.
+
+1927 tests; `containershot` 71 → **73**; `live --render-check` 22/22 validation
+ON 0 errors. **Open on the merchant:** only the trade button's own
+`Button.Plain` chrome, and the component-predicate decline.
 
 ### M93v — the XP bar, and a blit argument I read as a size
 
